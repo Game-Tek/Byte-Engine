@@ -188,7 +188,8 @@ impl AssetHandler for FBXAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, spec, source_type) = context.resolve(source_id).await?;
+		let (data, source_type) = context.resolve(source_id).await?;
+		let spec = context.load_sidecar(source_id).await?;
 
 		if !self.can_handle(&source_type) {
 			return Err(LoadErrors::UnsupportedType);

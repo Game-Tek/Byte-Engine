@@ -84,10 +84,7 @@ impl<'a> TrackingStorageBackend<'a> {
 		let mut dependencies = self.dependencies.lock();
 
 		if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-			// A sidecar-aware read is the stronger dependency when one bake uses the same file through both paths.
-			if !existing.version().tracks_sidecar() || dependency.version().tracks_sidecar() {
-				*existing = dependency;
-			}
+			*existing = dependency;
 		} else {
 			dependencies.push(dependency);
 		}
@@ -120,7 +117,7 @@ impl<'a> TrackingStorageBackend<'a> {
 		&'b self,
 		url: ResourceId<'b>,
 		allocator: Option<&'b dyn Allocator>,
-	) -> crate::r#async::BoxedFuture<'b, Result<(AssetStorageBytes<'b>, Option<BEADType>, String), ()>> {
+	) -> crate::r#async::BoxedFuture<'b, Result<(AssetStorageBytes<'b>, String), ()>> {
 		crate::r#async::future(async move {
 			let before = self.inner.version(url).await?;
 
@@ -130,26 +127,6 @@ impl<'a> TrackingStorageBackend<'a> {
 			};
 
 			let after = self.inner.version(url).await?;
-
-			self.finish_tracked_read(url, before, after, resolved)
-		})
-	}
-
-	/// Resolves one exact source file and verifies only that file remained stable during the read.
-	fn resolve_raw_tracked<'b>(
-		&'b self,
-		url: ResourceId<'b>,
-		allocator: Option<&'b dyn Allocator>,
-	) -> crate::r#async::BoxedFuture<'b, Result<AssetStorageBytes<'b>, ()>> {
-		crate::r#async::future(async move {
-			let before = self.inner.raw_version(url).await?;
-
-			let resolved = match allocator {
-				Some(allocator) => self.inner.resolve_raw_in(url, allocator).await?,
-				None => self.inner.resolve_raw(url).await?,
-			};
-
-			let after = self.inner.raw_version(url).await?;
 
 			self.finish_tracked_read(url, before, after, resolved)
 		})
@@ -164,7 +141,7 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 	fn resolve<'a>(
 		&'a self,
 		url: ResourceId<'a>,
-	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> + 'a {
+	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, String), ()>> + 'a {
 		self.resolve_tracked(url, None)
 	}
 
@@ -172,31 +149,24 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>> + 'a {
+	) -> impl std::future::Future<Output = Result<(AssetStorageBytes<'a>, String), ()>> + 'a {
 		self.resolve_tracked(url, Some(allocator))
 	}
 
-	fn resolve_raw<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-	) -> impl std::future::Future<Output = Result<AssetStorageBytes<'a>, ()>> + 'a {
-		self.resolve_raw_tracked(url, None)
-	}
-
-	fn resolve_raw_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> impl std::future::Future<Output = Result<AssetStorageBytes<'a>, ()>> + 'a {
-		self.resolve_raw_tracked(url, Some(allocator))
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
+		async move {
+			// Track absence as well as content, so creating a sidecar invalidates the baked resource.
+			let path = format!("{}.bead", url.get_base().as_ref());
+			let id = ResourceId::new(&path);
+			let before = self.inner.version(id).await?;
+			let resolved = self.inner.load_sidecar(url).await?;
+			let after = self.inner.version(id).await?;
+			self.finish_tracked_read(id, before, after, resolved)
+		}
 	}
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
 		self.inner.version(url)
-	}
-
-	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {
-		self.inner.raw_version(url)
 	}
 }
 
@@ -292,21 +262,20 @@ impl<'a> BakeContext<'a> {
 		self.resource_storage_backend.get_type(id)
 	}
 
-	/// Resolves source bytes and their optional BEAD description with the bake allocator.
-	pub async fn resolve<'b>(
-		&'b self,
-		id: ResourceId<'b>,
-	) -> Result<(AssetStorageBytes<'b>, Option<BEADType>, String), LoadErrors> {
+	/// Resolves only the requested source bytes with the bake allocator.
+	pub async fn resolve<'b>(&'b self, id: ResourceId<'b>) -> Result<(AssetStorageBytes<'b>, String), LoadErrors> {
 		self.asset_storage_backend
 			.resolve_in(id, self.allocator)
 			.await
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
-	/// Resolves one exact source file without reading or tracking an adjacent BEAD sidecar.
-	pub async fn resolve_raw<'b>(&'b self, id: ResourceId<'b>) -> Result<AssetStorageBytes<'b>, LoadErrors> {
+	/// Loads optional BEAD settings and records their presence or absence as a bake dependency.
+	///
+	/// Call this only when the handler consumes sidecar settings, then read the source with [`Self::resolve`].
+	pub async fn load_sidecar(&self, id: ResourceId<'_>) -> Result<Option<BEADType>, LoadErrors> {
 		self.asset_storage_backend
-			.resolve_raw_in(id, self.allocator)
+			.load_sidecar(id)
 			.await
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}

@@ -32,7 +32,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (manifest, _, asset_type) = context.resolve(url).await?;
+		let (manifest, asset_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&asset_type) {
 			return Err(LoadErrors::UnsupportedType);
@@ -48,7 +48,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 		let source_url = ResourceId::new(&source_id);
-		let encoded = context.resolve_raw(source_url).await.map_err(|_| {
+		let (encoded, _) = context.resolve(source_url).await.map_err(|_| {
 			context.error(format_args!(
 				"Environment-map source '{source_id}' could not be read. The most likely cause is that the asset-root-relative source ID does not exist or is inaccessible. See {}.",
 				crate::online_docs_url(ENVIRONMENT_MAP_DOCS_PATH)

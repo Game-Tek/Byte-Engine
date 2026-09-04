@@ -783,11 +783,7 @@ impl AssetManagerState {
 
 		let checks = resource.asset_dependencies().iter().map(|dependency| async move {
 			let id = ResourceId::new(dependency.id());
-			let current = if dependency.version().tracks_sidecar() {
-				self.storage_backend.version(id).await
-			} else {
-				self.storage_backend.raw_version(id).await
-			};
+			let current = self.storage_backend.version(id).await;
 
 			current.as_ref().ok() != Some(dependency.version())
 		});
@@ -870,6 +866,7 @@ pub mod tests {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
 
 			let (source, ..) = context.resolve(id).await?;
+			context.load_sidecar(id).await?;
 
 			match id.get_base().as_ref() {
 				"external.test" => {
@@ -1074,9 +1071,9 @@ pub mod tests {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
-			let (source, sidecar, asset_type) = context.resolve(id).await?;
+			let (source, asset_type) = context.resolve(id).await?;
 
-			if sidecar.is_some() || asset_type != "environment.bead" {
+			if asset_type != "environment.bead" {
 				return Err(LoadErrors::UnsupportedType);
 			}
 
@@ -1340,6 +1337,18 @@ pub mod tests {
 
 		assert_eq!(sidecar_rebake_hash, changed_hash);
 		assert_eq!(invocations.load(Ordering::SeqCst), 4);
+
+		asset_storage.remove_file("versioned.test.bead");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test")
+			.await
+			.expect("removing the requested sidecar should rebake");
+		assert_eq!(invocations.load(Ordering::SeqCst), 5);
+		asset_manager
+			.bake_if_not_exists::<TestResource>("versioned.test")
+			.await
+			.expect("an unchanged absent sidecar should stay fresh");
+		assert_eq!(invocations.load(Ordering::SeqCst), 5);
 	}
 
 	#[r#async::test]
@@ -1364,6 +1373,13 @@ pub mod tests {
 			.await
 			.expect("unchanged external source should be reused");
 
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		asset_storage.add_file("external.bin.bead", b"invalid unrequested settings");
+		asset_manager
+			.bake_if_not_exists::<TestResource>("external.test")
+			.await
+			.expect("unrequested dependency settings must leave the resource fresh");
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
 		asset_storage.add_file("external.bin", b"changed dependency");

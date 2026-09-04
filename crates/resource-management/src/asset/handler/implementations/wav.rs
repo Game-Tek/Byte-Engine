@@ -149,7 +149,7 @@ impl AssetHandler for WAVAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (data, _, dt) = context.resolve(url).await?;
+		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
 			return Err(LoadErrors::UnsupportedType);

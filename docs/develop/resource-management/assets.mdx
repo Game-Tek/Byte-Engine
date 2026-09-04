@@ -34,6 +34,19 @@ Handlers store the requested resource through their `BakeContext` after all gene
 The context keeps source resolution, recursive baking, allocator-aware resource writes, and storage errors consistent across formats.
 Each stored resource contains typed metadata plus the binary payload that consumers will later upload, stream, decode, or play.
 
+When your handler needs adjacent `.bead` settings, call `context.load_sidecar(id)` explicitly.
+`context.resolve(id)` returns only the source bytes and asset type. BESL, FBX, and glTF handlers request sidecars; other handlers read their sources independently.
+
+```rust
+let (source, asset_type) = context.resolve(id).await?;
+let settings = context.load_sidecar(id).await?;
+```
+
+The sidecar helper parses JSON5 and returns `None` when the sidecar is missing.
+It records the sidecar's own file ID as a dependency, including its absence, so creating, editing, or removing it makes the resource stale.
+A sidecar that your handler doesn't request has no effect on baking or freshness.
+Custom source backends provide the same utility through `StorageBackend::load_sidecar`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
+
 ## JSON5 asset files
 
 Byte Engine expects JSON5 wherever an asset format or sidecar uses JSON. Write

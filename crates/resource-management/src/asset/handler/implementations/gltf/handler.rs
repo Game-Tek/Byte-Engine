@@ -319,7 +319,8 @@ impl AssetHandler for GLTFAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, spec, dt) = context.resolve(source_id).await?;
+		let (data, dt) = context.resolve(source_id).await?;
+		let spec = context.load_sidecar(source_id).await?;
 
 		let (gltf, binary_blob) = if dt == "glb" {
 			// Arena-backed source bytes borrow the bake allocator, so parsing stays in this task instead of crossing a thread boundary.

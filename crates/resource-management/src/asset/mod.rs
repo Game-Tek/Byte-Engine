@@ -1,6 +1,6 @@
 //! Load source assets and use format-specific handlers to bake engine resources.
 
-use std::{alloc::Allocator, io::ErrorKind};
+use std::alloc::Allocator;
 
 use serde_json::{Map, Value};
 
@@ -130,73 +130,14 @@ pub use storage_backend::{
 use crate::r#async::read;
 use crate::resource::reader::MappedFileBacking;
 
-/// Loads a source asset and its optional BEAD description.
+/// Loads the exact source file without looking for or parsing an adjacent BEAD sidecar.
 ///
-/// Pass a path relative to the assets directory or a network URL. The function
-/// returns `Err(())` when it cannot find or read the asset.
+/// Paths are relative to `base_path`. Request settings separately through [`StorageBackend::load_sidecar`].
 pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 	allocator: &'a dyn Allocator,
-) -> Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()> {
-	let base = url.get_base();
-
-	let resource_origin = if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
-		"network"
-	} else {
-		"local"
-	};
-
-	match resource_origin {
-		// "network" => {
-		// 	let request = if let Ok(request) = ureq::get(base.as_ref()).call() { request } else { return Err(()); };
-		// 	let content_type = if let Some(e) = request.headers().get("content-type") { e.to_str().unwrap().to_string() } else { return Err(()); };
-		// 	format = content_type;
-
-		// 	source_bytes = Vec::new();
-
-		// 	spec = None;
-
-		// 	request.body().read_to_end(&mut source_bytes).or(Err(()))?;
-		// },
-		"local" => {
-			let path = base_path.unwrap_or(std::path::Path::new(""));
-
-			let path = path.join(base.as_ref());
-
-			let spec_path = path.with_added_extension("bead");
-			let format = url.get_asset_type().to_string();
-
-			// A BEAD declaration is itself the source description, so it cannot have another BEAD sidecar.
-			let spec = async {
-				if url.get_extension().eq_ignore_ascii_case("bead") {
-					Ok(None)
-				} else {
-					read_asset_spec(&spec_path).await
-				}
-			};
-
-			let source_bytes = read_asset_bytes(&path, allocator);
-
-			let (spec, source_bytes) = std::future::join!(spec, source_bytes).await;
-
-			return Ok((source_bytes?, spec?, format));
-		}
-		_ => {
-			// Could not resolve how to get raw resource, return empty bytes
-			Err(())
-		}
-	}
-}
-
-/// Loads the exact source file without looking for or parsing an adjacent BEAD sidecar.
-///
-/// Use this path when a file is data referenced by another asset instead of an independently bakeable asset.
-pub(crate) async fn read_raw_asset_from_source<'a>(
-	url: ResourceId<'a>,
-	base_path: Option<&'a std::path::Path>,
-	allocator: &'a dyn Allocator,
-) -> Result<AssetStorageBytes<'a>, ()> {
+) -> Result<(AssetStorageBytes<'a>, String), ()> {
 	let base = url.get_base();
 
 	if base.as_ref().starts_with("http://") || base.as_ref().starts_with("https://") {
@@ -206,28 +147,10 @@ pub(crate) async fn read_raw_asset_from_source<'a>(
 	let path = base_path.unwrap_or(std::path::Path::new("")).join(base.as_ref());
 	let source_bytes = read_asset_bytes(&path, allocator).await?;
 
-	Ok(source_bytes)
+	Ok((source_bytes, url.get_asset_type().to_string()))
 }
 
-async fn read_asset_spec(spec_path: &std::path::Path) -> Result<Option<BEADType>, ()> {
-	// Append ".bead" to the file name to check for a resource file.
-	let spec_bytes = match read(spec_path).await {
-		Ok(bytes) => Some(bytes),
-		Err(err) if err.kind() == ErrorKind::NotFound => None,
-		Err(_) => return Err(()),
-	};
-
-	if let Some(spec_bytes) = spec_bytes {
-		let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-
-		let spec = parse_json(spec).or(Err(()))?;
-
-		Ok(Some(spec))
-	} else {
-		Ok(None)
-	}
-}
-
+/// Maps source bytes when possible, falling back to an allocated asynchronous read.
 async fn read_asset_bytes<'a>(path: &std::path::Path, allocator: &'a dyn Allocator) -> Result<AssetStorageBytes<'a>, ()> {
 	match std::fs::File::open(path)
 		.map_err(|_| ())

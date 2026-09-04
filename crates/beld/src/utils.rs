@@ -121,10 +121,13 @@ mod tests {
 	struct EmptyAssetStorage;
 
 	impl StorageBackend for EmptyAssetStorage {
-		async fn resolve_raw<'a>(
+		async fn version<'a>(&'a self, _url: ResourceId<'a>) -> Result<resource_management::asset::AssetVersion, ()> {
+			Ok(resource_management::asset::AssetVersion::missing())
+		}
+		async fn resolve<'a>(
 			&'a self,
 			_url: ResourceId<'a>,
-		) -> Result<resource_management::asset::AssetStorageBytes<'a>, ()> {
+		) -> Result<(resource_management::asset::AssetStorageBytes<'a>, String), ()> {
 			Err(())
 		}
 	}

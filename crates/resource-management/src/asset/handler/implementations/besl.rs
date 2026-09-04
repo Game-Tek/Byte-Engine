@@ -38,7 +38,8 @@ impl AssetHandler for BESLShaderAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (source, spec, format) = context.resolve(id).await?;
+		let (source, format) = context.resolve(id).await?;
+		let spec = context.load_sidecar(id).await?;
 
 		if format != "besl" {
 			return Err(LoadErrors::UnsupportedType);

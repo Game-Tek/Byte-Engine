@@ -49,7 +49,7 @@ impl AssetHandler for IESAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (source, _, resource_type) = context.resolve(url).await?;
+		let (source, resource_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&resource_type) {
 			return Err(LoadErrors::UnsupportedType);

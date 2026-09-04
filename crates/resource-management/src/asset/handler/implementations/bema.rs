@@ -204,7 +204,7 @@ impl AssetHandler for BEMAAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (data, _, at) = context.resolve(url).await?;
+		let (data, at) = context.resolve(url).await?;
 
 		if at != "bema" {
 			return Err(LoadErrors::UnsupportedType);
@@ -385,7 +385,7 @@ async fn compile_and_store_shader(
 
 	let path = ResourceId::new(path);
 
-	let (arlp, _, format) = context.resolve(path).await?;
+	let (arlp, format) = context.resolve(path).await?;
 
 	let shader_code = std::str::from_utf8(&arlp)
 		.map_err(|_| LoadErrors::FailedToProcess)?

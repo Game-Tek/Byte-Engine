@@ -32,7 +32,7 @@ impl AssetHandler for EXRAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (source, _, data_type) = context.resolve(url).await?;
+		let (source, data_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&data_type) {
 			return Err(LoadErrors::UnsupportedType);

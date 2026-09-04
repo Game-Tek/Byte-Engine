@@ -28,7 +28,7 @@ impl AssetHandler for PNGAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let (data, _, dt) = context.resolve(url).await?;
+		let (data, dt) = context.resolve(url).await?;
 
 		let allocator = context.allocator();
 

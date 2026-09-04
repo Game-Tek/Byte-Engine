@@ -53,66 +53,45 @@ pub trait StorageBackend: Send + Sync {
 		None
 	}
 
-	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = ResolveResult<'a>> + 'a {
-		read_asset_from_source(url, None, &std::alloc::Global)
-	}
+	/// Loads only the requested source. Call [`Self::load_sidecar`] explicitly for BEAD settings.
+	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = ResolveResult<'a>> + 'a;
 
-	/// Resolves an asset while using the provided allocator for source bytes.
+	/// Loads source bytes with the provided allocator. Custom backends can override this to avoid copying.
 	fn resolve_in<'a>(
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
 	) -> impl Future<Output = ResolveResult<'a>> + 'a {
-		read_asset_from_source(url, None, allocator)
-	}
-
-	/// Resolves the exact source file without reading an adjacent BEAD sidecar.
-	///
-	/// Implement this method against the backend's own namespace. Environment-map manifests use it for referenced image
-	/// data that must not inherit the image's standalone asset sidecar.
-	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = RawResolveResult<'a>> + 'a;
-
-	/// Resolves the exact source file with the provided allocator and without reading an adjacent BEAD sidecar.
-	fn resolve_raw_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> impl Future<Output = RawResolveResult<'a>> + 'a {
 		async move {
-			let source = self.resolve_raw(url).await?;
+			let (source, format) = self.resolve(url).await?;
 			let mut allocated = Vec::new_in(allocator);
-
 			allocated.try_reserve_exact(source.len()).map_err(|_| ())?;
 			allocated.extend_from_slice(&source);
-
-			Ok(AssetStorageBytes::Allocated(allocated.into_boxed_slice()))
+			Ok((AssetStorageBytes::Allocated(allocated.into_boxed_slice()), format))
 		}
 	}
 
-	/// Returns the source version used to decide whether an existing baked resource is still fresh.
+	/// Loads optional JSON5 settings adjacent to the source, using this backend's namespace.
 	///
-	/// Backends with native metadata should override this method to avoid reading source bytes.
-	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
+	/// During baking, use [`crate::asset::handler::BakeContext::load_sidecar`] to record the sidecar dependency,
+	/// including its absence. Read the source separately with [`Self::resolve`].
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
 		async move {
-			let (source, sidecar, _) = self.resolve(url).await?;
-
-			if url.get_extension().eq_ignore_ascii_case("bead") {
-				Ok(AssetVersion::from_raw_content(&source))
-			} else {
-				AssetVersion::from_resolved(&source, sidecar.as_ref())
+			let path = format!("{}.bead", url.get_base().as_ref());
+			let id = ResourceId::new(&path);
+			if self.version(id).await?.source.is_none() {
+				return Ok(None);
 			}
+			let (bytes, _) = self.resolve(id).await?;
+			let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
+			parse_json(text).map(Some).map_err(|_| ())
 		}
 	}
 
-	/// Returns the exact source-file version without tracking an adjacent BEAD sidecar.
+	/// Returns the exact file's version, including an absent file, without reading adjacent files.
 	///
-	/// Backends with native metadata should override this method to avoid reading source bytes.
-	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
-		async move {
-			let source = self.resolve_raw(url).await?;
-			Ok(AssetVersion::from_raw_content(&source))
-		}
-	}
+	/// Return [`AssetVersion::missing`] only for missing files; propagate other access errors.
+	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a;
 }
 
 /// The `DynStorageBackend` trait provides object-safe asset source resolution and version checks.
@@ -123,11 +102,8 @@ pub trait DynStorageBackend: Send + Sync {
 	fn directory_accessible(&self, path: &Path) -> Option<bool>;
 	fn resolve<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, ResolveResult<'a>>;
 	fn resolve_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator) -> BoxedFuture<'a, ResolveResult<'a>>;
-	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, RawResolveResult<'a>>;
-	fn resolve_raw_in<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn Allocator)
-	-> BoxedFuture<'a, RawResolveResult<'a>>;
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>>;
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
-	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>>;
 }
 
 impl<T: StorageBackend> DynStorageBackend for T {
@@ -152,24 +128,12 @@ impl<T: StorageBackend> DynStorageBackend for T {
 		Box::pin(self.resolve_in(url, allocator))
 	}
 
-	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, RawResolveResult<'a>> {
-		Box::pin(self.resolve_raw(url))
-	}
-
-	fn resolve_raw_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> BoxedFuture<'a, RawResolveResult<'a>> {
-		Box::pin(self.resolve_raw_in(url, allocator))
+	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<Option<BEADType>, ()>> {
+		Box::pin(self.load_sidecar(url))
 	}
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
 		Box::pin(self.version(url))
-	}
-
-	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> BoxedFuture<'a, Result<AssetVersion, ()>> {
-		Box::pin(self.raw_version(url))
 	}
 }
 
@@ -248,69 +212,34 @@ impl AssetFileVersion {
 	}
 }
 
-/// The `AssetVersion` struct identifies exact source state and whether an adjacent BEAD sidecar participated in baking.
+/// The `AssetVersion` struct preserves one requested file's identity for freshness checks.
 ///
-/// Return this value from [`StorageBackend::version`] when a custom backend can provide cheaper identity metadata.
+/// Return this value from [`StorageBackend::version`], including when an optional file is missing.
 #[derive(
 	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct AssetVersion {
-	source: AssetFileVersion,
-	sidecar: AssetSidecarVersion,
-}
-
-/// Records whether the resolved operation consumed an adjacent BEAD sidecar.
-#[derive(
-	Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-enum AssetSidecarVersion {
-	Ignored,
-	Tracked(Option<AssetFileVersion>),
+	source: Option<AssetFileVersion>,
 }
 
 impl AssetVersion {
-	/// Creates a version from local file metadata without reading either file.
-	pub fn from_metadata(source: &AssetMetadata, sidecar: Option<&AssetMetadata>) -> Self {
+	/// Creates a version from local file metadata.
+	pub fn from_metadata(source: &AssetMetadata) -> Self {
 		Self {
-			source: AssetFileVersion::from_metadata(source),
-			sidecar: AssetSidecarVersion::Tracked(sidecar.map(AssetFileVersion::from_metadata)),
+			source: Some(AssetFileVersion::from_metadata(source)),
 		}
 	}
 
-	/// Creates a version from local metadata for an exact-file read that ignores adjacent BEAD sidecars.
-	pub fn from_raw_metadata(source: &AssetMetadata) -> Self {
+	/// Creates a version from the exact file's content.
+	pub fn from_content(source: &[u8]) -> Self {
 		Self {
-			source: AssetFileVersion::from_metadata(source),
-			sidecar: AssetSidecarVersion::Ignored,
+			source: Some(AssetFileVersion::from_bytes(source)),
 		}
 	}
 
-	/// Creates a version from source and optional sidecar content.
-	pub fn from_content(source: &[u8], sidecar: Option<&[u8]>) -> Self {
-		Self {
-			source: AssetFileVersion::from_bytes(source),
-			sidecar: AssetSidecarVersion::Tracked(sidecar.map(AssetFileVersion::from_bytes)),
-		}
-	}
-
-	/// Creates a content-backed version for an exact-file read that ignores adjacent BEAD sidecars.
-	pub fn from_raw_content(source: &[u8]) -> Self {
-		Self {
-			source: AssetFileVersion::from_bytes(source),
-			sidecar: AssetSidecarVersion::Ignored,
-		}
-	}
-
-	/// Builds a version from resolved bytes when the backend cannot provide file metadata.
-	fn from_resolved(source: &[u8], sidecar: Option<&BEADType>) -> Result<Self, ()> {
-		let sidecar = sidecar.map(serde_json::to_vec).transpose().map_err(|_| ())?;
-
-		Ok(Self::from_content(source, sidecar.as_deref()))
-	}
-
-	/// Returns whether freshness checks must include the adjacent BEAD sidecar.
-	pub(crate) fn tracks_sidecar(&self) -> bool {
-		matches!(self.sidecar, AssetSidecarVersion::Tracked(_))
+	/// Records absence so creating an explicitly requested optional file invalidates its dependents.
+	pub fn missing() -> Self {
+		Self { source: None }
 	}
 }
 
@@ -343,8 +272,7 @@ impl AssetDependency {
 	}
 }
 
-type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, Option<BEADType>, String), ()>;
-type RawResolveResult<'a> = Result<AssetStorageBytes<'a>, ()>;
+type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, String), ()>;
 
 /// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
@@ -407,50 +335,14 @@ impl StorageBackend for FileStorageBackend {
 		future(read_asset_from_source(url, Some(&self.base_path), allocator))
 	}
 
-	fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = RawResolveResult<'a>> + 'a {
-		future(read_raw_asset_from_source(url, Some(&self.base_path), &std::alloc::Global))
-	}
-
-	fn resolve_raw_in<'a>(
-		&'a self,
-		url: ResourceId<'a>,
-		allocator: &'a dyn Allocator,
-	) -> impl Future<Output = RawResolveResult<'a>> + 'a {
-		future(read_raw_asset_from_source(url, Some(&self.base_path), allocator))
-	}
-
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
 		future(async move {
-			let source_path = self.base_path.join(url.get_base().as_ref());
-			let sidecar_path = source_path.with_added_extension("bead");
-
-			let source = AsyncFile::open(source_path).await.map_err(|_| ())?;
-			let source = source.metadata().await.map_err(|_| ())?;
-			let sidecar = if url.get_extension().eq_ignore_ascii_case("bead") {
-				None
-			} else {
-				match AsyncFile::open(sidecar_path).await {
-					Ok(file) => Some(file.metadata().await.map_err(|_| ())?),
-					Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-					Err(_) => return Err(()),
-				}
-			};
-
-			if url.get_extension().eq_ignore_ascii_case("bead") {
-				Ok(AssetVersion::from_raw_metadata(&source))
-			} else {
-				Ok(AssetVersion::from_metadata(&source, sidecar.as_ref()))
+			let path = self.base_path.join(url.get_base().as_ref());
+			match AsyncFile::open(path).await {
+				Ok(file) => Ok(AssetVersion::from_metadata(&file.metadata().await.map_err(|_| ())?)),
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AssetVersion::missing()),
+				Err(_) => Err(()),
 			}
-		})
-	}
-
-	fn raw_version<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<AssetVersion, ()>> + 'a {
-		future(async move {
-			let source_path = self.base_path.join(url.get_base().as_ref());
-			let source = AsyncFile::open(source_path).await.map_err(|_| ())?;
-			let source = source.metadata().await.map_err(|_| ())?;
-
-			Ok(AssetVersion::from_raw_metadata(&source))
 		})
 	}
 }
@@ -580,14 +472,6 @@ fn resource_id_path(path: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-fn move_bytes_in<'a>(bytes: impl AsRef<[u8]>, allocator: &'a dyn Allocator) -> AssetStorageBytes<'a> {
-	let bytes = bytes.as_ref();
-	let mut output = Vec::with_capacity_in(bytes.len(), allocator);
-	output.extend_from_slice(bytes);
-	AssetStorageBytes::Allocated(output.into_boxed_slice())
-}
-
-#[cfg(test)]
 pub mod tests {
 	use std::{
 		alloc::{Allocator, Global},
@@ -598,26 +482,25 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{
-		AssetSidecarVersion, AssetSource, AssetStorageBytes, FileStorageBackend, RawResolveResult, ResolveResult,
-		StorageBackend, parse_json,
-	};
-	use crate::{
-		asset::ResourceId,
-		r#async::{BoxedFuture, read},
-		tests::ASSETS_PATH,
-	};
+	use super::{AssetSource, AssetStorageBytes, AssetVersion, FileStorageBackend, ResolveResult, StorageBackend};
+	use crate::{asset::ResourceId, tests::ASSETS_PATH};
 
 	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
 	#[derive(Clone)]
 	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
 
-	/// The `VirtualRawStorageBackend` struct proves allocator-aware raw reads stay within a custom backend namespace.
-	struct VirtualRawStorageBackend;
+	/// The `VirtualStorageBackend` struct proves allocator-aware reads stay within a custom backend namespace.
+	struct VirtualStorageBackend;
 
-	impl StorageBackend for VirtualRawStorageBackend {
-		async fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> RawResolveResult<'a> {
-			Ok(AssetStorageBytes::Owned(url.as_ref().as_bytes().into()))
+	impl StorageBackend for VirtualStorageBackend {
+		async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> ResolveResult<'a> {
+			Ok((
+				AssetStorageBytes::Owned(url.as_ref().as_bytes().into()),
+				url.get_asset_type().to_string(),
+			))
+		}
+		async fn version<'a>(&'a self, url: ResourceId<'a>) -> Result<AssetVersion, ()> {
+			Ok(AssetVersion::from_content(url.as_ref().as_bytes()))
 		}
 	}
 
@@ -636,12 +519,12 @@ pub mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn allocator_aware_raw_reads_use_the_custom_backend_namespace() {
-		let backend = VirtualRawStorageBackend;
-		let bytes = backend
-			.resolve_raw_in(ResourceId::new("not-on-disk.environment-source"), &Global)
+	async fn allocator_aware_reads_use_the_custom_backend_namespace() {
+		let backend = VirtualStorageBackend;
+		let (bytes, _) = backend
+			.resolve_in(ResourceId::new("not-on-disk.environment-source"), &Global)
 			.await
-			.expect("the custom raw source must resolve without consulting the process filesystem");
+			.expect("the custom source must resolve without consulting the process filesystem");
 
 		assert_eq!(bytes.as_slice(), b"not-on-disk.environment-source");
 		assert!(matches!(bytes, AssetStorageBytes::Allocated(_)));
@@ -671,153 +554,23 @@ pub mod tests {
 			async move { Ok(sources) }
 		}
 
-		fn resolve<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = ResolveResult<'a>> + 'a {
-			Box::pin(async move {
-				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
-				if let Some(data) = mocked_data {
-					let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
-						None
-					} else {
-						let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-						self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
-					};
-					let spec = if let Some(spec_data) = spec_data {
-						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
-						Some(parse_json(spec).or(Err(()))?)
-					} else {
-						None
-					};
-					return Ok((AssetStorageBytes::Owned(data), spec, url.get_asset_type().to_string()));
-				}
-
-				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
-
-				let path = std::path::Path::new(ASSETS_PATH);
-				let path = path.join(url.get_base().as_ref());
-
-				// Check if the file name exitst in our map
-				let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
-					None
-				} else {
-					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-					self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
-				};
-
-				// If case file needs to be looked for in the fs use the real path
-				let spec_path = path.with_added_extension("bead");
-
-				let spec = if url.get_extension().eq_ignore_ascii_case("bead") {
-					None
-				} else if let Some(data) = spec_data {
-					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec = parse_json(spec).or(Err(()))?;
-					Some(spec)
-				} else {
-					let spec_bytes = match read(&spec_path).await {
-						Ok(bytes) => Some(bytes),
-						Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-						Err(_) => return Err(()),
-					};
-
-					if let Some(spec_bytes) = spec_bytes {
-						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec = parse_json(spec).or(Err(()))?;
-						Some(spec)
-					} else {
-						None
-					}
-				};
-
-				let format = url.get_asset_type().to_string();
-
-				let source_bytes = read(&path).await.or(Err(()))?;
-
-				Ok((AssetStorageBytes::Owned(source_bytes.into_boxed_slice()), spec, format))
-			})
+		async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> ResolveResult<'a> {
+			let mocked = self.0.lock().unwrap().get(url.get_base().as_ref()).cloned();
+			if let Some(bytes) = mocked {
+				return Ok((AssetStorageBytes::Owned(bytes), url.get_asset_type().to_string()));
+			}
+			super::read_asset_from_source(url, Some(std::path::Path::new(ASSETS_PATH)), &Global).await
 		}
 
-		fn resolve_in<'a>(
-			&'a self,
-			url: ResourceId<'a>,
-			allocator: &'a dyn Allocator,
-		) -> impl std::future::Future<Output = ResolveResult<'a>> + 'a {
-			Box::pin(async move {
-				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
-				if let Some(data) = mocked_data {
-					let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
-						None
-					} else {
-						let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-						self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
-					};
-					let spec = if let Some(spec_data) = spec_data {
-						let spec = std::str::from_utf8(&spec_data).or(Err(()))?;
-						Some(parse_json(spec).or(Err(()))?)
-					} else {
-						None
-					};
-					return Ok((super::move_bytes_in(data, allocator), spec, url.get_asset_type().to_string()));
-				}
-
-				// NOTE: Don't return value from else because it would be a reborrow of self.0.lock().unwrap()
-
-				let path = std::path::Path::new(ASSETS_PATH);
-				let path = path.join(url.get_base().as_ref());
-
-				// Check if the file name exists in our map.
-				let spec_data = if url.get_extension().eq_ignore_ascii_case("bead") {
-					None
-				} else {
-					let spec_path = std::path::Path::new(url.get_base().as_ref()).with_added_extension("bead");
-					self.0.lock().unwrap().get(spec_path.to_str().unwrap()).cloned()
-				};
-
-				// If the file needs to be looked for in the fs use the real path.
-				let spec_path = path.with_added_extension("bead");
-
-				let spec = if url.get_extension().eq_ignore_ascii_case("bead") {
-					None
-				} else if let Some(data) = spec_data {
-					let spec = std::str::from_utf8(&data).or(Err(()))?;
-					let spec = parse_json(spec).or(Err(()))?;
-					Some(spec)
-				} else {
-					let spec_bytes = match read(&spec_path).await {
-						Ok(bytes) => Some(bytes),
-						Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-						Err(_) => return Err(()),
-					};
-
-					if let Some(spec_bytes) = spec_bytes {
-						let spec = std::str::from_utf8(&spec_bytes).or(Err(()))?;
-						let spec = parse_json(spec).or(Err(()))?;
-						Some(spec)
-					} else {
-						None
-					}
-				};
-
-				let format = url.get_asset_type().to_string();
-
-				let source_bytes = read(&path).await.or(Err(()))?;
-
-				Ok((super::move_bytes_in(source_bytes, allocator), spec, format))
-			})
-		}
-
-		fn resolve_raw<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = RawResolveResult<'a>> + 'a {
-			Box::pin(async move {
-				let mocked_data = { self.0.lock().unwrap().get(url.as_ref()).cloned() };
-
-				if let Some(data) = mocked_data {
-					return Ok(AssetStorageBytes::Owned(data));
-				}
-
-				let path = std::path::Path::new(ASSETS_PATH).join(url.get_base().as_ref());
-				let source_bytes = read(&path).await.or(Err(()))?;
-
-				Ok(AssetStorageBytes::Owned(source_bytes.into_boxed_slice()))
-			})
+		async fn version<'a>(&'a self, url: ResourceId<'a>) -> Result<super::AssetVersion, ()> {
+			if let Some(bytes) = self.0.lock().unwrap().get(url.get_base().as_ref()) {
+				return Ok(super::AssetVersion::from_content(bytes));
+			}
+			FileStorageBackend {
+				base_path: ASSETS_PATH.into(),
+			}
+			.version(url)
+			.await
 		}
 	}
 
@@ -864,14 +617,13 @@ pub mod tests {
 		fs::write(&path, expected).unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, spec, format) = storage_backend
+		let (bytes, format) = storage_backend
 			.resolve(ResourceId::new("shader.bin"))
 			.await
 			.expect("asset should resolve");
 
 		assert!(matches!(bytes, AssetStorageBytes::MappedFile(_)));
 		assert_eq!(bytes.as_slice(), expected);
-		assert!(spec.is_none());
 		assert_eq!(format, "bin");
 
 		fs::remove_dir_all(directory).unwrap();
@@ -886,13 +638,12 @@ pub mod tests {
 		fs::write(&path, expected).unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, spec, format) = storage_backend
+		let (bytes, format) = storage_backend
 			.resolve(ResourceId::new("skeleton"))
 			.await
 			.expect("extensionless dependency should resolve");
 
 		assert_eq!(bytes.as_slice(), expected);
-		assert!(spec.is_none());
 		assert_eq!(format, "");
 
 		fs::remove_dir_all(directory).unwrap();
@@ -906,13 +657,12 @@ pub mod tests {
 		fs::write(directory.join("studio.environment.bead.bead"), b"{ ignored: true }").unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, spec, asset_type) = storage_backend
+		let (bytes, asset_type) = storage_backend
 			.resolve(ResourceId::new("studio.environment.bead"))
 			.await
 			.expect("the compound BEAD declaration should resolve");
 
 		assert_eq!(bytes.as_slice(), b"environment");
-		assert!(spec.is_none());
 		assert_eq!(asset_type, "environment.bead");
 
 		let version = storage_backend
@@ -920,7 +670,7 @@ pub mod tests {
 			.await
 			.expect("the compound BEAD declaration should have source metadata");
 
-		assert_eq!(version.sidecar, AssetSidecarVersion::Ignored);
+		assert!(version.source.is_some());
 
 		fs::remove_dir_all(directory).unwrap();
 	}
@@ -938,8 +688,7 @@ pub mod tests {
 			.await
 			.expect("source metadata should be available");
 
-		assert_eq!(first.source.size, 4);
-		assert_eq!(first.sidecar, AssetSidecarVersion::Tracked(None));
+		assert_eq!(first.source.as_ref().unwrap().size, 4);
 
 		let mut source = OpenOptions::new().write(true).truncate(true).open(&source_path).unwrap();
 		source.write_all(b"size").unwrap();
@@ -959,29 +708,42 @@ pub mod tests {
 			.await
 			.expect("sidecar metadata should be available");
 
-		assert!(matches!(with_sidecar.sidecar, AssetSidecarVersion::Tracked(Some(_))));
+		assert_eq!(modified, with_sidecar);
 
 		fs::remove_dir_all(directory).unwrap();
 	}
 
 	#[crate::r#async::test]
-	async fn raw_versions_ignore_sidecar_changes_while_full_versions_track_them() {
+	async fn sidecars_are_explicit_optional_json5_reads() {
+		let backend = TestStorageBackend::new();
+		let id = ResourceId::new("explicit.test#fragment");
+		backend.add_file("explicit.test", b"source");
+		assert!(backend.load_sidecar(id).await.unwrap().is_none());
+		backend.add_file("explicit.test.bead", b"{ value: 3, }");
+		assert_eq!(backend.load_sidecar(id).await.unwrap().unwrap()["value"], 3);
+		backend.add_file("explicit.test.bead", b"invalid json5");
+		assert_eq!(backend.resolve(id).await.unwrap().0.as_slice(), b"source");
+		assert!(backend.load_sidecar(id).await.is_err());
+		backend.remove_file("explicit.test.bead");
+		assert!(backend.load_sidecar(id).await.unwrap().is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn file_versions_track_source_and_sidecar_independently() {
 		let storage_backend = TestStorageBackend::new();
 		storage_backend.add_file("source.exr", b"source");
 		storage_backend.add_file("source.exr.bead", b"{ exposure: 1 }");
 
-		let raw_before = storage_backend.raw_version(ResourceId::new("source.exr")).await.unwrap();
-		let full_before = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+		let raw_before = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+		let full_before = storage_backend.version(ResourceId::new("source.exr.bead")).await.unwrap();
 
 		storage_backend.add_file("source.exr.bead", b"{ exposure: 2 }");
 
-		let raw_after = storage_backend.raw_version(ResourceId::new("source.exr")).await.unwrap();
-		let full_after = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+		let raw_after = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
+		let full_after = storage_backend.version(ResourceId::new("source.exr.bead")).await.unwrap();
 
 		assert_eq!(raw_before, raw_after);
 		assert_ne!(full_before, full_after);
-		assert!(!raw_after.tracks_sidecar());
-		assert!(full_after.tracks_sidecar());
 	}
 }
 
@@ -996,7 +758,7 @@ use std::{
 
 use gxhash::GxHasher;
 
-use super::{BEADType, ResourceId, parse_json, read_asset_from_source, read_raw_asset_from_source};
+use super::{BEADType, ResourceId, parse_json, read_asset_from_source};
 use crate::{
 	r#async::{BoxedFuture, File as AsyncFile, future},
 	resource::reader::MappedFileBacking,

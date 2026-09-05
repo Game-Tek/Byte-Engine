@@ -155,34 +155,27 @@ impl StoredResourceReader {
 	}
 
 	/// Decodes a compressed payload into exact caller-owned post-decompression storage.
-	fn read_compressed<'a>(&self, read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, ()> {
+	fn read_compressed<'a>(&self, mut read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, ()> {
 		let compressed = self.backing.try_as_slice().ok_or(())?;
-		match read_target {
-			ReadTargetsMut::Buffer { buffer, offset, size } => {
-				validate_full_decode_target(buffer.len(), offset, size, self.decoded_size)?;
-				decode_resource(compressed, buffer)?;
-				Ok(ReadTargets::Buffer(buffer))
+		let (buffer, offset, size) = match &mut read_target {
+			ReadTargetsMut::Buffer { buffer, offset, size } => (&mut **buffer, *offset, *size),
+			ReadTargetsMut::Box { buffer, offset, size } => (&mut **buffer, *offset, *size),
+			ReadTargetsMut::BackingStorage => {
+				return Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(decode_owned(
+					compressed,
+					self.decoded_size,
+				)?)));
 			}
-			ReadTargetsMut::Box {
-				mut buffer,
-				offset,
-				size,
-			} => {
-				validate_full_decode_target(buffer.len(), offset, size, self.decoded_size)?;
-				decode_resource(compressed, &mut buffer)?;
-				Ok(ReadTargets::Box(buffer))
-			}
-			ReadTargetsMut::BackingStorage => Ok(ReadTargets::Backing(ResourceReaderBacking::Buffer(decode_owned(
-				compressed,
-				self.decoded_size,
-			)?))),
 			ReadTargetsMut::Streams(_) => {
 				log::error!(
 					"Compressed resource streams cannot be loaded separately. The most likely cause is that a partial read was requested for a resource stored as one compressed block. Load the complete resource into a post-decompression buffer or reader-owned backing storage."
 				);
-				Err(())
+				return Err(());
 			}
-		}
+		};
+		validate_full_decode_target(buffer.len(), offset, size, self.decoded_size)?;
+		decode_resource(compressed, buffer)?;
+		Ok(read_target.into())
 	}
 
 	/// Copies uncompressed stored bytes into the caller-selected range or streams.

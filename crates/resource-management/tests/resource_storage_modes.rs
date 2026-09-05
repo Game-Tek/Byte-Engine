@@ -99,6 +99,21 @@ async fn cpu_compression_metadata_survives_reopen_and_readers_only_return_decode
 		assert_eq!(loaded.buffer(), Some(payload.as_slice()));
 		drop(loaded);
 
+		// Owned destinations obey the same complete-payload contract as borrowed buffers.
+		for offset in [1, 0] {
+			let target = resource_management::resource::ReadTargetsMut::Box {
+				buffer: vec![0; payload.len()].into_boxed_slice(),
+				offset,
+				size: Some(payload.len()),
+			};
+			let loaded = reader.read_into(None, target).await;
+			if offset == 0 {
+				assert_eq!(loaded.unwrap().buffer(), Some(payload.as_slice()));
+			} else {
+				assert!(loaded.is_err());
+			}
+		}
+
 		let (_, reader) = storage.read(id).await.unwrap();
 		let backing = reader.into_backing_storage().await.unwrap();
 		assert_eq!(backing.as_slice(), payload);

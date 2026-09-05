@@ -357,18 +357,15 @@ fn a_document_without_a_material_is_reported() {
 
 #[test]
 fn an_unsupported_shading_model_is_reported() {
-	with_failure(
-		&material(r#"<surface name="shader" type="surfaceshader"/>"#),
-		|error| {
-			assert_eq!(
-				error,
-				super::LowerError::UnsupportedShader {
-					material: "M".to_string(),
-					category: "surface".to_string(),
-				}
-			);
-		},
-	);
+	with_failure(&material(r#"<surface name="shader" type="surfaceshader"/>"#), |error| {
+		assert_eq!(
+			error,
+			super::LowerError::UnsupportedShader {
+				material: "M".to_string(),
+				category: "surface".to_string(),
+			}
+		);
+	});
 }
 
 #[test]

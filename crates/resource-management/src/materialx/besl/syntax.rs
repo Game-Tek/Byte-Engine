@@ -2,9 +2,8 @@
 
 use besl::parser::Node;
 
-use crate::materialx::DataType;
-
 use super::error::LowerError;
+use crate::materialx::DataType;
 
 /// The `Expression` struct carries one lowered value: its BESL syntax and the MaterialX type it holds.
 ///

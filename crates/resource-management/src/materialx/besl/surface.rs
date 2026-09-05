@@ -2,12 +2,11 @@
 
 use besl::parser::Node;
 
-use crate::materialx::{DataType, NodeId, Source};
-
 use super::error::LowerError;
 use super::lowering::Lowering;
 use super::nodes::{convert, operand};
 use super::syntax::{self, Expression};
+use crate::materialx::{DataType, NodeId, Source};
 
 /// The `Property` struct names one input of a shading model and the value it falls back to.
 ///

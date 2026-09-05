@@ -4,12 +4,11 @@ use std::collections::HashMap;
 
 use besl::parser::Node;
 
-use crate::materialx::{Dag, DataType, DeclarationId, GraphId, Input, NodeId, PortIndex, Source, Value};
-
 use super::Texture;
 use super::error::LowerError;
 use super::nodes;
 use super::syntax::{self, Expression};
+use crate::materialx::{Dag, DataType, DeclarationId, GraphId, Input, NodeId, PortIndex, Source, Value};
 
 /// The deepest chain of node graph instantiations the lowering follows before it gives up.
 ///
@@ -296,13 +295,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	}
 
 	/// Opens a frame for one instantiation of a node scope.
-	fn open(
-		&mut self,
-		frame: usize,
-		graph: GraphId,
-		arguments: Vec<Argument<'a>>,
-		hint: &str,
-	) -> Result<usize, LowerError> {
+	fn open(&mut self, frame: usize, graph: GraphId, arguments: Vec<Argument<'a>>, hint: &str) -> Result<usize, LowerError> {
 		if self.depth(frame) >= INLINING_LIMIT {
 			return Err(LowerError::InliningLimitExceeded { node: hint.to_string() });
 		}
@@ -357,17 +350,15 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	}
 
 	/// Lowers a read of one of the enclosing scope's interface inputs.
-	fn interface(
-		&mut self,
-		frame: usize,
-		graph: GraphId,
-		input: PortIndex,
-		hint: &str,
-	) -> Result<Expression<'a>, LowerError> {
+	fn interface(&mut self, frame: usize, graph: GraphId, input: PortIndex, hint: &str) -> Result<Expression<'a>, LowerError> {
 		let owner = self.owner(frame, graph).unwrap_or(frame);
 		let port = input.index();
 
-		if let Some(value) = self.frames[owner].arguments.get(port).and_then(|argument| argument.value.clone()) {
+		if let Some(value) = self.frames[owner]
+			.arguments
+			.get(port)
+			.and_then(|argument| argument.value.clone())
+		{
 			return Ok(value);
 		}
 
@@ -499,12 +490,7 @@ impl<'a, 'd> Lowering<'a, 'd> {
 	}
 
 	/// Expands a node the document defines with a node graph, returning what sits behind one output.
-	pub fn through(
-		&mut self,
-		frame: usize,
-		node: NodeId,
-		output: usize,
-	) -> Result<Option<(usize, Source<'a>)>, LowerError> {
+	pub fn through(&mut self, frame: usize, node: NodeId, output: usize) -> Result<Option<(usize, Source<'a>)>, LowerError> {
 		let instance = self.dag.node(node);
 
 		if super::surface::is_shading_model(instance.category) {
@@ -549,12 +535,7 @@ fn constant<'a>(value: &Value<'a>, data_type: DataType<'a>, hint: &str) -> Resul
 		// A boolean lowers to the number a comparison would produce, so nothing has to convert it.
 		Value::Boolean(value) => syntax::literal(if *value { 1.0 } else { 0.0 }),
 		Value::Integer(value) => Node::literal_expression(value.to_string()),
-		Value::Float(_)
-		| Value::Color3(_)
-		| Value::Color4(_)
-		| Value::Vector2(_)
-		| Value::Vector3(_)
-		| Value::Vector4(_) => {
+		Value::Float(_) | Value::Color3(_) | Value::Color4(_) | Value::Vector2(_) | Value::Vector3(_) | Value::Vector4(_) => {
 			// Every one of these arms carries its components, so the fallback never fires.
 			let components = value.components().unwrap_or(&[0.0]);
 

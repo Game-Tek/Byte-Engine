@@ -2,12 +2,11 @@
 
 use besl::parser::Node;
 
-use crate::materialx::{DataType, Input, Node as Instance, NodeId, PortIndex, Source, Value};
-
 use super::Texture;
 use super::error::LowerError;
 use super::lowering::{Lowering, geometry};
 use super::syntax::{self, Expression};
+use crate::materialx::{DataType, Input, Node as Instance, NodeId, PortIndex, Source, Value};
 
 /// The ratio between a base-two and a natural logarithm.
 const LOGARITHM_OF_TWO: f32 = std::f32::consts::LN_2;
@@ -174,7 +173,9 @@ fn builtin<'a>(
 		"absval" | "floor" | "ceil" | "round" | "sign" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "acos" => {
 			let value = operand(lowering, frame, node, "in", 0.0, result)?;
 
-			componentwise(lowering, name, result, vec![value], |lanes| scalar_function(category, &lanes[0]))?
+			componentwise(lowering, name, result, vec![value], |lanes| {
+				scalar_function(category, &lanes[0])
+			})?
 		}
 		"ln" => {
 			let value = operand(lowering, frame, node, "in", 1.0, result)?;
@@ -432,11 +433,7 @@ fn normalize<'a>(
 
 /// Writes a linear blend between two values.
 fn blend<'a>(from: Node<'a>, to: Node<'a>, factor: Node<'a>) -> Node<'a> {
-	Node::operator(
-		"+",
-		from.clone(),
-		Node::operator("*", Node::operator("-", to, from), factor),
-	)
+	Node::operator("+", from.clone(), Node::operator("*", Node::operator("-", to, from), factor))
 }
 
 /// Adds a list of terms together, or writes nothing when the list is empty.
@@ -470,11 +467,7 @@ fn comparison<'a>(
 }
 
 /// Converts an integer value to a float, so a comparison can be written with float intrinsics.
-fn as_float<'a>(
-	lowering: &mut Lowering<'a, '_>,
-	hint: &str,
-	value: Expression<'a>,
-) -> Result<Expression<'a>, LowerError> {
+fn as_float<'a>(lowering: &mut Lowering<'a, '_>, hint: &str, value: Expression<'a>) -> Result<Expression<'a>, LowerError> {
 	if value.data_type != DataType::Integer {
 		return lowering.addressable(hint, value);
 	}

@@ -125,9 +125,9 @@ mod syntax;
 mod tests;
 
 pub use error::LowerError;
+use lowering::Lowering;
 
 use crate::materialx::{Dag, NodeId};
-use lowering::Lowering;
 
 /// The input a material reads its surface shader from.
 const SURFACE_SHADER_INPUT: &str = "surfaceshader";

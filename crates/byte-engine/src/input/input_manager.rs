@@ -369,11 +369,9 @@ impl InputManager {
 
 	/// Resolves source names and rejects unsupported snapshot triggers.
 	fn resolve_binding(&self, binding: &ActionBindingDescription) -> Option<TriggerMapping> {
-		let trigger_handle = self.to_trigger_handle(&binding.input_source)?;
+		let (trigger_handle, source) = self.resolve_trigger(&binding.input_source)?;
 		let trigger = if let Some(reference) = &binding.trigger {
-			let handle = self.to_trigger_handle(reference)?;
-			let source = &self.triggers[trigger_handle.0 as usize];
-			let gate = &self.triggers[handle.0 as usize];
+			let (handle, gate) = self.resolve_trigger(reference)?;
 			if gate.r#type != Types::Boolean || gate.device_class_handle != source.device_class_handle {
 				warn!(
 					"Input snapshot binding is invalid. The trigger must be boolean and belong to the value source's device class."
@@ -447,42 +445,24 @@ impl InputManager {
 		}
 	}
 
-	/// Resolves a name or handle once and checks that its trigger is registered.
+	/// Resolves a registered trigger by handle or its `DeviceClass.Trigger` name.
 	fn resolve_trigger(&self, reference: &TriggerReference) -> Option<(TriggerHandle, &Trigger)> {
-		let handle = self.to_trigger_handle(reference)?;
+		let handle = match reference {
+			TriggerReference::Handle(handle) => *handle,
+			TriggerReference::Name(name) => {
+				let (class_name, trigger_name) = name.split_once('.')?;
+				let class = self.device_classes.iter().position(|class| class.name == class_name)?;
+				let index = self.triggers.iter().position(|trigger| {
+					trigger.device_class_handle == DeviceClassHandle(class as u32) && trigger.name == trigger_name
+				})?;
+				TriggerHandle(index as u32)
+			}
+		};
 		self.triggers.get(handle.0 as usize).map(|trigger| (handle, trigger))
 	}
 
 	fn get_device(&self, device_handle: &DeviceHandle) -> &Device {
 		&self.devices[device_handle.0 as usize]
-	}
-
-	fn to_trigger_handle(&self, trigger_reference: &TriggerReference) -> Option<TriggerHandle> {
-		match trigger_reference {
-			TriggerReference::Handle(handle) => Some(*handle),
-			TriggerReference::Name(name) => {
-				let tokens = (*name).split('.');
-
-				let input_device_class = self
-					.device_classes
-					.iter()
-					.enumerate()
-					.find(|(_, device_class)| device_class.name == tokens.clone().next().unwrap());
-
-				if let Some((idc_index, _)) = input_device_class {
-					let input_device_class_handle = DeviceClassHandle(idc_index as u32);
-
-					let trigger = self.triggers.iter().enumerate().find(|(_, input_source)| {
-						input_source.name == tokens.clone().next_back().unwrap()
-							&& input_source.device_class_handle == input_device_class_handle
-					});
-
-					trigger.map(|trigger| TriggerHandle(trigger.0 as u32))
-				} else {
-					None
-				}
-			}
-		}
 	}
 
 	/// Returns the channel that publishes resolved action events.
@@ -609,6 +589,25 @@ mod tests {
 	fn update_input_manager(input_manager: &mut InputManager) {
 		let frame_allocator = bumpalo::Bump::new();
 		input_manager.update(&frame_allocator);
+	}
+
+	#[test]
+	fn trigger_queries_reject_unknown_handles_and_malformed_paths() {
+		let (input, device) = build_input_manager_with_device(register_keyboard_device_class);
+		for reference in [
+			TriggerReference::Handle(TriggerHandle(u32::MAX)),
+			TriggerReference::Name(""),
+			TriggerReference::Name("Keyboard"),
+			TriggerReference::Name("Keyboard."),
+			TriggerReference::Name("Keyboard.Unknown.Up"),
+			TriggerReference::Name("Unknown.Up"),
+		] {
+			assert!(input.get_trigger_value_for_device(SeatHandle(0), device, reference).is_err());
+		}
+		assert_eq!(
+			input.get_trigger_value_for_device(SeatHandle(0), device, TriggerReference::Name("Keyboard.Up")),
+			Ok(Value::Bool(false))
+		);
 	}
 
 	#[test]

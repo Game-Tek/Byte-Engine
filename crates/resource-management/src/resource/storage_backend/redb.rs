@@ -207,7 +207,7 @@ impl ReDBStorageBackend {
 			let sequence = NEXT_STAGING_FILE.fetch_add(1, Ordering::Relaxed);
 			let path = self.base_path.join(format!(
 				"{STAGED_RESOURCE_FILE_PREFIX}-{}-{}-{sequence}.tmp",
-				resource_key_hex(resource_id.0),
+				resource_id,
 				std::process::id()
 			));
 			let file = match compio::fs::OpenOptions::new()
@@ -1010,7 +1010,7 @@ fn read_packed_ranges(db: &redb::Database) -> Result<Vec<PackedRange>, String> {
 		let resource: SerializableResource = crate::from_slice(entry.1.value()).map_err(|_| {
 			format!(
 				"Packed resource metadata is invalid for '{}'. The most likely cause is a corrupt or incompatible resource database.",
-				resource_key_hex(key)
+				ResourceId(key)
 			)
 		})?;
 		let offset = offsets
@@ -1118,10 +1118,6 @@ fn sync_resource_management_signature(base_path: &Path) {
 	write_resource_cache_signature(base_path, RESOURCE_MANAGEMENT_SIGNATURE_FILE, RESOURCE_MANAGEMENT_CODE_HASH);
 }
 
-fn resource_key_hex(key: [u8; 16]) -> String {
-	ResourceId(key).into()
-}
-
 /// Creates a consistent storage error for one REDB clear step.
 fn resource_clear_error(action: &str, error: impl std::fmt::Display) -> String {
 	format!(
@@ -1130,7 +1126,7 @@ fn resource_clear_error(action: &str, error: impl std::fmt::Display) -> String {
 }
 
 fn resource_payload_path(base_path: &Path, key: [u8; 16], hash: u64, encoding: ResourcePayloadEncoding) -> std::path::PathBuf {
-	base_path.join(format!("{}-{hash:016x}-{}", resource_key_hex(key), encoding.as_str()))
+	base_path.join(format!("{}-{hash:016x}-{}", ResourceId(key), encoding.as_str()))
 }
 
 /// Enumerates backend-owned payload files on a blocking worker because Compio does not provide directory iteration.
@@ -1203,23 +1199,17 @@ fn is_direct_texture(class: &str, metadata: &[u8]) -> bool {
 	class == "Image" && crate::from_slice::<crate::resources::image::Image>(metadata).is_ok_and(|image| image.ibl.is_none())
 }
 
+/// Encodes the class and fixed-width UID directly into the persisted index key.
 fn class_index_key(class: &str, key: [u8; 16]) -> Vec<u8> {
 	let mut bytes = Vec::with_capacity(class.len() + 1 + 32);
-	bytes.extend_from_slice(class.as_bytes());
-	bytes.push(0);
-	bytes.extend_from_slice(resource_key_hex(key).as_bytes());
+	write!(bytes, "{class}\0{}", ResourceId(key)).expect("Writing a resource index to a Vec cannot fail");
 	bytes
 }
 
+/// Encodes the property fields and UID without allocating an intermediate hexadecimal string.
 fn property_index_key(class: &str, property: &str, value: &str, key: [u8; 16]) -> Vec<u8> {
 	let mut bytes = Vec::with_capacity(class.len() + property.len() + value.len() + 3 + 32);
-	bytes.extend_from_slice(class.as_bytes());
-	bytes.push(0);
-	bytes.extend_from_slice(property.as_bytes());
-	bytes.push(0);
-	bytes.extend_from_slice(value.as_bytes());
-	bytes.push(0);
-	bytes.extend_from_slice(resource_key_hex(key).as_bytes());
+	write!(bytes, "{class}\0{property}\0{value}\0{}", ResourceId(key)).expect("Writing a resource index to a Vec cannot fail");
 	bytes
 }
 
@@ -2353,6 +2343,7 @@ mod tests {
 
 use std::{
 	future::Future,
+	io::Write as _,
 	path::Path,
 	sync::atomic::{AtomicU64, Ordering},
 };

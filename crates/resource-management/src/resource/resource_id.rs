@@ -1,6 +1,6 @@
 use std::{
 	borrow::Borrow,
-	fmt::{Debug, Write},
+	fmt::{self, Write},
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ impl From<&str> for ResourceId {
 }
 
 impl ResourceId {
+	/// Parses exactly 32 hexadecimal digits, accepting either letter case.
 	pub fn from_uid_hex(value: &str) -> Option<Self> {
 		if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
 			return None;
@@ -33,6 +34,15 @@ impl ResourceId {
 
 	pub fn to_hex(self) -> String {
 		self.into()
+	}
+}
+
+impl fmt::Display for ResourceId {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		for byte in self.0 {
+			write!(formatter, "{byte:02x}")?;
+		}
+		Ok(())
 	}
 }
 
@@ -82,6 +92,7 @@ mod tests {
 			0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
 		];
 
+		assert_eq!(format!("{id}"), "00112233445566778899aabbccddeeff");
 		assert_eq!(*id.as_ref(), expected);
 		assert_eq!(<[u8; 16]>::from(id), expected);
 		assert_eq!(<&ResourceId as Borrow<[u8; 16]>>::borrow(&&id), &expected);
@@ -91,9 +102,7 @@ mod tests {
 impl From<ResourceId> for String {
 	fn from(val: ResourceId) -> Self {
 		let mut s = String::with_capacity(32);
-		for byte in &val.0 {
-			write!(s, "{:02x}", byte).unwrap();
-		}
+		write!(s, "{val}").expect("Writing a resource ID to a String cannot fail");
 		s
 	}
 }

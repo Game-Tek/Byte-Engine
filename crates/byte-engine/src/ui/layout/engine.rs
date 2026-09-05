@@ -320,53 +320,52 @@ impl<C: 'static> Engine<C> {
 			let feather_mask = feather_masks.get(&element.id).and_then(|mask| mask.element);
 
 			let opacity = effective_opacity(element.id, &tree, &mut effective_opacities);
-			let style = retained_element.element.primitive.style().clone();
-			let backdrop_blur_radius = style
-				.layers()
-				.iter()
-				.find(|layer| matches!(layer.kind(), LayerKind::Fill) && layer.backdrop_blur_radius() > 0.0)
-				.map(|layer| layer.backdrop_blur_radius())
-				.unwrap_or(0.0);
-			let color = style
-				.layers()
-				.first()
-				.map(|layer| match &layer.color {
-					Color::Value(rgba) => *rgba,
-					Color::Sample(_) => RGBA::white(),
-				})
-				.unwrap_or_else(RGBA::white);
-
-			match &retained_element.element.primitive {
-				Primitives::Container(container) => elements.push(RenderElement {
+			let style = retained_element.element.primitive.style();
+			// Only layered geometry retains a style copy; images and text borrow what they need.
+			let mut push_rectangle = |corner_radius, corner_exponent| {
+				elements.push(RenderElement {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
 					clip,
 					feather_mask,
-					style,
+					style: style.clone(),
 					opacity,
-					backdrop_blur_radius,
-					corner_radius: container.corner_radius,
-					corner_exponent: container.corner_exponent,
-				}),
+					backdrop_blur_radius: style
+						.layers()
+						.iter()
+						.find(|layer| matches!(layer.kind(), LayerKind::Fill) && layer.backdrop_blur_radius() > 0.0)
+						.map_or(0.0, |layer| layer.backdrop_blur_radius()),
+					corner_radius,
+					corner_exponent,
+				});
+			};
+			let mut push_text = |content: &str, font_size| {
+				text_elements.push(RenderTextElement {
+					id: element.id.get(),
+					position: element.position,
+					size: element.size,
+					clip,
+					feather_mask,
+					color: match style.layers().first().map(|layer| &layer.color) {
+						Some(Color::Value(rgba)) => *rgba,
+						_ => RGBA::white(),
+					},
+					opacity,
+					font_size,
+					content: content.to_string(),
+				});
+			};
+
+			match &retained_element.element.primitive {
+				Primitives::Container(container) => push_rectangle(container.corner_radius, container.corner_exponent),
 				Primitives::Shape(shape) => {
 					let (corner_radius, corner_exponent) = match shape.shape {
 						Shapes::Box { radius, exponent, .. } => (radius, exponent),
 						_ => (0.0, 2.0),
 					};
 
-					elements.push(RenderElement {
-						id: element.id.get(),
-						position: element.position,
-						size: element.size,
-						clip,
-						feather_mask,
-						style,
-						opacity,
-						backdrop_blur_radius,
-						corner_radius,
-						corner_exponent,
-					});
+					push_rectangle(corner_radius, corner_exponent);
 				}
 				Primitives::Curve(curve) => curve_elements.push(RenderCurveElement {
 					id: element.id.get(),
@@ -374,7 +373,7 @@ impl<C: 'static> Engine<C> {
 					size: element.size,
 					clip,
 					feather_mask,
-					style,
+					style: style.clone(),
 					opacity,
 					segments: curve.path().segments().to_vec(),
 				}),
@@ -391,28 +390,8 @@ impl<C: 'static> Engine<C> {
 					feather_mask,
 					opacity,
 				}),
-				Primitives::Text(text) => text_elements.push(RenderTextElement {
-					id: element.id.get(),
-					position: element.position,
-					size: element.size,
-					clip,
-					feather_mask,
-					color,
-					opacity,
-					font_size: text.settings().font_size,
-					content: text.content().to_string(),
-				}),
-				Primitives::TextField(text_field) => text_elements.push(RenderTextElement {
-					id: element.id.get(),
-					position: element.position,
-					size: element.size,
-					clip,
-					feather_mask,
-					color,
-					opacity,
-					font_size: text_field.settings().font_size,
-					content: text_field.content().to_string(),
-				}),
+				Primitives::Text(text) => push_text(text.content(), text.settings().font_size),
+				Primitives::TextField(text_field) => push_text(text_field.content(), text_field.settings().font_size),
 			}
 		}
 

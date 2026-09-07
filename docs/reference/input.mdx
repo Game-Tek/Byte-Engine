@@ -165,6 +165,114 @@ a value that matches the action's type. The inspector publishes the canonical
 `ActionEvent` directly to the same channel used by physical input. The message-type
 endpoint describes the supported value variants and their payload shapes.
 
+## Give each consumer its own input layer
+
+Input arrives in two steps. `InputEvents` collects the raw control values once
+per tick. Then every distinct consumer — a UI, gameplay, a debug overlay — owns
+an `ActionProcessor` that turns the pending records into that layer's actions.
+
+Register controls on `InputEvents` and create devices with `events.create_device(&class)`.
+Each processor retains its action values, so processing needs no frame allocator.
+
+Process layers in priority order, and end the tick when the last one is done:
+
+```rust
+let mut events = InputEvents::new();
+let mut ui = ActionProcessor::new(events.add_consumer(), ui_channel).with_declarations(ui_actions.listener());
+let mut game = ActionProcessor::new(events.add_consumer(), game_channel).with_declarations(game_actions.listener());
+
+// Each tick, after recording window input into `events`:
+ui.process(&mut events, |action| {
+    if ui_handles(action) { Consumption::Consumed } else { Consumption::Ignored }
+});
+game.process(&mut events, |action| { play(action); Consumption::Ignored });
+events.end_tick();
+```
+
+Use `InputEvents::new_in`, `ActionProcessor::new_in`, or `InputManager::new_in`
+to choose the allocator for retained input storage. The `new` constructors use
+Rust's global allocator. A queue and its layers can use different allocators.
+
+```rust
+let storage = bumpalo::Bump::new();
+let mut events = InputEvents::new_in(&storage);
+let mut ui = ActionProcessor::new_in(events.add_consumer(), ui_channel, &storage);
+```
+
+Keep the allocator alive for the input objects' lifetime. `end_tick` reuses queue
+capacity and retains control state; reset an arena after dropping those objects.
+The allocator covers registered names, buffers, bindings, and action values.
+Channels and action factories keep their own allocation policies.
+
+A layer answers `Consumption::Consumed` for an action it handled. The record
+behind that action stops there, so no later layer turns the same input into
+another action. `Consumption::Ignored` lets the input continue down the chain.
+Each layer also publishes its actions to its own channel, so systems that only
+observe actions can keep using listeners.
+
+Layers do not share actions. Give each one its own action factory, and bind the
+same control in as many layers as you need: only the layer that consumes it
+decides what the input means this tick.
+
+Use `ActionProcessor::consume_pending` for a context that must swallow input it
+has no action for, such as a modal dialog over a scene.
+
+### Decide with the value, not with layout
+
+Bind the value your decision needs, instead of querying the UI mid-tick. A
+binding that publishes the cursor position when a button goes down gives the
+layer the exact click position:
+
+```rust
+ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")
+```
+
+After evaluating a UI snapshot, call `snapshot.retain_hit_test(&mut hits)` on a
+reused `ui::intersection::HitTest`. Query those retained, clipped rectangles
+while deciding consumption. The query uses normalized window coordinates and
+neither allocates nor runs layout.
+
+Set decorative and full-screen transparent containers to
+`Container::hit_testable(false)` so uncovered areas pass through. Their children
+can remain interactive. The retained query uses rectangular bounds; it does not
+perform alpha or rounded-corner hit testing.
+
+Subscribe to `app.messages().channel::<ghi::window::Events>()` before creating a
+window. In the ordinary `tick_with` callback, translate those events with
+`process_default_window_input` into your own `InputEvents`, then process your
+layers. Omit `setup_default_input` when the app owns this pipeline, so the
+default manager does not publish competing actions. Window close and renderer
+lifecycle handling still belong to the graphics application.
+
+### Holds, impulses, and cancellation
+
+Consuming a press claims its control until it is released, so a drag keeps
+working when the pointer leaves the surface that started it, and the release
+reaches the layer that owns the drag. A control another layer claims contributes
+nothing to this layer's actions, so its held keys cannot join your movement
+vector. Repeated down records from platform key repeat are still one hold.
+
+Mark custom impulse controls with `TriggerDescription::transient()`. Standard
+mouse movement, scroll, and keyboard character controls already use this flag.
+An impulse never claims a control and never repeats through a tick policy.
+
+Call `ActionProcessor::cancel_action` when a layer loses focus while holding an
+action, or `ActionProcessor::cancel_device` when a device is suspended. The
+action publishes its neutral value with `ActionEvent::is_cancelled` and stops
+repeating. Cancellation needs no access to the queue. The interrupted press
+stays claimed until release, so a later layer needs a fresh press. End the
+interaction on a cancelled action instead of treating it as a successful release.
+
+### Or keep the convenience path
+
+`InputManager` owns both steps and broadcasts every action, which is all a
+single-consumer application needs. It is also what `setup_default_input` and the
+standard `tick_with` loop install. Manual and inspector requests are addressed
+to one action directly and never compete for input.
+
+Choose one of the two paths per application. The manager broadcasts its whole
+queue, so a layer placed beside it cannot consume anything from it.
+
 ## Practical guidance
 
 Name actions after intent, not hardware.

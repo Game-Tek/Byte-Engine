@@ -98,19 +98,20 @@ fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr)
 	})
 }
 
+impl crate::core::message::Message for ghi::window::Events {}
+
 /// Converts GHI window events into records for the standard mouse and keyboard
 /// device classes.
-pub fn process_default_window_input(
-	input_system: &mut input::InputManager,
+///
+/// Pass the result to [`InputEvents::record`](input::InputEvents::record), or to
+/// [`InputManager::record_trigger_value_for_device`](input::InputManager::record_trigger_value_for_device)
+/// when the application uses the convenience path.
+pub fn process_default_window_input<A: std::alloc::Allocator + Clone>(
+	events: &input::InputEvents<A>,
 	event: ghi::window::Events,
-) -> Option<(
-	input::SeatHandle,
-	input::DeviceHandle,
-	input::input_manager::TriggerReference,
-	input::Value,
-)> {
-	let mouse = *input_system.get_devices_by_class_name("Mouse")?.first()?;
-	let keyboard = *input_system.get_devices_by_class_name("Keyboard")?.first()?;
+) -> Option<(input::SeatHandle, input::DeviceHandle, input::TriggerReference, input::Value)> {
+	let mouse = events.devices_by_class_name("Mouse")?.next()?;
+	let keyboard = events.devices_by_class_name("Keyboard")?.next()?;
 	let seat = input::SeatHandle::stub();
 
 	let record = match event {
@@ -123,7 +124,7 @@ pub fn process_default_window_input(
 					return Some((
 						seat,
 						mouse,
-						input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+						input::TriggerReference::Name("Mouse.Scroll"),
 						input::Value::Float(1.0),
 					));
 				}
@@ -131,7 +132,7 @@ pub fn process_default_window_input(
 					return Some((
 						seat,
 						mouse,
-						input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+						input::TriggerReference::Name("Mouse.Scroll"),
 						input::Value::Float(-1.0),
 					));
 				}
@@ -139,26 +140,26 @@ pub fn process_default_window_input(
 			(
 				seat,
 				mouse,
-				input::input_manager::TriggerReference::Name(trigger),
+				input::TriggerReference::Name(trigger),
 				input::Value::Bool(pressed),
 			)
 		}
 		ghi::window::Events::MousePosition { x, y, .. } => (
 			seat,
 			mouse,
-			input::input_manager::TriggerReference::Name("Mouse.Position"),
+			input::TriggerReference::Name("Mouse.Position"),
 			input::Value::Vector2(input::Axis2::new(x, y)),
 		),
 		ghi::window::Events::MouseMove { dx, dy, .. } => (
 			seat,
 			mouse,
-			input::input_manager::TriggerReference::Name("Mouse.Movement"),
+			input::TriggerReference::Name("Mouse.Movement"),
 			input::Value::Vector2(input::Axis2::new(dx, dy)),
 		),
 		ghi::window::Events::Scroll { dy, .. } => (
 			seat,
 			mouse,
-			input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+			input::TriggerReference::Name("Mouse.Scroll"),
 			input::Value::Float(dy),
 		),
 		ghi::window::Events::Key { pressed, key, .. } => {
@@ -175,14 +176,14 @@ pub fn process_default_window_input(
 			(
 				seat,
 				keyboard,
-				input::input_manager::TriggerReference::Name(trigger),
+				input::TriggerReference::Name(trigger),
 				input::Value::Bool(pressed),
 			)
 		}
 		ghi::window::Events::Character { character, .. } => (
 			seat,
 			keyboard,
-			input::input_manager::TriggerReference::Name("Keyboard.Character"),
+			input::TriggerReference::Name("Keyboard.Character"),
 			input::Value::Unicode(character),
 		),
 		_ => return None,
@@ -197,21 +198,21 @@ mod tests {
 	use crate::core::channel::{Channel as _, DefaultChannel};
 	use crate::input::utils::{register_keyboard_device_class, register_mouse_device_class};
 
-	fn input_manager() -> input::InputManager {
-		let actions = DefaultChannel::new();
-		let mut manager = input::InputManager::new(actions.listener(), DefaultChannel::new());
-		let mouse = register_mouse_device_class(&mut manager);
-		let keyboard = register_keyboard_device_class(&mut manager);
-		manager.create_device(&mouse);
-		manager.create_device(&keyboard);
-		manager
+	/// Builds the standard mouse and keyboard devices the translation expects.
+	fn window_input() -> input::InputEvents {
+		let mut events = input::InputEvents::new();
+		let mouse = register_mouse_device_class(&mut events);
+		let keyboard = register_keyboard_device_class(&mut events);
+		events.create_device(&mouse);
+		events.create_device(&keyboard);
+		events
 	}
 
 	#[test]
 	fn maps_mouse_move_to_mouse_movement_trigger() {
-		let mut manager = input_manager();
+		let events = window_input();
 		let result = process_default_window_input(
-			&mut manager,
+			&events,
 			ghi::window::Events::MouseMove {
 				seat: ghi::window::Seat::stub(),
 				dx: 0.25,
@@ -221,18 +222,15 @@ mod tests {
 		)
 		.expect("expected test value");
 
-		assert!(matches!(
-			result.2,
-			input::input_manager::TriggerReference::Name("Mouse.Movement")
-		));
+		assert!(matches!(result.2, input::TriggerReference::Name("Mouse.Movement")));
 		assert_eq!(result.3, input::Value::Vector2(input::Axis2::new(0.25, -0.5)));
 	}
 
 	#[test]
 	fn maps_scroll_to_mouse_scroll_trigger() {
-		let mut manager = input_manager();
+		let events = window_input();
 		let result = process_default_window_input(
-			&mut manager,
+			&events,
 			ghi::window::Events::Scroll {
 				seat: ghi::window::Seat::stub(),
 				dx: 0.0,
@@ -242,18 +240,15 @@ mod tests {
 		)
 		.expect("expected test value");
 
-		assert!(matches!(
-			result.2,
-			input::input_manager::TriggerReference::Name("Mouse.Scroll")
-		));
+		assert!(matches!(result.2, input::TriggerReference::Name("Mouse.Scroll")));
 		assert_eq!(result.3, input::Value::Float(-0.75));
 	}
 
 	#[test]
 	fn maps_backspace_to_keyboard_backspace_trigger() {
-		let mut manager = input_manager();
+		let events = window_input();
 		let result = process_default_window_input(
-			&mut manager,
+			&events,
 			ghi::window::Events::Key {
 				seat: ghi::window::Seat::stub(),
 				pressed: true,
@@ -262,18 +257,15 @@ mod tests {
 		)
 		.expect("expected test value");
 
-		assert!(matches!(
-			result.2,
-			input::input_manager::TriggerReference::Name("Keyboard.Backspace")
-		));
+		assert!(matches!(result.2, input::TriggerReference::Name("Keyboard.Backspace")));
 		assert_eq!(result.3, input::Value::Bool(true));
 	}
 
 	#[test]
 	fn maps_character_to_keyboard_character_trigger() {
-		let mut manager = input_manager();
+		let events = window_input();
 		let result = process_default_window_input(
-			&mut manager,
+			&events,
 			ghi::window::Events::Character {
 				seat: ghi::window::Seat::stub(),
 				character: 'é',
@@ -281,10 +273,7 @@ mod tests {
 		)
 		.expect("expected test value");
 
-		assert!(matches!(
-			result.2,
-			input::input_manager::TriggerReference::Name("Keyboard.Character")
-		));
+		assert!(matches!(result.2, input::TriggerReference::Name("Keyboard.Character")));
 		assert_eq!(result.3, input::Value::Unicode('é'));
 	}
 

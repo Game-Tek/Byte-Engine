@@ -48,6 +48,7 @@ pub struct GraphicsApplication {
 	application: BaseApplication,
 	message_bus: MessageBus,
 	messages: MessageScope,
+	window_events: DefaultChannel<ghi::window::Events>,
 
 	tick_count: u64,
 	start_time: std::time::Instant,
@@ -71,7 +72,7 @@ pub struct GraphicsApplication {
 
 	input_system: input::InputManager,
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
-	gamepad_device_class_handle: Option<input::device_class::DeviceClassHandle>,
+	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
 
@@ -177,10 +178,13 @@ impl Application for GraphicsApplication {
 
 		let generator_factory = messages.factory();
 
+		let window_events = messages.channel();
+
 		GraphicsApplication {
 			application,
 			message_bus,
 			messages,
+			window_events,
 
 			application_events,
 			http_inspector,
@@ -257,8 +261,9 @@ impl GraphicsApplication {
 		let mut close = false;
 		for window_events in self.renderer.update_windows() {
 			for event in window_events {
+				self.window_events.send(event);
 				close |= matches!(event, ghi::window::Events::Close);
-				if let Some((seat, device, action, value)) = process_default_window_input(&mut self.input_system, event) {
+				if let Some((seat, device, action, value)) = process_default_window_input(self.input_system.events(), event) {
 					self.input_system.record_trigger_value_for_device(seat, device, action, value);
 				}
 			}
@@ -365,7 +370,7 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_input");
 			let _enter = span.enter();
-			self.input_system.update(&self.application.frame_allocator);
+			self.input_system.update();
 		}
 
 		// Physics publishes its results back to the shared transform route. Discard
@@ -491,6 +496,9 @@ impl GraphicsApplication {
 	///
 	/// Next, call [`MessageScope::channel`] or [`MessageScope::factory`] to add an
 	/// application-defined message route without declaring its type at startup.
+	/// Subscribe to [`ghi::window::Events`] before creating windows to handle raw
+	/// input in your application callback. Events are published in polling order;
+	/// the current stream does not identify which window produced each event.
 	pub fn messages(&self) -> &MessageScope {
 		&self.messages
 	}
@@ -735,16 +743,15 @@ mod tests {
 			))
 			.with(crate::gameplay::Name::new("Zoom"));
 		let action_handle = action.handle();
-		let frame_allocator = bumpalo::Bump::new();
 
-		input_manager.update(&frame_allocator);
+		input_manager.update();
 		input_manager.record_trigger_value_for_device(
 			input::SeatHandle::stub(),
 			mouse,
-			input::input_manager::TriggerReference::Name("Mouse.Scroll"),
+			input::TriggerReference::Name("Mouse.Scroll"),
 			input::Value::Float(1.0),
 		);
-		input_manager.update(&frame_allocator);
+		input_manager.update();
 
 		assert_eq!(action_listener.read().expect("action event").handle(), action_handle);
 	}
@@ -784,7 +791,7 @@ use crate::{
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
 	ghi::command_buffer::CommandBufferRecording as _,
-	input::{Action, input_trigger},
+	input::Action,
 	inspector::{
 		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
 		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,

@@ -3,29 +3,33 @@
 /// # Triggers
 ///
 /// - `Position`: Absolute window-relative position as a 2D vector from -1 to 1.
-/// - `Movement`: Relative movement as a 2D vector normalized by the window size.
+/// - `Movement`: Relative movement as a 2D vector normalized by the window size. Each record is one impulse.
 /// - `LeftButton`: State of the left mouse button as a Boolean value.
 /// - `RightButton`: State of the right mouse button as a Boolean value.
-/// - `Scroll`: Vertical scroll amount as a float from -1 to 1.
-pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
-	let mouse_device_class_handle = input_manager.register_device_class("Mouse");
+/// - `Scroll`: Vertical scroll amount as a float from -1 to 1. Each record is one impulse.
+pub fn register_mouse_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+	let mouse_device_class_handle = registry.register_device_class("Mouse");
 
-	input_manager.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Axis2>::default());
-	input_manager.register_trigger(&mouse_device_class_handle, "Movement", TriggerDescription::<Axis2>::default());
-	input_manager.register_trigger(
+	registry.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Axis2>::default());
+	registry.register_trigger(
+		&mouse_device_class_handle,
+		"Movement",
+		TriggerDescription::<Axis2>::default().transient(),
+	);
+	registry.register_trigger(
 		&mouse_device_class_handle,
 		"LeftButton",
 		TriggerDescription::<bool>::default(),
 	);
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&mouse_device_class_handle,
 		"RightButton",
 		TriggerDescription::<bool>::default(),
 	);
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&mouse_device_class_handle,
 		"Scroll",
-		TriggerDescription::new(0f32, 0f32, -1f32, 1f32),
+		TriggerDescription::new(0f32, 0f32, -1f32, 1f32).transient(),
 	);
 
 	mouse_device_class_handle
@@ -37,32 +41,30 @@ pub fn register_mouse_device_class(input_manager: &mut InputManager) -> DeviceCl
 ///
 /// The class exposes Boolean triggers for `W`, `S`, `A`, `D`, `Space`, the four
 /// arrow keys, `Escape`, and `Backspace`. The `Character` trigger emits typed
-/// text as a `char`.
-pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
-	let keyboard_device_class_handle = input_manager.register_device_class("Keyboard");
+/// text as a `char`, one impulse per character.
+pub fn register_keyboard_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+	let keyboard_device_class_handle = registry.register_device_class("Keyboard");
 
-	input_manager.register_trigger(&keyboard_device_class_handle, "W", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "S", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "A", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "D", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "Space", TriggerDescription::<bool>::default());
-
-	input_manager.register_trigger(&keyboard_device_class_handle, "Up", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "Down", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "Left", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&keyboard_device_class_handle, "Right", TriggerDescription::<bool>::default());
-
-	input_manager.register_trigger(&keyboard_device_class_handle, "Escape", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(
-		&keyboard_device_class_handle,
+	for name in [
+		"W",
+		"S",
+		"A",
+		"D",
+		"Space",
+		"Up",
+		"Down",
+		"Left",
+		"Right",
+		"Escape",
 		"Backspace",
-		TriggerDescription::<bool>::default(),
-	);
+	] {
+		registry.register_trigger(&keyboard_device_class_handle, name, TriggerDescription::<bool>::default());
+	}
 
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&keyboard_device_class_handle,
 		"Character",
-		TriggerDescription::<char>::default(),
+		TriggerDescription::<char>::default().transient(),
 	);
 
 	keyboard_device_class_handle
@@ -75,81 +77,53 @@ pub fn register_keyboard_device_class(input_manager: &mut InputManager) -> Devic
 /// - `LeftStick` and `RightStick`: 2D vectors from -1 to 1.
 /// - `LeftTrigger` and `RightTrigger`: floats from 0 to 1.
 /// - Face, bumper, stick, menu, and directional-pad buttons: Boolean values.
-pub fn register_gamepad_device_class(input_manager: &mut InputManager) -> DeviceClassHandle {
-	let gamepad_device_class_handle = input_manager.register_device_class("Gamepad");
+pub fn register_gamepad_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+	let gamepad_device_class_handle = registry.register_device_class("Gamepad");
 
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&gamepad_device_class_handle,
 		"LeftStick",
 		TriggerDescription::<Axis2>::default(),
 	);
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&gamepad_device_class_handle,
 		"RightStick",
 		TriggerDescription::<Axis2>::default(),
 	);
 
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&gamepad_device_class_handle,
 		"LeftTrigger",
 		TriggerDescription::<f32>::default(),
 	);
-	input_manager.register_trigger(
+	registry.register_trigger(
 		&gamepad_device_class_handle,
 		"RightTrigger",
 		TriggerDescription::<f32>::default(),
 	);
 
-	input_manager.register_trigger(&gamepad_device_class_handle, "A", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "B", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "X", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "Y", TriggerDescription::<bool>::default());
-
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
+	for name in [
+		"A",
+		"B",
+		"X",
+		"Y",
 		"LeftBumper",
-		TriggerDescription::<bool>::default(),
-	);
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
 		"RightBumper",
-		TriggerDescription::<bool>::default(),
-	);
-
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
 		"LeftStickButton",
-		TriggerDescription::<bool>::default(),
-	);
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
 		"RightStickButton",
-		TriggerDescription::<bool>::default(),
-	);
-
-	input_manager.register_trigger(&gamepad_device_class_handle, "Select", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "Start", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(&gamepad_device_class_handle, "Guide", TriggerDescription::<bool>::default());
-
-	input_manager.register_trigger(&gamepad_device_class_handle, "DPadUp", TriggerDescription::<bool>::default());
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
+		"Select",
+		"Start",
+		"Guide",
+		"DPadUp",
 		"DPadDown",
-		TriggerDescription::<bool>::default(),
-	);
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
 		"DPadLeft",
-		TriggerDescription::<bool>::default(),
-	);
-	input_manager.register_trigger(
-		&gamepad_device_class_handle,
 		"DPadRight",
-		TriggerDescription::<bool>::default(),
-	);
+	] {
+		registry.register_trigger(&gamepad_device_class_handle, name, TriggerDescription::<bool>::default());
+	}
 
 	gamepad_device_class_handle
 }
 
 use super::Axis2;
-use super::{InputManager, device_class::DeviceClassHandle, input_trigger::TriggerDescription};
+use super::{TriggerRegistry, device::DeviceClassHandle, trigger::TriggerDescription};

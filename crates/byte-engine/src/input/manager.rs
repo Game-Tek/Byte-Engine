@@ -1,116 +1,72 @@
-//! Runtime storage and evaluation for input devices, triggers, and actions.
+//! The convenience input path for applications with a single input consumer.
 //!
-//! Device classes describe layouts such as "Mouse" or "Gamepad"; devices are
-//! concrete instances of those classes; triggers are named values on a class.
-//! Actions map one or more triggers into application concepts such as movement.
+//! [`InputManager`] wires the two input steps together and broadcasts every
+//! action: it owns one [`InputEvents`] queue and one [`ActionProcessor`], and
+//! consumes nothing. Use it for applications where no two contexts compete for
+//! the same control, and for the standard headed integration through
+//! `GraphicsApplication`.
 //!
-//! Most headed applications receive an [`InputManager`] through
-//! `GraphicsApplication` and install the standard layouts with
-//! `setup_default_input`. Custom runtimes construct it from an action factory
-//! listener and an action event channel, then register classes before creating
-//! devices.
+//! Applications that need layered input, such as a UI that consumes clicks
+//! before gameplay sees them, own an [`InputEvents`] and one
+//! [`ActionProcessor`] per layer instead. Choose one of the two: this manager
+//! broadcasts the whole queue, so a layer added beside it cannot consume
+//! anything from it.
+//!
+//! See [Input](/docs/reference/input) for both workflows.
 
-/// The synthetic device reserved for actions triggered without physical input.
-const MANUAL_ACTION_DEVICE: DeviceHandle = DeviceHandle(u32::MAX);
-
-/// The [`InputManager`] struct owns input topology, current values, and action
-/// evaluation state.
+/// The [`InputManager`] struct broadcasts every action a device produces.
 ///
-/// Feed platform records into this type before calling its update path. For the
-/// standard headed integration, use
-/// `process_default_window_input` rather than duplicating the mouse and keyboard
-/// trigger-name mapping.
+/// Register device classes and triggers through [`TriggerRegistry`], create
+/// devices, then record platform values with
+/// [`Self::record_trigger_value_for_device`] and call [`Self::update`] once per
+/// application tick. For the standard headed integration, use
+/// `process_default_window_input` rather than duplicating the mouse and
+/// keyboard trigger-name mapping.
 ///
-/// After registration, subscribe through [`Self::event_channel`], queue physical
-/// values with [`Self::record_trigger_value_for_device`], and call
-/// [`Self::update`] once per application tick.
-/// See [Input](/docs/reference/input)
-/// for the complete registration and evaluation flow.
-pub struct InputManager {
-	device_classes: Vec<DeviceClass>,
-	triggers: Vec<Trigger>,
-	devices: Vec<Device>,
-	records: Vec<Record>,
-	actions: Vec<InputAction>,
-	/// Stores the latest trigger value for each seat and device.
-	trigger_values: HashMap<(SeatHandle, DeviceHandle, TriggerHandle), Record>,
-	/// Stores the latest action value for each seat and device.
-	action_values: HashMap<(SeatHandle, DeviceHandle, ActionHandle), Value>,
-	pending_manual_actions: Vec<(SeatHandle, ActionHandle, Value)>,
-	action_listener: DefaultListener<CreateMessage<Action>>,
-	event_channel: DefaultChannel<ActionEvent>,
+/// Subscribe through [`Self::event_channel`] to receive the resolved
+/// [`ActionEvent`] values.
+pub struct InputManager<A: Allocator + Clone = Global> {
+	events: InputEvents<A>,
+	processor: ActionProcessor<A>,
 }
 
 impl InputManager {
 	/// Creates an input manager connected to action creation and event channels.
 	pub fn new(action_listener: DefaultListener<CreateMessage<Action>>, event_channel: DefaultChannel<ActionEvent>) -> Self {
-		InputManager {
-			device_classes: Vec::new(),
-			triggers: Vec::new(),
-			devices: Vec::new(),
-			records: Vec::new(),
-			actions: Vec::new(),
-			trigger_values: HashMap::with_capacity(512),
-			action_values: HashMap::with_capacity(64),
-			pending_manual_actions: Vec::new(),
-			action_listener,
-			event_channel,
+		Self::new_in(action_listener, event_channel, Global)
+	}
+
+	/// Returns the synthetic device used by [`Self::trigger_action`].
+	pub fn manual_action_device_handle() -> DeviceHandle {
+		MANUAL_ACTION_DEVICE
+	}
+}
+
+impl<A: Allocator + Clone> InputManager<A> {
+	/// Creates the queue and its action processor in `allocator`.
+	///
+	/// Keep arena storage alive until the manager is dropped. The supplied
+	/// listener and channel retain their own allocation policies. Next, register
+	/// controls through [`TriggerRegistry`] and call [`Self::create_device`].
+	pub fn new_in(
+		action_listener: DefaultListener<CreateMessage<Action>>,
+		event_channel: DefaultChannel<ActionEvent>,
+		allocator: A,
+	) -> Self {
+		let mut events = InputEvents::new_in(allocator.clone());
+		let consumer = events.add_consumer();
+		Self {
+			events,
+			processor: ActionProcessor::new_in(consumer, event_channel, allocator).with_declarations(action_listener),
 		}
 	}
 
-	/// Registers a named device class, such as `Keyboard`.
+	/// Returns the input step this manager records into.
 	///
-	/// Use PascalCase for `name` so trigger paths remain consistent.
-	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
-		let device_class = DeviceClass { name: name.to_string() };
-		debug_assert!(
-			self.device_classes.len() < u32::MAX as usize,
-			"Device-class handle space is exhausted. The most likely cause is registering classes continuously instead of reusing them."
-		);
-
-		DeviceClassHandle(insert_return_length(&mut self.device_classes, device_class) as u32)
-	}
-
-	/// Registers a named trigger on a device class.
-	///
-	/// `value_type` defines the trigger's initial value and valid Rust type. Use
-	/// the returned [`TriggerHandle`] to bind actions or submit input records.
-	pub fn register_trigger<T>(
-		&mut self,
-		device_handle: &DeviceClassHandle,
-		name: &str,
-		value_type: TriggerDescription<T>,
-	) -> TriggerHandle
-	where
-		T: InputValue + Into<Value>,
-	{
-		let default = value_type.default;
-
-		let default: Value = default.into();
-		let default_value_type: Types = default.into();
-
-		assert_eq!(
-			default_value_type,
-			T::get_type(),
-			"Default value type does not match input source type"
-		);
-
-		debug_assert!(
-			(device_handle.0 as usize) < self.device_classes.len(),
-			"Trigger device class is unknown. The most likely cause is using a handle from another input manager."
-		);
-		debug_assert!(
-			self.triggers.len() < u32::MAX as usize,
-			"Trigger handle space is exhausted. The most likely cause is registering triggers continuously instead of reusing them."
-		);
-		let input_source = Trigger {
-			device_class_handle: *device_handle,
-			name: name.to_string(),
-			r#type: T::get_type(),
-			default,
-		};
-
-		TriggerHandle(insert_return_length(&mut self.triggers, input_source) as u32)
+	/// Use it to read control values, and to translate platform events with
+	/// `process_default_window_input`.
+	pub fn events(&self) -> &InputEvents<A> {
+		&self.events
 	}
 
 	/// Creates one concrete device from a registered class.
@@ -118,19 +74,12 @@ impl InputManager {
 	/// Call this once for each physical or virtual device, such as each connected
 	/// gamepad.
 	pub fn create_device(&mut self, device_class_handle: &DeviceClassHandle) -> DeviceHandle {
-		debug_assert!(
-			(device_class_handle.0 as usize) < self.device_classes.len(),
-			"Device class is unknown. The most likely cause is using a handle from another input manager."
-		);
-		debug_assert!(
-			self.devices.len() < u32::MAX as usize,
-			"Device handle space is exhausted. The most likely cause is creating devices without retiring old state."
-		);
-		let device = Device {
-			device_class_handle: *device_class_handle,
-		};
+		self.events.create_device(device_class_handle)
+	}
 
-		DeviceHandle(insert_return_length(&mut self.devices, device) as u32)
+	/// Returns all devices that belong to the named class.
+	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<impl Iterator<Item = DeviceHandle> + '_> {
+		self.events.devices_by_class_name(class_name)
 	}
 
 	/// Queues a trigger value for a device and seat.
@@ -144,27 +93,7 @@ impl InputManager {
 		trigger_reference: TriggerReference,
 		value: Value,
 	) {
-		let Some((trigger_handle, trigger)) = self.resolve_trigger(&trigger_reference) else {
-			warn!("Input trigger is unknown. The most likely cause is an unregistered trigger name or handle.");
-			return;
-		};
-
-		if trigger.r#type != value.into() {
-			warn!("Tried to record an extraneous type into input source: {}", trigger.name);
-			return; // Value type does not match input source declared type, so don't record.
-		}
-
-		let time = std::time::SystemTime::now();
-
-		let record = Record {
-			seat_handle,
-			device_handle,
-			trigger_handle,
-			value,
-			time,
-		};
-
-		self.records.push(record);
+		self.events.record(seat_handle, device_handle, trigger_reference, value);
 	}
 
 	/// Resolves queued trigger and manual-action values, then emits action events.
@@ -172,134 +101,9 @@ impl InputManager {
 	/// Call this once per application tick after recording platform input. Next,
 	/// drain a listener created from [`Self::event_channel`] to handle the resolved
 	/// [`ActionEvent`] values.
-	pub fn update(&mut self, frame_allocator: &bumpalo::Bump) {
-		while let Some(message) = self.action_listener.read() {
-			let handle = message.handle();
-			let action = message.into_data();
-
-			let index = self.create_action_with_tick_policy(action.r#type, &action.bindings, action.tick_policy);
-			self.actions[index.0 as usize].handle = Some(handle);
-		}
-
-		// Phase A: Process new records (if any) and resolve actions that received input.
-		if !self.records.is_empty() {
-			let records = self.records.as_mut_slice();
-
-			let has_snapshots = self
-				.actions
-				.iter()
-				.any(|action| action.trigger_mappings.iter().any(|mapping| mapping.trigger.is_some()));
-			// Update sources in queue order so later motion or releases cannot overwrite a click.
-			for record in records.iter() {
-				self.trigger_values
-					.insert((record.seat_handle, record.device_handle, record.trigger_handle), *record);
-				if !has_snapshots || record.value != Value::Bool(true) {
-					continue;
-				}
-				for (i, action) in self.actions.iter().enumerate() {
-					for mapping in action
-						.trigger_mappings
-						.iter()
-						.filter(|mapping| mapping.trigger == Some(record.trigger_handle))
-					{
-						let Some(value) = resolve_action_value(action, mapping, record, &self.trigger_values, frame_allocator)
-						else {
-							continue;
-						};
-						self.action_values
-							.insert((record.seat_handle, record.device_handle, ActionHandle(i as u32)), value);
-						if let Some(handle) = action.handle {
-							self.event_channel.send(ActionEvent::new(record.seat_handle, handle, value));
-						}
-					}
-				}
-			}
-
-			// Sort records by source first and time second so each source's last record is the most recent.
-			records.sort_by(compare_source_then_time);
-			let record_count = compact_latest_by_source(records);
-			let records = &records[..record_count];
-
-			for (i, action) in self.actions.iter().enumerate() {
-				let action_records = records.iter().filter_map(|record| {
-					action
-						.trigger_mappings
-						.iter()
-						.find(|mapping| mapping.trigger.is_none() && mapping.trigger_handle == record.trigger_handle)
-						.map(|mapping| (record, mapping))
-				});
-				let Some((record, mapping)) = action_records.max_by_key(|(record, _)| record.time) else {
-					continue;
-				};
-
-				let Some(value) = resolve_action_value(action, mapping, record, &self.trigger_values, frame_allocator) else {
-					continue;
-				};
-
-				self.action_values
-					.insert((record.seat_handle, record.device_handle, ActionHandle(i as u32)), value);
-
-				// OnChange actions emit here (on actual input change).
-				if let Some(handle) = &action.handle {
-					log::debug!(
-						target: "byte_engine::input::actions",
-						"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
-						action.tick_policy,
-						handle,
-						record.seat_handle,
-						record.device_handle,
-						value
-					);
-					self.event_channel.send(ActionEvent::new(record.seat_handle, *handle, value));
-				}
-			}
-		}
-
-		self.records.clear();
-
-		// Manual actions enter the same state table as physical actions, using the
-		// reserved device because they do not originate from a concrete device.
-		for (seat_handle, action_handle, value) in self.pending_manual_actions.drain(..) {
-			self.action_values
-				.insert((seat_handle, MANUAL_ACTION_DEVICE, action_handle), value);
-
-			if let Some(action) = self.actions.get(action_handle.0 as usize)
-				&& let Some(handle) = action.handle
-			{
-				self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
-			}
-		}
-
-		// Phase B: Tick-based emission for WhileActive and Always actions.
-		// Iterates all actions and emits events based on their tick policy using the
-		// most recently resolved value. Only emits for devices that have previously
-		// interacted with the action.
-		for (&(seat_handle, device_handle, action_handle), &value) in &self.action_values {
-			let action = &self.actions[action_handle.0 as usize];
-			// Snapshot actions emit only in response to their explicit triggers.
-			if action.trigger_mappings.iter().any(|mapping| mapping.trigger.is_some()) {
-				continue;
-			}
-
-			let handle = match &action.handle {
-				Some(h) => *h,
-				None => continue,
-			};
-
-			let emit = match action.tick_policy {
-				TickPolicy::OnChange => false,
-				TickPolicy::WhileActive => !value.is_default(),
-				TickPolicy::Always => true,
-			};
-			if emit {
-				log::debug!(
-					target: "byte_engine::input::actions",
-					"Emitting input action event: policy={:?}, handle={:?}, seat={:?}, device={:?}, value={:?}",
-					action.tick_policy, handle, seat_handle, device_handle, value
-				);
-				self.event_channel.send(ActionEvent::new(seat_handle, handle, value));
-			}
-		}
+	pub fn update(&mut self) {
+		self.processor.broadcast(&self.events);
+		self.events.end_tick();
 	}
 
 	/// Queues an action value for emission during the next [`Self::update`] call.
@@ -312,25 +116,7 @@ impl InputManager {
 		action_handle: ActionHandle,
 		value: Value,
 	) -> Result<(), InputActionError> {
-		let action = self
-			.actions
-			.get(action_handle.0 as usize)
-			.ok_or(InputActionError::UnknownAction(action_handle))?;
-		let actual_type = value.into();
-		if action.r#type != actual_type {
-			return Err(InputActionError::TypeMismatch {
-				expected: action.r#type,
-				actual: actual_type,
-			});
-		}
-
-		self.pending_manual_actions.push((seat_handle, action_handle, value));
-		Ok(())
-	}
-
-	/// Returns the synthetic device used by [`Self::trigger_action`].
-	pub fn manual_action_device_handle() -> DeviceHandle {
-		MANUAL_ACTION_DEVICE
+		self.processor.trigger_action(seat_handle, action_handle, value)
 	}
 
 	/// Creates an action that emits when its resolved value changes.
@@ -351,61 +137,8 @@ impl InputManager {
 		action_binding_descriptions: &[ActionBindingDescription],
 		tick_policy: TickPolicy,
 	) -> ActionHandle {
-		let input_event = InputAction {
-			r#type,
-			trigger_mappings: action_binding_descriptions
-				.iter()
-				.filter_map(|binding| self.resolve_binding(binding))
-				.collect(),
-			handle: None,
-			tick_policy,
-		};
-
-		let handle = ActionHandle(self.actions.len() as u32);
-		self.actions.push(input_event);
-
-		handle
-	}
-
-	/// Resolves source names and rejects unsupported snapshot triggers.
-	fn resolve_binding(&self, binding: &ActionBindingDescription) -> Option<TriggerMapping> {
-		let (trigger_handle, source) = self.resolve_trigger(&binding.input_source)?;
-		let trigger = if let Some(reference) = &binding.trigger {
-			let (handle, gate) = self.resolve_trigger(reference)?;
-			if gate.r#type != Types::Boolean || gate.device_class_handle != source.device_class_handle {
-				warn!(
-					"Input snapshot binding is invalid. The trigger must be boolean and belong to the value source's device class."
-				);
-				return None;
-			}
-			Some(handle)
-		} else {
-			None
-		};
-		Some(TriggerMapping {
-			trigger_handle,
-			trigger,
-			mapping: binding.mapping.value,
-			function: Some(binding.mapping.function),
-		})
-	}
-
-	/// Returns all devices that belong to the named class.
-	pub fn get_devices_by_class_name(&self, class_name: &str) -> Option<Vec<DeviceHandle>> {
-		let device_class_handle = self
-			.device_classes
-			.iter()
-			.enumerate()
-			.find_map(|(i, d)| (d.name == class_name).then_some(DeviceClassHandle(i as u32)))?;
-		Some(
-			self.devices
-				.iter()
-				.enumerate()
-				.filter_map(|(index, device)| {
-					(device.device_class_handle == device_class_handle).then_some(DeviceHandle(index as u32))
-				})
-				.collect(),
-		)
+		self.processor
+			.create_action(&self.events, r#type, action_binding_descriptions, tick_policy)
 	}
 
 	/// Returns the latest processed trigger value for a seat and device.
@@ -417,52 +150,12 @@ impl InputManager {
 		device_handle: DeviceHandle,
 		trigger_reference: TriggerReference,
 	) -> Result<Value, ()> {
-		let (trigger_handle, trigger) = self.resolve_trigger(&trigger_reference).ok_or(())?;
-
-		Ok(self
-			.trigger_values
-			.get(&(seat_handle, device_handle, trigger_handle))
-			.map(|record| record.value)
-			.unwrap_or(trigger.default))
+		self.events.value(seat_handle, device_handle, trigger_reference)
 	}
 
 	/// Returns the latest resolved action state for a seat and device.
-	pub fn get_action_state(
-		&self,
-		seat_handle: SeatHandle,
-		action_handle: ActionHandle,
-		device_handle: DeviceHandle,
-	) -> InputEventState {
-		InputEventState {
-			seat_handle,
-			device_handle,
-			input_event_handle: action_handle,
-			value: self
-				.action_values
-				.get(&(seat_handle, device_handle, action_handle))
-				.copied()
-				.unwrap_or_else(|| self.actions[action_handle.0 as usize].r#type.default_value()),
-		}
-	}
-
-	/// Resolves a registered trigger by handle or its `DeviceClass.Trigger` name.
-	fn resolve_trigger(&self, reference: &TriggerReference) -> Option<(TriggerHandle, &Trigger)> {
-		let handle = match reference {
-			TriggerReference::Handle(handle) => *handle,
-			TriggerReference::Name(name) => {
-				let (class_name, trigger_name) = name.split_once('.')?;
-				let class = self.device_classes.iter().position(|class| class.name == class_name)?;
-				let index = self.triggers.iter().position(|trigger| {
-					trigger.device_class_handle == DeviceClassHandle(class as u32) && trigger.name == trigger_name
-				})?;
-				TriggerHandle(index as u32)
-			}
-		};
-		self.triggers.get(handle.0 as usize).map(|trigger| (handle, trigger))
-	}
-
-	fn get_device(&self, device_handle: &DeviceHandle) -> &Device {
-		&self.devices[device_handle.0 as usize]
+	pub fn get_action_state(&self, seat_handle: SeatHandle, action_handle: ActionHandle, device_handle: DeviceHandle) -> Value {
+		self.processor.action_state(seat_handle, action_handle, device_handle)
 	}
 
 	/// Returns the channel that publishes resolved action events.
@@ -470,7 +163,22 @@ impl InputManager {
 	/// Next, call [`DefaultChannel::listener`] and keep that listener with the
 	/// application system that handles the action.
 	pub fn event_channel(&self) -> &DefaultChannel<ActionEvent> {
-		&self.event_channel
+		self.processor.event_channel()
+	}
+}
+
+impl<A: Allocator + Clone> TriggerRegistry for InputManager<A> {
+	fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
+		self.events.register_device_class(name)
+	}
+
+	fn register_trigger<T: InputValue + Into<Value>>(
+		&mut self,
+		device_class: &DeviceClassHandle,
+		name: &str,
+		description: TriggerDescription<T>,
+	) -> TriggerHandle {
+		self.events.register_trigger(device_class, name, description)
 	}
 }
 
@@ -483,15 +191,6 @@ pub enum InputActionError {
 	TypeMismatch { expected: Types, actual: Types },
 }
 
-#[derive(Copy, Clone, Debug)]
-/// The `TriggerReference` enum lets callers select a trigger by handle or name.
-pub enum TriggerReference {
-	/// Selects a trigger by its registered handle.
-	Handle(TriggerHandle),
-	/// Selects a trigger by its `DeviceClass.Trigger` name.
-	Name(&'static str),
-}
-
 impl Message for Value {}
 
 #[cfg(test)]
@@ -499,12 +198,16 @@ mod tests {
 	use std::{cell::RefCell, ops::DerefMut, rc::Rc, sync::Arc};
 
 	use math::Quaternion;
+	use utils::RGBA;
 
 	use super::*;
+	use crate::core::channel::Channel as _;
+	use crate::core::factory::Factory;
+	use crate::core::listener::Listener;
 	use crate::input::ActionBindingDescription;
 	use crate::input::{
-		ValueMapping,
-		input_trigger::TriggerDescription,
+		Axis2, Axis3, Function, ValueMapping,
+		trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	};
 
@@ -586,11 +289,6 @@ mod tests {
 		(input_manager, device)
 	}
 
-	fn update_input_manager(input_manager: &mut InputManager) {
-		let frame_allocator = bumpalo::Bump::new();
-		input_manager.update(&frame_allocator);
-	}
-
 	#[test]
 	fn trigger_queries_reject_unknown_handles_and_malformed_paths() {
 		let (input, device) = build_input_manager_with_device(register_keyboard_device_class);
@@ -625,9 +323,7 @@ mod tests {
 		] {
 			let action = input.create_action(kind, &[]);
 			assert_eq!(
-				input
-					.get_action_state(SeatHandle(0), action, InputManager::manual_action_device_handle())
-					.value,
+				input.get_action_state(SeatHandle(0), action, InputManager::manual_action_device_handle()),
 				expected
 			);
 		}
@@ -645,14 +341,14 @@ mod tests {
 		let third_keyboard = input.create_device(&keyboard);
 
 		assert_eq!(
-			input.get_devices_by_class_name("Keyboard"),
+			input.get_devices_by_class_name("Keyboard").map(Iterator::collect::<Vec<_>>),
 			Some(vec![first_keyboard, second_keyboard, third_keyboard])
 		);
 		assert_eq!(
-			input.get_devices_by_class_name("Mouse"),
+			input.get_devices_by_class_name("Mouse").map(Iterator::collect::<Vec<_>>),
 			Some(vec![first_mouse, second_mouse])
 		);
-		assert_eq!(input.get_devices_by_class_name("Unknown"), None);
+		assert!(input.get_devices_by_class_name("Unknown").is_none());
 	}
 
 	#[test]
@@ -672,76 +368,67 @@ mod tests {
 		let device = input_manager.create_device(&x);
 		let seat = SeatHandle::stub();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(0f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(0f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
-			Value::Float(-1f32)
-		);
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(-1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(0f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(1f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
-			Value::Float(-1f32)
-		);
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(-1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
-			Value::Float(-1f32)
-		);
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(-1f32));
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Down"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, Value::Float(0f32));
+		assert_eq!(input_manager.get_action_state(seat, action, device), Value::Float(0f32));
 	}
 
 	#[test]
@@ -772,37 +459,37 @@ mod tests {
 		let seat = SeatHandle::stub();
 
 		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
+			input_manager.get_action_state(seat, action, device),
 			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), true.into());
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
+			input_manager.get_action_state(seat, action, device),
 			Value::Vector2(Axis2::new(1f32 / 2f32.sqrt(), 1f32 / 2f32.sqrt()))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Up"), false.into());
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), false.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
+			input_manager.get_action_state(seat, action, device),
 			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Left"), true.into());
 		input_manager.record_trigger_value_for_device(seat, device, TriggerReference::Name("Keyboard.Right"), true.into());
 
-		update_input_manager(&mut input_manager);
+		input_manager.update();
 
 		assert_eq!(
-			input_manager.get_action_state(seat, action, device).value,
+			input_manager.get_action_state(seat, action, device),
 			Value::Vector2(Axis2::new(0f32, 0f32))
 		);
 	}
@@ -832,7 +519,7 @@ mod tests {
 
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, b); // Record alternate value.
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
 		assert_eq!(
 			input_manager
@@ -843,7 +530,7 @@ mod tests {
 
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value.
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
 		assert_eq!(
 			input_manager
@@ -854,7 +541,7 @@ mod tests {
 
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value again.
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
 		assert_eq!(
 			input_manager
@@ -866,7 +553,7 @@ mod tests {
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, a); // Record default value.
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, b); // Record alternate value after recording default value.
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
 		assert_eq!(
 			input_manager
@@ -877,7 +564,7 @@ mod tests {
 
 		input_manager.record_trigger_value_for_device(seat, device, trigger_reference, z); // Record a different type.
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
 		assert_eq!(
 			input_manager
@@ -1046,19 +733,19 @@ mod tests {
 		);
 		let seat = SeatHandle::stub();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, a.into());
+		assert_eq!(input_manager.get_action_state(seat, action, device), a.into());
 
 		input_manager.record_trigger_value_for_device(seat, device, handle, true.into());
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, b.into());
+		assert_eq!(input_manager.get_action_state(seat, action, device), b.into());
 
 		input_manager.record_trigger_value_for_device(seat, device, handle, false.into());
 
-		update_input_manager(input_manager);
+		input_manager.update();
 
-		assert_eq!(input_manager.get_action_state(seat, action, device).value, a.into());
+		assert_eq!(input_manager.get_action_state(seat, action, device), a.into());
 	}
 
 	#[test]
@@ -1177,7 +864,7 @@ mod tests {
 		}
 
 		fn update(&mut self) {
-			update_input_manager(&mut self.input_manager);
+			self.input_manager.update();
 		}
 
 		fn tick(&mut self) -> usize {
@@ -1297,11 +984,12 @@ mod tests {
 		assert_eq!(event.seat_handle(), fixture.seat);
 		assert_eq!(event.handle(), event_handle);
 		assert_eq!(event.value(), Value::Float(3.5));
+		// The synthetic value remains available after another update.
+		fixture.update();
 		assert_eq!(
 			fixture
 				.input_manager
-				.get_action_state(fixture.seat, action_handle, InputManager::manual_action_device_handle())
-				.value,
+				.get_action_state(fixture.seat, action_handle, InputManager::manual_action_device_handle()),
 			Value::Float(3.5)
 		);
 	}
@@ -1397,31 +1085,16 @@ mod tests {
 	}
 }
 
-use std::{collections::HashMap, default};
+use std::alloc::{Allocator, Global};
 
-use log::warn;
-use serde::de;
-use utils::{RGBA, insert_return_length};
-
-pub use super::action_evaluator::InputEventState;
+use super::events::InputEvents;
+use super::processor::{ActionProcessor, MANUAL_ACTION_DEVICE};
+use super::trigger::{TriggerDescription, TriggerHandle, TriggerReference, TriggerRegistry};
 use super::{
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, Function, SeatHandle, TickPolicy, TriggerHandle, Types,
-	Value,
-	action::{InputValue, TriggerMapping},
-	action_evaluator::{InputAction, resolve_action_value},
-	device::Device,
-	device_class::{DeviceClass, DeviceClassHandle},
-	input_trigger::{Trigger, TriggerDescription},
-	records::{Record, compact_latest_by_source, compare_source_then_time},
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, SeatHandle, TickPolicy, Types, Value, action::InputValue,
+	device::DeviceClassHandle,
 };
-use super::{Axis2, Axis3};
 use crate::{
-	core::{
-		Entity, EntityHandle,
-		channel::{Channel as _, DefaultChannel},
-		factory::{CreateMessage, Factory},
-		listener::{DefaultListener, Listener},
-		message::Message,
-	},
+	core::{channel::DefaultChannel, factory::CreateMessage, listener::DefaultListener, message::Message},
 	input::ActionEvent,
 };

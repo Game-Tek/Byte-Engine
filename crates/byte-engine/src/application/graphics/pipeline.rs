@@ -363,14 +363,27 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 /// Installs the retained UI render pass fed by UI render messages from `ui`.
 ///
 /// Register this pass before publishing renders that every sink must observe.
+/// The source subscribes immediately and retains the latest render for sinks
+/// initialized later.
 pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>) {
-	let ui = ui.clone();
+	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
 	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+		/// The `CustomRenderPass` struct connects a sink to the shared retained UI source.
 		struct CustomRenderPass {
-			listener: DefaultListener<CreateMessage<Render>>,
+			source: std::rc::Rc<std::cell::RefCell<UiRenderSource>>,
+			revision: u64,
 			render_pass: UiRenderPass,
+		}
+
+		impl CustomRenderPass {
+			/// Adopts the latest submitted render once per sink, including while bypassed.
+			fn update(&mut self) {
+				if let Some(render) = self.source.borrow_mut().latest(&mut self.revision) {
+					self.render_pass.update(render);
+				}
+			}
 		}
 
 		impl rendering::RenderPass for CustomRenderPass {
@@ -384,7 +397,7 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 				sink: &rendering::Sink,
 				frame_allocator: &'a bumpalo::Bump,
 			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
+				self.update();
 
 				self.render_pass.prepare(frame, sink, frame_allocator)
 			}
@@ -395,17 +408,87 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 				sink: &rendering::Sink,
 				frame_allocator: &'a bumpalo::Bump,
 			) -> Option<rendering::render_pass::RenderPassReturn<'a>> {
-				drain_render_pass_messages(&mut self.listener, |render| self.render_pass.update(render.into_data()));
+				self.update();
 
 				self.render_pass.bypass(frame, sink, frame_allocator)
 			}
 		}
 
 		Box::new(CustomRenderPass {
-			listener: ui.listener(),
+			source: std::rc::Rc::clone(&source),
+			revision: 0,
 			render_pass: UiRenderPass::new(render_pass_builder),
 		})
 	});
+}
+
+/// The `UiRenderSource` struct retains submitted UI independently of sink startup.
+///
+/// Subscribe during setup, then give each sink its own revision for [`Self::latest`].
+struct UiRenderSource {
+	listener: DefaultListener<CreateMessage<Render>>,
+	render: Option<Render>,
+	revision: u64,
+}
+
+#[cfg(test)]
+mod ui_source_tests {
+	use super::*;
+	use crate::ui::{Container, Context, ElementContext, Engine, Size};
+
+	#[test]
+	fn submitted_ui_reaches_late_sinks_without_republication() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			std::boxed::Box::pin(async move {
+				let _root = ctx.element("root").container(Container::default());
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let allocator = bumpalo::Bump::new();
+		let mut publish = |size| {
+			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render(&mut snapshot));
+		};
+		// No sink exists when the first render is submitted.
+		publish(100);
+		let mut first = 0;
+		assert_eq!(source.latest(&mut first).unwrap().root().size, Size::new(100, 100));
+		let mut late = 0;
+		assert_eq!(source.latest(&mut late).unwrap().root().size, Size::new(100, 100));
+		assert!(source.latest(&mut first).is_none());
+		publish(150);
+		publish(200);
+		assert_eq!(source.latest(&mut first).unwrap().root().size, Size::new(200, 200));
+		assert_eq!(source.latest(&mut late).unwrap().root().size, Size::new(200, 200));
+	}
+}
+
+impl UiRenderSource {
+	fn new(listener: DefaultListener<CreateMessage<Render>>) -> Self {
+		Self {
+			listener,
+			render: None,
+			revision: 0,
+		}
+	}
+
+	/// Returns the newest render when this sink has not adopted it yet.
+	fn latest(&mut self, sink_revision: &mut u64) -> Option<&Render> {
+		drain_render_pass_messages(&mut self.listener, |message| {
+			self.render = Some(message.into_data());
+			self.revision += 1;
+		});
+		if *sink_revision == self.revision {
+			return None;
+		}
+		*sink_revision = self.revision;
+		self.render.as_ref()
+	}
 }
 
 /// Drains all pending pass inputs so active and bypassed paths adopt the same application state.

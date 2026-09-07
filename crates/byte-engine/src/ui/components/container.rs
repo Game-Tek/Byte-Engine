@@ -20,6 +20,7 @@ pub struct Container {
 	pub depth: Depth,
 	pub position: Position,
 	pub clip: bool,
+	pub(crate) hit_testable: bool,
 	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) transform: Transform,
@@ -27,6 +28,13 @@ pub struct Container {
 }
 
 impl Container {
+	/// Selects whether this surface participates in pointer hit testing.
+	/// Disable this for decorative roots; children retain their own policy.
+	pub fn hit_testable(mut self, enabled: bool) -> Self {
+		self.hit_testable = enabled;
+		self
+	}
+
 	pub fn size(self, sizing: Sizing) -> Self {
 		Self {
 			width: sizing,
@@ -145,6 +153,10 @@ impl Container {
 		self.clip = enabled;
 	}
 
+	pub fn set_hit_testable(&mut self, enabled: bool) {
+		self.hit_testable = enabled;
+	}
+
 	pub fn set_opacity(&mut self, opacity: f32) {
 		self.visual.opacity = opacity;
 	}
@@ -180,6 +192,7 @@ impl Default for Container {
 			depth: Depth::default(),
 			position: Position::default(),
 			clip: true,
+			hit_testable: true,
 			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),

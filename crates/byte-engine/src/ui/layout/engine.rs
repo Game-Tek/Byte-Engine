@@ -918,6 +918,51 @@ mod tests {
 	}
 
 	#[test]
+	fn retained_hits_preserve_clipping_and_ignore_decoration_after_frame_reset() {
+		let mut allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut parent = root.element("parent").container(
+					Container::default()
+						.absolute_position(10, 10)
+						.width(40.into())
+						.height(40.into()),
+				);
+				let _child = parent.element("child").container(
+					Container::default()
+						.absolute_position(35, 35)
+						.width(40.into())
+						.height(40.into()),
+				);
+				let _decoration = root.element("decoration").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(100.into())
+						.height(100.into())
+						.hit_testable(false),
+				);
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let mut hits = crate::ui::intersection::HitTest::default();
+		let inside = UiPoint::new(-0.2, 0.2);
+		let outside = UiPoint::new(0.2, -0.2);
+		let target = {
+			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			snapshot.retain_hit_test(&mut hits);
+			assert_eq!(snapshot.click(outside), None);
+			snapshot.click(inside).expect("the child's visible area should accept clicks")
+		};
+		allocator.reset();
+		assert_eq!(hits.query(inside), Some(target));
+		assert_eq!(hits.query(outside), None);
+	}
+
+	#[test]
 	fn clipping_prunes_descendants_from_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hits = Arc::new(AtomicUsize::new(0));

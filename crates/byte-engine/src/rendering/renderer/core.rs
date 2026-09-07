@@ -50,7 +50,8 @@ pub struct Renderer {
 	render_pass_states: HashMap<String, RenderPassState>,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
-	pipeline_manager_resources_by_sink: SmallVec<[(PipelineManagerId, SinkId, Vec<(String, ghi::AccessPolicies)>); 64]>,
+	pipeline_manager_attachments_by_sink:
+		SmallVec<[(PipelineManagerId, SinkId, SmallVec<[ghi::AttachmentInformation; 8]>); 64]>,
 	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
 	pipeline_compilation_manager: crate::rendering::pipeline_compilation::PipelineManager,
 	pipeline_compilation_servers: Vec<crate::rendering::PipelineManagerServer>,
@@ -222,7 +223,7 @@ impl Renderer {
 			render_pass_states: HashMap::new(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
-			pipeline_manager_resources_by_sink: SmallVec::with_capacity(64),
+			pipeline_manager_attachments_by_sink: SmallVec::with_capacity(64),
 			pipeline_compilation_client,
 			pipeline_compilation_manager,
 			pipeline_compilation_servers,
@@ -287,12 +288,11 @@ impl Renderer {
 					self.pipeline_compilation_client.clone(),
 				);
 				pipeline_manager.create_sink(sink_id, &mut rpb);
+				// Resolve attachment identity now: later post-processing may rebind `main`.
 				let consumed_resources = rpb
-					.consumed_resources
-					.iter()
-					.map(|(name, access)| ((*name).to_string(), *access))
-					.collect();
-				self.pipeline_manager_resources_by_sink
+					.images
+					.get_attachment_infos_for_resources(sink_id, &rpb.consumed_resources);
+				self.pipeline_manager_attachments_by_sink
 					.push((pipeline_manager_id, sink_id, consumed_resources));
 
 				if rpb.consumed_resources.is_empty() {
@@ -312,7 +312,7 @@ impl Renderer {
 				context,
 				render_targets,
 				pipeline_managers,
-				pipeline_manager_resources_by_sink,
+				pipeline_manager_attachments_by_sink,
 				pipeline_compilation_client,
 				..
 			} = self;
@@ -328,12 +328,11 @@ impl Renderer {
 					pipeline_compilation_client.clone(),
 				);
 				sm.create_sink(sink_id, &mut rpb);
+				// Resolve attachment identity now: later post-processing may rebind `main`.
 				let consumed_resources = rpb
-					.consumed_resources
-					.iter()
-					.map(|(name, access)| ((*name).to_string(), *access))
-					.collect();
-				pipeline_manager_resources_by_sink.push((pipeline_manager_id, sink_id, consumed_resources));
+					.images
+					.get_attachment_infos_for_resources(sink_id, &rpb.consumed_resources);
+				pipeline_manager_attachments_by_sink.push((pipeline_manager_id, sink_id, consumed_resources));
 
 				if rpb.consumed_resources.is_empty() {
 					log::debug!("No resources consumed by scene manager");
@@ -544,7 +543,7 @@ impl Renderer {
 		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
 		#[cfg(debug_assertions)]
 		let resource_updates = &self.resource_updates;
-		let pipeline_manager_resources_by_sink = &self.pipeline_manager_resources_by_sink;
+		let pipeline_manager_attachments_by_sink = &self.pipeline_manager_attachments_by_sink;
 		let render_passes = &mut self.render_passes;
 		let render_passes_by_sink = &self.render_passes_by_sink;
 		let scene_presentation_copies = &mut self.scene_presentation_copies;
@@ -684,17 +683,14 @@ impl Renderer {
 						let _enter = span.enter();
 						for (pipeline_manager_id, commands) in pipeline_manager_commands {
 							for (command, sink) in commands.into_iter().zip(sinks.iter()) {
-								let attachment_infos = render_targets.get_attachment_infos_for_resources(
-									sink.index(),
-									pipeline_manager_resources_by_sink
-										.iter()
-										.find_map(|(id, sink_id, resources)| {
-											(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(resources.as_slice())
-										})
-										.unwrap_or(&[]),
-								);
+								let attachment_infos = pipeline_manager_attachments_by_sink
+									.iter()
+									.find_map(|(id, sink_id, attachments)| {
+										(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(attachments.as_slice())
+									})
+									.unwrap_or(&[]);
 
-								command(&mut *command_buffer_recording, &attachment_infos);
+								command(&mut *command_buffer_recording, attachment_infos);
 							}
 						}
 					}
@@ -721,10 +717,9 @@ impl Renderer {
 						}
 					}
 
-					for (command, sink_id) in scene_presentation_commands {
+					for (command, _sink_id) in scene_presentation_commands {
 						if let Some(command) = command {
-							let attachment_infos = render_targets.get_attachment_infos_for_resources(sink_id, &[]);
-							command(&mut *command_buffer_recording, &attachment_infos);
+							command(&mut *command_buffer_recording, &[]);
 						}
 					}
 

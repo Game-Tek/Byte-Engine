@@ -250,6 +250,7 @@ dependencies = [
  "flate2",
  "fontdue",
  "half",
+ "hashbrown 0.17.1",
  "hidapi",
  "kanal",
  "log",

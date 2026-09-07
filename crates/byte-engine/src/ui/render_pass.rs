@@ -73,6 +73,7 @@ pub struct UiRenderPass {
 	blur_half_scratch: ghi::BaseImageHandle,
 	blur_half_output: ghi::BaseImageHandle,
 	main_attachment: ghi::BaseImageHandle,
+	background_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	output_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	data: UiDrawList,
@@ -308,6 +309,8 @@ impl UiRenderPass {
 			image: text_overlay.into(),
 			descriptor_set: text_overlay_descriptor_set,
 		}];
+		let background_pass =
+			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, main_attachment_image);
 		let output_pass =
 			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, main_attachment_image, output);
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
@@ -349,6 +352,7 @@ impl UiRenderPass {
 			blur_half_scratch: blur_half_scratch_image,
 			blur_half_output: blur_half_output_image,
 			main_attachment: main_attachment_image,
+			background_pass,
 			output_pass,
 			bypass_pass,
 			data: UiDrawList::default(),
@@ -432,8 +436,9 @@ impl UiRenderPass {
 		self.text_overlays[index].descriptor_set
 	}
 
-	pub fn update(&mut self, render: engine::Render) {
-		update_from_render(&render, &mut self.data);
+	/// Adopts submitted UI data; the caller can share one render across sinks.
+	pub fn update(&mut self, render: &engine::Render) {
+		update_from_render(render, &mut self.data);
 	}
 }
 
@@ -603,7 +608,7 @@ impl RenderPass for UiRenderPass {
 		sort_prepared_batches(&mut prepared_batches);
 
 		if prepared_batches.is_empty() {
-			return None;
+			return self.bypass_pass.prepare(frame, sink, frame_allocator);
 		}
 
 		let vertex_buffer = self.vertex_buffer;
@@ -624,28 +629,27 @@ impl RenderPass for UiRenderPass {
 		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
 		let blur_composite_descriptor_set = self.blur_composite_descriptor_set;
 		let main_attachment = self.main_attachment;
+		let background_command = self.background_pass.prepare(frame, sink, frame_allocator)?;
 		let output_command = self.output_pass.prepare(frame, sink, frame_allocator)?;
 		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(&prepared_batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
 			move |command_buffer, _| {
+				// UI is composited over this frame's scene, including on blur-only frames.
+				background_command(command_buffer, &[]);
 				command_buffer.region(
 					|label| label.write_str("UI"),
 					|command_buffer| {
-						let mut needs_clear = true;
-
 						if !batches.is_empty() {
 							for batch in batches {
-								let clear_before_batch = needs_clear;
 								let attachments = [ghi::AttachmentInformation::new(
 									main_attachment,
 									ghi::Layouts::RenderTarget,
 									ghi::ClearValue::None,
-									!clear_before_batch,
+									true,
 									true,
 								)];
-								needs_clear = false;
 
 								match batch {
 									UiPreparedBatch::Rect(batch) => {
@@ -712,18 +716,6 @@ impl RenderPass for UiRenderPass {
 										command_buffer.end_render_pass();
 									}
 									UiPreparedBatch::Blur(batch) => {
-										// A compute capture cannot perform the first attachment clear. Open an empty
-										// render pass first so a blur-only frame never samples prior frame contents.
-										if clear_before_batch {
-											command_buffer.start_render_pass(extent, &attachments).end_render_pass();
-										}
-										let loaded_attachments = [ghi::AttachmentInformation::new(
-											main_attachment,
-											ghi::Layouts::RenderTarget,
-											ghi::ClearValue::None,
-											true,
-											true,
-										)];
 										command_buffer.region(
 											|label| label.write_str("UI Backdrop Blur"),
 											|command_buffer| {
@@ -798,8 +790,7 @@ impl RenderPass for UiRenderPass {
 														.index_type(ghi::DataTypes::U16)),
 												);
 
-												let command_buffer =
-													command_buffer.start_render_pass(extent, &loaded_attachments);
+												let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 												let command_buffer =
 													command_buffer.bind_raster_pipeline(blur_composite_pipeline);
 												command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);

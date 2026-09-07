@@ -8,6 +8,34 @@ struct QueryElement {
 	size: Size,
 }
 
+/// The `HitTest` struct keeps submitted UI geometry available between frames.
+///
+/// Refresh it with [`crate::ui::layout::snapshot::Snapshot::retain_hit_test`]
+/// after preparing a render. Then use [`Self::query`] before action publication;
+/// queries borrow retained geometry and never run layout or allocate.
+#[derive(Default)]
+pub struct HitTest {
+	elements: Vec<QueryElement>,
+	size: [f32; 2],
+}
+
+impl HitTest {
+	/// Returns the frontmost surface at normalized window coordinates.
+	/// A missing hit passes through to a lower input context. The snapshot keeps
+	/// stable IDs, so the receiving UI must still reject removed targets.
+	pub fn query(&self, position: crate::ui::UiPoint) -> Option<Id> {
+		let point = Location::new(
+			(position.x + 1.0) * 0.5 * self.size[0],
+			(1.0 - position.y) * 0.5 * self.size[1],
+		);
+		self.elements
+			.iter()
+			.rev()
+			.find(|element| point_in_layout_element(element, point))
+			.and_then(|element| Id::new(element.id))
+	}
+}
+
 /// The `MouseClickAcceleration` struct provides a uniform-grid index for pointer
 /// hit testing.
 pub(crate) struct MouseClickAcceleration<'a> {
@@ -20,6 +48,14 @@ pub(crate) struct MouseClickAcceleration<'a> {
 }
 
 impl<'a> MouseClickAcceleration<'a> {
+	/// Copies only hit geometry into reusable storage, preserving draw priority.
+	pub(super) fn retain(&self, target: &mut HitTest, size: Size) {
+		target.size = [size.x(), size.y()];
+		target.elements.clear();
+		target.elements.extend_from_slice(&self.elements);
+		// Stable sorting preserves layout order for surfaces at equal depth.
+		target.elements.sort_by_key(|element| element.position.z());
+	}
 	fn new(layout: Vec<QueryElement, &'a bumpalo::Bump>, frame_allocator: &'a bumpalo::Bump) -> Self {
 		if layout.is_empty() {
 			let mut buckets = Vec::with_capacity_in(1, frame_allocator);

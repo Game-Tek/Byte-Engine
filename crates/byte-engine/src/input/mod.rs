@@ -1,15 +1,22 @@
 //! Device-independent input actions and device registration.
 //!
-//! Typical headed applications call `setup_default_input`, translate window
-//! events with `process_default_window_input`, and create application-level
-//! [`Action`] values through
+//! Input runs in two steps. [`InputEvents`] collects raw control values once per
+//! tick; then one [`ActionProcessor`] per input layer turns the pending records
+//! into that layer's actions. A layer that answers [`Consumption::Consumed`]
+//! keeps its input from reaching later layers, which is how a UI takes a click
+//! before gameplay sees it.
+//!
+//! Applications with a single consumer can use [`InputManager`] instead: it owns
+//! both steps and broadcasts every action. Typical headed applications call
+//! `setup_default_input`, translate window events with
+//! `process_default_window_input`, and create application-level [`Action`]
+//! values through
 //! [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world).
 //! Use [`utils`] when registering the standard mouse, keyboard, or gamepad
 //! classes in a custom application.
 //!
-//! [`InputManager`] owns device and action state. [`Value`] is the erased value
-//! passed through that runtime; typed action declarations use
-//! [`action::InputValue`] to constrain supported value types.
+//! [`Value`] is the erased value passed through the runtime; typed action
+//! declarations use [`action::InputValue`] to constrain supported value types.
 //!
 //! See [Input](/docs/reference/input)
 //! for the device, trigger, action, and event workflow.
@@ -17,22 +24,21 @@
 use super::utils::RGBA;
 use crate::core::factory::Handle;
 
-mod action_evaluator;
 mod axis;
+mod evaluator;
+mod events;
 pub(crate) mod gamepad;
 #[doc(hidden)]
-pub mod input_manager;
-mod records;
+pub mod manager;
+mod processor;
 
 #[doc(hidden)]
 pub mod action;
 #[doc(hidden)]
 pub mod device;
-#[doc(hidden)]
-pub mod device_class;
-#[doc(hidden)]
-pub mod input_trigger;
 mod seat;
+#[doc(hidden)]
+pub mod trigger;
 #[doc(hidden)]
 pub mod utils;
 
@@ -41,11 +47,13 @@ pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
 pub use axis::{Axis2, Axis3};
 pub use device::DeviceHandle;
-pub use input_manager::InputActionError;
-pub use input_manager::InputManager;
-pub use input_trigger::TriggerHandle;
+pub use events::{ConsumerHandle, InputEvents};
+pub use manager::InputActionError;
+pub use manager::InputManager;
 use math::Quaternion;
+pub use processor::{ActionProcessor, Consumption, ResolvedAction};
 pub use seat::SeatHandle;
+pub use trigger::{TriggerHandle, TriggerReference, TriggerRegistry};
 
 use self::action::InputValue;
 
@@ -384,6 +392,8 @@ pub struct ActionEvent {
 	handle: Handle,
 	/// The value of the action that triggered the event.
 	value: Value,
+	/// Marks an interaction its layer ended without a physical release.
+	cancelled: bool,
 }
 
 impl ActionEvent {
@@ -393,6 +403,25 @@ impl ActionEvent {
 			seat_handle,
 			handle,
 			value,
+			cancelled: false,
+		}
+	}
+
+	/// Reports an interaction its layer ended instead of a physical release.
+	///
+	/// A cancelled action carries its neutral value. Check it before committing
+	/// an interaction that a release would normally complete, such as a drag.
+	pub fn is_cancelled(&self) -> bool {
+		self.cancelled
+	}
+
+	/// Creates the event that reports an interrupted interaction.
+	pub(super) fn cancelled(seat_handle: SeatHandle, handle: Handle, value: Value) -> Self {
+		Self {
+			seat_handle,
+			handle,
+			value,
+			cancelled: true,
 		}
 	}
 

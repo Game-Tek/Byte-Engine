@@ -32,7 +32,7 @@ impl ActionLike for Action {
 
 /// The [`InputValue`] trait marks typed values supported by the input runtime.
 ///
-/// It is primarily used with [`crate::input::input_trigger::TriggerDescription`]
+/// It is primarily used with [`crate::input::trigger::TriggerDescription`]
 /// and should only be implemented when a matching [`Value`] representation
 /// exists.
 pub trait InputValue: Default + Clone + Copy + 'static {
@@ -162,6 +162,6 @@ use smallvec::SmallVec;
 use utils::RGBA;
 
 use super::TriggerHandle;
-use super::{Axis2, Axis3, Function, TickPolicy, Types, Value, input_manager::TriggerReference};
+use super::{Axis2, Axis3, Function, TickPolicy, TriggerReference, Types, Value};
 use crate::core::{Entity, EntityHandle};
 use crate::input::ValueMapping;

@@ -223,7 +223,11 @@ fn layout_elements<'a>(
 
 		let position = location_from_offset(ts.offset, ts.depth);
 
-		let hit_testable = matches!(element.element.primitive, Primitives::Container(_) | Primitives::TextField(_));
+		let hit_testable = match &element.element.primitive {
+			Primitives::Container(container) => container.hit_testable,
+			Primitives::TextField(_) => true,
+			_ => false,
+		};
 
 		LayoutElement {
 			id: element.id,

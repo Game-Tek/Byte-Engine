@@ -14,7 +14,7 @@ use hidapi::{HidApi, HidDevice};
 use log::{debug, warn};
 
 use super::Axis2;
-use super::{DeviceHandle, Value, input_manager::TriggerReference};
+use super::{DeviceHandle, TriggerReference, Value};
 
 const STICK_EPSILON: f32 = 0.001;
 const TRIGGER_EPSILON: f32 = 0.001;

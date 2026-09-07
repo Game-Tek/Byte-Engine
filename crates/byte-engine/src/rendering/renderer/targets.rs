@@ -116,20 +116,18 @@ impl RenderTargets {
 		attachments.collect()
 	}
 
+	/// Resolves attachments at pass registration, before later passes can rebind names.
 	pub fn get_attachment_infos_for_resources(
 		&self,
 		sink_id: usize,
-		resources: &[(String, ghi::AccessPolicies)],
+		resources: &[(&str, ghi::AccessPolicies)],
 	) -> SmallVec<[ghi::AttachmentInformation; 8]> {
 		let mut accesses_by_name = SmallVec::<[(&str, ghi::AccessPolicies); 8]>::new();
 		for (name, access) in resources {
-			if let Some((_, existing)) = accesses_by_name
-				.iter_mut()
-				.find(|(existing_name, _)| *existing_name == name.as_str())
-			{
+			if let Some((_, existing)) = accesses_by_name.iter_mut().find(|(existing_name, _)| *existing_name == *name) {
 				*existing |= *access;
 			} else {
-				accesses_by_name.push((name.as_str(), *access));
+				accesses_by_name.push((*name, *access));
 			}
 		}
 

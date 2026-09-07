@@ -19,6 +19,12 @@ pub struct Snapshot<'a> {
 }
 
 impl Snapshot<'_> {
+	/// Retains this render's clipped hit geometry without borrowing frame storage.
+	/// Next, use [`crate::ui::intersection::HitTest::query`] to arbitrate input
+	/// before the following layout evaluation. Reuse `target` across frames.
+	pub fn retain_hit_test(&self, target: &mut crate::ui::intersection::HitTest) {
+		self.acceleration.retain(target, self.size);
+	}
 	pub fn cursor(&self) -> Option<Id> {
 		self.cursor
 	}

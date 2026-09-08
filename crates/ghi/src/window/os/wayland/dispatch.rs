@@ -178,6 +178,10 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 						(height * (this.state.scale as i32)) as u32,
 					);
 					this.state.extent = Some(extent);
+					this.events.push_back(Events::Resize {
+						width: extent.width(),
+						height: extent.height(),
+					});
 				}
 			}
 			xdg_toplevel::Event::Close => {

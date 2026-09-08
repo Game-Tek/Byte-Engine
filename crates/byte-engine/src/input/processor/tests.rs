@@ -108,6 +108,44 @@ fn ignore(_: &ResolvedAction) -> bool {
 	false
 }
 
+#[test]
+fn resetting_a_seat_discards_interrupted_input_and_allows_a_new_press_without_a_release() {
+	let mut fixture = Fixture::new();
+	let mut layer = fixture.layer();
+	let button = layer.button("Mouse.LeftButton", TickPolicy::OnChange);
+	fixture.record("Mouse.LeftButton", true);
+	fixture.process(&mut layer, handles(button));
+	fixture.end_tick();
+	layer.published();
+
+	// A lost window may never receive this press's release. Its queued motion
+	// and retained press must disappear while another seat keeps its input.
+	fixture.record("Mouse.Position", Axis2::new(0.5, 0.5));
+	fixture.events.record(
+		SeatHandle(1),
+		fixture.mouse,
+		TriggerReference::Name("Mouse.LeftButton"),
+		true.into(),
+	);
+	fixture.events.reset_seat(SeatHandle::stub());
+	layer.processor.cancel_seat(SeatHandle::stub());
+	assert!(layer.published()[0].is_cancelled());
+
+	fixture.record("Mouse.LeftButton", true);
+	let resolved = fixture.process(&mut layer, handles(button));
+	assert_eq!(resolved.len(), 2);
+	let published = layer.published();
+	assert_eq!(published[0].seat_handle(), SeatHandle(1));
+	assert_eq!(published[1].seat_handle(), SeatHandle::stub());
+	assert!(published.iter().all(|event| event.value() == Value::Bool(true)));
+	assert_eq!(
+		fixture
+			.events
+			.value(SeatHandle::stub(), fixture.mouse, TriggerReference::Name("Mouse.Position")),
+		Ok(Value::Vector2(Axis2::new(0.0, 0.0)))
+	);
+}
+
 fn handles(action: Handle) -> impl Fn(&ResolvedAction) -> bool {
 	move |resolved: &ResolvedAction| resolved.handle == Some(action)
 }

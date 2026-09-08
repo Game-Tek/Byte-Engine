@@ -31,6 +31,7 @@ pub(crate) struct PathSegment {
 }
 
 /// The `LayoutElement` struct stores an element positioned and sized for a viewport.
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
 	pub(crate) position: Location3,

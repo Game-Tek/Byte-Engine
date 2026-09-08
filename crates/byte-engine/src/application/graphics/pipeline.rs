@@ -437,6 +437,34 @@ mod ui_source_tests {
 	use crate::ui::{Container, Context, ElementContext, Engine, Size};
 
 	#[test]
+	fn republished_unchanged_render_is_not_adopted_again() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			std::boxed::Box::pin(async move {
+				let _root = ctx.element("root").container(Container::default());
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let allocator = bumpalo::Bump::new();
+		let mut publish = |size| {
+			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render(&mut snapshot).clone());
+		};
+		publish(100);
+		let mut sink = 0;
+		assert!(source.latest(&mut sink).is_some());
+		// The same tree at the same size yields the same revision.
+		publish(100);
+		assert!(source.latest(&mut sink).is_none());
+		publish(120);
+		assert_eq!(source.latest(&mut sink).unwrap().root().size, Size::new(120, 120));
+	}
+
+	#[test]
 	fn submitted_ui_reaches_late_sinks_without_republication() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
@@ -452,7 +480,7 @@ mod ui_source_tests {
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render(&mut snapshot));
+			factory.create(engine.render(&mut snapshot).clone());
 		};
 		// No sink exists when the first render is submitted.
 		publish(100);
@@ -480,7 +508,16 @@ impl UiRenderSource {
 	/// Returns the newest render when this sink has not adopted it yet.
 	fn latest(&mut self, sink_revision: &mut u64) -> Option<&Render> {
 		drain_render_pass_messages(&mut self.listener, |message| {
-			self.render = Some(message.into_data());
+			let render = message.into_data();
+			// A republished unchanged render must not make every sink rebuild its draw list.
+			if self
+				.render
+				.as_ref()
+				.is_some_and(|current| current.revision() == render.revision())
+			{
+				return;
+			}
+			self.render = Some(render);
 			self.revision += 1;
 		});
 		if *sink_revision == self.revision {

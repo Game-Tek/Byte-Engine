@@ -21,8 +21,10 @@ impl Seat {
 /// An event reported by a window.
 #[derive(Debug, Clone, Copy)]
 pub enum Events {
-	/// The window changed size.
+	/// The window's drawable size changed, in pixels.
 	Resize { width: u32, height: u32 },
+	/// Keyboard focus changed. Cancel held interactions when focus is lost.
+	FocusChanged(bool),
 	/// The window was minimized.
 	Minimize,
 	/// The window was maximized.
@@ -49,7 +51,8 @@ pub enum Events {
 		time: u64,
 	},
 	/// The mouse moved to an absolute position.
-	/// Coordinates are normalized to the window in the range `-1.0..=1.0`.
+	/// Coordinates are normalized with window edges at `-1.0` and `1.0`.
+	/// Captured pointer positions may extend beyond the window edges.
 	MousePosition {
 		seat: Seat,
 		x: f32,

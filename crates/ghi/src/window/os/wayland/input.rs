@@ -189,6 +189,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 			}
 			wl_keyboard::Event::Enter { .. } => {
 				this.state.focused_keyboard = Some(keyboard.clone());
+				this.events.push_back(Events::FocusChanged(true));
 
 				this.process_requests(qh);
 			}
@@ -196,6 +197,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 				if let Some(focused_keyboard) = &this.state.focused_keyboard {
 					if focused_keyboard == keyboard {
 						this.state.focused_keyboard = None;
+						this.events.push_back(Events::FocusChanged(false));
 						this.state.pointer_is_confined = false;
 						this.state.pointer_is_locked = false;
 					}

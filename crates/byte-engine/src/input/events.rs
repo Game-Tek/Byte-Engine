@@ -202,6 +202,16 @@ impl<A: Allocator + Clone> InputEvents<A> {
 		}
 	}
 
+	/// Discards queued and held physical input for a seat that lost focus.
+	///
+	/// Resetting releases consumption ownership even when the platform missed a
+	/// button release. Also call each layer's [`ActionProcessor::cancel_seat`](super::ActionProcessor::cancel_seat)
+	/// so gameplay and interface interactions end as cancellations.
+	pub fn reset_seat(&mut self, seat: SeatHandle) {
+		self.records.retain(|record| record.seat_handle != seat);
+		self.sources.retain(|(owner, ..), _| *owner != seat);
+	}
+
 	/// Returns a control's latest physical value, or its default before the first record.
 	pub fn value(&self, seat: SeatHandle, device: DeviceHandle, reference: TriggerReference) -> Result<Value, ()> {
 		let (trigger_handle, trigger) = self.resolve_trigger(&reference).ok_or(())?;

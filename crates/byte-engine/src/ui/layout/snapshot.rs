@@ -16,6 +16,8 @@ pub struct Snapshot<'a> {
 	pub(super) cursor: Option<Id>,
 	pub(super) engine_state: Rc<RefCell<EngineState>>,
 	pub(super) size: Size,
+	/// The tree revision this layout was computed from.
+	pub(super) layout_revision: u64,
 }
 
 impl Snapshot<'_> {

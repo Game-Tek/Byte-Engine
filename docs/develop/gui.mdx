@@ -34,6 +34,53 @@ Text input is app-owned: `TextField` emits edit deltas such as inserted and dele
 Components request and release focus explicitly. Send key and text-edit events to
 the focused element.
 
+## Drag a UI item onto an application target
+
+Keep a `Drag<ItemId>` in your UI input layer and create a position action with
+`ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")`.
+Retain each submitted snapshot with `Snapshot::retain_hit_test`, then use its
+`HitTest` to resolve a source when the action starts. Convert positions with
+`HitTest::layout_position` so the drag threshold uses layout units.
+
+Forward the action phases to the same gesture. In this example, `item_for`
+resolves a UI source to your item identifier, and `accept_drop` validates the
+application target before changing application state:
+
+```rust
+let point = hits.layout_position(window_position);
+match phase {
+    ActionPhase::Started => {
+        if let Some(source) = hits.query(window_position)
+            && let Some(item) = item_for(source)
+        {
+            let _ = drag.press((), source, item, point);
+        }
+    }
+    ActionPhase::Updated => {
+        drag.move_to((), point);
+    }
+    ActionPhase::Ended => {
+        if let Some(drop) = drag.release((), point) {
+            accept_drop(drop);
+        }
+    }
+    ActionPhase::Cancelled => {
+        drag.cancel();
+    }
+}
+```
+
+Consume a captured gesture in your UI layer before gameplay processes the same
+input. Continue forwarding motion and release outside the source; repeat hit
+testing only when choosing a new source or a drop target. Use `Drag::capture`
+to draw a floating preview after `dragging` becomes true, while keeping the
+original item until the drop is accepted. A click, cancellation, or rejected
+drop then restores its normal appearance. When scaling a preview, use
+`Transform::origin(UiPoint::zero())` to keep its top-left corner anchored.
+Call `Drag::cancel` when the window
+loses focus or the source disappears. The UI supplies the gesture and geometry;
+your application decides which targets accept the item and how to apply it.
+
 ## Work within the current limits
 
 <Callout type="info" title="Primitive UI layer">
@@ -51,6 +98,57 @@ When you add a UI feature, follow the existing route:
 - let `UiRenderPass` consume the render data
 
 That path keeps UI code testable and avoids coupling application widgets directly to renderer resource ownership.
+
+## Retention and invalidation
+
+Unchanged UI must cost nothing beyond the draw calls themselves, so every stage
+retains its result and reuses it while its inputs repeat. The contract is one
+chain of revisions:
+
+- The retained tree advances a revision whenever an element is added, removed,
+  or handed out for mutation through `update_container`, `update_text`, and the
+  other update methods. Every such call counts, so only call them when state
+  actually changed. Re-declaring the same element path on a later frame does
+  not count.
+- `Engine::evaluate` reuses the retained layout while the tree revision and the
+  viewport size repeat. Input routing and task polling still run every frame.
+- `Engine::render` returns a reference to the render retained by the engine.
+  It keeps the same `Render::revision` while the tree, its layout, and the
+  viewport are unchanged, so clone it only when the revision moved.
+- `UiRenderPass` rebuilds geometry, uploads buffers, and touches the glyph atlas
+  only when the adopted render revision, the viewport extent, or the atlas
+  generation changes. Otherwise it records the prepared batches again.
+
+Applications should publish a render only when `Render::revision` changes. The
+render source deduplicates repeated revisions anyway, so a republished unchanged
+render never makes a sink rebuild.
+
+Anything that must change pixels has to go through the tree: mutate elements
+through the evaluation context rather than by keeping visual state outside the
+engine. Placement, style, opacity, clipping, and transforms all live on retained
+elements, so the revision covers them. Changing the viewport size is the one
+input outside the tree, and both evaluation and rendering key on it.
+
+## Text rendering
+
+Text is drawn from a shared glyph atlas. The text system rasterizes each
+character once per pixel size, the render pass packs the coverage into one
+atlas texture, and every visible glyph becomes a pixel-aligned quad batched by
+depth alongside rectangles, curves, and images. Measurement and placement use
+the same cached glyph metrics, so layout and drawing never disagree.
+
+Consequences for application code:
+
+- Idle text costs no CPU work: no rasterization, no texture upload, no geometry.
+- Moving or restyling a label regenerates its quads only; the atlas is untouched
+  while its glyphs are already resident.
+- A resize rasterizes glyphs at the new pixel size once, then they stay cached.
+- Clipping trims glyph quads and their texture windows together, and feather
+  masks apply in the shader exactly as they do for rectangles.
+
+The atlas starts small, doubles when full, and resets at its maximum size to
+hold only the glyphs of the current frame. Both cases advance the atlas
+generation, which invalidates prepared frames automatically.
 
 ## Rust API
 

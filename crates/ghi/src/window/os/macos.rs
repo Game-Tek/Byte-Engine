@@ -1,4 +1,7 @@
-use std::{cell::Cell, sync::Mutex};
+use std::{
+	cell::{Cell, RefCell},
+	sync::Mutex,
+};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -27,9 +30,8 @@ pub struct Handles {
 
 #[derive(Debug, Default)]
 struct WindowDelegateIvars {
-	close_requested: Cell<bool>,
-	minimize_requested: Cell<bool>,
-	maximize_requested: Cell<bool>,
+	/// Native callbacks share one queue so focus transitions keep their arrival order.
+	events: RefCell<Vec<Events>>,
 	zoomed: Cell<bool>,
 }
 
@@ -52,22 +54,37 @@ define_class!(
 	unsafe impl NSWindowDelegate for WindowDelegate {
 		#[unsafe(method(windowWillClose:))]
 		fn window_will_close(&self, _notification: &NSNotification) {
-			self.ivars().close_requested.set(true);
+			self.ivars().events.borrow_mut().push(Events::Close);
 		}
 
 		#[unsafe(method(windowDidMiniaturize:))]
 		fn window_did_miniaturize(&self, _notification: &NSNotification) {
-			self.ivars().minimize_requested.set(true);
+			self.ivars().events.borrow_mut().push(Events::Minimize);
 		}
 
 		#[unsafe(method(windowDidResize:))]
 		fn window_did_resize(&self, notification: &NSNotification) {
-			self.update_zoom_state(notification);
+			self.update_window_state(notification);
+		}
+
+		#[unsafe(method(windowDidChangeBackingProperties:))]
+		fn window_did_change_backing_properties(&self, notification: &NSNotification) {
+			self.update_window_state(notification);
+		}
+
+		#[unsafe(method(windowDidBecomeKey:))]
+		fn window_did_become_key(&self, _notification: &NSNotification) {
+			self.ivars().events.borrow_mut().push(Events::FocusChanged(true));
+		}
+
+		#[unsafe(method(windowDidResignKey:))]
+		fn window_did_resign_key(&self, _notification: &NSNotification) {
+			self.ivars().events.borrow_mut().push(Events::FocusChanged(false));
 		}
 
 		#[unsafe(method(windowDidEnterFullScreen:))]
 		fn window_did_enter_full_screen(&self, _notification: &NSNotification) {
-			self.ivars().maximize_requested.set(true);
+			self.ivars().events.borrow_mut().push(Events::Maximize);
 			self.ivars().zoomed.set(true);
 		}
 
@@ -112,7 +129,8 @@ impl WindowDelegate {
 		unsafe { msg_send![super(this), init] }
 	}
 
-	fn update_zoom_state(&self, notification: &NSNotification) {
+	/// Publishes the drawable pixel size so layout matches the swapchain after resize or display changes.
+	fn update_window_state(&self, notification: &NSNotification) {
 		let Some(window) = notification.object() else {
 			return;
 		};
@@ -120,6 +138,13 @@ impl WindowDelegate {
 		let Ok(window) = window.downcast::<NSWindow>() else {
 			return;
 		};
+		if let Some(view) = window.contentView() {
+			let size = view.convertRectToBacking(view.bounds()).size;
+			self.ivars().events.borrow_mut().push(Events::Resize {
+				width: size.width.round() as u32,
+				height: size.height.round() as u32,
+			});
+		}
 
 		let is_zoomed = window.isZoomed();
 		let was_zoomed = self.ivars().zoomed.get();
@@ -128,7 +153,7 @@ impl WindowDelegate {
 			self.ivars().zoomed.set(is_zoomed);
 
 			if is_zoomed {
-				self.ivars().maximize_requested.set(true);
+				self.ivars().events.borrow_mut().push(Events::Maximize);
 			}
 		}
 	}
@@ -154,8 +179,8 @@ impl ApplicationDelegate {
 	}
 }
 
-/// Normalizes a mouse position inside the content view so the window center is `0`
-/// and the window edges stay within `-1..=1`.
+/// Normalizes the window center to `0` and edges to `-1` and `1`, preserving
+/// captured positions outside the window so callers can reject an outside drop.
 fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f32, f32)> {
 	let width = content_frame.size.width as f32;
 	let height = content_frame.size.height as f32;
@@ -170,8 +195,8 @@ fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f3
 	let half_width = width / 2.0;
 	let half_height = height / 2.0;
 
-	let x = ((x - half_width) / half_width).clamp(-1.0, 1.0);
-	let y = ((y - half_height) / half_height).clamp(-1.0, 1.0);
+	let x = (x - half_width) / half_width;
+	let y = (y - half_height) / half_height;
 
 	Some((x, y))
 }
@@ -193,6 +218,12 @@ fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, events: &m
 		dy: event.deltaY() as f32,
 		time,
 	});
+	append_mouse_position(window, event, time, events);
+}
+
+/// Samples the event's position before a button transition so its drag endpoint
+/// stays correct when AppKit coalesces or omits a separate motion event.
+fn append_mouse_position(window: &NSWindow, event: &NSEvent, time: u64, events: &mut Vec<Events>) {
 	let Some(content_view) = window.contentView() else {
 		return;
 	};
@@ -308,6 +339,15 @@ impl WindowLike for Window {
 
 		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 		app.activate();
+		// Placement can select a display with a different backing scale than the
+		// screen used to request the window. Publish the actual pixels before input.
+		if let Some(view) = window.contentView() {
+			let size = view.convertRectToBacking(view.bounds()).size;
+			delegate.ivars().events.borrow_mut().push(Events::Resize {
+				width: size.width.round() as u32,
+				height: size.height.round() as u32,
+			});
+		}
 
 		Ok(Window {
 			window,
@@ -333,17 +373,7 @@ impl WindowLike for Window {
 		let mut events = Vec::new();
 		let app = MainThreadMarker::new().map(NSApp);
 
-		if self.delegate.ivars().close_requested.replace(false) {
-			events.push(Events::Close);
-		}
-
-		if self.delegate.ivars().minimize_requested.replace(false) {
-			events.push(Events::Minimize);
-		}
-
-		if self.delegate.ivars().maximize_requested.replace(false) {
-			events.push(Events::Maximize);
-		}
+		events.extend(self.delegate.ivars().events.borrow_mut().drain(..));
 
 		while let Some(event) = self.window.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
@@ -363,6 +393,7 @@ impl WindowLike for Window {
 				}
 				NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
 					let pressed = event.r#type() == NSEventType::LeftMouseDown;
+					append_mouse_position(&self.window, &event, time, &mut events);
 
 					events.push(Events::Button {
 						seat: Seat::stub(),
@@ -372,6 +403,7 @@ impl WindowLike for Window {
 				}
 				NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
 					let pressed = event.r#type() == NSEventType::RightMouseDown;
+					append_mouse_position(&self.window, &event, time, &mut events);
 
 					events.push(Events::Button {
 						seat: Seat::stub(),
@@ -381,6 +413,7 @@ impl WindowLike for Window {
 				}
 				NSEventType::OtherMouseDown | NSEventType::OtherMouseUp => {
 					let pressed = event.r#type() == NSEventType::OtherMouseDown;
+					append_mouse_position(&self.window, &event, time, &mut events);
 
 					events.push(Events::Button {
 						seat: Seat::stub(),
@@ -423,6 +456,9 @@ impl WindowLike for Window {
 					app.sendEvent(&event);
 				}
 			}
+			// Deliver delegate events before reading the next input record, including
+			// a focus loss followed by a button release in this same poll.
+			events.extend(self.delegate.ivars().events.borrow_mut().drain(..));
 		}
 
 		events.into_iter()
@@ -639,5 +675,15 @@ mod tests {
 
 		assert_eq!(top_left, (-1.0, 1.0));
 		assert_eq!(bottom_right, (1.0, -1.0));
+	}
+
+	#[test]
+	fn normalize_mouse_position_preserves_captured_positions_outside_the_window() {
+		let frame = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(200.0, 100.0));
+		assert_eq!(
+			normalize_mouse_position(NSPoint::new(-90.0, -30.0), frame),
+			Some((-2.0, -2.0))
+		);
+		assert_eq!(normalize_mouse_position(NSPoint::new(310.0, 170.0), frame), Some((2.0, 2.0)));
 	}
 }

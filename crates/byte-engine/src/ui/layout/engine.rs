@@ -21,7 +21,27 @@ pub struct Engine<C = ()> {
 	text_system: TextSystem,
 	ctx: Rc<C>,
 	runtime: Rc<RefCell<Runtime>>,
+	retained_layout: Option<RetainedLayout>,
+	retained_render: Option<RetainedRender>,
 }
+
+/// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
+struct RetainedLayout {
+	revision: u64,
+	size: Size,
+	elements: Vec<LayoutElement>,
+	clipped_elements: Vec<LayoutElement>,
+}
+
+/// The `RetainedRender` struct keeps the last render so unchanged trees report the same revision.
+struct RetainedRender {
+	tree_revision: u64,
+	layout_revision: u64,
+	size: Size,
+	render: Render,
+}
+
+static NEXT_RENDER_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl<C> Drop for Engine<C> {
 	fn drop(&mut self) {
@@ -133,6 +153,8 @@ impl<C: 'static> Engine<C> {
 			text_edits: VecDeque::new(),
 			text_system: TextSystem::new(),
 			ctx: Rc::new(ctx),
+			retained_layout: None,
+			retained_render: None,
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
 	}
@@ -183,27 +205,47 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
+	// Layout is retained per tree revision and viewport size; a matching frame copies the retained
+	// result instead of measuring, transforming, and clipping the tree again.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
-		let (elements, relations, clipped_elements) = {
-			let tree = Rc::clone(&self.runtime.borrow().tree);
-			let tree = tree.borrow();
-			let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
-			relations.extend_from_slice(&tree.relations);
+		let tree = Rc::clone(&self.runtime.borrow().tree);
+		let tree = tree.borrow();
+		let revision = tree.revision();
+		let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
+		relations.extend_from_slice(&tree.relations);
 
+		let retained = self
+			.retained_layout
+			.as_ref()
+			.filter(|retained| retained.revision == revision && retained.size == size);
+		let (elements, clipped_elements) = if let Some(retained) = retained {
+			let mut elements = Vec::with_capacity_in(retained.elements.len(), frame_allocator);
+			elements.extend_from_slice(&retained.elements);
+			let mut clipped_elements = Vec::with_capacity_in(retained.clipped_elements.len(), frame_allocator);
+			clipped_elements.extend_from_slice(&retained.clipped_elements);
+			(elements, clipped_elements)
+		} else {
 			let mut elements = layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator);
 			apply_visual_transforms(&mut elements, &tree, frame_allocator);
 			let clipped_elements = clipped_layout_elements(&elements, &tree, frame_allocator);
 
-			(elements, relations, clipped_elements)
-		};
+			self.retained_layout = Some(RetainedLayout {
+				revision,
+				size,
+				elements: elements.to_vec(),
+				clipped_elements: clipped_elements.to_vec(),
+			});
+			{
+				let mut state = self.state.borrow_mut();
+				state.set_element_ids(elements.iter().map(|element| element.id));
+			}
+			self.runtime.borrow_mut().update_geometry(&elements);
 
-		{
-			let mut state = self.state.borrow_mut();
-			state.set_element_ids(elements.iter().map(|element| element.id));
-		}
+			(elements, clipped_elements)
+		};
+		drop(tree);
 
 		let acceleration = build_mouse_click_acceleration(&clipped_elements, frame_allocator);
-		self.runtime.borrow_mut().update_geometry(&elements);
 
 		Snapshot {
 			elements,
@@ -212,6 +254,7 @@ impl<C: 'static> Engine<C> {
 			cursor: self.state.borrow().cursor(),
 			engine_state: Rc::clone(&self.state),
 			size,
+			layout_revision: revision,
 		}
 	}
 
@@ -288,13 +331,38 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Converts the specified snapshot into render data.
 	/// Builds render data from an evaluated UI snapshot.
 	///
 	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
+	/// The render is retained by the engine: while the tree, its layout, and the
+	/// viewport are unchanged, the same render with the same [`Render::revision`]
+	/// is returned again. Clone it only when the revision changed.
+	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> &Render {
+		let tree_revision = self.runtime.borrow().tree.borrow().revision();
+		let retained = self.retained_render.as_ref().is_some_and(|retained| {
+			retained.tree_revision == tree_revision
+				&& retained.layout_revision == snapshot.layout_revision
+				&& retained.size == snapshot.size
+		});
+		if !retained {
+			let render = self.build_render(snapshot);
+			self.retained_render = Some(RetainedRender {
+				tree_revision,
+				layout_revision: snapshot.layout_revision,
+				size: snapshot.size,
+				render,
+			});
+		}
+		&self
+			.retained_render
+			.as_ref()
+			.expect("UI render must be retained after a rebuild. The most likely cause is a rebuild that returned early.")
+			.render
+	}
+
 	// Keep the single tree walk contiguous because it propagates clip, opacity, transform, depth, and layer masks together.
 	#[allow(clippy::too_many_lines)]
-	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
+	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
 		let mut elements = Vec::new();
 		let mut curve_elements = Vec::new();
 		let mut image_elements = Vec::new();
@@ -406,6 +474,7 @@ impl<C: 'static> Engine<C> {
 			image_elements,
 			text_elements,
 			relations: snapshot.relations.to_vec(),
+			revision: RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
 		}
 	}
 
@@ -470,6 +539,14 @@ impl<C: 'static> Engine<C> {
 	}
 }
 
+/// The `RenderRevision` struct identifies the content of one [`Render`].
+///
+/// Revisions are unique across engines. Two renders with equal revisions
+/// describe identical visuals, so consumers keep the revision they last adopted
+/// and skip work while it repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RenderRevision(u64);
+
 /// The `Render` struct preserves the visual data derived from a snapshot so UI primitives can be submitted to the renderer.
 #[derive(Clone)]
 pub struct Render {
@@ -478,9 +555,15 @@ pub struct Render {
 	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
 	relations: Vec<(Id, Id)>,
+	revision: RenderRevision,
 }
 
 impl Render {
+	/// Identifies this render's content; unchanged UI keeps the same revision across frames.
+	pub fn revision(&self) -> RenderRevision {
+		self.revision
+	}
+
 	pub(crate) fn root(&self) -> &RenderElement {
 		self.elements.iter().find(|e| e.id == 1).unwrap()
 	}
@@ -557,6 +640,90 @@ mod tests {
 		fn drop(&mut self) {
 			self.0.fetch_add(1, Ordering::Relaxed);
 		}
+	}
+
+	#[test]
+	fn unchanged_tree_keeps_layout_and_render_revision_across_frames() {
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				root.element("label").text(Text::new("Stable"));
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let frame_allocator = bumpalo::Bump::new();
+
+		let mut first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let first_render = engine.render(&mut first);
+		let (first_revision, first_size) = (first_render.revision(), first_render.size());
+		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second_render = engine.render(&mut second);
+
+		assert_eq!(first.layout_revision, second.layout_revision);
+		assert_eq!(first_revision, second_render.revision());
+		assert_eq!(first_size, second_render.size());
+		assert!(engine.retained_layout.is_some());
+	}
+
+	#[test]
+	fn property_mutation_and_resize_advance_the_render_revision() {
+		let mut engine = Engine::new();
+		let opacity = Rc::new(std::cell::Cell::new(1.0f32));
+		let shared = Rc::clone(&opacity);
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				loop {
+					let opacity = shared.get();
+					root.update_container(|container| container.set_opacity(opacity));
+					ctx.render().await;
+				}
+			})
+		});
+		let frame_allocator = bumpalo::Bump::new();
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let baseline = engine.render(&mut snapshot).revision();
+
+		// The mounted task mutates the container every frame, so revisions must move.
+		opacity.set(0.5);
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let mutated = engine.render(&mut snapshot);
+		assert_ne!(baseline, mutated.revision());
+		assert_eq!(mutated.elements().next().unwrap().opacity, 0.5);
+		let mutated = mutated.revision();
+
+		let mut snapshot = engine.evaluate(Size::new(200, 100), &frame_allocator);
+		let resized = engine.render(&mut snapshot);
+		assert_ne!(mutated, resized.revision());
+		assert_eq!(resized.root().size, Size::new(200, 100));
+	}
+
+	#[test]
+	fn retained_tree_revision_tracks_insertion_mutation_and_removal() {
+		let mut tree = RetainedTree::new();
+		let start = tree.revision();
+		let (id, _) = tree.add_element(None, &[], "root", ConcreteElement::container(Container::default()));
+		assert!(tree.revision() > start);
+
+		let after_insert = tree.revision();
+		// Re-declaring the same path on a later frame is idempotent and must not invalidate retained state.
+		tree.begin_frame();
+		tree.add_element(None, &[], "root", ConcreteElement::container(Container::default()));
+		assert_eq!(tree.revision(), after_insert);
+
+		assert!(tree.element_mut(id).is_some());
+		assert!(tree.revision() > after_insert);
+
+		let after_mutation = tree.revision();
+		let (_, child_path) = tree.add_element(Some(id), &[], "child", ConcreteElement::container(Container::default()));
+		let after_child = tree.revision();
+		assert!(after_child > after_mutation);
+		assert!(!tree.remove_scope(&child_path).is_empty());
+		assert!(tree.revision() > after_child);
+		assert!(tree.remove_scope(&child_path).is_empty());
 	}
 
 	#[test]
@@ -1819,9 +1986,9 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].style.layers().len(), 1);
-		assert_eq!(render.elements[0].style.layers()[0].kind(), LayerKind::Fill);
-		match Layer::fill(&render.elements[0].style.layers()[0]) {
+		assert_eq!(render.elements().next().unwrap().style.layers().len(), 1);
+		assert_eq!(render.elements().next().unwrap().style.layers()[0].kind(), LayerKind::Fill);
+		match Layer::fill(&render.elements().next().unwrap().style.layers()[0]) {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.2, 0.3, 0.4, 1.0)),
 			Color::Sample(_) => panic!("expected value color"),
 		}
@@ -1842,7 +2009,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].backdrop_blur_radius, 18.0);
+		assert_eq!(render.elements().next().unwrap().backdrop_blur_radius, 18.0);
 	}
 
 	#[test]
@@ -1865,9 +2032,9 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].backdrop_blur_radius, 12.0);
-		assert_eq!(render.elements[0].opacity, 0.5);
-		assert_eq!(render.elements[0].clip, None);
+		assert_eq!(render.elements().next().unwrap().backdrop_blur_radius, 12.0);
+		assert_eq!(render.elements().next().unwrap().opacity, 0.5);
+		assert_eq!(render.elements().next().unwrap().clip, None);
 	}
 
 	#[test]
@@ -1894,9 +2061,12 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].style.layers().len(), 2);
-		assert_eq!(render.elements[0].style.layers()[0].kind(), LayerKind::Fill);
-		assert_eq!(render.elements[0].style.layers()[1].kind(), LayerKind::Stroke { width: 2.0 });
+		assert_eq!(render.elements().next().unwrap().style.layers().len(), 2);
+		assert_eq!(render.elements().next().unwrap().style.layers()[0].kind(), LayerKind::Fill);
+		assert_eq!(
+			render.elements().next().unwrap().style.layers()[1].kind(),
+			LayerKind::Stroke { width: 2.0 }
+		);
 	}
 
 	#[test]
@@ -2142,7 +2312,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].opacity, 0.4);
+		assert_eq!(render.elements().next().unwrap().opacity, 0.4);
 	}
 
 	#[test]
@@ -2198,8 +2368,8 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].corner_radius, 8.0);
-		assert_eq!(render.elements[0].corner_exponent, 4.0);
+		assert_eq!(render.elements().next().unwrap().corner_radius, 8.0);
+		assert_eq!(render.elements().next().unwrap().corner_exponent, 4.0);
 	}
 
 	#[test]
@@ -2222,8 +2392,8 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].corner_radius, 6.0);
-		assert_eq!(render.elements[0].corner_exponent, 4.0);
+		assert_eq!(render.elements().next().unwrap().corner_radius, 6.0);
+		assert_eq!(render.elements().next().unwrap().corner_exponent, 4.0);
 	}
 
 	#[test]
@@ -2368,7 +2538,7 @@ mod tests {
 		assert_eq!(second.elements[0].size, Size::new(30, 10));
 
 		let render = engine.render(&mut second);
-		match Layer::fill(&render.elements[0].style.layers()[0]) {
+		match Layer::fill(&render.elements().next().unwrap().style.layers()[0]) {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.4, 0.5, 0.6, 1.0)),
 			Color::Sample(_) => panic!("expected value color"),
 		}
@@ -2394,7 +2564,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 
-		assert_eq!(render.elements[0].opacity, 0.25);
+		assert_eq!(render.elements().next().unwrap().opacity, 0.25);
 	}
 
 	#[test]

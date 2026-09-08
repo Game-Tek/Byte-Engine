@@ -14,9 +14,9 @@ use windows::{
 				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GWLP_WNDPROC,
 				GetClientRect, GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, PM_REMOVE, PeekMessageA, PostQuitMessage,
 				RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE,
-				WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-				WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
-				WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
+				WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+				WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP,
+				WM_SETFOCUS, WM_SIZE, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
@@ -512,10 +512,13 @@ fn handle_event(
 			));
 		}
 		WM_SIZE => {
-			let width = lparam.0 as u32;
-			let height = (lparam.0 >> 16) as u32;
+			let width = (lparam.0 & 0xffff) as u32;
+			let height = ((lparam.0 >> 16) & 0xffff) as u32;
 
 			return Some((Some(Events::Resize { width, height }), LRESULT(0)));
+		}
+		WM_SETFOCUS | WM_KILLFOCUS => {
+			return Some((Some(Events::FocusChanged(msg == WM_SETFOCUS)), LRESULT(0)));
 		}
 		WM_DESTROY => {
 			unsafe {

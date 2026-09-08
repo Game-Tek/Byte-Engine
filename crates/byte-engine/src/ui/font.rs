@@ -5,10 +5,8 @@ use std::{
 };
 
 use fontdue::{Font, FontSettings};
-use utils::RGBA;
 
 use super::flow::Size;
-use super::style::EdgeFeather;
 
 const FALLBACK_WIDTH_FACTOR: f32 = 0.6;
 const FALLBACK_ASCENT_FACTOR: f32 = 0.8;
@@ -27,137 +25,75 @@ enum FontState {
 	Unavailable,
 }
 
+/// The `GlyphKey` struct identifies one rasterized glyph by character and pixel size.
+///
+/// The size is keyed by its bit pattern so a cache lookup never depends on float rounding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct GlyphKey {
+	pub(crate) character: char,
+	pub(crate) font_size_bits: u32,
+}
+
+impl GlyphKey {
+	pub(crate) fn new(character: char, font_size: f32) -> Self {
+		Self {
+			character,
+			font_size_bits: font_size.max(1.0).to_bits(),
+		}
+	}
+}
+
+/// The `Glyph` struct stores one rasterized glyph and the metrics needed to place it.
+///
+/// The bitmap is a row-major 8-bit coverage mask of `width * height` bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Glyph {
+	pub(crate) width: u32,
+	pub(crate) height: u32,
+	/// Horizontal offset from the pen position to the bitmap's left edge.
+	pub(crate) xmin: i32,
+	/// Vertical offset from the baseline to the bitmap's bottom edge.
+	pub(crate) ymin: i32,
+	pub(crate) advance_width: f32,
+	pub(crate) bitmap: Vec<u8>,
+}
+
+impl Glyph {
+	pub(crate) fn is_visible(&self) -> bool {
+		self.width > 0 && self.height > 0 && !self.bitmap.is_empty()
+	}
+}
+
+/// The `LineMetrics` struct stores the vertical metrics for one pixel size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LineMetrics {
+	pub(crate) line_height: f32,
+	pub(crate) ascent: f32,
+	pub(crate) descent: f32,
+}
+
+/// The `GlyphPlacement` struct locates one visible glyph bitmap in target pixels.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GlyphPlacement<'a> {
+	pub(crate) key: GlyphKey,
+	/// Left edge of the bitmap in target pixels.
+	pub(crate) x: i32,
+	/// Top edge of the bitmap in target pixels.
+	pub(crate) y: i32,
+	pub(crate) glyph: &'a Glyph,
+}
+
+/// The `TextSystem` struct shapes and rasterizes UI text through one shared glyph cache.
+///
+/// Measurement and rendering use the same cached glyph metrics, so layout and draw
+/// placement can never disagree. Glyph bitmaps are rasterized once per character
+/// and pixel size and reused for the life of the system.
 pub(crate) struct TextSystem {
 	font_state: FontState,
 	measure_cache: HashMap<u32, HashMap<String, Size>>,
+	glyph_cache: HashMap<GlyphKey, Glyph>,
+	line_metrics_cache: HashMap<u32, LineMetrics>,
 	reported_unavailable: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TextClipRect {
-	x: u32,
-	y: u32,
-	width: u32,
-	height: u32,
-}
-
-impl TextClipRect {
-	pub(crate) fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-		Self { x, y, width, height }
-	}
-
-	fn contains(&self, x: i32, y: i32) -> bool {
-		let Ok(x) = u32::try_from(x) else {
-			return false;
-		};
-		let Ok(y) = u32::try_from(y) else {
-			return false;
-		};
-		let right = self.x.saturating_add(self.width);
-		let bottom = self.y.saturating_add(self.height);
-
-		x >= self.x && x < right && y >= self.y && y < bottom
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct TextFeatherMask {
-	x: u32,
-	y: u32,
-	width: u32,
-	height: u32,
-	feather: EdgeFeather,
-	corner_radius: f32,
-	corner_exponent: f32,
-}
-
-impl TextFeatherMask {
-	pub(crate) fn new(
-		x: u32,
-		y: u32,
-		width: u32,
-		height: u32,
-		feather: EdgeFeather,
-		corner_radius: f32,
-		corner_exponent: f32,
-	) -> Self {
-		Self {
-			x,
-			y,
-			width,
-			height,
-			feather,
-			corner_radius,
-			corner_exponent: sanitize_corner_exponent(corner_exponent),
-		}
-	}
-
-	fn coverage(&self, x: i32, y: i32) -> f32 {
-		let x = x as f32;
-		let y = y as f32;
-		let left = x - self.x as f32;
-		let top = y - self.y as f32;
-		let right = self.x.saturating_add(self.width) as f32 - x;
-		let bottom = self.y.saturating_add(self.height) as f32 - y;
-
-		edge_coverage(top, self.feather.top)
-			* edge_coverage(right, self.feather.right)
-			* edge_coverage(bottom, self.feather.bottom)
-			* edge_coverage(left, self.feather.left)
-			* rounded_rect_coverage(
-				left,
-				top,
-				self.width as f32,
-				self.height as f32,
-				self.corner_radius,
-				self.corner_exponent,
-			)
-	}
-}
-
-fn rounded_rect_coverage(x: f32, y: f32, width: f32, height: f32, corner_radius: f32, corner_exponent: f32) -> f32 {
-	let half_width = width * 0.5;
-	let half_height = height * 0.5;
-	let radius = corner_radius.max(0.0).min(half_width.min(half_height));
-	if radius <= 0.0 {
-		return 1.0;
-	}
-
-	let centered_x = x - half_width;
-	let centered_y = y - half_height;
-	let rounded_extent_x = half_width - radius;
-	let rounded_extent_y = half_height - radius;
-	let corner_delta_x = centered_x.abs() - rounded_extent_x;
-	let corner_delta_y = centered_y.abs() - rounded_extent_y;
-	let abs_corner_x = corner_delta_x.max(0.0);
-	let abs_corner_y = corner_delta_y.max(0.0);
-	let corner_sum = abs_corner_x.powf(corner_exponent) + abs_corner_y.powf(corner_exponent);
-	let corner_distance = corner_sum.powf(1.0 / corner_exponent);
-	let field_distance = corner_distance + corner_delta_x.max(corner_delta_y).min(0.0) - radius;
-
-	(1.0 - smoothstep(-1.0, 1.0, field_distance)).clamp(0.0, 1.0)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-	let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-	t * t * (3.0 - 2.0 * t)
-}
-
-fn sanitize_corner_exponent(exponent: f32) -> f32 {
-	if !exponent.is_finite() || exponent < 1.0 {
-		2.0
-	} else {
-		exponent.clamp(1.0, 8.0)
-	}
-}
-
-fn edge_coverage(distance: f32, feather_width: f32) -> f32 {
-	if feather_width <= 0.0 {
-		1.0
-	} else {
-		let t = (distance / feather_width).clamp(0.0, 1.0);
-		t * t * (3.0 - 2.0 * t)
-	}
 }
 
 impl TextSystem {
@@ -165,8 +101,15 @@ impl TextSystem {
 		Self {
 			font_state: FontState::Uninitialized,
 			measure_cache: HashMap::new(),
+			glyph_cache: HashMap::new(),
+			line_metrics_cache: HashMap::new(),
 			reported_unavailable: false,
 		}
+	}
+
+	/// Returns whether a font is available for glyph rasterization.
+	pub fn has_font(&mut self) -> bool {
+		self.font().is_some()
 	}
 
 	pub fn measure(&mut self, text: &str, font_size: f32) -> Size {
@@ -180,9 +123,10 @@ impl TextSystem {
 			return *size;
 		}
 
-		let size = match self.font() {
-			Some(font) => measure_with_font(font, text, font_size),
-			None => measure_with_fallback(text, font_size),
+		let size = if self.has_font() {
+			self.measure_with_glyphs(text, font_size)
+		} else {
+			measure_with_fallback(text, font_size)
 		};
 		self.measure_cache
 			.entry(font_size_key)
@@ -191,64 +135,116 @@ impl TextSystem {
 		size
 	}
 
-	/// Rasterizes a text run into the provided RGBA texture using source-over alpha blending.
-	pub fn rasterize(
+	/// Returns the vertical metrics for one pixel size, or `None` without a font.
+	pub fn line_metrics(&mut self, font_size: f32) -> Option<LineMetrics> {
+		let font_size = font_size.max(1.0);
+		let key = font_size.to_bits();
+		if let Some(metrics) = self.line_metrics_cache.get(&key) {
+			return Some(*metrics);
+		}
+		let metrics = font_line_metrics(self.font()?, font_size);
+		self.line_metrics_cache.insert(key, metrics);
+		Some(metrics)
+	}
+
+	/// Returns the cached glyph for one character and pixel size, rasterizing it on first use.
+	pub fn glyph(&mut self, character: char, font_size: f32) -> Option<&Glyph> {
+		self.glyph_by_key(GlyphKey::new(character, font_size))
+	}
+
+	/// Returns the cached glyph for one key, rasterizing it on first use.
+	pub fn glyph_by_key(&mut self, key: GlyphKey) -> Option<&Glyph> {
+		if !self.glyph_cache.contains_key(&key) {
+			let font = self.font()?;
+			let (metrics, bitmap) = font.rasterize(key.character, f32::from_bits(key.font_size_bits));
+			self.glyph_cache.insert(
+				key,
+				Glyph {
+					width: metrics.width as u32,
+					height: metrics.height as u32,
+					xmin: metrics.xmin,
+					ymin: metrics.ymin,
+					advance_width: metrics.advance_width,
+					bitmap,
+				},
+			);
+		}
+		self.glyph_cache.get(&key)
+	}
+
+	/// Places every visible glyph of `text` in target pixels, starting at `origin`.
+	///
+	/// Lines advance by the font's line height and each glyph is snapped to whole
+	/// pixels, so the same run always maps to the same bitmap positions. Returns
+	/// `false` when no font is available.
+	pub fn place_glyphs(
 		&mut self,
-		target: &mut [u8],
-		target_width: u32,
-		target_height: u32,
-		position: (u32, u32),
 		text: &str,
 		font_size: f32,
-		color: RGBA,
-		clip: Option<TextClipRect>,
-		feather_mask: Option<TextFeatherMask>,
+		origin: (i32, i32),
+		mut visit: impl FnMut(GlyphPlacement<'_>),
 	) -> bool {
-		if text.is_empty() || target_width == 0 || target_height == 0 {
+		if text.is_empty() {
 			return false;
 		}
-
 		let font_size = font_size.max(1.0);
-		let Some(font) = self.font() else {
+		let Some(line) = self.line_metrics(font_size) else {
 			return false;
 		};
 
-		let (line_height, ascent, _) = line_metrics(font, font_size);
-		let mut baseline_y = position.1 as f32 + ascent.max(font_size * FALLBACK_ASCENT_FACTOR);
-		let mut pen_x = position.0 as f32;
-		let mut drew_anything = false;
+		let mut baseline_y = origin.1 as f32 + line.ascent.max(font_size * FALLBACK_ASCENT_FACTOR);
+		let mut pen_x = origin.0 as f32;
 
 		for character in text.chars() {
 			if character == '\n' {
-				pen_x = position.0 as f32;
-				baseline_y += line_height;
+				pen_x = origin.0 as f32;
+				baseline_y += line.line_height;
 				continue;
 			}
 
-			let (metrics, bitmap) = font.rasterize(character, font_size);
-			let glyph_x = pen_x.round() as i32 + metrics.xmin;
-			let glyph_y = baseline_y.round() as i32 - metrics.height as i32 - metrics.ymin;
-
-			if metrics.width > 0 && metrics.height > 0 && !bitmap.is_empty() {
-				drew_anything |= blend_glyph(
-					target,
-					target_width,
-					target_height,
-					glyph_x,
-					glyph_y,
-					metrics.width,
-					metrics.height,
-					&bitmap,
-					color,
-					clip,
-					feather_mask,
-				);
+			let key = GlyphKey::new(character, font_size);
+			let Some(glyph) = self.glyph_by_key(key) else {
+				return false;
+			};
+			if glyph.is_visible() {
+				visit(GlyphPlacement {
+					key,
+					x: pen_x.round() as i32 + glyph.xmin,
+					y: baseline_y.round() as i32 - glyph.height as i32 - glyph.ymin,
+					glyph,
+				});
 			}
-
-			pen_x += metrics.advance_width;
+			pen_x += glyph.advance_width;
 		}
 
-		drew_anything
+		true
+	}
+
+	fn measure_with_glyphs(&mut self, text: &str, font_size: f32) -> Size {
+		let Some(line) = self.line_metrics(font_size) else {
+			return measure_with_fallback(text, font_size);
+		};
+		let mut max_width: f32 = 0.0;
+		let mut current_width: f32 = 0.0;
+		let mut line_count = 1u32;
+
+		for character in text.chars() {
+			if character == '\n' {
+				max_width = max_width.max(current_width);
+				current_width = 0.0;
+				line_count += 1;
+				continue;
+			}
+
+			current_width += self.glyph(character, font_size).map_or(0.0, |glyph| glyph.advance_width);
+		}
+
+		max_width = max_width.max(current_width);
+
+		let line_box_height = (line.ascent - line.descent).max(font_size);
+		let height = line_box_height + (line_count.saturating_sub(1) as f32 * line.line_height);
+
+		Size::new(max_width.max(0.0), height.max(0.0))
 	}
 
 	fn font(&mut self) -> Option<&Font> {
@@ -276,31 +272,6 @@ impl TextSystem {
 	}
 }
 
-fn measure_with_font(font: &Font, text: &str, font_size: f32) -> Size {
-	let (line_height, ascent, descent) = line_metrics(font, font_size);
-	let mut max_width: f32 = 0.0;
-	let mut current_width: f32 = 0.0;
-	let mut line_count = 1u32;
-
-	for character in text.chars() {
-		if character == '\n' {
-			max_width = max_width.max(current_width);
-			current_width = 0.0;
-			line_count += 1;
-			continue;
-		}
-
-		current_width += font.metrics(character, font_size).advance_width;
-	}
-
-	max_width = max_width.max(current_width);
-
-	let line_box_height = (ascent - descent).max(font_size);
-	let height = line_box_height + (line_count.saturating_sub(1) as f32 * line_height);
-
-	Size::new(max_width.max(0.0), height.max(0.0))
-}
-
 fn measure_with_fallback(text: &str, font_size: f32) -> Size {
 	let lines = text.lines().collect::<Vec<_>>();
 	let line_count = lines.len().max(1) as f32;
@@ -313,96 +284,18 @@ fn measure_with_fallback(text: &str, font_size: f32) -> Size {
 	Size::new(max_width.max(0.0), height.max(0.0))
 }
 
-fn line_metrics(font: &Font, font_size: f32) -> (f32, f32, f32) {
+fn font_line_metrics(font: &Font, font_size: f32) -> LineMetrics {
 	font.horizontal_line_metrics(font_size)
-		.map(|metrics| (metrics.new_line_size, metrics.ascent, metrics.descent))
-		.unwrap_or((
-			font_size * FALLBACK_LINE_HEIGHT_FACTOR,
-			font_size * FALLBACK_ASCENT_FACTOR,
-			-font_size * FALLBACK_DESCENT_FACTOR,
-		))
-}
-
-/// Blends a glyph bitmap into the target texture while clipping to the texture bounds.
-fn blend_glyph(
-	target: &mut [u8],
-	target_width: u32,
-	target_height: u32,
-	glyph_x: i32,
-	glyph_y: i32,
-	glyph_width: usize,
-	glyph_height: usize,
-	bitmap: &[u8],
-	color: RGBA,
-	clip: Option<TextClipRect>,
-	feather_mask: Option<TextFeatherMask>,
-) -> bool {
-	let source_r = color.r.clamp(0.0, 1.0);
-	let source_g = color.g.clamp(0.0, 1.0);
-	let source_b = color.b.clamp(0.0, 1.0);
-	let source_a = color.a.clamp(0.0, 1.0);
-	let mut drew_anything = false;
-
-	for row in 0..glyph_height {
-		let target_y = glyph_y + row as i32;
-		if target_y < 0 || target_y >= target_height as i32 {
-			continue;
-		}
-
-		for column in 0..glyph_width {
-			let target_x = glyph_x + column as i32;
-			if target_x < 0 || target_x >= target_width as i32 {
-				continue;
-			}
-			if clip.is_some_and(|clip| !clip.contains(target_x, target_y)) {
-				continue;
-			}
-
-			let coverage = bitmap[row * glyph_width + column] as f32 / 255.0
-				* feather_mask.map(|mask| mask.coverage(target_x, target_y)).unwrap_or(1.0);
-			if coverage <= 0.0 {
-				continue;
-			}
-
-			let src_alpha = source_a * coverage;
-			let pixel_index = ((target_y as u32 * target_width + target_x as u32) * 4) as usize;
-
-			let dst_r = target[pixel_index] as f32 / 255.0;
-			let dst_g = target[pixel_index + 1] as f32 / 255.0;
-			let dst_b = target[pixel_index + 2] as f32 / 255.0;
-			let dst_alpha = target[pixel_index + 3] as f32 / 255.0;
-
-			let out_alpha = src_alpha + dst_alpha * (1.0 - src_alpha);
-			let src_r_premultiplied = source_r * src_alpha;
-			let src_g_premultiplied = source_g * src_alpha;
-			let src_b_premultiplied = source_b * src_alpha;
-			let dst_r_premultiplied = dst_r * dst_alpha;
-			let dst_g_premultiplied = dst_g * dst_alpha;
-			let dst_b_premultiplied = dst_b * dst_alpha;
-
-			let out_r_premultiplied = src_r_premultiplied + dst_r_premultiplied * (1.0 - src_alpha);
-			let out_g_premultiplied = src_g_premultiplied + dst_g_premultiplied * (1.0 - src_alpha);
-			let out_b_premultiplied = src_b_premultiplied + dst_b_premultiplied * (1.0 - src_alpha);
-
-			let (out_r, out_g, out_b) = if out_alpha > 0.0 {
-				(
-					out_r_premultiplied / out_alpha,
-					out_g_premultiplied / out_alpha,
-					out_b_premultiplied / out_alpha,
-				)
-			} else {
-				(0.0, 0.0, 0.0)
-			};
-
-			target[pixel_index] = (out_r.clamp(0.0, 1.0) * 255.0).round() as u8;
-			target[pixel_index + 1] = (out_g.clamp(0.0, 1.0) * 255.0).round() as u8;
-			target[pixel_index + 2] = (out_b.clamp(0.0, 1.0) * 255.0).round() as u8;
-			target[pixel_index + 3] = (out_alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
-			drew_anything = true;
-		}
-	}
-
-	drew_anything
+		.map(|metrics| LineMetrics {
+			line_height: metrics.new_line_size,
+			ascent: metrics.ascent,
+			descent: metrics.descent,
+		})
+		.unwrap_or(LineMetrics {
+			line_height: font_size * FALLBACK_LINE_HEIGHT_FACTOR,
+			ascent: font_size * FALLBACK_ASCENT_FACTOR,
+			descent: -font_size * FALLBACK_DESCENT_FACTOR,
+		})
 }
 
 fn load_system_font() -> Result<LoadedFont, String> {
@@ -496,107 +389,6 @@ fn font_search_roots() -> Vec<PathBuf> {
 	roots
 }
 
-#[cfg(test)]
-mod tests {
-	use utils::RGBA;
-
-	use super::{TextClipRect, TextSystem, blend_glyph};
-
-	#[test]
-	fn measure_reuses_cached_text_size_for_same_font_size() {
-		let mut text_system = TextSystem::new();
-
-		let first = text_system.measure("Cached", 16.0);
-		let cache_entries = text_system
-			.measure_cache
-			.get(&16.0f32.to_bits())
-			.map(|entries| entries.len())
-			.unwrap_or_default();
-
-		let second = text_system.measure("Cached", 16.0);
-		let second_cache_entries = text_system
-			.measure_cache
-			.get(&16.0f32.to_bits())
-			.map(|entries| entries.len())
-			.unwrap_or_default();
-
-		assert_eq!(second, first);
-		assert_eq!(second_cache_entries, cache_entries);
-	}
-
-	#[test]
-	fn clipped_glyph_reports_no_draw_when_all_pixels_are_outside_clip() {
-		let mut target = [0u8; 4];
-		let drew = blend_glyph(
-			&mut target,
-			1,
-			1,
-			0,
-			0,
-			1,
-			1,
-			&[255],
-			RGBA::white(),
-			Some(TextClipRect::new(1, 1, 1, 1)),
-			None,
-		);
-
-		assert!(!drew);
-		assert_eq!(target, [0, 0, 0, 0]);
-	}
-
-	#[test]
-	fn clipped_glyph_draws_pixels_inside_clip() {
-		let mut target = [0u8; 4];
-		let drew = blend_glyph(
-			&mut target,
-			1,
-			1,
-			0,
-			0,
-			1,
-			1,
-			&[255],
-			RGBA::white(),
-			Some(TextClipRect::new(0, 0, 1, 1)),
-			None,
-		);
-
-		assert!(drew);
-		assert_eq!(target, [255, 255, 255, 255]);
-	}
-
-	#[test]
-	fn feathered_glyph_reduces_alpha_near_mask_edge() {
-		let mut target = [0u8; 8];
-		let drew = blend_glyph(
-			&mut target,
-			2,
-			1,
-			0,
-			0,
-			2,
-			1,
-			&[255, 255],
-			RGBA::white(),
-			None,
-			Some(super::TextFeatherMask::new(
-				0,
-				0,
-				2,
-				1,
-				super::EdgeFeather::edges(0.0, 0.0, 0.0, 2.0),
-				0.0,
-				2.0,
-			)),
-		);
-
-		assert!(drew);
-		assert_eq!(target[3], 0);
-		assert_eq!(target[7], 128);
-	}
-}
-
 fn explicit_font_candidates() -> Vec<PathBuf> {
 	let mut candidates = Vec::new();
 
@@ -639,4 +431,101 @@ fn explicit_font_candidates() -> Vec<PathBuf> {
 	}
 
 	candidates
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Glyph, GlyphKey, TextSystem};
+
+	#[test]
+	fn measure_reuses_cached_text_size_for_same_font_size() {
+		let mut text_system = TextSystem::new();
+
+		let first = text_system.measure("Cached", 16.0);
+		let cache_entries = text_system
+			.measure_cache
+			.get(&16.0f32.to_bits())
+			.map(|entries| entries.len())
+			.unwrap_or_default();
+
+		let second = text_system.measure("Cached", 16.0);
+		let second_cache_entries = text_system
+			.measure_cache
+			.get(&16.0f32.to_bits())
+			.map(|entries| entries.len())
+			.unwrap_or_default();
+
+		assert_eq!(second, first);
+		assert_eq!(second_cache_entries, cache_entries);
+	}
+
+	#[test]
+	fn glyphs_are_rasterized_once_per_character_and_size() {
+		let mut text_system = TextSystem::new();
+		if !text_system.has_font() {
+			return;
+		}
+
+		let small = text_system.glyph('A', 16.0).unwrap().clone();
+		let large = text_system.glyph('A', 24.0).unwrap().clone();
+		assert_ne!(small, large);
+		assert!(small.is_visible());
+		assert_eq!(text_system.glyph_cache.len(), 2);
+
+		// Repeated lookups hit the same entry instead of rasterizing again.
+		let first: *const Glyph = text_system.glyph('A', 16.0).unwrap();
+		let second: *const Glyph = text_system.glyph('A', 16.0).unwrap();
+		assert_eq!(first, second);
+		assert_eq!(text_system.glyph_cache.len(), 2);
+	}
+
+	#[test]
+	fn glyph_key_normalizes_sizes_below_one_pixel() {
+		assert_eq!(GlyphKey::new('a', 0.25), GlyphKey::new('a', 1.0));
+		assert_ne!(GlyphKey::new('a', 2.0), GlyphKey::new('a', 1.0));
+	}
+
+	#[test]
+	fn placement_advances_pen_and_wraps_lines_from_cached_metrics() {
+		let mut text_system = TextSystem::new();
+		if !text_system.has_font() {
+			return;
+		}
+
+		// Placements borrow the cache, so copy what the assertions need.
+		let mut placements = Vec::new();
+		let placed = text_system.place_glyphs("AB\nC", 20.0, (10, 5), |placement| {
+			placements.push((placement.x, placement.y, placement.glyph.xmin, placement.glyph.advance_width));
+		});
+		assert!(placed);
+		assert_eq!(placements.len(), 3);
+
+		let [a, b, c] = placements[..] else { unreachable!() };
+		assert_eq!(a.0, 10 + a.2);
+		assert_eq!(b.0, (10.0 + a.3).round() as i32 + b.2);
+		assert_eq!(c.0, 10 + c.2);
+		assert!(c.1 > a.1, "second line must sit below the first");
+		let line = text_system.line_metrics(20.0).unwrap();
+		assert!((c.1 - a.1 - line.line_height.round() as i32).abs() <= 2);
+
+		// Measurement uses the same advances as placement.
+		let measured = text_system.measure("AB", 20.0);
+		assert!((measured.x() - (a.3 + b.3)).abs() < 0.001);
+	}
+
+	#[test]
+	fn whitespace_produces_no_visible_placement_but_advances() {
+		let mut text_system = TextSystem::new();
+		if !text_system.has_font() {
+			return;
+		}
+
+		let mut placements = Vec::new();
+		assert!(text_system.place_glyphs(" A", 16.0, (0, 0), |placement| {
+			placements.push((placement.x, placement.glyph.xmin))
+		}));
+		assert_eq!(placements.len(), 1);
+		let space = text_system.glyph(' ', 16.0).unwrap();
+		assert_eq!(placements[0].0, space.advance_width.round() as i32 + placements[0].1);
+	}
 }

@@ -12,6 +12,8 @@ pub(super) struct RetainedTree {
 	path_counts: HashMap<(Option<Id>, &'static str), u32>,
 	path_ids: HashMap<Vec<PathSegment>, Id>,
 	next_id: u32,
+	/// Advances on every structural or property change so consumers can retain derived state.
+	revision: u64,
 }
 
 impl RetainedTree {
@@ -24,6 +26,13 @@ impl RetainedTree {
 
 	pub(super) fn begin_frame(&mut self) {
 		self.path_counts.clear();
+	}
+
+	/// Returns a value that changes whenever elements are added, removed, or mutated.
+	///
+	/// Layout and render data derived from one revision stay valid until it changes.
+	pub(super) fn revision(&self) -> u64 {
+		self.revision
 	}
 
 	pub(super) fn element_path(
@@ -81,6 +90,7 @@ impl RetainedTree {
 			element,
 			path: path.clone(),
 		});
+		self.revision += 1;
 
 		if let Some(parent) = parent {
 			self.add_relation(parent, id);
@@ -96,12 +106,16 @@ impl RetainedTree {
 		if self.parent_by_child.insert(child, parent).is_none() {
 			self.relations.push((parent, child));
 			self.children_by_parent.entry(parent).or_default().push(child);
+			self.revision += 1;
 		}
 	}
 
+	/// Returns mutable access to one element and marks the tree as changed.
 	pub(super) fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
 		let index = *self.element_indices.get(&id)?;
-		self.elements.get_mut(index)
+		let element = self.elements.get_mut(index)?;
+		self.revision += 1;
+		Some(element)
 	}
 
 	pub(super) fn element(&self, id: Id) -> Option<&IdedElement> {
@@ -126,6 +140,7 @@ impl RetainedTree {
 		if removed.is_empty() {
 			return Vec::new();
 		}
+		self.revision += 1;
 
 		self.relations
 			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));

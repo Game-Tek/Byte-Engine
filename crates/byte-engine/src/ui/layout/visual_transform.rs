@@ -24,8 +24,9 @@ impl Affine2 {
 	}
 
 	pub(super) fn from_transform(transform: Transform, element: &LayoutElement) -> Self {
-		let center_x = element.position.x() + element.size.x() * 0.5;
-		let center_y = element.position.y() + element.size.y() * 0.5;
+		// Resolve the pivot in layout space before composing inherited transforms.
+		let origin_x = element.position.x() + element.size.x() * sanitize_origin(transform.origin.x);
+		let origin_y = element.position.y() + element.size.y() * sanitize_origin(transform.origin.y);
 		let scale_x = sanitize_scale(transform.scale_x);
 		let scale_y = sanitize_scale(transform.scale_y);
 
@@ -34,8 +35,8 @@ impl Affine2 {
 			b: 0.0,
 			c: 0.0,
 			d: scale_y,
-			tx: center_x + sanitize_offset(transform.translate_x) - center_x * scale_x,
-			ty: center_y + sanitize_offset(transform.translate_y) - center_y * scale_y,
+			tx: origin_x + sanitize_offset(transform.translate_x) - origin_x * scale_x,
+			ty: origin_y + sanitize_offset(transform.translate_y) - origin_y * scale_y,
 		}
 	}
 
@@ -97,6 +98,10 @@ fn sanitize_scale(value: f32) -> f32 {
 	if value.is_finite() { value.max(0.0) } else { 1.0 }
 }
 
+fn sanitize_origin(value: f32) -> f32 {
+	if value.is_finite() { value } else { 0.5 }
+}
+
 fn clamp_coordinate(value: f32) -> f32 {
 	if !value.is_finite() || value <= 0.0 { 0.0 } else { value }
 }
@@ -106,6 +111,47 @@ mod tests {
 	use std::num::NonZeroU32;
 
 	use super::*;
+	use crate::ui::{Container, Context, ElementContext, Engine, UiPoint, intersection::HitTest};
+
+	#[test]
+	fn scaling_origin_keeps_child_rendering_and_retained_hits_on_the_same_bounds() {
+		for (origin, expected) in [
+			(UiPoint::zero(), UiPoint::new(30.0, 35.0)),
+			(UiPoint::new(0.5, 0.5), UiPoint::new(50.0, 50.0)),
+			(UiPoint::new(1.5, -0.5), UiPoint::new(90.0, 20.0)),
+		] {
+			let allocator = bumpalo::Bump::new();
+			let mut engine = Engine::new();
+			engine.mount(move |ctx| {
+				Box::pin(async move {
+					let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+					let mut parent = root.element("parent").container(
+						Container::default()
+							.absolute_position(20, 30)
+							.width(80.into())
+							.height(60.into())
+							.hit_testable(false)
+							.transform(Transform::identity().origin(origin).scale(0.5).translate(10.0, 5.0)),
+					);
+					parent
+						.element("child")
+						.container(Container::default().width(20.into()).height(10.into()));
+				})
+			});
+			let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
+			let render = engine.render(&mut snapshot);
+			let mut hits = HitTest::default();
+			snapshot.retain_hit_test(&mut hits);
+			let pointer = UiPoint::new((expected.x + 1.0) / 100.0 - 1.0, 1.0 - (expected.y + 1.0) / 75.0);
+			let child = hits.query(pointer).expect("the transformed child accepts the pointer");
+			let bounds = hits.bounds(child).unwrap();
+			let visual = render.elements().find(|element| element.id == child.get()).unwrap();
+			assert_eq!((bounds.x(), bounds.y()), (expected.x, expected.y));
+			assert_eq!((bounds.width(), bounds.height()), (10.0, 5.0));
+			assert_eq!(visual.position, bounds.position);
+			assert_eq!(visual.size, bounds.size);
+		}
+	}
 
 	#[test]
 	fn transformed_rect_preserves_subpixel_motion_at_retina_scale() {

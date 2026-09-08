@@ -31,9 +31,11 @@ use crate::{
 // Group draw preparation and geometry generation by responsibility.
 mod data;
 mod geometry;
+mod text;
 
 use data::*;
 use geometry::*;
+use text::*;
 
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
@@ -50,9 +52,11 @@ pub struct UiRenderPass {
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
 	text_pipeline: crate::rendering::PipelineRef,
-	text_vertex_buffer: ghi::BufferHandle<[[f32; 2]; 3]>,
-	text_sampler: ghi::SamplerHandle,
-	text_overlays: Vec<UiTextOverlayTexture>,
+	text_vertex_buffer: ghi::BufferHandle<[UiTextVertex; MAX_UI_VERTICES]>,
+	text_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	text_atlas: UiGlyphAtlas,
+	text_atlas_image: ghi::BaseImageHandle,
+	text_atlas_descriptor_set: ghi::DescriptorSetHandle,
 	blur_downsample_pipeline: crate::rendering::PipelineRef,
 	blur_filter_pipeline: crate::rendering::PipelineRef,
 	blur_downsample_workgroup: Extent,
@@ -77,7 +81,10 @@ pub struct UiRenderPass {
 	output_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	data: UiDrawList,
+	render_revision: Option<engine::RenderRevision>,
+	prepared: Option<UiPreparedFrame>,
 	reported_capacity_limit: bool,
+	reported_dropped_glyphs: bool,
 	text_system: TextSystem,
 }
 
@@ -152,20 +159,30 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let text_overlay = context.build_dynamic_image(
-			ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name("UI Text Overlay")
+		let text_atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
+		// Glyph quads are pixel aligned, so nearest sampling reproduces the rasterized coverage exactly.
+		let text_atlas_image: ghi::BaseImageHandle = context
+			.build_image(
+				ghi::image::Builder::new(UI_GLYPH_ATLAS_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
+					.name("UI Glyph Atlas")
+					.extent(text_atlas.extent())
+					.device_accesses(ghi::DeviceAccesses::HostToDevice),
+			)
+			.into();
+		let text_vertex_buffer: ghi::BufferHandle<[UiTextVertex; MAX_UI_VERTICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Text Vertices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let text_vertex_buffer = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Text Fullscreen Triangle")
+		let text_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("UI Text Indices")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let text_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
 		let blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
@@ -297,18 +314,14 @@ impl UiRenderPass {
 				ghi::Layouts::Read,
 			),
 		]);
-		let text_overlay_descriptor_set = context.create_descriptor_set(Some("UI Text"));
+		let text_atlas_descriptor_set = context.create_descriptor_set(Some("UI Glyph Atlas"));
 		context.write(&[ghi::DescriptorWrite::combined_image_sampler(
-			text_overlay_descriptor_set,
-			TEXT_OVERLAY_BINDING.slot(),
-			text_overlay,
+			text_atlas_descriptor_set,
+			UI_GLYPH_ATLAS_BINDING.slot(),
+			text_atlas_image,
 			text_sampler,
 			ghi::Layouts::Read,
 		)]);
-		let text_overlays = vec![UiTextOverlayTexture {
-			image: text_overlay.into(),
-			descriptor_set: text_overlay_descriptor_set,
-		}];
 		let background_pass =
 			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, main_attachment_image);
 		let output_pass =
@@ -330,8 +343,10 @@ impl UiRenderPass {
 			image_textures: HashMap::new(),
 			text_pipeline,
 			text_vertex_buffer,
-			text_sampler,
-			text_overlays,
+			text_index_buffer,
+			text_atlas,
+			text_atlas_image,
+			text_atlas_descriptor_set,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			blur_downsample_workgroup,
@@ -356,7 +371,10 @@ impl UiRenderPass {
 			output_pass,
 			bypass_pass,
 			data: UiDrawList::default(),
+			render_revision: None,
+			prepared: None,
 			reported_capacity_limit: false,
+			reported_dropped_glyphs: false,
 			text_system: TextSystem::new(),
 		}
 	}
@@ -411,34 +429,174 @@ impl UiRenderPass {
 		Some(texture.descriptor_set)
 	}
 
-	fn ensure_text_overlay(&mut self, frame: &mut ghi::implementation::Frame, index: usize) -> ghi::DescriptorSetHandle {
-		while self.text_overlays.len() <= index {
-			let text_overlay = frame.build_image(
-				ghi::image::Builder::new(TEXT_OVERLAY_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
-					.name("UI Text Overlay")
-					.device_accesses(ghi::DeviceAccesses::HostToDevice),
+	/// Adopts submitted UI data; the caller can share one render across sinks.
+	///
+	/// Renders carry a revision; adopting the same revision again leaves the
+	/// prepared frame valid, so unchanged UI never rebuilds geometry.
+	pub fn update(&mut self, render: &engine::Render) {
+		if self.render_revision == Some(render.revision()) {
+			return;
+		}
+		update_from_render(render, &mut self.data);
+		self.render_revision = Some(render.revision());
+	}
+
+	/// Rebuilds geometry, uploads, and atlas residency for the adopted draw list at `extent`.
+	// Keep every geometry family in one rebuild so the prepared frame always describes the same uploads.
+	#[allow(clippy::too_many_lines)]
+	fn rebuild_prepared_frame(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		extent: Extent,
+		frame_allocator: &bumpalo::Bump,
+	) {
+		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
+		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
+		let curve_geometry = build_ui_curve_geometry(&self.data, extent, frame_allocator);
+		let image_geometry = build_ui_image_geometry(&self.data, extent, frame_allocator);
+		let text_geometry = if self.data.texts.is_empty() {
+			None
+		} else {
+			assert!(
+				extent.width() > 0 && extent.height() > 0,
+				"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 			);
-			let text_overlay: ghi::BaseImageHandle = text_overlay.into();
-			let descriptor_set = frame.create_descriptor_set(Some("UI Text"));
-			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
+			Some(build_ui_text_geometry(
+				&self.data,
+				extent,
+				&mut self.text_system,
+				&mut self.text_atlas,
+				frame_allocator,
+			))
+		};
+		let text_truncated = text_geometry.as_ref().is_some_and(|geometry| geometry.truncated);
+		let dropped_glyphs = text_geometry.as_ref().map_or(0, |geometry| geometry.dropped_glyphs);
+
+		let truncated = geometry.truncated
+			|| blur_geometry.truncated
+			|| curve_geometry.truncated
+			|| image_geometry.truncated
+			|| text_truncated;
+		if truncated && !self.reported_capacity_limit {
+			log::warn!(
+				"UI geometry capacity exceeded. The most likely cause is that the UI contains more than {MAX_UI_ELEMENTS} drawable elements in a single frame."
+			);
+			self.reported_capacity_limit = true;
+		} else if !truncated {
+			self.reported_capacity_limit = false;
+		}
+		if dropped_glyphs > 0 && !self.reported_dropped_glyphs {
+			log::warn!(
+				"UI glyph atlas capacity exceeded; {dropped_glyphs} glyphs were not drawn. The most likely cause is that one frame uses more distinct glyphs than a {UI_GLYPH_ATLAS_MAX_SIZE} pixel atlas can hold."
+			);
+			self.reported_dropped_glyphs = true;
+		} else if dropped_glyphs == 0 {
+			self.reported_dropped_glyphs = false;
+		}
+
+		if !geometry.batches.is_empty() {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.vertex_buffer);
+			vertex_buffer_slice[..geometry.vertices.len()].copy_from_slice(&geometry.vertices);
+			frame.sync_buffer(self.vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
+			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
+			frame.sync_buffer(self.index_buffer);
+		}
+
+		if !curve_geometry.batches.is_empty() {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.curve_vertex_buffer);
+			vertex_buffer_slice[..curve_geometry.vertices.len()].copy_from_slice(&curve_geometry.vertices);
+			frame.sync_buffer(self.curve_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.curve_index_buffer);
+			index_buffer_slice[..curve_geometry.indices.len()].copy_from_slice(&curve_geometry.indices);
+			frame.sync_buffer(self.curve_index_buffer);
+		}
+
+		if !blur_geometry.batches.is_empty() {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.blur_vertex_buffer);
+			vertex_buffer_slice[..blur_geometry.vertices.len()].copy_from_slice(&blur_geometry.vertices);
+			frame.sync_buffer(self.blur_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.blur_index_buffer);
+			index_buffer_slice[..blur_geometry.indices.len()].copy_from_slice(&blur_geometry.indices);
+			frame.sync_buffer(self.blur_index_buffer);
+
+			let half_extent = blur_half_extent(extent);
+			frame.resize_image(self.blur_full_scratch, extent);
+			frame.resize_image(self.blur_full_output, extent);
+			frame.resize_image(self.blur_half_source, half_extent);
+			frame.resize_image(self.blur_half_scratch, half_extent);
+			frame.resize_image(self.blur_half_output, half_extent);
+		}
+
+		if !image_geometry.batches.is_empty() {
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.image_vertex_buffer);
+			vertex_buffer_slice[..image_geometry.vertices.len()].copy_from_slice(&image_geometry.vertices);
+			frame.sync_buffer(self.image_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.image_index_buffer);
+			index_buffer_slice[..image_geometry.indices.len()].copy_from_slice(&image_geometry.indices);
+			frame.sync_buffer(self.image_index_buffer);
+		}
+
+		if let Some(text_geometry) = &text_geometry
+			&& !text_geometry.batches.is_empty()
+		{
+			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.text_vertex_buffer);
+			vertex_buffer_slice[..text_geometry.vertices.len()].copy_from_slice(&text_geometry.vertices);
+			frame.sync_buffer(self.text_vertex_buffer);
+
+			let index_buffer_slice = frame.get_mut_buffer_slice(self.text_index_buffer);
+			index_buffer_slice[..text_geometry.indices.len()].copy_from_slice(&text_geometry.indices);
+			frame.sync_buffer(self.text_index_buffer);
+		}
+		self.text_atlas.upload(frame, self.text_atlas_image);
+
+		let mut prepared_image_batches = Vec::new_in(frame_allocator);
+		for batch in &image_geometry.batches {
+			let Some(image) = self
+				.data
+				.images
+				.iter()
+				.find(|image| image.image_id == batch.image_id && image.version == batch.version)
+				.cloned()
+			else {
+				continue;
+			};
+			let Some(descriptor_set) = self.ensure_image_texture(frame, &image) else {
+				continue;
+			};
+			prepared_image_batches.push(UiPreparedImageBatch {
 				descriptor_set,
-				TEXT_OVERLAY_BINDING.slot(),
-				text_overlay,
-				self.text_sampler,
-				ghi::Layouts::Read,
-			)]);
-			self.text_overlays.push(UiTextOverlayTexture {
-				image: text_overlay,
-				descriptor_set,
+				batch: *batch,
 			});
 		}
 
-		self.text_overlays[index].descriptor_set
-	}
+		let text_batch_count = text_geometry.as_ref().map_or(0, |geometry| geometry.batches.len());
+		let mut batches = Vec::with_capacity(
+			geometry.batches.len()
+				+ blur_geometry.batches.len()
+				+ curve_geometry.batches.len()
+				+ prepared_image_batches.len()
+				+ text_batch_count,
+		);
+		batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
+		batches.extend(blur_geometry.batches.iter().copied().map(UiPreparedBatch::Blur));
+		batches.extend(curve_geometry.batches.iter().copied().map(UiPreparedBatch::Curve));
+		batches.extend(prepared_image_batches.iter().copied().map(UiPreparedBatch::Image));
+		if let Some(text_geometry) = &text_geometry {
+			batches.extend(text_geometry.batches.iter().copied().map(UiPreparedBatch::Text));
+		}
+		sort_prepared_batches(&mut batches);
 
-	/// Adopts submitted UI data; the caller can share one render across sinks.
-	pub fn update(&mut self, render: &engine::Render) {
-		update_from_render(render, &mut self.data);
+		self.prepared = Some(UiPreparedFrame {
+			revision: self.render_revision,
+			extent,
+			atlas_generation: self.text_atlas.generation(),
+			batches,
+		});
 	}
 }
 
@@ -463,149 +621,19 @@ impl RenderPass for UiRenderPass {
 		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
 		let blur_composite_pipeline = self.pipeline_manager.pipeline(self.blur_composite_pipeline)?;
 		let extent = sink.extent();
-		frame
-			.get_mut_buffer_slice(self.text_vertex_buffer)
-			.copy_from_slice(&[[-1.0, -1.0], [-1.0, 3.0], [3.0, -1.0]]);
-		frame.sync_buffer(self.text_vertex_buffer);
-		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
-		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
-		let curve_geometry = build_ui_curve_geometry(&self.data, extent, frame_allocator);
-		let image_geometry = build_ui_image_geometry(&self.data, extent, frame_allocator);
-		let has_rectangle_batches = !geometry.batches.is_empty();
-		let has_blur_batches = !blur_geometry.batches.is_empty();
-		let has_curve_batches = !curve_geometry.batches.is_empty();
-		let has_image_batches = !image_geometry.batches.is_empty();
-
-		if (geometry.truncated || blur_geometry.truncated || curve_geometry.truncated || image_geometry.truncated)
-			&& !self.reported_capacity_limit
+		let atlas_generation = self.text_atlas.generation();
+		if !self
+			.prepared
+			.as_ref()
+			.is_some_and(|prepared| prepared.matches(self.render_revision, extent, atlas_generation))
 		{
-			log::warn!(
-				"UI geometry capacity exceeded. The most likely cause is that the UI contains more than {MAX_UI_ELEMENTS} drawable elements in a single frame."
-			);
-			self.reported_capacity_limit = true;
-		} else if !geometry.truncated && !blur_geometry.truncated && !curve_geometry.truncated && !image_geometry.truncated {
-			self.reported_capacity_limit = false;
+			self.rebuild_prepared_frame(frame, extent, frame_allocator);
 		}
-
-		if has_rectangle_batches {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.vertex_buffer);
-			vertex_buffer_slice[..geometry.vertices.len()].copy_from_slice(&geometry.vertices);
-			frame.sync_buffer(self.vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
-			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
-			frame.sync_buffer(self.index_buffer);
-		}
-
-		if has_curve_batches {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.curve_vertex_buffer);
-			vertex_buffer_slice[..curve_geometry.vertices.len()].copy_from_slice(&curve_geometry.vertices);
-			frame.sync_buffer(self.curve_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.curve_index_buffer);
-			index_buffer_slice[..curve_geometry.indices.len()].copy_from_slice(&curve_geometry.indices);
-			frame.sync_buffer(self.curve_index_buffer);
-		}
-
-		if has_blur_batches {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.blur_vertex_buffer);
-			vertex_buffer_slice[..blur_geometry.vertices.len()].copy_from_slice(&blur_geometry.vertices);
-			frame.sync_buffer(self.blur_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.blur_index_buffer);
-			index_buffer_slice[..blur_geometry.indices.len()].copy_from_slice(&blur_geometry.indices);
-			frame.sync_buffer(self.blur_index_buffer);
-
-			let half_extent = blur_half_extent(extent);
-			frame.resize_image(self.blur_full_scratch, extent);
-			frame.resize_image(self.blur_full_output, extent);
-			frame.resize_image(self.blur_half_source, half_extent);
-			frame.resize_image(self.blur_half_scratch, half_extent);
-			frame.resize_image(self.blur_half_output, half_extent);
-		}
-
-		if has_image_batches {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.image_vertex_buffer);
-			vertex_buffer_slice[..image_geometry.vertices.len()].copy_from_slice(&image_geometry.vertices);
-			frame.sync_buffer(self.image_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.image_index_buffer);
-			index_buffer_slice[..image_geometry.indices.len()].copy_from_slice(&image_geometry.indices);
-			frame.sync_buffer(self.image_index_buffer);
-		}
-
-		let mut prepared_image_batches = Vec::new_in(frame_allocator);
-		for batch in &image_geometry.batches {
-			let Some(image) = self
-				.data
-				.images
-				.iter()
-				.find(|image| image.image_id == batch.image_id && image.version == batch.version)
-				.cloned()
-			else {
-				continue;
-			};
-			let Some(descriptor_set) = self.ensure_image_texture(frame, &image) else {
-				continue;
-			};
-			prepared_image_batches.push(UiPreparedImageBatch {
-				descriptor_set,
-				batch: *batch,
-			});
-		}
-
-		let mut text_groups = Vec::new();
-		if !self.data.texts.is_empty() {
-			assert!(
-				extent.width() > 0 && extent.height() > 0,
-				"UI text overlay resize requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
-			);
-
-			for text in self.data.texts.iter().cloned() {
-				if let Some((_, order, texts)) = text_groups
-					.iter_mut()
-					.find(|(depth, ..): &&mut (u32, u32, std::vec::Vec<UiTextDrawElement>)| *depth == text.depth)
-				{
-					*order = (*order).min(text.order);
-					texts.push(text);
-				} else {
-					text_groups.push((text.depth, text.order, vec![text]));
-				}
-			}
-			text_groups.sort_by_key(|(depth, order, _)| (*depth, *order));
-		}
-
-		let mut prepared_text_batches = Vec::new_in(frame_allocator);
-		for (index, (depth, order, texts)) in text_groups.iter().enumerate() {
-			let descriptor_set = self.ensure_text_overlay(frame, index);
-			let overlay = self.text_overlays[index].image;
-			frame.resize_image(overlay, Extent::rectangle(extent.width(), extent.height()));
-			let overlay_pixels = frame.get_texture_slice_mut(overlay);
-			let drew_text = rasterize_text_overlay(texts, self.data.layout_size, extent, &mut self.text_system, overlay_pixels);
-			if drew_text {
-				frame.sync_texture(overlay);
-				prepared_text_batches.push(UiPreparedTextBatch {
-					depth: *depth,
-					order: *order,
-					descriptor_set,
-				});
-			}
-		}
-
-		let mut prepared_batches = Vec::with_capacity_in(
-			geometry.batches.len()
-				+ blur_geometry.batches.len()
-				+ curve_geometry.batches.len()
-				+ prepared_image_batches.len()
-				+ prepared_text_batches.len(),
-			frame_allocator,
-		);
-		prepared_batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
-		prepared_batches.extend(blur_geometry.batches.iter().copied().map(UiPreparedBatch::Blur));
-		prepared_batches.extend(curve_geometry.batches.iter().copied().map(UiPreparedBatch::Curve));
-		prepared_batches.extend(prepared_image_batches.iter().copied().map(UiPreparedBatch::Image));
-		prepared_batches.extend(prepared_text_batches.iter().copied().map(UiPreparedBatch::Text));
-		sort_prepared_batches(&mut prepared_batches);
+		let prepared_batches = &self
+			.prepared
+			.as_ref()
+			.expect("UI prepared frame must exist after a rebuild. The most likely cause is a rebuild that returned early.")
+			.batches;
 
 		if prepared_batches.is_empty() {
 			return self.bypass_pass.prepare(frame, sink, frame_allocator);
@@ -618,6 +646,8 @@ impl RenderPass for UiRenderPass {
 		let image_vertex_buffer = self.image_vertex_buffer;
 		let image_index_buffer = self.image_index_buffer;
 		let text_vertex_buffer = self.text_vertex_buffer;
+		let text_index_buffer = self.text_index_buffer;
+		let text_atlas_descriptor_set = self.text_atlas_descriptor_set;
 		let blur_downsample_workgroup = self.blur_downsample_workgroup;
 		let blur_filter_workgroup = self.blur_filter_workgroup;
 		let blur_vertex_buffer = self.blur_vertex_buffer;
@@ -631,7 +661,7 @@ impl RenderPass for UiRenderPass {
 		let main_attachment = self.main_attachment;
 		let background_command = self.background_pass.prepare(frame, sink, frame_allocator)?;
 		let output_command = self.output_pass.prepare(frame, sink, frame_allocator)?;
-		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(&prepared_batches);
+		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(prepared_batches);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -707,12 +737,23 @@ impl RenderPass for UiRenderPass {
 										);
 										command_buffer.end_render_pass();
 									}
-									UiPreparedBatch::Text(prepared) => {
+									UiPreparedBatch::Text(batch) => {
 										command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
+										command_buffer.bind_index_buffer(
+											&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
+												.index_type(ghi::DataTypes::U16)),
+										);
+
 										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 										let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-										command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
-										command_buffer.draw(3, 1, 0, 0);
+										command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
+										command_buffer.draw_indexed(
+											batch.index_count,
+											1,
+											batch.first_index,
+											batch.vertex_offset,
+											0,
+										);
 										command_buffer.end_render_pass();
 									}
 									UiPreparedBatch::Blur(batch) => {
@@ -832,11 +873,11 @@ mod tests {
 		DrawClip, DrawFeatherMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
 		UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT,
 		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDispatchRegion, UiBlurDrawElement, UiBlurFilterPush,
-		UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiTextDrawElement,
-		blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_blur_geometry,
-		build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment, should_draw_image,
-		should_rasterize_text, update_from_render,
+		UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiPreparedFrame,
+		UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
+		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
+		build_ui_blur_geometry, build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment,
+		should_draw_image, should_rasterize_text, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2125,7 +2166,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 		let mut draw_list = UiDrawList::default();
-		update_from_render(&render, &mut draw_list);
+		update_from_render(render, &mut draw_list);
 
 		assert!(draw_list.elements.is_empty());
 		assert_eq!(draw_list.blurs.len(), 1);
@@ -2622,6 +2663,112 @@ mod tests {
 	}
 
 	#[test]
+	fn prepared_frame_only_matches_its_own_revision_extent_and_atlas_generation() {
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("root").container(Container::default());
+			})
+		});
+		let frame_allocator = bumpalo::Bump::new();
+		let mut snapshot = engine.evaluate(Size::new(10, 10), &frame_allocator);
+		let revision = Some(engine.render(&mut snapshot).revision());
+		let prepared = UiPreparedFrame {
+			revision,
+			extent: Extent::square(64),
+			atlas_generation: 2,
+			batches: Vec::new(),
+		};
+
+		assert!(prepared.matches(revision, Extent::square(64), 2));
+		assert!(!prepared.matches(None, Extent::square(64), 2));
+		assert!(!prepared.matches(revision, Extent::square(65), 2));
+		assert!(!prepared.matches(revision, Extent::square(64), 3));
+	}
+
+	#[test]
+	fn update_ignores_a_render_whose_revision_was_already_adopted() {
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				frame.element("label").text(Text::new("Stable"));
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let frame_allocator = bumpalo::Bump::new();
+		let mut draw_list = UiDrawList::default();
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let first = engine.render(&mut snapshot);
+		update_from_render(first, &mut draw_list);
+		let first = first.revision();
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second = engine.render(&mut snapshot);
+
+		assert_eq!(first, second.revision());
+		assert_eq!(draw_list.texts.len(), 1);
+	}
+
+	/// Verifies the text fragment shader scales the vertex color's alpha by sampled glyph coverage.
+	#[test]
+	fn ui_text_fragment_besl_vm_multiplies_color_alpha_by_atlas_coverage() {
+		let executable = ExecutableProgram::compile(ui_raster_program(UI_TEXT_FRAGMENT_BESL, "UI text fragment shader"))
+			.expect(
+				"Failed to compile UI text fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
+			);
+		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
+		let mut inputs = [
+			(0, "_besl_interface_color", Value::Vec4F([0.2, 0.4, 0.6, 0.8])),
+			(1, "_besl_interface_feather_mask_corner", Value::Vec2F([0.0, 2.0])),
+			(2, "_besl_interface_feather_mask_edges", Value::Vec4F([0.0; 4])),
+			(3, "_besl_interface_feather_mask_position", Value::Vec2F([0.0, 0.0])),
+			(4, "_besl_interface_feather_mask_size", Value::Vec2F([0.0, 0.0])),
+			(5, "_besl_interface_pixel_position", Value::Vec2F([1.5, 1.5])),
+			(6, "_besl_interface_uv", Value::Vec2F([0.5, 0.5])),
+		]
+		.map(|(location, name, value)| {
+			let mut input = Buffer::new(
+				executable
+					.input_layout(location)
+					.expect("Missing UI text fragment input layout. The most likely cause is a changed shader interface.")
+					.clone(),
+			);
+			input
+				.write(name, value)
+				.expect("Failed to seed a UI text fragment VM input. The most likely cause is an interface type mismatch.");
+			(location, input)
+		});
+		let mut output = Buffer::new(
+			executable
+				.output_layout(0)
+				.expect("Missing UI text fragment output layout. The most likely cause is an unresolved shader output.")
+				.clone(),
+		);
+		{
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut atlas);
+			for (location, input) in &mut inputs {
+				descriptors.bind_buffer(input_slot(*location), input);
+			}
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Failed to execute UI text fragment shader. The most likely cause is incomplete BESL VM support.");
+		}
+		let color = match output
+			.read("_besl_output_color_attachment")
+			.expect("Failed to read UI text fragment output. The most likely cause is an interface layout mismatch.")
+		{
+			Value::Vec4F(color) => color,
+			value => panic!("Invalid UI text fragment output type `{value:?}`."),
+		};
+
+		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
+	}
+
+	#[test]
 	fn checked_in_ui_raster_besl_sources_link() {
 		for (shader_name, source) in [
 			("UI rectangle vertex shader", UI_RECT_VERTEX_BESL),
@@ -3023,7 +3170,7 @@ mod tests {
 		});
 		let mut text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let text_render = text_engine.render(&mut text_snapshot);
-		update_from_render(&text_render, &mut draw_list);
+		update_from_render(text_render, &mut draw_list);
 
 		assert_eq!(draw_list.texts.len(), 1);
 
@@ -3035,7 +3182,7 @@ mod tests {
 		});
 		let mut no_text_snapshot = no_text_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let no_text_render = no_text_engine.render(&mut no_text_snapshot);
-		update_from_render(&no_text_render, &mut draw_list);
+		update_from_render(no_text_render, &mut draw_list);
 
 		assert!(draw_list.texts.is_empty());
 	}
@@ -3054,7 +3201,7 @@ mod tests {
 		});
 		let mut image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let image_render = image_engine.render(&mut image_snapshot);
-		update_from_render(&image_render, &mut draw_list);
+		update_from_render(image_render, &mut draw_list);
 
 		assert_eq!(draw_list.images.len(), 1);
 
@@ -3066,7 +3213,7 @@ mod tests {
 		});
 		let mut no_image_snapshot = no_image_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let no_image_render = no_image_engine.render(&mut no_image_snapshot);
-		update_from_render(&no_image_render, &mut draw_list);
+		update_from_render(no_image_render, &mut draw_list);
 
 		assert!(draw_list.images.is_empty());
 	}
@@ -3098,7 +3245,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 		let mut draw_list = UiDrawList::default();
-		update_from_render(&render, &mut draw_list);
+		update_from_render(render, &mut draw_list);
 
 		assert_eq!(draw_list.elements[0].color[3], 0.4);
 		assert_eq!(draw_list.elements[1].color[3], 0.3);
@@ -3122,7 +3269,7 @@ mod tests {
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let render = engine.render(&mut snapshot);
 		let mut draw_list = UiDrawList::default();
-		update_from_render(&render, &mut draw_list);
+		update_from_render(render, &mut draw_list);
 
 		assert_eq!(draw_list.images.len(), 1);
 		assert!((draw_list.images[0].opacity - 0.2).abs() < 0.0001);

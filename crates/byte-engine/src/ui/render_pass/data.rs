@@ -3,12 +3,6 @@
 use super::*;
 
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = crate::rendering::SCENE_COLOR_FORMAT;
-pub(super) const TEXT_OVERLAY_FORMAT: ghi::Formats = ghi::Formats::RGBA8UNORM;
-pub(super) const TEXT_OVERLAY_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
 pub(super) const UI_IMAGE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -287,13 +281,6 @@ pub(super) struct UiPreparedImageBatch {
 	pub(super) batch: UiImageDrawBatch,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiPreparedTextBatch {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) descriptor_set: ghi::DescriptorSetHandle,
-}
-
 /// The `UiBlurDispatchRegion` struct limits one compute stage to the padded part of the blur target it must produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct UiBlurDispatchRegion {
@@ -440,7 +427,7 @@ pub(super) enum UiPreparedBatch {
 	Rect(UiDrawBatch),
 	Curve(UiCurveDrawBatch),
 	Image(UiPreparedImageBatch),
-	Text(UiPreparedTextBatch),
+	Text(UiTextDrawBatch),
 	Blur(UiPreparedBlurBatch),
 }
 
@@ -509,9 +496,23 @@ pub(super) struct UiImageTexture {
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
 }
 
-pub(super) struct UiTextOverlayTexture {
-	pub(super) image: ghi::BaseImageHandle,
-	pub(super) descriptor_set: ghi::DescriptorSetHandle,
+/// The `UiPreparedFrame` struct retains the batches recorded for one render revision at one viewport.
+///
+/// Geometry, uploads, and atlas residency are only redone when the render
+/// revision, the viewport extent, or the glyph atlas generation changes.
+/// Frames that repeat the same key reuse the GPU buffers already in place.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct UiPreparedFrame {
+	pub(super) revision: Option<engine::RenderRevision>,
+	pub(super) extent: Extent,
+	pub(super) atlas_generation: u64,
+	pub(super) batches: Vec<UiPreparedBatch>,
+}
+
+impl UiPreparedFrame {
+	pub(super) fn matches(&self, revision: Option<engine::RenderRevision>, extent: Extent, atlas_generation: u64) -> bool {
+		self.revision == revision && self.extent == extent && self.atlas_generation == atlas_generation
+	}
 }
 
 // Whether text rasterization should be ommitted if text is empty, 0 sized in any dimension or if fully transparent
@@ -835,76 +836,4 @@ pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {
 		&& image.size[0] > 0.0
 		&& image.size[1] > 0.0
 		&& image.opacity > 0.0
-}
-
-/// Rasterizes all visible text elements into the UI overlay texture for the current viewport.
-pub(super) fn rasterize_text_overlay(
-	texts: &[UiTextDrawElement],
-	layout_size: [f32; 2],
-	viewport: Extent,
-	text_system: &mut TextSystem,
-	target: &mut [u8],
-) -> bool {
-	let viewport_width = viewport.width().max(1);
-	let viewport_height = viewport.height().max(1);
-
-	target.fill(0);
-
-	if texts.is_empty() {
-		return false;
-	}
-
-	let sx = viewport_width as f32 / layout_size[0].max(1.0);
-	let sy = viewport_height as f32 / layout_size[1].max(1.0);
-	let font_scale = sx.min(sy);
-	let mut drew_text = false;
-
-	for text in texts {
-		if !should_rasterize_text(text) {
-			continue;
-		}
-
-		let position = (
-			(text.position[0] * sx).round().max(0.0) as u32,
-			(text.position[1] * sy).round().max(0.0) as u32,
-		);
-		let font_size = (text.font_size * font_scale).max(1.0);
-		let clip = text.clip.and_then(|clip| {
-			let x = (clip.position[0] * sx).round().max(0.0) as u32;
-			let y = (clip.position[1] * sy).round().max(0.0) as u32;
-			let width = (clip.size[0] * sx).round().max(0.0) as u32;
-			let height = (clip.size[1] * sy).round().max(0.0) as u32;
-			(width > 0 && height > 0).then_some(crate::ui::font::TextClipRect::new(x, y, width, height))
-		});
-		let feather_mask = text.feather_mask.and_then(|mask| {
-			let scaled = scaled_feather_mask(Some(mask), sx, sy);
-			let x = scaled.position[0].round().max(0.0) as u32;
-			let y = scaled.position[1].round().max(0.0) as u32;
-			let width = scaled.size[0].round().max(0.0) as u32;
-			let height = scaled.size[1].round().max(0.0) as u32;
-			(width > 0 && height > 0).then_some(crate::ui::font::TextFeatherMask::new(
-				x,
-				y,
-				width,
-				height,
-				EdgeFeather::edges(scaled.edges[0], scaled.edges[1], scaled.edges[2], scaled.edges[3]),
-				scaled.corner[0],
-				scaled.corner[1],
-			))
-		});
-
-		drew_text |= text_system.rasterize(
-			target,
-			viewport_width,
-			viewport_height,
-			position,
-			&text.text,
-			font_size,
-			text.color,
-			clip,
-			feather_mask,
-		);
-	}
-
-	drew_text
 }

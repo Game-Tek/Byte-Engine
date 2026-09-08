@@ -5,6 +5,8 @@
 //! other [`Primitive`] values through the layout context. Send the resulting
 //! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
 //! integrating UI into a graphics application.
+//! For typed pointer gestures, capture a hit-tested source with [`Drag`] and
+//! validate its released payload against an application-owned drop target.
 //!
 //! See the [GUI guide](/docs/develop/gui)
 //! for component, layout, event, focus, and rendering guidance.
@@ -17,6 +19,7 @@ pub mod animation;
 pub mod components;
 #[doc(hidden)]
 pub mod control_flow;
+mod drag;
 pub mod element;
 #[doc(hidden)]
 pub mod flow;
@@ -50,12 +53,13 @@ pub use components::{
 	text::Text,
 	text_field::TextField,
 };
+pub use drag::{Drag, DragCapture, DragDrop};
 pub use element::{ConcreteElement, Element, ElementHandle, Id};
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{
 	Depth, Geometry, Position, Sizing,
 	context::{ContainerContext, Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
-	engine::{Engine, EvaluationContext, PointerState, Render, Runtime, UiEvent, UiKeyEvent, UiTextEditEvent},
+	engine::{Engine, EvaluationContext, PointerState, Render, RenderRevision, Runtime, UiEvent, UiKeyEvent, UiTextEditEvent},
 };
 pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};

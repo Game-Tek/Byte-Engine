@@ -1,4 +1,9 @@
-use super::{element::Id, flow::Location, layout::LayoutElement};
+use super::{
+	UiPoint,
+	element::Id,
+	flow::Location,
+	layout::{Geometry, LayoutElement},
+};
 use crate::ui::flow::{Location3, Size};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -20,14 +25,35 @@ pub struct HitTest {
 }
 
 impl HitTest {
+	/// Converts normalized window coordinates to this snapshot's layout units.
+	///
+	/// The layout origin is at the top left. Positions outside the viewport stay
+	/// outside, so a captured [`crate::ui::Drag`] can finish beyond its source.
+	pub fn layout_position(&self, position: UiPoint) -> UiPoint {
+		UiPoint::new(
+			(position.x + 1.0) * 0.5 * self.size[0],
+			(1.0 - position.y) * 0.5 * self.size[1],
+		)
+	}
+
+	/// Returns a retained surface's visible bounds in layout units.
+	///
+	/// These bounds include visual transforms and clipping from the submitted
+	/// snapshot. Use them with [`Self::layout_position`] to preserve a pointer's
+	/// offset inside a drag source.
+	pub fn bounds(&self, id: Id) -> Option<Geometry> {
+		self.elements
+			.iter()
+			.find(|element| element.id == id.get())
+			.map(|element| Geometry::new(element.position, element.size))
+	}
+
 	/// Returns the frontmost surface at normalized window coordinates.
 	/// A missing hit passes through to a lower input context. The snapshot keeps
 	/// stable IDs, so the receiving UI must still reject removed targets.
-	pub fn query(&self, position: crate::ui::UiPoint) -> Option<Id> {
-		let point = Location::new(
-			(position.x + 1.0) * 0.5 * self.size[0],
-			(1.0 - position.y) * 0.5 * self.size[1],
-		);
+	pub fn query(&self, position: UiPoint) -> Option<Id> {
+		let point = self.layout_position(position);
+		let point = Location::new(point.x, point.y);
 		self.elements
 			.iter()
 			.rev()
@@ -197,6 +223,43 @@ mod tests {
 		build_mouse_click_acceleration,
 	};
 	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
+	use crate::ui::{Container, Context, ElementContext, Engine, UiPoint};
+
+	#[test]
+	fn retained_layout_coordinates_and_bounds_support_drag_offsets_after_frame_reset() {
+		let mut allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let _source = root.element("source").container(
+					Container::default()
+						.absolute_position(20, 30)
+						.width(80.into())
+						.height(40.into()),
+				);
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let mut hits = super::HitTest::default();
+		{
+			let snapshot = engine.evaluate(Size::new(200, 100), &allocator);
+			snapshot.retain_hit_test(&mut hits);
+		}
+		allocator.reset();
+
+		let pointer = UiPoint::new(-0.5, 0.0);
+		let source = hits.query(pointer).unwrap();
+		let bounds = hits.bounds(source).unwrap();
+		assert_eq!(
+			(bounds.x(), bounds.y(), bounds.width(), bounds.height()),
+			(20.0, 30.0, 80.0, 40.0)
+		);
+		assert_eq!(hits.layout_position(pointer), UiPoint::new(50.0, 50.0));
+		assert_eq!(hits.layout_position(UiPoint::new(2.0, -2.0)), UiPoint::new(300.0, 150.0));
+	}
 
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {

@@ -76,6 +76,9 @@ pub struct Context {
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
 	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
 	pub(crate) tasks: Vec<Task>,
+	/// One retained upload arena per in-flight frame, followed by the transient arena for detached recordings.
+	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
+	pub(crate) argument_tables: command_buffer::CommandArgumentTables,
 
 	#[cfg(debug_assertions)]
 	pub names: HashMap<graphics_hardware_interface::Handles, String>,

@@ -600,6 +600,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		)]);
 		let upload_buffer = encode_texture_upload(
 			self.device.metal_device,
+			self.commit.upload_arena,
 			transfer_encoder.as_ref(),
 			texture.as_ref(),
 			format,

@@ -527,10 +527,17 @@ pub(crate) struct PipelineLayout {
 	pub(crate) push_constant_size: usize,
 }
 
-/// The `Materialization` struct owns one command recording's argument-buffer snapshot and hazard metadata.
+/// The `Materialization` struct owns one encoded argument-buffer snapshot and its hazard metadata.
+///
+/// The first bound descriptor set retains the snapshot. It stays valid while
+/// every set in `descriptor_sets` keeps the version recorded in `versions`.
+#[derive(Clone)]
 pub(crate) struct Materialization {
+	pub(crate) layout: graphics_hardware_interface::PipelineLayoutHandle,
+	pub(crate) descriptor_sets: SmallVec<[crate::descriptors::DescriptorSetHandle; 4]>,
 	pub(crate) versions: SmallVec<[u64; 4]>,
-	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>); 5]>,
+	/// One encoded range per stage layout: the stage, its backing buffer, and the range's byte offset.
+	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize); 5]>,
 	pub(crate) resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
 	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
 	pub(crate) _texture_views: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,

@@ -1,54 +1,5 @@
 use super::*;
 
-impl PushUploadArena<'_> {
-	/// Copies one push-constant state into a unique aligned range and returns its GPU address.
-	fn upload(
-		&mut self,
-		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		command: &mut queue::NativeCommand,
-		bytes: &[u8],
-	) -> mtl::MTLGPUAddress {
-		assert!(
-			!bytes.is_empty(),
-			"Empty Metal push upload. The most likely cause is that a zero-sized push-constant layout was marked dirty."
-		);
-
-		let current_offset = self
-			.pages
-			.last()
-			.and_then(|page| push_upload_offset(page.cursor, bytes.len(), page.buffer.length()));
-		if current_offset.is_none() {
-			let capacity =
-				bytes.len().checked_add(PUSH_UPLOAD_ALIGNMENT - 1).expect(
-					"Metal push upload size overflowed. The most likely cause is an invalid push-constant layout size.",
-				) & !(PUSH_UPLOAD_ALIGNMENT - 1);
-			let capacity = capacity.max(PUSH_UPLOAD_PAGE_SIZE);
-			let buffer = device
-				.newBufferWithLength_options(capacity, mtl::MTLResourceOptions::StorageModeShared)
-				.expect(
-					"Metal push upload allocation failed. The most likely cause is that the device is out of shared memory.",
-				);
-			command.retain_buffer(buffer.clone());
-			self.pages.push(PushUploadPage { buffer, cursor: 0 });
-		}
-
-		let page = self.pages.last_mut().expect(
-			"Missing Metal push upload page. The most likely cause is that page allocation did not update the command-local arena.",
-		);
-		let offset = push_upload_offset(page.cursor, bytes.len(), page.buffer.length()).expect(
-			"Metal push upload range does not fit. The most likely cause is that the newly allocated page is smaller than the push-constant state.",
-		);
-		// SAFETY: `offset` was computed against this page's capacity and leaves `bytes.len()` writable bytes.
-		let destination = unsafe { page.buffer.contents().as_ptr().cast::<u8>().add(offset) };
-		// SAFETY: Caller bytes and the freshly allocated upload page do not overlap.
-		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
-		page.cursor = offset + bytes.len();
-		page.buffer.gpuAddress().checked_add(offset as u64).expect(
-			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
-		)
-	}
-}
-
 impl<'a> CommandBufferRecording<'a> {
 	pub fn get_mut_buffer_slice<T: crate::Pod>(
 		&mut self,
@@ -130,6 +81,10 @@ impl<'a> CommandBufferRecording<'a> {
 		for (_, drawable) in &drawables {
 			command_buffer.retain_drawable(drawable.clone());
 		}
+		// Shared argument tables are snapshotted by every command that binds them, so retain them up front.
+		for table in commit.argument_tables.iter() {
+			command_buffer.retain_argument_table(table.clone());
+		}
 
 		Self {
 			device,
@@ -164,8 +119,6 @@ impl<'a> CommandBufferRecording<'a> {
 			active_encoder_scope: None,
 			next_encoder_id: 0,
 			resource_tracker,
-			argument_tables: CommandArgumentTables::default(),
-			push_upload_arena: PushUploadArena::new_in(allocator),
 			encoded_compute_pipeline: None,
 			encoded_render_pipeline: None,
 			applied_compute_descriptor_binding: None,
@@ -381,9 +334,9 @@ impl<'a> CommandBufferRecording<'a> {
 		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
-	/// Creates one initialized Metal 4 argument table when a shader stage first needs bindings.
+	/// Returns the shared Metal 4 argument table for one stage, creating it on first use.
 	pub(super) fn argument_table(&mut self, stage: ArgumentTableStage) -> Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>> {
-		if let Some(table) = self.argument_tables.get(stage) {
+		if let Some(table) = self.commit.argument_tables.get(stage) {
 			return table.clone();
 		}
 
@@ -395,7 +348,7 @@ impl<'a> CommandBufferRecording<'a> {
 			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
 		);
 		self.command_buffer.retain_argument_table(table.clone());
-		self.argument_tables.insert(stage, table.clone());
+		self.commit.argument_tables.insert(stage, table.clone());
 		table
 	}
 
@@ -429,10 +382,17 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	/// Uploads the current logical push state into an immutable command-local range.
+	/// Uploads the current logical push state into an immutable range of the frame's upload arena.
 	fn upload_push_constants(&mut self) -> mtl::MTLGPUAddress {
-		self.push_upload_arena
-			.upload(self.device.metal_device, &mut self.command_buffer, &self.push_constant_data)
+		let (buffer, offset) = self
+			.commit
+			.upload_arena
+			.upload(self.device.metal_device, &self.push_constant_data);
+		let address = buffer.gpuAddress().checked_add(offset as u64).expect(
+			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
+		);
+		self.command_buffer.retain_buffer(buffer.clone());
+		address
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
@@ -466,7 +426,7 @@ impl<'a> CommandBufferRecording<'a> {
 		slot: crate::shader::ResourceSlot,
 	) -> Option<(DescriptorSetHandle, &HashMap<u32, Descriptor>)> {
 		self.bound_descriptor_set_handles.iter().find_map(|set_handle| {
-			self.device.descriptor_sets[set_handle.0 as usize]
+			self.commit.descriptor_sets[set_handle.0 as usize]
 				.descriptors
 				.get(&slot)
 				.map(|descriptors| (*set_handle, descriptors))
@@ -494,9 +454,9 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Validates the retained set union against the active pipeline without requiring fixed arrays to be fully populated.
 	pub(super) fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout) {
 		for (left_index, left_handle) in self.bound_descriptor_set_handles.iter().enumerate() {
-			let left = &self.device.descriptor_sets[left_handle.0 as usize];
+			let left = &self.commit.descriptor_sets[left_handle.0 as usize];
 			for right_handle in self.bound_descriptor_set_handles.iter().skip(left_index + 1) {
-				let right = &self.device.descriptor_sets[right_handle.0 as usize];
+				let right = &self.commit.descriptor_sets[right_handle.0 as usize];
 
 				assert!(
 					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
@@ -510,7 +470,7 @@ impl<'a> CommandBufferRecording<'a> {
 			let range_start = descriptor.slot().index();
 			let range_end = resource_range_end(descriptor);
 			for set_handle in &self.bound_descriptor_set_handles {
-				let descriptor_set = &self.device.descriptor_sets[set_handle.0 as usize];
+				let descriptor_set = &self.commit.descriptor_sets[set_handle.0 as usize];
 
 				assert!(
 					descriptor_set
@@ -524,7 +484,7 @@ impl<'a> CommandBufferRecording<'a> {
 				.bound_descriptor_set_handles
 				.iter()
 				.filter(|set_handle| {
-					self.device.descriptor_sets[set_handle.0 as usize]
+					self.commit.descriptor_sets[set_handle.0 as usize]
 						.descriptors
 						.keys()
 						.any(|slot| (range_start..range_end).contains(&slot.index()))

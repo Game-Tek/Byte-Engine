@@ -10,7 +10,12 @@ impl Context {
 	}
 
 	/// Appends every pending buffer and image upload to one Metal 4 compute submission.
-	pub(super) fn flush_pending_uploads(&mut self, queue_handle: graphics_hardware_interface::QueueHandle, sequence_index: u8) {
+	pub(super) fn flush_pending_uploads(
+		&mut self,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+		sequence_index: u8,
+		arena_index: usize,
+	) {
 		if self.pending_buffer_syncs.is_empty() && self.pending_image_syncs.is_empty() {
 			return;
 		}
@@ -87,6 +92,7 @@ impl Context {
 			barrier.encode_compute(transfer_encoder.as_ref());
 			if let Some(upload_buffer) = crate::metal::command_buffer::encode_texture_upload(
 				self.device.as_ref(),
+				&mut self.upload_arenas[arena_index],
 				transfer_encoder.as_ref(),
 				image.texture.as_ref(),
 				image.format,

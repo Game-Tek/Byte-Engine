@@ -56,6 +56,8 @@ pub mod descriptor_set {
 		pub next: Option<DescriptorSetHandle>,
 		pub version: u64,
 		pub descriptors: HashMap<crate::shader::ResourceSlot, HashMap<u32, Descriptor>>,
+		/// Argument-buffer snapshots encoded with this set bound first, one per pipeline layout and set union.
+		pub argument_buffers: Vec<Materialization>,
 	}
 }
 

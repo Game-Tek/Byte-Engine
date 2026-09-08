@@ -782,6 +782,158 @@ mod flat_binding_tests {
 		);
 	}
 
+	/// Verifies argument buffers and upload pages are reused across frames and refreshed by descriptor writes.
+	#[test]
+	// One resource setup drives the retention, reuse, and invalidation checks in frame order.
+	#[allow(clippy::too_many_lines)]
+	fn argument_buffers_and_upload_pages_are_retained_across_frames_and_refreshed_on_writes() {
+		use crate::{
+			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+			device::Device as _,
+			queue::{FrameRequest, Queue as _, QueueExecution as _},
+		};
+
+		const INPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(0);
+		const OUTPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(1);
+		let source = r#"
+			#include <metal_stdlib>
+			using namespace metal;
+
+			struct Resources { constant uint* input [[id(0)]]; device uint* output [[id(1)]]; };
+			kernel void retention_main(
+				uint gid [[thread_position_in_grid]],
+				constant Resources& resources [[buffer(16)]],
+				constant uint& push [[buffer(15)]]) {
+				if (gid == 0) { resources.output[0] = resources.input[0] + push; }
+			}
+		"#;
+		let features = crate::device::Features::new();
+		let mut instance = super::Instance::new(features)
+			.expect("Metal retention test setup failed. The most likely cause is unavailable Metal device support.");
+		let mut queue_handle = None;
+		let mut context = instance
+			.create_device(
+				features,
+				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
+			)
+			.expect("Metal retention device creation failed. The most likely cause is unavailable compute queue support.")
+			.create_context()
+			.expect("Metal retention context creation failed. The most likely cause is unavailable Metal command support.");
+		let queue_handle = queue_handle.expect(
+			"Metal retention queue is missing. The most likely cause is that device selection did not return the requested queue.",
+		);
+		let shader = context
+			.create_shader(
+				Some("Metal Retention Probe"),
+				crate::shader::Sources::MTL {
+					source,
+					entry_point: "retention_main",
+				},
+				crate::ShaderTypes::Compute,
+				[
+					resource(
+						INPUT_SLOT.index(),
+						crate::shader::ResourceKind::StorageBuffer,
+						1,
+						crate::AccessPolicies::READ,
+					),
+					resource(
+						OUTPUT_SLOT.index(),
+						crate::shader::ResourceKind::StorageBuffer,
+						1,
+						crate::AccessPolicies::WRITE,
+					),
+				],
+			)
+			.expect("Metal retention shader creation failed. The most likely cause is invalid Metal test source.");
+		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
+			&[crate::pipelines::PushConstantRange::new(0, 4)],
+			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute),
+		));
+		let mut input_buffer = |value: u32| {
+			let buffer = context.build_buffer::<u32>(
+				crate::buffer::Builder::new(crate::Uses::Storage).device_accesses(crate::DeviceAccesses::HostToDevice),
+			);
+			*context.get_mut_buffer_slice(buffer) = value;
+			buffer
+		};
+		let first_input = input_buffer(10);
+		let second_input = input_buffer(20);
+		let output = context.build_buffer::<u32>(
+			crate::buffer::Builder::new(crate::Uses::Storage)
+				.device_accesses(crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuWrite),
+		);
+		let descriptor_set = context.create_descriptor_set(Some("Metal Retention Probe"));
+		context.write(&[
+			crate::DescriptorWrite::buffer(descriptor_set, INPUT_SLOT, first_input.into()),
+			crate::DescriptorWrite::buffer(descriptor_set, OUTPUT_SLOT, output.into()),
+		]);
+		let command_buffer = context
+			.queue(queue_handle)
+			.create_command_buffer(Some("Metal Retention Probe"));
+		let signal = context.create_synchronizer(Some("Metal Retention Probe"), true);
+		let frames = u64::from(context.frames);
+		let retained_snapshots = |context: &super::context::Context| {
+			context
+				.descriptor_sets
+				.iter()
+				.map(|set| set.argument_buffers.len())
+				.sum::<usize>()
+		};
+
+		let run_frame = |context: &mut super::context::Context, frame_index: u64, push: u32| -> u32 {
+			*context.get_mut_buffer_slice(output) = 0;
+			context
+				.queue(queue_handle)
+				.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
+					execution.record(command_buffer, |recording| {
+						let recording = recording.bind_compute_pipeline(pipeline);
+						recording.bind_descriptor_sets(&[descriptor_set]);
+						recording.write_push_constant(0, push);
+						recording.dispatch(crate::DispatchExtent::new(Extent::line(1), Extent::line(1)));
+					});
+					[]
+				});
+			context.wait();
+			*context.get_buffer_slice(output)
+		};
+
+		// One snapshot per frame-local set, then every later frame reuses its sequence's snapshot and pages.
+		for frame_index in 0..frames * 2 {
+			assert_eq!(
+				run_frame(&mut context, frame_index, frame_index as u32),
+				10 + frame_index as u32
+			);
+			assert_eq!(
+				retained_snapshots(&context),
+				(frame_index + 1).min(frames) as usize,
+				"Argument buffers were re-encoded for an unchanged descriptor set on frame {frame_index}. The most likely cause is that the cache key or version comparison changed.",
+			);
+		}
+		for sequence_index in 0..frames as usize {
+			assert_eq!(
+				context.upload_arenas[sequence_index].page_count(),
+				1,
+				"Upload pages were reallocated for sequence {sequence_index}. The most likely cause is that the frame arena was not reset or reused.",
+			);
+		}
+
+		// A descriptor write advances the set version, so the next frame must encode the new binding.
+		context.write(&[crate::DescriptorWrite::buffer(
+			descriptor_set,
+			INPUT_SLOT,
+			second_input.into(),
+		)]);
+		for frame_index in frames * 2..frames * 3 {
+			assert_eq!(
+				run_frame(&mut context, frame_index, 1),
+				21,
+				"A rewritten descriptor did not reach the GPU on frame {frame_index}. The most likely cause is that a stale argument-buffer snapshot was reused after its set version changed.",
+			);
+			assert_eq!(retained_snapshots(&context), frames as usize);
+		}
+	}
+
 	/// Verifies frame-local storage mip views remain valid after argument-buffer materialization.
 	#[test]
 	// Alternating both frame sequences is one contiguous residency contract and shares a single resource setup.

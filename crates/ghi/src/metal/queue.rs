@@ -10,6 +10,7 @@ pub(crate) struct NativeCommand {
 	command_buffer: Retained<ProtocolObject<dyn mtl::MTL4CommandBuffer>>,
 	residency_set: Retained<ProtocolObject<dyn mtl::MTLResidencySet>>,
 	retained_allocations: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLAllocation>>; 32]>,
+	retained_addresses: ::utils::hash::HashSet<usize>,
 	retained_objects: SmallVec<[Retained<AnyObject>; 4]>,
 }
 
@@ -33,6 +34,7 @@ impl NativeCommand {
 			command_buffer,
 			residency_set,
 			retained_allocations: SmallVec::new(),
+			retained_addresses: ::utils::hash::HashSet::default(),
 			retained_objects: SmallVec::new(),
 		}
 	}
@@ -122,11 +124,9 @@ impl NativeCommand {
 	}
 
 	fn retain_allocation(&mut self, allocation: Retained<ProtocolObject<dyn mtl::MTLAllocation>>) {
-		if self
-			.retained_allocations
-			.iter()
-			.any(|retained| std::ptr::eq::<ProtocolObject<dyn mtl::MTLAllocation>>(retained.as_ref(), allocation.as_ref()))
-		{
+		// Commands retain the same buffers and textures once per encoder; a set keeps repeats constant time.
+		let address = Retained::as_ptr(&allocation) as *const () as usize;
+		if !self.retained_addresses.insert(address) {
 			return;
 		}
 		self.residency_set.addAllocation(allocation.as_ref());
@@ -145,6 +145,7 @@ impl NativeCommand {
 		self.residency_set.removeAllAllocations();
 		self.residency_set.commit();
 		self.retained_allocations.clear();
+		self.retained_addresses.clear();
 		self.retained_objects.clear();
 	}
 }

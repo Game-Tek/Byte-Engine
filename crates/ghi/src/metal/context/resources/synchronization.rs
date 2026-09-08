@@ -60,6 +60,8 @@ impl Context {
 		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);
 		self.wait_for_private_synchronizer(synchronizer_handle);
 		self.retire_internal_uploads(frame_key.sequence_index);
+		// Every command that read this sequence's upload pages has completed, so the pages can be rewound.
+		self.upload_arenas[frame_key.sequence_index as usize].reset();
 		self.process_tasks(frame_key.sequence_index);
 		crate::queue::StartedFrame::new(
 			super::super::Frame::new_for_queue(self, frame_key, queue_handle, allocator),

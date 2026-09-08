@@ -12,6 +12,7 @@ impl Context {
 				next: None,
 				version: 0,
 				descriptors: HashMap::default(),
+				argument_buffers: Vec::new(),
 			});
 
 			if let Some(previous_handle) = previous_handle {

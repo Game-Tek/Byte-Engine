@@ -87,6 +87,10 @@ impl Context {
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
+			upload_arenas: (0..=MAX_FRAMES_IN_FLIGHT)
+				.map(|_| command_buffer::UploadArena::default())
+				.collect(),
+			argument_tables: command_buffer::CommandArgumentTables::default(),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::default(),

@@ -45,7 +45,7 @@ pub mod utils;
 pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
-pub use action::TriggerPhase;
+pub use action::TriggerMode;
 pub use axis::{Axis2, Axis3};
 pub use device::DeviceHandle;
 pub use events::{ConsumerHandle, InputEvents, SourceEvent};
@@ -381,6 +381,20 @@ impl From<Value> for ValueMapping {
 	}
 }
 
+/// Identifies the stage of an input interaction.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ActionPhase {
+	/// A drag begins at the current source value.
+	Started,
+	/// A value changes. Ordinary actions and click snapshots also use this phase.
+	#[default]
+	Updated,
+	/// A drag finishes on button release, carrying its final source value.
+	Ended,
+	/// An interaction is interrupted and must not be committed.
+	Cancelled,
+}
+
 #[derive(Clone, Debug)]
 /// The `ActionEvent` struct carries resolved action input to application code.
 ///
@@ -393,8 +407,8 @@ pub struct ActionEvent {
 	handle: Handle,
 	/// The value of the action that triggered the event.
 	value: Value,
-	/// Marks an interaction its layer ended without a physical release.
-	cancelled: bool,
+	/// Identifies the interaction stage for drag and cancellation handling.
+	pub(super) phase: ActionPhase,
 }
 
 impl ActionEvent {
@@ -404,16 +418,17 @@ impl ActionEvent {
 			seat_handle,
 			handle,
 			value,
-			cancelled: false,
+			phase: ActionPhase::Updated,
 		}
 	}
 
 	/// Reports an interaction its layer ended instead of a physical release.
 	///
-	/// A cancelled action carries its neutral value. Check it before committing
+	/// A cancelled drag carries its last position; other actions carry their neutral
+	/// value. Check it before committing
 	/// an interaction that a release would normally complete, such as a drag.
 	pub fn is_cancelled(&self) -> bool {
-		self.cancelled
+		self.phase == ActionPhase::Cancelled
 	}
 
 	/// Creates the event that reports an interrupted interaction.
@@ -422,8 +437,13 @@ impl ActionEvent {
 			seat_handle,
 			handle,
 			value,
-			cancelled: true,
+			phase: ActionPhase::Cancelled,
 		}
+	}
+
+	/// Returns the interaction stage. Use it to begin, update, or finish a drag.
+	pub fn phase(&self) -> ActionPhase {
+		self.phase
 	}
 
 	/// Returns the seat that produced the action value.

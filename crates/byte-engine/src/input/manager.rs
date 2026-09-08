@@ -102,8 +102,26 @@ impl<A: Allocator + Clone> InputManager<A> {
 	/// drain a listener created from [`Self::event_channel`] to handle the resolved
 	/// [`ActionEvent`] values.
 	pub fn update(&mut self) {
-		self.processor.broadcast(&self.events);
+		self.processor.broadcast(&mut self.events);
 		self.events.end_tick();
+	}
+
+	/// Cancels one action for a seat, publishing its cancellation through [`Self::event_channel`].
+	/// A drag carries its last position and requires a fresh button press to restart.
+	pub fn cancel_action(&mut self, seat: SeatHandle, action: ActionHandle) {
+		self.processor.cancel_action(seat, action);
+	}
+
+	/// Cancels a seat's interactions when it loses focus.
+	/// Next, read cancellation events through [`Self::event_channel`].
+	pub fn cancel_seat(&mut self, seat: SeatHandle) {
+		self.processor.cancel_seat(seat);
+	}
+
+	/// Cancels interactions on a suspended or disconnected device.
+	/// Next, read cancellation events through [`Self::event_channel`].
+	pub fn cancel_device(&mut self, seat: SeatHandle, device: DeviceHandle) {
+		self.processor.cancel_device(seat, device);
 	}
 
 	/// Queues an action value for emission during the next [`Self::update`] call.
@@ -887,7 +905,7 @@ mod tests {
 			Action::new(
 				&[ActionBindingDescription::new("Mouse.Position")
 					.triggered_by("Mouse.LeftButton")
-					.trigger_on(crate::input::TriggerPhase::Press)],
+					.trigger_on(crate::input::TriggerMode::Press)],
 				Types::Vector2,
 			)
 			.tick_policy(TickPolicy::Always),
@@ -971,6 +989,61 @@ mod tests {
 			fixture.update();
 			assert_eq!(fixture.next_event().map(|event| event.value()), expected);
 			assert!(fixture.next_event().is_none());
+		}
+		assert_eq!(fixture.tick(), 0);
+	}
+
+	#[test]
+	fn drag_events_preserve_queue_order_and_do_not_repeat_when_held() {
+		use crate::input::ActionPhase::{Ended, Started, Updated};
+		let mut fixture = InputFixture::new();
+		let class = crate::input::utils::register_mouse_device_class(&mut fixture.input_manager);
+		let mouse = fixture.input_manager.create_device(&class);
+		fixture.factory.create(
+			Action::new(
+				&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+				Types::Vector2,
+			)
+			.tick_policy(TickPolicy::Always),
+		);
+		for (source, value) in [
+			("Mouse.Position", Value::Vector2(Axis2::new(1.0, 2.0))),
+			("Mouse.LeftButton", Value::Bool(true)),
+			("Mouse.LeftButton", Value::Bool(true)),
+			("Mouse.Position", Value::Vector2(Axis2::new(3.0, 4.0))),
+			("Mouse.LeftButton", Value::Bool(false)),
+			("Mouse.LeftButton", Value::Bool(false)),
+			("Mouse.LeftButton", Value::Bool(true)),
+		] {
+			fixture
+				.input_manager
+				.record_trigger_value_for_device(fixture.seat, mouse, TriggerReference::Name(source), value);
+		}
+		fixture.update();
+		let actual = std::iter::from_fn(|| fixture.next_event())
+			.map(|event| (event.phase(), event.value()))
+			.collect::<Vec<_>>();
+		assert_eq!(
+			actual,
+			[
+				(Started, Value::Vector2(Axis2::new(1.0, 2.0))),
+				(Updated, Value::Vector2(Axis2::new(3.0, 4.0))),
+				(Ended, Value::Vector2(Axis2::new(3.0, 4.0))),
+				(Started, Value::Vector2(Axis2::new(3.0, 4.0))),
+			]
+		);
+		assert_eq!(fixture.tick(), 0);
+		fixture.input_manager.cancel_seat(fixture.seat);
+		let cancelled = fixture.next_event().unwrap();
+		assert!(cancelled.is_cancelled());
+		assert_eq!(cancelled.value(), Value::Vector2(Axis2::new(3.0, 4.0)));
+		for pressed in [true, false] {
+			fixture.input_manager.record_trigger_value_for_device(
+				fixture.seat,
+				mouse,
+				TriggerReference::Name("Mouse.LeftButton"),
+				pressed.into(),
+			);
 		}
 		assert_eq!(fixture.tick(), 0);
 	}

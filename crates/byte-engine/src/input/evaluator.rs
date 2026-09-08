@@ -16,7 +16,7 @@ pub(super) fn resolve_action_value(
 ) -> Option<Value> {
 	// Snapshot bindings convert the retained source value at the trigger's place in the queue.
 	let record = if mapping.trigger.is_some() {
-		read(mapping.trigger_handle)?
+		read(mapping.input_source)?
 	} else {
 		*record
 	};
@@ -49,9 +49,9 @@ fn resolve_float(
 			// Opposing scalar bindings follow the most recently pressed control.
 			if let Some((active_mapping, _)) = active_boolean_mappings(mappings, read).max_by_key(|(_, record)| record.sequence)
 			{
-				Some(value_as_float(active_mapping.mapping, true))
+				Some(value_as_float(active_mapping.mapping.value, true))
 			} else {
-				Some(value_as_float(mapping.mapping, record_value))
+				Some(value_as_float(mapping.mapping.value, record_value))
 			}
 		}
 		Value::Float(value) => Some(value),
@@ -82,7 +82,7 @@ fn resolve_vector2(
 	match record.value {
 		Value::Bool(_) => {
 			let value =
-				active_boolean_mappings(mappings, read).fold(Axis2::zero(), |sum, (mapping, _)| match mapping.mapping {
+				active_boolean_mappings(mappings, read).fold(Axis2::zero(), |sum, (mapping, _)| match mapping.mapping.value {
 					Value::Vector2(value) => sum + value,
 					_ => sum,
 				});
@@ -104,23 +104,22 @@ fn resolve_vector3(
 	match record.value {
 		Value::Bool(_) => {
 			let value =
-				active_boolean_mappings(mappings, read).fold(Axis3::zero(), |sum, (mapping, _)| match mapping.mapping {
+				active_boolean_mappings(mappings, read).fold(Axis3::zero(), |sum, (mapping, _)| match mapping.mapping.value {
 					Value::Vector3(value) => sum + value,
 					_ => sum,
 				});
 			Some(value.normalized())
 		}
-		Value::Vector2(value) => match mapping.function {
-			Some(Function::Sphere) => {
+		Value::Vector2(value) => match mapping.mapping.function {
+			Function::Sphere => {
 				let x_angle = value.x * PI;
 				let y_angle = value.y * PI * 0.5;
 				let direction = Axis3::new(x_angle.sin() * y_angle.cos(), y_angle.sin(), x_angle.cos() * y_angle.cos());
-				let Value::Vector3(transformation) = mapping.mapping else {
+				let Value::Vector3(transformation) = mapping.mapping.value else {
 					return unsupported_conversion();
 				};
 				Some(direction * transformation)
 			}
-			None => Some(Axis3::new(value.x, value.y, 0.0)),
 			_ => unsupported_conversion(),
 		},
 		Value::Vector3(value) => Some(value),
@@ -134,7 +133,7 @@ fn active_boolean_mappings<'a>(
 	read: &'a impl Fn(TriggerHandle) -> Option<Record>,
 ) -> impl Iterator<Item = (&'a TriggerMapping, Record)> + 'a {
 	mappings.iter().filter_map(|mapping| {
-		let record = read(mapping.trigger_handle)?;
+		let record = read(mapping.input_source)?;
 		(record.value == Value::Bool(true)).then_some((mapping, record))
 	})
 }

@@ -14,12 +14,13 @@ use super::action::TriggerMapping;
 use super::evaluator::resolve_action_value;
 use super::events::{ConsumerHandle, InputEvents, Record};
 use super::{
-	Action, ActionBindingDescription, ActionHandle, DeviceHandle, InputActionError, SeatHandle, TickPolicy, Types, Value,
+	Action, ActionBindingDescription, ActionHandle, DeviceHandle, InputActionError, SeatHandle, TickPolicy, TriggerMode, Types,
+	Value,
 };
 use crate::core::channel::{Channel as _, DefaultChannel};
 use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener};
-use crate::input::ActionEvent;
+use crate::input::{ActionEvent, ActionPhase};
 
 /// The `ResolvedAction` struct lets a layer decide whether to consume an action.
 ///
@@ -34,6 +35,8 @@ pub struct ResolvedAction {
 	pub handle: Option<Handle>,
 	/// The value the action resolved to.
 	pub value: Value,
+	/// The interaction stage, including drag start and release.
+	pub phase: ActionPhase,
 }
 
 /// The `Binding` enum selects which of an action's bindings a record may drive.
@@ -45,6 +48,8 @@ pub struct ResolvedAction {
 enum Binding {
 	/// Only bindings that publish another control's value at the chosen trigger phase.
 	Snapshot,
+	/// Snapshot clicks only; repeated presses cannot begin another drag.
+	Click,
 	/// Only bindings driven by their own control.
 	Direct,
 	/// Whichever binding the record matches first.
@@ -127,11 +132,21 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 		let allocator = self.actions.allocator();
 		let mut trigger_mappings = Vec::with_capacity_in(bindings.len(), allocator.clone());
 		trigger_mappings.extend(bindings.iter().filter_map(|binding| events.resolve_binding(binding)));
+		let mode = if trigger_mappings
+			.iter()
+			.any(|mapping| mapping.trigger.is_some() && mapping.trigger_mode == TriggerMode::Drag)
+		{
+			ActionMode::Drag(Vec::new_in(allocator.clone()))
+		} else if trigger_mappings.iter().any(|mapping| mapping.trigger.is_some()) {
+			ActionMode::Snapshot
+		} else {
+			ActionMode::Direct(tick_policy)
+		};
 		let action = InputAction {
+			mode,
 			r#type,
 			trigger_mappings: trigger_mappings.into_boxed_slice(),
 			handle: None,
-			tick_policy,
 			values: Vec::new_in(allocator.clone()),
 		};
 
@@ -168,38 +183,7 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 		events: &mut InputEvents<E>,
 		mut handle: impl FnMut(&ResolvedAction) -> Consumption,
 	) {
-		self.adopt_declarations(events);
-		for index in 0..events.records.len() {
-			let Some(record) = events.pending(self.consumer, index) else {
-				continue;
-			};
-			let mut consumed = false;
-			for (id, action) in self.actions.iter_mut().enumerate() {
-				let Some(value) = action.resolve(&record, Binding::Any, |trigger| {
-					events
-						.visible_record(self.consumer, index + 1, &(record.seat_handle, record.device_handle, trigger))
-						.copied()
-				}) else {
-					continue;
-				};
-				action.publish(
-					&self.channel,
-					record.seat_handle,
-					record.device_handle,
-					value,
-					!action.has_snapshot_bindings() && !events.is_transient(record.trigger_handle),
-				);
-				consumed |= handle(&ResolvedAction {
-					action: ActionHandle(id as u32),
-					handle: action.handle,
-					value,
-				}) == Consumption::Consumed;
-			}
-			if consumed {
-				events.consume(self.consumer, index);
-			}
-		}
-		self.finish(handle);
+		self.update::<false, E>(events, handle);
 	}
 
 	/// Consumes every record this layer can still see, matched or not.
@@ -239,8 +223,9 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 
 	/// Ends the interaction one action holds, without waiting for a release.
 	///
-	/// Use it when this layer loses focus: the action publishes its neutral value
-	/// with [`ActionEvent::is_cancelled`], stops repeating, and gives its controls
+	/// Use it when this layer loses focus: a drag publishes its last position;
+	/// other actions publish their neutral value. Both set [`ActionEvent::is_cancelled`],
+	/// stop repeating, and give their controls
 	/// back to later layers once they are released.
 	pub fn cancel_action(&mut self, seat: SeatHandle, action: ActionHandle) {
 		self.actions[action.0 as usize].cancel(&self.channel, |owner, _| owner == seat);
@@ -267,55 +252,124 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 	/// the input: snapshot bindings publish at each matching record's place in the queue,
 	/// and direct bindings publish once per action from each control's latest
 	/// record.
-	pub(super) fn broadcast<E: Allocator + Clone>(&mut self, events: &InputEvents<E>) {
+	pub(super) fn broadcast<E: Allocator + Clone>(&mut self, events: &mut InputEvents<E>) {
+		self.update::<true, E>(events, |_| Consumption::Ignored);
+	}
+
+	/// Runs the shared action pipeline, preserving broadcast aggregation and layer consumption.
+	fn update<const BROADCAST: bool, E: Allocator + Clone>(
+		&mut self,
+		events: &mut InputEvents<E>,
+		mut handle: impl FnMut(&ResolvedAction) -> Consumption,
+	) {
 		self.adopt_declarations(events);
-		if self.actions.iter().any(InputAction::has_snapshot_bindings) {
-			for (index, record) in events.records.iter().enumerate() {
-				if !matches!(record.value, Value::Bool(_)) {
+		if self.actions.iter().any(|action| matches!(action.mode, ActionMode::Drag(_))) {
+			self.update_records::<BROADCAST, true, E>(events, &mut handle);
+		} else {
+			self.update_records::<BROADCAST, false, E>(events, &mut handle);
+		}
+		self.finish(handle);
+	}
+
+	/// Shares resolution and publication while compiling out unused drag handling.
+	fn update_records<const BROADCAST: bool, const DRAGS: bool, E: Allocator + Clone>(
+		&mut self,
+		events: &mut InputEvents<E>,
+		handle: &mut impl FnMut(&ResolvedAction) -> Consumption,
+	) {
+		if !BROADCAST
+			|| self
+				.actions
+				.iter()
+				.any(|action| !matches!(action.mode, ActionMode::Direct(_)))
+		{
+			for index in 0..events.records.len() {
+				let record = if BROADCAST {
+					events.records[index]
+				} else {
+					let Some(record) = events.pending(self.consumer, index) else {
+						continue;
+					};
+					record
+				};
+				if BROADCAST && !DRAGS && !matches!(record.value, Value::Bool(_)) {
 					continue;
 				}
-				for action in &mut self.actions {
-					if let Some(value) = action.resolve(record, Binding::Snapshot, |trigger| {
+				// Clicks keep per-record semantics; a drag requires a fresh press.
+				let binding = if !BROADCAST {
+					Binding::Any
+				} else if !DRAGS || events.pending(self.consumer, index).is_some() {
+					Binding::Snapshot
+				} else {
+					Binding::Click
+				};
+				let mut consumed = false;
+				for (id, action) in self.actions.iter_mut().enumerate() {
+					let Some((value, phase, drag)) = action.resolve::<DRAGS>(&record, binding, |trigger| {
 						events
 							.visible_record(self.consumer, index + 1, &(record.seat_handle, record.device_handle, trigger))
 							.copied()
-					}) {
-						action.publish(&self.channel, record.seat_handle, record.device_handle, value, false);
+					}) else {
+						continue;
+					};
+					action.publish(
+						&self.channel,
+						(record.seat_handle, record.device_handle),
+						value,
+						matches!(action.mode, ActionMode::Direct(_)) && !events.is_transient(record.trigger_handle),
+						phase,
+					);
+					let accepted = handle(&ResolvedAction {
+						action: ActionHandle(id as u32),
+						handle: action.handle,
+						value,
+						phase,
+					}) == Consumption::Consumed;
+					consumed |= accepted;
+					if let (Some(drag), ActionMode::Drag(drags)) = (drag, &mut action.mode) {
+						// Capturing a drag keeps movement outside the original hit area consumed.
+						let state = &mut drags[drag];
+						state.consumed |= accepted;
+						consumed |= state.consumed;
 					}
+				}
+				if !BROADCAST && consumed {
+					events.consume(self.consumer, index);
 				}
 			}
 		}
-
-		// The queue already has arrival order. The last matching record is the
-		// direct action's final driver; no sorted or compacted copy is needed.
-		for action in &mut self.actions {
-			let Some(record) = events.records.iter().rev().find(|record| {
-				action
-					.trigger_mappings
-					.iter()
-					.any(|mapping| mapping.trigger.is_none() && mapping.trigger_handle == record.trigger_handle)
-			}) else {
-				continue;
-			};
-			if let Some(value) = action.resolve(record, Binding::Direct, |trigger| {
-				events
-					.visible_record(
-						self.consumer,
-						events.records.len(),
-						&(record.seat_handle, record.device_handle, trigger),
-					)
-					.copied()
-			}) {
-				action.publish(
-					&self.channel,
-					record.seat_handle,
-					record.device_handle,
-					value,
-					!action.has_snapshot_bindings() && !events.is_transient(record.trigger_handle),
-				);
+		if BROADCAST {
+			// The queue already has arrival order. The last matching record is the
+			// direct action's final driver; no sorted or compacted copy is needed.
+			for action in &mut self.actions {
+				let Some(index) = events.records.iter().rposition(|record| {
+					action
+						.trigger_mappings
+						.iter()
+						.any(|mapping| mapping.trigger.is_none() && mapping.input_source == record.trigger_handle)
+				}) else {
+					continue;
+				};
+				let record = &events.records[index];
+				if let Some((value, phase, _)) = action.resolve::<false>(record, Binding::Direct, |trigger| {
+					events
+						.visible_record(
+							self.consumer,
+							events.records.len(),
+							&(record.seat_handle, record.device_handle, trigger),
+						)
+						.copied()
+				}) {
+					action.publish(
+						&self.channel,
+						(record.seat_handle, record.device_handle),
+						value,
+						matches!(action.mode, ActionMode::Direct(_)) && !events.is_transient(record.trigger_handle),
+						phase,
+					);
+				}
 			}
 		}
-		self.finish(|_| Consumption::Ignored);
 	}
 
 	/// Publishes queued manual actions, then repeats the values held by each action.
@@ -325,18 +379,21 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 			let action = &mut self.actions[action.0 as usize];
 			action.publish(
 				&self.channel,
-				seat,
-				MANUAL_ACTION_DEVICE,
+				(seat, MANUAL_ACTION_DEVICE),
 				value,
-				!action.has_snapshot_bindings(),
+				matches!(action.mode, ActionMode::Direct(_)),
+				ActionPhase::Updated,
 			);
 		}
 		for (id, action) in self.actions.iter().enumerate() {
-			if action.tick_policy == TickPolicy::OnChange {
+			let ActionMode::Direct(policy) = action.mode else {
+				continue;
+			};
+			if policy == TickPolicy::OnChange {
 				continue;
 			}
 			for &(seat, _, value, holding) in &action.values {
-				if !holding || (action.tick_policy == TickPolicy::WhileActive && value.is_default()) {
+				if !holding || (policy == TickPolicy::WhileActive && value.is_default()) {
 					continue;
 				}
 				// Repetition has no new record to consume.
@@ -344,6 +401,7 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 					action: ActionHandle(id as u32),
 					handle: action.handle,
 					value,
+					phase: ActionPhase::Updated,
 				});
 				if let Some(handle) = action.handle {
 					self.channel.send(ActionEvent::new(seat, handle, value));
@@ -366,45 +424,126 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 
 /// The `InputAction` struct keeps a layer's binding policy and values together.
 struct InputAction<A: Allocator> {
+	mode: ActionMode<A>,
 	r#type: Types,
 	trigger_mappings: Box<[TriggerMapping], A>,
 	handle: Option<Handle>,
-	tick_policy: TickPolicy,
 	/// Values grow in the same allocator as the action and retain capacity between ticks.
 	values: Vec<(SeatHandle, DeviceHandle, Value, bool), A>,
 }
 
-impl<A: Allocator> InputAction<A> {
-	fn has_snapshot_bindings(&self) -> bool {
-		self.trigger_mappings.iter().any(|mapping| mapping.trigger.is_some())
-	}
+/// Stores only the policy or interaction state an action's bindings require.
+enum ActionMode<A: Allocator> {
+	Direct(TickPolicy),
+	Snapshot,
+	Drag(Vec<DragState, A>),
+}
 
+/// The `DragState` struct preserves one binding's interaction across input ticks.
+struct DragState {
+	seat: SeatHandle,
+	device: DeviceHandle,
+	binding: usize,
+	value: Value,
+	active: bool,
+	consumed: bool,
+}
+
+impl<A: Allocator> InputAction<A> {
 	/// Resolves a matching binding through the caller's view of physical input.
-	fn resolve(
-		&self,
+	#[inline]
+	fn resolve<const DRAGS: bool>(
+		&mut self,
 		record: &Record,
 		binding: Binding,
 		read: impl Fn(super::TriggerHandle) -> Option<Record>,
-	) -> Option<Value> {
+	) -> Option<(Value, ActionPhase, Option<usize>)> {
+		if DRAGS && matches!(binding, Binding::Any | Binding::Snapshot) && matches!(self.mode, ActionMode::Drag(_)) {
+			if let Some(sample) = self.resolve_drag(record, &read) {
+				return Some(sample);
+			}
+		}
 		let mapping = self.trigger_mappings.iter().find(|mapping| match mapping.trigger {
 			Some(trigger) => {
-				binding != Binding::Direct
+				mapping.trigger_mode != TriggerMode::Drag
+					&& binding != Binding::Direct
 					&& trigger == record.trigger_handle
-					&& record.value == Value::Bool(mapping.trigger_phase == super::TriggerPhase::Press)
+					&& record.value == Value::Bool(mapping.trigger_mode == TriggerMode::Press)
 			}
-			None => binding != Binding::Snapshot && mapping.trigger_handle == record.trigger_handle,
+			None => matches!(binding, Binding::Any | Binding::Direct) && mapping.input_source == record.trigger_handle,
 		})?;
 		resolve_action_value(self.r#type, &self.trigger_mappings, mapping, record, &read)
+			.map(|value| (value, ActionPhase::Updated, None))
+	}
+
+	/// Advances a drag only from a fresh press that has a visible source sample.
+	// Keep the drag state machine from expanding callers that also handle ordinary input.
+	#[inline(never)]
+	fn resolve_drag(
+		&mut self,
+		record: &Record,
+		read: impl Fn(super::TriggerHandle) -> Option<Record>,
+	) -> Option<(Value, ActionPhase, Option<usize>)> {
+		let ActionMode::Drag(drags) = &mut self.mode else {
+			return None;
+		};
+		for (binding, mapping) in self
+			.trigger_mappings
+			.iter()
+			.enumerate()
+			.filter(|(_, mapping)| mapping.trigger.is_some() && mapping.trigger_mode == TriggerMode::Drag)
+		{
+			let trigger = mapping.trigger.expect("Drag bindings require a button");
+			let button = record.trigger_handle == trigger;
+			if !button && record.trigger_handle != mapping.input_source {
+				continue;
+			}
+			let slot = drags.iter().position(|drag| {
+				drag.seat == record.seat_handle && drag.device == record.device_handle && drag.binding == binding
+			});
+			let active = slot.is_some_and(|slot| drags[slot].active);
+			let phase = match (button, record.value, active) {
+				(true, Value::Bool(true), false) => ActionPhase::Started,
+				(true, Value::Bool(false), true) => ActionPhase::Ended,
+				(false, _, true) if read(trigger).is_some_and(|gate| gate.value == Value::Bool(true)) => ActionPhase::Updated,
+				_ => continue,
+			};
+			let value = resolve_action_value(self.r#type, &self.trigger_mappings, mapping, record, &read)
+				.or_else(|| slot.filter(|_| active).map(|slot| drags[slot].value));
+			let Some(value) = value else {
+				continue;
+			};
+			// Reuse the binding's slot across drags; only the first interaction grows storage.
+			let slot = slot.unwrap_or_else(|| {
+				drags.push(DragState {
+					seat: record.seat_handle,
+					device: record.device_handle,
+					binding,
+					value,
+					active: false,
+					consumed: false,
+				});
+				drags.len() - 1
+			});
+			let drag = &mut drags[slot];
+			drag.value = value;
+			drag.active = phase != ActionPhase::Ended;
+			if phase == ActionPhase::Started {
+				drag.consumed = false;
+			}
+			return Some((value, phase, Some(slot)));
+		}
+		None
 	}
 
 	/// Stores a device's value beside its action and publishes declared actions.
 	fn publish(
 		&mut self,
 		channel: &DefaultChannel<ActionEvent>,
-		seat: SeatHandle,
-		device: DeviceHandle,
+		(seat, device): (SeatHandle, DeviceHandle),
 		value: Value,
 		holds: bool,
+		phase: ActionPhase,
 	) {
 		if let Some((_, _, previous, holding)) = self
 			.values
@@ -418,12 +557,25 @@ impl<A: Allocator> InputAction<A> {
 		}
 		if let Some(handle) = self.handle {
 			log::debug!(target: "byte_engine::input::actions", "Publishing input action: handle={handle:?}, seat={seat:?}, device={device:?}, value={value:?}");
-			channel.send(ActionEvent::new(seat, handle, value));
+			let mut event = ActionEvent::new(seat, handle, value);
+			event.phase = phase;
+			channel.send(event);
 		}
 	}
 
 	/// Neutralizes matching values and reports interrupted holds once.
 	fn cancel(&mut self, channel: &DefaultChannel<ActionEvent>, interrupted: impl Fn(SeatHandle, DeviceHandle) -> bool) {
+		if let ActionMode::Drag(drags) = &mut self.mode {
+			for drag in drags
+				.iter_mut()
+				.filter(|drag| drag.active && interrupted(drag.seat, drag.device))
+			{
+				drag.active = false;
+				if let Some(handle) = self.handle {
+					channel.send(ActionEvent::cancelled(drag.seat, handle, drag.value));
+				}
+			}
+		}
 		for (seat, device, value, holding) in &mut self.values {
 			if !interrupted(*seat, *device) {
 				continue;

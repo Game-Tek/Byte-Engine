@@ -16,6 +16,7 @@ use crate::{
 struct Fixture {
 	events: InputEvents,
 	mouse: DeviceHandle,
+	mouse_class: crate::input::device::DeviceClassHandle,
 	keyboard: DeviceHandle,
 	keyboard_class: crate::input::device::DeviceClassHandle,
 }
@@ -38,6 +39,7 @@ impl Fixture {
 		Self {
 			events,
 			mouse,
+			mouse_class,
 			keyboard,
 			keyboard_class,
 		}
@@ -488,7 +490,7 @@ fn click_phase_selects_the_snapshot_across_ticks() {
 		.actions
 		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
 	let press = layer.actions.create(Action::new(
-		&[binding.trigger_on(crate::input::TriggerPhase::Press)],
+		&[binding.trigger_on(crate::input::TriggerMode::Press)],
 		Types::Vector2,
 	));
 	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
@@ -507,4 +509,157 @@ fn click_phase_selects_the_snapshot_across_ticks() {
 	assert_eq!(actions[0].value, Value::Vector2(Axis2::new(3.0, 4.0)));
 	fixture.end_tick();
 	assert!(fixture.process(&mut layer, ignore).is_empty());
+}
+
+#[test]
+fn a_drag_captures_movement_until_release_and_then_allows_other_input() {
+	use crate::input::ActionPhase::{Ended, Started, Updated};
+	let mut fixture = Fixture::new();
+	let mut ui = fixture.layer();
+	let mut game = fixture.layer();
+	let binding = ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton");
+	let drag = ui
+		.actions
+		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
+	game.actions.create(Action::new(&[binding], Types::Vector2));
+	let game_motion = game.actions.create(Action::new(
+		&[ActionBindingDescription::new("Mouse.Position")],
+		Types::Vector2,
+	));
+	// Only the start is accepted by hit testing. Capture must survive moving outside.
+	let start = |action: &ResolvedAction| action.phase == Started;
+	fixture.record("Mouse.Position", Axis2::new(-0.5, 0.0));
+	fixture.record("Mouse.LeftButton", true);
+	let actions = fixture.process(&mut ui, start);
+	assert_eq!(actions.len(), 1);
+	assert_eq!(actions[0].phase, Started);
+	assert_eq!(actions[0].handle, Some(drag));
+	assert!(
+		fixture
+			.process(&mut game, ignore)
+			.iter()
+			.all(|action| action.handle == Some(game_motion))
+	);
+	fixture.end_tick();
+	assert!(fixture.process(&mut ui, ignore).is_empty());
+	fixture.record("Mouse.Position", Axis2::new(0.8, 0.2));
+	fixture.record("Mouse.LeftButton", false);
+	let actions = fixture.process(&mut ui, ignore);
+	assert_eq!(
+		actions.iter().map(|action| (action.phase, action.value)).collect::<Vec<_>>(),
+		[
+			(Updated, Value::Vector2(Axis2::new(0.8, 0.2))),
+			(Ended, Value::Vector2(Axis2::new(0.8, 0.2)))
+		]
+	);
+	assert!(fixture.process(&mut game, ignore).is_empty());
+	assert_eq!(
+		ui.published().iter().map(ActionEvent::phase).collect::<Vec<_>>(),
+		[Started, Updated, Ended]
+	);
+	fixture.end_tick();
+	fixture.record("Mouse.Position", Axis2::new(0.9, 0.3));
+	assert!(fixture.process(&mut ui, ignore).is_empty());
+	assert_eq!(fixture.process(&mut game, ignore)[0].handle, Some(game_motion));
+}
+
+#[test]
+fn cancelling_a_drag_at_the_origin_does_not_end_or_restart_it() {
+	use crate::input::ActionPhase::{Cancelled, Started};
+	let mut fixture = Fixture::new();
+	let mut layer = fixture.layer();
+	layer.actions.create(Action::new(
+		&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+		Types::Vector2,
+	));
+	fixture.record("Mouse.Position", Axis2::zero());
+	fixture.record("Mouse.LeftButton", true);
+	fixture.process(&mut layer, |_| true);
+	fixture.end_tick();
+	layer.published();
+	layer.processor.cancel_action(SeatHandle::stub(), ActionHandle(0));
+	layer.processor.cancel_action(SeatHandle::stub(), ActionHandle(0));
+	let cancelled = layer.published();
+	assert_eq!(cancelled.len(), 1);
+	assert_eq!(cancelled[0].phase(), Cancelled);
+	assert!(cancelled[0].is_cancelled());
+	assert_eq!(cancelled[0].value(), Value::Vector2(Axis2::zero()));
+	fixture.record("Mouse.LeftButton", true); // Platform repeat is not a new drag.
+	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Mouse.LeftButton", false);
+	assert!(fixture.process(&mut layer, ignore).is_empty());
+	fixture.end_tick();
+	fixture.record("Mouse.LeftButton", true);
+	assert_eq!(fixture.process(&mut layer, ignore)[0].phase, Started);
+}
+
+#[test]
+fn drags_require_a_sample_at_press_and_keep_devices_and_seats_separate() {
+	use crate::input::ActionPhase::{Ended, Started, Updated};
+	let mut fixture = Fixture::new();
+	let mut layer = fixture.layer();
+	layer.actions.create(Action::new(
+		&[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+		Types::Vector2,
+	));
+	let other = fixture.events.create_device(&fixture.mouse_class);
+	let other_seat = SeatHandle(12);
+	// A value from another seat or device cannot supply a start position.
+	for (seat, device) in [(SeatHandle::stub(), other), (other_seat, fixture.mouse)] {
+		fixture.events.record(
+			seat,
+			device,
+			TriggerReference::Name("Mouse.Position"),
+			Axis2::new(8.0, 9.0).into(),
+		);
+	}
+	fixture.record("Mouse.LeftButton", true);
+	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Mouse.LeftButton", false);
+	assert!(fixture.process(&mut layer, ignore).is_empty());
+	fixture.end_tick();
+	for (seat, device) in [
+		(SeatHandle::stub(), fixture.mouse),
+		(SeatHandle::stub(), other),
+		(other_seat, fixture.mouse),
+	] {
+		fixture
+			.events
+			.record(seat, device, TriggerReference::Name("Mouse.LeftButton"), true.into());
+	}
+	assert_eq!(
+		fixture
+			.process(&mut layer, ignore)
+			.iter()
+			.map(|action| action.phase)
+			.collect::<Vec<_>>(),
+		[Started; 3]
+	);
+	fixture.end_tick();
+	layer.published();
+	layer.processor.cancel_device(SeatHandle::stub(), fixture.mouse);
+	assert_eq!(layer.published().len(), 1);
+	for (seat, device) in [
+		(SeatHandle::stub(), fixture.mouse),
+		(SeatHandle::stub(), other),
+		(other_seat, fixture.mouse),
+	] {
+		fixture.events.record(
+			seat,
+			device,
+			TriggerReference::Name("Mouse.Position"),
+			Axis2::new(3.0, 4.0).into(),
+		);
+		fixture
+			.events
+			.record(seat, device, TriggerReference::Name("Mouse.LeftButton"), false.into());
+	}
+	assert_eq!(
+		fixture
+			.process(&mut layer, ignore)
+			.iter()
+			.map(|action| action.phase)
+			.collect::<Vec<_>>(),
+		[Updated, Ended, Updated, Ended]
+	);
 }

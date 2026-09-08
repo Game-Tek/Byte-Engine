@@ -98,11 +98,43 @@ separate cursor action or cached position.
 
 The trigger must be boolean and belong to the value source's device class.
 The input manager samples the latest recorded value from the same seat and device
-at each release by default. Choose `TriggerPhase::Press` with `trigger_on` to
+at each release by default. Choose `TriggerMode::Press` with `trigger_on` to
 sample on press instead. Movement alone does not emit this binding. If no value has been recorded yet, the trigger produces no event.
 Records are processed in queue order, so multiple clicks in one update retain
 their own positions. Actions containing these bindings bypass their tick policy
 to avoid repeating a captured value on later ticks.
+
+## Follow a drag
+
+Use one action to receive the position at press, each movement while held, and
+release:
+
+```rust
+let drag = Action::new(
+    &[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+    Types::Vector2,
+);
+```
+
+Read `ActionEvent::phase()` to handle `ActionPhase::Started`, `Updated`, and
+`Ended`. Each event carries the current position in `value()`. Store the start
+position in your application if you need a displacement or selection rectangle.
+Drags start immediately on press and bypass tick policy, so an idle pointer does
+not repeat drag events. The position must have a recorded value when the button
+is pressed; moving after a press without a sample does not begin a drag.
+
+With input layers, check `ResolvedAction::phase` and return
+`Consumption::Consumed` for a start inside your target. The layer then consumes
+that drag's movement and release even outside the target. Process that layer
+until release or cancellation. An ignored start can reach the next layer.
+
+Call `ActionProcessor::cancel_action`, `cancel_seat`, or `cancel_device` when
+focus changes or a device disconnects. A cancelled drag emits
+`ActionPhase::Cancelled` with its last position. Discard the operation instead
+of committing it; the button needs a fresh press to start another drag.
+Cancellation events are delivered through the action event channel.
+`InputManager` exposes the same cancellation methods for the default broadcast
+workflow.
 
 ## Value mapping
 
@@ -232,7 +264,7 @@ Clicks default to release. To capture the position on press, choose the phase:
 ```rust
 ActionBindingDescription::new("Mouse.Position")
     .triggered_by("Mouse.LeftButton")
-    .trigger_on(TriggerPhase::Press)
+    .trigger_on(TriggerMode::Press)
 ```
 
 After evaluating a UI snapshot, call `snapshot.retain_hit_test(&mut hits)` on a

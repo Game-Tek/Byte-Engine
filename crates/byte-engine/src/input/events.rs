@@ -336,9 +336,12 @@ impl<A: Allocator + Clone> InputEvents<A> {
 		let (trigger_handle, source) = self.resolve_trigger(&binding.input_source)?;
 		let trigger = if let Some(reference) = &binding.trigger {
 			let (handle, gate) = self.resolve_trigger(reference)?;
-			if gate.r#type != Types::Boolean || gate.device_class_handle != source.device_class_handle {
+			if gate.r#type != Types::Boolean
+				|| gate.device_class_handle != source.device_class_handle
+				|| (binding.trigger_mode == super::TriggerMode::Drag && gate.transient)
+			{
 				warn!(
-					"Input snapshot binding is invalid. The trigger must be boolean and belong to the value source's device class."
+					"Input binding is invalid. The trigger must be boolean, share the value source's device class, and be retained for drags."
 				);
 				return None;
 			}
@@ -348,11 +351,10 @@ impl<A: Allocator + Clone> InputEvents<A> {
 		};
 
 		Some(TriggerMapping {
-			trigger_handle,
+			input_source: trigger_handle,
 			trigger,
-			trigger_phase: binding.trigger_phase,
-			mapping: binding.mapping.value,
-			function: Some(binding.mapping.function),
+			trigger_mode: binding.trigger_mode,
+			mapping: binding.mapping,
 		})
 	}
 

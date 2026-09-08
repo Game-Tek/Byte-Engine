@@ -1,7 +1,9 @@
 //! Graph search and XZ-plane navigation-mesh path finding.
 //!
-//! Use [`a_star`] for an arbitrary graph. Use [`NavigationMesh::find_path`] when indexed convex
-//! navigation polygons should produce a string-pulled world-space path.
+//! Use [`a_star`] for one search on an arbitrary graph. Use [`a_star_batch`] or a retained
+//! [`PathSearch`] when several searches share one graph, so they also share their working
+//! storage. Use [`NavigationMesh::find_path`] when indexed convex navigation polygons should
+//! produce a string-pulled world-space path.
 
 mod navigation_mesh;
 
@@ -21,8 +23,120 @@ pub fn a_star<T>(
 	graph: &impl Graph<T>,
 	distance: impl Fn(NodeHandle, NodeHandle) -> f32,
 ) -> Vec<NodeHandle> {
-	let mut heap = BinaryHeap::with_capacity(64);
-	a_star_with_heap(start, target, graph, distance, &mut heap)
+	let mut path = Vec::new();
+	PathSearch::new().find_into(start, target, graph, distance, &mut path);
+	path
+}
+
+/// Finds a lowest-cost path for every `(start, target)` request on one graph.
+///
+/// The requests share one [`PathSearch`], so the batch allocates its working
+/// storage once instead of once per request. `resolve` receives each request's
+/// index and its path in request order; the path is empty when the target is
+/// unreachable. Build the graph once before calling this so the batch also
+/// shares that cost.
+pub fn a_star_batch<T>(
+	requests: impl IntoIterator<Item = (NodeHandle, NodeHandle)>,
+	graph: &impl Graph<T>,
+	distance: impl Fn(NodeHandle, NodeHandle) -> f32,
+	mut resolve: impl FnMut(usize, &[NodeHandle]),
+) {
+	let mut search = PathSearch::new();
+	let mut path = Vec::new();
+	for (index, (start, target)) in requests.into_iter().enumerate() {
+		search.find_into(start, target, graph, &distance, &mut path);
+		resolve(index, &path);
+	}
+}
+
+/// The `PathSearch` struct retains A* working storage so repeated searches do not allocate.
+///
+/// Keep one per system that searches every tick, or let [`a_star_batch`] own one
+/// for a batch. A search may run on any graph; storage grows to the largest
+/// graph seen.
+#[derive(Default)]
+pub struct PathSearch {
+	frontier: BinaryHeap<FrontierEntry>,
+	paths: Vec<Option<PathState>>,
+}
+
+impl PathSearch {
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Finds the lowest-cost path from `start` to `target` and writes it into `path`.
+	///
+	/// `path` is replaced. It includes both endpoints, or is left empty when the
+	/// target is unreachable; the return value reports reachability. See
+	/// [`a_star`] for the `distance` contract.
+	pub fn find_into<T>(
+		&mut self,
+		start: NodeHandle,
+		target: NodeHandle,
+		graph: &impl Graph<T>,
+		distance: impl Fn(NodeHandle, NodeHandle) -> f32,
+		path: &mut Vec<NodeHandle>,
+	) -> bool {
+		path.clear();
+		let Self { frontier, paths } = self;
+		frontier.clear();
+		frontier.push(FrontierEntry {
+			priority: 0f32,
+			cost: 0f32,
+			node: start,
+		});
+		paths.clear();
+		paths.resize(graph.node_count(), None);
+		paths[start as usize] = Some(PathState {
+			cost: 0f32,
+			predecessor: None,
+		});
+
+		while let Some(FrontierEntry { cost, node, .. }) = frontier.pop() {
+			let Some(current_path) = paths[node as usize] else {
+				continue;
+			};
+
+			// Cheaper routes leave their previous entries in the heap.
+			if cost > current_path.cost {
+				continue;
+			}
+
+			if node == target {
+				break;
+			}
+
+			for next in graph.neighbors(node) {
+				let new_cost = current_path.cost + distance(node, next);
+				let next_path = &mut paths[next as usize];
+				let improves_path = next_path.is_none_or(|path| new_cost < path.cost);
+
+				if improves_path {
+					*next_path = Some(PathState {
+						cost: new_cost,
+						predecessor: Some(node),
+					});
+					frontier.push(FrontierEntry {
+						priority: new_cost + distance(next, target),
+						cost: new_cost,
+						node: next,
+					});
+				}
+			}
+		}
+
+		if paths[target as usize].is_none() {
+			return false;
+		}
+
+		// Follow predecessors backward, then reverse them into traversal order.
+		path.extend(std::iter::successors(Some(target), |current| {
+			paths[*current as usize].and_then(|path| path.predecessor)
+		}));
+		path.reverse();
+		true
+	}
 }
 
 /// The `FrontierEntry` struct prioritizes a pending node and detects outdated routes.
@@ -58,74 +172,6 @@ impl Ord for FrontierEntry {
 		// BinaryHeap is a max-heap, so reverse the comparison to pop the lowest cost.
 		other.priority.total_cmp(&self.priority)
 	}
-}
-
-/// Finds a lowest-cost path while reusing the supplied frontier allocation.
-fn a_star_with_heap<T, A: Allocator>(
-	start: NodeHandle,
-	target: NodeHandle,
-	graph: &impl Graph<T>,
-	distance: impl Fn(NodeHandle, NodeHandle) -> f32,
-	frontier: &mut BinaryHeap<FrontierEntry, A>,
-) -> Vec<NodeHandle> {
-	// A caller may reuse a heap left populated by an earlier search.
-	frontier.clear();
-	frontier.push(FrontierEntry {
-		priority: 0f32,
-		cost: 0f32,
-		node: start,
-	});
-
-	let mut paths = vec![None; graph.node_count()];
-	paths[start as usize] = Some(PathState {
-		cost: 0f32,
-		predecessor: None,
-	});
-
-	while let Some(FrontierEntry { cost, node, .. }) = frontier.pop() {
-		let Some(current_path) = paths[node as usize] else {
-			continue;
-		};
-
-		// Cheaper routes leave their previous entries in the heap.
-		if cost > current_path.cost {
-			continue;
-		}
-
-		if node == target {
-			break;
-		}
-
-		for next in graph.neighbors(node) {
-			let new_cost = current_path.cost + distance(node, next);
-			let next_path = &mut paths[next as usize];
-			let improves_path = next_path.is_none_or(|path| new_cost < path.cost);
-
-			if improves_path {
-				*next_path = Some(PathState {
-					cost: new_cost,
-					predecessor: Some(node),
-				});
-				frontier.push(FrontierEntry {
-					priority: new_cost + distance(next, target),
-					cost: new_cost,
-					node: next,
-				});
-			}
-		}
-	}
-
-	if paths[target as usize].is_none() {
-		return Vec::new();
-	}
-
-	// Follow predecessors backward, then reverse them into traversal order.
-	let mut path: Vec<_> = std::iter::successors(Some(target), |current| {
-		paths[*current as usize].and_then(|path| path.predecessor)
-	})
-	.collect();
-	path.reverse();
-	path
 }
 
 pub type NodeHandle = u32;
@@ -418,6 +464,57 @@ mod tests {
 	}
 
 	#[test]
+	fn retained_search_reuses_storage_across_graphs_and_reports_reachability() {
+		let mut small = TrivialGraph::new();
+		let start = small.push(0);
+		let end = small.push_connected(start, 1);
+		let mut large = BitMatrixGraph::with_capacity(8);
+		let far_start = large.push(0);
+		let mut previous = far_start;
+		for value in 1..8 {
+			previous = large.push_connected(previous, value);
+		}
+		let island = small.push(2);
+
+		let mut search = PathSearch::new();
+		let mut path = vec![99];
+		assert!(search.find_into(start, end, &small, |_, _| 1f32, &mut path));
+		assert_eq!(path.as_slice(), [start, end]);
+		assert!(search.find_into(far_start, previous, &large, |_, _| 1f32, &mut path));
+		assert_eq!(path.len(), 8);
+		assert!(!search.find_into(start, island, &small, |_, _| 1f32, &mut path));
+		assert!(path.is_empty());
+		assert!(
+			search.paths.capacity() >= large.node_count(),
+			"storage keeps the largest graph seen"
+		);
+	}
+
+	#[test]
+	fn batch_resolves_every_request_in_order_on_one_graph() {
+		let mut graph = TrivialGraph::new();
+		let a = graph.push(0);
+		let b = graph.push_connected(a, 1);
+		let c = graph.push_connected(b, 2);
+		let island = graph.push(3);
+
+		let mut resolved = Vec::new();
+		a_star_batch(
+			[(a, c), (c, a), (a, island), (b, b)],
+			&graph,
+			|_, _| 1f32,
+			|index, path| {
+				resolved.push((index, path.to_vec()));
+			},
+		);
+
+		assert_eq!(
+			resolved,
+			[(0, vec![a, b, c]), (1, vec![c, b, a]), (2, Vec::new()), (3, vec![b])]
+		);
+	}
+
+	#[test]
 	fn bit_matrix_graph_reports_each_neighbor_once() {
 		let mut graph = BitMatrixGraph::with_capacity(130);
 		let start = graph.push(0);
@@ -427,4 +524,4 @@ mod tests {
 	}
 }
 
-use std::{alloc::Allocator, collections::BinaryHeap};
+use std::collections::BinaryHeap;

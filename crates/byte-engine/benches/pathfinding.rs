@@ -1,7 +1,8 @@
 //! Run with `cargo bench -p byte-engine --bench pathfinding`.
 
 use byte_engine::gameplay::pathfinding::{
-	BitMatrixGraph, NavigationMesh, NavigationPortal, NodeHandle, TrivialGraph, a_star, string_pull, string_pull_into,
+	BitMatrixGraph, Graph, NavigationMesh, NavigationPortal, NodeHandle, PathSearch, TrivialGraph, a_star, a_star_batch,
+	string_pull, string_pull_into,
 };
 use divan::{Bencher, counter::ItemsCount};
 use math::Point;
@@ -104,6 +105,96 @@ mod dense {
 	fn bit_matrix(bencher: Bencher, node_count: usize) {
 		let graph = dense_bit_matrix(node_count);
 		benchmark(bencher, &graph, node_count);
+	}
+}
+
+/// The `Lattice` struct is a square four-neighbor grid, the shape a tile-based scene searches.
+struct Lattice {
+	side: usize,
+}
+
+impl Graph<()> for Lattice {
+	fn node_count(&self) -> usize {
+		self.side * self.side
+	}
+
+	fn neighbors(&self, node: NodeHandle) -> impl Iterator<Item = NodeHandle> + '_ {
+		let side = self.side as NodeHandle;
+		let (x, z) = (node % side, node / side);
+		[
+			(x > 0).then(|| node - 1),
+			(x + 1 < side).then(|| node + 1),
+			(z > 0).then(|| node - side),
+			(z + 1 < side).then(|| node + side),
+		]
+		.into_iter()
+		.flatten()
+	}
+}
+
+impl Lattice {
+	fn manhattan(&self, from: NodeHandle, to: NodeHandle) -> f32 {
+		let side = self.side as NodeHandle;
+		((from % side).abs_diff(to % side) + (from / side).abs_diff(to / side)) as f32
+	}
+
+	/// Spreads requests across the lattice so consecutive searches touch different cells.
+	fn requests(&self, count: usize) -> Vec<(NodeHandle, NodeHandle)> {
+		let nodes = self.node_count() as NodeHandle;
+		(0..count as NodeHandle)
+			.map(|index| ((index * 7919) % nodes, nodes - 1 - (index * 104_729) % nodes))
+			.collect()
+	}
+}
+
+/// Compares one search per request against sharing search storage across a request batch.
+///
+/// The lattice is the 32 by 32 grid of a small scene; requests grow like the actor count.
+mod batch {
+	use super::*;
+
+	const SIDE: usize = 32;
+
+	#[divan::bench(args = [1, 16, 128])]
+	fn individual(bencher: Bencher, request_count: usize) {
+		let lattice = Lattice { side: SIDE };
+		let requests = lattice.requests(request_count);
+		bencher.counter(ItemsCount::new(request_count)).bench_local(|| {
+			for &(start, target) in &requests {
+				divan::black_box(a_star(start, target, &lattice, |from, to| lattice.manhattan(from, to)));
+			}
+		});
+	}
+
+	#[divan::bench(args = [1, 16, 128])]
+	fn batched(bencher: Bencher, request_count: usize) {
+		let lattice = Lattice { side: SIDE };
+		let requests = lattice.requests(request_count);
+		bencher.counter(ItemsCount::new(request_count)).bench_local(|| {
+			a_star_batch(
+				requests.iter().copied(),
+				&lattice,
+				|from, to| lattice.manhattan(from, to),
+				|_, path| {
+					divan::black_box(path);
+				},
+			);
+		});
+	}
+
+	/// A system that searches every tick keeps one search alive, so nothing allocates per batch either.
+	#[divan::bench(args = [1, 16, 128])]
+	fn retained(bencher: Bencher, request_count: usize) {
+		let lattice = Lattice { side: SIDE };
+		let requests = lattice.requests(request_count);
+		let mut search = PathSearch::new();
+		let mut path = Vec::new();
+		bencher.counter(ItemsCount::new(request_count)).bench_local(|| {
+			for &(start, target) in &requests {
+				search.find_into(start, target, &lattice, |from, to| lattice.manhattan(from, to), &mut path);
+				divan::black_box(&path);
+			}
+		});
 	}
 }
 

@@ -28,7 +28,7 @@ pub(super) struct Device {
 	pub(super) device_class_handle: DeviceClassHandle,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, facet::Facet)]
 /// The [`DeviceHandle`] struct identifies the device whose trigger or action state
 /// is being read or updated.
 pub struct DeviceHandle(pub(super) u32);

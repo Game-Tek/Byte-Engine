@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, facet::Facet)]
 /// The `SeatHandle` struct identifies the player seat associated with input.
 pub struct SeatHandle(pub(super) u32);
 

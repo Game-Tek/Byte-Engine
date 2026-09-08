@@ -13,6 +13,27 @@ use super::device::{Device, DeviceClass, DeviceClassHandle};
 use super::trigger::{Trigger, TriggerDescription, TriggerReference, TriggerRegistry};
 use super::{ActionBindingDescription, DeviceHandle, SeatHandle, TriggerHandle, Types, Value};
 
+/// The `SourceEvent` struct provides a serializable control sample for remote input replay.
+///
+/// Read pending samples with [`InputEvents::source_events`] and serialize them
+/// with Facet. Handles identify the sender's registry: map the seat, device, and
+/// trigger to the receiver's registered handles before calling [`InputEvents::record`].
+/// Preserve arrival order; sequence numbers let the transport detect duplicates
+/// or gaps but do not provide timestamps or identify a connection.
+#[derive(Copy, Clone, Debug, PartialEq, facet::Facet)]
+pub struct SourceEvent {
+	/// The sender's player seat.
+	pub seat_handle: SeatHandle,
+	/// The sender's concrete input device.
+	pub device_handle: DeviceHandle,
+	/// The sender's registered control.
+	pub trigger_handle: TriggerHandle,
+	/// The recorded control value.
+	pub value: Value,
+	/// The increasing arrival sequence within the sender's input queue.
+	pub sequence: u64,
+}
+
 /// Identifies one physical control for a device and seat.
 type Source = (SeatHandle, DeviceHandle, TriggerHandle);
 
@@ -152,6 +173,21 @@ impl<A: Allocator + Clone> InputEvents<A> {
 			sequence: self.sequence,
 			consumer,
 		});
+	}
+
+	/// Iterates over this tick's accepted source events in arrival order without allocating.
+	///
+	/// Serialize these samples before [`Self::end_tick`] (or
+	/// [`InputManager::update`](super::InputManager::update)) clears the queue.
+	/// Consumption by local layers does not remove samples from this stream.
+	pub fn source_events(&self) -> impl ExactSizeIterator<Item = SourceEvent> + '_ {
+		self.records.iter().map(|record| SourceEvent {
+			seat_handle: record.seat_handle,
+			device_handle: record.device_handle,
+			trigger_handle: record.trigger_handle,
+			value: record.value,
+			sequence: record.sequence,
+		})
 	}
 
 	/// Retains the last value of each control and clears this tick's queue.

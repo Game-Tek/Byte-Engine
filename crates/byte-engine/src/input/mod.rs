@@ -47,7 +47,7 @@ pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
 pub use axis::{Axis2, Axis3};
 pub use device::DeviceHandle;
-pub use events::{ConsumerHandle, InputEvents};
+pub use events::{ConsumerHandle, InputEvents, SourceEvent};
 pub use manager::InputActionError;
 pub use manager::InputManager;
 use math::Quaternion;

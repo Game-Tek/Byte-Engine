@@ -157,7 +157,7 @@ impl Default for TriggerDescription<Quaternion> {
 	}
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, facet::Facet)]
 /// The `TriggerHandle` struct identifies a trigger registered with an
 /// [`crate::input::InputManager`].
 pub struct TriggerHandle(pub(super) u32);

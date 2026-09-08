@@ -478,3 +478,33 @@ fn an_arena_backed_layer_shares_input_with_a_global_layer() {
 	assert_eq!(ui.action_state(SeatHandle::stub(), drag, fixture.mouse), Value::Bool(true));
 	assert!(fixture.process(&mut game, ignore).is_empty());
 }
+
+#[test]
+fn click_phase_selects_the_snapshot_across_ticks() {
+	let mut fixture = Fixture::new();
+	let mut layer = fixture.layer();
+	let binding = ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton");
+	let release = layer
+		.actions
+		.create(Action::new(&[binding], Types::Vector2).tick_policy(TickPolicy::Always));
+	let press = layer.actions.create(Action::new(
+		&[binding.trigger_on(crate::input::TriggerPhase::Press)],
+		Types::Vector2,
+	));
+	fixture.record("Mouse.Position", Axis2::new(1.0, 2.0));
+	fixture.record("Mouse.LeftButton", true);
+	let actions = fixture.process(&mut layer, ignore);
+	assert_eq!(actions.len(), 1);
+	assert_eq!(actions[0].handle, Some(press));
+	assert_eq!(actions[0].value, Value::Vector2(Axis2::new(1.0, 2.0)));
+	fixture.end_tick();
+	assert!(fixture.process(&mut layer, ignore).is_empty());
+	fixture.record("Mouse.Position", Axis2::new(3.0, 4.0));
+	fixture.record("Mouse.LeftButton", false);
+	let actions = fixture.process(&mut layer, ignore);
+	assert_eq!(actions.len(), 1);
+	assert_eq!(actions[0].handle, Some(release));
+	assert_eq!(actions[0].value, Value::Vector2(Axis2::new(3.0, 4.0)));
+	fixture.end_tick();
+	assert!(fixture.process(&mut layer, ignore).is_empty());
+}

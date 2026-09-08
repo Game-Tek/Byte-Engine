@@ -111,6 +111,7 @@ impl Action {
 pub struct ActionBindingDescription {
 	pub(crate) input_source: TriggerReference,
 	pub(crate) trigger: Option<TriggerReference>,
+	pub(crate) trigger_phase: TriggerPhase,
 	pub(crate) mapping: ValueMapping,
 }
 
@@ -119,16 +120,25 @@ impl ActionBindingDescription {
 		ActionBindingDescription {
 			input_source: TriggerReference::Name(input_source),
 			trigger: None,
+			trigger_phase: TriggerPhase::default(),
 			mapping: false.into(),
 		}
 	}
 
-	/// Samples this source whenever `trigger` records `true`, using the same seat
-	/// and device. Missing source values produce no event; releases are ignored.
-	/// Actions containing triggered bindings bypass their tick policy; each
-	/// positive record emits one snapshot. Next, pass this binding to [`Action::new`].
+	/// Samples this source when `trigger` is released, using the same seat and
+	/// device. Missing source values produce no event. Use [`Self::trigger_on`]
+	/// to choose presses instead. Triggered bindings bypass the action's tick
+	/// policy: each matching record emits one snapshot.
+	/// Next, pass this binding to [`Action::new`].
 	pub fn triggered_by(mut self, trigger: &'static str) -> Self {
 		self.trigger = Some(TriggerReference::Name(trigger));
+		self
+	}
+
+	/// Chooses which boolean records request snapshots from [`Self::triggered_by`].
+	/// The default is [`TriggerPhase::Release`]. Next, pass this binding to [`Action::new`].
+	pub fn trigger_on(mut self, phase: TriggerPhase) -> Self {
+		self.trigger_phase = phase;
 		self
 	}
 
@@ -136,6 +146,16 @@ impl ActionBindingDescription {
 		self.mapping = mapping;
 		self
 	}
+}
+
+/// Chooses when a triggered binding captures its source value.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TriggerPhase {
+	/// Captures the value when the key or button is released.
+	#[default]
+	Release,
+	/// Captures the value when the key or button is pressed.
+	Press,
 }
 
 /// The [`TriggerMapping`] struct is the resolved form of an action binding used by
@@ -146,6 +166,7 @@ pub struct TriggerMapping {
 	pub(crate) trigger_handle: TriggerHandle,
 	/// The optional boolean source that requests a snapshot.
 	pub(crate) trigger: Option<TriggerHandle>,
+	pub(crate) trigger_phase: TriggerPhase,
 	/// The value that this trigger maps to.
 	pub(crate) mapping: Value,
 	/// The function that this mapping uses to convert the trigger value to the action value.

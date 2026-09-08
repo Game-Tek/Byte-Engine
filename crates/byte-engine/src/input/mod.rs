@@ -45,6 +45,7 @@ pub mod utils;
 pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
+pub use action::TriggerPhase;
 pub use axis::{Axis2, Axis3};
 pub use device::DeviceHandle;
 pub use events::{ConsumerHandle, InputEvents, SourceEvent};

@@ -885,7 +885,9 @@ mod tests {
 		let other_mouse = fixture.input_manager.create_device(&class);
 		fixture.factory.create(
 			Action::new(
-				&[ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")],
+				&[ActionBindingDescription::new("Mouse.Position")
+					.triggered_by("Mouse.LeftButton")
+					.trigger_on(crate::input::TriggerPhase::Press)],
 				Types::Vector2,
 			)
 			.tick_policy(TickPolicy::Always),
@@ -941,6 +943,35 @@ mod tests {
 			TriggerReference::Name("Mouse.LeftButton"),
 			Value::Bool(true),
 		);
+		assert_eq!(fixture.tick(), 0);
+	}
+
+	#[test]
+	fn click_defaults_to_sampling_on_release() {
+		let mut fixture = InputFixture::new();
+		let class = crate::input::utils::register_mouse_device_class(&mut fixture.input_manager);
+		let mouse = fixture.input_manager.create_device(&class);
+		fixture.factory.create(Action::new(
+			&[ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")],
+			Types::Vector2,
+		));
+		for (source, value, expected) in [
+			("Mouse.Position", Value::Vector2(Axis2::new(1.0, 2.0)), None),
+			("Mouse.LeftButton", Value::Bool(true), None),
+			("Mouse.Position", Value::Vector2(Axis2::new(3.0, 4.0)), None),
+			(
+				"Mouse.LeftButton",
+				Value::Bool(false),
+				Some(Value::Vector2(Axis2::new(3.0, 4.0))),
+			),
+		] {
+			fixture
+				.input_manager
+				.record_trigger_value_for_device(fixture.seat, mouse, TriggerReference::Name(source), value);
+			fixture.update();
+			assert_eq!(fixture.next_event().map(|event| event.value()), expected);
+			assert!(fixture.next_event().is_none());
+		}
 		assert_eq!(fixture.tick(), 0);
 	}
 

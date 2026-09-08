@@ -43,7 +43,7 @@ pub struct ResolvedAction {
 /// snapshot bindings per record and direct bindings once per action.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Binding {
-	/// Only bindings that publish another control's value while a trigger is down.
+	/// Only bindings that publish another control's value at the chosen trigger phase.
 	Snapshot,
 	/// Only bindings driven by their own control.
 	Direct,
@@ -264,14 +264,14 @@ impl<A: Allocator + Clone> ActionProcessor<A> {
 	/// Publishes every action a record drives, without offering it for consumption.
 	///
 	/// [`InputManager`](super::InputManager) uses this where no layer competes for
-	/// the input: snapshot bindings publish at each press's place in the queue,
+	/// the input: snapshot bindings publish at each matching record's place in the queue,
 	/// and direct bindings publish once per action from each control's latest
 	/// record.
 	pub(super) fn broadcast<E: Allocator + Clone>(&mut self, events: &InputEvents<E>) {
 		self.adopt_declarations(events);
 		if self.actions.iter().any(InputAction::has_snapshot_bindings) {
 			for (index, record) in events.records.iter().enumerate() {
-				if record.value != Value::Bool(true) {
+				if !matches!(record.value, Value::Bool(_)) {
 					continue;
 				}
 				for action in &mut self.actions {
@@ -388,7 +388,9 @@ impl<A: Allocator> InputAction<A> {
 	) -> Option<Value> {
 		let mapping = self.trigger_mappings.iter().find(|mapping| match mapping.trigger {
 			Some(trigger) => {
-				binding != Binding::Direct && trigger == record.trigger_handle && record.value == Value::Bool(true)
+				binding != Binding::Direct
+					&& trigger == record.trigger_handle
+					&& record.value == Value::Bool(mapping.trigger_phase == super::TriggerPhase::Press)
 			}
 			None => binding != Binding::Snapshot && mapping.trigger_handle == record.trigger_handle,
 		})?;

@@ -350,6 +350,7 @@ impl<A: Allocator + Clone> InputEvents<A> {
 		Some(TriggerMapping {
 			trigger_handle,
 			trigger,
+			trigger_phase: binding.trigger_phase,
 			mapping: binding.mapping.value,
 			function: Some(binding.mapping.function),
 		})

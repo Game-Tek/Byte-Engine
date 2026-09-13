@@ -59,9 +59,9 @@ impl Action {
 /// The [`ActionBindingDescription`] struct connects a named or handled trigger to
 /// one contribution to an [`Action`].
 #[derive(Copy, Clone, Debug)]
-pub struct ActionBindingDescription<T = TriggerReference> {
-	pub(crate) input_source: T,
-	pub(crate) trigger: Option<T>,
+pub struct ActionBindingDescription {
+	pub(crate) input_source: TriggerReference,
+	pub(crate) trigger: Option<TriggerReference>,
 	pub(crate) trigger_mode: TriggerMode,
 	pub(crate) mapping: ValueMapping,
 }
@@ -122,18 +122,14 @@ pub enum TriggerMode {
 	Drag,
 }
 
-/// A binding whose source names have been resolved to registered trigger handles.
-pub type TriggerMapping = ActionBindingDescription<TriggerHandle>;
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-/// The [`ActionHandle`] struct identifies an action registered with an
-/// [`crate::input::InputManager`].
+/// The [`ActionHandle`] struct identifies an action created on an
+/// [`InputSink`](crate::input::InputSink).
 pub struct ActionHandle(pub(super) u32);
 
 use math::Quaternion;
 use smallvec::SmallVec;
 use utils::RGBA;
 
-use super::TriggerHandle;
 use super::{Axis2, Axis3, TickPolicy, TriggerReference, Types, Value};
 use crate::input::ValueMapping;

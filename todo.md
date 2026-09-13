@@ -52,7 +52,7 @@
 
 - Resolve named input triggers to handles during action registration and index device classes and triggers by name.
 - Reuse gamepad event, new-device, and present-path scratch storage; allocate owned HID paths only for confirmed new devices.
-- Decide how modifier keys behave across input layers: a layer that consumes `Ctrl` currently claims it, so a later layer's `Ctrl+S` no longer resolves. Consider modifier-only controls that layers read without claiming.
+- Decide how modifier keys behave across input sinks: a sink that captures `Ctrl` currently claims it, so a later sink's `Ctrl+S` no longer resolves. Consider modifier-only controls that sinks read without claiming.
 
 ## Metal-specific
 
@@ -85,7 +85,7 @@
 - Implement Metal ray tracing pipelines, acceleration structures, instance data, shader binding tables, and ray dispatch.
 - Decide how GHI should handle potentially unused staging buffers.
 - Implement macOS cursor visibility and confinement.
-- Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input manager.
+- Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input collector.
 
 ## Engine systems
 

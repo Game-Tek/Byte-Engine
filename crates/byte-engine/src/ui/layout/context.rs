@@ -3,6 +3,7 @@ use std::{future::Future, pin::Pin, time::Duration};
 use crate::ui::{
 	Container, Text,
 	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
+	drag::DragCapture,
 	element::Id,
 	layout::{
 		Geometry,
@@ -49,6 +50,9 @@ pub trait Context<C: 'static = ()>: Sized {
 	fn geometry(&self) -> Option<Geometry>;
 
 	fn pointer(&self) -> PointerState;
+
+	/// Returns the engine's captured drag gesture, if a source is held.
+	fn drag(&self) -> Option<DragCapture>;
 
 	fn request_focus(&mut self);
 

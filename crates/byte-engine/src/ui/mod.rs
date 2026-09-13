@@ -5,8 +5,9 @@
 //! other [`Primitive`] values through the layout context. Send the resulting
 //! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
 //! integrating UI into a graphics application.
-//! For typed pointer gestures, capture a hit-tested source with [`Drag`] and
-//! validate its released payload against an application-owned drop target.
+//! For pointer gestures, capture a hit-tested source with
+//! [`layout::engine::Engine::press`] and validate the released [`DragDrop`]
+//! against an application-owned drop target.
 //!
 //! See the [GUI guide](/docs/develop/gui)
 //! for component, layout, event, focus, and rendering guidance.
@@ -53,7 +54,7 @@ pub use components::{
 	text::Text,
 	text_field::TextField,
 };
-pub use drag::{Drag, DragCapture, DragDrop};
+pub use drag::{DragCapture, DragDrop};
 pub use element::{ConcreteElement, Element, ElementHandle, Id};
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{

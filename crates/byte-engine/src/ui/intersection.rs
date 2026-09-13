@@ -28,7 +28,7 @@ impl HitTest {
 	/// Converts normalized window coordinates to this snapshot's layout units.
 	///
 	/// The layout origin is at the top left. Positions outside the viewport stay
-	/// outside, so a captured [`crate::ui::Drag`] can finish beyond its source.
+	/// outside, so a drag captured by [`crate::ui::Engine::press`] can finish beyond its source.
 	pub fn layout_position(&self, position: UiPoint) -> UiPoint {
 		UiPoint::new(
 			(position.x + 1.0) * 0.5 * self.size[0],

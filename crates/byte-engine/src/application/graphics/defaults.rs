@@ -242,21 +242,14 @@ fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 /// The application tick translates window events and emits their resolved action
 /// values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
-	let input_system = &mut application.input_system;
-
-	let mouse = register_mouse_device_class(input_system);
-
-	let keyboard = register_keyboard_device_class(input_system);
-
-	let gamepad = register_gamepad_device_class(input_system);
-
+	let input = &mut application.input;
+	let mouse = register_mouse_device_class(input);
+	let keyboard = register_keyboard_device_class(input);
+	let gamepad = register_gamepad_device_class(input);
 	application.gamepad_device_class_handle = Some(gamepad);
-
-	input_system.create_device(&mouse);
-
-	input_system.create_device(&keyboard);
-
-	input_system.create_device(&gamepad);
+	input.create_device(&mouse);
+	input.create_device(&keyboard);
+	input.create_device(&gamepad);
 }
 
 /// Starts the audio worker, its byte-bounded global sample pool, and the

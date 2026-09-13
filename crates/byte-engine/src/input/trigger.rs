@@ -1,9 +1,8 @@
 /// The `TriggerRegistry` trait declares the controls an input source provides.
 ///
-/// Both [`InputEvents`](super::InputEvents) and
-/// [`InputManager`](super::InputManager) implement it, so registration helpers
-/// work with either. Next, create devices of a registered class and record
-/// their values.
+/// [`InputCollector`](super::InputCollector) implements it, so the helpers in
+/// [`utils`](super::utils) register the standard classes on any collector.
+/// Next, create devices of a registered class and record their values.
 pub trait TriggerRegistry {
 	/// Registers a named device class, such as `Keyboard`.
 	///
@@ -39,7 +38,7 @@ pub enum TriggerReference {
 pub(super) struct Trigger<A: std::alloc::Allocator> {
 	/// The device class that defines this trigger.
 	pub(super) device_class_handle: DeviceClassHandle,
-	/// The trigger name within its device class.
+	/// The `DeviceClass.Trigger` name records and bindings resolve against.
 	pub(super) name: Box<str, A>,
 	/// The value type produced by the trigger.
 	pub(super) r#type: Types,
@@ -81,8 +80,7 @@ impl<T: InputValue> TriggerDescription<T> {
 	/// Treats each record as a one-time impulse instead of a control being held.
 	///
 	/// Use it for wheel steps, relative motion, and text: an impulse never holds
-	/// an input layer's claim on the control and never repeats through a tick
-	/// policy.
+	/// a sink's capture of the control and never repeats through a tick policy.
 	pub fn transient(mut self) -> Self {
 		self.transient = true;
 		self
@@ -159,7 +157,7 @@ impl Default for TriggerDescription<Quaternion> {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, facet::Facet)]
 /// The `TriggerHandle` struct identifies a trigger registered with an
-/// [`crate::input::InputManager`].
+/// [`InputCollector`](crate::input::InputCollector).
 pub struct TriggerHandle(pub(super) u32);
 
 use math::Quaternion;

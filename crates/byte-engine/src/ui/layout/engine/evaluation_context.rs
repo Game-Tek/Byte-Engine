@@ -135,6 +135,11 @@ impl<C> EvaluationContext<C> {
 	pub fn pointer(&self) -> PointerState {
 		self.runtime.borrow().pointer
 	}
+
+	/// Returns the engine's captured drag gesture, if a source is held.
+	pub fn drag(&self) -> Option<DragCapture> {
+		self.runtime.borrow().drag.capture()
+	}
 }
 
 impl<C: 'static> Context<C> for EvaluationContext<C> {
@@ -164,6 +169,10 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 
 	fn pointer(&self) -> PointerState {
 		EvaluationContext::pointer(self)
+	}
+
+	fn drag(&self) -> Option<DragCapture> {
+		EvaluationContext::drag(self)
 	}
 
 	fn request_focus(&mut self) {

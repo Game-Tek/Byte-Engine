@@ -68,6 +68,7 @@ pub struct Runtime {
 	pub(super) focus_stack: Vec<Id>,
 	pub(super) geometry: HashMap<Id, Geometry>,
 	pub(super) pointer: PointerState,
+	pub(super) drag: Drag,
 	pub(super) frame: u64,
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
 }
@@ -103,6 +104,7 @@ impl Runtime {
 			focus_stack: Vec::new(),
 			geometry: HashMap::new(),
 			pointer: PointerState::default(),
+			drag: Drag::new(DRAG_THRESHOLD),
 			frame: 0,
 			tree: Rc::new(RefCell::new(RetainedTree::new())),
 		}

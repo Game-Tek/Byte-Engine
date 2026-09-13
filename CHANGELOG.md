@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Reworked input around two classes: every source event is recorded into an `InputCollector`, and each consumer owns an `InputSink` that declares its actions, pulls them once per tick, and answers `Capture::Captured` to keep the source event from later sinks. `InputEvents`, `ActionProcessor`, and `InputManager` are replaced; `GraphicsApplication::input_system` is replaced by `GraphicsApplication::input`, and manual action queuing is removed in favor of publishing `ActionEvent` values directly.
+- A value driven by a record is no longer repeated a second time in the same tick by `TickPolicy::WhileActive` or `TickPolicy::Always`.
+- Retained control values live in a dense per-seat, device, and trigger table instead of a hash map, each sink keeps a sorted control-to-action index so a record only visits the actions bound to it, and binding gates are classified when resolved. `InputCollector::has_trigger` is replaced by `InputCollector::trigger`, which returns the handle for recording without a name lookup, and the public `TriggerMapping` alias is removed.
+- `InputCollector::end_tick` is removed. Each sink reads from its own position in the queue, and a record is retained and dropped once every sink has pulled past it.
+- `process_default_window_input` records into the collector itself and discards the seat on focus loss, minimize, close, and resize, returning whether it did.
+- The UI `Engine` owns the pointer drag: `Engine::press`, `Engine::drag_to`, `Engine::release`, and `Engine::drag` replace the standalone `Drag` type, components read the held source through `Context::drag`, and `Engine::cancel` ends the interaction in progress. A changed viewport size cancels from `Engine::evaluate`.
+
 ## 0.2.0 - 2026-08-20
 
 - Added skeletal animation sampling, blending, inertialization, root motion, animation graphs, and reusable runtime players.

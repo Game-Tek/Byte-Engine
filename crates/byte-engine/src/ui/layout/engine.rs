@@ -41,6 +41,9 @@ struct RetainedRender {
 	render: Render,
 }
 
+/// Layout distance a captured pointer must travel before a press becomes a drag.
+const DRAG_THRESHOLD: f32 = 6.0;
+
 static NEXT_RENDER_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl<C> Drop for Engine<C> {
@@ -189,9 +192,14 @@ impl<C: 'static> Engine<C> {
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
 	///
-	/// Next, pass the mutable snapshot to [`Self::render`] and submit the returned
-	/// render data through [`crate::ui::UiRenderPass`].
+	/// A changed viewport size first ends the interaction in progress as
+	/// [`Self::cancel`] does. Next, pass the mutable snapshot to [`Self::render`]
+	/// and submit the returned render data through [`crate::ui::UiRenderPass`].
 	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
+		// Layout distances and the held source's place change with the viewport.
+		if self.retained_layout.as_ref().is_some_and(|retained| retained.size != size) {
+			self.cancel();
+		}
 		self.sync_pointer_state();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
@@ -522,6 +530,52 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
+	/// Captures a hit-tested source for a pointer gesture at a layout position.
+	///
+	/// Returns `false` while another source is held. Next, forward pointer motion
+	/// through [`Self::drag_to`] without hit testing the source again.
+	pub fn press(&mut self, source: Id, position: UiPoint) -> bool {
+		self.runtime.borrow_mut().drag.press(source, position)
+	}
+
+	/// Moves the captured pointer and reports whether a source is held.
+	///
+	/// The gesture activates once the pointer travels the drag threshold and stays
+	/// active if it returns. Next, call [`Self::release`] when the pointer is released.
+	pub fn drag_to(&mut self, position: UiPoint) -> bool {
+		self.runtime.borrow_mut().drag.move_to(position)
+	}
+
+	/// Releases the captured source and returns a drop only after activation.
+	///
+	/// The release position participates in threshold detection. A click clears
+	/// capture without yielding a drop. Next, validate the returned position
+	/// against your drop target before applying the source's meaning.
+	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
+		self.runtime.borrow_mut().drag.release(position)
+	}
+
+	/// Returns the captured drag gesture, if a source is held.
+	pub fn drag(&self) -> Option<DragCapture> {
+		self.runtime.borrow().drag.capture()
+	}
+
+	/// Ends the interaction in progress and returns the source of a cancelled drag.
+	///
+	/// Queued clicks, scrolls, key presses, and text edits are discarded, held
+	/// keys and the pointer are released, and a held source is restored without a
+	/// drop. Call this when the window loses focus or the user cancels; a changed
+	/// viewport size calls it from [`Self::evaluate`].
+	pub fn cancel(&mut self) -> Option<Id> {
+		self.is_clicking = false;
+		self.clicks.clear();
+		self.scrolls.clear();
+		self.key_states.clear();
+		self.key_presses.clear();
+		self.text_edits.clear();
+		self.runtime.borrow_mut().drag.cancel()
+	}
+
 	fn focused_text_field_last_char(&mut self) -> Option<char> {
 		let target = {
 			let state = self.state.borrow();
@@ -640,6 +694,83 @@ mod tests {
 		fn drop(&mut self) {
 			self.0.fetch_add(1, Ordering::Relaxed);
 		}
+	}
+
+	/// Mounts a component that records the drag it sees on every frame.
+	fn drag_observer() -> (Engine, Arc<StdMutex<Vec<Option<DragCapture>>>>) {
+		let observed = Arc::new(StdMutex::new(Vec::new()));
+		let observed_for_task = Arc::clone(&observed);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			let observed = Arc::clone(&observed_for_task);
+			Box::pin(async move {
+				loop {
+					observed.lock().expect("expected test value").push(ctx.drag());
+					ctx.render().await;
+				}
+			})
+		});
+		(engine, observed)
+	}
+
+	#[test]
+	fn press_activates_after_the_threshold_and_release_yields_the_drop_once() {
+		let frame_allocator = bumpalo::Bump::new();
+		let (mut engine, observed) = drag_observer();
+		let source = Id::new(7).expect("expected test value");
+		assert!(engine.press(source, UiPoint::new(10.0, 20.0)));
+		assert!(!engine.press(source, UiPoint::zero()));
+		assert!(engine.drag_to(UiPoint::new(12.0, 22.0)));
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let held = observed.lock().expect("expected test value")[0].expect("expected test value");
+		assert!(!held.dragging);
+		assert_eq!(held.position, UiPoint::new(12.0, 22.0));
+		// The release itself can supply the motion that reaches the threshold.
+		let dropped = engine.release(UiPoint::new(30.0, 20.0)).expect("expected test value");
+		assert_eq!(dropped.source, source);
+		assert_eq!(dropped.position, UiPoint::new(30.0, 20.0));
+		assert!(engine.drag().is_none());
+		assert!(engine.release(UiPoint::new(30.0, 20.0)).is_none());
+		assert!(!engine.drag_to(UiPoint::zero()));
+	}
+
+	#[test]
+	fn click_restores_source_without_a_drop() {
+		let mut engine = Engine::new();
+		assert!(engine.press(Id::new(1).expect("expected test value"), UiPoint::new(10.0, 20.0)));
+		assert!(engine.release(UiPoint::new(12.0, 22.0)).is_none());
+		assert!(engine.drag().is_none());
+	}
+
+	#[test]
+	fn cancel_restores_the_source_and_discards_queued_input() {
+		let frame_allocator = bumpalo::Bump::new();
+		let (mut engine, observed) = drag_observer();
+		let source = Id::new(3).expect("expected test value");
+		engine.press(source, UiPoint::zero());
+		engine.drag_to(UiPoint::new(10.0, 0.0));
+		engine.update_click_state(true);
+		assert_eq!(engine.cancel(), Some(source));
+		assert_eq!(engine.cancel(), None);
+		assert!(engine.release(UiPoint::new(10.0, 0.0)).is_none());
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		assert_eq!(observed.lock().expect("expected test value")[0], None);
+		assert!(!engine.runtime.borrow().pointer.pressed);
+		assert!(engine.press(source, UiPoint::zero()));
+	}
+
+	#[test]
+	fn resized_viewport_cancels_the_held_source_before_evaluation() {
+		let frame_allocator = bumpalo::Bump::new();
+		let (mut engine, observed) = drag_observer();
+		let source = Id::new(3).expect("expected test value");
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.press(source, UiPoint::zero());
+		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let _ = engine.evaluate(Size::new(50, 100), &frame_allocator);
+		let observed = observed.lock().expect("expected test value");
+		assert!(observed[1].is_some());
+		assert_eq!(observed[2], None);
 	}
 
 	#[test]
@@ -2877,6 +3008,7 @@ use super::{
 use crate::ui::{
 	Container, Depth, Text, Transform, UiPoint, UiVector,
 	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
+	drag::{Drag, DragCapture, DragDrop},
 	font::TextSystem,
 	intersection::build_mouse_click_acceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},

@@ -36,50 +36,55 @@ the focused element.
 
 ## Drag a UI item onto an application target
 
-Keep a `Drag<ItemId>` in your UI input layer and create a position action with
-`ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")`.
-Retain each submitted snapshot with `Snapshot::retain_hit_test`, then use its
-`HitTest` to resolve a source when the action starts. Convert positions with
-`HitTest::layout_position` so the drag threshold uses layout units.
+The engine owns one pointer drag. Create a position action with
+`ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")`
+in your UI's input sink. Retain each submitted snapshot with
+`Snapshot::retain_hit_test`, then use its `HitTest` to resolve a source when the
+action starts. Convert positions with `HitTest::layout_position` so the drag
+threshold uses layout units.
 
-Forward the action phases to the same gesture. In this example, `item_for`
-resolves a UI source to your item identifier, and `accept_drop` validates the
-application target before changing application state:
+Forward the action phases to the engine. In this example, `is_draggable`
+recognizes the retained sources your component created, and `accept_drop`
+maps the released source to your data and validates the application target
+before changing application state:
 
 ```rust
 let point = hits.layout_position(window_position);
 match phase {
     ActionPhase::Started => {
-        if let Some(source) = hits.query(window_position)
-            && let Some(item) = item_for(source)
-        {
-            let _ = drag.press((), source, item, point);
+        if let Some(source) = hits.query(window_position).filter(is_draggable) {
+            engine.press(source, point);
         }
     }
     ActionPhase::Updated => {
-        drag.move_to((), point);
+        engine.drag_to(point);
     }
     ActionPhase::Ended => {
-        if let Some(drop) = drag.release((), point) {
+        if let Some(drop) = engine.release(point) {
             accept_drop(drop);
         }
     }
     ActionPhase::Cancelled => {
-        drag.cancel();
+        engine.cancel();
     }
 }
 ```
 
-Consume a captured gesture in your UI layer before gameplay processes the same
+Capture the gesture in your UI's sink before gameplay processes the same
 input. Continue forwarding motion and release outside the source; repeat hit
-testing only when choosing a new source or a drop target. Use `Drag::capture`
-to draw a floating preview after `dragging` becomes true, while keeping the
-original item until the drop is accepted. A click, cancellation, or rejected
-drop then restores its normal appearance. When scaling a preview, use
-`Transform::origin(UiPoint::zero())` to keep its top-left corner anchored.
-Call `Drag::cancel` when the window
-loses focus or the source disappears. The UI supplies the gesture and geometry;
-your application decides which targets accept the item and how to apply it.
+testing only when choosing a new source or a drop target. Components read the
+held source through `Context::drag` to draw a floating preview after `dragging`
+becomes true, while keeping the original item until the drop is accepted. A
+click, cancellation, or rejected drop then restores its normal appearance. When
+scaling a preview, use `Transform::origin(UiPoint::zero())` to keep its top-left
+corner anchored.
+
+`Engine::cancel` ends the interaction in progress: it restores the held source
+and discards queued clicks, scrolls, key presses, and text edits. Call it when
+the window loses focus or the user cancels. A changed viewport size cancels
+from `Engine::evaluate`, because layout distances and the source's place move
+with it. The UI supplies the gesture and geometry; your application decides
+which targets accept the item and how to apply it.
 
 ## Work within the current limits
 

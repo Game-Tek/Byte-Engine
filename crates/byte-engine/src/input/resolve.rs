@@ -1,25 +1,24 @@
-//! Pure action value conversion. The caller supplies the control values its layer may read.
+//! Pure conversion of control values into an action's value type.
+//!
+//! The caller supplies `read`, which returns the control values its sink may
+//! see. Nothing here touches the queue or the registry.
 
 use std::f32::consts::PI;
 
-use super::action::TriggerMapping;
-use super::events::Record;
+use super::gesture::TriggerMapping;
+use super::queue::Record;
 use super::{Axis2, Axis3, Function, TriggerHandle, Types, Value};
 
-/// Resolves one action value from the latest trigger record and current trigger state.
-pub(super) fn resolve_action_value(
+/// Resolves one action value from the record driving `mapping` and the visible control state.
+pub(super) fn resolve_value(
 	kind: Types,
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
 	record: &Record,
 	read: &impl Fn(TriggerHandle) -> Option<Record>,
 ) -> Option<Value> {
-	// Snapshot bindings convert the retained source value at the trigger's place in the queue.
-	let record = if mapping.trigger.is_some() {
-		read(mapping.input_source)?
-	} else {
-		*record
-	};
+	// A gated binding converts the source value visible at the button's place in the queue.
+	let record = if mapping.gated() { read(mapping.source)? } else { *record };
 	match kind {
 		Types::Boolean => match record.value {
 			Value::Bool(value) => Some(Value::Bool(value)),
@@ -37,7 +36,7 @@ pub(super) fn resolve_action_value(
 	}
 }
 
-/// Resolves a scalar, giving the newest active boolean binding priority.
+/// Resolves a scalar, giving the most recently pressed boolean binding priority.
 fn resolve_float(
 	mappings: &[TriggerMapping],
 	mapping: &TriggerMapping,
@@ -133,7 +132,7 @@ fn active_boolean_mappings<'a>(
 	read: &'a impl Fn(TriggerHandle) -> Option<Record>,
 ) -> impl Iterator<Item = (&'a TriggerMapping, Record)> + 'a {
 	mappings.iter().filter_map(|mapping| {
-		let record = read(mapping.input_source)?;
+		let record = read(mapping.source)?;
 		(record.value == Value::Bool(true)).then_some((mapping, record))
 	})
 }

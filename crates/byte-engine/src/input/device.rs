@@ -5,7 +5,7 @@
 //! classes through [`TriggerRegistry`](crate::input::TriggerRegistry), using the
 //! predefined layouts in [`utils`](crate::input::utils) where they fit, then
 //! create devices with
-//! [`InputEvents::create_device`](crate::input::InputEvents::create_device).
+//! [`InputCollector::create_device`](crate::input::InputCollector::create_device).
 
 /// The [`DeviceClass`] struct groups the trigger layout shared by one category of
 /// input devices.

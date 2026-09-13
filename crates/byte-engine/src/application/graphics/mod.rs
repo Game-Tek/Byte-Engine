@@ -70,7 +70,10 @@ pub struct GraphicsApplication {
 	physics_transforms_listener: DefaultListener<TransformationUpdate>,
 	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
 
-	input_system: input::InputManager,
+	/// Every window and gamepad event ends up here before the world's actions pull it.
+	input: input::InputCollector,
+	/// The sink for actions declared through the world. It captures nothing.
+	actions: input::InputSink,
 	gamepad_system: Option<input::gamepad::GamepadSystem>,
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
@@ -119,7 +122,9 @@ impl Application for GraphicsApplication {
 
 		let world = DefaultWorld::with_messages(world_messages);
 		let action_events = world.messages().channel();
-		let input_system = input::InputManager::new(world.factory::<Action>().listener(), action_events.clone());
+		let mut input = input::InputCollector::new();
+		let actions = input::InputSink::new(input.add_sink(), action_events.clone())
+			.with_declarations(world.factory::<Action>().listener());
 		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
 		// the first frame has reached the screen.
 		let gamepad_system = None;
@@ -200,7 +205,8 @@ impl Application for GraphicsApplication {
 			physics_transforms_listener,
 			renderer_transforms_listener,
 
-			input_system,
+			input,
+			actions,
 			gamepad_system,
 			gamepad_device_class_handle: None,
 			resource_manager,
@@ -263,15 +269,15 @@ impl GraphicsApplication {
 			for event in window_events {
 				self.window_events.send(event);
 				close |= matches!(event, ghi::window::Events::Close);
-				if let Some((seat, device, action, value)) = process_default_window_input(self.input_system.events(), event) {
-					self.input_system.record_trigger_value_for_device(seat, device, action, value);
+				if process_default_window_input(&mut self.input, event) {
+					self.actions.cancel_seat(input::SeatHandle::stub());
 				}
 			}
 		}
 		close
 	}
 
-	/// Polls newly connected gamepads and forwards their trigger values into the input manager.
+	/// Polls newly connected gamepads and records their trigger values into the collector.
 	fn process_gamepad_events(&mut self) {
 		let span = debug_span!("GraphicsApplication::process_gamepad_events");
 		let _enter = span.enter();
@@ -287,7 +293,7 @@ impl GraphicsApplication {
 		if let Some(device_class) = self.gamepad_device_class_handle {
 			for (path, kind, device) in new_devices {
 				// Keep physical HID identity distinct so player and device routing is preserved.
-				let device_handle = self.input_system.create_device(&device_class);
+				let device_handle = self.input.create_device(&device_class);
 				gamepad_system.add_device(path, kind, device, device_handle);
 			}
 		} else if !new_devices.is_empty() {
@@ -304,7 +310,7 @@ impl GraphicsApplication {
 				event.trigger(),
 				event.value()
 			);
-			self.input_system.record_trigger_value_for_device(
+			self.input.record(
 				input::SeatHandle::stub(),
 				event.device_handle(),
 				event.trigger(),
@@ -370,7 +376,8 @@ impl GraphicsApplication {
 		{
 			let span = debug_span!("GraphicsApplication::update_input");
 			let _enter = span.enter();
-			self.input_system.update();
+			// The world's sink is the only sink here, so it captures nothing.
+			self.actions.pull(&mut self.input, |_| input::Capture::Passed);
 		}
 
 		// Physics publishes its results back to the shared transform route. Discard
@@ -461,9 +468,12 @@ impl GraphicsApplication {
 		);
 	}
 
-	/// Returns the input manager that owns devices, triggers, and action state.
-	pub fn input_system(&self) -> &input::InputManager {
-		&self.input_system
+	/// Returns the collector that owns the registered devices and their control values.
+	///
+	/// Declared [`Action`] values are published through the world's
+	/// [`ActionEvent`](input::ActionEvent) channel.
+	pub fn input(&self) -> &input::InputCollector {
+		&self.input
 	}
 
 	/// Returns the renderer used by setup functions and advanced render integrations.
@@ -725,35 +735,6 @@ mod tests {
 		assert_eq!(update.value(), &crate::configuration::ConfigurationValue::from("bypassed"));
 		assert!(port.read().is_none());
 		assert_eq!(configuration.events().len(), 1);
-	}
-
-	#[test]
-	fn world_actions_reach_the_input_manager_with_their_entity_handle() {
-		let message_bus = MessageBus::default();
-		let world = DefaultWorld::with_messages(message_bus.new_scope("world"));
-		let action_events = world.messages().channel();
-		let mut action_listener = action_events.listener();
-		let mut input_manager = input::InputManager::new(world.factory::<Action>().listener(), action_events);
-		let mouse_class = input::utils::register_mouse_device_class(&mut input_manager);
-		let mouse = input_manager.create_device(&mouse_class);
-		let action = world
-			.create(Action::new(
-				&[input::ActionBindingDescription::new("Mouse.Scroll")],
-				input::Types::Float,
-			))
-			.with(crate::gameplay::Name::new("Zoom"));
-		let action_handle = action.handle();
-
-		input_manager.update();
-		input_manager.record_trigger_value_for_device(
-			input::SeatHandle::stub(),
-			mouse,
-			input::TriggerReference::Name("Mouse.Scroll"),
-			input::Value::Float(1.0),
-		);
-		input_manager.update();
-
-		assert_eq!(action_listener.read().expect("action event").handle(), action_handle);
 	}
 }
 

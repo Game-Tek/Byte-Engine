@@ -93,11 +93,13 @@ Components can also receive the gesture as events. The source gets
 once the started drag is released or cancelled. The surface under the release
 point, and then each of its ancestors, gets `Events::Dropped` with
 `UiEvent::source` set to the released source; the source itself is skipped when
-finding that surface. The engine resolves the target during the next
-`Engine::evaluate` and delivers the source's `DragEnded` after it, so a target
-can claim the source before the source reacts. When one component awaits both,
-use `select_biased!` with the `Dropped` arm first; `select!` polls its arms in
-random order. A component that owns a drop target awaits it like a click:
+finding that surface. The engine resolves the target at the start of the next
+`Engine::evaluate` from the previous frame's hit geometry, before components
+run, so a component sees the drop and the cleared capture in the same poll. The
+source's `DragEnded` is queued after the drop; when one component awaits both,
+use `select_biased!` with the `Dropped` arm first, because `select!` polls its
+arms in random order. A component that owns a drop target awaits it like a
+click:
 
 ```rust
 loop {

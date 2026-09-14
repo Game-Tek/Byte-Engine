@@ -1,3 +1,4 @@
+use smallvec::{SmallVec, smallvec};
 use utils::RGBA;
 
 #[derive(Clone)]
@@ -93,13 +94,14 @@ pub trait Layer {
 
 #[derive(Clone)]
 pub struct ConcreteStyle {
-	pub(crate) layers: Vec<ConcreteLayer>,
+	// A default fill needs no allocation; layered styles can still grow normally.
+	pub(crate) layers: SmallVec<[ConcreteLayer; 1]>,
 }
 
 impl Default for ConcreteStyle {
 	fn default() -> Self {
 		Self {
-			layers: vec![ConcreteLayer::default()],
+			layers: smallvec![ConcreteLayer::default()],
 		}
 	}
 }
@@ -110,7 +112,7 @@ impl ConcreteStyle {
 	/// This style produces invisible elements. Use [`ConcreteStyle::default`] to
 	/// create a style with one visible default layer.
 	pub fn new() -> Self {
-		Self { layers: Vec::new() }
+		Self { layers: SmallVec::new() }
 	}
 
 	pub fn layer(mut self, layer: impl Into<ConcreteLayer>) -> Self {
@@ -227,7 +229,7 @@ impl Layer for ConcreteLayer {
 
 impl From<ConcreteLayer> for ConcreteStyle {
 	fn from(val: ConcreteLayer) -> Self {
-		ConcreteStyle { layers: vec![val] }
+		ConcreteStyle { layers: smallvec![val] }
 	}
 }
 

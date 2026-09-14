@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::{
-	ContainerContext, Position, Sizing, flow,
+	ContainerContext, Curve, CurvePath, Position, Sizing, flow,
 	style::{ConcreteLayer, ConcreteStyle, Layer},
 };
 
@@ -88,6 +88,21 @@ fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 	engine
 }
 
+/// Compares all layer properties consumed by the renderer.
+fn assert_same_style(actual: &ConcreteStyle, expected: &ConcreteStyle) {
+	assert_eq!(actual.layers().len(), expected.layers().len());
+	for (actual, expected) in actual.layers().iter().zip(expected.layers()) {
+		match (actual.fill(), expected.fill()) {
+			(Color::Value(actual), Color::Value(expected)) => assert_eq!(actual, expected),
+			(Color::Sample(actual), Color::Sample(expected)) => assert_eq!(actual, expected),
+			_ => panic!("Render layer colors differ"),
+		}
+		assert_eq!(actual.kind(), expected.kind());
+		assert_eq!(actual.feather(), expected.feather());
+		assert_eq!(actual.backdrop_blur_radius(), expected.backdrop_blur_radius());
+	}
+}
+
 /// Compares the geometry, inherited appearance, and content consumed by the renderer.
 fn assert_same_render(actual: &Render, expected: &Render) {
 	assert_eq!(actual.size(), expected.size());
@@ -115,14 +130,8 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				expected.corner_exponent
 			),
 		);
-		assert_eq!(actual.style.layers().len(), expected.style.layers().len());
-		for (actual, expected) in actual.style.layers().iter().zip(expected.style.layers()) {
-			let (Color::Value(actual_color), Color::Value(expected_color)) = (actual.fill(), expected.fill()) else {
-				panic!("Expected solid fixture colors")
-			};
-			assert_eq!(actual_color, expected_color);
-			assert_eq!(actual.feather(), expected.feather());
-		}
+		assert_eq!(actual.backdrop_blur_radius, expected.backdrop_blur_radius);
+		assert_same_style(&actual.style, &expected.style);
 	}
 	assert_eq!(actual.texts().count(), expected.texts().count());
 	for (actual, expected) in actual.texts().zip(expected.texts()) {
@@ -148,6 +157,106 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				&expected.content
 			),
 		);
+		assert_eq!(actual.color, expected.color);
+	}
+	assert_eq!(actual.curves().count(), expected.curves().count());
+	for (actual, expected) in actual.curves().zip(expected.curves()) {
+		assert_eq!(
+			(
+				actual.id,
+				actual.position,
+				actual.size,
+				actual.clip,
+				actual.feather_mask,
+				actual.opacity,
+				&actual.segments
+			),
+			(
+				expected.id,
+				expected.position,
+				expected.size,
+				expected.clip,
+				expected.feather_mask,
+				expected.opacity,
+				&expected.segments
+			),
+		);
+		assert_same_style(&actual.style, &expected.style);
+	}
+}
+
+/// Replaces a scope with different text, layers, paths, depths, and element counts.
+fn changing_content_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
+	let mut engine = Engine::with_context(std::cell::Cell::new(stage));
+	engine.mount(|ctx| {
+		Box::pin(async move {
+			let mut root = ctx.element("root").container(Container::default().clip(false));
+			loop {
+				root.element("screen")
+					.mount(|ctx| {
+						Box::pin(async move {
+							let stage = ctx.ctx().get();
+							let mut root = ctx
+								.element("root")
+								.container(Container::default().clip(false).flow(flow::row));
+							for index in 0..[3, 3, 1, 0, 4, 2][stage] {
+								let style = ConcreteStyle::from_layers((0..[1, 3, 0, 1, 2, 1][stage]).map(|layer| {
+									ConcreteLayer::default()
+										.color(RGBA::new(stage as f32 / 6.0, layer as f32 / 3.0, 0.5, 1.0).into())
+										.stroke(layer as f32 + 1.0)
+										.feather(EdgeFeather::all(stage as f32))
+								}));
+								let mut panel = root.element(["a", "b", "c", "d"][index]).container(
+									Container::default()
+										.size((30 + stage as u32).into())
+										.clip(false)
+										.flow(flow::column)
+										.depth(Depth::Absolute((index as i32 + stage as i32) % 3))
+										.corner_radius(stage as f32)
+										.opacity(1.0 - stage as f32 / 10.0)
+										.style(style.clone()),
+								);
+								panel.element("text").text(
+									Text::new(
+										["Long initial content", "X", "Longer replacement text", "", "Grow again", "Y"][stage],
+									)
+									.font_size(10.0 + stage as f32)
+									.style(style.clone()),
+								);
+								let mut path = CurvePath::new(20.into(), 20.into());
+								for segment in 0..[3, 1, 4, 0, 2, 1][stage] {
+									path = path.line((0.0, segment as f32), (10.0 + stage as f32, 10.0));
+								}
+								panel.element("curve").curve(Curve::new(path).style(style));
+							}
+							while ctx.ctx().get() == stage {
+								ctx.render().await;
+							}
+						})
+					})
+					.await;
+			}
+		})
+	});
+	engine
+}
+
+#[test]
+fn rebuilt_render_matches_fresh_content_and_preserves_older_clones() {
+	let mut engine = changing_content_scene(0);
+	let mut allocator = bumpalo::Bump::new();
+	let mut original = None;
+	for stage in 0..6 {
+		allocator.reset();
+		engine.ctx().set(stage);
+		let mut fresh = changing_content_scene(stage);
+		let mut actual = engine.evaluate(Size::new(200, 200), &allocator);
+		let mut expected = fresh.evaluate(Size::new(200, 200), &allocator);
+		let actual = engine.render(&mut actual);
+		let expected = fresh.render(&mut expected);
+		assert_same_render(actual, expected);
+		let (original, expected_original) = original.get_or_insert_with(|| (actual.clone(), expected.clone()));
+		assert_same_render(original, expected_original);
 	}
 }
 
@@ -167,15 +276,80 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 		let mut actual = engine.evaluate(size, &allocator);
 		let mut expected = fresh.evaluate(size, &allocator);
 		assert_same_render(engine.render(&mut actual), fresh.render(&mut expected));
+		let mut actual_hits = crate::ui::intersection::HitTest::default();
+		let mut expected_hits = crate::ui::intersection::HitTest::default();
+		actual.retain_hit_test(&mut actual_hits);
+		expected.retain_hit_test(&mut expected_hits);
 		for x in [0.0, 10.0, 30.0, 50.0, 90.0] {
 			for y in [0.0, 20.0, 80.0] {
-				assert_eq!(
-					actual.hit(UiPoint::new(x, y), None),
-					expected.hit(UiPoint::new(x, y), None),
-					"stage {stage}"
-				);
+				let point = UiPoint::new(x * 2.0 / size.x() - 1.0, 1.0 - y * 2.0 / size.y());
+				assert_eq!(actual_hits.query(point), expected_hits.query(point), "stage {stage}");
 			}
 		}
+	}
+}
+
+#[test]
+fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
+	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
+	fn stateful(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
+		crate::ui::FlowOutput::new(crate::ui::Offset::new(OFFSET.with(std::cell::Cell::get), 0.0), input.cursor())
+	}
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		Box::pin(async move {
+			let mut root = ctx
+				.element("root")
+				.container(Container::default().flow(flow::row_with_gap(3)));
+			let mut first = root
+				.element("a")
+				.container(Container::default().width(20.into()).height(10.into()));
+			root.element("b")
+				.container(Container::default().width(20.into()).height(10.into()));
+			ctx.render().await;
+			root.update_container(|value| value.set_opacity(0.5));
+			ctx.render().await;
+			root.update_container(|value| {
+				value.flow =
+					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::row_with_gap(7))
+			});
+			ctx.render().await;
+			root.update_container(|value| value.set_opacity(0.25));
+			ctx.render().await;
+			root.update_container(|value| {
+				value.flow =
+					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::column_with_gap(4))
+			});
+			ctx.render().await;
+			root.update_container(|value| {
+				value.flow = utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::center)
+			});
+			ctx.render().await;
+			// Replacing a built-in through the public field must enable the custom-flow fallback.
+			root.update_container(|value| {
+				value.flow =
+					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(stateful as fn(_) -> _)
+			});
+			ctx.render().await;
+			OFFSET.with(|offset| offset.set(13.0));
+			first.update_container(|value| value.set_opacity(0.5));
+		})
+	});
+	let mut allocator = bumpalo::Bump::new();
+	for (x, y) in [
+		(23.0, 0.0),
+		(23.0, 0.0),
+		(27.0, 0.0),
+		(27.0, 0.0),
+		(0.0, 14.0),
+		(40.0, 45.0),
+		(0.0, 0.0),
+		(13.0, 0.0),
+	] {
+		allocator.reset();
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let position = engine.render(&mut snapshot).elements().last().unwrap().position;
+		assert_eq!((position.x(), position.y()), (x, y));
 	}
 }
 
@@ -257,9 +431,13 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	assert_eq!(child.opacity, 0.25);
 	assert_eq!(child.clip, None);
 	let child_id = Id::new(child.id).unwrap();
-	assert_eq!(clicked.hit(UiPoint::new(45.0, 5.0), None), None);
+	let mut hits = crate::ui::intersection::HitTest::default();
+	clicked.retain_hit_test(&mut hits);
+	let point = UiPoint::new(-0.1, 0.9);
+	assert_eq!(hits.query(point), None);
 	let next = engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(next.hit(UiPoint::new(45.0, 5.0), None), Some(child_id));
+	next.retain_hit_test(&mut hits);
+	assert_eq!(hits.query(point), Some(child_id));
 }
 
 #[test]

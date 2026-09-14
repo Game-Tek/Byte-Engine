@@ -2,9 +2,48 @@ use std::collections::{HashMap, HashSet};
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 use crate::ui::{
+	Transform,
+	flow::{self, FlowOutput},
 	primitive::{Primitive, Primitives},
 	style::{EdgeFeather, Layer},
 };
+
+/// The `PlacementInputs` struct isolates container properties that can move or resize layout.
+#[derive(PartialEq)]
+struct PlacementInputs {
+	width: super::Sizing,
+	height: super::Sizing,
+	depth: super::Depth,
+	position: super::Position,
+	transform: Transform,
+	hit_testable: bool,
+	flow: (std::any::TypeId, FlowOutput),
+}
+
+/// Captures paint-independent layout inputs without copying styles or text.
+/// Other primitives conservatively remeasure after edits.
+fn placement_inputs(primitive: &Primitives) -> Option<PlacementInputs> {
+	let Primitives::Container(container) = primitive else {
+		return None;
+	};
+	Some(PlacementInputs {
+		width: container.width,
+		height: container.height,
+		depth: container.depth,
+		position: container.position,
+		transform: container.transform,
+		hit_testable: container.hit_testable,
+		flow: flow::placement_key(&container.flow)?,
+	})
+}
+
+/// Identifies flow replacements so geometry edits do not rescan the tree for custom callables.
+fn flow_type(primitive: &Primitives) -> Option<std::any::TypeId> {
+	match primitive {
+		Primitives::Container(container) => Some(container.flow.callable_type_id()),
+		_ => None,
+	}
+}
 
 // Clip inheritance depends on these container properties, independently of paint color.
 fn clip_inputs(primitive: &Primitives) -> Option<(bool, bool, f32, f32, Option<EdgeFeather>)> {
@@ -44,6 +83,10 @@ pub(super) struct RetainedTree {
 	next_id: u32,
 	/// Advances on every structural or property change so consumers can retain derived state.
 	revision: u64,
+	/// Advances when a mutation may change element positions, sizes, or hit participation.
+	pub(super) placement_revision: u64,
+	/// Advances when the set of flow types may change.
+	pub(super) flow_revision: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
 	pub(super) clip_revision: u64,
 	/// Clipping and inherited opacity can change independently of paint color.
@@ -120,6 +163,8 @@ impl RetainedTree {
 
 		self.element_indices.insert(id, self.elements.len());
 		self.revision += 1;
+		self.placement_revision = self.revision;
+		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 		self.elements.push(IdedElement {
@@ -171,6 +216,8 @@ impl RetainedTree {
 		self.children[parent_index].push(child_index);
 		self.relations.push((parent, child));
 		self.revision += 1;
+		self.placement_revision = self.revision;
+		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 		true
@@ -183,16 +230,28 @@ impl RetainedTree {
 		};
 		let element = &mut self.elements[index];
 		let primitive = &mut element.element.primitive;
+		let placement = placement_inputs(primitive);
+		let flow = flow_type(primitive);
 		let clip = clip_inputs(primitive);
 		let opacity = primitive.visual().opacity;
 		let old_clip_revision = self.clip_revision;
 		let old_appearance_revision = self.appearance_revision;
+		let old_placement_revision = self.placement_revision;
+		let old_flow_revision = self.flow_revision;
 		// Invalidate before application code runs, including when a callback unwinds.
 		self.revision += 1;
 		element.revision = self.revision;
+		self.placement_revision = self.revision;
+		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 		let updated = update(primitive);
+		if flow == flow_type(primitive) {
+			self.flow_revision = old_flow_revision;
+		}
+		if placement.is_some() && placement == placement_inputs(primitive) {
+			self.placement_revision = old_placement_revision;
+		}
 		if clip == clip_inputs(primitive) {
 			self.clip_revision = old_clip_revision;
 			if opacity == primitive.visual().opacity {
@@ -231,6 +290,8 @@ impl RetainedTree {
 			return &self.removed;
 		}
 		self.revision += 1;
+		self.placement_revision = self.revision;
+		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 

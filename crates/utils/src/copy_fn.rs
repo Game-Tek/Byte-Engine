@@ -1,4 +1,5 @@
 use std::{
+	any::TypeId,
 	fmt,
 	marker::PhantomData,
 	mem::{MaybeUninit, align_of, size_of},
@@ -66,10 +67,16 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 pub struct InlineCopyFn<Signature, const STORAGE_SIZE: usize = 16> {
 	storage: InlineStorage<STORAGE_SIZE>,
 	call: *const (),
+	type_id: fn() -> TypeId,
 	_signature: PhantomData<Signature>,
 }
 
 impl<Signature, const STORAGE_SIZE: usize> InlineCopyFn<Signature, STORAGE_SIZE> {
+	/// Returns the concrete callable's type, independently of its captured values.
+	pub fn callable_type_id(&self) -> TypeId {
+		(self.type_id)()
+	}
+
 	/// Checks whether `F` fits in the inline storage.
 	fn validate<F>() -> Result<(), InlineCopyFnError> {
 		if size_of::<F>() > STORAGE_SIZE {
@@ -102,6 +109,7 @@ impl<Signature, const STORAGE_SIZE: usize> InlineCopyFn<Signature, STORAGE_SIZE>
 		Ok(Self {
 			storage,
 			call,
+			type_id: TypeId::of::<F>,
 			_signature: PhantomData,
 		})
 	}
@@ -267,18 +275,22 @@ mod tests {
 		let function = InlineCopyFn::<fn(u32, u32) -> u32>::new(add);
 
 		assert_eq!(function.call(2, 3), 5);
+		assert_eq!(function.callable_type_id(), std::any::Any::type_id(&add));
+		assert_ne!(function.callable_type_id(), std::any::TypeId::of::<fn(u32, u32) -> u32>());
 	}
 
 	#[test]
 	fn stores_small_capturing_closures_and_supports_copying() {
 		let a = 3u64;
 		let b = 7u64;
-		let function = InlineCopyFn::<fn(u64) -> u64>::new(move |value| value + a + b);
+		let closure = move |value| value + a + b;
+		let function = InlineCopyFn::<fn(u64) -> u64>::new(closure);
 		let copied = function;
 		let cloned = function;
 
 		assert_eq!(copied.call(1), 11);
 		assert_eq!(cloned.call(5), 15);
+		assert_eq!(copied.callable_type_id(), std::any::Any::type_id(&closure));
 	}
 
 	#[test]

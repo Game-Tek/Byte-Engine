@@ -190,22 +190,30 @@ pub fn grid(input: FlowInput) -> FlowOutput {
 	FlowOutput::new(offset, Offset(offset.0 + size.0, offset.1 + size.1))
 }
 
+/// Places children in a row with a fixed gap after each child.
 pub fn row_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
-	let gap = gap.into() as f32;
-	move |input| {
-		let offset = input.cursor;
-		let size = input.child_size;
-		FlowOutput::new(offset, Offset(offset.0 + size.0 + gap, offset.1))
+	// Keep the callable type independent of the caller's numeric type.
+	fn with_gap(gap: f32) -> impl FlowFunction {
+		move |input| {
+			let offset = input.cursor;
+			let size = input.child_size;
+			FlowOutput::new(offset, Offset(offset.0 + size.0 + gap, offset.1))
+		}
 	}
+	with_gap(gap.into() as f32)
 }
 
+/// Places children in a column with a fixed gap after each child.
 pub fn column_with_gap(gap: impl Into<f64>) -> impl FlowFunction {
-	let gap = gap.into() as f32;
-	move |input| {
-		let offset = input.cursor;
-		let size = input.child_size;
-		FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 + gap))
+	// Keep the callable type independent of the caller's numeric type.
+	fn with_gap(gap: f32) -> impl FlowFunction {
+		move |input| {
+			let offset = input.cursor;
+			let size = input.child_size;
+			FlowOutput::new(offset, Offset(offset.0, offset.1 + size.1 + gap))
+		}
 	}
+	with_gap(gap.into() as f32)
 }
 
 pub fn centered_row(input: FlowInput) -> FlowOutput {
@@ -236,6 +244,32 @@ pub fn center(input: FlowInput) -> FlowOutput {
 }
 
 pub trait FlowFunction = Fn(FlowInput) -> FlowOutput + Copy;
+
+/// Identifies pure built-in flows and the gap captured by their closure variants.
+/// Custom callables, including erased function pointers, must replay placement.
+pub(crate) fn placement_key(flow: &utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>) -> Option<(std::any::TypeId, FlowOutput)> {
+	use std::any::Any;
+	let kind = flow.callable_type_id();
+	let builtin = [
+		row.type_id(),
+		column.type_id(),
+		grid.type_id(),
+		centered_row.type_id(),
+		centered_column.type_id(),
+		center.type_id(),
+		row_with_gap(0.0).type_id(),
+		column_with_gap(0.0).type_id(),
+	]
+	.contains(&kind);
+	// The gap is the only captured input in built-in flows. Zero sizes and cursor
+	// expose it without rounding it against a nonzero size or copying closure bytes.
+	builtin.then(|| {
+		(
+			kind,
+			flow.call(FlowInput::new(Size::new(0, 0), Offset::new(0, 0), Size::new(0, 0))),
+		)
+	})
+}
 
 impl Location3 {
 	pub fn new(x: impl Into<f64>, y: impl Into<f64>, z: u32) -> Self {

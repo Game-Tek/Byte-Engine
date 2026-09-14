@@ -101,6 +101,9 @@ impl Container {
 		}
 	}
 
+	/// Places this container at an offset from its parent's top-left corner
+	/// instead of in the parent's flow. A container with [`Depth::absolute`]
+	/// is placed from the viewport's corner instead.
 	pub fn absolute_position(self, x: impl Into<f64>, y: impl Into<f64>) -> Self {
 		self.position(Position::absolute(x, y))
 	}

@@ -34,6 +34,9 @@ pub struct Engine<C = ()> {
 struct RetainedLayout {
 	/// Last evaluated mutation; `revision` advances only when snapshot geometry changes.
 	tree_revision: u64,
+	placement_revision: u64,
+	flow_revision: u64,
+	has_custom_flows: bool,
 	clip_revision: u64,
 	revision: u64,
 	size: Size,
@@ -228,6 +231,7 @@ impl<C: 'static> Engine<C> {
 			self.cancel();
 		}
 		self.sync_pointer_state();
+		self.route_drops();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
 
@@ -240,8 +244,8 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
-	// Custom flows may read captured state. Replay placement on mutations, then preserve
-	// derived geometry when its result and the clipping inputs did not change.
+	// Paint changes reuse placement for built-in flows. Custom flows may read captured
+	// state, so they still replay after any mutation, including changes to other nodes.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
@@ -251,19 +255,38 @@ impl<C: 'static> Engine<C> {
 			.as_ref()
 			.is_some_and(|retained| retained.tree_revision == revision && retained.size == size);
 		if !unchanged {
-			let mut elements = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
-			apply_visual_transforms(&mut elements, &tree, frame_allocator);
+			let placement_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
+				retained.placement_revision == tree.placement_revision && !retained.has_custom_flows && retained.size == size
+			});
+			let previous = self
+				.retained_layout
+				.as_ref()
+				.filter(|_| placement_unchanged)
+				.map(|retained| Rc::clone(&retained.elements));
+			let mut placed;
+			let elements = if let Some(previous) = &previous {
+				previous.as_slice()
+			} else {
+				placed = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
+				apply_visual_transforms(&mut placed, &tree, frame_allocator);
+				placed.as_slice()
+			};
+			let has_custom_flows = self.retained_layout.as_ref()
+				.filter(|retained| retained.flow_revision == tree.flow_revision)
+				.map_or_else(|| tree.elements.iter().any(|element| {
+					matches!(&element.element.primitive, Primitives::Container(container) if crate::ui::flow::placement_key(&container.flow).is_none())
+				}), |retained| retained.has_custom_flows);
 			let geometry_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.size == size
 					&& retained.clip_revision == tree.clip_revision
-					&& retained.elements.as_slice() == elements.as_slice()
+					&& (placement_unchanged || retained.elements.as_slice() == elements)
 			});
 			if !geometry_unchanged {
 				// Resizing can replay a stateful flow without a tree mutation. Give each
 				// changed geometry its own revision so older snapshots keep distinct cache keys.
 				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
-				self.prepare_appearance(&elements, &tree, layout_revision, size);
-				let hit_elements = clipped_hit_elements(&elements, &tree, &self.visual_state, frame_allocator);
+				self.prepare_appearance(elements, &tree, layout_revision, size);
+				let hit_elements = clipped_hit_elements(elements, &tree, &self.visual_state, frame_allocator);
 				// A stable topology keeps IDs and layout order, so update only changed bounds.
 				// Structural edits also advance clip_revision, including removal and remount of the same ID.
 				if let Some(previous) = self
@@ -285,10 +308,13 @@ impl<C: 'static> Engine<C> {
 					self.state
 						.borrow_mut()
 						.set_element_ids(elements.iter().map(|element| element.id));
-					self.runtime.borrow_mut().update_geometry(&elements);
+					self.runtime.borrow_mut().update_geometry(elements);
 				}
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree_revision: revision,
+					placement_revision: tree.placement_revision,
+					flow_revision: tree.flow_revision,
+					has_custom_flows,
 					clip_revision: tree.clip_revision,
 					revision: layout_revision,
 					size,
@@ -299,7 +325,9 @@ impl<C: 'static> Engine<C> {
 				retained.revision = layout_revision;
 				retained.clip_revision = tree.clip_revision;
 				retained.size = size;
-				retain_snapshot_data(&mut retained.elements, &elements);
+				if !placement_unchanged {
+					retain_snapshot_data(&mut retained.elements, elements);
+				}
 				retain_snapshot_data(&mut retained.relations, &tree.relations);
 				// An older snapshot owns its index until it is dropped. Replace shared storage
 				// instead of copying an obsolete grid; otherwise refill it in place.
@@ -308,10 +336,14 @@ impl<C: 'static> Engine<C> {
 				}
 				Rc::get_mut(&mut retained.acceleration).unwrap().update(&hit_elements);
 			}
-			self.retained_layout
+			let retained = self
+				.retained_layout
 				.as_mut()
-				.expect("UI layout was not retained. Evaluation did not prepare its snapshot.")
-				.tree_revision = revision;
+				.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
+			retained.tree_revision = revision;
+			retained.placement_revision = tree.placement_revision;
+			retained.flow_revision = tree.flow_revision;
+			retained.has_custom_flows = has_custom_flows;
 		}
 		let retained = self
 			.retained_layout
@@ -362,11 +394,24 @@ impl<C: 'static> Engine<C> {
 				self.route_bubbling_event(target, Events::Scrolled, Some(delta), None);
 			}
 		}
+	}
 
-		// A drop target is any surface under the release point other than the released
-		// source, which hears about the end only after the target does.
+	/// Delivers queued drops before components poll, so a component sees the drop
+	/// and the cleared capture together.
+	///
+	/// Targets come from the previous frame's hit geometry, which the caller
+	/// measured the release against. The target is any surface under the release
+	/// point other than the released source, which hears about the end after it.
+	fn route_drops(&mut self) {
 		for drop in std::mem::take(&mut self.drops) {
-			if let Some(target) = snapshot.hit(drop.position, Some(drop.source)) {
+			let target = self.retained_layout.as_ref().and_then(|retained| {
+				let point = crate::ui::flow::Location::new(drop.position.x, drop.position.y);
+				retained
+					.acceleration
+					.query_excluding(point, Some(drop.source.get()))
+					.and_then(Id::new)
+			});
+			if let Some(target) = target {
 				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
 			}
 			self.runtime
@@ -476,10 +521,10 @@ impl<C: 'static> Engine<C> {
 				)
 			})
 			.unwrap_or_default();
-		elements.clear();
-		curve_elements.clear();
+		// Rewrite the live prefix while reusing each entry's owned buffers. Entries left
+		// beyond that prefix are dropped after the walk, so removed content cannot escape.
+		let (mut element_count, mut curve_count, mut text_count) = (0, 0, 0);
 		image_elements.clear();
-		text_elements.clear();
 		// Input callbacks can change appearance after layout. The cache key includes those changes.
 		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size);
 		if !visibility_unchanged {
@@ -498,6 +543,9 @@ impl<C: 'static> Engine<C> {
 					})
 					.copied(),
 			);
+			// Stable depth order is shared by every primitive list. Keep it with visibility
+			// so paint-only rebuilds neither sort nor allocate scratch for larger render entries.
+			visible.sort_by_key(|element| element.position.z());
 		}
 		for element in &visible {
 			let Some(&index) = tree.element_indices.get(&element.id) else {
@@ -511,13 +559,18 @@ impl<C: 'static> Engine<C> {
 			let style = retained_element.element.primitive.style();
 			// Only layered geometry retains a style copy; images and text borrow what they need.
 			let mut push_rectangle = |corner_radius, corner_exponent| {
-				elements.push(RenderElement {
+				let mut layers = elements
+					.get_mut(element_count)
+					.map(|entry| std::mem::take(&mut entry.style.layers))
+					.unwrap_or_default();
+				layers.clone_from(&style.layers);
+				let rendered = RenderElement {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
 					clip,
 					feather_mask,
-					style: style.clone(),
+					style: ConcreteStyle { layers },
 					opacity,
 					backdrop_blur_radius: style
 						.layers()
@@ -526,10 +579,22 @@ impl<C: 'static> Engine<C> {
 						.map_or(0.0, |layer| layer.backdrop_blur_radius()),
 					corner_radius,
 					corner_exponent,
-				});
+				};
+				if element_count < elements.len() {
+					elements[element_count] = rendered;
+				} else {
+					elements.push(rendered);
+				}
+				element_count += 1;
 			};
 			let mut push_text = |content: &str, font_size| {
-				text_elements.push(RenderTextElement {
+				let mut retained_content = text_elements
+					.get_mut(text_count)
+					.map(|entry| std::mem::take(&mut entry.content))
+					.unwrap_or_default();
+				retained_content.clear();
+				retained_content.push_str(content);
+				let rendered = RenderTextElement {
 					id: element.id.get(),
 					position: element.position,
 					size: element.size,
@@ -541,8 +606,14 @@ impl<C: 'static> Engine<C> {
 					},
 					opacity,
 					font_size,
-					content: content.to_string(),
-				});
+					content: retained_content,
+				};
+				if text_count < text_elements.len() {
+					text_elements[text_count] = rendered;
+				} else {
+					text_elements.push(rendered);
+				}
+				text_count += 1;
 			};
 
 			match &retained_element.element.primitive {
@@ -555,16 +626,31 @@ impl<C: 'static> Engine<C> {
 
 					push_rectangle(corner_radius, corner_exponent);
 				}
-				Primitives::Curve(curve) => curve_elements.push(RenderCurveElement {
-					id: element.id.get(),
-					position: element.position,
-					size: element.size,
-					clip,
-					feather_mask,
-					style: style.clone(),
-					opacity,
-					segments: curve.path().segments().to_vec(),
-				}),
+				Primitives::Curve(curve) => {
+					let (mut layers, mut segments) = curve_elements
+						.get_mut(curve_count)
+						.map(|entry| (std::mem::take(&mut entry.style.layers), std::mem::take(&mut entry.segments)))
+						.unwrap_or_default();
+					layers.clone_from(&style.layers);
+					segments.clear();
+					segments.extend_from_slice(curve.path().segments());
+					let rendered = RenderCurveElement {
+						id: element.id.get(),
+						position: element.position,
+						size: element.size,
+						clip,
+						feather_mask,
+						style: ConcreteStyle { layers },
+						opacity,
+						segments,
+					};
+					if curve_count < curve_elements.len() {
+						curve_elements[curve_count] = rendered;
+					} else {
+						curve_elements.push(rendered);
+					}
+					curve_count += 1;
+				}
 				Primitives::Image(image) => image_elements.push(RenderImageElement {
 					id: element.id.get(),
 					image_id: image.id(),
@@ -583,10 +669,9 @@ impl<C: 'static> Engine<C> {
 			}
 		}
 
-		elements.sort_by_key(|element| element.position.z());
-		curve_elements.sort_by_key(|element| element.position.z());
-		image_elements.sort_by_key(|element| element.position.z());
-		text_elements.sort_by_key(|element| element.position.z());
+		elements.truncate(element_count);
+		curve_elements.truncate(curve_count);
+		text_elements.truncate(text_count);
 
 		RetainedRender {
 			tree_revision: tree.revision(),
@@ -1524,18 +1609,20 @@ mod tests {
 		});
 		let mut first = engine.evaluate(Size::new(100, 100), &allocator);
 		let first_render = engine.render(&mut first).clone();
-		let inside = UiPoint::new(50.0, 50.0);
-		let outside = UiPoint::new(150.0, 150.0);
-		let root = first.hit(inside, None).unwrap();
-		assert_eq!(first.hit(outside, None), None);
+		let mut hits = crate::ui::intersection::HitTest::default();
+		first.retain_hit_test(&mut hits);
+		let root = hits.query(UiPoint::zero()).unwrap();
+		assert_eq!(hits.query(UiPoint::new(2.0, -2.0)), None);
 		let mut second = engine.evaluate(Size::new(200, 200), &allocator);
-		assert_eq!(second.hit(outside, None), Some(root));
+		second.retain_hit_test(&mut hits);
+		assert_eq!(hits.query(UiPoint::new(0.5, -0.5)), Some(root));
 		assert_eq!(
 			engine.render(&mut second).elements().next().unwrap().size,
 			Size::new(200, 200)
 		);
-		assert_eq!(first.hit(inside, None), Some(root));
-		assert_eq!(first.hit(outside, None), None);
+		first.retain_hit_test(&mut hits);
+		assert_eq!(hits.query(UiPoint::zero()), Some(root));
+		assert_eq!(hits.query(UiPoint::new(2.0, -2.0)), None);
 		assert_eq!(first_render.elements().next().unwrap().size, Size::new(100, 100));
 	}
 
@@ -1741,7 +1828,7 @@ mod tests {
 				);
 				let _child = parent.element("child").container(
 					Container::default()
-						.absolute_position(35, 35)
+						.absolute_position(25, 25)
 						.width(40.into())
 						.height(40.into()),
 				);
@@ -2600,8 +2687,21 @@ mod tests {
 		engine.mount(|ctx| {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default().clip(false));
-				frame.element("high").container(Container::default().depth(10));
-				frame.element("low").container(Container::default());
+				let mut high = frame
+					.element("high")
+					.container(Container::default().depth(10).size(20.into()));
+				high.element("text").text(Text::new("high"));
+				let mut low = frame.element("low").container(Container::default().size(20.into()));
+				low.element("text").text(Text::new("low"));
+				frame
+					.element("tie")
+					.container(Container::default().size(20.into()))
+					.element("text")
+					.text(Text::new("tie"));
+				ctx.render().await;
+				low.update_container(|value| value.set_opacity(0.5));
+				ctx.render().await;
+				high.update_container(|value| value.depth = Depth::relative(0));
 			})
 		});
 
@@ -2609,7 +2709,31 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 		let depths = render.elements().map(|element| element.position.z()).collect::<Vec<_>>();
 
-		assert_eq!(depths, vec![0, 1, 10]);
+		assert_eq!(depths, vec![0, 1, 1, 10]);
+		let ids = render.elements().map(|element| element.id).collect::<Vec<_>>();
+		assert_eq!(
+			render.texts().map(|element| element.content.as_str()).collect::<Vec<_>>(),
+			["low", "tie", "high"]
+		);
+
+		let mut painted = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut painted);
+		assert_eq!(render.elements().map(|element| element.id).collect::<Vec<_>>(), ids);
+		assert_eq!(
+			render.texts().map(|element| element.content.as_str()).collect::<Vec<_>>(),
+			["low", "tie", "high"]
+		);
+
+		let mut reordered = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut reordered);
+		assert_eq!(
+			render.elements().map(|element| element.id).collect::<Vec<_>>(),
+			[ids[0], ids[3], ids[1], ids[2]]
+		);
+		assert_eq!(
+			render.texts().map(|element| element.content.as_str()).collect::<Vec<_>>(),
+			["high", "low", "tie"]
+		);
 	}
 
 	#[test]
@@ -3523,5 +3647,5 @@ use crate::ui::{
 	font::TextSystem,
 	intersection::MouseClickAcceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
-	style::{Color, EdgeFeather, Layer as _, LayerKind},
+	style::{Color, ConcreteStyle, EdgeFeather, Layer as _, LayerKind},
 };

@@ -206,7 +206,8 @@ fn layout_elements<'a>(
 		let Primitives::Container(container) = &element.element.primitive else {
 			return;
 		};
-		let mut cursor: Offset = Into::<Location>::into(position).into();
+		let origin: Offset = Into::<Location>::into(position).into();
+		let mut cursor = origin;
 		// Absolute-depth layers start from the viewport after ordinary flow children.
 		for reset_layer in [false, true] {
 			for &child_index in &tree.children[index] {
@@ -222,7 +223,8 @@ fn layout_elements<'a>(
 				let available = if reset { root_size } else { size };
 				let child_size = measure(child, available, text, &mut measurements[child_index]);
 				let flow_output = match child_container.map(|value| value.position) {
-					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(x, y), cursor),
+					// Absolute positions are offsets from the parent's top-left corner.
+					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(origin.x() + x, origin.y() + y), cursor),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
 					_ => container.flow.call(FlowInput::new(size, cursor, child_size)),
 				};

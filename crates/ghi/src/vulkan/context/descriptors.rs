@@ -58,7 +58,7 @@ impl Context {
 		);
 		DescriptorHeapArena {
 			buffer: creation.resource,
-			pointer: unsafe { pointer.add(base_offset as usize) },
+			pointer: crate::vulkan::MappedMemoryPointer(unsafe { pointer.add(base_offset as usize) }),
 			device_address: aligned_address,
 			size,
 			reserved_size,

@@ -14,7 +14,7 @@ use log::{error, warn};
 use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding, identity_affine_matrix4x3_columns};
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
-use utils::hash::{HashMap, HashMapExt};
+use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
 use super::geometry::{GeometryHandles, MeshData};
@@ -388,9 +388,9 @@ impl VisibilityPipelineManager {
 			skinning_pass,
 			skinning_frame: SkinningFrame::default(),
 			pending_renderables: Vec::new(),
-			renderable_transforms: HashMap::new(),
-			loaded_materials: HashMap::new(),
-			loaded_ies_profiles: HashMap::new(),
+			renderable_transforms: HashMap::default(),
+			loaded_materials: HashMap::default(),
+			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
 				MAX_INSTANCES + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
 				MAX_INSTANCES + MAX_MATERIALS * MAX_MATERIAL_TEXTURES,
@@ -406,8 +406,8 @@ impl VisibilityPipelineManager {
 			gtao_settings: GtaoSettings::default(),
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
-				skinning_poses: HashMap::new(),
-				render_entity_handles: HashMap::new(),
+				skinning_poses: HashMap::default(),
+				render_entity_handles: HashMap::default(),
 				lights: StableVec::new(),
 				descriptor_set,
 				views_buffer,

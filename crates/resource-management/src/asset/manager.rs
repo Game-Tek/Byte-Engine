@@ -66,7 +66,7 @@ impl AssetManager {
 				asset_handlers: Vec::with_capacity(8),
 				storage_backend: Box::new(storage_backend),
 				resource_storage_backend,
-				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity(32))),
+				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
 				bake_memory_budget: None,
 				dispatcher,
 				#[cfg(debug_assertions)]
@@ -320,8 +320,8 @@ impl Default for HotReloadState {
 	fn default() -> Self {
 		Self {
 			watcher: None,
-			resources_by_source: HashMap::new(),
-			sources_by_resource: HashMap::new(),
+			resources_by_source: HashMap::default(),
+			sources_by_resource: HashMap::default(),
 			in_flight: std::collections::HashSet::new(),
 			pending: std::collections::HashSet::new(),
 			updates: None,
@@ -1736,7 +1736,6 @@ use std::{
 };
 
 use announcement;
-use gxhash::HashMapExt;
 use utils::{hash::HashMap, sync::Mutex};
 
 #[cfg(debug_assertions)]

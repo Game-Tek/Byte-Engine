@@ -6,7 +6,7 @@ use std::alloc::{Allocator, Global};
 
 use hashbrown::HashMap;
 use log::warn;
-use utils::hash::GxBuildHasher;
+use utils::hash::FxBuildHasher;
 
 use super::action::{InputValue, TriggerMapping};
 use super::device::{Device, DeviceClass, DeviceClassHandle};
@@ -54,7 +54,7 @@ pub struct InputEvents<A: Allocator + Clone = Global> {
 	devices: Vec<Device, A>,
 	pub(super) records: Vec<Record, A>,
 	/// Each source keeps its value and any press ownership from the previous tick.
-	sources: HashMap<Source, Record, GxBuildHasher, A>,
+	sources: HashMap<Source, Record, FxBuildHasher, A>,
 	consumers: u32,
 	sequence: u64,
 }
@@ -104,7 +104,7 @@ impl<A: Allocator + Clone> InputEvents<A> {
 			triggers: Vec::new_in(allocator.clone()),
 			devices: Vec::new_in(allocator.clone()),
 			records: Vec::with_capacity_in(64, allocator.clone()),
-			sources: HashMap::with_capacity_and_hasher_in(512, GxBuildHasher::default(), allocator),
+			sources: HashMap::with_capacity_and_hasher_in(512, FxBuildHasher, allocator),
 			consumers: 0,
 			sequence: 0,
 		}

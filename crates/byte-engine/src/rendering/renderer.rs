@@ -32,7 +32,7 @@ use crate::{
 	reason = "Renderer tests manufacture opaque GHI handles without exposing a production constructor."
 )]
 mod tests {
-	use utils::{Box, hash::HashMapExt as _};
+	use utils::Box;
 
 	use super::core::{ResolvedScreenshotCapture, captures_after_pass};
 	use super::*;
@@ -112,7 +112,7 @@ mod tests {
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut states = HashMap::new();
+		let mut states = HashMap::default();
 		let mut passes = [
 			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
 			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
@@ -139,7 +139,7 @@ mod tests {
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut states = HashMap::new();
+		let mut states = HashMap::default();
 		let mut passes = [];
 
 		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
@@ -163,7 +163,7 @@ mod tests {
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let event = configuration.update("render.pass.bloom", "disabled");
 		let mut pending = VecDeque::new();
-		let mut states = HashMap::new();
+		let mut states = HashMap::default();
 		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
 
 		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);

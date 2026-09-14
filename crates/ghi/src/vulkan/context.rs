@@ -2,11 +2,8 @@ use std::{borrow::Cow, num::NonZeroU32, u64};
 
 use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
-use utils::hash::{HashSet, HashSetExt};
-use utils::{
-	Extent,
-	hash::{HashMap, HashMapExt},
-};
+use utils::hash::HashSet;
+use utils::{Extent, hash::HashMap};
 
 use super::{
 	AccelerationStructure, Allocation, Buffer, BufferHandle, CommandBuffer, CommandBufferInternal, DescriptorHeapArena,
@@ -34,7 +31,7 @@ use crate::{
 pub(crate) struct TextureReadbackStorage {
 	pub(crate) buffer: vk::Buffer,
 	pub(crate) memory: vk::DeviceMemory,
-	pub(crate) pointer: *mut u8,
+	pub(crate) pointer: crate::vulkan::MappedMemoryPointer,
 	pub(crate) extent: Extent,
 	pub(crate) format: crate::Formats,
 	pub(crate) bytes_per_row: usize,
@@ -129,8 +126,8 @@ mod descriptor_task_tests {
 	use super::*;
 
 	fn retained_set(write: crate::descriptors::DescriptorWrite, version: u64) -> DescriptorSet {
-		let mut descriptors = HashMap::new();
-		descriptors.entry(write.slot).or_insert_with(HashMap::new).insert(
+		let mut descriptors = HashMap::default();
+		descriptors.entry(write.slot).or_insert_with(HashMap::default).insert(
 			write.array_element,
 			crate::vulkan::descriptor_set::RetainedDescriptor {
 				descriptor: write.descriptor,

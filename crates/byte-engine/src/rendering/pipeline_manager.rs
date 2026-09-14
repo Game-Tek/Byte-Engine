@@ -1,9 +1,5 @@
 use smallvec::SmallVec;
-use utils::{
-	Box, Extent,
-	hash::{HashMap, HashMapExt},
-	sync::RwLock,
-};
+use utils::{Box, Extent, hash::HashMap, sync::RwLock};
 
 use crate::rendering::{
 	Sink,

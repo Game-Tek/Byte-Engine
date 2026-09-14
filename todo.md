@@ -166,6 +166,8 @@
 
 ## Graphics hardware interface
 
+- Define and enforce Vulkan instance/device/context/factory ownership so contexts and detached resources cannot outlive their native parents. Rendering tests currently keep the primary device alive explicitly; replace this caller-enforced lifetime with a solid ownership model.
+
 - Split each large backend context implementation into resources, descriptors, pipelines, synchronization, transfers, and acceleration-structure modules while keeping the public context type in `context/mod.rs`.
 - Move GHI handles, resource descriptions, and behavioral traits into their existing domain modules instead of declaring most contracts in `graphics_hardware_interface.rs`.
 - Reduce `graphics_hardware_interface.rs` to compatibility re-exports or remove it after callers migrate to domain modules.

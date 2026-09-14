@@ -74,7 +74,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let handle = self.device.texture_readbacks.insert(TextureReadbackStorage {
 			buffer: staging,
 			memory,
-			pointer,
+			pointer: crate::vulkan::MappedMemoryPointer(pointer),
 			extent,
 			format,
 			bytes_per_row: layout.bytes_per_row,
@@ -698,7 +698,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		if !texture.access.contains(crate::DeviceAccesses::CpuWrite) {
 			return;
 		}
-		let (Some(buffer), Some(pointer)) = (texture.staging_buffer, texture.pointer) else {
+		let (Some(buffer), Some(pointer)) = (texture.staging_buffer, texture.pointer.map(|pointer| pointer.0)) else {
 			return;
 		};
 

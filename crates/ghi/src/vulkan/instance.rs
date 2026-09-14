@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+	Arc,
+	atomic::{AtomicU64, Ordering},
+};
 
 use ash::vk::{self, TaggedStructure as _};
 
@@ -8,13 +11,11 @@ pub struct Instance {
 	pub(crate) instance: ash::Instance,
 	pub(crate) entry: ash::Entry,
 
-	pub(crate) debug_data: Box<DebugCallbackData>,
+	pub(crate) debug_data: Arc<DebugCallbackData>,
 
 	debug_utils: Option<ash::ext::debug_utils::Instance>,
 	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
 }
-
-unsafe impl Send for Instance {}
 
 impl Instance {
 	pub fn new(settings: crate::device::Features) -> Result<Instance, &'static str> {
@@ -174,7 +175,7 @@ impl Instance {
 			Ok(instance) => Ok(instance),
 		}?;
 
-		let mut debug_data = Box::new(DebugCallbackData {
+		let debug_data = Arc::new(DebugCallbackData {
 			error_count: AtomicU64::new(0),
 			error_log_function: settings.debug_log_function.unwrap_or(|message| {
 				println!("{}", message);
@@ -196,7 +197,7 @@ impl Instance {
 						| vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
 				)
 				.pfn_user_callback(Some(vulkan_debug_utils_callback))
-				.user_data(debug_data.as_mut() as *mut DebugCallbackData as *mut std::ffi::c_void);
+				.user_data(Arc::as_ptr(&debug_data).cast_mut().cast());
 
 			let debug_utils_messenger = unsafe {
 				debug_utils
@@ -252,7 +253,8 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 	p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
 	p_user_data: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
-	let callback_data = if let Some(callback_data) = p_callback_data.as_ref() {
+	// SAFETY: Vulkan keeps the callback data valid for this invocation.
+	let callback_data = if let Some(callback_data) = unsafe { p_callback_data.as_ref() } {
 		callback_data
 	} else {
 		return vk::FALSE;
@@ -262,7 +264,8 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 		return vk::FALSE;
 	}
 
-	let message = std::ffi::CStr::from_ptr(callback_data.p_message);
+	// SAFETY: Vulkan supplies a null-terminated message for the duration of this callback.
+	let message = unsafe { std::ffi::CStr::from_ptr(callback_data.p_message) };
 
 	let message = if let Some(message) = message.to_str().ok() {
 		message
@@ -270,7 +273,9 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 		return vk::FALSE;
 	};
 
-	let user_data = if let Some(p_user_data) = (p_user_data as *mut DebugCallbackData).as_mut() {
+	// SAFETY: The instance retains this Arc until the messenger is destroyed.
+	// Callbacks may run concurrently, so only borrow the atomic callback state immutably.
+	let user_data = if let Some(p_user_data) = unsafe { p_user_data.cast::<DebugCallbackData>().as_ref() } {
 		p_user_data
 	} else {
 		return vk::FALSE;

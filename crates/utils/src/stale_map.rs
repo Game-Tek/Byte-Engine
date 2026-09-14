@@ -1,6 +1,6 @@
 //! Cache values by key and revision, while retaining values from older revisions.
 
-use gxhash::{HashMap, HashMapExt};
+use crate::hash::HashMap;
 
 /// The `Entry` enum distinguishes current, stale, and missing [`StaleHashMap`] entries.
 pub enum Entry<V> {
@@ -24,12 +24,12 @@ impl<K: Eq + std::hash::Hash, H: PartialEq, V> Default for StaleHashMap<K, H, V>
 impl<K: Eq + std::hash::Hash, H: PartialEq, V> StaleHashMap<K, H, V> {
 	/// Creates a map with space for 1,024 entries.
 	pub fn new() -> Self {
-		Self(HashMap::with_capacity(1024))
+		Self(HashMap::with_capacity_and_hasher(1024, Default::default()))
 	}
 
 	/// Creates a map with space for at least `capacity` entries.
 	pub fn with_capacity(capacity: usize) -> Self {
-		Self(HashMap::with_capacity(capacity))
+		Self(HashMap::with_capacity_and_hasher(capacity, Default::default()))
 	}
 
 	/// Returns the value when its stored revision matches `hash`.

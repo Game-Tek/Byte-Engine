@@ -36,7 +36,7 @@ impl Drop for Context {
 			for readback in self.texture_readbacks.values() {
 				self.device.destroy_buffer(readback.buffer, None);
 				if readback.memory != vk::DeviceMemory::null() {
-					if !readback.pointer.is_null() {
+					if !readback.pointer.0.is_null() {
 						self.device.unmap_memory(readback.memory);
 					}
 					self.device.free_memory(readback.memory, None);

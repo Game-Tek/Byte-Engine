@@ -5,8 +5,6 @@
 //! frame-local allocation. `GraphicsApplication` is the main headed example of
 //! that composition.
 
-//use utils::hash::HashSet; // Triggers address sanitation error
-
 /// The [`Application`] trait defines the lifecycle contract for a process-level
 /// Byte-Engine runtime.
 ///

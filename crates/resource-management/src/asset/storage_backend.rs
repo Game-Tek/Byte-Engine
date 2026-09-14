@@ -201,7 +201,8 @@ impl AssetFileVersion {
 
 	/// Creates a content-backed version for storage backends that do not expose file metadata.
 	fn from_bytes(bytes: &[u8]) -> Self {
-		let mut hasher = GxHasher::with_seed(961961961961961);
+		// Changing the content hasher makes older stored freshness hashes stale on the next comparison.
+		let mut hasher = FxHasher::with_seed(961961961961961);
 		hasher.write(bytes);
 
 		Self {
@@ -506,7 +507,7 @@ pub mod tests {
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
-			Self(Arc::new(Mutex::new(HashMap::new())))
+			Self(Arc::new(Mutex::new(HashMap::default())))
 		}
 
 		pub fn add_file(&self, name: &'static str, data: &[u8]) {
@@ -756,7 +757,7 @@ use std::{
 	time::UNIX_EPOCH,
 };
 
-use gxhash::GxHasher;
+use utils::hash::FxHasher;
 
 use super::{BEADType, ResourceId, parse_json, read_asset_from_source};
 use crate::{

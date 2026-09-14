@@ -19,7 +19,7 @@ pub(crate) struct Buffer {
 	pub(crate) buffer: vk::Buffer,
 	pub(crate) size: usize,
 	pub(crate) device_address: vk::DeviceAddress,
-	pub(crate) pointer: *mut u8,
+	pub(crate) pointer: crate::vulkan::MappedMemoryPointer,
 	pub(crate) uses: Uses,
 	pub(crate) access: crate::DeviceAccesses,
 }

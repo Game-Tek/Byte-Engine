@@ -79,9 +79,9 @@ impl PipelineManager {
 			pipeline_manager,
 			loader,
 			resource_store,
-			resident_meshes: HashMap::new(),
+			resident_meshes: HashMap::default(),
 			pending_renderables: Vec::new(),
-			renderable_transforms: HashMap::new(),
+			renderable_transforms: HashMap::default(),
 			sinks: Vec::with_capacity(4),
 		}
 	}
@@ -272,7 +272,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 use ghi::context::{Context as _, ContextCreate as _};
 use math::AffineShaderMatrix;
 use smallvec::SmallVec;
-use utils::hash::{HashMap, HashMapExt};
+use utils::hash::HashMap;
 
 use crate::{
 	core::factory::Handle,

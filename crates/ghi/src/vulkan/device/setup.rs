@@ -546,7 +546,7 @@ impl InnerDevice {
 
 		Ok(InnerDevice {
 			debug_utils,
-			debug_data: instance.debug_data.as_ref() as *const DebugCallbackData,
+			debug_data: instance.debug_data.clone(),
 
 			memory_properties,
 			queues,

@@ -301,7 +301,7 @@ impl Context {
 				this.pipelines.push(Pipeline {
 					pipeline,
 					layout: pipeline_layout_handle,
-					shader_handles: HashMap::new(),
+					shader_handles: HashMap::default(),
 				});
 
 				handle

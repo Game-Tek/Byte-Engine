@@ -365,7 +365,6 @@ impl<T: ReadStorageBackend + WriteStorageBackend> DynStorageBackend for T {}
 pub mod tests {
 	use std::sync::Arc;
 
-	use gxhash::HashMapExt;
 	use utils::{hash::HashMap, sync::Mutex};
 
 	use super::*;
@@ -382,9 +381,9 @@ pub mod tests {
 	impl TestStorageBackend {
 		pub fn new() -> Self {
 			Self {
-				resources: Arc::new(Mutex::new(HashMap::new())),
+				resources: Arc::new(Mutex::new(HashMap::default())),
 				#[cfg(debug_assertions)]
-				traces: Arc::new(Mutex::new(HashMap::new())),
+				traces: Arc::new(Mutex::new(HashMap::default())),
 			}
 		}
 

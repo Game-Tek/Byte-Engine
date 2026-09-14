@@ -220,7 +220,7 @@ impl Renderer {
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
 			pending_configuration: VecDeque::new(),
-			render_pass_states: HashMap::new(),
+			render_pass_states: HashMap::default(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
 			pipeline_manager_attachments_by_sink: SmallVec::with_capacity(64),
@@ -1010,11 +1010,7 @@ use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
 use tracing::debug_span;
 use utils::Box;
-use utils::{
-	Extent, RGBA,
-	hash::{HashMap, HashMapExt},
-	sync::RwLock,
-};
+use utils::{Extent, RGBA, hash::HashMap, sync::RwLock};
 
 use super::{
 	configuration::{

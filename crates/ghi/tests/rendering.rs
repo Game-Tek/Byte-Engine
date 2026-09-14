@@ -9,7 +9,7 @@
 	clippy::undocumented_unsafe_blocks
 )]
 
-use ghi::implementation::{Context as BackendContext, Instance};
+use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
 use ghi::{
 	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, QueueHandle,
 	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses, Window,
@@ -42,13 +42,18 @@ mod ray_tracing;
 mod resources;
 
 /// Creates the native device and raster queue used by one rendering scenario.
-fn create_default_device_setup() -> (Instance, BackendContext, QueueHandle) {
+///
+/// Bind the tuple in this order so reverse local drop order releases the context,
+/// then the device, and finally the instance.
+fn create_default_device_setup() -> (Instance, BackendDevice, BackendContext, QueueHandle) {
 	let features = ghi::device::Features::new().validation(true);
 	create_default_device_setup_with_features(features)
 }
 
 /// Creates the native device with the capabilities required by one rendering scenario.
-fn create_default_device_setup_with_features(features: ghi::device::Features) -> (Instance, BackendContext, QueueHandle) {
+fn create_default_device_setup_with_features(
+	features: ghi::device::Features,
+) -> (Instance, BackendDevice, BackendContext, QueueHandle) {
 	let mut instance = Instance::new(features).expect(
 		"Failed to create the GHI test instance. The most likely cause is that the active backend has no available device.",
 	);
@@ -61,89 +66,89 @@ fn create_default_device_setup_with_features(features: ghi::device::Features) ->
 		.expect("Failed to create the GHI test device. The most likely cause is unavailable raster queue support.");
 	let context = ghi::device::Device::create_context(&device)
 		.expect("Failed to create the GHI test context. The most likely cause is unavailable backend command support.");
-	(instance, context, queue_handle.unwrap())
+	(instance, device, context, queue_handle.unwrap())
 }
 
 #[test]
 fn render_triangle_pixels() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	raster::render_triangle(&mut device, queue_handle);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn raster_pipeline_can_disable_depth_writes() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	raster::render_without_depth_writes(&mut device, queue_handle);
 }
 
 #[test]
 #[ignore = "test is broken because of WSI"]
 fn present_to_window() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	presentation::present(&mut device, queue_handle);
 }
 
 #[test]
 #[ignore = "test is broken because of WSI"]
 fn present_multiple_frames_to_window() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	presentation::multiframe_present(&mut device, queue_handle);
 }
 
 #[test]
 fn render_multiple_frames() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::multiframe_rendering(&mut device, queue_handle);
 }
 
 #[test]
 fn change_frames_in_flight() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::change_frames(&mut device, queue_handle);
 }
 
 #[test]
 fn resize_render_target() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::resize(&mut device, queue_handle);
 }
 
 #[test]
 fn update_dynamic_data() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::dynamic_data(&mut device, queue_handle);
 }
 
 #[test]
 fn update_dynamic_textures() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::dynamic_textures(&mut device, queue_handle);
 }
 
 #[test]
 fn render_with_descriptor_sets() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::descriptor_sets(&mut device, queue_handle);
 }
 
 #[test]
 fn render_with_multiframe_resources() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::multiframe_resources(&mut device, queue_handle);
 }
 
 #[cfg(target_os = "windows")]
 #[test]
 fn round_trip_texture3d_lut() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::texture3d_lut_round_trip(&mut device, queue_handle);
 }
 
 #[test]
 #[ignore = "not working on supporting ray tracing right now"]
 fn render_with_ray_tracing() {
-	let (_instance, mut device, queue_handle) =
+	let (_instance, _device, mut device, queue_handle) =
 		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));
 	ray_tracing::ray_tracing(&mut device, queue_handle);
 }

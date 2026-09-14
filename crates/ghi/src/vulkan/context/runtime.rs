@@ -22,11 +22,11 @@ impl Context {
 			images: Vec::with_capacity(512),
 			samplers: Vec::with_capacity(128),
 			pipeline_layouts: Vec::with_capacity(64),
-			pipeline_layout_indices: HashMap::with_capacity(64),
+			pipeline_layout_indices: HashMap::with_capacity_and_hasher(64, Default::default()),
 			descriptor_sets: Vec::with_capacity(512),
 			descriptor_heaps: None,
 			descriptor_materializations: Vec::with_capacity(512),
-			materialization_indices: HashMap::with_capacity(512),
+			materialization_indices: HashMap::with_capacity_and_hasher(512, Default::default()),
 			retired_materializations: std::array::from_fn(|_| Vec::with_capacity(128)),
 			free_materialization_handles: Vec::with_capacity(128),
 			descriptor_sequence_epochs: [0; MAX_FRAMES_IN_FLIGHT],
@@ -41,11 +41,11 @@ impl Context {
 
 			settings,
 
-			states: HashMap::with_capacity(4096),
-			buffer_states: HashMap::with_capacity(4096),
+			states: HashMap::with_capacity_and_hasher(4096, Default::default()),
+			buffer_states: HashMap::with_capacity_and_hasher(4096, Default::default()),
 
-			pending_buffer_syncs: HashSet::with_capacity(128),
-			pending_image_syncs: HashSet::with_capacity(128),
+			pending_buffer_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
+			pending_image_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
 
 			persistent_write_dynamic_buffers: Vec::with_capacity(64),
 			swapchain_native_supports_formatless_storage_write,
@@ -54,7 +54,7 @@ impl Context {
 			tasks: Vec::with_capacity(1024),
 
 			#[cfg(debug_assertions)]
-			names: HashMap::with_capacity(4096),
+			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
 		};
 		context.descriptor_heaps = Some(context.create_descriptor_heaps());
 		Ok(context)
@@ -219,7 +219,7 @@ impl Context {
 	) -> &T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer.0, buffer.size).expect(
 			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		);
 		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
@@ -232,7 +232,7 @@ impl Context {
 	) -> &mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
 		let buffer = buffer.staging.map(|staging| self.buffers.resource(staging)).unwrap_or(buffer);
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer.0, buffer.size).expect(
 			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		);
 		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
@@ -249,7 +249,7 @@ impl Context {
 		let pointer = if std::mem::size_of::<T>() == 0 {
 			std::ptr::NonNull::<T>::dangling().as_ptr().cast::<u8>()
 		} else {
-			buffer.pointer
+			buffer.pointer.0
 		};
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer, std::mem::size_of::<T>()) }
@@ -272,7 +272,7 @@ impl Context {
 			texture.staging_buffer.is_some(),
 			"Attempted to map an image without a staging buffer. The most likely cause is that the image was created without CPU-visible access but is being written from the CPU."
 		);
-		let pointer = texture.pointer.expect(
+		let pointer = texture.pointer.map(|pointer| pointer.0).expect(
 			"Attempted to map an image without a CPU-visible pointer. The most likely cause is that image resize or creation did not rebuild the host-visible staging allocation."
 		);
 
@@ -303,7 +303,7 @@ impl Context {
 
 		let texture = handle.access(&self.images);
 
-		let pointer = texture.pointer.unwrap();
+		let pointer = texture.pointer.map(|pointer| pointer.0).unwrap();
 		let size = texture.size;
 
 		let slice = unsafe { std::slice::from_raw_parts_mut(pointer, size) };
@@ -360,7 +360,7 @@ impl Context {
 
 		let instance_buffer_slice = unsafe {
 			std::slice::from_raw_parts_mut(
-				instance_buffer.pointer as *mut vk::AccelerationStructureInstanceKHR,
+				instance_buffer.pointer.0 as *mut vk::AccelerationStructureInstanceKHR,
 				instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
 			)
 		};
@@ -381,7 +381,7 @@ impl Context {
 		let buffer = self.buffers.get_single(sbt_buffer_handle).unwrap();
 		let buffer = self.buffers.resource(buffer.staging.unwrap());
 
-		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
+		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer.0, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
 			.copy_from_slice(shader_handles.get(&shader_handle).unwrap());
 	}
 
@@ -585,7 +585,7 @@ impl Context {
 		unsafe {
 			self.device.destroy_buffer(readback.buffer, None);
 			if readback.memory != vk::DeviceMemory::null() {
-				if !readback.pointer.is_null() {
+				if !readback.pointer.0.is_null() {
 					self.device.unmap_memory(readback.memory);
 				}
 				self.device.free_memory(readback.memory, None);
@@ -608,7 +608,7 @@ impl Context {
 		self.texture_readbacks.submitted(texture_copy_handle)?;
 		self.device.wait();
 		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
-		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.is_null() {
+		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.0.is_null() {
 			Err(crate::TextureTransferError::MappingFailed)
 		} else {
 			let mapped_range = vk::MappedMemoryRange::default()
@@ -618,7 +618,7 @@ impl Context {
 			unsafe {
 				self.device
 					.invalidate_mapped_memory_ranges(&[mapped_range])
-					.map(|()| std::slice::from_raw_parts(readback.pointer, readback.size).to_vec())
+					.map(|()| std::slice::from_raw_parts(readback.pointer.0, readback.size).to_vec())
 					.map_err(|_| crate::TextureTransferError::MappingFailed)
 			}
 		};

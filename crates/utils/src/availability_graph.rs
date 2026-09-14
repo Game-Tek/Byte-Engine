@@ -8,7 +8,7 @@
 
 use std::hash::Hash;
 
-use crate::hash::{HashMap, HashMapExt as _};
+use crate::hash::HashMap;
 
 const NONE: u32 = u32::MAX;
 const LIVE: u8 = 1 << 0;
@@ -137,7 +137,7 @@ impl<K: Eq + Hash> AvailabilityGraph<K> {
 	/// Creates an empty graph with storage for the expected nodes and relationships.
 	pub fn with_capacity(node_capacity: usize, edge_capacity: usize) -> Self {
 		Self {
-			handles: HashMap::with_capacity(node_capacity),
+			handles: HashMap::with_capacity_and_hasher(node_capacity, Default::default()),
 			nodes: Vec::with_capacity(node_capacity),
 			edges: Vec::with_capacity(edge_capacity),
 			first_free_node: NONE,

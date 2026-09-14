@@ -21,7 +21,13 @@ use std::ops::Div;
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
 pub use availability_graph::{AvailabilityGraph, AvailabilityGraphError, AvailabilityHandle};
 pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
-pub use gxhash as hash;
+/// Fast in-memory hashing for engine collections.
+///
+/// Use [`hash::HashMap`] or [`hash::HashSet`] for global allocations. For a custom
+/// allocator, pass [`hash::FxBuildHasher`] to an allocator-aware collection.
+pub mod hash {
+	pub use rustc_hash::{FxBuildHasher, FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
+}
 pub use sonic_rs as json;
 pub use stable_vec::{StableVec, StableVecHandle};
 pub struct BufferAllocator<'a> {

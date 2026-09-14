@@ -14,7 +14,8 @@ pub struct MountedComponentFuture<F, T, C = ()> {
 	pub(super) parent_path: Vec<PathSegment>,
 	pub(super) name: &'static str,
 	pub(super) task_id: TaskId,
-	pub(super) scope: Option<Vec<PathSegment>>,
+	/// The started scope's element path and the identity that owns its tasks.
+	pub(super) scope: Option<(Vec<PathSegment>, ScopeId)>,
 	pub(super) complete: bool,
 	pub(super) output: PhantomData<T>,
 }
@@ -22,15 +23,17 @@ pub struct MountedComponentFuture<F, T, C = ()> {
 impl<F, T, C> Unpin for MountedComponentFuture<F, T, C> {}
 
 impl<F, T, C> MountedComponentFuture<F, T, C> {
+	/// Removes the scope's elements and ends the tasks spawned inside it.
 	fn cleanup_scope(&mut self) {
-		let Some(scope) = self.scope.take() else {
+		let Some((path, owner)) = self.scope.take() else {
 			return;
 		};
 
-		let removed = self.tree.borrow_mut().remove_scope(&scope);
+		let removed = self.tree.borrow_mut().remove_scope(&path);
 		if !removed.is_empty() {
 			self.runtime.borrow_mut().remove_targets(&removed);
 		}
+		Runtime::end_scope(&self.runtime, owner);
 	}
 }
 
@@ -52,6 +55,7 @@ where
 			.tree
 			.borrow_mut()
 			.scope_path(Some(self.parent), &self.parent_path, self.name);
+		let owner = self.runtime.borrow_mut().next_scope();
 		let ctx = EvaluationContext {
 			id: self.parent,
 			parent: Some(self.parent),
@@ -60,6 +64,7 @@ where
 			runtime: Rc::clone(&self.runtime),
 			tree: Rc::clone(&self.tree),
 			task_id: self.task_id,
+			owner,
 		};
 
 		// Keep the context and its borrowing component future in one owned future.
@@ -67,7 +72,7 @@ where
 			let mut ctx = ctx;
 			component(&mut ctx).await
 		});
-		self.scope = Some(scope);
+		self.scope = Some((scope, owner));
 		self.future = Some(future);
 	}
 }

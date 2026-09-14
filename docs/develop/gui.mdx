@@ -34,6 +34,15 @@ Text input is app-owned: `TextField` emits edit deltas such as inserted and dele
 Components request and release focus explicitly. Send key and text-edit events to
 the focused element.
 
+## Understand component lifetime
+
+A component started with `component` runs until its future returns or until the
+scope that started it is removed, whichever comes first. A scope is the one a
+`mount` created: when the mounted future completes or is dropped, its elements
+are removed and every component started inside it ends, including components
+those components started. Components started outside any mount live until they
+return or the engine is dropped.
+
 ## Drag a UI item onto an application target
 
 The engine owns one pointer drag. Create a position action with
@@ -80,12 +89,15 @@ scaling a preview, use `Transform::origin(UiPoint::zero())` to keep its top-left
 corner anchored.
 
 Components can also receive the gesture as events. The source gets
-`Events::DragStarted` when the threshold is crossed and `Events::DragCancelled`
-when a started drag is cancelled. The surface under the release point, and then
-each of its ancestors, gets `Events::Dropped` with `UiEvent::source` set to the
-released source; the source itself is skipped when finding that surface. The
-engine resolves the target during the next `Engine::evaluate`, so a component
-that owns a drop target awaits it like a click:
+`Events::DragStarted` when the threshold is crossed and `Events::DragEnded`
+once the started drag is released or cancelled. The surface under the release
+point, and then each of its ancestors, gets `Events::Dropped` with
+`UiEvent::source` set to the released source; the source itself is skipped when
+finding that surface. The engine resolves the target during the next
+`Engine::evaluate` and delivers the source's `DragEnded` after it, so a target
+can claim the source before the source reacts. When one component awaits both,
+use `select_biased!` with the `Dropped` arm first; `select!` polls its arms in
+random order. A component that owns a drop target awaits it like a click:
 
 ```rust
 loop {
@@ -98,6 +110,12 @@ loop {
 
 `Engine::release` still returns the `DragDrop` for applications that apply
 drops outside the UI, so either side can act on it.
+
+To let a dropped element join its target's layout, move it with
+`EvaluationContext::reparent`. The element keeps its id and properties and
+becomes the new parent's last flow child. Give a lifted element
+`Depth::absolute` while it follows the pointer so it does not displace its
+temporary siblings.
 
 `Engine::cancel` ends the interaction in progress: it restores the held source
 and discards queued clicks, scrolls, key presses, and text edits. Call it when

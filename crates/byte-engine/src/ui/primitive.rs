@@ -95,8 +95,10 @@ pub enum Events {
 	/// Delivered to the target under the release point, then to each ancestor,
 	/// with [`super::UiEvent::source`] set. The source never receives its own drop.
 	Dropped,
-	/// A started drag ended without a drop. Delivered to the source.
-	DragCancelled,
+	/// A started drag ended by release or cancellation. Delivered to the source
+	/// after any [`Self::Dropped`] the release produced, so a target claims the
+	/// source before the source reacts to the end.
+	DragEnded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

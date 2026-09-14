@@ -55,6 +55,11 @@ required-features = ["headed"]
 name = "pathfinding"
 harness = false
 
+[[bench]]
+name = "ui"
+harness = false
+required-features = ["headed"]
+
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }

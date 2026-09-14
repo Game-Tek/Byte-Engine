@@ -11,6 +11,7 @@
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
+- Give UI element paths an identity that cannot repeat between live scopes. `RetainedTree::element_path` resets ordinals every frame, so two mounts with the same name under one parent started on different frames share a path, share element ids, and removing one removes the other's elements. Task ownership already uses `ScopeId` and is unaffected.
 
 # P1 - Runtime performance
 

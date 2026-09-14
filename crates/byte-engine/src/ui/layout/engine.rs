@@ -183,14 +183,14 @@ impl<C: 'static> Engine<C> {
 	{
 		let runtime = Rc::clone(&self.runtime);
 		let tree = Rc::clone(&runtime.borrow().tree);
-		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
+		let task_id = runtime.borrow_mut().reserve_task(ScopeId::ROOT);
 		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
 		// Store an owning future while preserving the borrowed component interface.
 		let future = Box::pin(async move {
 			let mut ctx = ctx;
 			root(&mut ctx).await;
 		});
-		Runtime::replace_task_future(runtime, task_id, future);
+		runtime.borrow_mut().start_task(task_id, future);
 	}
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
@@ -294,11 +294,15 @@ impl<C: 'static> Engine<C> {
 			}
 		}
 
-		// A drop target is any surface under the release point other than the released source.
+		// A drop target is any surface under the release point other than the released
+		// source, which hears about the end only after the target does.
 		for drop in std::mem::take(&mut self.drops) {
 			if let Some(target) = snapshot.hit(drop.position, Some(drop.source)) {
 				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
 			}
+			self.runtime
+				.borrow_mut()
+				.push_event(drag_event(drop.source, Events::DragEnded));
 		}
 	}
 
@@ -594,7 +598,7 @@ impl<C: 'static> Engine<C> {
 	///
 	/// Queued clicks, scrolls, drops, key presses, and text edits are discarded,
 	/// held keys and the pointer are released, and a held source is restored
-	/// without a drop. A started drag sends [`Events::DragCancelled`] to its
+	/// without a drop. A started drag sends [`Events::DragEnded`] to its
 	/// source. Call this when the window loses focus or the user cancels; a
 	/// changed viewport size calls it from [`Self::evaluate`].
 	pub fn cancel(&mut self) -> Option<Id> {
@@ -609,7 +613,7 @@ impl<C: 'static> Engine<C> {
 		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
 		let source = runtime.drag.cancel()?;
 		if was_dragging {
-			runtime.push_event(drag_event(source, Events::DragCancelled));
+			runtime.push_event(drag_event(source, Events::DragEnded));
 		}
 		Some(source)
 	}
@@ -823,13 +827,15 @@ mod tests {
 		assert_eq!(observed[2], None);
 	}
 
-	/// What the board's components observed: the source's starts and cancellations, the target's drops.
+	/// What the board's components observed, in the order the source and target saw it.
 	#[derive(Default)]
 	struct DragLog {
 		ids: Option<(Id, Id)>,
 		started: usize,
-		cancelled: usize,
+		ended: usize,
 		drops: Vec<Option<Id>>,
+		/// The number of drops recorded when each end arrived.
+		drops_before_end: Vec<usize>,
 	}
 
 	/// Mounts a target with a hit-testable child and a source drawn over the target's corner.
@@ -861,10 +867,16 @@ mod tests {
 				);
 				log.lock().expect("expected test value").ids = Some((target.id(), source.id()));
 				loop {
-					utils::r#async::select! {
-						_ = source.on(Events::DragStarted) => log.lock().expect("expected test value").started += 1,
-						_ = source.on(Events::DragCancelled) => log.lock().expect("expected test value").cancelled += 1,
+					// A biased select takes the queued drop before the end, as a client would.
+					utils::r#async::select_biased! {
 						event = target.on(Events::Dropped) => log.lock().expect("expected test value").drops.push(event.source),
+						_ = source.on(Events::DragStarted) => log.lock().expect("expected test value").started += 1,
+						_ = source.on(Events::DragEnded) => {
+							let mut log = log.lock().expect("expected test value");
+							log.ended += 1;
+							let drops = log.drops.len();
+							log.drops_before_end.push(drops);
+						},
 					}
 				}
 			})
@@ -904,11 +916,13 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let observed = log.lock().expect("expected test value");
 		assert_eq!(observed.drops.len(), 2);
-		assert_eq!(observed.cancelled, 0);
+		// Every started gesture ends once, and the target's drop is recorded before the source's end.
+		assert_eq!(observed.ended, 3);
+		assert_eq!(observed.drops_before_end, vec![1, 2, 2]);
 	}
 
 	#[test]
-	fn cancel_reports_to_a_started_source_only() {
+	fn cancel_ends_a_started_source_only() {
 		let allocator = bumpalo::Bump::new();
 		let (mut engine, log) = drag_board();
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
@@ -922,8 +936,54 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let observed = log.lock().expect("expected test value");
 		assert_eq!(observed.started, 1);
-		assert_eq!(observed.cancelled, 1);
+		assert_eq!(observed.ended, 1);
 		assert!(observed.drops.is_empty());
+	}
+
+	#[test]
+	fn reparent_appends_to_the_new_parent_and_refuses_cycles() {
+		let allocator = bumpalo::Bump::new();
+		let log = Arc::new(StdMutex::new((None, Vec::new())));
+		let log_for_task = Arc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			let log = Arc::clone(&log_for_task);
+			Box::pin(async move {
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().flow(flow::column_with_gap(0)));
+				let mut first = root
+					.element("first")
+					.container(Container::default().width(10.into()).height(10.into()));
+				let mut second = root.element("second").container(
+					Container::default()
+						.width(10.into())
+						.height(10.into())
+						.flow(flow::column_with_gap(0)),
+				);
+				second
+					.element("inner")
+					.container(Container::default().width(5.into()).height(5.into()));
+				log.lock().expect("expected test value").0 = Some((first.id(), second.id()));
+				ctx.render().await;
+				let moved = first.reparent(second.id());
+				let cycle = second.reparent(first.id());
+				log.lock().expect("expected test value").1 = vec![moved, cycle];
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let (first, second) = log.lock().expect("expected test value").0.expect("expected test value");
+		assert_eq!(engine.runtime.borrow().geometry[&first].y(), 0.0);
+		assert_eq!(engine.runtime.borrow().geometry[&second].y(), 10.0);
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(log.lock().expect("expected test value").1, vec![true, false]);
+		let runtime = engine.runtime.borrow();
+		assert_eq!(runtime.geometry[&second].y(), 0.0);
+		assert_eq!(runtime.geometry[&first].y(), 5.0);
 	}
 
 	#[test]
@@ -1008,6 +1068,118 @@ mod tests {
 		assert!(!tree.remove_scope(&child_path).is_empty());
 		assert!(tree.revision() > after_child);
 		assert!(tree.remove_scope(&child_path).is_empty());
+	}
+
+	/// Mounts a scope that spawns a component counting the frames it runs, until `open` clears.
+	fn counting_scope(
+		ticks: Rc<std::cell::Cell<u32>>,
+		open: Rc<std::cell::Cell<bool>>,
+	) -> impl for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, ()> + 'static {
+		move |ctx| {
+			Box::pin(async move {
+				ctx.element("body").container(Container::default());
+				ctx.element("ticker").component(move |ctx| {
+					Box::pin(async move {
+						loop {
+							ticks.set(ticks.get() + 1);
+							ctx.render().await;
+						}
+					})
+				});
+				while open.get() {
+					ctx.render().await;
+				}
+			})
+		}
+	}
+
+	#[test]
+	fn removing_a_mounted_scope_ends_the_components_spawned_inside_it() {
+		let allocator = bumpalo::Bump::new();
+		let ticks = Rc::new(std::cell::Cell::new(0));
+		let open = Rc::new(std::cell::Cell::new(true));
+		let (task_ticks, task_open) = (Rc::clone(&ticks), Rc::clone(&open));
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				loop {
+					if task_open.get() {
+						root.element("menu")
+							.mount(counting_scope(Rc::clone(&task_ticks), Rc::clone(&task_open)))
+							.await;
+					} else {
+						ctx.render().await;
+					}
+				}
+			})
+		});
+		let mut frames = |count: usize| {
+			for _ in 0..count {
+				let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			}
+		};
+
+		frames(3);
+		assert!(ticks.get() > 0);
+		open.set(false);
+		frames(2);
+		let closed = ticks.get();
+		frames(3);
+		assert_eq!(ticks.get(), closed, "A component kept running after its scope was removed.");
+
+		// Reopening spawns a fresh component that runs again.
+		open.set(true);
+		frames(3);
+		assert!(ticks.get() > closed);
+	}
+
+	#[test]
+	fn removing_a_mounted_scope_keeps_tasks_of_a_live_scope_with_the_same_path() {
+		let allocator = bumpalo::Bump::new();
+		let first_ticks = Rc::new(std::cell::Cell::new(0));
+		let second_ticks = Rc::new(std::cell::Cell::new(0));
+		let first_open = Rc::new(std::cell::Cell::new(true));
+		let (first, second, open) = (Rc::clone(&first_ticks), Rc::clone(&second_ticks), Rc::clone(&first_open));
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut first = root.element("toast").mount(counting_scope(first, open));
+				utils::r#async::select_biased! {
+					_ = first => {},
+					_ = ctx.render() => {},
+				}
+				// Declared on a later frame under the same parent and name, so its path repeats the first's.
+				let mut second = root
+					.element("toast")
+					.mount(counting_scope(second, Rc::new(std::cell::Cell::new(true))));
+				loop {
+					utils::r#async::select_biased! {
+						_ = first => {},
+						_ = second => {},
+						_ = ctx.render() => {},
+					}
+				}
+			})
+		});
+		let mut frames = |count: usize| {
+			for _ in 0..count {
+				let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			}
+		};
+
+		frames(3);
+		assert!(first_ticks.get() > 0 && second_ticks.get() > 0);
+		first_open.set(false);
+		frames(2);
+		let (first_closed, second_closed) = (first_ticks.get(), second_ticks.get());
+		frames(3);
+		assert_eq!(first_ticks.get(), first_closed);
+		assert!(
+			second_ticks.get() > second_closed,
+			"Removing one scope ended a live scope's component."
+		);
 	}
 
 	#[test]
@@ -3145,7 +3317,7 @@ use std::{
 	task::{Context as TaskContext, Poll, Wake, Waker},
 };
 
-use utils::{RGBA, r#async::FusedFuture, sync::Mutex};
+use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex};
 
 use super::{
 	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,

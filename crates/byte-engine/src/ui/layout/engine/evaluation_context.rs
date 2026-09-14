@@ -12,6 +12,8 @@ pub struct EvaluationContext<C = ()> {
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
 	pub(super) task_id: TaskId,
+	/// The mounted scope that owns tasks spawned from this context.
+	pub(super) owner: ScopeId,
 }
 
 impl<C> EvaluationContext<C> {
@@ -29,6 +31,7 @@ impl<C> EvaluationContext<C> {
 			runtime,
 			tree,
 			task_id,
+			owner: ScopeId::ROOT,
 		}
 	}
 
@@ -37,6 +40,7 @@ impl<C> EvaluationContext<C> {
 		runtime: Rc<RefCell<Runtime>>,
 		tree: Rc<RefCell<RetainedTree>>,
 		task_id: TaskId,
+		owner: ScopeId,
 		id: Id,
 		path: Vec<PathSegment>,
 	) -> Self {
@@ -48,6 +52,7 @@ impl<C> EvaluationContext<C> {
 			runtime,
 			tree,
 			task_id,
+			owner,
 		}
 	}
 
@@ -58,9 +63,18 @@ impl<C> EvaluationContext<C> {
 			Rc::clone(&self.runtime),
 			Rc::clone(&self.tree),
 			self.task_id,
+			self.owner,
 			id,
 			path,
 		)
+	}
+
+	/// Moves this element under another parent as its last child, keeping its
+	/// id, path, and properties. The new parent's flow lays it out from the next
+	/// frame. Returns false for an unknown parent or when the parent is this
+	/// element or one of its descendants.
+	pub fn reparent(&mut self, parent: Id) -> bool {
+		self.tree.borrow_mut().reparent(self.id, parent)
 	}
 
 	pub fn update_container(&mut self, update: impl FnOnce(&mut Container)) -> bool {
@@ -215,7 +229,8 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 	{
 		let runtime = Rc::clone(&self.parent.runtime);
 		let tree = Rc::clone(&self.parent.tree);
-		let task_id = Runtime::spawn_placeholder(Rc::clone(&runtime));
+		// The task belongs to the enclosing mounted scope and ends when that scope is removed.
+		let task_id = runtime.borrow_mut().reserve_task(self.parent.owner);
 		let path = tree
 			.borrow_mut()
 			.scope_path(Some(self.parent.id), &self.parent.path, self.name);
@@ -227,6 +242,7 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 			runtime: Rc::clone(&runtime),
 			tree,
 			task_id,
+			owner: self.parent.owner,
 		};
 
 		// The runtime owns the context through this outer future; the component's
@@ -235,7 +251,7 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 			let mut ctx = ctx;
 			component(&mut ctx).await;
 		});
-		Runtime::replace_task_future(runtime, task_id, future);
+		runtime.borrow_mut().start_task(task_id, future);
 	}
 
 	fn mount<F, T>(self, component: F) -> MountedComponentFuture<F, T, C>

@@ -110,6 +110,36 @@ impl RetainedTree {
 		}
 	}
 
+	/// Moves an element under another parent as its last child.
+	///
+	/// The element keeps its id, path, and properties. Returns false when either
+	/// id is unknown or `parent` is the element itself or one of its descendants.
+	pub(super) fn reparent(&mut self, child: Id, parent: Id) -> bool {
+		if !self.element_indices.contains_key(&child) || !self.element_indices.contains_key(&parent) {
+			return false;
+		}
+		let mut ancestor = Some(parent);
+		while let Some(current) = ancestor {
+			if current == child {
+				return false;
+			}
+			ancestor = self.parent_by_child.get(&current).copied();
+		}
+		if let Some(previous) = self.parent_by_child.insert(child, parent) {
+			if previous == parent {
+				return true;
+			}
+			self.relations.retain(|relation| *relation != (previous, child));
+			if let Some(children) = self.children_by_parent.get_mut(&previous) {
+				children.retain(|sibling| *sibling != child);
+			}
+		}
+		self.relations.push((parent, child));
+		self.children_by_parent.entry(parent).or_default().push(child);
+		self.revision += 1;
+		true
+	}
+
 	/// Returns mutable access to one element and marks the tree as changed.
 	pub(super) fn element_mut(&mut self, id: Id) -> Option<&mut IdedElement> {
 		let index = *self.element_indices.get(&id)?;

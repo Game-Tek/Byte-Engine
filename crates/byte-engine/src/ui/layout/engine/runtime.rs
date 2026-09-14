@@ -4,15 +4,30 @@ use super::*;
 
 type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 
+/// The `UiTask` struct keeps one spawned component alive until its future completes or its owning scope is removed.
 pub(super) struct UiTask {
+	/// Empty while the task is being polled or before its future is started.
 	pub(super) future: Option<BoxedUiFuture>,
+	pub(super) owner: ScopeId,
 	pub(super) inbox: VecDeque<UiEvent>,
 	pub(super) key_inbox: VecDeque<UiKeyEvent>,
 	pub(super) text_edit_inbox: VecDeque<UiTextEditEvent>,
-	pub(super) complete: bool,
 }
 
-pub(super) type TaskId = usize;
+/// Task slots are reused, so a handle from a removed task finds nothing instead of its successor.
+pub(super) type TaskId = StableVecHandle;
+
+/// The `ScopeId` struct identifies one mounted scope so the tasks spawned inside it end with it.
+///
+/// Scope paths can repeat between live mounts, so ownership uses this identity instead,
+/// which an engine never hands out twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScopeId(u64);
+
+impl ScopeId {
+	/// The scope of the root component, which is never removed.
+	pub(super) const ROOT: Self = Self(0);
+}
 
 pub(super) struct EventWaiter {
 	pub(super) task_id: TaskId,
@@ -59,7 +74,8 @@ pub(super) fn sanitize_opacity(opacity: f32) -> f32 {
 }
 
 pub struct Runtime {
-	pub(super) tasks: Vec<UiTask>,
+	pub(super) tasks: StableVec<UiTask>,
+	next_scope: u64,
 	pub(super) ready: Arc<Mutex<VecDeque<TaskId>>>,
 	pub(super) frame_waiters: Vec<Waker>,
 	pub(super) event_waiters: Vec<EventWaiter>,
@@ -95,7 +111,8 @@ pub(super) fn task_waker(task: TaskId, ready: Arc<Mutex<VecDeque<TaskId>>>) -> W
 impl Runtime {
 	pub(super) fn new() -> Self {
 		Self {
-			tasks: Vec::new(),
+			tasks: StableVec::new(),
+			next_scope: ScopeId::ROOT.0,
 			ready: Arc::new(Mutex::new(VecDeque::new())),
 			frame_waiters: Vec::new(),
 			event_waiters: Vec::new(),
@@ -110,25 +127,71 @@ impl Runtime {
 		}
 	}
 
-	pub(super) fn spawn_placeholder(runtime: Rc<RefCell<Self>>) -> TaskId {
-		let mut runtime = runtime.borrow_mut();
-		let id = runtime.tasks.len();
-		runtime.tasks.push(UiTask {
-			future: Some(Box::pin(async {})),
+	/// Returns an identity for a newly mounted scope.
+	pub(super) fn next_scope(&mut self) -> ScopeId {
+		self.next_scope += 1;
+		ScopeId(self.next_scope)
+	}
+
+	/// Reserves a task owned by `owner` so its context can name it before the future exists.
+	///
+	/// Next, call [`Self::start_task`] with the future built from that context.
+	pub(super) fn reserve_task(&mut self, owner: ScopeId) -> TaskId {
+		self.tasks.push(UiTask {
+			future: None,
+			owner,
 			inbox: VecDeque::new(),
 			key_inbox: VecDeque::new(),
 			text_edit_inbox: VecDeque::new(),
-			complete: false,
-		});
-		runtime.ready.lock().push_back(id);
-		id
+		})
 	}
 
-	pub(super) fn replace_task_future(runtime: Rc<RefCell<Self>>, id: TaskId, future: UiFuture<'static>) {
-		let mut runtime = runtime.borrow_mut();
-		runtime.tasks[id].future = Some(future);
-		runtime.tasks[id].complete = false;
-		runtime.ready.lock().push_back(id);
+	pub(super) fn start_task(&mut self, id: TaskId, future: UiFuture<'static>) {
+		let task = self.tasks.get_mut(id).expect(
+			"A UI task was started after it was removed. The most likely cause is starting a task outside the call that reserved it.",
+		);
+		task.future = Some(future);
+		self.ready.lock().push_back(id);
+	}
+
+	/// Ends every task owned by a removed scope.
+	///
+	/// Futures are detached while the runtime is borrowed and dropped after the borrow
+	/// ends, because a dropped task's own mounted scopes end through this runtime again.
+	pub(super) fn end_scope(runtime: &Rc<RefCell<Self>>, owner: ScopeId) {
+		let detached = {
+			let mut runtime = runtime.borrow_mut();
+			let owned = runtime
+				.tasks
+				.handled_iter()
+				.filter(|(_, task)| task.owner == owner)
+				.map(|(id, _)| id)
+				.collect::<Vec<_>>();
+			if owned.is_empty() {
+				return;
+			}
+			let detached = owned
+				.into_iter()
+				.filter_map(|id| runtime.tasks.remove(id))
+				.collect::<Vec<_>>();
+			runtime.forget_removed_tasks();
+			detached
+		};
+		drop(detached);
+	}
+
+	/// Drops waiters left by removed tasks so no queue grows with tasks that no longer exist.
+	fn forget_removed_tasks(&mut self) {
+		let Self {
+			tasks,
+			event_waiters,
+			key_waiters,
+			text_edit_waiters,
+			..
+		} = self;
+		event_waiters.retain(|waiter| tasks.contains_handle(waiter.task_id));
+		key_waiters.retain(|waiter| tasks.contains_handle(waiter.task_id));
+		text_edit_waiters.retain(|waiter| tasks.contains_handle(waiter.task_id));
 	}
 
 	pub(super) fn begin_frame(runtime: Rc<RefCell<Self>>) {
@@ -144,38 +207,41 @@ impl Runtime {
 
 	pub(super) fn poll_ready_tasks(runtime: Rc<RefCell<Self>>) {
 		loop {
-			let (id, ready) = {
-				let runtime = runtime.borrow();
+			let (id, ready, mut future) = {
+				let mut runtime = runtime.borrow_mut();
 				let Some(id) = runtime.ready.lock().pop_front() else {
 					return;
 				};
-				(id, Arc::clone(&runtime.ready))
-			};
-
-			let mut future = {
-				let mut runtime = runtime.borrow_mut();
-				if runtime.tasks.get(id).map(|t| t.complete).unwrap_or(true) {
-					continue;
-				}
-
-				let Some(future) = runtime.tasks[id].future.take() else {
+				// Wakes from removed tasks and repeated wakes of one task find no future.
+				let Some(future) = runtime.tasks.get_mut(id).and_then(|task| task.future.take()) else {
 					continue;
 				};
-
-				future
+				(id, Arc::clone(&runtime.ready), future)
 			};
 
 			let waker = task_waker(id, ready);
 			let mut cx = TaskContext::from_waker(&waker);
 			let poll = future.as_mut().poll(&mut cx);
 
-			let mut runtime = runtime.borrow_mut();
-			if let Some(task) = runtime.tasks.get_mut(id) {
-				match poll {
-					Poll::Ready(()) => task.complete = true,
-					Poll::Pending => task.future = Some(future),
+			// A finished future, or one whose task was removed while it ran, is dropped
+			// outside the borrow because dropping it may end mounted scopes.
+			let finished = match poll {
+				Poll::Ready(()) => {
+					drop(future);
+					let mut runtime = runtime.borrow_mut();
+					runtime.tasks.remove(id);
+					runtime.forget_removed_tasks();
+					None
 				}
-			}
+				Poll::Pending => match runtime.borrow_mut().tasks.get_mut(id) {
+					Some(task) => {
+						task.future = Some(future);
+						None
+					}
+					None => Some(future),
+				},
+			};
+			drop(finished);
 		}
 	}
 
@@ -333,7 +399,7 @@ impl Runtime {
 		self.focus_stack.retain(|focused| !targets.contains(focused));
 		self.geometry.retain(|id, _| !targets.contains(id));
 
-		for task in &mut self.tasks {
+		for task in self.tasks.iter_mut() {
 			task.inbox.retain(|event| !targets.contains(&event.target));
 			task.key_inbox.retain(|event| !targets.contains(&event.target));
 			task.text_edit_inbox.retain(|event| !targets.contains(&event.target));

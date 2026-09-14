@@ -147,6 +147,11 @@ impl<'a> MouseClickAcceleration<'a> {
 
 	/// Returns the ID of the topmost element under the pointer position.
 	pub(crate) fn query(&self, mouse_position: Location) -> Option<u32> {
+		self.query_excluding(mouse_position, None)
+	}
+
+	/// Finds the frontmost surface at a point, skipping one element such as a held drag source.
+	pub(crate) fn query_excluding(&self, mouse_position: Location, excluded: Option<u32>) -> Option<u32> {
 		let (x, y) = mouse_position.into();
 		if x < 0.0 || y < 0.0 || x >= self.bounds.0 || y >= self.bounds.1 {
 			return None;
@@ -164,7 +169,7 @@ impl<'a> MouseClickAcceleration<'a> {
 
 		for &candidate_index in candidates {
 			let candidate = &self.elements[candidate_index];
-			if !point_in_layout_element(candidate, mouse_position) {
+			if Some(candidate.id) == excluded || !point_in_layout_element(candidate, mouse_position) {
 				continue;
 			}
 

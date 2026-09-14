@@ -89,6 +89,14 @@ impl Shapes {
 pub enum Events {
 	Actuated,
 	Scrolled,
+	/// The held source crossed the drag threshold. Delivered to the source.
+	DragStarted,
+	/// A source was released over this element or one of its descendants.
+	/// Delivered to the target under the release point, then to each ancestor,
+	/// with [`super::UiEvent::source`] set. The source never receives its own drop.
+	Dropped,
+	/// A started drag ended without a drop. Delivered to the source.
+	DragCancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

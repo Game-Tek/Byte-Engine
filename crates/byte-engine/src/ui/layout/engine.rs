@@ -15,6 +15,8 @@ pub struct Engine<C = ()> {
 	is_clicking: bool,
 	clicks: Vec<bool>,
 	scrolls: Vec<UiVector>,
+	/// Released sources waiting for the next layout to resolve their drop targets.
+	drops: Vec<DragDrop>,
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
 	text_edits: VecDeque<TextEdit>,
@@ -151,6 +153,7 @@ impl<C: 'static> Engine<C> {
 			is_clicking: false,
 			clicks: Vec::new(),
 			scrolls: Vec::new(),
+			drops: Vec::new(),
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
 			text_edits: VecDeque::new(),
@@ -280,18 +283,27 @@ impl<C: 'static> Engine<C> {
 					target,
 					kind: Events::Actuated,
 					delta: None,
+					source: None,
 				});
 			}
 		}
 
 		while let Some(delta) = self.scrolls.pop() {
 			if let Some(target) = snapshot.click(self.cursor_position) {
-				self.route_scroll_event(target, delta);
+				self.route_bubbling_event(target, Events::Scrolled, Some(delta), None);
+			}
+		}
+
+		// A drop target is any surface under the release point other than the released source.
+		for drop in std::mem::take(&mut self.drops) {
+			if let Some(target) = snapshot.hit(drop.position, Some(drop.source)) {
+				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
 			}
 		}
 	}
 
-	fn route_scroll_event(&mut self, target: Id, delta: UiVector) {
+	/// Delivers one event to a target and then to each of its ancestors.
+	fn route_bubbling_event(&mut self, target: Id, kind: Events, delta: Option<UiVector>, source: Option<Id>) {
 		let runtime = Rc::clone(&self.runtime);
 		let tree = Rc::clone(&runtime.borrow().tree);
 		let tree = tree.borrow();
@@ -300,8 +312,9 @@ impl<C: 'static> Engine<C> {
 		while let Some(target) = current {
 			runtime.borrow_mut().push_event(UiEvent {
 				target,
-				kind: Events::Scrolled,
-				delta: Some(delta),
+				kind,
+				delta,
+				source,
 			});
 			current = tree.parent_by_child.get(&target).copied();
 		}
@@ -541,18 +554,35 @@ impl<C: 'static> Engine<C> {
 	/// Moves the captured pointer and reports whether a source is held.
 	///
 	/// The gesture activates once the pointer travels the drag threshold and stays
-	/// active if it returns. Next, call [`Self::release`] when the pointer is released.
+	/// active if it returns. Activation sends [`Events::DragStarted`] to the source.
+	/// Next, call [`Self::release`] when the pointer is released.
 	pub fn drag_to(&mut self, position: UiPoint) -> bool {
-		self.runtime.borrow_mut().drag.move_to(position)
+		let mut runtime = self.runtime.borrow_mut();
+		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
+		let held = runtime.drag.move_to(position);
+		if let Some(capture) = runtime.drag.capture().filter(|capture| capture.dragging && !was_dragging) {
+			runtime.push_event(drag_event(capture.source, Events::DragStarted));
+		}
+		held
 	}
 
 	/// Releases the captured source and returns a drop only after activation.
 	///
 	/// The release position participates in threshold detection. A click clears
-	/// capture without yielding a drop. Next, validate the returned position
-	/// against your drop target before applying the source's meaning.
+	/// capture without yielding a drop. A drop is also delivered as
+	/// [`Events::Dropped`] to the surface under the release position by the next
+	/// [`Self::evaluate`], so either the caller or a component can apply it.
 	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
-		self.runtime.borrow_mut().drag.release(position)
+		let mut runtime = self.runtime.borrow_mut();
+		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
+		let dropped = runtime.drag.release(position)?;
+		// The release itself may have supplied the activating motion.
+		if !was_dragging {
+			runtime.push_event(drag_event(dropped.source, Events::DragStarted));
+		}
+		drop(runtime);
+		self.drops.push(dropped);
+		Some(dropped)
 	}
 
 	/// Returns the captured drag gesture, if a source is held.
@@ -562,18 +592,26 @@ impl<C: 'static> Engine<C> {
 
 	/// Ends the interaction in progress and returns the source of a cancelled drag.
 	///
-	/// Queued clicks, scrolls, key presses, and text edits are discarded, held
-	/// keys and the pointer are released, and a held source is restored without a
-	/// drop. Call this when the window loses focus or the user cancels; a changed
-	/// viewport size calls it from [`Self::evaluate`].
+	/// Queued clicks, scrolls, drops, key presses, and text edits are discarded,
+	/// held keys and the pointer are released, and a held source is restored
+	/// without a drop. A started drag sends [`Events::DragCancelled`] to its
+	/// source. Call this when the window loses focus or the user cancels; a
+	/// changed viewport size calls it from [`Self::evaluate`].
 	pub fn cancel(&mut self) -> Option<Id> {
 		self.is_clicking = false;
 		self.clicks.clear();
 		self.scrolls.clear();
+		self.drops.clear();
 		self.key_states.clear();
 		self.key_presses.clear();
 		self.text_edits.clear();
-		self.runtime.borrow_mut().drag.cancel()
+		let mut runtime = self.runtime.borrow_mut();
+		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
+		let source = runtime.drag.cancel()?;
+		if was_dragging {
+			runtime.push_event(drag_event(source, Events::DragCancelled));
+		}
+		Some(source)
 	}
 
 	fn focused_text_field_last_char(&mut self) -> Option<char> {
@@ -651,6 +689,18 @@ pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
 	pub delta: Option<UiVector>,
+	/// The released drag source of an [`Events::Dropped`] event.
+	pub source: Option<Id>,
+}
+
+/// Builds an event addressed to a drag source without a payload.
+fn drag_event(source: Id, kind: Events) -> UiEvent {
+	UiEvent {
+		target: source,
+		kind,
+		delta: None,
+		source: None,
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -771,6 +821,109 @@ mod tests {
 		let observed = observed.lock().expect("expected test value");
 		assert!(observed[1].is_some());
 		assert_eq!(observed[2], None);
+	}
+
+	/// What the board's components observed: the source's starts and cancellations, the target's drops.
+	#[derive(Default)]
+	struct DragLog {
+		ids: Option<(Id, Id)>,
+		started: usize,
+		cancelled: usize,
+		drops: Vec<Option<Id>>,
+	}
+
+	/// Mounts a target with a hit-testable child and a source drawn over the target's corner.
+	fn drag_board() -> (Engine, Arc<StdMutex<DragLog>>) {
+		let log = Arc::new(StdMutex::new(DragLog::default()));
+		let log_for_task = Arc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			let log = Arc::clone(&log_for_task);
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut target = root.element("target").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(50.into())
+						.height(50.into()),
+				);
+				let _inner = target.element("inner").container(
+					Container::default()
+						.absolute_position(30, 30)
+						.width(20.into())
+						.height(20.into()),
+				);
+				let mut source = root.element("source").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(20.into())
+						.height(20.into()),
+				);
+				log.lock().expect("expected test value").ids = Some((target.id(), source.id()));
+				loop {
+					utils::r#async::select! {
+						_ = source.on(Events::DragStarted) => log.lock().expect("expected test value").started += 1,
+						_ = source.on(Events::DragCancelled) => log.lock().expect("expected test value").cancelled += 1,
+						event = target.on(Events::Dropped) => log.lock().expect("expected test value").drops.push(event.source),
+					}
+				}
+			})
+		});
+		(engine, log)
+	}
+
+	#[test]
+	fn drag_events_reach_the_source_and_the_surface_under_the_release() {
+		let allocator = bumpalo::Bump::new();
+		let (mut engine, log) = drag_board();
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let (_, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+
+		// Motion past the threshold starts the drag; the drop lands on the target's child and bubbles up.
+		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
+		assert!(engine.drag_to(UiPoint::new(40.0, 40.0)));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(log.lock().expect("expected test value").started, 1);
+		assert!(engine.release(UiPoint::new(40.0, 40.0)).is_some());
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(log.lock().expect("expected test value").drops, vec![Some(source)]);
+
+		// A release whose motion activates the drag still starts it, and a release over the
+		// source itself drops onto the surface beneath it.
+		assert!(engine.press(source, UiPoint::new(1.0, 1.0)));
+		assert!(engine.release(UiPoint::new(19.0, 19.0)).is_some());
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let observed = log.lock().expect("expected test value");
+		assert_eq!(observed.started, 2);
+		assert_eq!(observed.drops, vec![Some(source), Some(source)]);
+		drop(observed);
+
+		// A release outside every surface drops nowhere.
+		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
+		assert!(engine.release(UiPoint::new(90.0, 90.0)).is_some());
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let observed = log.lock().expect("expected test value");
+		assert_eq!(observed.drops.len(), 2);
+		assert_eq!(observed.cancelled, 0);
+	}
+
+	#[test]
+	fn cancel_reports_to_a_started_source_only() {
+		let allocator = bumpalo::Bump::new();
+		let (mut engine, log) = drag_board();
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let (_, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+
+		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
+		assert_eq!(engine.cancel(), Some(source));
+		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
+		assert!(engine.drag_to(UiPoint::new(40.0, 40.0)));
+		assert_eq!(engine.cancel(), Some(source));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let observed = log.lock().expect("expected test value");
+		assert_eq!(observed.started, 1);
+		assert_eq!(observed.cancelled, 1);
+		assert!(observed.drops.is_empty());
 	}
 
 	#[test]

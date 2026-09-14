@@ -100,6 +100,17 @@ impl Snapshot<'_> {
 		Some(id)
 	}
 
+	/// Returns the frontmost surface at a layout position, skipping `excluded`.
+	///
+	/// Unlike [`Self::click`], this takes top-left layout units and leaves the
+	/// spatial cursor unchanged. Drop routing uses it to find the target beneath a
+	/// released source.
+	pub fn hit(&self, position: UiPoint, excluded: Option<Id>) -> Option<Id> {
+		self.acceleration
+			.query_excluding(Location::new(position.x, position.y), excluded.map(Id::get))
+			.and_then(Id::new)
+	}
+
 	pub fn click_cursor(&self) -> Option<Id> {
 		self.cursor.filter(|id| self.element(*id).is_some())
 	}

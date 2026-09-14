@@ -8,6 +8,7 @@
 - `InputCollector::end_tick` is removed. Each sink reads from its own position in the queue, and a record is retained and dropped once every sink has pulled past it.
 - `process_default_window_input` records into the collector itself and discards the seat on focus loss, minimize, close, and resize, returning whether it did.
 - The UI `Engine` owns the pointer drag: `Engine::press`, `Engine::drag_to`, `Engine::release`, and `Engine::drag` replace the standalone `Drag` type, components read the held source through `Context::drag`, and `Engine::cancel` ends the interaction in progress. A changed viewport size cancels from `Engine::evaluate`.
+- The UI engine delivers drag gestures to components as events: `Events::DragStarted` and `Events::DragCancelled` reach the source, and `Events::Dropped` reaches the surface under the release point and its ancestors with the released source in `UiEvent::source`. `UiEvent` gains that `source` field.
 
 ## 0.2.0 - 2026-08-20
 

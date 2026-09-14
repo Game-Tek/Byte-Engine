@@ -72,12 +72,32 @@ match phase {
 
 Capture the gesture in your UI's sink before gameplay processes the same
 input. Continue forwarding motion and release outside the source; repeat hit
-testing only when choosing a new source or a drop target. Components read the
-held source through `Context::drag` to draw a floating preview after `dragging`
-becomes true, while keeping the original item until the drop is accepted. A
-click, cancellation, or rejected drop then restores its normal appearance. When
+testing only when choosing a new source. Components read the held source
+through `Context::drag` to draw a floating preview after `dragging` becomes
+true, while keeping the original item until the drop is accepted. A click,
+cancellation, or rejected drop then restores its normal appearance. When
 scaling a preview, use `Transform::origin(UiPoint::zero())` to keep its top-left
 corner anchored.
+
+Components can also receive the gesture as events. The source gets
+`Events::DragStarted` when the threshold is crossed and `Events::DragCancelled`
+when a started drag is cancelled. The surface under the release point, and then
+each of its ancestors, gets `Events::Dropped` with `UiEvent::source` set to the
+released source; the source itself is skipped when finding that surface. The
+engine resolves the target during the next `Engine::evaluate`, so a component
+that owns a drop target awaits it like a click:
+
+```rust
+loop {
+    let event = column.on(Events::Dropped).await;
+    if let Some(card) = event.source {
+        accept(card);
+    }
+}
+```
+
+`Engine::release` still returns the `DragDrop` for applications that apply
+drops outside the UI, so either side can act on it.
 
 `Engine::cancel` ends the interaction in progress: it restores the held source
 and discards queued clicks, scrolls, key presses, and text edits. Call it when

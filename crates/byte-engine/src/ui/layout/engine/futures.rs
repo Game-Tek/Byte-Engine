@@ -29,9 +29,12 @@ impl<F, T, C> MountedComponentFuture<F, T, C> {
 			return;
 		};
 
-		let removed = self.tree.borrow_mut().remove_scope(path);
-		if !removed.is_empty() {
-			self.runtime.borrow_mut().remove_targets(&removed);
+		{
+			let mut tree = self.tree.borrow_mut();
+			let removed = tree.remove_scope(path);
+			if !removed.is_empty() {
+				self.runtime.borrow_mut().remove_targets(removed);
+			}
 		}
 		Runtime::end_scope(&self.runtime, owner);
 	}

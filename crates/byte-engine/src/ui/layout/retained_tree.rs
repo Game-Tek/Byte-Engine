@@ -32,12 +32,15 @@ pub(super) struct RetainedTree {
 	pub(super) element_indices: HashMap<Id, usize>,
 	pub(super) relations: Vec<(Id, Id)>,
 	/// Dense links follow `elements`; only external identity lookup needs hashing.
+	/// Spare child lists keep their capacity after a scope closes.
 	pub(super) children: Vec<Vec<usize>>,
 	pub(super) parents: Vec<Option<usize>>,
 	path_counts: HashMap<(Option<Id>, &'static str), u32>,
 	path_ids: HashMap<(usize, PathSegment), usize>,
 	/// Interned paths retain their original scope ancestry even after visual reparenting.
 	paths: Vec<(usize, Option<Id>)>,
+	/// Reused during scope cleanup; the caller consumes these IDs before the next removal.
+	removed: HashSet<Id>,
 	next_id: u32,
 	/// Advances on every structural or property change so consumers can retain derived state.
 	revision: u64,
@@ -49,9 +52,21 @@ pub(super) struct RetainedTree {
 
 impl RetainedTree {
 	pub(super) fn new() -> Self {
+		// Reserve a small screen up front; larger screens grow these collections normally.
+		const ELEMENT_CAPACITY: usize = 256;
+		let mut paths = Vec::with_capacity(ELEMENT_CAPACITY);
+		paths.push((0, None));
 		Self {
 			next_id: 1,
-			paths: vec![(0, None)],
+			elements: Vec::with_capacity(ELEMENT_CAPACITY),
+			element_indices: HashMap::with_capacity(ELEMENT_CAPACITY),
+			relations: Vec::with_capacity(ELEMENT_CAPACITY),
+			children: Vec::with_capacity(ELEMENT_CAPACITY),
+			parents: Vec::with_capacity(ELEMENT_CAPACITY),
+			path_counts: HashMap::with_capacity(ELEMENT_CAPACITY),
+			path_ids: HashMap::with_capacity(ELEMENT_CAPACITY),
+			paths,
+			removed: HashSet::with_capacity(ELEMENT_CAPACITY),
 			..Self::default()
 		}
 	}
@@ -117,7 +132,10 @@ impl RetainedTree {
 		let index = self.elements.len() - 1;
 		let parent_index = parent.map(|parent| self.element_indices[&parent]);
 		self.parents.push(parent_index);
-		self.children.push(Vec::new());
+		if index == self.children.len() {
+			self.children.push(Vec::new());
+		}
+		debug_assert!(self.children[index].is_empty());
 		if let Some(parent_index) = parent_index {
 			self.relations.push((self.elements[parent_index].id, id));
 			self.children[parent_index].push(index);
@@ -189,13 +207,13 @@ impl RetainedTree {
 		self.elements.get(index)
 	}
 
-	/// Removes the scope and returns its identities for runtime cleanup.
-	pub(super) fn remove_scope(&mut self, scope: usize) -> HashSet<Id> {
+	/// Removes the scope and lends its identities to runtime cleanup without reallocating the set.
+	pub(super) fn remove_scope(&mut self, scope: usize) -> &HashSet<Id> {
+		self.removed.clear();
 		if scope == 0 {
-			return HashSet::new();
+			return &self.removed;
 		}
 
-		let mut removed = HashSet::new();
 		self.elements.retain(|element| {
 			// Scope ownership follows declaration paths, never the current visual parent.
 			let mut path = element.path;
@@ -204,22 +222,22 @@ impl RetainedTree {
 			}
 			let should_remove = path == scope;
 			if should_remove {
-				removed.insert(element.id);
+				self.removed.insert(element.id);
 			}
 			!should_remove
 		});
 
-		if removed.is_empty() {
-			return HashSet::new();
+		if self.removed.is_empty() {
+			return &self.removed;
 		}
 		self.revision += 1;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 
 		self.relations
-			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));
+			.retain(|(parent, child)| !self.removed.contains(parent) && !self.removed.contains(child));
 		self.rebuild_element_indices();
-		removed
+		&self.removed
 	}
 
 	/// Restores index-based links after removal compacts the live elements.
@@ -230,7 +248,9 @@ impl RetainedTree {
 		}
 		self.parents.clear();
 		self.parents.resize(self.elements.len(), None);
-		self.children.resize_with(self.elements.len(), Vec::new);
+		// Keep cleared child lists for later mounts, including indices beyond the live tree.
+		self.children
+			.resize_with(self.children.len().max(self.elements.len()), Vec::new);
 		for children in &mut self.children {
 			children.clear();
 		}

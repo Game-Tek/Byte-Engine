@@ -94,12 +94,14 @@ impl Wake for TaskWaker {
 
 impl Runtime {
 	pub(super) fn new() -> Self {
+		// Most screens start a handful of components together. Reserve their scheduler storage once.
+		const TASK_CAPACITY: usize = 16;
 		Self {
-			tasks: StableVec::new(),
+			tasks: StableVec::with_capacity(TASK_CAPACITY),
 			next_scope: ScopeId::ROOT.0,
-			ready: Arc::new(Mutex::new(VecDeque::new())),
-			frame_waiters: StableVec::new(),
-			event_waiters: Vec::new(),
+			ready: Arc::new(Mutex::new(VecDeque::with_capacity(TASK_CAPACITY))),
+			frame_waiters: StableVec::with_capacity(TASK_CAPACITY),
+			event_waiters: Vec::with_capacity(TASK_CAPACITY),
 			key_waiters: Vec::new(),
 			text_edit_waiters: Vec::new(),
 			focus_stack: Vec::new(),

@@ -118,7 +118,7 @@ fn random_color_from_id(id: u32) -> RGBA {
 pub struct IdedElement {
 	pub(crate) id: Id,
 	pub(crate) element: ConcreteElement,
-	pub(crate) path: Vec<PathSegment>,
+	pub(crate) path: usize,
 }
 
 impl ElementHandle for IdedElement {
@@ -127,274 +127,132 @@ impl ElementHandle for IdedElement {
 	}
 }
 
-pub(crate) struct LayoutGraph {
-	element_indices: std::collections::HashMap<Id, usize>,
-	children_by_parent: std::collections::HashMap<Id, Vec<Id>>,
-	parent_by_child: std::collections::HashMap<Id, Id>,
-	root: Option<Id>,
-}
-
-impl LayoutGraph {
-	pub(crate) fn new(elements: &[IdedElement], relations: &[(Id, Id)]) -> Self {
-		let mut element_indices = std::collections::HashMap::with_capacity(elements.len());
-		for (index, element) in elements.iter().enumerate() {
-			element_indices.insert(element.id, index);
-		}
-
-		let mut children_by_parent = std::collections::HashMap::new();
-		let mut parent_by_child = std::collections::HashMap::with_capacity(relations.len());
-		for &(parent, child) in relations {
-			children_by_parent.entry(parent).or_insert_with(Vec::new).push(child);
-			parent_by_child.insert(child, parent);
-		}
-
-		let root = elements
-			.iter()
-			.find_map(|element| (!parent_by_child.contains_key(&element.id)).then_some(element.id));
-
-		Self {
-			element_indices,
-			children_by_parent,
-			parent_by_child,
-			root,
-		}
-	}
-
-	pub(crate) fn element<'a>(&self, elements: &'a [IdedElement], id: Id) -> Option<&'a IdedElement> {
-		elements.get(*self.element_indices.get(&id)?)
-	}
-
-	pub(crate) fn parent(&self, id: Id) -> Option<Id> {
-		self.parent_by_child.get(&id).copied()
-	}
-
-	pub(crate) fn children(&self, id: Id) -> impl Iterator<Item = Id> + '_ {
-		self.children_by_parent
-			.get(&id)
-			.into_iter()
-			.flat_map(|children| children.iter().copied())
-	}
-}
-
-/// Lays out the elements for a viewport and returns their calculated positions
-/// and sizes.
-///
-/// `relations` describes parent-child element relationships.
-// Keep size resolution and parent-child placement in one ordered layout pass.
-#[allow(clippy::too_many_lines)]
+/// Lays out the retained topology, measuring each element once for this traversal.
 fn layout_elements<'a>(
-	elements: impl AsRef<[IdedElement]>,
-	relation_map: &[(Id, Id)],
+	tree: &retained_tree::RetainedTree,
 	available_space: Size,
 	text_system: &mut TextSystem,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
-	let elements = elements.as_ref();
-	let mut lelements = Vec::with_capacity_in(elements.len(), frame_allocator);
-
-	if elements.is_empty() {
-		return lelements;
+	let mut elements = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
+	if tree.elements.is_empty() {
+		return elements;
 	}
 
-	let graph = LayoutGraph::new(elements, relation_map);
-
-	#[derive(Clone, Copy)]
-	struct TraversalState {
-		available_space: Size,
-		offset: Offset,
-		depth: i32,
-		is_root: bool,
-	}
-
-	#[derive(Clone, Copy)]
-	struct Context<'a> {
-		elements: &'a [IdedElement],
-		graph: &'a LayoutGraph,
-		root_size: Size,
-	}
-
-	fn calculate_element<'a>(
-		element: &IdedElement,
-		ctx: Context<'a>,
-		ts: TraversalState,
-		text_system: &mut TextSystem,
-	) -> LayoutElement {
-		let available_space = if ts.is_root { ctx.root_size } else { ts.available_space };
-		let size = calculate_element_size(element, available_space, text_system);
-
-		let position = location_from_offset(ts.offset, ts.depth);
-
-		let hit_testable = match &element.element.primitive {
-			Primitives::Container(container) => container.hit_testable,
-			Primitives::TextField(_) => true,
-			_ => false,
-		};
-
-		LayoutElement {
-			id: element.id,
-			position,
-			size,
-			hit_testable,
-		}
-	}
-
-	fn calculate_element_size(element: &IdedElement, available_space: Size, text_system: &mut TextSystem) -> Size {
+	// Resolve the primitive size used by both placement and the parent flow.
+	fn measure(element: &IdedElement, available: Size, text: &mut TextSystem) -> Size {
 		match &element.element.primitive {
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.width, container.height),
 				radius: container.corner_radius,
 				exponent: container.corner_exponent,
 			}
-			.bbox(available_space),
-			Primitives::Shape(shape) => shape.shape.bbox(available_space),
-			Primitives::Curve(curve) => curve.path().size(available_space),
+			.bbox(available),
+			Primitives::Shape(shape) => shape.shape.bbox(available),
+			Primitives::Curve(curve) => curve.path().size(available),
 			Primitives::Image(image) => Shapes::Box {
 				half: (image.width, image.height),
 				radius: 0.0,
 				exponent: 2.0,
 			}
-			.bbox(available_space),
-			Primitives::Text(text) => text_system.measure(text.content(), text.settings().font_size),
-			Primitives::TextField(text_field) => text_system.measure(text_field.content(), text_field.settings().font_size),
+			.bbox(available),
+			Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
+			Primitives::TextField(value) => text.measure(value.content(), value.settings().font_size),
 		}
 	}
 
-	fn layout_element<'a>(
-		elements: &[IdedElement],
-		lelements: &mut Vec<LayoutElement, &bumpalo::Bump>,
-		element: &IdedElement,
-		ctx: Context<'a>,
-		ts: TraversalState,
-		text_system: &mut TextSystem,
+	// Placement uses the size already measured for the parent's flow. Visual transforms
+	// remain a later pass and cannot move the flow cursor or change sibling sizing.
+	#[allow(clippy::too_many_arguments)]
+	fn place(
+		tree: &retained_tree::RetainedTree,
+		index: usize,
+		size: Size,
+		root_size: Size,
+		offset: Offset,
+		depth: i32,
 		highest_depth: &mut i32,
-	) -> Size {
-		let p = calculate_element(element, ctx, ts, text_system);
-
-		let size = p.size;
-		let mut cursor: Offset = Into::<Location>::into(p.position).into();
-		let element_id = p.id;
-
-		match &element.element.primitive {
-			Primitives::Container(container) => {
-				let flow = container.flow;
-
-				lelements.push(p);
-
-				for layout_reset_layer in [false, true] {
-					for child_id in ctx.graph.children(element_id) {
-						let Some(child) = ctx.graph.element(ctx.elements, child_id) else {
-							continue;
-						};
-						let reset_layout = resets_layout(child);
-						if reset_layout != layout_reset_layer {
-							continue;
-						}
-
-						let child_available_space = if reset_layout { ctx.root_size } else { size };
-						let expected_child_size = calculate_element_size(child, child_available_space, text_system);
-						let flow_output = if let Some(position) = absolute_position(child) {
-							FlowOutput::new(position, cursor)
-						} else if reset_layout {
-							FlowOutput::new(Offset::new(0.0, 0.0), cursor)
-						} else {
-							flow.call(FlowInput::new(size, cursor, expected_child_size))
-						};
-						let child_depth = resolve_element_depth(child, ts.depth, *highest_depth);
-						*highest_depth = (*highest_depth).max(child_depth);
-						let child_size = layout_element(
-							elements,
-							lelements,
-							child,
-							ctx,
-							TraversalState {
-								available_space: child_available_space,
-								offset: flow_output.child_offset(),
-								depth: child_depth,
-								is_root: false,
-							},
-							text_system,
-							highest_depth,
-						);
-
-						if !reset_layout {
-							cursor = flow_output.next_cursor();
-						}
-						debug_assert_eq!(expected_child_size, child_size);
-					}
+		text: &mut TextSystem,
+		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
+	) {
+		let element = &tree.elements[index];
+		let position = Location3::new(offset.x().max(0.0), offset.y().max(0.0), depth.max(0) as u32);
+		let hit_testable = match &element.element.primitive {
+			Primitives::Container(container) => container.hit_testable,
+			Primitives::TextField(_) => true,
+			_ => false,
+		};
+		output.push(LayoutElement {
+			id: element.id,
+			position,
+			size,
+			hit_testable,
+		});
+		let Primitives::Container(container) = &element.element.primitive else {
+			return;
+		};
+		let mut cursor: Offset = Into::<Location>::into(position).into();
+		// Absolute-depth layers start from the viewport after ordinary flow children.
+		for reset_layer in [false, true] {
+			for &child_index in &tree.children[index] {
+				let child = &tree.elements[child_index];
+				let child_container = match &child.element.primitive {
+					Primitives::Container(value) => Some(value),
+					_ => None,
+				};
+				let reset = child_container.is_some_and(|value| matches!(value.depth, Depth::Absolute(_)));
+				if reset != reset_layer {
+					continue;
 				}
-
-				size
-			}
-			Primitives::Shape(_) | Primitives::Curve(_) => {
-				lelements.push(p);
-				size
-			}
-			Primitives::Image(_) | Primitives::Text(_) | Primitives::TextField(_) => {
-				lelements.push(p);
-				size
+				let available = if reset { root_size } else { size };
+				let child_size = measure(child, available, text);
+				let flow_output = match child_container.map(|value| value.position) {
+					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(x, y), cursor),
+					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
+					_ => container.flow.call(FlowInput::new(size, cursor, child_size)),
+				};
+				let child_depth = match child_container.map(|value| value.depth) {
+					Some(Depth::Relative(value)) => depth.saturating_add(value),
+					Some(Depth::Absolute(value)) => highest_depth.saturating_add(value),
+					None => depth.saturating_add(1),
+				};
+				*highest_depth = (*highest_depth).max(child_depth);
+				place(
+					tree,
+					child_index,
+					child_size,
+					root_size,
+					flow_output.child_offset(),
+					child_depth,
+					highest_depth,
+					text,
+					output,
+				);
+				if !reset {
+					cursor = flow_output.next_cursor();
+				}
 			}
 		}
 	}
 
-	fn resets_layout(element: &IdedElement) -> bool {
-		matches!(
-			&element.element.primitive,
-			Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))
-		)
-	}
-
-	fn absolute_position(element: &IdedElement) -> Option<Offset> {
-		match &element.element.primitive {
-			Primitives::Container(container) => match container.position {
-				Position::Flow => None,
-				Position::Absolute { x, y } => Some(Offset::new(x, y)),
-			},
-			_ => None,
-		}
-	}
-
-	fn resolve_element_depth(element: &IdedElement, parent_depth: i32, highest_depth: i32) -> i32 {
-		match &element.element.primitive {
-			Primitives::Container(container) => match container.depth {
-				Depth::Relative(depth) => parent_depth.saturating_add(depth),
-				Depth::Absolute(depth) => highest_depth.saturating_add(depth),
-			},
-			_ => parent_depth.saturating_add(1),
-		}
-	}
-
-	fn clamp_depth(depth: i32) -> u32 {
-		depth.max(0) as u32
-	}
-
-	fn location_from_offset(offset: Offset, depth: i32) -> Location3 {
-		Location3::new(offset.x().max(0.0), offset.y().max(0.0), clamp_depth(depth))
-	}
-
-	let root_id = graph.root.expect("Root container not found");
-	let root = graph.element(elements, root_id).unwrap();
-	let mut highest_depth = 0;
-
-	layout_element(
-		elements,
-		&mut lelements,
+	let root = tree
+		.parents
+		.iter()
+		.position(Option::is_none)
+		.expect("Root container not found");
+	let root_size = measure(&tree.elements[root], available_space, text_system);
+	place(
+		tree,
 		root,
-		Context {
-			elements,
-			graph: &graph,
-			root_size: Size::new(available_space.x(), available_space.y()),
-		},
-		TraversalState {
-			available_space,
-			offset: Offset::new(0.0, 0.0),
-			depth: 0,
-			is_root: true,
-		},
+		root_size,
+		available_space,
+		Offset::new(0.0, 0.0),
+		0,
+		&mut 0,
 		text_system,
-		&mut highest_depth,
+		&mut elements,
 	);
-
-	lelements
+	elements
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,12 +449,27 @@ mod tests {
 		flow::{self, Location, Location3, Size},
 		layout::{ConcreteElement, Depth, Position, Sizing},
 	};
-	use super::{LayoutElement, layout_elements};
+	use super::LayoutElement;
 	use crate::ui::{
 		font::TextSystem,
 		layout::IdedElement,
 		primitive::{Primitives, Shapes},
 	};
+
+	/// Supplies retained topology to the layout seam from declarative test fixtures.
+	fn layout_elements<'a>(
+		elements: Vec<IdedElement>,
+		relations: &[(Id, Id)],
+		size: Size,
+		text: &mut TextSystem,
+		allocator: &'a bumpalo::Bump,
+	) -> Vec<LayoutElement, &'a bumpalo::Bump> {
+		let mut tree = super::retained_tree::RetainedTree::new();
+		tree.elements = elements;
+		tree.relations.extend_from_slice(relations);
+		tree.rebuild_element_indices();
+		super::layout_elements(&tree, size, text, allocator)
+	}
 
 	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
 		let mut counter = Id::MIN;
@@ -613,7 +486,7 @@ mod tests {
 					element: ConcreteElement {
 						primitive: Primitives::Container(e),
 					},
-					path: Vec::new(),
+					path: 0,
 				}
 			})
 			.collect()

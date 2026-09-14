@@ -9,16 +9,26 @@ pub(super) enum EffectiveClip {
 	Rect(Geometry),
 }
 
+/// The `VisualState` struct carries inherited appearance in retained element order.
 #[derive(Clone, Copy)]
-pub(super) struct ClipInfo {
-	pub(super) element: EffectiveClip,
-	pub(super) descendants: EffectiveClip,
+pub(super) struct VisualState {
+	pub(super) clip: EffectiveClip,
+	descendant_clip: EffectiveClip,
+	pub(super) feather: Option<FeatherMask>,
+	descendant_feather: Option<FeatherMask>,
+	opacity: Option<f32>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct FeatherInfo {
-	pub(super) element: Option<FeatherMask>,
-	pub(super) descendants: Option<FeatherMask>,
+impl Default for VisualState {
+	fn default() -> Self {
+		Self {
+			clip: EffectiveClip::Unbounded,
+			descendant_clip: EffectiveClip::Unbounded,
+			feather: None,
+			descendant_feather: None,
+			opacity: None,
+		}
+	}
 }
 
 impl EffectiveClip {
@@ -49,88 +59,58 @@ pub(super) fn geometry_from_layout_element(element: &LayoutElement) -> Geometry 
 	Geometry::new(element.position, element.size)
 }
 
-pub(super) fn element_clips<'a>(
-	elements: impl IntoIterator<Item = &'a LayoutElement>,
-	tree: &RetainedTree,
-) -> HashMap<Id, ClipInfo> {
-	let mut clips = HashMap::new();
-
+/// Resolves clip and feather inheritance together without allocating per-element maps.
+pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTree, states: &mut Vec<VisualState>) {
+	states.clear();
+	states.resize(tree.elements.len(), VisualState::default());
 	for element in elements {
-		let parent_clip = tree
-			.parent_by_child
-			.get(&element.id)
-			.copied()
-			.and_then(|parent| clips.get(&parent).map(|clip: &ClipInfo| clip.descendants))
-			.unwrap_or(EffectiveClip::Unbounded);
-		let inherited = if element_resets_clip(element.id, tree) {
-			EffectiveClip::Unbounded
-		} else {
-			parent_clip
+		let Some(&index) = tree.element_indices.get(&element.id) else {
+			continue;
 		};
-		let geometry = geometry_from_layout_element(element);
-		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
-			Some(Primitives::Container(container)) if container.clip => inherited.clip_descendants(geometry),
-			_ => inherited,
+		let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
+		let primitive = &tree.elements[index].element.primitive;
+		if matches!(primitive, Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))) {
+			inherited = VisualState::default();
+		}
+		let clip = inherited.descendant_clip;
+		let feather = inherited.descendant_feather;
+		let mut state = VisualState {
+			clip,
+			descendant_clip: clip,
+			feather,
+			descendant_feather: feather,
+			opacity: None,
 		};
-
-		clips.insert(
-			element.id,
-			ClipInfo {
-				element: inherited,
-				descendants,
-			},
-		);
+		if let Primitives::Container(container) = primitive {
+			if container.clip {
+				let geometry = geometry_from_layout_element(element);
+				state.descendant_clip = clip.clip_descendants(geometry);
+				state.descendant_feather = first_layer_feather(container.style.layers())
+					.map(|feather| FeatherMask {
+						geometry,
+						feather,
+						corner_radius: container.corner_radius,
+						corner_exponent: container.corner_exponent,
+					})
+					.or(feather);
+			}
+		}
+		states[index] = state;
 	}
-
-	clips
 }
 
-pub(super) fn element_feather_masks<'a>(
-	elements: impl IntoIterator<Item = &'a LayoutElement>,
-	tree: &RetainedTree,
-) -> HashMap<Id, FeatherInfo> {
-	let mut masks = HashMap::new();
-
-	for element in elements {
-		let parent_mask = tree
-			.parent_by_child
-			.get(&element.id)
-			.copied()
-			.and_then(|parent| masks.get(&parent).and_then(|mask: &FeatherInfo| mask.descendants));
-		let inherited = if element_resets_clip(element.id, tree) {
-			None
-		} else {
-			parent_mask
-		};
-		let descendants = match tree.element(element.id).map(|element| &element.element.primitive) {
-			Some(Primitives::Container(container)) if container.clip => first_layer_feather(container.style.layers())
-				.map(|feather| FeatherMask {
-					geometry: geometry_from_layout_element(element),
-					feather,
-					corner_radius: container.corner_radius,
-					corner_exponent: container.corner_exponent,
-				})
-				.or(inherited),
-			_ => inherited,
-		};
-
-		masks.insert(
-			element.id,
-			FeatherInfo {
-				element: inherited,
-				descendants,
-			},
-		);
+/// Resolves opacity from the current tree, including parents changed after layout by input callbacks.
+pub(super) fn effective_opacity(index: usize, tree: &RetainedTree, states: &mut [VisualState]) -> f32 {
+	if let Some(opacity) = states[index].opacity {
+		return opacity;
 	}
-
-	masks
-}
-
-pub(super) fn element_resets_clip(id: Id, tree: &RetainedTree) -> bool {
-	matches!(
-		tree.element(id).map(|element| &element.element.primitive),
-		Some(Primitives::Container(container)) if matches!(container.depth, Depth::Absolute(_))
-	)
+	let parent = tree.parents[index]
+		.map(|parent| effective_opacity(parent, tree, states))
+		.unwrap_or(1.0);
+	let local = sanitize_opacity(tree.elements[index].element.primitive.visual().opacity);
+	let opacity = (parent * local).clamp(0.0, 1.0);
+	states[index].opacity = Some(opacity);
+	opacity
 }
 
 pub(super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
@@ -140,18 +120,20 @@ pub(super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) ->
 		.find(|feather| !feather.is_none())
 }
 
+/// Keeps visible geometry for hit testing while preserving layout depth.
 pub(super) fn clipped_layout_elements<'a>(
 	elements: &[LayoutElement],
 	tree: &RetainedTree,
+	states: &[VisualState],
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
-	let clips = element_clips(elements, tree);
 	let mut clipped = Vec::with_capacity_in(elements.len(), frame_allocator);
 
 	for element in elements {
-		let Some(geometry) = clips
+		let Some(geometry) = tree
+			.element_indices
 			.get(&element.id)
-			.map(|clip| clip.element)
+			.map(|&index| states[index].clip)
 			.unwrap_or(EffectiveClip::Unbounded)
 			.apply(geometry_from_layout_element(element))
 		else {
@@ -173,6 +155,7 @@ pub(super) fn clipped_layout_elements<'a>(
 	clipped
 }
 
+/// Applies inherited visual transforms in layout order without changing flow placement.
 pub(super) fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &bumpalo::Bump) {
 	let mut resolved = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
 	for _ in 0..tree.elements.len() {
@@ -180,25 +163,18 @@ pub(super) fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &Ret
 	}
 
 	for element in elements {
-		let parent_transform = tree
-			.parent_by_child
-			.get(&element.id)
-			.copied()
-			.and_then(|parent| tree.element_indices.get(&parent).and_then(|index| resolved.get(*index)))
-			.and_then(|transform| *transform)
+		let Some(&index) = tree.element_indices.get(&element.id) else {
+			continue;
+		};
+		let parent_transform = tree.parents[index]
+			.and_then(|parent| resolved[parent])
 			.unwrap_or_else(Affine2::identity);
-
-		let local_transform = tree
-			.element(element.id)
-			.map(|retained_element| *retained_element.element.primitive.transform())
-			.unwrap_or_default();
+		let local_transform = *tree.elements[index].element.primitive.transform();
 		let transform = parent_transform.compose(Affine2::from_transform(local_transform, element));
 		let (position, size) = transform.transform_rect(element);
 
 		element.position = position;
 		element.size = size;
-		if let Some(index) = tree.element_indices.get(&element.id).copied() {
-			resolved[index] = Some(transform);
-		}
+		resolved[index] = Some(transform);
 	}
 }

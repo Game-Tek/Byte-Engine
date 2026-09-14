@@ -25,14 +25,26 @@ pub struct Engine<C = ()> {
 	runtime: Rc<RefCell<Runtime>>,
 	retained_layout: Option<RetainedLayout>,
 	retained_render: Option<RetainedRender>,
+	visual_state: Vec<VisualState>,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
 struct RetainedLayout {
 	revision: u64,
 	size: Size,
-	elements: Vec<LayoutElement>,
+	elements: Rc<Vec<LayoutElement>>,
+	relations: Rc<Vec<(Id, Id)>>,
 	clipped_elements: Vec<LayoutElement>,
+}
+
+/// Reuses uniquely owned snapshot storage without copying obsolete contents on a shared update.
+fn retain_snapshot_data<T: Copy>(target: &mut Rc<Vec<T>>, source: &[T]) {
+	if let Some(target) = Rc::get_mut(target) {
+		target.clear();
+		target.extend_from_slice(source);
+	} else {
+		*target = Rc::new(source.to_vec());
+	}
 }
 
 /// The `RetainedRender` struct keeps the last render so unchanged trees report the same revision.
@@ -161,6 +173,7 @@ impl<C: 'static> Engine<C> {
 			ctx: Rc::new(ctx),
 			retained_layout: None,
 			retained_render: None,
+			visual_state: Vec::new(),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
 	}
@@ -216,52 +229,47 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
-	// Layout is retained per tree revision and viewport size; a matching frame copies the retained
-	// result instead of measuring, transforming, and clipping the tree again.
+	// Unchanged snapshots share immutable layout data; a later evaluation preserves any
+	// snapshots still held by the caller and reuses storage once they have been dropped.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
 		let revision = tree.revision();
-		let mut relations = Vec::with_capacity_in(tree.relations.len(), frame_allocator);
-		relations.extend_from_slice(&tree.relations);
-
+		let unchanged = self
+			.retained_layout
+			.as_ref()
+			.is_some_and(|retained| retained.revision == revision && retained.size == size);
+		if !unchanged {
+			let mut elements = layout_elements(&tree, size, &mut self.text_system, frame_allocator);
+			apply_visual_transforms(&mut elements, &tree, frame_allocator);
+			prepare_visual_state(&elements, &tree, &mut self.visual_state);
+			let clipped_elements = clipped_layout_elements(&elements, &tree, &self.visual_state, frame_allocator);
+			let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
+				revision,
+				size,
+				elements: Rc::default(),
+				relations: Rc::default(),
+				clipped_elements: Vec::new(),
+			});
+			retained.revision = revision;
+			retained.size = size;
+			retain_snapshot_data(&mut retained.elements, &elements);
+			retain_snapshot_data(&mut retained.relations, &tree.relations);
+			retained.clipped_elements.clear();
+			retained.clipped_elements.extend_from_slice(&clipped_elements);
+			self.state
+				.borrow_mut()
+				.set_element_ids(elements.iter().map(|element| element.id));
+			self.runtime.borrow_mut().update_geometry(&elements);
+		}
 		let retained = self
 			.retained_layout
 			.as_ref()
-			.filter(|retained| retained.revision == revision && retained.size == size);
-		let (elements, clipped_elements) = if let Some(retained) = retained {
-			let mut elements = Vec::with_capacity_in(retained.elements.len(), frame_allocator);
-			elements.extend_from_slice(&retained.elements);
-			let mut clipped_elements = Vec::with_capacity_in(retained.clipped_elements.len(), frame_allocator);
-			clipped_elements.extend_from_slice(&retained.clipped_elements);
-			(elements, clipped_elements)
-		} else {
-			let mut elements = layout_elements(&tree.elements, &tree.relations, size, &mut self.text_system, frame_allocator);
-			apply_visual_transforms(&mut elements, &tree, frame_allocator);
-			let clipped_elements = clipped_layout_elements(&elements, &tree, frame_allocator);
-
-			self.retained_layout = Some(RetainedLayout {
-				revision,
-				size,
-				elements: elements.to_vec(),
-				clipped_elements: clipped_elements.to_vec(),
-			});
-			{
-				let mut state = self.state.borrow_mut();
-				state.set_element_ids(elements.iter().map(|element| element.id));
-			}
-			self.runtime.borrow_mut().update_geometry(&elements);
-
-			(elements, clipped_elements)
-		};
-		drop(tree);
-
-		let acceleration = build_mouse_click_acceleration(&clipped_elements, frame_allocator);
-
+			.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
 		Snapshot {
-			elements,
-			relations,
-			acceleration,
+			elements: Rc::clone(&retained.elements),
+			relations: Rc::clone(&retained.relations),
+			acceleration: build_mouse_click_acceleration(&retained.clipped_elements, frame_allocator),
 			cursor: self.state.borrow().cursor(),
 			engine_state: Rc::clone(&self.state),
 			size,
@@ -320,7 +328,11 @@ impl<C: 'static> Engine<C> {
 				delta,
 				source,
 			});
-			current = tree.parent_by_child.get(&target).copied();
+			current = tree
+				.element_indices
+				.get(&target)
+				.and_then(|&index| tree.parents[index])
+				.map(|parent| tree.elements[parent].id);
 		}
 	}
 
@@ -388,31 +400,40 @@ impl<C: 'static> Engine<C> {
 	// Keep the single tree walk contiguous because it propagates clip, opacity, transform, depth, and layer masks together.
 	#[allow(clippy::too_many_lines)]
 	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
-		let mut elements = Vec::new();
-		let mut curve_elements = Vec::new();
-		let mut image_elements = Vec::new();
-		let mut text_elements = Vec::new();
-		let mut effective_opacities = HashMap::new();
+		// Reuse the engine-owned buffers. Render clones keep their independent contents.
+		let (mut elements, mut curve_elements, mut image_elements, mut text_elements) = self
+			.retained_render
+			.take()
+			.map(|retained| {
+				(
+					retained.render.elements,
+					retained.render.curve_elements,
+					retained.render.image_elements,
+					retained.render.text_elements,
+				)
+			})
+			.unwrap_or_default();
+		elements.clear();
+		curve_elements.clear();
+		image_elements.clear();
+		text_elements.clear();
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
-		let clips = element_clips(snapshot.elements.iter(), &tree);
-		let feather_masks = element_feather_masks(snapshot.elements.iter(), &tree);
+		// Input can change the tree after evaluation, so refresh inherited appearance here.
+		prepare_visual_state(&snapshot.elements, &tree, &mut self.visual_state);
 
-		for element in &mut snapshot.elements {
-			let Some(retained_element) = tree.element(element.id) else {
+		for element in snapshot.elements.iter() {
+			let Some(&index) = tree.element_indices.get(&element.id) else {
 				continue;
 			};
-			let clip = clips
-				.get(&element.id)
-				.map(|clip| clip.element)
-				.unwrap_or(EffectiveClip::Unbounded);
-			if clip.apply(geometry_from_layout_element(element)).is_none() {
+			let retained_element = &tree.elements[index];
+			let state = self.visual_state[index];
+			if state.clip.apply(geometry_from_layout_element(element)).is_none() {
 				continue;
 			}
-			let clip = clip.as_rect();
-			let feather_mask = feather_masks.get(&element.id).and_then(|mask| mask.element);
-
-			let opacity = effective_opacity(element.id, &tree, &mut effective_opacities);
+			let clip = state.clip.as_rect();
+			let feather_mask = state.feather;
+			let opacity = effective_opacity(index, &tree, &mut self.visual_state);
 			let style = retained_element.element.primitive.style();
 			// Only layered geometry retains a style copy; images and text borrow what they need.
 			let mut push_rectangle = |corner_radius, corner_exponent| {
@@ -498,7 +519,6 @@ impl<C: 'static> Engine<C> {
 			curve_elements,
 			image_elements,
 			text_elements,
-			relations: snapshot.relations.to_vec(),
 			revision: RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
 		}
 	}
@@ -650,7 +670,6 @@ pub struct Render {
 	curve_elements: Vec<RenderCurveElement>,
 	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
-	relations: Vec<(Id, Id)>,
 	revision: RenderRevision,
 }
 
@@ -1049,25 +1068,25 @@ mod tests {
 	fn retained_tree_revision_tracks_insertion_mutation_and_removal() {
 		let mut tree = RetainedTree::new();
 		let start = tree.revision();
-		let (id, _) = tree.add_element(None, &[], "root", ConcreteElement::container(Container::default()));
+		let (id, _) = tree.add_element(None, 0, "root", ConcreteElement::container(Container::default()));
 		assert!(tree.revision() > start);
 
 		let after_insert = tree.revision();
 		// Re-declaring the same path on a later frame is idempotent and must not invalidate retained state.
 		tree.begin_frame();
-		tree.add_element(None, &[], "root", ConcreteElement::container(Container::default()));
+		tree.add_element(None, 0, "root", ConcreteElement::container(Container::default()));
 		assert_eq!(tree.revision(), after_insert);
 
 		assert!(tree.element_mut(id).is_some());
 		assert!(tree.revision() > after_insert);
 
 		let after_mutation = tree.revision();
-		let (_, child_path) = tree.add_element(Some(id), &[], "child", ConcreteElement::container(Container::default()));
+		let (_, child_path) = tree.add_element(Some(id), 0, "child", ConcreteElement::container(Container::default()));
 		let after_child = tree.revision();
 		assert!(after_child > after_mutation);
-		assert!(!tree.remove_scope(&child_path).is_empty());
+		assert!(!tree.remove_scope(child_path).is_empty());
 		assert!(tree.revision() > after_child);
-		assert!(tree.remove_scope(&child_path).is_empty());
+		assert!(tree.remove_scope(child_path).is_empty());
 	}
 
 	/// Mounts a scope that spawns a component counting the frames it runs, until `open` clears.
@@ -1349,7 +1368,7 @@ mod tests {
 		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 
 		assert_eq!(first.elements.len(), 2);
-		assert_eq!(first.relations, vec![(first_ids[0], first_ids[1])]);
+		assert_eq!(first.relations.as_slice(), &[(first_ids[0], first_ids[1])]);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
@@ -1410,6 +1429,92 @@ mod tests {
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(second.elements.len(), 1);
+	}
+
+	#[test]
+	fn earlier_snapshots_and_render_clones_keep_their_geometry_after_resize() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				ctx.element("root")
+					.container(Container::default().size(Sizing::Relative(1, 1)));
+			})
+		});
+		let mut first = engine.evaluate(Size::new(100, 100), &allocator);
+		let first_render = engine.render(&mut first).clone();
+		let inside = UiPoint::new(50.0, 50.0);
+		let outside = UiPoint::new(150.0, 150.0);
+		let root = first.hit(inside, None).unwrap();
+		assert_eq!(first.hit(outside, None), None);
+		let mut second = engine.evaluate(Size::new(200, 200), &allocator);
+		assert_eq!(second.hit(outside, None), Some(root));
+		assert_eq!(
+			engine.render(&mut second).elements().next().unwrap().size,
+			Size::new(200, 200)
+		);
+		assert_eq!(first.hit(inside, None), Some(root));
+		assert_eq!(first.hit(outside, None), None);
+		assert_eq!(first_render.elements().next().unwrap().size, Size::new(100, 100));
+	}
+
+	#[test]
+	fn a_task_waking_during_its_poll_completes_in_the_same_evaluation() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut waiting = true;
+				std::future::poll_fn(move |cx| {
+					if std::mem::take(&mut waiting) {
+						cx.waker().wake_by_ref();
+						cx.waker().wake_by_ref();
+						Poll::Pending
+					} else {
+						Poll::Ready(())
+					}
+				})
+				.await;
+				ctx.element("ready").container(Container::default().size(20.into()));
+			})
+		});
+		let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(snapshot.elements.len(), 1);
+		assert_eq!(snapshot.elements[0].size, Size::new(20, 20));
+	}
+
+	#[test]
+	fn mounted_scope_cleanup_follows_ownership_after_reparenting() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let destination = root.element("destination").container(Container::default()).id();
+				root.element("scope")
+					.mount(move |ctx| {
+						Box::pin(async move {
+							let mut child = ctx.element("child").container(Container::default());
+							assert!(child.reparent(destination));
+							child.element("grandchild").container(Container::default());
+							ctx.render().await;
+						})
+					})
+					.await;
+				root.element("replacement").container(Container::default().size(15.into()));
+			})
+		});
+		let first = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(first.elements.len(), 4);
+		let survivors = [first.elements[0].id, first.elements[1].id];
+		let second = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(second.elements.len(), 3);
+		assert_eq!([second.elements[0].id, second.elements[1].id], survivors);
+		assert_eq!(second.elements[2].size, Size::new(15, 15));
+		assert_eq!(
+			second.relations.as_slice(),
+			&[(survivors[0], survivors[1]), (survivors[0], second.elements[2].id)]
+		);
 	}
 
 	#[test]
@@ -3320,8 +3425,8 @@ use std::{
 use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex};
 
 use super::{
-	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, PathSegment, RenderCurveElement, RenderElement,
-	RenderImageElement, RenderTextElement,
+	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
+	RenderTextElement,
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
 	flow::{Location3, Size},

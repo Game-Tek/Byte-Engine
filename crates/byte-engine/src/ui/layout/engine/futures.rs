@@ -11,11 +11,11 @@ pub struct MountedComponentFuture<F, T, C = ()> {
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
 	pub(super) parent: Id,
-	pub(super) parent_path: Vec<PathSegment>,
+	pub(super) parent_path: usize,
 	pub(super) name: &'static str,
 	pub(super) task_id: TaskId,
 	/// The started scope's element path and the identity that owns its tasks.
-	pub(super) scope: Option<(Vec<PathSegment>, ScopeId)>,
+	pub(super) scope: Option<(usize, ScopeId)>,
 	pub(super) complete: bool,
 	pub(super) output: PhantomData<T>,
 }
@@ -29,7 +29,7 @@ impl<F, T, C> MountedComponentFuture<F, T, C> {
 			return;
 		};
 
-		let removed = self.tree.borrow_mut().remove_scope(&path);
+		let removed = self.tree.borrow_mut().remove_scope(path);
 		if !removed.is_empty() {
 			self.runtime.borrow_mut().remove_targets(&removed);
 		}
@@ -54,12 +54,12 @@ where
 		let scope = self
 			.tree
 			.borrow_mut()
-			.scope_path(Some(self.parent), &self.parent_path, self.name);
+			.scope_path(Some(self.parent), self.parent_path, self.name);
 		let owner = self.runtime.borrow_mut().next_scope();
 		let ctx = EvaluationContext {
 			id: self.parent,
 			parent: Some(self.parent),
-			path: scope.clone(),
+			path: scope,
 			ctx: Rc::clone(&self.ctx),
 			runtime: Rc::clone(&self.runtime),
 			tree: Rc::clone(&self.tree),
@@ -126,6 +126,7 @@ where
 }
 
 pub struct RenderFuture {
+	pub(super) waiter: Option<StableVecHandle>,
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) frame_seen: Option<u64>,
 	pub(super) complete: bool,
@@ -138,23 +139,34 @@ impl Future for RenderFuture {
 		if self.complete {
 			return Poll::Pending;
 		}
-
 		let current = self.runtime.borrow().frame;
+		if self.frame_seen.is_some_and(|seen| seen < current) {
+			if let Some(waiter) = self.waiter.take() {
+				self.runtime.borrow_mut().frame_waiters.remove(waiter);
+			}
+			self.complete = true;
+			return Poll::Ready(());
+		}
+		self.frame_seen = Some(current);
+		// A future keeps one subscription even when another selected branch wakes its task.
+		if let Some(waiter) = self.waiter {
+			let mut runtime = self.runtime.borrow_mut();
+			if let Some(Some(waker)) = runtime.frame_waiters.get_mut(waiter) {
+				waker.clone_from(cx.waker());
+			}
+		} else {
+			let waiter = self.runtime.borrow_mut().frame_waiters.push(Some(cx.waker().clone()));
+			self.waiter = Some(waiter);
+		}
+		Poll::Pending
+	}
+}
 
-		match self.frame_seen {
-			None => {
-				self.frame_seen = Some(current);
-				self.runtime.borrow_mut().frame_waiters.push(cx.waker().clone());
-				Poll::Pending
-			}
-			Some(seen) if seen < current => {
-				self.complete = true;
-				Poll::Ready(())
-			}
-			Some(_) => {
-				self.runtime.borrow_mut().frame_waiters.push(cx.waker().clone());
-				Poll::Pending
-			}
+impl Drop for RenderFuture {
+	fn drop(&mut self) {
+		// Dropping a losing select branch cancels its pending frame notification.
+		if let Some(waiter) = self.waiter.take() {
+			self.runtime.borrow_mut().frame_waiters.remove(waiter);
 		}
 	}
 }
@@ -162,6 +174,79 @@ impl Future for RenderFuture {
 impl FusedFuture for RenderFuture {
 	fn is_terminated(&self) -> bool {
 		self.complete
+	}
+}
+
+#[cfg(test)]
+mod frame_wait_tests {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	use super::*;
+
+	/// The `WakeCount` struct observes notifications through the future's caller-supplied waker.
+	#[derive(Default)]
+	struct WakeCount(AtomicUsize);
+
+	impl Wake for WakeCount {
+		fn wake(self: Arc<Self>) {
+			self.0.fetch_add(1, Ordering::Relaxed);
+		}
+	}
+
+	/// Creates a frame wait through the same context a mounted component receives.
+	fn frame_wait() -> (Engine, RenderFuture) {
+		let result = Rc::new(RefCell::new(None));
+		let output = Rc::clone(&result);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				ctx.element("root").container(Container::default());
+				*output.borrow_mut() = Some(ctx.render());
+			})
+		});
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		let future = result.borrow_mut().take().unwrap();
+		(engine, future)
+	}
+
+	#[test]
+	fn frame_wait_notifies_the_latest_caller_once() {
+		let (mut engine, mut future) = frame_wait();
+		let first = Arc::new(WakeCount::default());
+		let latest = Arc::new(WakeCount::default());
+		let first_waker = Waker::from(Arc::clone(&first));
+		let latest_waker = Waker::from(Arc::clone(&latest));
+		for _ in 0..8 {
+			assert!(
+				Pin::new(&mut future)
+					.poll(&mut TaskContext::from_waker(&first_waker))
+					.is_pending()
+			);
+		}
+		assert!(
+			Pin::new(&mut future)
+				.poll(&mut TaskContext::from_waker(&latest_waker))
+				.is_pending()
+		);
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		assert_eq!(first.0.load(Ordering::Relaxed), 0);
+		assert_eq!(latest.0.load(Ordering::Relaxed), 1);
+		assert!(
+			Pin::new(&mut future)
+				.poll(&mut TaskContext::from_waker(&latest_waker))
+				.is_ready()
+		);
+	}
+
+	#[test]
+	fn dropping_a_frame_wait_cancels_its_notification() {
+		let (mut engine, mut future) = frame_wait();
+		let count = Arc::new(WakeCount::default());
+		let waker = Waker::from(Arc::clone(&count));
+		assert!(Pin::new(&mut future).poll(&mut TaskContext::from_waker(&waker)).is_pending());
+		drop(future);
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		assert_eq!(count.0.load(Ordering::Relaxed), 0);
 	}
 }
 

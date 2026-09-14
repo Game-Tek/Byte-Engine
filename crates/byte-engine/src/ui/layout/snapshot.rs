@@ -10,8 +10,8 @@ use crate::ui::{UiPoint, UiVector, intersection::MouseClickAcceleration};
 
 /// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
 pub struct Snapshot<'a> {
-	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
-	pub(super) relations: Vec<(Id, Id), &'a bumpalo::Bump>,
+	pub(super) elements: Rc<Vec<LayoutElement>>,
+	pub(super) relations: Rc<Vec<(Id, Id)>>,
 	pub(super) acceleration: MouseClickAcceleration<'a>,
 	pub(super) cursor: Option<Id>,
 	pub(super) engine_state: Rc<RefCell<EngineState>>,
@@ -159,7 +159,7 @@ impl Snapshot<'_> {
 		let mut right: f32 = 1.0;
 		let mut bottom: f32 = 1.0;
 
-		for element in &self.elements {
+		for element in self.elements.iter() {
 			let frame = NavigationFrame::from_element(element);
 			right = right.max(frame.right);
 			bottom = bottom.max(frame.bottom);
@@ -181,7 +181,7 @@ impl Snapshot<'_> {
 		stack.push(ancestor);
 
 		while let Some(parent) = stack.pop() {
-			for &(candidate_parent, candidate_child) in &self.relations {
+			for &(candidate_parent, candidate_child) in self.relations.iter() {
 				if candidate_parent != parent {
 					continue;
 				}

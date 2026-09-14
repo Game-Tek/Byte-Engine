@@ -2,15 +2,19 @@ use std::collections::{HashMap, HashSet};
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 
+/// The `RetainedTree` struct owns stable UI identities and the live topology used by layout.
 #[derive(Default)]
 pub(super) struct RetainedTree {
 	pub(super) elements: Vec<IdedElement>,
 	pub(super) element_indices: HashMap<Id, usize>,
 	pub(super) relations: Vec<(Id, Id)>,
-	pub(super) children_by_parent: HashMap<Id, Vec<Id>>,
-	pub(super) parent_by_child: HashMap<Id, Id>,
+	/// Dense links follow `elements`; only external identity lookup needs hashing.
+	pub(super) children: Vec<Vec<usize>>,
+	pub(super) parents: Vec<Option<usize>>,
 	path_counts: HashMap<(Option<Id>, &'static str), u32>,
-	path_ids: HashMap<Vec<PathSegment>, Id>,
+	path_ids: HashMap<(usize, PathSegment), usize>,
+	/// Interned paths retain their original scope ancestry even after visual reparenting.
+	paths: Vec<(usize, Option<Id>)>,
 	next_id: u32,
 	/// Advances on every structural or property change so consumers can retain derived state.
 	revision: u64,
@@ -20,6 +24,7 @@ impl RetainedTree {
 	pub(super) fn new() -> Self {
 		Self {
 			next_id: 1,
+			paths: vec![(0, None)],
 			..Self::default()
 		}
 	}
@@ -35,79 +40,56 @@ impl RetainedTree {
 		self.revision
 	}
 
-	pub(super) fn element_path(
-		&mut self,
-		parent: Option<Id>,
-		parent_path: &[PathSegment],
-		name: &'static str,
-	) -> Vec<PathSegment> {
+	/// Interns a structural path so mounted contexts share ancestry without copying it.
+	pub(super) fn scope_path(&mut self, parent: Option<Id>, parent_path: usize, name: &'static str) -> usize {
 		let count = self.path_counts.entry((parent, name)).or_insert(0);
 		*count += 1;
-
-		let mut path = Vec::with_capacity(parent_path.len() + 1);
-		path.extend_from_slice(parent_path);
-		path.push(PathSegment { name, ordinal: *count });
-		path
+		let key = (parent_path, PathSegment { name, ordinal: *count });
+		*self.path_ids.entry(key).or_insert_with(|| {
+			let index = self.paths.len();
+			self.paths.push((parent_path, None));
+			index
+		})
 	}
 
-	pub(super) fn scope_path(
-		&mut self,
-		parent: Option<Id>,
-		parent_path: &[PathSegment],
-		name: &'static str,
-	) -> Vec<PathSegment> {
-		self.element_path(parent, parent_path, name)
+	/// Returns the stable element identity assigned to an interned path.
+	fn id_for_path(&mut self, path: usize) -> Id {
+		*self.paths[path].1.get_or_insert_with(|| {
+			let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
+			self.next_id += 1;
+			id
+		})
 	}
 
-	pub(super) fn id_for_path(&mut self, path: &[PathSegment]) -> Id {
-		if let Some(id) = self.path_ids.get(path) {
-			return *id;
-		}
-
-		let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
-		self.next_id += 1;
-		self.path_ids.insert(path.to_vec(), id);
-		id
-	}
-
+	/// Adds a declaration once and connects it to the retained layout topology.
 	pub(super) fn add_element(
 		&mut self,
 		parent: Option<Id>,
-		parent_path: &[PathSegment],
+		parent_path: usize,
 		name: &'static str,
 		element: ConcreteElement,
-	) -> (Id, Vec<PathSegment>) {
-		let path = self.element_path(parent, parent_path, name);
-		let id = self.id_for_path(&path);
+	) -> (Id, usize) {
+		let path = self.scope_path(parent, parent_path, name);
+		let id = self.id_for_path(path);
 
 		if self.element_indices.contains_key(&id) {
 			return (id, path);
 		}
 
 		self.element_indices.insert(id, self.elements.len());
-		self.elements.push(IdedElement {
-			id,
-			element,
-			path: path.clone(),
-		});
+		self.elements.push(IdedElement { id, element, path });
 		self.revision += 1;
 
-		if let Some(parent) = parent {
-			self.add_relation(parent, id);
+		let index = self.elements.len() - 1;
+		let parent_index = parent.map(|parent| self.element_indices[&parent]);
+		self.parents.push(parent_index);
+		self.children.push(Vec::new());
+		if let Some(parent_index) = parent_index {
+			self.relations.push((self.elements[parent_index].id, id));
+			self.children[parent_index].push(index);
 		}
 
 		(id, path)
-	}
-
-	fn add_relation(&mut self, parent: Id, child: Id) {
-		if self.parent_by_child.get(&child) == Some(&parent) {
-			return;
-		}
-		if self.parent_by_child.insert(child, parent).is_none() {
-			self.relations.push((parent, child));
-			self.children_by_parent.entry(parent).or_default().push(child);
-			self.revision += 1;
-		}
 	}
 
 	/// Moves an element under another parent as its last child.
@@ -115,27 +97,27 @@ impl RetainedTree {
 	/// The element keeps its id, path, and properties. Returns false when either
 	/// id is unknown or `parent` is the element itself or one of its descendants.
 	pub(super) fn reparent(&mut self, child: Id, parent: Id) -> bool {
-		if !self.element_indices.contains_key(&child) || !self.element_indices.contains_key(&parent) {
+		let (Some(&child_index), Some(&parent_index)) = (self.element_indices.get(&child), self.element_indices.get(&parent))
+		else {
 			return false;
-		}
-		let mut ancestor = Some(parent);
+		};
+		let mut ancestor = Some(parent_index);
 		while let Some(current) = ancestor {
-			if current == child {
+			if current == child_index {
 				return false;
 			}
-			ancestor = self.parent_by_child.get(&current).copied();
+			ancestor = self.parents[current];
 		}
-		if let Some(previous) = self.parent_by_child.insert(child, parent) {
-			if previous == parent {
-				return true;
-			}
-			self.relations.retain(|relation| *relation != (previous, child));
-			if let Some(children) = self.children_by_parent.get_mut(&previous) {
-				children.retain(|sibling| *sibling != child);
-			}
+		if self.parents[child_index] == Some(parent_index) {
+			return true;
 		}
+		if let Some(previous) = self.parents[child_index] {
+			self.children[previous].retain(|&sibling| sibling != child_index);
+			self.relations.retain(|&(_, candidate)| candidate != child);
+		}
+		self.parents[child_index] = Some(parent_index);
+		self.children[parent_index].push(child_index);
 		self.relations.push((parent, child));
-		self.children_by_parent.entry(parent).or_default().push(child);
 		self.revision += 1;
 		true
 	}
@@ -153,14 +135,20 @@ impl RetainedTree {
 		self.elements.get(index)
 	}
 
-	pub(super) fn remove_scope(&mut self, scope: &[PathSegment]) -> Vec<Id> {
-		if scope.is_empty() {
-			return Vec::new();
+	/// Removes the scope and returns its identities for runtime cleanup.
+	pub(super) fn remove_scope(&mut self, scope: usize) -> HashSet<Id> {
+		if scope == 0 {
+			return HashSet::new();
 		}
 
 		let mut removed = HashSet::new();
 		self.elements.retain(|element| {
-			let should_remove = element.path.starts_with(scope);
+			// Scope ownership follows declaration paths, never the current visual parent.
+			let mut path = element.path;
+			while path != 0 && path != scope {
+				path = self.paths[path].0;
+			}
+			let should_remove = path == scope;
 			if should_remove {
 				removed.insert(element.id);
 			}
@@ -168,29 +156,33 @@ impl RetainedTree {
 		});
 
 		if removed.is_empty() {
-			return Vec::new();
+			return HashSet::new();
 		}
 		self.revision += 1;
 
 		self.relations
 			.retain(|(parent, child)| !removed.contains(parent) && !removed.contains(child));
-		self.parent_by_child
-			.retain(|child, parent| !removed.contains(child) && !removed.contains(parent));
-		self.children_by_parent.retain(|parent, children| {
-			if removed.contains(parent) {
-				return false;
-			}
-			children.retain(|child| !removed.contains(child));
-			!children.is_empty()
-		});
 		self.rebuild_element_indices();
-		removed.into_iter().collect()
+		removed
 	}
 
-	fn rebuild_element_indices(&mut self) {
+	/// Restores index-based links after removal compacts the live elements.
+	pub(super) fn rebuild_element_indices(&mut self) {
 		self.element_indices.clear();
 		for (index, element) in self.elements.iter().enumerate() {
 			self.element_indices.insert(element.id, index);
+		}
+		self.parents.clear();
+		self.parents.resize(self.elements.len(), None);
+		self.children.resize_with(self.elements.len(), Vec::new);
+		for children in &mut self.children {
+			children.clear();
+		}
+		for &(parent, child) in &self.relations {
+			let parent = self.element_indices[&parent];
+			let child = self.element_indices[&child];
+			self.parents[child] = Some(parent);
+			self.children[parent].push(child);
 		}
 	}
 }

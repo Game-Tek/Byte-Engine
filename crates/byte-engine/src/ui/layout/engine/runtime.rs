@@ -1,5 +1,7 @@
 //! Task scheduling, event delivery, focus, and retained runtime state.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::*;
 
 type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
@@ -8,6 +10,8 @@ type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 pub(super) struct UiTask {
 	/// Empty while the task is being polled or before its future is started.
 	pub(super) future: Option<BoxedUiFuture>,
+	/// Reused across polls; its queued flag coalesces concurrent wake requests.
+	pub(super) waker: Option<Arc<TaskWaker>>,
 	pub(super) owner: ScopeId,
 	pub(super) inbox: VecDeque<UiEvent>,
 	pub(super) key_inbox: VecDeque<UiKeyEvent>,
@@ -49,26 +53,6 @@ pub(super) struct TextEditWaiter {
 	pub(super) waker: Waker,
 }
 
-pub(super) fn effective_opacity(id: Id, tree: &RetainedTree, effective_opacities: &mut HashMap<Id, f32>) -> f32 {
-	if let Some(opacity) = effective_opacities.get(&id) {
-		return *opacity;
-	}
-
-	let local_opacity = tree
-		.element(id)
-		.map(|element| sanitize_opacity(element.element.primitive.visual().opacity))
-		.unwrap_or(1.0);
-	let parent_opacity = tree
-		.parent_by_child
-		.get(&id)
-		.copied()
-		.map(|parent| effective_opacity(parent, tree, effective_opacities))
-		.unwrap_or(1.0);
-	let opacity = (parent_opacity * local_opacity).clamp(0.0, 1.0);
-	effective_opacities.insert(id, opacity);
-	opacity
-}
-
 pub(super) fn sanitize_opacity(opacity: f32) -> f32 {
 	if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 }
 }
@@ -77,7 +61,7 @@ pub struct Runtime {
 	pub(super) tasks: StableVec<UiTask>,
 	next_scope: u64,
 	pub(super) ready: Arc<Mutex<VecDeque<TaskId>>>,
-	pub(super) frame_waiters: Vec<Waker>,
+	pub(super) frame_waiters: StableVec<Option<Waker>>,
 	pub(super) event_waiters: Vec<EventWaiter>,
 	pub(super) key_waiters: Vec<KeyWaiter>,
 	pub(super) text_edit_waiters: Vec<TextEditWaiter>,
@@ -89,23 +73,23 @@ pub struct Runtime {
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
 }
 
+/// The `TaskWaker` struct keeps a live task scheduled at most once between polls.
 pub(super) struct TaskWaker {
 	pub(super) task: TaskId,
+	queued: AtomicBool,
 	pub(super) ready: Arc<Mutex<VecDeque<TaskId>>>,
 }
 
 impl Wake for TaskWaker {
 	fn wake(self: Arc<Self>) {
-		self.ready.lock().push_back(self.task);
+		self.wake_by_ref();
 	}
 
 	fn wake_by_ref(self: &Arc<Self>) {
-		self.ready.lock().push_back(self.task);
+		if !self.queued.swap(true, Ordering::AcqRel) {
+			self.ready.lock().push_back(self.task);
+		}
 	}
-}
-
-pub(super) fn task_waker(task: TaskId, ready: Arc<Mutex<VecDeque<TaskId>>>) -> Waker {
-	Waker::from(Arc::new(TaskWaker { task, ready }))
 }
 
 impl Runtime {
@@ -114,7 +98,7 @@ impl Runtime {
 			tasks: StableVec::new(),
 			next_scope: ScopeId::ROOT.0,
 			ready: Arc::new(Mutex::new(VecDeque::new())),
-			frame_waiters: Vec::new(),
+			frame_waiters: StableVec::new(),
 			event_waiters: Vec::new(),
 			key_waiters: Vec::new(),
 			text_edit_waiters: Vec::new(),
@@ -139,6 +123,7 @@ impl Runtime {
 	pub(super) fn reserve_task(&mut self, owner: ScopeId) -> TaskId {
 		self.tasks.push(UiTask {
 			future: None,
+			waker: None,
 			owner,
 			inbox: VecDeque::new(),
 			key_inbox: VecDeque::new(),
@@ -146,12 +131,19 @@ impl Runtime {
 		})
 	}
 
+	/// Starts a reserved task with one reusable, coalescing waker.
 	pub(super) fn start_task(&mut self, id: TaskId, future: UiFuture<'static>) {
+		let waker = Arc::new(TaskWaker {
+			task: id,
+			ready: Arc::clone(&self.ready),
+			queued: AtomicBool::new(false),
+		});
 		let task = self.tasks.get_mut(id).expect(
 			"A UI task was started after it was removed. The most likely cause is starting a task outside the call that reserved it.",
 		);
 		task.future = Some(future);
-		self.ready.lock().push_back(id);
+		task.waker = Some(Arc::clone(&waker));
+		waker.wake_by_ref();
 	}
 
 	/// Ends every task owned by a removed scope.
@@ -200,26 +192,31 @@ impl Runtime {
 		runtime.tree.borrow_mut().begin_frame();
 		crate::ui::timer::wake_due_timers(std::time::Instant::now());
 
-		for waker in runtime.frame_waiters.drain(..) {
+		for waker in runtime.frame_waiters.iter_mut().filter_map(Option::take) {
 			waker.wake();
 		}
 	}
 
+	/// Polls ready tasks outside the runtime borrow so components can update their tree.
 	pub(super) fn poll_ready_tasks(runtime: Rc<RefCell<Self>>) {
 		loop {
-			let (id, ready, mut future) = {
+			let (id, waker, mut future) = {
 				let mut runtime = runtime.borrow_mut();
 				let Some(id) = runtime.ready.lock().pop_front() else {
 					return;
 				};
-				// Wakes from removed tasks and repeated wakes of one task find no future.
-				let Some(future) = runtime.tasks.get_mut(id).and_then(|task| task.future.take()) else {
-					continue;
-				};
-				(id, Arc::clone(&runtime.ready), future)
+				// Generational handles reject wakes left by removed tasks.
+				let Some(task) = runtime.tasks.get_mut(id) else { continue };
+				let Some(future) = task.future.take() else { continue };
+				let waker = task
+					.waker
+					.as_ref()
+					.expect("A running UI task has no waker. The task was not started by its runtime.");
+				// Acquire preceding wakes, then clear before polling so a new wake schedules another poll.
+				waker.queued.swap(false, Ordering::AcqRel);
+				(id, Waker::from(Arc::clone(waker)), future)
 			};
 
-			let waker = task_waker(id, ready);
 			let mut cx = TaskContext::from_waker(&waker);
 			let poll = future.as_mut().poll(&mut cx);
 
@@ -392,12 +389,16 @@ impl Runtime {
 		);
 	}
 
-	pub(super) fn remove_targets(&mut self, targets: &[Id]) {
+	/// Removes input and geometry owned by the deleted elements.
+	pub(super) fn remove_targets(&mut self, targets: &HashSet<Id>) {
 		self.event_waiters.retain(|waiter| !targets.contains(&waiter.target));
 		self.key_waiters.retain(|waiter| !targets.contains(&waiter.target));
 		self.text_edit_waiters.retain(|waiter| !targets.contains(&waiter.target));
 		self.focus_stack.retain(|focused| !targets.contains(focused));
-		self.geometry.retain(|id, _| !targets.contains(id));
+		// Delete known keys instead of searching the removal list for every live entry.
+		for id in targets {
+			self.geometry.remove(id);
+		}
 
 		for task in self.tasks.iter_mut() {
 			task.inbox.retain(|event| !targets.contains(&event.target));

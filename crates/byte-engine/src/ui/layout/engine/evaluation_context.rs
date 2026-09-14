@@ -7,7 +7,7 @@ use super::*;
 pub struct EvaluationContext<C = ()> {
 	pub(super) id: Id,
 	pub(super) parent: Option<Id>,
-	pub(super) path: Vec<PathSegment>,
+	pub(super) path: usize,
 	pub(super) ctx: Rc<C>,
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
@@ -26,7 +26,7 @@ impl<C> EvaluationContext<C> {
 		Self {
 			id: Id::new(1).unwrap(),
 			parent: None,
-			path: Vec::new(),
+			path: 0,
 			ctx,
 			runtime,
 			tree,
@@ -42,7 +42,7 @@ impl<C> EvaluationContext<C> {
 		task_id: TaskId,
 		owner: ScopeId,
 		id: Id,
-		path: Vec<PathSegment>,
+		path: usize,
 	) -> Self {
 		Self {
 			id,
@@ -57,7 +57,7 @@ impl<C> EvaluationContext<C> {
 	}
 
 	fn add_element(&mut self, name: &'static str, element: ConcreteElement) -> EvaluationContext<C> {
-		let (id, path) = self.tree.borrow_mut().add_element(self.parent, &self.path, name, element);
+		let (id, path) = self.tree.borrow_mut().add_element(self.parent, self.path, name, element);
 		EvaluationContext::new_child(
 			Rc::clone(&self.ctx),
 			Rc::clone(&self.runtime),
@@ -171,6 +171,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 
 	fn render(&mut self) -> RenderFuture {
 		RenderFuture {
+			waiter: None,
 			runtime: Rc::clone(&self.runtime),
 			frame_seen: None,
 			complete: false,
@@ -233,7 +234,7 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 		let task_id = runtime.borrow_mut().reserve_task(self.parent.owner);
 		let path = tree
 			.borrow_mut()
-			.scope_path(Some(self.parent.id), &self.parent.path, self.name);
+			.scope_path(Some(self.parent.id), self.parent.path, self.name);
 		let ctx = EvaluationContext {
 			id: self.parent.id,
 			parent: Some(self.parent.id),
@@ -265,7 +266,7 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 			runtime: Rc::clone(&self.parent.runtime),
 			tree: Rc::clone(&self.parent.tree),
 			parent: self.parent.id,
-			parent_path: self.parent.path.clone(),
+			parent_path: self.parent.path,
 			name: self.name,
 			task_id: self.parent.task_id,
 			scope: None,

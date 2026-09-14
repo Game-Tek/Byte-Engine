@@ -83,6 +83,10 @@ pub(crate) struct GlyphPlacement<'a> {
 	pub(crate) glyph: &'a Glyph,
 }
 
+// Bound cached whole strings independently of glyphs, which remain reusable across text changes.
+const MEASURE_CACHE_ENTRIES: usize = 4096;
+const MEASURE_CACHE_BYTES: usize = 512 * 1024;
+
 /// The `TextSystem` struct shapes and rasterizes UI text through one shared glyph cache.
 ///
 /// Measurement and rendering use the same cached glyph metrics, so layout and draw
@@ -91,6 +95,9 @@ pub(crate) struct GlyphPlacement<'a> {
 pub(crate) struct TextSystem {
 	font_state: FontState,
 	measure_cache: HashMap<u32, HashMap<String, Size>>,
+	previous_measure_cache: HashMap<u32, HashMap<String, Size>>,
+	measure_cache_entries: usize,
+	measure_cache_bytes: usize,
 	glyph_cache: HashMap<GlyphKey, Glyph>,
 	line_metrics_cache: HashMap<u32, LineMetrics>,
 	reported_unavailable: bool,
@@ -101,6 +108,9 @@ impl TextSystem {
 		Self {
 			font_state: FontState::Uninitialized,
 			measure_cache: HashMap::new(),
+			previous_measure_cache: HashMap::new(),
+			measure_cache_entries: 0,
+			measure_cache_bytes: 0,
 			glyph_cache: HashMap::new(),
 			line_metrics_cache: HashMap::new(),
 			reported_unavailable: false,
@@ -112,6 +122,7 @@ impl TextSystem {
 		self.font().is_some()
 	}
 
+	/// Measures text with a bounded string cache and reusable glyph metrics.
 	pub fn measure(&mut self, text: &str, font_size: f32) -> Size {
 		if text.is_empty() {
 			return Size::new(0.0, 0.0);
@@ -119,8 +130,10 @@ impl TextSystem {
 
 		let font_size = font_size.max(1.0);
 		let font_size_key = font_size.to_bits();
-		if let Some(size) = self.measure_cache.get(&font_size_key).and_then(|sizes| sizes.get(text)) {
-			return *size;
+		for cache in [&self.measure_cache, &self.previous_measure_cache] {
+			if let Some(size) = cache.get(&font_size_key).and_then(|sizes| sizes.get(text)) {
+				return *size;
+			}
 		}
 
 		let size = if self.has_font() {
@@ -128,10 +141,27 @@ impl TextSystem {
 		} else {
 			measure_with_fallback(text, font_size)
 		};
-		self.measure_cache
-			.entry(font_size_key)
-			.or_default()
-			.insert(text.to_owned(), size);
+		// Rotate whole-string measurements in two bounded generations. Recent labels remain
+		// available through a rotation, while changing counters cannot retain every old value.
+		if text.len() <= MEASURE_CACHE_BYTES {
+			if self.measure_cache_entries == MEASURE_CACHE_ENTRIES
+				|| self.measure_cache_bytes + text.len() > MEASURE_CACHE_BYTES
+			{
+				std::mem::swap(&mut self.measure_cache, &mut self.previous_measure_cache);
+				self.measure_cache.clear();
+				self.measure_cache_entries = 0;
+				self.measure_cache_bytes = 0;
+			}
+			self.measure_cache
+				.entry(font_size_key)
+				.or_default()
+				.insert(text.to_owned(), size);
+			self.measure_cache_entries += 1;
+			self.measure_cache_bytes += text.len();
+			debug_assert!(
+				self.measure_cache_entries <= MEASURE_CACHE_ENTRIES && self.measure_cache_bytes <= MEASURE_CACHE_BYTES
+			);
+		}
 		size
 	}
 
@@ -436,6 +466,19 @@ fn explicit_font_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
 	use super::{Glyph, GlyphKey, TextSystem};
+
+	#[test]
+	fn measurements_stay_consistent_after_many_text_changes() {
+		let mut text_system = TextSystem::new();
+		let labels = [("Score: 123", 16.0), ("First line\nSecond line", 24.0), ("áβ中", 12.0)];
+		let expected = labels.map(|(text, size)| text_system.measure(text, size));
+		for value in 0..3 * super::MEASURE_CACHE_ENTRIES {
+			text_system.measure(&format!("Changing score: {value}"), 16.0);
+		}
+		for ((text, size), expected) in labels.into_iter().zip(expected) {
+			assert_eq!(text_system.measure(text, size), expected);
+		}
+	}
 
 	#[test]
 	fn measure_reuses_cached_text_size_for_same_font_size() {

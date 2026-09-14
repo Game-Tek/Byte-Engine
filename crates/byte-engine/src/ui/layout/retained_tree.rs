@@ -8,32 +8,46 @@ use crate::ui::{
 	style::{EdgeFeather, Layer},
 };
 
-/// The `PlacementInputs` struct isolates container properties that can move or resize layout.
+/// Properties that can change placement independently of text measurements.
 #[derive(PartialEq)]
-struct PlacementInputs {
-	width: super::Sizing,
-	height: super::Sizing,
-	depth: super::Depth,
-	position: super::Position,
-	transform: Transform,
-	hit_testable: bool,
-	flow: (std::any::TypeId, FlowOutput),
+enum PlacementInputs {
+	Container {
+		width: super::Sizing,
+		height: super::Sizing,
+		depth: super::Depth,
+		position: super::Position,
+		transform: Transform,
+		hit_testable: bool,
+		flow: (std::any::TypeId, FlowOutput),
+	},
+	Text {
+		transform: Transform,
+		hit_testable: bool,
+	},
 }
 
 /// Captures paint-independent layout inputs without copying styles or text.
 /// Other primitives conservatively remeasure after edits.
 fn placement_inputs(primitive: &Primitives) -> Option<PlacementInputs> {
-	let Primitives::Container(container) = primitive else {
-		return None;
-	};
-	Some(PlacementInputs {
-		width: container.width,
-		height: container.height,
-		depth: container.depth,
-		position: container.position,
-		transform: container.transform,
-		hit_testable: container.hit_testable,
-		flow: flow::placement_key(&container.flow)?,
+	Some(match primitive {
+		Primitives::Container(container) => PlacementInputs::Container {
+			width: container.width,
+			height: container.height,
+			depth: container.depth,
+			position: container.position,
+			transform: container.transform,
+			hit_testable: container.hit_testable,
+			flow: flow::placement_key(&container.flow)?,
+		},
+		Primitives::Text(text) => PlacementInputs::Text {
+			transform: text.transform,
+			hit_testable: false,
+		},
+		Primitives::TextField(text) => PlacementInputs::Text {
+			transform: text.transform,
+			hit_testable: true,
+		},
+		_ => return None,
 	})
 }
 
@@ -85,6 +99,9 @@ pub(super) struct RetainedTree {
 	revision: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
 	pub(super) placement_revision: u64,
+	/// Text edits need a size comparison before placement can be reused.
+	/// Structural edits invalidate placement before these indices can be read.
+	pub(super) text_changes: Vec<usize>,
 	/// Advances when the set of flow types may change.
 	pub(super) flow_revision: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
@@ -110,6 +127,7 @@ impl RetainedTree {
 			path_ids: HashMap::with_capacity(ELEMENT_CAPACITY),
 			paths,
 			removed: HashSet::with_capacity(ELEMENT_CAPACITY),
+			text_changes: Vec::with_capacity(ELEMENT_CAPACITY),
 			..Self::default()
 		}
 	}
@@ -251,6 +269,9 @@ impl RetainedTree {
 		}
 		if placement.is_some() && placement == placement_inputs(primitive) {
 			self.placement_revision = old_placement_revision;
+			if matches!(placement, Some(PlacementInputs::Text { .. })) {
+				self.text_changes.push(index);
+			}
 		}
 		if clip == clip_inputs(primitive) {
 			self.clip_revision = old_clip_revision;

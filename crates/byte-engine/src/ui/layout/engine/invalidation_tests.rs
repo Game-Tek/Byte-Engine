@@ -289,6 +289,130 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 	}
 }
 
+/// Builds adjacent text, an editable field, and a hit target to expose stale flow sizes.
+fn text_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
+	let mut engine = Engine::with_context(std::cell::Cell::new(stage));
+	engine.mount(|ctx| {
+		Box::pin(async move {
+			let mut root = ctx
+				.element("root")
+				.container(Container::default().flow(flow::row).clip(false));
+			let mut label = root.element("label").text(Text::new("ab"));
+			let mut field = root.element("field").text_field(TextField::new("ab"));
+			root.element("target").container(Container::default().size(20.into()));
+			let mut applied = 0;
+			loop {
+				let target = ctx.ctx().get();
+				for stage in applied + 1..=target {
+					match stage {
+						1 => {
+							// Reversing two advances preserves width while content and appearance change.
+							label.update_text(|value| {
+								value.set_content("ba");
+								value.set_style(ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.6, 1.0).into()));
+							});
+							field.update_text_field(|value| {
+								value.set_content("ba");
+								value.set_opacity(0.5);
+							});
+						}
+						2 => {
+							// Multiple edits before evaluation must compare the final content's size.
+							label.update_text(|value| value.set_content("temporary wider content"));
+							label.update_text(|value| value.set_content("ab"));
+						}
+						3 => {
+							label.update_text(|value| value.set_content("wider label"));
+							field.update_text_field(|value| value.set_content("wider field"));
+						}
+						4 => {
+							label.update_text(|value| value.settings.font_size = 24.0);
+							field.update_text_field(|value| value.settings.font_size = 24.0);
+						}
+						5 => {
+							label.update_text(|value| value.set_content("two\nlines"));
+							field.update_text_field(|value| value.set_content(""));
+						}
+						6 => {
+							label.update_text(|value| value.set_transform(Transform::identity().translate_x(10.0)));
+							field.update_text_field(|value| value.set_transform(Transform::identity().scale(0.5)));
+						}
+						7 => {
+							label.update_text(|value| value.set_content("lines\ntwo"));
+							field.update_text_field(|value| value.set_content("ba"));
+						}
+						_ => unreachable!(),
+					}
+				}
+				applied = target;
+				ctx.render().await;
+			}
+		})
+	});
+	engine
+}
+
+#[test]
+fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
+	let mut engine = text_scene(0);
+	let mut allocator = bumpalo::Bump::new();
+	let mut original = None;
+	for stage in 0..=7 {
+		allocator.reset();
+		engine.ctx().set(stage);
+		let mut fresh = text_scene(stage);
+		let size = Size::new(if stage == 7 { 500 } else { 400 }, 200);
+		let mut actual = engine.evaluate(size, &allocator);
+		let mut expected = fresh.evaluate(size, &allocator);
+		let actual_render = engine.render(&mut actual);
+		let expected_render = fresh.render(&mut expected);
+		assert_same_render(actual_render, expected_render);
+		let (original, original_expected) = original.get_or_insert_with(|| (actual_render.clone(), expected_render.clone()));
+		assert_same_render(original, original_expected);
+		let mut actual_hits = crate::ui::intersection::HitTest::default();
+		let mut expected_hits = crate::ui::intersection::HitTest::default();
+		actual.retain_hit_test(&mut actual_hits);
+		expected.retain_hit_test(&mut expected_hits);
+		for id in expected.elements.iter().map(|element| element.id) {
+			assert_eq!(actual_hits.bounds(id), expected_hits.bounds(id), "stage {stage}");
+		}
+	}
+}
+
+#[test]
+fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		Box::pin(async move {
+			let mut root = ctx.element("root").container(Container::default());
+			for content in ["ab", "ba"] {
+				root.element("temporary")
+					.mount(move |ctx| {
+						Box::pin(async move {
+							let mut label = ctx.element("label").text(Text::new(content));
+							ctx.render().await;
+							label.update_text(|value| value.set_content("removed before layout"));
+						})
+					})
+					.await;
+			}
+			let mut field = root.element("field").text_field(TextField::new("kept"));
+			ctx.render().await;
+			field.update_text_field(|value| value.set_content("much wider replacement"));
+		})
+	});
+	let mut allocator = bumpalo::Bump::new();
+	for content in ["ab", "ba", "kept", "much wider replacement"] {
+		allocator.reset();
+		let mut snapshot = engine.evaluate(Size::new(400, 200), &allocator);
+		let render = engine.render(&mut snapshot);
+		assert_eq!(render.texts().count(), 1);
+		let text = render.texts().next().unwrap();
+		assert_eq!(text.content, content);
+		assert_eq!(text.size, TextSystem::new().measure(content, 16.0));
+	}
+}
+
 #[test]
 fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
@@ -368,9 +492,13 @@ fn custom_flow_observes_captured_state_after_a_paint_update() {
 					)
 				}));
 			let mut child = root.element("child").container(Container::default().size(20.into()));
+			let mut label = root.element("label").text(Text::new("ab"));
 			ctx.render().await;
 			OFFSET.with(|offset| offset.set(40.0));
 			child.update_container(|value| value.set_opacity(0.5));
+			ctx.render().await;
+			OFFSET.with(|offset| offset.set(60.0));
+			label.update_text(|value| value.set_content("ba"));
 		})
 	});
 	let allocator = bumpalo::Bump::new();
@@ -378,6 +506,10 @@ fn custom_flow_observes_captured_state_after_a_paint_update() {
 	assert_eq!(engine.render(&mut first).elements().nth(1).unwrap().position.x(), 0.0);
 	let mut second = engine.evaluate(Size::new(100, 100), &allocator);
 	assert_eq!(engine.render(&mut second).elements().nth(1).unwrap().position.x(), 40.0);
+	let mut third = engine.evaluate(Size::new(100, 100), &allocator);
+	let render = engine.render(&mut third);
+	assert_eq!(render.elements().nth(1).unwrap().position.x(), 60.0);
+	assert_eq!(render.texts().next().unwrap().content, "ba");
 }
 
 #[test]

@@ -132,6 +132,35 @@ impl ElementHandle for IdedElement {
 // Cache keys include the node revision and parent space, so size changes naturally propagate.
 type Measurement = Option<(u64, Size, Size)>;
 
+/// Resolves and caches the primitive size used by placement and its parent flow.
+fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem, cached: &mut Measurement) -> Size {
+	if let Some((revision, parent_space, size)) = *cached {
+		if revision == element.revision && parent_space == available {
+			return size;
+		}
+	}
+	let size = match &element.element.primitive {
+		Primitives::Container(container) => Shapes::Box {
+			half: (container.width, container.height),
+			radius: container.corner_radius,
+			exponent: container.corner_exponent,
+		}
+		.bbox(available),
+		Primitives::Shape(shape) => shape.shape.bbox(available),
+		Primitives::Curve(curve) => curve.path().size(available),
+		Primitives::Image(image) => Shapes::Box {
+			half: (image.width, image.height),
+			radius: 0.0,
+			exponent: 2.0,
+		}
+		.bbox(available),
+		Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
+		Primitives::TextField(value) => text.measure(value.content(), value.settings().font_size),
+	};
+	*cached = Some((element.revision, available, size));
+	size
+}
+
 /// Replays flow placement while remeasuring only changed elements or parent spaces.
 fn layout_elements<'a>(
 	tree: &retained_tree::RetainedTree,
@@ -144,35 +173,6 @@ fn layout_elements<'a>(
 	measurements.resize(tree.elements.len(), None);
 	if tree.elements.is_empty() {
 		return elements;
-	}
-
-	// Resolve the primitive size used by both placement and the parent flow.
-	fn measure(element: &IdedElement, available: Size, text: &mut TextSystem, cached: &mut Measurement) -> Size {
-		if let Some((revision, parent_space, size)) = *cached {
-			if revision == element.revision && parent_space == available {
-				return size;
-			}
-		}
-		let size = match &element.element.primitive {
-			Primitives::Container(container) => Shapes::Box {
-				half: (container.width, container.height),
-				radius: container.corner_radius,
-				exponent: container.corner_exponent,
-			}
-			.bbox(available),
-			Primitives::Shape(shape) => shape.shape.bbox(available),
-			Primitives::Curve(curve) => curve.path().size(available),
-			Primitives::Image(image) => Shapes::Box {
-				half: (image.width, image.height),
-				radius: 0.0,
-				exponent: 2.0,
-			}
-			.bbox(available),
-			Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
-			Primitives::TextField(value) => text.measure(value.content(), value.settings().font_size),
-		};
-		*cached = Some((element.revision, available, size));
-		size
 	}
 
 	// Placement uses the size already measured for the parent's flow. Visual transforms
@@ -221,7 +221,7 @@ fn layout_elements<'a>(
 					continue;
 				}
 				let available = if reset { root_size } else { size };
-				let child_size = measure(child, available, text, &mut measurements[child_index]);
+				let child_size = measure_element(child, available, text, &mut measurements[child_index]);
 				let flow_output = match child_container.map(|value| value.position) {
 					// Absolute positions are offsets from the parent's top-left corner.
 					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(origin.x() + x, origin.y() + y), cursor),
@@ -258,7 +258,7 @@ fn layout_elements<'a>(
 		.iter()
 		.position(Option::is_none)
 		.expect("Root container not found");
-	let root_size = measure(&tree.elements[root], available_space, text_system, &mut measurements[root]);
+	let root_size = measure_element(&tree.elements[root], available_space, text_system, &mut measurements[root]);
 	place(
 		tree,
 		root,

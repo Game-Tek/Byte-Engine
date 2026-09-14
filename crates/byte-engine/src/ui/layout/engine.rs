@@ -244,11 +244,11 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
-	// Paint changes reuse placement for built-in flows. Custom flows may read captured
-	// state, so they still replay after any mutation, including changes to other nodes.
+	// Paint and equal-size text changes reuse placement for built-in flows. Custom flows
+	// may read captured state, so they still replay after any mutation to the tree.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
-		let tree = tree.borrow();
+		let mut tree = tree.borrow_mut();
 		let revision = tree.revision();
 		let unchanged = self
 			.retained_layout
@@ -256,7 +256,18 @@ impl<C: 'static> Engine<C> {
 			.is_some_and(|retained| retained.tree_revision == revision && retained.size == size);
 		if !unchanged {
 			let placement_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
-				retained.placement_revision == tree.placement_revision && !retained.has_custom_flows && retained.size == size
+				retained.placement_revision == tree.placement_revision
+					&& !retained.has_custom_flows
+					&& retained.size == size
+					// Only edited text needs checking. Keep the refreshed measurement if a
+					// changed size falls through to full placement, so it is not measured twice.
+					&& tree.text_changes.iter().all(|&index| {
+						let cached = &mut self.measurements[index];
+						let Some((_, available, previous_size)) = *cached else {
+							return false;
+						};
+						super::measure_element(&tree.elements[index], available, &mut self.text_system, cached) == previous_size
+					})
 			});
 			let previous = self
 				.retained_layout
@@ -344,6 +355,7 @@ impl<C: 'static> Engine<C> {
 			retained.placement_revision = tree.placement_revision;
 			retained.flow_revision = tree.flow_revision;
 			retained.has_custom_flows = has_custom_flows;
+			tree.text_changes.clear();
 		}
 		let retained = self
 			.retained_layout

@@ -315,6 +315,7 @@ dependencies = [
  "bytemuck",
  "direct-storage",
  "dispatch2",
+ "divan",
  "libloading",
  "objc2",
  "objc2-app-kit",

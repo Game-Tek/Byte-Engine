@@ -78,68 +78,47 @@ impl<C> EvaluationContext<C> {
 	}
 
 	pub fn update_container(&mut self, update: impl FnOnce(&mut Container)) -> bool {
-		let mut tree = self.tree.borrow_mut();
-		let Some(element) = tree.element_mut(self.id) else {
-			return false;
-		};
-		let Primitives::Container(container) = &mut element.element.primitive else {
-			return false;
-		};
-
-		update(container);
-		true
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Container(value) = primitive else {
+				return false;
+			};
+			update(value);
+			true
+		})
 	}
 
 	pub fn update_text(&mut self, update: impl FnOnce(&mut Text)) -> bool {
-		let mut tree = self.tree.borrow_mut();
-		let Some(element) = tree.element_mut(self.id) else {
-			return false;
-		};
-		let Primitives::Text(text) = &mut element.element.primitive else {
-			return false;
-		};
-
-		update(text);
-		true
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Text(value) = primitive else { return false };
+			update(value);
+			true
+		})
 	}
 
 	pub fn update_text_field(&mut self, update: impl FnOnce(&mut TextField)) -> bool {
-		let mut tree = self.tree.borrow_mut();
-		let Some(element) = tree.element_mut(self.id) else {
-			return false;
-		};
-		let Primitives::TextField(text_field) = &mut element.element.primitive else {
-			return false;
-		};
-
-		update(text_field);
-		true
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::TextField(value) = primitive else {
+				return false;
+			};
+			update(value);
+			true
+		})
 	}
 
 	pub fn update_shape(&mut self, update: impl FnOnce(&mut Shape)) -> bool {
-		let mut tree = self.tree.borrow_mut();
-		let Some(element) = tree.element_mut(self.id) else {
-			return false;
-		};
-		let Primitives::Shape(shape) = &mut element.element.primitive else {
-			return false;
-		};
-
-		update(shape);
-		true
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Shape(value) = primitive else { return false };
+			update(value);
+			true
+		})
 	}
 
 	pub fn update_image(&mut self, update: impl FnOnce(&mut Image)) -> bool {
-		let mut tree = self.tree.borrow_mut();
-		let Some(element) = tree.element_mut(self.id) else {
-			return false;
-		};
-		let Primitives::Image(image) = &mut element.element.primitive else {
-			return false;
-		};
-
-		update(image);
-		true
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Image(value) = primitive else { return false };
+			update(value);
+			true
+		})
 	}
 
 	pub fn geometry(&self) -> Option<Geometry> {

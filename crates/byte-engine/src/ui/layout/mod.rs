@@ -31,7 +31,7 @@ pub(crate) struct PathSegment {
 }
 
 /// The `LayoutElement` struct stores an element positioned and sized for a viewport.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
 	pub(crate) position: Location3,
@@ -119,6 +119,8 @@ pub struct IdedElement {
 	pub(crate) id: Id,
 	pub(crate) element: ConcreteElement,
 	pub(crate) path: usize,
+	/// Last mutation of this node, used by its measurement cache.
+	pub(crate) revision: u64,
 }
 
 impl ElementHandle for IdedElement {
@@ -127,21 +129,31 @@ impl ElementHandle for IdedElement {
 	}
 }
 
-/// Lays out the retained topology, measuring each element once for this traversal.
+// Cache keys include the node revision and parent space, so size changes naturally propagate.
+type Measurement = Option<(u64, Size, Size)>;
+
+/// Replays flow placement while remeasuring only changed elements or parent spaces.
 fn layout_elements<'a>(
 	tree: &retained_tree::RetainedTree,
 	available_space: Size,
 	text_system: &mut TextSystem,
+	measurements: &mut Vec<Measurement>,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
 	let mut elements = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
+	measurements.resize(tree.elements.len(), None);
 	if tree.elements.is_empty() {
 		return elements;
 	}
 
 	// Resolve the primitive size used by both placement and the parent flow.
-	fn measure(element: &IdedElement, available: Size, text: &mut TextSystem) -> Size {
-		match &element.element.primitive {
+	fn measure(element: &IdedElement, available: Size, text: &mut TextSystem, cached: &mut Measurement) -> Size {
+		if let Some((revision, parent_space, size)) = *cached {
+			if revision == element.revision && parent_space == available {
+				return size;
+			}
+		}
+		let size = match &element.element.primitive {
 			Primitives::Container(container) => Shapes::Box {
 				half: (container.width, container.height),
 				radius: container.corner_radius,
@@ -158,7 +170,9 @@ fn layout_elements<'a>(
 			.bbox(available),
 			Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
 			Primitives::TextField(value) => text.measure(value.content(), value.settings().font_size),
-		}
+		};
+		*cached = Some((element.revision, available, size));
+		size
 	}
 
 	// Placement uses the size already measured for the parent's flow. Visual transforms
@@ -173,6 +187,7 @@ fn layout_elements<'a>(
 		depth: i32,
 		highest_depth: &mut i32,
 		text: &mut TextSystem,
+		measurements: &mut [Measurement],
 		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
 	) {
 		let element = &tree.elements[index];
@@ -205,7 +220,7 @@ fn layout_elements<'a>(
 					continue;
 				}
 				let available = if reset { root_size } else { size };
-				let child_size = measure(child, available, text);
+				let child_size = measure(child, available, text, &mut measurements[child_index]);
 				let flow_output = match child_container.map(|value| value.position) {
 					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(x, y), cursor),
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
@@ -226,6 +241,7 @@ fn layout_elements<'a>(
 					child_depth,
 					highest_depth,
 					text,
+					measurements,
 					output,
 				);
 				if !reset {
@@ -240,7 +256,7 @@ fn layout_elements<'a>(
 		.iter()
 		.position(Option::is_none)
 		.expect("Root container not found");
-	let root_size = measure(&tree.elements[root], available_space, text_system);
+	let root_size = measure(&tree.elements[root], available_space, text_system, &mut measurements[root]);
 	place(
 		tree,
 		root,
@@ -250,6 +266,7 @@ fn layout_elements<'a>(
 		0,
 		&mut 0,
 		text_system,
+		measurements,
 		&mut elements,
 	);
 	elements
@@ -468,7 +485,7 @@ mod tests {
 		tree.elements = elements;
 		tree.relations.extend_from_slice(relations);
 		tree.rebuild_element_indices();
-		super::layout_elements(&tree, size, text, allocator)
+		super::layout_elements(&tree, size, text, &mut Vec::new(), allocator)
 	}
 
 	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
@@ -487,6 +504,7 @@ mod tests {
 						primitive: Primitives::Container(e),
 					},
 					path: 0,
+					revision: 0,
 				}
 			})
 			.collect()

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 use super::{
 	LayoutElement,
@@ -12,11 +12,13 @@ use crate::ui::{UiPoint, UiVector, intersection::MouseClickAcceleration};
 pub struct Snapshot<'a> {
 	pub(super) elements: Rc<Vec<LayoutElement>>,
 	pub(super) relations: Rc<Vec<(Id, Id)>>,
-	pub(super) acceleration: MouseClickAcceleration<'a>,
+	pub(super) acceleration: Rc<MouseClickAcceleration>,
+	// Keep the public frame lifetime even though retained geometry now owns its storage.
+	pub(super) frame_allocator: PhantomData<&'a bumpalo::Bump>,
 	pub(super) cursor: Option<Id>,
 	pub(super) engine_state: Rc<RefCell<EngineState>>,
 	pub(super) size: Size,
-	/// The tree revision this layout was computed from.
+	/// Identifies this geometry independently of tree mutations and viewport size.
 	pub(super) layout_revision: u64,
 }
 

@@ -26,15 +26,20 @@ pub struct Engine<C = ()> {
 	retained_layout: Option<RetainedLayout>,
 	retained_render: Option<RetainedRender>,
 	visual_state: Vec<VisualState>,
+	visual_state_key: Option<(u64, u64, Size)>,
+	measurements: Vec<super::Measurement>,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
 struct RetainedLayout {
+	/// Last evaluated mutation; `revision` advances only when snapshot geometry changes.
+	tree_revision: u64,
+	clip_revision: u64,
 	revision: u64,
 	size: Size,
 	elements: Rc<Vec<LayoutElement>>,
 	relations: Rc<Vec<(Id, Id)>>,
-	clipped_elements: Vec<LayoutElement>,
+	acceleration: Rc<MouseClickAcceleration>,
 }
 
 /// Reuses uniquely owned snapshot storage without copying obsolete contents on a shared update.
@@ -50,6 +55,8 @@ fn retain_snapshot_data<T: Copy>(target: &mut Rc<Vec<T>>, source: &[T]) {
 /// The `RetainedRender` struct keeps the last render so unchanged trees report the same revision.
 struct RetainedRender {
 	tree_revision: u64,
+	clip_revision: u64,
+	visible: Vec<LayoutElement>,
 	layout_revision: u64,
 	size: Size,
 	render: Render,
@@ -102,6 +109,8 @@ impl Default for PointerState {
 mod clipping;
 mod evaluation_context;
 mod futures;
+#[cfg(test)]
+mod invalidation_tests;
 mod runtime;
 
 use clipping::*;
@@ -174,6 +183,8 @@ impl<C: 'static> Engine<C> {
 			retained_layout: None,
 			retained_render: None,
 			visual_state: Vec::new(),
+			visual_state_key: None,
+			measurements: Vec::new(),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
 	}
@@ -229,8 +240,8 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
-	// Unchanged snapshots share immutable layout data; a later evaluation preserves any
-	// snapshots still held by the caller and reuses storage once they have been dropped.
+	// Custom flows may read captured state. Replay placement on mutations, then preserve
+	// derived geometry when its result and the clipping inputs did not change.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
@@ -238,29 +249,69 @@ impl<C: 'static> Engine<C> {
 		let unchanged = self
 			.retained_layout
 			.as_ref()
-			.is_some_and(|retained| retained.revision == revision && retained.size == size);
+			.is_some_and(|retained| retained.tree_revision == revision && retained.size == size);
 		if !unchanged {
-			let mut elements = layout_elements(&tree, size, &mut self.text_system, frame_allocator);
+			let mut elements = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
 			apply_visual_transforms(&mut elements, &tree, frame_allocator);
-			prepare_visual_state(&elements, &tree, &mut self.visual_state);
-			let clipped_elements = clipped_layout_elements(&elements, &tree, &self.visual_state, frame_allocator);
-			let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
-				revision,
-				size,
-				elements: Rc::default(),
-				relations: Rc::default(),
-				clipped_elements: Vec::new(),
+			let geometry_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
+				retained.size == size
+					&& retained.clip_revision == tree.clip_revision
+					&& retained.elements.as_slice() == elements.as_slice()
 			});
-			retained.revision = revision;
-			retained.size = size;
-			retain_snapshot_data(&mut retained.elements, &elements);
-			retain_snapshot_data(&mut retained.relations, &tree.relations);
-			retained.clipped_elements.clear();
-			retained.clipped_elements.extend_from_slice(&clipped_elements);
-			self.state
-				.borrow_mut()
-				.set_element_ids(elements.iter().map(|element| element.id));
-			self.runtime.borrow_mut().update_geometry(&elements);
+			if !geometry_unchanged {
+				// Resizing can replay a stateful flow without a tree mutation. Give each
+				// changed geometry its own revision so older snapshots keep distinct cache keys.
+				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
+				self.prepare_appearance(&elements, &tree, layout_revision, size);
+				let hit_elements = clipped_hit_elements(&elements, &tree, &self.visual_state, frame_allocator);
+				// A stable topology keeps IDs and layout order, so update only changed bounds.
+				// Structural edits also advance clip_revision, including removal and remount of the same ID.
+				if let Some(previous) = self
+					.retained_layout
+					.as_ref()
+					.filter(|retained| retained.clip_revision == tree.clip_revision)
+				{
+					let mut runtime = self.runtime.borrow_mut();
+					debug_assert_eq!(previous.elements.len(), elements.len());
+					for (previous, element) in previous.elements.iter().zip(elements.iter()) {
+						debug_assert_eq!(previous.id, element.id);
+						if previous.position != element.position || previous.size != element.size {
+							runtime
+								.geometry
+								.insert(element.id, Geometry::new(element.position, element.size));
+						}
+					}
+				} else {
+					self.state
+						.borrow_mut()
+						.set_element_ids(elements.iter().map(|element| element.id));
+					self.runtime.borrow_mut().update_geometry(&elements);
+				}
+				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
+					tree_revision: revision,
+					clip_revision: tree.clip_revision,
+					revision: layout_revision,
+					size,
+					elements: Rc::default(),
+					relations: Rc::default(),
+					acceleration: Rc::default(),
+				});
+				retained.revision = layout_revision;
+				retained.clip_revision = tree.clip_revision;
+				retained.size = size;
+				retain_snapshot_data(&mut retained.elements, &elements);
+				retain_snapshot_data(&mut retained.relations, &tree.relations);
+				// An older snapshot owns its index until it is dropped. Replace shared storage
+				// instead of copying an obsolete grid; otherwise refill it in place.
+				if Rc::get_mut(&mut retained.acceleration).is_none() {
+					retained.acceleration = Rc::default();
+				}
+				Rc::get_mut(&mut retained.acceleration).unwrap().update(&hit_elements);
+			}
+			self.retained_layout
+				.as_mut()
+				.expect("UI layout was not retained. Evaluation did not prepare its snapshot.")
+				.tree_revision = revision;
 		}
 		let retained = self
 			.retained_layout
@@ -269,11 +320,21 @@ impl<C: 'static> Engine<C> {
 		Snapshot {
 			elements: Rc::clone(&retained.elements),
 			relations: Rc::clone(&retained.relations),
-			acceleration: build_mouse_click_acceleration(&retained.clipped_elements, frame_allocator),
+			acceleration: Rc::clone(&retained.acceleration),
+			frame_allocator: PhantomData,
 			cursor: self.state.borrow().cursor(),
 			engine_state: Rc::clone(&self.state),
 			size,
-			layout_revision: revision,
+			layout_revision: retained.revision,
+		}
+	}
+
+	/// Reuses inherited appearance only for the same tree inputs and snapshot geometry.
+	fn prepare_appearance(&mut self, elements: &[LayoutElement], tree: &RetainedTree, layout_revision: u64, size: Size) {
+		let key = (tree.appearance_revision, layout_revision, size);
+		if self.visual_state_key != Some(key) {
+			prepare_visual_state(elements, tree, &mut self.visual_state);
+			self.visual_state_key = Some(key);
 		}
 	}
 
@@ -382,13 +443,7 @@ impl<C: 'static> Engine<C> {
 				&& retained.size == snapshot.size
 		});
 		if !retained {
-			let render = self.build_render(snapshot);
-			self.retained_render = Some(RetainedRender {
-				tree_revision,
-				layout_revision: snapshot.layout_revision,
-				size: snapshot.size,
-				render,
-			});
+			self.retained_render = Some(self.build_render(snapshot));
 		}
 		&self
 			.retained_render
@@ -397,11 +452,18 @@ impl<C: 'static> Engine<C> {
 			.render
 	}
 
-	// Keep the single tree walk contiguous because it propagates clip, opacity, transform, depth, and layer masks together.
+	// Rebuild visible draw data while preserving its layout order and owned render buffers.
 	#[allow(clippy::too_many_lines)]
-	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> Render {
+	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> RetainedRender {
+		let tree = Rc::clone(&self.runtime.borrow().tree);
+		let tree = tree.borrow();
+		let visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
+			retained.clip_revision == tree.clip_revision
+				&& retained.layout_revision == snapshot.layout_revision
+				&& retained.size == snapshot.size
+		});
 		// Reuse the engine-owned buffers. Render clones keep their independent contents.
-		let (mut elements, mut curve_elements, mut image_elements, mut text_elements) = self
+		let (mut elements, mut curve_elements, mut image_elements, mut text_elements, mut visible) = self
 			.retained_render
 			.take()
 			.map(|retained| {
@@ -410,6 +472,7 @@ impl<C: 'static> Engine<C> {
 					retained.render.curve_elements,
 					retained.render.image_elements,
 					retained.render.text_elements,
+					retained.visible,
 				)
 			})
 			.unwrap_or_default();
@@ -417,20 +480,31 @@ impl<C: 'static> Engine<C> {
 		curve_elements.clear();
 		image_elements.clear();
 		text_elements.clear();
-		let tree = Rc::clone(&self.runtime.borrow().tree);
-		let tree = tree.borrow();
-		// Input can change the tree after evaluation, so refresh inherited appearance here.
-		prepare_visual_state(&snapshot.elements, &tree, &mut self.visual_state);
-
-		for element in snapshot.elements.iter() {
+		// Input callbacks can change appearance after layout. The cache key includes those changes.
+		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size);
+		if !visibility_unchanged {
+			visible.clear();
+			visible.extend(
+				snapshot
+					.elements
+					.iter()
+					.filter(|element| {
+						tree.element_indices.get(&element.id).is_some_and(|&index| {
+							self.visual_state[index]
+								.clip
+								.apply(geometry_from_layout_element(element))
+								.is_some()
+						})
+					})
+					.copied(),
+			);
+		}
+		for element in &visible {
 			let Some(&index) = tree.element_indices.get(&element.id) else {
 				continue;
 			};
 			let retained_element = &tree.elements[index];
 			let state = self.visual_state[index];
-			if state.clip.apply(geometry_from_layout_element(element)).is_none() {
-				continue;
-			}
 			let clip = state.clip.as_rect();
 			let feather_mask = state.feather;
 			let opacity = effective_opacity(index, &tree, &mut self.visual_state);
@@ -514,12 +588,19 @@ impl<C: 'static> Engine<C> {
 		image_elements.sort_by_key(|element| element.position.z());
 		text_elements.sort_by_key(|element| element.position.z());
 
-		Render {
-			elements,
-			curve_elements,
-			image_elements,
-			text_elements,
-			revision: RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+		RetainedRender {
+			tree_revision: tree.revision(),
+			clip_revision: tree.clip_revision,
+			layout_revision: snapshot.layout_revision,
+			size: snapshot.size,
+			visible,
+			render: Render {
+				elements,
+				curve_elements,
+				image_elements,
+				text_elements,
+				revision: RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+			},
 		}
 	}
 
@@ -1077,7 +1158,7 @@ mod tests {
 		tree.add_element(None, 0, "root", ConcreteElement::container(Container::default()));
 		assert_eq!(tree.revision(), after_insert);
 
-		assert!(tree.element_mut(id).is_some());
+		assert!(tree.update_element(id, |_| true));
 		assert!(tree.revision() > after_insert);
 
 		let after_mutation = tree.revision();
@@ -3440,7 +3521,7 @@ use crate::ui::{
 	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
 	drag::{Drag, DragCapture, DragDrop},
 	font::TextSystem,
-	intersection::build_mouse_click_acceleration,
+	intersection::MouseClickAcceleration,
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, EdgeFeather, Layer as _, LayerKind},
 };

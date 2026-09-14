@@ -64,16 +64,17 @@ impl HitTest {
 
 /// The `MouseClickAcceleration` struct provides a uniform-grid index for pointer
 /// hit testing.
-pub(crate) struct MouseClickAcceleration<'a> {
+#[derive(Default)]
+pub(crate) struct MouseClickAcceleration {
 	cell_size: f32,
 	columns: usize,
 	rows: usize,
 	bounds: (f32, f32),
-	elements: Vec<QueryElement, &'a bumpalo::Bump>,
-	buckets: Vec<Vec<usize, &'a bumpalo::Bump>, &'a bumpalo::Bump>,
+	elements: Vec<QueryElement>,
+	buckets: Vec<Vec<usize>>,
 }
 
-impl<'a> MouseClickAcceleration<'a> {
+impl MouseClickAcceleration {
 	/// Copies only hit geometry into reusable storage, preserving draw priority.
 	pub(super) fn retain(&self, target: &mut HitTest, size: Size) {
 		target.size = [size.x(), size.y()];
@@ -82,24 +83,30 @@ impl<'a> MouseClickAcceleration<'a> {
 		// Stable sorting preserves layout order for surfaces at equal depth.
 		target.elements.sort_by_key(|element| element.position.z());
 	}
-	fn new(layout: Vec<QueryElement, &'a bumpalo::Bump>, frame_allocator: &'a bumpalo::Bump) -> Self {
-		if layout.is_empty() {
-			let mut buckets = Vec::with_capacity_in(1, frame_allocator);
-			buckets.push(Vec::new_in(frame_allocator));
-			return Self {
-				cell_size: 1.0,
-				columns: 1,
-				rows: 1,
-				bounds: (1.0, 1.0),
-				elements: Vec::new_in(frame_allocator),
-				buckets,
-			};
+	/// Reuses the pointer index while clipped hit geometry stays unchanged.
+	pub(crate) fn update(&mut self, layout: &[LayoutElement]) {
+		let elements = layout
+			.iter()
+			.filter(|element| element.hit_testable)
+			.map(|element| QueryElement {
+				id: element.id.get(),
+				position: element.position,
+				size: element.size,
+			});
+		if self.elements.iter().copied().eq(elements.clone()) {
+			return;
 		}
+		self.elements.clear();
+		self.elements.extend(elements);
+		self.rebuild();
+	}
 
+	/// Refills grid cells without discarding their capacity between layout changes.
+	fn rebuild(&mut self) {
 		let mut max_x: f32 = 0.0;
 		let mut max_y: f32 = 0.0;
 
-		for element in layout.iter() {
+		for element in &self.elements {
 			max_x = max_x.max(element.position.x() + element.size.x());
 			max_y = max_y.max(element.position.y() + element.size.y());
 		}
@@ -110,12 +117,13 @@ impl<'a> MouseClickAcceleration<'a> {
 
 		let columns = (bounds.0 / cell_size).ceil() as usize;
 		let rows = (bounds.1 / cell_size).ceil() as usize;
-		let mut buckets = Vec::with_capacity_in(columns * rows, frame_allocator);
-		for _ in 0..columns * rows {
-			buckets.push(Vec::new_in(frame_allocator));
+		// Keep spare cells when the grid shrinks so cyclic resizes need no allocation.
+		self.buckets.resize_with(self.buckets.len().max(columns * rows), Vec::new);
+		for bucket in &mut self.buckets {
+			bucket.clear();
 		}
 
-		for (index, element) in layout.iter().enumerate() {
+		for (index, element) in self.elements.iter().enumerate() {
 			if element.size.x() <= 0.0 || element.size.y() <= 0.0 {
 				continue;
 			}
@@ -130,19 +138,15 @@ impl<'a> MouseClickAcceleration<'a> {
 			for row in start_row..=end_row.min(rows.saturating_sub(1)) {
 				for col in start_col..=end_col.min(columns.saturating_sub(1)) {
 					let bucket_index = row * columns + col;
-					buckets[bucket_index].push(index);
+					self.buckets[bucket_index].push(index);
 				}
 			}
 		}
 
-		Self {
-			cell_size,
-			columns,
-			rows,
-			bounds,
-			elements: layout,
-			buckets,
-		}
+		self.cell_size = cell_size;
+		self.columns = columns;
+		self.rows = rows;
+		self.bounds = bounds;
 	}
 
 	/// Returns the ID of the topmost element under the pointer position.
@@ -197,36 +201,11 @@ fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	x >= left && x < right && y >= top && y < bottom
 }
 
-/// Builds an acceleration structure from `layout_containers` output for pointer
-/// hit testing.
-pub(crate) fn build_mouse_click_acceleration<'a>(
-	layout: &[LayoutElement],
-	frame_allocator: &'a bumpalo::Bump,
-) -> MouseClickAcceleration<'a> {
-	let mut query_elements = Vec::with_capacity_in(layout.len(), frame_allocator);
-	for e in layout.iter().filter(|e| e.hit_testable) {
-		query_elements.push(QueryElement {
-			id: e.id.get(),
-			position: e.position,
-			size: e.size,
-		});
-	}
-
-	MouseClickAcceleration::new(query_elements, frame_allocator)
-}
-
 #[cfg(test)]
 mod tests {
 	use utils::RGBA;
 
-	use super::{
-		super::{
-			element::Id,
-			flow::{Location, Location3, Size},
-			layout::LayoutElement,
-		},
-		build_mouse_click_acceleration,
-	};
+	use super::super::flow::{Location, Location3, Size};
 	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
 	use crate::ui::{Container, Context, ElementContext, Engine, UiPoint};
 
@@ -268,8 +247,7 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut layout = Vec::with_capacity_in(3, &frame_allocator);
+		let mut layout = Vec::with_capacity(3);
 		layout.push(QueryElement {
 			id: 1,
 			position: Location3::new(0, 0, 0),
@@ -286,7 +264,11 @@ mod tests {
 			size: Size::new(60, 60),
 		});
 
-		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
+		let mut acceleration = MouseClickAcceleration {
+			elements: layout,
+			..Default::default()
+		};
+		acceleration.rebuild();
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(3));
 		assert_eq!(acceleration.query(Location::new(30, 30)), Some(2));
@@ -295,8 +277,7 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_returns_none_when_no_hit() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut layout = Vec::with_capacity_in(2, &frame_allocator);
+		let mut layout = Vec::with_capacity(2);
 		layout.push(QueryElement {
 			id: 10,
 			position: Location3::new(0, 0, 0),
@@ -308,7 +289,11 @@ mod tests {
 			size: Size::new(50, 50),
 		});
 
-		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
+		let mut acceleration = MouseClickAcceleration {
+			elements: layout,
+			..Default::default()
+		};
+		acceleration.rebuild();
 
 		assert_eq!(acceleration.query(Location::new(125, 125)), None);
 		assert_eq!(acceleration.query(Location::new(300, 300)), None);
@@ -316,8 +301,7 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut layout = Vec::with_capacity_in(2, &frame_allocator);
+		let mut layout = Vec::with_capacity(2);
 		layout.push(QueryElement {
 			id: 20,
 			position: Location3::new(0, 0, 3),
@@ -329,22 +313,29 @@ mod tests {
 			size: Size::new(100, 100),
 		});
 
-		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
+		let mut acceleration = MouseClickAcceleration {
+			elements: layout,
+			..Default::default()
+		};
+		acceleration.rebuild();
 
 		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
 	}
 
 	#[test]
 	fn mouse_click_acceleration_preserves_fractional_visual_bounds() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut layout = Vec::with_capacity_in(1, &frame_allocator);
+		let mut layout = Vec::with_capacity(1);
 		layout.push(QueryElement {
 			id: 1,
 			position: Location3::new(10.25, 20.5, 0),
 			size: Size::new(5.5, 3.25),
 		});
 
-		let acceleration = MouseClickAcceleration::new(layout, &frame_allocator);
+		let mut acceleration = MouseClickAcceleration {
+			elements: layout,
+			..Default::default()
+		};
+		acceleration.rebuild();
 
 		assert_eq!(acceleration.query(Location::new(10.24, 21.0)), None);
 		assert_eq!(acceleration.query(Location::new(10.25, 20.5)), Some(1));

@@ -121,15 +121,15 @@ pub(super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) ->
 }
 
 /// Keeps visible geometry for hit testing while preserving layout depth.
-pub(super) fn clipped_layout_elements<'a>(
+pub(super) fn clipped_hit_elements<'a>(
 	elements: &[LayoutElement],
 	tree: &RetainedTree,
 	states: &[VisualState],
 	frame_allocator: &'a bumpalo::Bump,
 ) -> Vec<LayoutElement, &'a bumpalo::Bump> {
-	let mut clipped = Vec::with_capacity_in(elements.len(), frame_allocator);
+	let mut clipped = Vec::new_in(frame_allocator);
 
-	for element in elements {
+	for element in elements.iter().filter(|element| element.hit_testable) {
 		let Some(geometry) = tree
 			.element_indices
 			.get(&element.id)

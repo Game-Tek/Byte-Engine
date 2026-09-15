@@ -13,15 +13,18 @@ impl Context {
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(mtl::MTLPixelFormat::BGRA8Unorm);
 
-		match presentation_mode {
-			graphics_hardware_interface::PresentationModes::Inmediate => layer.setDisplaySyncEnabled(false),
-			graphics_hardware_interface::PresentationModes::FIFO => layer.setDisplaySyncEnabled(true),
-			graphics_hardware_interface::PresentationModes::Mailbox => layer.setDisplaySyncEnabled(true),
-		}
+		let display_sync_enabled = match presentation_mode {
+			graphics_hardware_interface::PresentationModes::Inmediate => false,
+			graphics_hardware_interface::PresentationModes::FIFO | graphics_hardware_interface::PresentationModes::Mailbox => {
+				true
+			}
+		};
+
+		layer.setDisplaySyncEnabled(display_sync_enabled);
 
 		let desired_drawable_count = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::Inmediate => 2,
-			graphics_hardware_interface::PresentationModes::FIFO => 2,
+			graphics_hardware_interface::PresentationModes::Inmediate
+			| graphics_hardware_interface::PresentationModes::FIFO => 2,
 			graphics_hardware_interface::PresentationModes::Mailbox => 3,
 		};
 

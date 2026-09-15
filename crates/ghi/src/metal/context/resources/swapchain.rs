@@ -4,20 +4,39 @@ impl Context {
 	pub fn bind_to_window(
 		&mut self,
 		window_os_handles: &window::Handles,
-		_presentation_mode: graphics_hardware_interface::PresentationModes,
+		presentation_mode: graphics_hardware_interface::PresentationModes,
 		_fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let layer = CAMetalLayer::new();
+
 		layer.setDevice(Some(&self.device));
 		layer.setPixelFormat(mtl::MTLPixelFormat::BGRA8Unorm);
+
+		match presentation_mode {
+			graphics_hardware_interface::PresentationModes::Inmediate => layer.setDisplaySyncEnabled(false),
+			graphics_hardware_interface::PresentationModes::FIFO => layer.setDisplaySyncEnabled(true),
+			graphics_hardware_interface::PresentationModes::Mailbox => layer.setDisplaySyncEnabled(true),
+		}
+
+		let desired_drawable_count = match presentation_mode {
+			graphics_hardware_interface::PresentationModes::Inmediate => 2,
+			graphics_hardware_interface::PresentationModes::FIFO => 2,
+			graphics_hardware_interface::PresentationModes::Mailbox => 3,
+		};
+
+		// A value other than 2 or 3 causes an exception
+		layer.setMaximumDrawableCount(desired_drawable_count);
+
 		let uses_proxy = !drawable_supports_uses(uses);
+
 		// framebufferOnly permits Metal's optimized display path when raster output is the drawable's only use.
 		let framebuffer_only_uses = Uses::RenderTarget | Uses::Clear;
 		layer.setFramebufferOnly(!uses_proxy && framebuffer_only_uses.contains(uses));
 
 		window_os_handles.view.setWantsLayer(true);
 		window_os_handles.view.setLayer(Some(layer.as_super()));
+
 		let extent = get_layer_extent(&layer, &window_os_handles.view);
 
 		let format = mtl::MTLPixelFormat::BGRA8Unorm;

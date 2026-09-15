@@ -135,7 +135,7 @@ mod tests {
 			.get_resource_data_by_name(ResourceId::new("studio.exr"))
 			.expect("the stored EXR pixels must exist");
 		let values = data
-			.chunks_exact(2)
+			.as_chunks::<2>().0.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect::<Vec<_>>();
 

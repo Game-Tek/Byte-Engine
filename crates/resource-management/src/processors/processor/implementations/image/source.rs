@@ -421,7 +421,7 @@ mod tests {
 		.expect("16-bit RGB must normalize to RGBA16F");
 		let values = canonical
 			.as_slice()
-			.chunks_exact(2)
+			.as_chunks::<2>().0.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect::<Vec<_>>();
 
@@ -456,7 +456,7 @@ mod tests {
 			canonicalize_rgba16f_in(source, Gamma::SRGB, Global).expect("high-precision sRGB must normalize to linear RGBA16F");
 		let values = canonical
 			.as_slice()
-			.chunks_exact(2)
+			.as_chunks::<2>().0.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect::<Vec<_>>();
 

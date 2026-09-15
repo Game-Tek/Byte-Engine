@@ -147,12 +147,12 @@ pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Ve
 	for row in readback.bytes.chunks_exact(bytes_per_row).take(height) {
 		match readback.format {
 			ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => {
-				for pixel in row[..row_size].chunks_exact(4) {
+				for pixel in row[..row_size].as_chunks::<4>().0 {
 					rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
 				}
 			}
 			ghi::Formats::RGBA16UNORM => {
-				for channel in row[..row_size].chunks_exact(2) {
+				for channel in row[..row_size].as_chunks::<2>().0 {
 					let value = u32::from(u16::from_ne_bytes([channel[0], channel[1]]));
 					rgba.push(((value * 255 + 32_767) / 65_535) as u8);
 				}

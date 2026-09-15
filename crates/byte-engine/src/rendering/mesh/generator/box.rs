@@ -175,7 +175,7 @@ mod tests {
 		let generator = BoxMeshGenerator::new();
 		let positions = generator.positions();
 		let normals = generator.normals();
-		for triangle in generator.indices().chunks_exact(3) {
+		for triangle in generator.indices().as_chunks::<3>().0 {
 			let a = vector(positions[triangle[0] as usize]);
 			let b = vector(positions[triangle[1] as usize]);
 			let c = vector(positions[triangle[2] as usize]);

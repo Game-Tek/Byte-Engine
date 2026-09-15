@@ -88,8 +88,8 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 			opacity: None,
 			scale,
 		};
-		if let Primitives::Container(container) = primitive {
-			if container.clip {
+		if let Primitives::Container(container) = primitive
+			&& container.clip {
 				let geometry = geometry_from_layout_element(element);
 				state.descendant_clip = clip.clip_descendants(geometry);
 				state.descendant_feather = first_layer_feather(container.style.layers())
@@ -101,7 +101,6 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 					})
 					.or(feather);
 			}
-		}
 		states[index] = state;
 	}
 }

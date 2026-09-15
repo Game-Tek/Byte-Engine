@@ -941,7 +941,7 @@ mod tests {
 		let gpu_base = &gpu.data[gpu_stream.offset()..gpu_stream.offset() + gpu_stream.size()];
 		let cpu_base = &cpu.data[cpu_stream.offset()..cpu_stream.offset() + cpu_stream.size()];
 		for (pixel_index, (gpu_pixel, cpu_pixel)) in gpu_base
-			.chunks_exact(BYTES_PER_RGBA16F_PIXEL)
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter()
 			.zip(cpu_base.chunks_exact(BYTES_PER_RGBA16F_PIXEL))
 			.enumerate()
 		{
@@ -964,7 +964,7 @@ mod tests {
 		);
 		let color = [4.0_f32, 0.5, 2.0];
 		let mut source = vec![0; 4 * 2 * BYTES_PER_RGBA16F_PIXEL];
-		for pixel in source.chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL) {
+		for pixel in source.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0 {
 			for (channel, value) in color.into_iter().enumerate() {
 				pixel[channel * 2..channel * 2 + 2].copy_from_slice(&f16::from_f32(value).to_le_bytes());
 			}
@@ -974,7 +974,7 @@ mod tests {
 		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
 
 		assert_eq!(&baked.data[..source.len()], source.as_slice());
-		for (pixel_index, pixel) in baked.data[source.len()..].chunks_exact(BYTES_PER_RGBA16F_PIXEL).enumerate() {
+		for (pixel_index, pixel) in baked.data[source.len()..].as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter().enumerate() {
 			let decoded = std::array::from_fn::<_, 4, _>(|channel| {
 				f16::from_le_bytes([pixel[channel * 2], pixel[channel * 2 + 1]]).to_f32()
 			});

@@ -155,6 +155,6 @@ fn render_with_ray_tracing() {
 
 #[test]
 fn update_texture_regions() {
-	let (_instance, mut device, queue_handle) = create_default_device_setup();
-	resources::texture_region_uploads(&mut device, queue_handle);
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
+	resources::texture_region_uploads(&mut context, queue_handle);
 }

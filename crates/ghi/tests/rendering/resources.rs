@@ -331,7 +331,7 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 			"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
 		);
 		let pixels = image_data
-			.chunks_exact(4)
+			.as_chunks::<4>().0.iter()
 			.map(|pixel| RGBAu8 {
 				r: pixel[0],
 				g: pixel[1],
@@ -586,7 +586,7 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 					let frame = execution.frame().unwrap();
 
 					let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-					for pixel in texture_slice.chunks_exact_mut(4).take(pixel_count) {
+					for pixel in texture_slice.as_chunks_mut::<4>().0.iter_mut().take(pixel_count) {
 						pixel.copy_from_slice(&[expected_color.r, expected_color.g, expected_color.b, expected_color.a]);
 					}
 					frame.sync_texture(upload_image.into());

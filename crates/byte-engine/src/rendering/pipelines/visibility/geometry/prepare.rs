@@ -114,10 +114,10 @@ impl PreparedMesh {
 		let mut staging = allocate_staging(&upload_staging, cursor).await?;
 		let backing = staging.bytes_mut();
 		backing[streams.positions.clone()].copy_from_slice(as_byte_slice(&positions));
-		for (destination, normal) in backing[streams.normals.clone()].chunks_exact_mut(4).zip(normals.iter()) {
+		for (destination, normal) in backing[streams.normals.clone()].as_chunks_mut::<4>().0.iter_mut().zip(normals.iter()) {
 			write_unit_vector(destination, *normal);
 		}
-		for (destination, (u, v)) in backing[streams.uvs.clone()].chunks_exact_mut(4).zip(uvs.iter()) {
+		for (destination, (u, v)) in backing[streams.uvs.clone()].as_chunks_mut::<4>().0.iter_mut().zip(uvs.iter()) {
 			write_f16_pair(destination, *u, *v);
 		}
 		backing[streams.vertex_indices.clone()].copy_from_slice(as_byte_slice(&vertex_indices));
@@ -190,7 +190,7 @@ impl PreparedMesh {
 		let rebase = |range: &Range<usize>| range.start - layout.source_byte_count..range.end - layout.source_byte_count;
 		let vertex_count = layout.counts.vertices as usize;
 		for (destination, source) in output[rebase(&layout.streams.normals)]
-			.chunks_exact_mut(4)
+			.as_chunks_mut::<4>().0.iter_mut()
 			.zip(source_bytes[layout.source_normals.clone()].chunks_exact(12))
 		{
 			write_unit_vector(destination, (read_f32(source, 0), read_f32(source, 4), read_f32(source, 8)));
@@ -530,7 +530,7 @@ fn build_resource_primitives(
 		let meshlet_offset = meshlets.len() as u32;
 		let mut local_primitive_offset = 0;
 		let mut local_triangle_offset = 0;
-		for bytes in source.chunks_exact(RESOURCE_MESHLET_STRIDE) {
+		for bytes in source.as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
 			let meshlet = read_resource_meshlet(bytes);
 			meshlets.push(ShaderMeshletData {
 				primitive_offset: local_primitive_offset,
@@ -695,7 +695,7 @@ fn build_generated_meshlets(
 		primitive_indices.append(meshlet_triangles);
 	};
 
-	for triangle in indices.chunks_exact(3) {
+	for triangle in indices.as_chunks::<3>().0 {
 		let new_vertices = triangle.iter().filter(|index| !meshlet_vertices.contains(index)).count();
 		if meshlet_vertices.len() + new_vertices > VERTEX_COUNT as usize || meshlet_triangles.len() >= TRIANGLE_COUNT as usize {
 			flush(&mut meshlet_vertices, &mut meshlet_triangles);
@@ -772,7 +772,7 @@ fn write_f16_pair(destination: &mut [u8], u: f32, v: f32) {
 /// Converts an f32 UV stream to half-float storage without clamping sampler coordinates.
 fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 	for (source, destination) in source
-		.chunks_exact(F32_UV_STRIDE)
+		.as_chunks::<F32_UV_STRIDE>().0.iter()
 		.zip(destination.chunks_exact_mut(F16_UV_STRIDE))
 		.take(vertex_count)
 	{
@@ -893,8 +893,8 @@ mod tests {
 		pack_f32_uvs(&source, &mut packed, values.len());
 
 		let decoded = packed
-			.chunks_exact(2)
-			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes(bytes.try_into().unwrap())).to_f32())
+			.as_chunks::<2>().0.iter()
+			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes((*bytes).try_into().unwrap())).to_f32())
 			.collect::<Vec<_>>();
 		assert_eq!(decoded, vec![-0.5, 2.0, 1.25, -3.0]);
 	}

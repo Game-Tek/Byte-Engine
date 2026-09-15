@@ -1166,8 +1166,8 @@ mod tests {
 			.expect("primitive triangle stream should exist");
 		let begin = aggregate.offset + primitive.offset;
 		processed.buffer[begin..begin + primitive.size]
-			.chunks_exact(2)
-			.map(|bytes| u16::from_le_bytes(bytes.try_into().expect("index should contain two bytes")))
+			.as_chunks::<2>().0.iter()
+			.map(|bytes| u16::from_le_bytes((*bytes).try_into().expect("index should contain two bytes")))
 			.collect()
 	}
 

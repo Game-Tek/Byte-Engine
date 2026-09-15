@@ -426,7 +426,7 @@ mod tests {
 	}
 
 	fn rgba16f_values(data: &[u8]) -> Vec<f32> {
-		data.chunks_exact(2)
+		data.as_chunks::<2>().0.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect()
 	}

@@ -397,7 +397,7 @@ impl SampleNode {
 			} else {
 				let start = source_frame * channel_count;
 				let end = (source_frame + run_length) * channel_count;
-				for (offset, frame) in samples[start..end].chunks_exact(2).enumerate() {
+				for (offset, frame) in samples[start..end].as_chunks::<2>().0.iter().enumerate() {
 					consume(rendered + offset, (frame[0] + frame[1]) * 0.5);
 				}
 			}

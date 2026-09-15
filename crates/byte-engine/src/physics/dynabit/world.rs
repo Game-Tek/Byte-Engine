@@ -1,10 +1,7 @@
 use std::alloc::Allocator;
 
 use math::{Scale, Vector};
-use utils::{
-	StableVec, StableVecHandle,
-	hash::{HashMap, HashMapExt},
-};
+use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::{
 	application::Time,
@@ -46,7 +43,7 @@ impl World {
 			gravity: Vector::new(0.0, -16.0, 0.0),
 			body_listener,
 			body_delete_listener,
-			handles_to_bodies: HashMap::with_capacity(1024),
+			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
 		}
 	}
 

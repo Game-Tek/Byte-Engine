@@ -60,7 +60,7 @@ impl Context {
 			(
 				self.device
 					.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)),
-				allocation.pointer.add(offset),
+				allocation.pointer.0.add(offset),
 			)
 		}
 	}
@@ -81,7 +81,7 @@ impl Context {
 				.bind_buffer_memory(buffer, allocation.memory, offset as u64)
 				.expect("No buffer memory binding")
 		};
-		unsafe { allocation.pointer.add(offset) }
+		unsafe { allocation.pointer.0.add(offset) }
 	}
 
 	/// Creates and maps one dedicated transfer-destination buffer without leaking partial Vulkan resources.
@@ -164,7 +164,7 @@ impl Context {
 				.bind_image_memory(image, allocation.memory, offset as u64)
 				.expect("No image memory binding")
 		};
-		(0, unsafe { allocation.pointer.add(offset) })
+		(0, unsafe { allocation.pointer.0.add(offset) })
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
@@ -287,7 +287,7 @@ impl Context {
 
 		self.allocations.push(Allocation {
 			memory,
-			pointer: mapped_memory.unwrap_or(std::ptr::null_mut()),
+			pointer: crate::vulkan::MappedMemoryPointer(mapped_memory.unwrap_or(std::ptr::null_mut())),
 		});
 
 		(allocation_handle, mapped_memory)
@@ -326,7 +326,7 @@ impl Context {
 			buffer: buffer_creation_result.resource,
 			size,
 			device_address,
-			pointer,
+			pointer: crate::vulkan::MappedMemoryPointer(pointer),
 			uses: resource_uses,
 			access: buffer_accesses,
 		}
@@ -352,7 +352,7 @@ impl Context {
 				buffer: vk::Buffer::null(),
 				size: 0,
 				device_address: 0,
-				pointer: std::ptr::null_mut(),
+				pointer: crate::vulkan::MappedMemoryPointer(std::ptr::null_mut()),
 				uses: resource_uses,
 				access: device_accesses,
 			};
@@ -569,7 +569,11 @@ impl Context {
 			);
 			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
-			(Some(buffer_creation_result.resource), Some(allocation_handle), Some(pointer))
+			(
+				Some(buffer_creation_result.resource),
+				Some(allocation_handle),
+				Some(crate::vulkan::MappedMemoryPointer(pointer)),
+			)
 		} else {
 			(None, None, None)
 		};

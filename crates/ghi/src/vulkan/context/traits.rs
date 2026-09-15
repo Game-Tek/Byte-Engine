@@ -414,7 +414,7 @@ impl crate::context::ContextCreate for Context {
 			next: None,
 			version: 0,
 			sequence_versions: [0; MAX_FRAMES_IN_FLIGHT],
-			descriptors: HashMap::new(),
+			descriptors: HashMap::default(),
 		});
 		self.set_object_debug_name(name, graphics_hardware_interface::Handles::DescriptorSet(handle));
 		handle
@@ -527,7 +527,7 @@ impl crate::context::ContextCreate for Context {
 		self.pipelines.push(Pipeline {
 			pipeline: pipeline_handle,
 			layout: pipeline_layout_handle,
-			shader_handles: HashMap::new(),
+			shader_handles: HashMap::default(),
 		});
 
 		handle
@@ -625,7 +625,8 @@ impl crate::context::ContextCreate for Context {
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
 
-		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> = HashMap::with_capacity(shaders.len());
+		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> =
+			HashMap::with_capacity_and_hasher(shaders.len(), Default::default());
 
 		let pipeline_handle = unsafe {
 			let pipeline = self
@@ -774,7 +775,7 @@ impl crate::context::ContextCreate for Context {
 			buffer: buffer_creation_result.resource,
 			size: buffer_creation_result.size,
 			device_address: address,
-			pointer,
+			pointer: crate::vulkan::MappedMemoryPointer(pointer),
 			uses: crate::Uses::empty(),
 			access: crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
 		});

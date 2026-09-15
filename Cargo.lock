@@ -354,7 +354,6 @@ dependencies = [
  "compio",
  "exr",
  "gltf",
- "gxhash",
  "image",
  "intel_tex_2",
  "json5",
@@ -382,8 +381,8 @@ name = "byte-engine-utils"
 version = "0.2.0"
 dependencies = [
  "futures",
- "gxhash",
  "parking_lot",
+ "rustc-hash",
  "smallbox",
  "sonic-rs",
 ]
@@ -1418,15 +1417,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
-]
-
-[[package]]
-name = "gxhash"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3ce1bab7aa741d4e7042b2aae415b78741f267a98a7271ea226cd5ba6c43d7d"
-dependencies = [
- "rustversion",
 ]
 
 [[package]]

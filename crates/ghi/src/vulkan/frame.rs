@@ -393,13 +393,13 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		{
 			// The persistent source receives user writes. Frame recording copies it to the current staging buffer.
 			let source_buffer = buffers.resource(source_handle);
-			(source_buffer.pointer, source_buffer.size)
+			(source_buffer.pointer.0, source_buffer.size)
 		} else if let Some(staging_handle) = buffer.staging {
 			self.device.pending_buffer_syncs.insert(handle);
 			let staging_buffer = buffers.resource(staging_handle);
-			(staging_buffer.pointer, staging_buffer.size)
+			(staging_buffer.pointer.0, staging_buffer.size)
 		} else {
-			(buffer.pointer, buffer.size)
+			(buffer.pointer.0, buffer.size)
 		};
 		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
 			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
@@ -448,13 +448,13 @@ impl Frame<'_> {
 					assert!(
 						size <= source_buffer.size
 							&& size <= staging_buffer.size
-							&& !source_buffer.pointer.is_null()
-							&& !staging_buffer.pointer.is_null(),
+							&& !source_buffer.pointer.0.is_null()
+							&& !staging_buffer.pointer.0.is_null(),
 						"Failed to copy a persistent Vulkan buffer. The most likely cause is that its source or frame-local staging allocation is missing mapped storage.",
 					);
 					// SAFETY: The source and staging buffers are distinct live allocations, and `size` is bounded by both.
 					unsafe {
-						std::ptr::copy_nonoverlapping(source_buffer.pointer, staging_buffer.pointer, size);
+						std::ptr::copy_nonoverlapping(source_buffer.pointer.0, staging_buffer.pointer.0, size);
 					}
 				}
 

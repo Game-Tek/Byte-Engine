@@ -133,10 +133,22 @@ pub(crate) struct Pipeline {
 	shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 }
 
+/// The `MappedMemoryPointer` struct lets context-owned Vulkan mappings move with their context.
+///
+/// Access to the bytes still requires raw-pointer operations and the context's
+/// host/GPU synchronization. This type deliberately does not implement `Sync`.
+#[derive(Clone, Copy)]
+pub(crate) struct MappedMemoryPointer(pub(crate) *mut u8);
+
+// SAFETY: Vulkan mappings have no host-thread affinity. This wrapper grants no
+// safe access to the pointee; callers must retain the allocation and synchronize
+// all accesses, including accesses through copied addresses and GPU commands.
+unsafe impl Send for MappedMemoryPointer {}
+
 /// The `DescriptorHeapArena` struct owns one long-lived mapped Vulkan descriptor heap.
 pub(crate) struct DescriptorHeapArena {
 	buffer: vk::Buffer,
-	pointer: *mut u8,
+	pointer: crate::vulkan::MappedMemoryPointer,
 	device_address: vk::DeviceAddress,
 	size: u64,
 	reserved_size: u64,
@@ -241,7 +253,7 @@ impl DescriptorHeapArena {
 		);
 		// SAFETY: DescriptorHeapArena owns a persistently mapped allocation, and the
 		// checked range remains valid for the lifetime of the arena.
-		let bytes = unsafe { std::slice::from_raw_parts_mut(self.pointer.add(offset as usize), size) };
+		let bytes = unsafe { std::slice::from_raw_parts_mut(self.pointer.0.add(offset as usize), size) };
 		vk::HostAddressRangeEXT::default().address(bytes)
 	}
 
@@ -354,7 +366,7 @@ pub(crate) struct CommandBuffer {
 #[derive(Clone, Copy)]
 pub(crate) struct Allocation {
 	memory: vk::DeviceMemory,
-	pointer: *mut u8,
+	pointer: crate::vulkan::MappedMemoryPointer,
 }
 
 pub(crate) struct DebugCallbackData {
@@ -539,7 +551,7 @@ mod descriptor_heap_arena_tests {
 	fn arena() -> DescriptorHeapArena {
 		DescriptorHeapArena {
 			buffer: vk::Buffer::null(),
-			pointer: std::ptr::null_mut(),
+			pointer: crate::vulkan::MappedMemoryPointer(std::ptr::null_mut()),
 			device_address: 0,
 			size: 256,
 			reserved_size: 64,

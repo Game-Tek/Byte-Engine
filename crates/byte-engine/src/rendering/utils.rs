@@ -214,7 +214,7 @@ impl<I> Default for MeshBuffersStats<I> {
 			vertex_count: 0,
 			index_count: 0,
 			next_mesh_id: 0,
-			meshes: HashMap::with_capacity(4096),
+			meshes: HashMap::with_capacity_and_hasher(4096, Default::default()),
 			instances: StableVec::new(),
 		}
 	}
@@ -466,9 +466,6 @@ use std::{alloc::Allocator, hash::Hash, marker::PhantomData};
 
 use math::Matrix;
 use resource_management::resources::skeleton::AffineMatrix4x3Columns;
-use utils::{
-	StableVec, StableVecHandle,
-	hash::{HashMap, HashMapExt as _},
-};
+use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::core::factory::Handle;

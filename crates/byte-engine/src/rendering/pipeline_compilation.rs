@@ -617,8 +617,8 @@ mod tests {
 		(
 			PipelineManagerClient {
 				shared: Arc::new(PipelineManagerShared {
-					entries: RwLock::new(HashMap::new()),
-					compute_pipelines: RwLock::new(HashMap::new()),
+					entries: RwLock::new(HashMap::default()),
+					compute_pipelines: RwLock::new(HashMap::default()),
 				}),
 				requests,
 			},
@@ -740,8 +740,8 @@ impl PipelineManager {
 		let (request_sender, request_receiver) = kanal::unbounded_async();
 		let (completion_sender, completion_receiver) = kanal::unbounded();
 		let shared = Arc::new(PipelineManagerShared {
-			entries: RwLock::new(HashMap::new()),
-			compute_pipelines: RwLock::new(HashMap::new()),
+			entries: RwLock::new(HashMap::default()),
+			compute_pipelines: RwLock::new(HashMap::default()),
 		});
 		let servers = (0..server_count.max(1))
 			.filter_map(|_| {
@@ -872,7 +872,4 @@ enum DetachedPipeline {
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use utils::{
-	hash::{HashMap, HashMapExt},
-	sync::RwLock,
-};
+use utils::{hash::HashMap, sync::RwLock};

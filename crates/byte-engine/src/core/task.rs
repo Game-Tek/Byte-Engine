@@ -2,10 +2,7 @@ use core::task;
 use std::{ops::Deref, sync::Arc};
 
 use downcast_rs::Downcast;
-use utils::{
-	hash::{HashMap, HashMapExt as _},
-	sync::Mutex,
-};
+use utils::{hash::HashMap, sync::Mutex};
 
 use super::{Entity, EntityHandle};
 use crate::time::MediaTime;

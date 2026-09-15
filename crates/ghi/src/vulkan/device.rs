@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU32};
+use std::{borrow::Cow, num::NonZeroU32, sync::Arc};
 
 use ash::vk::{self, TaggedStructure as _};
 use utils::{Extent, hash::HashMap};
@@ -13,7 +13,10 @@ use crate::{
 	window,
 };
 
-/// The `Device` struct carries the selected Vulkan device until a rendering context is created.
+/// The `Device` struct keeps the selected Vulkan device alive for rendering contexts and resource factories.
+///
+/// Create a context with [`crate::device::Device::create_context`]. Keep this device
+/// alive until its contexts, detached factories, and their resources have been dropped.
 pub struct Device {
 	pub inner: Option<InnerDevice>,
 	device: ash::Device,
@@ -21,14 +24,11 @@ pub struct Device {
 	shaders: Vec<crate::vulkan::Shader>,
 }
 
-// Vulkan device handles are thread-safe, and detached resource creation uses `Device` with no `InnerDevice`.
-unsafe impl Send for Device {}
-
 #[derive(Clone)]
 pub struct InnerDevice {
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
 
-	debug_data: *const DebugCallbackData,
+	debug_data: Arc<DebugCallbackData>,
 
 	pub(crate) physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,
@@ -57,15 +57,22 @@ pub struct InnerDevice {
 	pub(super) swapchain_proxy_supports_formatless_storage_write: bool,
 }
 
-// TODO: re-implement when we use a Box
-// impl Drop for InnerDevice {
-// 	fn drop(&mut self) {
-// 		unsafe {
-// 			self.device.device_wait_idle().expect("Failed to wait for device idle");
-// 			self.device.destroy_device(None);
-// 		}
-// 	}
-// }
+impl Drop for Device {
+	/// Waits for pending device work before destroying the Vulkan device.
+	fn drop(&mut self) {
+		// Detached factories borrow the native device; only the primary device owns it.
+		if self.inner.is_none() {
+			return;
+		}
+		// Callers must drop all contexts and factories before the primary device.
+		unsafe {
+			self.device.device_wait_idle().expect(
+				"Failed to wait for the Vulkan device during destruction. The most likely cause is that the device was lost.",
+			);
+			self.device.destroy_device(None);
+		}
+	}
+}
 
 impl std::ops::Deref for InnerDevice {
 	type Target = ash::Device;
@@ -81,8 +88,6 @@ pub struct ComputePipeline {
 	pub(crate) layout: crate::vulkan::PipelineLayout,
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 }
-
-unsafe impl Send for ComputePipeline {}
 
 /// The `RasterPipeline` struct carries detached Vulkan raster state until a frame interns it.
 pub struct RasterPipeline {

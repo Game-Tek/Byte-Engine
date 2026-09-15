@@ -261,9 +261,20 @@ pub(super) struct UiImageDrawBatch {
 	pub(super) order: u32,
 	pub(super) image_id: u64,
 	pub(super) version: u64,
+	// Matches the engine's 32-bit element range and remains valid through skipped images.
+	pub(super) source_index: u32,
 	pub(super) index_count: u32,
 	pub(super) first_index: u32,
 	pub(super) vertex_offset: i32,
+}
+
+impl UiImageDrawBatch {
+	/// Resolves the texture source for this batch in its originating draw list.
+	pub(super) fn source<'a>(&self, images: &'a [UiImageDrawElement]) -> Option<&'a UiImageDrawElement> {
+		let image = images.get(self.source_index as usize)?;
+		debug_assert_eq!((image.image_id, image.version), (self.image_id, self.version));
+		Some(image)
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,15 +698,16 @@ pub(super) fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f3
 
 // Keep the render snapshot conversion as one pass so all draw-list arrays share the same ordering and opacity rules.
 #[allow(clippy::too_many_lines)]
+/// Adopts a snapshot while retaining the owned text and curve buffers of surviving slots.
 pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
 	let root_size = render.root().size;
 
 	draw_list.layout_size = [root_size.x(), root_size.y()];
 	draw_list.elements.clear();
 	draw_list.blurs.clear();
-	draw_list.curves.clear();
 	draw_list.images.clear();
-	draw_list.texts.clear();
+	let mut curve_count = 0;
+	let mut text_count = 0;
 
 	for element in render.elements() {
 		let position = element.position;
@@ -777,7 +789,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 
-			draw_list.curves.push(UiCurveDrawElement {
+			let mut entry = UiCurveDrawElement {
 				depth: position.z(),
 				order: curve.id,
 				position: [position.x(), position.y()],
@@ -786,10 +798,20 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				feather_mask: draw_feather_mask_from_layout(curve.feather_mask),
 				color: color.into(),
 				stroke_width,
-				segments: curve.segments.clone(),
-			});
+				segments: Vec::new(),
+			};
+			// Reuse by output slot; filtered layers must not consume a retained buffer.
+			if let Some(previous) = draw_list.curves.get_mut(curve_count) {
+				entry.segments = std::mem::take(&mut previous.segments);
+				*previous = entry;
+			} else {
+				draw_list.curves.push(entry);
+			}
+			draw_list.curves[curve_count].segments.clone_from(&curve.segments);
+			curve_count += 1;
 		}
 	}
+	draw_list.curves.truncate(curve_count);
 
 	for image in render.images() {
 		draw_list.images.push(UiImageDrawElement {
@@ -811,7 +833,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	for text in render.texts() {
 		let mut color = text.color;
 		color.a *= text.opacity;
-		let text = UiTextDrawElement {
+		// Filter before touching retained strings so hidden text cannot discard reusable storage.
+		if text.content.is_empty() || !(color.a > 0.0 && text.size.x() > 0.0 && text.size.y() > 0.0) {
+			continue;
+		}
+		let mut entry = UiTextDrawElement {
 			depth: text.position.z(),
 			order: text.id,
 			position: [text.position.x(), text.position.y()],
@@ -820,13 +846,18 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			feather_mask: draw_feather_mask_from_layout(text.feather_mask),
 			color,
 			font_size: text.font_size,
-			text: text.content.clone(),
+			text: String::new(),
 		};
-
-		if should_rasterize_text(&text) {
-			draw_list.texts.push(text);
+		if let Some(previous) = draw_list.texts.get_mut(text_count) {
+			entry.text = std::mem::take(&mut previous.text);
+			*previous = entry;
+		} else {
+			draw_list.texts.push(entry);
 		}
+		draw_list.texts[text_count].text.clone_from(&text.content);
+		text_count += 1;
 	}
+	draw_list.texts.truncate(text_count);
 }
 
 pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {

@@ -25,6 +25,7 @@ network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
+ui-render-bench = ["headed"]
 
 [[bench]]
 name = "alley"
@@ -59,6 +60,13 @@ harness = false
 name = "ui"
 harness = false
 required-features = ["headed"]
+
+# Compile the private renderer stages directly, without exposing benchmark APIs.
+[[bench]]
+name = "ui_render"
+path = "benches/ui_render.rs"
+harness = false
+required-features = ["ui-render-bench"]
 
 [dependencies]
 base64 = { version = "0.13.1", optional = true }

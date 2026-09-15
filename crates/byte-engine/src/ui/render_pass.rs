@@ -33,6 +33,14 @@ mod data;
 mod geometry;
 mod text;
 
+#[cfg(test)]
+mod cpu_tests;
+
+#[cfg(all(test, feature = "ui-render-bench"))]
+mod benchmarks;
+#[cfg(all(test, feature = "ui-render-bench"))]
+mod source_benchmarks;
+
 use data::*;
 use geometry::*;
 use text::*;
@@ -556,13 +564,7 @@ impl UiRenderPass {
 
 		let mut prepared_image_batches = Vec::new_in(frame_allocator);
 		for batch in &image_geometry.batches {
-			let Some(image) = self
-				.data
-				.images
-				.iter()
-				.find(|image| image.image_id == batch.image_id && image.version == batch.version)
-				.cloned()
-			else {
+			let Some(image) = batch.source(&self.data.images).cloned() else {
 				continue;
 			};
 			let Some(descriptor_set) = self.ensure_image_texture(frame, &image) else {
@@ -575,7 +577,10 @@ impl UiRenderPass {
 		}
 
 		let text_batch_count = text_geometry.as_ref().map_or(0, |geometry| geometry.batches.len());
-		let mut batches = Vec::with_capacity(
+		// The previous frame is replaced below; retain its batch allocation across rebuilds.
+		let mut batches = self.prepared.take().map(|prepared| prepared.batches).unwrap_or_default();
+		batches.clear();
+		batches.reserve(
 			geometry.batches.len()
 				+ blur_geometry.batches.len()
 				+ curve_geometry.batches.len()

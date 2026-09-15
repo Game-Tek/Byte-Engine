@@ -209,6 +209,7 @@ pub(super) fn build_ui_geometry<'a>(
 
 // Keep blur region selection and its matching composite geometry in one pass.
 #[allow(clippy::too_many_lines)]
+/// Builds blur quads and dispatch regions, reusing kernels for adjacent equal radii.
 pub(super) fn build_ui_blur_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
@@ -233,6 +234,8 @@ pub(super) fn build_ui_blur_geometry<'a>(
 		truncated: false,
 	};
 
+	// Adjacent items often share a radius; their dispatch regions still remain independent.
+	let mut cached_kernels: Option<(f32, UiBlurKernel, UiBlurKernel)> = None;
 	for blur in &draw_list.blurs {
 		let rect_width = (blur.size[0] * sx).max(0.0);
 		let rect_height = (blur.size[1] * sy).max(0.0);
@@ -289,8 +292,14 @@ pub(super) fn build_ui_blur_geometry<'a>(
 		let effective_radius = (blur.radius * radius_scale).clamp(0.0, 64.0);
 		let sigma_pixels = blur_sigma(effective_radius);
 		let resolution_mix = blur_resolution_mix(sigma_pixels);
-		let full_kernel = UiBlurKernel::gaussian(sigma_pixels);
-		let half_kernel = UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels));
+		if cached_kernels.as_ref().is_none_or(|(radius, ..)| *radius != effective_radius) {
+			cached_kernels = Some((
+				effective_radius,
+				UiBlurKernel::gaussian(sigma_pixels),
+				UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)),
+			));
+		}
+		let (_, full_kernel, half_kernel) = cached_kernels.unwrap();
 		let full_regions = blur_full_dispatch_regions([x0, y0, x1, y1], viewport);
 		let half_regions = blur_half_dispatch_regions([x0, y0, x1, y1], viewport);
 
@@ -690,11 +699,14 @@ pub(super) fn clip_line_axis(p: f32, q: f32, t0: &mut f32, t1: &mut f32) -> bool
 	true
 }
 
+/// Builds clipped image quads and retains their source indices for texture preparation.
 pub(super) fn build_ui_image_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> UiImageGeometry<'a> {
+	// A render cannot contain more images than the engine's 32-bit element IDs allow.
+	debug_assert!(u32::try_from(draw_list.images.len()).is_ok());
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
 	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
@@ -713,7 +725,7 @@ pub(super) fn build_ui_image_geometry<'a>(
 		truncated: false,
 	};
 
-	for image in &draw_list.images {
+	for (source_index, image) in draw_list.images.iter().enumerate() {
 		if !should_draw_image(image) {
 			continue;
 		}
@@ -802,6 +814,7 @@ pub(super) fn build_ui_image_geometry<'a>(
 
 		geometry.indices.extend_from_slice(&[0, 1, 2, 2, 3, 0]);
 		geometry.batches.push(UiImageDrawBatch {
+			source_index: source_index as u32,
 			depth: image.depth,
 			order: image.order,
 			image_id: image.image_id,

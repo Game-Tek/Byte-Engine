@@ -184,22 +184,24 @@ impl TextSystem {
 
 	/// Returns the cached glyph for one key, rasterizing it on first use.
 	pub fn glyph_by_key(&mut self, key: GlyphKey) -> Option<&Glyph> {
-		if !self.glyph_cache.contains_key(&key) {
-			let font = self.font()?;
-			let (metrics, bitmap) = font.rasterize(key.character, f32::from_bits(key.font_size_bits));
-			self.glyph_cache.insert(
-				key,
-				Glyph {
-					width: metrics.width as u32,
-					height: metrics.height as u32,
-					xmin: metrics.xmin,
-					ymin: metrics.ymin,
-					advance_width: metrics.advance_width,
-					bitmap,
-				},
-			);
+		if matches!(self.font_state, FontState::Uninitialized) {
+			self.font()?;
 		}
-		self.glyph_cache.get(&key)
+		let FontState::Ready(font) = &self.font_state else {
+			return None;
+		};
+		// Borrow the loaded font separately so a cache hit needs only one lookup.
+		Some(self.glyph_cache.entry(key).or_insert_with(|| {
+			let (metrics, bitmap) = font.font.rasterize(key.character, f32::from_bits(key.font_size_bits));
+			Glyph {
+				width: metrics.width as u32,
+				height: metrics.height as u32,
+				xmin: metrics.xmin,
+				ymin: metrics.ymin,
+				advance_width: metrics.advance_width,
+				bitmap,
+			}
+		}))
 	}
 
 	/// Places every visible glyph of `text` in target pixels, starting at `origin`.

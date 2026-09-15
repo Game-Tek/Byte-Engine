@@ -269,8 +269,7 @@ struct PendingGlyph {
 	key: GlyphKey,
 	x: i32,
 	y: i32,
-	width: u32,
-	height: u32,
+	region: Option<AtlasRegion>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -359,16 +358,18 @@ pub(super) fn build_ui_text_geometry<'a>(
 				key: placement.key,
 				x: placement.x,
 				y: placement.y,
-				width: placement.glyph.width,
-				height: placement.glyph.height,
+				region: None,
 			});
 		});
 	}
-	for glyph in &pending {
-		if atlas.ensure(glyph.key, text_system).is_none() {
+	let generation = atlas.generation();
+	for glyph in &mut pending {
+		glyph.region = atlas.ensure(glyph.key, text_system);
+		if glyph.region.is_none() {
 			geometry.dropped_glyphs += 1;
 		}
 	}
+	let repacked = atlas.generation() != generation;
 
 	// Phase 2: emit quads against the final atlas layout.
 	let atlas_size = atlas.size().max(1) as f32;
@@ -384,14 +385,15 @@ pub(super) fn build_ui_text_geometry<'a>(
 
 	for glyph in &pending {
 		let text = &draw_list.texts[glyph.text_index];
-		let Some(region) = atlas.region(glyph.key) else {
+		// A repack can move earlier glyphs; otherwise residency already resolved the region.
+		let Some(region) = (if repacked { atlas.region(glyph.key) } else { glyph.region }) else {
 			continue;
 		};
 		let quad = PixelClip {
 			x0: glyph.x,
 			y0: glyph.y,
-			x1: glyph.x + glyph.width as i32,
-			y1: glyph.y + glyph.height as i32,
+			x1: glyph.x + region.width as i32,
+			y1: glyph.y + region.height as i32,
 		}
 		.intersect(clips[glyph.text_index]);
 		if quad.is_empty() {
@@ -752,6 +754,28 @@ mod tests {
 		assert_eq!(geometry.batches[0].index_count, 12);
 		assert_eq!(geometry.batches[1].first_index, 12);
 		assert_eq!(geometry.batches[1].vertex_offset, 8);
+	}
+
+	#[test]
+	fn text_geometry_matches_after_atlas_growth_and_warm_reuse() {
+		let mut text_system = TextSystem::new();
+		if !text_system.has_font() {
+			return;
+		}
+		// A sixteen-pixel atlas cannot hold this alphabet; early glyphs move as it grows.
+		let mut atlas = UiGlyphAtlas::new(16);
+		let arena = bumpalo::Bump::new();
+		let list = draw_list(vec![text("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0, 0, [0.0, 0.0], None)]);
+		let first = build_ui_text_geometry(&list, Extent::square(100), &mut text_system, &mut atlas, &arena);
+		let again = build_ui_text_geometry(&list, Extent::square(100), &mut text_system, &mut atlas, &arena);
+		assert!(!first.vertices.is_empty());
+		assert_eq!(first.dropped_glyphs, 0);
+		assert_eq!(
+			bytemuck::cast_slice::<_, u8>(&first.vertices),
+			bytemuck::cast_slice::<_, u8>(&again.vertices),
+		);
+		assert_eq!(first.indices, again.indices);
+		assert_eq!(first.batches, again.batches);
 	}
 
 	#[test]

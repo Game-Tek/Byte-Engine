@@ -238,7 +238,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
-	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> crate::frame::SwapchainAcquisition {
 		let swapchains = &self.device.swapchains;
 		let synchronizers = &self.device.synchronizers;
 
@@ -351,7 +351,11 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			Extent::rectangle(fallback_extent.width, fallback_extent.height)
 		};
 
-		(present_key, extent)
+		crate::frame::SwapchainAcquisition {
+			present_key,
+			extent,
+			present_time: None,
+		}
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {

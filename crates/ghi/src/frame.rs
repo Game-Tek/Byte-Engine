@@ -1,10 +1,3 @@
-use utils::Extent;
-
-use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
-	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
-};
-
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
 /// The frame lifetime keeps operations borrowed from the [`crate::Device`] only
 /// while the frame is active.
@@ -74,7 +67,37 @@ where
 
 	/// Acquires a swapchain image for presentation.
 	///
-	/// Returns a presentation key and the image extent.
-	/// # Errors
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
+	/// Returns the presentation key, image extent, and optional presentation time.
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> SwapchainAcquisition;
 }
+
+/// The `SwapchainAcquisition` struct provides the image information needed to prepare a frame for presentation.
+/// Use [`Self::present_key`] when submitting the frame through [`crate::queue::Queue::execute`].
+pub struct SwapchainAcquisition {
+	pub(crate) present_key: PresentKey,
+	pub(crate) extent: Extent,
+	pub(crate) present_time: Option<Instant>,
+}
+
+impl SwapchainAcquisition {
+	pub fn present_key(&self) -> PresentKey {
+		self.present_key
+	}
+
+	pub fn extent(&self) -> Extent {
+		self.extent
+	}
+
+	pub fn present_time(&self) -> Option<Instant> {
+		self.present_time
+	}
+}
+
+use std::time::Instant;
+
+use utils::Extent;
+
+use crate::{
+	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
+	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
+};

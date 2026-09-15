@@ -1894,7 +1894,7 @@ void main() {
 		let synchronizer = device.create_synchronizer(None, false);
 		let present_key = {
 			let mut frame = device.start_frame(0, synchronizer);
-			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+			let present_key = frame.acquire_swapchain_image(swapchain).present_key();
 			let mut recording = frame.create_command_buffer_recording(command_buffer);
 			let attachments = [crate::AttachmentInformation::new(
 				swapchain,
@@ -1988,7 +1988,7 @@ void main() {
 			&[],
 			synchronizer,
 			|execution| {
-				let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+				let present_key = execution.frame().unwrap().acquire_swapchain_image(swapchain).present_key();
 				captured_present_key = Some(present_key);
 				let present_keys = [present_key];
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -3968,7 +3968,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 				&[],
 				synchronizer,
 				|execution| {
-					let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+					let present_key = execution.frame().unwrap().acquire_swapchain_image(swapchain).present_key();
 					[present_key]
 				},
 			);

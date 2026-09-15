@@ -201,7 +201,7 @@ impl Frame<'_> {
 	pub fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> (graphics_hardware_interface::PresentKey, Extent) {
+	) -> crate::frame::SwapchainAcquisition {
 		let sequence_index = self.frame_key.sequence_index;
 
 		// Update layer extent before acquiring the drawable so that if a resize occurred,
@@ -239,7 +239,11 @@ impl Frame<'_> {
 				)));
 		}
 
-		(present_key, extent)
+		crate::frame::SwapchainAcquisition {
+			present_key,
+			extent,
+			present_time: None,
+		}
 	}
 
 	pub fn device(&mut self) -> &mut context::Context {
@@ -493,7 +497,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> (graphics_hardware_interface::PresentKey, Extent) {
+	) -> crate::frame::SwapchainAcquisition {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 }

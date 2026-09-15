@@ -577,7 +577,10 @@ impl Renderer {
 						windows
 							.iter()
 							.map(|(_window, swapchain)| {
-								let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
+								let acquisition = frame.acquire_swapchain_image(*swapchain);
+
+								let present_key = acquisition.present_key();
+								let extent = acquisition.extent();
 
 								if extent.width() == 0 || extent.height() == 0 {
 									log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);

@@ -164,7 +164,7 @@ impl Frame<'_> {
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
-	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
+	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
 		{
 			let swapchain =
 				self.device.swapchains.get(swapchain_handle.0 as usize).expect(
@@ -186,7 +186,11 @@ impl Frame<'_> {
 		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
 			image_index;
 		self.device.swapchains[swapchain_handle.0 as usize].acquired_sequences[self.frame_key.sequence_index as usize] = true;
-		(present_key, extent)
+		crate::frame::SwapchainAcquisition {
+			present_key,
+			extent,
+			present_time: None,
+		}
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {
@@ -250,7 +254,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::create_command_buffer_recording_without_implicit_sync(self, command_buffer_handle)
 	}
 
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 }

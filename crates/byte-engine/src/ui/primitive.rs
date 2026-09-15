@@ -10,7 +10,7 @@ use crate::ui::{
 	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
 };
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Shapes {
 	Triangle { vertices: [Location; 3] },
 	Circle { radius: f32 },

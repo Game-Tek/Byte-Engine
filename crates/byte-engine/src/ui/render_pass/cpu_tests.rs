@@ -288,3 +288,56 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	let geometry = build_ui_curve_geometry(&draw_list, Extent::square(800), &arena);
 	assert!(!geometry.vertices.is_empty(), "the routed wire produced no geometry");
 }
+
+/// Surviving layers must not retain old colors, clips, or curve paths after neighboring removals.
+#[test]
+fn cached_surface_geometry_follows_content_and_layer_edits() {
+	let mut rectangles = SurfaceCache::default();
+	let mut curves = CurveGeometryCache::default();
+	let mut data = UiDrawList::default();
+	let mut arena = bumpalo::Bump::new();
+	for (count, phase) in [(6, 0), (6, 0), (2, 1), (5, 2), (0, 3), (4, 4)] {
+		arena.reset();
+		update_from_render(&changing_render(count, phase), &mut data);
+		let actual = build_ui_geometry_cached(&data, Extent::square(800), &arena, Some(&mut rectangles));
+		let expected = build_ui_geometry(&data, Extent::square(800), &arena);
+		assert_eq!(
+			bytemuck::cast_slice::<_, u8>(&actual.vertices),
+			bytemuck::cast_slice::<_, u8>(&expected.vertices)
+		);
+		assert_eq!(actual.indices, expected.indices);
+		assert_eq!(actual.batches, expected.batches);
+		let actual = build_ui_curve_geometry_cached(&data, Extent::square(800), &arena, Some(&mut curves));
+		let expected = build_ui_curve_geometry(&data, Extent::square(800), &arena);
+		assert_eq!(
+			bytemuck::cast_slice::<_, u8>(&actual.vertices),
+			bytemuck::cast_slice::<_, u8>(&expected.vertices)
+		);
+		assert_eq!(actual.indices, expected.indices);
+		assert_eq!(actual.batches, expected.batches);
+	}
+}
+
+/// Scaling the root must change its surfaces without changing the viewport's layout units.
+#[test]
+fn root_transform_preserves_viewport_units() {
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		std::boxed::Box::pin(async move {
+			let mut root = ctx.element("root").container(
+				Container::default()
+					.style(ConcreteStyle::new())
+					.transform(Transform::identity().origin(UiPoint::zero()).translate(10., 20.).scale(2.)),
+			);
+			root.element("child").container(Container::default().size(10.into()));
+		})
+	});
+	let arena = bumpalo::Bump::new();
+	let mut snapshot = engine.evaluate(Size::new(100, 100), &arena);
+	let mut data = UiDrawList::default();
+	update_from_render(engine.render(&mut snapshot), &mut data);
+	let geometry = build_ui_geometry(&data, Extent::square(100), &arena);
+	assert_eq!(geometry.vertices.len(), 4);
+	assert_eq!(geometry.vertices[0].pixel_position, [10., 20.]);
+	assert_eq!(geometry.vertices[2].pixel_position, [30., 40.]);
+}

@@ -1010,9 +1010,19 @@ impl CommandBufferRecording<'_> {
 		for copy_texture in copied_textures {
 			let image = self.get_image(copy_texture.dst_texture);
 
+			let origin = copy_texture.region.map_or([0, 0], |region| region.offset);
+			let extent = copy_texture.region.map_or(image.extent, |region| {
+				::utils::Extent::rectangle(region.size[0], region.size[1])
+			});
+			let source_offset = (origin[1] as u64 * image.extent.width() as u64 + origin[0] as u64)
+				* crate::types::Size::size(&image.format_) as u64;
 			let regions = [vk::BufferImageCopy2::default()
-				.buffer_offset(0)
-				.buffer_row_length(0)
+				.buffer_offset(source_offset)
+				.buffer_row_length(if copy_texture.region.is_some() {
+					image.extent.width()
+				} else {
+					0
+				})
 				.buffer_image_height(0)
 				.image_subresource(
 					vk::ImageSubresourceLayers::default()
@@ -1021,8 +1031,8 @@ impl CommandBufferRecording<'_> {
 						.base_array_layer(0)
 						.layer_count(1),
 				)
-				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(extent_into_vk_extent(image.extent))];
+				.image_offset(vk::Offset3D::default().x(origin[0] as i32).y(origin[1] as i32).z(0))
+				.image_extent(extent_into_vk_extent(extent))];
 
 			let buffer = image.staging_buffer.unwrap();
 

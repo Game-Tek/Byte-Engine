@@ -68,7 +68,7 @@ impl Device {
 				frame_data.resize_with(self.frames as usize, Vec::new);
 			}
 		}
-		self.pending_texture_syncs.retain(|(pending, _)| *pending != image_handle.0);
+		self.pending_texture_syncs.retain(|(pending, ..)| *pending != image_handle.0);
 		self.resize_image_resource_for_sequence(image_handle, extent, sequence_index);
 		if dynamic {
 			for offset in 1..self.frames {

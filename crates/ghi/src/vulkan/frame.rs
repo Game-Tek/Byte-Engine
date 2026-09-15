@@ -219,6 +219,21 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			)));
 	}
 
+	fn sync_texture_region(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		region: crate::image::Region,
+	) {
+		let handle = self.get_current_image_handle(image_handle);
+		let image = &self.device.images[handle.0 as usize];
+		region.validate(image.extent, image.format_, image.layers.map_or(1, |layers| layers.get()));
+		assert!(
+			image.staging_buffer.is_some(),
+			"Texture staging is missing. The most likely cause is an image without host upload access."
+		);
+		self.device.pending_image_syncs.insert((handle, Some(region)));
+	}
+
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
@@ -465,16 +480,16 @@ impl Frame<'_> {
 				.collect();
 
 			let pending_images = &mut self.device.pending_image_syncs;
-			let images = &self.device.images;
 
 			let image_copies = pending_images
 				.drain()
 				.map(|e| {
-					let dst_image_handle = e;
+					let (dst_image_handle, region) = e;
 
-					let dst_image = &images[dst_image_handle.0 as usize];
-
-					ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
+					ImageCopy {
+						dst_texture: dst_image_handle,
+						region,
+					}
 				})
 				.collect();
 

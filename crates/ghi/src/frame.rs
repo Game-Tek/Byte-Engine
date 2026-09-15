@@ -32,6 +32,13 @@ where
 	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: BaseImageHandle);
 
+	/// Uploads only the given rectangle from the image's existing CPU backing bytes.
+	///
+	/// Supports uncompressed 2D color images with one layer at mip zero. Rows keep the
+	/// full image's pitch; untouched texels retain their GPU contents. Initialize
+	/// the whole image with [`Self::sync_texture`] before using partial updates.
+	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region);
+
 	/// Writes descriptor set updates during the active frame.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 

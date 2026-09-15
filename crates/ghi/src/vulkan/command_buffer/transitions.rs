@@ -29,29 +29,8 @@ impl BufferCopy {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ImageCopy {
-	pub _src_texture: ImageHandle,
-	pub _src_offset: vk::DeviceSize,
 	pub dst_texture: ImageHandle,
-	pub _dst_offset: vk::DeviceSize,
-	pub _size: usize,
-}
-
-impl ImageCopy {
-	pub fn new(
-		src_texture: ImageHandle,
-		src_offset: vk::DeviceSize,
-		dst_texture: ImageHandle,
-		dst_offset: vk::DeviceSize,
-		size: usize,
-	) -> Self {
-		Self {
-			_src_texture: src_texture,
-			_src_offset: src_offset,
-			dst_texture,
-			_dst_offset: dst_offset,
-			_size: size,
-		}
-	}
+	pub region: Option<crate::image::Region>,
 }
 
 pub(super) fn buffer_row_length(format: crate::Formats, source_bytes_per_row: usize) -> u32 {

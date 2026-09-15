@@ -603,3 +603,116 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 	assert_eq!(observed[0], observed[1]);
 	assert_eq!(observed[1].1.unwrap().size, Size::new(20, 20));
 }
+
+/// Camera edits preserve flow results, nested pivots, clipping, and older snapshots.
+#[test]
+fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
+	thread_local! { static CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+	fn counted(input: crate::ui::FlowInput) -> crate::ui::FlowOutput {
+		CALLS.with(|calls| calls.set(calls.get() + 1));
+		flow::row(input)
+	}
+	fn scene(camera: Transform, nested: Transform) -> Engine<std::cell::Cell<(Transform, Transform)>> {
+		let mut engine = Engine::with_context(std::cell::Cell::new((camera, nested)));
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let (camera, nested) = ctx.ctx().get();
+				let mut applied = (camera, nested);
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().flow(counted as fn(_) -> _));
+				let mut canvas = root
+					.element("canvas")
+					.container(Container::default().size(100.into()).clip(false).transform(camera));
+				let mut child = canvas
+					.element("child")
+					.container(Container::default().size(30.into()).flow(flow::column).transform(nested));
+				child.element("label").text(Text::new("Local label"));
+				child.element("wire").curve(
+					Curve::new(CurvePath::new(20.into(), 20.into()).cubic((0., 0.), (5., 20.), (15., 0.), (20., 20.)))
+						.hit_testable(6.0),
+				);
+				root.element("toolbar").container(Container::default().size(40.into()));
+				loop {
+					let (camera, nested) = ctx.ctx().get();
+					if camera != applied.0 {
+						canvas.update_container(|value| value.set_transform(camera));
+					}
+					if nested != applied.1 {
+						child.update_container(|value| value.set_transform(nested));
+					}
+					applied = (camera, nested);
+					ctx.render().await;
+				}
+			})
+		});
+		engine
+	}
+	let arena = bumpalo::Bump::new();
+	let identity = Transform::identity();
+	let mut retained = scene(identity, identity);
+	let original = retained.evaluate(Size::new(300, 200), &arena);
+	let original_elements = original.elements.to_vec();
+	for (camera, nested) in [
+		(identity.translate(12.25, 6.5), identity.scale(0.75)),
+		(
+			identity.translate(-70., 18.).scale(1.5),
+			identity.translate(9., 3.).scale(0.5),
+		),
+		(identity.translate(500., 0.), identity),
+		(identity, identity),
+	] {
+		retained.ctx().set((camera, nested));
+		let calls = CALLS.with(std::cell::Cell::get);
+		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
+		assert_eq!(
+			CALLS.with(std::cell::Cell::get),
+			calls,
+			"A transform edit called the layout flow."
+		);
+		let mut fresh = scene(camera, nested);
+		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
+		assert_eq!(actual.elements, expected.elements);
+		assert_same_render(retained.render(&mut actual), fresh.render(&mut expected));
+		for y in (0..200).step_by(5) {
+			for x in (0..300).step_by(5) {
+				assert_eq!(
+					actual.click(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0)),
+					expected.click(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0))
+				);
+			}
+		}
+		assert_eq!(*original.elements, original_elements);
+	}
+}
+
+/// Editing a retained path must move its hit surface even when its declared size stays fixed.
+#[test]
+fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
+	let id = Rc::new(std::cell::Cell::new(None));
+	let output = Rc::clone(&id);
+	let mut engine = Engine::new();
+	engine.mount(move |ctx| {
+		Box::pin(async move {
+			let mut root = ctx.element("root").container(Container::default());
+			let mut wire = root
+				.element("wire")
+				.curve(Curve::new(CurvePath::new(100.into(), 100.into()).line((0., 0.), (40., 0.))).hit_testable(6.));
+			output.set(Some(wire.id()));
+			ctx.render().await;
+			wire.update_curve(|curve| {
+				let path = curve.path_mut();
+				path.clear();
+				path.push_line((0., 20.), (40., 20.));
+			});
+		})
+	});
+	let arena = bumpalo::Bump::new();
+	let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+	let mut first = engine.evaluate(Size::new(100, 100), &arena);
+	assert_eq!(first.click(window(20., 1.)), id.get());
+	let mut second = engine.evaluate(Size::new(100, 100), &arena);
+	assert_ne!(second.click(window(20., 1.)), id.get());
+	assert_eq!(second.click(window(20., 21.)), id.get());
+	assert_eq!(first.click(window(20., 1.)), id.get());
+}

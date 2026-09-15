@@ -363,6 +363,8 @@ fn unchanged_revision(bencher: Bencher) {
 
 /// The `CpuFrame` struct retains the same CPU caches between changed-frame rebuilds.
 struct CpuFrame {
+	rectangles: SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>,
+	curves: CurveGeometryCache,
 	data: UiDrawList,
 	system: TextSystem,
 	atlas: UiGlyphAtlas,
@@ -376,9 +378,9 @@ impl CpuFrame {
 		self.arena.reset();
 		self.staging.clear();
 		update_from_render(render, &mut self.data);
-		let rects = build_ui_geometry(&self.data, viewport(), &self.arena);
+		let rects = build_ui_geometry_cached(&self.data, viewport(), &self.arena, Some(&mut self.rectangles));
 		let blurs = build_ui_blur_geometry(&self.data, viewport(), &self.arena);
-		let curves = build_ui_curve_geometry(&self.data, viewport(), &self.arena);
+		let curves = build_ui_curve_geometry_cached(&self.data, viewport(), &self.arena, Some(&mut self.curves));
 		let text = build_ui_text_geometry(&self.data, viewport(), &mut self.system, &mut self.atlas, &self.arena);
 		assert!(!rects.truncated && !curves.truncated && !blurs.truncated && !text.truncated && text.dropped_glyphs == 0);
 		let sources: [&[u8]; 8] = [
@@ -410,6 +412,8 @@ impl CpuFrame {
 fn changed_mixed_frame(bencher: Bencher, count: usize) {
 	let renders = [scene(count, Scene::Mixed, false), scene(count, Scene::Mixed, true)];
 	let mut frame = CpuFrame {
+		rectangles: SurfaceCache::default(),
+		curves: CurveGeometryCache::default(),
 		data: UiDrawList::default(),
 		system: TextSystem::new(),
 		atlas: UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE),

@@ -29,24 +29,32 @@ use crate::{
 };
 
 // Group draw preparation and geometry generation by responsibility.
+mod cache;
 mod data;
 mod geometry;
 mod text;
 
 #[cfg(test)]
 mod cpu_tests;
+#[cfg(test)]
+mod subtree_tests;
 
 #[cfg(all(test, feature = "ui-render-bench"))]
 mod benchmarks;
 #[cfg(all(test, feature = "ui-render-bench"))]
 mod source_benchmarks;
 
+use cache::*;
 use data::*;
 use geometry::*;
 use text::*;
 
 /// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
 pub struct UiRenderPass {
+	surface_revision: Option<engine::RenderRevision>,
+	rectangle_cache: SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>,
+	image_cache: ImageGeometryCache,
+	curve_cache: CurveGeometryCache,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	pipeline: crate::rendering::PipelineRef,
 	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
@@ -168,7 +176,7 @@ impl UiRenderPass {
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
 		let text_atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
-		// Glyph quads are pixel aligned, so nearest sampling reproduces the rasterized coverage exactly.
+		// Linear coverage sampling preserves fractional translation and residual bucket scaling.
 		let text_atlas_image: ghi::BaseImageHandle = context
 			.build_image(
 				ghi::image::Builder::new(UI_GLYPH_ATLAS_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
@@ -189,7 +197,7 @@ impl UiRenderPass {
 		);
 		let text_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
+				.filtering_mode(ghi::FilteringModes::Linear)
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
@@ -337,6 +345,10 @@ impl UiRenderPass {
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
+			surface_revision: None,
+			rectangle_cache: SurfaceCache::default(),
+			image_cache: ImageGeometryCache::default(),
+			curve_cache: CurveGeometryCache::default(),
 			pipeline_manager,
 			pipeline,
 			vertex_buffer,
@@ -445,6 +457,15 @@ impl UiRenderPass {
 		if self.render_revision == Some(render.revision()) {
 			return;
 		}
+		if self.surface_revision != Some(render.surface_revision) {
+			self.rectangle_cache.retain_surfaces(&render.surface_ids);
+			self.image_cache.retain_surfaces(&render.surface_ids);
+			self.curve_cache
+				.surfaces
+				.retain(|(id, _), _| render.surface_ids.binary_search(id).is_ok());
+			self.text_atlas.retain_surfaces(&render.surface_ids);
+			self.surface_revision = Some(render.surface_revision);
+		}
 		update_from_render(render, &mut self.data);
 		self.render_revision = Some(render.revision());
 	}
@@ -458,10 +479,10 @@ impl UiRenderPass {
 		extent: Extent,
 		frame_allocator: &bumpalo::Bump,
 	) {
-		let geometry = build_ui_geometry(&self.data, extent, frame_allocator);
+		let geometry = build_ui_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.rectangle_cache));
 		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
-		let curve_geometry = build_ui_curve_geometry(&self.data, extent, frame_allocator);
-		let image_geometry = build_ui_image_geometry(&self.data, extent, frame_allocator);
+		let curve_geometry = build_ui_curve_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.curve_cache));
+		let image_geometry = build_ui_image_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.image_cache));
 		let text_geometry = if self.data.texts.is_empty() {
 			None
 		} else {
@@ -2766,6 +2787,49 @@ mod tests {
 		};
 
 		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
+	}
+
+	/// Checks fractional scale and translation in the production text vertex shader.
+	#[test]
+	fn ui_text_vertex_besl_vm_applies_fractional_transform() {
+		let executable = ExecutableProgram::compile(ui_raster_program(UI_TEXT_VERTEX_BESL, "UI text vertex shader")).unwrap();
+		let values = [
+			("in_position", Value::Vec2F([10.5, 20.25])),
+			("in_uv", Value::Vec2F([0.1, 0.2])),
+			("in_color", Value::Vec4F([1.0; 4])),
+			("in_pixel_position", Value::Vec2F([0.0; 2])),
+			("in_feather_mask_position", Value::Vec2F([0.0; 2])),
+			("in_feather_mask_size", Value::Vec2F([0.0; 2])),
+			("in_feather_mask_edges", Value::Vec4F([0.0; 4])),
+			("in_feather_mask_corner", Value::Vec2F([0.0, 2.0])),
+			("in_transform", Value::Vec4F([0.015, -0.015, -0.795, 0.5925])),
+		];
+		let mut inputs: Vec<_> = values
+			.into_iter()
+			.enumerate()
+			.map(|(index, (name, value))| {
+				let mut input = Buffer::new(executable.input_layout(index as u8).unwrap().clone());
+				input.write(name, value).unwrap();
+				input
+			})
+			.collect();
+		let mut position = Buffer::new(executable.builtin_position_layout().unwrap().clone());
+		let mut outputs: Vec<_> = (0..7)
+			.map(|index| Buffer::new(executable.output_layout(index).unwrap().clone()))
+			.collect();
+		let mut descriptors = DescriptorBindings::new();
+		for (index, input) in inputs.iter_mut().enumerate() {
+			descriptors.bind_buffer(input_slot(index as u8), input);
+		}
+		for (index, output) in outputs.iter_mut().enumerate() {
+			descriptors.bind_buffer(output_slot(index as u8), output);
+		}
+		descriptors.bind_buffer(builtin_position_slot(), &mut position);
+		executable.run_main(&mut descriptors).unwrap();
+		let Value::Vec4F(actual) = position.read("_besl_interface_position").unwrap() else {
+			panic!("Expected vertex position")
+		};
+		assert_vec4_close(actual, [-0.6375, 0.28875, 0.0, 1.0]);
 	}
 
 	#[test]

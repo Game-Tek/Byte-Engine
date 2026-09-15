@@ -73,7 +73,7 @@ impl Context {
 			}
 		}
 
-		while let Some(image_handle) = self.pending_image_syncs.pop_front() {
+		while let Some((image_handle, region)) = self.pending_image_syncs.pop_front() {
 			let image = self.images.resource(image_handle);
 			let Some(staging) = image.staging.as_ref() else {
 				continue;
@@ -99,6 +99,7 @@ impl Context {
 				image.extent,
 				image.array_layers,
 				staging,
+				region,
 			) {
 				command_buffer.retain_buffer(upload_buffer);
 			}

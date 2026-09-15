@@ -147,3 +147,9 @@ fn render_with_ray_tracing() {
 		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));
 	ray_tracing::ray_tracing(&mut device, queue_handle);
 }
+
+#[test]
+fn update_texture_regions() {
+	let (_instance, mut device, queue_handle) = create_default_device_setup();
+	resources::texture_region_uploads(&mut device, queue_handle);
+}

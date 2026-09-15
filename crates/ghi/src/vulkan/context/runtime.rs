@@ -193,11 +193,12 @@ impl Context {
 		let image_copies: Vec<ImageCopy> = pending_images
 			.drain()
 			.map(|e| {
-				let dst_image_handle = e;
+				let (dst_image_handle, region) = e;
 
-				let dst_image = &self.images[dst_image_handle.0 as usize];
-
-				ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
+				ImageCopy {
+					dst_texture: dst_image_handle,
+					region,
+				}
 			})
 			.collect();
 
@@ -293,7 +294,7 @@ impl Context {
 			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
 		);
 
-		self.pending_image_syncs.insert(image_handle);
+		self.pending_image_syncs.insert((image_handle, None));
 	}
 
 	pub(crate) fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
@@ -310,7 +311,7 @@ impl Context {
 
 		f(slice);
 
-		self.pending_image_syncs.insert(handle);
+		self.pending_image_syncs.insert((handle, None));
 	}
 
 	pub(crate) fn write_instance(

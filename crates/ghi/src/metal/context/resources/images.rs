@@ -67,12 +67,12 @@ impl Context {
 		};
 
 		f(staging);
-		self.pending_image_syncs.push_back(image_handle);
+		self.pending_image_syncs.push_back((image_handle, None));
 	}
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
 		let handle = self.images.nth_handle(image_handle.0, 0).unwrap();
-		self.pending_image_syncs.push_back(handle);
+		self.pending_image_syncs.push_back((handle, None));
 	}
 
 	pub fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {

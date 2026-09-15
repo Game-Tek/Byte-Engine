@@ -120,6 +120,12 @@ impl Frame<'_> {
 			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
 	}
 
+	/// Schedules a rectangular upload from this frame's image staging storage.
+	pub fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
+		self.device
+			.queue_texture_region_for_sequence(image_handle, self.frame_key.sequence_index, region);
+	}
+
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
@@ -212,6 +218,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 	fn sync_texture(&mut self, image_handle: BaseImageHandle) {
 		Frame::sync_texture(self, image_handle);
+	}
+
+	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
+		Frame::sync_texture_region(self, image_handle, region);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {

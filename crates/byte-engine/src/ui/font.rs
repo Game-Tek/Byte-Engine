@@ -77,9 +77,9 @@ pub(crate) struct LineMetrics {
 pub(crate) struct GlyphPlacement<'a> {
 	pub(crate) key: GlyphKey,
 	/// Left edge of the bitmap in target pixels.
-	pub(crate) x: i32,
+	pub(crate) x: f32,
 	/// Top edge of the bitmap in target pixels.
-	pub(crate) y: i32,
+	pub(crate) y: f32,
 	pub(crate) glyph: &'a Glyph,
 }
 
@@ -206,8 +206,8 @@ impl TextSystem {
 
 	/// Places every visible glyph of `text` in target pixels, starting at `origin`.
 	///
-	/// Lines advance by the font's line height and each glyph is snapped to whole
-	/// pixels, so the same run always maps to the same bitmap positions. Returns
+	/// Lines advance by the font's line height. Fractional advances are preserved
+	/// so rendering can scale and translate the run without pixel snapping. Returns
 	/// `false` when no font is available.
 	pub fn place_glyphs(
 		&mut self,
@@ -241,8 +241,8 @@ impl TextSystem {
 			if glyph.is_visible() {
 				visit(GlyphPlacement {
 					key,
-					x: pen_x.round() as i32 + glyph.xmin,
-					y: baseline_y.round() as i32 - glyph.height as i32 - glyph.ymin,
+					x: pen_x + glyph.xmin as f32,
+					y: baseline_y - glyph.height as f32 - glyph.ymin as f32,
 					glyph,
 				});
 			}
@@ -546,12 +546,12 @@ mod tests {
 		assert_eq!(placements.len(), 3);
 
 		let [a, b, c] = placements[..] else { unreachable!() };
-		assert_eq!(a.0, 10 + a.2);
-		assert_eq!(b.0, (10.0 + a.3).round() as i32 + b.2);
-		assert_eq!(c.0, 10 + c.2);
+		assert_eq!(a.0, 10.0 + a.2 as f32);
+		assert_eq!(b.0, 10.0 + a.3 + b.2 as f32);
+		assert_eq!(c.0, 10.0 + c.2 as f32);
 		assert!(c.1 > a.1, "second line must sit below the first");
 		let line = text_system.line_metrics(20.0).unwrap();
-		assert!((c.1 - a.1 - line.line_height.round() as i32).abs() <= 2);
+		assert!((c.1 - a.1 - line.line_height).abs() <= 2.0);
 
 		// Measurement uses the same advances as placement.
 		let measured = text_system.measure("AB", 20.0);
@@ -571,6 +571,6 @@ mod tests {
 		}));
 		assert_eq!(placements.len(), 1);
 		let space = text_system.glyph(' ', 16.0).unwrap();
-		assert_eq!(placements[0].0, space.advance_width.round() as i32 + placements[0].1);
+		assert_eq!(placements[0].0, space.advance_width + placements[0].1 as f32);
 	}
 }

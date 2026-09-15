@@ -155,6 +155,7 @@ pub(super) fn clipped_hit_elements<'a>(
 	elements: &[LayoutElement],
 	tree: &RetainedTree,
 	states: &[VisualState],
+	curves: &mut HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> HitGeometry<'a> {
 	let mut hit = HitGeometry {
@@ -163,6 +164,7 @@ pub(super) fn clipped_hit_elements<'a>(
 		points: Vec::new_in(frame_allocator),
 	};
 	let mut flattened = Vec::new_in(frame_allocator);
+	curves.retain(|id, _| tree.element_indices.contains_key(id));
 
 	for element in elements.iter().filter(|element| element.hit_testable) {
 		let index = tree.element_indices.get(&element.id).copied();
@@ -176,13 +178,14 @@ pub(super) fn clipped_hit_elements<'a>(
 			Some((curve, width, scale)) => {
 				flattened.clear();
 				let origin = (element.position.x(), element.position.y());
-				for segment in curve.path().segments() {
-					segment.flatten(
-						|point| CurvePoint::new(origin.0 + point.x * scale[0], origin.1 + point.y * scale[1]),
-						HIT_CURVE_TOLERANCE,
-						&mut flattened,
-					);
-				}
+				let cached = curves.entry(element.id).or_default();
+				cached.update(curve.path().segments(), scale, HIT_CURVE_TOLERANCE);
+				flattened.extend(
+					cached
+						.points
+						.iter()
+						.map(|point| CurvePoint::new(origin.0 + point.x, origin.1 + point.y)),
+				);
 				let half_width = width * scale[0].min(scale[1]) * 0.5;
 				let Some(bounds) = polyline_bounds(&flattened, half_width) else {
 					continue;
@@ -244,26 +247,34 @@ fn polyline_bounds(points: &[CurvePoint], half_width: f32) -> Option<(f32, f32, 
 	))
 }
 
-/// Applies inherited visual transforms in layout order without changing flow placement.
-pub(super) fn apply_visual_transforms(elements: &mut [LayoutElement], tree: &RetainedTree, frame_allocator: &bumpalo::Bump) {
-	let mut resolved = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
-	for _ in 0..tree.elements.len() {
-		resolved.push(None);
-	}
-
-	for element in elements {
-		let Some(&index) = tree.element_indices.get(&element.id) else {
+/// Updates one visual subtree from its retained, untransformed placement.
+/// Parent transforms outside this boundary remain valid after a local edit.
+pub(super) fn update_visual_subtree(
+	index: usize,
+	tree: &RetainedTree,
+	placement: &[LayoutElement],
+	indices: &[usize],
+	resolved: &mut [Affine2],
+	elements: &mut [LayoutElement],
+	work: &mut Vec<usize>,
+) {
+	work.clear();
+	work.push(index);
+	while let Some(index) = work.pop() {
+		let offset = indices[index];
+		if offset == usize::MAX {
 			continue;
-		};
-		let parent_transform = tree.parents[index]
-			.and_then(|parent| resolved[parent])
-			.unwrap_or_else(Affine2::identity);
-		let local_transform = *tree.elements[index].element.primitive.transform();
-		let transform = parent_transform.compose(Affine2::from_transform(local_transform, element));
-		let (position, size) = transform.transform_rect(element);
-
-		element.position = position;
-		element.size = size;
-		resolved[index] = Some(transform);
+		}
+		let local = placement[offset];
+		let parent = tree.parents[index].map_or_else(Affine2::identity, |parent| resolved[parent]);
+		let transform = parent.compose(Affine2::from_transform(
+			*tree.elements[index].element.primitive.transform(),
+			&local,
+		));
+		let (position, size) = transform.transform_rect(&local);
+		elements[offset].position = position;
+		elements[offset].size = size;
+		resolved[index] = transform;
+		work.extend(tree.children[index].iter().rev().copied());
 	}
 }

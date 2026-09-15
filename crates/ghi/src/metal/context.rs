@@ -74,7 +74,7 @@ pub struct Context {
 
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
-	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
+	pub(crate) pending_image_syncs: VecDeque<(ImageHandle, Option<crate::image::Region>)>,
 	pub(crate) tasks: Vec<Task>,
 	/// One retained upload arena per in-flight frame, followed by the transient arena for detached recordings.
 	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,

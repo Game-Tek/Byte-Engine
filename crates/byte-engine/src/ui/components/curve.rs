@@ -339,3 +339,38 @@ impl Curve {
 		&self.visual
 	}
 }
+
+/// The `FlattenedCurve` struct retains local points for translated curves.
+/// A scale or path edit refreshes tessellation at the caller's tolerance.
+#[derive(Default)]
+pub(crate) struct FlattenedCurve {
+	segments: Vec<CurveSegment>,
+	scale: [f32; 2],
+	tolerance: f32,
+	pub(crate) points: Vec<CurvePoint>,
+	pub(crate) ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl FlattenedCurve {
+	/// Refreshes local points only when the path or its effective scale changes.
+	pub(crate) fn update(&mut self, segments: &[CurveSegment], scale: [f32; 2], tolerance: f32) {
+		if self.segments == segments && self.scale == scale && self.tolerance == tolerance {
+			return;
+		}
+		self.segments.clear();
+		self.segments.extend_from_slice(segments);
+		self.scale = scale;
+		self.tolerance = tolerance;
+		self.points.clear();
+		self.ranges.clear();
+		for segment in segments {
+			let start = self.points.len();
+			segment.flatten(
+				|point| CurvePoint::new(point.x * scale[0], point.y * scale[1]),
+				tolerance,
+				&mut self.points,
+			);
+			self.ranges.push(start..self.points.len());
+		}
+	}
+}

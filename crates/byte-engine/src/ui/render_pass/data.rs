@@ -69,7 +69,7 @@ pub(super) const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 14] = [
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("BLUR_RESOLUTION_MIX", ghi::DataTypes::Float, 0),
 ];
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct UiDrawElement {
 	pub(super) depth: u32,
 	pub(super) order: u32,
@@ -98,7 +98,7 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) radius: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct UiTextDrawElement {
 	pub(super) depth: u32,
 	pub(super) order: u32,
@@ -109,6 +109,35 @@ pub(super) struct UiTextDrawElement {
 	pub(super) color: RGBA,
 	pub(super) font_size: f32,
 	pub(super) text: String,
+}
+
+impl Clone for UiTextDrawElement {
+	/// Copies this surface and its owned local data.
+	fn clone(&self) -> Self {
+		Self {
+			depth: self.depth,
+			order: self.order,
+			position: self.position,
+			size: self.size,
+			clip: self.clip,
+			feather_mask: self.feather_mask,
+			color: self.color,
+			font_size: self.font_size,
+			text: self.text.clone(),
+		}
+	}
+	/// Reuses owned storage when a surface changes.
+	fn clone_from(&mut self, source: &Self) {
+		self.depth = source.depth;
+		self.order = source.order;
+		self.position = source.position;
+		self.size = source.size;
+		self.clip = source.clip;
+		self.feather_mask = source.feather_mask;
+		self.color = source.color;
+		self.font_size = source.font_size;
+		self.text.clone_from(&source.text);
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +156,7 @@ pub(super) struct UiImageDrawElement {
 	pub(super) opacity: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq)]
 pub(super) struct UiCurveDrawElement {
 	pub(super) depth: u32,
 	pub(super) order: u32,
@@ -138,6 +167,35 @@ pub(super) struct UiCurveDrawElement {
 	pub(super) color: [f32; 4],
 	pub(super) stroke_width: f32,
 	pub(super) segments: Vec<CurveSegment>,
+}
+
+impl Clone for UiCurveDrawElement {
+	/// Copies this surface and its owned local data.
+	fn clone(&self) -> Self {
+		Self {
+			depth: self.depth,
+			order: self.order,
+			position: self.position,
+			size: self.size,
+			clip: self.clip,
+			feather_mask: self.feather_mask,
+			color: self.color,
+			stroke_width: self.stroke_width,
+			segments: self.segments.clone(),
+		}
+	}
+	/// Reuses owned storage when a surface changes.
+	fn clone_from(&mut self, source: &Self) {
+		self.depth = source.depth;
+		self.order = source.order;
+		self.position = source.position;
+		self.size = source.size;
+		self.clip = source.clip;
+		self.feather_mask = source.feather_mask;
+		self.color = source.color;
+		self.stroke_width = source.stroke_width;
+		self.segments.clone_from(&source.segments);
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -700,9 +758,7 @@ pub(super) fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f3
 #[allow(clippy::too_many_lines)]
 /// Adopts a snapshot while retaining the owned text and curve buffers of surviving slots.
 pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDrawList) {
-	let root_size = render.root().size;
-
-	draw_list.layout_size = [root_size.x(), root_size.y()];
+	draw_list.layout_size = [render.viewport_size.x(), render.viewport_size.y()];
 	draw_list.elements.clear();
 	draw_list.blurs.clear();
 	draw_list.images.clear();

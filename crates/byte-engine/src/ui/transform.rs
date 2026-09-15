@@ -2,6 +2,9 @@ use super::UiPoint;
 
 /// The `Transform` struct supports visual placement and scaling after layout.
 ///
+/// Transform edits update visual bounds, clipping, and pointer hits without
+/// changing measured sizes or flow placement.
+///
 /// Scaling uses the element's center by default. Choose [`Self::origin`] when
 /// an edge or corner must stay anchored, then pass the transform to
 /// [`super::Container::transform`] or another UI primitive.

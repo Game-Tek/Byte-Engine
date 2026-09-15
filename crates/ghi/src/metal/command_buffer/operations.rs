@@ -607,6 +607,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			extent,
 			array_layers,
 			bytes,
+			None,
 		)
 		.expect(
 			"Metal image-data upload layout disappeared. The most likely cause is that format validation and upload encoding used different image metadata.",

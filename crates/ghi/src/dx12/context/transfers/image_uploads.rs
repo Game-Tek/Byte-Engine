@@ -184,6 +184,7 @@ impl Device {
 				source_row_pitch,
 				source_image_pitch,
 				destination_subresource,
+				None,
 			);
 		}
 	}
@@ -223,6 +224,7 @@ impl Device {
 			source_row_pitch,
 			source_row_pitch * row_count,
 			0,
+			None,
 		) {
 			self.gpu_uploaded_images.insert(image_handle.0);
 		}
@@ -241,7 +243,7 @@ impl Device {
 		let mut remaining = pending.len();
 		let mut index = 0;
 		while remaining > 0 {
-			let (image_handle, sequence_index) = pending[index];
+			let (image_handle, sequence_index, region) = pending[index];
 			remaining -= 1;
 			let image_mismatch = image_filter.is_some_and(|filter| filter != image_handle);
 			let sequence_mismatch = sequence_filter.is_some_and(|filter| filter != sequence_index);
@@ -251,12 +253,14 @@ impl Device {
 			}
 
 			pending.swap_remove(index);
-			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index) {
+			if self.record_image_storage_upload(command_buffer_handle, ImageHandle(image_handle), sequence_index, region) {
 				if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
-					command_buffer.recorded_texture_syncs.push((image_handle, sequence_index));
+					command_buffer
+						.recorded_texture_syncs
+						.push((image_handle, sequence_index, region));
 				}
 			} else {
-				pending.push((image_handle, sequence_index));
+				pending.push((image_handle, sequence_index, region));
 			}
 		}
 		self.pending_texture_syncs = pending;
@@ -269,8 +273,10 @@ impl Device {
 			.get_mut(command_buffer_handle.0 as usize)
 			.map(|command_buffer| std::mem::take(&mut command_buffer.recorded_texture_syncs))
 			.unwrap_or_default();
-		for (image_handle, sequence_index) in recorded.drain(..) {
-			self.queue_texture_sync_for_sequence(image_handle, sequence_index);
+		for upload in recorded.drain(..) {
+			if !self.pending_texture_syncs.contains(&upload) {
+				self.pending_texture_syncs.push(upload);
+			}
 		}
 		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.0 as usize) {
 			command_buffer.recorded_texture_syncs = recorded;
@@ -290,6 +296,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		image_handle: ImageHandle,
 		sequence_index: u8,
+		region: Option<crate::image::Region>,
 	) -> bool {
 		let Some(command_list) = self
 			.command_buffers
@@ -332,6 +339,7 @@ impl Device {
 			source_row_pitch,
 			source_image_pitch,
 			0,
+			region,
 		);
 		if let Some(frame_data_index) = frame_data_index {
 			self.images[image_index].frame_data.as_mut().unwrap()[frame_data_index] = source_bytes;
@@ -392,14 +400,27 @@ impl Device {
 		source_row_pitch: usize,
 		source_image_pitch: usize,
 		destination_mip_level: u32,
+		region: Option<crate::image::Region>,
 	) -> bool {
-		let Some((row_bytes, row_count, _)) = utils::texture_copy_layout(self.images[image_handle.0 as usize].format, extent)
-		else {
+		let format = self.images[image_handle.0 as usize].format;
+		let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
+		let origin = region.map_or([0, 0], |region| region.offset);
+		let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
+		let Some((row_bytes, row_count, _)) = utils::texture_copy_layout(format, copy_extent) else {
 			return false;
 		};
-		let Some(footprint) = self.native_texture_copy_footprint(&destination, destination_mip_level) else {
+		let Some(mut footprint) = self.native_texture_copy_footprint(&destination, destination_mip_level) else {
 			return false;
 		};
+		if region.is_some() {
+			// A placed footprint describes the compact patch, not the full destination.
+			footprint.placed.Footprint.Width = copy_extent.width();
+			footprint.placed.Footprint.Height = copy_extent.height();
+			footprint.placed.Footprint.RowPitch = row_bytes.next_multiple_of(256) as u32;
+			footprint.row_size = row_bytes;
+			footprint.row_count = row_count;
+			footprint.total_size = row_count * footprint.placed.Footprint.RowPitch as usize;
+		}
 		let depth = extent.depth().max(1) as usize;
 		let Ok(native_depth) = usize::try_from(footprint.placed.Footprint.Depth) else {
 			return false;
@@ -429,7 +450,9 @@ impl Device {
 		}
 		let (source_row_pitch, source_image_pitch, required_source_bytes) =
 			validated_texture_source_layout(row_bytes, row_count, source_row_pitch, source_image_pitch, depth);
-		if required_source_bytes > source_bytes.len() {
+		if required_source_bytes > source_bytes.len()
+			|| source_start + (row_count - 1) * source_row_pitch + row_bytes > source_bytes.len()
+		{
 			return false;
 		}
 		let (Some(upload), mapped, _) = self.create_buffer_resource(upload_size, DeviceAccesses::HostToDevice) else {
@@ -444,7 +467,7 @@ impl Device {
 		unsafe {
 			for layer in 0..depth {
 				for y in 0..row_count {
-					let source_start = layer * source_image_pitch + y * source_row_pitch;
+					let source_start = source_start + layer * source_image_pitch + y * source_row_pitch;
 					let source_end = source_start + row_bytes;
 					let upload_start = layer * upload_image_pitch + y * upload_row_pitch;
 					debug_assert!(source_end <= source_bytes.len());
@@ -481,7 +504,7 @@ impl Device {
 		);
 		// SAFETY: Both retained resources and their driver-provided subresource footprints remain valid through submission.
 		unsafe {
-			command_list.CopyTextureRegion(&destination_location, 0, 0, 0, &source_location, None);
+			command_list.CopyTextureRegion(&destination_location, origin[0], origin[1], 0, &source_location, None);
 		}
 		self.transition_tracked_image(
 			command_list,

@@ -79,7 +79,7 @@ pub struct Context {
 	/// Tracks pending buffer host to device, or device to host synchronization operations.
 	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
 	/// Tracks pending image host to device, or device to host synchronization operations.
-	pub(super) pending_image_syncs: HashSet<ImageHandle>,
+	pub(super) pending_image_syncs: HashSet<(ImageHandle, Option<crate::image::Region>)>,
 
 	/// Tracks all dynamic buffer master handles that use the persistent write mode.
 	/// These buffers have their source buffer memcpy'd into the per-frame staging

@@ -150,7 +150,19 @@ impl Frame<'_> {
 
 	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
 		let handle = self.get_current_image_handle(image_handle);
-		self.device.pending_image_syncs.push_back(handle);
+		self.device.pending_image_syncs.push_back((handle, None));
+	}
+
+	/// Schedules a rectangular upload from this frame's image staging storage.
+	pub fn sync_texture_region(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		region: crate::image::Region,
+	) {
+		let handle = self.get_current_image_handle(image_handle);
+		let image = self.device.images.resource(handle);
+		region.validate(image.extent, image.format, image.array_layers);
+		self.device.pending_image_syncs.push_back((handle, Some(region)));
 	}
 
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
@@ -445,7 +457,15 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
 		let handle = self.get_current_image_handle(image_handle);
-		self.device.pending_image_syncs.push_back(handle);
+		self.device.pending_image_syncs.push_back((handle, None));
+	}
+
+	fn sync_texture_region(
+		&mut self,
+		image_handle: graphics_hardware_interface::BaseImageHandle,
+		region: crate::image::Region,
+	) {
+		Frame::sync_texture_region(self, image_handle, region);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {

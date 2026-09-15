@@ -1,9 +1,9 @@
 //! UI glyph atlas packing and per-glyph text geometry generation.
 //!
-//! Text is drawn as pixel-aligned quads that sample one shared coverage atlas.
-//! Glyph bitmaps enter the atlas once per character and pixel size and stay
+//! Text is drawn as fractionally positioned quads that sample one shared coverage atlas.
+//! Glyph bitmaps enter the atlas once per character and raster-size bucket and stay
 //! resident, so an unchanged label costs no CPU rasterization and no upload.
-//! A moving or restyled label only regenerates its quads.
+//! The GPU scales cached bitmaps to the requested size with linear filtering.
 
 use std::collections::HashMap;
 
@@ -18,10 +18,10 @@ pub(super) const UI_GLYPH_ATLAS_BINDING: ghi::ShaderResourceDescriptor = ghi::Sh
 );
 pub(super) const UI_GLYPH_ATLAS_INITIAL_SIZE: u32 = 512;
 pub(super) const UI_GLYPH_ATLAS_MAX_SIZE: u32 = 4096;
-/// Transparent texels around every glyph so nearest sampling at a quad edge never reads a neighbor.
+/// Transparent texels around every glyph so linear filtering at a quad edge blends with transparent coverage.
 const UI_GLYPH_ATLAS_PADDING: u32 = 1;
 
-pub(super) const UI_TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
+pub(super) const UI_TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 9] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
@@ -30,6 +30,7 @@ pub(super) const UI_TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 8] = [
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("TRANSFORM", ghi::DataTypes::Float4, 0),
 ];
 
 #[repr(C)]
@@ -43,6 +44,7 @@ pub(super) struct UiTextVertex {
 	pub(super) feather_mask_size: [f32; 2],
 	pub(super) feather_mask_edges: [f32; 4],
 	pub(super) feather_mask_corner: [f32; 2],
+	pub(super) transform: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,9 @@ struct Shelf {
 /// regions. CPU pixels are the source of truth; [`Self::upload`] mirrors them to
 /// the GPU only after a change.
 pub(super) struct UiGlyphAtlas {
+	runs: Vec<CachedText>,
+	run_indices: HashMap<u32, usize>,
+	prepared: bool,
 	size: u32,
 	pixels: Vec<u8>,
 	shelves: Vec<Shelf>,
@@ -96,6 +101,8 @@ pub(super) struct UiGlyphAtlas {
 	regions: HashMap<GlyphKey, AtlasRegion>,
 	generation: u64,
 	dirty: bool,
+	full_upload: bool,
+	dirty_regions: Vec<ghi::image::Region>,
 	resized: bool,
 }
 
@@ -103,6 +110,9 @@ impl UiGlyphAtlas {
 	pub(super) fn new(size: u32) -> Self {
 		let size = size.clamp(1, UI_GLYPH_ATLAS_MAX_SIZE);
 		Self {
+			runs: Vec::new(),
+			run_indices: HashMap::new(),
+			prepared: false,
 			size,
 			pixels: vec![0; (size * size) as usize],
 			shelves: Vec::new(),
@@ -110,8 +120,24 @@ impl UiGlyphAtlas {
 			regions: HashMap::new(),
 			generation: 0,
 			dirty: false,
+			full_upload: true,
+			dirty_regions: Vec::new(),
 			resized: false,
 		}
+	}
+
+	#[cfg(test)]
+	pub(super) fn clear_prepared_runs(&mut self) {
+		self.runs.clear();
+		self.run_indices.clear();
+	}
+
+	/// Releases removed labels while keeping culled labels available when they return.
+	pub(super) fn retain_surfaces(&mut self, ids: &[u32]) {
+		self.runs.retain(|run| ids.binary_search(&run.input.order).is_ok());
+		self.run_indices.clear();
+		self.run_indices
+			.extend(self.runs.iter().enumerate().map(|(index, run)| (run.input.order, index)));
 	}
 
 	pub(super) fn size(&self) -> u32 {
@@ -184,6 +210,23 @@ impl UiGlyphAtlas {
 		}
 		self.regions.insert(key, region);
 		self.dirty = true;
+		if !self.full_upload {
+			// Shelf neighbors form one upload; padding supplies transparent samples
+			// for bilinear filtering without uploading the rest of the atlas.
+			if let Some(dirty) = self
+				.dirty_regions
+				.iter_mut()
+				.find(|dirty| dirty.offset[1] == y && dirty.offset[0] + dirty.size[0] == x)
+			{
+				dirty.size[0] += padded_width;
+				dirty.size[1] = dirty.size[1].max(padded_height);
+			} else {
+				self.dirty_regions.push(ghi::image::Region {
+					offset: [x, y],
+					size: [padded_width, padded_height],
+				});
+			}
+		}
 		Some(region)
 	}
 
@@ -229,6 +272,8 @@ impl UiGlyphAtlas {
 		self.regions.clear();
 		self.generation += 1;
 		self.dirty = true;
+		self.full_upload = true;
+		self.dirty_regions.clear();
 		self.resized = true;
 	}
 
@@ -252,9 +297,32 @@ impl UiGlyphAtlas {
 			return;
 		}
 		let staging = frame.get_texture_slice_mut(image);
-		staging[..self.pixels.len()].copy_from_slice(&self.pixels);
-		frame.sync_texture(image);
+		self.copy_dirty_pixels(staging);
+		if self.full_upload {
+			frame.sync_texture(image);
+		} else {
+			for &region in &self.dirty_regions {
+				frame.sync_texture_region(image, region);
+			}
+		}
+		self.full_upload = false;
+		self.dirty_regions.clear();
 		self.dirty = false;
+	}
+
+	/// Copies the pending rows into full-image staging storage without touching other texels.
+	fn copy_dirty_pixels(&self, staging: &mut [u8]) {
+		if self.full_upload {
+			staging[..self.pixels.len()].copy_from_slice(&self.pixels);
+			return;
+		}
+		for region in &self.dirty_regions {
+			for y in region.offset[1]..region.offset[1] + region.size[1] {
+				let start = (y * self.size + region.offset[0]) as usize;
+				let end = start + region.size[0] as usize;
+				staging[start..end].copy_from_slice(&self.pixels[start..end]);
+			}
+		}
 	}
 
 	#[cfg(test)]
@@ -263,21 +331,60 @@ impl UiGlyphAtlas {
 	}
 }
 
+/// The `CachedText` struct retains glyph positions relative to a label's origin.
+/// Visual edits invalidate quads; content and raster-size bucket changes also invalidate placement.
+struct CachedText {
+	/// The current draw-list slot protects callers that submit repeated surface IDs.
+	source_index: usize,
+	input: UiTextDrawElement,
+	font_size: f32,
+	viewport: (Extent, [f32; 2]),
+	generation: u64,
+	glyphs: Vec<PendingGlyph>,
+	vertices: Vec<UiTextVertex>,
+	vertices_valid: bool,
+	placement_valid: bool,
+	vertices_stable: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PendingGlyph {
-	text_index: usize,
 	key: GlyphKey,
-	x: i32,
-	y: i32,
+	x: f32,
+	y: f32,
 	region: Option<AtlasRegion>,
+}
+
+/// The `PreparedText` struct carries one label's frame data between atlas placement and quad emission.
+struct PreparedText {
+	clip: PixelClip,
+	glyphs: std::ops::Range<usize>,
+	cache_index: Option<usize>,
+}
+
+/// Appends local glyph positions to either retained storage or the current frame's arena.
+fn place_text_glyphs<A: std::alloc::Allocator>(
+	text_system: &mut TextSystem,
+	text: &str,
+	font_size: f32,
+	glyphs: &mut Vec<PendingGlyph, A>,
+) {
+	text_system.place_glyphs(text, font_size, (0, 0), |placement| {
+		glyphs.push(PendingGlyph {
+			key: placement.key,
+			x: placement.x,
+			y: placement.y,
+			region: None,
+		});
+	});
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PixelClip {
-	x0: i32,
-	y0: i32,
-	x1: i32,
-	y1: i32,
+	x0: f32,
+	y0: f32,
+	x1: f32,
+	y1: f32,
 }
 
 impl PixelClip {
@@ -295,19 +402,19 @@ impl PixelClip {
 	}
 }
 
-// Converts a layout-space clip to whole viewport pixels so glyph trimming matches pixel-snapped glyph placement.
+// Converts a layout-space clip to viewport pixels without rounding fractional boundaries.
 fn pixel_clip(clip: Option<DrawClip>, sx: f32, sy: f32, viewport: PixelClip) -> PixelClip {
 	let Some(clip) = clip else {
 		return viewport;
 	};
-	let x0 = (clip.position[0] * sx).round() as i32;
-	let y0 = (clip.position[1] * sy).round() as i32;
-	let x1 = ((clip.position[0] + clip.size[0]) * sx).round() as i32;
-	let y1 = ((clip.position[1] + clip.size[1]) * sy).round() as i32;
+	let x0 = clip.position[0] * sx;
+	let y0 = clip.position[1] * sy;
+	let x1 = (clip.position[0] + clip.size[0]) * sx;
+	let y1 = (clip.position[1] + clip.size[1]) * sy;
 	PixelClip { x0, y0, x1, y1 }.intersect(viewport)
 }
 
-/// Builds pixel-aligned glyph quads for every visible text run, batched by depth.
+/// Builds glyph quads with fractional transforms for every visible text run, batched by depth.
 ///
 /// Glyph placement and atlas residency are resolved for all runs before any quad
 /// is emitted, so an atlas repack in the middle of a frame can never leave
@@ -327,44 +434,121 @@ pub(super) fn build_ui_text_geometry<'a>(
 	let sy = viewport_height / draw_list.layout_size[1].max(1.0);
 	let font_scale = sx.min(sy);
 	let viewport_clip = PixelClip {
-		x0: 0,
-		y0: 0,
-		x1: viewport.width().max(1) as i32,
-		y1: viewport.height().max(1) as i32,
+		x0: 0.0,
+		y0: 0.0,
+		x1: viewport.width().max(1) as f32,
+		y1: viewport.height().max(1) as f32,
 	};
 
+	// One UTF-8 byte is a cheap upper bound for one output glyph. Clamp to the
+	// frame budget; this avoids repeated arena growth without reserving a maximum-sized frame.
+	let glyph_capacity = draw_list
+		.texts
+		.iter()
+		.filter(|text| should_rasterize_text(text))
+		.fold(0usize, |count, text| count.saturating_add(text.text.len()))
+		.min(MAX_UI_ELEMENTS);
 	let mut geometry = UiTextGeometry {
-		vertices: Vec::new_in(frame_allocator),
-		indices: Vec::new_in(frame_allocator),
-		batches: Vec::new_in(frame_allocator),
+		vertices: Vec::with_capacity_in(glyph_capacity * UI_VERTICES_PER_ELEMENT, frame_allocator),
+		indices: Vec::with_capacity_in(glyph_capacity * UI_INDICES_PER_ELEMENT, frame_allocator),
+		batches: Vec::with_capacity_in(
+			draw_list
+				.texts
+				.len()
+				.saturating_add(MAX_UI_VERTICES / MAX_UI_VERTICES_PER_DRAW)
+				.min(glyph_capacity),
+			frame_allocator,
+		),
 		truncated: false,
 		dropped_glyphs: 0,
 	};
 
 	// Phase 1: place glyphs and make every needed bitmap resident.
-	let mut pending = Vec::new_in(frame_allocator);
-	let mut clips = Vec::with_capacity_in(draw_list.texts.len(), frame_allocator);
+	// First submission streams directly; caches pay for themselves on repeated work.
+	let retain_runs = atlas.prepared;
+	atlas.prepared = true;
+	let mut pending = Vec::with_capacity_in(glyph_capacity, frame_allocator);
+	let mut labels = Vec::with_capacity_in(draw_list.texts.len(), frame_allocator);
 	for (text_index, text) in draw_list.texts.iter().enumerate() {
 		let clip = pixel_clip(text.clip, sx, sy, viewport_clip);
-		clips.push(clip);
+		labels.push(PreparedText {
+			clip,
+			glyphs: pending.len()..pending.len(),
+			cache_index: None,
+		});
+		let label = labels.last_mut().unwrap();
 		if !should_rasterize_text(text) || clip.is_empty() {
 			continue;
 		}
-		let origin = ((text.position[0] * sx).round() as i32, (text.position[1] * sy).round() as i32);
-		let font_size = (text.font_size * font_scale).max(1.0);
-		text_system.place_glyphs(&text.text, font_size, origin, |placement| {
-			pending.push(PendingGlyph {
-				text_index,
-				key: placement.key,
-				x: placement.x,
-				y: placement.y,
-				region: None,
+		let font_size = raster_font_size(text.font_size * font_scale);
+		if !retain_runs {
+			place_text_glyphs(text_system, &text.text, font_size, &mut pending);
+			label.glyphs.end = pending.len();
+			continue;
+		}
+		let generation = atlas.generation;
+		let index = *atlas.run_indices.entry(text.order).or_insert_with(|| {
+			let index = atlas.runs.len();
+			atlas.runs.push(CachedText {
+				source_index: text_index,
+				input: text.clone(),
+				font_size: f32::NAN,
+				viewport: (viewport, draw_list.layout_size),
+				generation,
+				glyphs: Vec::new(),
+				vertices: Vec::new(),
+				vertices_valid: false,
+				placement_valid: false,
+				vertices_stable: false,
 			});
+			index
 		});
+		label.cache_index = Some(index);
+		let run = &mut atlas.runs[index];
+		run.source_index = text_index;
+		let placement_changed = run.font_size != font_size || run.input.text != text.text;
+		let visual_changed = placement_changed
+			|| run.input != *text
+			|| run.viewport != (viewport, draw_list.layout_size)
+			|| run.generation != generation;
+		if !visual_changed && run.vertices_valid && run.placement_valid {
+			// Resident, unchanged labels need no glyph walk. A later atlas repack
+			// can rebuild their quads from retained local glyphs in phase two.
+			run.vertices_stable = true;
+			continue;
+		}
+		if placement_changed {
+			run.placement_valid = false;
+			// Continuously changing labels stream glyphs without retaining obsolete runs.
+			place_text_glyphs(text_system, &text.text, font_size, &mut pending);
+		} else {
+			if !run.placement_valid {
+				run.glyphs.clear();
+				place_text_glyphs(text_system, &text.text, font_size, &mut run.glyphs);
+				run.placement_valid = true;
+			}
+			for glyph in &mut run.glyphs {
+				if run.generation != generation {
+					glyph.region = None;
+				}
+				pending.push(*glyph);
+			}
+		}
+		run.vertices_stable = !visual_changed;
+		if visual_changed {
+			run.vertices_valid = false;
+		}
+		label.glyphs.end = pending.len();
+		run.input.clone_from(text);
+		run.font_size = font_size;
+		run.viewport = (viewport, draw_list.layout_size);
+		run.generation = generation;
 	}
 	let generation = atlas.generation();
 	for glyph in &mut pending {
-		glyph.region = atlas.ensure(glyph.key, text_system);
+		if glyph.region.is_none() {
+			glyph.region = atlas.ensure(glyph.key, text_system);
+		}
 		if glyph.region.is_none() {
 			geometry.dropped_glyphs += 1;
 		}
@@ -373,110 +557,241 @@ pub(super) fn build_ui_text_geometry<'a>(
 
 	// Phase 2: emit quads against the final atlas layout.
 	let atlas_size = atlas.size().max(1) as f32;
-	let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
-	let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
 
-	let mut batch_first_index = 0usize;
-	let mut batch_vertex_offset = 0usize;
-	let mut batch_vertex_count = 0usize;
-	let mut batch_index_count = 0usize;
-	let mut batch_depth = 0u32;
-	let mut batch_order = 0u32;
-
-	for glyph in &pending {
-		let text = &draw_list.texts[glyph.text_index];
-		// A repack can move earlier glyphs; otherwise residency already resolved the region.
-		let Some(region) = (if repacked { atlas.region(glyph.key) } else { glyph.region }) else {
-			continue;
-		};
-		let quad = PixelClip {
-			x0: glyph.x,
-			y0: glyph.y,
-			x1: glyph.x + region.width as i32,
-			y1: glyph.y + region.height as i32,
+	let regions = &atlas.regions;
+	for (text_index, (text, label)) in draw_list.texts.iter().zip(&mut labels).enumerate() {
+		if label.glyphs.is_empty() {
+			let Some(index) = label.cache_index else {
+				continue;
+			};
+			if atlas.runs[index].source_index != text_index {
+				// Manually built draw lists can repeat IDs. Recover an earlier run
+				// if a later occurrence replaced the entry after the fast path.
+				label.glyphs.start = pending.len();
+				text_system.place_glyphs(
+					&text.text,
+					raster_font_size(text.font_size * font_scale),
+					(0, 0),
+					|placement| {
+						pending.push(PendingGlyph {
+							key: placement.key,
+							x: placement.x,
+							y: placement.y,
+							region: regions.get(&placement.key).copied(),
+						});
+					},
+				);
+				label.glyphs.end = pending.len();
+			} else if repacked {
+				// Only a repack needs to revisit a label that skipped placement.
+				label.glyphs.start = pending.len();
+				pending.extend_from_slice(&atlas.runs[index].glyphs);
+				label.glyphs.end = pending.len();
+			}
 		}
-		.intersect(clips[glyph.text_index]);
-		if quad.is_empty() {
-			continue;
+		let run = label
+			.cache_index
+			.and_then(|index| atlas.runs.get_mut(index))
+			.filter(|run| run.source_index == text_index);
+		let mut local_glyphs = None;
+		let mut cached_vertices = None;
+		let mut valid = false;
+		if let Some(run) = run {
+			if run.placement_valid {
+				local_glyphs = Some(&mut run.glyphs);
+			}
+			if run.vertices_stable {
+				valid = run.vertices_valid && !repacked;
+				run.vertices_valid = !repacked && geometry.dropped_glyphs == 0;
+				cached_vertices = Some(&mut run.vertices);
+			}
+		}
+		let start = geometry.vertices.len();
+		let available = (MAX_UI_VERTICES - start).min((MAX_UI_INDICES - geometry.indices.len()) / 6 * 4);
+		if !valid {
+			if let Some(vertices) = cached_vertices.as_mut() {
+				vertices.clear();
+			}
+			let inputs = GlyphQuadInputs::new(text, viewport, atlas_size, [sx, sy]);
+			for (index, glyph) in pending[label.glyphs.clone()].iter().enumerate() {
+				let region = if repacked {
+					regions.get(&glyph.key).copied()
+				} else {
+					glyph.region
+				};
+				if let Some(local) = local_glyphs.as_deref_mut().and_then(|glyphs| glyphs.get_mut(index)) {
+					local.region = region;
+				}
+				let Some(region) = region else {
+					continue;
+				};
+				let Some(quad) = glyph_vertices(glyph, region, label.clip, &inputs) else {
+					continue;
+				};
+				if let Some(vertices) = cached_vertices.as_mut() {
+					vertices.extend_from_slice(&quad);
+					// One extra quad preserves truncation reporting for oversized cached runs.
+					if vertices.len() > MAX_UI_VERTICES {
+						break;
+					}
+				} else {
+					// Changing labels stream into the frame; no intermediate quad copy.
+					if geometry.vertices.len() - start == available {
+						geometry.truncated = true;
+						break;
+					}
+					geometry.vertices.extend_from_slice(&quad);
+				}
+			}
+		}
+		if let Some(vertices) = cached_vertices {
+			let count = vertices.len().min(available);
+			geometry.vertices.extend_from_slice(&vertices[..count]);
+			geometry.truncated |= count < vertices.len();
+		}
+		// Index the completed span, preserving depth order and each draw's u16 limit.
+		let vertex_count = geometry.vertices.len() - start;
+		let mut offset = 0;
+		while offset < vertex_count {
+			let new_batch = geometry.batches.last().is_none_or(|batch| {
+				batch.depth != text.depth || batch.index_count as usize / 6 * 4 == MAX_UI_VERTICES_PER_DRAW
+			});
+			if new_batch {
+				geometry.batches.push(UiTextDrawBatch {
+					depth: text.depth,
+					order: text.order,
+					index_count: 0,
+					first_index: geometry.indices.len() as u32,
+					vertex_offset: (start + offset) as i32,
+				});
+			}
+			let batch = geometry.batches.last_mut().unwrap();
+			let base = batch.index_count as usize / 6 * 4;
+			let count = (vertex_count - offset).min(MAX_UI_VERTICES_PER_DRAW - base);
+			for vertex in (base..base + count).step_by(4) {
+				let vertex = vertex as u16;
+				geometry
+					.indices
+					.extend_from_slice(&[vertex, vertex + 1, vertex + 2, vertex + 2, vertex + 3, vertex]);
+			}
+			batch.index_count += (count / 4 * 6) as u32;
+			batch.order = batch.order.min(text.order);
+			offset += count;
 		}
 
-		if geometry.vertices.len() + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES
-			|| geometry.indices.len() + UI_INDICES_PER_ELEMENT > MAX_UI_INDICES
-		{
-			geometry.truncated = true;
+		if geometry.truncated {
 			break;
 		}
-
-		if batch_index_count > 0
-			&& (batch_vertex_count + UI_VERTICES_PER_ELEMENT > MAX_UI_VERTICES_PER_DRAW || batch_depth != text.depth)
-		{
-			geometry.batches.push(UiTextDrawBatch {
-				depth: batch_depth,
-				order: batch_order,
-				index_count: batch_index_count as u32,
-				first_index: batch_first_index as u32,
-				vertex_offset: batch_vertex_offset as i32,
-			});
-			batch_first_index = geometry.indices.len();
-			batch_vertex_offset = geometry.vertices.len();
-			batch_vertex_count = 0;
-			batch_index_count = 0;
-		}
-		if batch_index_count == 0 {
-			batch_depth = text.depth;
-			batch_order = text.order;
-		} else {
-			batch_order = batch_order.min(text.order);
-		}
-
-		// Trimmed quads keep their texel alignment by trimming the atlas window identically.
-		let u0 = (region.x as f32 + (quad.x0 - glyph.x) as f32) / atlas_size;
-		let v0 = (region.y as f32 + (quad.y0 - glyph.y) as f32) / atlas_size;
-		let u1 = (region.x as f32 + (quad.x1 - glyph.x) as f32) / atlas_size;
-		let v1 = (region.y as f32 + (quad.y1 - glyph.y) as f32) / atlas_size;
-		let (x0, y0, x1, y1) = (quad.x0 as f32, quad.y0 as f32, quad.x1 as f32, quad.y1 as f32);
-		let color: [f32; 4] = text.color.into();
-		let feather_mask = scaled_feather_mask(text.feather_mask, sx, sy);
-		let vertex = |position: [f32; 2], uv: [f32; 2]| UiTextVertex {
-			position: [to_clip_x(position[0]), to_clip_y(position[1])],
-			uv,
-			color,
-			pixel_position: position,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
-		};
-		geometry.vertices.extend_from_slice(&[
-			vertex([x0, y0], [u0, v0]),
-			vertex([x1, y0], [u1, v0]),
-			vertex([x1, y1], [u1, v1]),
-			vertex([x0, y1], [u0, v1]),
-		]);
-		let base_vertex = batch_vertex_count as u16;
-		geometry.indices.extend_from_slice(&[
-			base_vertex,
-			base_vertex + 1,
-			base_vertex + 2,
-			base_vertex + 2,
-			base_vertex + 3,
-			base_vertex,
-		]);
-		batch_vertex_count += UI_VERTICES_PER_ELEMENT;
-		batch_index_count += UI_INDICES_PER_ELEMENT;
-	}
-
-	if batch_index_count > 0 {
-		geometry.batches.push(UiTextDrawBatch {
-			depth: batch_depth,
-			order: batch_order,
-			index_count: batch_index_count as u32,
-			first_index: batch_first_index as u32,
-			vertex_offset: batch_vertex_offset as i32,
-		});
 	}
 
 	geometry
+}
+
+/// Reuses the next multiple of four pixels, leaving a downscale for the GPU.
+/// Keep this renderer policy separate from logical text measurement.
+fn raster_font_size(size: f32) -> f32 {
+	(size.max(1.0) / 4.0).ceil() * 4.0
+}
+
+/// The `GlyphQuadInputs` struct keeps shared label transforms outside the glyph loop.
+struct GlyphQuadInputs {
+	origin: [f32; 2],
+	residual: f32,
+	inverse_residual: f32,
+	inverse_atlas_size: f32,
+	vertex: UiTextVertex,
+}
+
+impl GlyphQuadInputs {
+	/// Resolves the requested scale and styling once for all glyphs in a label.
+	fn new(text: &UiTextDrawElement, viewport: Extent, atlas_size: f32, scale: [f32; 2]) -> Self {
+		let [sx, sy] = scale;
+		let requested_size = (text.font_size * sx.min(sy)).max(1.0);
+		let residual = requested_size / raster_font_size(requested_size);
+		let origin = [text.position[0] * sx, text.position[1] * sy];
+		let width = viewport.width().max(1) as f32;
+		let height = viewport.height().max(1) as f32;
+		let mask = scaled_feather_mask(text.feather_mask, sx, sy);
+		Self {
+			origin,
+			residual,
+			inverse_residual: residual.recip(),
+			inverse_atlas_size: atlas_size.recip(),
+			vertex: UiTextVertex {
+				position: [0.0; 2],
+				uv: [0.0; 2],
+				pixel_position: [0.0; 2],
+				color: text.color.into(),
+				transform: [
+					residual * 2.0 / width,
+					-residual * 2.0 / height,
+					origin[0] * 2.0 / width - 1.0,
+					1.0 - origin[1] * 2.0 / height,
+				],
+				feather_mask_position: mask.position,
+				feather_mask_size: mask.size,
+				feather_mask_edges: mask.edges,
+				feather_mask_corner: mask.corner,
+			},
+		}
+	}
+}
+
+/// Clips one glyph against the final atlas packing and its current visual bounds.
+#[inline]
+fn glyph_vertices(
+	glyph: &PendingGlyph,
+	region: AtlasRegion,
+	clip: PixelClip,
+	inputs: &GlyphQuadInputs,
+) -> Option<[UiTextVertex; 4]> {
+	let GlyphQuadInputs {
+		origin,
+		residual,
+		inverse_residual,
+		inverse_atlas_size,
+		..
+	} = *inputs;
+	// Include the transparent border so fractional placement does not cut off
+	// coverage filtered just outside the original bitmap.
+	let padding = UI_GLYPH_ATLAS_PADDING as f32;
+	let left = (glyph.x - padding) * residual + origin[0];
+	let top = (glyph.y - padding) * residual + origin[1];
+	let quad = PixelClip {
+		x0: left,
+		y0: top,
+		x1: left + (region.width as f32 + padding * 2.0) * residual,
+		y1: top + (region.height as f32 + padding * 2.0) * residual,
+	}
+	.intersect(clip);
+	if quad.is_empty() {
+		return None;
+	}
+	// Clip in destination pixels, then map the surviving edges back into the
+	// bitmap. The vertex shader applies the remaining scale and translation.
+	let local = [
+		(quad.x0 - origin[0]) * inverse_residual,
+		(quad.y0 - origin[1]) * inverse_residual,
+		(quad.x1 - origin[0]) * inverse_residual,
+		(quad.y1 - origin[1]) * inverse_residual,
+	];
+	let u0 = (region.x as f32 + local[0] - glyph.x) * inverse_atlas_size;
+	let v0 = (region.y as f32 + local[1] - glyph.y) * inverse_atlas_size;
+	let u1 = (region.x as f32 + local[2] - glyph.x) * inverse_atlas_size;
+	let v1 = (region.y as f32 + local[3] - glyph.y) * inverse_atlas_size;
+	let (x0, y0, x1, y1) = (quad.x0, quad.y0, quad.x1, quad.y1);
+	let vertex = |pixel_position: [f32; 2], position: [f32; 2], uv: [f32; 2]| UiTextVertex {
+		position,
+		uv,
+		pixel_position,
+		..inputs.vertex
+	};
+	Some([
+		vertex([x0, y0], [local[0], local[1]], [u0, v0]),
+		vertex([x1, y0], [local[2], local[1]], [u1, v0]),
+		vertex([x1, y1], [local[2], local[3]], [u1, v1]),
+		vertex([x0, y1], [local[0], local[3]], [u0, v1]),
+	])
 }
 
 #[cfg(test)]
@@ -523,6 +838,99 @@ mod tests {
 	}
 
 	#[test]
+	fn fractional_zoom_reuses_bitmaps_and_preserves_exact_positions() {
+		let mut fonts = TextSystem::new();
+		assert!(fonts.has_font());
+		let mut atlas = UiGlyphAtlas::new(256);
+		let arena = bumpalo::Bump::new();
+		let mut list = draw_list(vec![text("AW", 0, 7, [10.25, 20.375], None)]);
+		list.texts[0].font_size = 13.1;
+		let first = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		let start = first.vertices[0].pixel_position;
+		let count = atlas.len();
+		atlas.dirty = false;
+		for step in 1..20 {
+			list.texts[0].font_size = 13.1 + step as f32 * 0.1;
+			let geometry = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+			assert_eq!(atlas.len(), count);
+			assert!(!atlas.is_dirty(), "sizes in one bucket must reuse resident bitmaps");
+			for vertex in &geometry.vertices {
+				// The production vertex transform must land on the unclamped fractional destination.
+				let x = (vertex.position[0] * vertex.transform[0] + vertex.transform[2] + 1.0) * 50.0;
+				let y = (1.0 - vertex.position[1] * vertex.transform[1] - vertex.transform[3]) * 50.0;
+				assert!((x - vertex.pixel_position[0]).abs() < 0.0001);
+				assert!((y - vertex.pixel_position[1]).abs() < 0.0001);
+			}
+		}
+		list.texts[0].font_size = 13.1;
+		list.texts[0].position[0] += 0.125;
+		list.texts[0].position[1] += 0.25;
+		let moved = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		assert!((moved.vertices[0].pixel_position[0] - start[0] - 0.125).abs() < 0.0001);
+		assert!((moved.vertices[0].pixel_position[1] - start[1] - 0.25).abs() < 0.0001);
+		list.texts[0].font_size = 16.1;
+		let _ = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		assert!(atlas.is_dirty());
+		assert_eq!(atlas.len(), count * 2);
+	}
+
+	#[test]
+	fn cached_labels_survive_later_repacking_and_repeated_ids() {
+		let mut fonts = TextSystem::new();
+		assert!(fonts.has_font());
+		let mut atlas = UiGlyphAtlas::new(32);
+		let arena = bumpalo::Bump::new();
+		let mut list = draw_list(vec![text("A", 0, 1, [2.25, 3.5], None)]);
+		for _ in 0..4 {
+			let _ = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		}
+		let generation = atlas.generation();
+		list.texts.push(text("BCDEFGHIJKLMNOPQRSTUVWXYZ", 0, 2, [0.0, 25.25], None));
+		let cached = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		assert!(atlas.generation() > generation);
+		atlas.clear_prepared_runs();
+		let fresh = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		assert_eq!(
+			bytemuck::cast_slice::<_, u8>(&cached.vertices),
+			bytemuck::cast_slice::<_, u8>(&fresh.vertices)
+		);
+		for _ in 0..4 {
+			let _ = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		}
+		list.texts.push(text("B", 0, 1, [10.5, 50.75], None));
+		let cached = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		atlas.clear_prepared_runs();
+		let fresh = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
+		assert_eq!(
+			bytemuck::cast_slice::<_, u8>(&cached.vertices),
+			bytemuck::cast_slice::<_, u8>(&fresh.vertices)
+		);
+	}
+
+	#[test]
+	fn atlas_updates_copy_padded_regions_and_reset_clears_old_pixels() {
+		let mut atlas = UiGlyphAtlas::new(64);
+		atlas.insert(GlyphKey::new('A', 16.0), &glyph(5, 8, 93)).unwrap();
+		let mut staging = vec![0; 64 * 64];
+		atlas.copy_dirty_pixels(&mut staging);
+		assert_eq!(staging, atlas.pixels());
+		// Emulate completion of the initial full upload, then add two shelf neighbors.
+		atlas.full_upload = false;
+		atlas.dirty = false;
+		atlas.insert(GlyphKey::new('B', 16.0), &glyph(6, 8, 121)).unwrap();
+		atlas.insert(GlyphKey::new('C', 16.0), &glyph(4, 7, 151)).unwrap();
+		// A distant staging byte must survive a partial copy.
+		*staging.last_mut().unwrap() = 231;
+		atlas.copy_dirty_pixels(&mut staging);
+		let mut expected = atlas.pixels().to_vec();
+		*expected.last_mut().unwrap() = 231;
+		assert_eq!(staging, expected);
+		atlas.reset(64);
+		atlas.copy_dirty_pixels(&mut staging);
+		assert!(staging.iter().all(|&pixel| pixel == 0));
+	}
+
+	#[test]
 	fn insert_pads_glyphs_and_copies_coverage() {
 		let mut atlas = UiGlyphAtlas::new(16);
 		let region = atlas.insert(GlyphKey::new('a', 8.0), &glyph(3, 2, 200)).unwrap();
@@ -543,7 +951,7 @@ mod tests {
 				assert_eq!(atlas.pixels()[((region.y + row) * size + region.x + column) as usize], 200);
 			}
 		}
-		// Padding stays transparent so nearest sampling never bleeds into a neighbor.
+		// Padding stays transparent so linear filtering blends with empty coverage.
 		assert_eq!(atlas.pixels()[0], 0);
 		assert_eq!(atlas.pixels()[(region.y * size + region.x + 3) as usize], 0);
 	}
@@ -619,12 +1027,12 @@ mod tests {
 	}
 
 	#[test]
-	fn pixel_clip_rounds_to_whole_pixels_and_stays_inside_the_viewport() {
+	fn pixel_clip_preserves_fractional_edges_inside_the_viewport() {
 		let viewport = PixelClip {
-			x0: 0,
-			y0: 0,
-			x1: 100,
-			y1: 50,
+			x0: 0.0,
+			y0: 0.0,
+			x1: 100.0,
+			y1: 50.0,
 		};
 		let clip = pixel_clip(
 			Some(DrawClip {
@@ -635,13 +1043,13 @@ mod tests {
 			1.0,
 			viewport,
 		);
-		assert_eq!((clip.x0, clip.y0, clip.x1, clip.y1), (21, 0, 61, 50));
+		assert_eq!((clip.x0, clip.y0, clip.x1, clip.y1), (20.8, 0.0, 61.2, 50.0));
 		assert!(!clip.is_empty());
-		assert_eq!(pixel_clip(None, 1.0, 1.0, viewport).x1, 100);
+		assert_eq!(pixel_clip(None, 1.0, 1.0, viewport).x1, 100.0);
 	}
 
 	#[test]
-	fn text_geometry_emits_pixel_aligned_quads_inside_the_atlas() {
+	fn text_geometry_emits_scaled_quads_inside_the_atlas() {
 		let mut text_system = TextSystem::new();
 		if !text_system.has_font() {
 			return;
@@ -662,8 +1070,6 @@ mod tests {
 		assert_eq!(atlas.len(), 2);
 		let atlas_size = atlas.size() as f32;
 		for vertex in &geometry.vertices {
-			assert_eq!(vertex.pixel_position[0].fract(), 0.0);
-			assert_eq!(vertex.pixel_position[1].fract(), 0.0);
 			assert!((0.0..=1.0).contains(&vertex.uv[0]) && (0.0..=1.0).contains(&vertex.uv[1]));
 			assert_eq!(vertex.color, [1.0, 0.5, 0.25, 1.0]);
 		}

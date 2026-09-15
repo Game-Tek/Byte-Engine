@@ -4,6 +4,36 @@ use utils::Extent;
 
 use crate::{ClearValue, DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
 
+/// The `Region` struct selects a rectangle in the base level of a 2D image.
+/// Write its rows through [`crate::frame::Frame::get_texture_slice_mut`], then
+/// submit them with [`crate::frame::Frame::sync_texture_region`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Region {
+	pub offset: [u32; 2],
+	pub size: [u32; 2],
+}
+
+impl Region {
+	/// Checks that a partial upload addresses a nonempty, uncompressed 2D color region.
+	pub(crate) fn validate(self, extent: Extent, format: Formats, layers: u32) {
+		assert!(
+			extent.depth() <= 1 && layers == 1 && format.bc_bytes_per_block().is_none() && !format.is_depth(),
+			"Texture region upload is unsupported. The most likely cause is a compressed, depth, layered, or 3D image."
+		);
+		assert!(
+			self.size[0] > 0
+				&& self.size[1] > 0
+				&& self.offset[0]
+					.checked_add(self.size[0])
+					.is_some_and(|end| end <= extent.width())
+				&& self.offset[1]
+					.checked_add(self.size[1])
+					.is_some_and(|end| end <= extent.height()),
+			"Texture upload region is out of bounds. The most likely cause is stale image dimensions or an empty rectangle."
+		);
+	}
+}
+
 /// Returns the dimensions of one mip while preserving the image dimensionality.
 pub(crate) fn mip_extent(extent: Extent, level: u32) -> Extent {
 	Extent::new(

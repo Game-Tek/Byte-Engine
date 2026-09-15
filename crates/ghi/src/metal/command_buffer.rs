@@ -133,9 +133,17 @@ pub(in crate::metal) fn encode_texture_upload(
 	extent: Extent,
 	array_layers: u32,
 	staging: &[u8],
+	region: Option<crate::image::Region>,
 ) -> Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>> {
-	let (bytes_per_row, row_count, bytes_per_image) = utils::texture_upload_layout(format, extent)?;
-	let expected_size = bytes_per_image
+	let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent)?;
+	if let Some(region) = region {
+		region.validate(extent, format, array_layers);
+	}
+	let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
+	let origin = region.map_or([0, 0], |region| region.offset);
+	let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
+	let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent)?;
+	let expected_size = source_image_pitch
 		.checked_mul(array_layers as usize)
 		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
 
@@ -166,12 +174,12 @@ pub(in crate::metal) fn encode_texture_upload(
 	let destination = unsafe { upload_buffer.contents().as_ptr().cast::<u8>().add(upload_offset) };
 
 	for slice in 0..array_layers as usize {
-		let source_offset = slice * bytes_per_image;
+		let source_offset = slice * source_image_pitch;
 		let destination_offset = slice * aligned_bytes_per_image;
-		let source_bytes = &staging[source_offset..source_offset + bytes_per_image];
+		let source_bytes = &staging[source_offset..source_offset + source_image_pitch];
 		for row in 0..row_count {
 			// SAFETY: Slice bounds above validate the source row offset.
-			let source = unsafe { source_bytes.as_ptr().add(row * bytes_per_row) };
+			let source = unsafe { source_bytes.as_ptr().add(source_start + row * source_row_pitch) };
 			// SAFETY: The upload allocation covers every padded row in every array layer.
 			let destination = unsafe { destination.add(destination_offset + row * aligned_bytes_per_row) };
 			// SAFETY: Source and upload allocations do not overlap and both expose `bytes_per_row` bytes.
@@ -179,9 +187,13 @@ pub(in crate::metal) fn encode_texture_upload(
 		}
 	}
 
-	let mut source_size = utils::texture_copy_size(format, extent);
+	let mut source_size = utils::texture_copy_size(format, copy_extent);
 	source_size.depth = 1;
-	let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+	let destination_origin = mtl::MTLOrigin {
+		x: origin[0] as _,
+		y: origin[1] as _,
+		z: 0,
+	};
 	for slice in 0..array_layers as usize {
 		// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
 		unsafe {

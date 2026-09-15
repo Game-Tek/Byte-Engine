@@ -5,7 +5,6 @@ use std::{
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 use crate::ui::{
-	Transform,
 	flow::{self, FlowOutput},
 	primitive::{Primitive, Primitives},
 	style::{EdgeFeather, Layer},
@@ -14,57 +13,67 @@ use crate::ui::{
 /// Properties that can change placement independently of text measurements.
 #[derive(PartialEq)]
 enum PlacementInputs {
+	Image {
+		width: super::Sizing,
+		height: super::Sizing,
+	},
+	Shape(crate::ui::primitive::Shapes),
 	Container {
 		width: super::Sizing,
 		height: super::Sizing,
 		depth: super::Depth,
 		position: super::Position,
-		transform: Transform,
 		hit_testable: bool,
-		flow: (std::any::TypeId, FlowOutput),
+		flow: (std::any::TypeId, Option<FlowOutput>),
 	},
 	Text {
-		transform: Transform,
 		hit_testable: bool,
 	},
-	/// Segment edits are paint-only; only the path's size and transform place a curve.
+	/// Segment edits are paint-only; only the path's size places a curve.
 	Curve {
 		width: super::Sizing,
 		height: super::Sizing,
-		transform: Transform,
 		hit_testable: bool,
 	},
 }
 
 /// Captures paint-independent layout inputs without copying styles or text.
-/// Other primitives conservatively remeasure after edits.
-fn placement_inputs(primitive: &Primitives) -> Option<PlacementInputs> {
-	Some(match primitive {
+/// Visual transforms never participate in flow placement.
+fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
+	match primitive {
 		Primitives::Container(container) => PlacementInputs::Container {
 			width: container.width,
 			height: container.height,
 			depth: container.depth,
 			position: container.position,
-			transform: container.transform,
 			hit_testable: container.hit_testable,
-			flow: flow::placement_key(&container.flow)?,
+			flow: (
+				container.flow.callable_type_id(),
+				flow::placement_key(&container.flow).map(|key| key.1),
+			),
 		},
-		Primitives::Text(text) => PlacementInputs::Text {
-			transform: text.transform,
-			hit_testable: false,
-		},
-		Primitives::TextField(text) => PlacementInputs::Text {
-			transform: text.transform,
-			hit_testable: true,
-		},
+		Primitives::Text(_) => PlacementInputs::Text { hit_testable: false },
+		Primitives::TextField(_) => PlacementInputs::Text { hit_testable: true },
 		Primitives::Curve(curve) => PlacementInputs::Curve {
 			width: curve.path.width,
 			height: curve.path.height,
-			transform: curve.transform,
 			hit_testable: curve.hit_width.is_some(),
 		},
-		_ => return None,
-	})
+		Primitives::Image(image) => PlacementInputs::Image {
+			width: image.width,
+			height: image.height,
+		},
+		Primitives::Shape(shape) => PlacementInputs::Shape(shape.shape.clone()),
+	}
+}
+
+/// Returns only the text inputs that affect intrinsic size.
+fn text_measurement_inputs(primitive: &Primitives) -> Option<(&str, f32)> {
+	match primitive {
+		Primitives::Text(text) => Some((text.content(), text.settings().font_size)),
+		Primitives::TextField(text) => Some((text.content(), text.settings().font_size)),
+		_ => None,
+	}
 }
 
 /// Identifies flow replacements so geometry edits do not rescan the tree for custom callables.
@@ -115,9 +124,15 @@ pub(super) struct RetainedTree {
 	revision: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
 	pub(super) placement_revision: u64,
+	/// Roots whose visual transforms changed since the last evaluation.
+	pub(super) transform_changes: Vec<usize>,
+	/// Custom flows may observe external state after edits other than visual transforms.
+	pub(super) non_transform_revision: u64,
 	/// Text edits need a size comparison before placement can be reused.
 	/// Structural edits invalidate placement before these indices can be read.
 	pub(super) text_changes: Vec<usize>,
+	/// Reused to compare text edits without allocating for visual-only updates.
+	text_before: String,
 	/// Advances when the set of flow types may change.
 	pub(super) flow_revision: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
@@ -210,6 +225,7 @@ impl RetainedTree {
 
 		self.element_indices.insert(id, self.elements.len());
 		self.revision += 1;
+		self.non_transform_revision = self.revision;
 		self.placement_revision = self.revision;
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
@@ -263,6 +279,7 @@ impl RetainedTree {
 		self.children[parent_index].push(child_index);
 		self.relations.push((parent, child));
 		self.revision += 1;
+		self.non_transform_revision = self.revision;
 		self.placement_revision = self.revision;
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
@@ -278,31 +295,47 @@ impl RetainedTree {
 		let element = &mut self.elements[index];
 		let primitive = &mut element.element.primitive;
 		let placement = placement_inputs(primitive);
+		let text_before = text_measurement_inputs(primitive).map(|(content, size)| {
+			self.text_before.clear();
+			self.text_before.push_str(content);
+			size
+		});
+		let transform = *primitive.transform();
 		let flow = flow_type(primitive);
 		let clip = clip_inputs(primitive);
 		let opacity = primitive.visual().opacity;
 		let old_clip_revision = self.clip_revision;
 		let old_appearance_revision = self.appearance_revision;
 		let old_placement_revision = self.placement_revision;
+		let old_non_transform_revision = self.non_transform_revision;
 		let old_flow_revision = self.flow_revision;
 		// Invalidate before application code runs, including when a callback unwinds.
 		self.revision += 1;
+		self.non_transform_revision = self.revision;
 		element.revision = self.revision;
 		self.placement_revision = self.revision;
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 		let updated = update(primitive);
+		if transform != *primitive.transform() && !self.transform_changes.contains(&index) {
+			self.transform_changes.push(index);
+		}
 		if flow == flow_type(primitive) {
 			self.flow_revision = old_flow_revision;
 		}
-		if placement.is_some() && placement == placement_inputs(primitive) {
+		if placement == placement_inputs(primitive) {
 			self.placement_revision = old_placement_revision;
-			if matches!(placement, Some(PlacementInputs::Text { .. })) {
+			if transform != *primitive.transform() {
+				self.non_transform_revision = old_non_transform_revision;
+			}
+			if text_measurement_inputs(primitive)
+				.is_some_and(|(content, size)| text_before != Some(size) || content != self.text_before)
+			{
 				self.text_changes.push(index);
 			}
 		}
-		if clip == clip_inputs(primitive) {
+		if clip == clip_inputs(primitive) && !matches!(primitive, Primitives::Curve(curve) if curve.hit_width().is_some()) {
 			self.clip_revision = old_clip_revision;
 			if opacity == primitive.visual().opacity {
 				self.appearance_revision = old_appearance_revision;
@@ -346,6 +379,7 @@ impl RetainedTree {
 			return &self.removed;
 		}
 		self.revision += 1;
+		self.non_transform_revision = self.revision;
 		self.placement_revision = self.revision;
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;

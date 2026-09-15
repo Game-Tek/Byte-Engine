@@ -32,6 +32,13 @@ pub struct Engine<C = ()> {
 	visual_state: Vec<VisualState>,
 	visual_state_key: Option<(u64, u64, Size)>,
 	measurements: Vec<super::Measurement>,
+	rendered_revisions: Vec<u64>,
+	/// Flow placement stays in layout units while snapshots expose transformed surfaces.
+	placement: Vec<LayoutElement>,
+	hit_curves: HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
+	transforms: Vec<Affine2>,
+	transform_work: Vec<usize>,
+	placement_indices: Vec<usize>,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
@@ -39,6 +46,7 @@ struct RetainedLayout {
 	/// Last evaluated mutation; `revision` advances only when snapshot geometry changes.
 	tree_revision: u64,
 	placement_revision: u64,
+	non_transform_revision: u64,
 	flow_revision: u64,
 	has_custom_flows: bool,
 	clip_revision: u64,
@@ -62,6 +70,7 @@ fn retain_snapshot_data<T: Copy>(target: &mut Rc<Vec<T>>, source: &[T]) {
 /// The `RetainedRender` struct keeps the last render so unchanged trees report the same revision.
 struct RetainedRender {
 	tree_revision: u64,
+	placement_revision: u64,
 	clip_revision: u64,
 	visible: Vec<LayoutElement>,
 	layout_revision: u64,
@@ -194,6 +203,12 @@ impl<C: 'static> Engine<C> {
 			visual_state: Vec::new(),
 			visual_state_key: None,
 			measurements: Vec::new(),
+			rendered_revisions: Vec::new(),
+			placement: Vec::new(),
+			hit_curves: HashMap::new(),
+			transforms: Vec::new(),
+			transform_work: Vec::new(),
+			placement_indices: Vec::new(),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
 	}
@@ -251,8 +266,8 @@ impl<C: 'static> Engine<C> {
 		snapshot
 	}
 
-	// Paint and equal-size text changes reuse placement for built-in flows. Custom flows
-	// may read captured state, so they still replay after any mutation to the tree.
+	// Visual transforms reuse placement for every flow. Other edits can replay custom
+	// flows because their placement may depend on captured application state.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let mut tree = tree.borrow_mut();
@@ -264,7 +279,7 @@ impl<C: 'static> Engine<C> {
 		if !unchanged {
 			let placement_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.placement_revision == tree.placement_revision
-					&& !retained.has_custom_flows
+					&& (!retained.has_custom_flows || retained.non_transform_revision == tree.non_transform_revision)
 					&& retained.size == size
 					// Only edited text needs checking. Keep the refreshed measurement if a
 					// changed size falls through to full placement, so it is not measured twice.
@@ -276,19 +291,61 @@ impl<C: 'static> Engine<C> {
 						super::measure_element(&tree.elements[index], available, &mut self.text_system, cached) == previous_size
 					})
 			});
+			let transforms_changed = !tree.transform_changes.is_empty();
 			let previous = self
 				.retained_layout
 				.as_ref()
-				.filter(|_| placement_unchanged)
+				.filter(|_| placement_unchanged && !transforms_changed)
 				.map(|retained| Rc::clone(&retained.elements));
-			let mut placed;
-			let elements = if let Some(previous) = &previous {
-				previous.as_slice()
-			} else {
+			let mut placed = Vec::new_in(frame_allocator);
+			if placement_unchanged && transforms_changed {
+				placed.extend_from_slice(&self.retained_layout.as_ref().unwrap().elements);
+				// Recompute from retained placement, never from already transformed bounds.
+				// An edited ancestor owns the whole subtree, including nested edited roots.
+				for &index in &tree.transform_changes {
+					let mut ancestor = tree.parents[index];
+					let mut covered = false;
+					while let Some(parent) = ancestor {
+						covered |= tree.transform_changes.contains(&parent);
+						ancestor = tree.parents[parent];
+					}
+					if !covered {
+						update_visual_subtree(
+							index,
+							&tree,
+							&self.placement,
+							&self.placement_indices,
+							&mut self.transforms,
+							&mut placed,
+							&mut self.transform_work,
+						);
+					}
+				}
+			} else if !placement_unchanged {
 				placed = layout_elements(&tree, size, &mut self.text_system, &mut self.measurements, frame_allocator);
-				apply_visual_transforms(&mut placed, &tree, frame_allocator);
-				placed.as_slice()
-			};
+				self.placement.clear();
+				self.placement.extend_from_slice(&placed);
+				self.transforms.resize(tree.elements.len(), Affine2::identity());
+				self.placement_indices.clear();
+				self.placement_indices.resize(tree.elements.len(), usize::MAX);
+				for (offset, element) in self.placement.iter().enumerate() {
+					self.placement_indices[tree.element_indices[&element.id]] = offset;
+				}
+				for index in 0..tree.elements.len() {
+					if tree.parents[index].is_none() {
+						update_visual_subtree(
+							index,
+							&tree,
+							&self.placement,
+							&self.placement_indices,
+							&mut self.transforms,
+							&mut placed,
+							&mut self.transform_work,
+						);
+					}
+				}
+			}
+			let elements = previous.as_deref().map_or(placed.as_slice(), |elements| elements.as_slice());
 			let has_custom_flows = self.retained_layout.as_ref()
 				.filter(|retained| retained.flow_revision == tree.flow_revision)
 				.map_or_else(|| tree.elements.iter().any(|element| {
@@ -297,6 +354,7 @@ impl<C: 'static> Engine<C> {
 			let geometry_unchanged = self.retained_layout.as_ref().is_some_and(|retained| {
 				retained.size == size
 					&& retained.clip_revision == tree.clip_revision
+					&& !transforms_changed
 					&& (placement_unchanged || retained.elements.as_slice() == elements)
 			});
 			if !geometry_unchanged {
@@ -304,7 +362,7 @@ impl<C: 'static> Engine<C> {
 				// changed geometry its own revision so older snapshots keep distinct cache keys.
 				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
 				self.prepare_appearance(elements, &tree, layout_revision, size);
-				let hit = clipped_hit_elements(elements, &tree, &self.visual_state, frame_allocator);
+				let hit = clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator);
 				// A stable topology keeps IDs and layout order, so update only changed bounds.
 				// Structural edits also advance clip_revision, including removal and remount of the same ID.
 				if let Some(previous) = self
@@ -331,6 +389,7 @@ impl<C: 'static> Engine<C> {
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree_revision: revision,
 					placement_revision: tree.placement_revision,
+					non_transform_revision: tree.non_transform_revision,
 					flow_revision: tree.flow_revision,
 					has_custom_flows,
 					clip_revision: tree.clip_revision,
@@ -343,7 +402,7 @@ impl<C: 'static> Engine<C> {
 				retained.revision = layout_revision;
 				retained.clip_revision = tree.clip_revision;
 				retained.size = size;
-				if !placement_unchanged {
+				if !placement_unchanged || transforms_changed {
 					retain_snapshot_data(&mut retained.elements, elements);
 				}
 				retain_snapshot_data(&mut retained.relations, &tree.relations);
@@ -362,9 +421,11 @@ impl<C: 'static> Engine<C> {
 				.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
 			retained.tree_revision = revision;
 			retained.placement_revision = tree.placement_revision;
+			retained.non_transform_revision = tree.non_transform_revision;
 			retained.flow_revision = tree.flow_revision;
 			retained.has_custom_flows = has_custom_flows;
 			tree.text_changes.clear();
+			tree.transform_changes.clear();
 		}
 		let retained = self
 			.retained_layout
@@ -614,6 +675,24 @@ impl<C: 'static> Engine<C> {
 				&& retained.layout_revision == snapshot.layout_revision
 				&& retained.size == snapshot.size
 		});
+		let render_revision = RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+		// Keep live identities independently of culling so sinks retain hidden canvas data.
+		// Placement edits are a conservative boundary for refreshing membership.
+		let (surface_revision, surface_ids) = self
+			.retained_render
+			.as_ref()
+			.filter(|retained| retained.placement_revision == tree.placement_revision)
+			.map(|retained| {
+				(
+					retained.render.surface_revision,
+					std::sync::Arc::clone(&retained.render.surface_ids),
+				)
+			})
+			.unwrap_or_else(|| {
+				let mut ids: Vec<_> = tree.elements.iter().map(|element| element.id.get()).collect();
+				ids.sort_unstable();
+				(render_revision, std::sync::Arc::from(ids))
+			});
 		// Reuse the engine-owned buffers. Render clones keep their independent contents.
 		let (mut elements, mut curve_elements, mut image_elements, mut text_elements, mut visible) = self
 			.retained_render
@@ -632,6 +711,7 @@ impl<C: 'static> Engine<C> {
 		// beyond that prefix are dropped after the walk, so removed content cannot escape.
 		let (mut element_count, mut curve_count, mut text_count) = (0, 0, 0);
 		image_elements.clear();
+		self.rendered_revisions.resize(tree.elements.len(), 0);
 		// Input callbacks can change appearance after layout. The cache key includes those changes.
 		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size);
 		if !visibility_unchanged {
@@ -659,6 +739,8 @@ impl<C: 'static> Engine<C> {
 				continue;
 			};
 			let retained_element = &tree.elements[index];
+			let local_unchanged = self.rendered_revisions[index] == retained_element.revision;
+			self.rendered_revisions[index] = retained_element.revision;
 			let state = self.visual_state[index];
 			let clip = state.clip.as_rect();
 			let feather_mask = state.feather;
@@ -666,6 +748,18 @@ impl<C: 'static> Engine<C> {
 			let style = retained_element.element.primitive.style();
 			// Only layered geometry retains a style copy; images and text borrow what they need.
 			let mut push_rectangle = |corner_radius, corner_exponent| {
+				if let Some(entry) = elements
+					.get_mut(element_count)
+					.filter(|entry| local_unchanged && entry.id == element.id.get())
+				{
+					entry.position = element.position;
+					entry.size = element.size;
+					entry.clip = clip;
+					entry.feather_mask = feather_mask;
+					entry.opacity = opacity;
+					element_count += 1;
+					return;
+				}
 				let mut layers = elements
 					.get_mut(element_count)
 					.map(|entry| std::mem::take(&mut entry.style.layers))
@@ -695,6 +789,19 @@ impl<C: 'static> Engine<C> {
 				element_count += 1;
 			};
 			let mut push_text = |content: &str, font_size| {
+				if let Some(entry) = text_elements
+					.get_mut(text_count)
+					.filter(|entry| local_unchanged && entry.id == element.id.get())
+				{
+					entry.position = element.position;
+					entry.size = element.size;
+					entry.clip = clip;
+					entry.feather_mask = feather_mask;
+					entry.opacity = opacity;
+					entry.scale = state.scale[0].min(state.scale[1]);
+					text_count += 1;
+					return;
+				}
 				let mut retained_content = text_elements
 					.get_mut(text_count)
 					.map(|entry| std::mem::take(&mut entry.content))
@@ -735,6 +842,19 @@ impl<C: 'static> Engine<C> {
 					push_rectangle(corner_radius, corner_exponent);
 				}
 				Primitives::Curve(curve) => {
+					if let Some(entry) = curve_elements
+						.get_mut(curve_count)
+						.filter(|entry| local_unchanged && entry.id == element.id.get())
+					{
+						entry.position = element.position;
+						entry.size = element.size;
+						entry.clip = clip;
+						entry.feather_mask = feather_mask;
+						entry.opacity = opacity;
+						entry.scale = state.scale;
+						curve_count += 1;
+						continue;
+					}
 					let (mut layers, mut segments) = curve_elements
 						.get_mut(curve_count)
 						.map(|entry| (std::mem::take(&mut entry.style.layers), std::mem::take(&mut entry.segments)))
@@ -784,6 +904,7 @@ impl<C: 'static> Engine<C> {
 
 		RetainedRender {
 			tree_revision: tree.revision(),
+			placement_revision: tree.placement_revision,
 			clip_revision: tree.clip_revision,
 			layout_revision: snapshot.layout_revision,
 			size: snapshot.size,
@@ -793,7 +914,10 @@ impl<C: 'static> Engine<C> {
 				curve_elements,
 				image_elements,
 				text_elements,
-				revision: RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+				revision: render_revision,
+				surface_revision,
+				surface_ids,
+				viewport_size: snapshot.size,
 			},
 		}
 	}
@@ -955,6 +1079,10 @@ pub struct RenderRevision(u64);
 /// The `Render` struct preserves the visual data derived from a snapshot so UI primitives can be submitted to the renderer.
 #[derive(Clone)]
 pub struct Render {
+	pub(crate) surface_revision: RenderRevision,
+	pub(crate) surface_ids: std::sync::Arc<[u32]>,
+	/// The viewport defines layout units independently of the root visual transform.
+	pub(crate) viewport_size: Size,
 	elements: Vec<RenderElement>,
 	curve_elements: Vec<RenderCurveElement>,
 	image_elements: Vec<RenderImageElement>,
@@ -968,6 +1096,7 @@ impl Render {
 		self.revision
 	}
 
+	#[cfg(test)]
 	pub(crate) fn root(&self) -> &RenderElement {
 		self.elements.iter().find(|e| e.id == 1).unwrap()
 	}

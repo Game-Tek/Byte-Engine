@@ -89,18 +89,19 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 			scale,
 		};
 		if let Primitives::Container(container) = primitive
-			&& container.clip {
-				let geometry = geometry_from_layout_element(element);
-				state.descendant_clip = clip.clip_descendants(geometry);
-				state.descendant_feather = first_layer_feather(container.style.layers())
-					.map(|feather| FeatherMask {
-						geometry,
-						feather,
-						corner_radius: container.corner_radius,
-						corner_exponent: container.corner_exponent,
-					})
-					.or(feather);
-			}
+			&& container.clip
+		{
+			let geometry = geometry_from_layout_element(element);
+			state.descendant_clip = clip.clip_descendants(geometry);
+			state.descendant_feather = first_layer_feather(container.style.layers())
+				.map(|feather| FeatherMask {
+					geometry,
+					feather,
+					corner_radius: container.corner_radius,
+					corner_exponent: container.corner_exponent,
+				})
+				.or(feather);
+		}
 		states[index] = state;
 	}
 }

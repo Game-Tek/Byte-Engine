@@ -280,7 +280,9 @@ impl<'a> DecodedExr<'a> {
 		};
 
 		for (destination, channel) in pixel
-			.as_chunks_mut::<{ std::mem::size_of::<f16>() }>().0.iter_mut()
+			.as_chunks_mut::<{ std::mem::size_of::<f16>() }>()
+			.0
+			.iter_mut()
 			.zip([channels.0, channels.1, channels.2, channels.3])
 		{
 			destination.copy_from_slice(&channel.to_le_bytes());
@@ -426,7 +428,9 @@ mod tests {
 	}
 
 	fn rgba16f_values(data: &[u8]) -> Vec<f32> {
-		data.as_chunks::<2>().0.iter()
+		data.as_chunks::<2>()
+			.0
+			.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect()
 	}

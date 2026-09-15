@@ -507,7 +507,14 @@ mod tests {
 			vec![(4, 2), (2, 1), (1, 1)]
 		);
 		for level in levels.levels() {
-			assert!(level.data.as_chunks::<4>().0.iter().all(|pixel| *pixel == [64, 128, 192, 255]));
+			assert!(
+				level
+					.data
+					.as_chunks::<4>()
+					.0
+					.iter()
+					.all(|pixel| *pixel == [64, 128, 192, 255])
+			);
 		}
 
 		let reused = generator

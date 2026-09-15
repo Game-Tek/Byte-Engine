@@ -163,18 +163,18 @@ pub(super) fn decode_into(metadata: Audio, bytes: &[u8], samples: &mut [f32]) ->
 			}
 		}
 		BitDepths::Sixteen => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(2)) {
+			for (destination, sample) in samples.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
 				*destination = i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32_768.0;
 			}
 		}
 		BitDepths::TwentyFour => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(3)) {
+			for (destination, sample) in samples.iter_mut().zip(bytes.as_chunks::<3>().0.iter()) {
 				let sign = if sample[2] & 0x80 == 0 { 0 } else { 0xff };
 				*destination = i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0;
 			}
 		}
 		BitDepths::ThirtyTwo => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(4)) {
+			for (destination, sample) in samples.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
 				*destination = i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32 / 2_147_483_648.0;
 			}
 		}

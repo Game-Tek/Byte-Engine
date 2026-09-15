@@ -153,16 +153,14 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		self.resolve_tracked(url, Some(allocator))
 	}
 
-	fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<Option<BEADType>, ()>> + 'a {
-		async move {
-			// Track absence as well as content, so creating a sidecar invalidates the baked resource.
-			let path = format!("{}.bead", url.get_base().as_ref());
-			let id = ResourceId::new(&path);
-			let before = self.inner.version(id).await?;
-			let resolved = self.inner.load_sidecar(url).await?;
-			let after = self.inner.version(id).await?;
-			self.finish_tracked_read(id, before, after, resolved)
-		}
+	async fn load_sidecar<'a>(&'a self, url: ResourceId<'a>) -> Result<Option<BEADType>, ()> {
+		// Track absence as well as content, so creating a sidecar invalidates the baked resource.
+		let path = format!("{}.bead", url.get_base().as_ref());
+		let id = ResourceId::new(&path);
+		let before = self.inner.version(id).await?;
+		let resolved = self.inner.load_sidecar(url).await?;
+		let after = self.inner.version(id).await?;
+		self.finish_tracked_read(id, before, after, resolved)
 	}
 
 	fn version<'a>(&'a self, url: ResourceId<'a>) -> impl std::future::Future<Output = Result<AssetVersion, ()>> + 'a {

@@ -139,9 +139,11 @@ type Measurement = Option<(u64, Size, Size)>;
 /// Resolves and caches the primitive size used by placement and its parent flow.
 fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem, cached: &mut Measurement) -> Size {
 	if let Some((revision, parent_space, size)) = *cached
-		&& revision == element.revision && parent_space == available {
-			return size;
-		}
+		&& revision == element.revision
+		&& parent_space == available
+	{
+		return size;
+	}
 	let size = match &element.element.primitive {
 		Primitives::Container(container) => Shapes::Box {
 			half: (container.width, container.height),

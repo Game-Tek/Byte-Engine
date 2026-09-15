@@ -219,7 +219,9 @@ pub(super) fn rgba_pixels(readback: ghi::TextureReadback) -> Vec<RGBAu8> {
 	);
 	readback
 		.bytes
-		.as_chunks::<{ std::mem::size_of::<RGBAu8>() }>().0.iter()
+		.as_chunks::<{ std::mem::size_of::<RGBAu8>() }>()
+		.0
+		.iter()
 		.map(|pixel| RGBAu8 {
 			r: pixel[0],
 			g: pixel[1],

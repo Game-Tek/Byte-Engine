@@ -10,18 +10,22 @@ use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_t
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
 		.bytes()
-		.as_chunks::<4>().0.iter()
+		.as_chunks::<4>()
+		.0
+		.iter()
 		.take(count)
-		.map(|chunk| f32::from_ne_bytes((*chunk).try_into().expect("Expected four bytes")))
+		.map(|chunk| f32::from_ne_bytes(*chunk))
 		.collect()
 }
 
 fn read_u32s(buffer: &Buffer, count: usize) -> Vec<u32> {
 	buffer
 		.bytes()
-		.as_chunks::<4>().0.iter()
+		.as_chunks::<4>()
+		.0
+		.iter()
 		.take(count)
-		.map(|chunk| u32::from_ne_bytes((*chunk).try_into().expect("Expected four bytes")))
+		.map(|chunk| u32::from_ne_bytes(*chunk))
 		.collect()
 }
 

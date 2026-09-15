@@ -331,7 +331,9 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 			"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
 		);
 		let pixels = image_data
-			.as_chunks::<4>().0.iter()
+			.as_chunks::<4>()
+			.0
+			.iter()
 			.map(|pixel| RGBAu8 {
 				r: pixel[0],
 				g: pixel[1],

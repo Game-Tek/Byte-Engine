@@ -114,7 +114,12 @@ impl PreparedMesh {
 		let mut staging = allocate_staging(&upload_staging, cursor).await?;
 		let backing = staging.bytes_mut();
 		backing[streams.positions.clone()].copy_from_slice(as_byte_slice(&positions));
-		for (destination, normal) in backing[streams.normals.clone()].as_chunks_mut::<4>().0.iter_mut().zip(normals.iter()) {
+		for (destination, normal) in backing[streams.normals.clone()]
+			.as_chunks_mut::<4>()
+			.0
+			.iter_mut()
+			.zip(normals.iter())
+		{
 			write_unit_vector(destination, *normal);
 		}
 		for (destination, (u, v)) in backing[streams.uvs.clone()].as_chunks_mut::<4>().0.iter_mut().zip(uvs.iter()) {
@@ -190,8 +195,10 @@ impl PreparedMesh {
 		let rebase = |range: &Range<usize>| range.start - layout.source_byte_count..range.end - layout.source_byte_count;
 		let vertex_count = layout.counts.vertices as usize;
 		for (destination, source) in output[rebase(&layout.streams.normals)]
-			.as_chunks_mut::<4>().0.iter_mut()
-			.zip(source_bytes[layout.source_normals.clone()].chunks_exact(12))
+			.as_chunks_mut::<4>()
+			.0
+			.iter_mut()
+			.zip(source_bytes[layout.source_normals.clone()].as_chunks::<12>().0.iter())
 		{
 			write_unit_vector(destination, (read_f32(source, 0), read_f32(source, 4), read_f32(source, 8)));
 		}
@@ -772,8 +779,10 @@ fn write_f16_pair(destination: &mut [u8], u: f32, v: f32) {
 /// Converts an f32 UV stream to half-float storage without clamping sampler coordinates.
 fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 	for (source, destination) in source
-		.as_chunks::<F32_UV_STRIDE>().0.iter()
-		.zip(destination.chunks_exact_mut(F16_UV_STRIDE))
+		.as_chunks::<F32_UV_STRIDE>()
+		.0
+		.iter()
+		.zip(destination.as_chunks_mut::<F16_UV_STRIDE>().0.iter_mut())
 		.take(vertex_count)
 	{
 		write_f16_pair(destination, read_f32(source, 0), read_f32(source, 4));
@@ -893,8 +902,10 @@ mod tests {
 		pack_f32_uvs(&source, &mut packed, values.len());
 
 		let decoded = packed
-			.as_chunks::<2>().0.iter()
-			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes((*bytes).try_into().unwrap())).to_f32())
+			.as_chunks::<2>()
+			.0
+			.iter()
+			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes(*bytes)).to_f32())
 			.collect::<Vec<_>>();
 		assert_eq!(decoded, vec![-0.5, 2.0, 1.25, -3.0]);
 	}

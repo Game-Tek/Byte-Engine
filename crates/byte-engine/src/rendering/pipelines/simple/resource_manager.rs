@@ -428,7 +428,9 @@ async fn prepare_generated_mesh(
 	let bytes = staging.bytes_mut();
 	bytes[..position_size].copy_from_slice(utils::as_byte_slice(positions.as_ref()));
 	for (destination, &index) in bytes[index_start..][..index_size]
-		.as_chunks_mut::<INDEX_STRIDE>().0.iter_mut()
+		.as_chunks_mut::<INDEX_STRIDE>()
+		.0
+		.iter_mut()
 		.zip(source_indices.iter())
 	{
 		destination.copy_from_slice(&(index as u16).to_ne_bytes());
@@ -498,8 +500,11 @@ async fn prepare_resource_mesh(
 		}
 	}
 
-	for component in staging.bytes_mut()[..layout.position_size].as_chunks_mut::<{ std::mem::size_of::<f32>() }>().0 {
-		let value = f32::from_le_bytes((*component).try_into().expect("A position component is four bytes."));
+	for component in staging.bytes_mut()[..layout.position_size]
+		.as_chunks_mut::<{ std::mem::size_of::<f32>() }>()
+		.0
+	{
+		let value = f32::from_le_bytes(*component);
 		component.copy_from_slice(&value.to_ne_bytes());
 	}
 	rebase_resource_indices(
@@ -546,7 +551,7 @@ fn rebase_resource_indices(indices: &mut [u8], primitives: &[ResourcePrimitiveLa
 			.get_mut(primitive.index_range.clone())
 			.ok_or(SimpleMeshError::InvalidPrimitiveLayout)?;
 		for encoded in primitive_indices.as_chunks_mut::<INDEX_STRIDE>().0 {
-			let local = u16::from_le_bytes((*encoded).try_into().expect("A Simple index is two bytes.")) as usize;
+			let local = u16::from_le_bytes(*encoded) as usize;
 			if local >= primitive.vertex_count {
 				return Err(SimpleMeshError::IndexOutOfRange);
 			}
@@ -590,8 +595,10 @@ mod tests {
 				utils::as_byte_slice(expected_positions.as_ref())
 			);
 			let actual_indices = prepared_bytes[index_range]
-				.as_chunks::<INDEX_STRIDE>().0.iter()
-				.map(|bytes| u16::from_ne_bytes((*bytes).try_into().unwrap()))
+				.as_chunks::<INDEX_STRIDE>()
+				.0
+				.iter()
+				.map(|bytes| u16::from_ne_bytes(*bytes))
 				.collect::<Vec<_>>();
 			assert_eq!(
 				actual_indices,
@@ -634,8 +641,10 @@ mod tests {
 
 		assert_eq!(positions, encoded_positions);
 		let actual = indices
-			.as_chunks::<INDEX_STRIDE>().0.iter()
-			.map(|bytes| u16::from_ne_bytes((*bytes).try_into().unwrap()))
+			.as_chunks::<INDEX_STRIDE>()
+			.0
+			.iter()
+			.map(|bytes| u16::from_ne_bytes(*bytes))
 			.collect::<Vec<_>>();
 		assert_eq!(actual, [0, 1, 2, 3, 4, 5]);
 		let mut indices = [3u16].into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>();

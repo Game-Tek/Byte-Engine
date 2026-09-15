@@ -1007,9 +1007,7 @@ impl<C: 'static> Engine<C> {
 	/// [`Self::evaluate`], so either the caller or a component can apply it. The
 	/// source gets [`Events::DragEnded`] either way.
 	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
-		let Some(point) = self.layout_point(position) else {
-			return None;
-		};
+		let point = self.layout_point(position)?;
 		let mut runtime = self.runtime.borrow_mut();
 		let held = runtime.drag.capture()?.source;
 		let dropped = runtime.drag.release(point);

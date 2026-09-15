@@ -75,7 +75,9 @@ mod tests {
 		.expect("Planar audio should process");
 
 		let samples: Vec<i16> = data
-			.as_chunks::<2>().0.iter()
+			.as_chunks::<2>()
+			.0
+			.iter()
 			.map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
 			.collect();
 		let audio: Audio = crate::from_slice(&asset.resource).unwrap();

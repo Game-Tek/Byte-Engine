@@ -605,10 +605,12 @@ fn write_source_atlas(
 	source_mip.clear();
 
 	// The root level spans the full atlas width. Decode while copying so non-finite source values remain sanitized.
-	for (source, destination) in source_rgba16f
-		.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter()
-		.zip(atlas[..source_rgba16f.len()].chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL))
-	{
+	for (source, destination) in source_rgba16f.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter().zip(
+		atlas[..source_rgba16f.len()]
+			.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
+			.iter_mut(),
+	) {
 		write_rgba16f(destination, decode_source_pixel(source));
 	}
 
@@ -756,10 +758,12 @@ fn write_source_level(
 		let source_start = y * level_width as usize;
 		let destination_start = ((level_y_offset as usize + y) * atlas_width as usize) * BYTES_PER_RGBA16F_PIXEL;
 		let destination_end = destination_start + level_width as usize * BYTES_PER_RGBA16F_PIXEL;
-		for (radiance, destination) in pixels[source_start..source_start + level_width as usize]
-			.iter()
-			.zip(atlas[destination_start..destination_end].chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL))
-		{
+		for (radiance, destination) in pixels[source_start..source_start + level_width as usize].iter().zip(
+			atlas[destination_start..destination_end]
+				.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>()
+				.0
+				.iter_mut(),
+		) {
 			write_rgba16f(destination, *radiance);
 		}
 	}
@@ -941,8 +945,10 @@ mod tests {
 		let gpu_base = &gpu.data[gpu_stream.offset()..gpu_stream.offset() + gpu_stream.size()];
 		let cpu_base = &cpu.data[cpu_stream.offset()..cpu_stream.offset() + cpu_stream.size()];
 		for (pixel_index, (gpu_pixel, cpu_pixel)) in gpu_base
-			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter()
-			.zip(cpu_base.chunks_exact(BYTES_PER_RGBA16F_PIXEL))
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
+			.iter()
+			.zip(cpu_base.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter())
 			.enumerate()
 		{
 			for channel in 0..3 {
@@ -974,7 +980,12 @@ mod tests {
 		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
 
 		assert_eq!(&baked.data[..source.len()], source.as_slice());
-		for (pixel_index, pixel) in baked.data[source.len()..].as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter().enumerate() {
+		for (pixel_index, pixel) in baked.data[source.len()..]
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
+			.iter()
+			.enumerate()
+		{
 			let decoded = std::array::from_fn::<_, 4, _>(|channel| {
 				f16::from_le_bytes([pixel[channel * 2], pixel[channel * 2 + 1]]).to_f32()
 			});

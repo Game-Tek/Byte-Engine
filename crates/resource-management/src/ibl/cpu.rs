@@ -490,7 +490,10 @@ fn decode_finite_half(bytes: &[u8]) -> f32 {
 }
 
 fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
-	for (radiance, pixel) in source.iter().zip(destination.chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL)) {
+	for (radiance, pixel) in source
+		.iter()
+		.zip(destination.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0.iter_mut())
+	{
 		write_rgba16f(pixel, *radiance);
 	}
 }
@@ -984,7 +987,10 @@ mod tests {
 		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		assert_eq!(first.streams.last().unwrap().name(), IBL_DIFFUSE_IRRADIANCE_STREAM_NAME);
 
-		for pixel in first.data[root.offset()..root.offset() + root.size()].as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0 {
+		for pixel in first.data[root.offset()..root.offset() + root.size()]
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
+		{
 			assert_eq!(decode_pixel(pixel), [color[0], color[1], color[2], 0.25]);
 		}
 		for stream in &first.streams[1..] {
@@ -1027,7 +1033,8 @@ mod tests {
 		assert_eq!(&baked.data[root.offset()..root.offset() + root.size()], source.as_slice());
 		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		for pixel in baked.data[specular_zero.offset()..specular_zero.offset() + specular_zero.size()]
-			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
 		{
 			assert_eq!(decode_pixel(pixel), [2.0, 3.0, 4.0, 1.0]);
 		}

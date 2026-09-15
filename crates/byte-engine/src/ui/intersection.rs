@@ -319,25 +319,26 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_hits_topmost_overlapping_element() {
-		let mut layout = Vec::with_capacity(3);
-		layout.push(QueryElement {
-			id: 1,
-			position: Location3::new(0, 0, 0),
-			size: Size::new(200, 200),
-			curve: None,
-		});
-		layout.push(QueryElement {
-			id: 2,
-			position: Location3::new(20, 20, 0),
-			size: Size::new(120, 120),
-			curve: None,
-		});
-		layout.push(QueryElement {
-			id: 3,
-			position: Location3::new(40, 40, 0),
-			size: Size::new(60, 60),
-			curve: None,
-		});
+		let layout = vec![
+			QueryElement {
+				id: 1,
+				position: Location3::new(0, 0, 0),
+				size: Size::new(200, 200),
+				curve: None,
+			},
+			QueryElement {
+				id: 2,
+				position: Location3::new(20, 20, 0),
+				size: Size::new(120, 120),
+				curve: None,
+			},
+			QueryElement {
+				id: 3,
+				position: Location3::new(40, 40, 0),
+				size: Size::new(60, 60),
+				curve: None,
+			},
+		];
 
 		let mut acceleration = MouseClickAcceleration {
 			elements: layout,
@@ -352,19 +353,20 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_returns_none_when_no_hit() {
-		let mut layout = Vec::with_capacity(2);
-		layout.push(QueryElement {
-			id: 10,
-			position: Location3::new(0, 0, 0),
-			size: Size::new(100, 100),
-			curve: None,
-		});
-		layout.push(QueryElement {
-			id: 11,
-			position: Location3::new(150, 150, 0),
-			size: Size::new(50, 50),
-			curve: None,
-		});
+		let layout = vec![
+			QueryElement {
+				id: 10,
+				position: Location3::new(0, 0, 0),
+				size: Size::new(100, 100),
+				curve: None,
+			},
+			QueryElement {
+				id: 11,
+				position: Location3::new(150, 150, 0),
+				size: Size::new(50, 50),
+				curve: None,
+			},
+		];
 
 		let mut acceleration = MouseClickAcceleration {
 			elements: layout,
@@ -378,19 +380,20 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_prefers_deeper_elements_over_layout_order() {
-		let mut layout = Vec::with_capacity(2);
-		layout.push(QueryElement {
-			id: 20,
-			position: Location3::new(0, 0, 3),
-			size: Size::new(100, 100),
-			curve: None,
-		});
-		layout.push(QueryElement {
-			id: 21,
-			position: Location3::new(0, 0, 1),
-			size: Size::new(100, 100),
-			curve: None,
-		});
+		let layout = vec![
+			QueryElement {
+				id: 20,
+				position: Location3::new(0, 0, 3),
+				size: Size::new(100, 100),
+				curve: None,
+			},
+			QueryElement {
+				id: 21,
+				position: Location3::new(0, 0, 1),
+				size: Size::new(100, 100),
+				curve: None,
+			},
+		];
 
 		let mut acceleration = MouseClickAcceleration {
 			elements: layout,
@@ -403,13 +406,12 @@ mod tests {
 
 	#[test]
 	fn mouse_click_acceleration_preserves_fractional_visual_bounds() {
-		let mut layout = Vec::with_capacity(1);
-		layout.push(QueryElement {
+		let layout = vec![QueryElement {
 			id: 1,
 			position: Location3::new(10.25, 20.5, 0),
 			size: Size::new(5.5, 3.25),
 			curve: None,
-		});
+		}];
 
 		let mut acceleration = MouseClickAcceleration {
 			elements: layout,

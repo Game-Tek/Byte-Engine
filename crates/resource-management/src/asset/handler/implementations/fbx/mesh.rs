@@ -817,7 +817,7 @@ pub(crate) fn append_triangulated_face<A: Allocator>(
 	let triangles = &scratch[..index_count];
 
 	// Retained triangles may share malformed corner normals with a degenerate sibling, so discard the source polygon as a unit.
-	for triangle in triangles.chunks_exact(3) {
+	for triangle in triangles.as_chunks::<3>().0 {
 		if is_degenerate_fbx_triangle(mesh, triangle)? {
 			return Ok(TriangulatedFaceAppendResult::CulledDegenerate);
 		}
@@ -908,7 +908,7 @@ pub(crate) fn remap_triangle_corners<'a>(
 
 	let mut batches = Vec::with_capacity_in(batch_capacity, allocator);
 
-	for triangle in corners.chunks_exact(3) {
+	for triangle in corners.as_chunks::<3>().0 {
 		let mut new_corners = 0usize;
 
 		for &corner in triangle {

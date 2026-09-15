@@ -606,7 +606,7 @@ fn write_source_atlas(
 
 	// The root level spans the full atlas width. Decode while copying so non-finite source values remain sanitized.
 	for (source, destination) in source_rgba16f
-		.chunks_exact(BYTES_PER_RGBA16F_PIXEL)
+		.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter()
 		.zip(atlas[..source_rgba16f.len()].chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL))
 	{
 		write_rgba16f(destination, decode_source_pixel(source));

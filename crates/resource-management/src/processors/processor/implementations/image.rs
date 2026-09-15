@@ -1006,7 +1006,7 @@ mod tests {
 
 /// Selects BC7 compressor settings that favor quality enough to avoid visible block-row artifacts.
 fn bc7_compression_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
-	let has_alpha = data.chunks_exact(4).any(|pixel| pixel[3] != 0xFF);
+	let has_alpha = data.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0xFF);
 
 	if has_alpha {
 		intel_tex_2::bc7::alpha_basic_settings()

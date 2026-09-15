@@ -556,7 +556,7 @@ fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> 
 
 fn orient_triangle_indices_in_place(indices: &mut [u32], winding: TriangleFrontFaceWinding) {
 	if winding == TriangleFrontFaceWinding::Clockwise {
-		for triangle in indices.chunks_exact_mut(3) {
+		for triangle in indices.as_chunks_mut::<3>().0 {
 			triangle.swap(1, 2);
 		}
 	}

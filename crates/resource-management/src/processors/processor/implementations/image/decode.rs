@@ -280,7 +280,7 @@ impl<'a> DecodedExr<'a> {
 		};
 
 		for (destination, channel) in pixel
-			.chunks_exact_mut(std::mem::size_of::<f16>())
+			.as_chunks_mut::<{ std::mem::size_of::<f16>() }>().0.iter_mut()
 			.zip([channels.0, channels.1, channels.2, channels.3])
 		{
 			destination.copy_from_slice(&channel.to_le_bytes());

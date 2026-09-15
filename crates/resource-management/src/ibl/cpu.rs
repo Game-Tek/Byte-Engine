@@ -469,7 +469,7 @@ pub(super) fn decode_source_radiance<'a>(
 		.try_reserve_exact(pixel_count)
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
 
-	for pixel in source.chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+	for pixel in source.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0 {
 		radiance.push(decode_source_pixel(pixel));
 	}
 

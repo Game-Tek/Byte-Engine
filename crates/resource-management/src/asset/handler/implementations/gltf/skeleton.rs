@@ -695,7 +695,7 @@ pub(crate) fn make_vector3_curve(
 
 			let mut out_tangents = Vec::with_capacity(times.len());
 
-			for triplet in values.chunks_exact(3) {
+			for triplet in values.as_chunks::<3>().0 {
 				in_tangents.push(triplet[0]);
 
 				key_values.push(triplet[1]);
@@ -742,7 +742,7 @@ pub(crate) fn make_quaternion_curve(
 
 			let mut out_tangents = Vec::with_capacity(times.len());
 
-			for triplet in values.chunks_exact(3) {
+			for triplet in values.as_chunks::<3>().0 {
 				in_tangents.push(triplet[0]);
 
 				key_values.push(normalize_gltf_quaternion_value(triplet[1])?);

@@ -301,6 +301,7 @@ impl Drop for InFlightBakeCleanup {
 }
 
 #[cfg(debug_assertions)]
+#[derive(Default)]
 struct HotReloadState {
 	watcher: Option<
 		notify_debouncer_full::Debouncer<
@@ -316,18 +317,6 @@ struct HotReloadState {
 }
 
 #[cfg(debug_assertions)]
-impl Default for HotReloadState {
-	fn default() -> Self {
-		Self {
-			watcher: None,
-			resources_by_source: HashMap::default(),
-			sources_by_resource: HashMap::default(),
-			in_flight: std::collections::HashSet::new(),
-			pending: std::collections::HashSet::new(),
-			updates: None,
-		}
-	}
-}
 
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1372,16 +1372,18 @@ mod board {
 		let column = window.model().columns.get()[target].expect("A board column did not report its identity.");
 		let from = window.center(card);
 		let to = window.center(column);
-		let source = window.hits.query(window.normalized(from));
-		window.engine.press(source.unwrap_or(card), from);
+		assert!(
+			window.engine.press(window.normalized(from)),
+			"The dragged card is not the frontmost surface under the pointer."
+		);
 		for step in 1..=DRAG_TICKS {
 			let t = step as f32 / DRAG_TICKS as f32;
 			let position = UiPoint::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
 			window.point_at(position);
-			window.engine.drag_to(position);
+			window.engine.drag_to(window.normalized(position));
 			window.tick();
 		}
-		window.engine.release(to);
+		window.engine.release(window.normalized(to));
 		window.ticks(2);
 	}
 
@@ -1390,12 +1392,6 @@ mod board {
 	fn drag_card_between_columns(bencher: Bencher) {
 		let mut window = Window::new(Model::default(), |ctx| Box::pin(board(ctx)));
 		let card = window.model().cards.borrow()[0];
-		let from = window.center(card);
-		assert_eq!(
-			window.hits.query(window.normalized(from)),
-			Some(card),
-			"The dragged card is not the frontmost surface under the pointer."
-		);
 		drag_card(&mut window, card, 1);
 		assert_eq!(window.model().landed.get(), 1, "Dragging a card did not drop it on a column.");
 		assert!(!window.tick(), "The board did not settle after a drop.");

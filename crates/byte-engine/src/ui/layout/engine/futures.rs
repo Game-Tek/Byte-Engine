@@ -12,7 +12,7 @@ pub struct MountedComponentFuture<F, T, C = ()> {
 	pub(super) tree: Rc<RefCell<RetainedTree>>,
 	pub(super) parent: Id,
 	pub(super) parent_path: usize,
-	pub(super) name: &'static str,
+	pub(super) name: Cow<'static, str>,
 	pub(super) task_id: TaskId,
 	/// The started scope's element path and the identity that owns its tasks.
 	pub(super) scope: Option<(usize, ScopeId)>,
@@ -54,10 +54,9 @@ where
 			return;
 		};
 
-		let scope = self
-			.tree
-			.borrow_mut()
-			.scope_path(Some(self.parent), self.parent_path, self.name);
+		// The name is only needed to intern the scope path, which happens once.
+		let name = std::mem::take(&mut self.name);
+		let scope = self.tree.borrow_mut().scope_path(Some(self.parent), self.parent_path, name);
 		let owner = self.runtime.borrow_mut().next_scope();
 		let ctx = EvaluationContext {
 			id: self.parent,

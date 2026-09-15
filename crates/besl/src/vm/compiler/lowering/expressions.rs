@@ -260,13 +260,47 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Compiles either a buffer access chain or a projection from a temporary aggregate value.
+	/// Compiles a resource or buffer access, or a projection from a temporary aggregate value.
 	pub(super) fn compile_accessor_expression(
 		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
+		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(expression)? {
+			if &value_type != expected_type {
+				return Err(VmError::TypeMismatch {
+					expected: expected_type.name().to_string(),
+					found: value_type.name().to_string(),
+				});
+			}
+			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
+			for element in 0..count {
+				let element_slot = ResourceSlot::new(slot.slot() + element as u32);
+				match descriptor_layouts.get(&element_slot) {
+					Some(existing) if existing != &DescriptorLayout::Texture => {
+						return Err(VmError::UnsupportedDescriptor {
+							slot: element_slot,
+							message: "Descriptor slot was reused with a different resource type".to_string(),
+						});
+					}
+					Some(_) => {}
+					None => {
+						descriptor_layouts.insert(element_slot, DescriptorLayout::Texture);
+					}
+				}
+			}
+			let index = self.compile_value_expression(&index, &ValueType::U32, descriptor_layouts)?;
+			let register = self.allocate_register();
+			self.instructions.push(Instruction::LoadResourceIndexed {
+				register,
+				slot,
+				index,
+				count,
+				value_type,
+			});
+			return Ok(register);
+		}
 		if let Some(target) = resolve_workgroup_access(expression)? {
 			return self.compile_workgroup_load(target, expected_type, descriptor_layouts);
 		}
@@ -469,7 +503,9 @@ impl<'a> Compiler<'a> {
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
-				if let Some(target) = resolve_workgroup_access(expression)? {
+				if let Some((_, _, _, value_type)) = resolve_texture_array_access(expression)? {
+					Ok(value_type)
+				} else if let Some(target) = resolve_workgroup_access(expression)? {
 					Ok(target.value_type)
 				} else if let Some(target) = resolve_task_payload_access(expression)? {
 					Ok(target.value_type)

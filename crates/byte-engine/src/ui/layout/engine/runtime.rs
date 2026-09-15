@@ -13,6 +13,8 @@ pub(super) struct UiTask {
 	/// Reused across polls; its queued flag coalesces concurrent wake requests.
 	pub(super) waker: Option<Arc<TaskWaker>>,
 	pub(super) owner: ScopeId,
+	/// The structural path the task was declared under, so removing an element ends it.
+	pub(super) path: usize,
 	pub(super) inbox: VecDeque<UiEvent>,
 	pub(super) key_inbox: VecDeque<UiKeyEvent>,
 	pub(super) text_edit_inbox: VecDeque<UiTextEditEvent>,
@@ -119,14 +121,15 @@ impl Runtime {
 		ScopeId(self.next_scope)
 	}
 
-	/// Reserves a task owned by `owner` so its context can name it before the future exists.
+	/// Reserves a task owned by `owner` and declared at `path` so its context can name it before the future exists.
 	///
 	/// Next, call [`Self::start_task`] with the future built from that context.
-	pub(super) fn reserve_task(&mut self, owner: ScopeId) -> TaskId {
+	pub(super) fn reserve_task(&mut self, owner: ScopeId, path: usize) -> TaskId {
 		self.tasks.push(UiTask {
 			future: None,
 			waker: None,
 			owner,
+			path,
 			inbox: VecDeque::new(),
 			key_inbox: VecDeque::new(),
 			text_edit_inbox: VecDeque::new(),
@@ -153,25 +156,30 @@ impl Runtime {
 	/// Futures are detached while the runtime is borrowed and dropped after the borrow
 	/// ends, because a dropped task's own mounted scopes end through this runtime again.
 	pub(super) fn end_scope(runtime: &Rc<RefCell<Self>>, owner: ScopeId) {
-		let detached = {
-			let mut runtime = runtime.borrow_mut();
-			let owned = runtime
-				.tasks
-				.handled_iter()
-				.filter(|(_, task)| task.owner == owner)
-				.map(|(id, _)| id)
-				.collect::<Vec<_>>();
-			if owned.is_empty() {
-				return;
-			}
-			let detached = owned
-				.into_iter()
-				.filter_map(|id| runtime.tasks.remove(id))
-				.collect::<Vec<_>>();
-			runtime.forget_removed_tasks();
-			detached
-		};
+		let detached = runtime.borrow_mut().detach_tasks(|task| task.owner == owner);
 		drop(detached);
+	}
+
+	/// Removes every task the predicate selects and hands their futures to the caller.
+	///
+	/// Drop the returned tasks after releasing the runtime borrow: a dropped future may
+	/// own mounted scopes that end through this runtime again.
+	pub(super) fn detach_tasks(&mut self, select: impl Fn(&UiTask) -> bool) -> Vec<UiTask> {
+		let selected = self
+			.tasks
+			.handled_iter()
+			.filter(|(_, task)| select(task))
+			.map(|(id, _)| id)
+			.collect::<Vec<_>>();
+		if selected.is_empty() {
+			return Vec::new();
+		}
+		let detached = selected
+			.into_iter()
+			.filter_map(|id| self.tasks.remove(id))
+			.collect::<Vec<_>>();
+		self.forget_removed_tasks();
+		detached
 	}
 
 	/// Drops waiters left by removed tasks so no queue grows with tasks that no longer exist.

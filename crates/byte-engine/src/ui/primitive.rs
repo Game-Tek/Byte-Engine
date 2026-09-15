@@ -89,16 +89,31 @@ impl Shapes {
 pub enum Events {
 	Actuated,
 	Scrolled,
-	/// The held source crossed the drag threshold. Delivered to the source.
-	DragStarted,
+	/// The pointer was pressed on this element and the engine holds it until
+	/// release or cancellation. Delivered to the surface under the press.
+	Grabbed,
+	/// The held element moved past the drag threshold. Delivered to the source
+	/// once per evaluation while the pointer moves, with
+	/// [`super::UiEvent::delta`] set to the offset from the press point in layout units.
+	Dragged,
 	/// A source was released over this element or one of its descendants.
 	/// Delivered to the target under the release point, then to each ancestor,
 	/// with [`super::UiEvent::source`] set. The source never receives its own drop.
 	Dropped,
-	/// A started drag ended by release or cancellation. Delivered to the source
-	/// after any [`Self::Dropped`] the release produced, so a target claims the
-	/// source before the source reacts to the end.
+	/// A grab ended by release or cancellation. Delivered to the source after any
+	/// [`Self::Dropped`] the release produced, with [`super::UiEvent::source`]
+	/// set to the surface the drag was dropped on, if any.
 	DragEnded,
+	/// The pointer moved onto this surface or one of its descendants. Delivered
+	/// once per evaluation in which the surface under the pointer changed, to
+	/// the new surface and then to each ancestor that did not already contain
+	/// the pointer. A held drag source is skipped, so a target under a dragged
+	/// item still hears about the pointer.
+	PointerEntered,
+	/// The pointer left this surface and all of its descendants. Delivered to
+	/// the previous surface and then to each ancestor that no longer contains
+	/// the pointer, before any [`Self::PointerEntered`] of the same evaluation.
+	PointerExited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

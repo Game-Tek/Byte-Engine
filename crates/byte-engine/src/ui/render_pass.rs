@@ -676,26 +676,93 @@ impl RenderPass for UiRenderPass {
 				command_buffer.region(
 					|label| label.write_str("UI"),
 					|command_buffer| {
-						if !batches.is_empty() {
-							for batch in batches {
-								let attachments = [ghi::AttachmentInformation::new(
-									main_attachment,
-									ghi::Layouts::RenderTarget,
-									ghi::ClearValue::None,
-									true,
-									true,
-								)];
+						// Share a raster pass without changing painter order. Blur must finish the
+						// preceding pass before its compute work reads the composited backdrop.
+						let attachments = [ghi::AttachmentInformation::new(
+							main_attachment,
+							ghi::Layouts::RenderTarget,
+							ghi::ClearValue::None,
+							true,
+							true,
+						)];
+						for batches in batches.chunk_by(|left, right| {
+							!matches!(left, UiPreparedBatch::Blur(_)) && !matches!(right, UiPreparedBatch::Blur(_))
+						}) {
+							if let [UiPreparedBatch::Blur(batch)] = batches {
+								command_buffer.region(
+									|label| label.write_str("UI Backdrop Blur"),
+									|command_buffer| {
+										if blur_uses_full_resolution(batch.resolution_mix) {
+											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+											compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
+											compute.write_push_constant(
+												0,
+												batch.full_kernel.push([1.0, 0.0], batch.full_regions.horizontal),
+											);
+											compute.dispatch(ghi::DispatchExtent::new(
+												batch.full_regions.horizontal.extent,
+												blur_filter_workgroup,
+											));
 
-								match batch {
-									UiPreparedBatch::Rect(batch) => {
-										command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
+											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+											compute.bind_descriptor_sets(&[blur_full_y_descriptor_set]);
+											compute.write_push_constant(
+												0,
+												batch.full_kernel.push([0.0, 1.0], batch.full_regions.vertical),
+											);
+											compute.dispatch(ghi::DispatchExtent::new(
+												batch.full_regions.vertical.extent,
+												blur_filter_workgroup,
+											));
+										}
+
+										if blur_uses_half_resolution(batch.resolution_mix) {
+											let compute = command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
+											compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
+											compute.write_push_constant(
+												0,
+												UiBlurDownsamplePush {
+													origin: batch.half_regions.downsample.origin,
+													extent: batch.half_regions.downsample.push_extent(),
+												},
+											);
+											compute.dispatch(ghi::DispatchExtent::new(
+												batch.half_regions.downsample.extent,
+												blur_downsample_workgroup,
+											));
+
+											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+											compute.bind_descriptor_sets(&[blur_half_x_descriptor_set]);
+											compute.write_push_constant(
+												0,
+												batch.half_kernel.push([1.0, 0.0], batch.half_regions.filter.horizontal),
+											);
+											compute.dispatch(ghi::DispatchExtent::new(
+												batch.half_regions.filter.horizontal.extent,
+												blur_filter_workgroup,
+											));
+
+											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+											compute.bind_descriptor_sets(&[blur_half_y_descriptor_set]);
+											compute.write_push_constant(
+												0,
+												batch.half_kernel.push([0.0, 1.0], batch.half_regions.filter.vertical),
+											);
+											compute.dispatch(ghi::DispatchExtent::new(
+												batch.half_regions.filter.vertical.extent,
+												blur_filter_workgroup,
+											));
+										}
+
+										command_buffer.bind_vertex_buffers(&[blur_vertex_buffer.into()]);
 										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(index_buffer)
+											&(Into::<ghi::BufferDescriptor>::into(blur_index_buffer)
 												.index_type(ghi::DataTypes::U16)),
 										);
 
 										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+										let command_buffer = command_buffer.bind_raster_pipeline(blur_composite_pipeline);
+										command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
 										command_buffer.draw_indexed(
 											batch.index_count,
 											1,
@@ -704,154 +771,82 @@ impl RenderPass for UiRenderPass {
 											0,
 										);
 										command_buffer.end_render_pass();
-									}
-									UiPreparedBatch::Curve(batch) => {
-										command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
-										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
-												.index_type(ghi::DataTypes::U16)),
-										);
+									},
+								);
+							} else {
+								let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+								for batch in batches {
+									match batch {
+										UiPreparedBatch::Rect(batch) => {
+											command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
+											command_buffer.bind_index_buffer(
+												&(Into::<ghi::BufferDescriptor>::into(index_buffer)
+													.index_type(ghi::DataTypes::U16)),
+											);
 
-										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
-										command_buffer.draw_indexed(
-											batch.index_count,
-											1,
-											batch.first_index,
-											batch.vertex_offset,
-											0,
-										);
-										command_buffer.end_render_pass();
-									}
-									UiPreparedBatch::Image(prepared) => {
-										command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
-										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
-												.index_type(ghi::DataTypes::U16)),
-										);
+											let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+											command_buffer.draw_indexed(
+												batch.index_count,
+												1,
+												batch.first_index,
+												batch.vertex_offset,
+												0,
+											);
+										}
+										UiPreparedBatch::Curve(batch) => {
+											command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
+											command_buffer.bind_index_buffer(
+												&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
+													.index_type(ghi::DataTypes::U16)),
+											);
 
-										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
-										command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
-										command_buffer.draw_indexed(
-											prepared.batch.index_count,
-											1,
-											prepared.batch.first_index,
-											prepared.batch.vertex_offset,
-											0,
-										);
-										command_buffer.end_render_pass();
-									}
-									UiPreparedBatch::Text(batch) => {
-										command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
-										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
-												.index_type(ghi::DataTypes::U16)),
-										);
+											let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
+											command_buffer.draw_indexed(
+												batch.index_count,
+												1,
+												batch.first_index,
+												batch.vertex_offset,
+												0,
+											);
+										}
+										UiPreparedBatch::Image(prepared) => {
+											command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
+											command_buffer.bind_index_buffer(
+												&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
+													.index_type(ghi::DataTypes::U16)),
+											);
 
-										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-										command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
-										command_buffer.draw_indexed(
-											batch.index_count,
-											1,
-											batch.first_index,
-											batch.vertex_offset,
-											0,
-										);
-										command_buffer.end_render_pass();
-									}
-									UiPreparedBatch::Blur(batch) => {
-										command_buffer.region(
-											|label| label.write_str("UI Backdrop Blur"),
-											|command_buffer| {
-												if blur_uses_full_resolution(batch.resolution_mix) {
-													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-													compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
-													compute.write_push_constant(
-														0,
-														batch.full_kernel.push([1.0, 0.0], batch.full_regions.horizontal),
-													);
-													compute.dispatch(ghi::DispatchExtent::new(
-														batch.full_regions.horizontal.extent,
-														blur_filter_workgroup,
-													));
+											let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
+											command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
+											command_buffer.draw_indexed(
+												prepared.batch.index_count,
+												1,
+												prepared.batch.first_index,
+												prepared.batch.vertex_offset,
+												0,
+											);
+										}
+										UiPreparedBatch::Text(batch) => {
+											command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
+											command_buffer.bind_index_buffer(
+												&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
+													.index_type(ghi::DataTypes::U16)),
+											);
 
-													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-													compute.bind_descriptor_sets(&[blur_full_y_descriptor_set]);
-													compute.write_push_constant(
-														0,
-														batch.full_kernel.push([0.0, 1.0], batch.full_regions.vertical),
-													);
-													compute.dispatch(ghi::DispatchExtent::new(
-														batch.full_regions.vertical.extent,
-														blur_filter_workgroup,
-													));
-												}
-
-												if blur_uses_half_resolution(batch.resolution_mix) {
-													let compute =
-														command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
-													compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
-													compute.write_push_constant(
-														0,
-														UiBlurDownsamplePush {
-															origin: batch.half_regions.downsample.origin,
-															extent: batch.half_regions.downsample.push_extent(),
-														},
-													);
-													compute.dispatch(ghi::DispatchExtent::new(
-														batch.half_regions.downsample.extent,
-														blur_downsample_workgroup,
-													));
-
-													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-													compute.bind_descriptor_sets(&[blur_half_x_descriptor_set]);
-													compute.write_push_constant(
-														0,
-														batch
-															.half_kernel
-															.push([1.0, 0.0], batch.half_regions.filter.horizontal),
-													);
-													compute.dispatch(ghi::DispatchExtent::new(
-														batch.half_regions.filter.horizontal.extent,
-														blur_filter_workgroup,
-													));
-
-													let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-													compute.bind_descriptor_sets(&[blur_half_y_descriptor_set]);
-													compute.write_push_constant(
-														0,
-														batch.half_kernel.push([0.0, 1.0], batch.half_regions.filter.vertical),
-													);
-													compute.dispatch(ghi::DispatchExtent::new(
-														batch.half_regions.filter.vertical.extent,
-														blur_filter_workgroup,
-													));
-												}
-
-												command_buffer.bind_vertex_buffers(&[blur_vertex_buffer.into()]);
-												command_buffer.bind_index_buffer(
-													&(Into::<ghi::BufferDescriptor>::into(blur_index_buffer)
-														.index_type(ghi::DataTypes::U16)),
-												);
-
-												let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-												let command_buffer =
-													command_buffer.bind_raster_pipeline(blur_composite_pipeline);
-												command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
-												command_buffer.draw_indexed(
-													batch.index_count,
-													1,
-													batch.first_index,
-													batch.vertex_offset,
-													0,
-												);
-												command_buffer.end_render_pass();
-											},
-										);
+											let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
+											command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
+											command_buffer.draw_indexed(
+												batch.index_count,
+												1,
+												batch.first_index,
+												batch.vertex_offset,
+												0,
+											);
+										}
+										UiPreparedBatch::Blur(_) => unreachable!("Blur batches have their own command group"),
 									}
 								}
+								command_buffer.end_render_pass();
 							}
 						}
 					},

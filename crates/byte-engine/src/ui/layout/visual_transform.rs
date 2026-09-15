@@ -81,8 +81,9 @@ impl Affine2 {
 		}
 
 		// Preserve fractional visual bounds so display scaling cannot magnify logical-pixel snapping.
-		let x = clamp_coordinate(min_x);
-		let y = clamp_coordinate(min_y);
+		// A position may be negative once panned past the viewport; only sizes are clamped.
+		let x = sanitize_offset(min_x);
+		let y = sanitize_offset(min_y);
 		let width = clamp_coordinate(max_x - min_x);
 		let height = clamp_coordinate(max_y - min_y);
 

@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{borrow::Cow, future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
 	Container, Text,
@@ -23,7 +23,12 @@ pub trait Context<C: 'static = ()>: Sized {
 	fn id(&self) -> Id;
 	fn ctx(&self) -> &C;
 
-	fn element<'a>(&'a mut self, name: &'static str) -> ElementSlot<'a, C>;
+	/// Declares a named slot under this context for an element, component, or mount.
+	///
+	/// A static name identifies a fixed part of a component. An owned `String`
+	/// names an element created at runtime, such as one node of a graph, so the
+	/// slot is keyed by the string's content rather than its address.
+	fn element<'a>(&'a mut self, name: impl Into<Cow<'static, str>>) -> ElementSlot<'a, C>;
 
 	fn text(&mut self, text: Text) -> EvaluationContext<C> {
 		self.element("text").text(text)
@@ -58,6 +63,10 @@ pub trait Context<C: 'static = ()>: Sized {
 
 	fn release_focus(&mut self);
 
+	/// Removes everything declared under this context, including the component
+	/// itself when called from one. See [`EvaluationContext::remove`].
+	fn remove(&mut self) -> bool;
+
 	fn wait(&mut self, duration: Duration) -> WaitFuture {
 		wait(duration)
 	}
@@ -69,7 +78,7 @@ pub trait Context<C: 'static = ()>: Sized {
 
 pub struct ElementSlot<'a, C: 'static = ()> {
 	pub(crate) parent: &'a mut EvaluationContext<C>,
-	pub(crate) name: &'static str,
+	pub(crate) name: Cow<'static, str>,
 }
 
 pub trait ElementContext<C: 'static = ()> {

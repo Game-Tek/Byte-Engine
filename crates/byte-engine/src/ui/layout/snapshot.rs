@@ -86,6 +86,14 @@ impl Snapshot<'_> {
 	}
 
 	pub fn click(&mut self, mouse_pos: UiPoint) -> Option<Id> {
+		let id = self.hover(mouse_pos, None)?;
+		self.set_cursor(Some(id));
+		Some(id)
+	}
+
+	/// Returns the frontmost surface under normalized window coordinates without
+	/// moving the cursor, skipping `excluded` such as a held drag source.
+	pub fn hover(&self, mouse_pos: UiPoint, excluded: Option<Id>) -> Option<Id> {
 		let size = self.size;
 
 		// Window input is normalized around the origin, while hit testing uses a top-left UI origin.
@@ -93,13 +101,9 @@ impl Snapshot<'_> {
 		let mouse_y = (mouse_pos.y + 1.0) * 0.5 * size.y();
 		let mouse_pos = UiPoint::new(mouse_x, size.y() - mouse_y);
 
-		let id = self
-			.acceleration
-			.query(Location::new(mouse_pos.x, mouse_pos.y))
-			.and_then(Id::new)?;
-
-		self.set_cursor(Some(id));
-		Some(id)
+		self.acceleration
+			.query_excluding(Location::new(mouse_pos.x, mouse_pos.y), excluded.map(Id::get))
+			.and_then(Id::new)
 	}
 
 	pub fn click_cursor(&self) -> Option<Id> {

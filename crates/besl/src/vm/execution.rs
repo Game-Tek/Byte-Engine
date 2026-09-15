@@ -529,6 +529,7 @@ impl ExecutableProgram {
 	) -> Result<InstructionProgress, VmError> {
 		match instruction {
 			Instruction::LoadLiteral { .. }
+			| Instruction::LoadResourceIndexed { .. }
 			| Instruction::Construct { .. }
 			| Instruction::Extract { .. }
 			| Instruction::ExtractDynamic { .. } => {
@@ -635,6 +636,27 @@ impl ExecutableProgram {
 	) -> Result<(), VmError> {
 		match instruction {
 			Instruction::LoadLiteral { register, value } => registers[*register] = Some(value.clone()),
+			Instruction::LoadResourceIndexed {
+				register,
+				slot,
+				index,
+				count,
+				value_type,
+			} => {
+				let index = expect_u32(read_register(registers, *index)?)? as usize;
+				if index >= *count {
+					return Err(VmError::DescriptorArrayIndexOutOfBounds {
+						slot: *slot,
+						index,
+						count: *count,
+					});
+				}
+				// Lowering validates the whole slot range, and the bounded index preserves that proof.
+				registers[*register] = Some(Value::Resource {
+					slot: ResourceSlot::new(slot.slot() + index as u32),
+					value_type: value_type.clone(),
+				});
+			}
 			Instruction::Construct {
 				register,
 				value_type,

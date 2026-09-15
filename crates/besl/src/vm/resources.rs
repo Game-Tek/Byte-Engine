@@ -359,6 +359,10 @@ impl<'a> DescriptorBindings<'a> {
 		self.bind_descriptor(slot, DescriptorBinding::Buffer(buffer));
 	}
 
+	/// Binds a sampled texture before calling [`ExecutableProgram::run_main`].
+	///
+	/// A descriptor array reserves consecutive slots: bind element `index` at
+	/// `ResourceSlot::new(binding + index)`, where `binding` is its declared slot.
 	pub fn bind_texture(&mut self, slot: ResourceSlot, texture: &'a mut Texture) {
 		self.bind_texture_with_sampler(slot, texture, Sampler::default());
 	}

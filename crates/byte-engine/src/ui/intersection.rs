@@ -11,6 +11,18 @@ struct QueryElement {
 	id: u32,
 	position: Location3,
 	size: Size,
+	/// Index of the polyline a curve is hit along, within its bounds.
+	curve: Option<u32>,
+}
+
+/// The `HitCurve` struct describes a hit-testable curve as a polyline in layout units.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct HitCurve {
+	pub(crate) id: u32,
+	pub(crate) half_width: f32,
+	/// The polyline's points, as a range of the shared point list.
+	pub(crate) first: u32,
+	pub(crate) count: u32,
 }
 
 /// The `HitTest` struct keeps submitted UI geometry available between frames.
@@ -21,6 +33,8 @@ struct QueryElement {
 #[derive(Default)]
 pub struct HitTest {
 	elements: Vec<QueryElement>,
+	curves: Vec<HitCurve>,
+	points: Vec<Location>,
 	size: [f32; 2],
 }
 
@@ -57,7 +71,7 @@ impl HitTest {
 		self.elements
 			.iter()
 			.rev()
-			.find(|element| point_in_layout_element(element, point))
+			.find(|element| hits(element, &self.curves, &self.points, point))
 			.and_then(|element| Id::new(element.id))
 	}
 }
@@ -71,6 +85,8 @@ pub(crate) struct MouseClickAcceleration {
 	rows: usize,
 	bounds: (f32, f32),
 	elements: Vec<QueryElement>,
+	curves: Vec<HitCurve>,
+	points: Vec<Location>,
 	buckets: Vec<Vec<usize>>,
 }
 
@@ -80,24 +96,44 @@ impl MouseClickAcceleration {
 		target.size = [size.x(), size.y()];
 		target.elements.clear();
 		target.elements.extend_from_slice(&self.elements);
+		target.curves.clear();
+		target.curves.extend_from_slice(&self.curves);
+		target.points.clear();
+		target.points.extend_from_slice(&self.points);
 		// Stable sorting preserves layout order for surfaces at equal depth.
 		target.elements.sort_by_key(|element| element.position.z());
 	}
+
 	/// Reuses the pointer index while clipped hit geometry stays unchanged.
-	pub(crate) fn update(&mut self, layout: &[LayoutElement]) {
-		let elements = layout
-			.iter()
-			.filter(|element| element.hit_testable)
-			.map(|element| QueryElement {
+	///
+	/// `curves` follow the order of the curve entries in `layout`; each names the
+	/// polyline, in `points`, that its element is hit along within its bounds.
+	pub(crate) fn update(&mut self, layout: &[LayoutElement], curves: &[HitCurve], points: &[Location]) {
+		let mut next_curve = 0u32;
+		let elements = layout.iter().filter(|element| element.hit_testable).map(|element| {
+			let curve = curves
+				.get(next_curve as usize)
+				.filter(|curve| curve.id == element.id.get())
+				.map(|_| {
+					next_curve += 1;
+					next_curve - 1
+				});
+			QueryElement {
 				id: element.id.get(),
 				position: element.position,
 				size: element.size,
-			});
-		if self.elements.iter().copied().eq(elements.clone()) {
+				curve,
+			}
+		});
+		let elements = elements.collect::<Vec<_>>();
+		if self.elements == elements && self.curves == curves && self.points == points {
 			return;
 		}
-		self.elements.clear();
-		self.elements.extend(elements);
+		self.elements = elements;
+		self.curves.clear();
+		self.curves.extend_from_slice(curves);
+		self.points.clear();
+		self.points.extend_from_slice(points);
 		self.rebuild();
 	}
 
@@ -128,8 +164,9 @@ impl MouseClickAcceleration {
 				continue;
 			}
 
-			let start_col = (element.position.x() / cell_size).floor() as usize;
-			let start_row = (element.position.y() / cell_size).floor() as usize;
+			// Bounds can start left of or above the viewport; those cells are simply not indexed.
+			let start_col = (element.position.x().max(0.0) / cell_size).floor() as usize;
+			let start_row = (element.position.y().max(0.0) / cell_size).floor() as usize;
 
 			// Rectangles use half-open bounds, so an edge on a cell boundary does not occupy the next cell.
 			let end_col = ((element.position.x() + element.size.x()) / cell_size).ceil().max(1.0) as usize - 1;
@@ -173,7 +210,7 @@ impl MouseClickAcceleration {
 
 		for &candidate_index in candidates {
 			let candidate = &self.elements[candidate_index];
-			if Some(candidate.id) == excluded || !point_in_layout_element(candidate, mouse_position) {
+			if Some(candidate.id) == excluded || !hits(candidate, &self.curves, &self.points, mouse_position) {
 				continue;
 			}
 
@@ -192,6 +229,18 @@ impl MouseClickAcceleration {
 	}
 }
 
+/// Tests a point against a surface's bounds and, for a curve, its polyline.
+fn hits(element: &QueryElement, curves: &[HitCurve], points: &[Location], point: Location) -> bool {
+	if !point_in_layout_element(element, point) {
+		return false;
+	}
+	let Some(curve) = element.curve.and_then(|index| curves.get(index as usize)) else {
+		return true;
+	};
+	let polyline = &points[curve.first as usize..(curve.first + curve.count) as usize];
+	polyline_distance(polyline, point).is_some_and(|distance| distance <= curve.half_width)
+}
+
 fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	let (x, y) = point.into();
 	let (left, top) = Into::<Location>::into(element.position).into();
@@ -199,6 +248,29 @@ fn point_in_layout_element(element: &QueryElement, point: Location) -> bool {
 	let bottom = top + element.size.y();
 
 	x >= left && x < right && y >= top && y < bottom
+}
+
+/// Distance from a point to the nearest span of a polyline, or to its only point.
+fn polyline_distance(polyline: &[Location], point: Location) -> Option<f32> {
+	let (x, y) = point.into();
+	let distance_to = |location: Location| (x - location.x()).hypot(y - location.y());
+	let mut best = f32::INFINITY;
+	if polyline.len() == 1 {
+		return Some(distance_to(polyline[0]));
+	}
+	for span in polyline.windows(2) {
+		let (ax, ay) = span[0].into();
+		let (bx, by) = span[1].into();
+		let (dx, dy) = (bx - ax, by - ay);
+		let length_squared = dx * dx + dy * dy;
+		let t = if length_squared <= 0.0 {
+			0.0
+		} else {
+			(((x - ax) * dx + (y - ay) * dy) / length_squared).clamp(0.0, 1.0)
+		};
+		best = best.min((x - (ax + dx * t)).hypot(y - (ay + dy * t)));
+	}
+	best.is_finite().then_some(best)
 }
 
 #[cfg(test)]
@@ -252,16 +324,19 @@ mod tests {
 			id: 1,
 			position: Location3::new(0, 0, 0),
 			size: Size::new(200, 200),
+			curve: None,
 		});
 		layout.push(QueryElement {
 			id: 2,
 			position: Location3::new(20, 20, 0),
 			size: Size::new(120, 120),
+			curve: None,
 		});
 		layout.push(QueryElement {
 			id: 3,
 			position: Location3::new(40, 40, 0),
 			size: Size::new(60, 60),
+			curve: None,
 		});
 
 		let mut acceleration = MouseClickAcceleration {
@@ -282,11 +357,13 @@ mod tests {
 			id: 10,
 			position: Location3::new(0, 0, 0),
 			size: Size::new(100, 100),
+			curve: None,
 		});
 		layout.push(QueryElement {
 			id: 11,
 			position: Location3::new(150, 150, 0),
 			size: Size::new(50, 50),
+			curve: None,
 		});
 
 		let mut acceleration = MouseClickAcceleration {
@@ -306,11 +383,13 @@ mod tests {
 			id: 20,
 			position: Location3::new(0, 0, 3),
 			size: Size::new(100, 100),
+			curve: None,
 		});
 		layout.push(QueryElement {
 			id: 21,
 			position: Location3::new(0, 0, 1),
 			size: Size::new(100, 100),
+			curve: None,
 		});
 
 		let mut acceleration = MouseClickAcceleration {
@@ -329,6 +408,7 @@ mod tests {
 			id: 1,
 			position: Location3::new(10.25, 20.5, 0),
 			size: Size::new(5.5, 3.25),
+			curve: None,
 		});
 
 		let mut acceleration = MouseClickAcceleration {

@@ -629,6 +629,52 @@ pub(super) fn accessor_references_buffer(expression: &NodeReference) -> bool {
 		.is_some_and(|(binding, _)| matches!(binding.borrow().node(), Nodes::Binding { .. } | Nodes::PushConstant { .. }))
 }
 
+/// Resolves one sampled-texture descriptor element using the binding's declared flat slot range.
+pub(super) fn resolve_texture_array_access(
+	expression: &NodeReference,
+) -> Result<Option<(ResourceSlot, usize, NodeReference, ValueType)>, VmError> {
+	let borrowed = expression.borrow();
+	let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
+		return Ok(None);
+	};
+	let Ok(binding) = extract_binding_reference(left) else {
+		return Ok(None);
+	};
+	let binding = binding.borrow();
+	let Nodes::Binding {
+		slot,
+		read,
+		write,
+		r#type: BindingTypes::CombinedImageSampler { format },
+		count: Some(count),
+		..
+	} = binding.node()
+	else {
+		return Ok(None);
+	};
+	let slot = ResourceSlot::new(*slot);
+	require_descriptor_access(slot, *read, *write, RequiredAccess::Read)?;
+	slot.slot()
+		.checked_add(count.get() - 1)
+		.ok_or_else(|| VmError::UnsupportedDescriptor {
+			slot,
+			message: "The descriptor array exceeds the flat resource slot range".to_string(),
+		})?;
+	let value_type = match format.as_str() {
+		"" | "Texture2D" => ValueType::Texture2D,
+		"Texture3D" => ValueType::Texture3D,
+		"TextureCube" => ValueType::TextureCube,
+		"TextureCubeArray" => ValueType::TextureCubeArray,
+		"ArrayTexture2D" => ValueType::ArrayTexture2D,
+		_ => {
+			return Err(VmError::UnsupportedType {
+				type_name: format.clone(),
+			});
+		}
+	};
+	Ok(Some((slot, count.get() as usize, right.clone(), value_type)))
+}
+
 pub(super) fn accessor_references_output(expression: &NodeReference) -> bool {
 	let borrowed = expression.borrow();
 	match borrowed.node() {

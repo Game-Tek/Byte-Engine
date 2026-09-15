@@ -8,6 +8,13 @@ pub(super) enum Instruction {
 		register: usize,
 		value: Value,
 	},
+	LoadResourceIndexed {
+		register: usize,
+		slot: ResourceSlot,
+		index: usize,
+		count: usize,
+		value_type: ValueType,
+	},
 	Construct {
 		register: usize,
 		value_type: ValueType,

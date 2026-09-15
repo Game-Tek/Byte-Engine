@@ -1,7 +1,10 @@
 //! CPU preparation contracts across changing content, clipping, and painter order.
 
 use super::*;
-use crate::ui::{ConcreteLayer, ConcreteStyle, Container, Context, Curve, CurvePath, ElementContext, Engine, Size, Text};
+use crate::ui::{
+	ConcreteLayer, ConcreteStyle, Container, ContainerContext, Context, Curve, CurvePath, CurveSegment, ElementContext, Engine,
+	Size, Text, Transform, UiPoint, flow,
+};
 
 /// Varies content, visibility, and stroke layers between snapshots.
 fn changing_render(count: usize, phase: usize) -> engine::Render {
@@ -168,4 +171,120 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 			assert_eq!(actual.resolution_mix, expected.batches[0].resolution_mix);
 		}
 	}
+}
+
+/// A zoomed subtree must scale its wires and labels the way its rectangles are scaled.
+#[test]
+fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		std::boxed::Box::pin(async move {
+			let mut canvas = ctx.element("canvas").container(
+				Container::default()
+					.width(100.into())
+					.height(100.into())
+					.flow(flow::center)
+					.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0)),
+			);
+			canvas.element("wire").curve(
+				Curve::new(CurvePath::new(100.into(), 100.into()).cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0)))
+					.style(ConcreteLayer::default().color(RGBA::white().into()).stroke(1.5)),
+			);
+			canvas.element("label").text(Text::new("node").font_size(10.0));
+		})
+	});
+	let arena = bumpalo::Bump::new();
+	let mut snapshot = engine.evaluate(Size::new(400, 400), &arena);
+	let render = engine.render(&mut snapshot).clone();
+	let mut draw_list = UiDrawList::default();
+	update_from_render(&render, &mut draw_list);
+
+	let wire = &draw_list.curves[0];
+	assert_eq!(wire.stroke_width, 3.0);
+	let [
+		CurveSegment::Cubic {
+			from,
+			control0,
+			control1,
+			to,
+		},
+	] = wire.segments.as_slice()
+	else {
+		panic!("expected the scaled cubic segment");
+	};
+	assert_eq!((from.x, from.y), (0.0, 0.0));
+	assert_eq!((control0.x, control0.y), (10.0, 0.0));
+	assert_eq!((control1.x, control1.y), (10.0, 20.0));
+	assert_eq!((to.x, to.y), (20.0, 20.0));
+	assert_eq!(draw_list.texts[0].font_size, 20.0);
+}
+
+/// Mirrors the graph demo: a wire declared empty and routed on a later frame inside a clipped, transformed canvas.
+#[test]
+fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		std::boxed::Box::pin(async move {
+			let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+			let mut viewport = root.element("viewport").container(
+				Container::default()
+					.absolute_position(100, 100)
+					.width(400.into())
+					.height(300.into()),
+			);
+			let mut content = viewport.element("content").container(
+				Container::default()
+					.absolute_position(0, 0)
+					.width(400.into())
+					.height(300.into())
+					.hit_testable(false)
+					.clip(false)
+					.transform(Transform::identity().origin(UiPoint::zero())),
+			);
+			let mut wires = content.element("wires").container(
+				Container::default()
+					.absolute_position(0, 0)
+					.width(400.into())
+					.height(300.into())
+					.hit_testable(false)
+					.clip(false),
+			);
+			wires.element("wire-1").component(|ctx| {
+				std::boxed::Box::pin(async move {
+					let mut curve = ctx.element("curve").curve(
+						Curve::new(CurvePath::new(400.into(), 300.into()))
+							.style(ConcreteLayer::default().color(RGBA::white().into()).stroke(3.0))
+							.hit_testable(12.0),
+					);
+					let mut routed = false;
+					loop {
+						crate::utils::r#async::select! {
+							_ = curve.on(crate::ui::Events::PointerEntered) => {},
+							_ = curve.on(crate::ui::Events::Actuated) => {},
+							_ = ctx.render() => {},
+						}
+						if !routed {
+							routed = true;
+							curve.update_curve(|curve| {
+								let path = curve.path_mut();
+								path.clear();
+								path.push_cubic((20.0, 20.0), (80.0, 20.0), (120.0, 200.0), (200.0, 200.0));
+							});
+						}
+					}
+				})
+			});
+		})
+	});
+	let arena = bumpalo::Bump::new();
+	let mut draw_list = UiDrawList::default();
+	for _ in 0..3 {
+		let mut snapshot = engine.evaluate(Size::new(800, 600), &arena);
+		let render = engine.render(&mut snapshot).clone();
+		update_from_render(&render, &mut draw_list);
+	}
+	assert_eq!(draw_list.curves.len(), 1);
+	assert_eq!(draw_list.curves[0].segments.len(), 1);
+	let geometry = build_ui_curve_geometry(&draw_list, Extent::square(800), &arena);
+	assert!(!geometry.vertices.is_empty(), "the routed wire produced no geometry");
 }

@@ -267,10 +267,10 @@ ActionBindingDescription::new("Mouse.Position")
     .trigger_on(TriggerMode::Press)
 ```
 
-After evaluating a UI snapshot, call `snapshot.retain_hit_test(&mut hits)` on a
-reused `ui::intersection::HitTest`. Query those retained, clipped rectangles
-while deciding capture. The query uses normalized window coordinates and
-neither allocates nor runs layout.
+While deciding capture, ask the UI engine what is under the pointer with
+`Engine::hit`. The query takes normalized window coordinates, answers from the
+last evaluated frame's clipped rectangles, and neither allocates nor runs
+layout.
 
 Set decorative and full-screen transparent containers to
 `Container::hit_testable(false)` so uncovered areas pass through. Their children

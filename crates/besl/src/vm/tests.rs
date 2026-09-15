@@ -2391,6 +2391,80 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 	);
 }
 
+const TEXTURE_DESCRIPTOR_ARRAY_SHADER: &str = r#"
+textures: descriptor<{ type: Texture2D, binding: 5, access: read, count: 3 }>;
+
+main: fn (pipeline_input: interface { index: u32, uv: vec2f }) -> output { color: vec4f } {
+	return { color: sample(textures[pipeline_input.index], pipeline_input.uv) };
+}
+"#;
+
+#[test]
+fn parsed_texture_descriptor_arrays_select_runtime_resources() {
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.25]];
+	let mut textures = colors.map(|color| {
+		let mut texture = Texture::new(1, 1).expect("Expected texture allocation");
+		texture.write([0, 0], color).expect("Expected texel write");
+		texture
+	});
+	let mut index_input = interface_buffer_for_input(&executable, 0);
+	let mut uv_input = interface_buffer_for_input(&executable, 1);
+	let mut output = interface_buffer_for_output(&executable, 0);
+	uv_input
+		.write("_besl_interface_uv", Value::Vec2F([0.5, 0.5]))
+		.expect("Expected UV input");
+	for index in [2, 0, 1] {
+		index_input
+			.write("_besl_interface_index", Value::U32(index))
+			.expect("Expected texture index");
+		{
+			let mut descriptors = DescriptorBindings::new();
+			// Inactive array elements need no host texture for this invocation.
+			descriptors.bind_texture(ResourceSlot::new(5 + index), &mut textures[index as usize]);
+			descriptors.bind_buffer(input_slot(0), &mut index_input);
+			descriptors.bind_buffer(input_slot(1), &mut uv_input);
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected indexed texture sampling");
+		}
+		assert_eq!(
+			output.read("_besl_output_color").expect("Expected sampled color"),
+			Value::Vec4F(colors[index as usize])
+		);
+	}
+}
+
+#[test]
+fn texture_descriptor_array_indices_stay_inside_the_declared_range() {
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let mut index_input = interface_buffer_for_input(&executable, 0);
+	let mut uv_input = interface_buffer_for_input(&executable, 1);
+	let mut output = interface_buffer_for_output(&executable, 0);
+	let mut adjacent_texture = Texture::new(1, 1).expect("Expected texture allocation");
+	index_input
+		.write("_besl_interface_index", Value::U32(3))
+		.expect("Expected texture index");
+	uv_input
+		.write("_besl_interface_uv", Value::Vec2F([0.5, 0.5]))
+		.expect("Expected UV input");
+	let mut descriptors = DescriptorBindings::new();
+	// A bound resource after the array must remain inaccessible through its index.
+	descriptors.bind_texture(ResourceSlot::new(8), &mut adjacent_texture);
+	descriptors.bind_buffer(input_slot(0), &mut index_input);
+	descriptors.bind_buffer(input_slot(1), &mut uv_input);
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	assert_eq!(
+		executable.run_main(&mut descriptors),
+		Err(VmError::DescriptorArrayIndexOutOfBounds {
+			slot: ResourceSlot::new(5),
+			index: 3,
+			count: 3
+		})
+	);
+}
+
 #[test]
 fn dynamic_const_array_indices_select_runtime_elements() {
 	let script = r#"

@@ -17,6 +17,10 @@ pub struct Engine<C = ()> {
 	scrolls: Vec<UiVector>,
 	/// Released sources waiting for the next layout to resolve their drop targets.
 	drops: Vec<DragDrop>,
+	/// The captured position the source was last told about.
+	dragged: Option<UiPoint>,
+	/// The surface under the pointer after the last evaluation, for enter and exit events.
+	hovered: Option<Id>,
 	key_states: HashMap<Key, bool>,
 	key_presses: VecDeque<Key>,
 	text_edits: VecDeque<TextEdit>,
@@ -178,6 +182,8 @@ impl<C: 'static> Engine<C> {
 			clicks: Vec::new(),
 			scrolls: Vec::new(),
 			drops: Vec::new(),
+			dragged: None,
+			hovered: None,
 			key_states: HashMap::new(),
 			key_presses: VecDeque::new(),
 			text_edits: VecDeque::new(),
@@ -210,7 +216,7 @@ impl<C: 'static> Engine<C> {
 	{
 		let runtime = Rc::clone(&self.runtime);
 		let tree = Rc::clone(&runtime.borrow().tree);
-		let task_id = runtime.borrow_mut().reserve_task(ScopeId::ROOT);
+		let task_id = runtime.borrow_mut().reserve_task(ScopeId::ROOT, 0);
 		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
 		// Store an owning future while preserving the borrowed component interface.
 		let future = Box::pin(async move {
@@ -231,6 +237,7 @@ impl<C: 'static> Engine<C> {
 			self.cancel();
 		}
 		self.sync_pointer_state();
+		self.route_drag();
 		self.route_drops();
 		Runtime::begin_frame(Rc::clone(&self.runtime));
 		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
@@ -297,7 +304,7 @@ impl<C: 'static> Engine<C> {
 				// changed geometry its own revision so older snapshots keep distinct cache keys.
 				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
 				self.prepare_appearance(elements, &tree, layout_revision, size);
-				let hit_elements = clipped_hit_elements(elements, &tree, &self.visual_state, frame_allocator);
+				let hit = clipped_hit_elements(elements, &tree, &self.visual_state, frame_allocator);
 				// A stable topology keeps IDs and layout order, so update only changed bounds.
 				// Structural edits also advance clip_revision, including removal and remount of the same ID.
 				if let Some(previous) = self
@@ -345,7 +352,9 @@ impl<C: 'static> Engine<C> {
 				if Rc::get_mut(&mut retained.acceleration).is_none() {
 					retained.acceleration = Rc::default();
 				}
-				Rc::get_mut(&mut retained.acceleration).unwrap().update(&hit_elements);
+				Rc::get_mut(&mut retained.acceleration)
+					.unwrap()
+					.update(&hit.elements, &hit.curves, &hit.points);
 			}
 			let retained = self
 				.retained_layout
@@ -390,6 +399,7 @@ impl<C: 'static> Engine<C> {
 	}
 
 	fn route_input_events(&mut self, snapshot: &mut Snapshot<'_>) {
+		self.route_hover(snapshot);
 		while let Some(click) = self.clicks.pop() {
 			if click && let Some(target) = snapshot.click(self.cursor_position) {
 				self.runtime.borrow_mut().push_event(UiEvent {
@@ -405,6 +415,47 @@ impl<C: 'static> Engine<C> {
 			if let Some(target) = snapshot.click(self.cursor_position) {
 				self.route_bubbling_event(target, Events::Scrolled, Some(delta), None);
 			}
+		}
+	}
+
+	/// Tells surfaces the pointer entered or left them, from this frame's geometry.
+	///
+	/// A held source is skipped so the surface beneath a dragged item is the one
+	/// that hears about the pointer, and the capture records it as its drop preview.
+	fn route_hover(&mut self, snapshot: &Snapshot<'_>) {
+		let held = self.runtime.borrow().drag.capture().map(|capture| capture.source);
+		let hovered = snapshot.hover(self.cursor_position, held);
+		if held.is_some() {
+			self.runtime.borrow_mut().drag.set_over(hovered);
+		}
+		let previous = std::mem::replace(&mut self.hovered, hovered);
+		if previous == hovered {
+			return;
+		}
+		let runtime = Rc::clone(&self.runtime);
+		let tree = Rc::clone(&runtime.borrow().tree);
+		let tree = tree.borrow();
+		let ancestors = |start: Option<Id>| {
+			let mut chain = std::vec::Vec::new();
+			let mut current = start;
+			while let Some(id) = current {
+				chain.push(id);
+				current = tree
+					.element_indices
+					.get(&id)
+					.and_then(|&index| tree.parents[index])
+					.map(|parent| tree.elements[parent].id);
+			}
+			chain
+		};
+		let (exited, entered) = (ancestors(previous), ancestors(hovered));
+		let mut runtime = runtime.borrow_mut();
+		// A surface containing both the old and the new target keeps the pointer and hears nothing.
+		for &target in exited.iter().filter(|id| !entered.contains(id)) {
+			runtime.push_event(drag_event(target, Events::PointerExited));
+		}
+		for &target in entered.iter().filter(|id| !exited.contains(id)) {
+			runtime.push_event(drag_event(target, Events::PointerEntered));
 		}
 	}
 
@@ -426,10 +477,54 @@ impl<C: 'static> Engine<C> {
 			if let Some(target) = target {
 				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
 			}
-			self.runtime
-				.borrow_mut()
-				.push_event(drag_event(drop.source, Events::DragEnded));
+			self.runtime.borrow_mut().push_event(UiEvent {
+				target: drop.source,
+				kind: Events::DragEnded,
+				delta: None,
+				source: target,
+			});
 		}
+	}
+
+	/// Tells a dragged source where it is, once per evaluation and only after it moved.
+	fn route_drag(&mut self) {
+		let mut runtime = self.runtime.borrow_mut();
+		let Some(capture) = runtime.drag.capture().filter(|capture| capture.dragging) else {
+			return;
+		};
+		if self.dragged == Some(capture.position) {
+			return;
+		}
+		self.dragged = Some(capture.position);
+		runtime.push_event(UiEvent {
+			target: capture.source,
+			kind: Events::Dragged,
+			delta: Some(UiVector::new(
+				capture.position.x - capture.origin.x,
+				capture.position.y - capture.origin.y,
+			)),
+			source: None,
+		});
+	}
+
+	/// Converts normalized window coordinates to the last evaluated frame's layout units.
+	fn layout_point(&self, position: UiPoint) -> Option<UiPoint> {
+		let size = self.retained_layout.as_ref()?.size;
+		Some(UiPoint::new(
+			(position.x + 1.0) * 0.5 * size.x(),
+			(1.0 - position.y) * 0.5 * size.y(),
+		))
+	}
+
+	/// Returns the frontmost surface at normalized window coordinates in the
+	/// last evaluated frame, without running layout.
+	pub fn hit(&self, position: UiPoint) -> Option<Id> {
+		let point = self.layout_point(position)?;
+		let retained = self.retained_layout.as_ref()?;
+		retained
+			.acceleration
+			.query(crate::ui::flow::Location::new(point.x, point.y))
+			.and_then(Id::new)
 	}
 
 	/// Delivers one event to a target and then to each of its ancestors.
@@ -618,6 +713,7 @@ impl<C: 'static> Engine<C> {
 					},
 					opacity,
 					font_size,
+					scale: state.scale[0].min(state.scale[1]),
 					content: retained_content,
 				};
 				if text_count < text_elements.len() {
@@ -654,6 +750,7 @@ impl<C: 'static> Engine<C> {
 						feather_mask,
 						style: ConcreteStyle { layers },
 						opacity,
+						scale: state.scale,
 						segments,
 					};
 					if curve_count < curve_elements.len() {
@@ -745,27 +842,37 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Captures a hit-tested source for a pointer gesture at a layout position.
+	/// Grabs the surface under normalized window coordinates for a pointer gesture.
 	///
-	/// Returns `false` while another source is held. Next, forward pointer motion
-	/// through [`Self::drag_to`] without hit testing the source again.
-	pub fn press(&mut self, source: Id, position: UiPoint) -> bool {
-		self.runtime.borrow_mut().drag.press(source, position)
+	/// The surface comes from the last evaluated frame and receives
+	/// [`Events::Grabbed`]. Returns `false` when nothing is there or another
+	/// source is held. Next, forward pointer motion through [`Self::drag_to`].
+	pub fn press(&mut self, position: UiPoint) -> bool {
+		let Some(source) = self.hit(position) else {
+			return false;
+		};
+		let Some(point) = self.layout_point(position) else {
+			return false;
+		};
+		let mut runtime = self.runtime.borrow_mut();
+		if !runtime.drag.press(source, point) {
+			return false;
+		}
+		self.dragged = None;
+		runtime.push_event(drag_event(source, Events::Grabbed));
+		true
 	}
 
 	/// Moves the captured pointer and reports whether a source is held.
 	///
 	/// The gesture activates once the pointer travels the drag threshold and stays
-	/// active if it returns. Activation sends [`Events::DragStarted`] to the source.
-	/// Next, call [`Self::release`] when the pointer is released.
+	/// active if it returns. The source then gets [`Events::Dragged`] from the
+	/// next [`Self::evaluate`]. Next, call [`Self::release`] when the pointer is released.
 	pub fn drag_to(&mut self, position: UiPoint) -> bool {
-		let mut runtime = self.runtime.borrow_mut();
-		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
-		let held = runtime.drag.move_to(position);
-		if let Some(capture) = runtime.drag.capture().filter(|capture| capture.dragging && !was_dragging) {
-			runtime.push_event(drag_event(capture.source, Events::DragStarted));
-		}
-		held
+		let Some(point) = self.layout_point(position) else {
+			return false;
+		};
+		self.runtime.borrow_mut().drag.move_to(point)
 	}
 
 	/// Releases the captured source and returns a drop only after activation.
@@ -773,18 +880,20 @@ impl<C: 'static> Engine<C> {
 	/// The release position participates in threshold detection. A click clears
 	/// capture without yielding a drop. A drop is also delivered as
 	/// [`Events::Dropped`] to the surface under the release position by the next
-	/// [`Self::evaluate`], so either the caller or a component can apply it.
+	/// [`Self::evaluate`], so either the caller or a component can apply it. The
+	/// source gets [`Events::DragEnded`] either way.
 	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
+		let Some(point) = self.layout_point(position) else {
+			return None;
+		};
 		let mut runtime = self.runtime.borrow_mut();
-		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
-		let dropped = runtime.drag.release(position)?;
-		// The release itself may have supplied the activating motion.
-		if !was_dragging {
-			runtime.push_event(drag_event(dropped.source, Events::DragStarted));
+		let held = runtime.drag.capture()?.source;
+		let dropped = runtime.drag.release(point);
+		match dropped {
+			Some(dropped) => self.drops.push(dropped),
+			None => runtime.push_event(drag_event(held, Events::DragEnded)),
 		}
-		drop(runtime);
-		self.drops.push(dropped);
-		Some(dropped)
+		dropped
 	}
 
 	/// Returns the captured drag gesture, if a source is held.
@@ -792,13 +901,18 @@ impl<C: 'static> Engine<C> {
 		self.runtime.borrow().drag.capture()
 	}
 
+	/// Returns the surface under the pointer after the last evaluation, skipping a held source.
+	pub fn hovered(&self) -> Option<Id> {
+		self.hovered
+	}
+
 	/// Ends the interaction in progress and returns the source of a cancelled drag.
 	///
 	/// Queued clicks, scrolls, drops, key presses, and text edits are discarded,
 	/// held keys and the pointer are released, and a held source is restored
-	/// without a drop. A started drag sends [`Events::DragEnded`] to its
-	/// source. Call this when the window loses focus or the user cancels; a
-	/// changed viewport size calls it from [`Self::evaluate`].
+	/// without a drop. The source gets [`Events::DragEnded`]. Call this when the
+	/// window loses focus or the user cancels; a changed viewport size calls it
+	/// from [`Self::evaluate`].
 	pub fn cancel(&mut self) -> Option<Id> {
 		self.is_clicking = false;
 		self.clicks.clear();
@@ -808,11 +922,8 @@ impl<C: 'static> Engine<C> {
 		self.key_presses.clear();
 		self.text_edits.clear();
 		let mut runtime = self.runtime.borrow_mut();
-		let was_dragging = runtime.drag.capture().is_some_and(|capture| capture.dragging);
 		let source = runtime.drag.cancel()?;
-		if was_dragging {
-			runtime.push_event(drag_event(source, Events::DragEnded));
-		}
+		runtime.push_event(drag_event(source, Events::DragEnded));
 		Some(source)
 	}
 
@@ -889,8 +1000,11 @@ pub(crate) struct VirtualViewport(Id);
 pub struct UiEvent {
 	pub target: Id,
 	pub kind: Events,
+	/// The scroll delta of an [`Events::Scrolled`] event, or the offset from the
+	/// press point of an [`Events::Dragged`] event.
 	pub delta: Option<UiVector>,
-	/// The released drag source of an [`Events::Dropped`] event.
+	/// The released drag source of an [`Events::Dropped`] event, or the surface
+	/// dropped on of an [`Events::DragEnded`] event.
 	pub source: Option<Id>,
 }
 
@@ -927,7 +1041,12 @@ mod tests {
 	use super::*;
 	use crate::ui::{
 		Depth, animate,
-		components::{container::Container, curve::CurvePath, shape::Shape, text_field::TextField},
+		components::{
+			container::Container,
+			curve::{CurvePath, CurveSegment},
+			shape::Shape,
+			text_field::TextField,
+		},
 		flow::{self, Location3},
 		layout::{
 			Geometry, Sizing,
@@ -947,7 +1066,12 @@ mod tests {
 		}
 	}
 
-	/// Mounts a component that records the drag it sees on every frame.
+	/// Converts layout units in a 128 by 128 frame to normalized window coordinates exactly.
+	fn window(x: f32, y: f32) -> UiPoint {
+		UiPoint::new(x / 64.0 - 1.0, 1.0 - y / 64.0)
+	}
+
+	/// Mounts a 20 by 20 source at the origin and records the drag it sees on every frame.
 	fn drag_observer() -> (Engine, Arc<StdMutex<Vec<Option<DragCapture>>>>) {
 		let observed = Arc::new(StdMutex::new(Vec::new()));
 		let observed_for_task = Arc::clone(&observed);
@@ -955,6 +1079,13 @@ mod tests {
 		engine.mount(move |ctx| {
 			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				root.element("source").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(20.into())
+						.height(20.into()),
+				);
 				loop {
 					observed.lock().expect("expected test value").push(ctx.drag());
 					ctx.render().await;
@@ -968,28 +1099,34 @@ mod tests {
 	fn press_activates_after_the_threshold_and_release_yields_the_drop_once() {
 		let frame_allocator = bumpalo::Bump::new();
 		let (mut engine, observed) = drag_observer();
-		let source = Id::new(7).expect("expected test value");
-		assert!(engine.press(source, UiPoint::new(10.0, 20.0)));
-		assert!(!engine.press(source, UiPoint::zero()));
-		assert!(engine.drag_to(UiPoint::new(12.0, 22.0)));
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let held = observed.lock().expect("expected test value")[0].expect("expected test value");
+		// Nothing can be grabbed before a frame supplies hit geometry.
+		assert!(!engine.press(window(10.0, 10.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert!(!engine.press(window(30.0, 30.0)));
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(!engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(12.0, 12.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let held = observed.lock().expect("expected test value")[1].expect("expected test value");
 		assert!(!held.dragging);
-		assert_eq!(held.position, UiPoint::new(12.0, 22.0));
+		assert_eq!(held.origin, UiPoint::new(10.0, 10.0));
+		assert_eq!(held.position, UiPoint::new(12.0, 12.0));
 		// The release itself can supply the motion that reaches the threshold.
-		let dropped = engine.release(UiPoint::new(30.0, 20.0)).expect("expected test value");
-		assert_eq!(dropped.source, source);
-		assert_eq!(dropped.position, UiPoint::new(30.0, 20.0));
+		let dropped = engine.release(window(30.0, 10.0)).expect("expected test value");
+		assert_eq!(dropped.source, engine.hit(window(10.0, 10.0)).expect("expected test value"));
+		assert_eq!(dropped.position, UiPoint::new(30.0, 10.0));
 		assert!(engine.drag().is_none());
-		assert!(engine.release(UiPoint::new(30.0, 20.0)).is_none());
-		assert!(!engine.drag_to(UiPoint::zero()));
+		assert!(engine.release(window(30.0, 10.0)).is_none());
+		assert!(!engine.drag_to(window(0.0, 0.0)));
 	}
 
 	#[test]
 	fn click_restores_source_without_a_drop() {
-		let mut engine = Engine::new();
-		assert!(engine.press(Id::new(1).expect("expected test value"), UiPoint::new(10.0, 20.0)));
-		assert!(engine.release(UiPoint::new(12.0, 22.0)).is_none());
+		let frame_allocator = bumpalo::Bump::new();
+		let (mut engine, _) = drag_observer();
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.release(window(12.0, 12.0)).is_none());
 		assert!(engine.drag().is_none());
 	}
 
@@ -997,28 +1134,28 @@ mod tests {
 	fn cancel_restores_the_source_and_discards_queued_input() {
 		let frame_allocator = bumpalo::Bump::new();
 		let (mut engine, observed) = drag_observer();
-		let source = Id::new(3).expect("expected test value");
-		engine.press(source, UiPoint::zero());
-		engine.drag_to(UiPoint::new(10.0, 0.0));
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let source = engine.hit(window(10.0, 10.0)).expect("expected test value");
+		engine.press(window(10.0, 10.0));
+		engine.drag_to(window(20.0, 10.0));
 		engine.update_click_state(true);
 		assert_eq!(engine.cancel(), Some(source));
 		assert_eq!(engine.cancel(), None);
-		assert!(engine.release(UiPoint::new(10.0, 0.0)).is_none());
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		assert_eq!(observed.lock().expect("expected test value")[0], None);
+		assert!(engine.release(window(20.0, 10.0)).is_none());
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert_eq!(observed.lock().expect("expected test value")[1], None);
 		assert!(!engine.runtime.borrow().pointer.pressed);
-		assert!(engine.press(source, UiPoint::zero()));
+		assert!(engine.press(window(10.0, 10.0)));
 	}
 
 	#[test]
 	fn resized_viewport_cancels_the_held_source_before_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
 		let (mut engine, observed) = drag_observer();
-		let source = Id::new(3).expect("expected test value");
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		engine.press(source, UiPoint::zero());
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let _ = engine.evaluate(Size::new(50, 100), &frame_allocator);
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		engine.press(window(10.0, 10.0));
+		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let _ = engine.evaluate(Size::new(64, 128), &frame_allocator);
 		let observed = observed.lock().expect("expected test value");
 		assert!(observed[1].is_some());
 		assert_eq!(observed[2], None);
@@ -1027,9 +1164,12 @@ mod tests {
 	/// What the board's components observed, in the order the source and target saw it.
 	#[derive(Default)]
 	struct DragLog {
-		ids: Option<(Id, Id)>,
-		started: usize,
-		ended: usize,
+		/// The target, its inner child, and the source.
+		ids: Option<(Id, Id, Id)>,
+		grabbed: usize,
+		dragged: Vec<UiVector>,
+		/// The surface each gesture ended on.
+		ended: Vec<Option<Id>>,
 		drops: Vec<Option<Id>>,
 		/// The number of drops recorded when each end arrived.
 		drops_before_end: Vec<usize>,
@@ -1050,7 +1190,7 @@ mod tests {
 						.width(50.into())
 						.height(50.into()),
 				);
-				let _inner = target.element("inner").container(
+				let inner = target.element("inner").container(
 					Container::default()
 						.absolute_position(30, 30)
 						.width(20.into())
@@ -1062,15 +1202,16 @@ mod tests {
 						.width(20.into())
 						.height(20.into()),
 				);
-				log.lock().expect("expected test value").ids = Some((target.id(), source.id()));
+				log.lock().expect("expected test value").ids = Some((target.id(), inner.id(), source.id()));
 				loop {
 					// A biased select takes the queued drop before the end, as a client would.
 					utils::r#async::select_biased! {
 						event = target.on(Events::Dropped) => log.lock().expect("expected test value").drops.push(event.source),
-						_ = source.on(Events::DragStarted) => log.lock().expect("expected test value").started += 1,
-						_ = source.on(Events::DragEnded) => {
+						_ = source.on(Events::Grabbed) => log.lock().expect("expected test value").grabbed += 1,
+						event = source.on(Events::Dragged) => log.lock().expect("expected test value").dragged.push(event.delta.expect("expected test value")),
+						event = source.on(Events::DragEnded) => {
 							let mut log = log.lock().expect("expected test value");
-							log.ended += 1;
+							log.ended.push(event.source);
 							let drops = log.drops.len();
 							log.drops_before_end.push(drops);
 						},
@@ -1085,55 +1226,98 @@ mod tests {
 	fn drag_events_reach_the_source_and_the_surface_under_the_release() {
 		let allocator = bumpalo::Bump::new();
 		let (mut engine, log) = drag_board();
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let (_, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		let (target, inner, source) = log.lock().expect("expected test value").ids.expect("expected test value");
 
 		// Motion past the threshold starts the drag; the drop lands on the target's child and bubbles up.
-		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
-		assert!(engine.drag_to(UiPoint::new(40.0, 40.0)));
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		assert_eq!(log.lock().expect("expected test value").started, 1);
-		assert!(engine.release(UiPoint::new(40.0, 40.0)).is_some());
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		assert_eq!(log.lock().expect("expected test value").drops, vec![Some(source)]);
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(40.0, 40.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		{
+			let observed = log.lock().expect("expected test value");
+			assert_eq!(observed.grabbed, 1);
+			assert_eq!(observed.dragged, vec![UiVector::new(30.0, 30.0)]);
+		}
+		assert!(engine.release(window(40.0, 40.0)).is_some());
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		{
+			let observed = log.lock().expect("expected test value");
+			assert_eq!(observed.drops, vec![Some(source)]);
+			assert_eq!(observed.ended, vec![Some(inner)]);
+		}
 
-		// A release whose motion activates the drag still starts it, and a release over the
+		// A release whose motion activates the drag still drops, and a release over the
 		// source itself drops onto the surface beneath it.
-		assert!(engine.press(source, UiPoint::new(1.0, 1.0)));
-		assert!(engine.release(UiPoint::new(19.0, 19.0)).is_some());
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let observed = log.lock().expect("expected test value");
-		assert_eq!(observed.started, 2);
-		assert_eq!(observed.drops, vec![Some(source), Some(source)]);
-		drop(observed);
+		assert!(engine.press(window(1.0, 1.0)));
+		assert!(engine.release(window(19.0, 19.0)).is_some());
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		{
+			let observed = log.lock().expect("expected test value");
+			assert_eq!(observed.grabbed, 2);
+			assert_eq!(observed.drops, vec![Some(source), Some(source)]);
+			assert_eq!(observed.ended, vec![Some(inner), Some(target)]);
+		}
 
-		// A release outside every surface drops nowhere.
-		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
-		assert!(engine.release(UiPoint::new(90.0, 90.0)).is_some());
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		// A release outside every surface drops nowhere, and a click ends its grab without a drop.
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.release(window(90.0, 90.0)).is_some());
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.release(window(12.0, 12.0)).is_none());
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let observed = log.lock().expect("expected test value");
+		assert_eq!(observed.grabbed, 4);
 		assert_eq!(observed.drops.len(), 2);
-		// Every started gesture ends once, and the target's drop is recorded before the source's end.
-		assert_eq!(observed.ended, 3);
-		assert_eq!(observed.drops_before_end, vec![1, 2, 2]);
+		// Every grab ends once, and the target's drop is recorded before the source's end.
+		assert_eq!(observed.ended, vec![Some(inner), Some(target), None, None]);
+		assert_eq!(observed.drops_before_end, vec![1, 2, 2, 2]);
 	}
 
 	#[test]
-	fn cancel_ends_a_started_source_only() {
+	fn motion_reaches_the_source_once_per_evaluation() {
 		let allocator = bumpalo::Bump::new();
 		let (mut engine, log) = drag_board();
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let (_, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 
-		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(12.0, 10.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		// Motion inside the threshold is not a drag.
+		assert!(log.lock().expect("expected test value").dragged.is_empty());
+		assert!(engine.drag_to(window(30.0, 10.0)));
+		assert!(engine.drag_to(window(40.0, 10.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		assert_eq!(
+			log.lock().expect("expected test value").dragged,
+			vec![UiVector::new(30.0, 0.0)]
+		);
+		assert!(engine.drag_to(window(40.0, 20.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		assert_eq!(
+			log.lock().expect("expected test value").dragged,
+			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
+		);
+	}
+
+	#[test]
+	fn cancel_ends_every_grab() {
+		let allocator = bumpalo::Bump::new();
+		let (mut engine, log) = drag_board();
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		let (_, _, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+
+		assert!(engine.press(window(10.0, 10.0)));
 		assert_eq!(engine.cancel(), Some(source));
-		assert!(engine.press(source, UiPoint::new(10.0, 10.0)));
-		assert!(engine.drag_to(UiPoint::new(40.0, 40.0)));
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
+		assert!(engine.press(window(10.0, 10.0)));
+		assert!(engine.drag_to(window(40.0, 40.0)));
 		assert_eq!(engine.cancel(), Some(source));
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let observed = log.lock().expect("expected test value");
-		assert_eq!(observed.started, 1);
-		assert_eq!(observed.ended, 1);
+		assert_eq!(observed.grabbed, 2);
+		assert_eq!(observed.ended, vec![None, None]);
+		assert!(observed.dragged.is_empty());
 		assert!(observed.drops.is_empty());
 	}
 
@@ -1246,20 +1430,20 @@ mod tests {
 	fn retained_tree_revision_tracks_insertion_mutation_and_removal() {
 		let mut tree = RetainedTree::new();
 		let start = tree.revision();
-		let (id, _) = tree.add_element(None, 0, "root", ConcreteElement::container(Container::default()));
+		let (id, _) = tree.add_element(None, 0, "root".into(), ConcreteElement::container(Container::default()));
 		assert!(tree.revision() > start);
 
 		let after_insert = tree.revision();
 		// Re-declaring the same path on a later frame is idempotent and must not invalidate retained state.
 		tree.begin_frame();
-		tree.add_element(None, 0, "root", ConcreteElement::container(Container::default()));
+		tree.add_element(None, 0, "root".into(), ConcreteElement::container(Container::default()));
 		assert_eq!(tree.revision(), after_insert);
 
 		assert!(tree.update_element(id, |_| true));
 		assert!(tree.revision() > after_insert);
 
 		let after_mutation = tree.revision();
-		let (_, child_path) = tree.add_element(Some(id), 0, "child", ConcreteElement::container(Container::default()));
+		let (_, child_path) = tree.add_element(Some(id), 0, "child".into(), ConcreteElement::container(Container::default()));
 		let after_child = tree.revision();
 		assert!(after_child > after_mutation);
 		assert!(!tree.remove_scope(child_path).is_empty());
@@ -3549,6 +3733,414 @@ mod tests {
 	}
 
 	#[test]
+	fn owned_names_declare_distinct_elements_and_repeat_by_content() {
+		let allocator = bumpalo::Bump::new();
+		let ids = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let out = Rc::clone(&ids);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				for index in 0..3 {
+					let node = root
+						.element(format!("node-{index}"))
+						.container(Container::default().width(10.into()).height(10.into()));
+					out.borrow_mut().push(node.id());
+				}
+				ctx.render().await;
+				// The same content on a later frame resolves the same retained element.
+				let again = root.element(String::from("node-1")).container(Container::default());
+				out.borrow_mut().push(again.id());
+			})
+		});
+		engine.evaluate(Size::new(100, 100), &allocator);
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let ids = ids.borrow();
+		assert_eq!(ids.len(), 4);
+		assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
+		assert_eq!(ids[3], ids[1]);
+	}
+
+	#[test]
+	fn removing_an_element_drops_its_subtree_and_ends_components_declared_under_it() {
+		let allocator = bumpalo::Bump::new();
+		let ticks = Rc::new(std::cell::Cell::new(0u32));
+		// 0 idle, 1 remove the node, 2 declare it again.
+		let stage = Rc::new(std::cell::Cell::new(0u8));
+		let ids = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let (task_ticks, task_stage, out) = (Rc::clone(&ticks), Rc::clone(&stage), Rc::clone(&ids));
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut node = root
+					.element("node")
+					.container(Container::default().width(10.into()).height(10.into()));
+				let label = node.element("label").text(Text::new("node"));
+				node.element("ticker").component(move |ctx| {
+					Box::pin(async move {
+						loop {
+							task_ticks.set(task_ticks.get() + 1);
+							ctx.render().await;
+						}
+					})
+				});
+				let keep = root
+					.element("keep")
+					.container(Container::default().width(10.into()).height(10.into()));
+				out.borrow_mut().extend([node.id(), label.id(), keep.id()]);
+				loop {
+					ctx.render().await;
+					match task_stage.replace(0) {
+						1 => {
+							assert!(node.geometry().is_some());
+							assert!(node.remove());
+							assert!(!node.remove(), "A second removal found something to remove.");
+							assert!(node.geometry().is_none());
+							assert!(!node.update_container(|_| {}));
+						}
+						2 => {
+							let again = root
+								.element("node")
+								.container(Container::default().width(10.into()).height(10.into()));
+							assert_eq!(again.id(), node.id(), "Declaring the name again did not reuse its id.");
+						}
+						_ => {}
+					}
+				}
+			})
+		});
+		let mut frames = |count: usize| {
+			let mut snapshot = None;
+			for _ in 0..count {
+				snapshot = Some(engine.evaluate(Size::new(100, 100), &allocator));
+			}
+			snapshot.unwrap()
+		};
+		let contains = |snapshot: &Snapshot<'_>, id: Id| snapshot.elements.iter().any(|element| element.id == id);
+
+		let snapshot = frames(3);
+		let (node, label, keep) = {
+			let ids = ids.borrow();
+			(ids[0], ids[1], ids[2])
+		};
+		assert!(contains(&snapshot, node) && contains(&snapshot, label) && contains(&snapshot, keep));
+		assert!(ticks.get() > 0);
+
+		stage.set(1);
+		let snapshot = frames(2);
+		assert!(!contains(&snapshot, node) && !contains(&snapshot, label));
+		assert!(contains(&snapshot, keep), "Removing one element removed its sibling.");
+		let closed = ticks.get();
+		frames(3);
+		assert_eq!(ticks.get(), closed, "A component kept running after its element was removed.");
+
+		stage.set(2);
+		let snapshot = frames(2);
+		assert!(
+			contains(&snapshot, node),
+			"A removed element declared again was not laid out."
+		);
+	}
+
+	#[test]
+	fn update_curve_repaints_segments_without_replaying_placement() {
+		let allocator = bumpalo::Bump::new();
+		let reroute = Rc::new(std::cell::Cell::new(false));
+		let flag = Rc::clone(&reroute);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut wire = root.element("wire").curve(
+					Curve::new(CurvePath::new(100.into(), 100.into()).line((0.0, 0.0), (10.0, 10.0)))
+						.style(ConcreteLayer::default().stroke(2.0)),
+				);
+				loop {
+					ctx.render().await;
+					if flag.replace(false) {
+						assert!(wire.update_curve(|curve| {
+							let path = curve.path_mut();
+							path.clear();
+							path.push_cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0));
+						}));
+					}
+				}
+			})
+		});
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render(&mut snapshot);
+		let first = render.revision();
+		let curve = render.curves().next().unwrap();
+		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Line { .. }]));
+		let placement = engine.runtime.borrow().tree.borrow().placement_revision;
+
+		reroute.set(true);
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render(&mut snapshot);
+		assert_ne!(render.revision(), first);
+		let curve = render.curves().next().unwrap();
+		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Cubic { .. }]));
+		assert_eq!(
+			engine.runtime.borrow().tree.borrow().placement_revision,
+			placement,
+			"Re-routing a curve replayed placement."
+		);
+	}
+
+	#[test]
+	fn scaled_ancestor_scales_curves_and_text_in_the_render() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				root.element("plain").curve(
+					Curve::new(CurvePath::new(10.into(), 10.into()).line((0.0, 0.0), (10.0, 10.0)))
+						.style(ConcreteLayer::default().stroke(1.0)),
+				);
+				let mut canvas = root.element("canvas").container(
+					Container::default()
+						.absolute_position(20, 30)
+						.width(100.into())
+						.height(100.into())
+						// Overlay the wire and the label instead of flowing the label out of the clip.
+						.flow(flow::center)
+						.transform(Transform::identity().origin(UiPoint::zero()).scale_xy(2.0, 3.0)),
+				);
+				canvas.element("wire").curve(
+					Curve::new(CurvePath::new(100.into(), 100.into()).line((0.0, 0.0), (10.0, 10.0)))
+						.style(ConcreteLayer::default().stroke(1.0)),
+				);
+				canvas.element("label").text(Text::new("node").font_size(10.0));
+			})
+		});
+		let mut snapshot = engine.evaluate(Size::new(400, 400), &allocator);
+		let render = engine.render(&mut snapshot);
+		let curves: std::vec::Vec<_> = render.curves().collect();
+		assert_eq!(curves.len(), 2);
+		assert_eq!(curves[0].scale, [1.0, 1.0]);
+		assert_eq!(curves[1].scale, [2.0, 3.0]);
+		assert_eq!((curves[1].position.x(), curves[1].position.y()), (20.0, 30.0));
+		let text = render.texts().next().unwrap();
+		assert_eq!(text.scale, 2.0, "Text takes the smaller axis of an anisotropic scale.");
+	}
+
+	/// Records every hover event a surface receives, in order.
+	fn hover_log(ctx: &mut EvaluationContext, log: Rc<RefCell<std::vec::Vec<(&'static str, Events)>>>, name: &'static str) {
+		ctx.element("hover").component(move |ctx| {
+			Box::pin(async move {
+				loop {
+					let event = utils::r#async::select! {
+						event = ctx.on(Events::PointerEntered) => event,
+						event = ctx.on(Events::PointerExited) => event,
+					};
+					log.borrow_mut().push((name, event.kind));
+				}
+			})
+		});
+	}
+
+	#[test]
+	fn pointer_enter_and_exit_follow_the_hovered_surface_and_its_ancestors() {
+		let allocator = bumpalo::Bump::new();
+		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let out = Rc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut panel = root.element("panel").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(100.into())
+						.height(50.into())
+						.flow(flow::row),
+				);
+				hover_log(&mut panel, Rc::clone(&out), "panel");
+				let mut left = panel
+					.element("left")
+					.container(Container::default().width(50.into()).height(50.into()));
+				hover_log(&mut left, Rc::clone(&out), "left");
+				let mut right = panel
+					.element("right")
+					.container(Container::default().width(50.into()).height(50.into()));
+				hover_log(&mut right, Rc::clone(&out), "right");
+			})
+		});
+		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+		let mut frame = |position: UiPoint| {
+			engine.set_cursor_position(position);
+			let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			std::mem::take(&mut *log.borrow_mut())
+		};
+
+		// The first frames only register the waiters.
+		frame(window(200.0, 200.0));
+		assert_eq!(
+			frame(window(10.0, 10.0)),
+			vec![("left", Events::PointerEntered), ("panel", Events::PointerEntered)]
+		);
+		// Moving between siblings leaves the shared ancestor alone.
+		assert_eq!(
+			frame(window(60.0, 10.0)),
+			vec![("left", Events::PointerExited), ("right", Events::PointerEntered)]
+		);
+		assert_eq!(frame(window(60.0, 20.0)), vec![], "Motion inside a surface produced events.");
+		assert_eq!(
+			frame(window(200.0, 200.0)),
+			vec![("right", Events::PointerExited), ("panel", Events::PointerExited)]
+		);
+	}
+
+	#[test]
+	fn a_held_source_is_skipped_so_the_surface_beneath_it_is_hovered_and_previewed() {
+		let allocator = bumpalo::Bump::new();
+		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let out = Rc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut target = root.element("target").container(
+					Container::default()
+						.absolute_position(50, 0)
+						.width(50.into())
+						.height(100.into()),
+				);
+				hover_log(&mut target, Rc::clone(&out), "target");
+				root.element("card").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(40.into())
+						.height(40.into())
+						.depth(Depth::absolute(1)),
+				);
+			})
+		});
+		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+		// Start over the card, which logs nothing, so only the target's events are observed.
+		engine.set_cursor_position(window(10.0, 10.0));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let card = engine.hit(window(10.0, 10.0)).unwrap();
+		let target = engine.hit(window(75.0, 50.0)).unwrap();
+		assert!(engine.press(window(10.0, 10.0)));
+		// The card stays under the pointer, but the held source is skipped.
+		assert!(engine.drag_to(window(20.0, 20.0)));
+		engine.set_cursor_position(window(20.0, 20.0));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(engine.hovered(), None);
+		assert_eq!(engine.drag().unwrap().over, None);
+		assert_eq!(engine.drag().unwrap().source, card);
+
+		engine.set_cursor_position(window(75.0, 50.0));
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		assert_eq!(engine.hovered(), Some(target));
+		assert_eq!(engine.drag().unwrap().over, Some(target));
+		assert_eq!(*log.borrow(), vec![("target", Events::PointerEntered)]);
+	}
+
+	#[test]
+	fn anchored_children_keep_negative_positions_through_transforms_and_hits() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut canvas = root.element("canvas").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.hit_testable(false)
+						.clip(false)
+						.transform(Transform::identity().origin(UiPoint::zero()).translate(-30.0, 0.0)),
+				);
+				canvas.element("node").container(
+					Container::default()
+						.absolute_position(-20, -10)
+						.width(80.into())
+						.height(40.into()),
+				);
+			})
+		});
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render(&mut snapshot);
+		let node = render.elements().find(|element| element.size == Size::new(80, 40)).unwrap();
+		assert_eq!((node.position.x(), node.position.y()), (-50.0, -10.0));
+		// Only the part inside the viewport can be hit.
+		assert!(engine.hit(UiPoint::new(10.0 / 50.0 - 1.0, 1.0 - 10.0 / 50.0)).is_some());
+		assert!(engine.hit(UiPoint::new(40.0 / 50.0 - 1.0, 1.0 - 10.0 / 50.0)).is_none());
+	}
+
+	#[test]
+	fn hit_testable_curves_are_found_along_their_stroke_and_scale_with_ancestors() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut frame = root.element("frame").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(100.into())
+						.height(100.into())
+						.flow(flow::center),
+				);
+				frame.element("decorative").curve(Curve::new(
+					CurvePath::new(100.into(), 100.into()).line((0.0, 90.0), (100.0, 90.0)),
+				));
+				frame.element("wire").curve(
+					Curve::new(CurvePath::new(100.into(), 100.into()).line((0.0, 0.0), (100.0, 100.0))).hit_testable(8.0),
+				);
+				let mut zoomed = root.element("zoomed").container(
+					Container::default()
+						.absolute_position(100, 0)
+						.width(50.into())
+						.height(50.into())
+						.hit_testable(false)
+						.clip(false)
+						.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0)),
+				);
+				zoomed
+					.element("wire")
+					.curve(Curve::new(CurvePath::new(50.into(), 50.into()).line((0.0, 50.0), (50.0, 0.0))).hit_testable(4.0));
+			})
+		});
+		let window = |x: f32, y: f32| UiPoint::new(x / 100.0 - 1.0, 1.0 - y / 100.0);
+		let snapshot = engine.evaluate(Size::new(200, 200), &allocator);
+		let frame = engine.hit(window(90.0, 10.0)).unwrap();
+		let wire = engine.hit(window(50.0, 50.0)).unwrap();
+		assert_ne!(wire, frame, "The wire was not hit on its stroke.");
+		assert_eq!(
+			engine.hit(window(50.0, 53.0)),
+			Some(wire),
+			"A point within the hit width missed."
+		);
+		assert_eq!(
+			engine.hit(window(50.0, 58.0)),
+			Some(frame),
+			"A point beyond the hit width hit the wire."
+		);
+		assert_eq!(
+			engine.hit(window(50.0, 90.0)),
+			Some(frame),
+			"A curve without a hit width was hit."
+		);
+
+		// The zoomed wire runs from (100, 100) to (200, 0) in layout units.
+		let zoomed = engine.hit(window(150.0, 50.0)).expect("the scaled wire accepts the pointer");
+		assert!(zoomed != wire && zoomed != frame);
+		assert_eq!(engine.hit(window(150.0, 55.0)), Some(zoomed), "The hit width did not scale.");
+		assert_eq!(engine.hit(window(150.0, 60.0)), None);
+
+		let mut hits = crate::ui::intersection::HitTest::default();
+		snapshot.retain_hit_test(&mut hits);
+		assert_eq!(hits.query(window(50.0, 50.0)), Some(wire));
+		assert_eq!(hits.query(window(150.0, 50.0)), Some(zoomed));
+	}
+
+	#[test]
 	fn animate_updates_existing_retained_element_across_frames() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
@@ -3628,6 +4220,7 @@ mod tests {
 }
 
 use std::{
+	borrow::Cow,
 	boxed::Box,
 	cell::RefCell,
 	collections::{HashMap, HashSet, VecDeque},
@@ -3646,7 +4239,7 @@ use super::{
 	RenderTextElement,
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
-	flow::{Location3, Size},
+	flow::{Location, Location3, Size},
 	layout_elements,
 	retained_tree::RetainedTree,
 	snapshot::Snapshot,
@@ -3654,10 +4247,15 @@ use super::{
 };
 use crate::ui::{
 	Container, Depth, Text, Transform, UiPoint, UiVector,
-	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
+	components::{
+		curve::{Curve, CurvePoint},
+		image::Image,
+		shape::Shape,
+		text_field::TextField,
+	},
 	drag::{Drag, DragCapture, DragDrop},
 	font::TextSystem,
-	intersection::MouseClickAcceleration,
+	intersection::{HitCurve, MouseClickAcceleration},
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, ConcreteStyle, EdgeFeather, Layer as _, LayerKind},
 };

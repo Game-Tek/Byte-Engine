@@ -789,6 +789,8 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 
+			// A zoomed subtree scales its wires like its rectangles: points from the
+			// element's origin and the stroke follow the inherited scale.
 			let mut entry = UiCurveDrawElement {
 				depth: position.z(),
 				order: curve.id,
@@ -797,7 +799,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				clip: draw_clip_from_geometry(curve.clip),
 				feather_mask: draw_feather_mask_from_layout(curve.feather_mask),
 				color: color.into(),
-				stroke_width,
+				stroke_width: stroke_width * curve.scale[0].min(curve.scale[1]),
 				segments: Vec::new(),
 			};
 			// Reuse by output slot; filtered layers must not consume a retained buffer.
@@ -807,7 +809,9 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			} else {
 				draw_list.curves.push(entry);
 			}
-			draw_list.curves[curve_count].segments.clone_from(&curve.segments);
+			let segments = &mut draw_list.curves[curve_count].segments;
+			segments.clear();
+			segments.extend(curve.segments.iter().map(|segment| scale_segment(segment, curve.scale)));
 			curve_count += 1;
 		}
 	}
@@ -845,7 +849,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			clip: draw_clip_from_geometry(text.clip),
 			feather_mask: draw_feather_mask_from_layout(text.feather_mask),
 			color,
-			font_size: text.font_size,
+			font_size: text.font_size * text.scale,
 			text: String::new(),
 		};
 		if let Some(previous) = draw_list.texts.get_mut(text_count) {
@@ -858,6 +862,36 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		text_count += 1;
 	}
 	draw_list.texts.truncate(text_count);
+}
+
+/// Scales a segment's points about the curve element's origin.
+fn scale_segment(segment: &CurveSegment, scale: [f32; 2]) -> CurveSegment {
+	if scale == [1.0, 1.0] {
+		return segment.clone();
+	}
+	let scaled = |point: CurvePoint| CurvePoint::new(point.x * scale[0], point.y * scale[1]);
+	match *segment {
+		CurveSegment::Line { from, to } => CurveSegment::Line {
+			from: scaled(from),
+			to: scaled(to),
+		},
+		CurveSegment::Quadratic { from, control, to } => CurveSegment::Quadratic {
+			from: scaled(from),
+			control: scaled(control),
+			to: scaled(to),
+		},
+		CurveSegment::Cubic {
+			from,
+			control0,
+			control1,
+			to,
+		} => CurveSegment::Cubic {
+			from: scaled(from),
+			control0: scaled(control0),
+			control1: scaled(control1),
+			to: scaled(to),
+		},
+	}
 }
 
 pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {

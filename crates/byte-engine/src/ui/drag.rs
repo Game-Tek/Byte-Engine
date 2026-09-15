@@ -1,9 +1,9 @@
 //! The pointer drag gesture owned by the UI engine.
 //!
-//! Resolve a source with [`super::intersection::HitTest`], then pass its identity
-//! to [`super::Engine::press`]. Keep forwarding the captured pointer's motion and
-//! release even outside that source. The application decides whether a
-//! [`DragDrop`] belongs to a valid target and what its source means.
+//! [`super::Engine::press`] hit-tests the pointer and holds the surface it finds.
+//! Keep forwarding the captured pointer's motion and release even outside that
+//! source. The application decides whether a [`DragDrop`] belongs to a valid
+//! target and what its source means.
 
 use super::{Id, UiPoint};
 
@@ -32,6 +32,9 @@ pub struct DragCapture {
 	pub position: UiPoint,
 	/// Whether the pointer has crossed the movement threshold during this gesture.
 	pub dragging: bool,
+	/// The surface under the captured pointer other than the source, from the
+	/// last evaluated frame. Read it to preview where a release would drop.
+	pub over: Option<Id>,
 }
 
 /// The `DragDrop` struct supports applying a released source to a drop target.
@@ -70,12 +73,20 @@ impl Drag {
 			origin: position,
 			position,
 			dragging: false,
+			over: None,
 		});
 		true
 	}
 
 	pub(super) fn capture(&self) -> Option<DragCapture> {
 		self.capture
+	}
+
+	/// Records the surface under the captured pointer for the frame just evaluated.
+	pub(super) fn set_over(&mut self, over: Option<Id>) {
+		if let Some(capture) = self.capture.as_mut() {
+			capture.over = over;
+		}
 	}
 
 	/// Updates the captured pointer and reports whether a gesture is held.

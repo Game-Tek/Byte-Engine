@@ -537,111 +537,11 @@ pub(super) fn flatten_curve_segment(
 	tolerance: f32,
 	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
 ) {
-	match *segment {
-		CurveSegment::Line { from, to } => {
-			push_scaled_point(points, from, origin, sx, sy);
-			push_scaled_point(points, to, origin, sx, sy);
-		}
-		CurveSegment::Quadratic { from, control, to } => {
-			let from = scaled_curve_point(from, origin, sx, sy);
-			let control = scaled_curve_point(control, origin, sx, sy);
-			let to = scaled_curve_point(to, origin, sx, sy);
-			if from.is_finite() && control.is_finite() && to.is_finite() {
-				points.push(from);
-				flatten_quadratic(from, control, to, tolerance, 0, points);
-			}
-		}
-		CurveSegment::Cubic {
-			from,
-			control0,
-			control1,
-			to,
-		} => {
-			let from = scaled_curve_point(from, origin, sx, sy);
-			let control0 = scaled_curve_point(control0, origin, sx, sy);
-			let control1 = scaled_curve_point(control1, origin, sx, sy);
-			let to = scaled_curve_point(to, origin, sx, sy);
-			if from.is_finite() && control0.is_finite() && control1.is_finite() && to.is_finite() {
-				points.push(from);
-				flatten_cubic(from, control0, control1, to, tolerance, 0, points);
-			}
-		}
-	}
-}
-
-pub(super) fn push_scaled_point(
-	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
-	point: CurvePoint,
-	origin: [f32; 2],
-	sx: f32,
-	sy: f32,
-) {
-	let point = scaled_curve_point(point, origin, sx, sy);
-	if point.is_finite() {
-		points.push(point);
-	}
+	segment.flatten(|point| scaled_curve_point(point, origin, sx, sy), tolerance, points);
 }
 
 pub(super) fn scaled_curve_point(point: CurvePoint, origin: [f32; 2], sx: f32, sy: f32) -> CurvePoint {
 	CurvePoint::new((origin[0] + point.x) * sx, (origin[1] + point.y) * sy)
-}
-
-pub(super) fn flatten_quadratic(
-	from: CurvePoint,
-	control: CurvePoint,
-	to: CurvePoint,
-	tolerance: f32,
-	depth: u32,
-	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
-) {
-	if depth >= 12 || point_line_distance(control, from, to) <= tolerance {
-		points.push(to);
-		return;
-	}
-
-	let from_control = midpoint(from, control);
-	let control_to = midpoint(control, to);
-	let mid = midpoint(from_control, control_to);
-	flatten_quadratic(from, from_control, mid, tolerance, depth + 1, points);
-	flatten_quadratic(mid, control_to, to, tolerance, depth + 1, points);
-}
-
-pub(super) fn flatten_cubic(
-	from: CurvePoint,
-	control0: CurvePoint,
-	control1: CurvePoint,
-	to: CurvePoint,
-	tolerance: f32,
-	depth: u32,
-	points: &mut Vec<CurvePoint, &bumpalo::Bump>,
-) {
-	if depth >= 12 || point_line_distance(control0, from, to).max(point_line_distance(control1, from, to)) <= tolerance {
-		points.push(to);
-		return;
-	}
-
-	let p01 = midpoint(from, control0);
-	let p12 = midpoint(control0, control1);
-	let p23 = midpoint(control1, to);
-	let p012 = midpoint(p01, p12);
-	let p123 = midpoint(p12, p23);
-	let mid = midpoint(p012, p123);
-	flatten_cubic(from, p01, p012, mid, tolerance, depth + 1, points);
-	flatten_cubic(mid, p123, p23, to, tolerance, depth + 1, points);
-}
-
-pub(super) fn midpoint(a: CurvePoint, b: CurvePoint) -> CurvePoint {
-	CurvePoint::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5)
-}
-
-pub(super) fn point_line_distance(point: CurvePoint, from: CurvePoint, to: CurvePoint) -> f32 {
-	let dx = to.x - from.x;
-	let dy = to.y - from.y;
-	let length = dx.hypot(dy);
-	if length <= 0.0001 {
-		return (point.x - from.x).hypot(point.y - from.y);
-	}
-	((point.x - from.x) * dy - (point.y - from.y) * dx).abs() / length
 }
 
 pub(super) fn clip_curve_span(from: &mut CurvePoint, to: &mut CurvePoint, clip: Option<DrawClip>, sx: f32, sy: f32) -> bool {

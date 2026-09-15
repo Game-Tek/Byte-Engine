@@ -56,7 +56,7 @@ impl<C> EvaluationContext<C> {
 		}
 	}
 
-	fn add_element(&mut self, name: &'static str, element: ConcreteElement) -> EvaluationContext<C> {
+	fn add_element(&mut self, name: Cow<'static, str>, element: ConcreteElement) -> EvaluationContext<C> {
 		let (id, path) = self.tree.borrow_mut().add_element(self.parent, self.path, name, element);
 		EvaluationContext::new_child(
 			Rc::clone(&self.ctx),
@@ -75,6 +75,45 @@ impl<C> EvaluationContext<C> {
 	/// element or one of its descendants.
 	pub fn reparent(&mut self, parent: Id) -> bool {
 		self.tree.borrow_mut().reparent(self.id, parent)
+	}
+
+	/// Moves another retained element under this element as its last child, so a
+	/// drop target can take in the source it was given. Returns false for an
+	/// unknown element or when it is this element or one of its ancestors.
+	pub fn adopt(&mut self, child: Id) -> bool {
+		self.tree.borrow_mut().reparent(child, self.id)
+	}
+
+	/// Removes this element, everything declared under it, and the components started
+	/// there, and returns whether anything was removed.
+	///
+	/// Called from a component's own context, it removes that component's elements
+	/// and ends the component, so return right after. The context stays usable only
+	/// to declare again: a later declaration of the same name under the same parent
+	/// in a later frame gets the same id. A mounted component awaited from outside
+	/// the removed element keeps running until its own future ends; its elements
+	/// are gone, so its updates report `false`.
+	pub fn remove(&mut self) -> bool {
+		let detached = {
+			let mut tree = self.tree.borrow_mut();
+			let mut runtime = self.runtime.borrow_mut();
+			let removed_elements = {
+				let removed = tree.remove_scope(self.path);
+				if !removed.is_empty() {
+					runtime.remove_targets(removed);
+				}
+				!removed.is_empty()
+			};
+			let path = self.path;
+			let detached = runtime.detach_tasks(|task| tree.path_is_under(task.path, path));
+			if !removed_elements && detached.is_empty() {
+				return false;
+			}
+			detached
+		};
+		// Dropped futures may own mounted scopes that end through the runtime again.
+		drop(detached);
+		true
 	}
 
 	pub fn update_container(&mut self, update: impl FnOnce(&mut Container)) -> bool {
@@ -113,6 +152,18 @@ impl<C> EvaluationContext<C> {
 		})
 	}
 
+	/// Edits a retained curve in place, such as re-routing a wire while its ends move.
+	///
+	/// Changing only the path's segments keeps the layout placement; changing its
+	/// size or transform replays placement like any other element edit.
+	pub fn update_curve(&mut self, update: impl FnOnce(&mut Curve)) -> bool {
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Curve(value) = primitive else { return false };
+			update(value);
+			true
+		})
+	}
+
 	pub fn update_image(&mut self, update: impl FnOnce(&mut Image)) -> bool {
 		self.tree.borrow_mut().update_element(self.id, |primitive| {
 			let Primitives::Image(value) = primitive else { return false };
@@ -144,8 +195,11 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 		self.ctx.as_ref()
 	}
 
-	fn element<'a>(&'a mut self, name: &'static str) -> ElementSlot<'a, C> {
-		ElementSlot { parent: self, name }
+	fn element<'a>(&'a mut self, name: impl Into<Cow<'static, str>>) -> ElementSlot<'a, C> {
+		ElementSlot {
+			parent: self,
+			name: name.into(),
+		}
 	}
 
 	fn render(&mut self) -> RenderFuture {
@@ -175,6 +229,10 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 
 	fn release_focus(&mut self) {
 		self.runtime.borrow_mut().release_focus(self.id);
+	}
+
+	fn remove(&mut self) -> bool {
+		EvaluationContext::remove(self)
 	}
 }
 
@@ -209,11 +267,12 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 	{
 		let runtime = Rc::clone(&self.parent.runtime);
 		let tree = Rc::clone(&self.parent.tree);
-		// The task belongs to the enclosing mounted scope and ends when that scope is removed.
-		let task_id = runtime.borrow_mut().reserve_task(self.parent.owner);
+		// The task belongs to the enclosing mounted scope and ends when that scope is removed,
+		// or earlier when the element it was declared under is removed.
 		let path = tree
 			.borrow_mut()
 			.scope_path(Some(self.parent.id), self.parent.path, self.name);
+		let task_id = runtime.borrow_mut().reserve_task(self.parent.owner, path);
 		let ctx = EvaluationContext {
 			id: self.parent.id,
 			parent: Some(self.parent.id),

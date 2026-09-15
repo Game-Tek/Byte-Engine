@@ -24,6 +24,9 @@ The layout layer stays small by design.
 Containers own sizing, positioning, flow, clipping, style, and visual data.
 Flow functions such as row, column, grid, and centered variants place children.
 Transforms are best treated as animation and presentation state, while position and sizing describe stable layout.
+A transform applies to the whole subtree: a scaled container scales its
+descendants' rectangles, hit bounds, clipping, curve points, stroke widths, and
+font sizes together, so one transform on a content layer zooms a canvas.
 
 ## Handle events and focus
 
@@ -43,33 +46,61 @@ are removed and every component started inside it ends, including components
 those components started. Components started outside any mount live until they
 return or the engine is dropped.
 
+`EvaluationContext::remove` removes one element together with everything
+declared under it: its descendants and the components started there. The
+context it was called on stays valid only to declare the same name again, which
+gets the same id on a later frame. A mounted component awaited from outside the
+removed element keeps running until its own future ends; its elements are gone,
+so its updates report `false`.
+
+## Build content at runtime
+
+`Context::element` takes any name that converts into `Cow<'static, str>`. A
+static name identifies a fixed part of a component. An owned `String` names an
+element created from data, such as one node of a graph, and the slot is keyed by
+the string's content, so the same content on a later frame resolves the same
+retained element:
+
+```rust
+let mut node = canvas.element(format!("node-{id}")).container(node_frame(position));
+let mut wire = canvas.element(format!("wire-{from}-{to}")).curve(wire_between(a, b));
+```
+
+Keep the element contexts as the handles to that content. Re-route a wire while
+its ends move with `EvaluationContext::update_curve`, editing the path in place
+so its segment buffer is reused; changing only the segments repaints the curve
+without replaying layout. Remove a node or a wire with
+`EvaluationContext::remove`:
+
+```rust
+wire.update_curve(|curve| {
+    let path = curve.path_mut();
+    path.clear();
+    path.push_cubic(from, from + tangent, to - tangent, to);
+});
+node.remove();
+```
+
 ## Drag a UI item onto an application target
 
 The engine owns one pointer drag. Create a position action with
 `ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")`
-in your UI's input sink. Retain each submitted snapshot with
-`Snapshot::retain_hit_test`, then use its `HitTest` to resolve a source when the
-action starts. Convert positions with `HitTest::layout_position` so the drag
-threshold uses layout units.
-
-Forward the action phases to the engine. In this example, `is_draggable`
-recognizes the retained sources your component created, and `accept_drop`
-maps the released source to your data and validates the application target
-before changing application state:
+in your UI's input sink and forward its phases to the engine in normalized
+window coordinates. `Engine::press` grabs the surface under the pointer from
+the last evaluated frame and returns whether it found one. In this example,
+`accept_drop` maps the released source to your data and validates the
+application target before changing application state:
 
 ```rust
-let point = hits.layout_position(window_position);
 match phase {
     ActionPhase::Started => {
-        if let Some(source) = hits.query(window_position).filter(is_draggable) {
-            engine.press(source, point);
-        }
+        engine.press(window_position);
     }
     ActionPhase::Updated => {
-        engine.drag_to(point);
+        engine.drag_to(window_position);
     }
     ActionPhase::Ended => {
-        if let Some(drop) = engine.release(point) {
+        if let Some(drop) = engine.release(window_position) {
             accept_drop(drop);
         }
     }
@@ -80,44 +111,79 @@ match phase {
 ```
 
 Capture the gesture in your UI's sink before gameplay processes the same
-input. Continue forwarding motion and release outside the source; repeat hit
-testing only when choosing a new source. Components read the held source
-through `Context::drag` to draw a floating preview after `dragging` becomes
-true, while keeping the original item until the drop is accepted. A click,
-cancellation, or rejected drop then restores its normal appearance. When
-scaling a preview, use `Transform::origin(UiPoint::zero())` to keep its top-left
-corner anchored.
+input, and continue forwarding motion and release outside the source.
+`Engine::hit` answers what is under a point when a sink needs that for its own
+capture decisions, such as refusing a drop over UI.
 
-Components can also receive the gesture as events. The source gets
-`Events::DragStarted` when the threshold is crossed and `Events::DragEnded`
-once the started drag is released or cancelled. The surface under the release
-point, and then each of its ancestors, gets `Events::Dropped` with
-`UiEvent::source` set to the released source; the source itself is skipped when
-finding that surface. The engine resolves the target at the start of the next
-`Engine::evaluate` from the previous frame's hit geometry, before components
-run, so a component sees the drop and the cleared capture in the same poll. The
-source's `DragEnded` is queued after the drop; when one component awaits both,
-use `select_biased!` with the `Dropped` arm first, because `select!` polls its
-arms in random order. A component that owns a drop target awaits it like a
-click:
+The grabbed surface receives the gesture as events, so it can react on its own.
+It gets `Events::Grabbed` on press. Once the pointer travels past the drag
+threshold, it gets `Events::Dragged` at the start of each `Engine::evaluate` in
+which the pointer moved, with `UiEvent::delta` set to the offset from the press
+point in layout units. When the grab ends by release or cancellation it gets
+`Events::DragEnded`, with `UiEvent::source` set to the surface the drag was
+dropped on, if any. Await all three in one loop, because an event with no
+component waiting for it is discarded, and a press and release can arrive in
+the same frame:
 
 ```rust
+let mut origin = None;
 loop {
-    let event = column.on(Events::Dropped).await;
-    if let Some(card) = event.source {
-        accept(card);
+    let event = select! {
+        event = card.on(Events::Grabbed) => event,
+        event = card.on(Events::Dragged) => event,
+        event = card.on(Events::DragEnded) => event,
+    };
+    match event.kind {
+        Events::Grabbed => {
+            origin = card.geometry();
+            card.update_container(|card| card.depth = Depth::absolute(1));
+        }
+        Events::Dragged => {
+            if let (Some(origin), Some(delta)) = (origin, event.delta) {
+                card.update_container(|card| card.set_transform(placed_at(origin.x() + delta.x, origin.y() + delta.y)));
+            }
+        }
+        _ => {
+            origin = None;
+            card.update_container(|card| {
+                card.depth = Depth::relative(1);
+                card.set_transform(Transform::identity());
+            });
+        }
     }
 }
 ```
 
-`Engine::release` still returns the `DragDrop` for applications that apply
-drops outside the UI, so either side can act on it.
+`Depth::absolute` lifts the card out of its parent's flow and places it from
+the viewport, so a translation by the drag offset from its grabbed geometry
+follows the pointer. When scaling a preview, use
+`Transform::origin(UiPoint::zero())` to keep its top-left corner anchored.
 
-To let a dropped element join its target's layout, move it with
-`EvaluationContext::reparent`. The element keeps its id and properties and
-becomes the new parent's last flow child. Give a lifted element
-`Depth::absolute` while it follows the pointer so it does not displace its
-temporary siblings.
+The surface under the release point, and then each of its ancestors, gets
+`Events::Dropped` with `UiEvent::source` set to the released source; the source
+itself is skipped when finding that surface. The engine resolves the target at
+the start of the next `Engine::evaluate` from the previous frame's hit
+geometry, before components run, and queues the source's `DragEnded` after it,
+so a target claims the source before the source settles. A target takes a
+dropped element into its own layout with `EvaluationContext::adopt`, which
+makes it the target's last flow child while keeping its id and properties:
+
+```rust
+loop {
+    let event = stack.on(Events::Dropped).await;
+    if let Some(card) = event.source {
+        stack.adopt(card);
+    }
+}
+```
+
+While a source is held, the surface under the pointer other than the source is
+available as `DragCapture::over`, so the source can preview where a release
+would land.
+
+`Engine::release` still returns the `DragDrop` for applications that apply
+drops outside the UI, so either side can act on it. An element can also move
+itself under another parent with `EvaluationContext::reparent`.
 
 `Engine::cancel` ends the interaction in progress: it restores the held source
 and discards queued clicks, scrolls, key presses, and text edits. Call it when
@@ -125,6 +191,28 @@ the window loses focus or the user cancels. A changed viewport size cancels
 from `Engine::evaluate`, because layout distances and the source's place move
 with it. The UI supplies the gesture and geometry; your application decides
 which targets accept the item and how to apply it.
+
+## React to the pointer passing over a surface
+
+Each `Engine::evaluate` compares the surface under the pointer with the previous
+frame's. When it changes, the old surface gets `Events::PointerExited` and the
+new one `Events::PointerEntered`, each followed by the ancestors that stopped or
+started containing the pointer. An ancestor containing both surfaces hears
+nothing, so a panel keeps its hover state while the pointer moves between its
+children. A held drag source is skipped, so a drop target under a dragged item
+still receives `PointerEntered`. `Engine::hovered` answers the same question at
+the application level, for a cursor shape for example.
+
+Curves take part once given a hit width: `Curve::hit_testable(width)` lets the
+pointer find the curve within `width` layout units of its stroke, along its
+whole length even where it runs beyond its declared size. A wire can then be
+hovered, clicked, and dropped on like a container. The width follows the
+inherited transform scale.
+
+A container with an absolute position may sit partly outside its parent,
+including at negative coordinates, so a canvas can be panned past its edge
+without snapping its content. Flow-placed children are still kept inside the
+viewport.
 
 ## Work within the current limits
 
@@ -151,8 +239,8 @@ retains its result and reuses it while its inputs repeat. The contract is one
 chain of revisions:
 
 - The retained tree advances a revision whenever an element is added, removed,
-  or handed out for mutation through `update_container`, `update_text`, and the
-  other update methods. Every such call counts, so only call them when state
+  or handed out for mutation through `update_container`, `update_text`,
+  `update_curve`, and the other update methods. Every such call counts, so only call them when state
   actually changed. Re-declaring the same element path on a later frame does
   not count.
 - `Engine::evaluate` reuses the retained layout while the tree revision and the

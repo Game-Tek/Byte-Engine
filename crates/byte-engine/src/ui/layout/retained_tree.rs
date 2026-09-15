@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+	borrow::Cow,
+	collections::{HashMap, HashSet},
+};
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 use crate::ui::{
@@ -24,6 +27,13 @@ enum PlacementInputs {
 		transform: Transform,
 		hit_testable: bool,
 	},
+	/// Segment edits are paint-only; only the path's size and transform place a curve.
+	Curve {
+		width: super::Sizing,
+		height: super::Sizing,
+		transform: Transform,
+		hit_testable: bool,
+	},
 }
 
 /// Captures paint-independent layout inputs without copying styles or text.
@@ -46,6 +56,12 @@ fn placement_inputs(primitive: &Primitives) -> Option<PlacementInputs> {
 		Primitives::TextField(text) => PlacementInputs::Text {
 			transform: text.transform,
 			hit_testable: true,
+		},
+		Primitives::Curve(curve) => PlacementInputs::Curve {
+			width: curve.path.width,
+			height: curve.path.height,
+			transform: curve.transform,
+			hit_testable: curve.hit_width.is_some(),
 		},
 		_ => return None,
 	})
@@ -88,7 +104,7 @@ pub(super) struct RetainedTree {
 	/// Spare child lists keep their capacity after a scope closes.
 	pub(super) children: Vec<Vec<usize>>,
 	pub(super) parents: Vec<Option<usize>>,
-	path_counts: HashMap<(Option<Id>, &'static str), u32>,
+	path_counts: HashMap<(Option<Id>, Cow<'static, str>), u32>,
 	path_ids: HashMap<(usize, PathSegment), usize>,
 	/// Interned paths retain their original scope ancestry even after visual reparenting.
 	paths: Vec<(usize, Option<Id>)>,
@@ -144,8 +160,10 @@ impl RetainedTree {
 	}
 
 	/// Interns a structural path so mounted contexts share ancestry without copying it.
-	pub(super) fn scope_path(&mut self, parent: Option<Id>, parent_path: usize, name: &'static str) -> usize {
-		let count = self.path_counts.entry((parent, name)).or_insert(0);
+	///
+	/// Names are declared once per element, so an owned name is cloned only at that time.
+	pub(super) fn scope_path(&mut self, parent: Option<Id>, parent_path: usize, name: Cow<'static, str>) -> usize {
+		let count = self.path_counts.entry((parent, name.clone())).or_insert(0);
 		*count += 1;
 		let key = (parent_path, PathSegment { name, ordinal: *count });
 		*self.path_ids.entry(key).or_insert_with(|| {
@@ -153,6 +171,17 @@ impl RetainedTree {
 			self.paths.push((parent_path, None));
 			index
 		})
+	}
+
+	/// Reports whether `path` is `ancestor` or was declared somewhere under it.
+	///
+	/// Declaration ancestry is what scope removal follows, so a visually reparented
+	/// element still belongs to the context that declared it.
+	pub(super) fn path_is_under(&self, mut path: usize, ancestor: usize) -> bool {
+		while path != 0 && path != ancestor {
+			path = self.paths[path].0;
+		}
+		path == ancestor
 	}
 
 	/// Returns the stable element identity assigned to an interned path.
@@ -169,7 +198,7 @@ impl RetainedTree {
 		&mut self,
 		parent: Option<Id>,
 		parent_path: usize,
-		name: &'static str,
+		name: Cow<'static, str>,
 		element: ConcreteElement,
 	) -> (Id, usize) {
 		let path = self.scope_path(parent, parent_path, name);
@@ -294,15 +323,21 @@ impl RetainedTree {
 			return &self.removed;
 		}
 
-		self.elements.retain(|element| {
+		let Self {
+			elements,
+			paths,
+			removed,
+			..
+		} = self;
+		elements.retain(|element| {
 			// Scope ownership follows declaration paths, never the current visual parent.
 			let mut path = element.path;
 			while path != 0 && path != scope {
-				path = self.paths[path].0;
+				path = paths[path].0;
 			}
 			let should_remove = path == scope;
 			if should_remove {
-				self.removed.insert(element.id);
+				removed.insert(element.id);
 			}
 			!should_remove
 		});

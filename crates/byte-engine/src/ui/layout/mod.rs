@@ -24,9 +24,9 @@ use crate::ui::{
 	style::{ConcreteStyle, EdgeFeather},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PathSegment {
-	pub(crate) name: &'static str,
+	pub(crate) name: std::borrow::Cow<'static, str>,
 	pub(crate) ordinal: u32,
 }
 
@@ -64,6 +64,8 @@ pub(crate) struct RenderTextElement {
 	pub(crate) color: RGBA,
 	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
+	/// Inherited visual scale applied to the font size when glyphs are placed.
+	pub(crate) scale: f32,
 	pub(crate) content: String,
 }
 
@@ -91,6 +93,8 @@ pub(crate) struct RenderCurveElement {
 	pub(crate) feather_mask: Option<FeatherMask>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
+	/// Inherited visual scale applied to segment points and stroke width.
+	pub(crate) scale: [f32; 2],
 	pub(crate) segments: Vec<CurveSegment>,
 }
 
@@ -184,6 +188,7 @@ fn layout_elements<'a>(
 		size: Size,
 		root_size: Size,
 		offset: Offset,
+		anchored: bool,
 		depth: i32,
 		highest_depth: &mut i32,
 		text: &mut TextSystem,
@@ -191,10 +196,18 @@ fn layout_elements<'a>(
 		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
 	) {
 		let element = &tree.elements[index];
-		let position = Location3::new(offset.x().max(0.0), offset.y().max(0.0), depth.max(0) as u32);
+		// Flow keeps children inside the viewport; an anchored child may sit partly
+		// outside its parent, such as a canvas node panned past the left edge.
+		let (x, y) = if anchored {
+			(offset.x(), offset.y())
+		} else {
+			(offset.x().max(0.0), offset.y().max(0.0))
+		};
+		let position = Location3::new(x, y, depth.max(0) as u32);
 		let hit_testable = match &element.element.primitive {
 			Primitives::Container(container) => container.hit_testable,
 			Primitives::TextField(_) => true,
+			Primitives::Curve(curve) => curve.hit_width().is_some(),
 			_ => false,
 		};
 		output.push(LayoutElement {
@@ -222,6 +235,7 @@ fn layout_elements<'a>(
 				}
 				let available = if reset { root_size } else { size };
 				let child_size = measure_element(child, available, text, &mut measurements[child_index]);
+				let anchored = matches!(child_container.map(|value| value.position), Some(Position::Absolute { .. }));
 				let flow_output = match child_container.map(|value| value.position) {
 					// Absolute positions are offsets from the parent's top-left corner.
 					Some(Position::Absolute { x, y }) => FlowOutput::new(Offset::new(origin.x() + x, origin.y() + y), cursor),
@@ -240,6 +254,7 @@ fn layout_elements<'a>(
 					child_size,
 					root_size,
 					flow_output.child_offset(),
+					anchored,
 					child_depth,
 					highest_depth,
 					text,
@@ -265,6 +280,7 @@ fn layout_elements<'a>(
 		root_size,
 		available_space,
 		Offset::new(0.0, 0.0),
+		false,
 		0,
 		&mut 0,
 		text_system,
@@ -778,7 +794,7 @@ mod tests {
 	}
 
 	#[test]
-	fn layout_absolute_position_clamps_negative_coordinates() {
+	fn layout_absolute_position_keeps_negative_coordinates() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default();
 		let child = Container::default()
@@ -801,7 +817,9 @@ mod tests {
 			&frame_allocator,
 		);
 
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		// An anchored child may start outside its parent, such as a canvas node panned past the edge.
+		assert_eq!(elements[1].position, Location3::new(-10, -20, 1));
+		assert_eq!(elements[1].size, Size::new(30, 30));
 	}
 
 	#[test]

@@ -128,6 +128,8 @@ pub mod synchronizer {
 }
 
 pub mod swapchain {
+	use std::sync::Arc;
+
 	use super::*;
 	use crate::image::ImageHandle;
 
@@ -140,5 +142,11 @@ pub mod swapchain {
 		pub uses_proxy: bool,
 		pub uses: crate::Uses,
 		pub extent: Extent,
+		/// The drawable acquired for the next presentation, held between acquisition and submission.
+		pub pending_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+		/// The `presentedTime` of the last drawable shown on screen, as `f64` bits. Zero means nothing was presented yet.
+		/// Metal publishes it through a presented handler on an arbitrary thread shortly after the display shows the
+		/// frame, so the value is shared atomically and may lag one acquisition behind.
+		pub last_presented_time: Arc<AtomicU64>,
 	}
 }

@@ -107,6 +107,14 @@ impl crate::context::Context for Context {
 		Context::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: graphics_hardware_interface::SwapchainHandle,
+	) -> crate::frame::SwapchainAcquisition {
+		Context::acquire_swapchain_image(self, frame, swapchain)
+	}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,

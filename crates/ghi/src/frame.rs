@@ -1,3 +1,12 @@
+use std::time::Instant;
+
+use utils::Extent;
+
+use crate::{
+	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
+	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
+};
+
 /// The `Frame` trait scopes frame-local GPU work so per-frame resources stay tied to an active frame.
 /// The frame lifetime keeps operations borrowed from the [`crate::Device`] only
 /// while the frame is active.
@@ -65,17 +74,19 @@ where
 		self.create_command_buffer_recording(command_buffer_handle)
 	}
 
-	/// Acquires a swapchain image for presentation.
+	/// Acquires a swapchain image for presentation from inside a started frame.
 	///
-	/// Returns the presentation key, image extent, and optional presentation time.
+	/// Use [`crate::context::Context::acquire_swapchain_image`] to acquire before the frame is started.
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> SwapchainAcquisition;
 }
 
 /// The `SwapchainAcquisition` struct provides the image information needed to prepare a frame for presentation.
 /// Use [`Self::present_key`] when submitting the frame through [`crate::queue::Queue::execute`].
+#[derive(Clone, Copy, Debug)]
 pub struct SwapchainAcquisition {
 	pub(crate) present_key: PresentKey,
 	pub(crate) extent: Extent,
+	/// The display time of the most recently presented image of this swapchain, when the backend reports it.
 	pub(crate) present_time: Option<Instant>,
 }
 
@@ -88,16 +99,10 @@ impl SwapchainAcquisition {
 		self.extent
 	}
 
+	/// Returns the display time of the most recently presented image of this swapchain.
+	///
+	/// Backends without presentation feedback return `None`.
 	pub fn present_time(&self) -> Option<Instant> {
 		self.present_time
 	}
 }
-
-use std::time::Instant;
-
-use utils::Extent;
-
-use crate::{
-	BaseBufferHandle, BaseImageHandle, BufferHandle, CommandBufferHandle, DynamicBufferHandle, Pod, PresentKey,
-	SwapchainHandle, command_buffer::CommandBufferRecording, descriptors,
-};

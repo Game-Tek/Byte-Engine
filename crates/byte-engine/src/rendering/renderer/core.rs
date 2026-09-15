@@ -29,6 +29,8 @@ pub struct Renderer {
 
 	/// Display windows and their swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
+	acquisitions: (u64, SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]>),
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
@@ -204,6 +206,7 @@ impl Renderer {
 			frame_queue_depth: frame_queue_depth as usize,
 
 			windows: SmallVec::with_capacity(16),
+			acquisitions: (0, SmallVec::with_capacity(16)),
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
 
@@ -466,11 +469,68 @@ impl Renderer {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
 	}
 
+	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
+	/// primary window's most recently presented image, when the backend reports it.
+	///
+	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image.
+	/// The call is idempotent for one frame: windows already acquired are skipped, so [`Self::prepare`] can
+	/// call it to pick up windows adopted later in the tick or to acquire when nothing was hoisted.
+	pub(crate) fn acquire_swapchain_images(&mut self) -> Option<std::time::Instant> {
+		if self.acquisitions.0 != self.started_frame_count {
+			self.acquisitions = (self.started_frame_count, SmallVec::new());
+		}
+		if self.acquisitions.1.len() == self.windows.len() {
+			return None;
+		}
+
+		let span = debug_span!(
+			"Renderer::acquire_swapchains",
+			frame = self.started_frame_count,
+			windows = self.windows.len()
+		);
+		let _enter = span.enter();
+
+		let shared_context = self.context.clone();
+		let mut context = shared_context.lock();
+		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
+		let mut present_time = None;
+
+		for (_window, swapchain) in self.windows.iter().skip(self.acquisitions.1.len()) {
+			let acquisition = context.acquire_swapchain_image(frame, *swapchain);
+			let extent = acquisition.extent();
+			if self.acquisitions.1.is_empty() {
+				present_time = acquisition.present_time();
+			}
+
+			if extent.width() == 0 || extent.height() == 0 {
+				log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+				self.acquisitions.1.push(None);
+				continue;
+			}
+
+			if extent.width() >= 65535 || extent.height() >= 65535 {
+				log::warn!(
+					"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+					extent
+				);
+				self.acquisitions.1.push(None);
+				continue;
+			}
+
+			self.acquisitions
+				.1
+				.push(Some((acquisition.present_key(), extent, *swapchain)));
+		}
+
+		present_time
+	}
+
 	/// Prepares a frame by invoking the configured render passes.
 	///
 	/// The renderer skips execution when no swapchain is available or when any
 	/// swapchain surface has a zero-sized dimension.
-	// Keep the frame transaction contiguous so acquisition, recording, presentation, and screenshot transfers stay ordered.
+	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
+	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn prepare(
 		&'_ mut self,
@@ -492,6 +552,9 @@ impl Renderer {
 				.map(|_| Err(RendererScreenshotError::SinkNotFound))
 				.collect();
 		};
+		// Acquire here when nothing was hoisted to the start of the tick, or for windows adopted since.
+		self.acquire_swapchain_images();
+
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
 		}
@@ -534,7 +597,7 @@ impl Renderer {
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
 		let wait_for = &[];
-		let windows = &self.windows;
+		let swapchains = &self.acquisitions.1;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
@@ -565,41 +628,12 @@ impl Renderer {
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains) = {
+				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
 					let _enter = span.enter();
 					let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
-					let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = {
-						let span = debug_span!("Renderer::acquire_swapchains", count = windows.len());
-						let _enter = span.enter();
-						windows
-							.iter()
-							.map(|(_window, swapchain)| {
-								let acquisition = frame.acquire_swapchain_image(*swapchain);
-
-								let present_key = acquisition.present_key();
-								let extent = acquisition.extent();
-
-								if extent.width() == 0 || extent.height() == 0 {
-									log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-									return None;
-								}
-
-								if extent.width() >= 65535 || extent.height() >= 65535 {
-									log::warn!(
-										"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
-										extent
-									);
-									return None;
-								}
-
-								Some((present_key, extent, *swapchain))
-							})
-							.collect()
-					};
-
 					let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
 
 					{
@@ -675,7 +709,7 @@ impl Renderer {
 						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains)
+					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys)
 				};
 
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {

@@ -1256,6 +1256,14 @@ impl crate::context::Context for Device {
 		Device::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, _uses)
 	}
 
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: SwapchainHandle,
+	) -> crate::frame::SwapchainAcquisition {
+		Device::acquire_swapchain_image(self, frame, swapchain)
+	}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: TextureCopyHandle,

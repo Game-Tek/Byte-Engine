@@ -428,6 +428,16 @@ pub trait Context: ContextCreate {
 		uses: Uses,
 	) -> SwapchainHandle;
 
+	/// Acquires the swapchain image that `frame` will present.
+	///
+	/// This can run before the frame is started so simulation can follow the presentation cadence.
+	/// It blocks until the frame sequence's previous submission and the presentation engine allow reuse.
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: SwapchainHandle,
+	) -> crate::frame::SwapchainAcquisition;
+
 	/// Waits for queued GPU work, consumes one transfer handle, and returns its owned result.
 	///
 	/// A transfer handle is local to the context that created it. Handle values can overlap across contexts,

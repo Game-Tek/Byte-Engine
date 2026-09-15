@@ -52,7 +52,13 @@ pub struct GraphicsApplication {
 
 	tick_count: u64,
 	start_time: std::time::Instant,
-	last_tick_time: MediaTime,
+	/// Accumulated frame deltas; kept separate from the wall clock so it stays consistent with paced deltas.
+	elapsed: MediaTime,
+	last_tick_instant: std::time::Instant,
+	/// The display time of the last presented frame the clock has consumed, when the swapchain reported one.
+	last_present_time: Option<std::time::Instant>,
+	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
+	elapsed_at_last_present: MediaTime,
 
 	close: bool,
 
@@ -218,7 +224,10 @@ impl Application for GraphicsApplication {
 
 			tick_count: 0,
 			start_time,
-			last_tick_time: MediaTime::from_std(start_time.elapsed()),
+			elapsed: MediaTime::from_std(start_time.elapsed()),
+			last_tick_instant: std::time::Instant::now(),
+			last_present_time: None,
+			elapsed_at_last_present: MediaTime::ZERO,
 
 			#[cfg(debug_assertions)]
 			ttff: MediaTime::ZERO,
@@ -252,12 +261,36 @@ impl GraphicsApplication {
 		&self.configuration
 	}
 
-	/// Samples one monotonic frame interval and advances the application clock.
-	fn sample_frame_time(&mut self) -> Time {
-		let elapsed = MediaTime::from_std(std::time::Instant::now().duration_since(self.start_time));
-		let delta = elapsed - self.last_tick_time;
-		self.last_tick_time = elapsed;
-		Time { elapsed, delta }
+	/// Advances the application clock by one frame.
+	///
+	/// Presented times form the display clock: when the swapchain reports a newer one, `elapsed` lands on the
+	/// point that display interval reaches, so deltas follow the display cadence instead of CPU scheduling noise.
+	/// Without a newer presented time (startup, skipped frames, or a report that arrives late) the tick advances
+	/// by the wall-clock interval; the next presented time discounts that advance instead of charging it twice.
+	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>) -> Time {
+		let now = std::time::Instant::now();
+		let wall_delta = MediaTime::from_std(now - self.last_tick_instant);
+		let delta = match (present_time, self.last_present_time) {
+			(Some(current), Some(previous)) if current > previous => {
+				let target = self.elapsed_at_last_present + MediaTime::from_std(current - previous);
+				if target > self.elapsed {
+					target - self.elapsed
+				} else {
+					MediaTime::ZERO
+				}
+			}
+			_ => wall_delta,
+		};
+		self.last_tick_instant = now;
+		self.elapsed += delta;
+		if present_time.is_some() && present_time != self.last_present_time {
+			self.last_present_time = present_time;
+			self.elapsed_at_last_present = self.elapsed;
+		}
+		Time {
+			elapsed: self.elapsed,
+			delta,
+		}
 	}
 
 	/// Routes window input events and reports whether any window requested close.
@@ -362,8 +395,6 @@ impl GraphicsApplication {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
-		let time = self.sample_frame_time();
-		let dt = time.delta;
 		{
 			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
 			let _enter = span.enter();
@@ -371,6 +402,14 @@ impl GraphicsApplication {
 		}
 		let mut close = self.process_window_events();
 		close |= matches!(self.application_events.1.read(), Some(Events::Close));
+
+		// Adopt windows created last tick, then block on the presentation engine before simulating so the
+		// tick paces on the display and the acquisition's presented time can drive the frame delta.
+		self.prepare_renderer_state();
+		let present_time = self.renderer.acquire_swapchain_images();
+		let time = self.sample_frame_time(present_time);
+		let dt = time.delta;
+
 		self.process_gamepad_events();
 
 		{

@@ -1,4 +1,4 @@
-use ash::vk::{self, TaggedStructure as _};
+use ash::vk;
 use utils::Extent;
 
 use super::{command_buffer::CommandBufferRecording, context::Context};
@@ -12,16 +12,11 @@ use crate::{
 pub struct Frame<'a> {
 	frame_key: FrameKey,
 	device: &'a mut Context,
-	acquired_swapchains: Vec<crate::PresentKey>,
 }
 
 impl<'a> Frame<'a> {
 	pub fn new(device: &'a mut Context, frame_key: FrameKey) -> Self {
-		Self {
-			frame_key,
-			device,
-			acquired_swapchains: Vec::new(),
-		}
+		Self { frame_key, device }
 	}
 
 	pub fn device(&self) -> &Context {
@@ -238,124 +233,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.write(descriptor_set_writes);
 	}
 
+	/// Acquires a swapchain image from inside the started frame. The sequence fence was already waited by `start_frame`.
 	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> crate::frame::SwapchainAcquisition {
-		let swapchains = &self.device.swapchains;
-		let synchronizers = &self.device.synchronizers;
-
-		let swapchain = &swapchains[swapchain_handle.0 as usize];
-		let fallback_extent = swapchain.extent;
-
-		let s = swapchain.max_image_count as u64;
-		let m = swapchain.min_image_count as u64;
-
-		let frame_key = self.frame_key;
-
-		let swapchain_frame_synchronizer =
-			swapchain.acquire_synchronizers[frame_key.sequence_index as usize].access(synchronizers);
-
-		let semaphore = swapchain_frame_synchronizer.semaphore;
-
-		// Use our own waiting technique if only one image (s - m == 0) can be acquired at a time, since
-		let use_vulkan_timeout = s - m != 0;
-
-		let acquire_info = vk::AcquireNextImageInfoKHR::default()
-			.swapchain(swapchain.swapchain)
-			.timeout(if use_vulkan_timeout { u64::MAX } else { 0 })
-			.semaphore(semaphore)
-			.device_mask(1)
-			.fence(swapchain_frame_synchronizer.fence);
-
-		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(swapchain.vk_present_mode);
-
-		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push(&mut vk_surface_present_mode)
-			.surface(swapchain.surface);
-
-		let mut vk_present_modes = [swapchain.vk_present_mode];
-
-		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_present_modes);
-
-		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
-
-		unsafe {
-			self.device
-				.surface_capabilities
-				.get_physical_device_surface_capabilities2(
-					self.device.physical_device,
-					&vk_surface_info,
-					&mut vk_surface_capabilities,
-				)
-				.expect("No surface capabilities")
-		};
-
-		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
-
-		let device = &self.device.device;
-
-		unsafe {
-			let _ = device.wait_for_fences(&[swapchain_frame_synchronizer.fence], true, u64::MAX);
-			let _ = device.reset_fences(&[swapchain_frame_synchronizer.fence]);
-		}
-
-		let swapchain_functions = &self.device.swapchain;
-
-		let acquisition_result = if !use_vulkan_timeout {
-			loop {
-				let acquisition_result = unsafe { swapchain_functions.acquire_next_image2(&acquire_info) };
-
-				match acquisition_result {
-					Ok(_) => break acquisition_result,
-					Err(vk::Result::NOT_READY) => std::thread::sleep(std::time::Duration::from_millis(1)),
-					_ => panic!("Failed to acquire next image"),
-				}
-			}
-		} else {
-			unsafe { swapchain_functions.acquire_next_image2(&acquire_info) }
-		};
-
-		let (index, swapchain_state) = if let Ok((index, is_suboptimal)) = acquisition_result {
-			if !is_suboptimal {
-				(index, graphics_hardware_interface::SwapchainStates::Ok)
-			} else {
-				(index, graphics_hardware_interface::SwapchainStates::Suboptimal)
-			}
-		} else {
-			(0, graphics_hardware_interface::SwapchainStates::Invalid)
-		};
-
-		let present_key = graphics_hardware_interface::PresentKey {
-			image_index: index as u8,
-			sequence_index: frame_key.sequence_index,
-			swapchain: swapchain_handle,
-		};
-
-		if swapchain_state != graphics_hardware_interface::SwapchainStates::Invalid
-			&& !self.acquired_swapchains.contains(&present_key)
-		{
-			self.acquired_swapchains.push(present_key);
-		}
-
-		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
-			index as u8;
-
-		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
-			&& vk_surface_capabilities.current_extent.height != u32::MAX
-		{
-			Extent::rectangle(
-				vk_surface_capabilities.current_extent.width,
-				vk_surface_capabilities.current_extent.height,
-			)
-		} else {
-			Extent::rectangle(fallback_extent.width, fallback_extent.height)
-		};
-
-		crate::frame::SwapchainAcquisition {
-			present_key,
-			extent,
-			present_time: None,
-		}
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {

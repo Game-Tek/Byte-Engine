@@ -11,12 +11,11 @@ use crate::image::ImageHandle;
 /// Its `NSAutoreleasePool` releases temporary Metal objects at the end of the frame.
 /// Without this pool, objects accumulate on threads that do not have a run-loop pool.
 ///
-/// Field order matters: Rust drops fields in declaration order. The drawables must be
-/// released before the autorelease pool drains, so `_autorelease_pool` is declared last.
+/// Acquired drawables live on the device swapchains (`pending_drawable`) so acquisition can
+/// happen before the frame is started; `_autorelease_pool` stays last so it drains after every other field.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	queue_handle: graphics_hardware_interface::QueueHandle,
-	drawables: Vec<(SwapchainHandle, Retained<ProtocolObject<dyn CAMetalDrawable>>), &'a dyn std::alloc::Allocator>,
 	device: &'a mut context::Context,
 	allocator: &'a dyn std::alloc::Allocator,
 	_autorelease_pool: Retained<NSAutoreleasePool>,
@@ -47,7 +46,6 @@ impl<'a> Frame<'a> {
 		Self {
 			frame_key,
 			queue_handle,
-			drawables: Vec::new_in(allocator),
 			device,
 			allocator,
 			_autorelease_pool: pool,
@@ -183,12 +181,13 @@ impl Frame<'_> {
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> super::CommandBufferRecording<'a> {
-		let mut drawables = Vec::with_capacity_in(self.drawables.len(), self.allocator);
-		drawables.extend(
-			self.drawables
-				.iter()
-				.map(|(swapchain, drawable)| (*swapchain, drawable.clone())),
-		);
+		let mut drawables = Vec::new_in(self.allocator);
+		drawables.extend(self.device.swapchains.iter().enumerate().filter_map(|(index, swapchain)| {
+			swapchain
+				.pending_drawable
+				.as_ref()
+				.map(|drawable| (SwapchainHandle(index as u64), drawable.clone()))
+		}));
 		let mut recording = self.device.create_command_buffer_recording_with_frame_key_in(
 			command_buffer_handle,
 			Some(self.frame_key),
@@ -198,52 +197,13 @@ impl Frame<'_> {
 		recording
 	}
 
+	/// Acquires a drawable from inside the started frame. The sequence synchronizer was already waited by `start_frame`.
 	pub fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> crate::frame::SwapchainAcquisition {
-		let sequence_index = self.frame_key.sequence_index;
-
-		// Update layer extent before acquiring the drawable so that if a resize occurred,
-		// the drawable is allocated at the correct size. update_layer_extent only calls
-		// setDrawableSize when the size actually changed, avoiding unnecessary drawable
-		// pool invalidation.
-		let extent = {
-			let swapchain = &self.device.swapchains[swapchain_handle.0 as usize];
-			update_layer_extent(&swapchain.layer, &swapchain.view)
-		};
-		self.device.swapchains[swapchain_handle.0 as usize].extent = extent;
-
-		// Proxy swapchains must keep their intermediate texture aligned with the drawable.
-		if self.device.swapchains[swapchain_handle.0 as usize].uses_proxy {
-			self.device.resize_swapchain_images(swapchain_handle, extent);
-		}
-
-		let drawable = self.device.swapchains[swapchain_handle.0 as usize]
-			.layer
-			.nextDrawable()
-			.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.");
-
-		let present_key = graphics_hardware_interface::PresentKey {
-			image_index: 0,
-			sequence_index,
-			swapchain: swapchain_handle,
-		};
-
-		self.drawables.push((swapchain_handle, drawable));
-		if !self.device.swapchains[swapchain_handle.0 as usize].uses_proxy {
-			// A CAMetalLayer supplies a different drawable texture on each acquisition.
-			self.device
-				.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(
-					swapchain_handle.0,
-				)));
-		}
-
-		crate::frame::SwapchainAcquisition {
-			present_key,
-			extent,
-			present_time: None,
-		}
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 
 	pub fn device(&mut self) -> &mut context::Context {
@@ -261,7 +221,7 @@ impl Frame<'_> {
 		self.execute_finished_batch(command_buffers, present_keys, synchronizer);
 	}
 
-	/// Removes the drawables acquired for this submission while preserving a missing drawable as an explicit skipped present.
+	/// Takes the pending drawables for this submission while preserving a missing drawable as an explicit skipped present.
 	fn take_present_drawables(
 		&mut self,
 		present_keys: &[graphics_hardware_interface::PresentKey],
@@ -274,11 +234,9 @@ impl Frame<'_> {
 		present_keys
 			.iter()
 			.map(|&present_key| {
-				let drawable = self
-					.drawables
-					.iter()
-					.position(|(swapchain, _)| *swapchain == present_key.swapchain)
-					.map(|index| self.drawables.swap_remove(index).1);
+				let drawable = self.device.swapchains[present_key.swapchain.0 as usize]
+					.pending_drawable
+					.take();
 				(present_key, drawable)
 			})
 			.collect()
@@ -409,10 +367,16 @@ impl Frame<'_> {
 				self.device.texture_readbacks.mark_submitted(*handle);
 			}
 
-			for (_, drawable) in &present_drawables {
+			for (present_key, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {
 					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 					stored_queue.queue.signalDrawable(drawable);
+					record_presented_time(
+						drawable,
+						self.device.swapchains[present_key.swapchain.0 as usize]
+							.last_presented_time
+							.clone(),
+					);
 					drawable.present();
 				}
 			}
@@ -432,6 +396,20 @@ impl Frame<'_> {
 			.synchronizer_for_sequence(synchronizer, self.frame_key.sequence_index);
 		self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
+}
+
+/// Publishes the drawable's on-screen time into `slot` once the display shows it.
+fn record_presented_time(drawable: &ProtocolObject<dyn mtl::MTLDrawable>, slot: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+	let handler = block2::StackBlock::new(move |drawable: std::ptr::NonNull<ProtocolObject<dyn mtl::MTLDrawable>>| {
+		// Metal may invoke this block on any thread, so it only touches the shared atomic.
+		// SAFETY: Metal keeps the drawable alive for the duration of the presented-handler invocation.
+		let presented_time = unsafe { drawable.as_ref() }.presentedTime();
+		if presented_time > 0.0 {
+			slot.store(presented_time.to_bits(), std::sync::atomic::Ordering::Release);
+		}
+	});
+	// SAFETY: Metal copies the block before this call returns, so the stack block may be dropped afterwards.
+	unsafe { drawable.addPresentedHandler(std::ptr::NonNull::from(&*handler).as_ptr()) };
 }
 
 impl<'a> crate::frame::Frame<'a> for Frame<'a> {

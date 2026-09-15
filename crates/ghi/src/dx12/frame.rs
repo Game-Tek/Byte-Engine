@@ -164,33 +164,10 @@ impl Frame<'_> {
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
+	/// Acquires a backbuffer from inside the started frame. The sequence fences were already waited by `start_frame`.
 	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
-		{
-			let swapchain =
-				self.device.swapchains.get(swapchain_handle.0 as usize).expect(
-					"Invalid DX12 swapchain handle. The most likely cause is that the handle came from another device.",
-				);
-			assert!(
-				swapchain.acquired_sequences.iter().all(|acquired| !acquired),
-				"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
-			);
-		}
-		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
-		let extent = self.device.swapchain_extent(swapchain_handle, self.frame_key.sequence_index);
-		let image_index = self.device.next_swapchain_image_index(swapchain_handle);
-		let present_key = PresentKey {
-			image_index,
-			sequence_index: self.frame_key.sequence_index,
-			swapchain: swapchain_handle,
-		};
-		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
-			image_index;
-		self.device.swapchains[swapchain_handle.0 as usize].acquired_sequences[self.frame_key.sequence_index as usize] = true;
-		crate::frame::SwapchainAcquisition {
-			present_key,
-			extent,
-			present_time: None,
-		}
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {

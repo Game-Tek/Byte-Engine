@@ -701,6 +701,131 @@ impl Context {
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
 	}
 
+	/// Acquires the swapchain image that `frame` will present before the frame is started.
+	///
+	/// The sequence fence is waited (not reset) first: the acquire semaphore of this sequence was last
+	/// waited by the submission `frames_in_flight` frames ago, and that wait must have executed before the
+	/// semaphore can be signaled again. `start_frame` later waits the same signaled fence instantly and resets it.
+	pub(crate) fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> crate::frame::SwapchainAcquisition {
+		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
+		let synchronizer_handles = self.get_syncronizer_handles(frame.synchronizer);
+		let fence = self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize].fence;
+		unsafe {
+			self.device
+				.device
+				.wait_for_fences(&[fence], true, u64::MAX)
+				.expect("Failed to wait for the frame sequence fence before swapchain acquisition. The most likely cause is that the device was lost.");
+		}
+		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
+	}
+
+	/// Acquires the next image of `swapchain_handle` using the acquire synchronizer of `sequence_index`.
+	pub(crate) fn acquire_swapchain_image_for_sequence(
+		&mut self,
+		sequence_index: u8,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> crate::frame::SwapchainAcquisition {
+		let swapchains = &self.swapchains;
+		let synchronizers = &self.synchronizers;
+
+		let swapchain = &swapchains[swapchain_handle.0 as usize];
+		let fallback_extent = swapchain.extent;
+
+		let s = swapchain.max_image_count as u64;
+		let m = swapchain.min_image_count as u64;
+
+		let swapchain_frame_synchronizer = swapchain.acquire_synchronizers[sequence_index as usize].access(synchronizers);
+
+		let semaphore = swapchain_frame_synchronizer.semaphore;
+
+		// Use our own waiting technique if only one image (s - m == 0) can be acquired at a time, since
+		let use_vulkan_timeout = s - m != 0;
+
+		let acquire_info = vk::AcquireNextImageInfoKHR::default()
+			.swapchain(swapchain.swapchain)
+			.timeout(if use_vulkan_timeout { u64::MAX } else { 0 })
+			.semaphore(semaphore)
+			.device_mask(1)
+			.fence(swapchain_frame_synchronizer.fence);
+
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(swapchain.vk_present_mode);
+
+		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
+			.push(&mut vk_surface_present_mode)
+			.surface(swapchain.surface);
+
+		let mut vk_present_modes = [swapchain.vk_present_mode];
+
+		let mut vk_surface_present_mode_compatibility =
+			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_present_modes);
+
+		let mut vk_surface_capabilities =
+			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
+
+		unsafe {
+			self.surface_capabilities
+				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
+				.expect("No surface capabilities")
+		};
+
+		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
+
+		let device = &self.device.device;
+
+		unsafe {
+			let _ = device.wait_for_fences(&[swapchain_frame_synchronizer.fence], true, u64::MAX);
+			let _ = device.reset_fences(&[swapchain_frame_synchronizer.fence]);
+		}
+
+		let swapchain_functions = &self.swapchain;
+
+		let acquisition_result = if !use_vulkan_timeout {
+			loop {
+				let acquisition_result = unsafe { swapchain_functions.acquire_next_image2(&acquire_info) };
+
+				match acquisition_result {
+					Ok(_) => break acquisition_result,
+					Err(vk::Result::NOT_READY) => std::thread::sleep(std::time::Duration::from_millis(1)),
+					_ => panic!("Failed to acquire next image"),
+				}
+			}
+		} else {
+			unsafe { swapchain_functions.acquire_next_image2(&acquire_info) }
+		};
+
+		// A suboptimal acquisition still yields a usable image; an error falls back to image zero as before.
+		let index = acquisition_result.map_or(0, |(index, _is_suboptimal)| index);
+
+		let present_key = graphics_hardware_interface::PresentKey {
+			image_index: index as u8,
+			sequence_index,
+			swapchain: swapchain_handle,
+		};
+
+		self.swapchains[swapchain_handle.0 as usize].acquired_image_indices[sequence_index as usize] = index as u8;
+
+		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
+			&& vk_surface_capabilities.current_extent.height != u32::MAX
+		{
+			Extent::rectangle(
+				vk_surface_capabilities.current_extent.width,
+				vk_surface_capabilities.current_extent.height,
+			)
+		} else {
+			Extent::rectangle(fallback_extent.width, fallback_extent.height)
+		};
+
+		crate::frame::SwapchainAcquisition {
+			present_key,
+			extent,
+			present_time: None,
+		}
+	}
+
 	pub(crate) fn swapchain_needs_proxy(
 		&self,
 		supported_usage_flags: vk::ImageUsageFlags,

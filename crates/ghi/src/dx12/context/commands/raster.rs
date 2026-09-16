@@ -670,4 +670,27 @@ impl Device {
 		self.viewport_set_count += 1;
 		self.scissor_set_count += 1;
 	}
+
+	/// Sets the native DX12 scissor rectangle inside an active render pass.
+	pub(crate) fn set_scissor_native(&mut self, command_buffer_handle: CommandBufferHandle, origin: [u32; 2], extent: Extent) {
+		let Some(command_list) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone())
+		else {
+			return;
+		};
+
+		let scissor = RECT {
+			left: origin[0] as i32,
+			top: origin[1] as i32,
+			right: (origin[0] + extent.width()) as i32,
+			bottom: (origin[1] + extent.height()) as i32,
+		};
+
+		unsafe {
+			command_list.RSSetScissorRects(&[scissor]);
+		}
+		self.scissor_set_count += 1;
+	}
 }

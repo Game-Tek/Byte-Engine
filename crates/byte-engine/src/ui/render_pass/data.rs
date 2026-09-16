@@ -35,7 +35,17 @@ pub(super) const UI_BLUR_SIGMA_SCALE: f32 = 1.689_394_6;
 pub(super) const UI_BLUR_FULL_ONLY_SIGMA: f32 = 4.0;
 pub(super) const UI_BLUR_HALF_ONLY_SIGMA: f32 = 6.0;
 pub(super) const UI_BLUR_HALF_RESAMPLING_VARIANCE: f32 = 2.75;
-pub(super) const UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurDownsamplePush>() as u32;
+pub(super) const UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiRegionPush>() as u32;
+/// Pixels added around every damaged rectangle for anti-aliasing and glyph atlas padding.
+pub(super) const UI_DAMAGE_MARGIN_PIXELS: f32 = 4.0;
+/// Pixels a backdrop blur reads around its quad through both the full and half resolution paths.
+pub(super) const UI_BLUR_FOOTPRINT_MARGIN: u32 = UI_BLUR_GAUSSIAN_SUPPORT * UI_BLUR_HALF_DOWNSCALE + 8;
+/// Every batch is drawn once per damage region, so keep the list short.
+pub(super) const MAX_UI_DAMAGE_REGIONS: usize = 4;
+/// Damage covering this share of the viewport becomes one full redraw.
+pub(super) const UI_FULL_REDRAW_AREA_SHARE: f32 = 0.6;
+/// Workgroup edge of the region clear and backdrop resolve compute shaders.
+pub(super) const UI_REGION_WORKGROUP: u32 = 16;
 pub(super) const UI_BLUR_FILTER_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurFilterPush>() as u32;
 pub(super) const UI_BLUR_DOWNSAMPLE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-downsample.besl";
 pub(super) const UI_BLUR_FILTER_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-filter.besl";
@@ -222,6 +232,16 @@ pub(super) struct UiDrawList {
 	pub(super) texts: Vec<UiTextDrawElement>,
 }
 
+impl UiDrawList {
+	pub(super) fn is_empty(&self) -> bool {
+		self.elements.is_empty()
+			&& self.blurs.is_empty()
+			&& self.curves.is_empty()
+			&& self.images.is_empty()
+			&& self.texts.is_empty()
+	}
+}
+
 impl Default for UiDrawList {
 	fn default() -> Self {
 		Self {
@@ -350,17 +370,17 @@ pub(super) struct UiPreparedImageBatch {
 	pub(super) batch: UiImageDrawBatch,
 }
 
-/// The `UiBlurDispatchRegion` struct limits one compute stage to the padded part of the blur target it must produce.
+/// The `UiPixelRegion` struct is an integer pixel rectangle: a compute dispatch region, a scissor, or damage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiBlurDispatchRegion {
+pub(super) struct UiPixelRegion {
 	pub(super) origin: [u32; 2],
 	pub(super) extent: Extent,
 }
 
-/// The `UiBlurDownsamplePush` struct carries one regional half-resolution dispatch to the production shader.
+/// The `UiRegionPush` struct carries one region-limited dispatch to a production shader.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct UiBlurDownsamplePush {
+pub(super) struct UiRegionPush {
 	pub(super) origin: [u32; 2],
 	pub(super) extent: [u32; 2],
 }
@@ -428,7 +448,7 @@ impl UiBlurKernel {
 	}
 
 	// Combines the reusable kernel with one axis and one regional dispatch.
-	pub(super) fn push(self, direction: [f32; 2], region: UiBlurDispatchRegion) -> UiBlurFilterPush {
+	pub(super) fn push(self, direction: [f32; 2], region: UiPixelRegion) -> UiBlurFilterPush {
 		UiBlurFilterPush {
 			filter_data: [direction[0], direction[1], self.center_weight, 0.0],
 			origin: region.origin,
@@ -466,14 +486,14 @@ impl UiBlurKernel {
 /// The `UiBlurPathRegions` struct describes the two separable Gaussian stages for one resolution path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct UiBlurPathRegions {
-	pub(super) horizontal: UiBlurDispatchRegion,
-	pub(super) vertical: UiBlurDispatchRegion,
+	pub(super) horizontal: UiPixelRegion,
+	pub(super) vertical: UiPixelRegion,
 }
 
 /// The `UiBlurHalfPathRegions` struct adds the binomial prefilter region needed by the half-resolution path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct UiBlurHalfPathRegions {
-	pub(super) downsample: UiBlurDispatchRegion,
+	pub(super) downsample: UiPixelRegion,
 	pub(super) filter: UiBlurPathRegions,
 }
 
@@ -489,6 +509,8 @@ pub(super) struct UiPreparedBlurBatch {
 	pub(super) half_kernel: UiBlurKernel,
 	pub(super) full_regions: UiBlurPathRegions,
 	pub(super) half_regions: UiBlurHalfPathRegions,
+	/// Scene and layer pixels both blur paths may read; resolved before filtering.
+	pub(super) backdrop: UiPixelRegion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -565,22 +587,184 @@ pub(super) struct UiImageTexture {
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
 }
 
-/// The `UiPreparedFrame` struct retains the batches recorded for one render revision at one viewport.
+/// The `UiPreparedFrame` struct retains the batches recorded for one render revision, viewport, and damage set.
 ///
 /// Geometry, uploads, and atlas residency are only redone when the render
-/// revision, the viewport extent, or the glyph atlas generation changes.
-/// Frames that repeat the same key reuse the GPU buffers already in place.
+/// revision, the viewport extent, the glyph atlas generation, or the damaged
+/// regions change. Frames that repeat the same key reuse the GPU buffers already in place.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct UiPreparedFrame {
 	pub(super) revision: Option<engine::RenderRevision>,
 	pub(super) extent: Extent,
 	pub(super) atlas_generation: u64,
+	/// Only elements touching these regions have geometry in this frame.
+	pub(super) damage: Vec<UiPixelRegion>,
 	pub(super) batches: Vec<UiPreparedBatch>,
 }
 
 impl UiPreparedFrame {
-	pub(super) fn matches(&self, revision: Option<engine::RenderRevision>, extent: Extent, atlas_generation: u64) -> bool {
-		self.revision == revision && self.extent == extent && self.atlas_generation == atlas_generation
+	pub(super) fn matches(
+		&self,
+		revision: Option<engine::RenderRevision>,
+		extent: Extent,
+		atlas_generation: u64,
+		damage: &[UiPixelRegion],
+	) -> bool {
+		self.revision == revision && self.extent == extent && self.atlas_generation == atlas_generation && self.damage == damage
+	}
+}
+
+impl UiPixelRegion {
+	pub(super) fn full(viewport: Extent) -> Self {
+		Self {
+			origin: [0, 0],
+			extent: viewport,
+		}
+	}
+
+	pub(super) fn is_empty(self) -> bool {
+		self.extent.width() == 0 || self.extent.height() == 0
+	}
+
+	pub(super) fn end(self) -> [u32; 2] {
+		[self.origin[0] + self.extent.width(), self.origin[1] + self.extent.height()]
+	}
+
+	pub(super) fn area(self) -> u64 {
+		u64::from(self.extent.width()) * u64::from(self.extent.height())
+	}
+
+	/// Rounds fractional pixel bounds outward with a margin, clamped to the viewport.
+	pub(super) fn from_bounds(bounds: [f32; 4], margin: f32, viewport: Extent) -> Option<Self> {
+		let clamp = |value: f32, limit: u32| value.clamp(0.0, limit as f32) as u32;
+		let x0 = clamp((bounds[0] - margin).floor(), viewport.width());
+		let y0 = clamp((bounds[1] - margin).floor(), viewport.height());
+		let x1 = clamp((bounds[2] + margin).ceil(), viewport.width());
+		let y1 = clamp((bounds[3] + margin).ceil(), viewport.height());
+		(x1 > x0 && y1 > y0).then(|| Self {
+			origin: [x0, y0],
+			extent: Extent::rectangle(x1 - x0, y1 - y0),
+		})
+	}
+
+	pub(super) fn intersects(self, other: Self) -> bool {
+		let (end, other_end) = (self.end(), other.end());
+		self.origin[0] < other_end[0] && other.origin[0] < end[0] && self.origin[1] < other_end[1] && other.origin[1] < end[1]
+	}
+
+	/// Reports whether fractional pixel bounds touch this region.
+	pub(super) fn intersects_bounds(self, bounds: [f32; 4]) -> bool {
+		let end = self.end();
+		bounds[0] < end[0] as f32
+			&& bounds[2] > self.origin[0] as f32
+			&& bounds[1] < end[1] as f32
+			&& bounds[3] > self.origin[1] as f32
+	}
+
+	pub(super) fn union(self, other: Self) -> Self {
+		let (end, other_end) = (self.end(), other.end());
+		let origin = [self.origin[0].min(other.origin[0]), self.origin[1].min(other.origin[1])];
+		Self {
+			origin,
+			extent: Extent::rectangle(end[0].max(other_end[0]) - origin[0], end[1].max(other_end[1]) - origin[1]),
+		}
+	}
+}
+
+impl From<UiPixelRegion> for UiRegionPush {
+	fn from(region: UiPixelRegion) -> Self {
+		Self {
+			origin: region.origin,
+			extent: region.push_extent(),
+		}
+	}
+}
+
+/// A viewport-covering quad that writes transparent black; the scissor limits it to one damaged region.
+pub(super) fn clear_quad() -> [UiVertex; UI_VERTICES_PER_ELEMENT] {
+	let vertex = |position: [f32; 2]| UiVertex {
+		position,
+		rect_size: [1.0, 1.0],
+		corner_exponent: 2.0,
+		feather_mask_corner: [0.0, 2.0],
+		..UiVertex::default()
+	};
+	[
+		vertex([-1.0, 1.0]),
+		vertex([1.0, 1.0]),
+		vertex([1.0, -1.0]),
+		vertex([-1.0, -1.0]),
+	]
+}
+
+/// Reports whether an element with these pixel bounds must be drawn for the damage; no damage list means everything.
+pub(super) fn damage_intersects(damage: Option<&[UiPixelRegion]>, bounds: [f32; 4]) -> bool {
+	damage.is_none_or(|damage| damage.iter().any(|region| region.intersects_bounds(bounds)))
+}
+
+/// Converts layout-unit damage into margin-padded pixel regions.
+pub(super) fn pixel_damage(rects: &[Geometry], layout_size: [f32; 2], viewport: Extent, out: &mut Vec<UiPixelRegion>) {
+	let sx = viewport.width().max(1) as f32 / layout_size[0].max(1.0);
+	let sy = viewport.height().max(1) as f32 / layout_size[1].max(1.0);
+	out.extend(rects.iter().filter_map(|rect| {
+		let bounds = [rect.x() * sx, rect.y() * sy, rect.right() * sx, rect.bottom() * sy];
+		UiPixelRegion::from_bounds(bounds, UI_DAMAGE_MARGIN_PIXELS, viewport)
+	}));
+}
+
+/// Adds the pixels every visible backdrop blur reads and writes, since blurs follow the scene each frame.
+pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mut Vec<UiPixelRegion>) {
+	let sx = viewport.width().max(1) as f32 / draw_list.layout_size[0].max(1.0);
+	let sy = viewport.height().max(1) as f32 / draw_list.layout_size[1].max(1.0);
+	out.extend(draw_list.blurs.iter().filter_map(|blur| {
+		if blur.radius <= 0.0 {
+			return None;
+		}
+		let mut bounds = [
+			blur.position[0] * sx,
+			blur.position[1] * sy,
+			(blur.position[0] + blur.size[0]) * sx,
+			(blur.position[1] + blur.size[1]) * sy,
+		];
+		if let Some(clip) = blur.clip {
+			bounds = [
+				bounds[0].max(clip.position[0] * sx),
+				bounds[1].max(clip.position[1] * sy),
+				bounds[2].min((clip.position[0] + clip.size[0]) * sx),
+				bounds[3].min((clip.position[1] + clip.size[1]) * sy),
+			];
+		}
+		UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+	}));
+}
+
+/// Merges overlapping regions, bounds the count, and promotes large damage to one full-viewport region.
+pub(super) fn merge_damage(damage: &mut Vec<UiPixelRegion>, viewport: Extent) {
+	damage.retain(|region| !region.is_empty());
+	let mut merged = true;
+	while merged {
+		merged = false;
+		'outer: for index in 0..damage.len() {
+			for other in index + 1..damage.len() {
+				if damage[index].intersects(damage[other]) {
+					damage[index] = damage[index].union(damage[other]);
+					damage.swap_remove(other);
+					merged = true;
+					break 'outer;
+				}
+			}
+		}
+	}
+	if damage.len() > MAX_UI_DAMAGE_REGIONS {
+		let union = damage.iter().copied().reduce(UiPixelRegion::union).unwrap();
+		damage.clear();
+		damage.push(union);
+	}
+	let full = UiPixelRegion::full(viewport);
+	let area: u64 = damage.iter().map(|region| region.area()).sum();
+	if !damage.is_empty() && area as f32 >= full.area() as f32 * UI_FULL_REDRAW_AREA_SHARE {
+		damage.clear();
+		damage.push(full);
 	}
 }
 
@@ -658,7 +842,7 @@ pub(super) fn blur_half_extent(extent: Extent) -> Extent {
 	)
 }
 
-impl UiBlurDispatchRegion {
+impl UiPixelRegion {
 	// Expands one region without crossing the selected blur target's edges.
 	pub(super) fn expanded(self, horizontal: u32, vertical: u32, target: Extent) -> Self {
 		let start_x = self.origin[0].saturating_sub(horizontal);
@@ -685,7 +869,7 @@ impl UiBlurDispatchRegion {
 // Converts screen bounds through a fixed full- or half-resolution lattice.
 // It never derives UV scale from ceil-divided image dimensions, which keeps odd
 // viewport widths phase-aligned with the composite shader.
-pub(super) fn blur_composite_region(bounds: [f32; 4], target: Extent, downscale: u32) -> UiBlurDispatchRegion {
+pub(super) fn blur_composite_region(bounds: [f32; 4], target: Extent, downscale: u32) -> UiPixelRegion {
 	let axis = |minimum: f32, maximum: f32, target_size: u32| {
 		let lattice_scale = 1.0 / downscale as f32;
 		let start = (minimum * lattice_scale - 0.5).floor().clamp(0.0, target_size as f32) as u32;
@@ -694,7 +878,7 @@ pub(super) fn blur_composite_region(bounds: [f32; 4], target: Extent, downscale:
 	};
 	let (start_x, end_x) = axis(bounds[0], bounds[2], target.width());
 	let (start_y, end_y) = axis(bounds[1], bounds[3], target.height());
-	UiBlurDispatchRegion {
+	UiPixelRegion {
 		origin: [start_x, start_y],
 		extent: Extent::rectangle(end_x - start_x, end_y - start_y),
 	}

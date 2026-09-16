@@ -46,6 +46,8 @@ pub struct CommandBufferRecording<'a> {
 	descriptor_heaps_bound: bool,
 	pending_rendering: Option<(Extent, SmallVec<[graphics_hardware_interface::AttachmentInformation; 8]>)>,
 	active_rendering: bool,
+	/// Extent of the render pass being recorded; scissors are clamped to it.
+	active_render_extent: Extent,
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 	readbacks_finalized: bool,
 }

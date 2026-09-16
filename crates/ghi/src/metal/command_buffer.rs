@@ -461,6 +461,8 @@ pub struct CommandBufferRecording<'a> {
 	render_push_constants_dirty: bool,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>>,
+	/// Extent of the render pass being encoded; scissors are clamped to it.
+	active_render_extent: Extent,
 	active_encoder_scope: Option<synchronization::MetalEncoderScope>,
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,

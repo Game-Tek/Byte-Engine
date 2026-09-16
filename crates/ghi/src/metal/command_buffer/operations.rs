@@ -231,6 +231,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			height: extent.height() as _,
 		});
 
+		self.active_render_extent = extent;
 		self.encoded_render_pipeline = None;
 		self.applied_render_descriptor_binding = None;
 		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
@@ -766,6 +767,21 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 		);
 
 		self.bound_index_buffer = Some((buffer_descriptor.buffer, buffer_descriptor.offset, index_type));
+	}
+
+	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent) {
+		let rce = self
+			.active_render_encoder
+			.as_ref()
+			.expect("No active render pass. The most likely cause is that set_scissor was called outside start_render_pass.");
+		// Metal rejects scissors outside the render target, so clamp to the pass extent.
+		let (origin, extent) = crate::clamp_scissor(origin, extent, self.active_render_extent);
+		rce.setScissorRect(mtl::MTLScissorRect {
+			x: origin[0] as _,
+			y: origin[1] as _,
+			width: extent.width() as _,
+			height: extent.height() as _,
+		});
 	}
 
 	fn end_render_pass(&mut self) {

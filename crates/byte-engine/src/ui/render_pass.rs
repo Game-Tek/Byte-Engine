@@ -37,6 +37,8 @@ mod text;
 #[cfg(test)]
 mod cpu_tests;
 #[cfg(test)]
+mod damage_tests;
+#[cfg(test)]
 mod subtree_tests;
 
 #[cfg(all(test, feature = "ui-render-bench"))]
@@ -92,12 +94,29 @@ pub struct UiRenderPass {
 	blur_half_source: ghi::BaseImageHandle,
 	blur_half_scratch: ghi::BaseImageHandle,
 	blur_half_output: ghi::BaseImageHandle,
-	main_attachment: ghi::BaseImageHandle,
-	background_pass: crate::rendering::render_passes::blit::ImageBypassPass,
-	output_pass: crate::rendering::render_passes::blit::ImageBypassPass,
+	blur_backdrop: ghi::BaseImageHandle,
+	/// Persistent premultiplied UI layer; only damaged regions are cleared and redrawn.
+	layer: ghi::BaseImageHandle,
+	/// Scissored quad with blending disabled: the hardware clear for one damaged region.
+	clear_pipeline: crate::rendering::PipelineRef,
+	clear_vertex_buffer: ghi::BufferHandle<[UiVertex; UI_VERTICES_PER_ELEMENT]>,
+	clear_index_buffer: ghi::BufferHandle<[u16; UI_INDICES_PER_ELEMENT]>,
+	clear_quad_uploaded: bool,
+	/// Scene under layer for one region: the frame output at full extent, or a blur's backdrop.
+	composite_pipeline: crate::rendering::PipelineRef,
+	composite_descriptor_set: ghi::DescriptorSetHandle,
+	blur_resolve_descriptor_set: ghi::DescriptorSetHandle,
+	region_workgroup: Extent,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	data: UiDrawList,
 	render_revision: Option<engine::RenderRevision>,
+	/// Layout-unit damage of the adopted render and the revision it is relative to.
+	damage_base: Option<engine::RenderRevision>,
+	damage_rects: Vec<Geometry>,
+	/// Revision and extent whose pixels the layer currently holds.
+	layer_revision: Option<engine::RenderRevision>,
+	layer_extent: Option<Extent>,
+	damage: Vec<UiPixelRegion>,
 	prepared: Option<UiPreparedFrame>,
 	reported_capacity_limit: bool,
 	reported_dropped_glyphs: bool,
@@ -112,13 +131,13 @@ impl UiRenderPass {
 	#[allow(clippy::too_many_lines)]
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
 		let source = render_pass_builder.read_from("main");
-		// Backdrop blur samples partially rendered UI, so keep a sampleable working image even when the graph output is the swapchain.
+		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		let main_attachment = render_pass_builder.create_render_target(
 			ghi::image::Builder::new(
 				MAIN_ATTACHMENT_FORMAT,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
 			)
-			.name("UI Working"),
+			.name("UI Layer"),
 		);
 		let output = render_pass_builder.create_main_render_target(
 			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("UI"),
@@ -134,10 +153,25 @@ impl UiRenderPass {
 		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
 		let blur_composite_pipeline =
 			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-composite.pipeline");
+		let composite_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/composite.pipeline");
+		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
 		let blur_downsample_workgroup = Extent::square(16);
 		let blur_filter_workgroup = Extent::square(16);
+		let region_workgroup = Extent::square(UI_REGION_WORKGROUP);
+		let output: ghi::ImageOrSwapchain = output.into();
 
 		let context = render_pass_builder.context();
+
+		let clear_vertex_buffer: ghi::BufferHandle<[UiVertex; UI_VERTICES_PER_ELEMENT]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Vertex)
+				.name("UI Clear Quad Vertices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let clear_index_buffer: ghi::BufferHandle<[u16; UI_INDICES_PER_ELEMENT]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Index)
+				.name("UI Clear Quad Indices")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
 
 		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex)
@@ -242,7 +276,58 @@ impl UiRenderPass {
 				.name("UI Backdrop Blur Half Output"),
 		);
 		let blur_half_output_image: ghi::BaseImageHandle = blur_half_output.into();
+		let blur_backdrop = context.build_dynamic_image(
+			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
+				.name("UI Backdrop Blur Source"),
+		);
+		let blur_backdrop_image: ghi::BaseImageHandle = blur_backdrop.into();
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
+		let source_image: ghi::BaseImageHandle = source.into();
+		let blur_resolve_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Resolve"));
+		let composite_descriptor_set = context.create_descriptor_set(Some("UI Composite"));
+		context.write(&[
+			ghi::DescriptorWrite::image(
+				composite_descriptor_set,
+				ghi::ResourceSlot::new(0),
+				source_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::image(
+				composite_descriptor_set,
+				ghi::ResourceSlot::new(1),
+				main_attachment_image,
+				ghi::Layouts::General,
+			),
+			match output {
+				ghi::ImageOrSwapchain::Image(image) => ghi::DescriptorWrite::image(
+					composite_descriptor_set,
+					ghi::ResourceSlot::new(2),
+					image,
+					ghi::Layouts::General,
+				),
+				ghi::ImageOrSwapchain::Swapchain(swapchain) => {
+					ghi::DescriptorWrite::swapchain(composite_descriptor_set, ghi::ResourceSlot::new(2), swapchain)
+				}
+			},
+			ghi::DescriptorWrite::image(
+				blur_resolve_descriptor_set,
+				ghi::ResourceSlot::new(0),
+				source_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::image(
+				blur_resolve_descriptor_set,
+				ghi::ResourceSlot::new(1),
+				main_attachment_image,
+				ghi::Layouts::General,
+			),
+			ghi::DescriptorWrite::image(
+				blur_resolve_descriptor_set,
+				ghi::ResourceSlot::new(2),
+				blur_backdrop_image,
+				ghi::Layouts::General,
+			),
+		]);
 		let blur_half_downsample_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half Downsample"));
 		let blur_full_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full X"));
 		let blur_full_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full Y"));
@@ -253,7 +338,7 @@ impl UiRenderPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_half_downsample_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
-				main_attachment_image,
+				blur_backdrop_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
@@ -266,7 +351,7 @@ impl UiRenderPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_full_x_descriptor_set,
 				UI_BLUR_SOURCE_BINDING.slot(),
-				main_attachment_image,
+				blur_backdrop_image,
 				blur_sampler,
 				ghi::Layouts::Read,
 			),
@@ -338,10 +423,6 @@ impl UiRenderPass {
 			text_sampler,
 			ghi::Layouts::Read,
 		)]);
-		let background_pass =
-			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, main_attachment_image);
-		let output_pass =
-			crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, main_attachment_image, output);
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
@@ -386,12 +467,24 @@ impl UiRenderPass {
 			blur_half_source: blur_half_source_image,
 			blur_half_scratch: blur_half_scratch_image,
 			blur_half_output: blur_half_output_image,
-			main_attachment: main_attachment_image,
-			background_pass,
-			output_pass,
+			blur_backdrop: blur_backdrop_image,
+			layer: main_attachment_image,
+			clear_pipeline,
+			clear_vertex_buffer,
+			clear_index_buffer,
+			clear_quad_uploaded: false,
+			composite_pipeline,
+			composite_descriptor_set,
+			blur_resolve_descriptor_set,
+			region_workgroup,
 			bypass_pass,
 			data: UiDrawList::default(),
 			render_revision: None,
+			damage_base: None,
+			damage_rects: Vec::new(),
+			layer_revision: None,
+			layer_extent: None,
+			damage: Vec::new(),
 			prepared: None,
 			reported_capacity_limit: false,
 			reported_dropped_glyphs: false,
@@ -468,6 +561,27 @@ impl UiRenderPass {
 		}
 		update_from_render(render, &mut self.data);
 		self.render_revision = Some(render.revision());
+		self.damage_rects.clear();
+		self.damage_base = render.damage().map(|(base, rects)| {
+			self.damage_rects.extend_from_slice(rects);
+			base
+		});
+	}
+
+	/// Computes this frame's pixel damage: engine damage when the layer holds its base revision, else everything.
+	///
+	/// Visible backdrop blurs are always damaged because they sample the scene rendered this frame.
+	fn frame_damage(&mut self, extent: Extent) {
+		self.damage.clear();
+		let relative =
+			self.layer_revision.is_some() && self.layer_revision == self.damage_base && self.layer_extent == Some(extent);
+		if relative {
+			pixel_damage(&self.damage_rects, self.data.layout_size, extent, &mut self.damage);
+		} else if self.layer_revision != self.render_revision || self.layer_extent != Some(extent) {
+			self.damage.push(UiPixelRegion::full(extent));
+		}
+		blur_footprints(&self.data, extent, &mut self.damage);
+		merge_damage(&mut self.damage, extent);
 	}
 
 	/// Rebuilds geometry, uploads, and atlas residency for the adopted draw list at `extent`.
@@ -479,10 +593,13 @@ impl UiRenderPass {
 		extent: Extent,
 		frame_allocator: &bumpalo::Bump,
 	) {
-		let geometry = build_ui_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.rectangle_cache));
+		let damage = Some(self.damage.as_slice());
+		let geometry = build_ui_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.rectangle_cache), damage);
 		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
-		let curve_geometry = build_ui_curve_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.curve_cache));
-		let image_geometry = build_ui_image_geometry_cached(&self.data, extent, frame_allocator, Some(&mut self.image_cache));
+		let curve_geometry =
+			build_ui_curve_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.curve_cache), damage);
+		let image_geometry =
+			build_ui_image_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.image_cache), damage);
 		let text_geometry = if self.data.texts.is_empty() {
 			None
 		} else {
@@ -490,12 +607,13 @@ impl UiRenderPass {
 				extent.width() > 0 && extent.height() > 0,
 				"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 			);
-			Some(build_ui_text_geometry(
+			Some(build_ui_text_geometry_damaged(
 				&self.data,
 				extent,
 				&mut self.text_system,
 				&mut self.text_atlas,
 				frame_allocator,
+				damage,
 			))
 		};
 		let text_truncated = text_geometry.as_ref().is_some_and(|geometry| geometry.truncated);
@@ -553,6 +671,7 @@ impl UiRenderPass {
 			frame.sync_buffer(self.blur_index_buffer);
 
 			let half_extent = blur_half_extent(extent);
+			frame.resize_image(self.blur_backdrop, extent);
 			frame.resize_image(self.blur_full_scratch, extent);
 			frame.resize_image(self.blur_full_output, extent);
 			frame.resize_image(self.blur_half_source, half_extent);
@@ -621,6 +740,7 @@ impl UiRenderPass {
 			revision: self.render_revision,
 			extent,
 			atlas_generation: self.text_atlas.generation(),
+			damage: self.damage.clone(),
 			batches,
 		});
 	}
@@ -646,24 +766,54 @@ impl RenderPass for UiRenderPass {
 		let blur_downsample_pipeline = self.pipeline_manager.pipeline(self.blur_downsample_pipeline)?;
 		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
 		let blur_composite_pipeline = self.pipeline_manager.pipeline(self.blur_composite_pipeline)?;
+		let composite_pipeline = self.pipeline_manager.pipeline(self.composite_pipeline)?;
+		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;
 		let extent = sink.extent();
+		if self.data.is_empty() && self.layer_revision.is_none() {
+			// Nothing was ever drawn into the layer, so the scene is the complete output.
+			return self.bypass_pass.prepare(frame, sink, frame_allocator);
+		}
+		self.frame_damage(extent);
 		let atlas_generation = self.text_atlas.generation();
-		if !self
-			.prepared
-			.as_ref()
-			.is_some_and(|prepared| prepared.matches(self.render_revision, extent, atlas_generation))
+		if !self.damage.is_empty()
+			&& !self
+				.prepared
+				.as_ref()
+				.is_some_and(|prepared| prepared.matches(self.render_revision, extent, atlas_generation, &self.damage))
 		{
 			self.rebuild_prepared_frame(frame, extent, frame_allocator);
+		}
+		if !self.clear_quad_uploaded {
+			frame
+				.get_mut_buffer_slice(self.clear_vertex_buffer)
+				.copy_from_slice(&clear_quad());
+			frame.sync_buffer(self.clear_vertex_buffer);
+			frame
+				.get_mut_buffer_slice(self.clear_index_buffer)
+				.copy_from_slice(&[0, 1, 2, 2, 3, 0]);
+			frame.sync_buffer(self.clear_index_buffer);
+			self.clear_quad_uploaded = true;
+		}
+		let composite_descriptor_set = self.composite_descriptor_set;
+		let region_workgroup = self.region_workgroup;
+		let composite = move |command_buffer: &mut ghi::implementation::CommandBufferRecording| {
+			let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
+			compute.bind_descriptor_sets(&[composite_descriptor_set]);
+			compute.write_push_constant(0, UiRegionPush::from(UiPixelRegion::full(extent)));
+			compute.dispatch(ghi::DispatchExtent::new(extent, region_workgroup));
+		};
+		if self.damage.is_empty() {
+			// The layer already shows this revision; only the scene underneath may have changed.
+			return Some(crate::rendering::render_pass::allocate_render_command(
+				frame_allocator,
+				move |command_buffer, _| composite(command_buffer),
+			));
 		}
 		let prepared_batches = &self
 			.prepared
 			.as_ref()
 			.expect("UI prepared frame must exist after a rebuild. The most likely cause is a rebuild that returned early.")
 			.batches;
-
-		if prepared_batches.is_empty() {
-			return self.bypass_pass.prepare(frame, sink, frame_allocator);
-		}
 
 		let vertex_buffer = self.vertex_buffer;
 		let index_buffer = self.index_buffer;
@@ -684,28 +834,46 @@ impl RenderPass for UiRenderPass {
 		let blur_half_x_descriptor_set = self.blur_half_x_descriptor_set;
 		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
 		let blur_composite_descriptor_set = self.blur_composite_descriptor_set;
-		let main_attachment = self.main_attachment;
-		let background_command = self.background_pass.prepare(frame, sink, frame_allocator)?;
-		let output_command = self.output_pass.prepare(frame, sink, frame_allocator)?;
+		let blur_resolve_descriptor_set = self.blur_resolve_descriptor_set;
+		let clear_vertex_buffer = self.clear_vertex_buffer;
+		let clear_index_buffer = self.clear_index_buffer;
+		let layer = self.layer;
 		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(prepared_batches);
+		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
+		// The recorded command brings the layer up to the adopted revision at this extent.
+		self.layer_revision = self.render_revision;
+		self.layer_extent = Some(extent);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
 			move |command_buffer, _| {
-				// UI is composited over this frame's scene, including on blur-only frames.
-				background_command(command_buffer, &[]);
 				command_buffer.region(
 					|label| label.write_str("UI"),
 					|command_buffer| {
-						// Share a raster pass without changing painter order. Blur must finish the
-						// preceding pass before its compute work reads the composited backdrop.
 						let attachments = [ghi::AttachmentInformation::new(
-							main_attachment,
+							layer,
 							ghi::Layouts::RenderTarget,
 							ghi::ClearValue::None,
 							true,
 							true,
 						)];
+						// Damaged pixels start transparent; everything intersecting them is redrawn in painter order.
+						command_buffer.bind_vertex_buffers(&[clear_vertex_buffer.into()]);
+						command_buffer.bind_index_buffer(
+							&(Into::<ghi::BufferDescriptor>::into(clear_index_buffer).index_type(ghi::DataTypes::U16)),
+						);
+						{
+							let command_buffer = command_buffer.start_render_pass(extent, &attachments);
+							let command_buffer = command_buffer.bind_raster_pipeline(clear_pipeline);
+							for region in damage {
+								command_buffer.set_scissor(region.origin, region.extent);
+								command_buffer.draw_indexed(UI_INDICES_PER_ELEMENT as u32, 1, 0, 0, 0);
+							}
+							command_buffer.end_render_pass();
+						}
+
+						// Share a raster pass without changing painter order. Blur must finish the
+						// preceding pass before its compute work reads the composited backdrop.
 						for batches in batches.chunk_by(|left, right| {
 							!matches!(left, UiPreparedBatch::Blur(_)) && !matches!(right, UiPreparedBatch::Blur(_))
 						}) {
@@ -713,6 +881,12 @@ impl RenderPass for UiRenderPass {
 								command_buffer.region(
 									|label| label.write_str("UI Backdrop Blur"),
 									|command_buffer| {
+										// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
+										let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
+										compute.bind_descriptor_sets(&[blur_resolve_descriptor_set]);
+										compute.write_push_constant(0, UiRegionPush::from(batch.backdrop));
+										compute.dispatch(ghi::DispatchExtent::new(batch.backdrop.extent, region_workgroup));
+
 										if blur_uses_full_resolution(batch.resolution_mix) {
 											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
 											compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
@@ -740,13 +914,7 @@ impl RenderPass for UiRenderPass {
 										if blur_uses_half_resolution(batch.resolution_mix) {
 											let compute = command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
 											compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
-											compute.write_push_constant(
-												0,
-												UiBlurDownsamplePush {
-													origin: batch.half_regions.downsample.origin,
-													extent: batch.half_regions.downsample.push_extent(),
-												},
-											);
+											compute.write_push_constant(0, UiRegionPush::from(batch.half_regions.downsample));
 											compute.dispatch(ghi::DispatchExtent::new(
 												batch.half_regions.downsample.extent,
 												blur_downsample_workgroup,
@@ -784,87 +952,95 @@ impl RenderPass for UiRenderPass {
 										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 										let command_buffer = command_buffer.bind_raster_pipeline(blur_composite_pipeline);
 										command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
-										command_buffer.draw_indexed(
-											batch.index_count,
-											1,
-											batch.first_index,
-											batch.vertex_offset,
-											0,
-										);
+										for region in damage {
+											command_buffer.set_scissor(region.origin, region.extent);
+											command_buffer.draw_indexed(
+												batch.index_count,
+												1,
+												batch.first_index,
+												batch.vertex_offset,
+												0,
+											);
+										}
 										command_buffer.end_render_pass();
 									},
 								);
 							} else {
 								let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-								for batch in batches {
-									match batch {
-										UiPreparedBatch::Rect(batch) => {
-											command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
-											command_buffer.bind_index_buffer(
-												&(Into::<ghi::BufferDescriptor>::into(index_buffer)
-													.index_type(ghi::DataTypes::U16)),
-											);
+								for region in damage {
+									command_buffer.set_scissor(region.origin, region.extent);
+									for batch in batches {
+										match batch {
+											UiPreparedBatch::Rect(batch) => {
+												command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
+												command_buffer.bind_index_buffer(
+													&(Into::<ghi::BufferDescriptor>::into(index_buffer)
+														.index_type(ghi::DataTypes::U16)),
+												);
 
-											let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
-											command_buffer.draw_indexed(
-												batch.index_count,
-												1,
-												batch.first_index,
-												batch.vertex_offset,
-												0,
-											);
-										}
-										UiPreparedBatch::Curve(batch) => {
-											command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
-											command_buffer.bind_index_buffer(
-												&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
-													.index_type(ghi::DataTypes::U16)),
-											);
+												let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
+												command_buffer.draw_indexed(
+													batch.index_count,
+													1,
+													batch.first_index,
+													batch.vertex_offset,
+													0,
+												);
+											}
+											UiPreparedBatch::Curve(batch) => {
+												command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
+												command_buffer.bind_index_buffer(
+													&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
+														.index_type(ghi::DataTypes::U16)),
+												);
 
-											let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
-											command_buffer.draw_indexed(
-												batch.index_count,
-												1,
-												batch.first_index,
-												batch.vertex_offset,
-												0,
-											);
-										}
-										UiPreparedBatch::Image(prepared) => {
-											command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
-											command_buffer.bind_index_buffer(
-												&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
-													.index_type(ghi::DataTypes::U16)),
-											);
+												let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
+												command_buffer.draw_indexed(
+													batch.index_count,
+													1,
+													batch.first_index,
+													batch.vertex_offset,
+													0,
+												);
+											}
+											UiPreparedBatch::Image(prepared) => {
+												command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
+												command_buffer.bind_index_buffer(
+													&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
+														.index_type(ghi::DataTypes::U16)),
+												);
 
-											let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
-											command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
-											command_buffer.draw_indexed(
-												prepared.batch.index_count,
-												1,
-												prepared.batch.first_index,
-												prepared.batch.vertex_offset,
-												0,
-											);
-										}
-										UiPreparedBatch::Text(batch) => {
-											command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
-											command_buffer.bind_index_buffer(
-												&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
-													.index_type(ghi::DataTypes::U16)),
-											);
+												let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
+												command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
+												command_buffer.draw_indexed(
+													prepared.batch.index_count,
+													1,
+													prepared.batch.first_index,
+													prepared.batch.vertex_offset,
+													0,
+												);
+											}
+											UiPreparedBatch::Text(batch) => {
+												command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
+												command_buffer.bind_index_buffer(
+													&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
+														.index_type(ghi::DataTypes::U16)),
+												);
 
-											let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-											command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
-											command_buffer.draw_indexed(
-												batch.index_count,
-												1,
-												batch.first_index,
-												batch.vertex_offset,
-												0,
-											);
+												let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
+												command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
+												command_buffer.draw_indexed(
+													batch.index_count,
+													1,
+													batch.first_index,
+													batch.vertex_offset,
+													0,
+												);
+											}
+											UiPreparedBatch::Blur(_) => {
+												unreachable!("Blur batches have their own command group")
+											}
 										}
-										UiPreparedBatch::Blur(_) => unreachable!("Blur batches have their own command group"),
 									}
 								}
 								command_buffer.end_render_pass();
@@ -872,8 +1048,8 @@ impl RenderPass for UiRenderPass {
 						}
 					},
 				);
-				// Resolve the working image only after every raster and blur batch has contributed to it.
-				output_command(command_buffer, &[]);
+				// The scene is composited under the layer only after every damaged region has been redrawn.
+				composite(command_buffer);
 			},
 		))
 	}
@@ -893,8 +1069,8 @@ mod tests {
 	use super::{
 		DrawClip, DrawFeatherMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
 		UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT,
-		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDispatchRegion, UiBlurDrawElement, UiBlurFilterPush,
-		UiBlurKernel, UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiPreparedFrame,
+		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel,
+		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiPixelRegion, UiPreparedFrame,
 		UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
 		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
 		build_ui_blur_geometry, build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment,
@@ -1114,7 +1290,7 @@ mod tests {
 		executable: &ExecutableProgram,
 		source: &mut Texture,
 		result: &mut Texture,
-		region: UiBlurDispatchRegion,
+		region: UiPixelRegion,
 	) {
 		let mut push_constant = blur_region_push_constant(executable, region.origin, region.push_extent());
 		let mut descriptors = DescriptorBindings::new();
@@ -1136,7 +1312,7 @@ mod tests {
 		result: &mut Texture,
 		kernel: UiBlurKernel,
 		direction: [f32; 2],
-		region: UiBlurDispatchRegion,
+		region: UiPixelRegion,
 	) {
 		let mut push_constant = blur_filter_push_constant(executable, kernel.push(direction, region));
 		let mut descriptors = DescriptorBindings::new();
@@ -1150,8 +1326,8 @@ mod tests {
 		}
 	}
 
-	fn full_blur_region(extent: Extent) -> UiBlurDispatchRegion {
-		UiBlurDispatchRegion { origin: [0, 0], extent }
+	fn full_blur_region(extent: Extent) -> UiPixelRegion {
+		UiPixelRegion { origin: [0, 0], extent }
 	}
 
 	// Runs every production BESL stage selected for one radius and returns the
@@ -1404,7 +1580,7 @@ mod tests {
 	#[test]
 	fn backdrop_blur_filter_besl_vm_preserves_constants_and_direction() {
 		let executable = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let region = UiBlurDispatchRegion {
+		let region = UiPixelRegion {
 			origin: [1, 1],
 			extent: Extent::rectangle(1, 1),
 		};
@@ -1429,7 +1605,7 @@ mod tests {
 		impulse[(width + center) as usize] = [1.0; 4];
 		let mut source = texture_2d(width, 3, &impulse);
 		let mut result = empty_image(width, 3);
-		let region = UiBlurDispatchRegion {
+		let region = UiPixelRegion {
 			origin: [0, 0],
 			extent: Extent::rectangle(width, 3),
 		};
@@ -1455,7 +1631,7 @@ mod tests {
 		let center = width / 2;
 		let sigma = blur_half_sigma(blur_sigma(36.0));
 		let kernel = UiBlurKernel::gaussian(sigma);
-		let region = UiBlurDispatchRegion {
+		let region = UiPixelRegion {
 			origin: [0, 0],
 			extent: Extent::rectangle(width, 1),
 		};
@@ -1619,14 +1795,14 @@ mod tests {
 
 		assert_eq!(
 			full.vertical,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [399, 299],
 				extent: Extent::rectangle(402, 302),
 			}
 		);
 		assert_eq!(
 			full.horizontal,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [398, 277],
 				extent: Extent::rectangle(404, 346),
 			}
@@ -1636,21 +1812,21 @@ mod tests {
 
 		assert_eq!(
 			half.filter.vertical,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [198, 148],
 				extent: Extent::rectangle(204, 154),
 			}
 		);
 		assert_eq!(
 			half.filter.horizontal,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [197, 126],
 				extent: Extent::rectangle(206, 198),
 			}
 		);
 		assert_eq!(
 			half.downsample,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [175, 125],
 				extent: Extent::rectangle(250, 200),
 			}
@@ -2157,7 +2333,7 @@ mod tests {
 		);
 		assert_eq!(
 			geometry.batches[0].half_regions.filter.vertical,
-			UiBlurDispatchRegion {
+			UiPixelRegion {
 				origin: [8, 18],
 				extent: Extent::rectangle(34, 44),
 			}
@@ -2694,17 +2870,20 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut snapshot = engine.evaluate(Size::new(10, 10), &frame_allocator);
 		let revision = Some(engine.render(&mut snapshot).revision());
+		let damage = vec![UiPixelRegion::full(Extent::square(64))];
 		let prepared = UiPreparedFrame {
 			revision,
 			extent: Extent::square(64),
 			atlas_generation: 2,
+			damage: damage.clone(),
 			batches: Vec::new(),
 		};
 
-		assert!(prepared.matches(revision, Extent::square(64), 2));
-		assert!(!prepared.matches(None, Extent::square(64), 2));
-		assert!(!prepared.matches(revision, Extent::square(65), 2));
-		assert!(!prepared.matches(revision, Extent::square(64), 3));
+		assert!(prepared.matches(revision, Extent::square(64), 2, &damage));
+		assert!(!prepared.matches(None, Extent::square(64), 2, &damage));
+		assert!(!prepared.matches(revision, Extent::square(65), 2, &damage));
+		assert!(!prepared.matches(revision, Extent::square(64), 3, &damage));
+		assert!(!prepared.matches(revision, Extent::square(64), 2, &[]));
 	}
 
 	#[test]

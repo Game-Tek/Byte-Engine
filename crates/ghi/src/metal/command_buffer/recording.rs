@@ -116,6 +116,7 @@ impl<'a> CommandBufferRecording<'a> {
 			render_push_constants_dirty: false,
 			active_compute_encoder: None,
 			active_render_encoder: None,
+			active_render_extent: Extent::rectangle(0, 0),
 			active_encoder_scope: None,
 			next_encoder_id: 0,
 			resource_tracker,

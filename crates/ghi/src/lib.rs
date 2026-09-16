@@ -126,6 +126,41 @@ pub(crate) fn debug_name(_name: Option<&str>) -> Option<String> {
 	None
 }
 
+/// Clamps a scissor rectangle to the active render area so every backend accepts it.
+///
+/// Returns an empty rectangle at the render-area edge when the request lies fully outside it.
+pub(crate) fn clamp_scissor(origin: [u32; 2], extent: utils::Extent, render_area: utils::Extent) -> ([u32; 2], utils::Extent) {
+	let x = origin[0].min(render_area.width());
+	let y = origin[1].min(render_area.height());
+	let width = extent.width().min(render_area.width() - x);
+	let height = extent.height().min(render_area.height() - y);
+	([x, y], utils::Extent::rectangle(width, height))
+}
+
+#[cfg(test)]
+mod scissor_tests {
+	use utils::Extent;
+
+	use super::clamp_scissor;
+
+	#[test]
+	fn scissors_are_clamped_to_the_render_area() {
+		let area = Extent::rectangle(100, 50);
+		assert_eq!(
+			clamp_scissor([10, 5], Extent::rectangle(20, 10), area),
+			([10, 5], Extent::rectangle(20, 10))
+		);
+		assert_eq!(
+			clamp_scissor([90, 45], Extent::rectangle(20, 10), area),
+			([90, 45], Extent::rectangle(10, 5))
+		);
+		assert_eq!(
+			clamp_scissor([200, 0], Extent::rectangle(20, 10), area),
+			([100, 0], Extent::rectangle(0, 10))
+		);
+	}
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) use implementation::Binding;
 pub(crate) use implementation::DescriptorSet;

@@ -1,0 +1,30 @@
+scene: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
+layer: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+
+push_constant: push_constant {
+	origin: vec2u,
+	extent: vec2u,
+}
+
+// Places the premultiplied UI layer over the scene inside one region:
+// out = scene * (1 - layer.a) + layer. The frame output uses the full extent;
+// a backdrop blur resolves only the pixels its kernel reads.
+main: fn(input: StageInput) -> void {
+	let local_coordinate: vec2u = input.thread_id;
+	if (local_coordinate.x >= push_constant.extent.x || local_coordinate.y >= push_constant.extent.y) {
+		return;
+	}
+	let coordinate: vec2u = local_coordinate + push_constant.origin;
+	guard_image_bounds(layer, coordinate);
+	let scene_color: vec4f = image_load(scene, coordinate);
+	let layer_color: vec4f = image_load(layer, coordinate);
+	let coverage: f32 = 1.0 - layer_color.w;
+	let color: vec4f = vec4f(
+		scene_color.x * coverage + layer_color.x,
+		scene_color.y * coverage + layer_color.y,
+		scene_color.z * coverage + layer_color.z,
+		1.0
+	);
+	write(result, coordinate, color);
+}

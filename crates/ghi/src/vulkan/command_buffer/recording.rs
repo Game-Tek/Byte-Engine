@@ -47,6 +47,7 @@ impl CommandBufferRecording<'_> {
 			descriptor_heaps_bound: false,
 			pending_rendering: None,
 			active_rendering: false,
+			active_render_extent: Extent::rectangle(0, 0),
 			texture_readbacks: SmallVec::new(),
 			readbacks_finalized: false,
 
@@ -754,6 +755,7 @@ impl CommandBufferRecording<'_> {
 			self.device.device.cmd_begin_rendering(command_buffer, &rendering_info);
 		}
 		self.active_rendering = true;
+		self.active_render_extent = extent;
 	}
 
 	fn get_internal_handle(&self, handle: graphics_hardware_interface::Handles) -> Handles {

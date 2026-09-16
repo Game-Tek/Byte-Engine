@@ -383,6 +383,23 @@ impl Geometry {
 		self.width() <= 0.0 || self.height() <= 0.0
 	}
 
+	/// Returns the smallest rectangle containing both, keeping this depth.
+	pub fn union(self, other: Self) -> Self {
+		let left = self.x().min(other.x());
+		let top = self.y().min(other.y());
+		let right = self.right().max(other.right());
+		let bottom = self.bottom().max(other.bottom());
+		Self::new(Location3::new(left, top, self.z()), Size::new(right - left, bottom - top))
+	}
+
+	/// Grows every edge by `outset` layout units.
+	pub fn expanded(self, outset: f32) -> Self {
+		Self::new(
+			Location3::new(self.x() - outset, self.y() - outset, self.z()),
+			Size::new(self.width() + outset * 2.0, self.height() + outset * 2.0),
+		)
+	}
+
 	pub fn intersect(self, other: Self) -> Option<Self> {
 		let left = self.x().max(other.x());
 		let top = self.y().max(other.y());

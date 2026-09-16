@@ -33,6 +33,9 @@ pub struct Engine<C = ()> {
 	visual_state_key: Option<(u64, u64, Size)>,
 	measurements: Vec<super::Measurement>,
 	rendered_revisions: Vec<u64>,
+	/// What each rendered element last looked like, by tree index, so the next render can report damage.
+	rendered_footprints: Vec<Option<Footprint>>,
+	footprint_scratch: Vec<Option<Footprint>>,
 	/// Flow placement stays in layout units while snapshots expose transformed surfaces.
 	placement: Vec<LayoutElement>,
 	hit_curves: HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
@@ -77,6 +80,26 @@ struct RetainedRender {
 	size: Size,
 	render: Render,
 }
+
+/// The `Footprint` struct records everything that decides one element's pixels.
+///
+/// Two equal footprints draw identically, so a render only damages elements whose
+/// footprint changed, appeared, or disappeared since the previous render.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Footprint {
+	id: u32,
+	/// The node revision covers style, content, and every other primitive property.
+	revision: u64,
+	/// Visible rectangle after the element's own outset and its clip.
+	rect: Option<Geometry>,
+	clip: Option<Geometry>,
+	feather: Option<FeatherMask>,
+	opacity: f32,
+	scale: [f32; 2],
+}
+
+/// Damage lists longer than this collapse into their union so consumers stay bounded.
+pub const MAX_DAMAGE_RECTS: usize = 8;
 
 /// Layout distance a captured pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD: f32 = 6.0;
@@ -204,6 +227,8 @@ impl<C: 'static> Engine<C> {
 			visual_state_key: None,
 			measurements: Vec::new(),
 			rendered_revisions: Vec::new(),
+			rendered_footprints: Vec::new(),
+			footprint_scratch: Vec::new(),
 			placement: Vec::new(),
 			hit_curves: HashMap::new(),
 			transforms: Vec::new(),
@@ -675,6 +700,12 @@ impl<C: 'static> Engine<C> {
 				&& retained.layout_revision == snapshot.layout_revision
 				&& retained.size == snapshot.size
 		});
+		// Damage is relative to the previous render only while the viewport is the same size.
+		let damage_base = self
+			.retained_render
+			.as_ref()
+			.filter(|retained| retained.size == snapshot.size)
+			.map(|retained| retained.render.revision);
 		let render_revision = RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
 		// Keep live identities independently of culling so sinks retain hidden canvas data.
 		// Placement edits are a conservative boundary for refreshing membership.
@@ -711,6 +742,11 @@ impl<C: 'static> Engine<C> {
 		// beyond that prefix are dropped after the walk, so removed content cannot escape.
 		let (mut element_count, mut curve_count, mut text_count) = (0, 0, 0);
 		image_elements.clear();
+		let previous_footprints = std::mem::take(&mut self.rendered_footprints);
+		let mut next_footprints = std::mem::take(&mut self.footprint_scratch);
+		next_footprints.clear();
+		next_footprints.resize(tree.elements.len(), None);
+		let mut damage: Vec<Geometry> = Vec::new();
 		self.rendered_revisions.resize(tree.elements.len(), 0);
 		// Input callbacks can change appearance after layout. The cache key includes those changes.
 		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size);
@@ -746,6 +782,46 @@ impl<C: 'static> Engine<C> {
 			let feather_mask = state.feather;
 			let opacity = effective_opacity(index, &tree, &mut self.visual_state);
 			let style = retained_element.element.primitive.style();
+			// Curves stroke outward from their path; rectangles stroke inward.
+			let outset = match &retained_element.element.primitive {
+				Primitives::Curve(_) => {
+					style
+						.layers()
+						.iter()
+						.map(|layer| match layer.kind() {
+							LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => width,
+							_ => 0.0,
+						})
+						.fold(0.0f32, f32::max)
+						* state.scale[0].max(state.scale[1])
+						* 0.5
+				}
+				_ => 0.0,
+			};
+			let footprint = Footprint {
+				id: element.id.get(),
+				revision: retained_element.revision,
+				rect: {
+					let rect = geometry_from_layout_element(element).expanded(outset);
+					match clip {
+						Some(clip) => rect.intersect(clip),
+						None => Some(rect),
+					}
+				},
+				clip,
+				feather: feather_mask,
+				opacity,
+				scale: state.scale,
+			};
+			match previous_footprints.get(index).copied().flatten() {
+				Some(previous) if previous == footprint => {}
+				Some(previous) => {
+					damage.extend(previous.rect);
+					damage.extend(footprint.rect);
+				}
+				None => damage.extend(footprint.rect),
+			}
+			next_footprints[index] = Some(footprint);
 			// Only layered geometry retains a style copy; images and text borrow what they need.
 			let mut push_rectangle = |corner_radius, corner_exponent| {
 				if let Some(entry) = elements
@@ -902,6 +978,21 @@ impl<C: 'static> Engine<C> {
 		curve_elements.truncate(curve_count);
 		text_elements.truncate(text_count);
 
+		// Elements that were drawn last time and are now culled, removed, or truncated leave a hole.
+		for (index, previous) in previous_footprints.iter().enumerate() {
+			if let Some(previous) = previous
+				&& next_footprints.get(index).copied().flatten().is_none()
+			{
+				damage.extend(previous.rect);
+			}
+		}
+		self.footprint_scratch = previous_footprints;
+		self.rendered_footprints = next_footprints;
+		let damage = match damage_base {
+			Some(_) => collapse_damage(damage),
+			None => Vec::new(),
+		};
+
 		RetainedRender {
 			tree_revision: tree.revision(),
 			placement_revision: tree.placement_revision,
@@ -918,6 +1009,8 @@ impl<C: 'static> Engine<C> {
 				surface_revision,
 				surface_ids,
 				viewport_size: snapshot.size,
+				damage,
+				damage_base,
 			},
 		}
 	}
@@ -1066,6 +1159,23 @@ impl<C: 'static> Engine<C> {
 	}
 }
 
+/// Drops empty rectangles and bounds the damage list at [`MAX_DAMAGE_RECTS`] by taking the union.
+fn collapse_damage(mut damage: Vec<Geometry>) -> Vec<Geometry> {
+	damage.retain(|rect| !rect.is_empty());
+	// An element that changed in place pushes its rectangle twice.
+	damage.dedup();
+	if damage.len() > MAX_DAMAGE_RECTS {
+		let union = damage
+			.iter()
+			.copied()
+			.reduce(Geometry::union)
+			.expect("Damage list is non-empty. The most likely cause is a length check that changed.");
+		damage.clear();
+		damage.push(union);
+	}
+	damage
+}
+
 /// The `RenderRevision` struct identifies the content of one [`Render`].
 ///
 /// Revisions are unique across engines. Two renders with equal revisions
@@ -1086,12 +1196,26 @@ pub struct Render {
 	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
 	revision: RenderRevision,
+	/// Layout-unit rectangles whose pixels differ from `damage_base`; at most [`MAX_DAMAGE_RECTS`].
+	damage: Vec<Geometry>,
+	/// The render this damage is relative to; `None` when everything changed, such as after a viewport resize.
+	damage_base: Option<RenderRevision>,
 }
 
 impl Render {
 	/// Identifies this render's content; unchanged UI keeps the same revision across frames.
 	pub fn revision(&self) -> RenderRevision {
 		self.revision
+	}
+
+	/// Returns the base revision and the layout-unit regions that differ from it.
+	///
+	/// A consumer holding pixels for the base revision only needs to redraw inside these
+	/// rectangles. `None` means everything changed. Rectangles cover element bounds plus any
+	/// outward stroke and are already intersected with the element clip; consumers add their own
+	/// pixel-space margins such as anti-aliasing, glyph padding, and blur kernels.
+	pub fn damage(&self) -> Option<(RenderRevision, &[Geometry])> {
+		self.damage_base.map(|base| (base, self.damage.as_slice()))
 	}
 
 	#[cfg(test)]
@@ -1492,6 +1616,181 @@ mod tests {
 		let runtime = engine.runtime.borrow();
 		assert_eq!(runtime.geometry[&second].y(), 0.0);
 		assert_eq!(runtime.geometry[&first].y(), 5.0);
+	}
+
+	/// Evaluates and renders one frame, returning the revision and a copy of the damage.
+	fn damage_frame(engine: &mut Engine<()>, size: Size) -> (RenderRevision, Option<(RenderRevision, Vec<Geometry>)>) {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut snapshot = engine.evaluate(size, &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		(render.revision(), render.damage().map(|(base, rects)| (base, rects.to_vec())))
+	}
+
+	/// Reports whether one damage rectangle contains the given layout-unit box.
+	fn damage_covers(damage: &[Geometry], x: f32, y: f32, width: f32, height: f32) -> bool {
+		damage.iter().any(|rect| {
+			rect.x() <= x + 0.01
+				&& rect.y() <= y + 0.01
+				&& rect.right() >= x + width - 0.01
+				&& rect.bottom() >= y + height - 0.01
+		})
+	}
+
+	/// Mounts a root with one absolutely positioned box whose position and color follow shared cells.
+	fn mount_box(engine: &mut Engine<()>) -> (Rc<std::cell::Cell<(i32, i32)>>, Rc<std::cell::Cell<f32>>) {
+		let position = Rc::new(std::cell::Cell::new((0, 0)));
+		let red = Rc::new(std::cell::Cell::new(1.0f32));
+		let (shared_position, shared_red) = (Rc::clone(&position), Rc::clone(&red));
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut r#box = root.element("box").container(
+					Container::default()
+						.width(10.into())
+						.height(10.into())
+						.absolute_position(0, 0),
+				);
+				let (mut last_position, mut last_red) = ((0, 0), 1.0f32);
+				loop {
+					if shared_position.get() != last_position {
+						last_position = shared_position.get();
+						r#box.update_container(|container| container.set_position(last_position));
+					}
+					if shared_red.get() != last_red {
+						last_red = shared_red.get();
+						r#box.update_container(|container| {
+							container.set_style(ConcreteLayer::default().color(RGBA::new(last_red, 0.0, 0.0, 1.0).into()));
+						});
+					}
+					ctx.render().await;
+				}
+			})
+		});
+		(position, red)
+	}
+
+	#[test]
+	fn first_render_and_viewport_change_damage_everything() {
+		let mut engine = Engine::new();
+		let _ = mount_box(&mut engine);
+		let (first, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		assert!(damage.is_none(), "The first render has no base to be relative to.");
+		let (second, damage) = damage_frame(&mut engine, Size::new(120, 100));
+		assert_ne!(first, second);
+		assert!(damage.is_none(), "A viewport change invalidates every pixel.");
+	}
+
+	#[test]
+	fn moved_element_damages_old_and_new_bounds() {
+		let mut engine = Engine::new();
+		let (position, _) = mount_box(&mut engine);
+		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
+		position.set((50, 50));
+		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (base, damage) = damage.expect("a second render is relative to the first");
+		assert_ne!(first, second);
+		assert_eq!(base, first);
+		assert!(damage_covers(&damage, 0.0, 0.0, 10.0, 10.0), "old bounds: {damage:?}");
+		assert!(damage_covers(&damage, 50.0, 50.0, 10.0, 10.0), "new bounds: {damage:?}");
+		assert!(
+			!damage_covers(&damage, 0.0, 0.0, 100.0, 100.0),
+			"the unchanged root is not damaged: {damage:?}"
+		);
+	}
+
+	#[test]
+	fn style_change_damages_one_rectangle() {
+		let mut engine = Engine::new();
+		let (_, red) = mount_box(&mut engine);
+		let _ = damage_frame(&mut engine, Size::new(100, 100));
+		red.set(0.5);
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (_, damage) = damage.expect("relative damage");
+		assert_eq!(damage.len(), 1, "{damage:?}");
+		assert!(damage_covers(&damage, 0.0, 0.0, 10.0, 10.0));
+	}
+
+	#[test]
+	fn added_and_removed_elements_damage_their_bounds() {
+		let mut engine = Engine::new();
+		let visible = Rc::new(std::cell::Cell::new(false));
+		let shared = Rc::clone(&visible);
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut shown = false;
+				let mut node = None;
+				loop {
+					if shared.get() != shown {
+						shown = shared.get();
+						if shown {
+							node = Some(
+								root.element("node").container(
+									Container::default()
+										.width(20.into())
+										.height(20.into())
+										.absolute_position(30, 40),
+								),
+							);
+						} else if let Some(mut node) = node.take() {
+							node.remove();
+						}
+					}
+					ctx.render().await;
+				}
+			})
+		});
+		let _ = damage_frame(&mut engine, Size::new(100, 100));
+		visible.set(true);
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (_, damage) = damage.expect("relative damage");
+		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "added: {damage:?}");
+		visible.set(false);
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (_, damage) = damage.expect("relative damage");
+		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "removed: {damage:?}");
+		assert!(!damage_covers(&damage, 0.0, 0.0, 100.0, 100.0), "root untouched: {damage:?}");
+	}
+
+	#[test]
+	fn child_of_moved_parent_is_damaged_and_long_lists_collapse() {
+		let mut engine = Engine::new();
+		let offset = Rc::new(std::cell::Cell::new(0));
+		let shared = Rc::clone(&offset);
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default());
+				let mut panel = root.element("panel").container(
+					Container::default()
+						.width(50.into())
+						.height(50.into())
+						.absolute_position(0, 0),
+				);
+				for index in 0..12 {
+					panel.element(format!("child{index}")).container(
+						Container::default()
+							.width(4.into())
+							.height(4.into())
+							.absolute_position(index * 4, 0),
+					);
+				}
+				let mut last = 0;
+				loop {
+					if shared.get() != last {
+						last = shared.get();
+						panel.update_container(|container| container.set_position((last, last)));
+					}
+					ctx.render().await;
+				}
+			})
+		});
+		let _ = damage_frame(&mut engine, Size::new(100, 100));
+		offset.set(20);
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (_, damage) = damage.expect("relative damage");
+		// Twelve children plus the panel exceed the cap, so one union remains.
+		assert_eq!(damage.len(), 1, "{damage:?}");
+		assert!(damage_covers(&damage, 0.0, 0.0, 70.0, 70.0), "{damage:?}");
 	}
 
 	#[test]

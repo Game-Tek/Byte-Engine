@@ -428,6 +428,19 @@ pub(super) fn build_ui_text_geometry<'a>(
 	atlas: &mut UiGlyphAtlas,
 	frame_allocator: &'a bumpalo::Bump,
 ) -> UiTextGeometry<'a> {
+	build_ui_text_geometry_damaged(draw_list, viewport, text_system, atlas, frame_allocator, None)
+}
+
+/// Builds glyph quads for the labels touching `damage`; `None` builds everything.
+#[allow(clippy::too_many_lines)]
+pub(super) fn build_ui_text_geometry_damaged<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	text_system: &mut TextSystem,
+	atlas: &mut UiGlyphAtlas,
+	frame_allocator: &'a bumpalo::Bump,
+	damage: Option<&[UiPixelRegion]>,
+) -> UiTextGeometry<'a> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
 	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
@@ -478,6 +491,18 @@ pub(super) fn build_ui_text_geometry<'a>(
 		});
 		let label = labels.last_mut().unwrap();
 		if !should_rasterize_text(text) || clip.is_empty() {
+			continue;
+		}
+		if !damage_intersects(
+			damage,
+			element_bounds(
+				text.position,
+				[text.size[0] * sx, text.size[1] * sy],
+				sx,
+				sy,
+				UI_DAMAGE_MARGIN_PIXELS,
+			),
+		) {
 			continue;
 		}
 		let font_size = raster_font_size(text.font_size * font_scale);

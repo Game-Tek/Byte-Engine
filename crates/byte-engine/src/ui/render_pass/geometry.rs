@@ -8,7 +8,19 @@ pub(super) fn build_ui_geometry_cached<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	frame_allocator: &'a bumpalo::Bump,
+	cache: Option<&mut SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>>,
+) -> UiGeometry<'a> {
+	build_ui_geometry_damaged(draw_list, viewport, frame_allocator, cache, None)
+}
+
+/// Builds rectangle geometry for the elements touching `damage`; `None` builds everything.
+#[allow(clippy::too_many_lines)]
+pub(super) fn build_ui_geometry_damaged<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	frame_allocator: &'a bumpalo::Bump,
 	mut cache: Option<&mut SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>>,
+	damage: Option<&[UiPixelRegion]>,
 ) -> UiGeometry<'a> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
@@ -50,6 +62,12 @@ pub(super) fn build_ui_geometry_cached<'a>(
 
 		let stroke_width = element.stroke_width * radius_scale;
 		if matches!(element.layer_kind, LayerKind::Stroke { .. }) && (!stroke_width.is_finite() || stroke_width <= 0.0) {
+			continue;
+		}
+		if !damage_intersects(
+			damage,
+			element_bounds(element.position, [rect_width, rect_height], sx, sy, UI_DAMAGE_MARGIN_PIXELS),
+		) {
 			continue;
 		}
 
@@ -219,6 +237,8 @@ pub(super) fn build_ui_blur_geometry<'a>(
 		let (_, full_kernel, half_kernel) = cached_kernels.unwrap();
 		let full_regions = blur_full_dispatch_regions([x0, y0, x1, y1], viewport);
 		let half_regions = blur_half_dispatch_regions([x0, y0, x1, y1], viewport);
+		let backdrop = UiPixelRegion::from_bounds([x0, y0, x1, y1], UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+			.unwrap_or(UiPixelRegion::full(viewport));
 
 		geometry.vertices.extend_from_slice(&[
 			UiVertex {
@@ -305,6 +325,7 @@ pub(super) fn build_ui_blur_geometry<'a>(
 			half_kernel,
 			full_regions,
 			half_regions,
+			backdrop,
 		});
 	}
 
@@ -316,7 +337,19 @@ pub(super) fn build_ui_curve_geometry_cached<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	frame_allocator: &'a bumpalo::Bump,
+	cache: Option<&mut CurveGeometryCache>,
+) -> UiCurveGeometry<'a> {
+	build_ui_curve_geometry_damaged(draw_list, viewport, frame_allocator, cache, None)
+}
+
+/// Builds curve geometry for the curves touching `damage`; `None` builds everything.
+#[allow(clippy::too_many_lines)]
+pub(super) fn build_ui_curve_geometry_damaged<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	frame_allocator: &'a bumpalo::Bump,
 	mut cache: Option<&mut CurveGeometryCache>,
+	damage: Option<&[UiPixelRegion]>,
 ) -> UiCurveGeometry<'a> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
@@ -363,6 +396,18 @@ pub(super) fn build_ui_curve_geometry_cached<'a>(
 
 		let half_width = stroke_width * 0.5;
 		let expansion = half_width + CURVE_AA_WIDTH_PIXELS;
+		if !damage_intersects(
+			damage,
+			element_bounds(
+				curve.position,
+				[curve.size[0] * sx, curve.size[1] * sy],
+				sx,
+				sy,
+				expansion + UI_DAMAGE_MARGIN_PIXELS,
+			),
+		) {
+			continue;
+		}
 		let feather_mask = scaled_feather_mask(curve.feather_mask, sx, sy);
 		let first_index = geometry.indices.len();
 		let vertex_offset = geometry.vertices.len();
@@ -582,7 +627,18 @@ pub(super) fn build_ui_image_geometry_cached<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	frame_allocator: &'a bumpalo::Bump,
+	cache: Option<&mut ImageGeometryCache>,
+) -> UiImageGeometry<'a> {
+	build_ui_image_geometry_damaged(draw_list, viewport, frame_allocator, cache, None)
+}
+
+/// Builds image quads for the images touching `damage`; `None` builds everything.
+pub(super) fn build_ui_image_geometry_damaged<'a>(
+	draw_list: &UiDrawList,
+	viewport: Extent,
+	frame_allocator: &'a bumpalo::Bump,
 	mut cache: Option<&mut ImageGeometryCache>,
+	damage: Option<&[UiPixelRegion]>,
 ) -> UiImageGeometry<'a> {
 	// A render cannot contain more images than the engine's 32-bit element IDs allow.
 	debug_assert!(u32::try_from(draw_list.images.len()).is_ok());
@@ -609,6 +665,18 @@ pub(super) fn build_ui_image_geometry_cached<'a>(
 
 	for (source_index, image) in draw_list.images.iter().enumerate() {
 		if !should_draw_image(image) {
+			continue;
+		}
+		if !damage_intersects(
+			damage,
+			element_bounds(
+				image.position,
+				[image.size[0] * sx, image.size[1] * sy],
+				sx,
+				sy,
+				UI_DAMAGE_MARGIN_PIXELS,
+			),
+		) {
 			continue;
 		}
 
@@ -651,6 +719,19 @@ pub(super) fn build_ui_image_geometry_cached<'a>(
 	}
 
 	geometry
+}
+
+/// Pixel bounds of an element for damage tests: its layout origin scaled, its pixel size, and a margin.
+#[inline]
+pub(super) fn element_bounds(position: [f32; 2], pixel_size: [f32; 2], sx: f32, sy: f32, margin: f32) -> [f32; 4] {
+	let x0 = position[0] * sx;
+	let y0 = position[1] * sy;
+	[
+		x0 - margin,
+		y0 - margin,
+		x0 + pixel_size[0] + margin,
+		y0 + pixel_size[1] + margin,
+	]
 }
 
 /// Resolves one rectangle's clipped quad independently of draw batching.

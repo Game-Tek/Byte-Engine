@@ -248,9 +248,18 @@ chain of revisions:
 - `Engine::render` returns a reference to the render retained by the engine.
   It keeps the same `Render::revision` while the tree, its layout, and the
   viewport are unchanged, so clone it only when the revision moved.
-- `UiRenderPass` rebuilds geometry, uploads buffers, and touches the glyph atlas
-  only when the adopted render revision, the viewport extent, or the atlas
-  generation changes. Otherwise it records the prepared batches again.
+- `Engine::render` also reports damage: `Render::damage` returns the previous
+  revision and the layout-unit rectangles whose pixels differ from it, built
+  from the same per-node revisions. A consumer holding pixels for that base
+  revision redraws only inside those rectangles; anyone else redraws everything.
+  A viewport change reports no base, meaning everything changed.
+- `UiRenderPass` keeps a persistent transparent UI layer. Each frame it clears
+  and redraws only the damaged pixel regions (plus every visible backdrop blur,
+  which samples the scene rendered that frame), then composites the scene under
+  the layer. Geometry, uploads, and atlas residency are rebuilt only for the
+  elements touching that damage, and only when the adopted render revision, the
+  viewport extent, the atlas generation, or the damaged regions change. A frame
+  with no damage records only the composite.
 
 Applications should publish a render only when `Render::revision` changes. The
 render source deduplicates repeated revisions anyway, so a republished unchanged

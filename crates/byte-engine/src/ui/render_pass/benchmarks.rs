@@ -356,9 +356,17 @@ fn unchanged_revision(bencher: Bencher) {
 		revision: Some(render.revision()),
 		extent: viewport(),
 		atlas_generation: 0,
+		damage: vec![UiPixelRegion::full(viewport())],
 		batches: Vec::new(),
 	};
-	bencher.bench_local(|| black_box(frame.matches(black_box(Some(render.revision())), black_box(viewport()), black_box(0))));
+	bencher.bench_local(|| {
+		black_box(frame.matches(
+			black_box(Some(render.revision())),
+			black_box(viewport()),
+			black_box(0),
+			black_box(&frame.damage),
+		))
+	});
 }
 
 /// The `CpuFrame` struct retains the same CPU caches between changed-frame rebuilds.

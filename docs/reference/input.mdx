@@ -277,10 +277,12 @@ Set decorative and full-screen transparent containers to
 can remain interactive. The retained query uses rectangular bounds; it does not
 perform alpha or rounded-corner hit testing.
 
-Subscribe to `app.messages().channel::<ghi::window::Events>()` before creating a
-window. In the ordinary `tick_with` callback, record those events with
-`process_default_window_input` into your own `InputCollector`, then pull your
-sinks. The function returns `true` when focus loss, minimizing, closing, or
+Subscribe to `app.messages().channel::<ghi::window::Event>()` before creating a
+window. In the ordinary `tick_with` callback, take the `Event::Window` values,
+record their `event` with `process_default_window_input` into your own
+`InputCollector`, then pull your sinks. Each window event carries the
+`WindowId` of the window it targets, so an app with several windows can route
+input per window. The function returns `true` when focus loss, minimizing, closing, or
 resizing discarded the seat, so cancel your sinks' held actions on that tick. Omit `setup_default_input` when the app owns this pipeline, so the
 application's own sink does not publish competing actions. Window close and
 renderer lifecycle handling still belong to the graphics application.

@@ -1,11 +1,43 @@
 //! Creates platform windows and reports their input events.
+//!
+//! Every supported platform delivers events through one process-wide queue, so
+//! [`App`] owns the only pump and tags each event with the [`WindowId`] it
+//! targets. Input is routed to the window holding focus.
 
+pub mod app;
 pub mod input;
 pub(crate) mod os;
 pub mod window;
 
+pub use self::app::App;
 pub use self::os::Handles;
 pub use self::window::Window;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The `WindowId` struct identifies the window an [`Event`] targets.
+pub struct WindowId(u64);
+
+impl WindowId {
+	pub(crate) fn from_raw(raw: u64) -> Self {
+		Self(raw)
+	}
+}
+
+/// An event reported by the application pump.
+#[derive(Debug, Clone, Copy)]
+pub enum Event {
+	/// The event belongs to the application rather than to one window.
+	App(AppEvents),
+	/// The event targets one window. Input targets the window with focus.
+	Window { window: WindowId, event: Events },
+}
+
+/// An event that belongs to the application as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppEvents {
+	/// The platform asked the application to quit, e.g. from the dock or a session end.
+	Quit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The `Seat` struct identifies the input seat associated with a window input event.

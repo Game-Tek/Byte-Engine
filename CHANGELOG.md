@@ -21,6 +21,8 @@
 - `Curve::hit_testable(width)` makes a curve a pointer target within `width` layout units of its stroke, so wires can be hovered, clicked, and dropped on. `HitTest` retains the same polylines.
 - Absolutely positioned containers keep negative layout coordinates instead of being snapped to the viewport's edge; visual transforms preserve them as well.
 - `Context::remove` is available to components, so a component can remove its own elements and end itself.
+- GHI windows are pumped by one `ghi::window::App` per process instead of per window, matching how Win32, AppKit, and Wayland deliver events. Create windows with `App::create_window` and drain `App::poll`, which yields `ghi::window::Event`: either an application event such as `AppEvents::Quit`, or a window `Events` value tagged with the `WindowId` it targets. Input targets the window with focus. `Window::new`, `Window::poll`, and `Renderer::update_windows` are removed; `Renderer::poll_windows` replaces the latter, and the graphics application publishes `ghi::window::Event` instead of `ghi::window::Events`.
+- Multiple GHI windows no longer steal each other's events on macOS, Win32 reports `WM_QUIT` and keeps handling messages sent between polls, and every Wayland window shares one compositor connection. The macOS dock's Quit item now asks the application to close instead of ending the process.
 
 ## 0.2.0 - 2026-08-20
 

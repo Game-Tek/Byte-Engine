@@ -98,7 +98,7 @@ fn parse_artnet_ipv4_parameter(parameter: Option<&Parameter>, default: Ipv4Addr)
 	})
 }
 
-impl crate::core::message::Message for ghi::window::Events {}
+impl crate::core::message::Message for ghi::window::Event {}
 
 /// Records a GHI window event into the standard mouse and keyboard devices.
 ///

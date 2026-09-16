@@ -1,38 +1,32 @@
 use utils::Extent;
 
 use crate::window::{
-	Events, Features,
+	WindowId,
 	input::{Keys, MouseKeys},
 	os::{self, WindowLike as _},
 };
 
+/// The `Window` struct keeps a native window alive for presentation. Create it with
+/// [`crate::window::App::create_window`]; its events arrive through [`crate::window::App::poll`],
+/// tagged with [`Window::id`]. Dropping it closes the window.
 pub struct Window {
 	name: String,
 	extent: Extent,
-	id_name: String,
 	os_window: os::Window,
-	features: Features,
 }
 
 impl Window {
-	pub fn new(name: &str, extent: Extent) -> Result<Window, String> {
-		Self::new_with_params(name, extent, name, Features::empty())
-	}
-
-	pub fn new_with_params(name: &str, extent: Extent, id_name: &str, features: Features) -> Result<Window, String> {
-		let os_window = os::Window::try_new(name, extent, id_name, features)?;
-
-		Ok(Window {
+	pub(crate) fn new(name: &str, extent: Extent, os_window: os::Window) -> Window {
+		Window {
 			name: name.to_owned(),
 			extent,
-			id_name: id_name.to_owned(),
 			os_window,
-			features,
-		})
+		}
 	}
 
-	pub fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
-		self.os_window.poll()
+	/// Returns the id that tags this window's events.
+	pub fn id(&self) -> WindowId {
+		self.os_window.id()
 	}
 
 	pub fn os_handles(&self) -> os::Handles {
@@ -45,10 +39,6 @@ impl Window {
 
 	pub fn extent(&self) -> Extent {
 		self.extent
-	}
-
-	pub fn id_name(&self) -> &str {
-		&self.id_name
 	}
 }
 

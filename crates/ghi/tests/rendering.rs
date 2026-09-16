@@ -12,7 +12,7 @@
 use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
 use ghi::{
 	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, QueueHandle,
-	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses, Window,
+	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -28,6 +28,7 @@ use ghi::{
 	shader::{CompiledShaderSource, ShaderSource},
 	*,
 };
+use ghi::window::{App, Features};
 use utils::{Extent, RGBA};
 
 #[path = "rendering/common.rs"]

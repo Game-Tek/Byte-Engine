@@ -5,7 +5,10 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 	// Use and odd width to make sure there is a middle/center pixel
 	let extent = Extent::rectangle(1921, 1080);
 
-	let mut window = Window::new("Present Test", extent).expect("Failed to create window");
+	let mut app = App::new("Present Test").expect("Failed to create app");
+	let window = app
+		.create_window("Present Test", extent, Features::empty())
+		.expect("Failed to create window");
 
 	let os_handles = window.os_handles();
 
@@ -47,7 +50,7 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 
 	let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
-	for _ in window.poll() {}
+	for _ in app.poll() {}
 
 	renderer.start_frame_capture();
 
@@ -91,7 +94,7 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 
 	renderer.end_frame_capture();
 
-	for _ in window.poll() {}
+	for _ in app.poll() {}
 
 	// TODO: assert rendering results
 
@@ -102,7 +105,10 @@ pub(super) fn multiframe_present(renderer: &mut impl ghi::context::Context, queu
 	// Use and odd width to make sure there is a middle/center pixel
 	let extent = Extent::rectangle(1920, 1080);
 
-	let window = Window::new("Present Test", extent).expect("Failed to create window");
+	let mut app = App::new("Present Test").expect("Failed to create app");
+	let window = app
+		.create_window("Present Test", extent, Features::empty())
+		.expect("Failed to create window");
 
 	let os_handles = window.os_handles();
 

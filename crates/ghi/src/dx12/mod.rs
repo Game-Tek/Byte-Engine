@@ -1825,7 +1825,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(65, 33);
-		let window = crate::window::Window::new("DX12 Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let mut app = crate::window::App::new("DX12 Present Proxy Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Present Proxy Test", extent, crate::window::Features::empty())
+			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
 		let vertices: [f32; 21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
@@ -1928,7 +1931,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window = crate::window::Window::new("DX12 Outstanding Acquisition Test", extent)
+		let mut app =
+			crate::window::App::new("DX12 Outstanding Acquisition Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Outstanding Acquisition Test", extent, crate::window::Features::empty())
 			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
 		let synchronizer = device.create_synchronizer(None, true);
@@ -1951,8 +1957,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window =
-			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let mut app = crate::window::App::new("DX12 Storage Present Proxy Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Storage Present Proxy Test", extent, crate::window::Features::empty())
+			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
 		let slot = crate::ResourceSlot::new(0);
 		let resource =
@@ -3964,9 +3972,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window = crate::window::Window::new("DX12 Missing Present Preparation Test", extent).expect(
-			"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
-		);
+		let mut app =
+			crate::window::App::new("DX12 Missing Present Preparation Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window(
+				"DX12 Missing Present Preparation Test",
+				extent,
+				crate::window::Features::empty(),
+			)
+			.expect(
+				"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
+			);
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
 		device.get_swapchain_image(swapchain, crate::Uses::Storage);
 		let synchronizer = device.create_synchronizer(None, false);

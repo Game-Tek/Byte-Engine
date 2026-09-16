@@ -29,6 +29,8 @@ pub struct Renderer {
 
 	/// Display windows and their swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
+	app: Option<ghi::window::App>,
 	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
 	acquisitions: (u64, SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
@@ -208,6 +210,7 @@ impl Renderer {
 			frame_queue_depth: frame_queue_depth as usize,
 
 			windows: SmallVec::with_capacity(16),
+			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
 			present_interval: None,
 			sink_cameras: SmallVec::with_capacity(16),
@@ -468,8 +471,10 @@ impl Renderer {
 		}
 	}
 
-	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
-		self.windows.iter_mut().map(|(window, _)| window.poll())
+	/// Drains pending application and window events. Match [`ghi::window::Event::Window`] ids against the
+	/// windows created with [`Self::create_window`].
+	pub fn poll_windows(&mut self) -> impl Iterator<Item = ghi::window::Event> + '_ {
+		self.app.iter_mut().flat_map(|app| app.poll())
 	}
 
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
@@ -900,7 +905,16 @@ impl Renderer {
 			ghi::window::Features::empty()
 		};
 
-		let window = ghi::Window::new_with_params(name, extent, "main_window", features);
+		// Connect on first use so headless renderers never touch the windowing system.
+		let app = match self.app.take() {
+			Some(app) => Ok(app),
+			None => ghi::window::App::new("main_window"),
+		};
+		let window = app.and_then(|mut app| {
+			let window = app.create_window(name, extent, features);
+			self.app = Some(app);
+			window
+		});
 
 		match window {
 			Ok(window) => {

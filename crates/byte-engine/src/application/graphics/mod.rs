@@ -52,7 +52,7 @@ pub struct GraphicsApplication {
 	application: BaseApplication,
 	message_bus: MessageBus,
 	messages: MessageScope,
-	window_events: DefaultChannel<ghi::window::Events>,
+	window_events: DefaultChannel<ghi::window::Event>,
 
 	tick_count: u64,
 	start_time: std::time::Instant,
@@ -308,17 +308,20 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Routes window input events and reports whether any window requested close.
+	/// Routes window input events and reports whether the platform or any window requested close.
 	fn process_window_events(&mut self) -> bool {
 		let span = debug_span!("GraphicsApplication::process_window_events");
 		let _enter = span.enter();
 		let mut close = false;
-		for window_events in self.renderer.update_windows() {
-			for event in window_events {
-				self.window_events.send(event);
-				close |= matches!(event, ghi::window::Events::Close);
-				if process_default_window_input(&mut self.input, event) {
-					self.actions.cancel_seat(input::SeatHandle::stub());
+		for event in self.renderer.poll_windows() {
+			self.window_events.send(event);
+			match event {
+				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
+				ghi::window::Event::Window { event, .. } => {
+					close |= matches!(event, ghi::window::Events::Close);
+					if process_default_window_input(&mut self.input, event) {
+						self.actions.cancel_seat(input::SeatHandle::stub());
+					}
 				}
 			}
 		}
@@ -565,9 +568,9 @@ impl GraphicsApplication {
 	///
 	/// Next, call [`MessageScope::channel`] or [`MessageScope::factory`] to add an
 	/// application-defined message route without declaring its type at startup.
-	/// Subscribe to [`ghi::window::Events`] before creating windows to handle raw
-	/// input in your application callback. Events are published in polling order;
-	/// the current stream does not identify which window produced each event.
+	/// Subscribe to [`ghi::window::Event`] before creating windows to handle raw
+	/// input in your application callback. Events are published in arrival order,
+	/// and each window event carries the [`ghi::window::WindowId`] it targets.
 	pub fn messages(&self) -> &MessageScope {
 		&self.messages
 	}

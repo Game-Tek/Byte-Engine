@@ -29,17 +29,11 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_registry::WlRegistry,
 				"wl_output" => {
 					this.wl_output = Some(registry.bind(name, version, qh, ()));
 				}
-				"wl_surface" => {
-					this.wl_surface = Some(registry.bind(name, version, qh, ()));
-				}
 				"wl_callback" => {
 					this.wl_callback = Some(registry.bind(name, version, qh, ()));
 				}
 				"zwp_relative_pointer_manager_v1" => {
 					this.zwp_relative_pointer_manager = Some(registry.bind(name, version, qh, ()));
-				}
-				"zwp_pointer_constraints_v1" => {
-					this.zwp_pointer_constraints = Some(registry.bind(name, version, qh, ()));
 				}
 				_ => {}
 			},
@@ -95,26 +89,30 @@ impl wayland_client::Dispatch<wl_compositor::WlCompositor, ()> for AppData {
 	}
 }
 
-impl wayland_client::Dispatch<wayland_client::protocol::wl_surface::WlSurface, ()> for AppData {
+impl wayland_client::Dispatch<wl_surface::WlSurface, WindowId> for AppData {
 	fn event(
 		this: &mut Self,
 		surface: &wl_surface::WlSurface,
 		event: wl_surface::Event,
-		_: &(),
+		id: &WindowId,
 		_: &wayland_client::Connection,
 		_: &wayland_client::QueueHandle<AppData>,
 	) {
+		let Some(window) = this.window_mut(*id) else {
+			return;
+		};
+
 		match event {
-			wayland_client::protocol::wl_surface::Event::Enter { .. } => {}
-			wayland_client::protocol::wl_surface::Event::Leave { .. } => {
-				this.state.extent = None;
+			wl_surface::Event::Enter { .. } => {}
+			wl_surface::Event::Leave { .. } => {
+				window.extent = None;
 			}
-			wayland_client::protocol::wl_surface::Event::PreferredBufferScale { factor } => {
-				this.state.scale = this.state.scale.max(factor as _);
+			wl_surface::Event::PreferredBufferScale { factor } => {
+				window.scale = window.scale.max(factor as _);
 				surface.set_buffer_scale(factor);
 				surface.commit();
 			}
-			wayland_client::protocol::wl_surface::Event::PreferredBufferTransform { .. } => {}
+			wl_surface::Event::PreferredBufferTransform { .. } => {}
 			_ => {}
 		}
 	}
@@ -138,31 +136,33 @@ impl wayland_client::Dispatch<xdg_wm_base::XdgWmBase, ()> for AppData {
 	}
 }
 
-impl wayland_client::Dispatch<xdg_surface::XdgSurface, ()> for AppData {
+impl wayland_client::Dispatch<xdg_surface::XdgSurface, WindowId> for AppData {
 	fn event(
 		this: &mut Self,
 		s: &xdg_surface::XdgSurface,
 		event: xdg_surface::Event,
-		_: &(),
+		id: &WindowId,
 		_: &wayland_client::Connection,
 		_: &wayland_client::QueueHandle<AppData>,
 	) {
 		match event {
 			xdg_surface::Event::Configure { serial } => {
 				s.ack_configure(serial);
-				this.state.configured = true;
+				if let Some(window) = this.window_mut(*id) {
+					window.configured = true;
+				}
 			}
 			_ => {}
 		}
 	}
 }
 
-impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
+impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, WindowId> for AppData {
 	fn event(
 		this: &mut Self,
 		_: &xdg_toplevel::XdgToplevel,
 		event: xdg_toplevel::Event,
-		_: &(),
+		id: &WindowId,
 		_: &wayland_client::Connection,
 		_: &wayland_client::QueueHandle<AppData>,
 	) {
@@ -172,20 +172,27 @@ impl wayland_client::Dispatch<xdg_toplevel::XdgToplevel, ()> for AppData {
 				// Suggested size
 			}
 			xdg_toplevel::Event::Configure { width, height, .. } => {
+				let Some(window) = this.window_mut(*id) else {
+					return;
+				};
+
 				if width != 0 && height != 0 {
 					let extent = Extent::rectangle(
-						(width * (this.state.scale as i32)) as u32,
-						(height * (this.state.scale as i32)) as u32,
+						(width * (window.scale as i32)) as u32,
+						(height * (window.scale as i32)) as u32,
 					);
-					this.state.extent = Some(extent);
-					this.events.push_back(Events::Resize {
-						width: extent.width(),
-						height: extent.height(),
-					});
+					window.extent = Some(extent);
+					this.push(
+						*id,
+						Events::Resize {
+							width: extent.width(),
+							height: extent.height(),
+						},
+					);
 				}
 			}
 			xdg_toplevel::Event::Close => {
-				this.events.push_back(Events::Close);
+				this.push(*id, Events::Close);
 			}
 			_ => {}
 		}

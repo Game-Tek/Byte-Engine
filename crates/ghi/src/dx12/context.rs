@@ -1264,7 +1264,7 @@ impl crate::context::Context for Device {
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain: SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		Device::acquire_swapchain_image(self, frame, swapchain)
 	}
 

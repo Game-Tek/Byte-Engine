@@ -509,7 +509,14 @@ impl Renderer {
 		let mut present_time = None;
 
 		for (_window, swapchain) in self.windows.iter().skip(self.acquisitions.1.len()) {
-			let acquisition = context.acquire_swapchain_image(frame, *swapchain);
+			let Some(acquisition) = context.acquire_swapchain_image(frame, *swapchain) else {
+				log::warn!(
+					"No swapchain image was available for window {:?}. Rendering will be skipped.",
+					swapchain
+				);
+				self.acquisitions.1.push(None);
+				continue;
+			};
 			let extent = acquisition.extent();
 			if self.acquisitions.1.is_empty() {
 				present_time = acquisition.present_time();
@@ -536,6 +543,14 @@ impl Renderer {
 		}
 
 		present_time
+	}
+
+	/// Returns whether any window holds an acquired swapchain image for the current frame.
+	///
+	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
+	/// and the caller must pace the tick itself.
+	pub(crate) fn presents_this_frame(&self) -> bool {
+		self.acquisitions.0 == self.started_frame_count && self.acquisitions.1.iter().any(Option::is_some)
 	}
 
 	/// Prepares a frame by invoking the configured render passes.

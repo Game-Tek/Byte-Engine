@@ -201,7 +201,7 @@ impl Frame<'_> {
 	pub fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		self.device
 			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
@@ -475,7 +475,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 }

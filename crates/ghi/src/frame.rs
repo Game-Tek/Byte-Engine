@@ -77,7 +77,8 @@ where
 	/// Acquires a swapchain image for presentation from inside a started frame.
 	///
 	/// Use [`crate::context::Context::acquire_swapchain_image`] to acquire before the frame is started.
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> SwapchainAcquisition;
+	/// Returns `None` when the presentation engine has no image to give; skip presenting that swapchain this frame.
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<SwapchainAcquisition>;
 }
 
 /// The `SwapchainAcquisition` struct provides the image information needed to prepare a frame for presentation.

@@ -165,7 +165,7 @@ impl Frame<'_> {
 	}
 
 	/// Acquires a backbuffer from inside the started frame. The sequence fences were already waited by `start_frame`.
-	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
+	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
 		self.device
 			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
@@ -231,7 +231,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::create_command_buffer_recording_without_implicit_sync(self, command_buffer_handle)
 	}
 
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 }

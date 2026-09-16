@@ -58,7 +58,12 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 			&[],
 			render_finished_synchronizer,
 			|execution| {
-				let present_key = execution.frame().unwrap().acquire_swapchain_image(swapchain).present_key();
+				let present_key = execution
+					.frame()
+					.unwrap()
+					.acquire_swapchain_image(swapchain)
+					.expect("acquire swapchain image")
+					.present_key();
 				let present_keys = [present_key];
 
 				execution.record(command_buffer_handle, |command_buffer_recording| {
@@ -149,7 +154,12 @@ pub(super) fn multiframe_present(renderer: &mut impl ghi::context::Context, queu
 				&[],
 				render_finished_synchronizer,
 				|execution| {
-					let present_key = execution.frame().unwrap().acquire_swapchain_image(swapchain).present_key();
+					let present_key = execution
+						.frame()
+						.unwrap()
+						.acquire_swapchain_image(swapchain)
+						.expect("acquire swapchain image")
+						.present_key();
 					let present_keys = [present_key];
 
 					execution.record(command_buffer_handle, |command_buffer_recording| {

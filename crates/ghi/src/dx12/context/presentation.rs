@@ -238,7 +238,7 @@ impl Device {
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain_handle: SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
 		if let Some(previous) = self.last_frame_synchronizers[sequence_index as usize] {
 			self.wait_for_synchronizer_sequence(previous, sequence_index);
@@ -252,11 +252,13 @@ impl Device {
 	}
 
 	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
+	///
+	/// DXGI always has a current backbuffer, so this never returns `None`.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
 		swapchain_handle: SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		{
 			// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
 			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
@@ -282,11 +284,11 @@ impl Device {
 		};
 		self.swapchains[swapchain_handle.0 as usize].acquired_image_indices[sequence_index as usize] = image_index;
 		self.swapchains[swapchain_handle.0 as usize].acquired_sequences[sequence_index as usize] = true;
-		crate::frame::SwapchainAcquisition {
+		Some(crate::frame::SwapchainAcquisition {
 			present_key,
 			extent,
 			present_time: None,
-		}
+		})
 	}
 
 	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.

@@ -281,7 +281,7 @@ impl crate::context::Context for Context {
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain: graphics_hardware_interface::SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		Context::acquire_swapchain_image(self, frame, swapchain)
 	}
 

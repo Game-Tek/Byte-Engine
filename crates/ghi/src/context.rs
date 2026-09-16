@@ -432,11 +432,13 @@ pub trait Context: ContextCreate {
 	///
 	/// This can run before the frame is started so simulation can follow the presentation cadence.
 	/// It blocks until the frame sequence's previous submission and the presentation engine allow reuse.
+	/// Returns `None` when the presentation engine has no image to give (an exhausted drawable pool, a hidden
+	/// window, or an out-of-date surface); the caller skips presenting that swapchain for the frame.
 	fn acquire_swapchain_image(
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain: SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition;
+	) -> Option<crate::frame::SwapchainAcquisition>;
 
 	/// Sets the minimum interval between presented frames of a swapchain, or removes it with `None`.
 	///

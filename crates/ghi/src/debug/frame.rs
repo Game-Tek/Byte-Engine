@@ -33,8 +33,11 @@ impl<'a> Frame<'a> {
 		)
 	}
 
-	pub fn acquire_swapchain_image(&mut self, _swapchain_handle: SwapchainHandle) -> crate::frame::SwapchainAcquisition {
-		crate::frame::SwapchainAcquisition {
+	pub fn acquire_swapchain_image(
+		&mut self,
+		_swapchain_handle: SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		Some(crate::frame::SwapchainAcquisition {
 			present_key: PresentKey {
 				image_index: 0,
 				sequence_index: 0,
@@ -42,7 +45,7 @@ impl<'a> Frame<'a> {
 			},
 			extent: Extent::rectangle(0, 0),
 			present_time: None,
-		}
+		})
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {

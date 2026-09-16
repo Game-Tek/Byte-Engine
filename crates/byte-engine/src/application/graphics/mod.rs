@@ -14,6 +14,9 @@
 // Bound ready work while the temporary Compio runtime still shares the application thread.
 const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 
+/// The frame period the loop sleeps for when no window presents and no `max-frame-rate` caps the rate.
+const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
+
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
 ///
@@ -58,6 +61,8 @@ pub struct GraphicsApplication {
 	last_tick_instant: std::time::Instant,
 	/// The display time of the last presented frame the clock has consumed, when the swapchain reported one.
 	last_present_time: Option<std::time::Instant>,
+	/// The frame period the loop sleeps for when no window presents; the `max-frame-rate` parameter when given.
+	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
 	elapsed_at_last_present: MediaTime,
 
@@ -139,12 +144,13 @@ impl Application for GraphicsApplication {
 		let configuration = Configuration::new();
 		let mut renderer = rendering::renderer::Renderer::new(&application, &configuration);
 		renderer.set_resource_manager(&resource_manager);
-		if let Some(max_frame_rate) = application
+		let present_interval = application
 			.get_parameter("max-frame-rate")
 			.and_then(|parameter| parameter.value.parse::<f64>().ok())
 			.filter(|rate| *rate > 0.0)
-		{
-			renderer.set_present_interval(Some(std::time::Duration::from_secs_f64(1.0 / max_frame_rate)));
+			.map(|max_frame_rate| std::time::Duration::from_secs_f64(1.0 / max_frame_rate));
+		if present_interval.is_some() {
+			renderer.set_present_interval(present_interval);
 		}
 		queue_render_pass_startup_parameters(application.parameters(), &configuration);
 
@@ -235,6 +241,7 @@ impl Application for GraphicsApplication {
 			elapsed: MediaTime::from_std(start_time.elapsed()),
 			last_tick_instant: std::time::Instant::now(),
 			last_present_time: None,
+			skipped_frame_pace: present_interval.unwrap_or(DEFAULT_SKIPPED_FRAME_PACE),
 			elapsed_at_last_present: MediaTime::ZERO,
 
 			#[cfg(debug_assertions)]
@@ -415,6 +422,11 @@ impl GraphicsApplication {
 		// tick paces on the display and the acquisition's presented time can drive the frame delta.
 		self.prepare_renderer_state();
 		let present_time = self.renderer.acquire_swapchain_images();
+		if !self.renderer.presents_this_frame() {
+			// Nothing blocked on the presentation engine (no window, or every window skipped), so the loop paces
+			// itself instead of spinning a core.
+			std::thread::sleep(self.skipped_frame_pace);
+		}
 		let time = self.sample_frame_time(present_time);
 		let dt = time.delta;
 

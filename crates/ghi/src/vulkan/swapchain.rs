@@ -22,6 +22,9 @@ pub(crate) struct Swapchain {
 	pub format: Formats,
 	pub supported_usage_flags: vk::ImageUsageFlags,
 	pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
+	/// Per sequence, whether the acquire fence was reset for an acquisition that then failed and left it unsignaled.
+	/// The next acquisition on that sequence must not wait on it.
+	pub acquire_fence_unsignaled: [bool; MAX_FRAMES_IN_FLIGHT],
 	pub extent: vk::Extent2D,
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,

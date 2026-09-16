@@ -110,7 +110,7 @@ impl Context {
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
 		let synchronizer_handle = self.synchronizer_for_sequence(frame.synchronizer, sequence_index);
 		self.wait_for_private_synchronizer(synchronizer_handle);
@@ -118,11 +118,14 @@ impl Context {
 	}
 
 	/// Acquires the next drawable for `swapchain_handle` and records it as the pending presentation of `sequence_index`.
+	///
+	/// Returns `None` when the layer has no drawable to give, which happens once the pool is exhausted while the
+	/// window is occluded or hidden. No presentation is pending for the swapchain in that case.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> crate::frame::SwapchainAcquisition {
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		// Update layer extent before acquiring the drawable so that if a resize occurred,
 		// the drawable is allocated at the correct size. update_layer_extent only calls
 		// setDrawableSize when the size actually changed, avoiding unnecessary drawable
@@ -141,10 +144,12 @@ impl Context {
 		let drawable = {
 			// SAFETY: The pool is created and drained on this thread around a call that may run outside any frame pool.
 			let _pool = unsafe { NSAutoreleasePool::new() };
-			self.swapchains[swapchain_handle.0 as usize]
-				.layer
-				.nextDrawable()
-				.expect("Failed to acquire Metal drawable. The most likely cause is that the layer has no available drawables.")
+			self.swapchains[swapchain_handle.0 as usize].layer.nextDrawable()
+		};
+
+		let Some(drawable) = drawable else {
+			self.swapchains[swapchain_handle.0 as usize].pending_drawable = None;
+			return None;
 		};
 
 		let present_key = graphics_hardware_interface::PresentKey {
@@ -168,11 +173,11 @@ impl Context {
 			)));
 		}
 
-		crate::frame::SwapchainAcquisition {
+		Some(crate::frame::SwapchainAcquisition {
 			present_key,
 			extent,
 			present_time,
-		}
+		})
 	}
 }
 

@@ -234,7 +234,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	/// Acquires a swapchain image from inside the started frame. The sequence fence was already waited by `start_frame`.
-	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> crate::frame::SwapchainAcquisition {
+	fn acquire_swapchain_image(
+		&mut self,
+		swapchain_handle: crate::SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
 		self.device
 			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}

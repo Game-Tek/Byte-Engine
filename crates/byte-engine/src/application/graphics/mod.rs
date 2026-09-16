@@ -25,6 +25,7 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
+/// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
@@ -138,6 +139,13 @@ impl Application for GraphicsApplication {
 		let configuration = Configuration::new();
 		let mut renderer = rendering::renderer::Renderer::new(&application, &configuration);
 		renderer.set_resource_manager(&resource_manager);
+		if let Some(max_frame_rate) = application
+			.get_parameter("max-frame-rate")
+			.and_then(|parameter| parameter.value.parse::<f64>().ok())
+			.filter(|rate| *rate > 0.0)
+		{
+			renderer.set_present_interval(Some(std::time::Duration::from_secs_f64(1.0 / max_frame_rate)));
+		}
 		queue_render_pass_startup_parameters(application.parameters(), &configuration);
 
 		#[cfg(debug_assertions)]

@@ -69,6 +69,8 @@ impl Device {
 			acquired_image_indices: [0; 8],
 			acquired_sequences: [false; 8],
 			queue_handle,
+			present_interval: None,
+			next_present_slot: None,
 		});
 
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
@@ -245,12 +247,21 @@ impl Device {
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
+	pub fn set_present_interval(&mut self, swapchain_handle: SwapchainHandle, interval: Option<std::time::Duration>) {
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+	}
+
 	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
 		swapchain_handle: SwapchainHandle,
 	) -> crate::frame::SwapchainAcquisition {
+		{
+			// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		}
 		{
 			let swapchain = self
 				.swapchains

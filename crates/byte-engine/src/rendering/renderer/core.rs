@@ -31,6 +31,8 @@ pub struct Renderer {
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
 	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
 	acquisitions: (u64, SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]>),
+	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
+	present_interval: Option<std::time::Duration>,
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
@@ -207,6 +209,7 @@ impl Renderer {
 
 			windows: SmallVec::with_capacity(16),
 			acquisitions: (0, SmallVec::with_capacity(16)),
+			present_interval: None,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
 
@@ -467,6 +470,16 @@ impl Renderer {
 
 	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
 		self.windows.iter_mut().map(|(window, _)| window.poll())
+	}
+
+	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
+	/// including windows created later. `None` removes the cap so frames present on every refresh.
+	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
+		self.present_interval = interval;
+		let mut context = self.context.lock();
+		for (_window, swapchain) in &self.windows {
+			context.set_present_interval(*swapchain, interval);
+		}
 	}
 
 	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
@@ -882,12 +895,16 @@ impl Renderer {
 				// takes the same lock, and `SharedContext` is a plain mutex that does not re-enter.
 				let swapchain_handle = {
 					let mut context = self.context.lock();
-					context.bind_to_window(
+					let swapchain_handle = context.bind_to_window(
 						&os_handles,
 						ghi::PresentationModes::FIFO,
 						extent,
 						ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
-					)
+					);
+					if self.present_interval.is_some() {
+						context.set_present_interval(swapchain_handle, self.present_interval);
+					}
+					swapchain_handle
 				};
 
 				let sink_id = self.windows.len();

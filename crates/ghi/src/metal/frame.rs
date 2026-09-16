@@ -371,13 +371,13 @@ impl Frame<'_> {
 				if let Some(drawable) = drawable {
 					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 					stored_queue.queue.signalDrawable(drawable);
-					record_presented_time(
-						drawable,
-						self.device.swapchains[present_key.swapchain.0 as usize]
-							.last_presented_time
-							.clone(),
-					);
-					drawable.present();
+					let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+					record_presented_time(drawable, swapchain.last_presented_time.clone());
+					match swapchain.present_interval {
+						// Metal schedules the drawable for the first refresh after the interval since the previous present.
+						Some(interval) => drawable.presentAfterMinimumDuration(interval.as_secs_f64()),
+						None => drawable.present(),
+					}
 				}
 			}
 			submitted

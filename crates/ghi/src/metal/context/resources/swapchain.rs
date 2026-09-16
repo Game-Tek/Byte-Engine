@@ -87,9 +87,18 @@ impl Context {
 			extent,
 			pending_drawable: None,
 			last_presented_time: std::sync::Arc::new(AtomicU64::new(0)),
+			present_interval: None,
 		});
 
 		handle
+	}
+
+	pub fn set_present_interval(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		interval: Option<std::time::Duration>,
+	) {
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
 	}
 
 	/// Acquires the drawable that `frame` will present before the frame is started.

@@ -285,6 +285,14 @@ impl crate::context::Context for Context {
 		Context::acquire_swapchain_image(self, frame, swapchain)
 	}
 
+	fn set_present_interval(
+		&mut self,
+		swapchain: graphics_hardware_interface::SwapchainHandle,
+		interval: Option<std::time::Duration>,
+	) {
+		Context::set_present_interval(self, swapchain, interval);
+	}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,

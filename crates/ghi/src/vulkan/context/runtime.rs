@@ -496,6 +496,8 @@ impl Context {
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,
+			present_interval: None,
+			next_present_slot: None,
 		});
 
 		swapchain_handle
@@ -723,12 +725,26 @@ impl Context {
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
+	pub(crate) fn set_present_interval(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		interval: Option<std::time::Duration>,
+	) {
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+	}
+
 	/// Acquires the next image of `swapchain_handle` using the acquire synchronizer of `sequence_index`.
 	pub(crate) fn acquire_swapchain_image_for_sequence(
 		&mut self,
 		sequence_index: u8,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> crate::frame::SwapchainAcquisition {
+		{
+			// Vulkan has no timed present in the extensions we enable, so the cap paces acquisition instead.
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		}
+
 		let swapchains = &self.swapchains;
 		let synchronizers = &self.synchronizers;
 

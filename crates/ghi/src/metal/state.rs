@@ -148,5 +148,7 @@ pub mod swapchain {
 		/// Metal publishes it through a presented handler on an arbitrary thread shortly after the display shows the
 		/// frame, so the value is shared atomically and may lag one acquisition behind.
 		pub last_presented_time: Arc<AtomicU64>,
+		/// The minimum time between presented frames; `None` presents on the next refresh.
+		pub present_interval: Option<std::time::Duration>,
 	}
 }

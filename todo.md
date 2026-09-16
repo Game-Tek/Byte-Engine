@@ -172,6 +172,7 @@
 - Split each large backend context implementation into resources, descriptors, pipelines, synchronization, transfers, and acceleration-structure modules while keeping the public context type in `context/mod.rs`.
 - Move GHI handles, resource descriptions, and behavioral traits into their existing domain modules instead of declaring most contracts in `graphics_hardware_interface.rs`.
 - Reduce `graphics_hardware_interface.rs` to compatibility re-exports or remove it after callers migrate to domain modules.
+- Honor the swapchain present interval (`Context::set_present_interval`) natively on Vulkan and DX12. Both currently sleep in `pace_present` before acquisition, which is not phase-locked to vblank and can alternate between one and three refresh periods when the slot lands near a boundary. Use `VK_EXT_present_timing` (or `VK_GOOGLE_display_timing`) on Vulkan and a waitable swapchain with `SetMaximumFrameLatency` on DX12, the way Metal uses `presentAfterMinimumDuration`. Verify with `--max-frame-rate=30` on a 60 Hz display: deltas should sit at 33.3 ms as they do on Metal.
 
 ## Cross-cutting layout
 

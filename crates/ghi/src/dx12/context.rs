@@ -931,6 +931,10 @@ pub(crate) struct Swapchain {
 	pub(crate) acquired_image_indices: [u8; 8],
 	pub(crate) acquired_sequences: [bool; 8],
 	queue_handle: QueueHandle,
+	/// The minimum time between presented frames; `None` presents on the next refresh.
+	pub(crate) present_interval: Option<std::time::Duration>,
+	/// The earliest time the next acquisition may start when `present_interval` is set.
+	pub(crate) next_present_slot: Option<std::time::Instant>,
 }
 
 pub(crate) struct Synchronizer {
@@ -1262,6 +1266,10 @@ impl crate::context::Context for Device {
 		swapchain: SwapchainHandle,
 	) -> crate::frame::SwapchainAcquisition {
 		Device::acquire_swapchain_image(self, frame, swapchain)
+	}
+
+	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {
+		Device::set_present_interval(self, swapchain, interval);
 	}
 
 	fn get_image_data(

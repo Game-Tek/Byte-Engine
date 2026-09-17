@@ -1865,7 +1865,15 @@ mod tests {
 		tree.add_element(None, 0, "root".into(), ConcreteElement::container(Container::default()));
 		assert_eq!(tree.revision(), after_insert);
 
+		// An edit that writes nothing new keeps retained state valid.
 		assert!(tree.update_element(id, |_| true));
+		assert_eq!(tree.revision(), after_insert);
+
+		assert!(tree.update_element(id, |primitive| {
+			let Primitives::Container(container) = primitive else { return false };
+			container.set_opacity(0.5);
+			true
+		}));
 		assert!(tree.revision() > after_insert);
 
 		let after_mutation = tree.revision();
@@ -3953,6 +3961,101 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 
 		assert_eq!(render.elements().next().unwrap().opacity, 0.25);
+	}
+
+	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.
+	fn mount_edited_elements(engine: &mut Engine, edit: Rc<std::cell::Cell<u8>>) {
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default()
+						.width(40.into())
+						.height(40.into())
+						.style(ConcreteLayer::default().color(RGBA::new(0.1, 0.2, 0.3, 1.0).into())),
+				);
+				let mut label = ctx.element("label").text(Text::new("Hello"));
+				let mut wire = ctx.element("wire").curve(
+					Curve::new(CurvePath::new(100.into(), 100.into()).line((0.0, 0.0), (10.0, 10.0)))
+						.style(ConcreteLayer::default().stroke(2.0)),
+				);
+				let mut picture = ctx
+					.element("picture")
+					.image(crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]));
+				loop {
+					ctx.render().await;
+					match edit.replace(0) {
+						// Write the values already present.
+						1 => {
+							frame.update_container(|container| {
+								container.width = Sizing::pixels(40);
+								container.set_opacity(1.0);
+								container.set_style(ConcreteLayer::default().color(RGBA::new(0.1, 0.2, 0.3, 1.0).into()));
+							});
+							label.update_text(|text| {
+								text.set_content("Hello");
+								text.set_opacity(1.0);
+							});
+							wire.update_curve(|curve| {
+								let path = curve.path_mut();
+								path.clear();
+								path.push_line((0.0, 0.0), (10.0, 10.0));
+							});
+							picture.update_image(|image| image.set_opacity(1.0));
+						}
+						// Change a value and restore it within the same edit.
+						2 => {
+							label.update_text(|text| {
+								text.set_content("Changed");
+								text.set_content("Hello");
+							});
+						}
+						3 => {
+							frame.update_container(|container| {
+								container.set_style(ConcreteLayer::default().color(RGBA::new(0.9, 0.2, 0.3, 1.0).into()));
+							});
+						}
+						4 => {
+							picture.update_image(|image| {
+								*image = crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]);
+							});
+						}
+						_ => {}
+					}
+				}
+			})
+		});
+	}
+
+	#[test]
+	fn updates_that_change_nothing_keep_the_render_revision() {
+		let allocator = bumpalo::Bump::new();
+		let edit = Rc::new(std::cell::Cell::new(0));
+		let mut engine = Engine::new();
+		mount_edited_elements(&mut engine, Rc::clone(&edit));
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let first = engine.render(&mut snapshot).revision();
+
+		for step in [1, 2] {
+			edit.set(step);
+			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			assert_eq!(engine.render(&mut snapshot).revision(), first, "Edit {step} changed the render revision.");
+		}
+	}
+
+	#[test]
+	fn updates_that_change_style_or_image_contents_advance_the_render_revision() {
+		for step in [3, 4] {
+			let allocator = bumpalo::Bump::new();
+			let edit = Rc::new(std::cell::Cell::new(0));
+			let mut engine = Engine::new();
+			mount_edited_elements(&mut engine, Rc::clone(&edit));
+			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			let first = engine.render(&mut snapshot).revision();
+
+			edit.set(step);
+			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			assert_ne!(engine.render(&mut snapshot).revision(), first, "Edit {step} kept the render revision.");
+		}
 	}
 
 	#[test]

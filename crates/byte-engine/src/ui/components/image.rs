@@ -22,6 +22,11 @@ pub struct Image {
 }
 
 impl Image {
+	/// Identifies the pixel contents without comparing them.
+	pub(crate) fn content_key(&self) -> (u64, u64, u32, u32) {
+		(self.id, self.version, self.width_pixels, self.height_pixels)
+	}
+
 	pub fn from_rgba(width: u32, height: u32, pixels: impl Into<Vec<u8>>) -> Self {
 		let pixels = pixels.into();
 		let expected_len = width as usize * height as usize * 4;

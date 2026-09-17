@@ -1,7 +1,7 @@
 use smallvec::{SmallVec, smallvec};
 use utils::RGBA;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum Color {
 	Value(RGBA),
 	Sample(String),
@@ -131,7 +131,7 @@ impl ConcreteStyle {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ConcreteLayer {
 	pub(crate) color: Color,
 	pub(crate) kind: LayerKind,

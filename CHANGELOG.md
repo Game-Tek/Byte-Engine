@@ -24,6 +24,7 @@
 - GHI windows are pumped by one `ghi::window::App` per process instead of per window, matching how Win32, AppKit, and Wayland deliver events. Create windows with `App::create_window` and drain `App::poll`, which yields `ghi::window::Event`: either an application event such as `AppEvents::Quit`, or a window `Events` value tagged with the `WindowId` it targets. Input targets the window with focus. `Window::new`, `Window::poll`, and `Renderer::update_windows` are removed; `Renderer::poll_windows` replaces the latter, and the graphics application publishes `ghi::window::Event` instead of `ghi::window::Events`.
 - Multiple GHI windows no longer steal each other's events on macOS, Win32 reports `WM_QUIT` and keeps handling messages sent between polls, and every Wayland window shares one compositor connection. The macOS dock's Quit item now asks the application to close instead of ending the process.
 - The `render-on-demand` application parameter renders a frame only when something changed. Window changes, new UI renders, and screenshot requests ask for frames; call `Renderer::request_redraw` after changing the scene. Idle ticks keep handling events at the `max-frame-rate` pace. Render passes report pending output through the new `RenderPass::needs_frame`, which defaults to `false`.
+- A UI `update_*` call that writes the values an element already has no longer advances the render revision, so unchanged frames reuse the retained render and on-demand rendering stays idle.
 
 ## 0.2.0 - 2026-08-20
 

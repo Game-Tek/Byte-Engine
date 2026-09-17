@@ -5,9 +5,12 @@ use std::{
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 use crate::ui::{
+	components::{
+		container::ContainerProperties, curve::CurveSegment, text::TextSettings, text_field::TextFieldSettings,
+	},
 	flow::{self, FlowOutput},
 	primitive::{Primitive, Primitives},
-	style::{EdgeFeather, Layer},
+	style::{ConcreteLayer, EdgeFeather, Layer},
 };
 
 /// Properties that can change placement independently of text measurements.
@@ -64,6 +67,53 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 			height: image.height,
 		},
 		Primitives::Shape(shape) => PlacementInputs::Shape(shape.shape.clone()),
+	}
+}
+
+/// The fixed-size properties that, with style, content, transform, and opacity, fully describe a primitive.
+#[derive(PartialEq)]
+enum PropertyInputs {
+	Container(ContainerProperties),
+	Shape(crate::ui::primitive::Shapes, ContainerProperties),
+	Image {
+		content: (u64, u64, u32, u32),
+		width: super::Sizing,
+		height: super::Sizing,
+	},
+	Text(TextSettings),
+	TextField(TextFieldSettings),
+	Curve {
+		width: super::Sizing,
+		height: super::Sizing,
+		hit_width: Option<f32>,
+	},
+}
+
+/// Captures the properties an edit is compared on, or `None` when a custom flow cannot be compared.
+fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
+	Some(match primitive {
+		Primitives::Container(container) => PropertyInputs::Container(container.properties()?),
+		Primitives::Shape(shape) => PropertyInputs::Shape(shape.shape.clone(), shape.settings.properties()?),
+		Primitives::Image(image) => PropertyInputs::Image {
+			content: image.content_key(),
+			width: image.width,
+			height: image.height,
+		},
+		Primitives::Text(text) => PropertyInputs::Text(*text.settings()),
+		Primitives::TextField(text_field) => PropertyInputs::TextField(*text_field.settings()),
+		Primitives::Curve(curve) => PropertyInputs::Curve {
+			width: curve.path.width,
+			height: curve.path.height,
+			hit_width: curve.hit_width,
+		},
+	})
+}
+
+/// Returns the curve segments of a primitive, which are compared by content.
+fn curve_segments(primitive: &Primitives) -> &[CurveSegment] {
+	match primitive {
+		Primitives::Curve(curve) => &curve.path.segments,
+		_ => &[],
 	}
 }
 
@@ -133,6 +183,9 @@ pub(super) struct RetainedTree {
 	pub(super) text_changes: Vec<usize>,
 	/// Reused to compare text edits without allocating for visual-only updates.
 	text_before: String,
+	/// Reused to compare style layers and curve segments across an edit.
+	style_before: Vec<ConcreteLayer>,
+	segments_before: Vec<CurveSegment>,
 	/// Advances when the set of flow types may change.
 	pub(super) flow_revision: u64,
 	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
@@ -304,6 +357,13 @@ impl RetainedTree {
 		let flow = flow_type(primitive);
 		let clip = clip_inputs(primitive);
 		let opacity = primitive.visual().opacity;
+		let properties = property_inputs(primitive);
+		self.style_before.clear();
+		self.style_before.extend_from_slice(primitive.style().layers());
+		self.segments_before.clear();
+		self.segments_before.extend_from_slice(curve_segments(primitive));
+		let old_revision = self.revision;
+		let old_element_revision = element.revision;
 		let old_clip_revision = self.clip_revision;
 		let old_appearance_revision = self.appearance_revision;
 		let old_placement_revision = self.placement_revision;
@@ -318,6 +378,27 @@ impl RetainedTree {
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
 		let updated = update(primitive);
+		// An edit that wrote the values already present changes nothing, so every revision stays put and consumers
+		// keep their retained renders.
+		if properties.is_some()
+			&& properties == property_inputs(primitive)
+			&& transform == *primitive.transform()
+			&& opacity == primitive.visual().opacity
+			&& text_measurement_inputs(primitive).map_or(true, |(content, size)| {
+				text_before == Some(size) && content == self.text_before
+			})
+			&& self.style_before.as_slice() == primitive.style().layers()
+			&& self.segments_before.as_slice() == curve_segments(primitive)
+		{
+			self.revision = old_revision;
+			element.revision = old_element_revision;
+			self.non_transform_revision = old_non_transform_revision;
+			self.placement_revision = old_placement_revision;
+			self.flow_revision = old_flow_revision;
+			self.clip_revision = old_clip_revision;
+			self.appearance_revision = old_appearance_revision;
+			return updated;
+		}
 		if transform != *primitive.transform() && !self.transform_changes.contains(&index) {
 			self.transform_changes.push(index);
 		}

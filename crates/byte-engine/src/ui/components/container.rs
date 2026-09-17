@@ -27,7 +27,44 @@ pub struct Container {
 	pub(crate) visual: Visual,
 }
 
+/// Every fixed-size container property, compared to prove an edit changed nothing.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ContainerProperties {
+	min_width: Option<Sizing>,
+	min_height: Option<Sizing>,
+	width: Sizing,
+	height: Sizing,
+	corner_radius: f32,
+	corner_exponent: f32,
+	max_width: Option<Sizing>,
+	max_height: Option<Sizing>,
+	depth: Depth,
+	position: Position,
+	clip: bool,
+	hit_testable: bool,
+	flow: (std::any::TypeId, FlowOutput),
+}
+
 impl Container {
+	/// Returns the fixed-size properties, or `None` when a custom flow keeps them from being compared.
+	pub(crate) fn properties(&self) -> Option<ContainerProperties> {
+		Some(ContainerProperties {
+			min_width: self.min_width,
+			min_height: self.min_height,
+			width: self.width,
+			height: self.height,
+			corner_radius: self.corner_radius,
+			corner_exponent: self.corner_exponent,
+			max_width: self.max_width,
+			max_height: self.max_height,
+			depth: self.depth,
+			position: self.position,
+			clip: self.clip,
+			hit_testable: self.hit_testable,
+			flow: flow::placement_key(&self.flow)?,
+		})
+	}
+
 	/// Selects whether this surface participates in pointer hit testing.
 	/// Disable this for decorative roots; children retain their own policy.
 	pub fn hit_testable(mut self, enabled: bool) -> Self {

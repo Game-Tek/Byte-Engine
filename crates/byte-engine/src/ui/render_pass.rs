@@ -751,6 +751,12 @@ impl RenderPass for UiRenderPass {
 		"ui"
 	}
 
+	fn needs_frame(&mut self) -> bool {
+		// The layer lags the adopted render until a recorded frame brings it up to date. An empty UI that never
+		// drew anything has nothing to show.
+		self.layer_revision != self.render_revision && !(self.data.is_empty() && self.layer_revision.is_none())
+	}
+
 	// Keep ordered UI batch recording in one function so clears, blur barriers, and depth order cannot diverge.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	fn prepare<'a>(

@@ -68,6 +68,8 @@ pub struct Renderer {
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
 	defer_first_frame_sink_setup: bool,
+	/// Whether renderer state changed in a way that the last presented frame does not show.
+	redraw_requested: bool,
 
 	/// The GHI context where all rendering resources and operations are performed.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
@@ -242,6 +244,7 @@ impl Renderer {
 			render_command_buffer,
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
+			redraw_requested: true,
 		}
 	}
 
@@ -378,6 +381,7 @@ impl Renderer {
 	/// `name`. Pass names come from [`RenderPass::name`].
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
 		self.render_pass_states.insert(name.to_string(), state);
+		self.redraw_requested = true;
 		set_render_pass_state_by_name(&mut self.render_passes, name, state)
 	}
 
@@ -550,6 +554,27 @@ impl Renderer {
 		present_time
 	}
 
+	/// Asks for a new frame when the application changed something the renderer cannot observe itself.
+	///
+	/// This only matters with the `render-on-demand` application parameter: scene pipelines do not report their
+	/// changes, so call this after moving cameras or scene objects. UI renders and window events request frames
+	/// on their own.
+	pub fn request_redraw(&mut self) {
+		self.redraw_requested = true;
+	}
+
+	/// Reports whether the next frame would show something the last presented frame does not.
+	///
+	/// Render passes adopt their pending inputs while answering, so call this after the tick published them.
+	pub(crate) fn needs_frame(&mut self) -> bool {
+		let mut needs_frame = self.redraw_requested || !self.pending_sink_initializations.is_empty();
+		// Ask every pass so each adopts its inputs this tick, even when an earlier one already answered.
+		for render_pass in &mut self.render_passes {
+			needs_frame |= render_pass.needs_frame();
+		}
+		needs_frame
+	}
+
 	/// Returns whether any window holds an acquired swapchain image for the current frame.
 	///
 	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
@@ -587,6 +612,7 @@ impl Renderer {
 		};
 		// Acquire here when nothing was hoisted to the start of the tick, or for windows adopted since.
 		self.acquire_swapchain_images();
+		self.redraw_requested = false;
 
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
@@ -946,6 +972,7 @@ impl Renderer {
 				};
 
 				self.windows.push((window, swapchain_handle));
+				self.redraw_requested = true;
 
 				if sink_has_camera {
 					if self.defer_first_frame_sink_setup && self.started_frame_count == 0 {
@@ -973,10 +1000,10 @@ impl Renderer {
 			.find(|(existing_handle, ..)| *existing_handle == handle)
 		{
 			*existing_camera = camera;
-			return;
+		} else {
+			self.cameras.push((handle, camera, Transform::default()));
 		}
-
-		self.cameras.push((handle, camera, Transform::default()));
+		self.redraw_requested = true;
 	}
 }
 /// Returns request slots transferred immediately after one prepared pass entry.

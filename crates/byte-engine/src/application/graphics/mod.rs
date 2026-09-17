@@ -29,6 +29,7 @@ const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::fro
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
+/// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the `max-frame-rate` pace, or 60 per second, so events are still handled. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
@@ -65,6 +66,10 @@ pub struct GraphicsApplication {
 	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
 	elapsed_at_last_present: MediaTime,
+	/// Whether frames are rendered only when something changed; the `render-on-demand` parameter.
+	render_on_demand: bool,
+	/// Whether the last tick rendered because something changed, so this tick expects to render again.
+	rendering_active: bool,
 
 	close: bool,
 
@@ -152,6 +157,9 @@ impl Application for GraphicsApplication {
 		if present_interval.is_some() {
 			renderer.set_present_interval(present_interval);
 		}
+		let render_on_demand = application
+			.get_parameter("render-on-demand")
+			.is_some_and(|parameter| parameter.as_bool_simple());
 		queue_render_pass_startup_parameters(application.parameters(), &configuration);
 
 		#[cfg(debug_assertions)]
@@ -243,6 +251,8 @@ impl Application for GraphicsApplication {
 			last_present_time: None,
 			skipped_frame_pace: present_interval.unwrap_or(DEFAULT_SKIPPED_FRAME_PACE),
 			elapsed_at_last_present: MediaTime::ZERO,
+			render_on_demand,
+			rendering_active: true,
 
 			#[cfg(debug_assertions)]
 			ttff: MediaTime::ZERO,
@@ -309,21 +319,34 @@ impl GraphicsApplication {
 	}
 
 	/// Routes window input events and reports whether the platform or any window requested close.
+	///
+	/// Window state changes request a frame. Input events do not: their consumers publish what changed.
 	fn process_window_events(&mut self) -> bool {
 		let span = debug_span!("GraphicsApplication::process_window_events");
 		let _enter = span.enter();
 		let mut close = false;
+		let mut redraw = false;
 		for event in self.renderer.poll_windows() {
 			self.window_events.send(event);
 			match event {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
 				ghi::window::Event::Window { event, .. } => {
 					close |= matches!(event, ghi::window::Events::Close);
+					redraw |= matches!(
+						event,
+						ghi::window::Events::Resize { .. }
+							| ghi::window::Events::FocusChanged(_)
+							| ghi::window::Events::Minimize
+							| ghi::window::Events::Maximize
+					);
 					if process_default_window_input(&mut self.input, event) {
 						self.actions.cancel_seat(input::SeatHandle::stub());
 					}
 				}
 			}
+		}
+		if redraw {
+			self.renderer.request_redraw();
 		}
 		close
 	}
@@ -383,10 +406,9 @@ impl GraphicsApplication {
 	}
 
 	/// Renders one frame and completes every screenshot request with its encoded result.
-	fn render_frame(&mut self) {
+	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>) {
 		let span = debug_span!("GraphicsApplication::render_frame");
 		let _enter = span.enter();
-		let requests = self.screenshot_broker.drain();
 		let captures = requests
 			.iter()
 			.map(|request| (request.sink, &request.capture))
@@ -423,8 +445,14 @@ impl GraphicsApplication {
 
 		// Adopt windows created last tick, then block on the presentation engine before simulating so the
 		// tick paces on the display and the acquisition's presented time can drive the frame delta.
+		// An acquired image must be presented, so on-demand rendering only hoists the acquisition while frames keep
+		// coming; the first frame after an idle stretch acquires when it renders.
 		self.prepare_renderer_state();
-		let present_time = self.renderer.acquire_swapchain_images();
+		let present_time = if self.rendering_active {
+			self.renderer.acquire_swapchain_images()
+		} else {
+			None
+		};
 		if !self.renderer.presents_this_frame() {
 			// Nothing blocked on the presentation engine (no window, or every window skipped), so the loop paces
 			// itself instead of spinning a core.
@@ -463,7 +491,13 @@ impl GraphicsApplication {
 		}
 
 		self.prepare_renderer_state();
-		self.render_frame();
+		let screenshot_requests = self.screenshot_broker.drain();
+		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
+		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
+		self.rendering_active = changed || !self.render_on_demand;
+		if self.rendering_active || self.renderer.presents_this_frame() {
+			self.render_frame(screenshot_requests);
+		}
 
 		{
 			let span = debug_span!("GraphicsApplication::flush_world_deletions");

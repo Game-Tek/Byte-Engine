@@ -412,6 +412,12 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 
 				self.render_pass.bypass(frame, sink, frame_allocator)
 			}
+
+			fn needs_frame(&mut self) -> bool {
+				self.update();
+
+				self.render_pass.needs_frame()
+			}
 		}
 
 		Box::new(CustomRenderPass {

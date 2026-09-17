@@ -55,6 +55,14 @@ pub trait RenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>>;
+
+	/// Reports whether this pass has output that the last presented frame does not show yet.
+	///
+	/// On-demand rendering only draws a frame when something asks for one. Return `true` while the pass's inputs
+	/// changed since it last recorded, or while it animates. Passes that only transform their input keep the default.
+	fn needs_frame(&mut self) -> bool {
+		false
+	}
 }
 
 /// Implements a [`RenderPass`] method that only hands the frame to an inner pass.
@@ -131,6 +139,11 @@ impl RenderPassHarness {
 			render_pass,
 			state: RenderPassState::Enabled,
 		}
+	}
+
+	/// Reports whether the wrapped pass asks for a new frame; see [`RenderPass::needs_frame`].
+	pub fn needs_frame(&mut self) -> bool {
+		self.render_pass.needs_frame()
 	}
 
 	/// Returns the pass state used for the next frame preparation.

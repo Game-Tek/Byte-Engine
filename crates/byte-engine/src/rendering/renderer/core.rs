@@ -491,6 +491,13 @@ impl Renderer {
 		}
 	}
 
+	/// Returns the shortest refresh interval among the displays showing a window, when any platform reports one.
+	///
+	/// The fastest display decides so that no window handles its events later than its display could show them.
+	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+		self.windows.iter().filter_map(|(window, _)| window.refresh_interval()).min()
+	}
+
 	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
 	/// primary window's most recently presented image, when the backend reports it.
 	///

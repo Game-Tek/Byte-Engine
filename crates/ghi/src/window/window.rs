@@ -33,6 +33,13 @@ impl Window {
 		self.os_window.handles()
 	}
 
+	/// Returns the refresh interval of the display the window is on, when the platform reports it.
+	///
+	/// [`crate::window::Events::DisplayChanged`] reports when this value may have changed.
+	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+		self.os_window.refresh_interval()
+	}
+
 	pub fn name(&self) -> &str {
 		&self.name
 	}

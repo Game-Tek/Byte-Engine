@@ -1,4 +1,12 @@
-use std::{collections::VecDeque, ffi::c_void};
+use std::{
+	collections::VecDeque,
+	ffi::c_void,
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+	time::Duration,
+};
 
 use utils::Extent;
 use wayland_client::{
@@ -48,7 +56,12 @@ pub struct Window {
 	surface: wl_surface::WlSurface,
 	xdg_surface: xdg_surface::XdgSurface,
 	xdg_toplevel: xdg_toplevel::XdgToplevel,
+	/// The refresh interval the event queue last reported for this window.
+	refresh: SharedRefresh,
 }
+
+/// A refresh interval in nanoseconds, where `0` means unknown, shared between a window and the event queue.
+type SharedRefresh = Arc<AtomicU64>; // TODO: hmmmmm
 
 pub struct Handles {
 	pub display: *mut c_void,
@@ -81,6 +94,8 @@ struct AppData {
 	output_scale: u32,
 	/// The extent of the monitor.
 	monitor_extent: Option<Extent>,
+	/// Every output and the refresh rate of its current mode in millihertz, `0` when unknown.
+	outputs: Vec<(WlOutput, i32)>,
 	/// The pointer and the window it is over.
 	pointer_focus: Option<(wl_pointer::WlPointer, WindowId)>,
 	/// The keyboard and the window it targets.
@@ -102,6 +117,15 @@ struct WindowState {
 	extent: Option<Extent>,
 	/// Whether the initial xdg_surface configuration has been acknowledged.
 	configured: bool,
+	/// The outputs the surface is shown on.
+	outputs: Vec<WlOutput>,
+	/// The refresh interval of the fastest output the surface is on.
+	refresh: SharedRefresh,
+}
+
+/// Converts a refresh rate in millihertz to its interval, or `None` when unknown.
+fn refresh_interval(millihertz: i32) -> Option<Duration> {
+	(millihertz > 0).then(|| Duration::from_secs_f64(1000.0 / millihertz as f64))
 }
 
 mod dispatch;

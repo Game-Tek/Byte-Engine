@@ -103,9 +103,14 @@ impl wayland_client::Dispatch<wl_surface::WlSurface, WindowId> for AppData {
 		};
 
 		match event {
-			wl_surface::Event::Enter { .. } => {}
-			wl_surface::Event::Leave { .. } => {
+			wl_surface::Event::Enter { output } => {
+				window.outputs.push(output);
+				this.update_window_refresh(*id);
+			}
+			wl_surface::Event::Leave { output } => {
 				window.extent = None;
+				window.outputs.retain(|entered| *entered != output);
+				this.update_window_refresh(*id);
 			}
 			wl_surface::Event::PreferredBufferScale { factor } => {
 				window.scale = window.scale.max(factor as _);

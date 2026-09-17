@@ -1,10 +1,18 @@
-use std::{cell::RefCell, collections::VecDeque, ffi::CString, rc::Rc};
+use std::{
+	cell::{Cell, RefCell},
+	collections::VecDeque,
+	ffi::CString,
+	rc::Rc,
+};
 
 use windows::{
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
 		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-		Graphics::Gdi::HBRUSH,
+		Graphics::Gdi::{
+			DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONEAREST,
+			MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+		},
 		System::LibraryLoader::GetModuleHandleA,
 		UI::{
 			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
@@ -15,9 +23,9 @@ use windows::{
 			WindowsAndMessaging::{
 				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GetClientRect,
 				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, PM_REMOVE, PeekMessageA, RI_KEY_BREAK, RegisterClassA,
-				SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_INPUT, WM_KEYDOWN,
+				SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN,
 				WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WNDCLASS_STYLES, WNDCLASSA,
+				WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA,
 				WS_POPUP, WS_VISIBLE,
 			},
 		},
@@ -61,6 +69,8 @@ struct WindowData {
 	events: EventQueue,
 	use_raw_mouse: bool,
 	use_raw_keyboard: bool,
+	/// The monitor the window was last reported on, so moves report only real display changes.
+	monitor: Cell<HMONITOR>,
 }
 
 impl WindowData {
@@ -168,6 +178,7 @@ impl AppLike for App {
 			events: self.events.clone(),
 			use_raw_mouse: self.use_raw_mouse,
 			use_raw_keyboard: self.use_raw_keyboard,
+			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
 		});
 
 		// Messages sent during creation fall through to `DefWindowProcA` because no data is attached yet.
@@ -182,6 +193,9 @@ impl AppLike for App {
 				height: height as u32,
 			});
 		}
+		data.push(Events::DisplayChanged {
+			refresh_interval: monitor_refresh_interval(data.monitor.get()),
+		});
 
 		Ok(Window {
 			hwnd,
@@ -230,6 +244,10 @@ impl WindowLike for Window {
 			hinstance: self.hinstance,
 		}
 	}
+
+	fn refresh_interval(&self) -> Option<std::time::Duration> {
+		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
+	}
 }
 
 impl Drop for Window {
@@ -240,6 +258,26 @@ impl Drop for Window {
 			let _ = DestroyWindow(self.hwnd);
 		}
 	}
+}
+
+/// Returns the refresh interval of the monitor's current display mode.
+fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
+	let mut info = MONITORINFOEXW::default();
+	info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+	let mut mode = DEVMODEW {
+		dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+		..Default::default()
+	};
+	unsafe {
+		if !GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+			return None;
+		}
+		if !EnumDisplaySettingsW(windows::core::PCWSTR(info.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode).as_bool() {
+			return None;
+		}
+	}
+	// Frequencies of 0 and 1 stand for the hardware default, which Windows does not name.
+	(mode.dmDisplayFrequency > 1).then(|| std::time::Duration::from_secs_f64(1.0 / mode.dmDisplayFrequency as f64))
 }
 
 fn window_id(hwnd: HWND) -> WindowId {
@@ -515,6 +553,16 @@ fn handle_event(
 			let height = ((lparam.0 >> 16) & 0xffff) as u32;
 
 			return Some((Some(Events::Resize { width, height }), LRESULT(0)));
+		}
+		// Both messages still need default handling: moves generate `WM_SIZE` and `WM_MOVE` from it.
+		WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE => {
+			let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+			if msg == WM_DISPLAYCHANGE || monitor != window_data.monitor.replace(monitor) {
+				window_data.push(Events::DisplayChanged {
+					refresh_interval: monitor_refresh_interval(monitor),
+				});
+			}
+			return None;
 		}
 		WM_SETFOCUS | WM_KILLFOCUS => {
 			return Some((Some(Events::FocusChanged(msg == WM_SETFOCUS)), LRESULT(0)));

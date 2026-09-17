@@ -55,6 +55,9 @@ impl Seat {
 pub enum Events {
 	/// The window's drawable size changed, in pixels.
 	Resize { width: u32, height: u32 },
+	/// The window moved to another display, or its display changed mode. Carries the refresh interval of the display
+	/// the window is on now, when the platform reports it.
+	DisplayChanged { refresh_interval: Option<std::time::Duration> },
 	/// Keyboard focus changed. Cancel held interactions when focus is lost.
 	FocusChanged(bool),
 	/// The window was minimized.

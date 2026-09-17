@@ -55,6 +55,7 @@ impl AppLike for App {
 				windows: Vec::with_capacity(4),
 				output_scale: 1,
 				monitor_extent: None,
+				outputs: Vec::new(),
 				pointer_focus: None,
 				keyboard_focus: None,
 				keyboard_state: None,
@@ -86,12 +87,15 @@ impl AppLike for App {
 		toplevel.set_app_id(self.id_name.clone());
 
 		let scale = self.data.output_scale;
+		let refresh = SharedRefresh::default();
 		self.data.windows.push(WindowState {
 			id,
 			surface: surface.clone(),
 			scale,
 			extent: None,
 			configured: false,
+			outputs: Vec::new(),
+			refresh: refresh.clone(),
 		});
 
 		surface.set_buffer_scale(scale as _);
@@ -112,6 +116,7 @@ impl AppLike for App {
 			surface,
 			xdg_surface,
 			xdg_toplevel: toplevel,
+			refresh,
 		})
 	}
 
@@ -158,6 +163,13 @@ impl WindowLike for Window {
 			surface: self.surface.id().as_ptr() as _,
 		}
 	}
+
+	fn refresh_interval(&self) -> Option<Duration> {
+		match self.refresh.load(Ordering::Relaxed) {
+			0 => None,
+			nanoseconds => Some(Duration::from_nanos(nanoseconds)),
+		}
+	}
 }
 
 impl Drop for Window {
@@ -179,6 +191,23 @@ impl AppData {
 
 	pub(super) fn push(&mut self, window: WindowId, event: Events) {
 		self.events.push_back(Event::Window { window, event });
+	}
+
+	/// Recomputes a window's refresh interval from the outputs it is on and reports a change.
+	pub(super) fn update_window_refresh(&mut self, id: WindowId) {
+		let Some(window) = self.windows.iter().find(|window| window.id == id) else {
+			return;
+		};
+		let interval = window
+			.outputs
+			.iter()
+			.filter_map(|output| self.outputs.iter().find(|(known, _)| known == output))
+			.filter_map(|(_, millihertz)| refresh_interval(*millihertz))
+			.min();
+		let nanoseconds = interval.map_or(0, |interval| interval.as_nanos() as u64);
+		if window.refresh.swap(nanoseconds, Ordering::Relaxed) != nanoseconds {
+			self.push(id, Events::DisplayChanged { refresh_interval: interval });
+		}
 	}
 
 	/// Drops the state of windows whose [`Window`] handle destroyed their surface, along with any focus on them.

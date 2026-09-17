@@ -25,6 +25,7 @@
 - Multiple GHI windows no longer steal each other's events on macOS, Win32 reports `WM_QUIT` and keeps handling messages sent between polls, and every Wayland window shares one compositor connection. The macOS dock's Quit item now asks the application to close instead of ending the process.
 - The `render-on-demand` application parameter renders a frame only when something changed. Window changes, new UI renders, and screenshot requests ask for frames; call `Renderer::request_redraw` after changing the scene. Idle ticks keep handling events at the `max-frame-rate` pace. Render passes report pending output through the new `RenderPass::needs_frame`, which defaults to `false`.
 - A UI `update_*` call that writes the values an element already has no longer advances the render revision, so unchanged frames reuse the retained render and on-demand rendering stays idle.
+- Ticks that present nothing, such as idle on-demand ticks, now run at the refresh rate of the fastest display showing a window instead of a fixed 60 per second, or at the `max-frame-rate` pace when that is slower. GHI windows report their display's refresh rate through `Window::refresh_interval` and the new `Events::DisplayChanged` event on macOS, Win32, and Wayland, and `Renderer::refresh_interval` returns the fastest one.
 
 ## 0.2.0 - 2026-08-20
 

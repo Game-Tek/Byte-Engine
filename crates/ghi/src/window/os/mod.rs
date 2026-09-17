@@ -39,4 +39,7 @@ pub trait WindowLike: Sized {
 	fn id(&self) -> WindowId;
 
 	fn handles(&self) -> Handles;
+
+	/// Returns the refresh interval of the display the window is on, when the platform reports it.
+	fn refresh_interval(&self) -> Option<std::time::Duration>;
 }

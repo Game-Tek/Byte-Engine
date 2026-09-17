@@ -87,6 +87,16 @@ define_class!(
 			self.update_window_state(notification);
 		}
 
+		#[unsafe(method(windowDidChangeScreen:))]
+		fn window_did_change_screen(&self, notification: &NSNotification) {
+			let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) else {
+				return;
+			};
+			self.push(Events::DisplayChanged {
+				refresh_interval: screen_refresh_interval(&window),
+			});
+		}
+
 		#[unsafe(method(windowDidBecomeKey:))]
 		fn window_did_become_key(&self, _notification: &NSNotification) {
 			self.push(Events::FocusChanged(true));
@@ -140,6 +150,21 @@ define_class!(
 			};
 			if sender.keyWindow().is_none() {
 				restore_windows(&sender);
+			}
+		}
+
+		#[unsafe(method(applicationDidChangeScreenParameters:))]
+		fn application_did_change_screen_parameters(&self, _notification: &NSNotification) {
+			// A display mode change reaches the application, not the windows, so report it for every window.
+			let mtm = self.mtm();
+			let mut events = self.ivars().events.borrow_mut();
+			for window in NSApp(mtm).windows().iter() {
+				events.push_back(Event::Window {
+					window: window_id(&window),
+					event: Events::DisplayChanged {
+						refresh_interval: screen_refresh_interval(&window),
+					},
+				});
 			}
 		}
 
@@ -222,6 +247,12 @@ fn restore_windows(app: &NSApplication) {
 	if let Some(window) = windows.firstObject() {
 		window.makeKeyAndOrderFront(None);
 	}
+}
+
+/// Returns the refresh interval of the screen showing most of the window.
+fn screen_refresh_interval(window: &NSWindow) -> Option<std::time::Duration> {
+	let frames_per_second = window.screen()?.maximumFramesPerSecond();
+	(frames_per_second > 0).then(|| std::time::Duration::from_secs_f64(1.0 / frames_per_second as f64))
 }
 
 fn window_id(window: &NSWindow) -> WindowId {
@@ -415,6 +446,9 @@ impl AppLike for App {
 				height: size.height.round() as u32,
 			});
 		}
+		delegate.push(Events::DisplayChanged {
+			refresh_interval: screen_refresh_interval(&window),
+		});
 
 		Ok(Window {
 			window,
@@ -525,6 +559,10 @@ impl WindowLike for Window {
 		Handles {
 			view: self.window.contentView().unwrap().retain(),
 		}
+	}
+
+	fn refresh_interval(&self) -> Option<std::time::Duration> {
+		screen_refresh_interval(&self.window)
 	}
 }
 

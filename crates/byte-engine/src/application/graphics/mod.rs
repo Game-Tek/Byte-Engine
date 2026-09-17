@@ -14,8 +14,20 @@
 // Bound ready work while the temporary Compio runtime still shares the application thread.
 const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 
-/// The frame period the loop sleeps for when no window presents and no `max-frame-rate` caps the rate.
+/// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
+/// refresh rate is known.
 const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// Chooses how long a tick that presents nothing sleeps.
+///
+/// No frame reaches the screen faster than the display refreshes or than the cap allows, so the slower of the two
+/// known intervals wins.
+fn skipped_frame_pace(
+	present_interval: Option<std::time::Duration>,
+	refresh_interval: Option<std::time::Duration>,
+) -> std::time::Duration {
+	present_interval.max(refresh_interval).unwrap_or(DEFAULT_SKIPPED_FRAME_PACE)
+}
 
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
@@ -29,7 +41,7 @@ const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::fro
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
-/// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the `max-frame-rate` pace, or 60 per second, so events are still handled. The default is `false`.
+/// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
@@ -62,7 +74,9 @@ pub struct GraphicsApplication {
 	last_tick_instant: std::time::Instant,
 	/// The display time of the last presented frame the clock has consumed, when the swapchain reported one.
 	last_present_time: Option<std::time::Instant>,
-	/// The frame period the loop sleeps for when no window presents; the `max-frame-rate` parameter when given.
+	/// The minimum time between presented frames; the `max-frame-rate` parameter when given.
+	present_interval: Option<std::time::Duration>,
+	/// The frame period the loop sleeps for when no window presents; see [`skipped_frame_pace`].
 	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
 	elapsed_at_last_present: MediaTime,
@@ -249,7 +263,8 @@ impl Application for GraphicsApplication {
 			elapsed: MediaTime::from_std(start_time.elapsed()),
 			last_tick_instant: std::time::Instant::now(),
 			last_present_time: None,
-			skipped_frame_pace: present_interval.unwrap_or(DEFAULT_SKIPPED_FRAME_PACE),
+			present_interval,
+			skipped_frame_pace: skipped_frame_pace(present_interval, None),
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
 			rendering_active: true,
@@ -326,18 +341,21 @@ impl GraphicsApplication {
 		let _enter = span.enter();
 		let mut close = false;
 		let mut redraw = false;
+		let mut display_changed = false;
 		for event in self.renderer.poll_windows() {
 			self.window_events.send(event);
 			match event {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
 				ghi::window::Event::Window { event, .. } => {
 					close |= matches!(event, ghi::window::Events::Close);
+					display_changed |= matches!(event, ghi::window::Events::DisplayChanged { .. });
 					redraw |= matches!(
 						event,
 						ghi::window::Events::Resize { .. }
 							| ghi::window::Events::FocusChanged(_)
 							| ghi::window::Events::Minimize
 							| ghi::window::Events::Maximize
+							| ghi::window::Events::DisplayChanged { .. }
 					);
 					if process_default_window_input(&mut self.input, event) {
 						self.actions.cancel_seat(input::SeatHandle::stub());
@@ -347,6 +365,9 @@ impl GraphicsApplication {
 		}
 		if redraw {
 			self.renderer.request_redraw();
+		}
+		if display_changed {
+			self.skipped_frame_pace = skipped_frame_pace(self.present_interval, self.renderer.refresh_interval());
 		}
 		close
 	}
@@ -768,6 +789,16 @@ pub use pipeline::{
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn skipped_frame_pace_follows_the_slower_of_the_cap_and_the_display() {
+		let ms = std::time::Duration::from_millis;
+		assert_eq!(skipped_frame_pace(None, None), DEFAULT_SKIPPED_FRAME_PACE);
+		assert_eq!(skipped_frame_pace(None, Some(ms(8))), ms(8));
+		assert_eq!(skipped_frame_pace(Some(ms(33)), None), ms(33));
+		assert_eq!(skipped_frame_pace(Some(ms(33)), Some(ms(8))), ms(33));
+		assert_eq!(skipped_frame_pace(Some(ms(4)), Some(ms(16))), ms(16));
+	}
 
 	#[test]
 	fn bypass_message_drain_adopts_every_pending_value() {

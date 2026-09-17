@@ -225,7 +225,7 @@ impl wayland_client::Dispatch<wl_keyboard::WlKeyboard, ()> for AppData {
 impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 	fn event(
 		this: &mut Self,
-		_: &wl_output::WlOutput,
+		output: &wl_output::WlOutput,
 		event: wl_output::Event,
 		_: &(),
 		_: &wayland_client::Connection,
@@ -240,12 +240,37 @@ impl wayland_client::Dispatch<wl_output::WlOutput, ()> for AppData {
 				}
 			}
 			wl_output::Event::Geometry { .. } => {}
-			wl_output::Event::Mode { width, height, .. } => {
+			wl_output::Event::Mode {
+				flags,
+				width,
+				height,
+				refresh,
+			} => {
 				this.monitor_extent = Some(Extent::rectangle(width as _, height as _));
+				// Outputs list every mode they support; only the current one sets the refresh rate.
+				if let wayland_client::WEnum::Value(flags) = flags
+					&& flags.contains(wl_output::Mode::Current)
+				{
+					match this.outputs.iter_mut().find(|(known, _)| known == output) {
+						Some((_, millihertz)) => *millihertz = refresh,
+						None => this.outputs.push((output.clone(), refresh)),
+					}
+				}
 			}
 			wl_output::Event::Description { .. } => {}
 			wl_output::Event::Name { .. } => {}
-			wl_output::Event::Done => {}
+			// Mode changes are atomic at `done`, so windows on this output report their new refresh rate here.
+			wl_output::Event::Done => {
+				let windows = this
+					.windows
+					.iter()
+					.filter(|window| window.outputs.contains(output))
+					.map(|window| window.id)
+					.collect::<Vec<_>>();
+				for id in windows {
+					this.update_window_refresh(id);
+				}
+			}
 			_ => {}
 		}
 	}

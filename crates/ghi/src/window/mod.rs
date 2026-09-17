@@ -9,7 +9,7 @@ pub mod input;
 pub(crate) mod os;
 pub mod window;
 
-pub use self::app::App;
+pub use self::app::{App, AppWaker};
 pub use self::os::Handles;
 pub use self::window::Window;
 
@@ -21,6 +21,17 @@ impl WindowId {
 	pub(crate) fn from_raw(raw: u64) -> Self {
 		Self(raw)
 	}
+}
+
+/// How long [`App::poll`] may wait for the first event before draining the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+	/// Drain what is already queued and return.
+	Immediate,
+	/// Wait until an event arrives, an [`AppWaker`] wakes the app, or the instant passes.
+	Until(std::time::Instant),
+	/// Wait until an event arrives or an [`AppWaker`] wakes the app.
+	Forever,
 }
 
 /// An event reported by the application pump.

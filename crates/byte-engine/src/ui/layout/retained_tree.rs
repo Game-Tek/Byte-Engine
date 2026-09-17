@@ -5,9 +5,7 @@ use std::{
 
 use super::{ConcreteElement, Id, IdedElement, PathSegment};
 use crate::ui::{
-	components::{
-		container::ContainerProperties, curve::CurveSegment, text::TextSettings, text_field::TextFieldSettings,
-	},
+	components::{container::ContainerProperties, curve::CurveSegment, text::TextSettings, text_field::TextFieldSettings},
 	flow::{self, FlowOutput},
 	primitive::{Primitive, Primitives},
 	style::{ConcreteLayer, EdgeFeather, Layer},
@@ -386,8 +384,7 @@ impl RetainedTree {
 			&& opacity == primitive.visual().opacity
 			&& text_measurement_inputs(primitive).map_or(true, |(content, size)| {
 				text_before == Some(size) && content == self.text_before
-			})
-			&& self.style_before.as_slice() == primitive.style().layers()
+			}) && self.style_before.as_slice() == primitive.style().layers()
 			&& self.segments_before.as_slice() == curve_segments(primitive)
 		{
 			self.revision = old_revision;

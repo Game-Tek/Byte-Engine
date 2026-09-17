@@ -45,6 +45,12 @@ impl AppLike for App {
 			}
 		}?;
 
+		let wake = rustix::event::eventfd(
+			0,
+			rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+		)
+		.map_err(|error| format!("Failed to create the wake eventfd: {error}"))?;
+
 		let mut app = App {
 			connection: conn,
 			event_queue,
@@ -63,6 +69,7 @@ impl AppLike for App {
 			},
 			id_name: id_name.to_owned(),
 			next_window: 1,
+			wake: Arc::new(wake),
 		};
 
 		// Receive seat and output state before the first window picks its scale.
@@ -120,14 +127,35 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self) -> impl Iterator<Item = Event> + '_ {
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		self.data.forget_destroyed_windows();
 
 		self.event_queue
 			.flush()
 			.expect("Failed to flush Wayland requests. The most likely cause is that the compositor connection was lost.");
 
+		// A guard only exists when nothing is queued for dispatch, so waiting behind it cannot hide events.
 		if let Some(guard) = self.event_queue.prepare_read() {
+			let timeout = match wait {
+				Wait::Immediate => Some(Duration::ZERO),
+				Wait::Until(deadline) => Some(deadline.saturating_duration_since(std::time::Instant::now())),
+				Wait::Forever => None,
+			};
+			if timeout != Some(Duration::ZERO) && self.data.events.is_empty() {
+				let timeout = timeout.map(|timeout| rustix::event::Timespec {
+					tv_sec: timeout.as_secs() as _,
+					tv_nsec: timeout.subsec_nanos() as _,
+				});
+				let connection = guard.connection_fd();
+				let mut fds = [
+					rustix::event::PollFd::new(&connection, rustix::event::PollFlags::IN),
+					rustix::event::PollFd::new(&*self.wake, rustix::event::PollFlags::IN),
+				];
+				// An interrupted wait is an early return, which the caller treats like any wake.
+				let _ = rustix::event::poll(&mut fds, timeout.as_ref());
+				// Reset the counter so the next wait sleeps again; an empty counter reports `WouldBlock`.
+				let _ = rustix::io::read(&*self.wake, &mut [0u8; 8]);
+			}
 			match guard.read() {
 				Ok(_) => {}
 				// The socket is non-blocking, so an empty socket only means there is nothing new.
@@ -143,6 +171,10 @@ impl AppLike for App {
 			.expect("Failed to dispatch Wayland events. The most likely cause is a protocol error reported by the compositor.");
 
 		std::iter::from_fn(move || self.data.events.pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker(Arc::clone(&self.wake))
 	}
 }
 
@@ -206,7 +238,12 @@ impl AppData {
 			.min();
 		let nanoseconds = interval.map_or(0, |interval| interval.as_nanos() as u64);
 		if window.refresh.swap(nanoseconds, Ordering::Relaxed) != nanoseconds {
-			self.push(id, Events::DisplayChanged { refresh_interval: interval });
+			self.push(
+				id,
+				Events::DisplayChanged {
+					refresh_interval: interval,
+				},
+			);
 		}
 	}
 

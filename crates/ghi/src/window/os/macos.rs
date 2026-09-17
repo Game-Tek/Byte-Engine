@@ -14,12 +14,13 @@ use objc2_app_kit::{
 	NSWindowStyleMask,
 };
 use objc2_foundation::{
-	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+	NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+	NSString,
 };
 
 use crate::window::input::{Keys, MouseKeys};
 use crate::window::{
-	AppEvents, Event, Events, Features, Seat, WindowId,
+	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
 	os::{AppLike, WindowLike},
 };
 
@@ -37,6 +38,40 @@ pub struct App {
 pub struct Window {
 	window: Retained<NSWindow>,
 	_delegate: Retained<WindowDelegate>,
+}
+
+/// The `AppWaker` struct posts an empty application-defined event that ends a waiting poll.
+#[derive(Clone)]
+pub struct AppWaker;
+
+impl AppWaker {
+	pub fn wake(&self) {
+		post_wake_event();
+	}
+}
+
+/// Marks the application-defined events that only exist to end a waiting poll.
+const WAKE_EVENT_SUBTYPE: i16 = 0x4245;
+
+/// Posts an event that ends a waiting poll without producing an engine event.
+fn post_wake_event() {
+	let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+		NSEventType::ApplicationDefined,
+		NSPoint::new(0.0, 0.0),
+		NSEventModifierFlags::empty(),
+		0.0,
+		0,
+		None,
+		WAKE_EVENT_SUBTYPE,
+		0,
+		0,
+	) else {
+		return;
+	};
+	// SAFETY: AppKit documents `postEvent:atStart:` as callable from secondary threads, and the shared application
+	// object exists because the app that hands out wakers created it on the main thread.
+	let app = NSApplication::sharedApplication(unsafe { MainThreadMarker::new_unchecked() });
+	app.postEvent_atStart(&event, false);
 }
 
 pub struct Handles {
@@ -166,12 +201,14 @@ define_class!(
 					},
 				});
 			}
+			post_wake_event();
 		}
 
 		#[unsafe(method(applicationShouldTerminate:))]
 		fn application_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
 			// The engine owns shutdown, so AppKit must not exit the process underneath it.
 			self.ivars().events.borrow_mut().push_back(Event::App(AppEvents::Quit));
+			post_wake_event();
 			NSApplicationTerminateReply::TerminateCancel
 		}
 	}
@@ -194,6 +231,8 @@ impl WindowDelegate {
 			window: ivars.window,
 			event,
 		});
+		// Notifications can arrive without an NSEvent, which would leave a waiting poll asleep.
+		post_wake_event();
 	}
 
 	/// Publishes the drawable pixel size so layout matches the swapchain after resize or display changes.
@@ -456,16 +495,33 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self) -> impl Iterator<Item = Event> + '_ {
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		let app = NSApp(self.mtm);
+
+		// Only the first dequeue waits; a nil date drains what is queued without waiting.
+		let mut expiration = match wait {
+			Wait::Immediate => None,
+			Wait::Until(deadline) => Some(NSDate::dateWithTimeIntervalSinceNow(
+				deadline.saturating_duration_since(std::time::Instant::now()).as_secs_f64(),
+			)),
+			Wait::Forever => Some(NSDate::distantFuture()),
+		};
+		// Events queued by delegates before the wait must not sleep behind it.
+		if !self.events.borrow().is_empty() {
+			expiration = None;
+		}
 
 		while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
-			None,
+			expiration.take().as_deref(),
 			// SAFETY: NSDefaultRunLoopMode is an immutable process-lifetime Foundation constant.
 			unsafe { NSDefaultRunLoopMode },
 			true,
 		) {
+			if event.r#type() == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
+				continue;
+			}
+
 			// Input without a target window, such as motion over the desktop, still reaches AppKit below.
 			if let Some(window) = event.window(self.mtm) {
 				let time = (event.timestamp() * 1000.0) as u64;
@@ -547,6 +603,10 @@ impl AppLike for App {
 		}
 
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker
 	}
 }
 

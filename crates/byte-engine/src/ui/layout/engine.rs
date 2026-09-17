@@ -238,6 +238,26 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
+	/// Sets the waker that runs the tick in which this engine evaluates.
+	///
+	/// A component woken from another thread, such as by a worker that finished loading, wakes this waker so the
+	/// host runs the tick that polls it. Pass `GraphicsApplication::waker` converted into a [`Waker`].
+	pub fn set_waker(&mut self, waker: Waker) {
+		*self.runtime.borrow().host.lock() = Some(waker);
+	}
+
+	/// Returns when this engine next needs an evaluation, or `None` when it only reacts to events.
+	///
+	/// The engine needs one now while a component waits for a frame, which includes every running animation, or a
+	/// woken component waits to be polled. Otherwise the earliest UI timer decides. Hand the answer to the host
+	/// that drives the engine, such as `GraphicsApplication::schedule_tick`.
+	pub fn next_tick(&self) -> Option<std::time::Instant> {
+		if self.runtime.borrow().needs_tick() {
+			return Some(std::time::Instant::now());
+		}
+		crate::ui::timer::next_deadline()
+	}
+
 	pub fn ctx(&self) -> &C {
 		self.ctx.as_ref()
 	}
@@ -1870,7 +1890,9 @@ mod tests {
 		assert_eq!(tree.revision(), after_insert);
 
 		assert!(tree.update_element(id, |primitive| {
-			let Primitives::Container(container) = primitive else { return false };
+			let Primitives::Container(container) = primitive else {
+				return false;
+			};
 			container.set_opacity(0.5);
 			true
 		}));
@@ -3963,6 +3985,41 @@ mod tests {
 		assert_eq!(render.elements().next().unwrap().opacity, 0.25);
 	}
 
+	#[test]
+	fn next_tick_is_now_while_a_component_waits_for_frames() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let _frame = ctx.element("frame").container(Container::default());
+				loop {
+					ctx.render().await;
+				}
+			})
+		});
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+
+		assert!(engine.next_tick().is_some_and(|tick| tick <= std::time::Instant::now()));
+	}
+
+	#[test]
+	fn next_tick_follows_a_pending_ui_timer() {
+		let allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(Container::default());
+				crate::ui::timer::wait(std::time::Duration::from_secs(3600)).await;
+				frame.on(Events::Actuated).await;
+			})
+		});
+		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+
+		// Timers are process-wide, so another test's earlier timer may come first; this one bounds the answer.
+		let tick = engine.next_tick().expect("A pending UI timer did not schedule a tick.");
+		assert!(tick <= std::time::Instant::now() + std::time::Duration::from_secs(3600));
+	}
+
 	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.
 	fn mount_edited_elements(engine: &mut Engine, edit: Rc<std::cell::Cell<u8>>) {
 		engine.mount(move |ctx| {
@@ -3978,9 +4035,9 @@ mod tests {
 					Curve::new(CurvePath::new(100.into(), 100.into()).line((0.0, 0.0), (10.0, 10.0)))
 						.style(ConcreteLayer::default().stroke(2.0)),
 				);
-				let mut picture = ctx
-					.element("picture")
-					.image(crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]));
+				let mut picture =
+					ctx.element("picture")
+						.image(crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]));
 				loop {
 					ctx.render().await;
 					match edit.replace(0) {
@@ -4038,7 +4095,11 @@ mod tests {
 		for step in [1, 2] {
 			edit.set(step);
 			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-			assert_eq!(engine.render(&mut snapshot).revision(), first, "Edit {step} changed the render revision.");
+			assert_eq!(
+				engine.render(&mut snapshot).revision(),
+				first,
+				"Edit {step} changed the render revision."
+			);
 		}
 	}
 
@@ -4054,7 +4115,11 @@ mod tests {
 
 			edit.set(step);
 			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-			assert_ne!(engine.render(&mut snapshot).revision(), first, "Edit {step} kept the render revision.");
+			assert_ne!(
+				engine.render(&mut snapshot).revision(),
+				first,
+				"Edit {step} kept the render revision."
+			);
 		}
 	}
 

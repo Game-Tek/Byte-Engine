@@ -63,6 +63,8 @@ pub struct Runtime {
 	pub(super) tasks: StableVec<UiTask>,
 	next_scope: u64,
 	pub(super) ready: Arc<Mutex<VecDeque<TaskId>>>,
+	/// Runs the tick that polls woken tasks; see [`super::Engine::set_waker`].
+	pub(super) host: Arc<Mutex<Option<Waker>>>,
 	pub(super) frame_waiters: StableVec<Option<Waker>>,
 	pub(super) event_waiters: Vec<EventWaiter>,
 	pub(super) key_waiters: Vec<KeyWaiter>,
@@ -80,6 +82,8 @@ pub(super) struct TaskWaker {
 	pub(super) task: TaskId,
 	queued: AtomicBool,
 	pub(super) ready: Arc<Mutex<VecDeque<TaskId>>>,
+	/// Runs the tick that polls the task when it is woken from outside the engine's own evaluation.
+	pub(super) host: Arc<Mutex<Option<Waker>>>,
 }
 
 impl Wake for TaskWaker {
@@ -90,6 +94,10 @@ impl Wake for TaskWaker {
 	fn wake_by_ref(self: &Arc<Self>) {
 		if !self.queued.swap(true, Ordering::AcqRel) {
 			self.ready.lock().push_back(self.task);
+			// A wake from another thread must reach the host so the task is polled in its next tick.
+			if let Some(host) = self.host.lock().as_ref() {
+				host.wake_by_ref();
+			}
 		}
 	}
 }
@@ -102,6 +110,7 @@ impl Runtime {
 			tasks: StableVec::with_capacity(TASK_CAPACITY),
 			next_scope: ScopeId::ROOT.0,
 			ready: Arc::new(Mutex::new(VecDeque::with_capacity(TASK_CAPACITY))),
+			host: Arc::new(Mutex::new(None)),
 			frame_waiters: StableVec::with_capacity(TASK_CAPACITY),
 			event_waiters: Vec::with_capacity(TASK_CAPACITY),
 			key_waiters: Vec::new(),
@@ -113,6 +122,11 @@ impl Runtime {
 			frame: 0,
 			tree: Rc::new(RefCell::new(RetainedTree::new())),
 		}
+	}
+
+	/// Reports whether a component waits for the next frame or to be polled.
+	pub(super) fn needs_tick(&self) -> bool {
+		self.frame_waiters.iter().any(Option::is_some) || !self.ready.lock().is_empty()
 	}
 
 	/// Returns an identity for a newly mounted scope.
@@ -141,6 +155,7 @@ impl Runtime {
 		let waker = Arc::new(TaskWaker {
 			task: id,
 			ready: Arc::clone(&self.ready),
+			host: Arc::clone(&self.host),
 			queued: AtomicBool::new(false),
 		});
 		let task = self.tasks.get_mut(id).expect(

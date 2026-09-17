@@ -322,6 +322,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "renderdoc",
+ "rustix",
  "shaderc",
  "smallvec 1.15.2",
  "wayland-client",

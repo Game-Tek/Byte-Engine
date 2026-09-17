@@ -15,11 +15,17 @@ pub use win32::{App, Window};
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(target_os = "macos")]
+pub use macos::AppWaker;
+#[cfg(target_os = "macos")]
 pub use macos::Handles;
 #[cfg(target_os = "macos")]
 pub use macos::{App, Window};
+#[cfg(target_os = "linux")]
+pub use wayland::AppWaker;
+#[cfg(target_os = "windows")]
+pub use win32::AppWaker;
 
-use crate::window::{Event, Features, WindowId};
+use crate::window::{Event, Features, Wait, WindowId};
 
 /// The platform connection that owns the process event queue.
 pub trait AppLike: Sized {
@@ -31,8 +37,12 @@ pub trait AppLike: Sized {
 	/// Creates a window with the given name, extent, and features.
 	fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Self::Window, String>;
 
-	/// Pumps the native queue and yields every pending event in arrival order.
-	fn poll(&mut self) -> impl Iterator<Item = Event> + '_;
+	/// Waits as `wait` allows for the first event, then pumps the native queue and yields every pending event in
+	/// arrival order.
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_;
+
+	/// Returns a handle that interrupts a waiting [`Self::poll`] from any thread.
+	fn waker(&self) -> AppWaker;
 }
 
 pub trait WindowLike: Sized {

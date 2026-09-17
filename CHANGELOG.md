@@ -26,6 +26,9 @@
 - The `render-on-demand` application parameter renders a frame only when something changed. Window changes, new UI renders, and screenshot requests ask for frames; call `Renderer::request_redraw` after changing the scene. Idle ticks keep handling events at the `max-frame-rate` pace. Render passes report pending output through the new `RenderPass::needs_frame`, which defaults to `false`.
 - A UI `update_*` call that writes the values an element already has no longer advances the render revision, so unchanged frames reuse the retained render and on-demand rendering stays idle.
 - Ticks that present nothing, such as idle on-demand ticks, now run at the refresh rate of the fastest display showing a window instead of a fixed 60 per second, or at the `max-frame-rate` pace when that is slower. GHI windows report their display's refresh rate through `Window::refresh_interval` and the new `Events::DisplayChanged` event on macOS, Win32, and Wayland, and `Renderer::refresh_interval` returns the fastest one.
+- An idle `render-on-demand` application now waits in the window system instead of ticking. It keeps ticking while a frame is being shown, and wakes for window events, inspector requests, and anything that wakes its `LoopWaker`. After a wait, `Time::delta` is capped at one frame while `Time::elapsed` includes the wait.
+- Systems the application loop drives report when they next need a tick, wired explicitly: `GraphicsApplication::waker` hands out a `LoopWaker` (which converts into a `std::task::Waker`), and `GraphicsApplication::schedule_tick` takes the instant of the next tick they need. A UI engine answers both with `Engine::set_waker` and `Engine::next_tick`, so animations keep running at the display rate and UI timers fire on time.
+- `ghi::window::App::poll` and `Renderer::poll_windows` take a `Wait` that lets them wait for the first event, and `App::waker` returns an `AppWaker` that ends such a wait from any thread.
 
 ## 0.2.0 - 2026-08-20
 

@@ -18,6 +18,27 @@ const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
 /// refresh rate is known.
 const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
 
+/// Chooses how long an idle on-demand tick waits for window events.
+///
+/// A wake that arrived since the last wait, or a UI that needs a tick now, runs the tick at once. Otherwise the
+/// earliest of the UI's next tick and the next input poll bounds the wait, and with neither the loop waits for an
+/// event.
+fn idle_wait(
+	woken: bool,
+	ui_tick: Option<std::time::Instant>,
+	poll_at: Option<std::time::Instant>,
+	now: std::time::Instant,
+) -> ghi::window::Wait {
+	if woken {
+		return ghi::window::Wait::Immediate;
+	}
+	match ui_tick.into_iter().chain(poll_at).min() {
+		None => ghi::window::Wait::Forever,
+		Some(deadline) if deadline <= now => ghi::window::Wait::Immediate,
+		Some(deadline) => ghi::window::Wait::Until(deadline),
+	}
+}
+
 /// Chooses how long a tick that presents nothing sleeps.
 ///
 /// No frame reaches the screen faster than the display refreshes or than the cap allows, so the slower of the two
@@ -41,7 +62,7 @@ fn skipped_frame_pace(
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
-/// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. The default is `false`.
+/// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
@@ -84,6 +105,12 @@ pub struct GraphicsApplication {
 	render_on_demand: bool,
 	/// Whether the last tick rendered because something changed, so this tick expects to render again.
 	rendering_active: bool,
+	/// Wakes this loop when state it cannot observe through window events changes.
+	waker: LoopWaker,
+	/// Whether the window system's waker reached [`Self::waker`].
+	platform_waker_set: bool,
+	/// The earliest tick the application asked for; see [`Self::schedule_tick`].
+	requested_tick: Option<std::time::Instant>,
 
 	close: bool,
 
@@ -218,7 +245,8 @@ impl Application for GraphicsApplication {
 		let inspector = EntityHandle::from(inspector);
 		let screenshot_broker = inspector.screenshot_broker();
 		let inspector: EntityHandle<dyn Inspector> = inspector;
-		let http_inspector = HttpInspectorServer::new(inspector);
+		let waker = LoopWaker::default();
+		let http_inspector = HttpInspectorServer::new(inspector, waker.clone());
 
 		let window_factory = messages.factory();
 		let window_factory_listener = window_factory.listener();
@@ -268,6 +296,9 @@ impl Application for GraphicsApplication {
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
 			rendering_active: true,
+			waker,
+			platform_waker_set: false,
+			requested_tick: None,
 
 			#[cfg(debug_assertions)]
 			ttff: MediaTime::ZERO,
@@ -307,22 +338,27 @@ impl GraphicsApplication {
 	/// point that display interval reaches, so deltas follow the display cadence instead of CPU scheduling noise.
 	/// Without a newer presented time (startup, skipped frames, or a report that arrives late) the tick advances
 	/// by the wall-clock interval; the next presented time discounts that advance instead of charging it twice.
-	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>) -> Time {
+	///
+	/// After the loop waited for events, `elapsed` still advances by the time spent waiting, but the delta is capped
+	/// at one frame so systems stepping by it do not jump across the idle stretch.
+	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>, waited: bool) -> Time {
 		let now = std::time::Instant::now();
 		let wall_delta = MediaTime::from_std(now - self.last_tick_instant);
-		let delta = match (present_time, self.last_present_time) {
+		let (delta, advance) = match (present_time, self.last_present_time) {
 			(Some(current), Some(previous)) if current > previous => {
 				let target = self.elapsed_at_last_present + MediaTime::from_std(current - previous);
-				if target > self.elapsed {
+				let delta = if target > self.elapsed {
 					target - self.elapsed
 				} else {
 					MediaTime::ZERO
-				}
+				};
+				(delta, delta)
 			}
-			_ => wall_delta,
+			_ if waited => (wall_delta.min(MediaTime::from_std(self.skipped_frame_pace)), wall_delta),
+			_ => (wall_delta, wall_delta),
 		};
 		self.last_tick_instant = now;
-		self.elapsed += delta;
+		self.elapsed += advance;
 		if present_time.is_some() && present_time != self.last_present_time {
 			self.last_present_time = present_time;
 			self.elapsed_at_last_present = self.elapsed;
@@ -336,13 +372,13 @@ impl GraphicsApplication {
 	/// Routes window input events and reports whether the platform or any window requested close.
 	///
 	/// Window state changes request a frame. Input events do not: their consumers publish what changed.
-	fn process_window_events(&mut self) -> bool {
+	fn process_window_events(&mut self, wait: ghi::window::Wait) -> bool {
 		let span = debug_span!("GraphicsApplication::process_window_events");
 		let _enter = span.enter();
 		let mut close = false;
 		let mut redraw = false;
 		let mut display_changed = false;
-		for event in self.renderer.poll_windows() {
+		for event in self.renderer.poll_windows(wait) {
 			self.window_events.send(event);
 			match event {
 				ghi::window::Event::App(ghi::window::AppEvents::Quit) => close = true,
@@ -370,6 +406,43 @@ impl GraphicsApplication {
 			self.skipped_frame_pace = skipped_frame_pace(self.present_interval, self.renderer.refresh_interval());
 		}
 		close
+	}
+
+	/// Chooses how long this tick may wait for window events, and marks the loop as waiting when it may.
+	///
+	/// Only an idle on-demand loop with a window system connection waits. Pair a waiting result with
+	/// [`crate::application::waker::end_wait`] once the wait returned.
+	fn event_wait(&mut self) -> ghi::window::Wait {
+		#[cfg(debug_assertions)]
+		if self.kill_after.is_some() {
+			// Smoke runs count ticks, so they keep ticking while idle.
+			return ghi::window::Wait::Immediate;
+		}
+		if !self.render_on_demand || self.rendering_active {
+			return ghi::window::Wait::Immediate;
+		}
+		if !self.platform_waker_set {
+			let Some(platform_waker) = self.renderer.app_waker() else {
+				// Without a window there is no event queue to wait in.
+				return ghi::window::Wait::Immediate;
+			};
+			self.waker.set_platform_waker(move || platform_waker.wake());
+			self.platform_waker_set = true;
+		}
+
+		let woken = self.waker.begin_wait();
+		let now = std::time::Instant::now();
+		// Gamepads report nothing through the window system, so connected ones are polled once per frame.
+		let poll_at = self
+			.gamepad_system
+			.as_ref()
+			.filter(|gamepads| gamepads.has_devices())
+			.map(|_| now + self.skipped_frame_pace);
+		let wait = idle_wait(woken, self.requested_tick.take(), poll_at, now);
+		if wait == ghi::window::Wait::Immediate {
+			self.waker.end_wait();
+		}
+		wait
 	}
 
 	/// Polls newly connected gamepads and records their trigger values into the collector.
@@ -461,7 +534,12 @@ impl GraphicsApplication {
 			let _enter = span.enter();
 			self.application.frame_allocator.reset();
 		}
-		let mut close = self.process_window_events();
+		let wait = self.event_wait();
+		let waited = wait != ghi::window::Wait::Immediate;
+		let mut close = self.process_window_events(wait);
+		if waited {
+			self.waker.end_wait();
+		}
 		close |= matches!(self.application_events.1.read(), Some(Events::Close));
 
 		// Adopt windows created last tick, then block on the presentation engine before simulating so the
@@ -474,12 +552,12 @@ impl GraphicsApplication {
 		} else {
 			None
 		};
-		if !self.renderer.presents_this_frame() {
-			// Nothing blocked on the presentation engine (no window, or every window skipped), so the loop paces
-			// itself instead of spinning a core.
+		if !waited && !self.renderer.presents_this_frame() {
+			// Nothing blocked on the presentation engine or the event queue (no window, every window skipped, or a
+			// UI that ticks without changing), so the loop paces itself instead of spinning a core.
 			std::thread::sleep(self.skipped_frame_pace);
 		}
-		let time = self.sample_frame_time(present_time);
+		let time = self.sample_frame_time(present_time, waited);
 		let dt = time.delta;
 
 		self.process_gamepad_events();
@@ -583,6 +661,24 @@ impl GraphicsApplication {
 			self.max_frame_time,
 			self.ttff
 		);
+	}
+
+	/// Returns a waker that makes this application run its next tick from any thread.
+	///
+	/// Hand it to whatever changes state the loop cannot observe through window events, such as a worker thread or
+	/// a UI engine through `Engine::set_waker`. It only matters with `render-on-demand`, where an idle loop waits
+	/// in the window system.
+	pub fn waker(&self) -> LoopWaker {
+		self.waker.clone()
+	}
+
+	/// Asks the loop to run a tick at `at`, or as soon as it can when `at` has passed.
+	///
+	/// Systems the loop drives itself, such as a UI engine, report their next evaluation this way: pass
+	/// `Engine::next_tick` from the tick callback. Without a request, an idle `render-on-demand` loop waits for
+	/// events and wakes. The earliest request wins, and each tick starts without one.
+	pub fn schedule_tick(&mut self, at: Option<std::time::Instant>) {
+		self.requested_tick = self.requested_tick.into_iter().chain(at).min();
 	}
 
 	/// Returns the collector that owns the registered devices and their control values.
@@ -786,9 +882,25 @@ pub use pipeline::{
 	setup_simple_render_pipeline, setup_smaa_render_pass, setup_srgb_display_render_pass, setup_ui_render_pass,
 };
 
+use crate::application::LoopWaker;
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn idle_wait_runs_now_waits_for_the_earliest_deadline_or_waits_for_events() {
+		use ghi::window::Wait;
+		let now = std::time::Instant::now();
+		let soon = now + std::time::Duration::from_millis(5);
+		let later = now + std::time::Duration::from_millis(50);
+		assert_eq!(idle_wait(true, None, None, now), Wait::Immediate);
+		assert_eq!(idle_wait(false, None, None, now), Wait::Forever);
+		assert_eq!(idle_wait(false, Some(now), None, now), Wait::Immediate);
+		assert_eq!(idle_wait(false, Some(later), None, now), Wait::Until(later));
+		assert_eq!(idle_wait(false, Some(later), Some(soon), now), Wait::Until(soon));
+		assert_eq!(idle_wait(false, None, Some(soon), now), Wait::Until(soon));
+	}
 
 	#[test]
 	fn skipped_frame_pace_follows_the_slower_of_the_cap_and_the_display() {

@@ -50,7 +50,7 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 
 	let render_finished_synchronizer = renderer.create_synchronizer(None, true);
 
-	for _ in app.poll() {}
+	for _ in app.poll(ghi::window::Wait::Immediate) {}
 
 	renderer.start_frame_capture();
 
@@ -94,7 +94,7 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 
 	renderer.end_frame_capture();
 
-	for _ in app.poll() {}
+	for _ in app.poll(ghi::window::Wait::Immediate) {}
 
 	// TODO: assert rendering results
 

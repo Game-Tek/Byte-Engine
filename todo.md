@@ -149,6 +149,7 @@
 ## Application and input
 
 - Move input trigger and evaluation documentation beside the implementation that owns those rules.
+- Move UI timer deadlines from the process-wide list in `crates/byte-engine/src/ui/timer.rs` into the runtime a `WaitFuture` is polled in, found through its task context, so `Engine::next_tick` reads only its own state and `timer::wait` keeps its signature.
 
 ## Assets and resource processing
 

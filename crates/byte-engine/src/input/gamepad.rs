@@ -120,6 +120,11 @@ impl GamepadSystem {
 		(new_devices, events)
 	}
 
+	/// Reports whether any gamepad is connected, since their input is only seen by polling.
+	pub(crate) fn has_devices(&self) -> bool {
+		!self.devices.is_empty()
+	}
+
 	pub(crate) fn add_device(&mut self, path: String, kind: GamepadKind, device: HidDevice, device_handle: DeviceHandle) {
 		self.devices.insert(path, GamepadDevice::new(kind, device, device_handle));
 	}

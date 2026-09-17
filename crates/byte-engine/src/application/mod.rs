@@ -17,8 +17,10 @@ pub mod parameters;
 pub mod thread;
 #[doc(hidden)]
 pub mod tracy;
+pub mod waker;
 pub use application::{Application, BaseApplication};
 pub use tracy::{TracySetupError, setup_tracy};
+pub use waker::LoopWaker;
 
 #[cfg(feature = "headed")]
 pub mod graphics;

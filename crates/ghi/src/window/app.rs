@@ -1,7 +1,7 @@
 use utils::Extent;
 
 use crate::window::{
-	Event, Features, Window,
+	Event, Features, Wait, Window,
 	os::{self, AppLike as _},
 };
 
@@ -32,8 +32,30 @@ impl App {
 		Ok(Window::new(name, extent, os_window))
 	}
 
-	/// Drains every pending application and window event without blocking.
-	pub fn poll(&mut self) -> impl Iterator<Item = Event> + '_ {
-		self.os_app.poll()
+	/// Waits as `wait` allows for the first event, then drains every pending application and window event.
+	///
+	/// Pass [`Wait::Immediate`] to only drain. A waiting call also returns when an [`AppWaker`] from
+	/// [`Self::waker`] wakes the app, which then yields no event.
+	pub fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		self.os_app.poll(wait)
+	}
+
+	/// Returns a handle other threads use to interrupt a waiting [`Self::poll`].
+	pub fn waker(&self) -> AppWaker {
+		AppWaker(self.os_app.waker())
+	}
+}
+
+/// The `AppWaker` struct interrupts a waiting [`App::poll`] from any thread.
+///
+/// Waking an app that is not waiting makes its next waiting poll return at once. Repeated wakes before a poll
+/// coalesce into one.
+#[derive(Clone)]
+pub struct AppWaker(os::AppWaker);
+
+impl AppWaker {
+	/// Makes a waiting [`App::poll`] return.
+	pub fn wake(&self) {
+		self.0.wake();
 	}
 }

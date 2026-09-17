@@ -1,6 +1,7 @@
 use std::{
 	collections::VecDeque,
 	ffi::c_void,
+	os::fd::OwnedFd,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
@@ -34,7 +35,7 @@ use wayland_protocols::{
 use xkbcommon::xkb::{self, keysyms};
 
 use crate::window::{
-	Event, Events, Features, Seat, WindowId,
+	Event, Events, Features, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 	os::{AppLike, WindowLike},
 };
@@ -46,6 +47,19 @@ pub struct App {
 	data: AppData,
 	id_name: String,
 	next_window: u64,
+	/// The eventfd a waiting poll watches next to the display socket.
+	wake: Arc<OwnedFd>,
+}
+
+/// The `AppWaker` struct writes to the eventfd a waiting poll watches.
+#[derive(Clone)]
+pub struct AppWaker(Arc<OwnedFd>);
+
+impl AppWaker {
+	pub fn wake(&self) {
+		// A full counter already wakes the poll, so a failed write loses nothing.
+		let _ = rustix::io::write(&*self.0, &1u64.to_ne_bytes());
+	}
 }
 
 /// The `Window` struct owns a toplevel's protocol objects; dropping it destroys them, and the [`App`]

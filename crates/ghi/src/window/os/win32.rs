@@ -3,17 +3,21 @@ use std::{
 	collections::VecDeque,
 	ffi::CString,
 	rc::Rc,
+	sync::Arc,
 };
 
 use windows::{
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
-		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+		Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
 		Graphics::Gdi::{
 			DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONEAREST,
 			MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
 		},
-		System::LibraryLoader::GetModuleHandleA,
+		System::{
+			LibraryLoader::GetModuleHandleA,
+			Threading::{CreateEventW, INFINITE, SetEvent},
+		},
 		UI::{
 			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 			Input::{
@@ -22,11 +26,12 @@ use windows::{
 			},
 			WindowsAndMessaging::{
 				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GetClientRect,
-				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, PM_REMOVE, PeekMessageA, RI_KEY_BREAK, RegisterClassA,
-				SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN,
-				WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
-				WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA,
-				WS_POPUP, WS_VISIBLE,
+				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+				PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage,
+				UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+				WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_QUIT,
+				WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP,
+				WS_VISIBLE,
 			},
 		},
 	},
@@ -34,7 +39,7 @@ use windows::{
 };
 
 use crate::window::{
-	AppEvents, Event, Events, Features, Seat, WindowId,
+	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
 	os::{AppLike, WindowLike},
 };
@@ -49,6 +54,42 @@ pub struct App {
 	events: EventQueue,
 	use_raw_mouse: bool,
 	use_raw_keyboard: bool,
+	wake_event: Arc<WakeEvent>,
+}
+
+/// The `WakeEvent` struct owns the auto-reset event a waiting poll also waits on.
+///
+/// Wakers share it so the handle stays valid for as long as any of them can signal it.
+struct WakeEvent(HANDLE);
+
+// SAFETY: Event handles are process-wide kernel objects that Win32 lets any thread signal and wait on.
+unsafe impl Send for WakeEvent {}
+// SAFETY: `SetEvent` and waits on the same handle are thread-safe kernel calls.
+unsafe impl Sync for WakeEvent {}
+
+impl Drop for WakeEvent {
+	fn drop(&mut self) {
+		// Drop cannot report the failure, and a failed close only leaks the handle.
+		unsafe {
+			let _ = CloseHandle(self.0);
+		}
+	}
+}
+
+/// The `AppWaker` struct signals the event a waiting poll waits on.
+///
+/// An event object survives the modal loops Windows runs while moving or resizing a window, where posted
+/// thread messages are dropped.
+#[derive(Clone)]
+pub struct AppWaker(Arc<WakeEvent>);
+
+impl AppWaker {
+	pub fn wake(&self) {
+		// A failed signal leaves the poll waiting for its next event or deadline, which is all it can do.
+		unsafe {
+			let _ = SetEvent(self.0.0);
+		}
+	}
 }
 
 pub struct Window {
@@ -134,6 +175,13 @@ impl AppLike for App {
 		let use_raw_mouse = register_raw_input(HID_USAGE_GENERIC_MOUSE);
 		let use_raw_keyboard = register_raw_input(HID_USAGE_GENERIC_KEYBOARD);
 
+		// Auto-reset, so one wait consumes every wake signaled before it.
+		let wake_event = unsafe { CreateEventW(None, false, false, windows::core::PCWSTR::null()) }.map_err(|error| {
+			format!(
+				"Failed to create the wake event: {error}. The most likely cause is that the process ran out of kernel handles."
+			)
+		})?;
+
 		Ok(App {
 			class_atom,
 			class_name,
@@ -141,6 +189,7 @@ impl AppLike for App {
 			events: EventQueue::default(),
 			use_raw_mouse,
 			use_raw_keyboard,
+			wake_event: Arc::new(WakeEvent(wake_event)),
 		})
 	}
 
@@ -204,7 +253,27 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self) -> impl Iterator<Item = Event> + '_ {
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		let timeout = match wait {
+			Wait::Immediate => None,
+			// Round up so the wait does not end just before the deadline and spin once more.
+			Wait::Until(deadline) => Some(
+				deadline
+					.saturating_duration_since(std::time::Instant::now())
+					.as_nanos()
+					.div_ceil(1_000_000)
+					.min(u128::from(INFINITE - 1)) as u32,
+			),
+			Wait::Forever => Some(INFINITE),
+		};
+		// Events queued by window procedures outside the pump must not sleep behind the wait.
+		if let Some(timeout) = timeout.filter(|_| self.events.borrow().is_empty()) {
+			// Input already in the queue ends the wait at once, including input seen but not removed by an earlier peek.
+			unsafe {
+				let _ = MsgWaitForMultipleObjectsEx(Some(&[self.wake_event.0]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			}
+		}
+
 		let mut msg = MSG::default();
 
 		// A null window filter also receives thread messages such as `WM_QUIT`.
@@ -221,6 +290,10 @@ impl AppLike for App {
 		}
 
 		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker(Arc::clone(&self.wake_event))
 	}
 }
 
@@ -272,7 +345,13 @@ fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
 		if !GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
 			return None;
 		}
-		if !EnumDisplaySettingsW(windows::core::PCWSTR(info.szDevice.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode).as_bool() {
+		if !EnumDisplaySettingsW(
+			windows::core::PCWSTR(info.szDevice.as_ptr()),
+			ENUM_CURRENT_SETTINGS,
+			&mut mode,
+		)
+		.as_bool()
+		{
 			return None;
 		}
 	}

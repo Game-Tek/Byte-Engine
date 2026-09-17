@@ -475,10 +475,18 @@ impl Renderer {
 		}
 	}
 
-	/// Drains pending application and window events. Match [`ghi::window::Event::Window`] ids against the
-	/// windows created with [`Self::create_window`].
-	pub fn poll_windows(&mut self) -> impl Iterator<Item = ghi::window::Event> + '_ {
-		self.app.iter_mut().flat_map(|app| app.poll())
+	/// Waits as `wait` allows for the first event, then drains pending application and window events. Match
+	/// [`ghi::window::Event::Window`] ids against the windows created with [`Self::create_window`].
+	///
+	/// Without a window there is no event queue, so the call returns at once whatever `wait` says.
+	pub fn poll_windows(&mut self, wait: ghi::window::Wait) -> impl Iterator<Item = ghi::window::Event> + '_ {
+		self.app.iter_mut().flat_map(move |app| app.poll(wait))
+	}
+
+	/// Returns the handle that interrupts a waiting [`Self::poll_windows`], once a window connected the renderer
+	/// to the window system.
+	pub(crate) fn app_waker(&self) -> Option<ghi::window::AppWaker> {
+		self.app.as_ref().map(ghi::window::App::waker)
 	}
 
 	/// Caps the presentation rate by setting the minimum time between presented frames on every window,

@@ -51,6 +51,16 @@ pub(crate) fn wake_due_timers(now: Instant) {
 	}
 }
 
+/// Returns the earliest deadline a pending UI timer waits for.
+pub(crate) fn next_deadline() -> Option<Instant> {
+	timer_waiters()
+		.lock()
+		.expect("UI timer waiter lock poisoned")
+		.iter()
+		.map(|waiter| waiter.deadline)
+		.min()
+}
+
 impl Future for WaitFuture {
 	type Output = ();
 

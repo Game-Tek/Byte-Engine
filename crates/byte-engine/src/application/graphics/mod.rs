@@ -11,45 +11,6 @@
 //! Follow the [sample project guide](/docs/use/sample-project)
 //! for the complete application setup sequence.
 
-// Bound ready work while the temporary Compio runtime still shares the application thread.
-const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
-
-/// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
-/// refresh rate is known.
-const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
-
-/// Chooses how long an idle on-demand tick waits for window events.
-///
-/// A wake that arrived since the last wait, or a UI that needs a tick now, runs the tick at once. Otherwise the
-/// earliest of the UI's next tick and the next input poll bounds the wait, and with neither the loop waits for an
-/// event.
-fn idle_wait(
-	woken: bool,
-	ui_tick: Option<std::time::Instant>,
-	poll_at: Option<std::time::Instant>,
-	now: std::time::Instant,
-) -> ghi::window::Wait {
-	if woken {
-		return ghi::window::Wait::Immediate;
-	}
-	match ui_tick.into_iter().chain(poll_at).min() {
-		None => ghi::window::Wait::Forever,
-		Some(deadline) if deadline <= now => ghi::window::Wait::Immediate,
-		Some(deadline) => ghi::window::Wait::Until(deadline),
-	}
-}
-
-/// Chooses how long a tick that presents nothing sleeps.
-///
-/// No frame reaches the screen faster than the display refreshes or than the cap allows, so the slower of the two
-/// known intervals wins.
-fn skipped_frame_pace(
-	present_interval: Option<std::time::Duration>,
-	refresh_interval: Option<std::time::Duration>,
-) -> std::time::Duration {
-	present_interval.max(refresh_interval).unwrap_or(DEFAULT_SKIPPED_FRAME_PACE)
-}
-
 /// The [`GraphicsApplication`] struct owns the headed runtime and coordinates
 /// windows, input, worlds, resources, audio workers, and rendering.
 ///
@@ -62,6 +23,7 @@ fn skipped_frame_pace(
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
+/// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
 /// - `assets-path`: Selects the debug-build asset directory. Relative overrides use the current working directory. In development, the default is `assets` under `CARGO_MANIFEST_DIR` when available, then beside the executable.
 /// - `resources.path`: Selects the resource directory. Relative overrides use the current working directory. In development, the default uses `CARGO_MANIFEST_DIR` when available; otherwise, it is beside the executable.
@@ -97,6 +59,12 @@ pub struct GraphicsApplication {
 	last_present_time: Option<std::time::Instant>,
 	/// The minimum time between presented frames; the `max-frame-rate` parameter when given.
 	present_interval: Option<std::time::Duration>,
+	/// The fixed simulation step; the `simulation-rate` parameter when given.
+	simulation_step: Option<MediaTime>,
+	/// Simulated time that has not yet reached a whole fixed step.
+	simulation_pending: MediaTime,
+	/// The time the fixed steps run so far have consumed.
+	simulation_elapsed: MediaTime,
 	/// The frame period the loop sleeps for when no window presents; see [`skipped_frame_pace`].
 	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
@@ -198,6 +166,11 @@ impl Application for GraphicsApplication {
 		if present_interval.is_some() {
 			renderer.set_present_interval(present_interval);
 		}
+		let simulation_step = application
+			.get_parameter("simulation-rate")
+			.and_then(|parameter| parameter.value.parse::<f64>().ok())
+			.filter(|rate| *rate > 0.0)
+			.map(|simulation_rate| MediaTime::from_seconds_f64(1.0 / simulation_rate));
 		let render_on_demand = application
 			.get_parameter("render-on-demand")
 			.is_some_and(|parameter| parameter.as_bool_simple());
@@ -292,6 +265,9 @@ impl Application for GraphicsApplication {
 			last_tick_instant: std::time::Instant::now(),
 			last_present_time: None,
 			present_interval,
+			simulation_step,
+			simulation_pending: MediaTime::ZERO,
+			simulation_elapsed: MediaTime::ZERO,
 			skipped_frame_pace: skipped_frame_pace(present_interval, None),
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
@@ -524,8 +500,110 @@ impl GraphicsApplication {
 		}
 	}
 
+	/// Drops the transforms physics published since the last time simulation read them.
+	///
+	/// Physics results return on the shared transform route, so they must be discarded before the route is used to
+	/// collect the commands of a new step; otherwise a body's own output arrives back as an authored transform.
+	fn drain_physics_transforms(&mut self) {
+		while self.physics_transforms_listener.read().is_some() {}
+	}
+
+	/// Advances anchors and physics by `time`.
+	fn update_world(&mut self, time: Time) {
+		let span = debug_span!("GraphicsApplication::update_world");
+		let _enter = span.enter();
+		self.world.update(
+			time,
+			&mut self.physics_transforms_listener,
+			&mut self.application.frame_allocator,
+		);
+	}
+
+	/// Panics when a configured fixed simulation rate cannot be met by simulating once per presented frame.
+	///
+	/// [`Self::tick_with`] ties the two rates together, so a `simulation-rate` that disagrees with the rate frames
+	/// reach the screen at is a loop the application cannot run. The check repeats every tick because a window
+	/// moved to another display changes the refresh rate mid-run, and because the first window arrives after
+	/// startup. An unknown presentation cadence cannot be shown to disagree, so it passes.
+	fn assert_tied_simulation_rate(&self) {
+		let Some(step) = self.simulation_step else {
+			return;
+		};
+		// Frames arrive no faster than the slower of the cap and the display.
+		let Some(present_interval) = self.present_interval.max(self.renderer.refresh_interval()) else {
+			return;
+		};
+		assert!(
+			rates_are_tied(step, MediaTime::from_std(present_interval)),
+			"A simulation rate of {:.2} Hz cannot be met by a loop that presents {:.2} frames per second. The most likely cause is a simulation-rate parameter under GraphicsApplication::tick_with, which simulates once per frame; call GraphicsApplication::tick_stepped_with instead.",
+			1.0 / step.as_seconds_f64(),
+			1.0 / present_interval.as_secs_f64(),
+		);
+	}
+
+	/// Runs the whole fixed steps this frame owes and schedules the tick the next one is due in.
+	fn run_simulation_steps<S: FnMut(&mut Self, Time)>(&mut self, delta: MediaTime, simulate: &mut S) {
+		let step = self.simulation_step.unwrap_or(DEFAULT_SIMULATION_STEP);
+		self.simulation_pending += delta;
+		let (steps, remainder) = simulation_steps(self.simulation_pending, step, MAX_SIMULATION_STEPS_PER_FRAME);
+		self.simulation_pending = remainder;
+		for _ in 0..steps {
+			let span = debug_span!("GraphicsApplication::simulation_step");
+			let _enter = span.enter();
+			self.simulation_elapsed += step;
+			let time = Time::new(self.simulation_elapsed, step);
+			self.drain_physics_transforms();
+			simulate(self, time);
+			self.update_world(time);
+		}
+		// An idle on-demand loop waits in the window system, so the next step has to be one of the deadlines it
+		// waits for. Frames the loop runs anyway reach the step sooner and cost nothing here.
+		self.schedule_tick(Some(std::time::Instant::now() + (step - self.simulation_pending).to_std()));
+	}
+
 	/// Runs one graphics tick and lets application code update state before rendering.
+	///
+	/// Simulation advances once per tick, by the frame delta. A `simulation-rate` that disagrees with the rate
+	/// frames are presented at panics here; use [`Self::tick_stepped_with`] to run the two rates apart.
 	pub fn tick_with<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, f: F) -> Option<R> {
+		self.assert_tied_simulation_rate();
+		self.tick_internal(|application, time| {
+			application.drain_physics_transforms();
+			let result = {
+				let span = debug_span!("GraphicsApplication::user_tick");
+				let _enter = span.enter();
+				f(application, time)
+			};
+			application.update_world(time);
+			result
+		})
+	}
+
+	/// Runs one graphics tick whose simulation advances in fixed steps, independent of the frame rate.
+	///
+	/// `simulate` runs zero or more times before the frame, each time with a [`Time`] whose delta is the fixed
+	/// step from `simulation-rate` and whose elapsed value counts the steps run so far. The world, and so physics,
+	/// advances with it. `frame` then runs once with the frame's own display-derived [`Time`], for the work that
+	/// belongs to what is about to be drawn: the UI, cameras, and animation.
+	///
+	/// A frame that owes more steps than the loop runs in one tick drops the outstanding time instead of running
+	/// it later. Renderers consume the state left by the last step, so a simulation rate below the frame rate
+	/// repeats a frame's worth of state until the next step lands.
+	pub fn tick_stepped_with<R, S: FnMut(&mut Self, Time), F: FnOnce(&mut Self, Time) -> R>(
+		&mut self,
+		mut simulate: S,
+		frame: F,
+	) -> Option<R> {
+		self.tick_internal(move |application, time| {
+			application.run_simulation_steps(time.delta, &mut simulate);
+			let span = debug_span!("GraphicsApplication::user_tick");
+			let _enter = span.enter();
+			frame(application, time)
+		})
+	}
+
+	/// Runs the tick every entry point shares, calling `run` where application and world updates belong.
+	fn tick_internal<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> Option<R> {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -569,25 +647,7 @@ impl GraphicsApplication {
 			self.actions.pull(&mut self.input, |_| input::Capture::Passed);
 		}
 
-		// Physics publishes its results back to the shared transform route. Discard
-		// those prior-frame outputs before collecting commands from this user tick.
-		while self.physics_transforms_listener.read().is_some() {}
-
-		let result = {
-			let span = debug_span!("GraphicsApplication::user_tick");
-			let _enter = span.enter();
-			f(self, time)
-		};
-
-		{
-			let span = debug_span!("GraphicsApplication::update_world");
-			let _enter = span.enter();
-			self.world.update(
-				time,
-				&mut self.physics_transforms_listener,
-				&mut self.application.frame_allocator,
-			);
-		}
+		let result = run(self, time);
 
 		self.prepare_renderer_state();
 		let screenshot_requests = self.screenshot_broker.drain();
@@ -872,6 +932,80 @@ fn default_application_directory(
 		})
 		.join(directory)
 }
+// Bound ready work while the temporary Compio runtime still shares the application thread.
+const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
+
+/// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
+/// refresh rate is known.
+const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// Chooses how long an idle on-demand tick waits for window events.
+///
+/// A wake that arrived since the last wait, or a UI that needs a tick now, runs the tick at once. Otherwise the
+/// earliest of the UI's next tick and the next input poll bounds the wait, and with neither the loop waits for an
+/// event.
+fn idle_wait(
+	woken: bool,
+	ui_tick: Option<std::time::Instant>,
+	poll_at: Option<std::time::Instant>,
+	now: std::time::Instant,
+) -> ghi::window::Wait {
+	if woken {
+		return ghi::window::Wait::Immediate;
+	}
+	match ui_tick.into_iter().chain(poll_at).min() {
+		None => ghi::window::Wait::Forever,
+		Some(deadline) if deadline <= now => ghi::window::Wait::Immediate,
+		Some(deadline) => ghi::window::Wait::Until(deadline),
+	}
+}
+
+/// Chooses how long a tick that presents nothing sleeps.
+///
+/// No frame reaches the screen faster than the display refreshes or than the cap allows, so the slower of the two
+/// known intervals wins.
+fn skipped_frame_pace(
+	present_interval: Option<std::time::Duration>,
+	refresh_interval: Option<std::time::Duration>,
+) -> std::time::Duration {
+	present_interval.max(refresh_interval).unwrap_or(DEFAULT_SKIPPED_FRAME_PACE)
+}
+
+/// The fixed step [`GraphicsApplication::tick_stepped_with`] uses when `simulation-rate` is not given.
+const DEFAULT_SIMULATION_STEP: MediaTime = MediaTime::from_ticks(crate::time::TICKS_PER_SECOND / 60);
+
+/// The most fixed steps one frame runs before the loop drops the outstanding simulation debt.
+const MAX_SIMULATION_STEPS_PER_FRAME: u32 = 8;
+
+/// The reciprocal of the largest relative difference at which two rates still count as tied.
+const TIED_RATE_TOLERANCE: i64 = 100;
+
+/// Splits accumulated time into whole fixed steps and the remainder that carries into the next frame.
+///
+/// The remainder is always what is left inside one step, so the steps a frame does run never drift: a frame that
+/// owes more than `max_steps` drops the outstanding debt instead of running it later, which costs simulated time
+/// rather than making the next frames longer still.
+fn simulation_steps(pending: MediaTime, step: MediaTime, max_steps: u32) -> (u32, MediaTime) {
+	debug_assert!(
+		step > MediaTime::ZERO,
+		"Simulation step must be positive. The most likely cause is a zero or negative simulation rate."
+	);
+	if pending < step {
+		return (0, pending);
+	}
+	let steps = pending.as_ticks() / step.as_ticks();
+	let remainder = MediaTime::from_ticks(pending.as_ticks() % step.as_ticks());
+	(steps.min(i64::from(max_steps)) as u32, remainder)
+}
+
+/// Returns whether a fixed simulation step matches the interval frames are presented at.
+///
+/// Reported cadences rarely land on the exact step, so a small relative difference, such as a 59.94 Hz display
+/// against a 60 Hz step, still counts as tied.
+fn rates_are_tied(step: MediaTime, present_interval: MediaTime) -> bool {
+	let difference = step.max(present_interval) - step.min(present_interval);
+	difference * TIED_RATE_TOLERANCE <= present_interval
+}
 
 mod pipeline;
 use pipeline::drain_render_pass_messages;
@@ -910,6 +1044,53 @@ mod tests {
 		assert_eq!(skipped_frame_pace(Some(ms(33)), None), ms(33));
 		assert_eq!(skipped_frame_pace(Some(ms(33)), Some(ms(8))), ms(33));
 		assert_eq!(skipped_frame_pace(Some(ms(4)), Some(ms(16))), ms(16));
+	}
+
+	#[test]
+	fn simulation_steps_consume_whole_steps_and_carry_the_remainder() {
+		let step = MediaTime::from_frames(1, 60).expect("expected test value");
+
+		assert_eq!(simulation_steps(step / 2, step, 8), (0, step / 2));
+		assert_eq!(simulation_steps(step, step, 8), (1, MediaTime::ZERO));
+		assert_eq!(simulation_steps(step * 2 + step / 4, step, 8), (2, step / 4));
+	}
+
+	#[test]
+	fn simulation_steps_accumulate_without_drift() {
+		let step = MediaTime::from_frames(1, 60).expect("expected test value");
+		let delta = MediaTime::from_frames(1, 144).expect("expected test value");
+		let mut pending = MediaTime::ZERO;
+		let mut simulated = MediaTime::ZERO;
+
+		for _ in 0..1_000 {
+			pending += delta;
+			let (steps, remainder) = simulation_steps(pending, step, 8);
+			pending = remainder;
+			simulated += step * i64::from(steps);
+		}
+
+		// Every frame's delta ends up either simulated or still pending, however the frame rate divides the step.
+		assert_eq!(simulated + pending, delta * 1_000);
+	}
+
+	#[test]
+	fn simulation_steps_drop_the_debt_past_the_frame_budget() {
+		let step = MediaTime::from_frames(1, 60).expect("expected test value");
+
+		let (steps, remainder) = simulation_steps(step * 20 + step / 2, step, 8);
+
+		assert_eq!(steps, 8);
+		assert_eq!(remainder, step / 2);
+	}
+
+	#[test]
+	fn rates_are_tied_within_a_small_reported_difference() {
+		let frame = |rate| MediaTime::from_frames(1, rate).expect("expected test value");
+
+		assert!(rates_are_tied(frame(60), frame(60)));
+		assert!(rates_are_tied(frame(60), MediaTime::from_seconds_f64(1.0 / 59.94)));
+		assert!(!rates_are_tied(frame(60), frame(30)));
+		assert!(!rates_are_tied(frame(60), frame(144)));
 	}
 
 	#[test]

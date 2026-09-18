@@ -205,6 +205,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
+		_alpha: f32,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		while let Some(event) = self.loader.poll() {
 			match event {

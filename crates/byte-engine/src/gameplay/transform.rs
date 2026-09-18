@@ -142,6 +142,23 @@ impl Transform {
 	pub fn get_orientation(&self) -> Orientation {
 		self.orientation
 	}
+
+	/// Returns the transform `alpha` of the way from this one to `target`.
+	///
+	/// Position and scale move in a straight line and the orientation follows the shortest arc, so a display can
+	/// show where an object was between two simulation samples. `alpha` is expected in `0..=1`.
+	pub fn interpolate(&self, target: &Self, alpha: f32) -> Self {
+		let orientation = maths_rs::slerp(self.orientation.into_maths(), target.orientation.into_maths(), alpha);
+		Self::new(
+			Point::from_maths(maths_rs::lerp(
+				self.position.into_maths(),
+				target.position.into_maths(),
+				alpha,
+			)),
+			Scale::from_maths(maths_rs::lerp(self.scale.into_maths(), target.scale.into_maths(), alpha)),
+			Orientation::try_from_maths(orientation).unwrap_or(target.orientation),
+		)
+	}
 }
 
 impl From<&Transform> for Matrix {
@@ -199,6 +216,28 @@ mod tests {
 		},
 		space::{Orientable, Positionable, Scalable, Transformable},
 	};
+
+	#[test]
+	fn interpolation_moves_position_and_scale_linearly_and_turns_along_the_shortest_arc() {
+		let start = Transform::new(Point::new(0.0, 0.0, 0.0), Scale::new(1.0, 1.0, 1.0), Orientation::identity());
+		let quarter_turn =
+			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::y_axis(), math::Degrees::new(90.0).into())
+				.expect("expected test value");
+		let end = Transform::new(Point::new(4.0, 2.0, 0.0), Scale::new(3.0, 1.0, 1.0), quarter_turn);
+
+		let middle = start.interpolate(&end, 0.5);
+
+		let position = middle.get_position();
+		assert!((position.x() - 2.0).abs() < 1e-5 && (position.y() - 1.0).abs() < 1e-5);
+		assert!((middle.scale().x() - 2.0).abs() < 1e-5);
+		// Halfway through a quarter turn about Y, the X axis points 45 degrees toward -Z.
+		let turned = middle
+			.get_orientation()
+			.rotate_vector(math::Vector::<WorldSpace>::new(1.0, 0.0, 0.0));
+		assert!((turned.x() - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
+		assert!((turned.z().abs() - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
+		assert!((start.interpolate(&end, 1.0).get_position().x() - 4.0).abs() < 1e-5);
+	}
 
 	struct SpatialEntity {
 		transform: Transform,

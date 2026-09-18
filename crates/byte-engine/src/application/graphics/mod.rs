@@ -65,6 +65,8 @@ pub struct GraphicsApplication {
 	simulation_pending: MediaTime,
 	/// The time the fixed steps run so far have consumed.
 	simulation_elapsed: MediaTime,
+	/// How far the frame lies between the two most recent steps; `1` when simulation runs once per frame.
+	simulation_alpha: f32,
 	/// The frame period the loop sleeps for when no window presents; see [`skipped_frame_pace`].
 	skipped_frame_pace: std::time::Duration,
 	/// The value of `elapsed` when `last_present_time` was consumed; later presented times land relative to it.
@@ -268,6 +270,7 @@ impl Application for GraphicsApplication {
 			simulation_step,
 			simulation_pending: MediaTime::ZERO,
 			simulation_elapsed: MediaTime::ZERO,
+			simulation_alpha: 1.0,
 			skipped_frame_pace: skipped_frame_pace(present_interval, None),
 			elapsed_at_last_present: MediaTime::ZERO,
 			render_on_demand,
@@ -487,6 +490,7 @@ impl GraphicsApplication {
 			&mut self.renderer_transforms_listener,
 			&self.application.frame_allocator,
 			&captures,
+			self.simulation_alpha,
 		);
 		for (request, capture) in requests.into_iter().zip(results) {
 			let result = capture
@@ -508,7 +512,7 @@ impl GraphicsApplication {
 		while self.physics_transforms_listener.read().is_some() {}
 	}
 
-	/// Advances anchors and physics by `time`.
+	/// Advances anchors and physics by `time`, then marks the step's end for the renderer.
 	fn update_world(&mut self, time: Time) {
 		let span = debug_span!("GraphicsApplication::update_world");
 		let _enter = span.enter();
@@ -517,6 +521,7 @@ impl GraphicsApplication {
 			&mut self.physics_transforms_listener,
 			&mut self.application.frame_allocator,
 		);
+		self.renderer.step();
 	}
 
 	/// Panics when a configured fixed simulation rate cannot be met by simulating once per presented frame.
@@ -556,6 +561,9 @@ impl GraphicsApplication {
 			simulate(self, time);
 			self.update_world(time);
 		}
+		// Frames show the world one step behind, moving from the previous step's state to the latest one's as
+		// the pending time fills the step.
+		self.simulation_alpha = self.simulation_pending.as_seconds_f32() / step.as_seconds_f32();
 		// An idle on-demand loop waits in the window system, so the next step has to be one of the deadlines it
 		// waits for. Frames the loop runs anyway reach the step sooner and cost nothing here.
 		self.schedule_tick(Some(std::time::Instant::now() + (step - self.simulation_pending).to_std()));
@@ -575,6 +583,7 @@ impl GraphicsApplication {
 				f(application, time)
 			};
 			application.update_world(time);
+			application.simulation_alpha = 1.0;
 			result
 		})
 	}

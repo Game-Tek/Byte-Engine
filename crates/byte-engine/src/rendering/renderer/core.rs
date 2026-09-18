@@ -590,6 +590,13 @@ impl Renderer {
 		needs_frame
 	}
 
+	/// Tells every pipeline manager that one simulation step ended; see [`PipelineManager::step`].
+	pub(crate) fn step(&mut self) {
+		for pipeline_manager in &mut self.pipeline_managers {
+			pipeline_manager.step();
+		}
+	}
+
 	/// Returns whether any window holds an acquired swapchain image for the current frame.
 	///
 	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
@@ -610,6 +617,7 @@ impl Renderer {
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
 		frame_allocator: &bumpalo::Bump,
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
+		alpha: f32,
 	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
 		let span = debug_span!(
 			"Renderer::prepare",
@@ -751,7 +759,8 @@ impl Renderer {
 						let _enter = span.enter();
 						pipeline_managers
 							.filter_map(|(pipeline_manager_id, sm)| {
-								sm.prepare(frame, &sinks, frame_allocator).map(|commands| (pipeline_manager_id, commands))
+								sm.prepare(frame, &sinks, frame_allocator, alpha)
+									.map(|commands| (pipeline_manager_id, commands))
 							})
 							.collect()
 					};

@@ -70,6 +70,20 @@ main: fn (input: StageInput) -> interface {
 	let curve_from: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let curve_to: vec2f = vec2f(0.0, 0.0);
 
+	// A turned edge crosses pixels at an angle, so the rasterizer can no longer resolve it. The quad
+	// grows by a pixel for the fragment stage to fade the edge across, and the texture rectangle
+	// grows with it. Glyphs carry their own padding and curves their own expansion.
+	let turn: vec4f = masks[primitives[primitive].mask].rotation;
+	let kind: u32 = primitives[primitive].kind;
+	if (abs(turn.y) > 0.00001 && (kind == 0 || kind == 1 || kind == 3)) {
+		let outward: vec2f = vec2f(corner.x * 2.0 - 1.0, corner.y * 2.0 - 1.0);
+		pixel_position = pixel_position + outward;
+		uv = vec2f(
+			uv.x + outward.x * (a.z - a.x) / max(bounds.z - bounds.x, 0.0001),
+			uv.y + outward.y * (a.w - a.y) / max(bounds.w - bounds.y, 0.0001)
+		);
+	}
+
 	// A curve piece holds its segment's whole cubic and which slice of it to draw.
 	if (primitives[primitive].kind == 2) {
 		let piece: u32 = primitives[primitive].data0 & 65535;
@@ -110,7 +124,6 @@ main: fn (input: StageInput) -> interface {
 
 	// A primitive is laid out and shaded unrotated. Only its quad turns, and the unrotated pixel
 	// position interpolates across it, so the fragment stage needs no inverse.
-	let turn: vec4f = masks[primitives[primitive].mask].rotation;
 	let screen_position: vec2f = vec2f(
 		turn.x * pixel_position.x - turn.y * pixel_position.y + turn.z,
 		turn.y * pixel_position.x + turn.x * pixel_position.y + turn.w

@@ -99,6 +99,22 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
 	return max(fill_coverage - inner_coverage, 0.0);
 }
 
+// Coverage of a turned primitive's quad, whose edges the rasterizer cannot resolve. The vertex
+// stage grew the quad by a pixel so each edge fades across the pixels it crosses. A rounded
+// rectangle's field already fades its own edges, so only square shapes and images need this.
+turned_edge_coverage: fn (index: u32, pixel: vec2f) -> f32 {
+	let kind: u32 = primitives[index].kind;
+	if (abs(masks[primitives[index].mask].rotation.y) <= 0.00001) {
+		return 1.0;
+	}
+	if (kind != 3 && (kind > 1 || primitives[index].b.x >= 0.0001)) {
+		return 1.0;
+	}
+	let bounds: vec4f = primitives[index].bounds;
+	let inside: vec2f = vec2f(min(pixel.x - bounds.x, bounds.z - pixel.x), min(pixel.y - bounds.y, bounds.w - pixel.y));
+	return clamp(inside.x + 0.5, 0.0, 1.0) * clamp(inside.y + 0.5, 0.0, 1.0);
+}
+
 // Coverage left by a primitive's hard clip and feathered mask.
 mask_coverage: fn (index: u32, pixel: vec2f) -> f32 {
 	if (index == 0) {
@@ -486,7 +502,8 @@ main: fn(pipeline_input: interface {
 		pipeline_input.curve_from,
 		pipeline_input.curve_to
 	);
-	let mask: f32 = mask_coverage(primitives[pipeline_input.primitive].mask, pipeline_input.pixel_position);
+	let mask: f32 = mask_coverage(primitives[pipeline_input.primitive].mask, pipeline_input.pixel_position)
+		* turned_edge_coverage(pipeline_input.primitive, pipeline_input.pixel_position);
 	let color_attachment: vec4f = vec4f(shaded.x, shaded.y, shaded.z, clamp(shaded.w * mask, 0.0, 1.0));
 
 	return { color_attachment };

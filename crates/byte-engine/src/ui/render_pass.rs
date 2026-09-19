@@ -3062,11 +3062,12 @@ mod tests {
 		assert!(corners.iter().all(|(_, varyings)| varyings.primitive == 1));
 		// The next six vertices of the same draw belong to the next record.
 		assert_eq!(vertex.run(0, 6).1.primitive, 1);
-		// A turned quad moves on screen while its fragments keep shading where it was laid out.
+		// A turned quad moves on screen while its fragments keep shading where it was laid out. It
+		// also grows by a pixel, which the fragment stage fades its edges across.
 		let (position, turned) = vertex.run(2, 1);
-		assert_vec2_close(turned.pixel_position, [80.0, 20.0]);
-		assert_vec2_close(turned.screen_position.unwrap(), [20.0, 80.0]);
-		assert_vec4_close(position, [-0.8, -0.6, 0.0, 1.0]);
+		assert_vec2_close(turned.pixel_position, [81.0, 19.0]);
+		assert_vec2_close(turned.screen_position.unwrap(), [21.0, 81.0]);
+		assert_vec4_close(position, [-0.79, -0.62, 0.0, 1.0]);
 	}
 
 	/// The distance from a point to a cubic, by dense sampling.
@@ -3354,6 +3355,30 @@ mod tests {
 	}
 
 	/// Verifies the feather mask suppresses fragments outside its clipped region.
+	/// Verifies a turned square fill fades across its edge, which an unrotated one leaves to the rasterizer.
+	#[test]
+	fn ui_fragment_besl_vm_fades_the_edges_of_a_turned_square_fill() {
+		let turned = UiClipMaskEntry {
+			rotation: [0.8, 0.6, 0.0, 0.0],
+			..UiClipMaskEntry::NONE
+		};
+		let alpha = |x: f32, mask: Option<UiClipMaskEntry>| {
+			run_ui_rect_fragment_vm(UiRectFragment {
+				pixel_position: [x, 50.0],
+				corner_radius: 0.0,
+				mask,
+				..Default::default()
+			})[3]
+		};
+		let inside = alpha(50.0, Some(turned));
+		let default_left = UiRectFragment::default().rect[0];
+		// On the edge half the pixel is covered, a pixel inside all of it, and a pixel outside none.
+		assert!((alpha(default_left, Some(turned)) - inside * 0.5).abs() < 0.001);
+		assert!((alpha(default_left + 1.0, Some(turned)) - inside).abs() < 0.001);
+		assert!(alpha(default_left - 1.0, Some(turned)).abs() < 0.001);
+		assert!((alpha(default_left, None) - inside).abs() < 0.001);
+	}
+
 	#[test]
 	fn ui_fragment_besl_vm_clip_mask_suppresses_outside_pixels() {
 		let mask = UiClipMaskEntry {

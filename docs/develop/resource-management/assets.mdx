@@ -26,6 +26,7 @@ The standard graphics setup installs handlers for common engine formats:
 - FBX meshes, skeletons, and skeletal animation clips
 - `.bema` materials and variants
 - `.pipeline` GPU pipeline descriptions
+- `.flipbook` image sequences with a playback rate
 - LUT assets
 - WAV and OGG audio
 - standalone `.besl` shaders with `.besl.bead` stage metadata
@@ -46,6 +47,17 @@ The sidecar helper parses JSON5 and returns `None` when the sidecar is missing.
 It records the sidecar's own file ID as a dependency, including its absence, so creating, editing, or removing it makes the resource stale.
 A sidecar that your handler doesn't request has no effect on baking or freshness.
 Custom source backends provide the same utility through `StorageBackend::load_sidecar`; implement `version` for individual files and return `AssetVersion::missing()` only when a file doesn't exist.
+
+## Flipbooks
+
+Declare an image sequence and its playback rate in a `.flipbook` file:
+
+```json
+{ "frames_per_second": 12, "images": ["char/run0.png", "char/run1.png"] }
+```
+
+Baking the flipbook bakes its images too. Request it as a `resource_management::resources::flipbook::Flipbook`; its `images` arrive solved, in playback order, ready to load.
+To pick the image a frame shows, sample the loaded images with `byte_engine::animation::flipbook::Flipbook` and the `time` that `PipelineManager::prepare` receives, so playback follows the frame clock instead of the simulation rate.
 
 ## JSON5 asset files
 

@@ -31,6 +31,8 @@
 - `ghi::window::App::poll` and `Renderer::poll_windows` take a `Wait` that lets them wait for the first event, and `App::waker` returns an `AppWaker` that ends such a wait from any thread.
 - Simulation can step at its own rate: `GraphicsApplication::tick_stepped_with` takes a `simulate` callback, run zero or more times per tick with a fixed step from the new `simulation-rate` parameter (default 60), and a `frame` callback run once with the display-derived time. The world and physics advance with the steps. A frame that falls more than eight steps behind drops the outstanding time. `tick_with` keeps simulating once per frame and panics when `simulation-rate` disagrees with the rate frames are presented at.
 - Frames show the world interpolated between the two most recent simulation steps, one step behind. `PipelineManager::step` marks the end of a step, transforms read in it are that step's sample, and `PipelineManager::prepare` receives `alpha`, how far the frame lies between the two latest steps. The visibility pipeline moves each renderable between its samples and holds transforms written outside a step where they are; `Transform::interpolate` blends two transforms.
+- `.flipbook` assets declare `frames_per_second` and the ordered `images` of a sequence. The standard setup bakes them together with their images into a `Flipbook` resource that owns its solved image references.
+- `PipelineManager::prepare` receives `time`, the frame clock's elapsed time, after `alpha`, so managers can drive playback such as flipbooks at the display rate instead of the simulation rate.
 
 ## 0.2.0 - 2026-08-20
 

@@ -5,10 +5,11 @@ use resource_management::{
 		StorageBackend, handler::implementations::bema::BEMAAssetHandler,
 		handler::implementations::besl::BESLShaderAssetHandler,
 		handler::implementations::environment::EnvironmentMapAssetHandler, handler::implementations::exr::EXRAssetHandler,
-		handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
-		handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
-		handler::implementations::ogg::OGGAssetHandler, handler::implementations::pipeline::PipelineAssetHandler,
-		handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
+		handler::implementations::fbx::FBXAssetHandler, handler::implementations::flipbook::FlipbookAssetHandler,
+		handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
+		handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
+		handler::implementations::pipeline::PipelineAssetHandler, handler::implementations::png::PNGAssetHandler,
+		handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
 	},
 	ibl::IBLGenerator,
 	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
@@ -47,6 +48,8 @@ where
 	asset_manager.add_asset_handler(OGGAssetHandler::new());
 
 	asset_manager.add_asset_handler(PipelineAssetHandler);
+
+	asset_manager.add_asset_handler(FlipbookAssetHandler);
 
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
 

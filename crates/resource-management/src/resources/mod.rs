@@ -47,6 +47,7 @@ pub(crate) use impl_direct_resource;
 
 pub mod animation;
 pub mod audio;
+pub mod flipbook;
 pub mod image;
 pub mod lut;
 pub mod material;

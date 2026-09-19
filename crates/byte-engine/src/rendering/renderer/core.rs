@@ -618,6 +618,7 @@ impl Renderer {
 		frame_allocator: &bumpalo::Bump,
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
 		alpha: f32,
+		time: crate::time::MediaTime,
 	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
 		let span = debug_span!(
 			"Renderer::prepare",
@@ -759,7 +760,7 @@ impl Renderer {
 						let _enter = span.enter();
 						pipeline_managers
 							.filter_map(|(pipeline_manager_id, sm)| {
-								sm.prepare(frame, &sinks, frame_allocator, alpha)
+								sm.prepare(frame, &sinks, frame_allocator, alpha, time)
 									.map(|commands| (pipeline_manager_id, commands))
 							})
 							.collect()

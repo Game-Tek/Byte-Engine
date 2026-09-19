@@ -100,6 +100,7 @@ pub fn setup_simple_render_pipeline(
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
 			alpha: f32,
+			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			while let Some(message) = self.mesh_receiver.read() {
 				let handle = message.handle();
@@ -118,7 +119,7 @@ pub fn setup_simple_render_pipeline(
 				// TODO: handle light removal
 			}
 
-			self.pipeline_manager.prepare(frame, sinks, frame_allocator, alpha)
+			self.pipeline_manager.prepare(frame, sinks, frame_allocator, alpha, time)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
@@ -315,6 +316,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
 			alpha: f32,
+			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
 			self.request_pending_lights();
 			self.request_pending_meshes();
@@ -324,7 +326,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			self.visibility_pipeline_manager.process_transform_updates(alpha);
 			self.process_deletions();
 
-			self.visibility_pipeline_manager.prepare(frame, sinks, frame_allocator, alpha)
+			self.visibility_pipeline_manager
+				.prepare(frame, sinks, frame_allocator, alpha, time)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {

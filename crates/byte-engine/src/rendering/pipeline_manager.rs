@@ -1,9 +1,12 @@
 use smallvec::SmallVec;
 use utils::{Box, Extent, hash::HashMap, sync::RwLock};
 
-use crate::rendering::{
-	Sink,
-	render_pass::{RenderPassBuilder, RenderPassReturn},
+use crate::{
+	rendering::{
+		Sink,
+		render_pass::{RenderPassBuilder, RenderPassReturn},
+	},
+	time::MediaTime,
 };
 
 /// The [`PipelineManager`] trait bridges scene state with render work for active
@@ -28,6 +31,9 @@ pub trait PipelineManager {
 	/// `alpha` is how far this frame lies between the two most recent simulation steps: `0` at the older one,
 	/// `1` at the one [`Self::step`] last marked. It is `1` when simulation runs once per frame.
 	///
+	/// `time` is the frame clock's elapsed time. Drive playback that must follow the display instead of the
+	/// simulation rate from it, such as flipbook frames.
+	///
 	/// Drain loader completions before publishing newly resident resources to
 	/// waiting scene instances and building draws.
 	fn prepare<'a>(
@@ -36,6 +42,7 @@ pub trait PipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		alpha: f32,
+		time: MediaTime,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>>;
 
 	/// Creates the persistent pass state needed by one new render sink.

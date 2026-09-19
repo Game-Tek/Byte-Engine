@@ -201,6 +201,8 @@ pub fn setup_default_resource_and_asset_management(
 
 		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::pipeline::PipelineAssetHandler);
 
+		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::flipbook::FlipbookAssetHandler);
+
 		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
 			log::warn!(
 				"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"

@@ -921,6 +921,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
 		_alpha: f32,
+		_time: crate::time::MediaTime,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
 		self.adopt_resource_completions(frame);

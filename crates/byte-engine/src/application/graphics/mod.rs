@@ -479,7 +479,7 @@ impl GraphicsApplication {
 	}
 
 	/// Renders one frame and completes every screenshot request with its encoded result.
-	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>) {
+	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) {
 		let span = debug_span!("GraphicsApplication::render_frame");
 		let _enter = span.enter();
 		let captures = requests
@@ -491,6 +491,7 @@ impl GraphicsApplication {
 			&self.application.frame_allocator,
 			&captures,
 			self.simulation_alpha,
+			time,
 		);
 		for (request, capture) in requests.into_iter().zip(results) {
 			let result = capture
@@ -664,7 +665,7 @@ impl GraphicsApplication {
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
 		self.rendering_active = changed || !self.render_on_demand;
 		if self.rendering_active || self.renderer.presents_this_frame() {
-			self.render_frame(screenshot_requests);
+			self.render_frame(screenshot_requests, time.elapsed());
 		}
 
 		{

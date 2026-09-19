@@ -3634,6 +3634,41 @@ mod tests {
 	}
 
 	#[test]
+	fn rounded_bordered_container_masks_descendants_inside_its_border() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let mut frame = ctx.element("frame").container(
+					Container::default().width(50.into()).height(40.into()).corner_radius(8.0).style(
+						ConcreteStyle::new()
+							.layer(ConcreteLayer::default())
+							.layer(ConcreteLayer::default().stroke(2.0)),
+					),
+				);
+				frame
+					.element("child")
+					.container(Container::default().width(60.into()).height(60.into()));
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let child = render
+			.elements()
+			.find(|element| element.id == 2)
+			.expect("expected test value");
+		let inside = Geometry::new(Location3::new(2, 2, 0), Size::new(46, 36));
+		let mask = child.feather_mask.expect("expected test value");
+
+		assert_eq!(child.clip, Some(inside));
+		assert_eq!(mask.geometry.size, inside.size);
+		assert_eq!(mask.feather, EdgeFeather::none());
+		assert_eq!(mask.corner_radius, 6.0);
+	}
+
+	#[test]
 	fn render_inherits_parent_opacity() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();

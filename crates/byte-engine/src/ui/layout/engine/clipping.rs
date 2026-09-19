@@ -91,13 +91,18 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 		if let Primitives::Container(container) = primitive
 			&& container.clip
 		{
-			let geometry = geometry_from_layout_element(element);
+			// Descendants clip to the inside of the border, so they never paint over an inset stroke.
+			let border = border_width(container.style.layers());
+			let geometry = geometry_from_layout_element(element).expanded(-border);
+			let corner_radius = (container.corner_radius - border).max(0.0);
 			state.descendant_clip = clip.clip_descendants(geometry);
-			state.descendant_feather = first_layer_feather(container.style.layers())
-				.map(|feather| FeatherMask {
+			// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
+			let own_feather = first_layer_feather(container.style.layers());
+			state.descendant_feather = (own_feather.is_some() || corner_radius > 0.0)
+				.then(|| FeatherMask {
 					geometry,
-					feather,
-					corner_radius: container.corner_radius,
+					feather: own_feather.unwrap_or_else(EdgeFeather::none),
+					corner_radius,
 					corner_exponent: container.corner_exponent,
 				})
 				.or(feather);
@@ -134,6 +139,17 @@ pub(super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) ->
 		.iter()
 		.map(crate::ui::style::Layer::feather)
 		.find(|feather| !feather.is_none())
+}
+
+/// Widest inset stroke among the layers, in layout units.
+fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
+	layers
+		.iter()
+		.filter_map(|layer| match layer.kind() {
+			LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => Some(width),
+			_ => None,
+		})
+		.fold(0.0, f32::max)
 }
 
 /// Hit geometry for one frame: clipped bounds, plus the polylines curves are hit along.

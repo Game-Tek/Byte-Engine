@@ -106,7 +106,7 @@ fn image_batches_resolve_visible_sources_and_versions() {
 				position: [0.0, 0.0],
 				size: [10.0, 10.0],
 				clip: None,
-				feather_mask: None,
+				clip_mask: None,
 			}
 		});
 	let mut clipped = images[1].clone();
@@ -146,7 +146,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				position: [10.0, 10.0],
 				size: [20.0, 20.0],
 				clip: None,
-				feather_mask: None,
+				clip_mask: None,
 				color: [1.0; 4],
 				corner_radius: 4.0,
 				corner_exponent: 2.0,

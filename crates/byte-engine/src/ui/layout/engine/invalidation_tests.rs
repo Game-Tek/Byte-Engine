@@ -114,7 +114,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				actual.position,
 				actual.size,
 				actual.clip,
-				actual.feather_mask,
+				actual.clip_mask,
 				actual.opacity,
 				actual.corner_radius,
 				actual.corner_exponent
@@ -124,7 +124,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				expected.position,
 				expected.size,
 				expected.clip,
-				expected.feather_mask,
+				expected.clip_mask,
 				expected.opacity,
 				expected.corner_radius,
 				expected.corner_exponent
@@ -141,7 +141,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				actual.position,
 				actual.size,
 				actual.clip,
-				actual.feather_mask,
+				actual.clip_mask,
 				actual.opacity,
 				actual.font_size,
 				&actual.content
@@ -151,7 +151,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				expected.position,
 				expected.size,
 				expected.clip,
-				expected.feather_mask,
+				expected.clip_mask,
 				expected.opacity,
 				expected.font_size,
 				&expected.content
@@ -167,7 +167,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				actual.position,
 				actual.size,
 				actual.clip,
-				actual.feather_mask,
+				actual.clip_mask,
 				actual.opacity,
 				&actual.segments
 			),
@@ -176,7 +176,7 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 				expected.position,
 				expected.size,
 				expected.clip,
-				expected.feather_mask,
+				expected.clip_mask,
 				expected.opacity,
 				&expected.segments
 			),

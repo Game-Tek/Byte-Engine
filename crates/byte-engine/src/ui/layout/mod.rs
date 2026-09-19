@@ -46,7 +46,7 @@ pub(crate) struct RenderElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
-	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) clip_mask: Option<ClipMask>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	pub(crate) backdrop_blur_radius: f32,
@@ -60,7 +60,7 @@ pub(crate) struct RenderTextElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
-	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) clip_mask: Option<ClipMask>,
 	pub(crate) color: RGBA,
 	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
@@ -80,7 +80,7 @@ pub(crate) struct RenderImageElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
-	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) clip_mask: Option<ClipMask>,
 	pub(crate) opacity: f32,
 }
 
@@ -90,7 +90,7 @@ pub(crate) struct RenderCurveElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
-	pub(crate) feather_mask: Option<FeatherMask>,
+	pub(crate) clip_mask: Option<ClipMask>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	/// Inherited visual scale applied to segment points and stroke width.
@@ -99,7 +99,7 @@ pub(crate) struct RenderCurveElement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct FeatherMask {
+pub(crate) struct ClipMask {
 	pub(crate) geometry: Geometry,
 	pub(crate) feather: EdgeFeather,
 	pub(crate) corner_radius: f32,

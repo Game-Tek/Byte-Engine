@@ -1,4 +1,4 @@
-//! Clipping, feather-mask, and visual-transform preparation.
+//! Clipping, clip-mask, and visual-transform preparation.
 
 use super::*;
 
@@ -14,8 +14,8 @@ pub(super) enum EffectiveClip {
 pub(super) struct VisualState {
 	pub(super) clip: EffectiveClip,
 	descendant_clip: EffectiveClip,
-	pub(super) feather: Option<FeatherMask>,
-	descendant_feather: Option<FeatherMask>,
+	pub(super) mask: Option<ClipMask>,
+	descendant_mask: Option<ClipMask>,
 	opacity: Option<f32>,
 	/// The product of every ancestor's and this element's visual scale, so curve
 	/// points and glyph sizes follow a zoomed subtree the way its rectangles do.
@@ -27,8 +27,8 @@ impl Default for VisualState {
 		Self {
 			clip: EffectiveClip::Unbounded,
 			descendant_clip: EffectiveClip::Unbounded,
-			feather: None,
-			descendant_feather: None,
+			mask: None,
+			descendant_mask: None,
 			opacity: None,
 			scale: [1.0, 1.0],
 		}
@@ -63,7 +63,7 @@ pub(super) fn geometry_from_layout_element(element: &LayoutElement) -> Geometry 
 	Geometry::new(element.position, element.size)
 }
 
-/// Resolves clip and feather inheritance together without allocating per-element maps.
+/// Resolves clip and mask inheritance together without allocating per-element maps.
 pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTree, states: &mut Vec<VisualState>) {
 	states.clear();
 	states.resize(tree.elements.len(), VisualState::default());
@@ -79,12 +79,12 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 			inherited = VisualState::default();
 		}
 		let clip = inherited.descendant_clip;
-		let feather = inherited.descendant_feather;
+		let mask = inherited.descendant_mask;
 		let mut state = VisualState {
 			clip,
 			descendant_clip: clip,
-			feather,
-			descendant_feather: feather,
+			mask,
+			descendant_mask: mask,
 			opacity: None,
 			scale,
 		};
@@ -98,14 +98,14 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 			state.descendant_clip = clip.clip_descendants(geometry);
 			// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
 			let own_feather = first_layer_feather(container.style.layers());
-			state.descendant_feather = (own_feather.is_some() || corner_radius > 0.0)
-				.then(|| FeatherMask {
+			state.descendant_mask = (own_feather.is_some() || corner_radius > 0.0)
+				.then(|| ClipMask {
 					geometry,
 					feather: own_feather.unwrap_or_else(EdgeFeather::none),
 					corner_radius,
 					corner_exponent: container.corner_exponent,
 				})
-				.or(feather);
+				.or(mask);
 		}
 		states[index] = state;
 	}

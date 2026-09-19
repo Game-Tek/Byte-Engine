@@ -26,7 +26,7 @@ fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 		position,
 		size,
 		clip: None,
-		feather_mask: None,
+		clip_mask: None,
 		color: [1.0, 1.0, 1.0, 1.0],
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
@@ -94,7 +94,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 			position: [100.0, 100.0],
 			size: [50.0, 50.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: [1.0; 4],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -188,6 +188,6 @@ fn clear_quad_covers_the_viewport_with_transparent_black() {
 		assert_eq!(vertex.color, [0.0; 4]);
 		// No rounded corner and no feather mask, so the rectangle shader's coverage is one everywhere.
 		assert_eq!(vertex.corner_radius, 0.0);
-		assert_eq!(vertex.feather_mask_size, [0.0, 0.0]);
+		assert_eq!(vertex.clip_mask_size, [0.0, 0.0]);
 	}
 }

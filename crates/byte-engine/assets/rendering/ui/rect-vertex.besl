@@ -7,10 +7,10 @@ in_corner_radius: input<f32, 5>;
 in_corner_exponent: input<f32, 6>;
 in_layer_kind: input<f32, 7>;
 in_stroke_width: input<f32, 8>;
-in_feather_mask_position: input<vec2f, 9>;
-in_feather_mask_size: input<vec2f, 10>;
-in_feather_mask_edges: input<vec4f, 11>;
-in_feather_mask_corner: input<vec2f, 12>;
+in_clip_mask_position: input<vec2f, 9>;
+in_clip_mask_size: input<vec2f, 10>;
+in_clip_mask_edges: input<vec4f, 11>;
+in_clip_mask_corner: input<vec2f, 12>;
 in_blur_resolution_mix: input<f32, 13>;
 
 main: fn () -> interface {
@@ -23,10 +23,10 @@ main: fn () -> interface {
 	corner_exponent: f32,
 	layer_kind: f32,
 	stroke_width: f32,
-	feather_mask_position: vec2f,
-	feather_mask_size: vec2f,
-	feather_mask_edges: vec4f,
-	feather_mask_corner: vec2f,
+	clip_mask_position: vec2f,
+	clip_mask_size: vec2f,
+	clip_mask_edges: vec4f,
+	clip_mask_corner: vec2f,
 	screen_uv: vec2f,
 	blur_resolution_mix: f32,
 } {
@@ -43,10 +43,10 @@ main: fn () -> interface {
 		corner_exponent: in_corner_exponent,
 		layer_kind: in_layer_kind,
 		stroke_width: in_stroke_width,
-		feather_mask_position: in_feather_mask_position,
-		feather_mask_size: in_feather_mask_size,
-		feather_mask_edges: in_feather_mask_edges,
-		feather_mask_corner: in_feather_mask_corner,
+		clip_mask_position: in_clip_mask_position,
+		clip_mask_size: in_clip_mask_size,
+		clip_mask_edges: in_clip_mask_edges,
+		clip_mask_corner: in_clip_mask_corner,
 		screen_uv,
 		blur_resolution_mix: in_blur_resolution_mix,
 	};

@@ -4,10 +4,10 @@ main: fn(pipeline_input: interface {
 	segment_to: vec2f,
 	color: vec4f,
 	half_width: f32,
-	feather_mask_position: vec2f,
-	feather_mask_size: vec2f,
-	feather_mask_edges: vec4f,
-	feather_mask_corner: vec2f,
+	clip_mask_position: vec2f,
+	clip_mask_size: vec2f,
+	clip_mask_edges: vec4f,
+	clip_mask_corner: vec2f,
 }) -> output { color_attachment: vec4f } {
 	let segment: vec2f = pipeline_input.segment_to - pipeline_input.segment_from;
 	let segment_length: f32 = sqrt(max(dot(segment, segment), 0.0001));
@@ -16,24 +16,24 @@ main: fn(pipeline_input: interface {
 	let relative_position: vec2f = pipeline_input.pixel_position - (pipeline_input.segment_from + pipeline_input.segment_to) * 0.5;
 	let strip_distance: vec2f = abs(vec2f(dot(relative_position, tangent), dot(relative_position, normal))) - vec2f(segment_length * 0.5, pipeline_input.half_width);
 	let signed_distance: f32 = length(vec4f(max(strip_distance, vec2f(0.0, 0.0)).x, max(strip_distance, vec2f(0.0, 0.0)).y, 0.0, 0.0)) + min(max(strip_distance.x, strip_distance.y), 0.0);
-	let coverage: f32 = 1.0 - smoothstep(0.0 - max(fwidth(signed_distance), 1.0), max(fwidth(signed_distance), 1.0), signed_distance);
-	let feather_top: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.feather_mask_edges.x, 0.0001), pipeline_input.pixel_position.y - pipeline_input.feather_mask_position.y), step(0.0001, pipeline_input.feather_mask_edges.x));
-	let feather_right: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.feather_mask_edges.y, 0.0001), pipeline_input.feather_mask_position.x + pipeline_input.feather_mask_size.x - pipeline_input.pixel_position.x), step(0.0001, pipeline_input.feather_mask_edges.y));
-	let feather_bottom: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.feather_mask_edges.z, 0.0001), pipeline_input.feather_mask_position.y + pipeline_input.feather_mask_size.y - pipeline_input.pixel_position.y), step(0.0001, pipeline_input.feather_mask_edges.z));
-	let feather_left: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.feather_mask_edges.w, 0.0001), pipeline_input.pixel_position.x - pipeline_input.feather_mask_position.x), step(0.0001, pipeline_input.feather_mask_edges.w));
-	let feather_half_size: vec2f = pipeline_input.feather_mask_size * 0.5;
-	let feather_corner_radius: f32 = min(pipeline_input.feather_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
-	let feather_corner_exponent: f32 = pipeline_input.feather_mask_corner.y;
-	let feather_centered_position: vec2f = pipeline_input.pixel_position - pipeline_input.feather_mask_position - feather_half_size;
+	let coverage: f32 = clamp(0.5 - signed_distance / max(fwidth(signed_distance), 1.0), 0.0, 1.0);
+	let feather_top: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.clip_mask_edges.x, 0.0001), pipeline_input.pixel_position.y - pipeline_input.clip_mask_position.y), step(0.0001, pipeline_input.clip_mask_edges.x));
+	let feather_right: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.clip_mask_edges.y, 0.0001), pipeline_input.clip_mask_position.x + pipeline_input.clip_mask_size.x - pipeline_input.pixel_position.x), step(0.0001, pipeline_input.clip_mask_edges.y));
+	let feather_bottom: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.clip_mask_edges.z, 0.0001), pipeline_input.clip_mask_position.y + pipeline_input.clip_mask_size.y - pipeline_input.pixel_position.y), step(0.0001, pipeline_input.clip_mask_edges.z));
+	let feather_left: f32 = mix(1.0, smoothstep(0.0, max(pipeline_input.clip_mask_edges.w, 0.0001), pipeline_input.pixel_position.x - pipeline_input.clip_mask_position.x), step(0.0001, pipeline_input.clip_mask_edges.w));
+	let feather_half_size: vec2f = pipeline_input.clip_mask_size * 0.5;
+	let feather_corner_radius: f32 = min(pipeline_input.clip_mask_corner.x, min(feather_half_size.x, feather_half_size.y));
+	let feather_corner_exponent: f32 = pipeline_input.clip_mask_corner.y;
+	let feather_centered_position: vec2f = pipeline_input.pixel_position - pipeline_input.clip_mask_position - feather_half_size;
 	let feather_rounded_extent: vec2f = feather_half_size - vec2f(feather_corner_radius, feather_corner_radius);
 	let feather_corner_delta: vec2f = abs(feather_centered_position) - feather_rounded_extent;
 	let feather_abs_corner: vec2f = max(feather_corner_delta, vec2f(0.0, 0.0));
 	let feather_corner_sum: f32 = pow(feather_abs_corner.x, feather_corner_exponent) + pow(feather_abs_corner.y, feather_corner_exponent);
 	let feather_field_distance: f32 = pow(feather_corner_sum, 1.0 / feather_corner_exponent) + min(max(feather_corner_delta.x, feather_corner_delta.y), 0.0) - feather_corner_radius;
-	let feather_mask_enabled: f32 = step(0.0001, min(pipeline_input.feather_mask_size.x, pipeline_input.feather_mask_size.y));
+	let clip_mask_enabled: f32 = step(0.0001, min(pipeline_input.clip_mask_size.x, pipeline_input.clip_mask_size.y));
 	let feather_rounded_shape: f32 = step(0.0001, feather_corner_radius);
-	let feather_shape_coverage: f32 = mix(1.0, 1.0 - smoothstep(0.0 - 1.0, 1.0, feather_field_distance), feather_rounded_shape);
-	let feather_coverage: f32 = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, feather_mask_enabled);
+	let feather_shape_coverage: f32 = mix(1.0, clamp(0.5 - feather_field_distance, 0.0, 1.0), feather_rounded_shape);
+	let feather_coverage: f32 = mix(1.0, feather_top * feather_right * feather_bottom * feather_left * feather_shape_coverage, clip_mask_enabled);
 	let color_attachment: vec4f = vec4f(
 		pipeline_input.color.x,
 		pipeline_input.color.y,

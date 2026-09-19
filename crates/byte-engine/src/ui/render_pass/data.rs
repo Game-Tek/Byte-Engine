@@ -73,10 +73,10 @@ pub(super) const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 14] = [
 	ghi::pipelines::VertexElement::new("CORNER_EXPONENT", ghi::DataTypes::Float, 0),
 	ghi::pipelines::VertexElement::new("LAYER_KIND", ghi::DataTypes::Float, 0),
 	ghi::pipelines::VertexElement::new("STROKE_WIDTH", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("BLUR_RESOLUTION_MIX", ghi::DataTypes::Float, 0),
 ];
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -86,7 +86,7 @@ pub(super) struct UiDrawElement {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
-	pub(super) feather_mask: Option<DrawFeatherMask>,
+	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: [f32; 4],
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
@@ -101,7 +101,7 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
-	pub(super) feather_mask: Option<DrawFeatherMask>,
+	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: [f32; 4],
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
@@ -115,7 +115,7 @@ pub(super) struct UiTextDrawElement {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
-	pub(super) feather_mask: Option<DrawFeatherMask>,
+	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: RGBA,
 	pub(super) font_size: f32,
 	pub(super) text: String,
@@ -130,7 +130,7 @@ impl Clone for UiTextDrawElement {
 			position: self.position,
 			size: self.size,
 			clip: self.clip,
-			feather_mask: self.feather_mask,
+			clip_mask: self.clip_mask,
 			color: self.color,
 			font_size: self.font_size,
 			text: self.text.clone(),
@@ -143,7 +143,7 @@ impl Clone for UiTextDrawElement {
 		self.position = source.position;
 		self.size = source.size;
 		self.clip = source.clip;
-		self.feather_mask = source.feather_mask;
+		self.clip_mask = source.clip_mask;
 		self.color = source.color;
 		self.font_size = source.font_size;
 		self.text.clone_from(&source.text);
@@ -162,7 +162,7 @@ pub(super) struct UiImageDrawElement {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
-	pub(super) feather_mask: Option<DrawFeatherMask>,
+	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) opacity: f32,
 }
 
@@ -173,7 +173,7 @@ pub(super) struct UiCurveDrawElement {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
-	pub(super) feather_mask: Option<DrawFeatherMask>,
+	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) color: [f32; 4],
 	pub(super) stroke_width: f32,
 	pub(super) segments: Vec<CurveSegment>,
@@ -188,7 +188,7 @@ impl Clone for UiCurveDrawElement {
 			position: self.position,
 			size: self.size,
 			clip: self.clip,
-			feather_mask: self.feather_mask,
+			clip_mask: self.clip_mask,
 			color: self.color,
 			stroke_width: self.stroke_width,
 			segments: self.segments.clone(),
@@ -201,7 +201,7 @@ impl Clone for UiCurveDrawElement {
 		self.position = source.position;
 		self.size = source.size;
 		self.clip = source.clip;
-		self.feather_mask = source.feather_mask;
+		self.clip_mask = source.clip_mask;
 		self.color = source.color;
 		self.stroke_width = source.stroke_width;
 		self.segments.clone_from(&source.segments);
@@ -215,7 +215,7 @@ pub(super) struct DrawClip {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct DrawFeatherMask {
+pub(super) struct DrawClipMask {
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) edges: [f32; 4],
@@ -267,10 +267,10 @@ pub(super) struct UiVertex {
 	pub(super) corner_exponent: f32,
 	pub(super) layer_kind: f32,
 	pub(super) stroke_width: f32,
-	pub(super) feather_mask_position: [f32; 2],
-	pub(super) feather_mask_size: [f32; 2],
-	pub(super) feather_mask_edges: [f32; 4],
-	pub(super) feather_mask_corner: [f32; 2],
+	pub(super) clip_mask_position: [f32; 2],
+	pub(super) clip_mask_size: [f32; 2],
+	pub(super) clip_mask_edges: [f32; 4],
+	pub(super) clip_mask_corner: [f32; 2],
 	pub(super) blur_resolution_mix: f32,
 }
 
@@ -278,10 +278,10 @@ pub(super) const UI_IMAGE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 7] = [
 	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("OPACITY", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
 ];
 
 #[repr(C)]
@@ -290,10 +290,10 @@ pub(super) struct UiImageVertex {
 	pub(super) position: [f32; 2],
 	pub(super) uv: [f32; 2],
 	pub(super) opacity: f32,
-	pub(super) feather_mask_position: [f32; 2],
-	pub(super) feather_mask_size: [f32; 2],
-	pub(super) feather_mask_edges: [f32; 4],
-	pub(super) feather_mask_corner: [f32; 2],
+	pub(super) clip_mask_position: [f32; 2],
+	pub(super) clip_mask_size: [f32; 2],
+	pub(super) clip_mask_edges: [f32; 4],
+	pub(super) clip_mask_corner: [f32; 2],
 }
 
 pub(super) const UI_CURVE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 10] = [
@@ -303,10 +303,10 @@ pub(super) const UI_CURVE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 10] = [
 	ghi::pipelines::VertexElement::new("SEGMENT_TO", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("HALF_WIDTH", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
 ];
 
 #[repr(C)]
@@ -318,10 +318,10 @@ pub(super) struct UiCurveVertex {
 	pub(super) segment_to: [f32; 2],
 	pub(super) color: [f32; 4],
 	pub(super) half_width: f32,
-	pub(super) feather_mask_position: [f32; 2],
-	pub(super) feather_mask_size: [f32; 2],
-	pub(super) feather_mask_edges: [f32; 4],
-	pub(super) feather_mask_corner: [f32; 2],
+	pub(super) clip_mask_position: [f32; 2],
+	pub(super) clip_mask_size: [f32; 2],
+	pub(super) clip_mask_edges: [f32; 4],
+	pub(super) clip_mask_corner: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -686,7 +686,7 @@ pub(super) fn clear_quad() -> [UiVertex; UI_VERTICES_PER_ELEMENT] {
 		position,
 		rect_size: [1.0, 1.0],
 		corner_exponent: 2.0,
-		feather_mask_corner: [0.0, 2.0],
+		clip_mask_corner: [0.0, 2.0],
 		..UiVertex::default()
 	};
 	[
@@ -914,8 +914,8 @@ pub(super) fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip
 	})
 }
 
-pub(super) fn draw_feather_mask_from_layout(mask: Option<FeatherMask>) -> Option<DrawFeatherMask> {
-	mask.map(|mask| DrawFeatherMask {
+pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>) -> Option<DrawClipMask> {
+	mask.map(|mask| DrawClipMask {
 		position: [mask.geometry.x(), mask.geometry.y()],
 		size: [mask.geometry.width(), mask.geometry.height()],
 		edges: [mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left],
@@ -923,14 +923,34 @@ pub(super) fn draw_feather_mask_from_layout(mask: Option<FeatherMask>) -> Option
 	})
 }
 
-pub(super) fn scaled_feather_mask(mask: Option<DrawFeatherMask>, sx: f32, sy: f32) -> DrawFeatherMask {
-	mask.map(|mask| DrawFeatherMask {
-		position: [mask.position[0] * sx, mask.position[1] * sy],
-		size: [mask.size[0] * sx, mask.size[1] * sy],
+/// Converts a layout rectangle to viewport pixels with its edges on whole pixels, as `[x0, y0, x1, y1]`.
+///
+/// Every rectangle, clip, and mask goes through here, so shared edges stay shared
+/// and a one pixel border covers one pixel instead of straddling two. Edges round
+/// rather than sizes, and a visible span never rounds away.
+pub(super) fn snapped_rect(position: [f32; 2], size: [f32; 2], sx: f32, sy: f32) -> [f32; 4] {
+	let span = |position: f32, size: f32, scale: f32| {
+		let start = (position * scale).round();
+		let end = ((position + size) * scale).round();
+		(start, if size * scale > 0.0 { end.max(start + 1.0) } else { end })
+	};
+	let (x0, x1) = span(position[0], size[0], sx);
+	let (y0, y1) = span(position[1], size[1], sy);
+	[x0, y0, x1, y1]
+}
+
+pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> DrawClipMask {
+	mask.map(|mask| {
+		let [x0, y0, x1, y1] = snapped_rect(mask.position, mask.size, sx, sy);
+		(mask, [x0, y0], [x1 - x0, y1 - y0])
+	})
+	.map(|(mask, position, size)| DrawClipMask {
+		position,
+		size,
 		edges: [mask.edges[0] * sy, mask.edges[1] * sx, mask.edges[2] * sy, mask.edges[3] * sx],
 		corner: [mask.corner[0] * sx.min(sy), mask.corner[1]],
 	})
-	.unwrap_or(DrawFeatherMask {
+	.unwrap_or(DrawClipMask {
 		position: [0.0, 0.0],
 		size: [0.0, 0.0],
 		edges: [0.0, 0.0, 0.0, 0.0],
@@ -973,7 +993,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
-				feather_mask: draw_feather_mask_from_layout(element.feather_mask),
+				clip_mask: draw_clip_mask_from_layout(element.clip_mask),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1001,7 +1021,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
-				feather_mask: draw_feather_mask_from_layout(element.feather_mask),
+				clip_mask: draw_clip_mask_from_layout(element.clip_mask),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1037,7 +1057,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(curve.clip),
-				feather_mask: draw_feather_mask_from_layout(curve.feather_mask),
+				clip_mask: draw_clip_mask_from_layout(curve.clip_mask),
 				color: color.into(),
 				stroke_width: stroke_width * curve.scale[0].min(curve.scale[1]),
 				segments: Vec::new(),
@@ -1069,7 +1089,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [image.position.x(), image.position.y()],
 			size: [image.size.x(), image.size.y()],
 			clip: draw_clip_from_geometry(image.clip),
-			feather_mask: draw_feather_mask_from_layout(image.feather_mask),
+			clip_mask: draw_clip_mask_from_layout(image.clip_mask),
 			opacity: image.opacity,
 		});
 	}
@@ -1087,7 +1107,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [text.position.x(), text.position.y()],
 			size: [text.size.x(), text.size.y()],
 			clip: draw_clip_from_geometry(text.clip),
-			feather_mask: draw_feather_mask_from_layout(text.feather_mask),
+			clip_mask: draw_clip_mask_from_layout(text.clip_mask),
 			color,
 			font_size: text.font_size * text.scale,
 			text: String::new(),

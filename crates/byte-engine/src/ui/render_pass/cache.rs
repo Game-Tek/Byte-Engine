@@ -70,7 +70,7 @@ impl<K: PartialEq + Clone, V: Copy> SurfaceCache<K, V> {
 
 /// Image pixels and source indices do not affect a quad's shape or UV coordinates.
 pub(super) type ImageGeometryCache =
-	SurfaceCache<([f32; 2], [f32; 2], Option<DrawClip>, Option<DrawFeatherMask>, f32), Option<[UiImageVertex; 4]>>;
+	SurfaceCache<([f32; 2], [f32; 2], Option<DrawClip>, Option<DrawClipMask>, f32), Option<[UiImageVertex; 4]>>;
 
 /// The `CurveGeometryCache` struct retains local tessellation and the last visible quads.
 #[derive(Default)]

@@ -93,7 +93,7 @@ struct Footprint {
 	/// Visible rectangle after the element's own outset and its clip.
 	rect: Option<Geometry>,
 	clip: Option<Geometry>,
-	feather: Option<FeatherMask>,
+	mask: Option<ClipMask>,
 	opacity: f32,
 	scale: [f32; 2],
 }
@@ -799,7 +799,7 @@ impl<C: 'static> Engine<C> {
 			self.rendered_revisions[index] = retained_element.revision;
 			let state = self.visual_state[index];
 			let clip = state.clip.as_rect();
-			let feather_mask = state.feather;
+			let clip_mask = state.mask;
 			let opacity = effective_opacity(index, &tree, &mut self.visual_state);
 			let style = retained_element.element.primitive.style();
 			// Curves stroke outward from their path; rectangles stroke inward.
@@ -829,7 +829,7 @@ impl<C: 'static> Engine<C> {
 					}
 				},
 				clip,
-				feather: feather_mask,
+				mask: clip_mask,
 				opacity,
 				scale: state.scale,
 			};
@@ -851,7 +851,7 @@ impl<C: 'static> Engine<C> {
 					entry.position = element.position;
 					entry.size = element.size;
 					entry.clip = clip;
-					entry.feather_mask = feather_mask;
+					entry.clip_mask = clip_mask;
 					entry.opacity = opacity;
 					element_count += 1;
 					return;
@@ -866,7 +866,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					clip,
-					feather_mask,
+					clip_mask,
 					style: ConcreteStyle { layers },
 					opacity,
 					backdrop_blur_radius: style
@@ -892,7 +892,7 @@ impl<C: 'static> Engine<C> {
 					entry.position = element.position;
 					entry.size = element.size;
 					entry.clip = clip;
-					entry.feather_mask = feather_mask;
+					entry.clip_mask = clip_mask;
 					entry.opacity = opacity;
 					entry.scale = state.scale[0].min(state.scale[1]);
 					text_count += 1;
@@ -909,7 +909,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					clip,
-					feather_mask,
+					clip_mask,
 					color: match style.layers().first().map(|layer| &layer.color) {
 						Some(Color::Value(rgba)) => *rgba,
 						_ => RGBA::white(),
@@ -945,7 +945,7 @@ impl<C: 'static> Engine<C> {
 						entry.position = element.position;
 						entry.size = element.size;
 						entry.clip = clip;
-						entry.feather_mask = feather_mask;
+						entry.clip_mask = clip_mask;
 						entry.opacity = opacity;
 						entry.scale = state.scale;
 						curve_count += 1;
@@ -963,7 +963,7 @@ impl<C: 'static> Engine<C> {
 						position: element.position,
 						size: element.size,
 						clip,
-						feather_mask,
+						clip_mask,
 						style: ConcreteStyle { layers },
 						opacity,
 						scale: state.scale,
@@ -986,7 +986,7 @@ impl<C: 'static> Engine<C> {
 					position: element.position,
 					size: element.size,
 					clip,
-					feather_mask,
+					clip_mask,
 					opacity,
 				}),
 				Primitives::Text(text) => push_text(text.content(), text.settings().font_size),
@@ -3519,20 +3519,20 @@ mod tests {
 			.find(|element| element.id == 2)
 			.expect("expected test value");
 		let text = render.texts().find(|text| text.id == 3).expect("expected test value");
-		let expected = FeatherMask {
+		let expected = ClipMask {
 			geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
 			feather: EdgeFeather::vertical(8.0),
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
 		};
 
-		assert_eq!(parent.feather_mask, None);
-		assert_eq!(child.feather_mask, Some(expected));
-		assert_eq!(text.feather_mask, Some(expected));
+		assert_eq!(parent.clip_mask, None);
+		assert_eq!(child.clip_mask, Some(expected));
+		assert_eq!(text.clip_mask, Some(expected));
 	}
 
 	#[test]
-	fn clip_false_prevents_layer_feather_mask_inheritance() {
+	fn clip_false_prevents_layer_clip_mask_inheritance() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
@@ -3558,7 +3558,7 @@ mod tests {
 			.find(|element| element.id == 2)
 			.expect("expected test value");
 
-		assert_eq!(child.feather_mask, None);
+		assert_eq!(child.clip_mask, None);
 	}
 
 	#[test]
@@ -3590,8 +3590,8 @@ mod tests {
 			.expect("expected test value");
 
 		assert_eq!(
-			child.feather_mask,
-			Some(FeatherMask {
+			child.clip_mask,
+			Some(ClipMask {
 				geometry: Geometry::new(Location3::new(0, 0, 0), Size::new(50, 40)),
 				feather: EdgeFeather::horizontal(4.0),
 				corner_radius: 0.0,
@@ -3627,7 +3627,7 @@ mod tests {
 			.elements()
 			.find(|element| element.id == 2)
 			.expect("expected test value");
-		let mask = child.feather_mask.expect("expected test value");
+		let mask = child.clip_mask.expect("expected test value");
 
 		assert_eq!(mask.corner_radius, 8.0);
 		assert_eq!(mask.corner_exponent, 4.0);
@@ -3641,11 +3641,15 @@ mod tests {
 		engine.mount(|ctx| {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(
-					Container::default().width(50.into()).height(40.into()).corner_radius(8.0).style(
-						ConcreteStyle::new()
-							.layer(ConcreteLayer::default())
-							.layer(ConcreteLayer::default().stroke(2.0)),
-					),
+					Container::default()
+						.width(50.into())
+						.height(40.into())
+						.corner_radius(8.0)
+						.style(
+							ConcreteStyle::new()
+								.layer(ConcreteLayer::default())
+								.layer(ConcreteLayer::default().stroke(2.0)),
+						),
 				);
 				frame
 					.element("child")
@@ -3660,7 +3664,7 @@ mod tests {
 			.find(|element| element.id == 2)
 			.expect("expected test value");
 		let inside = Geometry::new(Location3::new(2, 2, 0), Size::new(46, 36));
-		let mask = child.feather_mask.expect("expected test value");
+		let mask = child.clip_mask.expect("expected test value");
 
 		assert_eq!(child.clip, Some(inside));
 		assert_eq!(mask.geometry.size, inside.size);
@@ -4864,7 +4868,7 @@ use std::{
 use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex};
 
 use super::{
-	ConcreteElement, FeatherMask, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
+	ClipMask, ConcreteElement, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
 	RenderTextElement,
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},

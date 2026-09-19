@@ -4,10 +4,10 @@ in_segment_from: input<vec2f, 2>;
 in_segment_to: input<vec2f, 3>;
 in_color: input<vec4f, 4>;
 in_half_width: input<f32, 5>;
-in_feather_mask_position: input<vec2f, 6>;
-in_feather_mask_size: input<vec2f, 7>;
-in_feather_mask_edges: input<vec4f, 8>;
-in_feather_mask_corner: input<vec2f, 9>;
+in_clip_mask_position: input<vec2f, 6>;
+in_clip_mask_size: input<vec2f, 7>;
+in_clip_mask_edges: input<vec4f, 8>;
+in_clip_mask_corner: input<vec2f, 9>;
 
 main: fn() -> interface {
 	position: vec4f,
@@ -16,10 +16,10 @@ main: fn() -> interface {
 	segment_to: vec2f,
 	color: vec4f,
 	half_width: f32,
-	feather_mask_position: vec2f,
-	feather_mask_size: vec2f,
-	feather_mask_edges: vec4f,
-	feather_mask_corner: vec2f,
+	clip_mask_position: vec2f,
+	clip_mask_size: vec2f,
+	clip_mask_edges: vec4f,
+	clip_mask_corner: vec2f,
 } {
 	let position: vec4f = vec4f(in_position.x, in_position.y, 0.0, 1.0);
 
@@ -30,9 +30,9 @@ main: fn() -> interface {
 		segment_to: in_segment_to,
 		color: in_color,
 		half_width: in_half_width,
-		feather_mask_position: in_feather_mask_position,
-		feather_mask_size: in_feather_mask_size,
-		feather_mask_edges: in_feather_mask_edges,
-		feather_mask_corner: in_feather_mask_corner,
+		clip_mask_position: in_clip_mask_position,
+		clip_mask_size: in_clip_mask_size,
+		clip_mask_edges: in_clip_mask_edges,
+		clip_mask_corner: in_clip_mask_corner,
 	};
 }

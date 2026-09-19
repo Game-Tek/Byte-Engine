@@ -185,16 +185,11 @@ pub(super) fn build_ui_blur_geometry<'a>(
 			break;
 		}
 
-		let original_x0 = blur.position[0] * sx;
-		let original_y0 = blur.position[1] * sy;
-		let original_x1 = original_x0 + rect_width;
-		let original_y1 = original_y0 + rect_height;
+		let [original_x0, original_y0, original_x1, original_y1] = snapped_rect(blur.position, blur.size, sx, sy);
+		let (rect_width, rect_height) = (original_x1 - original_x0, original_y1 - original_y0);
 		let (x0, y0, x1, y1) = match blur.clip {
 			Some(clip) => {
-				let clip_x0 = clip.position[0] * sx;
-				let clip_y0 = clip.position[1] * sy;
-				let clip_x1 = clip_x0 + clip.size[0] * sx;
-				let clip_y1 = clip_y0 + clip.size[1] * sy;
+				let [clip_x0, clip_y0, clip_x1, clip_y1] = snapped_rect(clip.position, clip.size, sx, sy);
 				(
 					original_x0.max(clip_x0),
 					original_y0.max(clip_y0),
@@ -218,7 +213,7 @@ pub(super) fn build_ui_blur_geometry<'a>(
 		let local_y1 = y1 - original_y0;
 		let corner_radius = resolved_corner_radius(blur.corner_radius * radius_scale, rect_width, rect_height);
 		let corner_exponent = resolved_corner_exponent(blur.corner_exponent);
-		let feather_mask = scaled_feather_mask(blur.feather_mask, sx, sy);
+		let clip_mask = scaled_clip_mask(blur.clip_mask, sx, sy);
 		let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 		let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
 		let first_index = geometry.indices.len() as u32;
@@ -251,10 +246,10 @@ pub(super) fn build_ui_blur_geometry<'a>(
 				corner_exponent,
 				layer_kind: 0.0,
 				stroke_width: 0.0,
-				feather_mask_position: feather_mask.position,
-				feather_mask_size: feather_mask.size,
-				feather_mask_edges: feather_mask.edges,
-				feather_mask_corner: feather_mask.corner,
+				clip_mask_position: clip_mask.position,
+				clip_mask_size: clip_mask.size,
+				clip_mask_edges: clip_mask.edges,
+				clip_mask_corner: clip_mask.corner,
 				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
@@ -267,10 +262,10 @@ pub(super) fn build_ui_blur_geometry<'a>(
 				corner_exponent,
 				layer_kind: 0.0,
 				stroke_width: 0.0,
-				feather_mask_position: feather_mask.position,
-				feather_mask_size: feather_mask.size,
-				feather_mask_edges: feather_mask.edges,
-				feather_mask_corner: feather_mask.corner,
+				clip_mask_position: clip_mask.position,
+				clip_mask_size: clip_mask.size,
+				clip_mask_edges: clip_mask.edges,
+				clip_mask_corner: clip_mask.corner,
 				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
@@ -283,10 +278,10 @@ pub(super) fn build_ui_blur_geometry<'a>(
 				corner_exponent,
 				layer_kind: 0.0,
 				stroke_width: 0.0,
-				feather_mask_position: feather_mask.position,
-				feather_mask_size: feather_mask.size,
-				feather_mask_edges: feather_mask.edges,
-				feather_mask_corner: feather_mask.corner,
+				clip_mask_position: clip_mask.position,
+				clip_mask_size: clip_mask.size,
+				clip_mask_edges: clip_mask.edges,
+				clip_mask_corner: clip_mask.corner,
 				blur_resolution_mix: resolution_mix,
 			},
 			UiVertex {
@@ -299,10 +294,10 @@ pub(super) fn build_ui_blur_geometry<'a>(
 				corner_exponent,
 				layer_kind: 0.0,
 				stroke_width: 0.0,
-				feather_mask_position: feather_mask.position,
-				feather_mask_size: feather_mask.size,
-				feather_mask_edges: feather_mask.edges,
-				feather_mask_corner: feather_mask.corner,
+				clip_mask_position: clip_mask.position,
+				clip_mask_size: clip_mask.size,
+				clip_mask_edges: clip_mask.edges,
+				clip_mask_corner: clip_mask.corner,
 				blur_resolution_mix: resolution_mix,
 			},
 		]);
@@ -408,7 +403,7 @@ pub(super) fn build_ui_curve_geometry_damaged<'a>(
 		) {
 			continue;
 		}
-		let feather_mask = scaled_feather_mask(curve.feather_mask, sx, sy);
+		let clip_mask = scaled_clip_mask(curve.clip_mask, sx, sy);
 		let first_index = geometry.indices.len();
 		let vertex_offset = geometry.vertices.len();
 
@@ -489,10 +484,10 @@ pub(super) fn build_ui_curve_geometry_damaged<'a>(
 							segment_to: [to.x, to.y],
 							color: curve.color,
 							half_width,
-							feather_mask_position: feather_mask.position,
-							feather_mask_size: feather_mask.size,
-							feather_mask_edges: feather_mask.edges,
-							feather_mask_corner: feather_mask.corner,
+							clip_mask_position: clip_mask.position,
+							clip_mask_size: clip_mask.size,
+							clip_mask_edges: clip_mask.edges,
+							clip_mask_corner: clip_mask.corner,
 						});
 					}
 					geometry.indices.extend_from_slice(&[
@@ -571,10 +566,7 @@ pub(super) fn clip_curve_span(from: &mut CurvePoint, to: &mut CurvePoint, clip: 
 		return true;
 	};
 
-	let x_min = clip.position[0] * sx;
-	let y_min = clip.position[1] * sy;
-	let x_max = x_min + clip.size[0] * sx;
-	let y_max = y_min + clip.size[1] * sy;
+	let [x_min, y_min, x_max, y_max] = snapped_rect(clip.position, clip.size, sx, sy);
 	let dx = to.x - from.x;
 	let dy = to.y - from.y;
 	let mut t0 = 0.0;
@@ -687,7 +679,7 @@ pub(super) fn build_ui_image_geometry_damaged<'a>(
 			break;
 		}
 
-		let key = (image.position, image.size, image.clip, image.feather_mask, image.opacity);
+		let key = (image.position, image.size, image.clip, image.clip_mask, image.opacity);
 		let first_index = geometry.indices.len();
 		let vertex_offset = geometry.vertices.len();
 		if let Some(cache) = cache.as_deref_mut() {
@@ -745,20 +737,14 @@ fn rectangle_vertices<R>(
 ) -> Option<R> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
-	let rect_width = (element.size[0] * sx).max(0.0);
-	let rect_height = (element.size[1] * sy).max(0.0);
+	let [original_x0, original_y0, original_x1, original_y1] = snapped_rect(element.position, element.size, sx, sy);
+	let rect_width = (original_x1 - original_x0).max(0.0);
+	let rect_height = (original_y1 - original_y0).max(0.0);
 	let radius_scale = sx.min(sy);
 	let stroke_width = element.stroke_width * radius_scale;
-	let original_x0 = element.position[0] * sx;
-	let original_y0 = element.position[1] * sy;
-	let original_x1 = original_x0 + rect_width;
-	let original_y1 = original_y0 + rect_height;
 	let (x0, y0, x1, y1) = match element.clip {
 		Some(clip) => {
-			let clip_x0 = clip.position[0] * sx;
-			let clip_y0 = clip.position[1] * sy;
-			let clip_x1 = clip_x0 + clip.size[0] * sx;
-			let clip_y1 = clip_y0 + clip.size[1] * sy;
+			let [clip_x0, clip_y0, clip_x1, clip_y1] = snapped_rect(clip.position, clip.size, sx, sy);
 			(
 				original_x0.max(clip_x0),
 				original_y0.max(clip_y0),
@@ -779,7 +765,7 @@ fn rectangle_vertices<R>(
 	let corner_radius = resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height);
 	let corner_exponent = resolved_corner_exponent(element.corner_exponent);
 	let layer_kind = layer_kind_value(element.layer_kind);
-	let feather_mask = scaled_feather_mask(element.feather_mask, sx, sy);
+	let clip_mask = scaled_clip_mask(element.clip_mask, sx, sy);
 
 	let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 	let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
@@ -795,10 +781,10 @@ fn rectangle_vertices<R>(
 			corner_exponent,
 			layer_kind,
 			stroke_width,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 			blur_resolution_mix: 0.0,
 		},
 		UiVertex {
@@ -811,10 +797,10 @@ fn rectangle_vertices<R>(
 			corner_exponent,
 			layer_kind,
 			stroke_width,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 			blur_resolution_mix: 0.0,
 		},
 		UiVertex {
@@ -827,10 +813,10 @@ fn rectangle_vertices<R>(
 			corner_exponent,
 			layer_kind,
 			stroke_width,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 			blur_resolution_mix: 0.0,
 		},
 		UiVertex {
@@ -843,10 +829,10 @@ fn rectangle_vertices<R>(
 			corner_exponent,
 			layer_kind,
 			stroke_width,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 			blur_resolution_mix: 0.0,
 		},
 	]))
@@ -879,18 +865,11 @@ fn image_vertices<R>(
 ) -> Option<R> {
 	let viewport_width = viewport.width().max(1) as f32;
 	let viewport_height = viewport.height().max(1) as f32;
-	let rect_width = image.size[0] * sx;
-	let rect_height = image.size[1] * sy;
-	let original_x0 = image.position[0] * sx;
-	let original_y0 = image.position[1] * sy;
-	let original_x1 = original_x0 + rect_width;
-	let original_y1 = original_y0 + rect_height;
+	let [original_x0, original_y0, original_x1, original_y1] = snapped_rect(image.position, image.size, sx, sy);
+	let (rect_width, rect_height) = (original_x1 - original_x0, original_y1 - original_y0);
 	let (x0, y0, x1, y1) = match image.clip {
 		Some(clip) => {
-			let clip_x0 = clip.position[0] * sx;
-			let clip_y0 = clip.position[1] * sy;
-			let clip_x1 = clip_x0 + clip.size[0] * sx;
-			let clip_y1 = clip_y0 + clip.size[1] * sy;
+			let [clip_x0, clip_y0, clip_x1, clip_y1] = snapped_rect(clip.position, clip.size, sx, sy);
 			(
 				original_x0.max(clip_x0),
 				original_y0.max(clip_y0),
@@ -908,7 +887,7 @@ fn image_vertices<R>(
 	let v0 = ((y0 - original_y0) / rect_height).clamp(0.0, 1.0);
 	let u1 = ((x1 - original_x0) / rect_width).clamp(0.0, 1.0);
 	let v1 = ((y1 - original_y0) / rect_height).clamp(0.0, 1.0);
-	let feather_mask = scaled_feather_mask(image.feather_mask, sx, sy);
+	let clip_mask = scaled_clip_mask(image.clip_mask, sx, sy);
 
 	let to_clip_x = |pixel_x: f32| (pixel_x / viewport_width) * 2.0 - 1.0;
 	let to_clip_y = |pixel_y: f32| 1.0 - (pixel_y / viewport_height) * 2.0;
@@ -918,37 +897,37 @@ fn image_vertices<R>(
 			position: [to_clip_x(x0), to_clip_y(y0)],
 			uv: [u0, v0],
 			opacity: image.opacity,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 		},
 		UiImageVertex {
 			position: [to_clip_x(x1), to_clip_y(y0)],
 			uv: [u1, v0],
 			opacity: image.opacity,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 		},
 		UiImageVertex {
 			position: [to_clip_x(x1), to_clip_y(y1)],
 			uv: [u1, v1],
 			opacity: image.opacity,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 		},
 		UiImageVertex {
 			position: [to_clip_x(x0), to_clip_y(y1)],
 			uv: [u0, v1],
 			opacity: image.opacity,
-			feather_mask_position: feather_mask.position,
-			feather_mask_size: feather_mask.size,
-			feather_mask_edges: feather_mask.edges,
-			feather_mask_corner: feather_mask.corner,
+			clip_mask_position: clip_mask.position,
+			clip_mask_size: clip_mask.size,
+			clip_mask_edges: clip_mask.edges,
+			clip_mask_corner: clip_mask.corner,
 		},
 	]))
 }

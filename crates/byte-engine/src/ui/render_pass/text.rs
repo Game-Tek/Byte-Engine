@@ -1,9 +1,10 @@
 //! UI glyph atlas packing and per-glyph text geometry generation.
 //!
 //! Text is drawn as fractionally positioned quads that sample one shared coverage atlas.
-//! Glyph bitmaps enter the atlas once per character and raster-size bucket and stay
+//! Glyph bitmaps enter the atlas once per character and whole-pixel raster size and stay
 //! resident, so an unchanged label costs no CPU rasterization and no upload.
-//! The GPU scales cached bitmaps to the requested size with linear filtering.
+//! A whole device size draws texel for texel on whole pixels; a fractional one leaves
+//! the GPU a small linear-filtered scale.
 
 use std::collections::HashMap;
 
@@ -26,10 +27,10 @@ pub(super) const UI_TEXT_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 9] = [
 	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
 	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("FEATHER_MASK_CORNER", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
+	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
 	ghi::pipelines::VertexElement::new("TRANSFORM", ghi::DataTypes::Float4, 0),
 ];
 
@@ -40,10 +41,10 @@ pub(super) struct UiTextVertex {
 	pub(super) uv: [f32; 2],
 	pub(super) color: [f32; 4],
 	pub(super) pixel_position: [f32; 2],
-	pub(super) feather_mask_position: [f32; 2],
-	pub(super) feather_mask_size: [f32; 2],
-	pub(super) feather_mask_edges: [f32; 4],
-	pub(super) feather_mask_corner: [f32; 2],
+	pub(super) clip_mask_position: [f32; 2],
+	pub(super) clip_mask_size: [f32; 2],
+	pub(super) clip_mask_edges: [f32; 4],
+	pub(super) clip_mask_corner: [f32; 2],
 	pub(super) transform: [f32; 4],
 }
 
@@ -402,15 +403,12 @@ impl PixelClip {
 	}
 }
 
-// Converts a layout-space clip to viewport pixels without rounding fractional boundaries.
+// Converts a layout-space clip to viewport pixels on the same whole-pixel edges as the rectangle that owns it.
 fn pixel_clip(clip: Option<DrawClip>, sx: f32, sy: f32, viewport: PixelClip) -> PixelClip {
 	let Some(clip) = clip else {
 		return viewport;
 	};
-	let x0 = clip.position[0] * sx;
-	let y0 = clip.position[1] * sy;
-	let x1 = (clip.position[0] + clip.size[0]) * sx;
-	let y1 = (clip.position[1] + clip.size[1]) * sy;
+	let [x0, y0, x1, y1] = snapped_rect(clip.position, clip.size, sx, sy);
 	PixelClip { x0, y0, x1, y1 }.intersect(viewport)
 }
 
@@ -712,10 +710,11 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 	geometry
 }
 
-/// Reuses the next multiple of four pixels, leaving a downscale for the GPU.
+/// Rasterizes at the nearest whole pixel size, so text at a whole device size draws
+/// texel for texel and a fractional zoom leaves the GPU only a few percent of scale.
 /// Keep this renderer policy separate from logical text measurement.
 fn raster_font_size(size: f32) -> f32 {
-	(size.max(1.0) / 4.0).ceil() * 4.0
+	size.max(1.0).round()
 }
 
 /// The `GlyphQuadInputs` struct keeps shared label transforms outside the glyph loop.
@@ -733,10 +732,14 @@ impl GlyphQuadInputs {
 		let [sx, sy] = scale;
 		let requested_size = (text.font_size * sx.min(sy)).max(1.0);
 		let residual = requested_size / raster_font_size(requested_size);
-		let origin = [text.position[0] * sx, text.position[1] * sy];
+		let mut origin = [text.position[0] * sx, text.position[1] * sy];
+		// Unscaled bitmaps land on whole pixels so linear filtering returns their texels exactly.
+		if residual == 1.0 {
+			origin = [origin[0].round(), origin[1].round()];
+		}
 		let width = viewport.width().max(1) as f32;
 		let height = viewport.height().max(1) as f32;
-		let mask = scaled_feather_mask(text.feather_mask, sx, sy);
+		let mask = scaled_clip_mask(text.clip_mask, sx, sy);
 		Self {
 			origin,
 			residual,
@@ -753,10 +756,10 @@ impl GlyphQuadInputs {
 					origin[0] * 2.0 / width - 1.0,
 					1.0 - origin[1] * 2.0 / height,
 				],
-				feather_mask_position: mask.position,
-				feather_mask_size: mask.size,
-				feather_mask_edges: mask.edges,
-				feather_mask_corner: mask.corner,
+				clip_mask_position: mask.position,
+				clip_mask_size: mask.size,
+				clip_mask_edges: mask.edges,
+				clip_mask_corner: mask.corner,
 			},
 		}
 	}
@@ -780,8 +783,14 @@ fn glyph_vertices(
 	// Include the transparent border so fractional placement does not cut off
 	// coverage filtered just outside the original bitmap.
 	let padding = UI_GLYPH_ATLAS_PADDING as f32;
-	let left = (glyph.x - padding) * residual + origin[0];
-	let top = (glyph.y - padding) * residual + origin[1];
+	// Fractional pen advances would put an unscaled bitmap between pixels; snap it like its label's origin.
+	let (glyph_x, glyph_y) = if residual == 1.0 {
+		(glyph.x.round(), glyph.y.round())
+	} else {
+		(glyph.x, glyph.y)
+	};
+	let left = (glyph_x - padding) * residual + origin[0];
+	let top = (glyph_y - padding) * residual + origin[1];
 	let quad = PixelClip {
 		x0: left,
 		y0: top,
@@ -800,10 +809,10 @@ fn glyph_vertices(
 		(quad.x1 - origin[0]) * inverse_residual,
 		(quad.y1 - origin[1]) * inverse_residual,
 	];
-	let u0 = (region.x as f32 + local[0] - glyph.x) * inverse_atlas_size;
-	let v0 = (region.y as f32 + local[1] - glyph.y) * inverse_atlas_size;
-	let u1 = (region.x as f32 + local[2] - glyph.x) * inverse_atlas_size;
-	let v1 = (region.y as f32 + local[3] - glyph.y) * inverse_atlas_size;
+	let u0 = (region.x as f32 + local[0] - glyph_x) * inverse_atlas_size;
+	let v0 = (region.y as f32 + local[1] - glyph_y) * inverse_atlas_size;
+	let u1 = (region.x as f32 + local[2] - glyph_x) * inverse_atlas_size;
+	let v1 = (region.y as f32 + local[3] - glyph_y) * inverse_atlas_size;
 	let (x0, y0, x1, y1) = (quad.x0, quad.y0, quad.x1, quad.y1);
 	let vertex = |pixel_position: [f32; 2], position: [f32; 2], uv: [f32; 2]| UiTextVertex {
 		position,
@@ -847,7 +856,7 @@ mod tests {
 			position,
 			size: [80.0, 20.0],
 			clip,
-			feather_mask: None,
+			clip_mask: None,
 			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
 			font_size: 16.0,
 			text: content.to_string(),
@@ -875,7 +884,8 @@ mod tests {
 		let count = atlas.len();
 		atlas.dirty = false;
 		for step in 1..20 {
-			list.texts[0].font_size = 13.1 + step as f32 * 0.1;
+			// Stay inside the 13 pixel bucket, which ends at 13.5.
+			list.texts[0].font_size = 13.1 + step as f32 * 0.02;
 			let geometry = build_ui_text_geometry(&list, Extent::square(100), &mut fonts, &mut atlas, &arena);
 			assert_eq!(atlas.len(), count);
 			assert!(!atlas.is_dirty(), "sizes in one bucket must reuse resident bitmaps");
@@ -1052,7 +1062,7 @@ mod tests {
 	}
 
 	#[test]
-	fn pixel_clip_preserves_fractional_edges_inside_the_viewport() {
+	fn pixel_clip_snaps_edges_to_whole_pixels_inside_the_viewport() {
 		let viewport = PixelClip {
 			x0: 0.0,
 			y0: 0.0,
@@ -1068,7 +1078,7 @@ mod tests {
 			1.0,
 			viewport,
 		);
-		assert_eq!((clip.x0, clip.y0, clip.x1, clip.y1), (20.8, 0.0, 61.2, 50.0));
+		assert_eq!((clip.x0, clip.y0, clip.x1, clip.y1), (21.0, 0.0, 61.0, 50.0));
 		assert!(!clip.is_empty());
 		assert_eq!(pixel_clip(None, 1.0, 1.0, viewport).x1, 100.0);
 	}

@@ -21,7 +21,7 @@ fn image_sources(bencher: Bencher, count: usize) {
 				position: [(index % 40 * 48) as f32, (index / 40 * 40) as f32],
 				size: [24.0, 24.0],
 				clip: None,
-				feather_mask: None,
+				clip_mask: None,
 				opacity: 1.0,
 			})
 			.collect(),

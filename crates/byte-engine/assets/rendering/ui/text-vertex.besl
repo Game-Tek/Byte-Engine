@@ -2,10 +2,10 @@ in_position: input<vec2f, 0>;
 in_uv: input<vec2f, 1>;
 in_color: input<vec4f, 2>;
 in_pixel_position: input<vec2f, 3>;
-in_feather_mask_position: input<vec2f, 4>;
-in_feather_mask_size: input<vec2f, 5>;
-in_feather_mask_edges: input<vec4f, 6>;
-in_feather_mask_corner: input<vec2f, 7>;
+in_clip_mask_position: input<vec2f, 4>;
+in_clip_mask_size: input<vec2f, 5>;
+in_clip_mask_edges: input<vec4f, 6>;
+in_clip_mask_corner: input<vec2f, 7>;
 
 in_transform: input<vec4f, 8>;
 
@@ -14,10 +14,10 @@ main: fn () -> interface {
 	uv: vec2f,
 	color: vec4f,
 	pixel_position: vec2f,
-	feather_mask_position: vec2f,
-	feather_mask_size: vec2f,
-	feather_mask_edges: vec4f,
-	feather_mask_corner: vec2f,
+	clip_mask_position: vec2f,
+	clip_mask_size: vec2f,
+	clip_mask_edges: vec4f,
+	clip_mask_corner: vec2f,
 } {
 	// Apply the exact fractional transform to coordinates from the cached raster size.
 	let position: vec4f = vec4f(in_position.x * in_transform.x + in_transform.z, in_position.y * in_transform.y + in_transform.w, 0.0, 1.0);
@@ -27,9 +27,9 @@ main: fn () -> interface {
 		uv: in_uv,
 		color: in_color,
 		pixel_position: in_pixel_position,
-		feather_mask_position: in_feather_mask_position,
-		feather_mask_size: in_feather_mask_size,
-		feather_mask_edges: in_feather_mask_edges,
-		feather_mask_corner: in_feather_mask_corner,
+		clip_mask_position: in_clip_mask_position,
+		clip_mask_size: in_clip_mask_size,
+		clip_mask_edges: in_clip_mask_edges,
+		clip_mask_corner: in_clip_mask_corner,
 	};
 }

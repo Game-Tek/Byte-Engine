@@ -13,7 +13,7 @@ use utils::{Box, Extent, RGBA};
 
 use super::{
 	element::ElementHandle as _,
-	layout::{FeatherMask, Geometry, engine},
+	layout::{ClipMask, Geometry, engine},
 	style::{Color, EdgeFeather, LayerKind},
 };
 use crate::{
@@ -1073,7 +1073,7 @@ mod tests {
 	use utils::{Extent, RGBA};
 
 	use super::{
-		DrawClip, DrawFeatherMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
+		DrawClip, DrawClipMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
 		UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT,
 		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel,
 		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiPixelRegion, UiPreparedFrame,
@@ -1241,11 +1241,11 @@ mod tests {
 			(10, "_besl_interface_pixel_position", Value::Vec2F(pixel_position)),
 			(9, "_besl_interface_local_position", Value::Vec2F([1.0, 1.0])),
 			(11, "_besl_interface_rect_size", Value::Vec2F([2.0, 2.0])),
-			(3, "_besl_interface_corner_radius", Value::F32(0.0)),
-			(2, "_besl_interface_corner_exponent", Value::F32(2.0)),
-			(6, "_besl_interface_feather_mask_position", Value::Vec2F([0.0, 0.0])),
-			(7, "_besl_interface_feather_mask_size", Value::Vec2F([8.0, 4.0])),
-			(5, "_besl_interface_feather_mask_edges", Value::Vec4F(feather_edges)),
+			(7, "_besl_interface_corner_radius", Value::F32(0.0)),
+			(6, "_besl_interface_corner_exponent", Value::F32(2.0)),
+			(3, "_besl_interface_clip_mask_position", Value::Vec2F([0.0, 0.0])),
+			(4, "_besl_interface_clip_mask_size", Value::Vec2F([8.0, 4.0])),
+			(2, "_besl_interface_clip_mask_edges", Value::Vec4F(feather_edges)),
 			(0, "_besl_interface_blur_resolution_mix", Value::F32(resolution_mix)),
 		]
 		.map(|(location, name, value)| {
@@ -2109,10 +2109,10 @@ mod tests {
 		corner_exponent: f32,
 		layer_kind: f32,
 		stroke_width: f32,
-		feather_mask_position: [f32; 2],
-		feather_mask_size: [f32; 2],
-		feather_mask_edges: [f32; 4],
-		feather_mask_corner: [f32; 2],
+		clip_mask_position: [f32; 2],
+		clip_mask_size: [f32; 2],
+		clip_mask_edges: [f32; 4],
+		clip_mask_corner: [f32; 2],
 	}
 
 	impl Default for UiFragmentVmInputs {
@@ -2127,10 +2127,10 @@ mod tests {
 				corner_exponent: 2.0,
 				layer_kind: 0.0,
 				stroke_width: 0.0,
-				feather_mask_position: [0.0, 0.0],
-				feather_mask_size: [0.0, 0.0],
-				feather_mask_edges: [0.0; 4],
-				feather_mask_corner: [0.0, 2.0],
+				clip_mask_position: [0.0, 0.0],
+				clip_mask_size: [0.0, 0.0],
+				clip_mask_edges: [0.0; 4],
+				clip_mask_corner: [0.0, 2.0],
 			}
 		}
 	}
@@ -2142,30 +2142,22 @@ mod tests {
 				"Failed to compile UI fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
 			);
 		let mut inputs = [
-			(1, "_besl_interface_color", Value::Vec4F(values.color)),
+			(5, "_besl_interface_color", Value::Vec4F(values.color)),
 			(10, "_besl_interface_pixel_position", Value::Vec2F(values.pixel_position)),
 			(9, "_besl_interface_local_position", Value::Vec2F(values.local_position)),
 			(11, "_besl_interface_rect_size", Value::Vec2F(values.rect_size)),
-			(3, "_besl_interface_corner_radius", Value::F32(values.corner_radius)),
-			(2, "_besl_interface_corner_exponent", Value::F32(values.corner_exponent)),
+			(7, "_besl_interface_corner_radius", Value::F32(values.corner_radius)),
+			(6, "_besl_interface_corner_exponent", Value::F32(values.corner_exponent)),
 			(8, "_besl_interface_layer_kind", Value::F32(values.layer_kind)),
 			(13, "_besl_interface_stroke_width", Value::F32(values.stroke_width)),
 			(
-				6,
-				"_besl_interface_feather_mask_position",
-				Value::Vec2F(values.feather_mask_position),
+				3,
+				"_besl_interface_clip_mask_position",
+				Value::Vec2F(values.clip_mask_position),
 			),
-			(7, "_besl_interface_feather_mask_size", Value::Vec2F(values.feather_mask_size)),
-			(
-				5,
-				"_besl_interface_feather_mask_edges",
-				Value::Vec4F(values.feather_mask_edges),
-			),
-			(
-				4,
-				"_besl_interface_feather_mask_corner",
-				Value::Vec2F(values.feather_mask_corner),
-			),
+			(4, "_besl_interface_clip_mask_size", Value::Vec2F(values.clip_mask_size)),
+			(2, "_besl_interface_clip_mask_edges", Value::Vec4F(values.clip_mask_edges)),
+			(1, "_besl_interface_clip_mask_corner", Value::Vec2F(values.clip_mask_corner)),
 		]
 		.map(|(location, name, value)| {
 			let mut input = Buffer::new(
@@ -2215,7 +2207,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [50.0, 50.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius,
 			corner_exponent,
@@ -2239,7 +2231,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [100.0, 100.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			stroke_width: 4.0,
 			segments,
@@ -2258,7 +2250,7 @@ mod tests {
 					position: [10.0, 20.0],
 					size: [30.0, 40.0],
 					clip: None,
-					feather_mask: None,
+					clip_mask: None,
 					color: [0.25, 0.5, 0.75, 1.0],
 					corner_radius: 8.0,
 					corner_exponent: 2.0,
@@ -2310,7 +2302,7 @@ mod tests {
 					position: [10.0, 20.0],
 					size: [30.0, 40.0],
 					clip: None,
-					feather_mask: None,
+					clip_mask: None,
 					color: [0.0, 0.0, 0.0, 0.45],
 					corner_radius: 8.0,
 					corner_exponent: 2.0,
@@ -2389,7 +2381,7 @@ mod tests {
 						position: [0.0, 0.0],
 						size: [10.0, 10.0],
 						clip: None,
-						feather_mask: None,
+						clip_mask: None,
 						color: [1.0, 1.0, 1.0, 1.0],
 						corner_radius: 0.0,
 						corner_exponent: 2.0,
@@ -2402,7 +2394,7 @@ mod tests {
 						position: [0.0, 0.0],
 						size: [10.0, 10.0],
 						clip: None,
-						feather_mask: None,
+						clip_mask: None,
 						color: [1.0, 1.0, 1.0, 1.0],
 						corner_radius: 0.0,
 						corner_exponent: 2.0,
@@ -2455,7 +2447,7 @@ mod tests {
 					position: [0.0, 0.0],
 					size: [80.0, 20.0],
 					clip: None,
-					feather_mask: None,
+					clip_mask: None,
 					color: [1.0, 1.0, 1.0, 1.0],
 					corner_radius: 80.0,
 					corner_exponent: 2.0,
@@ -2507,10 +2499,10 @@ mod tests {
 	}
 
 	#[test]
-	fn feather_mask_scales_to_viewport_pixels() {
+	fn clip_mask_scales_to_viewport_pixels() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut element = draw_element(0.0, 2.0);
-		element.feather_mask = Some(DrawFeatherMask {
+		element.clip_mask = Some(DrawClipMask {
 			position: [10.0, 20.0],
 			size: [30.0, 40.0],
 			edges: [1.0, 2.0, 3.0, 4.0],
@@ -2530,11 +2522,11 @@ mod tests {
 			&frame_allocator,
 		);
 
-		assert_vec2_close(geometry.vertices[0].feather_mask_position, [20.0, 60.0]);
-		assert_vec2_close(geometry.vertices[0].feather_mask_size, [60.0, 120.0]);
+		assert_vec2_close(geometry.vertices[0].clip_mask_position, [20.0, 60.0]);
+		assert_vec2_close(geometry.vertices[0].clip_mask_size, [60.0, 120.0]);
 
-		assert_eq!(geometry.vertices[0].feather_mask_edges, [3.0, 4.0, 9.0, 8.0]);
-		assert_eq!(geometry.vertices[0].feather_mask_corner, [10.0, 3.0]);
+		assert_eq!(geometry.vertices[0].clip_mask_edges, [3.0, 4.0, 9.0, 8.0]);
+		assert_eq!(geometry.vertices[0].clip_mask_corner, [10.0, 3.0]);
 	}
 
 	#[test]
@@ -2926,11 +2918,11 @@ mod tests {
 			);
 		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
 		let mut inputs = [
-			(0, "_besl_interface_color", Value::Vec4F([0.2, 0.4, 0.6, 0.8])),
-			(1, "_besl_interface_feather_mask_corner", Value::Vec2F([0.0, 2.0])),
-			(2, "_besl_interface_feather_mask_edges", Value::Vec4F([0.0; 4])),
-			(3, "_besl_interface_feather_mask_position", Value::Vec2F([0.0, 0.0])),
-			(4, "_besl_interface_feather_mask_size", Value::Vec2F([0.0, 0.0])),
+			(4, "_besl_interface_color", Value::Vec4F([0.2, 0.4, 0.6, 0.8])),
+			(0, "_besl_interface_clip_mask_corner", Value::Vec2F([0.0, 2.0])),
+			(1, "_besl_interface_clip_mask_edges", Value::Vec4F([0.0; 4])),
+			(2, "_besl_interface_clip_mask_position", Value::Vec2F([0.0, 0.0])),
+			(3, "_besl_interface_clip_mask_size", Value::Vec2F([0.0, 0.0])),
 			(5, "_besl_interface_pixel_position", Value::Vec2F([1.5, 1.5])),
 			(6, "_besl_interface_uv", Value::Vec2F([0.5, 0.5])),
 		]
@@ -2983,10 +2975,10 @@ mod tests {
 			("in_uv", Value::Vec2F([0.1, 0.2])),
 			("in_color", Value::Vec4F([1.0; 4])),
 			("in_pixel_position", Value::Vec2F([0.0; 2])),
-			("in_feather_mask_position", Value::Vec2F([0.0; 2])),
-			("in_feather_mask_size", Value::Vec2F([0.0; 2])),
-			("in_feather_mask_edges", Value::Vec4F([0.0; 4])),
-			("in_feather_mask_corner", Value::Vec2F([0.0, 2.0])),
+			("in_clip_mask_position", Value::Vec2F([0.0; 2])),
+			("in_clip_mask_size", Value::Vec2F([0.0; 2])),
+			("in_clip_mask_edges", Value::Vec4F([0.0; 4])),
+			("in_clip_mask_corner", Value::Vec2F([0.0, 2.0])),
 			("in_transform", Value::Vec4F([0.015, -0.015, -0.795, 0.5925])),
 		];
 		let mut inputs: Vec<_> = values
@@ -3057,10 +3049,10 @@ mod tests {
 			"in_corner_exponent",
 			"in_layer_kind",
 			"in_stroke_width",
-			"in_feather_mask_position",
-			"in_feather_mask_size",
-			"in_feather_mask_edges",
-			"in_feather_mask_corner",
+			"in_clip_mask_position",
+			"in_clip_mask_size",
+			"in_clip_mask_edges",
+			"in_clip_mask_corner",
 			"in_blur_resolution_mix",
 		];
 		let input_values = [
@@ -3121,13 +3113,13 @@ mod tests {
 			.iter()
 			.zip([
 				"_besl_interface_blur_resolution_mix",
+				"_besl_interface_clip_mask_corner",
+				"_besl_interface_clip_mask_edges",
+				"_besl_interface_clip_mask_position",
+				"_besl_interface_clip_mask_size",
 				"_besl_interface_color",
 				"_besl_interface_corner_exponent",
 				"_besl_interface_corner_radius",
-				"_besl_interface_feather_mask_corner",
-				"_besl_interface_feather_mask_edges",
-				"_besl_interface_feather_mask_position",
-				"_besl_interface_feather_mask_size",
 				"_besl_interface_layer_kind",
 				"_besl_interface_local_position",
 				"_besl_interface_pixel_position",
@@ -3137,13 +3129,13 @@ mod tests {
 			])
 			.zip([
 				Value::F32(0.375),
-				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
-				Value::F32(3.0),
-				Value::F32(12.0),
 				Value::Vec2F([9.0, 2.0]),
 				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
 				Value::Vec2F([5.0, 6.0]),
 				Value::Vec2F([70.0, 60.0]),
+				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
+				Value::F32(3.0),
+				Value::F32(12.0),
 				Value::F32(1.0),
 				Value::Vec2F([3.0, 4.0]),
 				Value::Vec2F([10.0, 20.0]),
@@ -3196,12 +3188,12 @@ mod tests {
 
 	/// Verifies the feather mask suppresses fragments outside its clipped region.
 	#[test]
-	fn ui_fragment_besl_vm_feather_mask_suppresses_outside_pixels() {
+	fn ui_fragment_besl_vm_clip_mask_suppresses_outside_pixels() {
 		let output = run_ui_fragment_vm(UiFragmentVmInputs {
 			pixel_position: [10.0, 10.0],
-			feather_mask_position: [25.0, 25.0],
-			feather_mask_size: [50.0, 50.0],
-			feather_mask_edges: [5.0; 4],
+			clip_mask_position: [25.0, 25.0],
+			clip_mask_size: [50.0, 50.0],
+			clip_mask_edges: [5.0; 4],
 			..Default::default()
 		});
 
@@ -3291,7 +3283,7 @@ mod tests {
 				position: [0.0, 0.0],
 				size: [1.0, 1.0],
 				clip: None,
-				feather_mask: None,
+				clip_mask: None,
 				color: [1.0, 1.0, 1.0, 1.0],
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
@@ -3339,7 +3331,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: [1.0, 1.0, 1.0, 0.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -3352,7 +3344,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [1.0, 1.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
@@ -3387,7 +3379,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 0.0),
 			font_size: 16.0,
 			text: "Hidden".to_string(),
@@ -3398,7 +3390,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [32.0, 16.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			color: RGBA::new(1.0, 1.0, 1.0, 1.0),
 			font_size: 16.0,
 			text: "Visible".to_string(),
@@ -3546,7 +3538,7 @@ mod tests {
 					position: [20.0, 25.0],
 					size: [20.0, 10.0],
 				}),
-				feather_mask: None,
+				clip_mask: None,
 				opacity: 1.0,
 			}],
 			texts: Vec::new(),
@@ -3576,7 +3568,7 @@ mod tests {
 			position: [0.0, 0.0],
 			size: [20.0, 20.0],
 			clip: None,
-			feather_mask: None,
+			clip_mask: None,
 			opacity: 0.0,
 		};
 

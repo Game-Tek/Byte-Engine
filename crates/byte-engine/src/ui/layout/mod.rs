@@ -190,10 +190,9 @@ fn layout_elements<'a>(
 		root_size: Size,
 		offset: Offset,
 		anchored: bool,
-		depth: i32,
-		highest_depth: &mut i32,
 		text: &mut TextSystem,
 		measurements: &mut [Measurement],
+		slots: &mut [usize],
 		output: &mut Vec<LayoutElement, &bumpalo::Bump>,
 	) {
 		let element = &tree.elements[index];
@@ -204,13 +203,15 @@ fn layout_elements<'a>(
 		} else {
 			(offset.x().max(0.0), offset.y().max(0.0))
 		};
-		let position = Location3::new(x, y, depth.max(0) as u32);
+		// The paint walk below assigns the depth once every element is placed.
+		let position = Location3::new(x, y, 0);
 		let hit_testable = match &element.element.primitive {
 			Primitives::Container(container) => container.hit_testable,
 			Primitives::TextField(_) => true,
 			Primitives::Curve(curve) => curve.hit_width().is_some(),
 			_ => false,
 		};
+		slots[index] = output.len();
 		output.push(LayoutElement {
 			id: element.id,
 			position,
@@ -243,12 +244,6 @@ fn layout_elements<'a>(
 					_ if reset => FlowOutput::new(Offset::new(0.0, 0.0), cursor),
 					_ => container.flow.call(FlowInput::new(size, cursor, child_size)),
 				};
-				let child_depth = match child_container.map(|value| value.depth) {
-					Some(Depth::Relative(value)) => depth.saturating_add(value),
-					Some(Depth::Absolute(value)) => highest_depth.saturating_add(value),
-					None => depth.saturating_add(1),
-				};
-				*highest_depth = (*highest_depth).max(child_depth);
 				place(
 					tree,
 					child_index,
@@ -256,10 +251,9 @@ fn layout_elements<'a>(
 					root_size,
 					flow_output.child_offset(),
 					anchored,
-					child_depth,
-					highest_depth,
 					text,
 					measurements,
+					slots,
 					output,
 				);
 				if !reset {
@@ -269,12 +263,53 @@ fn layout_elements<'a>(
 		}
 	}
 
+	// Depth is an element's rank in the paint order. A container is painted before its children and
+	// its children in the order of their relative depths, so a subtree takes one contiguous range of
+	// ranks and none of its elements can end up over or under another component's.
+	fn rank(
+		tree: &retained_tree::RetainedTree,
+		index: usize,
+		next: &mut u32,
+		slots: &[usize],
+		siblings: &mut Vec<(i32, usize), &bumpalo::Bump>,
+		layers: &mut Vec<(i32, usize), &bumpalo::Bump>,
+		output: &mut [LayoutElement],
+	) {
+		let position = &mut output[slots[index]].position;
+		*position = Location3::new(position.x(), position.y(), *next);
+		*next += 1;
+		if !matches!(tree.elements[index].element.primitive, Primitives::Container(_)) {
+			return;
+		}
+		// Every level sorts its own tail of the shared scratch list.
+		let start = siblings.len();
+		for &child in &tree.children[index] {
+			match &tree.elements[child].element.primitive {
+				Primitives::Container(container) => match container.depth {
+					Depth::Relative(depth) => siblings.push((depth, child)),
+					Depth::Absolute(depth) => layers.push((depth, child)),
+				},
+				_ => siblings.push((1, child)),
+			}
+		}
+		// The sort is stable, so children at the same depth keep their declaration order.
+		siblings[start..].sort_by_key(|&(depth, _)| depth);
+		let end = siblings.len();
+		for sibling in start..end {
+			let child = siblings[sibling].1;
+			rank(tree, child, next, slots, siblings, layers, output);
+		}
+		siblings.truncate(start);
+	}
+
 	let root = tree
 		.parents
 		.iter()
 		.position(Option::is_none)
 		.expect("Root container not found");
 	let root_size = measure_element(&tree.elements[root], available_space, text_system, &mut measurements[root]);
+	let mut slots = Vec::with_capacity_in(tree.elements.len(), frame_allocator);
+	slots.resize(tree.elements.len(), 0);
 	place(
 		tree,
 		root,
@@ -282,12 +317,23 @@ fn layout_elements<'a>(
 		available_space,
 		Offset::new(0.0, 0.0),
 		false,
-		0,
-		&mut 0,
 		text_system,
 		measurements,
+		&mut slots,
 		&mut elements,
 	);
+
+	let mut next = 0;
+	let mut siblings = Vec::new_in(frame_allocator);
+	let mut layers = Vec::new_in(frame_allocator);
+	rank(tree, root, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
+	// Absolute-depth layers leave their parent and paint above all ordinary content, lowest first and
+	// in tree order among equals. A layer found inside another one is ranked after it, which keeps it
+	// above the layer that opened it.
+	while let Some(lowest) = (0..layers.len()).min_by_key(|&layer| layers[layer].0) {
+		let (_, index) = layers.remove(lowest);
+		rank(tree, index, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
+	}
 	elements
 }
 
@@ -611,71 +657,100 @@ mod tests {
 
 		assert_layout(&elements[0], Size::new(1024, 1024), Location3::new(0, 0, 0));
 		for (index, y) in [0, 64, 128, 192].into_iter().enumerate() {
-			assert_layout(&elements[index + 1], Size::new(64, 64), Location3::new(0, y, 1));
+			assert_layout(
+				&elements[index + 1],
+				Size::new(64, 64),
+				Location3::new(0, y, index as u32 + 1),
+			);
 		}
 	}
 
-	#[test]
-	fn layout_relative_depth_offsets_from_parent_depth() {
+	/// Returns each container's depth, in the order the containers were given to `layout`.
+	fn depths(containers: impl IntoIterator<Item = Container>, relations: &[(usize, usize)]) -> std::vec::Vec<u32> {
+		let elements = make_elements(containers);
+		let ids: std::vec::Vec<Id> = elements.iter().map(|element| element.id()).collect();
+		let relations: std::vec::Vec<(Id, Id)> = relations.iter().map(|&(parent, child)| (ids[parent], ids[child])).collect();
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let child = Container::default().depth(Depth::relative(2));
-		let grandchild = Container::default();
-
-		let elements = make_elements([root, child, grandchild]);
-
-		let root = &elements[0];
-		let child = &elements[1];
-		let grandchild = &elements[2];
-
-		let relations = [(root.id(), child.id()), (child.id(), grandchild.id())];
-
-		let elements = layout_elements(
+		let placed = layout_elements(
 			elements,
 			&relations,
 			Size::new(100, 100),
 			&mut TextSystem::new(),
 			&frame_allocator,
 		);
-
-		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
-		assert_eq!(elements[1].position, Location3::new(0, 0, 2));
-		assert_eq!(elements[2].position, Location3::new(0, 0, 3));
+		ids.iter()
+			.map(|id| placed.iter().find(|element| element.id == *id).expect("placed").position.z())
+			.collect()
 	}
 
 	#[test]
-	fn layout_absolute_depth_offsets_from_current_highest_depth() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let regular = Container::default().depth(Depth::relative(3));
-		let modal = Container::default().depth(Depth::absolute(1));
-		let modal_child = Container::default();
-
-		let elements = make_elements([root, regular, modal, modal_child]);
-
-		let root = &elements[0];
-		let regular = &elements[1];
-		let modal = &elements[2];
-		let modal_child = &elements[3];
-
-		let relations = [
-			(root.id(), regular.id()),
-			(root.id(), modal.id()),
-			(modal.id(), modal_child.id()),
-		];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
+	fn layout_relative_depth_orders_siblings_inside_their_parent() {
+		let raised = Container::default().depth(Depth::relative(2));
+		// root -> [raised -> raised_child, regular]
+		let depths = depths(
+			[Container::default(), raised, Container::default(), Container::default()],
+			&[(0, 1), (1, 2), (0, 3)],
 		);
 
-		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
-		assert_eq!(elements[1].position, Location3::new(0, 0, 3));
-		assert_eq!(elements[2].position.z(), 4);
-		assert_eq!(elements[3].position.z(), 5);
+		// The regular sibling paints first although it is declared last, and the raised child follows its parent.
+		assert_eq!(depths, [0, 2, 3, 1]);
+	}
+
+	#[test]
+	fn layout_relative_depth_cannot_cross_into_another_component() {
+		let overlay = Container::default().depth(Depth::relative(8));
+		// root -> [first -> overlay -> overlay_child, second -> second_child]
+		let depths = depths(
+			[
+				Container::default(),
+				Container::default(),
+				overlay,
+				Container::default(),
+				Container::default(),
+				Container::default(),
+			],
+			&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5)],
+		);
+
+		// Everything in the first component stays under everything in the second one.
+		assert_eq!(depths, [0, 1, 2, 3, 4, 5]);
+	}
+
+	#[test]
+	fn layout_absolute_depth_paints_above_a_deeper_later_component() {
+		let modal = Container::default().depth(Depth::absolute(1));
+		let overlay = Container::default().depth(Depth::relative(8));
+		// root -> [toolbar -> modal -> modal_child, graph -> overlay -> overlay_child]
+		let depths = depths(
+			[
+				Container::default(),
+				Container::default(),
+				modal,
+				Container::default(),
+				Container::default(),
+				overlay,
+				Container::default(),
+			],
+			&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6)],
+		);
+
+		assert_eq!(depths, [0, 1, 5, 6, 2, 3, 4]);
+	}
+
+	#[test]
+	fn layout_absolute_depth_layers_stack_by_value_and_above_their_host() {
+		let toast = Container::default().depth(Depth::absolute(4));
+		let modal = Container::default().depth(Depth::absolute(1));
+		let nested_modal = Container::default().depth(Depth::absolute(1));
+		let popup = Container::default().depth(Depth::absolute(1));
+		// root -> [toast -> popup, modal -> nested_modal]
+		let depths = depths(
+			[Container::default(), toast, modal, nested_modal, popup],
+			&[(0, 1), (0, 2), (2, 3), (1, 4)],
+		);
+
+		// The modals come first, the nested one over its host, then the toast and the popup it opened.
+		assert_eq!(depths, [0, 3, 1, 2, 4]);
 	}
 
 	#[test]
@@ -769,8 +844,8 @@ mod tests {
 		);
 
 		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position, Location3::new(70, 12, 1));
-		assert_eq!(elements[3].position, Location3::new(20, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(70, 12, 2));
+		assert_eq!(elements[3].position, Location3::new(20, 0, 3));
 	}
 
 	#[test]
@@ -870,9 +945,9 @@ mod tests {
 		);
 
 		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position, Location3::new(30, 0, 1));
+		assert_eq!(elements[2].position, Location3::new(30, 0, 2));
 		assert_eq!(elements[3].id, modal_id);
-		assert_eq!(elements[3].position, Location3::new(0, 0, 2));
+		assert_eq!(elements[3].position, Location3::new(0, 0, 3));
 	}
 
 	#[test]
@@ -938,7 +1013,7 @@ mod tests {
 
 		let element = &elements[2];
 
-		assert_eq!(element.position, Location3::new(40, 32, 1));
+		assert_eq!(element.position, Location3::new(40, 32, 2));
 		assert_eq!(element.size, Size::new(20, 16));
 	}
 
@@ -967,7 +1042,7 @@ mod tests {
 
 		assert_eq!(elements.len(), 3);
 		assert_eq!(elements[1].position, Location3::new(0, 35, 1));
-		assert_eq!(elements[2].position, Location3::new(20, 35, 1));
+		assert_eq!(elements[2].position, Location3::new(20, 35, 2));
 	}
 
 	#[test]
@@ -1002,7 +1077,7 @@ mod tests {
 
 		let element = &elements[2];
 
-		assert_eq!(element.position, Location3::new(30, 30, 1));
+		assert_eq!(element.position, Location3::new(30, 30, 2));
 		assert_eq!(element.size, Size::new(40, 20));
 	}
 }

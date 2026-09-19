@@ -1,4 +1,4 @@
-//! Damage regions, damage-filtered geometry, and the compute shaders that clear and composite the layer.
+//! Damage regions, damage-filtered primitives, and the compute shader that composites the layer.
 
 use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, Value};
 use utils::Extent;
@@ -113,7 +113,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 }
 
 #[test]
-fn only_elements_touching_damage_get_geometry() {
+fn only_elements_touching_damage_get_primitives() {
 	let frame_allocator = bumpalo::Bump::new();
 	let draw_list = UiDrawList {
 		layout_size: [100.0, 100.0],
@@ -121,21 +121,24 @@ fn only_elements_touching_damage_get_geometry() {
 		..UiDrawList::default()
 	};
 	let viewport = Extent::square(100);
-	let all = build_ui_geometry_damaged(&draw_list, viewport, &frame_allocator, None, None);
-	assert_eq!(all.indices.len(), 2 * UI_INDICES_PER_ELEMENT);
-
-	let damage = [region(55, 55, 2, 2)];
-	let partial = build_ui_geometry_damaged(&draw_list, viewport, &frame_allocator, None, Some(&damage));
-	assert_eq!(partial.indices.len(), UI_INDICES_PER_ELEMENT);
-	assert_eq!(partial.batches[0].order, 2);
-
+	// Returns the left edges of the rectangles drawn, after the clear quad.
+	let drawn = |damage: Option<&[UiPixelRegion]>| -> Vec<f32> {
+		let output = build_ui_primitives(
+			&draw_list,
+			viewport,
+			&frame_allocator,
+			None,
+			&mut UiMaskTable::default(),
+			None,
+			damage,
+		);
+		output.primitives[1..].iter().map(|primitive| primitive.bounds[0]).collect()
+	};
+	assert_eq!(drawn(None), [0.0, 50.0]);
+	assert_eq!(drawn(Some(&[region(55, 55, 2, 2)])), [50.0]);
 	// The margin pulls in a neighbor that only touches the region by anti-aliasing distance.
-	let damage = [region(12, 12, 2, 2)];
-	let neighbor = build_ui_geometry_damaged(&draw_list, viewport, &frame_allocator, None, Some(&damage));
-	assert_eq!(neighbor.batches[0].order, 1);
-
-	let nothing = build_ui_geometry_damaged(&draw_list, viewport, &frame_allocator, None, Some(&[]));
-	assert!(nothing.batches.is_empty());
+	assert_eq!(drawn(Some(&[region(12, 12, 2, 2)])), [0.0]);
+	assert!(drawn(Some(&[])).is_empty());
 	assert!(damage_intersects(None, [1000.0, 1000.0, 1001.0, 1001.0]));
 }
 
@@ -178,16 +181,11 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 }
 
 #[test]
-fn clear_quad_covers_the_viewport_with_transparent_black() {
-	let quad = clear_quad();
-	assert_eq!(
-		quad.iter().map(|vertex| vertex.position).collect::<Vec<_>>(),
-		vec![[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]]
-	);
-	for vertex in quad {
-		assert_eq!(vertex.color, [0.0; 4]);
-		// No rounded corner and no feather mask, so the rectangle shader's coverage is one everywhere.
-		assert_eq!(vertex.corner_radius, 0.0);
-		assert_eq!(vertex.clip_mask_size, [0.0, 0.0]);
-	}
+fn clear_primitive_covers_the_viewport_with_transparent_black() {
+	let clear = clear_primitive(Extent::rectangle(640, 480));
+	assert_eq!(clear.bounds, [0.0, 0.0, 640.0, 480.0]);
+	assert_eq!(clear.color, [0.0; 4]);
+	assert_eq!(clear.kind, UI_KIND_RECT);
+	// No rounded corner, no stroke, and no mask, so the shader's coverage is one everywhere.
+	assert_eq!((clear.b[0], clear.b[2], clear.mask), (0.0, 0.0, 0));
 }

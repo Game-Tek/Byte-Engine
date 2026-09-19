@@ -69,13 +69,11 @@ pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 	engine
 }
 
-/// Cached surfaces must produce the same submitted vertices and batches as fresh preparation.
+/// Cached surfaces must produce the same submitted primitives and steps as fresh preparation.
 #[test]
-fn camera_geometry_matches_fresh_preparation() {
+fn camera_primitives_match_fresh_preparation() {
 	let mut engine = graph_engine(64);
-	let mut rectangles = SurfaceCache::default();
-	let mut images = ImageGeometryCache::default();
-	let mut curves = CurveGeometryCache::default();
+	let mut caches = UiGeometryCaches::default();
 	let mut text = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(64);
 	let mut data = UiDrawList::default();
@@ -94,41 +92,21 @@ fn camera_geometry_matches_fresh_preparation() {
 		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
 		update_from_render(engine.render(&mut snapshot), &mut data);
 		let extent = Extent::rectangle(extent, 1080);
-		macro_rules! same {
-			($actual:expr, $expected:expr) => {{
-				let actual = $actual;
-				let expected = $expected;
-				assert_eq!(
-					bytemuck::cast_slice::<_, u8>(&actual.vertices),
-					bytemuck::cast_slice::<_, u8>(&expected.vertices)
-				);
-				assert_eq!(actual.indices, expected.indices);
-				assert_eq!(actual.batches, expected.batches);
-				assert_eq!(actual.truncated, expected.truncated);
-			}};
-		}
-		same!(
-			build_ui_geometry_cached(&data, extent, &arena, Some(&mut rectangles)),
-			build_ui_geometry(&data, extent, &arena)
-		);
-		same!(
-			build_ui_curve_geometry_cached(&data, extent, &arena, Some(&mut curves)),
-			build_ui_curve_geometry(&data, extent, &arena)
-		);
-		same!(
-			build_ui_image_geometry_cached(&data, extent, &arena, Some(&mut images)),
-			build_ui_image_geometry(&data, extent, &arena)
-		);
+		let mut masks = UiMaskTable::default();
+		let actual = build_ui_primitives(&data, extent, &arena, Some(&mut caches), &mut masks, None, None);
+		let mut fresh_masks = UiMaskTable::default();
+		let expected = build_ui_primitives_uncached(&data, extent, &arena, &mut fresh_masks);
+		assert_eq!(actual.primitives, expected.primitives);
+		assert_eq!(actual.steps, expected.steps);
+		assert_eq!(actual.images, expected.images);
+		assert_eq!(actual.truncated, expected.truncated);
+		assert_eq!(masks.entries(), fresh_masks.entries());
 		// Preserve the atlas packing while clearing only the prepared-run cache.
-		let actual = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &arena);
+		let actual = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
 		atlas.clear_prepared_runs();
-		let expected = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &arena);
-		assert_eq!(
-			bytemuck::cast_slice::<_, u8>(&actual.vertices),
-			bytemuck::cast_slice::<_, u8>(&expected.vertices)
-		);
-		assert_eq!(actual.indices, expected.indices);
-		assert_eq!(actual.batches, expected.batches);
+		let expected = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		assert_eq!(actual.primitives, expected.primitives);
+		assert_eq!(actual.labels, expected.labels);
 	}
 }
 
@@ -163,9 +141,8 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 		engine.render(&mut snapshot).clone()
 	});
 	let mut data = UiDrawList::default();
-	let mut rectangles = SurfaceCache::default();
-	let mut images = ImageGeometryCache::default();
-	let mut curves = CurveGeometryCache::default();
+	let mut caches = UiGeometryCaches::default();
+	let mut masks = UiMaskTable::default();
 	let mut text = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
 	let mut frame = 0;
@@ -173,16 +150,23 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 	// Warm both glyph sizes and all retained buffers outside the measurement.
 	for _ in 0..4 {
 		update_from_render(&frames[frame % 2], &mut data);
-		build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &arena);
+		build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
 		frame += 1;
 	}
 	bencher.bench_local(|| {
 		arena.reset();
 		update_from_render(&frames[frame % 2], &mut data);
-		divan::black_box(build_ui_geometry_cached(&data, extent, &arena, Some(&mut rectangles)));
-		divan::black_box(build_ui_curve_geometry_cached(&data, extent, &arena, Some(&mut curves)));
-		divan::black_box(build_ui_image_geometry_cached(&data, extent, &arena, Some(&mut images)));
-		divan::black_box(build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &arena));
+		masks.clear();
+		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		divan::black_box(build_ui_primitives(
+			&data,
+			extent,
+			&arena,
+			Some(&mut caches),
+			&mut masks,
+			Some(&glyphs),
+			None,
+		));
 		frame += 1;
 	});
 }

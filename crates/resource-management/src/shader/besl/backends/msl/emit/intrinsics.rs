@@ -27,6 +27,22 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_node_string(string, resource);
 	}
 
+	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
+	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
+		let Some((kind, resource, index)) = resource_accessor(texture) else {
+			self.emit_node_string(string, texture);
+			string.push_str("_sampler");
+			return;
+		};
+		self.emit_intrinsic_resource_reference(string, &resource);
+		string.push_str("_sampler");
+		if kind == ResourceAccessorKind::DescriptorArray {
+			string.push('[');
+			self.emit_node_string(string, &index);
+			string.push(']');
+		}
+	}
+
 	pub(crate) fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
@@ -90,13 +106,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						string.push(']');
 					}
 					string.push_str(".sample(");
-					self.emit_intrinsic_resource_reference(string, &resource);
-					string.push_str("_sampler");
-					if kind == ResourceAccessorKind::DescriptorArray {
-						string.push('[');
-						self.emit_node_string(string, &index);
-						string.push(']');
-					}
+					self.emit_sampler(string, &arguments[0]);
 					string.push_str(", ");
 					self.emit_node_string(string, &arguments[1]);
 					if kind == ResourceAccessorKind::Texture2DArrayLayer {
@@ -108,8 +118,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 				return;
@@ -128,8 +138,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			"texture_lod" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
 				self.emit_node_string(string, &arguments[1]);
 				// Qualify the Metal helper so BESL identifiers such as `level` cannot shadow it.
 				string.push_str(", metal::level(");
@@ -144,8 +154,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			"texture_cube_array_lod" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".sample(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", ");
 				self.emit_node_string(string, &arguments[2]);
@@ -163,8 +173,8 @@ impl<A: Allocator + Clone> Generator<A> {
 					});
 					self.emit_node_string(string, &arguments[0]);
 					string.push_str(", ");
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str("_sampler, ");
+					self.emit_sampler(string, &arguments[0]);
+					string.push_str(", ");
 					self.emit_node_string(string, &arguments[1]);
 					string.push_str(", ");
 					if arguments.len() == 4 {
@@ -178,8 +188,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				} else {
 					self.emit_node_string(string, &arguments[0]);
 					string.push_str(".sample(");
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str("_sampler, ");
+					self.emit_sampler(string, &arguments[0]);
+					string.push_str(", ");
 					self.emit_node_string(string, &arguments[1]);
 					if arguments.len() == 4 {
 						string.push_str(", ");

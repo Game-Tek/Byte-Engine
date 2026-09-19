@@ -102,6 +102,9 @@ realfft = "3.5.0"
 hidapi = "2.6.1"
 ctrlc = "3.5.1"
 fontdue = "0.9.3"
+# Reads glyph outlines for GPU text. Keep fontdue's feature set: with the default features unified into
+# fontdue's copy, the parser's variable font support returns no outlines for the macOS system font.
+ttf-parser = { version = "0.21.1", default-features = false }
 artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"
 bitflags = "2.11.1"

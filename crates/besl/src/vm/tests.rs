@@ -2155,6 +2155,50 @@ fn executable_program_executes_continue_and_comparisons() {
 	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(1));
 }
 
+/// Verifies `break` leaves only the innermost loop and execution resumes after it.
+#[test]
+fn executable_program_breaks_out_of_the_innermost_loop() {
+	let script = r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		for (let i: u32 = 0; i < 3; i = i + 1) {
+			for (let j: u32 = 0; j < 10; j = j + 1) {
+				if (j == 2) {
+					break;
+				}
+				sum = sum + 1;
+			}
+			sum = sum + 10;
+		}
+		buff.sum = sum;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("sum", u32_type).into()],
+			},
+			25,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+
+	let slot = ResourceSlot::new(25);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	// Each outer iteration counts two inner iterations before the break, then its own ten.
+	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(36));
+}
+
 #[test]
 fn executable_program_evaluates_scalar_math_intrinsics() {
 	let script = r#"

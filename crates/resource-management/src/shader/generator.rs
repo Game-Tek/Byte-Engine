@@ -750,6 +750,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::Continue => string.push_str("continue"),
+			besl::Expressions::Break => string.push_str("break"),
 			besl::Expressions::Discard => self.emit_discard(string),
 			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
 		}

@@ -82,6 +82,7 @@ impl Generator {
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
 				| besl::Expressions::Continue
+				| besl::Expressions::Break
 				| besl::Expressions::Discard => false,
 			},
 			_ => false,

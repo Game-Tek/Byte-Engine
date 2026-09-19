@@ -549,6 +549,9 @@ impl<'a> Compiler<'a> {
 			Nodes::Expression(Expressions::Continue) => Err(VmError::UnsupportedExpression {
 				message: "`continue` is only valid as a statement".to_string(),
 			}),
+			Nodes::Expression(Expressions::Break) => Err(VmError::UnsupportedExpression {
+				message: "`break` is only valid as a statement".to_string(),
+			}),
 			Nodes::Expression(Expressions::Discard) => Err(VmError::UnsupportedExpression {
 				message: "`discard` is only valid as a statement".to_string(),
 			}),

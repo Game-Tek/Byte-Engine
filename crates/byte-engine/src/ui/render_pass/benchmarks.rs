@@ -87,13 +87,20 @@ fn draw_list(count: usize, kind: Scene) -> UiDrawList {
 }
 
 /// Reports live output and retained arena bytes outside timing when diagnostics are requested.
-fn report_geometry(name: &str, count: usize, arena: &bumpalo::Bump, vertex_bytes: usize, index_bytes: usize, batches: usize) {
+fn report_primitives(name: &str, count: usize, arena: &bumpalo::Bump, primitives: usize, draws: usize) {
 	if std::env::var_os("UI_RENDER_BENCH_STATS").is_some() {
 		eprintln!(
-			"{name}/{count}: vertex_bytes={vertex_bytes} index_bytes={index_bytes} batches={batches} arena_bytes={}",
+			"{name}/{count}: primitive_bytes={} draws={draws} arena_bytes={}",
+			primitives * std::mem::size_of::<UiPrimitive>(),
 			arena.allocated_bytes()
 		);
 	}
+}
+
+/// Builds a frame's primitives without caches or text. The first record is the clear quad.
+fn primitives<'a>(data: &UiDrawList, masks: &mut UiMaskTable, arena: &'a bumpalo::Bump) -> UiPrimitives<'a> {
+	masks.clear();
+	build_ui_primitives_uncached(data, viewport(), arena, masks)
 }
 
 /// Alternates prepared render snapshots so every adoption represents changed content.
@@ -134,66 +141,64 @@ fn clone_render(bencher: Bencher, count: usize) {
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Builds rectangle vertices, indices, and batches in a reused frame arena.
+/// Builds rectangle primitives in a reused frame arena.
 fn rectangles(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Rectangles);
 	let mut arena = bumpalo::Bump::new();
-	assert_eq!(build_ui_geometry(&data, viewport(), &arena).vertices.len(), count * 4);
+	let mut masks = UiMaskTable::default();
+	assert_eq!(primitives(&data, &mut masks, &arena).primitives.len(), count + 1);
 	bencher.bench_local(|| {
 		arena.reset();
-		black_box(build_ui_geometry(black_box(&data), viewport(), &arena));
+		black_box(primitives(black_box(&data), &mut masks, &arena));
 	});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Flattens cubic curves and builds their stroke geometry in a reused arena.
+/// Picks piece counts for cubic curves and writes their records in a reused arena.
 fn curves(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Curves);
 	let mut arena = bumpalo::Bump::new();
+	let mut masks = UiMaskTable::default();
 	// Bump reset retains its largest chunk; warm through growth before steady measurements.
 	for _ in 0..3 {
 		arena.reset();
-		black_box(build_ui_curve_geometry(&data, viewport(), &arena));
+		black_box(primitives(&data, &mut masks, &arena));
 	}
 	arena.reset();
-	let geometry = build_ui_curve_geometry(&data, viewport(), &arena);
-	assert!(!geometry.truncated && geometry.vertices.len() > count * 4);
-	report_geometry(
-		"curves",
-		count,
-		&arena,
-		std::mem::size_of_val(geometry.vertices.as_slice()),
-		std::mem::size_of_val(geometry.indices.as_slice()),
-		geometry.batches.len(),
-	);
-	drop(geometry);
+	let output = primitives(&data, &mut masks, &arena);
+	assert!(!output.truncated && output.primitives.len() > count * 2);
+	report_primitives("curves", count, &arena, output.primitives.len(), output.steps.len());
+	drop(output);
 	bencher.bench_local(|| {
 		arena.reset();
-		black_box(build_ui_curve_geometry(black_box(&data), viewport(), &arena));
+		black_box(primitives(black_box(&data), &mut masks, &arena));
 	});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Builds image quads without creating textures or descriptors.
+/// Builds image primitives without creating textures or descriptors.
 fn images(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Images);
 	let mut arena = bumpalo::Bump::new();
-	assert_eq!(build_ui_image_geometry(&data, viewport(), &arena).vertices.len(), count * 4);
+	let mut masks = UiMaskTable::default();
+	assert_eq!(primitives(&data, &mut masks, &arena).images.len(), count);
 	bencher.bench_local(|| {
 		arena.reset();
-		black_box(build_ui_image_geometry(black_box(&data), viewport(), &arena));
+		black_box(primitives(black_box(&data), &mut masks, &arena));
 	});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Builds blur quads, dispatch regions, and Gaussian kernels.
+/// Builds blur primitives, dispatch regions, and Gaussian kernels, with the stroke each blurred card also has.
 fn blur_regions_and_kernels(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Blur);
 	let mut arena = bumpalo::Bump::new();
-	assert_eq!(build_ui_blur_geometry(&data, viewport(), &arena).vertices.len(), count * 4);
+	let mut masks = UiMaskTable::default();
+	let blurs = |output: &UiPrimitives| output.steps.iter().filter(|step| matches!(step, UiStep::Blur(_))).count();
+	assert_eq!(blurs(&primitives(&data, &mut masks, &arena)), count);
 	bencher.bench_local(|| {
 		arena.reset();
-		black_box(build_ui_blur_geometry(black_box(&data), viewport(), &arena));
+		black_box(primitives(black_box(&data), &mut masks, &arena));
 	});
 }
 
@@ -204,21 +209,22 @@ fn text_warm(bencher: Bencher, count: usize) {
 	let mut arena = bumpalo::Bump::new();
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
+	let mut masks = UiMaskTable::default();
 	for _ in 0..3 {
 		arena.reset();
-		black_box(build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &arena));
+		black_box(build_ui_text_geometry(
+			&data,
+			viewport(),
+			&mut system,
+			&mut atlas,
+			&mut masks,
+			&arena,
+		));
 	}
 	arena.reset();
-	let geometry = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &arena);
-	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.vertices.len() >= count * 4);
-	report_geometry(
-		"text",
-		count,
-		&arena,
-		std::mem::size_of_val(geometry.vertices.as_slice()),
-		std::mem::size_of_val(geometry.indices.as_slice()),
-		geometry.batches.len(),
-	);
+	let geometry = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
+	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() >= count);
+	report_primitives("text", count, &arena, geometry.primitives.len(), 0);
 	drop(geometry);
 	bencher.bench_local(|| {
 		arena.reset();
@@ -227,6 +233,7 @@ fn text_warm(bencher: Bencher, count: usize) {
 			viewport(),
 			&mut system,
 			&mut atlas,
+			&mut masks,
 			&arena,
 		));
 	});
@@ -275,76 +282,110 @@ fn text_cold_glyphs(bencher: Bencher, count: usize) {
 			(system, UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE), bumpalo::Bump::new())
 		})
 		.bench_local_refs(|(system, atlas, arena)| {
-			black_box(build_ui_text_geometry(black_box(&data), viewport(), system, atlas, arena));
+			black_box(build_ui_text_geometry(
+				black_box(&data),
+				viewport(),
+				system,
+				atlas,
+				&mut UiMaskTable::default(),
+				arena,
+			));
 		});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Isolates the source-image scan performed for each generated image batch.
-fn image_batch_lookup(bencher: Bencher, count: usize) {
-	let data = draw_list(count, Scene::Images);
-	let arena = bumpalo::Bump::new();
-	let geometry = build_ui_image_geometry(&data, viewport(), &arena);
+/// Builds Slug text geometry with every glyph's curves and bands already packed.
+fn slug_text_warm(bencher: Bencher, count: usize) {
+	let data = draw_list(count, Scene::Text);
+	let mut arena = bumpalo::Bump::new();
+	let mut system = TextSystem::new();
+	let mut glyphs = UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY);
+	let mut masks = UiMaskTable::default();
+	let geometry = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &arena);
+	assert!(!geometry.truncated && geometry.dropped_glyphs == 0 && geometry.primitives.len() >= count);
+	report_primitives("slug text", count, &arena, geometry.primitives.len(), 0);
+	drop(geometry);
 	bencher.bench_local(|| {
-		for batch in black_box(&geometry.batches) {
-			// Mirrors the CPU lookup in rebuild_prepared_frame; texture creation is excluded.
-			black_box(
-				data.images
-					.iter()
-					.find(|image| image.image_id == batch.image_id && image.version == batch.version)
-					.unwrap(),
-			);
-		}
+		arena.reset();
+		black_box(build_ui_slug_geometry(
+			black_box(&data),
+			viewport(),
+			&mut system,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+		));
 	});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Restores the renderer's batch assembly order before each depth-and-order sort.
-fn order_batches(bencher: Bencher, count: usize) {
+/// Includes reading outlines and packing curves and bands, with font loading outside timing.
+fn slug_text_cold_glyphs(bencher: Bencher, count: usize) {
+	let data = draw_list(count, Scene::Text);
+	bencher
+		.with_inputs(|| {
+			let mut system = TextSystem::new();
+			assert!(system.has_font());
+			(
+				system,
+				UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY),
+				bumpalo::Bump::new(),
+			)
+		})
+		.bench_local_refs(|(system, glyphs, arena)| {
+			black_box(build_ui_slug_geometry(
+				black_box(&data),
+				viewport(),
+				system,
+				glyphs,
+				&mut UiMaskTable::default(),
+				arena,
+			));
+		});
+}
+
+#[divan::bench(args = [100, 1000])]
+/// Merges rectangles, blurs, curves, and glyphs into one painter-ordered primitive stream.
+fn merge_mixed_frame(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Mixed);
-	let arena = bumpalo::Bump::new();
-	let rects = build_ui_geometry(&data, viewport(), &arena);
-	let blurs = build_ui_blur_geometry(&data, viewport(), &arena);
-	let curves = build_ui_curve_geometry(&data, viewport(), &arena);
-	let mut source = Vec::new();
-	source.extend(rects.batches.iter().copied().map(UiPreparedBatch::Rect));
-	source.extend(blurs.batches.iter().copied().map(UiPreparedBatch::Blur));
-	source.extend(curves.batches.iter().copied().map(UiPreparedBatch::Curve));
-	let mut batches = source.clone();
+	let mut arena = bumpalo::Bump::new();
+	let mut masks = UiMaskTable::default();
+	let mut system = TextSystem::new();
+	let mut glyphs = UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY);
+	let text_arena = bumpalo::Bump::new();
+	let text = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &text_arena);
+	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None);
+	report_primitives("mixed", count, &arena, output.primitives.len(), output.steps.len());
+	drop(output);
 	bencher.bench_local(|| {
-		batches.copy_from_slice(black_box(&source));
-		sort_prepared_batches(&mut batches);
-		black_box(&batches);
+		arena.reset();
+		black_box(build_ui_primitives(
+			black_box(&data),
+			viewport(),
+			&arena,
+			None,
+			&mut masks,
+			Some(&text),
+			None,
+		));
 	});
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Copies generated geometry into CPU buffers sized before measurement.
+/// Copies generated primitives into a CPU buffer sized before measurement.
 fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 	let data = draw_list(count, Scene::Mixed);
 	let arena = bumpalo::Bump::new();
-	let rects = build_ui_geometry(&data, viewport(), &arena);
-	let blurs = build_ui_blur_geometry(&data, viewport(), &arena);
-	let curves = build_ui_curve_geometry(&data, viewport(), &arena);
+	let mut masks = UiMaskTable::default();
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
-	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &arena);
-	let sources: [&[u8]; 8] = [
-		bytemuck::cast_slice(&rects.vertices),
-		bytemuck::cast_slice(&rects.indices),
-		bytemuck::cast_slice(&curves.vertices),
-		bytemuck::cast_slice(&curves.indices),
-		bytemuck::cast_slice(&blurs.vertices),
-		bytemuck::cast_slice(&blurs.indices),
-		bytemuck::cast_slice(&text.vertices),
-		bytemuck::cast_slice(&text.indices),
-	];
-	let mut destinations = sources.map(|bytes| vec![0; bytes.len()]);
+	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
+	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None);
+	let source: &[u8] = bytemuck::cast_slice(&output.primitives);
+	let mut destination = vec![0; source.len()];
 	bencher.bench_local(|| {
-		for (destination, source) in destinations.iter_mut().zip(black_box(&sources)) {
-			destination.copy_from_slice(source);
-			black_box(destination);
-		}
+		destination.copy_from_slice(black_box(source));
+		black_box(&destination);
 	});
 }
 
@@ -355,9 +396,9 @@ fn unchanged_revision(bencher: Bencher) {
 	let frame = UiPreparedFrame {
 		revision: Some(render.revision()),
 		extent: viewport(),
-		atlas_generation: 0,
+		glyph_generation: 0,
 		damage: vec![UiPixelRegion::full(viewport())],
-		batches: Vec::new(),
+		steps: Vec::new(),
 	};
 	bencher.bench_local(|| {
 		black_box(frame.matches(
@@ -371,8 +412,8 @@ fn unchanged_revision(bencher: Bencher) {
 
 /// The `CpuFrame` struct retains the same CPU caches between changed-frame rebuilds.
 struct CpuFrame {
-	rectangles: SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>,
-	curves: CurveGeometryCache,
+	caches: UiGeometryCaches,
+	masks: UiMaskTable,
 	data: UiDrawList,
 	system: TextSystem,
 	atlas: UiGlyphAtlas,
@@ -385,43 +426,40 @@ impl CpuFrame {
 	fn rebuild(&mut self, render: &engine::Render) {
 		self.arena.reset();
 		self.staging.clear();
+		self.masks.clear();
 		update_from_render(render, &mut self.data);
-		let rects = build_ui_geometry_cached(&self.data, viewport(), &self.arena, Some(&mut self.rectangles));
-		let blurs = build_ui_blur_geometry(&self.data, viewport(), &self.arena);
-		let curves = build_ui_curve_geometry_cached(&self.data, viewport(), &self.arena, Some(&mut self.curves));
-		let text = build_ui_text_geometry(&self.data, viewport(), &mut self.system, &mut self.atlas, &self.arena);
-		assert!(!rects.truncated && !curves.truncated && !blurs.truncated && !text.truncated && text.dropped_glyphs == 0);
-		let sources: [&[u8]; 8] = [
-			bytemuck::cast_slice(&rects.vertices),
-			bytemuck::cast_slice(&rects.indices),
-			bytemuck::cast_slice(&curves.vertices),
-			bytemuck::cast_slice(&curves.indices),
-			bytemuck::cast_slice(&blurs.vertices),
-			bytemuck::cast_slice(&blurs.indices),
-			bytemuck::cast_slice(&text.vertices),
-			bytemuck::cast_slice(&text.indices),
-		];
-		for source in sources {
-			self.staging.extend_from_slice(source);
-		}
-		let mut batches =
-			Vec::with_capacity(rects.batches.len() + curves.batches.len() + blurs.batches.len() + text.batches.len());
-		batches.extend(rects.batches.iter().copied().map(UiPreparedBatch::Rect));
-		batches.extend(blurs.batches.iter().copied().map(UiPreparedBatch::Blur));
-		batches.extend(curves.batches.iter().copied().map(UiPreparedBatch::Curve));
-		batches.extend(text.batches.iter().copied().map(UiPreparedBatch::Text));
-		sort_prepared_batches(&mut batches);
-		black_box((&self.staging, &batches));
+		let text = build_ui_text_geometry_damaged(
+			&self.data,
+			viewport(),
+			&mut self.system,
+			&mut self.atlas,
+			&mut self.masks,
+			&self.arena,
+			None,
+		);
+		let output = build_ui_primitives(
+			&self.data,
+			viewport(),
+			&self.arena,
+			Some(&mut self.caches),
+			&mut self.masks,
+			Some(&text),
+			None,
+		);
+		assert!(!output.truncated && output.dropped_glyphs == 0);
+		self.staging.extend_from_slice(bytemuck::cast_slice(&output.primitives));
+		self.staging.extend_from_slice(bytemuck::cast_slice(self.masks.entries()));
+		black_box((&self.staging, &output.steps));
 	}
 }
 
 #[divan::bench(args = [100, 1000])]
-/// Combines adoption, warm geometry, CPU staging copies, and batch assembly for changed frames.
+/// Combines adoption, warm primitive building, and CPU staging copies for changed frames.
 fn changed_mixed_frame(bencher: Bencher, count: usize) {
 	let renders = [scene(count, Scene::Mixed, false), scene(count, Scene::Mixed, true)];
 	let mut frame = CpuFrame {
-		rectangles: SurfaceCache::default(),
-		curves: CurveGeometryCache::default(),
+		caches: UiGeometryCaches::default(),
+		masks: UiMaskTable::default(),
 		data: UiDrawList::default(),
 		system: TextSystem::new(),
 		atlas: UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE),

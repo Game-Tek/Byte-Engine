@@ -568,7 +568,10 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					build_bindings(bindings, value, state);
 				}
 			}
-			besl::Expressions::Literal { .. } | besl::Expressions::Continue | besl::Expressions::Discard => {}
+			besl::Expressions::Literal { .. }
+			| besl::Expressions::Continue
+			| besl::Expressions::Break
+			| besl::Expressions::Discard => {}
 		},
 		besl::Nodes::Binding {
 			name,

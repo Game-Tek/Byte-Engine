@@ -63,6 +63,18 @@ impl<'a> Compiler<'a> {
 					.push(jump_index);
 				Ok(())
 			}
+			Nodes::Expression(Expressions::Break) => {
+				drop(borrowed);
+				let Some(patches) = self.loop_break_patches.last_mut() else {
+					return Err(VmError::UnsupportedStatement {
+						message: "`break` must be used inside a loop".to_string(),
+					});
+				};
+				// The loop's end is unknown until its body is compiled, so the jump is patched afterwards.
+				patches.push(self.instructions.len());
+				self.instructions.push(Instruction::Jump { target: usize::MAX });
+				Ok(())
+			}
 			Nodes::Expression(Expressions::Discard) => {
 				drop(borrowed);
 				self.instructions.push(Instruction::Discard);
@@ -141,6 +153,7 @@ impl<'a> Compiler<'a> {
 		let continue_target = usize::MAX;
 		self.loop_continue_targets.push(continue_target);
 		self.loop_continue_patches.push(Vec::new());
+		self.loop_break_patches.push(Vec::new());
 		for statement in statements {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
@@ -160,6 +173,12 @@ impl<'a> Compiler<'a> {
 		match &mut self.instructions[loop_end_placeholder_index] {
 			Instruction::JumpIfZero { target, .. } => *target = loop_end,
 			_ => unreachable!("Expected JumpIfZero placeholder"),
+		}
+		for jump_index in self.loop_break_patches.pop().expect("Expected break patch list") {
+			match &mut self.instructions[jump_index] {
+				Instruction::Jump { target } => *target = loop_end,
+				_ => unreachable!("Expected break jump placeholder"),
+			}
 		}
 
 		Ok(())

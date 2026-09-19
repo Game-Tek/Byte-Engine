@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use super::{
-	super::{ResourceAccessorKind, is_two, resource_accessor},
+	super::{ResourceAccessorKind, is_two, resource_accessor, resource_reference_kind},
 	analysis::Generator,
 	header,
 };
@@ -146,13 +146,8 @@ impl Generator {
 	fn emit_sample(&mut self, string: &mut String, arguments: &[besl::NodeReference]) {
 		string.push_str("texture(");
 		let accessor = resource_accessor(&arguments[0]);
-		if let Some((kind, resource, index)) = &accessor {
+		if let Some((ResourceAccessorKind::Texture2DArrayLayer, resource, _)) = &accessor {
 			self.emit_node_string(string, resource);
-			if *kind == ResourceAccessorKind::DescriptorArray {
-				string.push_str("[nonuniformEXT(");
-				self.emit_node_string(string, index);
-				string.push_str(")]");
-			}
 		} else {
 			self.emit_node_string(string, &arguments[0]);
 		}
@@ -966,7 +961,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn emit_accessor_expression(&mut self, string: &mut String, left: &besl::NodeReference, right: &besl::NodeReference) {
 		self.emit_node_string(string, left);
-		if !matches!(
+		if resource_reference_kind(left) == Some(ResourceAccessorKind::DescriptorArray) {
+			// Any expression may pick the element, so the index cannot be assumed uniform across a draw.
+			string.push_str("[nonuniformEXT(");
+			self.emit_node_string(string, right);
+			string.push_str(")]");
+		} else if !matches!(
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		) && left.borrow().node().is_indexable()

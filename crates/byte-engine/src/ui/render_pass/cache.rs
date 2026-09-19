@@ -68,25 +68,20 @@ impl<K: PartialEq + Clone, V: Copy> SurfaceCache<K, V> {
 	}
 }
 
-/// Image pixels and source indices do not affect a quad's shape or UV coordinates.
-pub(super) type ImageGeometryCache =
-	SurfaceCache<([f32; 2], [f32; 2], Option<DrawClip>, Option<DrawClipMask>, f32), Option<[UiImageVertex; 4]>>;
-
-/// The `CurveGeometryCache` struct retains local tessellation and the last visible quads.
+/// The `UiGeometryCaches` struct retains the primitives of settled rectangles and images between frames.
+///
+/// A primitive's mask index belongs to one frame's mask table, so the builder assigns it after the lookup.
 #[derive(Default)]
-pub(super) struct CurveGeometryCache {
-	/// Previous visible output sizes the next frame without keeping a peak allocation alive.
-	pub(super) previous_span_count: usize,
-	pub(super) surfaces: HashMap<(u32, usize), CachedCurve>,
+pub(super) struct UiGeometryCaches {
+	pub(super) rectangles: SurfaceCache<UiDrawElement, Option<UiPrimitive>>,
+	/// Image pixels and source indices do not affect a quad's shape or texture rectangle.
+	pub(super) images: SurfaceCache<([f32; 2], [f32; 2], Option<DrawClip>, f32), Option<UiPrimitive>>,
 }
 
-/// The `CachedCurve` struct separates scale-sensitive points from clipped geometry.
-#[derive(Default)]
-pub(super) struct CachedCurve {
-	pub(super) input: Option<UiCurveDrawElement>,
-	pub(super) valid: bool,
-	pub(super) viewport: Option<(Extent, [f32; 2])>,
-	pub(super) flattened: crate::ui::components::curve::FlattenedCurve,
-	pub(super) vertices: Vec<UiCurveVertex>,
-	pub(super) indices: Vec<u16>,
+impl UiGeometryCaches {
+	/// Releases removed surfaces while preserving geometry outside the current clip.
+	pub(super) fn retain_surfaces(&mut self, ids: &[u32]) {
+		self.rectangles.retain_surfaces(ids);
+		self.images.retain_surfaces(ids);
+	}
 }

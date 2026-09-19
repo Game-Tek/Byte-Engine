@@ -171,6 +171,27 @@ mod tests {
 	}
 
 	#[test]
+	fn descriptor_array_elements_reach_every_texture_intrinsic_in_glsl() {
+		let root = besl::compile_to_besl(super::super::DESCRIPTOR_ARRAY_FRAGMENT, None)
+			.expect("Expected descriptor-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected descriptor-array fragment GLSL generation");
+
+		assert_string_contains!(shader, "uvec2(textureSize(textures[nonuniformEXT(items[index].slot)],0))");
+		assert_string_contains!(shader, "textureLod(textures[nonuniformEXT(index+1)],uv,0.0)");
+		assert_string_contains!(shader, "texture(textures[nonuniformEXT(items[index].slot)],uv)");
+
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-descriptor-array-intrinsics")
+			.expect("Expected descriptor-array fragment GLSL to compile to SPIR-V");
+	}
+
+	#[test]
 	fn structural_position_uses_gl_position_without_colliding_with_a_local() {
 		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
 			.expect("Expected structural position source to link");
@@ -743,6 +764,28 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
+	}
+
+	#[test]
+	fn break_lowers_to_glsl() {
+		let script = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					break;
+				}
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){break;};};");
 	}
 
 	#[test]

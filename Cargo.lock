@@ -267,6 +267,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "tracing-tracy",
+ "ttf-parser",
 ]
 
 [[package]]

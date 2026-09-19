@@ -239,8 +239,9 @@ instead of widening to `f32`.
 
 ## Control flow
 
-Use `if`, C-style `for`, `return`, and `continue` to control program flow. Use
-`discard` to stop a fragment invocation without producing its normal outputs.
+Use `if`, C-style `for`, `return`, `continue`, and `break` to control program
+flow. Use `discard` to stop a fragment invocation without producing its normal
+outputs.
 
 ```rust
 main: fn () -> void {
@@ -253,7 +254,20 @@ main: fn () -> void {
 }
 ```
 
-BESL doesn't currently have `else`, `break`, `while`, or unary operators.
+`continue` skips to the loop's update clause. `break` leaves the innermost loop
+and resumes after it, which lets a loop over sorted data stop at the first
+element that can no longer matter:
+
+```rust
+for (let i: u32 = 0; i < count; i = i + 1) {
+	if (values[i].key < threshold) {
+		break;
+	}
+	total = total + values[i].weight;
+}
+```
+
+BESL doesn't currently have `else`, `while`, or unary operators.
 
 | Operation | Operators |
 | --- | --- |

@@ -3361,7 +3361,8 @@ mod tests {
 		let render = engine.render(&mut snapshot);
 		let depths = render.elements().map(|element| element.position.z()).collect::<Vec<_>>();
 
-		assert_eq!(depths, vec![0, 1, 1, 10]);
+		// Depth is the rank in the paint order, and each container is followed by its text.
+		assert_eq!(depths, vec![0, 1, 3, 5]);
 		let ids = render.elements().map(|element| element.id).collect::<Vec<_>>();
 		assert_eq!(
 			render.texts().map(|element| element.content.as_str()).collect::<Vec<_>>(),
@@ -4360,7 +4361,10 @@ mod tests {
 		let curves: std::vec::Vec<_> = render.curves().collect();
 
 		assert_eq!(curves.len(), 2);
-		assert_eq!(curves[0].position, curves[1].position);
+		assert_eq!(
+			(curves[0].position.x(), curves[0].position.y()),
+			(curves[1].position.x(), curves[1].position.y())
+		);
 		assert_eq!(curves[0].size, Size::new(100, 50));
 		assert_eq!(curves[1].size, Size::new(100, 50));
 	}

@@ -1247,6 +1247,8 @@ impl Nodes {
 				r#type: BindingTypes::BufferArray { .. },
 				..
 			} => true,
+			// A descriptor array holds one resource per element.
+			Nodes::Binding { count: Some(_), .. } => true,
 			Nodes::Member { r#type, count, .. } => count.is_some() || type_is_indexable(r#type),
 			Nodes::Input { format, .. } => type_is_indexable(format),
 			Nodes::Output { format, count, .. } => count.is_some() || type_is_indexable(format),
@@ -1508,6 +1510,8 @@ pub enum Expressions {
 		value: Option<NodeReference>,
 	},
 	Continue,
+	/// Leaves the innermost enclosing loop.
+	Break,
 	Discard,
 	Member {
 		name: String,

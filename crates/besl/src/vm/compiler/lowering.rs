@@ -102,6 +102,8 @@ struct Compiler<'a> {
 	parameter_count: usize,
 	loop_continue_targets: Vec<usize>,
 	loop_continue_patches: Vec<Vec<usize>>,
+	/// Jumps emitted by `break` in each open loop; they are pointed at the loop's end once it is known.
+	loop_break_patches: Vec<Vec<usize>>,
 }
 
 impl<'a> Compiler<'a> {
@@ -124,6 +126,7 @@ impl<'a> Compiler<'a> {
 			parameter_count: signature.params.len(),
 			loop_continue_targets: Vec::new(),
 			loop_continue_patches: Vec::new(),
+			loop_break_patches: Vec::new(),
 		};
 
 		for (index, param) in signature.params.iter().enumerate() {

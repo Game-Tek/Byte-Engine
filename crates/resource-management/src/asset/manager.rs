@@ -316,8 +316,6 @@ struct HotReloadState {
 	updates: Option<Arc<crate::resource::resource_manager::ResourceUpdateBroadcaster>>,
 }
 
-#[cfg(debug_assertions)]
-
 /// The `LoadMessages` enum identifies failures while an asset is loaded, baked, or stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadMessages {

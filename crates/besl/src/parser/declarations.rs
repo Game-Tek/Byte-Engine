@@ -768,6 +768,7 @@ pub enum Expressions<'a> {
 		value: Option<Box<Node<'a>>>,
 	},
 	Continue,
+	Break,
 	Discard,
 }
 
@@ -775,6 +776,7 @@ pub enum Expressions<'a> {
 pub(super) enum Atoms<'a> {
 	Keyword,
 	Continue,
+	Break,
 	Discard,
 	Accessor,
 	GroupedExpression(Vec<Atoms<'a>>),
@@ -876,6 +878,7 @@ impl Precedence for Atoms<'_> {
 		match self {
 			Atoms::Keyword => 0,
 			Atoms::Continue => 0,
+			Atoms::Break => 0,
 			Atoms::Discard => 0,
 			Atoms::Accessor => 1,
 			Atoms::GroupedExpression { .. } => 0,

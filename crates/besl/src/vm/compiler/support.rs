@@ -604,6 +604,7 @@ pub(super) fn extract_access_chain(expression: &NodeReference) -> Result<(NodeRe
 				match expression {
 					Expressions::Return { .. } => "return",
 					Expressions::Continue => "continue",
+					Expressions::Break => "break",
 					Expressions::Discard => "discard",
 					Expressions::Member { .. } => "member",
 					Expressions::Expression { .. } => "multi-element expression group",

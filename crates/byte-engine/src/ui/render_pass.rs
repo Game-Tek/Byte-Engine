@@ -32,6 +32,7 @@ use crate::{
 mod cache;
 mod data;
 mod geometry;
+mod slug;
 mod text;
 
 #[cfg(test)]
@@ -43,65 +44,90 @@ mod subtree_tests;
 
 #[cfg(all(test, feature = "ui-render-bench"))]
 mod benchmarks;
-#[cfg(all(test, feature = "ui-render-bench"))]
-mod source_benchmarks;
 
 use cache::*;
 use data::*;
 use geometry::*;
+use slug::*;
 use text::*;
 
-/// The `UiRenderPass` struct centralizes batched UI rectangle rendering and text overlay compositing for the main render target.
+/// The text renderer every [`UiRenderPass`] uses. Set it to [`UiTextMode::Atlas`] to draw CPU-rasterized glyphs instead.
+const UI_TEXT_MODE: UiTextMode = UiTextMode::Slug;
+
+/// The `UiTextMode` enum names the UI's two interchangeable text renderers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiTextMode {
+	/// The GPU computes glyph coverage per pixel from outline curves. See [`slug`].
+	Slug,
+	/// The CPU rasterizes glyphs per pixel size into one coverage atlas that quads sample. See [`text`].
+	Atlas,
+}
+
+/// The `UiText` enum owns the glyph data and GPU resources of the active text renderer.
+///
+/// Both renderers emit glyph primitives for the same ubershader, so the rest of the pass only
+/// differs in which variant prepares the frame.
+enum UiText {
+	Slug {
+		glyphs: UiGlyphCurves,
+		curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_GLYPH_CURVE_CAPACITY]>,
+		band_buffer: ghi::BufferHandle<[u32; UI_GLYPH_BAND_CAPACITY]>,
+	},
+	Atlas {
+		atlas: UiGlyphAtlas,
+		image: ghi::BaseImageHandle,
+	},
+}
+
+impl UiText {
+	/// Identifies the current glyph packing; a prepared frame built against an older one is stale.
+	fn generation(&self) -> u64 {
+		match self {
+			Self::Slug { glyphs, .. } => glyphs.generation(),
+			Self::Atlas { atlas, .. } => atlas.generation(),
+		}
+	}
+}
+
+/// The `UiRenderPass` struct draws the UI into a persistent layer and composites the scene under it.
+///
+/// Every UI primitive is one record in a storage buffer that a single ubershader draws without
+/// vertex or index buffers. A frame is one draw per damaged region, plus one more for each
+/// backdrop blur, because a blur reads the layer drawn below it.
 pub struct UiRenderPass {
 	surface_revision: Option<engine::RenderRevision>,
-	rectangle_cache: SurfaceCache<UiDrawElement, Option<[UiVertex; 4]>>,
-	image_cache: ImageGeometryCache,
-	curve_cache: CurveGeometryCache,
+	caches: UiGeometryCaches,
+	masks: UiMaskTable,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	pipeline: crate::rendering::PipelineRef,
-	vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
-	index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	curve_pipeline: crate::rendering::PipelineRef,
-	curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]>,
-	curve_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	image_pipeline: crate::rendering::PipelineRef,
-	image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]>,
-	image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
+	/// The ubershader with blending disabled: a scissored quad is the hardware clear for one damaged region.
+	clear_pipeline: crate::rendering::PipelineRef,
+	primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]>,
+	mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]>,
+	descriptor_set: ghi::DescriptorSetHandle,
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
-	text_pipeline: crate::rendering::PipelineRef,
-	text_vertex_buffer: ghi::BufferHandle<[UiTextVertex; MAX_UI_VERTICES]>,
-	text_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
-	text_atlas: UiGlyphAtlas,
-	text_atlas_image: ghi::BaseImageHandle,
-	text_atlas_descriptor_set: ghi::DescriptorSetHandle,
+	text: UiText,
 	blur_downsample_pipeline: crate::rendering::PipelineRef,
 	blur_filter_pipeline: crate::rendering::PipelineRef,
 	blur_downsample_workgroup: Extent,
 	blur_filter_workgroup: Extent,
-	blur_composite_pipeline: crate::rendering::PipelineRef,
-	blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]>,
-	blur_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]>,
 	blur_sampler: ghi::SamplerHandle,
 	blur_half_downsample_descriptor_set: ghi::DescriptorSetHandle,
 	blur_full_x_descriptor_set: ghi::DescriptorSetHandle,
 	blur_full_y_descriptor_set: ghi::DescriptorSetHandle,
 	blur_half_x_descriptor_set: ghi::DescriptorSetHandle,
 	blur_half_y_descriptor_set: ghi::DescriptorSetHandle,
-	blur_composite_descriptor_set: ghi::DescriptorSetHandle,
 	blur_full_scratch: ghi::BaseImageHandle,
 	blur_full_output: ghi::BaseImageHandle,
 	blur_half_source: ghi::BaseImageHandle,
 	blur_half_scratch: ghi::BaseImageHandle,
 	blur_half_output: ghi::BaseImageHandle,
 	blur_backdrop: ghi::BaseImageHandle,
+	/// Whether the ubershader's blur bindings hold the blur outputs, which exist once a blur sizes them.
+	blur_textures_bound: bool,
 	/// Persistent premultiplied UI layer; only damaged regions are cleared and redrawn.
 	layer: ghi::BaseImageHandle,
-	/// Scissored quad with blending disabled: the hardware clear for one damaged region.
-	clear_pipeline: crate::rendering::PipelineRef,
-	clear_vertex_buffer: ghi::BufferHandle<[UiVertex; UI_VERTICES_PER_ELEMENT]>,
-	clear_index_buffer: ghi::BufferHandle<[u16; UI_INDICES_PER_ELEMENT]>,
-	clear_quad_uploaded: bool,
 	/// Scene under layer for one region: the frame output at full extent, or a blur's backdrop.
 	composite_pipeline: crate::rendering::PipelineRef,
 	composite_descriptor_set: ghi::DescriptorSetHandle,
@@ -120,6 +146,7 @@ pub struct UiRenderPass {
 	prepared: Option<UiPreparedFrame>,
 	reported_capacity_limit: bool,
 	reported_dropped_glyphs: bool,
+	reported_image_limit: bool,
 	text_system: TextSystem,
 }
 
@@ -144,17 +171,12 @@ impl UiRenderPass {
 		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
-		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/rectangle.pipeline");
-		let curve_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/curve.pipeline");
-		let image_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/image.pipeline");
-		let text_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/text.pipeline");
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/ui.pipeline");
+		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
 		let blur_downsample_pipeline =
 			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-downsample.pipeline");
 		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
-		let blur_composite_pipeline =
-			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-composite.pipeline");
 		let composite_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/composite.pipeline");
-		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
 		let blur_downsample_workgroup = Extent::square(16);
 		let blur_filter_workgroup = Extent::square(16);
 		let region_workgroup = Extent::square(UI_REGION_WORKGROUP);
@@ -162,45 +184,14 @@ impl UiRenderPass {
 
 		let context = render_pass_builder.context();
 
-		let clear_vertex_buffer: ghi::BufferHandle<[UiVertex; UI_VERTICES_PER_ELEMENT]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Clear Quad Vertices")
+		let primitive_buffer: ghi::BufferHandle<[UiPrimitive; MAX_UI_PRIMITIVES]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Primitives")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let clear_index_buffer: ghi::BufferHandle<[u16; UI_INDICES_PER_ELEMENT]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Clear Quad Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-
-		let vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let curve_vertex_buffer: ghi::BufferHandle<[UiCurveVertex; MAX_UI_VERTICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Curve Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let curve_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Curve Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let image_vertex_buffer: ghi::BufferHandle<[UiImageVertex; MAX_UI_VERTICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Image Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let image_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Image Indices")
+		let mask_buffer: ghi::BufferHandle<[UiClipMaskEntry; MAX_UI_MASKS]> = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Clip Masks")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let image_sampler = context.build_sampler(
@@ -209,42 +200,99 @@ impl UiRenderPass {
 				.mip_map_mode(ghi::FilteringModes::Linear)
 				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
 		);
-		let text_atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
-		// Linear coverage sampling preserves fractional translation and residual bucket scaling.
-		let text_atlas_image: ghi::BaseImageHandle = context
+		// Every texture binding of the ubershader needs a texture, so unused ones share this one.
+		let unused_texture: ghi::BaseImageHandle = context
 			.build_image(
-				ghi::image::Builder::new(UI_GLYPH_ATLAS_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
-					.name("UI Glyph Atlas")
-					.extent(text_atlas.extent())
+				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+					.name("UI Unused Texture")
+					.extent(Extent::square(1))
 					.device_accesses(ghi::DeviceAccesses::HostToDevice),
 			)
 			.into();
-		let text_vertex_buffer: ghi::BufferHandle<[UiTextVertex; MAX_UI_VERTICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Text Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let text_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Text Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let text_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
-		let blur_vertex_buffer: ghi::BufferHandle<[UiVertex; MAX_UI_VERTICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Vertex)
-				.name("UI Backdrop Blur Vertices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
-		let blur_index_buffer: ghi::BufferHandle<[u16; MAX_UI_INDICES]> = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Index)
-				.name("UI Backdrop Blur Indices")
-				.device_accesses(ghi::DeviceAccesses::HostToDevice),
-		);
+		let descriptor_set = context.create_descriptor_set(Some("UI"));
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_PRIMITIVES_SLOT, primitive_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_MASKS_SLOT, mask_buffer.into()),
+			ghi::DescriptorWrite::combined_image_sampler(
+				descriptor_set,
+				UI_BLUR_FULL_SLOT,
+				unused_texture,
+				image_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::combined_image_sampler(
+				descriptor_set,
+				UI_BLUR_HALF_SLOT,
+				unused_texture,
+				image_sampler,
+				ghi::Layouts::Read,
+			),
+		]);
+		for slot in 0..UI_TEXTURE_SLOTS {
+			context.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+				descriptor_set,
+				UI_TEXTURES_SLOT,
+				unused_texture,
+				image_sampler,
+				ghi::Layouts::Read,
+				slot,
+			)]);
+		}
+		let text = match UI_TEXT_MODE {
+			UiTextMode::Slug => {
+				let curve_buffer = context.build_buffer(
+					ghi::buffer::Builder::new(ghi::Uses::Storage)
+						.name("UI Glyph Curves")
+						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				);
+				let band_buffer = context.build_buffer(
+					ghi::buffer::Builder::new(ghi::Uses::Storage)
+						.name("UI Glyph Bands")
+						.device_accesses(ghi::DeviceAccesses::HostToDevice),
+				);
+				context.write(&[
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_CURVES_SLOT, curve_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_BANDS_SLOT, band_buffer.into()),
+				]);
+				UiText::Slug {
+					glyphs: UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY),
+					curve_buffer,
+					band_buffer,
+				}
+			}
+			UiTextMode::Atlas => {
+				let atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
+				// Linear coverage sampling preserves fractional translation and residual bucket scaling.
+				let image: ghi::BaseImageHandle = context
+					.build_image(
+						ghi::image::Builder::new(UI_GLYPH_ATLAS_FORMAT, ghi::Uses::Image | ghi::Uses::TransferDestination)
+							.name("UI Glyph Atlas")
+							.extent(atlas.extent())
+							.device_accesses(ghi::DeviceAccesses::HostToDevice),
+					)
+					.into();
+				let sampler = context.build_sampler(
+					ghi::sampler::Builder::new()
+						.filtering_mode(ghi::FilteringModes::Linear)
+						.mip_map_mode(ghi::FilteringModes::Closest)
+						.addressing_mode(ghi::SamplerAddressingModes::Clamp),
+				);
+				context.write(&[
+					ghi::DescriptorWrite::combined_image_sampler_array(
+						descriptor_set,
+						UI_TEXTURES_SLOT,
+						image,
+						sampler,
+						ghi::Layouts::Read,
+						UI_ATLAS_TEXTURE_SLOT,
+					),
+					// No atlas glyph reads outline data, but the shader's bindings still need a buffer.
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_CURVES_SLOT, mask_buffer.into()),
+					ghi::DescriptorWrite::buffer(descriptor_set, UI_GLYPH_BANDS_SLOT, mask_buffer.into()),
+				]);
+				UiText::Atlas { atlas, image }
+			}
+		};
 		let blur_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -333,7 +381,6 @@ impl UiRenderPass {
 		let blur_full_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Full Y"));
 		let blur_half_x_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half X"));
 		let blur_half_y_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Half Y"));
-		let blur_composite_descriptor_set = context.create_descriptor_set(Some("UI Backdrop Blur Composite"));
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				blur_half_downsample_descriptor_set,
@@ -400,79 +447,40 @@ impl UiRenderPass {
 				blur_half_output_image,
 				ghi::Layouts::General,
 			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				blur_composite_descriptor_set,
-				UI_BLUR_FULL_COMPOSITE_BINDING.slot(),
-				blur_full_output_image,
-				blur_sampler,
-				ghi::Layouts::Read,
-			),
-			ghi::DescriptorWrite::combined_image_sampler(
-				blur_composite_descriptor_set,
-				UI_BLUR_HALF_COMPOSITE_BINDING.slot(),
-				blur_half_output_image,
-				blur_sampler,
-				ghi::Layouts::Read,
-			),
 		]);
-		let text_atlas_descriptor_set = context.create_descriptor_set(Some("UI Glyph Atlas"));
-		context.write(&[ghi::DescriptorWrite::combined_image_sampler(
-			text_atlas_descriptor_set,
-			UI_GLYPH_ATLAS_BINDING.slot(),
-			text_atlas_image,
-			text_sampler,
-			ghi::Layouts::Read,
-		)]);
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
 			surface_revision: None,
-			rectangle_cache: SurfaceCache::default(),
-			image_cache: ImageGeometryCache::default(),
-			curve_cache: CurveGeometryCache::default(),
+			caches: UiGeometryCaches::default(),
+			masks: UiMaskTable::default(),
 			pipeline_manager,
 			pipeline,
-			vertex_buffer,
-			index_buffer,
-			curve_pipeline,
-			curve_vertex_buffer,
-			curve_index_buffer,
-			image_pipeline,
-			image_vertex_buffer,
-			image_index_buffer,
+			clear_pipeline,
+			primitive_buffer,
+			mask_buffer,
+			descriptor_set,
 			image_sampler,
 			image_textures: HashMap::new(),
-			text_pipeline,
-			text_vertex_buffer,
-			text_index_buffer,
-			text_atlas,
-			text_atlas_image,
-			text_atlas_descriptor_set,
+			text,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
 			blur_downsample_workgroup,
 			blur_filter_workgroup,
-			blur_composite_pipeline,
-			blur_vertex_buffer,
-			blur_index_buffer,
 			blur_sampler,
 			blur_half_downsample_descriptor_set,
 			blur_full_x_descriptor_set,
 			blur_full_y_descriptor_set,
 			blur_half_x_descriptor_set,
 			blur_half_y_descriptor_set,
-			blur_composite_descriptor_set,
 			blur_full_scratch: blur_full_scratch_image,
 			blur_full_output: blur_full_output_image,
 			blur_half_source: blur_half_source_image,
 			blur_half_scratch: blur_half_scratch_image,
 			blur_half_output: blur_half_output_image,
 			blur_backdrop: blur_backdrop_image,
+			blur_textures_bound: false,
 			layer: main_attachment_image,
-			clear_pipeline,
-			clear_vertex_buffer,
-			clear_index_buffer,
-			clear_quad_uploaded: false,
 			composite_pipeline,
 			composite_descriptor_set,
 			blur_resolve_descriptor_set,
@@ -488,45 +496,55 @@ impl UiRenderPass {
 			prepared: None,
 			reported_capacity_limit: false,
 			reported_dropped_glyphs: false,
+			reported_image_limit: false,
 			text_system: TextSystem::new(),
 		}
 	}
 
-	fn ensure_image_texture(
-		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		image: &UiImageDrawElement,
-	) -> Option<ghi::DescriptorSetHandle> {
-		if !should_draw_image(image) {
-			return None;
-		}
-
-		let needs_create = !self.image_textures.contains_key(&image.image_id);
-		if needs_create {
-			let texture = frame.build_image(
-				ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
-					.name("UI Image")
-					.extent(Extent::rectangle(image.source_width, image.source_height))
-					.device_accesses(ghi::DeviceAccesses::HostToDevice),
-			);
-			let texture: ghi::BaseImageHandle = texture.into();
-			let descriptor_set = frame.create_descriptor_set(Some("UI Image"));
-			frame.write(&[ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				UI_IMAGE_BINDING.slot(),
-				texture,
-				self.image_sampler,
-				ghi::Layouts::Read,
-			)]);
-			self.image_textures.insert(
-				image.image_id,
+	/// Makes an image resident and returns the element of the ubershader's texture array it is bound to.
+	///
+	/// Returns `None` when every element holds an image the UI still shows.
+	fn ensure_image_texture(&mut self, frame: &mut ghi::implementation::Frame, source: usize) -> Option<u32> {
+		let image = &self.data.images[source];
+		if !self.image_textures.contains_key(&image.image_id) {
+			let free = (UI_FIRST_IMAGE_TEXTURE_SLOT..UI_TEXTURE_SLOTS)
+				.find(|slot| self.image_textures.values().all(|texture| texture.slot != *slot));
+			let texture = if let Some(slot) = free {
+				let texture: ghi::BaseImageHandle = frame
+					.build_image(
+						ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
+							.name("UI Image")
+							.extent(Extent::rectangle(image.source_width, image.source_height))
+							.device_accesses(ghi::DeviceAccesses::HostToDevice),
+					)
+					.into();
+				frame.write(&[ghi::DescriptorWrite::combined_image_sampler_array(
+					self.descriptor_set,
+					UI_TEXTURES_SLOT,
+					texture,
+					self.image_sampler,
+					ghi::Layouts::Read,
+					slot,
+				)]);
 				UiImageTexture {
 					version: u64::MAX,
 					extent: (0, 0),
 					image: texture,
-					descriptor_set,
-				},
-			);
+					slot,
+				}
+			} else {
+				// Every element is taken. An image the UI no longer shows hands over its texture and its element.
+				let shown = &self.data.images;
+				let stale = self
+					.image_textures
+					.keys()
+					.copied()
+					.find(|id| shown.iter().all(|image| image.image_id != *id))?;
+				let mut texture = self.image_textures.remove(&stale)?;
+				texture.version = u64::MAX;
+				texture
+			};
+			self.image_textures.insert(image.image_id, texture);
 		}
 
 		let texture = self.image_textures.get_mut(&image.image_id)?;
@@ -539,7 +557,7 @@ impl UiRenderPass {
 			texture.extent = (image.source_width, image.source_height);
 		}
 
-		Some(texture.descriptor_set)
+		Some(texture.slot)
 	}
 
 	/// Adopts submitted UI data; the caller can share one render across sinks.
@@ -551,12 +569,10 @@ impl UiRenderPass {
 			return;
 		}
 		if self.surface_revision != Some(render.surface_revision) {
-			self.rectangle_cache.retain_surfaces(&render.surface_ids);
-			self.image_cache.retain_surfaces(&render.surface_ids);
-			self.curve_cache
-				.surfaces
-				.retain(|(id, _), _| render.surface_ids.binary_search(id).is_ok());
-			self.text_atlas.retain_surfaces(&render.surface_ids);
+			self.caches.retain_surfaces(&render.surface_ids);
+			if let UiText::Atlas { atlas, .. } = &mut self.text {
+				atlas.retain_surfaces(&render.surface_ids);
+			}
 			self.surface_revision = Some(render.surface_revision);
 		}
 		update_from_render(render, &mut self.data);
@@ -584,8 +600,8 @@ impl UiRenderPass {
 		merge_damage(&mut self.damage, extent);
 	}
 
-	/// Rebuilds geometry, uploads, and atlas residency for the adopted draw list at `extent`.
-	// Keep every geometry family in one rebuild so the prepared frame always describes the same uploads.
+	/// Rebuilds primitives, uploads, and glyph residency for the adopted draw list at `extent`.
+	// Keep every upload in one rebuild so the prepared frame always describes what the GPU buffers hold.
 	#[allow(clippy::too_many_lines)]
 	fn rebuild_prepared_frame(
 		&mut self,
@@ -594,82 +610,93 @@ impl UiRenderPass {
 		frame_allocator: &bumpalo::Bump,
 	) {
 		let damage = Some(self.damage.as_slice());
-		let geometry = build_ui_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.rectangle_cache), damage);
-		let blur_geometry = build_ui_blur_geometry(&self.data, extent, frame_allocator);
-		let curve_geometry =
-			build_ui_curve_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.curve_cache), damage);
-		let image_geometry =
-			build_ui_image_geometry_damaged(&self.data, extent, frame_allocator, Some(&mut self.image_cache), damage);
-		let text_geometry = if self.data.texts.is_empty() {
-			None
-		} else {
-			assert!(
-				extent.width() > 0 && extent.height() > 0,
-				"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
-			);
-			Some(build_ui_text_geometry_damaged(
-				&self.data,
-				extent,
-				&mut self.text_system,
-				&mut self.text_atlas,
-				frame_allocator,
-				damage,
-			))
+		assert!(
+			self.data.texts.is_empty() || (extent.width() > 0 && extent.height() > 0),
+			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
+		);
+		self.masks.clear();
+		// Each renderer packs its own glyph data; both produce primitives for the same shader.
+		let text = match &mut self.text {
+			_ if self.data.texts.is_empty() => None,
+			UiText::Slug {
+				glyphs,
+				curve_buffer,
+				band_buffer,
+			} => {
+				let geometry = build_ui_slug_geometry_damaged(
+					&self.data,
+					extent,
+					&mut self.text_system,
+					glyphs,
+					&mut self.masks,
+					frame_allocator,
+					damage,
+				);
+				glyphs.upload(frame, *curve_buffer, *band_buffer);
+				Some(geometry)
+			}
+			UiText::Atlas { atlas, image } => {
+				let geometry = build_ui_text_geometry_damaged(
+					&self.data,
+					extent,
+					&mut self.text_system,
+					atlas,
+					&mut self.masks,
+					frame_allocator,
+					damage,
+				);
+				atlas.upload(frame, *image);
+				Some(geometry)
+			}
 		};
-		let text_truncated = text_geometry.as_ref().is_some_and(|geometry| geometry.truncated);
-		let dropped_glyphs = text_geometry.as_ref().map_or(0, |geometry| geometry.dropped_glyphs);
+		let mut primitives = build_ui_primitives(
+			&self.data,
+			extent,
+			frame_allocator,
+			Some(&mut self.caches),
+			&mut self.masks,
+			text.as_ref(),
+			damage,
+		);
 
-		let truncated = geometry.truncated
-			|| blur_geometry.truncated
-			|| curve_geometry.truncated
-			|| image_geometry.truncated
-			|| text_truncated;
-		if truncated && !self.reported_capacity_limit {
-			log::warn!(
-				"UI geometry capacity exceeded. The most likely cause is that the UI contains more than {MAX_UI_ELEMENTS} drawable elements in a single frame."
-			);
-			self.reported_capacity_limit = true;
-		} else if !truncated {
-			self.reported_capacity_limit = false;
-		}
-		if dropped_glyphs > 0 && !self.reported_dropped_glyphs {
-			log::warn!(
-				"UI glyph atlas capacity exceeded; {dropped_glyphs} glyphs were not drawn. The most likely cause is that one frame uses more distinct glyphs than a {UI_GLYPH_ATLAS_MAX_SIZE} pixel atlas can hold."
-			);
-			self.reported_dropped_glyphs = true;
-		} else if dropped_glyphs == 0 {
-			self.reported_dropped_glyphs = false;
+		let mut images_without_texture = 0;
+		for &(primitive, source) in &primitives.images {
+			match self.ensure_image_texture(frame, source as usize) {
+				Some(slot) => primitives.primitives[primitive as usize].data0 = slot,
+				None => {
+					// An empty quad rasterizes nothing, which keeps the records after it in place.
+					primitives.primitives[primitive as usize].bounds = [0.0; 4];
+					images_without_texture += 1;
+				}
+			}
 		}
 
-		if !geometry.batches.is_empty() {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.vertex_buffer);
-			vertex_buffer_slice[..geometry.vertices.len()].copy_from_slice(&geometry.vertices);
-			frame.sync_buffer(self.vertex_buffer);
+		warn_once(&mut self.reported_capacity_limit, primitives.truncated, || {
+			format!(
+				"UI primitive capacity exceeded. The most likely cause is that the UI needs more than {MAX_UI_PRIMITIVES} rectangles, glyphs, images, and curve pieces, or more than {MAX_UI_MASKS} clip masks, in a single frame."
+			)
+		});
+		warn_once(&mut self.reported_dropped_glyphs, primitives.dropped_glyphs > 0, || {
+			format!(
+				"UI glyph capacity exceeded; {} glyphs were not drawn. The most likely cause is that one frame uses more distinct glyphs than the glyph atlas or the glyph curve buffers can hold.",
+				primitives.dropped_glyphs
+			)
+		});
+		warn_once(&mut self.reported_image_limit, images_without_texture > 0, || {
+			format!(
+				"UI image capacity exceeded; {images_without_texture} images were not drawn. The most likely cause is that the UI shows more than {} distinct images at once.",
+				UI_TEXTURE_SLOTS - UI_FIRST_IMAGE_TEXTURE_SLOT
+			)
+		});
 
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.index_buffer);
-			index_buffer_slice[..geometry.indices.len()].copy_from_slice(&geometry.indices);
-			frame.sync_buffer(self.index_buffer);
-		}
+		frame.get_mut_buffer_slice(self.primitive_buffer)[..primitives.primitives.len()]
+			.copy_from_slice(&primitives.primitives);
+		frame.sync_buffer(self.primitive_buffer);
+		let masks = self.masks.entries();
+		frame.get_mut_buffer_slice(self.mask_buffer)[..masks.len()].copy_from_slice(masks);
+		frame.sync_buffer(self.mask_buffer);
 
-		if !curve_geometry.batches.is_empty() {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.curve_vertex_buffer);
-			vertex_buffer_slice[..curve_geometry.vertices.len()].copy_from_slice(&curve_geometry.vertices);
-			frame.sync_buffer(self.curve_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.curve_index_buffer);
-			index_buffer_slice[..curve_geometry.indices.len()].copy_from_slice(&curve_geometry.indices);
-			frame.sync_buffer(self.curve_index_buffer);
-		}
-
-		if !blur_geometry.batches.is_empty() {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.blur_vertex_buffer);
-			vertex_buffer_slice[..blur_geometry.vertices.len()].copy_from_slice(&blur_geometry.vertices);
-			frame.sync_buffer(self.blur_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.blur_index_buffer);
-			index_buffer_slice[..blur_geometry.indices.len()].copy_from_slice(&blur_geometry.indices);
-			frame.sync_buffer(self.blur_index_buffer);
-
+		if primitives.steps.iter().any(|step| matches!(step, UiStep::Blur(_))) {
 			let half_extent = blur_half_extent(extent);
 			frame.resize_image(self.blur_backdrop, extent);
 			frame.resize_image(self.blur_full_scratch, extent);
@@ -677,73 +704,48 @@ impl UiRenderPass {
 			frame.resize_image(self.blur_half_source, half_extent);
 			frame.resize_image(self.blur_half_scratch, half_extent);
 			frame.resize_image(self.blur_half_output, half_extent);
+			if !self.blur_textures_bound {
+				frame.write(&[
+					ghi::DescriptorWrite::combined_image_sampler(
+						self.descriptor_set,
+						UI_BLUR_FULL_SLOT,
+						self.blur_full_output,
+						self.blur_sampler,
+						ghi::Layouts::Read,
+					),
+					ghi::DescriptorWrite::combined_image_sampler(
+						self.descriptor_set,
+						UI_BLUR_HALF_SLOT,
+						self.blur_half_output,
+						self.blur_sampler,
+						ghi::Layouts::Read,
+					),
+				]);
+				self.blur_textures_bound = true;
+			}
 		}
 
-		if !image_geometry.batches.is_empty() {
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.image_vertex_buffer);
-			vertex_buffer_slice[..image_geometry.vertices.len()].copy_from_slice(&image_geometry.vertices);
-			frame.sync_buffer(self.image_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.image_index_buffer);
-			index_buffer_slice[..image_geometry.indices.len()].copy_from_slice(&image_geometry.indices);
-			frame.sync_buffer(self.image_index_buffer);
-		}
-
-		if let Some(text_geometry) = &text_geometry
-			&& !text_geometry.batches.is_empty()
-		{
-			let vertex_buffer_slice = frame.get_mut_buffer_slice(self.text_vertex_buffer);
-			vertex_buffer_slice[..text_geometry.vertices.len()].copy_from_slice(&text_geometry.vertices);
-			frame.sync_buffer(self.text_vertex_buffer);
-
-			let index_buffer_slice = frame.get_mut_buffer_slice(self.text_index_buffer);
-			index_buffer_slice[..text_geometry.indices.len()].copy_from_slice(&text_geometry.indices);
-			frame.sync_buffer(self.text_index_buffer);
-		}
-		self.text_atlas.upload(frame, self.text_atlas_image);
-
-		let mut prepared_image_batches = Vec::new_in(frame_allocator);
-		for batch in &image_geometry.batches {
-			let Some(image) = batch.source(&self.data.images).cloned() else {
-				continue;
-			};
-			let Some(descriptor_set) = self.ensure_image_texture(frame, &image) else {
-				continue;
-			};
-			prepared_image_batches.push(UiPreparedImageBatch {
-				descriptor_set,
-				batch: *batch,
-			});
-		}
-
-		let text_batch_count = text_geometry.as_ref().map_or(0, |geometry| geometry.batches.len());
-		// The previous frame is replaced below; retain its batch allocation across rebuilds.
-		let mut batches = self.prepared.take().map(|prepared| prepared.batches).unwrap_or_default();
-		batches.clear();
-		batches.reserve(
-			geometry.batches.len()
-				+ blur_geometry.batches.len()
-				+ curve_geometry.batches.len()
-				+ prepared_image_batches.len()
-				+ text_batch_count,
-		);
-		batches.extend(geometry.batches.iter().copied().map(UiPreparedBatch::Rect));
-		batches.extend(blur_geometry.batches.iter().copied().map(UiPreparedBatch::Blur));
-		batches.extend(curve_geometry.batches.iter().copied().map(UiPreparedBatch::Curve));
-		batches.extend(prepared_image_batches.iter().copied().map(UiPreparedBatch::Image));
-		if let Some(text_geometry) = &text_geometry {
-			batches.extend(text_geometry.batches.iter().copied().map(UiPreparedBatch::Text));
-		}
-		sort_prepared_batches(&mut batches);
+		// The previous frame is replaced below; retain its step allocation across rebuilds.
+		let mut steps = self.prepared.take().map(|prepared| prepared.steps).unwrap_or_default();
+		steps.clear();
+		steps.extend_from_slice(&primitives.steps);
 
 		self.prepared = Some(UiPreparedFrame {
 			revision: self.render_revision,
 			extent,
-			atlas_generation: self.text_atlas.generation(),
+			glyph_generation: self.text.generation(),
 			damage: self.damage.clone(),
-			batches,
+			steps,
 		});
 	}
+}
+
+/// Warns when a limit is first exceeded, and again only after a frame that stayed within it.
+fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnce() -> String) {
+	if exceeded && !*reported {
+		log::warn!("{}", message());
+	}
+	*reported = exceeded;
 }
 
 impl RenderPass for UiRenderPass {
@@ -757,8 +759,8 @@ impl RenderPass for UiRenderPass {
 		self.layer_revision != self.render_revision && !(self.data.is_empty() && self.layer_revision.is_none())
 	}
 
-	// Keep ordered UI batch recording in one function so clears, blur barriers, and depth order cannot diverge.
-	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+	// Keep ordered UI step recording in one function so clears, blur barriers, and painter order cannot diverge.
+	#[allow(clippy::too_many_lines)]
 	fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -766,39 +768,24 @@ impl RenderPass for UiRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
-		let curve_pipeline = self.pipeline_manager.pipeline(self.curve_pipeline)?;
-		let image_pipeline = self.pipeline_manager.pipeline(self.image_pipeline)?;
-		let text_pipeline = self.pipeline_manager.pipeline(self.text_pipeline)?;
+		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;
 		let blur_downsample_pipeline = self.pipeline_manager.pipeline(self.blur_downsample_pipeline)?;
 		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
-		let blur_composite_pipeline = self.pipeline_manager.pipeline(self.blur_composite_pipeline)?;
 		let composite_pipeline = self.pipeline_manager.pipeline(self.composite_pipeline)?;
-		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;
 		let extent = sink.extent();
 		if self.data.is_empty() && self.layer_revision.is_none() {
 			// Nothing was ever drawn into the layer, so the scene is the complete output.
 			return self.bypass_pass.prepare(frame, sink, frame_allocator);
 		}
 		self.frame_damage(extent);
-		let atlas_generation = self.text_atlas.generation();
+		let glyph_generation = self.text.generation();
 		if !self.damage.is_empty()
 			&& !self
 				.prepared
 				.as_ref()
-				.is_some_and(|prepared| prepared.matches(self.render_revision, extent, atlas_generation, &self.damage))
+				.is_some_and(|prepared| prepared.matches(self.render_revision, extent, glyph_generation, &self.damage))
 		{
 			self.rebuild_prepared_frame(frame, extent, frame_allocator);
-		}
-		if !self.clear_quad_uploaded {
-			frame
-				.get_mut_buffer_slice(self.clear_vertex_buffer)
-				.copy_from_slice(&clear_quad());
-			frame.sync_buffer(self.clear_vertex_buffer);
-			frame
-				.get_mut_buffer_slice(self.clear_index_buffer)
-				.copy_from_slice(&[0, 1, 2, 2, 3, 0]);
-			frame.sync_buffer(self.clear_index_buffer);
-			self.clear_quad_uploaded = true;
 		}
 		let composite_descriptor_set = self.composite_descriptor_set;
 		let region_workgroup = self.region_workgroup;
@@ -815,36 +802,23 @@ impl RenderPass for UiRenderPass {
 				move |command_buffer, _| composite(command_buffer),
 			));
 		}
-		let prepared_batches = &self
+		let prepared_steps = &self
 			.prepared
 			.as_ref()
 			.expect("UI prepared frame must exist after a rebuild. The most likely cause is a rebuild that returned early.")
-			.batches;
+			.steps;
 
-		let vertex_buffer = self.vertex_buffer;
-		let index_buffer = self.index_buffer;
-		let curve_vertex_buffer = self.curve_vertex_buffer;
-		let curve_index_buffer = self.curve_index_buffer;
-		let image_vertex_buffer = self.image_vertex_buffer;
-		let image_index_buffer = self.image_index_buffer;
-		let text_vertex_buffer = self.text_vertex_buffer;
-		let text_index_buffer = self.text_index_buffer;
-		let text_atlas_descriptor_set = self.text_atlas_descriptor_set;
+		let descriptor_set = self.descriptor_set;
 		let blur_downsample_workgroup = self.blur_downsample_workgroup;
 		let blur_filter_workgroup = self.blur_filter_workgroup;
-		let blur_vertex_buffer = self.blur_vertex_buffer;
-		let blur_index_buffer = self.blur_index_buffer;
 		let blur_half_downsample_descriptor_set = self.blur_half_downsample_descriptor_set;
 		let blur_full_x_descriptor_set = self.blur_full_x_descriptor_set;
 		let blur_full_y_descriptor_set = self.blur_full_y_descriptor_set;
 		let blur_half_x_descriptor_set = self.blur_half_x_descriptor_set;
 		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
-		let blur_composite_descriptor_set = self.blur_composite_descriptor_set;
 		let blur_resolve_descriptor_set = self.blur_resolve_descriptor_set;
-		let clear_vertex_buffer = self.clear_vertex_buffer;
-		let clear_index_buffer = self.clear_index_buffer;
 		let layer = self.layer;
-		let batches: &'a [UiPreparedBatch] = frame_allocator.alloc_slice_copy(prepared_batches);
+		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(prepared_steps);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
 		// The recorded command brings the layer up to the adopted revision at this extent.
 		self.layer_revision = self.render_revision;
@@ -856,201 +830,124 @@ impl RenderPass for UiRenderPass {
 				command_buffer.region(
 					|label| label.write_str("UI"),
 					|command_buffer| {
-						let attachments = [ghi::AttachmentInformation::new(
-							layer,
-							ghi::Layouts::RenderTarget,
-							ghi::ClearValue::None,
-							true,
-							true,
-						)];
+						let push = |first: u32| UiDrawPush {
+							viewport: [extent.width().max(1) as f32, extent.height().max(1) as f32],
+							first,
+							padding: 0,
+						};
 						// Damaged pixels start transparent; everything intersecting them is redrawn in painter order.
-						command_buffer.bind_vertex_buffers(&[clear_vertex_buffer.into()]);
-						command_buffer.bind_index_buffer(
-							&(Into::<ghi::BufferDescriptor>::into(clear_index_buffer).index_type(ghi::DataTypes::U16)),
-						);
-						{
-							let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-							let command_buffer = command_buffer.bind_raster_pipeline(clear_pipeline);
-							for region in damage {
-								command_buffer.set_scissor(region.origin, region.extent);
-								command_buffer.draw_indexed(UI_INDICES_PER_ELEMENT as u32, 1, 0, 0, 0);
-							}
-							command_buffer.end_render_pass();
-						}
+						// Damage that covers the viewport is the attachment's own clear, which also skips loading the layer.
+						let redraws_everything = damage == [UiPixelRegion::full(extent)];
 
-						// Share a raster pass without changing painter order. Blur must finish the
-						// preceding pass before its compute work reads the composited backdrop.
-						for batches in batches.chunk_by(|left, right| {
-							!matches!(left, UiPreparedBatch::Blur(_)) && !matches!(right, UiPreparedBatch::Blur(_))
-						}) {
-							if let [UiPreparedBatch::Blur(batch)] = batches {
-								command_buffer.region(
-									|label| label.write_str("UI Backdrop Blur"),
-									|command_buffer| {
-										// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
-										let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
-										compute.bind_descriptor_sets(&[blur_resolve_descriptor_set]);
-										compute.write_push_constant(0, UiRegionPush::from(batch.backdrop));
-										compute.dispatch(ghi::DispatchExtent::new(batch.backdrop.extent, region_workgroup));
+						for (index, step) in steps.iter().enumerate() {
+							let (first, count) = match step {
+								UiStep::Draw { first, count } => (*first, *count),
+								UiStep::Blur(blur) => {
+									command_buffer.region(
+										|label| label.write_str("UI Backdrop Blur"),
+										|command_buffer| {
+											// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
+											let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
+											compute.bind_descriptor_sets(&[blur_resolve_descriptor_set]);
+											compute.write_push_constant(0, UiRegionPush::from(blur.backdrop));
+											compute.dispatch(ghi::DispatchExtent::new(blur.backdrop.extent, region_workgroup));
 
-										if blur_uses_full_resolution(batch.resolution_mix) {
-											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-											compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
-											compute.write_push_constant(
-												0,
-												batch.full_kernel.push([1.0, 0.0], batch.full_regions.horizontal),
-											);
-											compute.dispatch(ghi::DispatchExtent::new(
-												batch.full_regions.horizontal.extent,
-												blur_filter_workgroup,
-											));
-
-											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-											compute.bind_descriptor_sets(&[blur_full_y_descriptor_set]);
-											compute.write_push_constant(
-												0,
-												batch.full_kernel.push([0.0, 1.0], batch.full_regions.vertical),
-											);
-											compute.dispatch(ghi::DispatchExtent::new(
-												batch.full_regions.vertical.extent,
-												blur_filter_workgroup,
-											));
-										}
-
-										if blur_uses_half_resolution(batch.resolution_mix) {
-											let compute = command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
-											compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
-											compute.write_push_constant(0, UiRegionPush::from(batch.half_regions.downsample));
-											compute.dispatch(ghi::DispatchExtent::new(
-												batch.half_regions.downsample.extent,
-												blur_downsample_workgroup,
-											));
-
-											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-											compute.bind_descriptor_sets(&[blur_half_x_descriptor_set]);
-											compute.write_push_constant(
-												0,
-												batch.half_kernel.push([1.0, 0.0], batch.half_regions.filter.horizontal),
-											);
-											compute.dispatch(ghi::DispatchExtent::new(
-												batch.half_regions.filter.horizontal.extent,
-												blur_filter_workgroup,
-											));
-
-											let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
-											compute.bind_descriptor_sets(&[blur_half_y_descriptor_set]);
-											compute.write_push_constant(
-												0,
-												batch.half_kernel.push([0.0, 1.0], batch.half_regions.filter.vertical),
-											);
-											compute.dispatch(ghi::DispatchExtent::new(
-												batch.half_regions.filter.vertical.extent,
-												blur_filter_workgroup,
-											));
-										}
-
-										command_buffer.bind_vertex_buffers(&[blur_vertex_buffer.into()]);
-										command_buffer.bind_index_buffer(
-											&(Into::<ghi::BufferDescriptor>::into(blur_index_buffer)
-												.index_type(ghi::DataTypes::U16)),
-										);
-
-										let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-										let command_buffer = command_buffer.bind_raster_pipeline(blur_composite_pipeline);
-										command_buffer.bind_descriptor_sets(&[blur_composite_descriptor_set]);
-										for region in damage {
-											command_buffer.set_scissor(region.origin, region.extent);
-											command_buffer.draw_indexed(
-												batch.index_count,
-												1,
-												batch.first_index,
-												batch.vertex_offset,
-												0,
-											);
-										}
-										command_buffer.end_render_pass();
-									},
-								);
-							} else {
-								let command_buffer = command_buffer.start_render_pass(extent, &attachments);
-								for region in damage {
-									command_buffer.set_scissor(region.origin, region.extent);
-									for batch in batches {
-										match batch {
-											UiPreparedBatch::Rect(batch) => {
-												command_buffer.bind_vertex_buffers(&[vertex_buffer.into()]);
-												command_buffer.bind_index_buffer(
-													&(Into::<ghi::BufferDescriptor>::into(index_buffer)
-														.index_type(ghi::DataTypes::U16)),
-												);
-
-												let command_buffer = command_buffer.bind_raster_pipeline(pipeline);
-												command_buffer.draw_indexed(
-													batch.index_count,
-													1,
-													batch.first_index,
-													batch.vertex_offset,
+											if blur_uses_full_resolution(blur.resolution_mix) {
+												let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+												compute.bind_descriptor_sets(&[blur_full_x_descriptor_set]);
+												compute.write_push_constant(
 													0,
+													blur.full_kernel.push([1.0, 0.0], blur.full_regions.horizontal),
 												);
-											}
-											UiPreparedBatch::Curve(batch) => {
-												command_buffer.bind_vertex_buffers(&[curve_vertex_buffer.into()]);
-												command_buffer.bind_index_buffer(
-													&(Into::<ghi::BufferDescriptor>::into(curve_index_buffer)
-														.index_type(ghi::DataTypes::U16)),
-												);
+												compute.dispatch(ghi::DispatchExtent::new(
+													blur.full_regions.horizontal.extent,
+													blur_filter_workgroup,
+												));
 
-												let command_buffer = command_buffer.bind_raster_pipeline(curve_pipeline);
-												command_buffer.draw_indexed(
-													batch.index_count,
-													1,
-													batch.first_index,
-													batch.vertex_offset,
+												let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+												compute.bind_descriptor_sets(&[blur_full_y_descriptor_set]);
+												compute.write_push_constant(
 													0,
+													blur.full_kernel.push([0.0, 1.0], blur.full_regions.vertical),
 												);
+												compute.dispatch(ghi::DispatchExtent::new(
+													blur.full_regions.vertical.extent,
+													blur_filter_workgroup,
+												));
 											}
-											UiPreparedBatch::Image(prepared) => {
-												command_buffer.bind_vertex_buffers(&[image_vertex_buffer.into()]);
-												command_buffer.bind_index_buffer(
-													&(Into::<ghi::BufferDescriptor>::into(image_index_buffer)
-														.index_type(ghi::DataTypes::U16)),
-												);
 
-												let command_buffer = command_buffer.bind_raster_pipeline(image_pipeline);
-												command_buffer.bind_descriptor_sets(&[prepared.descriptor_set]);
-												command_buffer.draw_indexed(
-													prepared.batch.index_count,
-													1,
-													prepared.batch.first_index,
-													prepared.batch.vertex_offset,
-													0,
-												);
-											}
-											UiPreparedBatch::Text(batch) => {
-												command_buffer.bind_vertex_buffers(&[text_vertex_buffer.into()]);
-												command_buffer.bind_index_buffer(
-													&(Into::<ghi::BufferDescriptor>::into(text_index_buffer)
-														.index_type(ghi::DataTypes::U16)),
-												);
+											if blur_uses_half_resolution(blur.resolution_mix) {
+												let compute = command_buffer.bind_compute_pipeline(blur_downsample_pipeline);
+												compute.bind_descriptor_sets(&[blur_half_downsample_descriptor_set]);
+												compute
+													.write_push_constant(0, UiRegionPush::from(blur.half_regions.downsample));
+												compute.dispatch(ghi::DispatchExtent::new(
+													blur.half_regions.downsample.extent,
+													blur_downsample_workgroup,
+												));
 
-												let command_buffer = command_buffer.bind_raster_pipeline(text_pipeline);
-												command_buffer.bind_descriptor_sets(&[text_atlas_descriptor_set]);
-												command_buffer.draw_indexed(
-													batch.index_count,
-													1,
-													batch.first_index,
-													batch.vertex_offset,
+												let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+												compute.bind_descriptor_sets(&[blur_half_x_descriptor_set]);
+												compute.write_push_constant(
 													0,
+													blur.half_kernel.push([1.0, 0.0], blur.half_regions.filter.horizontal),
 												);
+												compute.dispatch(ghi::DispatchExtent::new(
+													blur.half_regions.filter.horizontal.extent,
+													blur_filter_workgroup,
+												));
+
+												let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
+												compute.bind_descriptor_sets(&[blur_half_y_descriptor_set]);
+												compute.write_push_constant(
+													0,
+													blur.half_kernel.push([0.0, 1.0], blur.half_regions.filter.vertical),
+												);
+												compute.dispatch(ghi::DispatchExtent::new(
+													blur.half_regions.filter.vertical.extent,
+													blur_filter_workgroup,
+												));
 											}
-											UiPreparedBatch::Blur(_) => {
-												unreachable!("Blur batches have their own command group")
-											}
-										}
-									}
+										},
+									);
+									continue;
 								}
-								command_buffer.end_render_pass();
+							};
+
+							// Each draw is its own pass because the blur before it reads the layer from compute.
+							// The first one always runs, since it clears the damage.
+							let clears = index == 0;
+							let attachments = [ghi::AttachmentInformation::new(
+								layer,
+								ghi::Layouts::RenderTarget,
+								if clears && redraws_everything {
+									ghi::ClearValue::Color(RGBA::transparent())
+								} else {
+									ghi::ClearValue::None
+								},
+								!(clears && redraws_everything),
+								true,
+							)];
+							let render_pass = command_buffer.start_render_pass(extent, &attachments);
+							if clears && !redraws_everything {
+								let clear = render_pass.bind_raster_pipeline(clear_pipeline);
+								clear.bind_descriptor_sets(&[descriptor_set]);
+								clear.write_push_constant(0, push(0));
+								for region in damage {
+									clear.set_scissor(region.origin, region.extent);
+									clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+								}
 							}
+							if count > 0 {
+								let draw = render_pass.bind_raster_pipeline(pipeline);
+								draw.bind_descriptor_sets(&[descriptor_set]);
+								draw.write_push_constant(0, push(first));
+								for region in damage {
+									draw.set_scissor(region.origin, region.extent);
+									draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+								}
+							}
+							render_pass.end_render_pass();
 						}
 					},
 				);
@@ -1068,19 +965,22 @@ mod tests {
 	use std::mem::{align_of, offset_of, size_of};
 
 	use besl::vm::{
-		Buffer, DescriptorBindings, ExecutableProgram, Texture, Value, builtin_position_slot, input_slot, output_slot,
+		Buffer, DescriptorBindings, ExecutableProgram, Texture, Value, builtin_position_slot, builtin_vertex_index_slot,
+		input_slot, output_slot,
 	};
 	use utils::{Extent, RGBA};
 
 	use super::{
-		DrawClip, DrawClipMask, MAX_UI_ELEMENTS, MAX_UI_VERTICES_PER_DRAW, UI_BLUR_GAUSSIAN_PAIR_COUNT,
-		UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_INDICES_PER_CURVE_SPAN, UI_INDICES_PER_ELEMENT,
-		UI_VERTICES_PER_CURVE_SPAN, UI_VERTICES_PER_ELEMENT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel,
-		UiCurveDrawElement, UiDrawBatch, UiDrawElement, UiDrawList, UiImageDrawElement, UiPixelRegion, UiPreparedFrame,
-		UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
-		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
-		build_ui_blur_geometry, build_ui_curve_geometry, build_ui_geometry, build_ui_image_geometry, flatten_curve_segment,
-		should_draw_image, should_rasterize_text, update_from_render,
+		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, UI_ATLAS_TEXTURE_SLOT,
+		UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT,
+		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_GLYPH_BAND_CAPACITY, UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH,
+		UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_RECT, UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush,
+		UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement,
+		UiMaskTable, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement,
+		blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
+		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached,
+		build_ui_slug_geometry, clear_primitive, curve_piece_count, should_draw_image, should_rasterize_text,
+		update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1093,6 +993,7 @@ mod tests {
 			image::Image,
 		},
 		flow::Size,
+		font::TextSystem,
 		layout::{
 			context::{Context, ElementContext},
 			engine::Engine,
@@ -1102,15 +1003,8 @@ mod tests {
 
 	const UI_BLUR_DOWNSAMPLE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-downsample.besl");
 	const UI_BLUR_FILTER_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-filter.besl");
-	const UI_BLUR_COMPOSITE_BESL: &str = include_str!("../../assets/rendering/ui/backdrop-blur-composite.besl");
-	const UI_RECT_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/rect-vertex.besl");
-	const UI_RECT_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/rect-fragment.besl");
-	const UI_CURVE_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/curve-vertex.besl");
-	const UI_CURVE_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/curve-fragment.besl");
-	const UI_IMAGE_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/image-vertex.besl");
-	const UI_IMAGE_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/image-fragment.besl");
-	const UI_TEXT_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/text-vertex.besl");
-	const UI_TEXT_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/text-fragment.besl");
+	const UI_VERTEX_BESL: &str = include_str!("../../assets/rendering/ui/ui-vertex.besl");
+	const UI_FRAGMENT_BESL: &str = include_str!("../../assets/rendering/ui/ui-fragment.besl");
 
 	fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
 		assert!((actual[0] - expected[0]).abs() < 0.0001);
@@ -1141,6 +1035,264 @@ mod tests {
 				"Missing {shader_name} entry point. The most likely cause is that the checked-in BESL asset has no `main` function."
 			)
 		})
+	}
+
+	/// The `UiVaryings` struct is what the vertex stage hands one fragment.
+	#[derive(Debug, Clone, Copy, Default)]
+	struct UiVaryings {
+		primitive: u32,
+		pixel_position: [f32; 2],
+		uv: [f32; 2],
+		curve_from: [f32; 4],
+		curve_to: [f32; 2],
+	}
+
+	fn vm_array(executable: &ExecutableProgram, slot: u32, count: usize) -> Buffer {
+		Buffer::new_array(
+			executable
+				.buffer_layout(besl::vm::ResourceSlot::new(slot))
+				.expect("Missing UI shader buffer layout. The most likely cause is a changed shader binding.")
+				.clone(),
+			count.max(1),
+		)
+		.expect("Failed to create a UI shader VM buffer. The most likely cause is an invalid element count.")
+	}
+
+	// Mirrors primitive records into a VM buffer the way the render pass uploads them.
+	fn vm_primitives(executable: &ExecutableProgram, primitives: &[UiPrimitive]) -> Buffer {
+		let mut buffer = vm_array(executable, 0, primitives.len());
+		for (index, primitive) in primitives.iter().enumerate() {
+			for (name, value) in [
+				("bounds", Value::Vec4F(primitive.bounds)),
+				("color", Value::Vec4F(primitive.color)),
+				("a", Value::Vec4F(primitive.a)),
+				("b", Value::Vec4F(primitive.b)),
+				("kind", Value::U32(primitive.kind)),
+				("mask", Value::U32(primitive.mask)),
+				("data0", Value::U32(primitive.data0)),
+				("data1", Value::U32(primitive.data1)),
+			] {
+				buffer
+					.write_array_member(index, name, value)
+					.expect("Failed to write a primitive. The most likely cause is a changed primitive record layout.");
+			}
+		}
+		buffer
+	}
+
+	/// The `UiFragmentVm` struct runs the production UI fragment shader on the records of one frame.
+	struct UiFragmentVm {
+		executable: ExecutableProgram,
+		primitives: Buffer,
+		masks: Buffer,
+		glyph_curves: Buffer,
+		glyph_bands: Buffer,
+	}
+
+	impl UiFragmentVm {
+		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
+			let executable = compile_shader_vm(ui_raster_program(UI_FRAGMENT_BESL, "UI fragment shader"));
+			let primitives = vm_primitives(&executable, primitives);
+			let mut mask_buffer = vm_array(&executable, 1, masks.len());
+			for (index, mask) in masks.iter().enumerate() {
+				for (name, value) in [
+					("clip", mask.clip),
+					("rect", mask.rect),
+					("edges", mask.edges),
+					("corner", mask.corner),
+				] {
+					mask_buffer
+						.write_array_member(index, name, Value::Vec4F(value))
+						.expect("Failed to write a clip mask. The most likely cause is a changed clip mask layout.");
+				}
+			}
+			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
+			let mut glyph_curves = vm_array(&executable, 2, curves.len());
+			for (index, points) in curves.iter().enumerate() {
+				glyph_curves
+					.write_array_member(index, "points", Value::Vec4F(*points))
+					.expect("Failed to write a glyph curve. The most likely cause is a changed curve element layout.");
+			}
+			let mut glyph_bands = vm_array(&executable, 3, bands.len());
+			for (index, value) in bands.iter().enumerate() {
+				glyph_bands
+					.write_array_member(index, "value", Value::U32(*value))
+					.expect("Failed to write a glyph band. The most likely cause is a changed band element layout.");
+			}
+			Self {
+				executable,
+				primitives,
+				masks: mask_buffer,
+				glyph_curves,
+				glyph_bands,
+			}
+		}
+
+		/// Shades one fragment. `textures` pairs shader bindings with the textures bound to them.
+		fn run(&mut self, varyings: UiVaryings, textures: &mut [(u32, &mut Texture)]) -> [f32; 4] {
+			// Interface fields take their locations in name order.
+			let mut inputs = [
+				("_besl_interface_curve_from", Value::Vec4F(varyings.curve_from)),
+				("_besl_interface_curve_to", Value::Vec2F(varyings.curve_to)),
+				("_besl_interface_pixel_position", Value::Vec2F(varyings.pixel_position)),
+				("_besl_interface_primitive", Value::U32(varyings.primitive)),
+				("_besl_interface_uv", Value::Vec2F(varyings.uv)),
+			]
+			.into_iter()
+			.enumerate()
+			.map(|(location, (name, value))| {
+				let mut input = Buffer::new(
+					self.executable
+						.input_layout(location as u8)
+						.expect("Missing UI fragment input layout. The most likely cause is a changed shader interface.")
+						.clone(),
+				);
+				input
+					.write(name, value)
+					.expect("Failed to seed a UI fragment VM input. The most likely cause is an interface type mismatch.");
+				input
+			})
+			.collect::<Vec<_>>();
+			let mut output = Buffer::new(
+				self.executable
+					.output_layout(0)
+					.expect("Missing UI fragment output layout. The most likely cause is an unresolved shader output.")
+					.clone(),
+			);
+			{
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(0), &mut self.primitives);
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(1), &mut self.masks);
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(2), &mut self.glyph_curves);
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(3), &mut self.glyph_bands);
+				for (slot, texture) in textures.iter_mut() {
+					descriptors.bind_texture(besl::vm::ResourceSlot::new(*slot), texture);
+				}
+				for (location, input) in inputs.iter_mut().enumerate() {
+					descriptors.bind_buffer(input_slot(location as u8), input);
+				}
+				descriptors.bind_buffer(output_slot(0), &mut output);
+				self.executable
+					.run_main(&mut descriptors)
+					.expect("Failed to execute the UI fragment shader. The most likely cause is incomplete BESL VM support.");
+			}
+			match output
+				.read("_besl_output_color_attachment")
+				.expect("Failed to read UI fragment output. The most likely cause is an interface layout mismatch.")
+			{
+				Value::Vec4F(color) => color,
+				value => panic!(
+					"Invalid UI fragment output type `{value:?}`. The most likely cause is a BESL VM interface type mismatch."
+				),
+			}
+		}
+	}
+
+	/// The `UiVertexVm` struct runs the production UI vertex shader, which pulls its quads from the primitive records.
+	struct UiVertexVm {
+		executable: ExecutableProgram,
+		primitives: Buffer,
+		viewport: [f32; 2],
+	}
+
+	impl UiVertexVm {
+		fn new(primitives: &[UiPrimitive], viewport: [f32; 2]) -> Self {
+			let executable = compile_shader_vm(ui_raster_program(UI_VERTEX_BESL, "UI vertex shader"));
+			let primitives = vm_primitives(&executable, primitives);
+			Self {
+				executable,
+				primitives,
+				viewport,
+			}
+		}
+
+		/// Returns the clip space position and the varyings of one vertex of a draw that starts at record `first`.
+		fn run(&mut self, first: u32, vertex_index: u32) -> ([f32; 4], UiVaryings) {
+			let mut push_constant = Buffer::new(
+				self.executable
+					.push_constant_layout()
+					.expect("Missing UI draw push constants. The most likely cause is a changed vertex shader interface.")
+					.clone(),
+			);
+			push_constant.write("viewport", Value::Vec2F(self.viewport)).unwrap();
+			push_constant.write("first", Value::U32(first)).unwrap();
+			let mut vertex = Buffer::new(self.executable.builtin_vertex_index_layout().unwrap().clone());
+			vertex.write("vertex_index", Value::U32(vertex_index)).unwrap();
+			let mut position = Buffer::new(self.executable.builtin_position_layout().unwrap().clone());
+			let mut outputs: Vec<_> = (0..5)
+				.map(|index| Buffer::new(self.executable.output_layout(index).unwrap().clone()))
+				.collect();
+			{
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(0), &mut self.primitives);
+				descriptors.bind_push_constant(&mut push_constant);
+				descriptors.bind_buffer(builtin_vertex_index_slot(), &mut vertex);
+				descriptors.bind_buffer(builtin_position_slot(), &mut position);
+				for (index, output) in outputs.iter_mut().enumerate() {
+					descriptors.bind_buffer(output_slot(index as u8), output);
+				}
+				self.executable
+					.run_main(&mut descriptors)
+					.expect("Failed to execute the UI vertex shader. The most likely cause is incomplete BESL VM support.");
+			}
+			let vec2 = |buffer: &Buffer, name: &str| match buffer.read(name) {
+				Ok(Value::Vec2F(value)) => value,
+				value => panic!("Invalid UI vertex output `{name}`: {value:?}."),
+			};
+			let vec4 = |buffer: &Buffer, name: &str| match buffer.read(name) {
+				Ok(Value::Vec4F(value)) => value,
+				value => panic!("Invalid UI vertex output `{name}`: {value:?}."),
+			};
+			let Ok(Value::U32(primitive)) = outputs[3].read("_besl_interface_primitive") else {
+				panic!("Invalid UI vertex primitive output. The most likely cause is a changed vertex shader interface.");
+			};
+			(
+				vec4(&position, "_besl_interface_position"),
+				// Interface fields take their locations in name order.
+				UiVaryings {
+					primitive,
+					pixel_position: vec2(&outputs[2], "_besl_interface_pixel_position"),
+					uv: vec2(&outputs[4], "_besl_interface_uv"),
+					curve_from: vec4(&outputs[0], "_besl_interface_curve_from"),
+					curve_to: vec2(&outputs[1], "_besl_interface_curve_to"),
+				},
+			)
+		}
+
+		/// Returns the corners of one primitive's quad, clockwise from the top left, and its flat varyings.
+		fn quad(&mut self, primitive: u32) -> ([[f32; 2]; 4], UiVaryings) {
+			let corners = [0, 1, 2, 4].map(|vertex| self.run(primitive, vertex).1.pixel_position);
+			(corners, self.run(primitive, 0).1)
+		}
+	}
+
+	/// Shades every pixel whose center is inside a primitive's quad, as the rasterizer would.
+	fn rasterize_primitive(
+		vertex: &mut UiVertexVm,
+		fragment: &mut UiFragmentVm,
+		primitive: u32,
+		mut shade: impl FnMut([i32; 2], [f32; 4]),
+	) {
+		let (corners, varyings) = vertex.quad(primitive);
+		let min = |axis: usize| corners.iter().map(|corner| corner[axis]).fold(f32::INFINITY, f32::min);
+		let max = |axis: usize| corners.iter().map(|corner| corner[axis]).fold(f32::NEG_INFINITY, f32::max);
+		for y in min(1).floor() as i32..max(1).ceil() as i32 {
+			for x in min(0).floor() as i32..max(0).ceil() as i32 {
+				let center = [x as f32 + 0.5, y as f32 + 0.5];
+				// The quad is convex and clockwise, so its inside is to the right of every edge.
+				let inside = (0..4).all(|edge| {
+					let (from, to) = (corners[edge], corners[(edge + 1) % 4]);
+					(to[0] - from[0]) * (center[1] - from[1]) - (to[1] - from[1]) * (center[0] - from[0]) >= 0.0
+				});
+				if inside {
+					let varyings = UiVaryings {
+						pixel_position: center,
+						..varyings
+					};
+					shade([x, y], fragment.run(varyings, &mut []));
+				}
+			}
+		}
 	}
 
 	// Initializes the shared origin/extent contract used by regional compute stages.
@@ -1205,6 +1357,28 @@ mod tests {
 	}
 
 	// Executes the production composite shader with a full-coverage rectangle.
+	// A square backdrop blur primitive under one feather mask, which is all the composite tests vary.
+	fn blur_composite_vm() -> UiFragmentVm {
+		UiFragmentVm::new(
+			&[UiPrimitive {
+				bounds: [0.0, 0.0, 8.0, 4.0],
+				a: [0.0, 0.0, 8.0, 4.0],
+				b: [0.0, 2.0, 0.0, 0.0],
+				kind: UI_KIND_BLUR,
+				mask: 1,
+				..UiPrimitive::default()
+			}],
+			&[
+				UiClipMaskEntry::NONE,
+				UiClipMaskEntry {
+					rect: [0.0, 0.0, 8.0, 4.0],
+					..UiClipMaskEntry::NONE
+				},
+			],
+			None,
+		)
+	}
+
 	fn run_blur_composite_vm(
 		full_texels: &[[f32; 4]],
 		full_extent: [u32; 2],
@@ -1214,11 +1388,10 @@ mod tests {
 		resolution_mix: f32,
 		feather_edges: [f32; 4],
 	) -> [f32; 4] {
-		let executable = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
 		let mut full_blurred = texture_2d(full_extent[0], full_extent[1], full_texels);
 		let mut half_blurred = texture_2d(half_extent[0], half_extent[1], half_texels);
 		run_blur_composite_textures_vm(
-			&executable,
+			&mut blur_composite_vm(),
 			&mut full_blurred,
 			&mut half_blurred,
 			pixel_position,
@@ -1227,67 +1400,34 @@ mod tests {
 		)
 	}
 
-	// Executes one fragment against reusable textures and a precompiled shader,
+	// Executes one backdrop blur fragment against reusable textures and a precompiled shader,
 	// which keeps production-chain parameter sweeps fast enough for unit tests.
 	fn run_blur_composite_textures_vm(
-		executable: &ExecutableProgram,
+		composite: &mut UiFragmentVm,
 		full_blurred: &mut Texture,
 		half_blurred: &mut Texture,
 		pixel_position: [f32; 2],
 		resolution_mix: f32,
 		feather_edges: [f32; 4],
 	) -> [f32; 4] {
-		let mut inputs = [
-			(10, "_besl_interface_pixel_position", Value::Vec2F(pixel_position)),
-			(9, "_besl_interface_local_position", Value::Vec2F([1.0, 1.0])),
-			(11, "_besl_interface_rect_size", Value::Vec2F([2.0, 2.0])),
-			(7, "_besl_interface_corner_radius", Value::F32(0.0)),
-			(6, "_besl_interface_corner_exponent", Value::F32(2.0)),
-			(3, "_besl_interface_clip_mask_position", Value::Vec2F([0.0, 0.0])),
-			(4, "_besl_interface_clip_mask_size", Value::Vec2F([8.0, 4.0])),
-			(2, "_besl_interface_clip_mask_edges", Value::Vec4F(feather_edges)),
-			(0, "_besl_interface_blur_resolution_mix", Value::F32(resolution_mix)),
-		]
-		.map(|(location, name, value)| {
-			let mut input = Buffer::new(
-				executable
-					.input_layout(location)
-					.expect("Missing blur composite input. The most likely cause is a changed production shader interface.")
-					.clone(),
-			);
-			input
-				.write(name, value)
-				.expect("Failed to initialize blur composite input. The most likely cause is a changed input type.");
-			(location, input)
-		});
-		let mut output = Buffer::new(
-			executable
-				.output_layout(0)
-				.expect("Missing blur composite output. The most likely cause is a changed production shader interface.")
-				.clone(),
-		);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), full_blurred);
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(1), half_blurred);
-			for (location, input) in &mut inputs {
-				descriptors.bind_buffer(input_slot(*location), input);
-			}
-			descriptors.bind_buffer(output_slot(0), &mut output);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute the blur composite shader. The most likely cause is incomplete BESL VM support.");
-		}
-
-		match output
-			.read("_besl_output_color_attachment")
-			.expect("Failed to read blur composite output. The most likely cause is a changed output interface.")
-		{
-			Value::Vec4F(color) => color,
-			value => {
-				panic!("Invalid blur composite output `{value:?}`. The most likely cause is a changed production shader type.")
-			}
-		}
+		composite
+			.primitives
+			.write_array_member(0, "b", Value::Vec4F([0.0, 2.0, 0.0, resolution_mix]))
+			.expect("Failed to set the blur resolution mix. The most likely cause is a changed primitive record layout.");
+		composite
+			.masks
+			.write_array_member(1, "edges", Value::Vec4F(feather_edges))
+			.expect("Failed to set the feather edges. The most likely cause is a changed clip mask layout.");
+		composite.run(
+			UiVaryings {
+				pixel_position,
+				..UiVaryings::default()
+			},
+			&mut [
+				(UI_BLUR_FULL_SLOT.index(), full_blurred),
+				(UI_BLUR_HALF_SLOT.index(), half_blurred),
+			],
+		)
 	}
 
 	// Executes one regional production downsample dispatch into a caller-owned
@@ -1341,7 +1481,7 @@ mod tests {
 	fn run_adaptive_blur_scanline_vm(
 		downsample: &ExecutableProgram,
 		filter: &ExecutableProgram,
-		composite: &ExecutableProgram,
+		composite: &mut UiFragmentVm,
 		texels: &[[f32; 4]],
 		extent: Extent,
 		radius: f32,
@@ -1898,7 +2038,7 @@ mod tests {
 	fn backdrop_blur_production_besl_chain_sweep_preserves_positive_filtering() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 5);
 		let radii = [0.0, 0.25, 1.0, 4.0, 18.0, 32.0, 64.0];
 		for pattern in [
@@ -1913,8 +2053,15 @@ mod tests {
 			let input_variation = input.windows(2).map(|pair| (pair[1][0] - pair[0][0]).abs()).sum::<f32>();
 			for display_scale in [1.0, 2.0] {
 				for radius in radii {
-					let output =
-						run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, display_scale);
+					let output = run_adaptive_blur_scanline_vm(
+						&downsample,
+						&filter,
+						&mut composite,
+						&texels,
+						extent,
+						radius,
+						display_scale,
+					);
 					for color in &output {
 						for channel in color.iter().take(3) {
 							assert!(
@@ -1952,11 +2099,11 @@ mod tests {
 	fn backdrop_blur_production_chain_changes_continuously_across_radius_sweep() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let mut composite = blur_composite_vm();
 		let extent = Extent::rectangle(49, 1);
 		let texels = blur_chain_fixture(BlurChainPattern::ThinLine, extent);
-		let sample_center = |radius| {
-			run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, radius, 1.0)
+		let mut sample_center = |radius| {
+			run_adaptive_blur_scanline_vm(&downsample, &filter, &mut composite, &texels, extent, radius, 1.0)
 				[extent.width() as usize / 2][0]
 		};
 
@@ -2001,11 +2148,11 @@ mod tests {
 	fn backdrop_blur_awkward_width_impulse_centroid_stays_phase_aligned() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let mut composite = blur_composite_vm();
 		for width in [2_801, 2_802] {
 			let extent = Extent::rectangle(width, 1);
 			let texels = blur_chain_fixture(BlurChainPattern::Impulse, extent);
-			let output = run_adaptive_blur_scanline_vm(&downsample, &filter, &composite, &texels, extent, 18.0, 2.0);
+			let output = run_adaptive_blur_scanline_vm(&downsample, &filter, &mut composite, &texels, extent, 18.0, 2.0);
 			let energy = output.iter().map(|color| color[0]).sum::<f32>();
 			let centroid = output.iter().enumerate().map(|(x, color)| x as f32 * color[0]).sum::<f32>() / energy;
 			let source_centroid = (width / 2) as f32;
@@ -2021,7 +2168,7 @@ mod tests {
 	fn backdrop_blur_regional_production_chain_never_samples_stale_texels() {
 		let downsample = compile_ui_blur_shader(UI_BLUR_DOWNSAMPLE_BESL);
 		let filter = compile_ui_blur_shader(UI_BLUR_FILTER_BESL);
-		let composite = compile_ui_blur_shader(UI_BLUR_COMPOSITE_BESL);
+		let mut composite = blur_composite_vm();
 		let viewport = Extent::rectangle(129, 33);
 		let bounds = [45.25, 10.25, 83.75, 22.75];
 		let regions = blur_half_dispatch_regions(bounds, viewport);
@@ -2093,110 +2240,9 @@ mod tests {
 				if pixel[0] < bounds[0] || pixel[0] >= bounds[2] || pixel[1] < bounds[1] || pixel[1] >= bounds[3] {
 					continue;
 				}
-				let output = run_blur_composite_textures_vm(&composite, &mut full, &mut vertical, pixel, 1.0, [0.0; 4]);
+				let output = run_blur_composite_textures_vm(&mut composite, &mut full, &mut vertical, pixel, 1.0, [0.0; 4]);
 				assert_rgba_close(output, constant, 2e-5);
 			}
-		}
-	}
-
-	/// The `UiFragmentVmInputs` struct provides one deterministic fragment invocation to the BESL VM tests.
-	struct UiFragmentVmInputs {
-		color: [f32; 4],
-		pixel_position: [f32; 2],
-		local_position: [f32; 2],
-		rect_size: [f32; 2],
-		corner_radius: f32,
-		corner_exponent: f32,
-		layer_kind: f32,
-		stroke_width: f32,
-		clip_mask_position: [f32; 2],
-		clip_mask_size: [f32; 2],
-		clip_mask_edges: [f32; 4],
-		clip_mask_corner: [f32; 2],
-	}
-
-	impl Default for UiFragmentVmInputs {
-		/// Provides a centered fill invocation whose output should preserve the input color.
-		fn default() -> Self {
-			Self {
-				color: [0.2, 0.4, 0.6, 0.8],
-				pixel_position: [50.0, 50.0],
-				local_position: [50.0, 50.0],
-				rect_size: [100.0, 100.0],
-				corner_radius: 12.0,
-				corner_exponent: 2.0,
-				layer_kind: 0.0,
-				stroke_width: 0.0,
-				clip_mask_position: [0.0, 0.0],
-				clip_mask_size: [0.0, 0.0],
-				clip_mask_edges: [0.0; 4],
-				clip_mask_corner: [0.0, 2.0],
-			}
-		}
-	}
-
-	/// Executes the production UI fragment shader for one set of interpolated inputs.
-	fn run_ui_fragment_vm(values: UiFragmentVmInputs) -> [f32; 4] {
-		let executable = ExecutableProgram::compile(ui_raster_program(UI_RECT_FRAGMENT_BESL, "UI rectangle fragment shader"))
-			.expect(
-				"Failed to compile UI fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
-			);
-		let mut inputs = [
-			(5, "_besl_interface_color", Value::Vec4F(values.color)),
-			(10, "_besl_interface_pixel_position", Value::Vec2F(values.pixel_position)),
-			(9, "_besl_interface_local_position", Value::Vec2F(values.local_position)),
-			(11, "_besl_interface_rect_size", Value::Vec2F(values.rect_size)),
-			(7, "_besl_interface_corner_radius", Value::F32(values.corner_radius)),
-			(6, "_besl_interface_corner_exponent", Value::F32(values.corner_exponent)),
-			(8, "_besl_interface_layer_kind", Value::F32(values.layer_kind)),
-			(13, "_besl_interface_stroke_width", Value::F32(values.stroke_width)),
-			(
-				3,
-				"_besl_interface_clip_mask_position",
-				Value::Vec2F(values.clip_mask_position),
-			),
-			(4, "_besl_interface_clip_mask_size", Value::Vec2F(values.clip_mask_size)),
-			(2, "_besl_interface_clip_mask_edges", Value::Vec4F(values.clip_mask_edges)),
-			(1, "_besl_interface_clip_mask_corner", Value::Vec2F(values.clip_mask_corner)),
-		]
-		.map(|(location, name, value)| {
-			let mut input = Buffer::new(
-				executable
-					.input_layout(location)
-					.expect("Missing UI fragment input layout. The most likely cause is an unused or unresolved shader input.")
-					.clone(),
-			);
-			input
-				.write(name, value)
-				.expect("Failed to seed a UI fragment VM input. The most likely cause is an interface type mismatch.");
-			(location, input)
-		});
-
-		let mut output = Buffer::new(
-			executable
-				.output_layout(0)
-				.expect("Missing UI fragment output layout. The most likely cause is an unresolved shader output.")
-				.clone(),
-		);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			for (location, input) in &mut inputs {
-				descriptors.bind_buffer(input_slot(*location), input);
-			}
-			descriptors.bind_buffer(output_slot(0), &mut output);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute UI fragment shader. The most likely cause is incomplete BESL VM support.");
-		}
-
-		match output
-			.read("_besl_output_color_attachment")
-			.expect("Failed to read UI fragment output. The most likely cause is an interface layout mismatch.")
-		{
-			Value::Vec4F(color) => color,
-			value => panic!(
-				"Invalid UI fragment output type `{value:?}`. The most likely cause is a BESL VM interface type mismatch."
-			),
 		}
 	}
 
@@ -2220,10 +2266,6 @@ mod tests {
 		vec![255; width as usize * height as usize * 4]
 	}
 
-	fn triangle_area(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-		(b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-	}
-
 	fn curve_element(segments: Vec<CurveSegment>) -> UiCurveDrawElement {
 		UiCurveDrawElement {
 			depth: 0,
@@ -2238,627 +2280,520 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn builds_a_single_batched_quad() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![UiDrawElement {
-					depth: 0,
-					order: 0,
-					position: [10.0, 20.0],
-					size: [30.0, 40.0],
-					clip: None,
-					clip_mask: None,
-					color: [0.25, 0.5, 0.75, 1.0],
-					corner_radius: 8.0,
-					corner_exponent: 2.0,
-					layer_kind: LayerKind::Fill,
-					stroke_width: 0.0,
-				}],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(200, 100),
-			&frame_allocator,
-		);
+	fn elements_list(layout_size: [f32; 2], elements: Vec<UiDrawElement>) -> UiDrawList {
+		UiDrawList {
+			layout_size,
+			elements,
+			..UiDrawList::default()
+		}
+	}
 
-		assert_eq!(geometry.vertices.len(), 4);
-		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
-		assert_eq!(
-			geometry.batches.as_slice(),
-			[UiDrawBatch {
-				depth: 0,
-				order: 0,
-				index_count: UI_INDICES_PER_ELEMENT as u32,
-				first_index: 0,
-				vertex_offset: 0,
-			}]
-		);
-		assert_vec2_close(geometry.vertices[0].position, [-0.8, 0.6]);
-		assert_vec2_close(geometry.vertices[2].position, [-0.2, -0.2]);
-
-		assert_eq!(geometry.vertices[2].local_position, [60.0, 40.0]);
-		assert_eq!(geometry.vertices[0].rect_size, [60.0, 40.0]);
-		assert_eq!(geometry.vertices[0].corner_radius, 8.0);
-		assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
-		assert_eq!(geometry.vertices[0].layer_kind, 0.0);
-		assert_eq!(geometry.vertices[0].stroke_width, 0.0);
+	/// Builds a frame's primitives without caches or text, and returns them after the clear quad.
+	fn build<'a>(
+		draw_list: &UiDrawList,
+		viewport: Extent,
+		arena: &'a bumpalo::Bump,
+	) -> (Vec<UiPrimitive>, UiPrimitives<'a>, UiMaskTable) {
+		let mut masks = UiMaskTable::default();
+		let output = build_ui_primitives_uncached(draw_list, viewport, arena, &mut masks);
+		assert_eq!(output.primitives[0], clear_primitive(viewport));
+		(output.primitives[1..].to_vec(), output, masks)
 	}
 
 	#[test]
-	fn blur_geometry_builds_an_adaptive_composite_quad_at_display_scale() {
+	fn builds_one_primitive_and_one_draw_for_a_rectangle() {
 		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_blur_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: Vec::new(),
-				blurs: vec![UiBlurDrawElement {
-					depth: 2,
-					order: 7,
-					position: [10.0, 20.0],
-					size: [30.0, 40.0],
-					clip: None,
-					clip_mask: None,
-					color: [0.0, 0.0, 0.0, 0.45],
-					corner_radius: 8.0,
-					corner_exponent: 2.0,
-					radius: 18.0,
-				}],
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(200, 200),
-			&frame_allocator,
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![UiDrawElement {
+				position: [10.0, 20.0],
+				size: [30.0, 40.0],
+				color: [0.25, 0.5, 0.75, 1.0],
+				..draw_element(8.0, 2.0)
+			}],
 		);
+		let (primitives, output, _) = build(&list, Extent::rectangle(200, 100), &frame_allocator);
 
-		assert_eq!(geometry.vertices.len(), 4);
-		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
-		assert_eq!(geometry.batches.len(), 1);
-		assert_eq!(geometry.batches[0].depth, 2);
-		assert_eq!(geometry.batches[0].order, 7);
+		// The first record is the clear quad, so draws start after it.
+		assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 1 }]);
+		assert_eq!(
+			primitives,
+			[UiPrimitive {
+				bounds: [20.0, 20.0, 80.0, 60.0],
+				color: [0.25, 0.5, 0.75, 1.0],
+				a: [20.0, 20.0, 60.0, 40.0],
+				b: [8.0, 2.0, 0.0, 0.0],
+				kind: UI_KIND_RECT,
+				mask: 0,
+				data0: 0,
+				data1: 0,
+			}]
+		);
+	}
+
+	#[test]
+	fn blur_builds_an_adaptive_composite_primitive_at_display_scale() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = UiDrawList {
+			layout_size: [100.0, 100.0],
+			blurs: vec![UiBlurDrawElement {
+				depth: 2,
+				order: 7,
+				position: [10.0, 20.0],
+				size: [30.0, 40.0],
+				clip: None,
+				clip_mask: None,
+				color: [0.0, 0.0, 0.0, 0.45],
+				corner_radius: 8.0,
+				corner_exponent: 2.0,
+				radius: 18.0,
+			}],
+			..UiDrawList::default()
+		};
+		let (primitives, output, _) = build(&list, Extent::rectangle(200, 200), &frame_allocator);
+
 		let expected_sigma = blur_sigma(36.0);
-
-		assert_eq!(geometry.batches[0].resolution_mix, 1.0);
-		assert_eq!(geometry.batches[0].full_kernel, UiBlurKernel::gaussian(expected_sigma));
+		// The empty first draw is the pass that clears the damage before the blur reads the layer.
+		let [
+			UiStep::Draw { first: 1, count: 0 },
+			UiStep::Blur(blur),
+			UiStep::Draw { first: 1, count: 1 },
+		] = output.steps.as_slice()
+		else {
+			panic!("A blur must dispatch before the draw that holds its quad: {:?}", output.steps);
+		};
+		assert_eq!(blur.resolution_mix, 1.0);
+		assert_eq!(blur.full_kernel, UiBlurKernel::gaussian(expected_sigma));
+		assert_eq!(blur.half_kernel, UiBlurKernel::gaussian(blur_half_sigma(expected_sigma)));
 		assert_eq!(
-			geometry.batches[0].half_kernel,
-			UiBlurKernel::gaussian(blur_half_sigma(expected_sigma))
-		);
-		assert_eq!(
-			geometry.batches[0].half_regions.filter.vertical,
+			blur.half_regions.filter.vertical,
 			UiPixelRegion {
 				origin: [8, 18],
 				extent: Extent::rectangle(34, 44),
 			}
 		);
-		assert!(geometry.vertices.iter().all(|vertex| vertex.blur_resolution_mix == 1.0));
-		assert_vec2_close(geometry.vertices[0].position, [-0.8, 0.6]);
-
-		assert_eq!(geometry.vertices[0].color, [0.0, 0.0, 0.0, 0.45]);
+		assert_eq!(primitives.len(), 1);
+		assert_eq!(primitives[0].kind, UI_KIND_BLUR);
+		assert_eq!(primitives[0].bounds, [20.0, 40.0, 80.0, 120.0]);
+		assert_eq!(primitives[0].b, [16.0, 2.0, 0.0, 1.0]);
+		assert_eq!(primitives[0].color, [0.0, 0.0, 0.0, 0.45]);
 	}
 
 	#[test]
-	fn blurred_fill_layer_is_not_added_to_normal_rectangles() {
+	fn primitives_merge_every_element_type_in_painter_order() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::new();
+		let rectangle = |depth: u32, order: u32| UiDrawElement {
+			depth,
+			order,
+			..draw_element(0.0, 2.0)
+		};
+		let list = UiDrawList {
+			layout_size: [100.0, 100.0],
+			elements: vec![rectangle(0, 1), rectangle(1, 3), rectangle(1, 6), rectangle(2, 9)],
+			blurs: vec![UiBlurDrawElement {
+				depth: 1,
+				order: 3,
+				position: [0.0, 0.0],
+				size: [50.0, 50.0],
+				clip: None,
+				clip_mask: None,
+				color: [0.0; 4],
+				corner_radius: 0.0,
+				corner_exponent: 2.0,
+				radius: 8.0,
+			}],
+			curves: vec![UiCurveDrawElement {
+				depth: 1,
+				order: 5,
+				..curve_element(vec![CurveSegment::Line {
+					from: CurvePoint::new(10.0, 10.0),
+					to: CurvePoint::new(40.0, 10.0),
+				}])
+			}],
+			images: vec![UiImageDrawElement {
+				depth: 1,
+				order: 4,
+				image_id: 1,
+				version: 1,
+				source_width: 1,
+				source_height: 1,
+				pixels: image_pixels(1, 1).into(),
+				position: [0.0, 0.0],
+				size: [10.0, 10.0],
+				clip: None,
+				clip_mask: None,
+				opacity: 1.0,
+			}],
+			texts: Vec::new(),
+		};
+		let (primitives, output, _) = build(&list, Extent::square(100), &frame_allocator);
 
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				ctx.element("frame").container(
-					Container::default()
-						.width(20.into())
-						.height(20.into())
-						.style(ConcreteLayer::default().backdrop_blur(18.0)),
-				);
-			})
-		});
-
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
-		let mut draw_list = UiDrawList::default();
-		update_from_render(render, &mut draw_list);
-
-		assert!(draw_list.elements.is_empty());
-		assert_eq!(draw_list.blurs.len(), 1);
-		assert_eq!(draw_list.blurs[0].radius, 18.0);
-	}
-
-	#[test]
-	fn rectangle_batches_split_when_depth_changes() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![
-					UiDrawElement {
-						depth: 0,
-						order: 0,
-						position: [0.0, 0.0],
-						size: [10.0, 10.0],
-						clip: None,
-						clip_mask: None,
-						color: [1.0, 1.0, 1.0, 1.0],
-						corner_radius: 0.0,
-						corner_exponent: 2.0,
-						layer_kind: LayerKind::Fill,
-						stroke_width: 0.0,
-					},
-					UiDrawElement {
-						depth: 1,
-						order: 1,
-						position: [0.0, 0.0],
-						size: [10.0, 10.0],
-						clip: None,
-						clip_mask: None,
-						color: [1.0, 1.0, 1.0, 1.0],
-						corner_radius: 0.0,
-						corner_exponent: 2.0,
-						layer_kind: LayerKind::Fill,
-						stroke_width: 0.0,
-					},
-				],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::square(100),
-			&frame_allocator,
+		// Depth orders first and the element second, across types. A blur goes under its own element's layers.
+		let kinds: Vec<_> = primitives.iter().map(|primitive| primitive.kind).collect();
+		assert_eq!(
+			kinds,
+			[
+				UI_KIND_RECT,
+				UI_KIND_BLUR,
+				UI_KIND_RECT,
+				UI_KIND_IMAGE,
+				UI_KIND_CURVE,
+				UI_KIND_RECT,
+				UI_KIND_RECT
+			]
 		);
+		// Only the blur splits the frame: everything before it is one draw and everything from its quad on is another.
+		assert!(matches!(
+			output.steps.as_slice(),
+			[
+				UiStep::Draw { first: 1, count: 1 },
+				UiStep::Blur(_),
+				UiStep::Draw { first: 2, count: 6 }
+			]
+		));
+		// The pass fills in the texture slot of the image primitive it is told about.
+		assert_eq!(output.images.as_slice(), [(4, 0)]);
+	}
 
-		assert_eq!(geometry.batches.len(), 2);
-		assert_eq!(geometry.batches[0].depth, 0);
-		assert_eq!(geometry.batches[1].depth, 1);
+	#[test]
+	fn many_rectangles_share_one_draw() {
+		let frame_allocator = bumpalo::Bump::new();
+		let count = (u16::MAX as usize + 1) / 4 + 1;
+		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); count]);
+		let (primitives, output, _) = build(&list, Extent::square(1), &frame_allocator);
+
+		// No index buffer means no vertex limit per draw.
+		assert_eq!(primitives.len(), count);
+		assert_eq!(
+			output.steps.as_slice(),
+			[UiStep::Draw {
+				first: 1,
+				count: count as u32
+			}]
+		);
 	}
 
 	#[test]
 	fn scales_corner_radius_to_viewport_pixels() {
 		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(6.0, 2.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(200, 300),
-			&frame_allocator,
-		);
+		let list = elements_list([100.0, 100.0], vec![draw_element(8.0, 2.0)]);
+		let (primitives, ..) = build(&list, Extent::square(200), &frame_allocator);
 
-		assert_eq!(geometry.vertices[0].corner_radius, 12.0);
+		assert_eq!(primitives[0].b[0], 16.0);
 	}
 
 	#[test]
 	fn clamps_corner_radius_to_half_the_shortest_edge() {
 		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![UiDrawElement {
-					depth: 0,
-					order: 0,
-					position: [0.0, 0.0],
-					size: [80.0, 20.0],
-					clip: None,
-					clip_mask: None,
-					color: [1.0, 1.0, 1.0, 1.0],
-					corner_radius: 80.0,
-					corner_exponent: 2.0,
-					layer_kind: LayerKind::Fill,
-					stroke_width: 0.0,
-				}],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![UiDrawElement {
+				size: [40.0, 20.0],
+				..draw_element(64.0, 2.0)
+			}],
 		);
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
 
-		assert_eq!(geometry.vertices[0].corner_radius, 10.0);
+		assert_eq!(primitives[0].b[0], 10.0);
 	}
 
 	#[test]
-	fn clipped_geometry_trims_vertices_but_preserves_local_position() {
+	fn clipped_rectangle_trims_its_quad_but_keeps_its_shape() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut element = draw_element(0.0, 2.0);
-		element.position = [20.0, 20.0];
-		element.size = [40.0, 40.0];
-		element.clip = Some(DrawClip {
-			position: [30.0, 10.0],
-			size: [20.0, 30.0],
-		});
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![element],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![UiDrawElement {
+				position: [10.0, 10.0],
+				size: [40.0, 40.0],
+				clip: Some(DrawClip {
+					position: [20.0, 15.0],
+					size: [10.0, 50.0],
+				}),
+				..draw_element(8.0, 2.0)
+			}],
 		);
+		let (primitives, _, masks) = build(&list, Extent::square(100), &frame_allocator);
 
-		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
-		assert_vec2_close(geometry.vertices[0].local_position, [10.0, 0.0]);
-		assert_vec2_close(geometry.vertices[1].local_position, [30.0, 0.0]);
-		assert_vec2_close(geometry.vertices[2].local_position, [30.0, 20.0]);
-		assert_vec2_close(geometry.vertices[3].local_position, [10.0, 20.0]);
-		assert_vec2_close(geometry.vertices[0].rect_size, [40.0, 40.0]);
+		// The quad shrinks to the clip while the shader still measures corners from the whole rectangle.
+		assert_eq!(primitives[0].bounds, [20.0, 15.0, 30.0, 50.0]);
+		assert_eq!(primitives[0].a, [10.0, 10.0, 40.0, 40.0]);
+		// A quad the CPU trimmed needs no clip on the GPU.
+		assert_eq!(primitives[0].mask, 0);
+		assert_eq!(masks.entries().len(), 1);
 	}
 
 	#[test]
-	fn clip_mask_scales_to_viewport_pixels() {
+	fn clip_masks_scale_to_viewport_pixels_and_are_shared() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut element = draw_element(0.0, 2.0);
-		element.clip_mask = Some(DrawClipMask {
+		let mask = Some(DrawClipMask {
 			position: [10.0, 20.0],
 			size: [30.0, 40.0],
 			edges: [1.0, 2.0, 3.0, 4.0],
 			corner: [5.0, 3.0],
 		});
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![element],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(200, 300),
-			&frame_allocator,
-		);
-
-		assert_vec2_close(geometry.vertices[0].clip_mask_position, [20.0, 60.0]);
-		assert_vec2_close(geometry.vertices[0].clip_mask_size, [60.0, 120.0]);
-
-		assert_eq!(geometry.vertices[0].clip_mask_edges, [3.0, 4.0, 9.0, 8.0]);
-		assert_eq!(geometry.vertices[0].clip_mask_corner, [10.0, 3.0]);
-	}
-
-	#[test]
-	fn fully_clipped_geometry_is_skipped_before_capacity_checks() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut element = draw_element(0.0, 2.0);
-		element.position = [20.0, 20.0];
-		element.size = [10.0, 10.0];
-		element.clip = Some(DrawClip {
-			position: [40.0, 40.0],
-			size: [10.0, 10.0],
-		});
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![element],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert!(geometry.vertices.is_empty());
-		assert!(geometry.indices.is_empty());
-		assert!(geometry.batches.is_empty());
-	}
-
-	#[test]
-	fn negative_corner_radius_resolves_to_square_corners() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(-8.0, 2.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].corner_radius, 0.0);
-	}
-
-	#[test]
-	fn explicit_corner_exponent_is_uploaded_to_vertices() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(8.0, 4.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].corner_exponent, 4.0);
-	}
-
-	#[test]
-	fn fill_layer_uploads_fill_kind() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(0.0, 2.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].layer_kind, 0.0);
-		assert_eq!(geometry.vertices[0].stroke_width, 0.0);
-	}
-
-	#[test]
-	fn stroke_layer_uploads_scaled_stroke_width() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut element = draw_element(0.0, 2.0);
-		element.layer_kind = LayerKind::Stroke { width: 3.0 };
-		element.stroke_width = 3.0;
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![element],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(200, 300),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].layer_kind, 1.0);
-		assert_eq!(geometry.vertices[0].stroke_width, 6.0);
-	}
-
-	#[test]
-	fn invalid_stroke_widths_are_skipped() {
-		for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-			let frame_allocator = bumpalo::Bump::new();
-			let mut element = draw_element(0.0, 2.0);
-			element.layer_kind = LayerKind::Stroke { width };
-			element.stroke_width = width;
-
-			let geometry = build_ui_geometry(
-				&UiDrawList {
-					layout_size: [100.0, 100.0],
-					elements: vec![element],
-					blurs: Vec::new(),
-					curves: Vec::new(),
-					images: Vec::new(),
-					texts: vec![],
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				UiDrawElement {
+					clip_mask: mask,
+					..draw_element(0.0, 2.0)
 				},
-				Extent::rectangle(100, 100),
-				&frame_allocator,
-			);
+				draw_element(0.0, 2.0),
+				UiDrawElement {
+					clip_mask: mask,
+					..draw_element(0.0, 2.0)
+				},
+			],
+		);
+		let (primitives, _, masks) = build(&list, Extent::rectangle(200, 300), &frame_allocator);
 
-			assert!(geometry.vertices.is_empty());
-			assert!(geometry.indices.is_empty());
+		assert_eq!(
+			primitives.iter().map(|primitive| primitive.mask).collect::<Vec<_>>(),
+			[1, 0, 1]
+		);
+		assert_eq!(masks.entries().len(), 2);
+		let entry = masks.entries()[1];
+		assert_eq!(entry.rect, [20.0, 60.0, 60.0, 120.0]);
+		assert_eq!(entry.edges, [3.0, 4.0, 9.0, 8.0]);
+		assert_eq!(entry.corner, [10.0, 3.0, 0.0, 0.0]);
+	}
+
+	#[test]
+	fn skips_elements_that_draw_nothing_before_capacity_checks() {
+		let frame_allocator = bumpalo::Bump::new();
+		let hidden = [
+			UiDrawElement {
+				color: [1.0, 1.0, 1.0, 0.0],
+				..draw_element(0.0, 2.0)
+			},
+			UiDrawElement {
+				clip: Some(DrawClip {
+					position: [80.0, 80.0],
+					size: [10.0, 10.0],
+				}),
+				..draw_element(0.0, 2.0)
+			},
+			UiDrawElement {
+				layer_kind: LayerKind::Stroke { width: f32::NAN },
+				stroke_width: f32::NAN,
+				..draw_element(0.0, 2.0)
+			},
+		];
+		let mut elements: Vec<_> = hidden.iter().cycle().take(MAX_UI_PRIMITIVES + 3).copied().collect();
+		elements.push(draw_element(0.0, 2.0));
+		let (primitives, output, _) = build(
+			&elements_list([100.0, 100.0], elements),
+			Extent::square(100),
+			&frame_allocator,
+		);
+
+		assert!(!output.truncated);
+		assert_eq!(primitives.len(), 1);
+	}
+
+	#[test]
+	fn reports_truncation_when_the_primitive_buffer_is_full() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = elements_list([1.0, 1.0], vec![draw_element(0.0, 2.0); MAX_UI_PRIMITIVES]);
+		let (_, output, _) = build(&list, Extent::square(1), &frame_allocator);
+
+		// The clear quad takes the first record.
+		assert!(output.truncated);
+		assert_eq!(output.primitives.len(), MAX_UI_PRIMITIVES);
+		assert_eq!(
+			output.steps.as_slice(),
+			[UiStep::Draw {
+				first: 1,
+				count: MAX_UI_PRIMITIVES as u32 - 1
+			}]
+		);
+	}
+
+	#[test]
+	fn corner_shapes_resolve_to_what_the_shader_can_draw() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				draw_element(-4.0, 2.0),
+				draw_element(8.0, 3.5),
+				draw_element(8.0, f32::NAN),
+				draw_element(8.0, 0.5),
+				draw_element(8.0, 64.0),
+			],
+		);
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+
+		let shapes: Vec<_> = primitives.iter().map(|primitive| [primitive.b[0], primitive.b[1]]).collect();
+		assert_eq!(shapes, [[0.0, 2.0], [8.0, 3.5], [8.0, 2.0], [8.0, 2.0], [8.0, 8.0]]);
+	}
+
+	#[test]
+	fn stroke_width_tells_a_stroke_from_a_fill() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = elements_list(
+			[100.0, 100.0],
+			vec![
+				draw_element(8.0, 2.0),
+				UiDrawElement {
+					layer_kind: LayerKind::Stroke { width: 3.0 },
+					stroke_width: 3.0,
+					..draw_element(8.0, 2.0)
+				},
+			],
+		);
+		let (primitives, ..) = build(&list, Extent::square(200), &frame_allocator);
+
+		assert_eq!(primitives[0].b[2], 0.0);
+		// Strokes scale with the viewport like corner radii.
+		assert_eq!(primitives[1].b[2], 6.0);
+	}
+
+	fn cubic_wire() -> CurveSegment {
+		CurveSegment::Cubic {
+			from: CurvePoint::new(10.0, 20.0),
+			control0: CurvePoint::new(50.0, 20.0),
+			control1: CurvePoint::new(50.0, 80.0),
+			to: CurvePoint::new(90.0, 80.0),
+		}
+	}
+
+	fn curve_list(curve: UiCurveDrawElement) -> UiDrawList {
+		UiDrawList {
+			layout_size: [100.0, 100.0],
+			curves: vec![curve],
+			..UiDrawList::default()
 		}
 	}
 
 	#[test]
-	fn line_curve_segment_flattens_to_one_span() {
+	fn curve_segments_become_pieces_of_one_cubic() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut points = Vec::new_in(&frame_allocator);
-		flatten_curve_segment(
-			&CurveSegment::Line {
-				from: CurvePoint::new(1.0, 2.0),
-				to: CurvePoint::new(5.0, 6.0),
-			},
-			[10.0, 20.0],
-			2.0,
-			3.0,
-			0.35,
-			&mut points,
-		);
+		let list = curve_list(curve_element(vec![cubic_wire()]));
+		let (primitives, output, _) = build(&list, Extent::square(200), &frame_allocator);
 
-		assert_eq!(points.len(), 2);
-		assert_eq!(points[0], CurvePoint::new(22.0, 66.0));
-		assert_eq!(points[1], CurvePoint::new(30.0, 78.0));
-	}
-
-	#[test]
-	fn quadratic_and_cubic_curves_flatten_adaptively() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut quadratic = Vec::new_in(&frame_allocator);
-		flatten_curve_segment(
-			&CurveSegment::Quadratic {
-				from: CurvePoint::new(0.0, 0.0),
-				control: CurvePoint::new(50.0, 100.0),
-				to: CurvePoint::new(100.0, 0.0),
-			},
-			[0.0, 0.0],
-			1.0,
-			1.0,
-			0.35,
-			&mut quadratic,
-		);
-
-		let mut cubic = Vec::new_in(&frame_allocator);
-		flatten_curve_segment(
-			&CurveSegment::Cubic {
-				from: CurvePoint::new(0.0, 0.0),
-				control0: CurvePoint::new(20.0, 100.0),
-				control1: CurvePoint::new(80.0, -100.0),
-				to: CurvePoint::new(100.0, 0.0),
-			},
-			[0.0, 0.0],
-			1.0,
-			1.0,
-			0.35,
-			&mut cubic,
-		);
-
-		assert!(quadratic.len() > 2);
-		assert!(cubic.len() > 2);
-		assert_eq!(quadratic[0], CurvePoint::new(0.0, 0.0));
-		assert_eq!(quadratic[quadratic.len() - 1], CurvePoint::new(100.0, 0.0));
-		assert_eq!(cubic[0], CurvePoint::new(0.0, 0.0));
-		assert_eq!(cubic[cubic.len() - 1], CurvePoint::new(100.0, 0.0));
-	}
-
-	#[test]
-	fn curve_geometry_builds_anti_aliased_span_quad() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_curve_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: Vec::new(),
-				blurs: Vec::new(),
-				curves: vec![curve_element(vec![CurveSegment::Line {
-					from: CurvePoint::new(10.0, 20.0),
-					to: CurvePoint::new(30.0, 20.0),
-				}])],
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(200, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_CURVE_SPAN);
-		assert_eq!(geometry.indices.len(), UI_INDICES_PER_CURVE_SPAN);
-		assert_eq!(geometry.batches.len(), 1);
-		assert_eq!(geometry.vertices[0].segment_from, [20.0, 20.0]);
-		assert_eq!(geometry.vertices[0].segment_to, [60.0, 20.0]);
-		assert_eq!(geometry.vertices[0].half_width, 2.0);
-		assert!(geometry.vertices[0].pixel_position[0] < 20.0);
-		assert!(geometry.vertices[0].pixel_position[1] < 20.0);
-	}
-
-	#[test]
-	fn curve_quad_winding_matches_rectangle_winding() {
-		let frame_allocator = bumpalo::Bump::new();
-		let rect_geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(0.0, 2.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-		let curve_geometry = build_ui_curve_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: Vec::new(),
-				blurs: Vec::new(),
-				curves: vec![curve_element(vec![CurveSegment::Line {
-					from: CurvePoint::new(10.0, 20.0),
-					to: CurvePoint::new(30.0, 20.0),
-				}])],
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		let rect_area = triangle_area(
-			rect_geometry.vertices[0].position,
-			rect_geometry.vertices[1].position,
-			rect_geometry.vertices[2].position,
-		);
-		let curve_area = triangle_area(
-			curve_geometry.vertices[0].position,
-			curve_geometry.vertices[1].position,
-			curve_geometry.vertices[2].position,
-		);
-
-		assert!(rect_area < 0.0);
-		assert!(curve_area < 0.0);
-	}
-
-	#[test]
-	fn curve_geometry_clips_partially_visible_spans() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut curve = curve_element(vec![CurveSegment::Line {
-			from: CurvePoint::new(0.0, 10.0),
-			to: CurvePoint::new(100.0, 10.0),
-		}]);
-		curve.clip = Some(DrawClip {
-			position: [25.0, 0.0],
-			size: [50.0, 20.0],
-		});
-		let geometry = build_ui_curve_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: Vec::new(),
-				blurs: Vec::new(),
-				curves: vec![curve],
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].segment_from, [25.0, 10.0]);
-		assert_eq!(geometry.vertices[0].segment_to, [75.0, 10.0]);
-	}
-
-	#[test]
-	fn curve_geometry_skips_invalid_or_non_positive_strokes() {
-		for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-			let frame_allocator = bumpalo::Bump::new();
-			let mut curve = curve_element(vec![CurveSegment::Line {
-				from: CurvePoint::new(0.0, 0.0),
-				to: CurvePoint::new(10.0, 0.0),
-			}]);
-			curve.stroke_width = width;
-			let geometry = build_ui_curve_geometry(
-				&UiDrawList {
-					layout_size: [100.0, 100.0],
-					elements: Vec::new(),
-					blurs: Vec::new(),
-					curves: vec![curve],
-					images: Vec::new(),
-					texts: Vec::new(),
-				},
-				Extent::rectangle(100, 100),
-				&frame_allocator,
-			);
-
-			assert!(geometry.vertices.is_empty());
-			assert!(geometry.indices.is_empty());
+		// The CPU only picks a piece count; every piece carries the whole cubic in viewport pixels.
+		let count = primitives.len() as u32;
+		assert!((2..=16).contains(&count), "unexpected piece count {count}");
+		assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count }]);
+		for (piece, primitive) in primitives.iter().enumerate() {
+			assert_eq!(primitive.kind, UI_KIND_CURVE);
+			assert_eq!(primitive.bounds, [20.0, 40.0, 100.0, 40.0]);
+			assert_eq!(primitive.a, [100.0, 160.0, 180.0, 160.0]);
+			// Half of the four unit stroke, scaled by two.
+			assert_eq!(primitive.b[0], 4.0);
+			assert_eq!(primitive.data0, piece as u32 | count << 16);
+			// A lone segment rounds off both of its ends.
+			assert_eq!(primitive.data1, UI_CURVE_CAP_START | UI_CURVE_CAP_END);
 		}
 	}
 
 	#[test]
-	fn prepared_frame_only_matches_its_own_revision_extent_and_atlas_generation() {
+	fn lines_and_quadratics_are_stored_as_the_cubic_that_traces_them() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = curve_list(curve_element(vec![
+			CurveSegment::Line {
+				from: CurvePoint::new(0.0, 0.0),
+				to: CurvePoint::new(30.0, 60.0),
+			},
+			CurveSegment::Quadratic {
+				from: CurvePoint::new(0.0, 0.0),
+				control: CurvePoint::new(3.0, 6.0),
+				to: CurvePoint::new(9.0, 0.0),
+			},
+		]));
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+
+		// A straight line needs one piece however long it is.
+		assert_eq!(primitives.len(), 2);
+		assert_eq!(primitives[0].bounds, [0.0, 0.0, 10.0, 20.0]);
+		assert_eq!(primitives[0].a, [20.0, 40.0, 30.0, 60.0]);
+		assert_eq!(primitives[1].bounds, [0.0, 0.0, 2.0, 4.0]);
+		assert_eq!(primitives[1].a, [5.0, 4.0, 9.0, 0.0]);
+	}
+
+	#[test]
+	fn curve_piece_count_follows_bend_and_fit_error() {
+		let line = [[0.0, 0.0], [100.0, 0.0], [200.0, 0.0], [300.0, 0.0]];
+		let gentle = [[0.0, 0.0], [100.0, 4.0], [200.0, 4.0], [300.0, 0.0]];
+		let wire = [[0.0, 0.0], [150.0, 0.0], [150.0, 100.0], [300.0, 100.0]];
+		let wild = [[0.0, 0.0], [90_000.0, 0.0], [-90_000.0, 100.0], [300.0, 100.0]];
+
+		assert_eq!(curve_piece_count(&line), 1);
+		assert!(curve_piece_count(&gentle) <= 2);
+		assert!((4..=12).contains(&curve_piece_count(&wire)));
+		assert_eq!(curve_piece_count(&wild), MAX_CURVE_PIECES);
+		// Zooming in bends a curve further from its chords in pixels, so it takes more pieces.
+		let zoomed = wire.map(|point| [point[0] * 4.0, point[1] * 4.0]);
+		assert!(curve_piece_count(&zoomed) > curve_piece_count(&wire));
+	}
+
+	#[test]
+	fn curve_caps_round_path_ends_and_corners_but_not_smooth_joints() {
+		let frame_allocator = bumpalo::Bump::new();
+		let line = |from: [f32; 2], to: [f32; 2]| CurveSegment::Line {
+			from: CurvePoint::new(from[0], from[1]),
+			to: CurvePoint::new(to[0], to[1]),
+		};
+		let list = curve_list(curve_element(vec![
+			line([10.0, 10.0], [30.0, 10.0]),
+			// Continues straight on: a smooth joint.
+			line([30.0, 10.0], [50.0, 10.0]),
+			// Turns: a corner, which the segment that starts at it rounds.
+			line([50.0, 10.0], [50.0, 40.0]),
+			// No length: it leaves no primitive and its neighbors still meet.
+			line([50.0, 40.0], [50.0, 40.0]),
+			// Starts somewhere else: a new path.
+			line([70.0, 70.0], [90.0, 70.0]),
+		]));
+		let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+
+		let caps: Vec<_> = primitives.iter().map(|primitive| primitive.data1).collect();
+		assert_eq!(
+			caps,
+			[
+				UI_CURVE_CAP_START,
+				0,
+				UI_CURVE_CAP_START | UI_CURVE_CAP_END,
+				UI_CURVE_CAP_START | UI_CURVE_CAP_END
+			]
+		);
+	}
+
+	#[test]
+	fn curves_carry_their_clip_to_the_shader() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = curve_list(UiCurveDrawElement {
+			clip: Some(DrawClip {
+				position: [20.0, 0.0],
+				size: [30.0, 100.0],
+			}),
+			..curve_element(vec![cubic_wire()])
+		});
+		let (primitives, _, masks) = build(&list, Extent::square(200), &frame_allocator);
+
+		// A curve's quads are not axis aligned, so the fragment shader clips them instead of the CPU.
+		assert!(primitives.iter().all(|primitive| primitive.mask == 1));
+		assert_eq!(masks.entries()[1].clip, [40.0, 0.0, 100.0, 200.0]);
+		assert_eq!(masks.entries()[1].rect, [0.0; 4]);
+	}
+
+	#[test]
+	fn curve_skips_invalid_or_non_positive_strokes() {
+		let frame_allocator = bumpalo::Bump::new();
+		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
+			let list = curve_list(UiCurveDrawElement {
+				stroke_width,
+				color: [1.0, 1.0, 1.0, alpha],
+				..curve_element(vec![cubic_wire()])
+			});
+			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
+			assert!(primitives.is_empty());
+		}
+	}
+
+	#[test]
+	fn prepared_frame_only_matches_its_own_revision_extent_and_glyph_generation() {
 		let mut engine = Engine::new();
 		engine.mount(|ctx| {
 			Box::pin(async move {
@@ -2872,9 +2807,9 @@ mod tests {
 		let prepared = UiPreparedFrame {
 			revision,
 			extent: Extent::square(64),
-			atlas_generation: 2,
+			glyph_generation: 2,
 			damage: damage.clone(),
-			batches: Vec::new(),
+			steps: Vec::new(),
 		};
 
 		assert!(prepared.matches(revision, Extent::square(64), 2, &damage));
@@ -2909,466 +2844,505 @@ mod tests {
 		assert_eq!(draw_list.texts.len(), 1);
 	}
 
-	/// Verifies the text fragment shader scales the vertex color's alpha by sampled glyph coverage.
+	/// Verifies the fragment shader scales an atlas glyph's alpha by the sampled coverage.
 	#[test]
-	fn ui_text_fragment_besl_vm_multiplies_color_alpha_by_atlas_coverage() {
-		let executable = ExecutableProgram::compile(ui_raster_program(UI_TEXT_FRAGMENT_BESL, "UI text fragment shader"))
-			.expect(
-				"Failed to compile UI text fragment shader for the BESL VM. The most likely cause is missing VM shader support.",
-			);
-		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
-		let mut inputs = [
-			(4, "_besl_interface_color", Value::Vec4F([0.2, 0.4, 0.6, 0.8])),
-			(0, "_besl_interface_clip_mask_corner", Value::Vec2F([0.0, 2.0])),
-			(1, "_besl_interface_clip_mask_edges", Value::Vec4F([0.0; 4])),
-			(2, "_besl_interface_clip_mask_position", Value::Vec2F([0.0, 0.0])),
-			(3, "_besl_interface_clip_mask_size", Value::Vec2F([0.0, 0.0])),
-			(5, "_besl_interface_pixel_position", Value::Vec2F([1.5, 1.5])),
-			(6, "_besl_interface_uv", Value::Vec2F([0.5, 0.5])),
-		]
-		.map(|(location, name, value)| {
-			let mut input = Buffer::new(
-				executable
-					.input_layout(location)
-					.expect("Missing UI text fragment input layout. The most likely cause is a changed shader interface.")
-					.clone(),
-			);
-			input
-				.write(name, value)
-				.expect("Failed to seed a UI text fragment VM input. The most likely cause is an interface type mismatch.");
-			(location, input)
-		});
-		let mut output = Buffer::new(
-			executable
-				.output_layout(0)
-				.expect("Missing UI text fragment output layout. The most likely cause is an unresolved shader output.")
-				.clone(),
-		);
-		{
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(besl::vm::ResourceSlot::new(0), &mut atlas);
-			for (location, input) in &mut inputs {
-				descriptors.bind_buffer(input_slot(*location), input);
-			}
-			descriptors.bind_buffer(output_slot(0), &mut output);
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute UI text fragment shader. The most likely cause is incomplete BESL VM support.");
-		}
-		let color = match output
-			.read("_besl_output_color_attachment")
-			.expect("Failed to read UI text fragment output. The most likely cause is an interface layout mismatch.")
-		{
-			Value::Vec4F(color) => color,
-			value => panic!("Invalid UI text fragment output type `{value:?}`."),
+	fn ui_fragment_besl_vm_multiplies_color_alpha_by_atlas_coverage() {
+		let glyph = UiPrimitive {
+			bounds: [0.0, 0.0, 2.0, 2.0],
+			color: [0.2, 0.4, 0.6, 0.8],
+			a: [0.0, 0.0, 1.0, 1.0],
+			kind: UI_KIND_ATLAS_GLYPH,
+			..UiPrimitive::default()
 		};
+		let mut atlas = texture_2d(2, 2, &[[0.5, 0.0, 0.0, 1.0]; 4]);
+		let color = UiFragmentVm::new(&[glyph], &[UiClipMaskEntry::NONE], None).run(
+			UiVaryings {
+				pixel_position: [1.5, 1.5],
+				uv: [0.5, 0.5],
+				..UiVaryings::default()
+			},
+			// The atlas is the first element of the texture array.
+			&mut [(UI_TEXTURES_SLOT.index() + UI_ATLAS_TEXTURE_SLOT, &mut atlas)],
+		);
 
 		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
 	}
 
-	/// Checks fractional scale and translation in the production text vertex shader.
+	/// Verifies the fragment shader samples an image from its texture slot and applies its opacity.
 	#[test]
-	fn ui_text_vertex_besl_vm_applies_fractional_transform() {
-		let executable = ExecutableProgram::compile(ui_raster_program(UI_TEXT_VERTEX_BESL, "UI text vertex shader")).unwrap();
-		let values = [
-			("in_position", Value::Vec2F([10.5, 20.25])),
-			("in_uv", Value::Vec2F([0.1, 0.2])),
-			("in_color", Value::Vec4F([1.0; 4])),
-			("in_pixel_position", Value::Vec2F([0.0; 2])),
-			("in_clip_mask_position", Value::Vec2F([0.0; 2])),
-			("in_clip_mask_size", Value::Vec2F([0.0; 2])),
-			("in_clip_mask_edges", Value::Vec4F([0.0; 4])),
-			("in_clip_mask_corner", Value::Vec2F([0.0, 2.0])),
-			("in_transform", Value::Vec4F([0.015, -0.015, -0.795, 0.5925])),
-		];
-		let mut inputs: Vec<_> = values
-			.into_iter()
-			.enumerate()
-			.map(|(index, (name, value))| {
-				let mut input = Buffer::new(executable.input_layout(index as u8).unwrap().clone());
-				input.write(name, value).unwrap();
-				input
-			})
-			.collect();
-		let mut position = Buffer::new(executable.builtin_position_layout().unwrap().clone());
-		let mut outputs: Vec<_> = (0..7)
-			.map(|index| Buffer::new(executable.output_layout(index).unwrap().clone()))
-			.collect();
-		let mut descriptors = DescriptorBindings::new();
-		for (index, input) in inputs.iter_mut().enumerate() {
-			descriptors.bind_buffer(input_slot(index as u8), input);
-		}
-		for (index, output) in outputs.iter_mut().enumerate() {
-			descriptors.bind_buffer(output_slot(index as u8), output);
-		}
-		descriptors.bind_buffer(builtin_position_slot(), &mut position);
-		executable.run_main(&mut descriptors).unwrap();
-		let Value::Vec4F(actual) = position.read("_besl_interface_position").unwrap() else {
-			panic!("Expected vertex position")
+	fn ui_fragment_besl_vm_samples_an_image_from_its_texture_slot() {
+		let image = UiPrimitive {
+			bounds: [0.0, 0.0, 2.0, 2.0],
+			color: [1.0, 1.0, 1.0, 0.5],
+			a: [0.0, 0.0, 1.0, 1.0],
+			kind: UI_KIND_IMAGE,
+			data0: 7,
+			..UiPrimitive::default()
 		};
-		assert_vec4_close(actual, [-0.6375, 0.28875, 0.0, 1.0]);
+		let mut texture = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.8]]);
+		let color = UiFragmentVm::new(&[image], &[UiClipMaskEntry::NONE], None).run(
+			UiVaryings {
+				pixel_position: [1.0, 1.0],
+				uv: [0.5, 0.5],
+				..UiVaryings::default()
+			},
+			&mut [(UI_TEXTURES_SLOT.index() + 7, &mut texture)],
+		);
+
+		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.4]);
+	}
+
+	/// Runs the production shaders at every pixel center of a label's glyph quads.
+	///
+	/// Returns each covered pixel with the alpha the shader wrote, which is the glyph coverage for an opaque white label.
+	fn slug_label_coverage(content: &str, position: [f32; 2], font_size: f32, extent: u32) -> Vec<([u32; 2], f32)> {
+		let mut text_system = TextSystem::new();
+		let mut glyphs = UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY);
+		let mut masks = UiMaskTable::default();
+		let arena = bumpalo::Bump::new();
+		let draw_list = UiDrawList {
+			layout_size: [extent as f32; 2],
+			texts: vec![UiTextDrawElement {
+				depth: 0,
+				order: 0,
+				position,
+				size: [extent as f32; 2],
+				clip: None,
+				clip_mask: None,
+				color: RGBA::white(),
+				font_size,
+				text: content.to_string(),
+			}],
+			..UiDrawList::default()
+		};
+		let geometry = build_ui_slug_geometry(
+			&draw_list,
+			Extent::square(extent),
+			&mut text_system,
+			&mut glyphs,
+			&mut masks,
+			&arena,
+		);
+
+		let mut vertex = UiVertexVm::new(&geometry.primitives, [extent as f32; 2]);
+		let mut fragment = UiFragmentVm::new(&geometry.primitives, masks.entries(), Some(&glyphs));
+		let mut pixels = Vec::new();
+		for glyph in 0..geometry.primitives.len() as u32 {
+			rasterize_primitive(&mut vertex, &mut fragment, glyph, |[x, y], color| {
+				pixels.push(([x as u32, y as u32], color[3]));
+			});
+		}
+		pixels
+	}
+
+	/// Verifies that packed outlines evaluated by the Slug shader cover the same pixels as the CPU rasterizer.
+	#[test]
+	fn ui_fragment_besl_vm_slug_glyphs_match_rasterized_coverage() {
+		let mut fonts = TextSystem::new();
+		if !fonts.has_font() {
+			return;
+		}
+		for (character, font_size) in [('@', 32.0f32), ('g', 24.0), ('B', 16.0), ('W', 12.0), ('8', 48.0)] {
+			// A whole-pixel pen and baseline put the shader's samples on the rasterizer's pixel grid.
+			let position = [8.0f32, 4.0];
+			let line = fonts.line_metrics(font_size).unwrap();
+			let baseline = (position[1] + line.ascent.max(font_size * 0.8f32)).round();
+			let glyph = fonts.glyph(character, font_size).unwrap().clone();
+			let left = position[0] as i32 + glyph.xmin;
+			let top = baseline as i32 - glyph.ymin - glyph.height as i32;
+
+			let pixels = slug_label_coverage(&character.to_string(), position, font_size, 96);
+			// The quad spans the whole bitmap, so no rasterized coverage goes unsampled.
+			assert!(pixels.len() >= (glyph.width * glyph.height) as usize);
+			let (mut total, mut worst) = (0.0f32, 0.0f32);
+			for ([x, y], coverage) in &pixels {
+				let (column, row) = (*x as i32 - left, *y as i32 - top);
+				let inside = column >= 0 && row >= 0 && column < glyph.width as i32 && row < glyph.height as i32;
+				let expected = if inside {
+					glyph.bitmap[(row as u32 * glyph.width + column as u32) as usize] as f32 / 255.0
+				} else {
+					0.0
+				};
+				total += (coverage - expected).abs();
+				worst = worst.max((coverage - expected).abs());
+			}
+			// Two rays per pixel estimate the exact area the rasterizer integrates, so single edge
+			// pixels may differ while the glyph as a whole must agree closely.
+			let mean = total / pixels.len() as f32;
+			assert!(
+				mean < 0.03,
+				"'{character}' at {font_size} px differs by {mean} per pixel on average"
+			);
+			assert!(
+				worst < 0.35,
+				"'{character}' at {font_size} px differs by {worst} at one pixel"
+			);
+		}
 	}
 
 	#[test]
 	fn checked_in_ui_raster_besl_sources_link() {
-		for (shader_name, source) in [
-			("UI rectangle vertex shader", UI_RECT_VERTEX_BESL),
-			("UI rectangle fragment shader", UI_RECT_FRAGMENT_BESL),
-			("UI curve vertex shader", UI_CURVE_VERTEX_BESL),
-			("UI curve fragment shader", UI_CURVE_FRAGMENT_BESL),
-			("UI image vertex shader", UI_IMAGE_VERTEX_BESL),
-			("UI image fragment shader", UI_IMAGE_FRAGMENT_BESL),
-			("UI text vertex shader", UI_TEXT_VERTEX_BESL),
-			("UI text fragment shader", UI_TEXT_FRAGMENT_BESL),
-			("UI backdrop blur composite fragment shader", UI_BLUR_COMPOSITE_BESL),
-		] {
+		for (shader_name, source) in [("UI vertex shader", UI_VERTEX_BESL), ("UI fragment shader", UI_FRAGMENT_BESL)] {
 			ui_raster_program(source, shader_name);
 		}
 	}
 
-	/// Verifies the production UI vertex shader preserves every geometry and styling varying.
+	/// Verifies the vertex shader pulls a quad's corners, texture rectangle, and record index without vertex buffers.
 	#[test]
-	fn ui_vertex_besl_vm_forwards_position_and_varyings() {
-		let executable = ExecutableProgram::compile(ui_raster_program(UI_RECT_VERTEX_BESL, "UI rectangle vertex shader"))
-			.expect("Failed to compile UI vertex shader for the BESL VM. The most likely cause is missing VM shader support.");
-		let mut inputs: [Buffer; 14] = std::array::from_fn(|location| {
-			Buffer::new(
-				executable
-					.input_layout(location as u8)
-					.expect("Missing UI vertex input layout. The most likely cause is an unresolved shader input.")
-					.clone(),
-			)
-		});
-		let input_names = [
-			"in_position",
-			"in_pixel_position",
-			"in_local_position",
-			"in_rect_size",
-			"in_color",
-			"in_corner_radius",
-			"in_corner_exponent",
-			"in_layer_kind",
-			"in_stroke_width",
-			"in_clip_mask_position",
-			"in_clip_mask_size",
-			"in_clip_mask_edges",
-			"in_clip_mask_corner",
-			"in_blur_resolution_mix",
+	fn ui_vertex_besl_vm_pulls_quads_from_primitive_records() {
+		let primitives = [
+			UiPrimitive::default(),
+			UiPrimitive {
+				bounds: [20.0, 20.0, 80.0, 60.0],
+				a: [0.25, 0.5, 0.75, 1.0],
+				kind: UI_KIND_IMAGE,
+				..UiPrimitive::default()
+			},
 		];
-		let input_values = [
-			Value::Vec2F([0.25, -0.75]),
-			Value::Vec2F([10.0, 20.0]),
-			Value::Vec2F([3.0, 4.0]),
-			Value::Vec2F([100.0, 80.0]),
-			Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
-			Value::F32(12.0),
-			Value::F32(3.0),
-			Value::F32(1.0),
-			Value::F32(2.5),
-			Value::Vec2F([5.0, 6.0]),
-			Value::Vec2F([70.0, 60.0]),
-			Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
-			Value::Vec2F([9.0, 2.0]),
-			Value::F32(0.375),
-		];
-		for ((input, name), value) in inputs.iter_mut().zip(input_names).zip(input_values) {
-			input
-				.write(name, value)
-				.expect("Failed to seed a UI vertex VM input. The most likely cause is an interface type mismatch.");
-		}
+		let mut vertex = UiVertexVm::new(&primitives, [200.0, 100.0]);
 
-		let mut position = Buffer::new(
-			executable
-				.builtin_position_layout()
-				.expect("Missing UI vertex position layout. The most likely cause is an unresolved position output.")
-				.clone(),
-		);
-		let mut outputs: [Buffer; 14] = std::array::from_fn(|location| {
-			Buffer::new(
-				executable
-					.output_layout(location as u8)
-					.expect("Missing UI vertex varying layout. The most likely cause is an unresolved shader output.")
-					.clone(),
-			)
-		});
-		{
-			let mut descriptors = DescriptorBindings::new();
-			for (location, input) in inputs.iter_mut().enumerate() {
-				descriptors.bind_buffer(input_slot(location as u8), input);
-			}
-			descriptors.bind_buffer(builtin_position_slot(), &mut position);
-			for (location, output) in outputs.iter_mut().enumerate() {
-				descriptors.bind_buffer(output_slot(location as u8), output);
-			}
-			executable
-				.run_main(&mut descriptors)
-				.expect("Failed to execute UI vertex shader. The most likely cause is incomplete BESL VM support.");
-		}
-
+		// Six vertices per record, so a draw that starts at record one reaches it with its first vertex.
+		let corners: Vec<_> = (0..6).map(|index| vertex.run(1, index)).collect();
+		let pixels: Vec<_> = corners.iter().map(|(_, varyings)| varyings.pixel_position).collect();
 		assert_eq!(
-			position.read("_besl_interface_position").expect("Expected position output"),
-			Value::Vec4F([0.25, -0.75, 0.0, 1.0])
+			pixels,
+			[
+				[20.0, 20.0],
+				[80.0, 20.0],
+				[80.0, 60.0],
+				[80.0, 60.0],
+				[20.0, 60.0],
+				[20.0, 20.0]
+			]
 		);
-		for ((output, name), expected) in outputs
-			.iter()
-			.zip([
-				"_besl_interface_blur_resolution_mix",
-				"_besl_interface_clip_mask_corner",
-				"_besl_interface_clip_mask_edges",
-				"_besl_interface_clip_mask_position",
-				"_besl_interface_clip_mask_size",
-				"_besl_interface_color",
-				"_besl_interface_corner_exponent",
-				"_besl_interface_corner_radius",
-				"_besl_interface_layer_kind",
-				"_besl_interface_local_position",
-				"_besl_interface_pixel_position",
-				"_besl_interface_rect_size",
-				"_besl_interface_screen_uv",
-				"_besl_interface_stroke_width",
-			])
-			.zip([
-				Value::F32(0.375),
-				Value::Vec2F([9.0, 2.0]),
-				Value::Vec4F([1.0, 2.0, 3.0, 4.0]),
-				Value::Vec2F([5.0, 6.0]),
-				Value::Vec2F([70.0, 60.0]),
-				Value::Vec4F([0.1, 0.2, 0.3, 0.4]),
-				Value::F32(3.0),
-				Value::F32(12.0),
-				Value::F32(1.0),
-				Value::Vec2F([3.0, 4.0]),
-				Value::Vec2F([10.0, 20.0]),
-				Value::Vec2F([100.0, 80.0]),
-				Value::Vec2F([0.625, 0.875]),
-				Value::F32(2.5),
-			]) {
-			assert_eq!(output.read(name).expect("Expected UI vertex varying output"), expected);
+		assert_vec4_close(corners[0].0, [-0.8, 0.6, 0.0, 1.0]);
+		assert_vec4_close(corners[2].0, [-0.2, -0.2, 0.0, 1.0]);
+		assert_vec2_close(corners[0].1.uv, [0.25, 0.5]);
+		assert_vec2_close(corners[2].1.uv, [0.75, 1.0]);
+		assert!(corners.iter().all(|(_, varyings)| varyings.primitive == 1));
+		// The next six vertices of the same draw belong to the next record.
+		assert_eq!(vertex.run(0, 6).1.primitive, 1);
+	}
+
+	/// The distance from a point to a cubic, by dense sampling.
+	fn distance_to_cubic(cubic: &[[f32; 2]; 4], point: [f32; 2]) -> f32 {
+		let samples = 4000;
+		let at = |t: f32| {
+			let s = 1.0 - t;
+			[0, 1].map(|axis| {
+				s * s * s * cubic[0][axis]
+					+ 3.0 * s * s * t * cubic[1][axis]
+					+ 3.0 * s * t * t * cubic[2][axis]
+					+ t * t * t * cubic[3][axis]
+			})
+		};
+		(0..samples)
+			.map(|index| {
+				let (from, to) = (at(index as f32 / samples as f32), at((index + 1) as f32 / samples as f32));
+				let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+				let t =
+					(((point[0] - from[0]) * dx + (point[1] - from[1]) * dy) / (dx * dx + dy * dy).max(1e-12)).clamp(0.0, 1.0);
+				(point[0] - from[0] - dx * t).hypot(point[1] - from[1] - dy * t)
+			})
+			.fold(f32::INFINITY, f32::min)
+	}
+
+	/// Verifies that the pieces of an analytic curve tile its stroke: every pixel matches the exact
+	/// distance to the curve, no pixel is shaded by two pieces, and no stroke pixel falls outside the quads.
+	#[test]
+	fn ui_shaders_besl_vm_draw_an_analytic_curve_without_seams() {
+		let frame_allocator = bumpalo::Bump::new();
+		let extent = 64u32;
+		for (segment, stroke_width) in [
+			(
+				CurveSegment::Cubic {
+					from: CurvePoint::new(6.5, 10.25),
+					control0: CurvePoint::new(34.0, 10.25),
+					control1: CurvePoint::new(30.0, 52.0),
+					to: CurvePoint::new(57.0, 52.75),
+				},
+				3.0,
+			),
+			(
+				CurveSegment::Quadratic {
+					from: CurvePoint::new(8.0, 50.0),
+					control: CurvePoint::new(30.0, 4.0),
+					to: CurvePoint::new(56.0, 44.0),
+				},
+				1.5,
+			),
+			(
+				CurveSegment::Line {
+					from: CurvePoint::new(9.0, 9.5),
+					to: CurvePoint::new(52.25, 40.0),
+				},
+				2.0,
+			),
+		] {
+			let cubic = match segment {
+				CurveSegment::Cubic {
+					from,
+					control0,
+					control1,
+					to,
+				} => [from, control0, control1, to].map(|point| [point.x, point.y]),
+				CurveSegment::Quadratic { from, control, to } => {
+					let third = |a: CurvePoint, b: CurvePoint| [a.x + (b.x - a.x) * 2.0 / 3.0, a.y + (b.y - a.y) * 2.0 / 3.0];
+					[[from.x, from.y], third(from, control), third(to, control), [to.x, to.y]]
+				}
+				CurveSegment::Line { from, to } => [[from.x, from.y], [from.x, from.y], [to.x, to.y], [to.x, to.y]],
+			};
+			let list = UiDrawList {
+				layout_size: [extent as f32; 2],
+				curves: vec![UiCurveDrawElement {
+					stroke_width,
+					..curve_element(vec![segment.clone()])
+				}],
+				..UiDrawList::default()
+			};
+			let (primitives, ..) = build(&list, Extent::square(extent), &frame_allocator);
+			let mut vertex = UiVertexVm::new(&primitives, [extent as f32; 2]);
+			let mut fragment = UiFragmentVm::new(&primitives, &[UiClipMaskEntry::NONE], None);
+
+			// Alpha per pixel, and how many pieces shaded it at all.
+			let mut coverage = vec![(0.0f32, 0u32); (extent * extent) as usize];
+			for piece in 0..primitives.len() as u32 {
+				rasterize_primitive(&mut vertex, &mut fragment, piece, |[x, y], color| {
+					if x < 0 || y < 0 || x >= extent as i32 || y >= extent as i32 || color[3] <= 0.0 {
+						return;
+					}
+					let pixel = &mut coverage[(y as u32 * extent + x as u32) as usize];
+					// Alpha blending accumulates coverage the way the layer does.
+					pixel.0 = pixel.0 + color[3] * (1.0 - pixel.0);
+					pixel.1 += 1;
+				});
+			}
+
+			// Only a cubic is approximated, by quadratics that stay within the fit tolerance of it.
+			let tolerance = if matches!(segment, CurveSegment::Cubic { .. }) {
+				CURVE_QUADRATIC_TOLERANCE_PIXELS + 0.01
+			} else {
+				0.001
+			};
+			for y in 0..extent {
+				for x in 0..extent {
+					let (alpha, pieces) = coverage[(y * extent + x) as usize];
+					let distance = distance_to_cubic(&cubic, [x as f32 + 0.5, y as f32 + 0.5]);
+					let expected = (0.5 - (distance - stroke_width * 0.5)).clamp(0.0, 1.0);
+					assert!(
+						(alpha - expected).abs() < tolerance,
+						"{segment:?}: pixel ({x}, {y}) has coverage {alpha}, expected {expected}"
+					);
+					assert!(pieces <= 1, "{segment:?}: pixel ({x}, {y}) is shaded by {pieces} pieces");
+				}
+			}
 		}
 	}
 
-	/// Verifies a centered fill fragment retains its source color.
+	/// Verifies that a curve's hard clip reaches the fragment shader through its mask entry.
+	#[test]
+	fn ui_fragment_besl_vm_clips_curves_per_pixel() {
+		let frame_allocator = bumpalo::Bump::new();
+		let list = UiDrawList {
+			layout_size: [64.0, 64.0],
+			curves: vec![UiCurveDrawElement {
+				clip: Some(DrawClip {
+					position: [0.0, 0.0],
+					size: [32.0, 64.0],
+				}),
+				..curve_element(vec![CurveSegment::Line {
+					from: CurvePoint::new(8.0, 20.5),
+					to: CurvePoint::new(56.0, 20.5),
+				}])
+			}],
+			..UiDrawList::default()
+		};
+		let (primitives, _, masks) = build(&list, Extent::square(64), &frame_allocator);
+		let mut vertex = UiVertexVm::new(&primitives, [64.0; 2]);
+		let mut fragment = UiFragmentVm::new(&primitives, masks.entries(), None);
+
+		let (mut inside, mut outside) = (0.0f32, 0.0f32);
+		rasterize_primitive(&mut vertex, &mut fragment, 0, |[x, _], color| {
+			if x < 32 {
+				inside += color[3];
+			} else {
+				outside += color[3];
+			}
+		});
+		assert!(inside > 50.0, "the visible half of the line must be drawn, found {inside}");
+		assert_eq!(outside, 0.0);
+	}
+
+	/// The `UiRectFragment` struct describes one fragment of a rectangle layer for the BESL VM tests.
+	struct UiRectFragment {
+		color: [f32; 4],
+		pixel_position: [f32; 2],
+		rect: [f32; 4],
+		corner_radius: f32,
+		corner_exponent: f32,
+		stroke_width: f32,
+		mask: Option<UiClipMaskEntry>,
+	}
+
+	impl Default for UiRectFragment {
+		/// Provides a centered fill invocation whose output should preserve the input color.
+		fn default() -> Self {
+			Self {
+				color: [0.2, 0.4, 0.6, 0.8],
+				pixel_position: [50.0, 50.0],
+				rect: [0.0, 0.0, 100.0, 100.0],
+				corner_radius: 12.0,
+				corner_exponent: 2.0,
+				stroke_width: 0.0,
+				mask: None,
+			}
+		}
+	}
+
+	/// Executes the production UI fragment shader for one fragment of a rectangle layer.
+	fn run_ui_rect_fragment_vm(values: UiRectFragment) -> [f32; 4] {
+		let rectangle = UiPrimitive {
+			bounds: [
+				values.rect[0],
+				values.rect[1],
+				values.rect[0] + values.rect[2],
+				values.rect[1] + values.rect[3],
+			],
+			color: values.color,
+			a: values.rect,
+			b: [values.corner_radius, values.corner_exponent, values.stroke_width, 0.0],
+			kind: UI_KIND_RECT,
+			mask: values.mask.is_some() as u32,
+			..UiPrimitive::default()
+		};
+		let masks = [UiClipMaskEntry::NONE, values.mask.unwrap_or(UiClipMaskEntry::NONE)];
+		UiFragmentVm::new(&[rectangle], &masks, None).run(
+			UiVaryings {
+				pixel_position: values.pixel_position,
+				..UiVaryings::default()
+			},
+			&mut [],
+		)
+	}
+
+	/// Verifies a centered fill fragment emits its unmodified layer color.
 	#[test]
 	fn ui_fragment_besl_vm_preserves_centered_fill_color() {
-		let expected = UiFragmentVmInputs::default().color;
-		assert_vec4_close(run_ui_fragment_vm(UiFragmentVmInputs::default()), expected);
+		let expected = UiRectFragment::default().color;
+		assert_vec4_close(run_ui_rect_fragment_vm(UiRectFragment::default()), expected);
+		// A square fill skips the shape math entirely and must agree.
+		assert_vec4_close(
+			run_ui_rect_fragment_vm(UiRectFragment {
+				corner_radius: 0.0,
+				..Default::default()
+			}),
+			expected,
+		);
 	}
 
 	/// Verifies rounded-corner coverage rejects a fragment outside the rounded boundary.
 	#[test]
 	fn ui_fragment_besl_vm_rejects_rounded_corner_exterior() {
-		let output = run_ui_fragment_vm(UiFragmentVmInputs {
-			local_position: [0.0, 0.0],
-			corner_radius: 20.0,
-			..Default::default()
-		});
+		for corner_exponent in [2.0, 4.0] {
+			let output = run_ui_rect_fragment_vm(UiRectFragment {
+				pixel_position: [0.0, 0.0],
+				corner_radius: 20.0,
+				corner_exponent,
+				..Default::default()
+			});
 
-		assert!(
-			output[3] < 0.001,
-			"Expected rounded corner alpha near zero, found {}",
-			output[3]
-		);
+			assert!(
+				output[3] < 0.001,
+				"Expected rounded corner alpha near zero, found {}",
+				output[3]
+			);
+		}
+	}
+
+	/// Verifies that circular corners, which skip the superellipse math, agree with it.
+	#[test]
+	fn ui_fragment_besl_vm_circular_corners_match_the_superellipse_field() {
+		for pixel_position in [[3.5, 3.5], [5.5, 2.5], [6.5, 6.5], [1.5, 9.5]] {
+			for stroke_width in [0.0, 2.0] {
+				let coverage = |corner_exponent: f32| {
+					run_ui_rect_fragment_vm(UiRectFragment {
+						pixel_position,
+						corner_radius: 20.0,
+						corner_exponent,
+						stroke_width,
+						..Default::default()
+					})[3]
+				};
+				// An exponent just past the shortcut's tolerance takes the general path on the same shape.
+				assert!((coverage(2.0) - coverage(2.002)).abs() < 0.01);
+			}
+		}
 	}
 
 	/// Verifies stroke coverage removes fragments that lie inside the hollow center.
 	#[test]
 	fn ui_fragment_besl_vm_stroke_excludes_the_center() {
-		let output = run_ui_fragment_vm(UiFragmentVmInputs {
-			layer_kind: 1.0,
-			stroke_width: 3.0,
-			..Default::default()
-		});
+		for corner_radius in [12.0, 0.0] {
+			let center = run_ui_rect_fragment_vm(UiRectFragment {
+				stroke_width: 3.0,
+				corner_radius,
+				..Default::default()
+			});
+			let edge = run_ui_rect_fragment_vm(UiRectFragment {
+				stroke_width: 3.0,
+				corner_radius,
+				pixel_position: [1.5, 50.0],
+				..Default::default()
+			});
 
-		assert!(
-			output[3] < 0.001,
-			"Expected stroke center alpha near zero, found {}",
-			output[3]
-		);
+			assert!(
+				center[3] < 0.001,
+				"Expected stroke center alpha near zero, found {}",
+				center[3]
+			);
+			assert!(
+				(edge[3] - 0.8).abs() < 0.001,
+				"Expected a solid stroke edge, found {}",
+				edge[3]
+			);
+		}
 	}
 
 	/// Verifies the feather mask suppresses fragments outside its clipped region.
 	#[test]
 	fn ui_fragment_besl_vm_clip_mask_suppresses_outside_pixels() {
-		let output = run_ui_fragment_vm(UiFragmentVmInputs {
+		let mask = UiClipMaskEntry {
+			rect: [25.0, 25.0, 50.0, 50.0],
+			edges: [5.0; 4],
+			..UiClipMaskEntry::NONE
+		};
+		let outside = run_ui_rect_fragment_vm(UiRectFragment {
 			pixel_position: [10.0, 10.0],
-			clip_mask_position: [25.0, 25.0],
-			clip_mask_size: [50.0, 50.0],
-			clip_mask_edges: [5.0; 4],
+			mask: Some(mask),
+			..Default::default()
+		});
+		let feathered = run_ui_rect_fragment_vm(UiRectFragment {
+			pixel_position: [27.5, 50.0],
+			mask: Some(mask),
+			..Default::default()
+		});
+		let inside = run_ui_rect_fragment_vm(UiRectFragment {
+			mask: Some(mask),
 			..Default::default()
 		});
 
 		assert!(
-			output[3] < 0.001,
+			outside[3] < 0.001,
 			"Expected feathered pixel alpha near zero, found {}",
-			output[3]
+			outside[3]
 		);
-	}
-
-	#[test]
-	fn curve_geometry_reports_capacity_truncation() {
-		let frame_allocator = bumpalo::Bump::new();
-		let curves = (0..=MAX_UI_ELEMENTS)
-			.map(|_| {
-				curve_element(vec![CurveSegment::Line {
-					from: CurvePoint::new(0.0, 0.0),
-					to: CurvePoint::new(1.0, 0.0),
-				}])
-			})
-			.collect();
-		let geometry = build_ui_curve_geometry(
-			&UiDrawList {
-				layout_size: [1.0, 1.0],
-				elements: Vec::new(),
-				blurs: Vec::new(),
-				curves,
-				images: Vec::new(),
-				texts: Vec::new(),
-			},
-			Extent::rectangle(1, 1),
-			&frame_allocator,
+		// Halfway through a five pixel feather is half coverage.
+		assert!(
+			(feathered[3] - 0.4).abs() < 0.001,
+			"Expected half coverage, found {}",
+			feathered[3]
 		);
-
-		assert!(geometry.truncated);
-		assert_eq!(geometry.vertices.len(), MAX_UI_ELEMENTS * UI_VERTICES_PER_CURVE_SPAN);
-	}
-
-	#[test]
-	fn invalid_corner_exponents_resolve_to_round_corners() {
-		for exponent in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5] {
-			let frame_allocator = bumpalo::Bump::new();
-			let geometry = build_ui_geometry(
-				&UiDrawList {
-					layout_size: [100.0, 100.0],
-					elements: vec![draw_element(8.0, exponent)],
-					blurs: Vec::new(),
-					curves: Vec::new(),
-					images: Vec::new(),
-					texts: vec![],
-				},
-				Extent::rectangle(100, 100),
-				&frame_allocator,
-			);
-
-			assert_eq!(geometry.vertices[0].corner_exponent, 2.0);
-		}
-	}
-
-	#[test]
-	fn high_corner_exponents_are_clamped() {
-		let frame_allocator = bumpalo::Bump::new();
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [100.0, 100.0],
-				elements: vec![draw_element(8.0, 12.0)],
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::rectangle(100, 100),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.vertices[0].corner_exponent, 8.0);
-	}
-
-	#[test]
-	fn splits_large_batches_to_stay_within_u16_indices() {
-		let frame_allocator = bumpalo::Bump::new();
-		let element_count = MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT + 1;
-		let elements = (0..element_count)
-			.map(|_| UiDrawElement {
-				depth: 0,
-				order: 0,
-				position: [0.0, 0.0],
-				size: [1.0, 1.0],
-				clip: None,
-				clip_mask: None,
-				color: [1.0, 1.0, 1.0, 1.0],
-				corner_radius: 0.0,
-				corner_exponent: 2.0,
-				layer_kind: LayerKind::Fill,
-				stroke_width: 0.0,
-			})
-			.collect();
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [1.0, 1.0],
-				elements,
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::square(1),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.batches.len(), 2);
-		assert_eq!(
-			geometry.batches[0].index_count as usize,
-			MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT * UI_INDICES_PER_ELEMENT
-		);
-		assert_eq!(geometry.batches[0].first_index, 0);
-		assert_eq!(geometry.batches[0].vertex_offset, 0);
-		assert_eq!(geometry.batches[1].index_count, UI_INDICES_PER_ELEMENT as u32);
-		assert_eq!(
-			geometry.batches[1].first_index as usize,
-			MAX_UI_VERTICES_PER_DRAW / UI_VERTICES_PER_ELEMENT * UI_INDICES_PER_ELEMENT
-		);
-		assert_eq!(geometry.batches[1].vertex_offset as usize, MAX_UI_VERTICES_PER_DRAW);
-	}
-
-	#[test]
-	fn skips_zero_alpha_elements_before_capacity_checks() {
-		let frame_allocator = bumpalo::Bump::new();
-		let mut elements = Vec::with_capacity(MAX_UI_ELEMENTS + 1);
-
-		elements.extend((0..MAX_UI_ELEMENTS).map(|_| UiDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [1.0, 1.0],
-			clip: None,
-			clip_mask: None,
-			color: [1.0, 1.0, 1.0, 0.0],
-			corner_radius: 0.0,
-			corner_exponent: 2.0,
-			layer_kind: LayerKind::Fill,
-			stroke_width: 0.0,
-		}));
-		elements.push(UiDrawElement {
-			depth: 0,
-			order: 0,
-			position: [0.0, 0.0],
-			size: [1.0, 1.0],
-			clip: None,
-			clip_mask: None,
-			color: [1.0, 1.0, 1.0, 1.0],
-			corner_radius: 0.0,
-			corner_exponent: 2.0,
-			layer_kind: LayerKind::Fill,
-			stroke_width: 0.0,
-		});
-
-		let geometry = build_ui_geometry(
-			&UiDrawList {
-				layout_size: [1.0, 1.0],
-				elements,
-				blurs: Vec::new(),
-				curves: Vec::new(),
-				images: Vec::new(),
-				texts: vec![],
-			},
-			Extent::square(1),
-			&frame_allocator,
-		);
-
-		assert!(!geometry.truncated);
-		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
-		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
-		assert_eq!(geometry.batches.len(), 1);
+		assert_vec4_close(inside, UiRectFragment::default().color);
 	}
 
 	#[test]
@@ -3517,13 +3491,10 @@ mod tests {
 	}
 
 	#[test]
-	fn image_geometry_trims_uvs_to_clip() {
+	fn image_trims_its_texture_rectangle_to_the_clip() {
 		let frame_allocator = bumpalo::Bump::new();
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
-			elements: Vec::new(),
-			blurs: Vec::new(),
-			curves: Vec::new(),
 			images: vec![UiImageDrawElement {
 				depth: 7,
 				order: 0,
@@ -3539,23 +3510,24 @@ mod tests {
 					size: [20.0, 10.0],
 				}),
 				clip_mask: None,
-				opacity: 1.0,
+				opacity: 0.5,
 			}],
-			texts: Vec::new(),
+			..UiDrawList::default()
 		};
 
-		let geometry = build_ui_image_geometry(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
+		let (primitives, output, _) = build(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
 
-		assert_eq!(geometry.vertices.len(), UI_VERTICES_PER_ELEMENT);
-		assert_eq!(geometry.indices.len(), UI_INDICES_PER_ELEMENT);
-		assert_eq!(geometry.batches.len(), 1);
-		assert_eq!(geometry.batches[0].depth, 7);
-		assert_vec2_close(geometry.vertices[0].uv, [0.25, 0.25]);
-		assert_vec2_close(geometry.vertices[2].uv, [0.75, 0.75]);
+		assert_eq!(primitives.len(), 1);
+		assert_eq!(primitives[0].kind, UI_KIND_IMAGE);
+		assert_eq!(primitives[0].bounds, [20.0, 25.0, 40.0, 35.0]);
+		assert_vec4_close(primitives[0].a, [0.25, 0.25, 0.75, 0.75]);
+		// The shader multiplies the texel's alpha by the color's.
+		assert_eq!(primitives[0].color, [1.0, 1.0, 1.0, 0.5]);
+		assert_eq!(output.images.as_slice(), [(1, 0)]);
 	}
 
 	#[test]
-	fn image_geometry_skips_invalid_or_transparent_images() {
+	fn image_skips_invalid_or_transparent_images() {
 		let frame_allocator = bumpalo::Bump::new();
 		let hidden = UiImageDrawElement {
 			depth: 0,
@@ -3576,16 +3548,13 @@ mod tests {
 
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
-			elements: Vec::new(),
-			blurs: Vec::new(),
-			curves: Vec::new(),
 			images: vec![hidden],
-			texts: Vec::new(),
+			..UiDrawList::default()
 		};
-		let geometry = build_ui_image_geometry(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
+		let (primitives, output, _) = build(&draw_list, Extent::rectangle(100, 100), &frame_allocator);
 
-		assert!(geometry.vertices.is_empty());
-		assert!(geometry.indices.is_empty());
-		assert!(geometry.batches.is_empty());
+		assert!(primitives.is_empty());
+		assert!(output.images.is_empty());
+		assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 0 }]);
 	}
 }

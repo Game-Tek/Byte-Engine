@@ -1,0 +1,108 @@
+// The UI ubershader's vertex stage. No vertex or index buffer is bound: six vertices pull one
+// record from `primitives` and place the corners of its quad.
+
+Primitive: struct {
+	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
+	bounds: vec4f,
+	color: vec4f,
+	a: vec4f,
+	b: vec4f,
+	kind: u32,
+	mask: u32,
+	data0: u32,
+	data1: u32,
+}
+
+primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
+
+push_constant: push_constant {
+	viewport: vec2f,
+	// The record the draw's first vertex belongs to. A push constant means the same on every backend,
+	// where a first vertex does not always reach the vertex index.
+	first: u32,
+	padding: u32,
+}
+
+// Evaluates a cubic's blossom. With parameters drawn from {t0, t1} this yields the control points
+// of the cubic restricted to [t0, t1].
+blossom: fn (c01: vec4f, c23: vec4f, u: f32, v: f32, w: f32) -> vec2f {
+	let c0: vec2f = vec2f(c01.x, c01.y);
+	let c1: vec2f = vec2f(c01.z, c01.w);
+	let c2: vec2f = vec2f(c23.x, c23.y);
+	let c3: vec2f = vec2f(c23.z, c23.w);
+	let p01: vec2f = c0 + (c1 - c0) * u;
+	let p12: vec2f = c1 + (c2 - c1) * u;
+	let p23: vec2f = c2 + (c3 - c2) * u;
+	let p012: vec2f = p01 + (p12 - p01) * v;
+	let p123: vec2f = p12 + (p23 - p12) * v;
+	return p012 + (p123 - p012) * w;
+}
+
+main: fn (input: StageInput) -> interface {
+	position: vec4f,
+	curve_from: vec4f,
+	curve_to: vec2f,
+	pixel_position: vec2f,
+	primitive: u32,
+	uv: vec2f,
+} {
+	let primitive: u32 = push_constant.first + input.vertex_index / 6;
+	// Two triangles: top left, top right, bottom right, then bottom right, bottom left, top left.
+	let corner_index: u32 = input.vertex_index % 6;
+	let corner: vec2f = vec2f(f32((14 >> corner_index) & 1), f32((28 >> corner_index) & 1));
+
+	let bounds: vec4f = primitives[primitive].bounds;
+	let a: vec4f = primitives[primitive].a;
+	let pixel_position: vec2f = vec2f(mix(bounds.x, bounds.z, corner.x), mix(bounds.y, bounds.w, corner.y));
+	// Images and atlas glyphs keep their texture rectangle in `a`.
+	let uv: vec2f = vec2f(mix(a.x, a.z, corner.x), mix(a.y, a.w, corner.y));
+	let curve_from: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let curve_to: vec2f = vec2f(0.0, 0.0);
+
+	// A curve piece holds its segment's whole cubic and which slice of it to draw.
+	if (primitives[primitive].kind == 2) {
+		let piece: u32 = primitives[primitive].data0 & 65535;
+		let count: u32 = primitives[primitive].data0 >> 16;
+		let t0: f32 = f32(piece) / f32(count);
+		let t1: f32 = f32(piece + 1) / f32(count);
+		let s0: vec2f = blossom(bounds, a, t0, t0, t0);
+		let s1: vec2f = blossom(bounds, a, t0, t0, t1);
+		let s2: vec2f = blossom(bounds, a, t0, t1, t1);
+		let s3: vec2f = blossom(bounds, a, t1, t1, t1);
+		// The quadratic closest to a cubic slice. Its error falls with the cube of the slice count,
+		// which the CPU picks, and it is exact for a line or a quadratic stored as a cubic.
+		let control: vec2f = ((s1 + s2) * 3.0 - s0 - s3) * 0.25;
+		curve_from = vec4f(s0.x, s0.y, control.x, control.y);
+		curve_to = s3;
+
+		// Bound the slice with a box along its chord. A quadratic stays inside its control points
+		// along the chord and bulges half as far as its control point across it.
+		let chord: vec2f = s3 - s0;
+		let chord_length: f32 = sqrt(dot(chord, chord));
+		let tangent: vec2f = vec2f(1.0, 0.0);
+		if (chord_length > 0.0001) {
+			tangent = chord / chord_length;
+		}
+		let normal: vec2f = vec2f(0.0 - tangent.y, tangent.x);
+		let along: f32 = dot(control - s0, tangent);
+		let across: f32 = dot(control - s0, normal) * 0.5;
+		// Half the stroke plus one pixel of anti-aliasing, which also covers a round cap.
+		let expansion: f32 = primitives[primitive].b.x + 1.0;
+		let along_min: f32 = min(min(along, 0.0), chord_length) - expansion;
+		let along_max: f32 = max(max(along, 0.0), chord_length) + expansion;
+		let across_min: f32 = min(across, 0.0) - expansion;
+		let across_max: f32 = max(across, 0.0) + expansion;
+		pixel_position = s0
+			+ tangent * mix(along_min, along_max, corner.x)
+			+ normal * mix(across_min, across_max, corner.y);
+	}
+
+	let position: vec4f = vec4f(
+		pixel_position.x / push_constant.viewport.x * 2.0 - 1.0,
+		1.0 - pixel_position.y / push_constant.viewport.y * 2.0,
+		0.0,
+		1.0
+	);
+
+	return { position, curve_from, curve_to, pixel_position, primitive, uv };
+}

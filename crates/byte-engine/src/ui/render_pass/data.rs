@@ -3,11 +3,19 @@
 use super::*;
 
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = crate::rendering::SCENE_COLOR_FORMAT;
-pub(super) const UI_IMAGE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
+/// Bindings of the UI ubershader. They match `ui-vertex.besl` and `ui-fragment.besl`.
+pub(super) const UI_PRIMITIVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
+pub(super) const UI_MASKS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
+pub(super) const UI_GLYPH_CURVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(2);
+pub(super) const UI_GLYPH_BANDS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(3);
+/// The full and half resolution blurred backdrops a backdrop blur primitive samples.
+pub(super) const UI_BLUR_FULL_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(4);
+pub(super) const UI_BLUR_HALF_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(5);
+pub(super) const UI_TEXTURES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(6);
+/// Elements of the ubershader's texture array. The first is the glyph atlas and the rest hold images.
+pub(super) const UI_TEXTURE_SLOTS: u32 = 32;
+pub(super) const UI_ATLAS_TEXTURE_SLOT: u32 = 0;
+pub(super) const UI_FIRST_IMAGE_TEXTURE_SLOT: u32 = 1;
 pub(super) const UI_BLUR_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -17,16 +25,6 @@ pub(super) const UI_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::Sh
 	ghi::ResourceSlot::new(1),
 	ghi::ResourceKind::StorageImage,
 	ghi::AccessPolicies::WRITE,
-);
-pub(super) const UI_BLUR_FULL_COMPOSITE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-pub(super) const UI_BLUR_HALF_COMPOSITE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
 );
 pub(super) const UI_BLUR_HALF_DOWNSCALE: u32 = 2;
 pub(super) const UI_BLUR_GAUSSIAN_SUPPORT: u32 = 22;
@@ -40,7 +38,7 @@ pub(super) const UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of:
 pub(super) const UI_DAMAGE_MARGIN_PIXELS: f32 = 4.0;
 /// Pixels a backdrop blur reads around its quad through both the full and half resolution paths.
 pub(super) const UI_BLUR_FOOTPRINT_MARGIN: u32 = UI_BLUR_GAUSSIAN_SUPPORT * UI_BLUR_HALF_DOWNSCALE + 8;
-/// Every batch is drawn once per damage region, so keep the list short.
+/// Every draw is repeated once per damage region, so keep the list short.
 pub(super) const MAX_UI_DAMAGE_REGIONS: usize = 4;
 /// Damage covering this share of the viewport becomes one full redraw.
 pub(super) const UI_FULL_REDRAW_AREA_SHARE: f32 = 0.6;
@@ -49,36 +47,20 @@ pub(super) const UI_REGION_WORKGROUP: u32 = 16;
 pub(super) const UI_BLUR_FILTER_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurFilterPush>() as u32;
 pub(super) const UI_BLUR_DOWNSAMPLE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-downsample.besl";
 pub(super) const UI_BLUR_FILTER_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-filter.besl";
-pub(super) const UI_BLUR_COMPOSITE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-composite.besl";
 
-pub(super) const UI_VERTICES_PER_ELEMENT: usize = 4;
-pub(super) const UI_INDICES_PER_ELEMENT: usize = 6;
-pub(super) const UI_VERTICES_PER_CURVE_SPAN: usize = 4;
-pub(super) const UI_INDICES_PER_CURVE_SPAN: usize = 6;
-pub(super) const MAX_UI_VERTICES_PER_DRAW: usize = u16::MAX as usize + 1;
-pub(super) const MAX_UI_ELEMENTS: usize = 65_536;
-pub(super) const MAX_UI_IMAGES: usize = MAX_UI_ELEMENTS;
-pub(super) const MAX_UI_VERTICES: usize = MAX_UI_ELEMENTS * UI_VERTICES_PER_ELEMENT;
-pub(super) const MAX_UI_INDICES: usize = MAX_UI_ELEMENTS * UI_INDICES_PER_ELEMENT;
-pub(super) const CURVE_FLATTEN_TOLERANCE_PIXELS: f32 = 0.35;
+/// Vertices the ubershader pulls per primitive: two triangles with no index buffer.
+pub(super) const UI_VERTICES_PER_PRIMITIVE: u32 = 6;
+/// Records in the primitive buffer. Rectangle layers, glyphs, images, blurs, and curve pieces all share it.
+pub(super) const MAX_UI_PRIMITIVES: usize = 1 << 17;
+/// Distinct clip and mask combinations one frame can reference.
+pub(super) const MAX_UI_MASKS: usize = 1 << 12;
+/// Largest distance between a cubic slice and the quadratic the shader draws in its place.
+pub(super) const CURVE_QUADRATIC_TOLERANCE_PIXELS: f32 = 0.05;
+/// Largest distance a curve piece may bulge from its chord, which keeps its bounding box tight.
+pub(super) const CURVE_PIECE_BULGE_PIXELS: f32 = 4.0;
+pub(super) const MAX_CURVE_PIECES: u32 = 64;
 pub(super) const CURVE_AA_WIDTH_PIXELS: f32 = 1.0;
 
-pub(super) const UI_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 14] = [
-	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("LOCAL_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("RECT_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("CORNER_RADIUS", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("CORNER_EXPONENT", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("LAYER_KIND", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("STROKE_WIDTH", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("BLUR_RESOLUTION_MIX", ghi::DataTypes::Float, 0),
-];
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct UiDrawElement {
 	pub(super) depth: u32,
@@ -255,119 +237,140 @@ impl Default for UiDrawList {
 	}
 }
 
+/// How the ubershader shades a primitive. The values match `ui-fragment.besl`.
+pub(super) const UI_KIND_RECT: u32 = 0;
+pub(super) const UI_KIND_BLUR: u32 = 1;
+pub(super) const UI_KIND_CURVE: u32 = 2;
+pub(super) const UI_KIND_IMAGE: u32 = 3;
+pub(super) const UI_KIND_SLUG_GLYPH: u32 = 4;
+pub(super) const UI_KIND_ATLAS_GLYPH: u32 = 5;
+/// Curve piece flags: the piece's segment rounds off its start or its end.
+pub(super) const UI_CURVE_CAP_START: u32 = 1;
+pub(super) const UI_CURVE_CAP_END: u32 = 2;
+
+/// The `UiPrimitive` struct is one quad of the UI: a rectangle layer, a glyph, an image, a backdrop blur, or a curve piece.
+///
+/// The vertex shader pulls six vertices from each record, so the UI needs no vertex or index
+/// buffer and every primitive between two backdrop blurs shares one draw.
+///
+/// | Kind | `bounds` | `a` | `b` | `data0` | `data1` |
+/// | --- | --- | --- | --- | --- | --- |
+/// | Rectangle, blur | clipped quad | unclipped x, y, width, height | corner radius, corner exponent, stroke width, blur resolution mix | | |
+/// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
+/// | Image | clipped quad | texture rectangle | | texture slot | |
+/// | Slug glyph | clipped quad | pen x, pen y, pixels per em | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
+/// | Atlas glyph | clipped quad | texture rectangle | | | |
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct UiVertex {
-	pub(super) position: [f32; 2],
-	pub(super) pixel_position: [f32; 2],
-	pub(super) local_position: [f32; 2],
-	pub(super) rect_size: [f32; 2],
+#[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(super) struct UiPrimitive {
+	pub(super) bounds: [f32; 4],
 	pub(super) color: [f32; 4],
-	pub(super) corner_radius: f32,
-	pub(super) corner_exponent: f32,
-	pub(super) layer_kind: f32,
-	pub(super) stroke_width: f32,
-	pub(super) clip_mask_position: [f32; 2],
-	pub(super) clip_mask_size: [f32; 2],
-	pub(super) clip_mask_edges: [f32; 4],
-	pub(super) clip_mask_corner: [f32; 2],
-	pub(super) blur_resolution_mix: f32,
+	pub(super) a: [f32; 4],
+	pub(super) b: [f32; 4],
+	pub(super) kind: u32,
+	/// Index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
+	pub(super) mask: u32,
+	pub(super) data0: u32,
+	pub(super) data1: u32,
 }
 
-pub(super) const UI_IMAGE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 7] = [
-	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("UV", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("OPACITY", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
-];
-
+/// The `UiClipMaskEntry` struct is one hard clip and feathered mask that primitives share by index.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct UiImageVertex {
-	pub(super) position: [f32; 2],
-	pub(super) uv: [f32; 2],
-	pub(super) opacity: f32,
-	pub(super) clip_mask_position: [f32; 2],
-	pub(super) clip_mask_size: [f32; 2],
-	pub(super) clip_mask_edges: [f32; 4],
-	pub(super) clip_mask_corner: [f32; 2],
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(super) struct UiClipMaskEntry {
+	/// Hard clip as x0, y0, x1, y1. Only curves need it; every other quad is trimmed on the CPU.
+	pub(super) clip: [f32; 4],
+	/// Mask rectangle as x, y, width, height. A zero size disables the mask.
+	pub(super) rect: [f32; 4],
+	pub(super) edges: [f32; 4],
+	/// Corner radius and corner exponent.
+	pub(super) corner: [f32; 4],
 }
 
-pub(super) const UI_CURVE_VERTEX_LAYOUT: [ghi::pipelines::VertexElement; 10] = [
-	ghi::pipelines::VertexElement::new("POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("PIXEL_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("SEGMENT_FROM", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("SEGMENT_TO", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("COLOR", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("HALF_WIDTH", ghi::DataTypes::Float, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_POSITION", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_SIZE", ghi::DataTypes::Float2, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_EDGES", ghi::DataTypes::Float4, 0),
-	ghi::pipelines::VertexElement::new("CLIP_MASK_CORNER", ghi::DataTypes::Float2, 0),
-];
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct UiCurveVertex {
-	pub(super) position: [f32; 2],
-	pub(super) pixel_position: [f32; 2],
-	pub(super) segment_from: [f32; 2],
-	pub(super) segment_to: [f32; 2],
-	pub(super) color: [f32; 4],
-	pub(super) half_width: f32,
-	pub(super) clip_mask_position: [f32; 2],
-	pub(super) clip_mask_size: [f32; 2],
-	pub(super) clip_mask_edges: [f32; 4],
-	pub(super) clip_mask_corner: [f32; 2],
+impl UiClipMaskEntry {
+	pub(super) const UNCLIPPED: [f32; 4] = [-1.0e30, -1.0e30, 1.0e30, 1.0e30];
+	pub(super) const NONE: Self = Self {
+		clip: Self::UNCLIPPED,
+		rect: [0.0; 4],
+		edges: [0.0; 4],
+		corner: [0.0, 2.0, 0.0, 0.0],
+	};
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiDrawBatch {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) index_count: u32,
-	pub(super) first_index: u32,
-	pub(super) vertex_offset: i32,
+/// The `UiMaskTable` struct deduplicates the clips and masks of one frame's primitives.
+///
+/// A mask belongs to a container, so most primitives share a handful of entries instead of each
+/// carrying its own copy.
+pub(super) struct UiMaskTable {
+	entries: Vec<UiClipMaskEntry>,
+	// Every element of a list can carry its own mask, so the lookup has to stay cheap next to building a primitive.
+	indices: utils::hash::HashMap<[u32; 16], u32>,
+	pub(super) truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiImageDrawBatch {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) image_id: u64,
-	pub(super) version: u64,
-	// Matches the engine's 32-bit element range and remains valid through skipped images.
-	pub(super) source_index: u32,
-	pub(super) index_count: u32,
-	pub(super) first_index: u32,
-	pub(super) vertex_offset: i32,
-}
-
-impl UiImageDrawBatch {
-	/// Resolves the texture source for this batch in its originating draw list.
-	pub(super) fn source<'a>(&self, images: &'a [UiImageDrawElement]) -> Option<&'a UiImageDrawElement> {
-		let image = images.get(self.source_index as usize)?;
-		debug_assert_eq!((image.image_id, image.version), (self.image_id, self.version));
-		Some(image)
+impl Default for UiMaskTable {
+	fn default() -> Self {
+		Self {
+			entries: vec![UiClipMaskEntry::NONE],
+			indices: utils::hash::HashMap::default(),
+			truncated: false,
+		}
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiCurveDrawBatch {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) index_count: u32,
-	pub(super) first_index: u32,
-	pub(super) vertex_offset: i32,
+impl UiMaskTable {
+	/// Starts a frame while keeping the table's allocations.
+	pub(super) fn clear(&mut self) {
+		self.entries.truncate(1);
+		self.indices.clear();
+		self.truncated = false;
+	}
+
+	pub(super) fn entries(&self) -> &[UiClipMaskEntry] {
+		&self.entries
+	}
+
+	/// Returns the index of a layout-space clip and mask in viewport pixels. Pass the clip only for
+	/// primitives the CPU does not trim.
+	pub(super) fn index(&mut self, clip: Option<DrawClip>, mask: Option<DrawClipMask>, sx: f32, sy: f32) -> u32 {
+		if clip.is_none() && mask.is_none() {
+			return 0;
+		}
+		let mask = scaled_clip_mask(mask, sx, sy);
+		let entry = UiClipMaskEntry {
+			clip: clip.map_or(UiClipMaskEntry::UNCLIPPED, |clip| {
+				snapped_rect(clip.position, clip.size, sx, sy)
+			}),
+			rect: [mask.position[0], mask.position[1], mask.size[0], mask.size[1]],
+			edges: mask.edges,
+			corner: [mask.corner[0], mask.corner[1], 0.0, 0.0],
+		};
+		// Siblings share their container's mask, so the last entry is the usual answer.
+		if self.entries.len() > 1 && self.entries.last() == Some(&entry) {
+			return self.entries.len() as u32 - 1;
+		}
+		let key: [u32; 16] = bytemuck::cast(entry);
+		if let Some(&index) = self.indices.get(&key) {
+			return index;
+		}
+		if self.entries.len() == MAX_UI_MASKS {
+			self.truncated = true;
+			return 0;
+		}
+		let index = self.entries.len() as u32;
+		self.entries.push(entry);
+		self.indices.insert(key, index);
+		index
+	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UiPreparedImageBatch {
-	pub(super) descriptor_set: ghi::DescriptorSetHandle,
-	pub(super) batch: UiImageDrawBatch,
+/// The `UiDrawPush` struct tells the vertex shader the viewport and which record a draw starts at.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(super) struct UiDrawPush {
+	pub(super) viewport: [f32; 2],
+	pub(super) first: u32,
+	pub(super) padding: u32,
 }
 
 /// The `UiPixelRegion` struct is an integer pixel rectangle: a compute dispatch region, a scissor, or damage.
@@ -497,13 +500,9 @@ pub(super) struct UiBlurHalfPathRegions {
 	pub(super) filter: UiBlurPathRegions,
 }
 
+/// The `UiBlurDispatch` struct is the compute work that fills the blurred backdrop one blur primitive samples.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct UiPreparedBlurBatch {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) index_count: u32,
-	pub(super) first_index: u32,
-	pub(super) vertex_offset: i32,
+pub(super) struct UiBlurDispatch {
 	pub(super) resolution_mix: f32,
 	pub(super) full_kernel: UiBlurKernel,
 	pub(super) half_kernel: UiBlurKernel,
@@ -513,93 +512,52 @@ pub(super) struct UiPreparedBlurBatch {
 	pub(super) backdrop: UiPixelRegion,
 }
 
+/// The `UiStep` enum is one recorded step of a UI frame, in painter order.
+///
+/// A frame's steps alternate between draws and blurs, and both begin and end with a draw. Only the
+/// first draw can be empty, when the frame starts with a blur or draws nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum UiPreparedBatch {
-	Rect(UiDrawBatch),
-	Curve(UiCurveDrawBatch),
-	Image(UiPreparedImageBatch),
-	Text(UiTextDrawBatch),
-	Blur(UiPreparedBlurBatch),
+pub(super) enum UiStep {
+	/// One draw of consecutive primitives, recorded as its own pass.
+	Draw { first: u32, count: u32 },
+	/// A backdrop blur reads the layer drawn so far, so it ends the draw before it. Its own quad
+	/// is the first primitive of the draw that follows.
+	Blur(UiBlurDispatch),
 }
 
-impl UiPreparedBatch {
-	fn depth(self) -> u32 {
-		match self {
-			Self::Rect(batch) => batch.depth,
-			Self::Curve(batch) => batch.depth,
-			Self::Image(batch) => batch.batch.depth,
-			Self::Text(batch) => batch.depth,
-			Self::Blur(batch) => batch.depth,
-		}
-	}
-
-	fn order(self) -> u32 {
-		match self {
-			Self::Rect(batch) => batch.order,
-			Self::Curve(batch) => batch.order,
-			Self::Image(batch) => batch.batch.order,
-			Self::Text(batch) => batch.order,
-			Self::Blur(batch) => batch.order,
-		}
-	}
-}
-
-pub(super) fn sort_prepared_batches(batches: &mut [UiPreparedBatch]) {
-	batches.sort_by_key(|batch| (batch.depth(), batch.order()));
-}
-
+/// The `UiPrimitives` struct carries one frame's primitives in painter order and the steps that draw them.
 #[derive(Debug)]
-pub(super) struct UiGeometry<'a> {
-	pub(super) vertices: Vec<UiVertex, &'a bumpalo::Bump>,
-	pub(super) indices: Vec<u16, &'a bumpalo::Bump>,
-	pub(super) batches: Vec<UiDrawBatch, &'a bumpalo::Bump>,
+pub(super) struct UiPrimitives<'a> {
+	/// The first record is the quad that clears damaged regions; the steps start after it.
+	pub(super) primitives: Vec<UiPrimitive, &'a bumpalo::Bump>,
+	pub(super) steps: Vec<UiStep, &'a bumpalo::Bump>,
+	/// Each image primitive and the draw-list image it shows. The pass writes the texture slot into it.
+	pub(super) images: Vec<(u32, u32), &'a bumpalo::Bump>,
 	pub(super) truncated: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct UiBlurGeometry<'a> {
-	pub(super) vertices: Vec<UiVertex, &'a bumpalo::Bump>,
-	pub(super) indices: Vec<u16, &'a bumpalo::Bump>,
-	pub(super) batches: Vec<UiPreparedBlurBatch, &'a bumpalo::Bump>,
-	pub(super) truncated: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct UiImageGeometry<'a> {
-	pub(super) vertices: Vec<UiImageVertex, &'a bumpalo::Bump>,
-	pub(super) indices: Vec<u16, &'a bumpalo::Bump>,
-	pub(super) batches: Vec<UiImageDrawBatch, &'a bumpalo::Bump>,
-	pub(super) truncated: bool,
-}
-
-#[derive(Debug)]
-pub(super) struct UiCurveGeometry<'a> {
-	pub(super) vertices: Vec<UiCurveVertex, &'a bumpalo::Bump>,
-	pub(super) indices: Vec<u16, &'a bumpalo::Bump>,
-	pub(super) batches: Vec<UiCurveDrawBatch, &'a bumpalo::Bump>,
-	pub(super) truncated: bool,
+	pub(super) dropped_glyphs: usize,
 }
 
 pub(super) struct UiImageTexture {
 	pub(super) version: u64,
 	pub(super) extent: (u32, u32),
 	pub(super) image: ghi::BaseImageHandle,
-	pub(super) descriptor_set: ghi::DescriptorSetHandle,
+	/// Element of the ubershader's texture array this image is bound to.
+	pub(super) slot: u32,
 }
 
-/// The `UiPreparedFrame` struct retains the batches recorded for one render revision, viewport, and damage set.
+/// The `UiPreparedFrame` struct retains the steps recorded for one render revision, viewport, and damage set.
 ///
-/// Geometry, uploads, and atlas residency are only redone when the render
-/// revision, the viewport extent, the glyph atlas generation, or the damaged
+/// Geometry, uploads, and glyph residency are only redone when the render
+/// revision, the viewport extent, the text renderer's glyph generation, or the damaged
 /// regions change. Frames that repeat the same key reuse the GPU buffers already in place.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct UiPreparedFrame {
 	pub(super) revision: Option<engine::RenderRevision>,
 	pub(super) extent: Extent,
-	pub(super) atlas_generation: u64,
-	/// Only elements touching these regions have geometry in this frame.
+	pub(super) glyph_generation: u64,
+	/// Only elements touching these regions have primitives in this frame.
 	pub(super) damage: Vec<UiPixelRegion>,
-	pub(super) batches: Vec<UiPreparedBatch>,
+	pub(super) steps: Vec<UiStep>,
 }
 
 impl UiPreparedFrame {
@@ -607,10 +565,10 @@ impl UiPreparedFrame {
 		&self,
 		revision: Option<engine::RenderRevision>,
 		extent: Extent,
-		atlas_generation: u64,
+		glyph_generation: u64,
 		damage: &[UiPixelRegion],
 	) -> bool {
-		self.revision == revision && self.extent == extent && self.atlas_generation == atlas_generation && self.damage == damage
+		self.revision == revision && self.extent == extent && self.glyph_generation == glyph_generation && self.damage == damage
 	}
 }
 
@@ -680,21 +638,16 @@ impl From<UiPixelRegion> for UiRegionPush {
 	}
 }
 
-/// A viewport-covering quad that writes transparent black; the scissor limits it to one damaged region.
-pub(super) fn clear_quad() -> [UiVertex; UI_VERTICES_PER_ELEMENT] {
-	let vertex = |position: [f32; 2]| UiVertex {
-		position,
-		rect_size: [1.0, 1.0],
-		corner_exponent: 2.0,
-		clip_mask_corner: [0.0, 2.0],
-		..UiVertex::default()
-	};
-	[
-		vertex([-1.0, 1.0]),
-		vertex([1.0, 1.0]),
-		vertex([1.0, -1.0]),
-		vertex([-1.0, -1.0]),
-	]
+/// A viewport-covering rectangle that writes transparent black; the scissor limits it to one damaged region.
+pub(super) fn clear_primitive(viewport: Extent) -> UiPrimitive {
+	let size = [viewport.width().max(1) as f32, viewport.height().max(1) as f32];
+	UiPrimitive {
+		bounds: [0.0, 0.0, size[0], size[1]],
+		a: [0.0, 0.0, size[0], size[1]],
+		b: [0.0, 2.0, 0.0, 0.0],
+		kind: UI_KIND_RECT,
+		..UiPrimitive::default()
+	}
 }
 
 /// Reports whether an element with these pixel bounds must be drawn for the damage; no damage list means everything.
@@ -782,13 +735,6 @@ pub(super) fn resolved_corner_exponent(exponent: f32) -> f32 {
 		2.0
 	} else {
 		exponent.clamp(1.0, 8.0)
-	}
-}
-
-pub(super) fn layer_kind_value(kind: LayerKind) -> f32 {
-	match kind {
-		LayerKind::Fill => 0.0,
-		LayerKind::Stroke { .. } => 1.0,
 	}
 }
 

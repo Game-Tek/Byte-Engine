@@ -1,0 +1,488 @@
+// The UI ubershader. Every UI primitive is one record in `primitives`, and its `kind` selects how
+// the quad is shaded. A record is constant across its quad, so every branch on it is coherent and
+// the work a primitive does not need is skipped instead of being multiplied by zero.
+
+Primitive: struct {
+	// The pixel rectangle the quad covers. A curve piece stores its first two control points here.
+	bounds: vec4f,
+	color: vec4f,
+	a: vec4f,
+	b: vec4f,
+	kind: u32,
+	// Index into `masks`. Zero means no clip and no mask.
+	mask: u32,
+	data0: u32,
+	data1: u32,
+}
+
+ClipMask: struct {
+	// Hard clip as (x0, y0, x1, y1).
+	clip: vec4f,
+	// Feathered mask rectangle as (x, y, width, height). A zero size disables it.
+	rect: vec4f,
+	// Feather widths for the top, right, bottom, and left edges.
+	edges: vec4f,
+	// Corner radius and corner exponent.
+	corner: vec4f,
+}
+
+GlyphCurve: struct {
+	// The first and second control points as (x1, y1, x2, y2). The third control point is the first
+	// point of the next element, which a contour's following curve shares.
+	points: vec4f,
+}
+
+GlyphBand: struct {
+	value: u32,
+}
+
+primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
+masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
+glyph_curves: descriptor<{ type: GlyphCurve[], binding: 2, access: read }>;
+// Per glyph: a (curve count, list offset) pair for every horizontal band, the same for every
+// vertical band, then the lists of curve indices those offsets point at, relative to the glyph.
+glyph_bands: descriptor<{ type: GlyphBand[], binding: 3, access: read }>;
+// The full and half resolution blurred backdrops that a backdrop blur primitive samples.
+full_blurred_texture: descriptor<{ type: Texture2D, binding: 4, access: read }>;
+half_blurred_texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
+// Element 0 is the glyph atlas and the rest are images.
+textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
+
+// Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels and `shape` is
+// the corner radius, the corner exponent, and the stroke width, where zero fills.
+rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
+	let corner_radius: f32 = min(shape.x, min(half_size.x, half_size.y));
+	let stroke_width: f32 = shape.z;
+
+	// A square fill has its edges on whole pixels, so the rasterizer already resolved its coverage.
+	if (corner_radius < 0.0001 && stroke_width <= 0.0) {
+		return 1.0;
+	}
+
+	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
+	let corner_delta: vec2f = abs(centered_position) - (half_size - vec2f(corner_radius, corner_radius));
+	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
+	let inside_distance: f32 = min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+
+	// Circular corners are a plain distance with a unit gradient.
+	let corner_distance: f32 = sqrt(dot(abs_corner, abs_corner));
+	let field_gradient_length: f32 = 1.0;
+	let corner_exponent: f32 = shape.y;
+	if (abs(corner_exponent - 2.0) > 0.001) {
+		// A superellipse field is not a distance, so its gradient rescales it near the corner.
+		let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+		corner_distance = pow(corner_sum, 1.0 / corner_exponent);
+		if (corner_sum >= 0.0001) {
+			let corner_gradient_scale: f32 = pow(corner_sum, (1.0 / corner_exponent) - 1.0);
+			let corner_gradient: vec2f = vec2f(
+				pow(abs_corner.x, corner_exponent - 1.0) * corner_gradient_scale,
+				pow(abs_corner.y, corner_exponent - 1.0) * corner_gradient_scale
+			);
+			field_gradient_length = max(sqrt(dot(corner_gradient, corner_gradient)), 0.0001);
+		}
+	}
+
+	let field_distance: f32 = corner_distance + inside_distance;
+	let fill_coverage: f32 = 1.0;
+	if (corner_radius >= 0.0001) {
+		fill_coverage = clamp(0.5 - field_distance / max(fwidth(field_distance), 1.0), 0.0, 1.0);
+	}
+	if (stroke_width <= 0.0) {
+		return fill_coverage;
+	}
+
+	let signed_distance: f32 = field_distance / field_gradient_length;
+	let inner_coverage: f32 = clamp(0.5 - (signed_distance + stroke_width) / max(fwidth(signed_distance), 1.0), 0.0, 1.0);
+	return max(fill_coverage - inner_coverage, 0.0);
+}
+
+// Coverage left by a primitive's hard clip and feathered mask.
+mask_coverage: fn (index: u32, pixel: vec2f) -> f32 {
+	if (index == 0) {
+		return 1.0;
+	}
+	let clip: vec4f = masks[index].clip;
+	if (pixel.x < clip.x || pixel.y < clip.y || pixel.x >= clip.z || pixel.y >= clip.w) {
+		return 0.0;
+	}
+	let rect: vec4f = masks[index].rect;
+	if (min(rect.z, rect.w) < 0.0001) {
+		return 1.0;
+	}
+
+	let edges: vec4f = masks[index].edges;
+	let coverage: f32 = 1.0;
+	if (edges.x >= 0.0001) {
+		coverage = coverage * smoothstep(0.0, edges.x, pixel.y - rect.y);
+	}
+	if (edges.y >= 0.0001) {
+		coverage = coverage * smoothstep(0.0, edges.y, rect.x + rect.z - pixel.x);
+	}
+	if (edges.z >= 0.0001) {
+		coverage = coverage * smoothstep(0.0, edges.z, rect.y + rect.w - pixel.y);
+	}
+	if (edges.w >= 0.0001) {
+		coverage = coverage * smoothstep(0.0, edges.w, pixel.x - rect.x);
+	}
+
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
+	let corner_radius: f32 = min(masks[index].corner.x, min(half_size.x, half_size.y));
+	if (corner_radius < 0.0001) {
+		return coverage;
+	}
+	let corner_exponent: f32 = masks[index].corner.y;
+	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
+	let corner_delta: vec2f = abs(centered_position) - (half_size - vec2f(corner_radius, corner_radius));
+	let abs_corner: vec2f = max(corner_delta, vec2f(0.0, 0.0));
+	let corner_sum: f32 = pow(abs_corner.x, corner_exponent) + pow(abs_corner.y, corner_exponent);
+	let field_distance: f32 = pow(corner_sum, 1.0 / corner_exponent) + min(max(corner_delta.x, corner_delta.y), 0.0) - corner_radius;
+	return coverage * clamp(0.5 - field_distance, 0.0, 1.0);
+}
+
+cube_root: fn (value: f32) -> f32 {
+	let root: f32 = pow(abs(value), 0.33333334);
+	if (value < 0.0) {
+		return 0.0 - root;
+	}
+	return root;
+}
+
+// Finds the parameter, clamped to the curve, of the point on a quadratic Bezier closest to `pixel`.
+// The distance to B(t) = from + 2at + bt^2 is stationary where a cubic in t is zero, which has a
+// closed form. See Inigo Quilez, "2D distance functions": https://iquilezles.org/articles/distfunctions2d
+closest_parameter: fn (from: vec2f, control: vec2f, to: vec2f, pixel: vec2f) -> f32 {
+	let a: vec2f = control - from;
+	let b: vec2f = from - control * 2.0 + to;
+	let d: vec2f = from - pixel;
+	let aa: f32 = dot(a, a);
+	let bb: f32 = dot(b, b);
+
+	// The cubic is normalized by |b|^2, which loses all precision as the curve straightens. A nearly
+	// straight curve's closest point is next to the chord projection, where Newton's method on the
+	// distance derivative converges in two steps.
+	if (bb < aa * 0.001) {
+		let chord: vec2f = to - from;
+		let t: f32 = clamp((0.0 - dot(d, chord)) / max(dot(chord, chord), 0.00000001), 0.0, 1.0);
+		for (let i: u32 = 0; i < 2; i = i + 1) {
+			let tangent: vec2f = a + b * t;
+			let offset: vec2f = d + (a * 2.0 + b * t) * t;
+			let slope: f32 = max(dot(tangent, tangent) * 2.0 + dot(offset, b), 0.00000001);
+			t = clamp(t - dot(offset, tangent) / slope, 0.0, 1.0);
+		}
+		return t;
+	}
+
+	let kk: f32 = 1.0 / bb;
+	let kx: f32 = kk * dot(a, b);
+	let ky: f32 = kk * (2.0 * aa + dot(d, b)) / 3.0;
+	let kz: f32 = kk * dot(d, a);
+	let p: f32 = ky - kx * kx;
+	let q: f32 = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+	let h: f32 = q * q + 4.0 * p * p * p;
+	if (h >= 0.0) {
+		// One real root.
+		let root: f32 = sqrt(h);
+		return clamp(cube_root((root - q) * 0.5) + cube_root((0.0 - root - q) * 0.5) - kx, 0.0, 1.0);
+	}
+
+	// Three real roots. The closest point is at one of these two; the third is a local maximum.
+	let z: f32 = sqrt(0.0 - p);
+	let angle: f32 = (1.5707964 - asin(clamp(q / (p * z * 2.0), 0.0 - 1.0, 1.0))) / 3.0;
+	let m: f32 = cos(angle);
+	let n: f32 = sin(angle) * 1.7320508;
+	let t1: f32 = clamp((m + m) * z - kx, 0.0, 1.0);
+	let t2: f32 = clamp((0.0 - n - m) * z - kx, 0.0, 1.0);
+	let offset1: vec2f = d + (a * 2.0 + b * t1) * t1;
+	let offset2: vec2f = d + (a * 2.0 + b * t2) * t2;
+	if (dot(offset1, offset1) < dot(offset2, offset2)) {
+		return t1;
+	}
+	return t2;
+}
+
+// Tells which side of the joint at `numerator / count` along a curve primitive's cubic a pixel is
+// on: negative before the joint and positive after it. Neighboring pieces evaluate the same
+// expression on the same record, so exactly one of them owns every pixel and nothing blends twice.
+joint_side: fn (index: u32, numerator: u32, count: u32, pixel: vec2f) -> f32 {
+	let c0: vec2f = vec2f(primitives[index].bounds.x, primitives[index].bounds.y);
+	let c1: vec2f = vec2f(primitives[index].bounds.z, primitives[index].bounds.w);
+	let c2: vec2f = vec2f(primitives[index].a.x, primitives[index].a.y);
+	let c3: vec2f = vec2f(primitives[index].a.z, primitives[index].a.w);
+	let t: f32 = f32(numerator) / f32(count);
+	let s: f32 = 1.0 - t;
+	let joint: vec2f = c0 * (s * s * s) + c1 * (3.0 * s * s * t) + c2 * (3.0 * s * t * t) + c3 * (t * t * t);
+	let tangent: vec2f = (c1 - c0) * (s * s) + (c2 - c1) * (2.0 * s * t) + (c3 - c2) * (t * t);
+	if (dot(tangent, tangent) < 0.000000000001) {
+		tangent = c3 - c0;
+	}
+	return dot(pixel - joint, tangent);
+}
+
+// Coverage of one piece of a stroked curve. The vertex shader supplies the piece's quadratic.
+curve_coverage: fn (index: u32, from: vec2f, control: vec2f, to: vec2f, pixel: vec2f) -> f32 {
+	let piece: u32 = primitives[index].data0 & 65535;
+	let count: u32 = primitives[index].data0 >> 16;
+	let caps: u32 = primitives[index].data1;
+
+	// A capped end also owns the pixels past it, which the clamped distance rounds off.
+	if (piece > 0 || (caps & 1) == 0) {
+		if (joint_side(index, piece, count, pixel) < 0.0) {
+			return 0.0;
+		}
+	}
+	if (piece + 1 < count || (caps & 2) == 0) {
+		if (joint_side(index, piece + 1, count, pixel) >= 0.0) {
+			return 0.0;
+		}
+	}
+
+	let t: f32 = closest_parameter(from, control, to, pixel);
+	let offset: vec2f = from - pixel + ((control - from) * 2.0 + (from - control * 2.0 + to) * t) * t;
+	return clamp(0.5 - (sqrt(dot(offset, offset)) - primitives[index].b.x), 0.0, 1.0);
+}
+
+// Glyph coverage computed per pixel from outline curves with the Slug algorithm.
+// Ported from the reference pixel shader by Eric Lengyel, copyright 2017, used under the MIT license:
+// https://github.com/EricLengyel/Slug
+//
+// The reference reads its curves and bands from two 4096 texel wide textures. Storage buffers hold
+// the same data here, so a location is one index and needs no wrap to the next texture row.
+
+// Tells which roots of a sample relative curve can cross the ray along the first axis.
+// Bit 0 is set for the first root and bit 8 for the second.
+root_code: fn (y1: f32, y2: f32, y3: f32) -> u32 {
+	// One bit per control point below the ray indexes the eligibility table 0x2E74.
+	let shift: u32 = u32((1.0 - step(0.0, y1)) + (1.0 - step(0.0, y2)) * 2.0 + (1.0 - step(0.0, y3)) * 4.0);
+	return (11892 >> shift) & 257;
+}
+
+// Finds where a sample relative curve crosses a ray through the origin.
+// `a` values run along the ray and `b` values across it. Returns both crossings measured along the ray.
+crossings: fn (a1: f32, a2: f32, a3: f32, b1: f32, b2: f32, b3: f32) -> vec2f {
+	// The curve crosses the ray where a t^2 - 2b t + c is zero across it.
+	let a_across: f32 = b1 - b2 * 2.0 + b3;
+	let b_across: f32 = b1 - b2;
+	let a_along: f32 = a1 - a2 * 2.0 + a3;
+	let b_along: f32 = a1 - a2;
+
+	// A negative discriminant is clamped, which treats imaginary roots as a double root.
+	let d: f32 = sqrt(max(b_across * b_across - a_across * b1, 0.0));
+	let t1: f32 = (b_across - d) / a_across;
+	let t2: f32 = (b_across + d) / a_across;
+
+	// A nearly linear polynomial has the single root of -2b t + c. The threshold is 1 / 65536.
+	if (abs(a_across) < 0.0000152587890625) {
+		t1 = b1 * 0.5 / b_across;
+		t2 = t1;
+	}
+
+	return vec2f((a_along * t1 - b_along * 2.0) * t1 + a1, (a_along * t2 - b_along * 2.0) * t2 + a1);
+}
+
+// Accumulates the horizontal ray's coverage and weight over the curves of one horizontal band.
+horizontal_coverage: fn (header: u32, glyph: u32, coord: vec2f, pixels_per_em: f32) -> vec2f {
+	let count: u32 = glyph_bands[header].value;
+	let list: u32 = glyph + glyph_bands[header + 1].value;
+	let coverage: f32 = 0.0;
+	let weight: f32 = 0.0;
+
+	for (let i: u32 = 0; i < count; i = i + 1) {
+		let curve: u32 = glyph_bands[list + i].value;
+		let p12: vec4f = glyph_curves[curve].points;
+		let p3: vec4f = glyph_curves[curve + 1].points;
+		let x1: f32 = p12.x - coord.x;
+		let y1: f32 = p12.y - coord.y;
+		let x2: f32 = p12.z - coord.x;
+		let y2: f32 = p12.w - coord.y;
+		let x3: f32 = p3.x - coord.x;
+		let y3: f32 = p3.y - coord.y;
+
+		// Curves are sorted by descending largest x. Once one ends left of the pixel, so do the rest.
+		if (max(max(x1, x2), x3) * pixels_per_em < 0.0 - 0.5) {
+			break;
+		}
+
+		let code: u32 = root_code(y1, y2, y3);
+		if (code != 0) {
+			// Scale the crossings so that the pixel spans -0.5 to 0.5.
+			let r: vec2f = crossings(x1, x2, x3, y1, y2, y3) * pixels_per_em;
+			if ((code & 1) != 0) {
+				coverage = coverage + clamp(r.x + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
+			}
+			if (code > 1) {
+				coverage = coverage - clamp(r.y + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
+			}
+		}
+	}
+
+	return vec2f(coverage, weight);
+}
+
+// Accumulates the vertical ray's coverage and weight over the curves of one vertical band.
+vertical_coverage: fn (header: u32, glyph: u32, coord: vec2f, pixels_per_em: f32) -> vec2f {
+	let count: u32 = glyph_bands[header].value;
+	let list: u32 = glyph + glyph_bands[header + 1].value;
+	let coverage: f32 = 0.0;
+	let weight: f32 = 0.0;
+
+	for (let i: u32 = 0; i < count; i = i + 1) {
+		let curve: u32 = glyph_bands[list + i].value;
+		let p12: vec4f = glyph_curves[curve].points;
+		let p3: vec4f = glyph_curves[curve + 1].points;
+		let x1: f32 = p12.x - coord.x;
+		let y1: f32 = p12.y - coord.y;
+		let x2: f32 = p12.z - coord.x;
+		let y2: f32 = p12.w - coord.y;
+		let x3: f32 = p3.x - coord.x;
+		let y3: f32 = p3.y - coord.y;
+
+		// Curves are sorted by descending largest y. Once one ends below the pixel, so do the rest.
+		if (max(max(y1, y2), y3) * pixels_per_em < 0.0 - 0.5) {
+			break;
+		}
+
+		let code: u32 = root_code(x1, x2, x3);
+		if (code != 0) {
+			let r: vec2f = crossings(y1, y2, y3, x1, x2, x3) * pixels_per_em;
+			// A vertical ray sees the opposite winding of a horizontal one, so the signs swap.
+			if ((code & 1) != 0) {
+				coverage = coverage - clamp(r.x + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
+			}
+			if (code > 1) {
+				coverage = coverage + clamp(r.y + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
+			}
+		}
+	}
+
+	return vec2f(coverage, weight);
+}
+
+// Coverage of an outline glyph. The record holds the pen position and pixels per em in `a`, the band
+// scale and offset in `b`, the band data location in `data0`, and the last band of each axis in `data1`.
+glyph_coverage: fn (index: u32, pixel: vec2f) -> f32 {
+	let pen: vec4f = primitives[index].a;
+	let banding: vec4f = primitives[index].b;
+	let glyph: u32 = primitives[index].data0;
+	let last_horizontal_band: u32 = primitives[index].data1 & 65535;
+	let last_vertical_band: u32 = primitives[index].data1 >> 16;
+
+	// Em space has y pointing up from the baseline.
+	let coord: vec2f = vec2f((pixel.x - pen.x) / pen.z, (pen.y - pixel.y) / pen.z);
+
+	// The band scale and offset map the sample to the bands it lies in. Clamp before the conversion
+	// because a negative float has no unsigned value.
+	let horizontal_band: u32 = u32(clamp(coord.y * banding.y + banding.w, 0.0, f32(last_horizontal_band)));
+	let vertical_band: u32 = u32(clamp(coord.x * banding.x + banding.z, 0.0, f32(last_vertical_band)));
+
+	// Vertical band headers follow the horizontal ones.
+	let horizontal: vec2f = horizontal_coverage(glyph + horizontal_band * 2, glyph, coord, pen.z);
+	let vertical: vec2f = vertical_coverage(glyph + (last_horizontal_band + 1 + vertical_band) * 2, glyph, coord, pen.z);
+
+	// Blend both rays by how close their crossings are to the pixel center. The absolute values accept
+	// either winding direction, and the clamp applies the nonzero fill rule.
+	let weighted: f32 = abs(horizontal.x * horizontal.y + vertical.x * vertical.y) / max(horizontal.y + vertical.y, 0.0000152587890625);
+	return clamp(max(weighted, min(abs(horizontal.x), abs(vertical.x))), 0.0, 1.0);
+}
+
+// Reconstructs the half-resolution lattice with Arm's positive eight-read
+// tent. Bilinear filtering turns the half-texel diagonal reads into the dense
+// center of the tent while the one-texel cardinal reads preserve its tails.
+reconstruct_half_resolution: fn(uv: vec2f, half_texel: vec2f) -> vec4f {
+	let color: vec4f = texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x * 2.0, 0.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x, half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0, half_texel.y * 2.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x, half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x * 2.0, 0.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(half_texel.x, 0.0 - half_texel.y)) * 2.0;
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0, 0.0 - half_texel.y * 2.0));
+	color = color + texture_lod(half_blurred_texture, uv + vec2f(0.0 - half_texel.x, 0.0 - half_texel.y)) * 2.0;
+	return color / 12.0;
+}
+
+// Samples the blurred backdrop under a pixel. Texture-size-derived coordinates keep the full and
+// half-resolution lattices phase-aligned for odd viewport sizes.
+//
+// Avoids touching an inactive path because its regional texture can retain
+// unrelated data. This also prevents a stale NaN from poisoning an endpoint
+// through the arithmetic form of mix even when its nominal weight is zero.
+sample_backdrop: fn(pixel: vec2f, resolution_mix: f32) -> vec4f {
+	let full_size: vec2u = texture_size(full_blurred_texture);
+	let half_size: vec2u = texture_size(half_blurred_texture);
+	let half_texture_size: vec2f = vec2f(f32(half_size.x), f32(half_size.y));
+	let full_uv: vec2f = pixel / vec2f(f32(full_size.x), f32(full_size.y));
+	let half_uv: vec2f = pixel / (half_texture_size * 2.0);
+	let half_texel: vec2f = vec2f(0.5, 0.5) / half_texture_size;
+	if (resolution_mix <= 0.0) {
+		return texture_lod(full_blurred_texture, full_uv);
+	}
+	if (resolution_mix >= 1.0) {
+		return reconstruct_half_resolution(half_uv, half_texel);
+	}
+	let full_blurred: vec4f = texture_lod(full_blurred_texture, full_uv);
+	let half_blurred: vec4f = reconstruct_half_resolution(half_uv, half_texel);
+	return full_blurred * (1.0 - resolution_mix) + half_blurred * resolution_mix;
+}
+
+// Shades one pixel of a primitive. The alpha carries the primitive's coverage.
+shade: fn (index: u32, pixel: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
+	let kind: u32 = primitives[index].kind;
+	let color: vec4f = primitives[index].color;
+
+	// Outline glyph.
+	if (kind == 4) {
+		return vec4f(color.x, color.y, color.z, color.w * glyph_coverage(index, pixel));
+	}
+	// Rectangle layer.
+	if (kind == 0) {
+		return vec4f(color.x, color.y, color.z, color.w * rect_coverage(primitives[index].a, primitives[index].b, pixel));
+	}
+	// Curve piece.
+	if (kind == 2) {
+		let coverage: f32 = curve_coverage(
+			index,
+			vec2f(curve_from.x, curve_from.y),
+			vec2f(curve_from.z, curve_from.w),
+			curve_to,
+			pixel
+		);
+		return vec4f(color.x, color.y, color.z, color.w * coverage);
+	}
+	// Image. Its color alpha holds the opacity.
+	if (kind == 3) {
+		let slot: u32 = primitives[index].data0;
+		let texel: vec4f = sample(textures[slot], uv);
+		return vec4f(texel.x, texel.y, texel.z, texel.w * color.w);
+	}
+	// Atlas glyph.
+	if (kind == 5) {
+		return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x);
+	}
+	// Backdrop blur. The mask coverage is the source alpha.
+	let blurred: vec4f = sample_backdrop(pixel, clamp(primitives[index].b.w, 0.0, 1.0));
+	return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(primitives[index].a, primitives[index].b, pixel));
+}
+
+main: fn(pipeline_input: interface {
+	curve_from: vec4f,
+	curve_to: vec2f,
+	pixel_position: vec2f,
+	primitive: u32,
+	uv: vec2f,
+}) -> output { color_attachment: vec4f } {
+	let shaded: vec4f = shade(
+		pipeline_input.primitive,
+		pipeline_input.pixel_position,
+		pipeline_input.uv,
+		pipeline_input.curve_from,
+		pipeline_input.curve_to
+	);
+	let mask: f32 = mask_coverage(primitives[pipeline_input.primitive].mask, pipeline_input.pixel_position);
+	let color_attachment: vec4f = vec4f(shaded.x, shaded.y, shaded.z, clamp(shaded.w * mask, 0.0, 1.0));
+
+	return { color_attachment };
+}

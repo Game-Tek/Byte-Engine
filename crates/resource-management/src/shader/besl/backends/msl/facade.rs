@@ -246,6 +246,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
 				| besl::Expressions::Continue
+				| besl::Expressions::Break
 				| besl::Expressions::Discard => false,
 			},
 			_ => false,
@@ -337,6 +338,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					besl::Expressions::VariableDeclaration { .. }
 					| besl::Expressions::Literal { .. }
 					| besl::Expressions::Continue
+					| besl::Expressions::Break
 					| besl::Expressions::Discard => {}
 				},
 				_ => {}
@@ -464,7 +466,10 @@ impl<A: Allocator + Clone> Generator<A> {
 						node_requires_resource_context(left, visited, include_push_constant)
 							|| node_requires_resource_context(right, visited, include_push_constant)
 					}
-					besl::Expressions::Literal { .. } | besl::Expressions::Continue | besl::Expressions::Discard => false,
+					besl::Expressions::Literal { .. }
+					| besl::Expressions::Continue
+					| besl::Expressions::Break
+					| besl::Expressions::Discard => false,
 				},
 				_ => false,
 			};

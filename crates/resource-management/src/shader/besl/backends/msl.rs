@@ -199,6 +199,37 @@ mod tests {
 	}
 
 	#[compio::test]
+	async fn descriptor_array_elements_reach_every_texture_intrinsic_in_msl() {
+		let root = besl::compile_to_besl(super::super::DESCRIPTOR_ARRAY_FRAGMENT, None)
+			.expect("Expected descriptor-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected descriptor-array fragment MSL generation");
+
+		assert_string_contains!(
+			shader,
+			"uint2(resources.textures[resources.items[index].slot].get_width(),resources.textures[resources.items[index].slot].get_height())"
+		);
+		assert_string_contains!(
+			shader,
+			"resources.textures[index+1].sample(resources.textures_sampler[index+1], uv, metal::level(0.0))"
+		);
+		assert_string_contains!(
+			shader,
+			"resources.textures[resources.items[index].slot].sample(resources.textures_sampler[resources.items[index].slot], uv)"
+		);
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-descriptor-array-intrinsics")
+			.await
+			.expect("Expected descriptor-array fragment MSL to compile natively");
+	}
+
+	#[compio::test]
 	async fn structural_position_uses_metal_position_without_colliding_with_a_local() {
 		let root = besl::compile_to_besl(super::super::STRUCTURAL_POSITION_VERTEX, None)
 			.expect("Expected structural position source to link");
@@ -2093,6 +2124,28 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "uint packed=((1<<8)|(2&255));");
+	}
+
+	#[test]
+	fn break_lowers_to_msl() {
+		let script = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					break;
+				}
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "for(uint i=0;i<=4;i=(i+1)){if(i>=2){break;};};");
 	}
 
 	#[test]

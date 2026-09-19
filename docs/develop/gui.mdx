@@ -256,9 +256,9 @@ chain of revisions:
 - `UiRenderPass` keeps a persistent transparent UI layer. Each frame it clears
   and redraws only the damaged pixel regions (plus every visible backdrop blur,
   which samples the scene rendered that frame), then composites the scene under
-  the layer. Geometry, uploads, and atlas residency are rebuilt only for the
+  the layer. Primitives, uploads, and glyph residency are rebuilt only for the
   elements touching that damage, and only when the adopted render revision, the
-  viewport extent, the atlas generation, or the damaged regions change. A frame
+  viewport extent, the glyph generation, or the damaged regions change. A frame
   with no damage records only the composite.
 
 Applications should publish a render only when `Render::revision` changes. The
@@ -271,26 +271,119 @@ engine. Placement, style, opacity, clipping, and transforms all live on retained
 elements, so the revision covers them. Changing the viewport size is the one
 input outside the tree, and both evaluation and rendering key on it.
 
+## Depth
+
+Depth decides what paints over what, and what a pointer hits first. It is local
+to each container. `Depth::relative(n)` orders a child among its siblings: a
+container paints first, then its children from the lowest depth to the highest,
+and children at the same depth in the order they were declared. A child that is
+not a container counts as `Depth::relative(1)`.
+
+A container and everything inside it paint as one block. No depth set inside a
+component can put one of its elements over or under another component, so a
+widget can use whatever depths it likes for its own overlays.
+
+`Depth::absolute(n)` is for layers that must cover the rest of the UI, such as a
+modal or a toast. The container leaves its parent and paints above all ordinary
+content, wherever it is declared. Absolute layers stack from the lowest `n` to
+the highest and in tree order among equals. A layer declared inside another one
+paints over it, so a dialog opened from a modal covers that modal.
+
+## Drawing
+
+`UiRenderPass` draws the whole UI with one shader pair and no vertex or index
+buffers. Every rectangle layer, glyph, image, backdrop blur, and curve piece is
+one 80-byte primitive in a storage buffer, written in painter order: by depth,
+then by element, across all element types. The vertex shader pulls six vertices
+from each primitive, and the fragment shader branches on the primitive's kind.
+A primitive is constant across its quad, so each branch is coherent, and a plain
+square fill skips the corner, stroke, and mask math entirely.
+
+A frame is one draw per damaged region. Only a backdrop blur adds draws, because
+it reads the layer drawn below it: the primitives before it are drawn, its
+compute passes run, and its own quad starts the next draw. Damaged regions are
+cleared by the same shaders with blending disabled, in the same pass. When the
+damage covers the viewport, the attachment's clear does it instead.
+
+Things to know when you build UI:
+
+- Clips and feather masks are shared. A primitive stores an index into a small
+  table, so a masked container costs one entry however many elements it holds.
+  A frame can use 4,096 distinct combinations.
+- Images are bound through one texture array, so the UI can show 31 distinct
+  images at once. An image the UI stops showing gives up its slot. Images past
+  the limit are skipped and reported once in the log.
+- One frame holds 131,072 primitives. A glyph is one primitive and a curve is a
+  few per segment. Past the limit, the rest of the frame is skipped and
+  reported once in the log.
+
+### Curves
+
+Curves are evaluated on the GPU. The CPU doesn't flatten, clip, or cache them:
+it converts each segment to a cubic in pixels, picks how many pieces to draw it
+in, and writes that many copies of the control points. The vertex shader cuts
+piece `k` out of the cubic, fits the quadratic closest to it, and bounds it
+with a box along its chord. The fragment shader finds the closest point on that
+quadratic in closed form and shades by the exact distance. A line or a quadratic
+is exact, and a cubic stays within 0.05 pixels.
+
+The piece count grows with how far the curve bends and with zoom, so a straight
+line is one piece at any length and a typical node-graph wire is six to eight.
+
+Each pixel is shaded by exactly one piece of a segment, the one whose part of the
+curve it is closest to, so translucent strokes have no seams. Path ends and
+corners are round. Where two segments meet smoothly, neither draws a cap. At a
+corner, the segment that starts there rounds it, and a translucent stroke is
+blended twice where that cap overlaps the previous segment.
+
+A curve's clip is tested per pixel because its quads aren't axis aligned.
+Every other element is still trimmed on the CPU.
+
 ## Text rendering
 
-Text is drawn from a shared glyph atlas. The text system rasterizes each
-character once per pixel size, the render pass packs the coverage into one
-atlas texture, and every visible glyph becomes a pixel-aligned quad batched by
-depth alongside rectangles, curves, and images. Measurement and placement use
-the same cached glyph metrics, so layout and drawing never disagree.
+Text is drawn from glyph outlines on the GPU with the
+[Slug algorithm](https://github.com/EricLengyel/Slug) by Eric Lengyel. The text
+system reads each glyph's quadratic curves from the font once, in em units that
+don't depend on a font size. The render pass packs them into two storage
+buffers: the curves, and bands that list the curves crossing each horizontal and
+vertical slice of the glyph. Every visible glyph becomes one primitive, drawn in
+painter order in the same draw as rectangles, curves, and images, and the
+fragment shader computes each pixel's exact coverage from the few curves in its
+bands.
+
+Measurement and placement use the same size-independent advances, so layout and
+drawing never disagree.
 
 Consequences for application code:
 
-- Idle text costs no CPU work: no rasterization, no texture upload, no geometry.
-- Moving or restyling a label regenerates its quads only; the atlas is untouched
-  while its glyphs are already resident.
-- A resize rasterizes glyphs at the new pixel size once, then they stay cached.
-- Clipping trims glyph quads and their texture windows together, and feather
-  masks apply in the shader exactly as they do for rectangles.
+- Text is sharp at every size. A zoom, a resize, or an animated font size
+  rasterizes nothing and uploads nothing; glyph data is uploaded once per glyph,
+  not once per glyph and size.
+- Idle text costs no CPU work, and moving or restyling a label regenerates its
+  primitives only.
+- Horizontal positions stay fractional, so letter spacing is exact. Baselines
+  snap to whole pixels, which keeps horizontal strokes crisp.
+- Clipping trims glyph quads and the outline area they sample together, and
+  feather masks apply in the shader exactly as they do for rectangles.
+- Fonts with cubic outlines work too: cubic segments become quadratic curves
+  within 1/4096 of an em when the glyph is first read.
 
-The atlas starts small, doubles when full, and resets at its maximum size to
-hold only the glyphs of the current frame. Both cases advance the atlas
-generation, which invalidates prepared frames automatically.
+The glyph buffers hold a few thousand glyphs. When they fill up, they're emptied
+to hold only the glyphs of the current frame. This advances the glyph generation,
+which invalidates prepared frames automatically. Glyphs that still don't fit are
+skipped and reported once in the log.
+
+### Switch to the glyph atlas renderer
+
+The previous renderer is still in the engine. It rasterizes each character on
+the CPU once per whole pixel size, packs the coverage into one atlas texture,
+and draws pixel-aligned quads that sample it. Use it to compare output or
+performance, or on hardware where per-pixel curve evaluation costs too much.
+
+To switch, set `UI_TEXT_MODE` in `crates/byte-engine/src/ui/render_pass.rs` to
+`UiTextMode::Atlas` and rebuild. Both renderers emit primitives for the same
+shader and share the draw list, clipping, and damage rules, so nothing else
+changes. The atlas is the first element of the image texture array.
 
 ## Rust API
 

@@ -499,6 +499,7 @@ pub(super) fn lex_parsed_node(
 					},
 				}),
 				parser::Expressions::Continue => Node::expression(Expressions::Continue),
+				parser::Expressions::Break => Node::expression(Expressions::Break),
 				parser::Expressions::Discard => Node::expression(Expressions::Discard),
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?;

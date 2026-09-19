@@ -18,6 +18,11 @@ pub(super) struct UiTask {
 	pub(super) inbox: VecDeque<UiEvent>,
 	pub(super) key_inbox: VecDeque<UiKeyEvent>,
 	pub(super) text_edit_inbox: VecDeque<UiTextEditEvent>,
+	/// The frame a dropped frame wait was counting from, for the wait that replaces it in the same poll.
+	///
+	/// A frame wait that loses a selection is dropped while the frame it waited for may already
+	/// have begun. Its replacement continues from here instead of waiting for one more frame.
+	pub(super) carried_frame: Option<u64>,
 }
 
 /// Task slots are reused, so a handle from a removed task finds nothing instead of its successor.
@@ -147,6 +152,7 @@ impl Runtime {
 			inbox: VecDeque::new(),
 			key_inbox: VecDeque::new(),
 			text_edit_inbox: VecDeque::new(),
+			carried_frame: None,
 		})
 	}
 
@@ -257,6 +263,9 @@ impl Runtime {
 				}
 				Poll::Pending => match runtime.borrow_mut().tasks.get_mut(id) {
 					Some(task) => {
+						// A task that ends its poll without waiting for a frame again starts its next wait fresh,
+						// so a wait after a long idle still sees the layout of the frame that follows it.
+						task.carried_frame = None;
 						task.future = Some(future);
 						None
 					}

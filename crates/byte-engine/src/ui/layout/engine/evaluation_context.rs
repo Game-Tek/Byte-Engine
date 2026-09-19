@@ -206,6 +206,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 		RenderFuture {
 			waiter: None,
 			runtime: Rc::clone(&self.runtime),
+			task_id: self.task_id,
 			frame_seen: None,
 			complete: false,
 		}

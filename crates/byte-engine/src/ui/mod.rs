@@ -44,8 +44,8 @@ pub mod transform;
 pub mod visual;
 
 pub use animation::{
-	Animation, AnimationDriver, BackOut, Curves, Easing, Interpolate, Spring, Track, animate, back_out, ease_in, ease_in_out,
-	ease_out, ease_out_cubic, ease_out_quart, emphasized_out, spring,
+	Animation, AnimationDriver, BackOut, Curves, Easing, Interpolate, Smoothing, Spring, Track, animate, back_out, ease_in,
+	ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, smooth, spring,
 };
 pub use components::{
 	container::Container,

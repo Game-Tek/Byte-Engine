@@ -452,12 +452,17 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		}
 		if !damage_intersects(
 			damage,
-			element_bounds(
-				text.position,
-				[text.size[0] * sx, text.size[1] * sy],
+			turned_bounds(
+				element_bounds(
+					text.position,
+					[text.size[0] * sx, text.size[1] * sy],
+					sx,
+					sy,
+					UI_DAMAGE_MARGIN_PIXELS,
+				),
+				text.clip_mask,
 				sx,
 				sy,
-				UI_DAMAGE_MARGIN_PIXELS,
 			),
 		) {
 			continue;

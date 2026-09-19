@@ -284,12 +284,17 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 			if geometry.truncated || !should_rasterize_text(text) || clip.is_empty() {
 				continue;
 			}
-			let bounds = element_bounds(
-				text.position,
-				[text.size[0] * sx, text.size[1] * sy],
+			let bounds = turned_bounds(
+				element_bounds(
+					text.position,
+					[text.size[0] * sx, text.size[1] * sy],
+					sx,
+					sy,
+					UI_DAMAGE_MARGIN_PIXELS,
+				),
+				text.clip_mask,
 				sx,
 				sy,
-				UI_DAMAGE_MARGIN_PIXELS,
 			);
 			if !damage_intersects(damage, bounds) {
 				continue;

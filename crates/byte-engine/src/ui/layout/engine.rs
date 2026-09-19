@@ -94,6 +94,7 @@ struct Footprint {
 	rect: Option<Geometry>,
 	clip: Option<Geometry>,
 	mask: Option<ClipMask>,
+	rotation: Option<Rotation>,
 	opacity: f32,
 	scale: [f32; 2],
 }
@@ -800,6 +801,11 @@ impl<C: 'static> Engine<C> {
 			let state = self.visual_state[index];
 			let clip = state.clip.as_rect();
 			let clip_mask = state.mask;
+			let rotation = self
+				.transforms
+				.get(index)
+				.map(|transform| transform.rotation)
+				.filter(|rotation| !rotation.is_identity());
 			let opacity = effective_opacity(index, &tree, &mut self.visual_state);
 			let style = retained_element.element.primitive.style();
 			// Curves stroke outward from their path; rectangles stroke inward.
@@ -823,13 +829,16 @@ impl<C: 'static> Engine<C> {
 				revision: retained_element.revision,
 				rect: {
 					let rect = geometry_from_layout_element(element).expanded(outset);
-					match clip {
+					let rect = match clip {
 						Some(clip) => rect.intersect(clip),
 						None => Some(rect),
-					}
+					};
+					// Damage covers where the pixels land, which a turn moves away from the placement.
+					rect.map(|rect| rotation.map_or(rect, |rotation| rotation.geometry(rect)))
 				},
 				clip,
 				mask: clip_mask,
+				rotation,
 				opacity,
 				scale: state.scale,
 			};
@@ -852,6 +861,7 @@ impl<C: 'static> Engine<C> {
 					entry.size = element.size;
 					entry.clip = clip;
 					entry.clip_mask = clip_mask;
+					entry.rotation = rotation;
 					entry.opacity = opacity;
 					element_count += 1;
 					return;
@@ -867,6 +877,7 @@ impl<C: 'static> Engine<C> {
 					size: element.size,
 					clip,
 					clip_mask,
+					rotation,
 					style: ConcreteStyle { layers },
 					opacity,
 					backdrop_blur_radius: style
@@ -893,6 +904,7 @@ impl<C: 'static> Engine<C> {
 					entry.size = element.size;
 					entry.clip = clip;
 					entry.clip_mask = clip_mask;
+					entry.rotation = rotation;
 					entry.opacity = opacity;
 					entry.scale = state.scale[0].min(state.scale[1]);
 					text_count += 1;
@@ -910,6 +922,7 @@ impl<C: 'static> Engine<C> {
 					size: element.size,
 					clip,
 					clip_mask,
+					rotation,
 					color: match style.layers().first().map(|layer| &layer.color) {
 						Some(Color::Value(rgba)) => *rgba,
 						_ => RGBA::white(),
@@ -946,6 +959,7 @@ impl<C: 'static> Engine<C> {
 						entry.size = element.size;
 						entry.clip = clip;
 						entry.clip_mask = clip_mask;
+						entry.rotation = rotation;
 						entry.opacity = opacity;
 						entry.scale = state.scale;
 						curve_count += 1;
@@ -964,6 +978,7 @@ impl<C: 'static> Engine<C> {
 						size: element.size,
 						clip,
 						clip_mask,
+						rotation,
 						style: ConcreteStyle { layers },
 						opacity,
 						scale: state.scale,
@@ -987,6 +1002,7 @@ impl<C: 'static> Engine<C> {
 					size: element.size,
 					clip,
 					clip_mask,
+					rotation,
 					opacity,
 				}),
 				Primitives::Text(text) => push_text(text.content(), text.settings().font_size),
@@ -4895,4 +4911,5 @@ use crate::ui::{
 	intersection::{HitCurve, MouseClickAcceleration},
 	primitive::{Events, Key, Primitive as _, Primitives, Shapes, TextEdit},
 	style::{Color, ConcreteStyle, EdgeFeather, Layer as _, LayerKind},
+	transform::Rotation,
 };

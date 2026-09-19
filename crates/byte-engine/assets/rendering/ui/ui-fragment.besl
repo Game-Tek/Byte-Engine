@@ -24,6 +24,8 @@ ClipMask: struct {
 	edges: vec4f,
 	// Corner radius and corner exponent.
 	corner: vec4f,
+	// The turn the vertex stage applied. The clip and the mask are tested before it.
+	rotation: vec4f,
 }
 
 GlyphCurve: struct {
@@ -428,8 +430,9 @@ sample_backdrop: fn(pixel: vec2f, resolution_mix: f32) -> vec4f {
 	return full_blurred * (1.0 - resolution_mix) + half_blurred * resolution_mix;
 }
 
-// Shades one pixel of a primitive. The alpha carries the primitive's coverage.
-shade: fn (index: u32, pixel: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
+// Shades one pixel of a primitive. The alpha carries the primitive's coverage. `pixel` is where
+// the primitive was laid out and `screen` is where its turn drew it.
+shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
 	let kind: u32 = primitives[index].kind;
 	let color: vec4f = primitives[index].color;
 
@@ -463,7 +466,7 @@ shade: fn (index: u32, pixel: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec
 		return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x);
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
-	let blurred: vec4f = sample_backdrop(pixel, clamp(primitives[index].b.w, 0.0, 1.0));
+	let blurred: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
 	return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(primitives[index].a, primitives[index].b, pixel));
 }
 
@@ -473,10 +476,12 @@ main: fn(pipeline_input: interface {
 	pixel_position: vec2f,
 	primitive: u32,
 	uv: vec2f,
+	screen_position: vec2f,
 }) -> output { color_attachment: vec4f } {
 	let shaded: vec4f = shade(
 		pipeline_input.primitive,
 		pipeline_input.pixel_position,
+		pipeline_input.screen_position,
 		pipeline_input.uv,
 		pipeline_input.curve_from,
 		pipeline_input.curve_to

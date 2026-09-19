@@ -13,7 +13,17 @@ Primitive: struct {
 	data1: u32,
 }
 
+ClipMask: struct {
+	clip: vec4f,
+	rect: vec4f,
+	edges: vec4f,
+	corner: vec4f,
+	// The turn a primitive draws with, as (cos, sin, x, y) in pixels.
+	rotation: vec4f,
+}
+
 primitives: descriptor<{ type: Primitive[], binding: 0, access: read }>;
+masks: descriptor<{ type: ClipMask[], binding: 1, access: read }>;
 
 push_constant: push_constant {
 	viewport: vec2f,
@@ -45,6 +55,7 @@ main: fn (input: StageInput) -> interface {
 	pixel_position: vec2f,
 	primitive: u32,
 	uv: vec2f,
+	screen_position: vec2f,
 } {
 	let primitive: u32 = push_constant.first + input.vertex_index / 6;
 	// Two triangles: top left, top right, bottom right, then bottom right, bottom left, top left.
@@ -97,12 +108,20 @@ main: fn (input: StageInput) -> interface {
 			+ normal * mix(across_min, across_max, corner.y);
 	}
 
+	// A primitive is laid out and shaded unrotated. Only its quad turns, and the unrotated pixel
+	// position interpolates across it, so the fragment stage needs no inverse.
+	let turn: vec4f = masks[primitives[primitive].mask].rotation;
+	let screen_position: vec2f = vec2f(
+		turn.x * pixel_position.x - turn.y * pixel_position.y + turn.z,
+		turn.y * pixel_position.x + turn.x * pixel_position.y + turn.w
+	);
+
 	let position: vec4f = vec4f(
-		pixel_position.x / push_constant.viewport.x * 2.0 - 1.0,
-		1.0 - pixel_position.y / push_constant.viewport.y * 2.0,
+		screen_position.x / push_constant.viewport.x * 2.0 - 1.0,
+		1.0 - screen_position.y / push_constant.viewport.y * 2.0,
 		0.0,
 		1.0
 	);
 
-	return { position, curve_from, curve_to, pixel_position, primitive, uv };
+	return { position, curve_from, curve_to, pixel_position, primitive, uv, screen_position };
 }

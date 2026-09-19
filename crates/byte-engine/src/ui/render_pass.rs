@@ -15,6 +15,7 @@ use super::{
 	element::ElementHandle as _,
 	layout::{ClipMask, Geometry, engine},
 	style::{Color, EdgeFeather, LayerKind},
+	transform::Rotation,
 };
 use crate::{
 	core::Entity,
@@ -970,6 +971,7 @@ mod tests {
 	};
 	use utils::{Extent, RGBA};
 
+	use super::Rotation;
 	use super::{
 		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, UI_ATLAS_TEXTURE_SLOT,
 		UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT,
@@ -1045,6 +1047,26 @@ mod tests {
 		uv: [f32; 2],
 		curve_from: [f32; 4],
 		curve_to: [f32; 2],
+		/// Where the quad's turn drew the pixel. `None` is an unrotated quad, drawn at `pixel_position`.
+		screen_position: Option<[f32; 2]>,
+	}
+
+	fn vm_masks(executable: &ExecutableProgram, masks: &[UiClipMaskEntry]) -> Buffer {
+		let mut mask_buffer = vm_array(executable, 1, masks.len());
+		for (index, mask) in masks.iter().enumerate() {
+			for (name, value) in [
+				("clip", mask.clip),
+				("rect", mask.rect),
+				("edges", mask.edges),
+				("corner", mask.corner),
+				("rotation", mask.rotation),
+			] {
+				mask_buffer
+					.write_array_member(index, name, Value::Vec4F(value))
+					.expect("Failed to write a clip mask. The most likely cause is a changed clip mask layout.");
+			}
+		}
+		mask_buffer
 	}
 
 	fn vm_array(executable: &ExecutableProgram, slot: u32, count: usize) -> Buffer {
@@ -1093,19 +1115,7 @@ mod tests {
 		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], glyphs: Option<&UiGlyphCurves>) -> Self {
 			let executable = compile_shader_vm(ui_raster_program(UI_FRAGMENT_BESL, "UI fragment shader"));
 			let primitives = vm_primitives(&executable, primitives);
-			let mut mask_buffer = vm_array(&executable, 1, masks.len());
-			for (index, mask) in masks.iter().enumerate() {
-				for (name, value) in [
-					("clip", mask.clip),
-					("rect", mask.rect),
-					("edges", mask.edges),
-					("corner", mask.corner),
-				] {
-					mask_buffer
-						.write_array_member(index, name, Value::Vec4F(value))
-						.expect("Failed to write a clip mask. The most likely cause is a changed clip mask layout.");
-				}
-			}
+			let mask_buffer = vm_masks(&executable, masks);
 			let (curves, bands) = glyphs.map_or((&[][..], &[][..]), |glyphs| (glyphs.curves(), glyphs.bands()));
 			let mut glyph_curves = vm_array(&executable, 2, curves.len());
 			for (index, points) in curves.iter().enumerate() {
@@ -1136,6 +1146,10 @@ mod tests {
 				("_besl_interface_curve_to", Value::Vec2F(varyings.curve_to)),
 				("_besl_interface_pixel_position", Value::Vec2F(varyings.pixel_position)),
 				("_besl_interface_primitive", Value::U32(varyings.primitive)),
+				(
+					"_besl_interface_screen_position",
+					Value::Vec2F(varyings.screen_position.unwrap_or(varyings.pixel_position)),
+				),
 				("_besl_interface_uv", Value::Vec2F(varyings.uv)),
 			]
 			.into_iter()
@@ -1192,16 +1206,19 @@ mod tests {
 	struct UiVertexVm {
 		executable: ExecutableProgram,
 		primitives: Buffer,
+		masks: Buffer,
 		viewport: [f32; 2],
 	}
 
 	impl UiVertexVm {
-		fn new(primitives: &[UiPrimitive], viewport: [f32; 2]) -> Self {
+		fn new(primitives: &[UiPrimitive], masks: &[UiClipMaskEntry], viewport: [f32; 2]) -> Self {
 			let executable = compile_shader_vm(ui_raster_program(UI_VERTEX_BESL, "UI vertex shader"));
 			let primitives = vm_primitives(&executable, primitives);
+			let masks = vm_masks(&executable, masks);
 			Self {
 				executable,
 				primitives,
+				masks,
 				viewport,
 			}
 		}
@@ -1219,12 +1236,13 @@ mod tests {
 			let mut vertex = Buffer::new(self.executable.builtin_vertex_index_layout().unwrap().clone());
 			vertex.write("vertex_index", Value::U32(vertex_index)).unwrap();
 			let mut position = Buffer::new(self.executable.builtin_position_layout().unwrap().clone());
-			let mut outputs: Vec<_> = (0..5)
+			let mut outputs: Vec<_> = (0..6)
 				.map(|index| Buffer::new(self.executable.output_layout(index).unwrap().clone()))
 				.collect();
 			{
 				let mut descriptors = DescriptorBindings::new();
 				descriptors.bind_buffer(besl::vm::ResourceSlot::new(0), &mut self.primitives);
+				descriptors.bind_buffer(besl::vm::ResourceSlot::new(1), &mut self.masks);
 				descriptors.bind_push_constant(&mut push_constant);
 				descriptors.bind_buffer(builtin_vertex_index_slot(), &mut vertex);
 				descriptors.bind_buffer(builtin_position_slot(), &mut position);
@@ -1252,7 +1270,8 @@ mod tests {
 				UiVaryings {
 					primitive,
 					pixel_position: vec2(&outputs[2], "_besl_interface_pixel_position"),
-					uv: vec2(&outputs[4], "_besl_interface_uv"),
+					uv: vec2(&outputs[5], "_besl_interface_uv"),
+					screen_position: Some(vec2(&outputs[4], "_besl_interface_screen_position")),
 					curve_from: vec4(&outputs[0], "_besl_interface_curve_from"),
 					curve_to: vec2(&outputs[1], "_besl_interface_curve_to"),
 				},
@@ -1287,6 +1306,7 @@ mod tests {
 				if inside {
 					let varyings = UiVaryings {
 						pixel_position: center,
+						screen_position: None,
 						..varyings
 					};
 					shade([x, y], fragment.run(varyings, &mut []));
@@ -2530,6 +2550,12 @@ mod tests {
 			size: [30.0, 40.0],
 			edges: [1.0, 2.0, 3.0, 4.0],
 			corner: [5.0, 3.0],
+			rotation: Rotation {
+				cos: 0.0,
+				sin: 1.0,
+				x: 7.0,
+				y: 9.0,
+			},
 		});
 		let list = elements_list(
 			[100.0, 100.0],
@@ -2556,6 +2582,7 @@ mod tests {
 		assert_eq!(entry.rect, [20.0, 60.0, 60.0, 120.0]);
 		assert_eq!(entry.edges, [3.0, 4.0, 9.0, 8.0]);
 		assert_eq!(entry.corner, [10.0, 3.0, 0.0, 0.0]);
+		assert_eq!(entry.rotation, [0.0, 1.0, 14.0, 27.0]);
 	}
 
 	#[test]
@@ -2924,7 +2951,7 @@ mod tests {
 			&arena,
 		);
 
-		let mut vertex = UiVertexVm::new(&geometry.primitives, [extent as f32; 2]);
+		let mut vertex = UiVertexVm::new(&geometry.primitives, masks.entries(), [extent as f32; 2]);
 		let mut fragment = UiFragmentVm::new(&geometry.primitives, masks.entries(), Some(&glyphs));
 		let mut pixels = Vec::new();
 		for glyph in 0..geometry.primitives.len() as u32 {
@@ -2998,8 +3025,21 @@ mod tests {
 				kind: UI_KIND_IMAGE,
 				..UiPrimitive::default()
 			},
+			UiPrimitive {
+				bounds: [20.0, 20.0, 80.0, 60.0],
+				mask: 1,
+				..UiPrimitive::default()
+			},
 		];
-		let mut vertex = UiVertexVm::new(&primitives, [200.0, 100.0]);
+		// A quarter turn clockwise around the quad's top left corner.
+		let masks = [
+			UiClipMaskEntry::NONE,
+			UiClipMaskEntry {
+				rotation: [0.0, 1.0, 40.0, 0.0],
+				..UiClipMaskEntry::NONE
+			},
+		];
+		let mut vertex = UiVertexVm::new(&primitives, &masks, [200.0, 100.0]);
 
 		// Six vertices per record, so a draw that starts at record one reaches it with its first vertex.
 		let corners: Vec<_> = (0..6).map(|index| vertex.run(1, index)).collect();
@@ -3022,6 +3062,11 @@ mod tests {
 		assert!(corners.iter().all(|(_, varyings)| varyings.primitive == 1));
 		// The next six vertices of the same draw belong to the next record.
 		assert_eq!(vertex.run(0, 6).1.primitive, 1);
+		// A turned quad moves on screen while its fragments keep shading where it was laid out.
+		let (position, turned) = vertex.run(2, 1);
+		assert_vec2_close(turned.pixel_position, [80.0, 20.0]);
+		assert_vec2_close(turned.screen_position.unwrap(), [20.0, 80.0]);
+		assert_vec4_close(position, [-0.8, -0.6, 0.0, 1.0]);
 	}
 
 	/// The distance from a point to a cubic, by dense sampling.
@@ -3100,8 +3145,8 @@ mod tests {
 				}],
 				..UiDrawList::default()
 			};
-			let (primitives, ..) = build(&list, Extent::square(extent), &frame_allocator);
-			let mut vertex = UiVertexVm::new(&primitives, [extent as f32; 2]);
+			let (primitives, _, masks) = build(&list, Extent::square(extent), &frame_allocator);
+			let mut vertex = UiVertexVm::new(&primitives, masks.entries(), [extent as f32; 2]);
 			let mut fragment = UiFragmentVm::new(&primitives, &[UiClipMaskEntry::NONE], None);
 
 			// Alpha per pixel, and how many pieces shaded it at all.
@@ -3158,7 +3203,7 @@ mod tests {
 			..UiDrawList::default()
 		};
 		let (primitives, _, masks) = build(&list, Extent::square(64), &frame_allocator);
-		let mut vertex = UiVertexVm::new(&primitives, [64.0; 2]);
+		let mut vertex = UiVertexVm::new(&primitives, masks.entries(), [64.0; 2]);
 		let mut fragment = UiFragmentVm::new(&primitives, masks.entries(), None);
 
 		let (mut inside, mut outside) = (0.0f32, 0.0f32);

@@ -202,6 +202,8 @@ pub(super) struct DrawClipMask {
 	pub(super) size: [f32; 2],
 	pub(super) edges: [f32; 4],
 	pub(super) corner: [f32; 2],
+	/// The turn the element draws with, in layout units. A zero size keeps the turn without masking.
+	pub(super) rotation: Rotation,
 }
 
 #[derive(Debug, Clone)]
@@ -279,12 +281,15 @@ pub(super) struct UiPrimitive {
 #[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(super) struct UiClipMaskEntry {
 	/// Hard clip as x0, y0, x1, y1. Only curves need it; every other quad is trimmed on the CPU.
+	/// The clip and the mask are tested before the turn, where the primitive is laid out.
 	pub(super) clip: [f32; 4],
 	/// Mask rectangle as x, y, width, height. A zero size disables the mask.
 	pub(super) rect: [f32; 4],
 	pub(super) edges: [f32; 4],
 	/// Corner radius and corner exponent.
 	pub(super) corner: [f32; 4],
+	/// The turn the vertex shader applies to the quad, as cos, sin, x, y in pixels.
+	pub(super) rotation: [f32; 4],
 }
 
 impl UiClipMaskEntry {
@@ -294,6 +299,7 @@ impl UiClipMaskEntry {
 		rect: [0.0; 4],
 		edges: [0.0; 4],
 		corner: [0.0, 2.0, 0.0, 0.0],
+		rotation: [1.0, 0.0, 0.0, 0.0],
 	};
 }
 
@@ -304,7 +310,7 @@ impl UiClipMaskEntry {
 pub(super) struct UiMaskTable {
 	entries: Vec<UiClipMaskEntry>,
 	// Every element of a list can carry its own mask, so the lookup has to stay cheap next to building a primitive.
-	indices: utils::hash::HashMap<[u32; 16], u32>,
+	indices: utils::hash::HashMap<[u32; 20], u32>,
 	pub(super) truncated: bool,
 }
 
@@ -344,12 +350,13 @@ impl UiMaskTable {
 			rect: [mask.position[0], mask.position[1], mask.size[0], mask.size[1]],
 			edges: mask.edges,
 			corner: [mask.corner[0], mask.corner[1], 0.0, 0.0],
+			rotation: [mask.rotation.cos, mask.rotation.sin, mask.rotation.x, mask.rotation.y],
 		};
 		// Siblings share their container's mask, so the last entry is the usual answer.
 		if self.entries.len() > 1 && self.entries.last() == Some(&entry) {
 			return self.entries.len() as u32 - 1;
 		}
-		let key: [u32; 16] = bytemuck::cast(entry);
+		let key: [u32; 20] = bytemuck::cast(entry);
 		if let Some(&index) = self.indices.get(&key) {
 			return index;
 		}
@@ -860,13 +867,26 @@ pub(super) fn draw_clip_from_geometry(clip: Option<Geometry>) -> Option<DrawClip
 	})
 }
 
-pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>) -> Option<DrawClipMask> {
-	mask.map(|mask| DrawClipMask {
-		position: [mask.geometry.x(), mask.geometry.y()],
-		size: [mask.geometry.width(), mask.geometry.height()],
-		edges: [mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left],
-		corner: [mask.corner_radius, mask.corner_exponent],
+pub(super) fn draw_clip_mask_from_layout(mask: Option<ClipMask>, rotation: Option<Rotation>) -> Option<DrawClipMask> {
+	// A turned element without a mask still needs a table entry to carry its turn.
+	(mask.is_some() || rotation.is_some()).then(|| DrawClipMask {
+		position: mask.map_or([0.0; 2], |mask| [mask.geometry.x(), mask.geometry.y()]),
+		size: mask.map_or([0.0; 2], |mask| [mask.geometry.width(), mask.geometry.height()]),
+		edges: mask.map_or([0.0; 4], |mask| {
+			[mask.feather.top, mask.feather.right, mask.feather.bottom, mask.feather.left]
+		}),
+		corner: mask.map_or([0.0, 2.0], |mask| [mask.corner_radius, mask.corner_exponent]),
+		rotation: rotation.unwrap_or(Rotation::IDENTITY),
 	})
+}
+
+/// Moves unrotated pixel bounds to where an element's turn draws them, for damage tests.
+#[inline]
+pub(super) fn turned_bounds(bounds: [f32; 4], mask: Option<DrawClipMask>, sx: f32, sy: f32) -> [f32; 4] {
+	match mask {
+		Some(mask) if !mask.rotation.is_identity() => mask.rotation.scaled(sx, sy).bounds(bounds),
+		_ => bounds,
+	}
 }
 
 /// Converts a layout rectangle to viewport pixels with its edges on whole pixels, as `[x0, y0, x1, y1]`.
@@ -895,12 +915,14 @@ pub(super) fn scaled_clip_mask(mask: Option<DrawClipMask>, sx: f32, sy: f32) -> 
 		size,
 		edges: [mask.edges[0] * sy, mask.edges[1] * sx, mask.edges[2] * sy, mask.edges[3] * sx],
 		corner: [mask.corner[0] * sx.min(sy), mask.corner[1]],
+		rotation: mask.rotation.scaled(sx, sy),
 	})
 	.unwrap_or(DrawClipMask {
 		position: [0.0, 0.0],
 		size: [0.0, 0.0],
 		edges: [0.0, 0.0, 0.0, 0.0],
 		corner: [0.0, 2.0],
+		rotation: Rotation::IDENTITY,
 	})
 }
 
@@ -939,7 +961,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
-				clip_mask: draw_clip_mask_from_layout(element.clip_mask),
+				clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -967,7 +989,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
-				clip_mask: draw_clip_mask_from_layout(element.clip_mask),
+				clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1003,7 +1025,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(curve.clip),
-				clip_mask: draw_clip_mask_from_layout(curve.clip_mask),
+				clip_mask: draw_clip_mask_from_layout(curve.clip_mask, curve.rotation),
 				color: color.into(),
 				stroke_width: stroke_width * curve.scale[0].min(curve.scale[1]),
 				segments: Vec::new(),
@@ -1035,7 +1057,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [image.position.x(), image.position.y()],
 			size: [image.size.x(), image.size.y()],
 			clip: draw_clip_from_geometry(image.clip),
-			clip_mask: draw_clip_mask_from_layout(image.clip_mask),
+			clip_mask: draw_clip_mask_from_layout(image.clip_mask, image.rotation),
 			opacity: image.opacity,
 		});
 	}
@@ -1053,7 +1075,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			position: [text.position.x(), text.position.y()],
 			size: [text.size.x(), text.size.y()],
 			clip: draw_clip_from_geometry(text.clip),
-			clip_mask: draw_clip_mask_from_layout(text.clip_mask),
+			clip_mask: draw_clip_mask_from_layout(text.clip_mask, text.rotation),
 			color,
 			font_size: text.font_size * text.scale,
 			text: String::new(),

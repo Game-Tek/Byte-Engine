@@ -126,7 +126,12 @@ pub(super) fn build_ui_primitives<'a>(
 				}
 				if !damage_intersects(
 					damage,
-					element_bounds(element.position, [rect_width, rect_height], sx, sy, UI_DAMAGE_MARGIN_PIXELS),
+					turned_bounds(
+						element_bounds(element.position, [rect_width, rect_height], sx, sy, UI_DAMAGE_MARGIN_PIXELS),
+						element.clip_mask,
+						sx,
+						sy,
+					),
 				) {
 					continue;
 				}
@@ -161,12 +166,17 @@ pub(super) fn build_ui_primitives<'a>(
 				let half_width = stroke_width * 0.5;
 				if !damage_intersects(
 					damage,
-					element_bounds(
-						curve.position,
-						[curve.size[0] * sx, curve.size[1] * sy],
+					turned_bounds(
+						element_bounds(
+							curve.position,
+							[curve.size[0] * sx, curve.size[1] * sy],
+							sx,
+							sy,
+							half_width + CURVE_AA_WIDTH_PIXELS + UI_DAMAGE_MARGIN_PIXELS,
+						),
+						curve.clip_mask,
 						sx,
 						sy,
-						half_width + CURVE_AA_WIDTH_PIXELS + UI_DAMAGE_MARGIN_PIXELS,
 					),
 				) {
 					continue;
@@ -213,12 +223,17 @@ pub(super) fn build_ui_primitives<'a>(
 				}
 				if !damage_intersects(
 					damage,
-					element_bounds(
-						image.position,
-						[image.size[0] * sx, image.size[1] * sy],
+					turned_bounds(
+						element_bounds(
+							image.position,
+							[image.size[0] * sx, image.size[1] * sy],
+							sx,
+							sy,
+							UI_DAMAGE_MARGIN_PIXELS,
+						),
+						image.clip_mask,
 						sx,
 						sy,
-						UI_DAMAGE_MARGIN_PIXELS,
 					),
 				) {
 					continue;

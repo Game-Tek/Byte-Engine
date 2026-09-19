@@ -127,9 +127,15 @@ where
 	}
 }
 
+/// The `RenderFuture` struct resolves on the first frame that begins after it was first polled.
+///
+/// A wait dropped before it resolves, as the losing branch of a selection is, hands the frame it
+/// was counting from to the next wait its task polls in the same poll. A component that selects
+/// over events and frames in a loop therefore still sees every frame while events keep winning.
 pub struct RenderFuture {
 	pub(super) waiter: Option<StableVecHandle>,
 	pub(super) runtime: Rc<RefCell<Runtime>>,
+	pub(super) task_id: TaskId,
 	pub(super) frame_seen: Option<u64>,
 	pub(super) complete: bool,
 }
@@ -142,6 +148,16 @@ impl Future for RenderFuture {
 			return Poll::Pending;
 		}
 		let current = self.runtime.borrow().frame;
+		if self.frame_seen.is_none() {
+			// Continue the wait this one replaces, if its task dropped one earlier in this poll.
+			let carried = self
+				.runtime
+				.borrow_mut()
+				.tasks
+				.get_mut(self.task_id)
+				.and_then(|task| task.carried_frame.take());
+			self.frame_seen = Some(carried.unwrap_or(current));
+		}
 		if self.frame_seen.is_some_and(|seen| seen < current) {
 			if let Some(waiter) = self.waiter.take() {
 				self.runtime.borrow_mut().frame_waiters.remove(waiter);
@@ -149,7 +165,6 @@ impl Future for RenderFuture {
 			self.complete = true;
 			return Poll::Ready(());
 		}
-		self.frame_seen = Some(current);
 		// A future keeps one subscription even when another selected branch wakes its task.
 		if let Some(waiter) = self.waiter {
 			let mut runtime = self.runtime.borrow_mut();
@@ -167,8 +182,16 @@ impl Future for RenderFuture {
 impl Drop for RenderFuture {
 	fn drop(&mut self) {
 		// Dropping a losing select branch cancels its pending frame notification.
+		let mut runtime = self.runtime.borrow_mut();
 		if let Some(waiter) = self.waiter.take() {
-			self.runtime.borrow_mut().frame_waiters.remove(waiter);
+			runtime.frame_waiters.remove(waiter);
+		}
+		// The frames it already waited through still count for the wait that replaces it.
+		if !self.complete
+			&& let Some(seen) = self.frame_seen
+			&& let Some(task) = runtime.tasks.get_mut(self.task_id)
+		{
+			task.carried_frame = Some(task.carried_frame.map_or(seen, |carried| carried.min(seen)));
 		}
 	}
 }
@@ -184,6 +207,7 @@ mod frame_wait_tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
 	use super::*;
+	use crate::ui::layout::context::ContainerContext as _;
 
 	/// The `WakeCount` struct observes notifications through the future's caller-supplied waker.
 	#[derive(Default)]
@@ -238,6 +262,76 @@ mod frame_wait_tests {
 				.poll(&mut TaskContext::from_waker(&latest_waker))
 				.is_ready()
 		);
+	}
+
+	/// Mounts a surface that selects over its drag events and frames, events first, and counts each.
+	fn selecting_surface() -> (Engine, Rc<std::cell::Cell<(u32, u32)>>) {
+		let counts = Rc::new(std::cell::Cell::new((0, 0)));
+		let output = Rc::clone(&counts);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut surface = ctx.element("surface").container(Container::default());
+				loop {
+					let dragged = utils::r#async::select_biased! {
+						_ = surface.on(Events::Dragged) => true,
+						_ = surface.render() => false,
+					};
+					let (events, frames) = output.get();
+					output.set(if dragged { (events + 1, frames) } else { (events, frames + 1) });
+				}
+			})
+		});
+		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		(engine, counts)
+	}
+
+	#[test]
+	fn a_frame_wait_that_keeps_losing_a_selection_still_sees_every_frame() {
+		let (mut engine, counts) = selecting_surface();
+		assert!(engine.press(UiPoint::new(0.0, 0.0)));
+		for step in 1..=20 {
+			engine.drag_to(UiPoint::new(step as f32 * 0.04, 0.0));
+			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		}
+		let (events, frames) = counts.get();
+		assert!(events >= 15, "the drag did not reach the surface every frame: {events}");
+		assert_eq!(frames, 20, "continuous events starved the frame wait");
+	}
+
+	#[test]
+	fn a_frame_wait_after_idle_frames_still_waits_for_the_next_frame() {
+		let ticks = Rc::new(std::cell::Cell::new(0));
+		let output = Rc::clone(&ticks);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut surface = ctx.element("surface").container(Container::default());
+				loop {
+					// The frame wait loses once and is abandoned while the task idles on events alone.
+					utils::r#async::select_biased! {
+						_ = surface.on(Events::Grabbed) => {},
+						_ = surface.render() => {},
+					};
+					surface.on(Events::DragEnded).await;
+					surface.render().await;
+					output.set(output.get() + 1);
+				}
+			})
+		});
+		let frame = |engine: &mut Engine| {
+			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
+		};
+		frame(&mut engine);
+		engine.press(UiPoint::new(0.0, 0.0));
+		for _ in 0..10 {
+			frame(&mut engine);
+		}
+		engine.release(UiPoint::new(0.0, 0.0));
+		frame(&mut engine);
+		assert_eq!(ticks.get(), 0, "a stale frame wait resolved without a new frame");
+		frame(&mut engine);
+		assert_eq!(ticks.get(), 1);
 	}
 
 	#[test]

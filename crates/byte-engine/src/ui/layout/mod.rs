@@ -47,6 +47,8 @@ pub(crate) struct RenderElement {
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
 	pub(crate) clip_mask: Option<ClipMask>,
+	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	pub(crate) backdrop_blur_radius: f32,
@@ -61,6 +63,8 @@ pub(crate) struct RenderTextElement {
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
 	pub(crate) clip_mask: Option<ClipMask>,
+	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
 	pub(crate) color: RGBA,
 	pub(crate) opacity: f32,
 	pub(crate) font_size: f32,
@@ -81,6 +85,8 @@ pub(crate) struct RenderImageElement {
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
 	pub(crate) clip_mask: Option<ClipMask>,
+	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
 	pub(crate) opacity: f32,
 }
 
@@ -91,6 +97,8 @@ pub(crate) struct RenderCurveElement {
 	pub(crate) size: Size,
 	pub(crate) clip: Option<Geometry>,
 	pub(crate) clip_mask: Option<ClipMask>,
+	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) opacity: f32,
 	/// Inherited visual scale applied to segment points and stroke width.

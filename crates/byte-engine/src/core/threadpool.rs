@@ -247,11 +247,25 @@ impl LanePool {
 	/// The iterator must yield no more than [`Self::parallelism`] jobs for one gang dispatch.
 	/// Mutable access prevents overlapping or nested dispatches on this pool because lane
 	/// collectives need exclusive access to its worker set and could otherwise deadlock.
+	pub fn try_dispatch_many<'job, I, F, R>(&'job mut self, jobs: I) -> ThreadResult<Vec<R>>
+	where
+		I: IntoIterator<Item = F>,
+		F: FnOnce() -> R + Send + 'job,
+		R: Send + 'job,
+	{
+		self.try_dispatch_many_with_caller(jobs, || ()).map(|(values, ())| values)
+	}
+
+	/// Runs a worker batch alongside caller-bound work and joins all jobs before returning a panic.
 	#[allow(
 		unsafe_code,
 		reason = "Blocking completion keeps call-borrowed jobs alive in static worker mailboxes."
 	)]
-	pub fn try_dispatch_many<'job, I, F, R>(&'job mut self, jobs: I) -> ThreadResult<Vec<R>>
+	pub fn try_dispatch_many_with_caller<'job, I, F, R, C>(
+		&'job mut self,
+		jobs: I,
+		caller: impl FnOnce() -> C,
+	) -> ThreadResult<(Vec<R>, C)>
 	where
 		I: IntoIterator<Item = F>,
 		F: FnOnce() -> R + Send + 'job,
@@ -287,6 +301,8 @@ impl LanePool {
 		}));
 		drop(completion_sender);
 
+		// Catch caller panics before waiting so borrowed jobs remain valid until every lane finishes.
+		let caller = catch_unwind(AssertUnwindSafe(caller));
 		let mut values = std::iter::repeat_with(|| None).take(submitted).collect::<Vec<_>>();
 		let mut job_panic = None;
 		for _ in 0..submitted {
@@ -306,10 +322,13 @@ impl LanePool {
 		}
 
 		// Every accepted job produced one successful value when no panic payload was captured.
-		Ok(values
-			.into_iter()
-			.map(|value| value.expect("Lane-pool completion failed. A successful job result is missing."))
-			.collect())
+		Ok((
+			values
+				.into_iter()
+				.map(|value| value.expect("Lane-pool completion failed. A successful job result is missing."))
+				.collect(),
+			caller?,
+		))
 	}
 }
 

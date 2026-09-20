@@ -142,32 +142,116 @@ impl Application for GraphicsApplication {
 
 		let configuration = Configuration::new();
 		let mut alley = crate::core::alley::Alley::new();
-		// Store recovery overlaps device creation on a persistent lane. Graphics setup remains on the
-		// caller's thread, and both jobs finish before subsystems can request application resources.
-		let (resource_storage, mut renderer) = alley
-			.join(
-				move || {
-					ReDBStorageBackend::new_writable_with_settings(
-						resources_path,
-						ResourceStorageSettings::new(ResourceStorageMode::Files)
-							.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
-					)
-					.unwrap()
+		let world = DefaultWorld::with_messages(world_messages.clone());
+		let transforms = world.transforms_channel().clone();
+		let mut storage = None;
+		let mut services = None;
+		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
+		let mut renderer = alley
+			.join_with_mut(
+				(&mut storage, &mut services),
+				|lane, (storage, services)| {
+					lane.only_one_runs_mut(storage, |storage| {
+						*storage = Some(
+							ReDBStorageBackend::new_writable_with_settings(
+								resources_path.clone(),
+								ResourceStorageSettings::new(ResourceStorageMode::Files)
+									.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+							)
+							.unwrap(),
+						);
+					});
+					lane.only_one_runs_mut(services, |services| {
+						let action_events = world_messages.channel();
+						let mut input = input::InputCollector::new();
+						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
+							.with_declarations(world_messages.factory::<Action>().listener());
+						// Register the application listener before control handlers can publish a
+						// close request. Worker listeners join this future-only route during setup.
+						let application_events: (DefaultChannel<Events>, DefaultListener<Events>) = {
+							let channel = messages.channel();
+							let listener = channel.listener();
+							(channel, listener)
+						};
+
+						ctrlc::set_handler({
+							let events = application_events.0.clone();
+							move || {
+								events.send(Events::Close);
+							}
+						})
+						.unwrap();
+
+						let cameras_listener = world_messages.factory::<Camera>().listener();
+						let physics_transforms_listener = transforms.listener();
+						let renderer_transforms_listener = transforms.listener();
+
+						// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
+						let mut inspector =
+							DefaultInspector::new(application_events.0.clone(), configuration.clone(), world_messages.clone());
+						inspector
+							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
+							.unwrap_or_else(|error| panic!("{error}"));
+						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+							inspector
+								.register_message(message_type, world_messages.channel::<DeleteMessage>())
+								.unwrap_or_else(|error| panic!("{error}"));
+						}
+						inspector
+							.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
+							.unwrap_or_else(|error| panic!("{error}"));
+						let inspector = EntityHandle::from(inspector);
+						let screenshot_broker = inspector.screenshot_broker();
+						let inspector: EntityHandle<dyn Inspector> = inspector;
+						let waker = LoopWaker::default();
+						let http_inspector = HttpInspectorServer::new(inspector, waker.clone());
+
+						let window_factory = messages.factory();
+						let window_factory_listener = window_factory.listener();
+
+						let generator_factory = messages.factory();
+
+						let window_events = messages.channel();
+						*services = Some((
+							input,
+							actions,
+							application_events,
+							cameras_listener,
+							physics_transforms_listener,
+							renderer_transforms_listener,
+							http_inspector,
+							screenshot_broker,
+							waker,
+							window_factory,
+							window_factory_listener,
+							generator_factory,
+							window_events,
+						));
+					});
 				},
 				|| rendering::renderer::Renderer::new(&application, &configuration),
 			)
 			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+		let resource_storage = storage.unwrap();
+		let (
+			input,
+			actions,
+			application_events,
+			cameras_listener,
+			physics_transforms_listener,
+			renderer_transforms_listener,
+			http_inspector,
+			screenshot_broker,
+			waker,
+			window_factory,
+			window_factory_listener,
+			generator_factory,
+			window_events,
+		) = services.unwrap();
+		// HID initialization stays deferred until the first presented frame.
+		let gamepad_system = None;
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
-
-		let world = DefaultWorld::with_messages(world_messages);
-		let action_events = world.messages().channel();
-		let mut input = input::InputCollector::new();
-		let actions = input::InputSink::new(input.add_sink(), action_events.clone())
-			.with_declarations(world.factory::<Action>().listener());
-		// HID initialization and first enumeration can block startup on Windows, so gamepads are initialized after
-		// the first frame has reached the screen.
-		let gamepad_system = None;
 
 		renderer.set_resource_manager(&resource_manager);
 		let present_interval = application
@@ -192,53 +276,6 @@ impl Application for GraphicsApplication {
 		let kill_after = application
 			.get_parameter("kill-after")
 			.map(|p| p.value.parse::<u64>().unwrap());
-
-		// Register the application listener before control handlers can publish a
-		// close request. Worker listeners join this future-only route during setup.
-		let application_events: (DefaultChannel<Events>, DefaultListener<Events>) = {
-			let channel = messages.channel();
-			let listener = channel.listener();
-			(channel, listener)
-		};
-
-		ctrlc::set_handler({
-			let events = application_events.0.clone();
-			move || {
-				events.send(Events::Close);
-			}
-		})
-		.unwrap();
-
-		let cameras_listener = world.factory::<Camera>().listener();
-		let physics_transforms_listener = world.transforms_channel().listener();
-		let renderer_transforms_listener = world.transforms_channel().listener();
-
-		// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
-		let mut inspector =
-			DefaultInspector::new(application_events.0.clone(), configuration.clone(), world.messages().clone());
-		inspector
-			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, world.transforms_channel().clone())
-			.unwrap_or_else(|error| panic!("{error}"));
-		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
-			inspector
-				.register_message(message_type, world.messages().channel::<DeleteMessage>())
-				.unwrap_or_else(|error| panic!("{error}"));
-		}
-		inspector
-			.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
-			.unwrap_or_else(|error| panic!("{error}"));
-		let inspector = EntityHandle::from(inspector);
-		let screenshot_broker = inspector.screenshot_broker();
-		let inspector: EntityHandle<dyn Inspector> = inspector;
-		let waker = LoopWaker::default();
-		let http_inspector = HttpInspectorServer::new(inspector, waker.clone());
-
-		let window_factory = messages.factory();
-		let window_factory_listener = window_factory.listener();
-
-		let generator_factory = messages.factory();
-
-		let window_events = messages.channel();
 
 		GraphicsApplication {
 			application,

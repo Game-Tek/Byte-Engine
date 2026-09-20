@@ -782,6 +782,38 @@ impl Alley {
 		self.execute(move |lane| f(lane, resources))
 	}
 
+	/// Runs resource-owning lanes alongside caller-bound work, then joins every lane.
+	///
+	/// Resources follow the ownership rules of [`Self::execute_with_mut`]. The caller and its result
+	/// stay on this thread; all jobs finish before a panic is returned. Use this to overlap CPU setup
+	/// with graphics work that must remain on the caller.
+	pub fn join_with_mut<Resources, F, C>(
+		&mut self,
+		resources: Resources,
+		f: F,
+		caller: impl FnOnce() -> C,
+	) -> std::thread::Result<C>
+	where
+		Resources: IntoLaneResources,
+		F: for<'dispatch> Fn(&mut ConcreteLane<'dispatch>, &Resources::Bound) + Clone + Send,
+	{
+		let parallelism = self.threadpool.parallelism();
+		let mut resource_count = 0;
+		let resources = resources.bind(parallelism, &mut resource_count, lane_resources_private::BindToken);
+		// Lanes without resources have no work in this dispatch. Keep them asleep.
+		let active_lanes = resource_count.min(parallelism);
+		let state = DispatchState::new(active_lanes);
+		let resources = &resources;
+		let state = &state;
+		let jobs = (0..active_lanes).map(|index| {
+			let f = f.clone();
+			move || f(&mut ConcreteLane::new(index, state), resources)
+		});
+		self.threadpool
+			.try_dispatch_many_with_caller(jobs, caller)
+			.map(|(_, caller)| caller)
+	}
+
 	/// Executes every lane with exclusive access to a balanced mutable partition.
 	///
 	/// Mutable access prevents overlapping or nested dispatches on this `Alley`. Gang-scheduled
@@ -963,6 +995,64 @@ mod tests {
 		assert!(result.is_err());
 		assert!(finished);
 		assert_eq!(alley.join(|| 2, || 3).unwrap(), (2, 3));
+	}
+
+	#[test]
+	fn resource_lanes_overlap_caller_and_remain_reusable_after_panics() {
+		for panic_lane in [None, Some(0), Some(1), Some(2)] {
+			let mut alley = Alley::with_parallelism(2);
+			let mut first = None;
+			let mut second = None;
+			let barrier = Barrier::new(3);
+			let caller_thread = std::thread::current().id();
+			let local = std::rc::Rc::new(7);
+			let result = alley.join_with_mut(
+				(&mut first, &mut second),
+				|lane, (first, second)| {
+					lane.only_one_runs_mut(first, |value| {
+						*value = Some(std::thread::current().id());
+						barrier.wait();
+						assert_ne!(panic_lane, Some(0), "first worker failed");
+					});
+					lane.only_one_runs_mut(second, |value| {
+						*value = Some(std::thread::current().id());
+						barrier.wait();
+						assert_ne!(panic_lane, Some(1), "second worker failed");
+					});
+				},
+				|| {
+					barrier.wait();
+					assert_eq!(std::thread::current().id(), caller_thread);
+					assert_ne!(panic_lane, Some(2), "caller failed");
+					local.clone()
+				},
+			);
+			assert_ne!(first, second);
+			assert_ne!(first, Some(caller_thread));
+			assert_ne!(second, Some(caller_thread));
+			assert_eq!(result.is_err(), panic_lane.is_some());
+			if let Ok(value) = result {
+				assert_eq!(*value, 7);
+			}
+			assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1]);
+		}
+	}
+
+	#[test]
+	fn resource_join_runs_all_initializers_on_a_single_available_lane() {
+		let mut alley = Alley::with_parallelism(1);
+		let (mut first, mut second) = (0, 0);
+		alley
+			.join_with_mut(
+				(&mut first, &mut second),
+				|lane, (first, second)| {
+					lane.only_one_runs_mut(first, |value| *value = 4);
+					lane.only_one_runs_mut(second, |value| *value = 9);
+				},
+				|| (),
+			)
+			.unwrap();
+		assert_eq!((first, second), (4, 9));
 	}
 
 	#[test]

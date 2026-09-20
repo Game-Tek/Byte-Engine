@@ -108,6 +108,8 @@ pub struct GraphicsApplication {
 	renderer: Renderer,
 
 	threads: SmallVec<[Thread; 64]>,
+	/// Persistent lanes shared by initialization and application frame work.
+	alley: crate::core::alley::Alley,
 
 	#[cfg(debug_assertions)]
 	ttff: MediaTime,
@@ -138,13 +140,23 @@ impl Application for GraphicsApplication {
 
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
-		// Opening an application store first removes resources baked by an incompatible engine revision.
-		let resource_storage = ReDBStorageBackend::new_writable_with_settings(
-			resources_path,
-			ResourceStorageSettings::new(ResourceStorageMode::Files)
-				.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
-		)
-		.unwrap(); // TODO: revise this
+		let configuration = Configuration::new();
+		let mut alley = crate::core::alley::Alley::new();
+		// Store recovery overlaps device creation on a persistent lane. Graphics setup remains on the
+		// caller's thread, and both jobs finish before subsystems can request application resources.
+		let (resource_storage, mut renderer) = alley
+			.join(
+				move || {
+					ReDBStorageBackend::new_writable_with_settings(
+						resources_path,
+						ResourceStorageSettings::new(ResourceStorageMode::Files)
+							.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
+					)
+					.unwrap()
+				},
+				|| rendering::renderer::Renderer::new(&application, &configuration),
+			)
+			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
@@ -157,8 +169,6 @@ impl Application for GraphicsApplication {
 		// the first frame has reached the screen.
 		let gamepad_system = None;
 
-		let configuration = Configuration::new();
-		let mut renderer = rendering::renderer::Renderer::new(&application, &configuration);
 		renderer.set_resource_manager(&resource_manager);
 		let present_interval = application
 			.get_parameter("max-frame-rate")
@@ -258,6 +268,7 @@ impl Application for GraphicsApplication {
 			renderer,
 
 			threads: SmallVec::new(),
+			alley,
 
 			close: false,
 
@@ -630,19 +641,18 @@ impl GraphicsApplication {
 		}
 		close |= matches!(self.application_events.1.read(), Some(Events::Close));
 
-		// Adopt windows created last tick, then block on the presentation engine before simulating so the
-		// tick paces on the display and the acquisition's presented time can drive the frame delta.
+		// Existing windows pace simulation on the display; newly published windows are adopted after the
+		// callback so their scene can request resources before native window setup begins.
 		// An acquired image must be presented, so on-demand rendering only hoists the acquisition while frames keep
 		// coming; the first frame after an idle stretch acquires when it renders.
-		self.prepare_renderer_state();
 		let present_time = if self.rendering_active {
 			self.renderer.acquire_swapchain_images()
 		} else {
 			None
 		};
-		if !waited && !self.renderer.presents_this_frame() {
-			// Nothing blocked on the presentation engine or the event queue (no window, every window skipped, or a
-			// UI that ticks without changing), so the loop paces itself instead of spinning a core.
+		if self.tick_count > 0 && !waited && !self.renderer.presents_this_frame() {
+			// The first tick has no previous frame to pace. Later ticks that neither present nor wait for
+			// events sleep here so a windowless or unchanged application does not spin a core.
 			std::thread::sleep(self.skipped_frame_pace);
 		}
 		let time = self.sample_frame_time(present_time, waited);
@@ -659,6 +669,7 @@ impl GraphicsApplication {
 
 		let result = run(self, time);
 
+		self.renderer.update();
 		self.prepare_renderer_state();
 		let screenshot_requests = self.screenshot_broker.drain();
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
@@ -749,6 +760,15 @@ impl GraphicsApplication {
 	/// events and wakes. The earliest request wins, and each tick starts without one.
 	pub fn schedule_tick(&mut self, at: Option<std::time::Instant>) {
 		self.requested_tick = self.requested_tick.into_iter().chain(at).min();
+	}
+
+	/// Borrows the persistent lanes for independent application or frame work.
+	///
+	/// Use [`crate::core::alley::Alley::join`] for caller-bound work or
+	/// [`crate::core::alley::Alley::execute_with_mut`] for resources with stable lane ownership.
+	/// Every dispatch finishes before returning to the application's next phase.
+	pub fn alley_mut(&mut self) -> &mut crate::core::alley::Alley {
+		&mut self.alley
 	}
 
 	/// Returns the collector that owns the registered devices and their control values.

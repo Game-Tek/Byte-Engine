@@ -154,6 +154,26 @@ pub struct UiRenderPass {
 impl Entity for UiRenderPass {}
 
 impl UiRenderPass {
+	/// Requests shared shader resources before sink-local images and descriptors are needed.
+	pub(crate) fn request_pipelines(
+		pipeline_manager: &crate::rendering::PipelineManagerClient,
+	) -> [crate::rendering::PipelineRef; 5] {
+		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/ui.pipeline");
+		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
+		let blur_downsample_pipeline =
+			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-downsample.pipeline");
+		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
+		let composite_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/composite.pipeline");
+		crate::rendering::render_passes::blit::ImageBypassPass::request_pipeline(pipeline_manager);
+		[
+			pipeline,
+			clear_pipeline,
+			blur_downsample_pipeline,
+			blur_filter_pipeline,
+			composite_pipeline,
+		]
+	}
+
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
 	#[allow(clippy::too_many_lines)]
@@ -172,12 +192,13 @@ impl UiRenderPass {
 		);
 
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
-		let pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/ui.pipeline");
-		let clear_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/layer-clear.pipeline");
-		let blur_downsample_pipeline =
-			pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-downsample.pipeline");
-		let blur_filter_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/backdrop-blur-filter.pipeline");
-		let composite_pipeline = pipeline_manager.request_pipeline("byte-engine/rendering/ui/composite.pipeline");
+		let [
+			pipeline,
+			clear_pipeline,
+			blur_downsample_pipeline,
+			blur_filter_pipeline,
+			composite_pipeline,
+		] = Self::request_pipelines(&pipeline_manager);
 		let blur_downsample_workgroup = Extent::square(16);
 		let blur_filter_workgroup = Extent::square(16);
 		let region_workgroup = Extent::square(UI_REGION_WORKGROUP);
@@ -768,16 +789,17 @@ impl RenderPass for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		if self.data.is_empty() && self.layer_revision.is_none() {
+			// Nothing was ever drawn into the layer, so the scene is the complete output.
+			return self.bypass_pass.prepare(frame, sink, frame_allocator);
+		}
 		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
 		let clear_pipeline = self.pipeline_manager.pipeline(self.clear_pipeline)?;
 		let blur_downsample_pipeline = self.pipeline_manager.pipeline(self.blur_downsample_pipeline)?;
 		let blur_filter_pipeline = self.pipeline_manager.pipeline(self.blur_filter_pipeline)?;
 		let composite_pipeline = self.pipeline_manager.pipeline(self.composite_pipeline)?;
 		let extent = sink.extent();
-		if self.data.is_empty() && self.layer_revision.is_none() {
-			// Nothing was ever drawn into the layer, so the scene is the complete output.
-			return self.bypass_pass.prepare(frame, sink, frame_allocator);
-		}
+
 		self.frame_damage(extent);
 		let glyph_generation = self.text.generation();
 		if !self.damage.is_empty()

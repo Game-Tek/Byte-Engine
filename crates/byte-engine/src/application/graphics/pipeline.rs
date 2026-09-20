@@ -375,6 +375,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 /// The source subscribes immediately and retains the latest render for sinks
 /// initialized later.
 pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>) {
+	defaults::setup_default_pipeline_compilation(application);
+	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
@@ -568,6 +570,7 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 /// window; use `render.pass.srgb-display` to enable or bypass it at runtime.
 pub fn setup_srgb_display_render_pass(application: &mut GraphicsApplication) {
 	defaults::setup_default_pipeline_compilation(application);
+	rendering::render_passes::srgb_display::SrgbDisplayPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {

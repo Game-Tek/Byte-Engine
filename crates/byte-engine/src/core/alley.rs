@@ -732,6 +732,19 @@ impl Alley {
 		}
 	}
 
+	/// Runs worker work alongside work confined to the calling thread, then returns both results.
+	///
+	/// Neither caller work nor its result needs to be `Send`. Both jobs finish before a captured panic
+	/// is returned, so their borrowed inputs remain valid. The alley can then run another [`Self::join`]
+	/// or a collective [`Self::execute`] dispatch.
+	pub fn join<R: Send, C>(
+		&mut self,
+		worker: impl FnOnce() -> R + Send,
+		caller: impl FnOnce() -> C,
+	) -> std::thread::Result<(R, C)> {
+		self.threadpool.try_join(worker, caller)
+	}
+
 	/// Executes `f` once on every lane and returns after all lanes finish.
 	///
 	/// Mutable access prevents overlapping or nested dispatches on this `Alley`. Gang-scheduled
@@ -880,6 +893,76 @@ mod tests {
 
 	fn unwrap_dispatch<R>(result: std::thread::Result<Vec<R>>) -> Vec<R> {
 		result.unwrap_or_else(|payload| resume_unwind(payload))
+	}
+
+	#[test]
+	fn join_overlaps_borrowed_work_and_keeps_caller_state_on_its_thread() {
+		let mut alley = Alley::with_parallelism(1);
+		let caller_thread = std::thread::current().id();
+		let local = std::rc::Rc::new(std::cell::Cell::new(0));
+		let mut value = 3;
+		let (started, waiting) = std::sync::mpsc::channel();
+		let (release, released) = std::sync::mpsc::channel();
+		let value_ref = &mut value;
+		let (worker_thread, returned) = alley
+			.join(
+				move || {
+					started.send(()).unwrap();
+					released.recv_timeout(Duration::from_secs(5)).unwrap();
+					*value_ref *= 2;
+					std::thread::current().id()
+				},
+				|| {
+					waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+					assert_eq!(std::thread::current().id(), caller_thread);
+					local.set(7);
+					release.send(()).unwrap();
+					local.clone()
+				},
+			)
+			.unwrap();
+		assert_ne!(worker_thread, caller_thread);
+		assert_eq!(value, 6);
+		assert_eq!(returned.get(), 7);
+		assert_eq!(alley.join(std::thread::current, || ()).unwrap().0.id(), worker_thread);
+		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0]);
+	}
+
+	#[test]
+	fn join_waits_for_borrowed_worker_after_caller_panics() {
+		let mut alley = Alley::with_parallelism(1);
+		let mut finished = false;
+		let (release, released) = std::sync::mpsc::channel();
+		let finished_ref = &mut finished;
+		let result = alley.join(
+			move || {
+				released.recv_timeout(Duration::from_secs(5)).unwrap();
+				sleep(Duration::from_millis(10));
+				*finished_ref = true;
+			},
+			|| {
+				release.send(()).unwrap();
+				panic!("caller failed");
+			},
+		);
+		assert!(result.is_err());
+		assert!(finished);
+		assert_eq!(alley.join(|| 2, || 3).unwrap(), (2, 3));
+	}
+
+	#[test]
+	fn join_finishes_caller_work_when_worker_panics() {
+		let mut alley = Alley::with_parallelism(1);
+		let mut finished = false;
+		let result = alley.join(
+			|| panic!("worker failed"),
+			|| {
+				finished = true;
+			},
+		);
+		assert!(result.is_err());
+		assert!(finished);
+		assert_eq!(alley.join(|| 2, || 3).unwrap(), (2, 3));
 	}
 
 	#[test]

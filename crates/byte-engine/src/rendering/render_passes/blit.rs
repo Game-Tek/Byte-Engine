@@ -9,6 +9,13 @@ pub(crate) struct ImageBypassPass {
 }
 
 impl ImageBypassPass {
+	const PIPELINE: &'static str = "byte-engine/rendering/blit/image.pipeline";
+
+	/// Starts the shared copy shader before a sink needs its forwarding pass.
+	pub(crate) fn request_pipeline(manager: &crate::rendering::PipelineManagerClient) {
+		manager.request_pipeline(Self::PIPELINE);
+	}
+
 	/// Creates a compute copy from the pass input to the output consumed by downstream passes.
 	pub(crate) fn new(
 		render_pass_builder: &mut RenderPassBuilder<'_>,
@@ -18,7 +25,7 @@ impl ImageBypassPass {
 		let source = source.into();
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("Render Pass Bypass", "byte-engine/rendering/blit/image.pipeline"),
+			simple_compute::Descriptor::new("Render Pass Bypass", Self::PIPELINE),
 		)
 		.expect("Failed to create the render-pass bypass shader. The most likely cause is an incompatible shader interface.");
 		let render_pass = pipeline

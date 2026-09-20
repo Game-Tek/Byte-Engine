@@ -1,4 +1,5 @@
 use std::{
+	cell::OnceCell,
 	collections::HashMap,
 	fs,
 	path::{Path, PathBuf},
@@ -10,12 +11,14 @@ use super::flow::Size;
 
 const FALLBACK_WIDTH_FACTOR: f32 = 0.6;
 const FALLBACK_ASCENT_FACTOR: f32 = 0.8;
-const FALLBACK_DESCENT_FACTOR: f32 = 0.2;
 const FALLBACK_LINE_HEIGHT_FACTOR: f32 = 1.2;
 const FONT_SEARCH_DEPTH: usize = 3;
 
+/// The `LoadedFont` struct retains font data for on-demand outlines and optional bitmap rendering.
 struct LoadedFont {
-	font: Font,
+	/// Only the bitmap path needs the rasterizer's eagerly compiled glyph geometry.
+	rasterizer: OnceCell<Option<Font>>,
+	glyph_indices: HashMap<char, u16>,
 	/// The font file, kept because outlines are read from it on a character's first use.
 	data: Vec<u8>,
 	path: PathBuf,
@@ -154,7 +157,7 @@ impl TextSystem {
 		}
 	}
 
-	/// Returns whether a font is available for glyph rasterization.
+	/// Returns whether a font is available for text measurement and drawing.
 	pub fn has_font(&mut self) -> bool {
 		self.font().is_some()
 	}
@@ -225,11 +228,25 @@ impl TextSystem {
 		if matches!(self.font_state, FontState::Uninitialized) {
 			self.font()?;
 		}
-		let FontState::Ready(font) = &self.font_state else {
+		let FontState::Ready(font) = &mut self.font_state else {
 			return None;
 		};
-		// Use the rasterizer's own character map so that outlines, bitmaps, and advances describe the same glyph.
-		let index = font.font.lookup_glyph_index(character);
+		let index = *font.glyph_indices.entry(character).or_insert_with(|| {
+			let face = ttf_parser::Face::parse(&font.data, 0)
+				.expect("Loaded font is invalid. The most likely cause is that validated font data changed after loading.");
+			// Match fontdue's last nonzero cmap mapping, including fonts with several character maps.
+			face.tables()
+				.cmap
+				.and_then(|table| {
+					table
+						.subtables
+						.into_iter()
+						.filter_map(|subtable| subtable.glyph_index(character as u32))
+						.filter(|glyph| glyph.0 != 0)
+						.last()
+				})
+				.map_or(0, |glyph| glyph.0)
+		});
 		if self.outlines.len() <= index as usize {
 			self.outlines.resize(index as usize + 1, None);
 		}
@@ -281,9 +298,14 @@ impl TextSystem {
 		let FontState::Ready(font) = &self.font_state else {
 			return None;
 		};
+		// Bitmap consumers initialize the rasterizer once; layout and GPU outlines never need it.
+		let rasterizer = font
+			.rasterizer
+			.get_or_init(|| Font::from_bytes(font.data.as_slice(), FontSettings::default()).ok())
+			.as_ref()?;
 		// Borrow the loaded font separately so a cache hit needs only one lookup.
 		Some(self.glyph_cache.entry(key).or_insert_with(|| {
-			let (metrics, bitmap) = font.font.rasterize(key.character, f32::from_bits(key.font_size_bits));
+			let (metrics, bitmap) = rasterizer.rasterize(key.character, f32::from_bits(key.font_size_bits));
 			Glyph {
 				width: metrics.width as u32,
 				height: metrics.height as u32,
@@ -373,7 +395,8 @@ impl TextSystem {
 		Size::new(max_width.max(0.0), height.max(0.0))
 	}
 
-	fn font(&mut self) -> Option<&Font> {
+	/// Loads font tables on first use without preparing every glyph for CPU rasterization.
+	fn font(&mut self) -> Option<&LoadedFont> {
 		if matches!(self.font_state, FontState::Uninitialized) {
 			self.font_state = match load_system_font() {
 				Ok(font) => {
@@ -392,7 +415,7 @@ impl TextSystem {
 		}
 
 		match &self.font_state {
-			FontState::Ready(font) => Some(&font.font),
+			FontState::Ready(font) => Some(font),
 			_ => None,
 		}
 	}
@@ -410,18 +433,18 @@ fn measure_with_fallback(text: &str, font_size: f32) -> Size {
 	Size::new(max_width.max(0.0), height.max(0.0))
 }
 
-fn font_line_metrics(font: &Font, font_size: f32) -> LineMetrics {
-	font.horizontal_line_metrics(font_size)
-		.map(|metrics| LineMetrics {
-			line_height: metrics.new_line_size,
-			ascent: metrics.ascent,
-			descent: metrics.descent,
-		})
-		.unwrap_or(LineMetrics {
-			line_height: font_size * FALLBACK_LINE_HEIGHT_FACTOR,
-			ascent: font_size * FALLBACK_ASCENT_FACTOR,
-			descent: -font_size * FALLBACK_DESCENT_FACTOR,
-		})
+/// Reads the same horizontal line metrics used by the bitmap rasterizer.
+fn font_line_metrics(font: &LoadedFont, font_size: f32) -> LineMetrics {
+	let face = ttf_parser::Face::parse(&font.data, 0)
+		.expect("Loaded font is invalid. The most likely cause is that validated font data changed after loading.");
+	let scale = font_size / face.units_per_em() as f32;
+	let ascent = face.ascender() as i32;
+	let descent = face.descender() as i32;
+	LineMetrics {
+		line_height: (ascent - descent + face.line_gap() as i32) as f32 * scale,
+		ascent: ascent as f32 * scale,
+		descent: descent as f32 * scale,
+	}
 }
 
 /// Largest distance, in em units, between a cubic outline segment and the quadratic curves that replace it.
@@ -526,7 +549,7 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 	let Ok(face) = ttf_parser::Face::parse(&font.data, 0) else {
 		return outline;
 	};
-	let scale = 1.0 / font.font.units_per_em();
+	let scale = 1.0 / face.units_per_em() as f32;
 	let glyph = ttf_parser::GlyphId(glyph);
 	outline.advance = face.glyph_hor_advance(glyph).unwrap_or(0) as f32 * scale;
 
@@ -552,6 +575,7 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 	outline
 }
 
+/// Finds a readable font and validates its tables before retaining its bytes.
 fn load_system_font() -> Result<LoadedFont, String> {
 	for path in explicit_font_candidates().into_iter().chain(
 		font_search_roots()
@@ -566,11 +590,16 @@ fn load_system_font() -> Result<LoadedFont, String> {
 			continue;
 		};
 
-		let Ok(font) = Font::from_bytes(bytes.as_slice(), FontSettings::default()) else {
+		let Ok(_) = ttf_parser::Face::parse(&bytes, 0) else {
 			continue;
 		};
 
-		return Ok(LoadedFont { font, data: bytes, path });
+		return Ok(LoadedFont {
+			rasterizer: OnceCell::new(),
+			glyph_indices: HashMap::new(),
+			data: bytes,
+			path,
+		});
 	}
 
 	Err(
@@ -690,6 +719,35 @@ fn explicit_font_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
 	use super::{Glyph, GlyphKey, TextSystem};
+
+	#[test]
+	fn outline_and_bitmap_text_keep_the_same_metrics() {
+		let mut text = TextSystem::new();
+		if !text.has_font() {
+			return;
+		}
+		for character in "AV café ΩЖ中🙂\u{10ffff}".chars() {
+			let advance = text.outline(character).unwrap().1.advance;
+			for size in [12.0, 19.5, 32.0] {
+				let bitmap = text.glyph(character, size).unwrap();
+				assert!((advance * size - bitmap.advance_width).abs() < 0.0001);
+			}
+		}
+		let mut outlines = Vec::new();
+		text.place_outlines("A B\nC", 19.5, |glyph| outlines.push(glyph.pen));
+		let mut bitmaps = Vec::new();
+		text.place_glyphs("A B\nC", 19.5, (0, 0), |glyph| {
+			bitmaps.push([
+				glyph.x - glyph.glyph.xmin as f32,
+				glyph.y + glyph.glyph.height as f32 + glyph.glyph.ymin as f32,
+			]);
+		});
+		assert_eq!(outlines.len(), bitmaps.len());
+		for (outline, bitmap) in outlines.into_iter().zip(bitmaps) {
+			assert!((outline[0] - bitmap[0]).abs() < 0.0001);
+			assert!((outline[1] - bitmap[1]).abs() < 0.0001);
+		}
+	}
 
 	#[test]
 	fn measurements_stay_consistent_after_many_text_changes() {

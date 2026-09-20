@@ -209,18 +209,32 @@ impl LanePool {
 		self.try_dispatch_many(jobs)
 	}
 
-	/// Runs all `jobs` and returns values in submission order or the first captured panic.
+	/// Runs one worker job alongside caller-thread work and waits for both, including after a panic.
 	///
-	/// The iterator must yield no more than [`Self::parallelism`] jobs for one gang dispatch.
-	/// Mutable access prevents overlapping or nested dispatches on this pool because lane
-	/// collectives need exclusive access to its worker set and could otherwise deadlock.
-	pub fn try_dispatch_many<'job, I, F, R>(&'job mut self, jobs: I) -> ThreadResult<Vec<R>>
-	where
-		I: IntoIterator<Item = F>,
-		F: FnOnce() -> R + Send + 'job,
-		R: Send + 'job,
-	{
-		self.try_dispatch_many_inner(jobs)
+	/// Only the worker job and its result cross threads. Use this when caller work owns thread-bound state.
+	#[allow(
+		unsafe_code,
+		reason = "Joining both jobs keeps borrowed work alive in the persistent mailbox."
+	)]
+	pub fn try_join<R: Send, C>(
+		&mut self,
+		worker: impl FnOnce() -> R + Send,
+		caller: impl FnOnce() -> C,
+	) -> ThreadResult<(R, C)> {
+		let (completed, completion) = kanal::bounded(1);
+		let job: Job<'_> = Box::new(move || {
+			let _ = completed.send(catch_unwind(AssertUnwindSafe(worker)));
+		});
+		// SAFETY: Receive completion before propagating either panic, so the worker cannot outlive its inputs.
+		let job = unsafe { erase_lane_job_lifetime(job) };
+		self.senders[0]
+			.send(job)
+			.expect("Lane-pool submission failed. The selected worker mailbox has disconnected.");
+		let caller = catch_unwind(AssertUnwindSafe(caller));
+		let worker = completion
+			.recv()
+			.expect("Lane-pool completion failed. The worker dropped its job without reporting completion.");
+		Ok((worker?, caller?))
 	}
 
 	/// Returns the number of persistent worker lanes.
@@ -228,12 +242,16 @@ impl LanePool {
 		self.senders.len()
 	}
 
-	/// Submits one batch and waits for every accepted job before returning.
+	/// Runs all `jobs` and returns values in submission order or the first captured panic.
+	///
+	/// The iterator must yield no more than [`Self::parallelism`] jobs for one gang dispatch.
+	/// Mutable access prevents overlapping or nested dispatches on this pool because lane
+	/// collectives need exclusive access to its worker set and could otherwise deadlock.
 	#[allow(
 		unsafe_code,
 		reason = "Blocking completion keeps call-borrowed jobs alive in static worker mailboxes."
 	)]
-	fn try_dispatch_many_inner<'job, I, F, R>(&'job mut self, jobs: I) -> ThreadResult<Vec<R>>
+	pub fn try_dispatch_many<'job, I, F, R>(&'job mut self, jobs: I) -> ThreadResult<Vec<R>>
 	where
 		I: IntoIterator<Item = F>,
 		F: FnOnce() -> R + Send + 'job,

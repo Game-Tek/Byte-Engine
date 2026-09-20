@@ -590,6 +590,13 @@ impl Renderer {
 		needs_frame
 	}
 
+	/// Starts scene resource requests before window setup or frame preparation borrows the context.
+	pub(crate) fn update(&mut self) {
+		for pipeline_manager in &mut self.pipeline_managers {
+			pipeline_manager.update();
+		}
+	}
+
 	/// Tells every pipeline manager that one simulation step ended; see [`PipelineManager::step`].
 	pub(crate) fn step(&mut self) {
 		for pipeline_manager in &mut self.pipeline_managers {

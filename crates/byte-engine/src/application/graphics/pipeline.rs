@@ -94,6 +94,14 @@ pub fn setup_simple_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn update(&mut self) {
+			while let Some(message) = self.mesh_receiver.read() {
+				let handle = message.handle();
+
+				self.pipeline_manager.request_mesh(handle, message.into_data());
+			}
+		}
+
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
@@ -102,12 +110,6 @@ pub fn setup_simple_render_pipeline(
 			alpha: f32,
 			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
-			while let Some(message) = self.mesh_receiver.read() {
-				let handle = message.handle();
-
-				self.pipeline_manager.request_mesh(frame, handle, message.into_data());
-			}
-
 			while let Some(message) = self.transforms_listener.read() {
 				self.pipeline_manager
 					.update_transform(frame, message.handle(), message.transform());
@@ -306,6 +308,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn update(&mut self) {
+			self.request_pending_lights();
+			self.request_pending_meshes();
+			self.request_pending_environments();
+		}
+
 		fn step(&mut self) {
 			self.visibility_pipeline_manager.step();
 		}
@@ -318,9 +326,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			alpha: f32,
 			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
-			self.request_pending_lights();
-			self.request_pending_meshes();
-			self.request_pending_environments();
 			self.process_pose_updates();
 
 			self.visibility_pipeline_manager.process_transform_updates(alpha);

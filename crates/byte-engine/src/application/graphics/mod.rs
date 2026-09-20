@@ -726,7 +726,8 @@ impl GraphicsApplication {
 
 		#[cfg(debug_assertions)]
 		{
-			if self.tick_count == 1 {
+			// A tick without a window submits nothing, so stamp the first tick that reached the screen.
+			if self.ttff == MediaTime::ZERO && self.renderer.has_presented() {
 				self.ttff = MediaTime::from_std(self.start_time.elapsed());
 			}
 

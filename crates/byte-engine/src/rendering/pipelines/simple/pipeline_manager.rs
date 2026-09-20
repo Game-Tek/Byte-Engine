@@ -1,8 +1,8 @@
 //! Simple scene rendering and adoption of loader-resident meshes.
 //!
-//! Scene creation enters through [`PipelineManager::request_mesh`]. Loader lanes
-//! prepare, place, and transfer meshes, then `prepare` adopts their residency,
-//! resolves pending scene instances, and builds draws.
+//! Scene creation enters through [`PipelineManager::request_mesh`] during the renderer's `update` phase, so
+//! loading overlaps window setup. Loader lanes prepare, place, and transfer meshes, then `prepare` adopts
+//! their residency, resolves pending scene instances, and builds draws.
 //!
 //! Keep this orchestration layer when adapting the example, but replace the
 //! loader and store with the future renderer's formats and resident tables.
@@ -88,10 +88,10 @@ impl PipelineManager {
 
 	/// Requests or reuses a mesh and delays instance creation until GPU upload completion.
 	///
-	/// Call this while adopting a scene creation message. Duplicate mesh keys
-	/// coalesce in the loader while each handle retains independent pending state.
-	/// Failed keys retry when scene demand requests them again.
-	pub fn request_mesh(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, renderable: RenderableMesh) {
+	/// Call this while adopting a scene creation message, from [`crate::rendering::PipelineManager::update`] so
+	/// loading overlaps window setup. Duplicate mesh keys coalesce in the loader while each handle retains
+	/// independent pending state. Failed keys retry when scene demand requests them again.
+	pub fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
 		let source = renderable.source().clone();
 		let key = source.key();
 
@@ -100,12 +100,10 @@ impl PipelineManager {
 		self.remove_mesh_instance(handle);
 		self.remove_pending(handle);
 
-		if let Some(resident) = self.resident_meshes.get(&key).copied() {
-			self.add_resident_instance(frame, handle, resident);
-			return;
+		// Instance data lives in frame storage, so even a resident mesh waits for `prepare` to place it.
+		if !self.resident_meshes.contains_key(&key) {
+			self.loader.request(source);
 		}
-
-		self.loader.request(source);
 		self.pending_renderables.push(PendingRenderable { handle, key });
 	}
 

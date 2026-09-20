@@ -612,6 +612,11 @@ impl Renderer {
 		self.acquisitions.0 == self.started_frame_count && self.acquisitions.1.iter().any(Option::is_some)
 	}
 
+	/// Returns whether any frame has been submitted to a window since startup.
+	pub(crate) fn has_presented(&self) -> bool {
+		self.started_frame_count > 0
+	}
+
 	/// Prepares a frame by invoking the configured render passes.
 	///
 	/// The renderer skips execution when no swapchain is available or when any

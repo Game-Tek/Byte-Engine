@@ -10,6 +10,7 @@
 )]
 
 use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
+use ghi::window::{App, Features};
 use ghi::{
 	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, QueueHandle,
 	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses,
@@ -28,7 +29,6 @@ use ghi::{
 	shader::{CompiledShaderSource, ShaderSource},
 	*,
 };
-use ghi::window::{App, Features};
 use utils::{Extent, RGBA};
 
 #[path = "rendering/common.rs"]
@@ -147,7 +147,10 @@ fn round_trip_texture3d_lut() {
 }
 
 #[test]
-#[ignore = "not working on supporting ray tracing right now"]
+#[cfg_attr(
+	not(target_os = "macos"),
+	ignore = "ray tracing is implemented for the Metal backend; the other backends are still in progress"
+)]
 fn render_with_ray_tracing() {
 	let (_instance, _device, mut device, queue_handle) =
 		create_default_device_setup_with_features(ghi::device::Features::new().validation(true).ray_tracing(true));

@@ -58,12 +58,11 @@ fn retain_descriptor_resources(
 					}
 				}
 				Descriptor::AccelerationStructure { handle } => {
-					if let Some(structure) = device.acceleration_structures[handle.0 as usize].structure.as_ref() {
-						// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
-						let allocation =
-							unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone()) };
-						command_buffer.retain_allocations(std::iter::once(allocation));
-					}
+					let structure = &device.acceleration_structures[handle.0 as usize].structure;
+					// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
+					let allocation =
+						unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone()) };
+					command_buffer.retain_allocations(std::iter::once(allocation));
 				}
 				Descriptor::Sampler { sampler } => {
 					command_buffer.retain_sampler(device.samplers[sampler.0 as usize].sampler.clone());
@@ -170,13 +169,12 @@ impl CommandBufferRecording<'_> {
 						};
 					}
 					(DescriptorBindingSlot::AccelerationStructure(slot), Descriptor::AccelerationStructure { handle }) => {
-						if let Some(structure) = self.device.acceleration_structures[handle.0 as usize].structure.as_ref() {
-							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
-							unsafe {
-								layout
-									.argument_encoder
-									.setAccelerationStructure_atIndex(Some(structure.as_ref()), slot as _);
-							}
+						let structure = &self.device.acceleration_structures[handle.0 as usize].structure;
+						// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
+						unsafe {
+							layout
+								.argument_encoder
+								.setAccelerationStructure_atIndex(Some(structure.as_ref()), slot as _);
 						}
 					}
 					_ => unreachable!(
@@ -362,7 +360,10 @@ impl CommandBufferRecording<'_> {
 							synchronization::MetalResourceUse::drawable(drawable.as_ref(), stages, access)
 						}
 					}
-					Descriptor::Sampler { .. } | Descriptor::AccelerationStructure { .. } => continue,
+					Descriptor::AccelerationStructure { handle } => {
+						synchronization::MetalResourceUse::acceleration_structure(handle.0 as usize, stages, access)
+					}
+					Descriptor::Sampler { .. } => continue,
 				};
 				uses.push(resource_use);
 			}
@@ -438,9 +439,11 @@ impl CommandBufferRecording<'_> {
 		}
 
 		let compute_pipeline_state = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
-			PipelineState::Compute(compute_pipeline_state) => compute_pipeline_state.clone(),
-			_ => panic!(
-				"Cannot dispatch a non-compute Metal pipeline. The most likely cause is that a raster or ray tracing pipeline handle was passed to bind_compute_pipeline."
+			PipelineState::Compute(compute_pipeline_state) | PipelineState::RayTracing(compute_pipeline_state) => {
+				compute_pipeline_state.clone()
+			}
+			PipelineState::Raster(_) => panic!(
+				"Cannot dispatch a raster Metal pipeline. The most likely cause is that a raster pipeline handle was passed to bind_compute_pipeline."
 			),
 		};
 		self.command_buffer.retain_compute_pipeline(compute_pipeline_state.clone());
@@ -494,8 +497,14 @@ impl CommandBufferRecording<'_> {
 			return;
 		}
 
+		// A ray-tracing pipeline runs only its ray-generation function on Metal, so the dispatch binds that stage's
+		// argument buffer and leaves the hit and miss stages, which have no Metal function, unbound.
+		let dispatched_stage = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
+			PipelineState::RayTracing(_) => crate::Stages::RAYGEN,
+			_ => crate::Stages::COMPUTE,
+		};
 		let applied = self.apply_argument_buffers(pipeline_handle, |recording, stage, address| {
-			if stage.intersects(crate::Stages::COMPUTE) {
+			if stage.intersects(dispatched_stage) {
 				recording.set_stage_buffer_address(ArgumentTableStage::Compute, ARGUMENT_BUFFER_BINDING_BASE, address);
 			}
 		});

@@ -594,7 +594,9 @@ pub(crate) struct Pipeline {
 pub(crate) enum PipelineState {
 	Raster(Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>),
 	Compute(Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>),
-	RayTracing,
+	/// Metal has no ray-tracing pipeline state: a ray-generation function is a compute function that resolves hits
+	/// through the bound acceleration structure, so tracing rays dispatches this compute state.
+	RayTracing(Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>),
 }
 
 pub(crate) fn resource_ranges_overlap(

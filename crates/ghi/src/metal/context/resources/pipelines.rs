@@ -377,20 +377,45 @@ impl Context {
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
 		let layout = self.create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
+		// Metal dispatches ray generation as compute work and resolves hit and miss behaviour inside that function
+		// through the bound acceleration structure, so only the ray-generation shader becomes pipeline state here.
+		let raygen = builder
+			.shaders
+			.iter()
+			.find(|shader_parameter| matches!(shader_parameter.stage, crate::ShaderTypes::RayGen))
+			.expect(
+				"Metal ray tracing pipeline creation requires a ray generation shader. The most likely cause is that ray_tracing::Builder received only hit or miss shaders.",
+			);
+		let shader_handle = *raygen.handle;
+		let shader = &self.shaders[shader_handle.0 as usize];
+		let function = build_metal4_function_descriptor(shader, raygen.specialization_map).expect(
+			"Metal 4 ray tracing pipeline creation requires a Metal function descriptor. The most likely cause is that the ray generation shader has no Metal library or entry point.",
+		);
+		let pipeline_name = if cfg!(debug_assertions) && self.settings.debug_labels {
+			shader.name.as_deref()
+		} else {
+			None
+		};
+		let compute_pipeline_state = compile_metal4_compute_pipeline(self.compiler.as_ref(), pipeline_name, &function);
+		let compute_threadgroup_size = shader.threadgroup_size;
+
+		let mut shader_handles = HashMap::default();
+		shader_handles.insert(shader_handle, [0; 32]);
+
 		self.pipelines.push(Pipeline {
-			pipeline: PipelineState::RayTracing,
+			pipeline: PipelineState::RayTracing(compute_pipeline_state),
 			depth_stencil_state: None,
 			layout,
 			vertex_layout: None,
-			shader_handles: HashMap::default(),
-			compute_threadgroup_size: None,
+			shader_handles,
+			compute_threadgroup_size,
 			object_threadgroup_size: None,
 			mesh_threadgroup_size: None,
 			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
 			cull_mode: crate::pipelines::raster::CullMode::Back,
 			fill_mode: crate::pipelines::raster::FillMode::Solid,
 		});
-		// TODO: Metal ray tracing pipeline mapping.
+
 		graphics_hardware_interface::PipelineHandle((self.pipelines.len() - 1) as u64)
 	}
 }

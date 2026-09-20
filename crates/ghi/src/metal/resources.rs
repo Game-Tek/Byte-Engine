@@ -31,9 +31,30 @@ pub(crate) struct Mesh {
 	pub(crate) vertex_size: usize,
 }
 
+/// The `AccelerationStructureGeometry` enum records the geometry class one acceleration structure was sized for.
+///
+/// Metal sizes a structure from its geometry counts and formats alone, so the counts captured at creation are
+/// enough to allocate storage before any build supplies the geometry buffers.
+#[derive(Clone, Copy)]
+pub(crate) enum AccelerationStructureGeometry {
+	/// One indexed triangle geometry with the given vertex format, index type, and triangle count.
+	Triangles {
+		vertex_format: mtl::MTLAttributeFormat,
+		index_type: mtl::MTLIndexType,
+		triangle_count: usize,
+	},
+	/// One axis-aligned bounding-box geometry with the given box count.
+	BoundingBoxes { bounding_box_count: usize },
+	/// An instance structure over at most `max_instance_count` bottom-level instances.
+	Instances { max_instance_count: usize },
+}
+
+/// The `AccelerationStructure` struct owns one Metal acceleration structure and the build sizes it was created with.
 pub(crate) struct AccelerationStructure {
-	pub(crate) structure: Option<Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>>,
-	pub(crate) buffer: Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
+	pub(crate) structure: Retained<ProtocolObject<dyn mtl::MTLAccelerationStructure>>,
+	pub(crate) geometry: AccelerationStructureGeometry,
+	/// The scratch bytes Metal requires to build this structure.
+	pub(crate) build_scratch_size: usize,
 }
 
 #[derive(Clone, Copy)]

@@ -113,7 +113,7 @@ fn drawable_supports_uses(uses: crate::Uses) -> bool {
 }
 
 mod recording;
-mod resources;
+pub(in crate::metal) mod resources;
 mod traits;
 
 #[cfg(test)]

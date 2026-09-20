@@ -8,6 +8,8 @@ pub(crate) enum MetalResourceKey {
 	Buffer(BufferHandle),
 	Image(ImageHandle),
 	SwapchainDrawable(usize),
+	/// One acceleration structure, identified by its index in the context's acceleration-structure storage.
+	AccelerationStructure(usize),
 }
 
 impl MetalResourceKey {
@@ -19,8 +21,16 @@ impl MetalResourceKey {
 /// The `MetalResourceRegion` enum limits hazard tracking to an accessed buffer range or texture subresource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum MetalResourceRegion {
-	Buffer { start: usize, end: usize },
-	Texture { mip_level: Option<u32>, layer: Option<u32> },
+	Buffer {
+		start: usize,
+		end: usize,
+	},
+	Texture {
+		mip_level: Option<u32>,
+		layer: Option<u32>,
+	},
+	/// The whole resource, for allocations Metal does not let a command access piecewise.
+	Whole,
 }
 
 impl MetalResourceRegion {
@@ -107,6 +117,7 @@ impl MetalResourceRegion {
 					layer: right_layer,
 				},
 			) => (left_mip.is_none() || left_mip == right_mip) && (left_layer.is_none() || left_layer == right_layer),
+			(Self::Whole, Self::Whole) => true,
 			_ => false,
 		}
 	}
@@ -155,6 +166,19 @@ impl MetalResourceUse {
 		)
 	}
 
+	/// Records one access to a whole acceleration structure.
+	///
+	/// Metal builds and reads an acceleration structure as one opaque allocation, so its hazards are tracked
+	/// without a region the way buffer ranges and texture subresources are.
+	pub(crate) fn acceleration_structure(index: usize, stages: mtl::MTLStages, access: crate::AccessPolicies) -> Self {
+		Self::new(
+			MetalResourceKey::AccelerationStructure(index),
+			MetalResourceRegion::Whole,
+			stages,
+			access,
+		)
+	}
+
 	pub(crate) fn drawable(
 		texture: &ProtocolObject<dyn mtl::MTLTexture>,
 		stages: mtl::MTLStages,
@@ -187,6 +211,18 @@ impl MetalResourceUse {
 	}
 }
 
+/// The shader stages Metal runs on its compute timeline.
+///
+/// Metal has no ray-tracing pipeline: a ray-generation function is a compute function that resolves hits through
+/// the acceleration structure it is given, so every ray-tracing stage dispatches as compute work here.
+pub(crate) const DISPATCH_STAGES: crate::Stages = crate::Stages::COMPUTE
+	.union(crate::Stages::RAYGEN)
+	.union(crate::Stages::CLOSEST_HIT)
+	.union(crate::Stages::ANY_HIT)
+	.union(crate::Stages::INTERSECTION)
+	.union(crate::Stages::MISS)
+	.union(crate::Stages::CALLABLE);
+
 /// Converts GHI shader-stage visibility to the stages Metal 4 accepts in barrier commands.
 pub(crate) fn to_metal_stages(stages: crate::Stages) -> mtl::MTLStages {
 	[
@@ -194,16 +230,7 @@ pub(crate) fn to_metal_stages(stages: crate::Stages) -> mtl::MTLStages {
 		(crate::Stages::TASK, mtl::MTLStages::Object),
 		(crate::Stages::MESH, mtl::MTLStages::Mesh),
 		(crate::Stages::FRAGMENT, mtl::MTLStages::Fragment),
-		(
-			crate::Stages::COMPUTE
-				| crate::Stages::RAYGEN
-				| crate::Stages::CLOSEST_HIT
-				| crate::Stages::ANY_HIT
-				| crate::Stages::INTERSECTION
-				| crate::Stages::MISS
-				| crate::Stages::CALLABLE,
-			mtl::MTLStages::Dispatch,
-		),
+		(DISPATCH_STAGES, mtl::MTLStages::Dispatch),
 		(crate::Stages::TRANSFER, mtl::MTLStages::Blit),
 		(
 			crate::Stages::ACCELERATION_STRUCTURE_BUILD,

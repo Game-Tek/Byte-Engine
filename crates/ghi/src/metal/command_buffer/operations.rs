@@ -1,4 +1,5 @@
 use super::*;
+use crate::metal::context::resources::acceleration_structures;
 
 impl CommandBufferRecording<'_> {
 	/// Resolves one public transfer source to the retained Metal texture and synchronization use recorded by a copy.
@@ -88,6 +89,111 @@ impl CommandBufferRecording<'_> {
 	}
 }
 
+/// The `AccelerationStructureRange` struct pairs the Metal address range for one build input with its tracked access.
+struct AccelerationStructureRange {
+	range: mtl::MTL4BufferRange,
+	use_: synchronization::MetalResourceUse,
+}
+
+impl CommandBufferRecording<'_> {
+	/// Resolves one acceleration-structure build input to a Metal address range and retains its buffer.
+	///
+	/// Metal 4 reads build inputs by GPU address, so the buffer is declared resident here rather than bound.
+	fn resolve_acceleration_structure_buffer(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+		offset: usize,
+		size: usize,
+		access: crate::AccessPolicies,
+	) -> AccelerationStructureRange {
+		let handle = self.get_internal_buffer_handle(buffer_handle);
+		let buffer = self.device.buffers.resource(handle);
+
+		assert!(
+			offset + size <= buffer.size,
+			"Metal acceleration structure build range exceeds its buffer. The most likely cause is that the build description declares more geometry than the buffer holds. range_end={}, buffer_size={}",
+			offset + size,
+			buffer.size,
+		);
+		let address = buffer.gpu_address.checked_add(offset as u64).expect(
+			"Metal acceleration structure build address overflowed. The most likely cause is that the build offset exceeds the native address space.",
+		);
+		let native_buffer = buffer.buffer.clone();
+
+		self.command_buffer.retain_buffer(native_buffer);
+
+		AccelerationStructureRange {
+			range: mtl::MTL4BufferRange {
+				bufferAddress: address,
+				length: size as u64,
+			},
+			use_: synchronization::MetalResourceUse::buffer(
+				handle,
+				offset,
+				size,
+				mtl::MTLStages::AccelerationStructure,
+				access,
+			),
+		}
+	}
+
+	/// Resolves one strided geometry range from a build description.
+	fn resolve_acceleration_structure_strided_range(
+		&mut self,
+		range: &crate::BufferStridedRange,
+		access: crate::AccessPolicies,
+	) -> AccelerationStructureRange {
+		self.resolve_acceleration_structure_buffer(range.buffer_offset.buffer, range.buffer_offset.offset, range.size, access)
+	}
+
+	/// Encodes one acceleration-structure build into the recording's compute encoder.
+	///
+	/// Metal 4 builds acceleration structures on the compute timeline, so this shares the encoder and barrier
+	/// tracking every other compute command in the recording uses.
+	fn encode_acceleration_structure_build(
+		&mut self,
+		structure_index: usize,
+		descriptor: &mtl::MTL4AccelerationStructureDescriptor,
+		scratch_buffer: &crate::BufferDescriptor,
+		input_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
+	) {
+		let (structure, build_scratch_size) = {
+			let acceleration_structure = &self.device.acceleration_structures[structure_index];
+			(
+				acceleration_structure.structure.clone(),
+				acceleration_structure.build_scratch_size,
+			)
+		};
+		let scratch = self.resolve_acceleration_structure_buffer(
+			scratch_buffer.buffer,
+			scratch_buffer.offset,
+			build_scratch_size,
+			crate::AccessPolicies::WRITE,
+		);
+
+		// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
+		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone()) };
+		self.command_buffer.retain_allocations(std::iter::once(allocation));
+
+		let encoder = self.prepare_transfer().clone();
+
+		self.consume_compute_resources(input_uses.into_iter().chain([
+			scratch.use_,
+			synchronization::MetalResourceUse::acceleration_structure(
+				structure_index,
+				mtl::MTLStages::AccelerationStructure,
+				crate::AccessPolicies::WRITE,
+			),
+		]));
+
+		// SAFETY: The structure was sized for this descriptor's geometry at creation, the scratch range covers the
+		// size Metal reported for that build, and every referenced buffer is retained and resident.
+		unsafe {
+			encoder.buildAccelerationStructure_descriptor_scratchBuffer(structure.as_ref(), descriptor, scratch.range);
+		}
+	}
+}
+
 impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 	fn frame_key(&self) -> graphics_hardware_interface::FrameKey {
 		self.frame_key.expect(
@@ -97,16 +203,137 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 	fn build_top_level_acceleration_structure(
 		&mut self,
-		_acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
+		acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
 	) {
-		// TODO: Map acceleration structure build to MTLAccelerationStructureCommandEncoder.
+		let crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
+			instances_buffer,
+			instance_count,
+		} = acceleration_structure_build.description;
+
+		let structure_index = acceleration_structure_build.acceleration_structure.0 as usize;
+		let instance_count = instance_count as usize;
+		let instances = self.resolve_acceleration_structure_buffer(
+			instances_buffer,
+			0,
+			instance_count * acceleration_structures::INSTANCE_DESCRIPTOR_SIZE,
+			crate::AccessPolicies::READ,
+		);
+
+		let descriptor = mtl::MTL4InstanceAccelerationStructureDescriptor::new();
+		// SAFETY: The instance range was bounds-checked against the instance buffer that backs it.
+		unsafe {
+			descriptor.setInstanceDescriptorBuffer(instances.range);
+			descriptor.setInstanceDescriptorStride(acceleration_structures::INSTANCE_DESCRIPTOR_SIZE);
+			descriptor.setInstanceCount(instance_count);
+		}
+		descriptor.setInstanceDescriptorType(mtl::MTLAccelerationStructureInstanceDescriptorType::Indirect);
+
+		// Instance records name their bottom-level structures by GPU resource handle, which the descriptor does not
+		// enumerate, so every structure this context owns stays resident for the build.
+		let bottom_level_allocations = self
+			.device
+			.acceleration_structures
+			.iter()
+			.map(|acceleration_structure| {
+				// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
+				unsafe {
+					Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(acceleration_structure.structure.clone())
+				}
+			})
+			.collect::<SmallVec<[_; 8]>>();
+		self.command_buffer.retain_allocations(bottom_level_allocations);
+
+		// The instance records also make every bottom-level structure a read input of this build, so the build
+		// waits on the bottom-level builds recorded before it.
+		let bottom_level_reads = (0..self.device.acceleration_structures.len())
+			.filter(|index| *index != structure_index)
+			.map(|index| {
+				synchronization::MetalResourceUse::acceleration_structure(
+					index,
+					mtl::MTLStages::AccelerationStructure,
+					crate::AccessPolicies::READ,
+				)
+			})
+			.collect::<SmallVec<[_; 8]>>();
+
+		self.encode_acceleration_structure_build(
+			structure_index,
+			&descriptor,
+			&acceleration_structure_build.scratch_buffer,
+			std::iter::once(instances.use_).chain(bottom_level_reads),
+		);
 	}
 
 	fn build_bottom_level_acceleration_structures(
 		&mut self,
-		_acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
+		acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
 	) {
-		// TODO: Map acceleration structure build to MTLAccelerationStructureCommandEncoder.
+		for build in acceleration_structure_builds {
+			let structure_index = build.acceleration_structure.0 as usize;
+			let (geometry_descriptor, uses) = match &build.description {
+				crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+					vertex_buffer,
+					vertex_count: _,
+					vertex_position_encoding,
+					index_buffer,
+					triangle_count,
+					index_format,
+				} => {
+					let vertices =
+						self.resolve_acceleration_structure_strided_range(vertex_buffer, crate::AccessPolicies::READ);
+					let indices = self.resolve_acceleration_structure_strided_range(index_buffer, crate::AccessPolicies::READ);
+					let descriptor = mtl::MTL4AccelerationStructureTriangleGeometryDescriptor::new();
+
+					descriptor.setVertexFormat(acceleration_structures::to_vertex_format(*vertex_position_encoding));
+					descriptor.setIndexType(acceleration_structures::to_index_type(*index_format));
+					// SAFETY: Both ranges were bounds-checked against the buffers that back them, and the counts they
+					// describe come from the caller's geometry description.
+					unsafe {
+						descriptor.setVertexBuffer(vertices.range);
+						descriptor.setVertexStride(vertex_buffer.stride);
+						descriptor.setIndexBuffer(indices.range);
+						descriptor.setTriangleCount(*triangle_count as usize);
+					}
+
+					(
+						Retained::into_super(descriptor),
+						SmallVec::<[_; 2]>::from_slice(&[vertices.use_, indices.use_]),
+					)
+				}
+				crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB {
+					aabb_buffer,
+					transform_count,
+					..
+				} => {
+					let bounding_box_count = *transform_count as usize;
+					let bounding_boxes = self.resolve_acceleration_structure_buffer(
+						*aabb_buffer,
+						0,
+						bounding_box_count * std::mem::size_of::<mtl::MTLAxisAlignedBoundingBox>(),
+						crate::AccessPolicies::READ,
+					);
+					let descriptor = mtl::MTL4AccelerationStructureBoundingBoxGeometryDescriptor::new();
+
+					// SAFETY: The bounding-box range was bounds-checked against the buffer that backs it.
+					unsafe {
+						descriptor.setBoundingBoxBuffer(bounding_boxes.range);
+						descriptor.setBoundingBoxStride(std::mem::size_of::<mtl::MTLAxisAlignedBoundingBox>());
+						descriptor.setBoundingBoxCount(bounding_box_count);
+					}
+
+					(
+						Retained::into_super(descriptor),
+						SmallVec::<[_; 2]>::from_slice(&[bounding_boxes.use_]),
+					)
+				}
+			};
+
+			let descriptor = mtl::MTL4PrimitiveAccelerationStructureDescriptor::new();
+			let geometry_descriptors = NSArray::from_retained_slice(&[geometry_descriptor]);
+			descriptor.setGeometryDescriptors(Some(&geometry_descriptors));
+
+			self.encode_acceleration_structure_build(structure_index, &descriptor, &build.scratch_buffer, uses);
+		}
 	}
 
 	fn start_render_pass(
@@ -1096,7 +1323,30 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 }
 
 impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
-	fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, _x: u32, _y: u32, _z: u32) {
-		// TODO: Encode Metal ray tracing dispatch.
+	fn trace_rays(&mut self, _binding_tables: crate::rt::BindingTables, x: u32, y: u32, z: u32) {
+		// Metal resolves hit and miss behaviour inside the ray-generation function through the bound acceleration
+		// structure, so the binding tables other backends index carry no work here and one ray is one thread.
+		let bound_pipeline = self
+			.bound_pipeline
+			.expect("No pipeline bound. The most likely cause is that trace_rays was called before bind_ray_tracing_pipeline.");
+		let threadgroup_extent = self.device.pipelines[bound_pipeline.0 as usize]
+			.compute_threadgroup_size
+			.unwrap_or(Extent::square(8));
+
+		self.prepare_compute_dispatch([]);
+		self.flush_compute_push_constants();
+
+		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
+			mtl::MTLSize {
+				width: x.div_ceil(threadgroup_extent.width().max(1)) as _,
+				height: y.div_ceil(threadgroup_extent.height().max(1)) as _,
+				depth: z.div_ceil(threadgroup_extent.depth().max(1)) as _,
+			},
+			mtl::MTLSize {
+				width: threadgroup_extent.width().max(1) as _,
+				height: threadgroup_extent.height().max(1) as _,
+				depth: threadgroup_extent.depth().max(1) as _,
+			},
+		);
 	}
 }

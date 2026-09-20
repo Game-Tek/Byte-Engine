@@ -12,6 +12,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
 use objc2_foundation::{NSArray, NSRange, NSSize};
 use objc2_metal as mtl;
+use objc2_metal::MTLAccelerationStructure as _;
 use objc2_metal::MTLArgumentEncoder as _;
 use objc2_metal::MTLDevice as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};

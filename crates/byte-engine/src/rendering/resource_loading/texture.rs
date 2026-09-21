@@ -769,8 +769,8 @@ mod tests {
 
 	#[resource_management::r#async::test]
 	async fn texture_preparation_accepts_only_zero_depth_for_two_dimensional_resources() {
-		let bytes = Box::leak(vec![0_u8; 16].into_boxed_slice());
-		let (staging, _worker) = UploadStagingArena::new_for_test(bytes);
+		let mut bytes = vec![0_u8; 16];
+		let (staging, _worker) = UploadStagingArena::new_for_test(&mut bytes);
 
 		let prepared = PreparedTextureTransfer::prepare(native_image_reference(0), staging.clone())
 			.await

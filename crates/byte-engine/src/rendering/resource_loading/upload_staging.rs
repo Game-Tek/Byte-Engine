@@ -103,8 +103,12 @@ impl UploadStagingArena {
 		)
 	}
 
+	/// Creates the client and worker halves over a caller-owned test buffer.
+	///
+	/// Like [`Self::create`], the arena keeps only the buffer's address, so the caller must keep
+	/// `bytes` alive until the arena, its worker, and every lease have been dropped.
 	#[cfg(test)]
-	pub(crate) fn new_for_test(bytes: &'static mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
+	pub(crate) fn new_for_test(bytes: &mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
 		Self::from_region(StagingRegion {
 			offset: 0,
 			address: bytes.as_mut_ptr() as usize,
@@ -287,10 +291,10 @@ mod tests {
 	fn leases_remain_disjoint_and_return_capacity_after_completion_or_cancellation() {
 		use std::{future::Future as _, task::Poll};
 
-		let bytes = Box::leak(vec![0u8; 64].into_boxed_slice());
+		let mut bytes = vec![0u8; 64];
 		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
 		executor.block_on(async {
-			let (arena, worker) = UploadStagingArena::new_for_test(bytes);
+			let (arena, worker) = UploadStagingArena::new_for_test(&mut bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let mut first = arena.allocate(24, 16).await.expect("first lease");
 			let mut second = arena.allocate(24, 16).await.expect("second lease");

@@ -796,11 +796,11 @@ mod tests {
 
 	#[test]
 	fn generated_mesh_preparation_owns_complete_transfer_data() {
-		let bytes = Box::leak(vec![0u8; 1024 * 1024].into_boxed_slice());
+		let mut bytes = vec![0u8; 1024 * 1024];
 		let executor = resource_management::r#async::Executor::new().expect("mesh preparation test executor");
 		let prepared = executor
 			.block_on(async {
-				let (staging, worker) = UploadStagingArena::new_for_test(bytes);
+				let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
 				resource_management::r#async::spawn(worker.run()).detach();
 				PreparedMesh::generated(&BoxMeshGenerator::new(), staging).await
 			})

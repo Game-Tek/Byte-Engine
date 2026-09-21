@@ -292,6 +292,7 @@ impl<'a> DecodedExr<'a> {
 
 /// Decodes EXR directly to half floats so highlights do not require an intermediate f32 surface.
 fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<DecodedImage<'a>, ImageDecodeError> {
+	// Bakes already run across the asset workers, and exr's rayon pool cannot be joined, so decode on the calling thread.
 	let image = exr::prelude::read()
 		.no_deep_data()
 		.largest_resolution_level()
@@ -301,6 +302,7 @@ fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<Dec
 		)
 		.first_valid_layer()
 		.all_attributes()
+		.non_parallel()
 		.from_buffered(Cursor::new(encoded))
 		.map_err(|_| ImageDecodeError::InvalidData)?;
 	let decoded = image.layer_data.channel_data.pixels;

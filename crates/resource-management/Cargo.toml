@@ -37,7 +37,7 @@ ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.2.0", optiona
 bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
 
 png = "0.18.0"
-exr = "1.74.2"
+exr = { version = "1.74.2", default-features = false }
 rkyv = { version = "0.8.15", features = ["unaligned"] }
 md5 = "0.8.0"
 redb = "4.1.0"

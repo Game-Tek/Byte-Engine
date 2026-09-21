@@ -104,7 +104,8 @@ pub use xml::{Tree, XmlError};
 ///
 /// Every structure this module produces borrows its text from the source and its storage from here,
 /// so a whole document can live in one arena that is released in a single step. Pass a
-/// `bumpalo::Bump` for that, or `&std::alloc::Global` when a document does not warrant one.
+/// `bumpalo::Bump`. Text decoded from an escaped attribute has to outlive the XML tree, so it is never
+/// freed on its own; a general-purpose allocator such as `&std::alloc::Global` retains it permanently.
 pub type Alloc<'a> = &'a dyn std::alloc::Allocator;
 
 /// The MaterialX specification version this parser implements.

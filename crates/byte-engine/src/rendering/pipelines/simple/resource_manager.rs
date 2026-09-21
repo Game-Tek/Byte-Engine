@@ -575,10 +575,10 @@ mod tests {
 
 	#[test]
 	fn generated_mesh_preparation_writes_simple_positions_and_u16_indices() {
-		let bytes = Box::leak(vec![0u8; 4096].into_boxed_slice());
+		let mut bytes = vec![0u8; 4096];
 		let executor = resource_management::r#async::Executor::new().expect("Simple preparation test executor");
 		executor.block_on(async {
-			let (staging, worker) = UploadStagingArena::new_for_test(bytes);
+			let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
 			resource_management::r#async::spawn(worker.run()).detach();
 			let generator = BoxMeshGenerator::new();
 			let mut prepared = prepare_generated_mesh(&generator, staging)

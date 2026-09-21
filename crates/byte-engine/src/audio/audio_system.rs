@@ -347,6 +347,10 @@ impl SampleNode {
 		if phase_increment == phase_denominator && self.rate_phase == 0 {
 			return self.process_unity_block(sample_count, consume);
 		}
+		// Splitting the increment once lets the loop advance the exact rational
+		// phase with additions and a carry instead of a division per sample.
+		let step_frames = phase_increment / phase_denominator;
+		let step_phase = phase_increment % phase_denominator;
 		let mut rendered = 0;
 
 		for index in 0..sample_count {
@@ -364,15 +368,21 @@ impl SampleNode {
 			consume(index, current + (next - current) * fraction);
 			rendered += 1;
 
-			self.rate_phase += phase_increment;
-			self.source_frame += self.rate_phase / phase_denominator;
-			self.rate_phase %= phase_denominator;
+			self.rate_phase += step_phase;
+			self.source_frame += step_frames;
+			if self.rate_phase >= phase_denominator {
+				self.rate_phase -= phase_denominator;
+				self.source_frame += 1;
+			}
 
-			if self.playback_mode == SamplePlaybackMode::Loop {
-				self.source_frame %= frame_count;
-			} else if self.source_frame >= frame_count {
-				self.finished = true;
-				break;
+			if self.source_frame >= frame_count {
+				if self.playback_mode == SamplePlaybackMode::Loop {
+					// Fast rates can overshoot a short loop by more than one length.
+					self.source_frame %= frame_count;
+				} else {
+					self.finished = true;
+					break;
+				}
 			}
 		}
 

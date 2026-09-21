@@ -176,6 +176,21 @@ mod tests {
 	}
 
 	#[test]
+	fn stereo_sources_are_mixed_down_once_while_decoding() {
+		let metadata = metadata(BitDepths::Sixteen, 2, 2);
+		let layout = AudioSampleLayout::new(metadata).unwrap();
+		let mut samples = [0.0; 2];
+		let bytes: Vec<u8> = [16_384_i16, -16_384, 16_384, 8_192]
+			.iter()
+			.flat_map(|sample| sample.to_le_bytes())
+			.collect();
+
+		assert_eq!((layout.channel_count, layout.scalar_count), (1, 2));
+		assert_eq!(decode_into(metadata, &bytes, &mut samples), Ok(layout));
+		assert_eq!(samples, [0.0, 0.375]);
+	}
+
+	#[test]
 	fn stereo_frames_are_downmixed_to_mono() {
 		let sample = AudioSampleLease::for_test(48_000, 2, Box::from([1.0, -1.0, 0.5, 0.25]));
 
@@ -338,7 +353,7 @@ mod tests {
 	#[test]
 	fn decoded_sample_size_is_checked_before_pool_admission() {
 		assert_eq!(
-			AudioSampleLayout::new(metadata(BitDepths::Eight, 2, 2)).and_then(AudioSampleLayout::decoded_byte_count),
+			AudioSampleLayout::new(metadata(BitDepths::Eight, 1, 4)).and_then(AudioSampleLayout::decoded_byte_count),
 			Ok(16)
 		);
 		let mut pool = pool(8);

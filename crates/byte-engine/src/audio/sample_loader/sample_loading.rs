@@ -1,6 +1,6 @@
 //! Async sample loading and audio-thread completion delivery.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use resource_management::{
 	Reference,
@@ -259,6 +259,12 @@ pub(crate) struct AudioSampleLoader {
 	completions: kanal::AsyncSender<AudioLoadCompletion>,
 	releases: Arc<AudioSampleReleaseQueue>,
 	pool: AudioSamplePool,
+	/// Remembers the resolved pool key of each played resource so repeat
+	/// playback can lease resident PCM without reopening the resource.
+	/// The pool stays authoritative; a stale key only causes a miss.
+	resident_keys: HashMap<String, AudioSampleCacheKey>,
+	#[cfg(debug_assertions)]
+	resource_updates: resource_management::resource::resource_manager::ResourceUpdateListener,
 }
 
 enum AudioSamplePoolLoad {
@@ -279,6 +285,9 @@ impl AudioSampleLoader {
 		(
 			AudioSampleLoaderClient::new(commands.to_sync(), completions.to_sync(), Arc::clone(&releases)),
 			Self {
+				#[cfg(debug_assertions)]
+				resource_updates: resource_manager.resource_updates(),
+				resident_keys: HashMap::new(),
 				resource_manager,
 				commands: command_receiver,
 				completions: completion_sender,
@@ -322,6 +331,19 @@ impl AudioSampleLoader {
 	/// Loads and converts one resource while its borrowed backing remains local
 	/// to this async task.
 	async fn load(&mut self, resource_id: &str) -> Result<AudioSamplePoolLoad, String> {
+		self.pool.release_returned(&self.releases);
+
+		// Rebaked assets must resolve again so their new payload hash is seen.
+		#[cfg(debug_assertions)]
+		while let Some(update) = self.resource_updates.read() {
+			self.resident_keys.remove(update.id());
+		}
+
+		// A miss means the pool evicted the sample; resolving below refreshes the key.
+		if let Some(sample) = self.resident_keys.get(resource_id).and_then(|key| self.pool.lease(key)) {
+			return Ok(AudioSamplePoolLoad::Ready(sample));
+		}
+
 		let mut reference: Reference<Audio> = self
 			.resource_manager
 			.request(resource_id)
@@ -329,7 +351,7 @@ impl AudioSampleLoader {
 			.map_err(|error| format!("Resource request failed. The resource manager reported: {error}"))?;
 		let metadata = *reference.resource();
 		let cache_key = AudioSampleCacheKey::new(resource_id, reference.hash(), metadata);
-		self.pool.release_returned(&self.releases);
+		self.resident_keys.insert(resource_id.to_string(), cache_key.clone());
 
 		if let Some(sample) = self.pool.lease(&cache_key) {
 			return Ok(AudioSamplePoolLoad::Ready(sample));

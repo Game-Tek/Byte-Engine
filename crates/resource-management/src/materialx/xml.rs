@@ -753,7 +753,10 @@ mod tests {
 
 		let source = r#"<!DOCTYPE materialx [<!ENTITY x "y">]><materialx version="1.39"/>"#;
 
-		assert!(matches!(Tree::parse_in(source, allocator), Err(XmlError::DoctypeNotSupported { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::DoctypeNotSupported { .. })
+		));
 	}
 
 	#[test]
@@ -763,7 +766,10 @@ mod tests {
 
 		let source = r#"<materialx version="1.39"><nodegraph name="NG"></materialx>"#;
 
-		assert!(matches!(Tree::parse_in(source, allocator), Err(XmlError::MismatchedEndTag { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::MismatchedEndTag { .. })
+		));
 	}
 
 	#[test]
@@ -773,7 +779,10 @@ mod tests {
 
 		let source = r#"<materialx doc="a &nbsp; b"/>"#;
 
-		assert!(matches!(Tree::parse_in(source, allocator), Err(XmlError::UnknownEntity { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::UnknownEntity { .. })
+		));
 	}
 
 	#[test]
@@ -783,7 +792,10 @@ mod tests {
 
 		let source = r#"<materialx version="1.39" version="1.38"/>"#;
 
-		assert!(matches!(Tree::parse_in(source, allocator), Err(XmlError::DuplicateAttribute { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::DuplicateAttribute { .. })
+		));
 	}
 
 	#[test]
@@ -808,6 +820,9 @@ mod tests {
 			source.push_str("<a>");
 		}
 
-		assert!(matches!(Tree::parse_in(&source, allocator), Err(XmlError::DepthLimitExceeded { .. })));
+		assert!(matches!(
+			Tree::parse_in(&source, allocator),
+			Err(XmlError::DepthLimitExceeded { .. })
+		));
 	}
 }

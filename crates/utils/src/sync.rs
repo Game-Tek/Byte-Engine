@@ -5,8 +5,8 @@ pub use std::io::{Read, Seek, Write};
 pub use std::rc::Rc;
 pub use std::sync::Arc;
 
-pub use parking_lot::{Mutex, MutexGuard};
 pub use parking_lot::RwLock;
 pub use parking_lot::RwLockReadGuard;
 pub use parking_lot::RwLockUpgradableReadGuard;
 pub use parking_lot::RwLockWriteGuard;
+pub use parking_lot::{Mutex, MutexGuard};

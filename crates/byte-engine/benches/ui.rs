@@ -1608,7 +1608,9 @@ mod tooltip {
 				.style(panel(0.16, 0.18, 0.22)),
 		);
 		tooltip.element("label").text(Text::new("Tooltip").font_size(14.0));
-		tooltip.element("hint").container(Container::default().size(20.into()).style(panel(0.16, 0.18, 0.22)));
+		tooltip
+			.element("hint")
+			.container(Container::default().size(20.into()).style(panel(0.16, 0.18, 0.22)));
 		loop {
 			let frame = (ctx.ctx().frame.get() % PERIOD) as f32;
 			tooltip.update_container(|value| {

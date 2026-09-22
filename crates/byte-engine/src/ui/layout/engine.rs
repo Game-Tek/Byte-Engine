@@ -453,9 +453,8 @@ impl<C: 'static> Engine<C> {
 								)
 							})
 					});
-				let hit = (!refreshed).then(|| {
-					clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator)
-				});
+				let hit = (!refreshed)
+					.then(|| clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator));
 				// A stable topology keeps IDs and layout order, so update only changed bounds.
 				// Structural edits also advance clip_revision, including removal and remount of the same ID.
 				if let Some(previous) = self
@@ -898,10 +897,7 @@ impl<C: 'static> Engine<C> {
 					.clip
 					.apply(geometry_from_layout_element(&element))
 					.is_some();
-				let slot = self
-					.depth_order
-					.binary_search(&(element.position.z(), offset as u32))
-					.ok();
+				let slot = self.depth_order.binary_search(&(element.position.z(), offset as u32)).ok();
 				if slot.is_some() != now_visible {
 					flipped = true;
 				} else if let Some(slot) = slot {
@@ -929,11 +925,7 @@ impl<C: 'static> Engine<C> {
 				}));
 			self.depth_order.sort_unstable();
 			visible.clear();
-			visible.extend(
-				self.depth_order
-					.iter()
-					.map(|&(_, offset)| snapshot.elements[offset as usize]),
-			);
+			visible.extend(self.depth_order.iter().map(|&(_, offset)| snapshot.elements[offset as usize]));
 		}
 		for element in &visible {
 			let Some(index) = tree.index_of(element) else {
@@ -2039,7 +2031,9 @@ mod tests {
 		assert!(damage_covers(&damage, 20.0, 20.0, 10.0, 10.0), "old child bounds: {damage:?}");
 		assert!(damage_covers(&damage, 70.0, 70.0, 10.0, 10.0), "new child bounds: {damage:?}");
 		assert!(
-			!damage.iter().any(|rect| rect.right() > 80.0 && rect.bottom() > 80.0 && rect.x() < 80.0),
+			!damage
+				.iter()
+				.any(|rect| rect.right() > 80.0 && rect.bottom() > 80.0 && rect.x() < 80.0),
 			"the untouched sibling is not damaged: {damage:?}"
 		);
 		// A second move damages the previous and the next bounds again, without the first.

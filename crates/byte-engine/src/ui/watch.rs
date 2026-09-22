@@ -173,7 +173,11 @@ mod tests {
 		}
 		watch.set(1);
 		watch.set(2);
-		assert_eq!(count.0.load(Ordering::Relaxed), 1, "writes between polls must coalesce into one wake");
+		assert_eq!(
+			count.0.load(Ordering::Relaxed),
+			1,
+			"writes between polls must coalesce into one wake"
+		);
 		let mut changed = subscriber.changed();
 		assert!(poll(&mut changed, &waker));
 	}

@@ -186,3 +186,4 @@
 - Keep tests in the new owning submodules instead of retaining large centralized test sections.
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
+- Build a level manager on top of `Scene`/`SceneNode` (`crates/byte-engine/src/gameplay/scene.rs`): active-scene switching, loading levels from assets, and optional re-parenting of scene members.

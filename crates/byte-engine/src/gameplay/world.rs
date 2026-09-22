@@ -15,6 +15,11 @@ pub struct DefaultWorld {
 
 	anchor_system: AnchorSystem,
 	physics_system: dynabit::World,
+
+	scene_graph: SceneGraph,
+	scene_nodes: DefaultListener<CreateMessage<SceneNode>>,
+	/// Deletions posted straight to the channel, such as inspector messages, which still need their scene subtree cascaded.
+	posted_deletes: DefaultListener<DeleteMessage>,
 }
 
 impl Default for DefaultWorld {
@@ -45,6 +50,8 @@ impl DefaultWorld {
 
 		let anchor_system = AnchorSystem::new();
 		let physics_system = dynabit::World::new(body_factory.listener(), deletes.listener());
+		let scene_nodes = messages.factory::<SceneNode>().listener();
+		let posted_deletes = deletes.listener();
 
 		Self {
 			messages,
@@ -55,6 +62,10 @@ impl DefaultWorld {
 
 			anchor_system,
 			physics_system,
+
+			scene_graph: SceneGraph::default(),
+			scene_nodes,
+			posted_deletes,
 		}
 	}
 
@@ -80,6 +91,7 @@ impl DefaultWorld {
 		transforms_rx: &mut impl Listener<TransformationUpdate>,
 		allocator: &mut bumpalo::Bump,
 	) {
+		self.cascade_posted_deletions();
 		self.anchor_system.update();
 		self.physics_system.update(time, transforms_rx, &self.transforms, allocator);
 	}
@@ -101,13 +113,42 @@ impl DefaultWorld {
 		self.deletes.listener()
 	}
 
-	/// Publishes one terminal deletion and removes the handle from inspection diagnostics.
+	/// Publishes terminal deletions for `handle` and every scene member nested under it.
 	///
-	/// Consumers created through [`Self::deletions_listener`] receive the same
-	/// handle and can retire their system-specific state.
-	pub fn delete(&self, handle: Handle) {
-		self.deletes.send(DeleteMessage::new(handle));
-		self.deletes.forget_entity(handle);
+	/// Nested members are deleted children-first and `handle` last, so deleting
+	/// a [`Scene`](crate::gameplay::Scene) tears down the whole level. Consumers
+	/// created through [`Self::deletions_listener`] receive every handle and can
+	/// retire their system-specific state.
+	pub fn delete(&mut self, handle: Handle) {
+		self.track_scene_nodes();
+		let deletes = &self.deletes;
+		self.scene_graph
+			.remove_subtree(handle, |removed| publish_deletion(deletes, removed));
+	}
+
+	/// Links scene members created since the last call into the scene graph.
+	fn track_scene_nodes(&mut self) {
+		while let Some(creation) = self.scene_nodes.read() {
+			self.scene_graph.attach(creation.handle(), creation.data().parent());
+		}
+	}
+
+	/// Cascades deletions that bypassed [`Self::delete`] to their scene members.
+	///
+	/// Deletions from [`Self::delete`] also arrive here; their subtrees are
+	/// already gone, so they publish nothing.
+	fn cascade_posted_deletions(&mut self) {
+		self.track_scene_nodes();
+		let deletes = &self.deletes;
+		while let Some(deletion) = self.posted_deletes.read() {
+			let posted = deletion.into_handle();
+			// The posted handle already has its deletion message.
+			self.scene_graph.remove_subtree(posted, |removed| {
+				if removed != posted {
+					publish_deletion(deletes, removed)
+				}
+			});
+		}
 	}
 
 	pub fn poses_channel(&self) -> &DefaultChannel<UpdatePose> {
@@ -118,6 +159,12 @@ impl DefaultWorld {
 	pub fn audio_graph_factory(&self) -> &AudioGraphFactory {
 		&self.audio_graph_factory
 	}
+}
+
+/// Sends one deletion and removes the handle from inspection diagnostics.
+fn publish_deletion(deletes: &DefaultChannel<DeleteMessage>, handle: Handle) {
+	deletes.send(DeleteMessage::new(handle));
+	deletes.forget_entity(handle);
 }
 
 impl Publisher<TransformationUpdate> for DefaultWorld {
@@ -181,7 +228,12 @@ use crate::{
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},
-	gameplay::{Name, Transform, anchor::AnchorSystem, transform::TransformationUpdate},
+	gameplay::{
+		Name, Transform,
+		anchor::AnchorSystem,
+		scene::{SceneGraph, SceneNode},
+		transform::TransformationUpdate,
+	},
 	physics::{self, dynabit},
 	rendering::{Camera, UpdatePose},
 };
@@ -190,6 +242,7 @@ use crate::{
 mod tests {
 	use super::*;
 	use crate::core::{listener::Listener, targeted_message::MessageTargeter};
+	use crate::gameplay::{Scene, SceneNode};
 	use crate::rendering::{PointLight, RenderableMesh};
 
 	#[test]
@@ -297,7 +350,7 @@ mod tests {
 	fn world_deletion_retires_the_factory_handle_from_inspection() {
 		let message_bus = MessageBus::default();
 		let observer = message_bus.observe().expect("attach observer");
-		let world = DefaultWorld::with_messages(message_bus.new_scope("observed-world"));
+		let mut world = DefaultWorld::with_messages(message_bus.new_scope("observed-world"));
 		let mut deletions = world.deletions_listener();
 		let handle = world.factory::<String>().create("temporary".to_string());
 
@@ -306,5 +359,68 @@ mod tests {
 
 		assert_eq!(deletions.read().expect("world deletion").into_handle(), handle);
 		assert!(observer.entities().is_empty());
+	}
+
+	/// Reads every pending deletion handle in publication order.
+	fn deleted(deletions: &mut DefaultListener<DeleteMessage>) -> Vec<Handle> {
+		std::iter::from_fn(|| deletions.read().map(DeleteMessage::into_handle)).collect()
+	}
+
+	#[test]
+	fn deleting_a_scene_deletes_every_nested_member_children_first() {
+		let mut world = DefaultWorld::new();
+		let mut deletions = world.deletions_listener();
+
+		let scene: Handle = world.create(Scene).into();
+		let tank: Handle = world.create(Name::new("tank")).with(SceneNode::under(scene)).into();
+		let turret: Handle = world.create(Name::new("turret")).with(SceneNode::under(tank)).into();
+		let rock: Handle = world.create(Name::new("rock")).with(SceneNode::under(scene)).into();
+		let outsider: Handle = world.create(Name::new("outsider")).into();
+
+		world.delete(scene);
+
+		let deleted = deleted(&mut deletions);
+		assert_eq!(deleted.len(), 4);
+		assert_eq!(deleted.last(), Some(&scene));
+		let position = |handle| deleted.iter().position(|&h| h == handle).expect("member deleted");
+		assert!(position(turret) < position(tank));
+		assert!(deleted.contains(&rock));
+		assert!(!deleted.contains(&outsider));
+	}
+
+	#[test]
+	fn deleting_a_member_detaches_it_from_its_scene() {
+		let mut world = DefaultWorld::new();
+		let mut deletions = world.deletions_listener();
+
+		let scene: Handle = world.create(Scene).into();
+		let first: Handle = world.create(Name::new("first")).with(SceneNode::under(scene)).into();
+		let second: Handle = world.create(Name::new("second")).with(SceneNode::under(scene)).into();
+
+		world.delete(first);
+		assert_eq!(deleted(&mut deletions), [first]);
+
+		world.delete(scene);
+		assert_eq!(deleted(&mut deletions), [second, scene]);
+	}
+
+	#[test]
+	fn deletions_posted_to_the_channel_cascade_on_update() {
+		let mut world = DefaultWorld::new();
+		let mut deletions = world.deletions_listener();
+		let mut transforms = world.transforms_channel().listener();
+		let mut allocator = bumpalo::Bump::new();
+
+		let scene: Handle = world.create(Scene).into();
+		let member: Handle = world.create(Name::new("member")).with(SceneNode::under(scene)).into();
+
+		world.deletes.send(DeleteMessage::new(scene));
+		world.update(
+			Time::new(crate::time::MediaTime::ZERO, crate::time::MediaTime::ZERO),
+			&mut transforms,
+			&mut allocator,
+		);
+
+		assert_eq!(deleted(&mut deletions), [scene, member]);
 	}
 }

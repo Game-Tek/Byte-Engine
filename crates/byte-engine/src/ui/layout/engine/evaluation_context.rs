@@ -164,6 +164,15 @@ impl<C> EvaluationContext<C> {
 		})
 	}
 
+	/// Edits a retained path in place. Replacing its outline repacks it; a style edit repaints only.
+	pub fn update_path(&mut self, update: impl FnOnce(&mut crate::ui::components::path::Path)) -> bool {
+		self.tree.borrow_mut().update_element(self.id, |primitive| {
+			let Primitives::Path(value) = primitive else { return false };
+			update(value);
+			true
+		})
+	}
+
 	pub fn update_image(&mut self, update: impl FnOnce(&mut Image)) -> bool {
 		self.tree.borrow_mut().update_element(self.id, |primitive| {
 			let Primitives::Image(value) = primitive else { return false };
@@ -260,6 +269,10 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 
 	fn image(self, image: Image) -> EvaluationContext<C> {
 		self.parent.add_element(self.name, ConcreteElement::image(image))
+	}
+
+	fn path(self, path: crate::ui::components::path::Path) -> EvaluationContext<C> {
+		self.parent.add_element(self.name, ConcreteElement::path(path))
 	}
 
 	fn component<F>(self, component: F)

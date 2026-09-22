@@ -7,7 +7,7 @@ use super::{
 };
 use crate::ui::{
 	Container,
-	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
+	components::{curve::Curve, image::Image, path::Path, shape::Shape, text::Text, text_field::TextField},
 };
 
 #[derive(Clone, PartialEq)]
@@ -145,6 +145,7 @@ pub enum Primitives {
 	Container(Container),
 	Shape(Shape),
 	Curve(Curve),
+	Path(Path),
 	Image(Image),
 	Text(Text),
 	TextField(TextField),
@@ -165,6 +166,12 @@ impl From<Text> for Primitives {
 impl From<Image> for Primitives {
 	fn from(image: Image) -> Self {
 		Primitives::Image(image)
+	}
+}
+
+impl From<Path> for Primitives {
+	fn from(path: Path) -> Self {
+		Primitives::Path(path)
 	}
 }
 
@@ -193,7 +200,7 @@ impl Primitive for Primitives {
 				exponent: 2.0,
 			},
 			Primitives::Shape(shape) => shape.shape.clone(),
-			Primitives::Curve(_) => Shapes::Box {
+			Primitives::Curve(_) | Primitives::Path(_) => Shapes::Box {
 				half: (Sizing::pixels(0.0), Sizing::pixels(0.0)),
 				radius: 0.0,
 				exponent: 2.0,
@@ -209,6 +216,7 @@ impl Primitive for Primitives {
 			Primitives::TextField(text_field) => text_field.style_ref(),
 			Primitives::Shape(shape) => shape.style_ref(),
 			Primitives::Curve(curve) => curve.style_ref(),
+			Primitives::Path(path) => path.style_ref(),
 		}
 	}
 
@@ -220,6 +228,7 @@ impl Primitive for Primitives {
 			Primitives::TextField(text_field) => text_field.transform_ref(),
 			Primitives::Shape(shape) => shape.transform_ref(),
 			Primitives::Curve(curve) => curve.transform_ref(),
+			Primitives::Path(path) => path.transform_ref(),
 		}
 	}
 
@@ -231,6 +240,7 @@ impl Primitive for Primitives {
 			Primitives::TextField(text_field) => text_field.visual_ref(),
 			Primitives::Shape(shape) => shape.visual_ref(),
 			Primitives::Curve(curve) => curve.visual_ref(),
+			Primitives::Path(path) => path.visual_ref(),
 		}
 	}
 }

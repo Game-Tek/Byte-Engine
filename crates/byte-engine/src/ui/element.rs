@@ -11,7 +11,7 @@ use super::{
 };
 use crate::ui::{
 	Container,
-	components::{curve::Curve, image::Image, shape::Shape, text::Text, text_field::TextField},
+	components::{curve::Curve, image::Image, path::Path, shape::Shape, text::Text, text_field::TextField},
 	flow::{Offset, Size},
 	primitive::{Primitives, Shapes},
 };
@@ -64,6 +64,13 @@ impl ConcreteElement {
 	/// Creates an element backed by an image primitive.
 	pub fn image(image: Image) -> Self {
 		let primitive = Primitives::Image(image);
+
+		Self { primitive }
+	}
+
+	/// Creates an element backed by a filled path primitive.
+	pub fn path(path: Path) -> Self {
+		let primitive = Primitives::Path(path);
 
 		Self { primitive }
 	}

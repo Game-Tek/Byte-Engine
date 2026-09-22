@@ -8,6 +8,9 @@ Primitive: struct {
 	color: vec4f,
 	a: vec4f,
 	b: vec4f,
+	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
+	color_end: vec4f,
+	gradient: vec4f,
 	kind: u32,
 	// Index into `masks`. Zero means no clip and no mask.
 	mask: u32,
@@ -49,6 +52,9 @@ full_blurred_texture: descriptor<{ type: Texture2D, binding: 4, access: read }>;
 half_blurred_texture: descriptor<{ type: Texture2D, binding: 5, access: read }>;
 // Element 0 is the glyph atlas and the rest are images.
 textures: descriptor<{ type: Texture2D, binding: 6, access: read, count: 32 }>;
+// Packed path outlines, laid out exactly like the glyph buffers, after the 32 texture slots. See `path_coverage`.
+path_curves: descriptor<{ type: GlyphCurve[], binding: 38, access: read }>;
+path_bands: descriptor<{ type: GlyphBand[], binding: 39, access: read }>;
 
 // Coverage of a rounded rectangle layer. `rect` is (x, y, width, height) in pixels and `shape` is
 // the corner radius, the corner exponent, and the stroke width, where zero fills.
@@ -454,6 +460,107 @@ glyph_coverage: fn (index: u32, pixel: vec2f) -> f32 {
 	return clamp(max(weighted, min(abs(horizontal.x), abs(vertical.x))), 0.0, 1.0);
 }
 
+// Path coverage. A copy of the glyph functions over the path buffers, with one pixel scale per
+// axis so a path can stretch with its element.
+path_horizontal_coverage: fn (header: u32, path: u32, coord: vec2f, pixels_per_unit: f32) -> vec2f {
+	let count: u32 = path_bands[header].value;
+	let list: u32 = path + path_bands[header + 1].value;
+	let coverage: f32 = 0.0;
+	let weight: f32 = 0.0;
+
+	for (let i: u32 = 0; i < count; i = i + 1) {
+		let curve: u32 = path_bands[list + i].value;
+		let p12: vec4f = path_curves[curve].points;
+		let p3: vec4f = path_curves[curve + 1].points;
+		let x1: f32 = p12.x - coord.x;
+		let y1: f32 = p12.y - coord.y;
+		let x2: f32 = p12.z - coord.x;
+		let y2: f32 = p12.w - coord.y;
+		let x3: f32 = p3.x - coord.x;
+		let y3: f32 = p3.y - coord.y;
+
+		if (max(max(x1, x2), x3) * pixels_per_unit < 0.0 - 0.5) {
+			break;
+		}
+
+		let code: u32 = root_code(y1, y2, y3);
+		if (code != 0) {
+			let r: vec2f = crossings(x1, x2, x3, y1, y2, y3) * pixels_per_unit;
+			if ((code & 1) != 0) {
+				coverage = coverage + clamp(r.x + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
+			}
+			if (code > 1) {
+				coverage = coverage - clamp(r.y + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
+			}
+		}
+	}
+
+	return vec2f(coverage, weight);
+}
+
+path_vertical_coverage: fn (header: u32, path: u32, coord: vec2f, pixels_per_unit: f32) -> vec2f {
+	let count: u32 = path_bands[header].value;
+	let list: u32 = path + path_bands[header + 1].value;
+	let coverage: f32 = 0.0;
+	let weight: f32 = 0.0;
+
+	for (let i: u32 = 0; i < count; i = i + 1) {
+		let curve: u32 = path_bands[list + i].value;
+		let p12: vec4f = path_curves[curve].points;
+		let p3: vec4f = path_curves[curve + 1].points;
+		let x1: f32 = p12.x - coord.x;
+		let y1: f32 = p12.y - coord.y;
+		let x2: f32 = p12.z - coord.x;
+		let y2: f32 = p12.w - coord.y;
+		let x3: f32 = p3.x - coord.x;
+		let y3: f32 = p3.y - coord.y;
+
+		if (max(max(y1, y2), y3) * pixels_per_unit < 0.0 - 0.5) {
+			break;
+		}
+
+		let code: u32 = root_code(x1, x2, x3);
+		if (code != 0) {
+			let r: vec2f = crossings(y1, y2, y3, x1, x2, x3) * pixels_per_unit;
+			if ((code & 1) != 0) {
+				coverage = coverage - clamp(r.x + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
+			}
+			if (code > 1) {
+				coverage = coverage + clamp(r.y + 0.5, 0.0, 1.0);
+				weight = max(weight, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
+			}
+		}
+	}
+
+	return vec2f(coverage, weight);
+}
+
+// Coverage of a filled path. The record holds the origin and the pixels per path unit on each
+// axis in `a`, the band scale and offset in `b`, the band data location in `data0`, and the
+// last band of each axis in `data1`.
+path_coverage: fn (index: u32, pixel: vec2f) -> f32 {
+	let origin: vec4f = primitives[index].a;
+	let banding: vec4f = primitives[index].b;
+	let path: u32 = primitives[index].data0;
+	let last_horizontal_band: u32 = primitives[index].data1 & 65535;
+	let last_vertical_band: u32 = primitives[index].data1 >> 16;
+
+	// Path space has y pointing up from the origin, like a glyph's em space.
+	let coord: vec2f = vec2f((pixel.x - origin.x) / origin.z, (origin.y - pixel.y) / origin.w);
+
+	let horizontal_band: u32 = u32(clamp(coord.y * banding.y + banding.w, 0.0, f32(last_horizontal_band)));
+	let vertical_band: u32 = u32(clamp(coord.x * banding.x + banding.z, 0.0, f32(last_vertical_band)));
+
+	let horizontal: vec2f = path_horizontal_coverage(path + horizontal_band * 2, path, coord, origin.z);
+	let vertical: vec2f = path_vertical_coverage(path + (last_horizontal_band + 1 + vertical_band) * 2, path, coord, origin.w);
+
+	let weighted: f32 = abs(horizontal.x * horizontal.y + vertical.x * vertical.y) / max(horizontal.y + vertical.y, 0.0000152587890625);
+	return clamp(max(weighted, min(abs(horizontal.x), abs(vertical.x))), 0.0, 1.0);
+}
+
 // Reconstructs the half-resolution lattice with Arm's positive eight-read
 // tent. Bilinear filtering turns the half-texel diagonal reads into the dense
 // center of the tent while the one-texel cardinal reads preserve its tails.
@@ -493,15 +600,40 @@ sample_backdrop: fn(pixel: vec2f, resolution_mix: f32) -> vec4f {
 	return full_blurred * (1.0 - resolution_mix) + half_blurred * resolution_mix;
 }
 
+// The paint of a primitive at a laid-out pixel: its color, or its two colors blended along the
+// gradient axis. Pixels before the axis start take the first color and pixels past its end the second.
+paint: fn (index: u32, pixel: vec2f) -> vec4f {
+	let color: vec4f = primitives[index].color;
+	let axis: vec4f = primitives[index].gradient;
+	let direction: vec2f = vec2f(axis.z - axis.x, axis.w - axis.y);
+	let length_squared: f32 = dot(direction, direction);
+	if (length_squared <= 0.0) {
+		return color;
+	}
+	let offset: vec2f = vec2f(pixel.x - axis.x, pixel.y - axis.y);
+	let t: f32 = clamp(dot(offset, direction) / length_squared, 0.0, 1.0);
+	let end: vec4f = primitives[index].color_end;
+	return vec4f(
+		color.x + (end.x - color.x) * t,
+		color.y + (end.y - color.y) * t,
+		color.z + (end.z - color.z) * t,
+		color.w + (end.w - color.w) * t
+	);
+}
+
 // Shades one pixel of a primitive. The alpha carries the primitive's coverage. `pixel` is where
 // the primitive was laid out and `screen` is where its turn drew it.
 shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f, curve_to: vec2f) -> vec4f {
 	let kind: u32 = primitives[index].kind;
-	let color: vec4f = primitives[index].color;
+	let color: vec4f = paint(index, pixel);
 
 	// Outline glyph.
 	if (kind == 4) {
 		return vec4f(color.x, color.y, color.z, color.w * glyph_coverage(index, pixel));
+	}
+	// Filled path.
+	if (kind == 8) {
+		return vec4f(color.x, color.y, color.z, color.w * path_coverage(index, pixel));
 	}
 	// Rectangle layer.
 	if (kind == 0) {
@@ -534,7 +666,15 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 		return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x);
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
-	let blurred: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
+	let resolution_mix: f32 = primitives[index].b.w;
+	// A path blur's other slots describe the outline, so its resolution mix rides in the color's alpha.
+	if (kind == 9) {
+		resolution_mix = primitives[index].color.w;
+	}
+	let blurred: vec4f = sample_backdrop(screen, clamp(resolution_mix, 0.0, 1.0));
+	if (kind == 9) {
+		return vec4f(blurred.x, blurred.y, blurred.z, path_coverage(index, pixel));
+	}
 	// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.
 	if (kind == 7) {
 		let shape: vec4f = vec4f(primitives[index].b.x, primitives[index].b.y, primitives[index].b.z, 0.0);

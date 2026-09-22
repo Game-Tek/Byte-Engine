@@ -755,7 +755,9 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 				let mut sibling = root
 					.element("sibling")
 					.container(Container::default().size(60.into()).clip(true).corner_radius(8.0));
-				sibling.element("sibling_leaf").container(Container::default().size(90.into()));
+				sibling
+					.element("sibling_leaf")
+					.container(Container::default().size(90.into()));
 				loop {
 					let (outer, inner) = ctx.ctx().get();
 					if outer != applied.0 {

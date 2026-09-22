@@ -76,7 +76,12 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 }
 
 /// Derives an element's state from its parent's already resolved state and its own geometry.
-pub(super) fn inherited_visual_state(element: &LayoutElement, index: usize, tree: &RetainedTree, states: &[VisualState]) -> VisualState {
+pub(super) fn inherited_visual_state(
+	element: &LayoutElement,
+	index: usize,
+	tree: &RetainedTree,
+	states: &[VisualState],
+) -> VisualState {
 	let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
 	let primitive = &tree.elements[index].element.primitive;
 	// Transforms compose through absolute-depth layers even though clipping restarts there.
@@ -264,7 +269,9 @@ fn hit_entry(
 		}
 		None => (Some(geometry_from_layout_element(element)), None),
 	};
-	let geometry = bounds.and_then(|bounds| clip.apply(bounds)).filter(|geometry| !geometry.is_empty());
+	let geometry = bounds
+		.and_then(|bounds| clip.apply(bounds))
+		.filter(|geometry| !geometry.is_empty());
 	match geometry {
 		Some(geometry) => HitEntry {
 			position: Location3::new(geometry.x(), geometry.y(), element.position.z()),

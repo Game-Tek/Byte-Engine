@@ -1,10 +1,39 @@
 use smallvec::{SmallVec, smallvec};
 use utils::RGBA;
 
+/// A two-stop linear gradient. `from` and `to` are in the element's own units from its origin:
+/// path units for a path with a view box, layout units otherwise. Pixels before `from` take
+/// `start`, pixels past `to` take `end`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinearGradient {
+	pub from: [f32; 2],
+	pub to: [f32; 2],
+	pub start: RGBA,
+	pub end: RGBA,
+}
+
+impl LinearGradient {
+	pub fn new(from: impl Into<[f32; 2]>, to: impl Into<[f32; 2]>, start: RGBA, end: RGBA) -> Self {
+		Self {
+			from: from.into(),
+			to: to.into(),
+			start,
+			end,
+		}
+	}
+}
+
 #[derive(Clone, PartialEq)]
 pub enum Color {
 	Value(RGBA),
 	Sample(String),
+	Gradient(LinearGradient),
+}
+
+impl From<LinearGradient> for Color {
+	fn from(gradient: LinearGradient) -> Self {
+		Color::Gradient(gradient)
+	}
 }
 
 impl From<RGBA> for Color {
@@ -79,6 +108,9 @@ impl Default for EdgeFeather {
 fn sanitize_feather_width(width: f32) -> f32 {
 	if width.is_finite() { width.max(0.0) } else { 0.0 }
 }
+
+/// Maps a backdrop blur radius to the standard deviation of its Gaussian: `sigma = scale * sqrt(radius)`.
+pub(crate) const BACKDROP_BLUR_SIGMA_SCALE: f32 = 1.689_394_6;
 
 fn sanitize_backdrop_blur_radius(radius: f32) -> f32 {
 	if radius.is_finite() { radius.clamp(0.0, 64.0) } else { 0.0 }
@@ -201,6 +233,18 @@ impl ConcreteLayer {
 		self
 	}
 
+	/// Blurs the pixels rendered behind this layer with a Gaussian of standard deviation `sigma`,
+	/// in layout units. This is the radius of [`ConcreteLayer::backdrop_blur`] expressed the way
+	/// an SVG filter or a design tool states it.
+	pub fn backdrop_blur_sigma(self, sigma: f32) -> Self {
+		let radius = if sigma.is_finite() && sigma > 0.0 {
+			(sigma / BACKDROP_BLUR_SIGMA_SCALE).powi(2)
+		} else {
+			0.0
+		};
+		self.backdrop_blur(radius)
+	}
+
 	/// Blurs the pixels rendered behind this layer using the legacy method name.
 	///
 	/// This method is an alias for [`ConcreteLayer::backdrop_blur`], including its
@@ -275,7 +319,7 @@ mod tests {
 		assert_eq!(layer.kind(), LayerKind::Stroke { width: 2.5 });
 		match Layer::fill(&layer) {
 			Color::Value(actual) => assert_eq!(*actual, color),
-			Color::Sample(_) => panic!("expected value color"),
+			_ => panic!("expected value color"),
 		}
 	}
 

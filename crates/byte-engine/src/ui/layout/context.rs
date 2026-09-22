@@ -2,7 +2,7 @@ use std::{borrow::Cow, future::Future, pin::Pin, time::Duration};
 
 use crate::ui::{
 	Container, Text,
-	components::{curve::Curve, image::Image, shape::Shape, text_field::TextField},
+	components::{curve::Curve, image::Image, path::Path, shape::Shape, text_field::TextField},
 	drag::DragCapture,
 	element::Id,
 	layout::{
@@ -50,6 +50,10 @@ pub trait Context<C: 'static = ()>: Sized {
 		self.element("image").image(image)
 	}
 
+	fn path(&mut self, path: Path) -> EvaluationContext<C> {
+		self.element("path").path(path)
+	}
+
 	fn render(&mut self) -> RenderFuture;
 
 	fn geometry(&self) -> Option<Geometry>;
@@ -88,6 +92,7 @@ pub trait ElementContext<C: 'static = ()> {
 	fn shape(self, shape: Shape) -> EvaluationContext<C>;
 	fn curve(self, curve: Curve) -> EvaluationContext<C>;
 	fn image(self, image: Image) -> EvaluationContext<C>;
+	fn path(self, path: Path) -> EvaluationContext<C>;
 	fn component<F>(self, component: F)
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static;

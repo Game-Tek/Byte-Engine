@@ -12,6 +12,9 @@ pub(super) const UI_GLYPH_BANDS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new
 pub(super) const UI_BLUR_FULL_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(4);
 pub(super) const UI_BLUR_HALF_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(5);
 pub(super) const UI_TEXTURES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(6);
+pub(super) const UI_PATH_CURVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(UI_TEXTURES_SLOT.index() + UI_TEXTURE_SLOTS);
+pub(super) const UI_PATH_BANDS_SLOT: ghi::ResourceSlot =
+	ghi::ResourceSlot::new(UI_TEXTURES_SLOT.index() + UI_TEXTURE_SLOTS + 1);
 /// Elements of the ubershader's texture array. The first is the glyph atlas and the rest hold images.
 pub(super) const UI_TEXTURE_SLOTS: u32 = 32;
 pub(super) const UI_ATLAS_TEXTURE_SLOT: u32 = 0;
@@ -29,7 +32,7 @@ pub(super) const UI_BLUR_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::Sh
 pub(super) const UI_BLUR_HALF_DOWNSCALE: u32 = 2;
 pub(super) const UI_BLUR_GAUSSIAN_SUPPORT: u32 = 22;
 pub(super) const UI_BLUR_GAUSSIAN_PAIR_COUNT: usize = 11;
-pub(super) const UI_BLUR_SIGMA_SCALE: f32 = 1.689_394_6;
+pub(super) const UI_BLUR_SIGMA_SCALE: f32 = crate::ui::style::BACKDROP_BLUR_SIGMA_SCALE;
 pub(super) const UI_BLUR_FULL_ONLY_SIGMA: f32 = 4.0;
 pub(super) const UI_BLUR_HALF_ONLY_SIGMA: f32 = 6.0;
 pub(super) const UI_BLUR_HALF_RESAMPLING_VARIANCE: f32 = 2.75;
@@ -69,7 +72,8 @@ pub(super) struct UiDrawElement {
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
 	pub(super) clip_mask: Option<DrawClipMask>,
-	pub(super) color: [f32; 4],
+	/// The gradient axis is in layout units from the element's origin.
+	pub(super) paint: UiPaint,
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
 	pub(super) sector: Option<Sector>,
@@ -77,7 +81,7 @@ pub(super) struct UiDrawElement {
 	pub(super) stroke_width: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct UiBlurDrawElement {
 	pub(super) depth: u32,
 	pub(super) order: u32,
@@ -90,6 +94,8 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) corner_exponent: f32,
 	pub(super) sector: Option<Sector>,
 	pub(super) radius: f32,
+	/// A path outline instead of the rectangle or sector; the path geometry pass builds its primitive.
+	pub(super) path: Option<UiPathShape>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -158,7 +164,8 @@ pub(super) struct UiCurveDrawElement {
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
 	pub(super) clip_mask: Option<DrawClipMask>,
-	pub(super) color: [f32; 4],
+	/// The gradient axis is in layout units from the curve's origin, scaled like its points.
+	pub(super) paint: UiPaint,
 	pub(super) stroke_width: f32,
 	pub(super) segments: Vec<CurveSegment>,
 }
@@ -173,7 +180,7 @@ impl Clone for UiCurveDrawElement {
 			size: self.size,
 			clip: self.clip,
 			clip_mask: self.clip_mask,
-			color: self.color,
+			paint: self.paint,
 			stroke_width: self.stroke_width,
 			segments: self.segments.clone(),
 		}
@@ -186,7 +193,7 @@ impl Clone for UiCurveDrawElement {
 		self.size = source.size;
 		self.clip = source.clip;
 		self.clip_mask = source.clip_mask;
-		self.color = source.color;
+		self.paint = source.paint;
 		self.stroke_width = source.stroke_width;
 		self.segments.clone_from(&source.segments);
 	}
@@ -208,12 +215,46 @@ pub(super) struct DrawClipMask {
 	pub(super) rotation: Rotation,
 }
 
+/// The outline of a path element, shared by its fill layers and its backdrop blur. The path
+/// geometry pass packs it once per key.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct UiPathShape {
+	pub(super) path_id: u64,
+	pub(super) version: u64,
+	pub(super) fill_rule: crate::ui::components::path::FillRule,
+	/// Layout units per path unit on each axis, before the viewport scale.
+	pub(super) scale: [f32; 2],
+	pub(super) segments: Arc<[CurveSegment]>,
+}
+
+impl UiPathShape {
+	/// Identifies the packed outline.
+	pub(super) fn key(&self) -> (u64, u64, crate::ui::components::path::FillRule) {
+		(self.path_id, self.version, self.fill_rule)
+	}
+}
+
+/// One fill layer of a path.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct UiPathDrawElement {
+	pub(super) depth: u32,
+	pub(super) order: u32,
+	pub(super) position: [f32; 2],
+	pub(super) size: [f32; 2],
+	pub(super) clip: Option<DrawClip>,
+	pub(super) clip_mask: Option<DrawClipMask>,
+	/// The gradient axis is in path units from the path's origin.
+	pub(super) paint: UiPaint,
+	pub(super) shape: UiPathShape,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct UiDrawList {
 	pub(super) layout_size: [f32; 2],
 	pub(super) elements: Vec<UiDrawElement>,
 	pub(super) blurs: Vec<UiBlurDrawElement>,
 	pub(super) curves: Vec<UiCurveDrawElement>,
+	pub(super) paths: Vec<UiPathDrawElement>,
 	pub(super) images: Vec<UiImageDrawElement>,
 	pub(super) texts: Vec<UiTextDrawElement>,
 }
@@ -223,6 +264,7 @@ impl UiDrawList {
 		self.elements.is_empty()
 			&& self.blurs.is_empty()
 			&& self.curves.is_empty()
+			&& self.paths.is_empty()
 			&& self.images.is_empty()
 			&& self.texts.is_empty()
 	}
@@ -235,9 +277,73 @@ impl Default for UiDrawList {
 			elements: Vec::new(),
 			blurs: Vec::new(),
 			curves: Vec::new(),
+			paths: Vec::new(),
 			images: Vec::new(),
 			texts: Vec::new(),
 		}
+	}
+}
+
+/// A layer's paint resolved for drawing: the color at each end of the gradient axis, and the
+/// axis in the element's own units. A flat color has equal ends and a zero axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiPaint {
+	pub(super) color: [f32; 4],
+	pub(super) color_end: [f32; 4],
+	pub(super) gradient: [f32; 4],
+}
+
+impl UiPaint {
+	/// Resolves a layer color with the element's opacity folded into both ends.
+	pub(super) fn resolve(color: &Color, opacity: f32) -> Self {
+		let faded = |mut rgba: RGBA| {
+			rgba.a *= opacity;
+			rgba.into()
+		};
+		match color {
+			Color::Value(rgba) => Self::flat(faded(*rgba)),
+			Color::Sample(_) => Self::flat(faded(RGBA::white())),
+			Color::Gradient(gradient) => Self {
+				color: faded(gradient.start),
+				color_end: faded(gradient.end),
+				gradient: [gradient.from[0], gradient.from[1], gradient.to[0], gradient.to[1]],
+			},
+		}
+	}
+
+	pub(super) fn flat(color: [f32; 4]) -> Self {
+		Self {
+			color,
+			color_end: color,
+			gradient: [0.0; 4],
+		}
+	}
+
+	/// The paint's largest alpha; a paint fading to nothing is still drawn.
+	pub(super) fn alpha(&self) -> f32 {
+		self.color[3].max(self.color_end[3])
+	}
+
+	/// The paint with its axis mapped from the element's units to laid-out pixels: `origin` in
+	/// pixels and `scale` in pixels per unit. A flat paint's zero axis lands on the origin twice, which stays flat.
+	pub(super) fn placed(self, origin: [f32; 2], scale: [f32; 2]) -> Self {
+		let [x0, y0, x1, y1] = self.gradient;
+		Self {
+			gradient: [
+				origin[0] + x0 * scale[0],
+				origin[1] + y0 * scale[1],
+				origin[0] + x1 * scale[0],
+				origin[1] + y1 * scale[1],
+			],
+			..self
+		}
+	}
+
+	/// Writes the paint into a primitive record.
+	pub(super) fn apply(self, primitive: &mut UiPrimitive) {
+		primitive.color = self.color;
+		primitive.color_end = self.color_end;
+		primitive.gradient = self.gradient;
 	}
 }
 
@@ -250,6 +356,9 @@ pub(super) const UI_KIND_SLUG_GLYPH: u32 = 4;
 pub(super) const UI_KIND_ATLAS_GLYPH: u32 = 5;
 pub(super) const UI_KIND_SECTOR: u32 = 6;
 pub(super) const UI_KIND_SECTOR_BLUR: u32 = 7;
+pub(super) const UI_KIND_PATH: u32 = 8;
+/// A backdrop blur shaped by a path. Its resolution mix rides in `color.w` because its other slots are the path's.
+pub(super) const UI_KIND_PATH_BLUR: u32 = 9;
 /// Fixed point steps per pixel of a sector primitive's edge inset in `data0`.
 pub(super) const SECTOR_INSET_SCALE: f32 = 256.0;
 /// Curve piece flags: the piece's segment rounds off its start or its end.
@@ -276,6 +385,10 @@ pub(super) struct UiPrimitive {
 	pub(super) color: [f32; 4],
 	pub(super) a: [f32; 4],
 	pub(super) b: [f32; 4],
+	/// The color at the end of the gradient axis. Equal to `color` for a flat paint.
+	pub(super) color_end: [f32; 4],
+	/// The gradient axis as x0, y0, x1, y1 in laid-out pixels. A zero length axis paints `color` alone.
+	pub(super) gradient: [f32; 4],
 	pub(super) kind: u32,
 	/// Index into the frame's [`UiMaskTable`]. Zero is no clip and no mask.
 	pub(super) mask: u32,
@@ -549,6 +662,8 @@ pub(super) struct UiPrimitives<'a> {
 	pub(super) images: Vec<(u32, u32), &'a bumpalo::Bump>,
 	pub(super) truncated: bool,
 	pub(super) dropped_glyphs: usize,
+	/// Paths that did not fit the path curve buffers even after a reset; they are not drawn.
+	pub(super) dropped_paths: usize,
 }
 
 pub(super) struct UiImageTexture {
@@ -569,6 +684,7 @@ pub(super) struct UiPreparedFrame {
 	pub(super) revision: Option<engine::RenderRevision>,
 	pub(super) extent: Extent,
 	pub(super) glyph_generation: u64,
+	pub(super) path_generation: u64,
 	/// Only elements touching these regions have primitives in this frame.
 	pub(super) damage: Vec<UiPixelRegion>,
 	pub(super) steps: Vec<UiStep>,
@@ -580,9 +696,14 @@ impl UiPreparedFrame {
 		revision: Option<engine::RenderRevision>,
 		extent: Extent,
 		glyph_generation: u64,
+		path_generation: u64,
 		damage: &[UiPixelRegion],
 	) -> bool {
-		self.revision == revision && self.extent == extent && self.glyph_generation == glyph_generation && self.damage == damage
+		self.revision == revision
+			&& self.extent == extent
+			&& self.glyph_generation == glyph_generation
+			&& self.path_generation == path_generation
+			&& self.damage == damage
 	}
 }
 
@@ -952,11 +1073,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if matches!(layer.kind, LayerKind::Fill) && layer.backdrop_blur_radius > 0.0 {
 				continue;
 			}
-			let mut color = match &layer.color {
-				Color::Value(rgba) => *rgba,
-				Color::Sample(_) => RGBA::white(),
-			};
-			color.a *= element.opacity;
+			let paint = UiPaint::resolve(&layer.color, element.opacity);
 			let stroke_width = stroke_width(layer.kind);
 			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
 				continue;
@@ -969,7 +1086,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(element.clip),
 				clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
-				color: color.into(),
+				paint,
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
 				sector: element.sector,
@@ -988,6 +1105,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				.map(|layer| match &layer.color {
 					Color::Value(rgba) => *rgba,
 					Color::Sample(_) => RGBA::white(),
+					Color::Gradient(gradient) => gradient.start,
 				})
 				.unwrap_or_else(RGBA::transparent);
 			color.a *= element.opacity;
@@ -1003,6 +1121,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				corner_exponent: element.corner_exponent,
 				sector: element.sector,
 				radius,
+				path: None,
 			});
 		}
 	}
@@ -1017,17 +1136,13 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 
-			let mut color = match &layer.color {
-				Color::Value(rgba) => *rgba,
-				Color::Sample(_) => RGBA::white(),
-			};
-			color.a *= curve.opacity;
-			if color.a <= 0.0 {
+			let paint = UiPaint::resolve(&layer.color, curve.opacity);
+			if paint.alpha() <= 0.0 {
 				continue;
 			}
 
 			// A zoomed subtree scales its wires like its rectangles: points from the
-			// element's origin and the stroke follow the inherited scale.
+			// element's origin, the gradient axis, and the stroke follow the inherited scale.
 			let mut entry = UiCurveDrawElement {
 				depth: position.z(),
 				order: curve.id,
@@ -1035,7 +1150,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				size: [size.x(), size.y()],
 				clip: draw_clip_from_geometry(curve.clip),
 				clip_mask: draw_clip_mask_from_layout(curve.clip_mask, curve.rotation),
-				color: color.into(),
+				paint: paint.placed([0.0, 0.0], curve.scale),
 				stroke_width: stroke_width * curve.scale[0].min(curve.scale[1]),
 				segments: Vec::new(),
 			};
@@ -1053,6 +1168,80 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		}
 	}
 	draw_list.curves.truncate(curve_count);
+
+	draw_list.paths.clear();
+	for path in render.paths() {
+		let position = path.position;
+		let size = path.size;
+		let shape = UiPathShape {
+			path_id: path.path_id,
+			version: path.version,
+			fill_rule: path.fill_rule,
+			// A view box maps path units onto the element's box, which already carries the
+			// inherited scale. Without one, points are layout units scaled like a curve's.
+			scale: match path.view_box {
+				Some([width, height]) => [
+					if width > 0.0 { size.x() / width } else { 0.0 },
+					if height > 0.0 { size.y() / height } else { 0.0 },
+				],
+				None => path.scale,
+			},
+			segments: Arc::clone(&path.segments),
+		};
+		let placed = |depth: u32| {
+			(
+				depth,
+				path.id,
+				[position.x(), position.y()],
+				[size.x(), size.y()],
+				draw_clip_from_geometry(path.clip),
+				draw_clip_mask_from_layout(path.clip_mask, path.rotation),
+			)
+		};
+
+		// Strokes on a path are not drawn yet. The first blurring fill blurs the backdrop under
+		// the outline, like a container's does, and every other fill paints the outline.
+		let mut blurred = false;
+		for layer in path.style.layers() {
+			if !matches!(layer.kind, LayerKind::Fill) {
+				continue;
+			}
+			let paint = UiPaint::resolve(&layer.color, path.opacity);
+			let (depth, order, position, size, clip, clip_mask) = placed(position.z());
+			let radius = backdrop_blur_radius(layer.backdrop_blur_radius);
+			if radius > 0.0 {
+				if !std::mem::replace(&mut blurred, true) {
+					draw_list.blurs.push(UiBlurDrawElement {
+						depth,
+						order,
+						position,
+						size,
+						clip,
+						clip_mask,
+						color: paint.color,
+						corner_radius: 0.0,
+						corner_exponent: 2.0,
+						sector: None,
+						radius,
+						path: Some(shape.clone()),
+					});
+				}
+			} else if paint.alpha() > 0.0 {
+				draw_list.paths.push(UiPathDrawElement {
+					depth,
+					order,
+					position,
+					size,
+					clip,
+					clip_mask,
+					paint,
+					shape: shape.clone(),
+				});
+			}
+		}
+	}
+	// Rectangle and path blurs were listed by element type; the merge reads each list in painter order.
+	draw_list.blurs.sort_by_key(|blur| (blur.depth, blur.order));
 
 	for image in render.images() {
 		draw_list.images.push(UiImageDrawElement {

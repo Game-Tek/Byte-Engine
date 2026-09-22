@@ -7,6 +7,9 @@ Primitive: struct {
 	color: vec4f,
 	a: vec4f,
 	b: vec4f,
+	// The color at the end of the gradient axis, and the axis as (x0, y0, x1, y1) in laid-out pixels.
+	color_end: vec4f,
+	gradient: vec4f,
 	kind: u32,
 	mask: u32,
 	data0: u32,

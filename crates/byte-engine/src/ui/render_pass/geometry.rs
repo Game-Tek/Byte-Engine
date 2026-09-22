@@ -18,6 +18,7 @@ pub(super) fn build_ui_primitives<'a>(
 	mut caches: Option<&mut UiGeometryCaches>,
 	masks: &mut UiMaskTable,
 	text: Option<&UiTextGeometry<'_>>,
+	paths: Option<&UiPathGeometry<'_>>,
 	damage: Option<&[UiPixelRegion]>,
 ) -> UiPrimitives<'a> {
 	// A render cannot contain more images than the engine's 32-bit element IDs allow.
@@ -33,14 +34,16 @@ pub(super) fn build_ui_primitives<'a>(
 	}
 
 	let glyph_count = text.map_or(0, |text| text.primitives.len());
-	let capacity =
-		(1 + draw_list.elements.len() + draw_list.blurs.len() + draw_list.images.len() + glyph_count).min(MAX_UI_PRIMITIVES);
+	let path_count = paths.map_or(0, |paths| paths.primitives.len());
+	let capacity = (1 + draw_list.elements.len() + draw_list.blurs.len() + draw_list.images.len() + glyph_count + path_count)
+		.min(MAX_UI_PRIMITIVES);
 	let mut output = UiPrimitives {
 		primitives: Vec::with_capacity_in(capacity, frame_allocator),
 		steps: Vec::with_capacity_in(draw_list.blurs.len() * 2 + 1, frame_allocator),
 		images: Vec::with_capacity_in(draw_list.images.len(), frame_allocator),
 		truncated: false,
 		dropped_glyphs: text.map_or(0, |text| text.dropped_glyphs),
+		dropped_paths: paths.map_or(0, |paths| paths.dropped_paths),
 	};
 	output.primitives.push(clear_primitive(viewport));
 	let mut draw_first = output.primitives.len();
@@ -49,7 +52,7 @@ pub(super) fn build_ui_primitives<'a>(
 	let mut cached_kernels: Option<(f32, UiBlurKernel, UiBlurKernel)> = None;
 	let mut cubics = Vec::new_in(frame_allocator);
 	// A blur goes under its own element's layers, and the remaining ties keep the order the types were listed in.
-	let (mut blurs, mut elements, mut curves, mut images, mut texts) = (0, 0, 0, 0, 0);
+	let (mut blurs, mut elements, mut curves, mut images, mut texts, mut fills) = (0, 0, 0, 0, 0, 0);
 	loop {
 		let heads = [
 			draw_list.blurs.get(blurs).map(|blur| (blur.depth, blur.order)),
@@ -57,6 +60,7 @@ pub(super) fn build_ui_primitives<'a>(
 			draw_list.curves.get(curves).map(|curve| (curve.depth, curve.order)),
 			draw_list.images.get(images).map(|image| (image.depth, image.order)),
 			draw_list.texts.get(texts).map(|text| (text.depth, text.order)),
+			draw_list.paths.get(fills).map(|path| (path.depth, path.order)),
 		];
 		let Some((_, next)) = heads
 			.iter()
@@ -76,7 +80,11 @@ pub(super) fn build_ui_primitives<'a>(
 				let effective_radius = (blur.radius * radius_scale).clamp(0.0, 64.0);
 				let sigma_pixels = blur_sigma(effective_radius);
 				let resolution_mix = blur_resolution_mix(sigma_pixels);
-				let Some(mut primitive) = blur_primitive(blur, viewport, sx, sy, resolution_mix) else {
+				let primitive = match &blur.path {
+					Some(_) => paths.and_then(|paths| paths.blurs.get(blurs - 1).copied().flatten()),
+					None => blur_primitive(blur, viewport, sx, sy, resolution_mix),
+				};
+				let Some(mut primitive) = primitive else {
 					continue;
 				};
 				if full {
@@ -115,7 +123,7 @@ pub(super) fn build_ui_primitives<'a>(
 				elements += 1;
 				let rect_width = (element.size[0] * sx).max(0.0);
 				let rect_height = (element.size[1] * sy).max(0.0);
-				if rect_width <= 0.0 || rect_height <= 0.0 || element.color[3] <= 0.0 {
+				if rect_width <= 0.0 || rect_height <= 0.0 || element.paint.alpha() <= 0.0 {
 					// Omit element if 0 sized in any dimension or if fully transparent
 					continue;
 				}
@@ -160,7 +168,7 @@ pub(super) fn build_ui_primitives<'a>(
 				let curve = &draw_list.curves[curves];
 				curves += 1;
 				let stroke_width = curve.stroke_width * radius_scale;
-				if curve.color[3] <= 0.0 || !stroke_width.is_finite() || stroke_width <= 0.0 {
+				if curve.paint.alpha() <= 0.0 || !stroke_width.is_finite() || stroke_width <= 0.0 {
 					continue;
 				}
 				let half_width = stroke_width * 0.5;
@@ -182,6 +190,7 @@ pub(super) fn build_ui_primitives<'a>(
 					continue;
 				}
 				let mask = masks.index(curve.clip, curve.clip_mask, sx, sy);
+				let paint = curve.paint.placed([curve.position[0] * sx, curve.position[1] * sy], [sx, sy]);
 				cubics.clear();
 				cubics.extend(
 					curve
@@ -201,16 +210,18 @@ pub(super) fn build_ui_primitives<'a>(
 							output.truncated = true;
 							break;
 						}
-						output.primitives.push(UiPrimitive {
+						let mut primitive = UiPrimitive {
 							bounds: [cubic[0][0], cubic[0][1], cubic[1][0], cubic[1][1]],
-							color: curve.color,
 							a: [cubic[2][0], cubic[2][1], cubic[3][0], cubic[3][1]],
 							b: [half_width, 0.0, 0.0, 0.0],
 							kind: UI_KIND_CURVE,
 							mask,
 							data0: piece | count << 16,
 							data1: caps,
-						});
+							..UiPrimitive::default()
+						};
+						paint.apply(&mut primitive);
+						output.primitives.push(primitive);
 					}
 				}
 			}
@@ -255,7 +266,7 @@ pub(super) fn build_ui_primitives<'a>(
 					output.primitives.push(primitive);
 				}
 			}
-			_ => {
+			4 => {
 				let label = text.and_then(|text| Some(&text.primitives[text.labels.get(texts)?.clone()]));
 				texts += 1;
 				let Some(label) = label else {
@@ -264,6 +275,16 @@ pub(super) fn build_ui_primitives<'a>(
 				let count = label.len().min(MAX_UI_PRIMITIVES - output.primitives.len());
 				output.primitives.extend_from_slice(&label[..count]);
 				output.truncated |= count < label.len();
+			}
+			_ => {
+				let fill = paths.and_then(|paths| Some(&paths.primitives[paths.ranges.get(fills)?.clone()]));
+				fills += 1;
+				let Some(fill) = fill else {
+					continue;
+				};
+				let count = fill.len().min(MAX_UI_PRIMITIVES - output.primitives.len());
+				output.primitives.extend_from_slice(&fill[..count]);
+				output.truncated |= count < fill.len();
 			}
 		}
 		if output.truncated {
@@ -275,7 +296,8 @@ pub(super) fn build_ui_primitives<'a>(
 		first: draw_first as u32,
 		count: (output.primitives.len() - draw_first) as u32,
 	});
-	output.truncated |= text.is_some_and(|text| text.truncated) || masks.truncated;
+	output.truncated |=
+		text.is_some_and(|text| text.truncated) || paths.is_some_and(|paths| paths.truncated) || masks.truncated;
 
 	output
 }
@@ -288,7 +310,7 @@ pub(super) fn build_ui_primitives_uncached<'a>(
 	arena: &'a bumpalo::Bump,
 	masks: &mut UiMaskTable,
 ) -> UiPrimitives<'a> {
-	build_ui_primitives(draw_list, viewport, arena, None, masks, None, None)
+	build_ui_primitives(draw_list, viewport, arena, None, masks, None, None, None)
 }
 
 /// Pixel bounds of an element for damage tests: its layout origin scaled, its pixel size, and a margin.
@@ -349,15 +371,19 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 			0,
 		),
 	};
-	Some(UiPrimitive {
+	let mut primitive = UiPrimitive {
 		bounds,
-		color: element.color,
 		a: [original[0], original[1], rect_width, rect_height],
 		b,
 		kind,
 		data0,
 		..UiPrimitive::default()
-	})
+	};
+	element
+		.paint
+		.placed([original[0], original[1]], [sx, sy])
+		.apply(&mut primitive);
+	Some(primitive)
 }
 
 /// Resolves one backdrop blur's clipped quad inside the viewport, which its dispatch regions are planned from.

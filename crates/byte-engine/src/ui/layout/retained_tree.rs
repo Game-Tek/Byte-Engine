@@ -5,7 +5,9 @@ use std::{
 
 use super::{ConcreteElement, Id, IdedElement, LayoutElement, PathSegment};
 use crate::ui::{
-	components::{container::ContainerProperties, curve::CurveSegment, text::TextSettings, text_field::TextFieldSettings},
+	components::{
+		container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings, text_field::TextFieldSettings,
+	},
 	flow::{self, FlowOutput},
 	primitive::{Primitive, Primitives},
 	style::{ConcreteLayer, EdgeFeather, Layer},
@@ -36,6 +38,11 @@ enum PlacementInputs {
 		height: super::Sizing,
 		hit_testable: bool,
 	},
+	/// Outline and style edits are paint-only; only the path's size places it.
+	Path {
+		width: super::Sizing,
+		height: super::Sizing,
+	},
 }
 
 /// Captures paint-independent layout inputs without copying styles or text.
@@ -64,6 +71,10 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 			width: image.width,
 			height: image.height,
 		},
+		Primitives::Path(path) => PlacementInputs::Path {
+			width: path.path.width,
+			height: path.path.height,
+		},
 		Primitives::Shape(shape) => PlacementInputs::Shape(shape.shape.clone()),
 	}
 }
@@ -85,6 +96,12 @@ enum PropertyInputs {
 		height: super::Sizing,
 		hit_width: Option<f32>,
 	},
+	Path {
+		content: (u64, u64, FillRule),
+		width: super::Sizing,
+		height: super::Sizing,
+		view_box: Option<[f32; 2]>,
+	},
 }
 
 /// Captures the properties an edit is compared on, or `None` when a custom flow cannot be compared.
@@ -103,6 +120,12 @@ fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
 			width: curve.path.width,
 			height: curve.path.height,
 			hit_width: curve.hit_width,
+		},
+		Primitives::Path(path) => PropertyInputs::Path {
+			content: path.content_key(),
+			width: path.path.width,
+			height: path.path.height,
+			view_box: path.view_box,
 		},
 	})
 }

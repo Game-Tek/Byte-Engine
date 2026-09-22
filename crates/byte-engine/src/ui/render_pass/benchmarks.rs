@@ -354,7 +354,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 	let mut glyphs = UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY);
 	let text_arena = bumpalo::Bump::new();
 	let text = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &text_arena);
-	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None);
+	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None, None);
 	report_primitives("mixed", count, &arena, output.primitives.len(), output.steps.len());
 	drop(output);
 	bencher.bench_local(|| {
@@ -366,6 +366,7 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 			None,
 			&mut masks,
 			Some(&text),
+			None,
 			None,
 		));
 	});
@@ -380,7 +381,7 @@ fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
 	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
-	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None);
+	let output = build_ui_primitives(&data, viewport(), &arena, None, &mut masks, Some(&text), None, None);
 	let source: &[u8] = bytemuck::cast_slice(&output.primitives);
 	let mut destination = vec![0; source.len()];
 	bencher.bench_local(|| {
@@ -444,6 +445,7 @@ impl CpuFrame {
 			Some(&mut self.caches),
 			&mut self.masks,
 			Some(&text),
+			None,
 			None,
 		);
 		assert!(!output.truncated && output.dropped_glyphs == 0);

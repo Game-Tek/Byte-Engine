@@ -35,6 +35,7 @@ use crate::{
 // Group draw preparation and geometry generation by responsibility.
 mod cache;
 mod data;
+mod fill;
 mod geometry;
 mod slug;
 mod text;
@@ -51,6 +52,7 @@ mod benchmarks;
 
 use cache::*;
 use data::*;
+use fill::*;
 use geometry::*;
 use slug::*;
 use text::*;
@@ -112,6 +114,9 @@ pub struct UiRenderPass {
 	image_sampler: ghi::SamplerHandle,
 	image_textures: HashMap<u64, UiImageTexture>,
 	text: UiText,
+	paths: UiPathCurves,
+	path_curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_PATH_CURVE_CAPACITY]>,
+	path_band_buffer: ghi::BufferHandle<[u32; UI_PATH_BAND_CAPACITY]>,
 	blur_downsample_pipeline: crate::rendering::PipelineRef,
 	blur_filter_pipeline: crate::rendering::PipelineRef,
 	blur_downsample_workgroup: Extent,
@@ -151,6 +156,7 @@ pub struct UiRenderPass {
 	reported_capacity_limit: bool,
 	reported_dropped_glyphs: bool,
 	reported_image_limit: bool,
+	reported_dropped_paths: bool,
 	text_system: TextSystem,
 }
 
@@ -318,6 +324,20 @@ impl UiRenderPass {
 				UiText::Atlas { atlas, image }
 			}
 		};
+		let path_curve_buffer = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Path Curves")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		let path_band_buffer = context.build_buffer(
+			ghi::buffer::Builder::new(ghi::Uses::Storage)
+				.name("UI Path Bands")
+				.device_accesses(ghi::DeviceAccesses::HostToDevice),
+		);
+		context.write(&[
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_PATH_CURVES_SLOT, path_curve_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, UI_PATH_BANDS_SLOT, path_band_buffer.into()),
+		]);
 		let blur_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
@@ -487,6 +507,9 @@ impl UiRenderPass {
 			descriptor_set,
 			image_sampler,
 			image_textures: HashMap::new(),
+			paths: UiPathCurves::new(UI_PATH_CURVE_CAPACITY, UI_PATH_BAND_CAPACITY),
+			path_curve_buffer,
+			path_band_buffer,
 			text,
 			blur_downsample_pipeline,
 			blur_filter_pipeline,
@@ -522,6 +545,7 @@ impl UiRenderPass {
 			reported_capacity_limit: false,
 			reported_dropped_glyphs: false,
 			reported_image_limit: false,
+			reported_dropped_paths: false,
 			text_system: TextSystem::new(),
 		}
 	}
@@ -674,6 +698,14 @@ impl UiRenderPass {
 				Some(geometry)
 			}
 		};
+		let paths = if self.data.paths.is_empty() {
+			None
+		} else {
+			let geometry =
+				build_ui_path_geometry_damaged(&self.data, extent, &mut self.paths, &mut self.masks, frame_allocator, damage);
+			self.paths.upload(frame, self.path_curve_buffer, self.path_band_buffer);
+			Some(geometry)
+		};
 		let mut primitives = build_ui_primitives(
 			&self.data,
 			extent,
@@ -681,6 +713,7 @@ impl UiRenderPass {
 			Some(&mut self.caches),
 			&mut self.masks,
 			text.as_ref(),
+			paths.as_ref(),
 			damage,
 		);
 
@@ -711,6 +744,13 @@ impl UiRenderPass {
 			format!(
 				"UI image capacity exceeded; {images_without_texture} images were not drawn. The most likely cause is that the UI shows more than {} distinct images at once.",
 				UI_TEXTURE_SLOTS - UI_FIRST_IMAGE_TEXTURE_SLOT
+			)
+		});
+
+		warn_once(&mut self.reported_dropped_paths, primitives.dropped_paths > 0, || {
+			format!(
+				"UI path capacity exceeded; {} path fills were not drawn. The most likely cause is that one frame draws more distinct path outlines than the path curve buffers can hold.",
+				primitives.dropped_paths
 			)
 		});
 
@@ -759,6 +799,7 @@ impl UiRenderPass {
 			revision: self.render_revision,
 			extent,
 			glyph_generation: self.text.generation(),
+			path_generation: self.paths.generation(),
 			damage: self.damage.clone(),
 			steps,
 		});
@@ -805,12 +846,11 @@ impl RenderPass for UiRenderPass {
 
 		self.frame_damage(extent);
 		let glyph_generation = self.text.generation();
+		let path_generation = self.paths.generation();
 		if !self.damage.is_empty()
-			&& !self
-				.prepared
-				.as_ref()
-				.is_some_and(|prepared| prepared.matches(self.render_revision, extent, glyph_generation, &self.damage))
-		{
+			&& !self.prepared.as_ref().is_some_and(|prepared| {
+				prepared.matches(self.render_revision, extent, glyph_generation, path_generation, &self.damage)
+			}) {
 			self.rebuild_prepared_frame(frame, extent, frame_allocator);
 		}
 		let composite_descriptor_set = self.composite_descriptor_set;
@@ -1003,11 +1043,11 @@ mod tests {
 		UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT, UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_GLYPH_BAND_CAPACITY,
 		UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_RECT, UI_KIND_SECTOR,
 		UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPixelRegion, UiPreparedFrame, UiPrimitive,
-		UiPrimitives, UiStep, UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions,
-		blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
-		blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count,
-		should_draw_image, should_rasterize_text, update_from_render,
+		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame,
+		UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions,
+		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma,
+		blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry,
+		clear_primitive, curve_piece_count, should_draw_image, should_rasterize_text, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -1114,6 +1154,8 @@ mod tests {
 				("color", Value::Vec4F(primitive.color)),
 				("a", Value::Vec4F(primitive.a)),
 				("b", Value::Vec4F(primitive.b)),
+				("color_end", Value::Vec4F(primitive.color_end)),
+				("gradient", Value::Vec4F(primitive.gradient)),
 				("kind", Value::U32(primitive.kind)),
 				("mask", Value::U32(primitive.mask)),
 				("data0", Value::U32(primitive.data0)),
@@ -2299,7 +2341,7 @@ mod tests {
 			size: [50.0, 50.0],
 			clip: None,
 			clip_mask: None,
-			color: [1.0, 1.0, 1.0, 1.0],
+			paint: UiPaint::flat([1.0; 4]),
 			corner_radius,
 			corner_exponent,
 			sector: None,
@@ -2320,7 +2362,7 @@ mod tests {
 			size: [100.0, 100.0],
 			clip: None,
 			clip_mask: None,
-			color: [1.0, 1.0, 1.0, 1.0],
+			paint: UiPaint::flat([1.0; 4]),
 			stroke_width: 4.0,
 			segments,
 		}
@@ -2354,7 +2396,7 @@ mod tests {
 			vec![UiDrawElement {
 				position: [10.0, 20.0],
 				size: [30.0, 40.0],
-				color: [0.25, 0.5, 0.75, 1.0],
+				paint: UiPaint::flat([0.25, 0.5, 0.75, 1.0]),
 				..draw_element(8.0, 2.0)
 			}],
 		);
@@ -2367,6 +2409,8 @@ mod tests {
 			[UiPrimitive {
 				bounds: [20.0, 20.0, 80.0, 60.0],
 				color: [0.25, 0.5, 0.75, 1.0],
+				color_end: [0.25, 0.5, 0.75, 1.0],
+				gradient: [20.0, 20.0, 20.0, 20.0],
 				a: [20.0, 20.0, 60.0, 40.0],
 				b: [8.0, 2.0, 0.0, 0.0],
 				kind: UI_KIND_RECT,
@@ -2394,6 +2438,7 @@ mod tests {
 				corner_exponent: 2.0,
 				sector: None,
 				radius: 18.0,
+				path: None,
 			}],
 			..UiDrawList::default()
 		};
@@ -2449,7 +2494,9 @@ mod tests {
 				corner_exponent: 2.0,
 				sector: None,
 				radius: 8.0,
+				path: None,
 			}],
+			paths: Vec::new(),
 			curves: vec![UiCurveDrawElement {
 				depth: 1,
 				order: 5,
@@ -2618,7 +2665,7 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let hidden = [
 			UiDrawElement {
-				color: [1.0, 1.0, 1.0, 0.0],
+				paint: UiPaint::flat([1.0, 1.0, 1.0, 0.0]),
 				..draw_element(0.0, 2.0)
 			},
 			UiDrawElement {
@@ -2839,7 +2886,7 @@ mod tests {
 		for (stroke_width, alpha) in [(0.0, 1.0), (-1.0, 1.0), (f32::NAN, 1.0), (4.0, 0.0)] {
 			let list = curve_list(UiCurveDrawElement {
 				stroke_width,
-				color: [1.0, 1.0, 1.0, alpha],
+				paint: UiPaint::flat([1.0, 1.0, 1.0, alpha]),
 				..curve_element(vec![cubic_wire()])
 			});
 			let (primitives, ..) = build(&list, Extent::square(100), &frame_allocator);
@@ -2863,15 +2910,17 @@ mod tests {
 			revision,
 			extent: Extent::square(64),
 			glyph_generation: 2,
+			path_generation: 5,
 			damage: damage.clone(),
 			steps: Vec::new(),
 		};
 
-		assert!(prepared.matches(revision, Extent::square(64), 2, &damage));
-		assert!(!prepared.matches(None, Extent::square(64), 2, &damage));
-		assert!(!prepared.matches(revision, Extent::square(65), 2, &damage));
-		assert!(!prepared.matches(revision, Extent::square(64), 3, &damage));
-		assert!(!prepared.matches(revision, Extent::square(64), 2, &[]));
+		assert!(prepared.matches(revision, Extent::square(64), 2, 5, &damage));
+		assert!(!prepared.matches(None, Extent::square(64), 2, 5, &damage));
+		assert!(!prepared.matches(revision, Extent::square(65), 2, 5, &damage));
+		assert!(!prepared.matches(revision, Extent::square(64), 3, 5, &damage));
+		assert!(!prepared.matches(revision, Extent::square(64), 2, 6, &damage));
+		assert!(!prepared.matches(revision, Extent::square(64), 2, 5, &[]));
 	}
 
 	#[test]
@@ -3250,6 +3299,8 @@ mod tests {
 	/// The `UiRectFragment` struct describes one fragment of a rectangle layer for the BESL VM tests.
 	struct UiRectFragment {
 		color: [f32; 4],
+		/// The paint's end color and pixel axis; `None` paints `color` flat.
+		gradient: Option<([f32; 4], [f32; 4])>,
 		pixel_position: [f32; 2],
 		rect: [f32; 4],
 		corner_radius: f32,
@@ -3263,6 +3314,7 @@ mod tests {
 		fn default() -> Self {
 			Self {
 				color: [0.2, 0.4, 0.6, 0.8],
+				gradient: None,
 				pixel_position: [50.0, 50.0],
 				rect: [0.0, 0.0, 100.0, 100.0],
 				corner_radius: 12.0,
@@ -3283,6 +3335,8 @@ mod tests {
 				values.rect[1] + values.rect[3],
 			],
 			color: values.color,
+			color_end: values.gradient.map_or(values.color, |(color_end, _)| color_end),
+			gradient: values.gradient.map_or([0.0; 4], |(_, axis)| axis),
 			a: values.rect,
 			b: [values.corner_radius, values.corner_exponent, values.stroke_width, 0.0],
 			kind: UI_KIND_RECT,
@@ -3511,6 +3565,31 @@ mod tests {
 	}
 
 	#[test]
+	fn ui_fragment_besl_vm_gradient_blends_along_its_axis_and_clamps_past_its_ends() {
+		let start = [1.0, 0.0, 0.0, 1.0];
+		let end = [0.0, 0.0, 1.0, 0.0];
+		// A horizontal axis from x = 20 to x = 60; the pixel's y must not matter.
+		let sample = |x: f32| {
+			run_ui_rect_fragment_vm(UiRectFragment {
+				color: start,
+				gradient: Some((end, [20.0, 10.0, 60.0, 10.0])),
+				pixel_position: [x, 50.0],
+				..Default::default()
+			})
+		};
+		assert_vec4_close(sample(5.0), start);
+		assert_vec4_close(sample(40.0), [0.5, 0.0, 0.5, 0.5]);
+		assert_vec4_close(sample(90.0), end);
+		// A zero length axis paints the start color everywhere.
+		let flat = run_ui_rect_fragment_vm(UiRectFragment {
+			color: start,
+			gradient: Some((end, [30.0, 30.0, 30.0, 30.0])),
+			..Default::default()
+		});
+		assert_vec4_close(flat, start);
+	}
+
+	#[test]
 	fn skips_zero_alpha_text_before_rasterization() {
 		assert!(!should_rasterize_text(&UiTextDrawElement {
 			depth: 0,
@@ -3627,8 +3706,8 @@ mod tests {
 		let mut draw_list = UiDrawList::default();
 		update_from_render(render, &mut draw_list);
 
-		assert_eq!(draw_list.elements[0].color[3], 0.4);
-		assert_eq!(draw_list.elements[1].color[3], 0.3);
+		assert_eq!(draw_list.elements[0].paint.color[3], 0.4);
+		assert_eq!(draw_list.elements[1].paint.color[3], 0.3);
 		assert_eq!(draw_list.texts[0].color, RGBA::new(1.0, 1.0, 1.0, 0.2));
 	}
 

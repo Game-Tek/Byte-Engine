@@ -70,7 +70,7 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		size: [10.0, 10.0],
 		clip: None,
 		clip_mask: None,
-		color: [color, 0.0, 0.0, 1.0],
+		paint: UiPaint::flat([color, 0.0, 0.0, 1.0]),
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
 		sector: None,
@@ -84,7 +84,7 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		size: [10.0, 10.0],
 		clip: None,
 		clip_mask: None,
-		color: [color, 0.0, 0.0, 1.0],
+		paint: UiPaint::flat([color, 0.0, 0.0, 1.0]),
 		stroke_width: 1.0,
 		segments: vec![CurveSegment::Line {
 			from: (0.0, 0.0).into(),
@@ -169,6 +169,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				corner_exponent: 2.0,
 				sector: None,
 				radius,
+				path: None,
 			})
 			.into(),
 		..UiDrawList::default()
@@ -190,7 +191,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 		for (blur, actual) in data.blurs.iter().zip(&combined) {
 			let single = UiDrawList {
 				layout_size: data.layout_size,
-				blurs: vec![*blur],
+				blurs: vec![blur.clone()],
 				..UiDrawList::default()
 			};
 			let expected = blurs(&single);
@@ -337,6 +338,7 @@ fn cached_surface_primitives_follow_content_and_layer_edits() {
 			&mut UiMaskTable::default(),
 			None,
 			None,
+			None,
 		);
 		let expected = primitives(&data, Extent::square(800), &arena);
 		assert_eq!(actual.primitives, expected.primitives);
@@ -365,4 +367,91 @@ fn root_transform_preserves_viewport_units() {
 	let output = primitives(&data, Extent::square(100), &arena);
 	assert_eq!(output.primitives.len(), 2);
 	assert_eq!(output.primitives[1].bounds, [10., 20., 30., 40.]);
+}
+
+/// A glass icon is three stacked paths; the glass blurs its backdrop under its outline.
+/// The blur must merge before the glass fill and the highlight after both, as the tree orders them.
+#[test]
+fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() {
+	use crate::ui::Path;
+
+	let frame_allocator = bumpalo::Bump::new();
+	let mut engine = Engine::new();
+	engine.mount(|ctx| {
+		std::boxed::Box::pin(async move {
+			let mut frame = ctx.element("frame").container(
+				Container::default()
+					.width(40.into())
+					.height(40.into())
+					.clip(false)
+					.flow(crate::ui::flow::center),
+			);
+			let square = || {
+				CurvePath::new(40.into(), 40.into())
+					.line((0.0, 0.0), (20.0, 0.0))
+					.line((20.0, 0.0), (20.0, 20.0))
+					.line((20.0, 20.0), (0.0, 20.0))
+			};
+			frame.element("body").path(Path::new(square()));
+			frame.element("glass").path(
+				Path::new(square()).style(
+					ConcreteStyle::new()
+						.layer(ConcreteLayer::default().backdrop_blur(8.0))
+						.layer(ConcreteLayer::default()),
+				),
+			);
+			frame.element("highlight").path(Path::new(square()));
+			// A later rectangle blur lands in the blur list first, since rectangles are walked before paths.
+			frame.element("pill").container(
+				Container::default()
+					.width(10.into())
+					.height(10.into())
+					.style(ConcreteLayer::default().backdrop_blur(4.0)),
+			);
+		})
+	});
+	let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+	let render = engine.render(&mut snapshot);
+	let mut data = UiDrawList::default();
+	update_from_render(&render, &mut data);
+
+	assert_eq!(data.blurs.len(), 2, "the glass blur layer and the pill's blur");
+	assert!(
+		data.blurs[0].path.is_some(),
+		"blurs are in painter order, so the glass comes first"
+	);
+	assert_eq!(data.paths.len(), 3, "body, glass tint, and highlight fills");
+	let keys: Vec<(u32, u32)> = data.paths.iter().map(|path| (path.depth, path.order)).collect();
+	assert_eq!(
+		(data.blurs[0].depth, data.blurs[0].order),
+		keys[1],
+		"the blur shares the glass fill's key"
+	);
+	assert!(keys[0] < keys[1] && keys[1] < keys[2], "paths keep tree order: {keys:?}");
+
+	let mut masks = UiMaskTable::default();
+	let mut curves = UiPathCurves::new(UI_PATH_CURVE_CAPACITY, UI_PATH_BAND_CAPACITY);
+	let paths = build_ui_path_geometry_damaged(&data, Extent::square(100), &mut curves, &mut masks, &frame_allocator, None);
+	let output = build_ui_primitives(
+		&data,
+		Extent::square(100),
+		&frame_allocator,
+		None,
+		&mut masks,
+		None,
+		Some(&paths),
+		None,
+	);
+	let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
+	assert_eq!(
+		kinds,
+		[
+			UI_KIND_RECT,
+			UI_KIND_PATH,
+			UI_KIND_PATH_BLUR,
+			UI_KIND_PATH,
+			UI_KIND_PATH,
+			UI_KIND_BLUR
+		]
+	);
 }

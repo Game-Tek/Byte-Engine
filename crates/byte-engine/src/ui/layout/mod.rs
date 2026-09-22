@@ -97,6 +97,27 @@ pub(crate) struct RenderImageElement {
 }
 
 #[derive(Clone)]
+pub(crate) struct RenderPathElement {
+	pub(crate) id: u32,
+	pub(crate) path_id: u64,
+	pub(crate) version: u64,
+	pub(crate) fill_rule: crate::ui::components::path::FillRule,
+	pub(crate) view_box: Option<[f32; 2]>,
+	pub(crate) position: Location3,
+	pub(crate) size: Size,
+	pub(crate) clip: Option<Geometry>,
+	pub(crate) clip_mask: Option<ClipMask>,
+	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
+	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
+	pub(crate) style: ConcreteStyle,
+	pub(crate) opacity: f32,
+	/// Inherited visual scale, used when the path has no view box.
+	pub(crate) scale: [f32; 2],
+	/// Unscaled segments in path units, shared with the draw list; the pass packs them once per content key.
+	pub(crate) segments: std::sync::Arc<[CurveSegment]>,
+}
+
+#[derive(Clone)]
 pub(crate) struct RenderCurveElement {
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
@@ -167,6 +188,7 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 		.bbox(available),
 		Primitives::Shape(shape) => shape.shape.bbox(available),
 		Primitives::Curve(curve) => curve.path().size(available),
+		Primitives::Path(path) => path.path().size(available),
 		Primitives::Image(image) => Shapes::Box {
 			half: (image.width, image.height),
 			radius: 0.0,

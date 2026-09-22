@@ -27,7 +27,7 @@ fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 		size,
 		clip: None,
 		clip_mask: None,
-		color: [1.0, 1.0, 1.0, 1.0],
+		paint: UiPaint::flat([1.0; 4]),
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
 		sector: None,
@@ -101,6 +101,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 			corner_exponent: 2.0,
 			sector: None,
 			radius: 8.0,
+			path: None,
 		}],
 		..UiDrawList::default()
 	};
@@ -131,6 +132,7 @@ fn only_elements_touching_damage_get_primitives() {
 			&frame_allocator,
 			None,
 			&mut UiMaskTable::default(),
+			None,
 			None,
 			damage,
 		);

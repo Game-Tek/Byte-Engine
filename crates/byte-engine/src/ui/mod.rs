@@ -52,6 +52,7 @@ pub use components::{
 	container::{Container, Sector},
 	curve::{Curve, CurvePath, CurvePoint, CurveSegment},
 	image::Image,
+	path::{FillRule, Path},
 	text::Text,
 	text_field::TextField,
 };
@@ -66,7 +67,7 @@ pub use layout::{
 pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};
 pub use render_pass::UiRenderPass;
-pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, MixModes};
+pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes};
 pub use timer::{WaitFuture, seconds, wait};
 pub use transform::Transform;
 pub use visual::Visual;

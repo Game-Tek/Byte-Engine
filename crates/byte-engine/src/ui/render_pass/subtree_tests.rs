@@ -93,7 +93,7 @@ fn camera_primitives_match_fresh_preparation() {
 		update_from_render(engine.render(&mut snapshot), &mut data);
 		let extent = Extent::rectangle(extent, 1080);
 		let mut masks = UiMaskTable::default();
-		let actual = build_ui_primitives(&data, extent, &arena, Some(&mut caches), &mut masks, None, None);
+		let actual = build_ui_primitives(&data, extent, &arena, Some(&mut caches), &mut masks, None, None, None);
 		let mut fresh_masks = UiMaskTable::default();
 		let expected = build_ui_primitives_uncached(&data, extent, &arena, &mut fresh_masks);
 		assert_eq!(actual.primitives, expected.primitives);
@@ -165,6 +165,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 			Some(&mut caches),
 			&mut masks,
 			Some(&glyphs),
+			None,
 			None,
 		));
 		frame += 1;

@@ -844,30 +844,38 @@ impl<C: 'static> Engine<C> {
 		// Reuse the engine-owned buffers. A consumer still holding the previous render
 		// keeps it, and every entry is then rewritten into fresh buffers.
 		let mut reclaimed = false;
-		let (mut elements, mut curve_elements, mut image_elements, mut text_elements, mut visible) = self
+		let (mut elements, mut curve_elements, mut path_elements, mut image_elements, mut text_elements, mut visible) = self
 			.retained_render
 			.take()
 			.map(|retained| {
 				let contents = std::sync::Arc::try_unwrap(retained.render.contents).ok();
 				reclaimed = contents.is_some();
-				let (elements, curve_elements, image_elements, text_elements) = contents
+				let (elements, curve_elements, path_elements, image_elements, text_elements) = contents
 					.map(|contents| {
 						(
 							contents.elements,
 							contents.curve_elements,
+							contents.path_elements,
 							contents.image_elements,
 							contents.text_elements,
 						)
 					})
 					.unwrap_or_default();
-				(elements, curve_elements, image_elements, text_elements, retained.visible)
+				(
+					elements,
+					curve_elements,
+					path_elements,
+					image_elements,
+					text_elements,
+					retained.visible,
+				)
 			})
 			.unwrap_or_default();
 		// Entries can only be kept where they are when the previous lists were reclaimed.
 		let incremental = incremental && reclaimed;
 		// Rewrite the live prefix while reusing each entry's owned buffers. Entries left
 		// beyond that prefix are dropped after the walk, so removed content cannot escape.
-		let (mut element_count, mut curve_count, mut text_count, mut image_count) = (0, 0, 0, 0);
+		let (mut element_count, mut curve_count, mut path_count, mut text_count, mut image_count) = (0, 0, 0, 0, 0);
 		let previous_footprints = std::mem::take(&mut self.rendered_footprints);
 		let mut next_footprints = std::mem::take(&mut self.footprint_scratch);
 		next_footprints.clear();
@@ -939,6 +947,7 @@ impl<C: 'static> Engine<C> {
 				match &retained_element.element.primitive {
 					Primitives::Container(_) | Primitives::Shape(_) => element_count += 1,
 					Primitives::Curve(_) => curve_count += 1,
+					Primitives::Path(_) => path_count += 1,
 					Primitives::Image(_) => image_count += 1,
 					Primitives::Text(_) | Primitives::TextField(_) => text_count += 1,
 				}
@@ -1141,6 +1150,56 @@ impl<C: 'static> Engine<C> {
 					}
 					curve_count += 1;
 				}
+				Primitives::Path(path) => {
+					if let Some(entry) = path_elements
+						.get_mut(path_count)
+						.filter(|entry| local_unchanged && entry.id == element.id.get())
+					{
+						entry.position = element.position;
+						entry.size = element.size;
+						entry.clip = clip;
+						entry.clip_mask = clip_mask;
+						entry.rotation = rotation;
+						entry.opacity = opacity;
+						entry.scale = state.scale;
+						path_count += 1;
+						continue;
+					}
+					let mut layers = path_elements
+						.get_mut(path_count)
+						.map(|entry| std::mem::take(&mut entry.style.layers))
+						.unwrap_or_default();
+					layers.clone_from(&style.layers);
+					// The outline is shared with every draw list entry that shows it, and only
+					// copied here when the element changed.
+					let segments = path_elements
+						.get(path_count)
+						.filter(|entry| entry.path_id == path.id() && entry.version == path.version())
+						.map(|entry| std::sync::Arc::clone(&entry.segments))
+						.unwrap_or_else(|| std::sync::Arc::from(path.path().segments()));
+					let rendered = RenderPathElement {
+						id: element.id.get(),
+						path_id: path.id(),
+						version: path.version(),
+						fill_rule: path.fill_rule,
+						view_box: path.view_box,
+						position: element.position,
+						size: element.size,
+						clip,
+						clip_mask,
+						rotation,
+						style: ConcreteStyle { layers },
+						opacity,
+						scale: state.scale,
+						segments,
+					};
+					if path_count < path_elements.len() {
+						path_elements[path_count] = rendered;
+					} else {
+						path_elements.push(rendered);
+					}
+					path_count += 1;
+				}
 				Primitives::Image(image) => {
 					let rendered = RenderImageElement {
 						id: element.id.get(),
@@ -1170,6 +1229,7 @@ impl<C: 'static> Engine<C> {
 
 		elements.truncate(element_count);
 		curve_elements.truncate(curve_count);
+		path_elements.truncate(path_count);
 		text_elements.truncate(text_count);
 		image_elements.truncate(image_count);
 
@@ -1200,6 +1260,7 @@ impl<C: 'static> Engine<C> {
 				contents: std::sync::Arc::new(RenderContents {
 					elements,
 					curve_elements,
+					path_elements,
 					image_elements,
 					text_elements,
 					revision: render_revision,
@@ -1408,6 +1469,7 @@ pub struct RenderContents {
 	pub(crate) viewport_size: Size,
 	elements: Vec<RenderElement>,
 	curve_elements: Vec<RenderCurveElement>,
+	path_elements: Vec<RenderPathElement>,
 	image_elements: Vec<RenderImageElement>,
 	text_elements: Vec<RenderTextElement>,
 	revision: RenderRevision,
@@ -1439,7 +1501,11 @@ impl Render {
 	}
 
 	pub(crate) fn size(&self) -> usize {
-		self.elements.len() + self.curve_elements.len() + self.image_elements.len() + self.text_elements.len()
+		self.elements.len()
+			+ self.curve_elements.len()
+			+ self.path_elements.len()
+			+ self.image_elements.len()
+			+ self.text_elements.len()
 	}
 
 	pub(crate) fn elements(&self) -> impl Iterator<Item = &RenderElement> {
@@ -1452,6 +1518,10 @@ impl Render {
 
 	pub(crate) fn curves(&self) -> impl Iterator<Item = &RenderCurveElement> {
 		self.curve_elements.iter()
+	}
+
+	pub(crate) fn paths(&self) -> impl Iterator<Item = &RenderPathElement> {
+		self.path_elements.iter()
 	}
 
 	pub(crate) fn images(&self) -> impl Iterator<Item = &RenderImageElement> {
@@ -3673,7 +3743,7 @@ mod tests {
 		assert_eq!(render.elements().next().unwrap().style.layers()[0].kind(), LayerKind::Fill);
 		match Layer::fill(&render.elements().next().unwrap().style.layers()[0]) {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.2, 0.3, 0.4, 1.0)),
-			Color::Sample(_) => panic!("expected value color"),
+			_ => panic!("expected value color"),
 		}
 	}
 
@@ -4262,7 +4332,7 @@ mod tests {
 		let render = engine.render(&mut second);
 		match Layer::fill(&render.elements().next().unwrap().style.layers()[0]) {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.4, 0.5, 0.6, 1.0)),
-			Color::Sample(_) => panic!("expected value color"),
+			_ => panic!("expected value color"),
 		}
 	}
 
@@ -5305,7 +5375,7 @@ use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex}
 
 use super::{
 	ClipMask, ConcreteElement, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
-	RenderTextElement,
+	RenderPathElement, RenderTextElement,
 	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
 	flow::{Location, Location3, Size},

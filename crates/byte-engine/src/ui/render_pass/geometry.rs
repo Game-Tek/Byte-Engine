@@ -330,18 +330,32 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 	let rect_width = (original[2] - original[0]).max(0.0);
 	let rect_height = (original[3] - original[1]).max(0.0);
 	let radius_scale = sx.min(sy);
+	// A fill has no stroke width, which is how the shader tells the two apart.
+	let stroke_width = element.stroke_width * radius_scale;
+	let (b, kind, data0) = match element.sector {
+		Some(sector) => (
+			sector_parameters(sector, stroke_width),
+			UI_KIND_SECTOR,
+			sector_inset(sector, radius_scale),
+		),
+		None => (
+			[
+				resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height),
+				resolved_corner_exponent(element.corner_exponent),
+				stroke_width,
+				0.0,
+			],
+			UI_KIND_RECT,
+			0,
+		),
+	};
 	Some(UiPrimitive {
 		bounds,
 		color: element.color,
 		a: [original[0], original[1], rect_width, rect_height],
-		b: [
-			resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height),
-			resolved_corner_exponent(element.corner_exponent),
-			// A fill has no stroke width, which is how the shader tells the two apart.
-			element.stroke_width * radius_scale,
-			0.0,
-		],
-		kind: UI_KIND_RECT,
+		b,
+		kind,
+		data0,
 		..UiPrimitive::default()
 	})
 }
@@ -364,19 +378,54 @@ fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, 
 		return None;
 	}
 	let (rect_width, rect_height) = (original[2] - original[0], original[3] - original[1]);
+	let (b, kind, data0) = match blur.sector {
+		Some(sector) => (
+			sector_parameters(sector, resolution_mix),
+			UI_KIND_SECTOR_BLUR,
+			sector_inset(sector, sx.min(sy)),
+		),
+		None => (
+			[
+				resolved_corner_radius(blur.corner_radius * sx.min(sy), rect_width, rect_height),
+				resolved_corner_exponent(blur.corner_exponent),
+				0.0,
+				resolution_mix,
+			],
+			UI_KIND_BLUR,
+			0,
+		),
+	};
 	Some(UiPrimitive {
 		bounds,
 		color: blur.color,
 		a: [original[0], original[1], rect_width, rect_height],
-		b: [
-			resolved_corner_radius(blur.corner_radius * sx.min(sy), rect_width, rect_height),
-			resolved_corner_exponent(blur.corner_exponent),
-			0.0,
-			resolution_mix,
-		],
-		kind: UI_KIND_BLUR,
+		b,
+		kind,
+		data0,
 		..UiPrimitive::default()
 	})
+}
+
+/// Packs a sector's edge inset in viewport pixels as fixed point with [`SECTOR_INSET_SCALE`] steps per pixel.
+fn sector_inset(sector: Sector, scale: f32) -> u32 {
+	let inset = if sector.inset.is_finite() {
+		sector.inset.max(0.0)
+	} else {
+		0.0
+	};
+	(inset * scale * SECTOR_INSET_SCALE).round().min(u32::MAX as f32) as u32
+}
+
+/// Packs a sector's shape for the shader: inner radius ratio, start angle, sweep angle, and the
+/// kind's fourth value. Ratios and angles are scale free, so the viewport scale does not touch them.
+fn sector_parameters(sector: Sector, fourth: f32) -> [f32; 4] {
+	let finite = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
+	[
+		finite(sector.inner, 0.0).clamp(0.0, 1.0),
+		finite(sector.start, 0.0),
+		finite(sector.sweep, 0.0).clamp(0.0, Sector::FULL_TURN),
+		fourth,
+	]
 }
 
 /// Resolves one image's clipped quad and the part of the texture it shows. The pass fills in the texture slot.

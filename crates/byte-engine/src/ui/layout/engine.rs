@@ -36,12 +36,20 @@ pub struct Engine<C = ()> {
 	/// What each rendered element last looked like, by tree index, so the next render can report damage.
 	rendered_footprints: Vec<Option<Footprint>>,
 	footprint_scratch: Vec<Option<Footprint>>,
+	/// Depth and snapshot offset of each visible element, kept so ordering never allocates.
+	depth_order: Vec<(u32, u32)>,
 	/// Flow placement stays in layout units while snapshots expose transformed surfaces.
 	placement: Vec<LayoutElement>,
 	hit_curves: HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
 	transforms: Vec<Affine2>,
 	transform_work: Vec<usize>,
 	placement_indices: Vec<usize>,
+	/// Placed elements inside the subtrees moved since the retained layout, parents before children.
+	dirty: Vec<usize>,
+	/// The layout revision that last moved each tree index, so a render walk can skip the rest.
+	dirty_stamps: Vec<u64>,
+	/// Each tree index's entry in the retained hit index, or `u32::MAX` when it has none.
+	hit_offsets: Vec<u32>,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
@@ -54,6 +62,8 @@ struct RetainedLayout {
 	has_custom_flows: bool,
 	clip_revision: u64,
 	revision: u64,
+	/// The layout this one differs from by visual transforms inside the engine's dirty roots alone.
+	transformed_from: Option<u64>,
 	size: Size,
 	elements: Rc<Vec<LayoutElement>>,
 	relations: Rc<Vec<(Id, Id)>>,
@@ -75,6 +85,7 @@ struct RetainedRender {
 	tree_revision: u64,
 	placement_revision: u64,
 	clip_revision: u64,
+	appearance_revision: u64,
 	visible: Vec<LayoutElement>,
 	layout_revision: u64,
 	size: Size,
@@ -230,10 +241,14 @@ impl<C: 'static> Engine<C> {
 			rendered_revisions: Vec::new(),
 			rendered_footprints: Vec::new(),
 			footprint_scratch: Vec::new(),
+			depth_order: Vec::new(),
 			placement: Vec::new(),
 			hit_curves: HashMap::new(),
 			transforms: Vec::new(),
 			transform_work: Vec::new(),
+			dirty: Vec::new(),
+			dirty_stamps: Vec::new(),
+			hit_offsets: Vec::new(),
 			placement_indices: Vec::new(),
 			runtime: Rc::new(RefCell::new(Runtime::new())),
 		}
@@ -344,6 +359,7 @@ impl<C: 'static> Engine<C> {
 				.filter(|_| placement_unchanged && !transforms_changed)
 				.map(|retained| Rc::clone(&retained.elements));
 			let mut placed = Vec::new_in(frame_allocator);
+			self.dirty.clear();
 			if placement_unchanged && transforms_changed {
 				placed.extend_from_slice(&self.retained_layout.as_ref().unwrap().elements);
 				// Recompute from retained placement, never from already transformed bounds.
@@ -364,6 +380,7 @@ impl<C: 'static> Engine<C> {
 							&mut self.transforms,
 							&mut placed,
 							&mut self.transform_work,
+							&mut self.dirty,
 						);
 					}
 				}
@@ -375,7 +392,7 @@ impl<C: 'static> Engine<C> {
 				self.placement_indices.clear();
 				self.placement_indices.resize(tree.elements.len(), usize::MAX);
 				for (offset, element) in self.placement.iter().enumerate() {
-					self.placement_indices[tree.element_indices[&element.id]] = offset;
+					self.placement_indices[element.index] = offset;
 				}
 				for index in 0..tree.elements.len() {
 					if tree.parents[index].is_none() {
@@ -387,9 +404,11 @@ impl<C: 'static> Engine<C> {
 							&mut self.transforms,
 							&mut placed,
 							&mut self.transform_work,
+							&mut self.dirty,
 						);
 					}
 				}
+				self.dirty.clear();
 			}
 			let elements = previous.as_deref().map_or(placed.as_slice(), |elements| elements.as_slice());
 			let has_custom_flows = self.retained_layout.as_ref()
@@ -407,8 +426,36 @@ impl<C: 'static> Engine<C> {
 				// Resizing can replay a stateful flow without a tree mutation. Give each
 				// changed geometry its own revision so older snapshots keep distinct cache keys.
 				let layout_revision = self.retained_layout.as_ref().map_or(1, |retained| retained.revision + 1);
-				self.prepare_appearance(elements, &tree, layout_revision, size);
-				let hit = clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator);
+				// Only the transformed subtrees moved, so appearance outside them is still current.
+				let transformed_from = self
+					.retained_layout
+					.as_ref()
+					.filter(|_| placement_unchanged && transforms_changed)
+					.map(|retained| retained.revision);
+				self.prepare_appearance(elements, &tree, layout_revision, size, transformed_from);
+				// Moved subtrees patch the retained hit index in place while nothing else holds it
+				// and the topology is stable; anything else rebuilds the index from every element.
+				let refreshed = transformed_from.is_some()
+					&& self.hit_offsets.len() == tree.elements.len()
+					&& self.retained_layout.as_mut().is_some_and(|retained| {
+						retained.clip_revision == tree.clip_revision
+							&& Rc::get_mut(&mut retained.acceleration).is_some_and(|acceleration| {
+								refresh_hit_entries(
+									&self.dirty,
+									elements,
+									&tree,
+									&self.visual_state,
+									&self.placement_indices,
+									&self.hit_offsets,
+									&mut self.hit_curves,
+									acceleration,
+									frame_allocator,
+								)
+							})
+					});
+				let hit = (!refreshed).then(|| {
+					clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator)
+				});
 				// A stable topology keeps IDs and layout order, so update only changed bounds.
 				// Structural edits also advance clip_revision, including removal and remount of the same ID.
 				if let Some(previous) = self
@@ -440,26 +487,37 @@ impl<C: 'static> Engine<C> {
 					has_custom_flows,
 					clip_revision: tree.clip_revision,
 					revision: layout_revision,
+					transformed_from,
 					size,
 					elements: Rc::default(),
 					relations: Rc::default(),
 					acceleration: Rc::default(),
 				});
 				retained.revision = layout_revision;
+				retained.transformed_from = transformed_from;
 				retained.clip_revision = tree.clip_revision;
 				retained.size = size;
 				if !placement_unchanged || transforms_changed {
 					retain_snapshot_data(&mut retained.elements, elements);
 				}
 				retain_snapshot_data(&mut retained.relations, &tree.relations);
-				// An older snapshot owns its index until it is dropped. Replace shared storage
-				// instead of copying an obsolete grid; otherwise refill it in place.
-				if Rc::get_mut(&mut retained.acceleration).is_none() {
-					retained.acceleration = Rc::default();
+				if let Some(hit) = hit {
+					// An older snapshot owns its index until it is dropped. Replace shared storage
+					// instead of copying an obsolete grid; otherwise refill it in place.
+					if Rc::get_mut(&mut retained.acceleration).is_none() {
+						retained.acceleration = Rc::default();
+					}
+					Rc::get_mut(&mut retained.acceleration)
+						.unwrap()
+						.update(&hit.elements, &hit.curves, &hit.points);
+					self.hit_offsets.clear();
+					self.hit_offsets.resize(tree.elements.len(), u32::MAX);
+					for (offset, element) in hit.elements.iter().enumerate() {
+						if let Some(index) = tree.index_of(element) {
+							self.hit_offsets[index] = offset as u32;
+						}
+					}
 				}
-				Rc::get_mut(&mut retained.acceleration)
-					.unwrap()
-					.update(&hit.elements, &hit.curves, &hit.points);
 			}
 			let retained = self
 				.retained_layout
@@ -490,12 +548,32 @@ impl<C: 'static> Engine<C> {
 	}
 
 	/// Reuses inherited appearance only for the same tree inputs and snapshot geometry.
-	fn prepare_appearance(&mut self, elements: &[LayoutElement], tree: &RetainedTree, layout_revision: u64, size: Size) {
+	///
+	/// `transformed_from` names the layout this geometry differs from by visual transforms
+	/// alone, within [`Self::dirty`]; appearance prepared for that layout is then refreshed
+	/// for those elements only, since state inherits strictly from the parent.
+	fn prepare_appearance(
+		&mut self,
+		elements: &[LayoutElement],
+		tree: &RetainedTree,
+		layout_revision: u64,
+		size: Size,
+		transformed_from: Option<u64>,
+	) {
 		let key = (tree.appearance_revision, layout_revision, size);
-		if self.visual_state_key != Some(key) {
-			prepare_visual_state(elements, tree, &mut self.visual_state);
-			self.visual_state_key = Some(key);
+		if self.visual_state_key == Some(key) {
+			return;
 		}
+		let previous = transformed_from.map(|revision| (tree.appearance_revision, revision, size));
+		if previous.is_some() && self.visual_state_key == previous && self.visual_state.len() == tree.elements.len() {
+			for &index in &self.dirty {
+				let element = &elements[self.placement_indices[index]];
+				self.visual_state[index] = inherited_visual_state(element, index, tree, &self.visual_state);
+			}
+		} else {
+			prepare_visual_state(elements, tree, &mut self.visual_state);
+		}
+		self.visual_state_key = Some(key);
 	}
 
 	fn sync_pointer_state(&mut self) {
@@ -693,7 +771,9 @@ impl<C: 'static> Engine<C> {
 	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
 	/// The render is retained by the engine: while the tree, its layout, and the
 	/// viewport are unchanged, the same render with the same [`Render::revision`]
-	/// is returned again. Clone it only when the revision changed.
+	/// is returned again. Cloning shares its contents; publish a clone only when
+	/// the revision changed, since a retained clone forces the next build to
+	/// allocate fresh buffers instead of reusing the engine's.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> &Render {
 		let tree_revision = self.runtime.borrow().tree.borrow().revision();
 		let retained = self.retained_render.as_ref().is_some_and(|retained| {
@@ -716,11 +796,27 @@ impl<C: 'static> Engine<C> {
 	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> RetainedRender {
 		let tree = Rc::clone(&self.runtime.borrow().tree);
 		let tree = tree.borrow();
-		let visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
+		let mut visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
 			retained.clip_revision == tree.clip_revision
 				&& retained.layout_revision == snapshot.layout_revision
 				&& retained.size == snapshot.size
 		});
+		// Geometry that moved by visual transforms alone, with appearance and clipping as
+		// the retained render saw them, leaves every entry outside the dirty subtrees as it is.
+		let incremental = self
+			.retained_render
+			.as_ref()
+			.zip(self.retained_layout.as_ref())
+			.is_some_and(|(render, layout)| {
+				layout.transformed_from == Some(render.layout_revision)
+					&& layout.revision == snapshot.layout_revision
+					&& render.clip_revision == tree.clip_revision
+					&& render.appearance_revision == tree.appearance_revision
+					&& render.size == snapshot.size
+					&& self.transforms.len() == tree.elements.len()
+					// Once most of the tree moved, patching costs more than the plain rebuild.
+					&& self.dirty.len() * 4 < tree.elements.len()
+			});
 		// Damage is relative to the previous render only while the viewport is the same size.
 		let damage_base = self
 			.retained_render
@@ -745,24 +841,33 @@ impl<C: 'static> Engine<C> {
 				ids.sort_unstable();
 				(render_revision, std::sync::Arc::from(ids))
 			});
-		// Reuse the engine-owned buffers. Render clones keep their independent contents.
+		// Reuse the engine-owned buffers. A consumer still holding the previous render
+		// keeps it, and every entry is then rewritten into fresh buffers.
+		let mut reclaimed = false;
 		let (mut elements, mut curve_elements, mut image_elements, mut text_elements, mut visible) = self
 			.retained_render
 			.take()
 			.map(|retained| {
-				(
-					retained.render.elements,
-					retained.render.curve_elements,
-					retained.render.image_elements,
-					retained.render.text_elements,
-					retained.visible,
-				)
+				let contents = std::sync::Arc::try_unwrap(retained.render.contents).ok();
+				reclaimed = contents.is_some();
+				let (elements, curve_elements, image_elements, text_elements) = contents
+					.map(|contents| {
+						(
+							contents.elements,
+							contents.curve_elements,
+							contents.image_elements,
+							contents.text_elements,
+						)
+					})
+					.unwrap_or_default();
+				(elements, curve_elements, image_elements, text_elements, retained.visible)
 			})
 			.unwrap_or_default();
+		// Entries can only be kept where they are when the previous lists were reclaimed.
+		let incremental = incremental && reclaimed;
 		// Rewrite the live prefix while reusing each entry's owned buffers. Entries left
 		// beyond that prefix are dropped after the walk, so removed content cannot escape.
-		let (mut element_count, mut curve_count, mut text_count) = (0, 0, 0);
-		image_elements.clear();
+		let (mut element_count, mut curve_count, mut text_count, mut image_count) = (0, 0, 0, 0);
 		let previous_footprints = std::mem::take(&mut self.rendered_footprints);
 		let mut next_footprints = std::mem::take(&mut self.footprint_scratch);
 		next_footprints.clear();
@@ -770,33 +875,75 @@ impl<C: 'static> Engine<C> {
 		let mut damage: Vec<Geometry> = Vec::new();
 		self.rendered_revisions.resize(tree.elements.len(), 0);
 		// Input callbacks can change appearance after layout. The cache key includes those changes.
-		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size);
+		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size, None);
+		let stamp = snapshot.layout_revision;
+		if incremental {
+			self.dirty_stamps.resize(tree.elements.len(), 0);
+			// Depth is a placement property, so order holds; only membership can flip, and a
+			// flip shifts entry slots, which the full walk below then rewrites.
+			let mut flipped = false;
+			for &index in &self.dirty {
+				self.dirty_stamps[index] = stamp;
+				let offset = self.placement_indices[index];
+				let element = snapshot.elements[offset];
+				let now_visible = self.visual_state[index]
+					.clip
+					.apply(geometry_from_layout_element(&element))
+					.is_some();
+				let slot = self
+					.depth_order
+					.binary_search(&(element.position.z(), offset as u32))
+					.ok();
+				if slot.is_some() != now_visible {
+					flipped = true;
+				} else if let Some(slot) = slot {
+					visible[slot] = element;
+				}
+			}
+			visibility_unchanged = !flipped;
+		}
+		let incremental = incremental && visibility_unchanged;
 		if !visibility_unchanged {
-			visible.clear();
-			visible.extend(
-				snapshot
-					.elements
-					.iter()
-					.filter(|element| {
-						tree.element_indices.get(&element.id).is_some_and(|&index| {
-							self.visual_state[index]
-								.clip
-								.apply(geometry_from_layout_element(element))
-								.is_some()
-						})
-					})
-					.copied(),
-			);
 			// Stable depth order is shared by every primitive list. Keep it with visibility
 			// so paint-only rebuilds neither sort nor allocate scratch for larger render entries.
-			visible.sort_by_key(|element| element.position.z());
+			// Offsets are unique, so an unstable sort of (depth, offset) keeps layout order
+			// at equal depth without the scratch buffer a stable element sort would allocate.
+			self.depth_order.clear();
+			self.depth_order
+				.extend(snapshot.elements.iter().enumerate().filter_map(|(offset, element)| {
+					let visible = tree.index_of(element).is_some_and(|index| {
+						self.visual_state[index]
+							.clip
+							.apply(geometry_from_layout_element(element))
+							.is_some()
+					});
+					visible.then(|| (element.position.z(), offset as u32))
+				}));
+			self.depth_order.sort_unstable();
+			visible.clear();
+			visible.extend(
+				self.depth_order
+					.iter()
+					.map(|&(_, offset)| snapshot.elements[offset as usize]),
+			);
 		}
 		for element in &visible {
-			let Some(&index) = tree.element_indices.get(&element.id) else {
+			let Some(index) = tree.index_of(element) else {
 				continue;
 			};
 			let retained_element = &tree.elements[index];
 			let local_unchanged = self.rendered_revisions[index] == retained_element.revision;
+			if incremental && local_unchanged && self.dirty_stamps[index] != stamp {
+				// Neither its geometry nor its content changed: the retained entry and footprint hold.
+				next_footprints[index] = previous_footprints.get(index).copied().flatten();
+				match &retained_element.element.primitive {
+					Primitives::Container(_) | Primitives::Shape(_) => element_count += 1,
+					Primitives::Curve(_) => curve_count += 1,
+					Primitives::Image(_) => image_count += 1,
+					Primitives::Text(_) | Primitives::TextField(_) => text_count += 1,
+				}
+				continue;
+			}
 			self.rendered_revisions[index] = retained_element.revision;
 			let state = self.visual_state[index];
 			let clip = state.clip.as_rect();
@@ -852,7 +999,7 @@ impl<C: 'static> Engine<C> {
 			}
 			next_footprints[index] = Some(footprint);
 			// Only layered geometry retains a style copy; images and text borrow what they need.
-			let mut push_rectangle = |corner_radius, corner_exponent| {
+			let mut push_rectangle = |corner_radius, corner_exponent, sector| {
 				if let Some(entry) = elements
 					.get_mut(element_count)
 					.filter(|entry| local_unchanged && entry.id == element.id.get())
@@ -887,6 +1034,7 @@ impl<C: 'static> Engine<C> {
 						.map_or(0.0, |layer| layer.backdrop_blur_radius()),
 					corner_radius,
 					corner_exponent,
+					sector,
 				};
 				if element_count < elements.len() {
 					elements[element_count] = rendered;
@@ -941,14 +1089,16 @@ impl<C: 'static> Engine<C> {
 			};
 
 			match &retained_element.element.primitive {
-				Primitives::Container(container) => push_rectangle(container.corner_radius, container.corner_exponent),
+				Primitives::Container(container) => {
+					push_rectangle(container.corner_radius, container.corner_exponent, container.sector)
+				}
 				Primitives::Shape(shape) => {
 					let (corner_radius, corner_exponent) = match shape.shape {
 						Shapes::Box { radius, exponent, .. } => (radius, exponent),
 						_ => (0.0, 2.0),
 					};
 
-					push_rectangle(corner_radius, corner_exponent);
+					push_rectangle(corner_radius, corner_exponent, None);
 				}
 				Primitives::Curve(curve) => {
 					if let Some(entry) = curve_elements
@@ -991,20 +1141,28 @@ impl<C: 'static> Engine<C> {
 					}
 					curve_count += 1;
 				}
-				Primitives::Image(image) => image_elements.push(RenderImageElement {
-					id: element.id.get(),
-					image_id: image.id(),
-					version: image.version(),
-					source_width: image.width_pixels(),
-					source_height: image.height_pixels(),
-					pixels: std::sync::Arc::clone(image.pixels()),
-					position: element.position,
-					size: element.size,
-					clip,
-					clip_mask,
-					rotation,
-					opacity,
-				}),
+				Primitives::Image(image) => {
+					let rendered = RenderImageElement {
+						id: element.id.get(),
+						image_id: image.id(),
+						version: image.version(),
+						source_width: image.width_pixels(),
+						source_height: image.height_pixels(),
+						pixels: std::sync::Arc::clone(image.pixels()),
+						position: element.position,
+						size: element.size,
+						clip,
+						clip_mask,
+						rotation,
+						opacity,
+					};
+					if image_count < image_elements.len() {
+						image_elements[image_count] = rendered;
+					} else {
+						image_elements.push(rendered);
+					}
+					image_count += 1;
+				}
 				Primitives::Text(text) => push_text(text.content(), text.settings().font_size),
 				Primitives::TextField(text_field) => push_text(text_field.content(), text_field.settings().font_size),
 			}
@@ -1013,6 +1171,7 @@ impl<C: 'static> Engine<C> {
 		elements.truncate(element_count);
 		curve_elements.truncate(curve_count);
 		text_elements.truncate(text_count);
+		image_elements.truncate(image_count);
 
 		// Elements that were drawn last time and are now culled, removed, or truncated leave a hole.
 		for (index, previous) in previous_footprints.iter().enumerate() {
@@ -1033,20 +1192,23 @@ impl<C: 'static> Engine<C> {
 			tree_revision: tree.revision(),
 			placement_revision: tree.placement_revision,
 			clip_revision: tree.clip_revision,
+			appearance_revision: tree.appearance_revision,
 			layout_revision: snapshot.layout_revision,
 			size: snapshot.size,
 			visible,
 			render: Render {
-				elements,
-				curve_elements,
-				image_elements,
-				text_elements,
-				revision: render_revision,
-				surface_revision,
-				surface_ids,
-				viewport_size: snapshot.size,
-				damage,
-				damage_base,
+				contents: std::sync::Arc::new(RenderContents {
+					elements,
+					curve_elements,
+					image_elements,
+					text_elements,
+					revision: render_revision,
+					surface_revision,
+					surface_ids,
+					viewport_size: snapshot.size,
+					damage,
+					damage_base,
+				}),
 			},
 		}
 	}
@@ -1221,8 +1383,25 @@ fn collapse_damage(mut damage: Vec<Geometry>) -> Vec<Geometry> {
 pub struct RenderRevision(u64);
 
 /// The `Render` struct preserves the visual data derived from a snapshot so UI primitives can be submitted to the renderer.
+///
+/// Its contents are shared, so cloning a render costs a reference count instead of
+/// copying every element. The engine reuses the buffers of a render nobody else
+/// holds; a consumer that retains a clone keeps it intact while the next one is built.
 #[derive(Clone)]
 pub struct Render {
+	contents: std::sync::Arc<RenderContents>,
+}
+
+impl std::ops::Deref for Render {
+	type Target = RenderContents;
+
+	fn deref(&self) -> &Self::Target {
+		&self.contents
+	}
+}
+
+/// The `RenderContents` struct holds the primitive lists a [`Render`] shares.
+pub struct RenderContents {
 	pub(crate) surface_revision: RenderRevision,
 	pub(crate) surface_ids: std::sync::Arc<[u32]>,
 	/// The viewport defines layout units independently of the root visual transform.
@@ -1732,6 +1911,75 @@ mod tests {
 			!damage_covers(&damage, 0.0, 0.0, 100.0, 100.0),
 			"the unchanged root is not damaged: {damage:?}"
 		);
+	}
+
+	/// A transform edit takes the incremental render path; damage still covers the moved
+	/// box's old and new bounds and nothing of the untouched sibling.
+	#[test]
+	fn transformed_element_damages_old_and_new_bounds_only() {
+		let mut engine = Engine::new();
+		let offset = Rc::new(std::cell::Cell::new(0.0f32));
+		let shared = Rc::clone(&offset);
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				// Enough untouched siblings that the moved subtree is a small share of the tree.
+				for slot in 0..12 {
+					root.element("static").container(
+						Container::default()
+							.width(10.into())
+							.height(10.into())
+							.absolute_position(80, 80 + slot),
+					);
+				}
+				let mut moved = root.element("moved").container(
+					Container::default()
+						.width(10.into())
+						.height(10.into())
+						.absolute_position(0, 0)
+						.clip(false),
+				);
+				// Its child sits apart from the parent's own bounds, so its damage is separate.
+				moved.element("child").container(
+					Container::default()
+						.width(10.into())
+						.height(10.into())
+						.absolute_position(20, 20),
+				);
+				let mut applied = 0.0f32;
+				loop {
+					if shared.get() != applied {
+						applied = shared.get();
+						moved.update_container(|container| {
+							container.set_transform(Transform::identity().translate(applied, applied))
+						});
+					}
+					ctx.render().await;
+				}
+			})
+		});
+		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
+		offset.set(50.0);
+		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (base, damage) = damage.expect("a second render is relative to the first");
+		assert_ne!(first, second);
+		assert_eq!(base, first);
+		assert!(damage_covers(&damage, 0.0, 0.0, 10.0, 10.0), "old bounds: {damage:?}");
+		assert!(damage_covers(&damage, 50.0, 50.0, 10.0, 10.0), "new bounds: {damage:?}");
+		assert!(damage_covers(&damage, 20.0, 20.0, 10.0, 10.0), "old child bounds: {damage:?}");
+		assert!(damage_covers(&damage, 70.0, 70.0, 10.0, 10.0), "new child bounds: {damage:?}");
+		assert!(
+			!damage.iter().any(|rect| rect.right() > 80.0 && rect.bottom() > 80.0 && rect.x() < 80.0),
+			"the untouched sibling is not damaged: {damage:?}"
+		);
+		// A second move damages the previous and the next bounds again, without the first.
+		offset.set(20.0);
+		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
+		let (base, damage) = damage.expect("relative damage");
+		assert_eq!(base, second);
+		assert!(damage_covers(&damage, 50.0, 50.0, 10.0, 10.0), "previous bounds: {damage:?}");
+		assert!(damage_covers(&damage, 20.0, 20.0, 10.0, 10.0), "next bounds: {damage:?}");
+		assert!(!damage_covers(&damage, 0.0, 0.0, 10.0, 10.0), "first bounds: {damage:?}");
 	}
 
 	#[test]
@@ -4592,6 +4840,174 @@ mod tests {
 				}
 			})
 		});
+	}
+
+	/// An event that fires while its component is not awaiting it is discarded, even when that component
+	/// awaited the same event before and dropped the wait, as a losing `select!` branch does.
+	#[test]
+	fn dropping_an_event_wait_discards_events_until_the_next_wait() {
+		let allocator = bumpalo::Bump::new();
+		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let out = Rc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut target = root.element("target").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(50.into())
+						.height(50.into()),
+				);
+				// Wait for one click, start and abandon a second wait, then look away for frames.
+				let _ = target.on(Events::Actuated).await;
+				out.borrow_mut().push("first");
+				let mut abandoned = target.on(Events::Actuated);
+				utils::r#async::select! {
+					_ = abandoned => out.borrow_mut().push("unexpected"),
+					_ = ctx.render() => {}
+				}
+				drop(abandoned);
+				for _ in 0..3 {
+					ctx.render().await;
+				}
+				let _ = target.on(Events::Actuated).await;
+				out.borrow_mut().push("second");
+			})
+		});
+		let mut frame = |click: bool| {
+			engine.set_cursor_position(UiPoint::new(-0.5, 0.5));
+			if click {
+				engine.update_click_state(true);
+				engine.update_click_state(false);
+			}
+			let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		};
+		frame(false);
+		frame(true);
+		assert_eq!(*log.borrow(), vec!["first"]);
+		// The abandoned wait ends this frame; clicks during the look-away frames must not replay later.
+		frame(false);
+		frame(true);
+		frame(true);
+		frame(false);
+		frame(false);
+		assert_eq!(*log.borrow(), vec!["first"], "a click fired while no wait was live was kept");
+		frame(true);
+		assert_eq!(*log.borrow(), vec!["first", "second"]);
+	}
+
+	/// While a source is held, the pointer still enters and leaves other surfaces, including ones that
+	/// appear or move under it during the gesture, as a menu opened by the press does. A sector that
+	/// grows open frame by frame is hit as it is now, not as it was when the element was placed.
+	#[test]
+	fn hover_follows_the_pointer_while_a_source_is_held() {
+		for (hold, sector) in [(false, false), (false, true), (true, false), (true, true)] {
+			held_hover_probe(hold, sector);
+		}
+	}
+
+	fn held_hover_probe(hold: bool, sector: bool) {
+		let allocator = bumpalo::Bump::new();
+		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
+		let out = Rc::clone(&log);
+		let mut engine = Engine::new();
+		engine.mount(move |ctx| {
+			Box::pin(async move {
+				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
+				let mut source = root.element("source").container(
+					Container::default()
+						.absolute_position(0, 0)
+						.width(20.into())
+						.height(20.into()),
+				);
+				// A dial parked out of the way until the press moves it under the pointer's path, holding a
+				// sector petal that grows open over the frames after the press.
+				let mut dial = root.element("dial").container(
+					Container::default()
+						.depth(Depth::absolute(3))
+						.absolute_position(500, 500)
+						.width(100.into())
+						.height(100.into())
+						.clip(false)
+						.hit_testable(false),
+				);
+				let mut target = dial.element("target").container(if sector {
+					Container::default()
+						.absolute_position(0, 0)
+						.width(100.into())
+						.height(100.into())
+						.clip(false)
+						.sector(crate::ui::Sector::new(0.0, 0.0, 0.3))
+				} else {
+					Container::default()
+						.absolute_position(50, 50)
+						.width(50.into())
+						.height(50.into())
+						.clip(false)
+				});
+				if hold {
+					let _ = source.on(Events::Grabbed).await;
+				} else {
+					let _ = source.on(Events::Actuated).await;
+				}
+				dial.update_container(|container| container.set_position((0, 0)));
+				let mut step = 0;
+				loop {
+					let event = utils::r#async::select! {
+						event = target.on(Events::PointerEntered) => Some(event.kind),
+						event = target.on(Events::PointerExited) => Some(event.kind),
+						_ = ctx.render() => None,
+					};
+					match event {
+						Some(kind) => out.borrow_mut().push(("target", kind)),
+						None if sector && step < 4 => {
+							step += 1;
+							let sweep = std::f32::consts::FRAC_PI_2 * step as f32 / 4.0;
+							target.update_container(|container| {
+								container.set_sector(Some(crate::ui::Sector::new(
+									std::f32::consts::FRAC_PI_4 - sweep * 0.5,
+									sweep,
+									0.3,
+								)));
+							});
+						}
+						None => {}
+					}
+				}
+			})
+		});
+		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
+		let frame = |engine: &mut Engine, position: UiPoint| {
+			engine.set_cursor_position(position);
+			engine.drag_to(position);
+			for _ in 0..2 {
+				let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+				let _ = engine.render(&mut snapshot);
+			}
+			std::mem::take(&mut *log.borrow_mut())
+		};
+		frame(&mut engine, window(10.0, 10.0));
+		if hold {
+			assert!(engine.press(window(10.0, 10.0)), "the source is under the press");
+		} else {
+			engine.update_click_state(true);
+			engine.update_click_state(false);
+		}
+		for _ in 0..4 {
+			frame(&mut engine, window(10.0, 10.0));
+		}
+		// The petal sweeps the lower-right quadrant of the dial centered at (50, 50).
+		assert_eq!(
+			frame(&mut engine, window(80.0, 80.0)),
+			vec![("target", Events::PointerEntered)],
+			"the held pointer entered the petal that opened under it"
+		);
+		assert_eq!(
+			frame(&mut engine, window(20.0, 80.0)),
+			vec![("target", Events::PointerExited)],
+			"the held pointer left the petal"
+		);
 	}
 
 	#[test]

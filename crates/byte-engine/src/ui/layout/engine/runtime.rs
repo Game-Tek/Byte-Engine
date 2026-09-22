@@ -325,6 +325,24 @@ impl Runtime {
 		self.text_edit_waiters.push(TextEditWaiter { task_id, target, waker });
 	}
 
+	/// Forgets a wait whose future was dropped, so events that fire while nobody awaits them are
+	/// discarded instead of queuing for a later wait. An event already delivered to the task's inbox
+	/// stays: several events can land in one frame, and a component reads them one wait at a time.
+	pub(super) fn cancel_event_wait(&mut self, task_id: TaskId, target: Id, kind: Events) {
+		self.event_waiters
+			.retain(|waiter| !(waiter.task_id == task_id && waiter.target == target && waiter.kind == kind));
+	}
+
+	pub(super) fn cancel_key_wait(&mut self, task_id: TaskId, target: Id, key: Key) {
+		self.key_waiters
+			.retain(|waiter| !(waiter.task_id == task_id && waiter.target == target && waiter.key == key));
+	}
+
+	pub(super) fn cancel_text_edit_wait(&mut self, task_id: TaskId, target: Id) {
+		self.text_edit_waiters
+			.retain(|waiter| !(waiter.task_id == task_id && waiter.target == target));
+	}
+
 	pub(super) fn push_event(&mut self, event: UiEvent) {
 		let mut i = 0;
 		while i < self.event_waiters.len() {

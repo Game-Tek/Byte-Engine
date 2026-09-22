@@ -68,47 +68,52 @@ pub(super) fn prepare_visual_state(elements: &[LayoutElement], tree: &RetainedTr
 	states.clear();
 	states.resize(tree.elements.len(), VisualState::default());
 	for element in elements {
-		let Some(&index) = tree.element_indices.get(&element.id) else {
+		let Some(index) = tree.index_of(element) else {
 			continue;
 		};
-		let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
-		let primitive = &tree.elements[index].element.primitive;
-		// Transforms compose through absolute-depth layers even though clipping restarts there.
-		let scale = composed_scale(inherited.scale, primitive.transform());
-		if matches!(primitive, Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))) {
-			inherited = VisualState::default();
-		}
-		let clip = inherited.descendant_clip;
-		let mask = inherited.descendant_mask;
-		let mut state = VisualState {
-			clip,
-			descendant_clip: clip,
-			mask,
-			descendant_mask: mask,
-			opacity: None,
-			scale,
-		};
-		if let Primitives::Container(container) = primitive
-			&& container.clip
-		{
-			// Descendants clip to the inside of the border, so they never paint over an inset stroke.
-			let border = border_width(container.style.layers());
-			let geometry = geometry_from_layout_element(element).expanded(-border);
-			let corner_radius = (container.corner_radius - border).max(0.0);
-			state.descendant_clip = clip.clip_descendants(geometry);
-			// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
-			let own_feather = first_layer_feather(container.style.layers());
-			state.descendant_mask = (own_feather.is_some() || corner_radius > 0.0)
-				.then(|| ClipMask {
-					geometry,
-					feather: own_feather.unwrap_or_else(EdgeFeather::none),
-					corner_radius,
-					corner_exponent: container.corner_exponent,
-				})
-				.or(mask);
-		}
-		states[index] = state;
+		states[index] = inherited_visual_state(element, index, tree, states);
 	}
+}
+
+/// Derives an element's state from its parent's already resolved state and its own geometry.
+pub(super) fn inherited_visual_state(element: &LayoutElement, index: usize, tree: &RetainedTree, states: &[VisualState]) -> VisualState {
+	let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
+	let primitive = &tree.elements[index].element.primitive;
+	// Transforms compose through absolute-depth layers even though clipping restarts there.
+	let scale = composed_scale(inherited.scale, primitive.transform());
+	if matches!(primitive, Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))) {
+		inherited = VisualState::default();
+	}
+	let clip = inherited.descendant_clip;
+	let mask = inherited.descendant_mask;
+	let mut state = VisualState {
+		clip,
+		descendant_clip: clip,
+		mask,
+		descendant_mask: mask,
+		opacity: None,
+		scale,
+	};
+	if let Primitives::Container(container) = primitive
+		&& container.clip
+	{
+		// Descendants clip to the inside of the border, so they never paint over an inset stroke.
+		let border = border_width(container.style.layers());
+		let geometry = geometry_from_layout_element(element).expanded(-border);
+		let corner_radius = (container.corner_radius - border).max(0.0);
+		state.descendant_clip = clip.clip_descendants(geometry);
+		// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
+		let own_feather = first_layer_feather(container.style.layers());
+		state.descendant_mask = (own_feather.is_some() || corner_radius > 0.0)
+			.then(|| ClipMask {
+				geometry,
+				feather: own_feather.unwrap_or_else(EdgeFeather::none),
+				corner_radius,
+				corner_exponent: container.corner_exponent,
+			})
+			.or(mask);
+	}
+	state
 }
 
 /// Composes an element's visual scale onto its parent's, matching [`Affine2::from_transform`].
@@ -182,75 +187,137 @@ pub(super) fn clipped_hit_elements<'a>(
 	let mut flattened = Vec::new_in(frame_allocator);
 	curves.retain(|id, _| tree.element_indices.contains_key(id));
 
+	// Every hit-testable element keeps an entry, empty when clipped away, so a stable
+	// topology maps tree indices to the same entries across transform edits.
 	for element in elements.iter().filter(|element| element.hit_testable) {
-		let index = tree.element_indices.get(&element.id).copied();
-		let clip = index.map(|index| states[index].clip).unwrap_or(EffectiveClip::Unbounded);
-		let curve = index.and_then(|index| match &tree.elements[index].element.primitive {
-			Primitives::Curve(curve) => curve.hit_width().map(|width| (curve, width, states[index].scale)),
-			_ => None,
-		});
-		// A curve is bounded by its flattened points; the half width is in scaled layout units.
-		let (bounds, half_width) = match curve {
-			Some((curve, width, scale)) => {
-				flattened.clear();
-				let origin = (element.position.x(), element.position.y());
-				let cached = curves.entry(element.id).or_default();
-				cached.update(curve.path().segments(), scale, HIT_CURVE_TOLERANCE);
-				flattened.extend(
-					cached
-						.points
-						.iter()
-						.map(|point| CurvePoint::new(origin.0 + point.x, origin.1 + point.y)),
-				);
-				let half_width = width * scale[0].min(scale[1]) * 0.5;
-				let Some(bounds) = polyline_bounds(&flattened, half_width) else {
-					continue;
-				};
-				(
-					Geometry::new(
-						Location3::new(bounds.0, bounds.1, element.position.z()),
-						Size::new(bounds.2, bounds.3),
-					),
-					Some(half_width),
-				)
-			}
-			None => (geometry_from_layout_element(element), None),
-		};
-		let Some(geometry) = clip.apply(bounds) else {
-			continue;
-		};
-		if geometry.is_empty() {
-			continue;
-		}
-
-		if let Some(half_width) = half_width {
+		let index = tree.index_of(element);
+		let entry = hit_entry(element, index, tree, states, curves, &mut flattened);
+		if let Some(half_width) = entry.half_width {
 			hit.curves.push(HitCurve {
 				id: element.id.get(),
 				half_width,
 				first: hit.points.len() as u32,
 				count: flattened.len() as u32,
 			});
-			hit.points
-				.extend(flattened.iter().map(|point| Location::new(point.x, point.y)));
+			hit.points.extend_from_slice(&flattened);
 		}
+		// Placement is reused across sector edits, so the shape is read from the tree as it is now.
+		let sector = index.and_then(|index| match &tree.elements[index].element.primitive {
+			Primitives::Container(container) => container.sector,
+			_ => None,
+		});
 		hit.elements.push(LayoutElement {
 			id: element.id,
-			position: Location3::new(geometry.x(), geometry.y(), element.position.z()),
-			size: geometry.size,
+			index: element.index,
+			position: entry.position,
+			size: entry.size,
 			hit_testable: element.hit_testable,
+			sector,
 		});
 	}
 
 	hit
 }
 
+/// One element's clipped hit bounds; `half_width` is set for a curve, whose polyline
+/// is left in `flattened` in layout units.
+struct HitEntry {
+	position: Location3,
+	size: Size,
+	half_width: Option<f32>,
+}
+
+fn hit_entry(
+	element: &LayoutElement,
+	index: Option<usize>,
+	tree: &RetainedTree,
+	states: &[VisualState],
+	curves: &mut HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
+	flattened: &mut Vec<Location, &bumpalo::Bump>,
+) -> HitEntry {
+	flattened.clear();
+	let clip = index.map(|index| states[index].clip).unwrap_or(EffectiveClip::Unbounded);
+	let curve = index.and_then(|index| match &tree.elements[index].element.primitive {
+		Primitives::Curve(curve) => curve.hit_width().map(|width| (curve, width, states[index].scale)),
+		_ => None,
+	});
+	// A curve is bounded by its flattened points; the half width is in scaled layout units.
+	let (bounds, half_width) = match curve {
+		Some((curve, width, scale)) => {
+			let origin = (element.position.x(), element.position.y());
+			let cached = curves.entry(element.id).or_default();
+			cached.update(curve.path().segments(), scale, HIT_CURVE_TOLERANCE);
+			flattened.extend(
+				cached
+					.points
+					.iter()
+					.map(|point| Location::new(origin.0 + point.x, origin.1 + point.y)),
+			);
+			let half_width = width * scale[0].min(scale[1]) * 0.5;
+			let bounds = polyline_bounds(flattened, half_width).map(|bounds| {
+				Geometry::new(
+					Location3::new(bounds.0, bounds.1, element.position.z()),
+					Size::new(bounds.2, bounds.3),
+				)
+			});
+			(bounds, Some(half_width))
+		}
+		None => (Some(geometry_from_layout_element(element)), None),
+	};
+	let geometry = bounds.and_then(|bounds| clip.apply(bounds)).filter(|geometry| !geometry.is_empty());
+	match geometry {
+		Some(geometry) => HitEntry {
+			position: Location3::new(geometry.x(), geometry.y(), element.position.z()),
+			size: geometry.size,
+			half_width,
+		},
+		None => HitEntry {
+			position: Location3::new(0.0, 0.0, element.position.z()),
+			size: Size::new(0.0, 0.0),
+			half_width,
+		},
+	}
+}
+
+/// Refreshes the retained hit entries of moved elements instead of rebuilding the index.
+///
+/// Returns `false` when the index must be rebuilt: a curve's polyline changed length,
+/// an entry moved past the grid, or the index was not retained for this topology.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn refresh_hit_entries(
+	dirty: &[usize],
+	elements: &[LayoutElement],
+	tree: &RetainedTree,
+	states: &[VisualState],
+	indices: &[usize],
+	hit_offsets: &[u32],
+	curves: &mut HashMap<Id, crate::ui::components::curve::FlattenedCurve>,
+	acceleration: &mut MouseClickAcceleration,
+	frame_allocator: &bumpalo::Bump,
+) -> bool {
+	let mut flattened = Vec::new_in(frame_allocator);
+	for &index in dirty {
+		let hit_offset = hit_offsets[index];
+		if hit_offset == u32::MAX {
+			continue;
+		}
+		let entry = hit_entry(&elements[indices[index]], Some(index), tree, states, curves, &mut flattened);
+		let curve = entry.half_width.map(|half_width| (half_width, flattened.as_slice()));
+		if !acceleration.patch(hit_offset as usize, entry.position, entry.size, curve) {
+			return false;
+		}
+	}
+	acceleration.commit();
+	true
+}
+
 /// Bounds of a polyline widened by `half_width`, as (x, y, width, height).
-fn polyline_bounds(points: &[CurvePoint], half_width: f32) -> Option<(f32, f32, f32, f32)> {
+fn polyline_bounds(points: &[Location], half_width: f32) -> Option<(f32, f32, f32, f32)> {
 	let mut min = (f32::INFINITY, f32::INFINITY);
 	let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
 	for point in points {
-		min = (min.0.min(point.x), min.1.min(point.y));
-		max = (max.0.max(point.x), max.1.max(point.y));
+		min = (min.0.min(point.x()), min.1.min(point.y()));
+		max = (max.0.max(point.x()), max.1.max(point.y()));
 	}
 	if points.is_empty() || !half_width.is_finite() {
 		return None;
@@ -265,6 +332,10 @@ fn polyline_bounds(points: &[CurvePoint], half_width: f32) -> Option<(f32, f32, 
 
 /// Updates one visual subtree from its retained, untransformed placement.
 /// Parent transforms outside this boundary remain valid after a local edit.
+///
+/// Every placed element it visits is appended to `dirty`, parents before children,
+/// for the stages that refresh appearance, hit geometry, and render entries in place.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn update_visual_subtree(
 	index: usize,
 	tree: &RetainedTree,
@@ -273,6 +344,7 @@ pub(super) fn update_visual_subtree(
 	resolved: &mut [Affine2],
 	elements: &mut [LayoutElement],
 	work: &mut Vec<usize>,
+	dirty: &mut Vec<usize>,
 ) {
 	work.clear();
 	work.push(index);
@@ -281,6 +353,7 @@ pub(super) fn update_visual_subtree(
 		if offset == usize::MAX {
 			continue;
 		}
+		dirty.push(index);
 		let local = placement[offset];
 		let parent = tree.parents[index].map_or_else(Affine2::identity, |parent| resolved[parent]);
 		let transform = parent.compose(Affine2::from_transform(

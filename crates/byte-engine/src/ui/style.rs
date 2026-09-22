@@ -129,6 +129,18 @@ impl ConcreteStyle {
 	pub fn layers(&self) -> &[ConcreteLayer] {
 		&self.layers
 	}
+
+	/// Replaces the layers in place, keeping this style's storage.
+	///
+	/// Equal layers leave the style untouched, and different ones reuse its capacity, so a
+	/// per-frame edit that passes a layer array allocates nothing.
+	pub fn set_layers(&mut self, layers: impl AsRef<[ConcreteLayer]>) {
+		let layers = layers.as_ref();
+		if self.layers.as_slice() != layers {
+			self.layers.clear();
+			self.layers.extend(layers.iter().cloned());
+		}
+	}
 }
 
 #[derive(Clone, PartialEq)]
@@ -224,6 +236,18 @@ impl Layer for ConcreteLayer {
 
 	fn backdrop_blur_radius(&self) -> f32 {
 		self.backdrop_blur_radius
+	}
+}
+
+impl AsRef<[ConcreteLayer]> for ConcreteStyle {
+	fn as_ref(&self) -> &[ConcreteLayer] {
+		&self.layers
+	}
+}
+
+impl AsRef<[ConcreteLayer]> for ConcreteLayer {
+	fn as_ref(&self) -> &[ConcreteLayer] {
+		std::slice::from_ref(self)
 	}
 }
 

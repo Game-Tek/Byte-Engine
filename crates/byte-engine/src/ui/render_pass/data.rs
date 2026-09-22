@@ -72,6 +72,7 @@ pub(super) struct UiDrawElement {
 	pub(super) color: [f32; 4],
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
+	pub(super) sector: Option<Sector>,
 	pub(super) layer_kind: LayerKind,
 	pub(super) stroke_width: f32,
 }
@@ -87,6 +88,7 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) color: [f32; 4],
 	pub(super) corner_radius: f32,
 	pub(super) corner_exponent: f32,
+	pub(super) sector: Option<Sector>,
 	pub(super) radius: f32,
 }
 
@@ -246,6 +248,10 @@ pub(super) const UI_KIND_CURVE: u32 = 2;
 pub(super) const UI_KIND_IMAGE: u32 = 3;
 pub(super) const UI_KIND_SLUG_GLYPH: u32 = 4;
 pub(super) const UI_KIND_ATLAS_GLYPH: u32 = 5;
+pub(super) const UI_KIND_SECTOR: u32 = 6;
+pub(super) const UI_KIND_SECTOR_BLUR: u32 = 7;
+/// Fixed point steps per pixel of a sector primitive's edge inset in `data0`.
+pub(super) const SECTOR_INSET_SCALE: f32 = 256.0;
 /// Curve piece flags: the piece's segment rounds off its start or its end.
 pub(super) const UI_CURVE_CAP_START: u32 = 1;
 pub(super) const UI_CURVE_CAP_END: u32 = 2;
@@ -258,6 +264,7 @@ pub(super) const UI_CURVE_CAP_END: u32 = 2;
 /// | Kind | `bounds` | `a` | `b` | `data0` | `data1` |
 /// | --- | --- | --- | --- | --- | --- |
 /// | Rectangle, blur | clipped quad | unclipped x, y, width, height | corner radius, corner exponent, stroke width, blur resolution mix | | |
+/// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | |
 /// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
 /// | Image | clipped quad | texture rectangle | | texture slot | |
 /// | Slug glyph | clipped quad | pen x, pen y, pixels per em | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
@@ -965,6 +972,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
+				sector: element.sector,
 				layer_kind: layer.kind,
 				stroke_width,
 			});
@@ -993,6 +1001,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
+				sector: element.sector,
 				radius,
 			});
 		}

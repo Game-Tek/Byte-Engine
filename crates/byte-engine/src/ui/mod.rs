@@ -42,13 +42,14 @@ pub mod timer;
 pub mod transform;
 #[doc(hidden)]
 pub mod visual;
+pub mod watch;
 
 pub use animation::{
 	Animation, AnimationDriver, BackOut, Curves, Easing, Interpolate, Smoothing, Spring, Track, animate, back_out, ease_in,
 	ease_in_out, ease_out, ease_out_cubic, ease_out_quart, emphasized_out, smooth, spring,
 };
 pub use components::{
-	container::Container,
+	container::{Container, Sector},
 	curve::{Curve, CurvePath, CurvePoint, CurveSegment},
 	image::Image,
 	text::Text,
@@ -69,3 +70,4 @@ pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKi
 pub use timer::{WaitFuture, seconds, wait};
 pub use transform::Transform;
 pub use visual::Visual;
+pub use watch::{Subscriber, Watch};

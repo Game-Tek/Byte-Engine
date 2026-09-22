@@ -8,6 +8,66 @@ use crate::ui::{
 	style::ConcreteStyle,
 };
 
+/// An annular sector a container is shaped as instead of a rounded rectangle.
+///
+/// The sector is centered in the container and its outer radius is half the shorter side.
+/// Angles are radians; zero points right and they grow clockwise on screen. A `sweep` of a
+/// full turn or more is a ring, and `inner` is the hole radius as a ratio of the outer radius,
+/// where zero makes a pie slice. `inset` pulls both straight edges inward by that many layout
+/// units, so neighboring sectors keep a constant gap from hub to rim instead of an angular one.
+/// Painting and pointer hits follow the sector; a clipping sector still masks its
+/// descendants to its rectangle and corner radius.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sector {
+	pub start: f32,
+	pub sweep: f32,
+	pub inner: f32,
+	pub inset: f32,
+}
+
+impl Sector {
+	pub const FULL_TURN: f32 = std::f32::consts::TAU;
+
+	pub fn new(start: f32, sweep: f32, inner: f32) -> Self {
+		Self {
+			start,
+			sweep,
+			inner,
+			inset: 0.0,
+		}
+	}
+
+	pub fn inset(self, inset: f32) -> Self {
+		Self { inset, ..self }
+	}
+
+	/// Reports whether a point, measured from the sector's center with the outer radius given, lies in it.
+	pub fn contains(&self, dx: f32, dy: f32, outer: f32) -> bool {
+		let radius = dx.hypot(dy);
+		if radius > outer || radius < self.inner.clamp(0.0, 1.0) * outer {
+			return false;
+		}
+		if self.sweep >= Self::FULL_TURN {
+			return true;
+		}
+		let sweep = self.sweep.max(0.0);
+		let angle = (dy.atan2(dx) - self.start).rem_euclid(Self::FULL_TURN);
+		if angle >= sweep {
+			return false;
+		}
+		// Inside the wedge, the point must also clear both straight edges by the inset.
+		let inset = self.inset.max(0.0);
+		if inset <= 0.0 {
+			return true;
+		}
+		[self.start, self.start + sweep].iter().all(|edge| {
+			let (ex, ey) = (edge.cos(), edge.sin());
+			let along = (dx * ex + dy * ey).max(0.0);
+			(dx - ex * along).hypot(dy - ey * along) >= inset
+		})
+	}
+}
+
 pub struct Container {
 	min_width: Option<Sizing>,
 	min_height: Option<Sizing>,
@@ -15,6 +75,7 @@ pub struct Container {
 	pub height: Sizing,
 	pub corner_radius: f32,
 	pub corner_exponent: f32,
+	pub sector: Option<Sector>,
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	pub depth: Depth,
@@ -36,6 +97,7 @@ pub(crate) struct ContainerProperties {
 	height: Sizing,
 	corner_radius: f32,
 	corner_exponent: f32,
+	sector: Option<Sector>,
 	max_width: Option<Sizing>,
 	max_height: Option<Sizing>,
 	depth: Depth,
@@ -55,6 +117,7 @@ impl Container {
 			height: self.height,
 			corner_radius: self.corner_radius,
 			corner_exponent: self.corner_exponent,
+			sector: self.sector,
 			max_width: self.max_width,
 			max_height: self.max_height,
 			depth: self.depth,
@@ -94,6 +157,14 @@ impl Container {
 
 	pub fn corner_exponent(self, corner_exponent: f32) -> Self {
 		Self { corner_exponent, ..self }
+	}
+
+	/// Shapes this container as an annular sector; see [`Sector`] for the parameters.
+	pub fn sector(self, sector: Sector) -> Self {
+		Self {
+			sector: Some(sector),
+			..self
+		}
 	}
 
 	pub fn min_width(self, min_width: Sizing) -> Self {
@@ -177,8 +248,9 @@ impl Container {
 		}
 	}
 
-	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
-		self.style = style.into();
+	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
+	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
+		self.style.set_layers(style);
 	}
 
 	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
@@ -199,6 +271,10 @@ impl Container {
 
 	pub fn set_opacity(&mut self, opacity: f32) {
 		self.visual.opacity = opacity;
+	}
+
+	pub fn set_sector(&mut self, sector: Option<Sector>) {
+		self.sector = sector;
 	}
 
 	pub fn set_corner_exponent(&mut self, corner_exponent: f32) {
@@ -225,6 +301,7 @@ impl Default for Container {
 			height: Sizing::full(),
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
+			sector: None,
 			min_width: None,
 			min_height: None,
 			max_width: None,

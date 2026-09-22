@@ -16,7 +16,7 @@ use super::{
 	primitive::BasePrimitive,
 };
 use crate::ui::{
-	components::curve::CurveSegment,
+	components::{container::Sector, curve::CurveSegment},
 	element::ConcreteElement,
 	flow::FlowFunction,
 	font::TextSystem,
@@ -34,9 +34,14 @@ pub(crate) struct PathSegment {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LayoutElement {
 	pub(crate) id: Id,
+	/// The element's index in the tree it was laid out from, so walks over a
+	/// snapshot need no ID hashing; see [`retained_tree::RetainedTree::index_of`].
+	pub(crate) index: usize,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) hit_testable: bool,
+	/// The sector a container is shaped as, which its pointer hits follow.
+	pub(crate) sector: Option<Sector>,
 }
 
 /// The `RenderElement` struct stores an element prepared for rendering.
@@ -54,6 +59,7 @@ pub(crate) struct RenderElement {
 	pub(crate) backdrop_blur_radius: f32,
 	pub(crate) corner_radius: f32,
 	pub(crate) corner_exponent: f32,
+	pub(crate) sector: Option<Sector>,
 }
 
 #[derive(Clone)]
@@ -219,12 +225,18 @@ fn layout_elements<'a>(
 			Primitives::Curve(curve) => curve.hit_width().is_some(),
 			_ => false,
 		};
+		let sector = match &element.element.primitive {
+			Primitives::Container(container) => container.sector,
+			_ => None,
+		};
 		slots[index] = output.len();
 		output.push(LayoutElement {
 			id: element.id,
+			index,
 			position,
 			size,
 			hit_testable,
+			sector,
 		});
 		let Primitives::Container(container) = &element.element.primitive else {
 			return;

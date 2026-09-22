@@ -44,8 +44,9 @@ impl TextField {
 		self
 	}
 
-	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
-		self.style = style.into();
+	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
+	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
+		self.style.set_layers(style);
 	}
 
 	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
@@ -56,8 +57,14 @@ impl TextField {
 		self.visual.opacity = opacity;
 	}
 
-	pub fn set_content(&mut self, content: impl Into<String>) {
-		self.content = content.into();
+	/// Replaces the content in place; equal content leaves it untouched and different
+	/// content reuses the existing capacity, so per-frame labels allocate nothing.
+	pub fn set_content(&mut self, content: impl AsRef<str>) {
+		let content = content.as_ref();
+		if self.content != content {
+			self.content.clear();
+			self.content.push_str(content);
+		}
 	}
 
 	pub fn content(&self) -> &str {

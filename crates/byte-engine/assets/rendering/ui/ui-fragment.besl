@@ -99,6 +99,53 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
 	return max(fill_coverage - inner_coverage, 0.0);
 }
 
+// Coverage of an annular sector layer. `rect` is the container's (x, y, width, height) in pixels
+// and `shape` is the inner radius as a ratio of the outer one, the start angle, the sweep, and
+// the stroke width, where zero fills. `inset` pulls both straight edges inward by that many
+// pixels. The sector is centered in the rectangle with the outer radius at half the shorter side;
+// zero radians points right and angles grow clockwise on screen.
+sector_coverage: fn (rect: vec4f, shape: vec4f, inset: f32, pixel: vec2f) -> f32 {
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
+	let outer_radius: f32 = min(half_size.x, half_size.y);
+	let inner_radius: f32 = clamp(shape.x, 0.0, 1.0) * outer_radius;
+	let sweep: f32 = shape.z;
+	let stroke_width: f32 = shape.w;
+	let centered_position: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
+
+	// The ring between the two radii is a plain distance from the ring's mid circle.
+	let radius: f32 = sqrt(dot(centered_position, centered_position));
+	let field_distance: f32 = abs(radius - (outer_radius + inner_radius) * 0.5) - (outer_radius - inner_radius) * 0.5;
+
+	// Anything short of a full turn is also cut by a wedge. Turned so the wedge is symmetric about
+	// the x axis, its field is the distance to the nearer boundary ray, negative inside the wedge.
+	// See Inigo Quilez, "2D distance functions": https://iquilezles.org/articles/distfunctions2d
+	if (sweep < 6.2831855) {
+		let half_sweep: f32 = max(sweep, 0.0) * 0.5;
+		let middle: f32 = shape.y + half_sweep;
+		let turn_cos: f32 = cos(middle);
+		let turn_sin: f32 = sin(middle);
+		let wedge_position: vec2f = vec2f(
+			turn_cos * centered_position.x + turn_sin * centered_position.y,
+			abs(turn_cos * centered_position.y - turn_sin * centered_position.x)
+		);
+		let edge: vec2f = vec2f(cos(half_sweep), sin(half_sweep));
+		let along_edge: f32 = clamp(dot(wedge_position, edge), 0.0, outer_radius);
+		let to_edge: vec2f = wedge_position - edge * along_edge;
+		let wedge_distance: f32 = sqrt(dot(to_edge, to_edge));
+		if (edge.x * wedge_position.y - edge.y * wedge_position.x < 0.0) {
+			wedge_distance = 0.0 - wedge_distance;
+		}
+		field_distance = max(field_distance, wedge_distance + inset);
+	}
+
+	let fill_coverage: f32 = clamp(0.5 - field_distance, 0.0, 1.0);
+	if (stroke_width <= 0.0) {
+		return fill_coverage;
+	}
+	let inner_coverage: f32 = clamp(0.5 - (field_distance + stroke_width), 0.0, 1.0);
+	return max(fill_coverage - inner_coverage, 0.0);
+}
+
 // Coverage of a turned primitive's quad, whose edges the rasterizer cannot resolve. The vertex
 // stage grew the quad by a pixel so each edge fades across the pixels it crosses. A rounded
 // rectangle's field already fades its own edges, so only square shapes and images need this.
@@ -460,6 +507,11 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 	if (kind == 0) {
 		return vec4f(color.x, color.y, color.z, color.w * rect_coverage(primitives[index].a, primitives[index].b, pixel));
 	}
+	// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
+	if (kind == 6) {
+		let inset: f32 = f32(primitives[index].data0) / 256.0;
+		return vec4f(color.x, color.y, color.z, color.w * sector_coverage(primitives[index].a, primitives[index].b, inset, pixel));
+	}
 	// Curve piece.
 	if (kind == 2) {
 		let coverage: f32 = curve_coverage(
@@ -483,6 +535,12 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
 	let blurred: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
+	// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.
+	if (kind == 7) {
+		let shape: vec4f = vec4f(primitives[index].b.x, primitives[index].b.y, primitives[index].b.z, 0.0);
+		let inset: f32 = f32(primitives[index].data0) / 256.0;
+		return vec4f(blurred.x, blurred.y, blurred.z, sector_coverage(primitives[index].a, shape, inset, pixel));
+	}
 	return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(primitives[index].a, primitives[index].b, pixel));
 }
 

@@ -24,7 +24,10 @@ use crate::{
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
 	},
 	ui::{
-		components::curve::{CurvePoint, CurveSegment},
+		components::{
+			container::Sector,
+			curve::{CurvePoint, CurveSegment},
+		},
 		font::TextSystem,
 	},
 };
@@ -995,16 +998,16 @@ mod tests {
 
 	use super::Rotation;
 	use super::{
-		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, UI_ATLAS_TEXTURE_SLOT,
-		UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT, UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT,
-		UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_GLYPH_BAND_CAPACITY, UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH,
-		UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_RECT, UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush,
-		UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement,
-		UiMaskTable, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement,
-		blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent, blur_half_sigma,
-		blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached,
-		build_ui_slug_geometry, clear_primitive, curve_piece_count, should_draw_image, should_rasterize_text,
-		update_from_render,
+		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_INSET_SCALE,
+		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT,
+		UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT, UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_GLYPH_BAND_CAPACITY,
+		UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_RECT, UI_KIND_SECTOR,
+		UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
+		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPixelRegion, UiPreparedFrame, UiPrimitive,
+		UiPrimitives, UiStep, UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions,
+		blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution,
+		blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count,
+		should_draw_image, should_rasterize_text, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2299,6 +2302,7 @@ mod tests {
 			color: [1.0, 1.0, 1.0, 1.0],
 			corner_radius,
 			corner_exponent,
+			sector: None,
 			layer_kind: LayerKind::Fill,
 			stroke_width: 0.0,
 		}
@@ -2388,6 +2392,7 @@ mod tests {
 				color: [0.0, 0.0, 0.0, 0.45],
 				corner_radius: 8.0,
 				corner_exponent: 2.0,
+				sector: None,
 				radius: 18.0,
 			}],
 			..UiDrawList::default()
@@ -2442,6 +2447,7 @@ mod tests {
 				color: [0.0; 4],
 				corner_radius: 0.0,
 				corner_exponent: 2.0,
+				sector: None,
 				radius: 8.0,
 			}],
 			curves: vec![UiCurveDrawElement {
@@ -3291,6 +3297,73 @@ mod tests {
 			},
 			&mut [],
 		)
+	}
+
+	/// Executes the production UI fragment shader for one fragment of a sector layer.
+	fn run_ui_sector_fragment_vm(rect: [f32; 4], sector: Sector, stroke_width: f32, pixel_position: [f32; 2]) -> f32 {
+		let primitive = UiPrimitive {
+			bounds: [rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]],
+			color: [1.0, 1.0, 1.0, 1.0],
+			a: rect,
+			b: [sector.inner, sector.start, sector.sweep, stroke_width],
+			kind: UI_KIND_SECTOR,
+			data0: (sector.inset * SECTOR_INSET_SCALE) as u32,
+			..UiPrimitive::default()
+		};
+		UiFragmentVm::new(&[primitive], &[UiClipMaskEntry::NONE], None).run(
+			UiVaryings {
+				pixel_position,
+				..UiVaryings::default()
+			},
+			&mut [],
+		)[3]
+	}
+
+	/// Verifies the sector field covers the ring inside its sweep and nothing else.
+	#[test]
+	fn ui_fragment_besl_vm_covers_only_the_sector() {
+		let rect = [0.0, 0.0, 200.0, 200.0];
+		// A quarter ring from straight down to the left, spanning half the radius outward.
+		let sector = Sector::new(std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2, 0.5);
+		let coverage = |x: f32, y: f32| run_ui_sector_fragment_vm(rect, sector, 0.0, [x, y]);
+
+		// Inside the ring, in the swept quadrant, which is down-left on screen.
+		assert!(coverage(100.0 - 50.0, 100.0 + 50.0) > 0.99);
+		// The same radius in the three other quadrants is outside the sweep.
+		assert!(coverage(100.0 + 50.0, 100.0 + 50.0) < 0.01);
+		assert!(coverage(100.0 - 50.0, 100.0 - 50.0) < 0.01);
+		assert!(coverage(100.0 + 50.0, 100.0 - 50.0) < 0.01);
+		// Inside the hole and past the outer radius.
+		assert!(coverage(100.0 - 20.0, 100.0 + 20.0) < 0.01);
+		assert!(coverage(100.0 - 90.0, 100.0 + 90.0) < 0.01);
+
+		// An inset clears a constant band along each straight edge. The start edge points straight down,
+		// so pixels left of it by less than the inset are out while those further left are in.
+		let inset = sector.inset(6.0);
+		assert!(run_ui_sector_fragment_vm(rect, inset, 0.0, [100.0 - 3.0, 100.0 + 70.0]) < 0.01);
+		assert!(run_ui_sector_fragment_vm(rect, inset, 0.0, [100.0 - 10.0, 100.0 + 70.0]) > 0.99);
+
+		// A full turn ignores the start angle and covers the whole ring.
+		let ring = Sector::new(3.0, Sector::FULL_TURN, 0.5);
+		assert!(run_ui_sector_fragment_vm(rect, ring, 0.0, [100.0 + 50.0, 100.0 - 50.0]) > 0.99);
+
+		// A stroke keeps the boundary and drops the interior.
+		let stroked = |x: f32, y: f32| run_ui_sector_fragment_vm(rect, sector, 4.0, [x, y]);
+		assert!(stroked(100.0 - 50.0, 100.0 + 50.0) < 0.01);
+		// Two pixels inside the outer edge, along the middle of the sweep.
+		assert!(
+			stroked(
+				100.0 - 98.0 * std::f32::consts::FRAC_1_SQRT_2,
+				100.0 + 98.0 * std::f32::consts::FRAC_1_SQRT_2
+			) > 0.9
+		);
+		// Inside the inner edge as well, where the stroke also runs.
+		assert!(
+			stroked(
+				100.0 - 52.0 * std::f32::consts::FRAC_1_SQRT_2,
+				100.0 + 52.0 * std::f32::consts::FRAC_1_SQRT_2
+			) > 0.9
+		);
 	}
 
 	/// Verifies a centered fill fragment emits its unmodified layer color.

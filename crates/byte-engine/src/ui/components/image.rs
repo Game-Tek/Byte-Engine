@@ -98,8 +98,9 @@ impl Image {
 		self.version = self.version.wrapping_add(1);
 	}
 
-	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
-		self.style = style.into();
+	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
+	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
+		self.style.set_layers(style);
 	}
 
 	pub fn set_transform(&mut self, transform: impl Into<Transform>) {

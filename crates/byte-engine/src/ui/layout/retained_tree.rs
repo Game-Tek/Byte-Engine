@@ -3,7 +3,7 @@ use std::{
 	collections::{HashMap, HashSet},
 };
 
-use super::{ConcreteElement, Id, IdedElement, PathSegment};
+use super::{ConcreteElement, Id, IdedElement, LayoutElement, PathSegment};
 use crate::ui::{
 	components::{container::ContainerProperties, curve::CurveSegment, text::TextSettings, text_field::TextFieldSettings},
 	flow::{self, FlowOutput},
@@ -133,7 +133,18 @@ fn flow_type(primitive: &Primitives) -> Option<std::any::TypeId> {
 }
 
 // Clip inheritance depends on these container properties, independently of paint color.
-fn clip_inputs(primitive: &Primitives) -> Option<(bool, bool, f32, f32, Option<EdgeFeather>)> {
+/// The inputs whose change rebuilds clipping and hit geometry. A sector belongs here: it reshapes what the
+/// pointer can hit without moving the element.
+fn clip_inputs(
+	primitive: &Primitives,
+) -> Option<(
+	bool,
+	bool,
+	f32,
+	f32,
+	Option<crate::ui::components::container::Sector>,
+	Option<EdgeFeather>,
+)> {
 	let Primitives::Container(container) = primitive else {
 		return None;
 	};
@@ -142,6 +153,7 @@ fn clip_inputs(primitive: &Primitives) -> Option<(bool, bool, f32, f32, Option<E
 		matches!(container.depth, super::Depth::Absolute(_)),
 		container.corner_radius,
 		container.corner_exponent,
+		container.sector,
 		container
 			.style
 			.layers()
@@ -470,6 +482,17 @@ impl RetainedTree {
 	}
 
 	/// Restores index-based links after removal compacts the live elements.
+	/// Resolves a laid-out element to its tree index without hashing.
+	///
+	/// A snapshot older than a structural edit can carry a stale index, so the
+	/// carried index is trusted only when the element there still has the same ID.
+	pub(super) fn index_of(&self, element: &LayoutElement) -> Option<usize> {
+		match self.elements.get(element.index) {
+			Some(candidate) if candidate.id == element.id => Some(element.index),
+			_ => self.element_indices.get(&element.id).copied(),
+		}
+	}
+
 	pub(super) fn rebuild_element_indices(&mut self) {
 		self.element_indices.clear();
 		for (index, element) in self.elements.iter().enumerate() {

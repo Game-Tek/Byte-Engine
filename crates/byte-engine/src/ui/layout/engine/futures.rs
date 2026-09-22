@@ -382,6 +382,18 @@ impl FusedFuture for EventFuture {
 	}
 }
 
+impl Drop for EventFuture {
+	/// A wait that ends without its event, such as a losing `select!` branch, stops listening. Events
+	/// only reach a component while it awaits them, so nothing is kept for a later wait.
+	fn drop(&mut self) {
+		if !self.complete {
+			self.runtime
+				.borrow_mut()
+				.cancel_event_wait(self.task_id, self.target, self.kind);
+		}
+	}
+}
+
 pub struct KeyFuture {
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) task_id: TaskId,
@@ -418,6 +430,14 @@ impl FusedFuture for KeyFuture {
 	}
 }
 
+impl Drop for KeyFuture {
+	fn drop(&mut self) {
+		if !self.complete {
+			self.runtime.borrow_mut().cancel_key_wait(self.task_id, self.target, self.key);
+		}
+	}
+}
+
 pub struct TextEditFuture {
 	pub(super) runtime: Rc<RefCell<Runtime>>,
 	pub(super) task_id: TaskId,
@@ -450,5 +470,13 @@ impl Future for TextEditFuture {
 impl FusedFuture for TextEditFuture {
 	fn is_terminated(&self) -> bool {
 		self.complete
+	}
+}
+
+impl Drop for TextEditFuture {
+	fn drop(&mut self) {
+		if !self.complete {
+			self.runtime.borrow_mut().cancel_text_edit_wait(self.task_id, self.target);
+		}
 	}
 }

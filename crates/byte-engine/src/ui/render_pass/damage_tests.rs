@@ -30,6 +30,7 @@ fn element(order: u32, position: [f32; 2], size: [f32; 2]) -> UiDrawElement {
 		color: [1.0, 1.0, 1.0, 1.0],
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
+		sector: None,
 		layer_kind: LayerKind::Fill,
 		stroke_width: 0.0,
 	}
@@ -98,6 +99,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 			color: [1.0; 4],
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
+			sector: None,
 			radius: 8.0,
 		}],
 		..UiDrawList::default()

@@ -73,6 +73,7 @@ fn primitives_preserve_painter_order_for_equal_keys() {
 		color: [color, 0.0, 0.0, 1.0],
 		corner_radius: 0.0,
 		corner_exponent: 2.0,
+		sector: None,
 		layer_kind: LayerKind::Fill,
 		stroke_width: 0.0,
 	};
@@ -166,6 +167,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				color: [1.0; 4],
 				corner_radius: 4.0,
 				corner_exponent: 2.0,
+				sector: None,
 				radius,
 			})
 			.into(),

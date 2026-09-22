@@ -2,7 +2,8 @@
 //! `cargo bench -p byte-engine --bench ui`.
 //!
 //! Every workload is a screen that games ship: a settings menu, a gameplay
-//! HUD, a leaderboard, a kanban board, and a sign-in form. A timed iteration
+//! HUD, a leaderboard, a kanban board, a sign-in form, and a tooltip sliding
+//! over a grid of static cards. A timed iteration
 //! runs whole application ticks the way `sandbox/isometric` does, so results
 //! read as frame costs against a 16.6 ms budget:
 //!
@@ -1558,6 +1559,73 @@ mod sign_in {
 		bencher.bench_local(|| {
 			keystroke(&mut window, step);
 			step += 1;
+		});
+	}
+}
+
+/// A tooltip sliding over a grid of many static, hit-testable cards, as a hover hint does
+/// in `sandbox/ui`: one small subtree moves by a visual transform while everything else
+/// holds, so the cost is what the engine spends outside the moved subtree.
+mod tooltip {
+	use super::*;
+
+	const CARDS: usize = 600;
+	const COLUMNS: usize = 30;
+	/// Frames before the tooltip's path repeats, so every sample sees the same motion.
+	const PERIOD: u32 = 200;
+
+	/// The `Model` struct carries the frame that places the tooltip.
+	#[derive(Default)]
+	struct Model {
+		frame: Cell<u32>,
+	}
+
+	async fn screen(ctx: &mut EvaluationContext<Model>) {
+		let mut root = ctx
+			.element("root")
+			.container(Container::default().size(Sizing::Relative(1, 1)).hit_testable(false));
+		for index in 0..CARDS {
+			let mut card = root.element("card").container(
+				Container::default()
+					.absolute_position((index % COLUMNS * 60) as u32, (index / COLUMNS * 48) as u32)
+					.width(56.into())
+					.height(44.into())
+					.clip(true)
+					.corner_radius(4.0)
+					.style(panel(0.16, 0.18, 0.22)),
+			);
+			if index % 3 == 0 {
+				card.element("label").text(Text::new("Card").font_size(12.0));
+			}
+		}
+		let mut tooltip = root.element("tooltip").container(
+			Container::default()
+				.absolute_position(0u32, 0u32)
+				.width(160.into())
+				.height(56.into())
+				.clip(true)
+				.corner_radius(6.0)
+				.style(panel(0.16, 0.18, 0.22)),
+		);
+		tooltip.element("label").text(Text::new("Tooltip").font_size(14.0));
+		tooltip.element("hint").container(Container::default().size(20.into()).style(panel(0.16, 0.18, 0.22)));
+		loop {
+			let frame = (ctx.ctx().frame.get() % PERIOD) as f32;
+			tooltip.update_container(|value| {
+				value.set_transform(Transform::identity().translate(frame * 7.0, frame * 3.5));
+			});
+			ctx.render().await;
+		}
+	}
+
+	#[divan::bench]
+	fn move_over_cards(bencher: Bencher) {
+		let mut window = Window::new(Model::default(), |ctx| Box::pin(screen(ctx)));
+		window.model().frame.set(window.model().frame.get() + 1);
+		assert!(window.tick(), "Moving the tooltip left the screen unchanged.");
+		bencher.bench_local(|| {
+			window.model().frame.set(window.model().frame.get() + 1);
+			window.tick()
 		});
 	}
 }

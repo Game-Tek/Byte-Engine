@@ -716,3 +716,86 @@ fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
 	assert_eq!(second.click(window(20., 21.)), id.get());
 	assert_eq!(first.click(window(20., 1.)), id.get());
 }
+
+/// A transform edit refreshes clip and mask inheritance inside the moved subtree only,
+/// so nested clips, rounded masks, absolute-depth layers, and untouched siblings must
+/// all match a scene mounted with the transform already applied.
+#[test]
+fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
+	fn scene(outer: Transform, inner: Transform) -> Engine<std::cell::Cell<(Transform, Transform)>> {
+		let mut engine = Engine::with_context(std::cell::Cell::new((outer, inner)));
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let (outer, inner) = ctx.ctx().get();
+				let mut applied = (outer, inner);
+				let mut root = ctx
+					.element("root")
+					.container(Container::default().flow(flow::row).clip(true).corner_radius(6.0));
+				let mut moved = root.element("moved").container(
+					Container::default()
+						.size(120.into())
+						.flow(flow::column)
+						.clip(true)
+						.corner_radius(10.0)
+						.transform(outer),
+				);
+				let mut nested = moved.element("nested").container(
+					Container::default()
+						.size(50.into())
+						.clip(true)
+						.corner_radius(4.0)
+						.opacity(0.5)
+						.transform(inner),
+				);
+				nested.element("leaf").container(Container::default().size(80.into()));
+				nested.element("label").text(Text::new("Inside"));
+				moved
+					.element("overlay")
+					.container(Container::default().size(30.into()).depth(Depth::Absolute(3)));
+				let mut sibling = root
+					.element("sibling")
+					.container(Container::default().size(60.into()).clip(true).corner_radius(8.0));
+				sibling.element("sibling_leaf").container(Container::default().size(90.into()));
+				loop {
+					let (outer, inner) = ctx.ctx().get();
+					if outer != applied.0 {
+						moved.update_container(|value| value.set_transform(outer));
+					}
+					if inner != applied.1 {
+						nested.update_container(|value| value.set_transform(inner));
+					}
+					applied = (outer, inner);
+					ctx.render().await;
+				}
+			})
+		});
+		engine
+	}
+	let arena = bumpalo::Bump::new();
+	let identity = Transform::identity();
+	let mut retained = scene(identity, identity);
+	let _ = retained.evaluate(Size::new(300, 200), &arena);
+	for (outer, inner) in [
+		(identity.translate(15.5, 7.25), identity),
+		(identity.translate(15.5, 7.25), identity.scale(1.6)),
+		(identity.rotate(0.3).scale(0.8), identity.scale(1.6)),
+		(identity.translate(-40., 20.), identity.translate(12., -8.).scale(2.0)),
+		// The nested subtree leaves its parent's clip entirely, then returns.
+		(identity.translate(-40., 20.), identity.translate(400., 0.)),
+		(identity.translate(-40., 20.), identity.translate(12., -8.)),
+		(identity, identity),
+	] {
+		retained.ctx().set((outer, inner));
+		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
+		let mut fresh = scene(outer, inner);
+		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
+		assert_eq!(actual.elements, expected.elements);
+		assert_same_render(retained.render(&mut actual), fresh.render(&mut expected));
+		for y in (0..200).step_by(4) {
+			for x in (0..300).step_by(4) {
+				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0);
+				assert_eq!(actual.click(point), expected.click(point));
+			}
+		}
+	}
+}

@@ -27,8 +27,8 @@ use std::cell::Cell;
 use byte_engine::{
 	ui::{
 		ConcreteLayer, ConcreteStyle, Container, ContainerContext as _, Context, Depth, ElementContext as _, ElementKey,
-		Engine, EvaluationContext, Id, Key, Render, RenderRevision, Size, Sizing, Text, TextField, Transform, UiFuture,
-		UiPoint, UiVector, flow, intersection::HitTest, primitive::Events,
+		Engine, EvaluationContext, Id, Key, Properties, Render, RenderRevision, Size, Sizing, Text, Transform, UiPoint,
+		UiVector, flow, intersection::HitTest, primitive::Events,
 	},
 	utils::{RGBA, r#async::select_biased},
 };
@@ -57,7 +57,7 @@ impl<C: 'static> Window<C> {
 	/// Mounts a screen and runs its cold first frame.
 	fn new<F>(model: C, root: F) -> Self
 	where
-		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
+		F: AsyncFnOnce(&mut EvaluationContext<C>) + 'static,
 	{
 		let mut engine = Engine::with_context(model);
 		engine.mount(root);
@@ -135,10 +135,15 @@ fn fill(r: f32, g: f32, b: f32, a: f32) -> ConcreteLayer {
 }
 
 /// A filled surface with a hairline border, the common panel and card look.
-fn panel(r: f32, g: f32, b: f32) -> ConcreteStyle {
-	ConcreteStyle::new()
-		.layer(fill(r, g, b, 1.0))
-		.layer(fill(1.0, 1.0, 1.0, 0.12).stroke(1.0))
+///
+/// An array of layers is written straight into the element's style, so it allocates nothing on the way.
+fn panel(r: f32, g: f32, b: f32) -> [ConcreteLayer; 2] {
+	[fill(r, g, b, 1.0), fill(1.0, 1.0, 1.0, 0.12).stroke(1.0)]
+}
+
+/// The look of a leaderboard cell, shared by every column.
+fn row_text(text: Properties<'_, Text>) -> Properties<'_, Text> {
+	text.font_size(16.0).style(text_color())
 }
 
 fn text_color() -> ConcreteLayer {
@@ -150,24 +155,26 @@ fn muted_color() -> ConcreteLayer {
 }
 
 /// A non-interactive box that sizes and places one line of text.
-fn cell<C: 'static>(
+async fn cell<C: 'static>(
 	parent: &mut EvaluationContext<C>,
 	key: impl Into<ElementKey>,
 	width: f32,
 	height: f32,
-	text: Text,
+	content: impl std::fmt::Display,
+	text: impl for<'s> FnOnce(Properties<'s, Text>) -> Properties<'s, Text>,
 ) -> EvaluationContext<C> {
 	parent
 		.element(key)
-		.container(
-			Container::default()
-				.width(width.into())
+		.container(|c| {
+			c.width(width.into())
 				.height(height.into())
 				.flow(flow::centered_row)
 				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		)
-		.text(text)
+				.style(ConcreteStyle::new())
+		})
+		.await
+		.text(content, text)
+		.await
 }
 
 fn emphasized_out(t: f32) -> f32 {
@@ -252,91 +259,98 @@ mod settings {
 	}
 
 	fn window() -> Window<Model> {
-		Window::new(Model::default(), |ctx| Box::pin(screen(ctx)))
+		Window::new(Model::default(), async move |ctx| screen(ctx).await)
 	}
 
 	async fn screen(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx.element("root").container(
-			Container::default()
-				.flow(flow::row)
-				.hit_testable(false)
-				.style(fill(0.05, 0.06, 0.08, 1.0)),
-		);
-		let mut sidebar = root.element("sidebar").container(
-			Container::default()
-				.width(280.0.into())
-				.flow(flow::column_with_gap(4))
-				.hit_testable(false)
-				.style(panel(0.08, 0.09, 0.11)),
-		);
-		cell(
-			&mut sidebar,
-			("cell", 1usize),
-			280.0,
-			72.0,
-			Text::new("Settings").font_size(28.0).style(text_color()),
-		);
+		let mut root = ctx
+			.element("root")
+			.container(|c| c.flow(flow::row).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.await;
+		let mut sidebar = root
+			.element("sidebar")
+			.container(|c| {
+				c.width(280.0.into())
+					.flow(flow::column_with_gap(4))
+					.hit_testable(false)
+					.style(panel(0.08, 0.09, 0.11))
+			})
+			.await;
+		cell(&mut sidebar, ("cell", 1usize), 280.0, 72.0, "Settings", |t| {
+			t.font_size(28.0).style(text_color())
+		})
+		.await;
 		for index in 0..CATEGORIES.len() {
 			sidebar
 				.element(("category", index))
-				.component(move |ctx| Box::pin(category_button(ctx, index)));
+				.component(async move |ctx| category_button(ctx, index).await)
+				.await;
 		}
 
-		let mut content = root.element("content").container(
-			Container::default()
-				.width(Sizing::Relative(3, 4))
-				.flow(flow::column_with_gap(16))
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
-		let mut header = content.element("header").container(
-			Container::default()
-				.height(72.0.into())
-				.flow(flow::centered_row)
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
-		let mut title = cell(
-			&mut header,
-			("cell", 2usize),
-			1000.0,
-			72.0,
-			Text::new(CATEGORIES[0]).font_size(32.0).style(text_color()),
-		);
-		header.element("reset").component(|ctx| Box::pin(reset_button(ctx)));
+		let mut content = root
+			.element("content")
+			.container(|c| {
+				c.width(Sizing::Relative(3, 4))
+					.flow(flow::column_with_gap(16))
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
+		let mut header = content
+			.element("header")
+			.container(|c| {
+				c.height(72.0.into())
+					.flow(flow::centered_row)
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
+		let mut title = cell(&mut header, ("cell", 2usize), 1000.0, 72.0, CATEGORIES[0], |t| {
+			t.font_size(32.0).style(text_color())
+		})
+		.await;
+		header
+			.element("reset")
+			.component(async move |ctx| reset_button(ctx).await)
+			.await;
 
 		loop {
 			let category = ctx.with(|c| c.category.get()).await;
-			title.update_text(move |text| text.set_content(CATEGORIES[category]));
+			title.update_text(|t| t.content(CATEGORIES[category])).await;
 			content
 				.element("list")
-				.mount(move |ctx| Box::pin(option_list(ctx, category)))
+				.mount(async move |ctx| option_list(ctx, category).await)
 				.await;
 		}
 	}
 
 	async fn category_button(ctx: &mut EvaluationContext<Model>, index: usize) {
-		let style = |selected: bool| {
+		fn style(button: Properties<'_, Container>, selected: bool) -> Properties<'_, Container> {
 			if selected {
-				panel(0.2, 0.32, 0.55)
+				button.style(panel(0.2, 0.32, 0.55))
 			} else {
-				ConcreteStyle::new().layer(fill(0.0, 0.0, 0.0, 0.0))
+				button.style(fill(0.0, 0.0, 0.0, 0.0))
 			}
-		};
-		let mut button = ctx.element("button").container(
-			Container::default()
-				.width(264.0.into())
-				.height(44.0.into())
-				.corner_radius(8.0)
-				.flow(flow::centered_row)
-				.style(style(index == 0)),
-		);
-		button.element("label").text(
-			Text::new(CATEGORIES[index])
-				.font_size(17.0)
-				.style(text_color())
-				.transform(Transform::identity().translate_x(16.0)),
-		);
+		}
+		let mut button = ctx
+			.element("button")
+			.container(|c| {
+				let c = c
+					.width(264.0.into())
+					.height(44.0.into())
+					.corner_radius(8.0)
+					.flow(flow::centered_row);
+				style(c, index == 0)
+			})
+			.await;
+		button
+			.element("label")
+			.text(CATEGORIES[index], |t| {
+				t.font_size(17.0)
+					.style(text_color())
+					.transform(Transform::identity().translate_x(16.0))
+			})
+			.await;
 		let mut ids = ctx.with(|c| c.categories.get()).await;
 		ids[index] = Some(button.id());
 		ctx.with(|c| c.categories.set(ids)).await;
@@ -350,32 +364,37 @@ mod settings {
 			}
 			if selected != (ctx.with(|c| c.category.get()).await == index) {
 				selected = !selected;
-				button.update_container(move |button| button.set_style(style(selected)));
+				button.update_container(|c| style(c, selected)).await;
 			}
 		}
 	}
 
 	/// Shows one category's options until another category is selected.
 	async fn option_list(ctx: &mut EvaluationContext<Model>, category: usize) {
-		let mut viewport = ctx.element("viewport").container(
-			Container::default()
-				.height(LIST_HEIGHT.into())
-				.corner_radius(12.0)
-				.flow(flow::column)
-				.style(panel(0.07, 0.08, 0.1)),
-		);
+		let mut viewport = ctx
+			.element("viewport")
+			.container(|c| {
+				c.height(LIST_HEIGHT.into())
+					.corner_radius(12.0)
+					.flow(flow::column)
+					.style(panel(0.07, 0.08, 0.1))
+			})
+			.await;
 		ctx.with(|c| c.list.set(Some(viewport.id()))).await;
-		let mut rows = viewport.element("rows").container(
-			Container::default()
-				.height((ROW_HEIGHT * OPTIONS.len() as f32).into())
-				.flow(flow::column)
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
+		let mut rows = viewport
+			.element("rows")
+			.container(|c| {
+				c.height((ROW_HEIGHT * OPTIONS.len() as f32).into())
+					.flow(flow::column)
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
 		for index in 0..OPTIONS.len() {
 			let label = OPTIONS[(index + category * 5) % OPTIONS.len()];
 			rows.element(("option", index))
-				.component(move |ctx| Box::pin(option_row(ctx, index, label)));
+				.component(async move |ctx| option_row(ctx, index, label).await)
+				.await;
 		}
 
 		let max_scroll = ROW_HEIGHT * OPTIONS.len() as f32 - LIST_HEIGHT;
@@ -385,7 +404,7 @@ mod settings {
 				event = viewport.on(Events::Scrolled) => {
 					let delta = event.delta.map_or(0.0, |delta| delta.y);
 					scroll = (scroll - delta * ROW_HEIGHT).clamp(0.0, max_scroll);
-					rows.update_container(move |rows| rows.set_transform(Transform::identity().translate_y(-scroll)));
+					rows.update_container(|c| c.transform(Transform::identity().translate_y(-scroll))).await;
 				},
 				_ = ctx.render() => if ctx.with(|c| c.category.get()).await != category {
 					return;
@@ -402,47 +421,45 @@ mod settings {
 		let knob_offset = |on: bool| Transform::identity().translate_x(if on { 27.0 } else { 3.0 });
 		let mut on = index % 3 != 1;
 
-		let mut row = ctx.element("row").container(
-			Container::default()
-				.height(ROW_HEIGHT.into())
-				.flow(flow::centered_row)
-				.hit_testable(false)
-				.style(fill(1.0, 1.0, 1.0, if index.is_multiple_of(2) { 0.02 } else { 0.0 })),
-		);
-		cell(
-			&mut row,
-			("cell", 3usize),
-			900.0,
-			ROW_HEIGHT,
-			Text::new(label)
-				.font_size(18.0)
+		let mut row = ctx
+			.element("row")
+			.container(|c| {
+				c.height(ROW_HEIGHT.into())
+					.flow(flow::centered_row)
+					.hit_testable(false)
+					.style(fill(1.0, 1.0, 1.0, if index.is_multiple_of(2) { 0.02 } else { 0.0 }))
+			})
+			.await;
+		cell(&mut row, ("cell", 3usize), 900.0, ROW_HEIGHT, label, |t| {
+			t.font_size(18.0)
 				.style(text_color())
-				.transform(Transform::identity().translate_x(24.0)),
-		);
-		let mut value = cell(
-			&mut row,
-			("cell", 4usize),
-			120.0,
-			ROW_HEIGHT,
-			Text::new(state(on)).font_size(16.0).style(muted_color()),
-		);
-		let mut track = row.element("toggle").container(
-			Container::default()
-				.width(52.0.into())
-				.height(28.0.into())
-				.corner_radius(14.0)
-				.flow(flow::centered_row)
-				.style(track_style(on)),
-		);
-		let mut knob = track.element("knob").container(
-			Container::default()
-				.width(22.0.into())
-				.height(22.0.into())
-				.corner_radius(11.0)
-				.hit_testable(false)
-				.transform(knob_offset(on))
-				.style(fill(0.96, 0.97, 0.98, 1.0)),
-		);
+				.transform(Transform::identity().translate_x(24.0))
+		})
+		.await;
+		let mut value = cell(&mut row, ("cell", 4usize), 120.0, ROW_HEIGHT, state(on), |t| {
+			t.font_size(16.0).style(muted_color())
+		})
+		.await;
+		let mut track = row
+			.element("toggle")
+			.container(|c| {
+				c.width(52.0.into())
+					.height(28.0.into())
+					.corner_radius(14.0)
+					.flow(flow::centered_row)
+					.style(track_style(on))
+			})
+			.await;
+		let mut knob = track
+			.element("knob")
+			.container(|c| {
+				c.size(22.0.into())
+					.corner_radius(11.0)
+					.hit_testable(false)
+					.transform(knob_offset(on))
+					.style(fill(0.96, 0.97, 0.98, 1.0))
+			})
+			.await;
 		if index == 5 {
 			ctx.with(|c| c.toggle.set(Some(track.id()))).await;
 		}
@@ -450,101 +467,113 @@ mod settings {
 		loop {
 			track.on(Events::Actuated).await;
 			on = !on;
-			value.update_text(move |text| text.set_content(state(on)));
-			track.update_container(move |track| track.set_style(track_style(on)));
-			knob.update_container(move |knob| knob.set_transform(knob_offset(on)));
+			value.update_text(|t| t.content(state(on))).await;
+			track.update_container(|c| c.style(track_style(on))).await;
+			knob.update_container(|c| c.transform(knob_offset(on))).await;
 		}
 	}
 
 	async fn reset_button(ctx: &mut EvaluationContext<Model>) {
-		let mut button = ctx.element("button").container(
-			Container::default()
-				.width(200.0.into())
-				.height(44.0.into())
-				.corner_radius(8.0)
-				.flow(flow::center)
-				.style(panel(0.16, 0.18, 0.22)),
-		);
+		let mut button = ctx
+			.element("button")
+			.container(|c| {
+				c.width(200.0.into())
+					.height(44.0.into())
+					.corner_radius(8.0)
+					.flow(flow::center)
+					.style(panel(0.16, 0.18, 0.22))
+			})
+			.await;
 		button
 			.element("label")
-			.text(Text::new("Reset to Defaults").font_size(16.0).style(text_color()));
+			.text("Reset to Defaults", |t| t.font_size(16.0).style(text_color()))
+			.await;
 		ctx.with(|c| c.reset.set(Some(button.id()))).await;
 		loop {
 			button.on(Events::Actuated).await;
-			ctx.element("dialog").mount(|ctx| Box::pin(confirm_dialog(ctx))).await;
+			ctx.element("dialog").mount(async move |ctx| confirm_dialog(ctx).await).await;
 		}
 	}
 
 	/// Fades a modal in over the menu, waits for a choice, and fades it out.
 	async fn confirm_dialog(ctx: &mut EvaluationContext<Model>) {
 		ctx.with(|c| c.dialog_open.set(true)).await;
-		let mut backdrop = ctx.element("backdrop").container(
-			Container::default()
-				.depth(Depth::absolute(1))
-				.flow(flow::center)
-				.style(fill(0.0, 0.0, 0.0, 0.0)),
-		);
-		let mut dialog = backdrop.element("dialog").container(
-			Container::default()
-				.width(640.0.into())
-				.height(260.0.into())
-				.corner_radius(24.0)
-				.flow(flow::centered_column)
-				.style(panel(0.1, 0.11, 0.14))
-				.opacity(0.0),
-		);
-		cell(
-			&mut dialog,
-			("cell", 5usize),
-			600.0,
-			72.0,
-			Text::new("Reset all settings?").font_size(28.0).style(text_color()),
-		);
+		let mut backdrop = ctx
+			.element("backdrop")
+			.container(|c| c.depth(Depth::absolute(1)).flow(flow::center).style(fill(0.0, 0.0, 0.0, 0.0)))
+			.await;
+		let mut dialog = backdrop
+			.element("dialog")
+			.container(|c| {
+				c.width(640.0.into())
+					.height(260.0.into())
+					.corner_radius(24.0)
+					.flow(flow::centered_column)
+					.style(panel(0.1, 0.11, 0.14))
+					.opacity(0.0)
+			})
+			.await;
+		cell(&mut dialog, ("cell", 5usize), 600.0, 72.0, "Reset all settings?", |t| {
+			t.font_size(28.0).style(text_color())
+		})
+		.await;
 		cell(
 			&mut dialog,
 			("cell", 6usize),
 			600.0,
 			72.0,
-			Text::new("Every option in every category returns to its default value.")
-				.font_size(16.0)
-				.style(muted_color()),
-		);
-		let mut buttons = dialog.element("buttons").container(
-			Container::default()
-				.width(416.0.into())
-				.height(56.0.into())
-				.flow(flow::row_with_gap(16))
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
-		let mut choice = |name: &'static str, label: &'static str, style: ConcreteStyle| {
-			let mut button = buttons.element(name).container(
-				Container::default()
-					.width(200.0.into())
-					.height(48.0.into())
-					.corner_radius(10.0)
-					.flow(flow::center)
-					.style(style),
-			);
+			"Every option in every category returns to its default value.",
+			|t| t.font_size(16.0).style(muted_color()),
+		)
+		.await;
+		let mut buttons = dialog
+			.element("buttons")
+			.container(|c| {
+				c.width(416.0.into())
+					.height(56.0.into())
+					.flow(flow::row_with_gap(16))
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
+		async fn choice(
+			buttons: &mut EvaluationContext<Model>,
+			name: &'static str,
+			label: &'static str,
+			style: [ConcreteLayer; 2],
+		) -> EvaluationContext<Model> {
+			let mut button = buttons
+				.element(name)
+				.container(|c| {
+					c.width(200.0.into())
+						.height(48.0.into())
+						.corner_radius(10.0)
+						.flow(flow::center)
+						.style(style)
+				})
+				.await;
 			button
 				.element("label")
-				.text(Text::new(label).font_size(18.0).style(text_color()));
+				.text(label, |t| t.font_size(18.0).style(text_color()))
+				.await;
 			button
-		};
-		let mut cancel = choice("cancel", "Cancel", panel(0.16, 0.18, 0.22));
-		let mut confirm = choice("confirm", "Reset", panel(0.7, 0.2, 0.2));
+		}
+		let mut cancel = choice(&mut buttons, "cancel", "Cancel", panel(0.16, 0.18, 0.22)).await;
+		let mut confirm = choice(&mut buttons, "confirm", "Reset", panel(0.7, 0.2, 0.2)).await;
 		ctx.with(|c| c.cancel.set(Some(cancel.id()))).await;
 
 		// Frame-counted easing keeps every round trip the same length regardless of wall-clock time.
-		let mut present = |t: f32| {
-			backdrop.update_container(move |backdrop| backdrop.set_style(fill(0.0, 0.0, 0.0, 0.6 * t)));
-			dialog.update_container(move |dialog| {
-				dialog.set_transform(Transform::identity().translate_y((1.0 - t) * 24.0).scale(0.965 + 0.035 * t));
-				dialog.set_opacity(t);
-			});
-		};
+		async fn present(backdrop: &mut EvaluationContext<Model>, dialog: &mut EvaluationContext<Model>, t: f32) {
+			backdrop.update_container(|c| c.style(fill(0.0, 0.0, 0.0, 0.6 * t))).await;
+			dialog
+				.update_container(|c| {
+					c.transform(Transform::identity().translate_y((1.0 - t) * 24.0).scale(0.965 + 0.035 * t))
+						.opacity(t)
+				})
+				.await;
+		}
 		for frame in 1..=ENTER_FRAMES {
-			present(emphasized_out(frame as f32 / ENTER_FRAMES as f32));
+			present(&mut backdrop, &mut dialog, emphasized_out(frame as f32 / ENTER_FRAMES as f32)).await;
 			ctx.render().await;
 		}
 		select_biased! {
@@ -552,7 +581,7 @@ mod settings {
 			_ = confirm.on(Events::Actuated) => {},
 		}
 		for frame in 1..=EXIT_FRAMES {
-			present(1.0 - frame as f32 / EXIT_FRAMES as f32);
+			present(&mut backdrop, &mut dialog, 1.0 - frame as f32 / EXIT_FRAMES as f32).await;
 			ctx.render().await;
 		}
 		ctx.with(|c| c.dialog_open.set(false)).await;
@@ -715,45 +744,51 @@ mod hud {
 		fps: u32,
 	}
 
-	fn bar<C: 'static>(parent: &mut EvaluationContext<C>, key: &str, color: ConcreteLayer) -> EvaluationContext<C> {
-		let mut track = parent.element(key).container(
-			Container::default()
-				.width(240.0.into())
-				.height(14.0.into())
-				.corner_radius(7.0)
-				.flow(flow::row)
-				.hit_testable(false)
-				.style(fill(0.0, 0.0, 0.0, 0.5)),
-		);
-		track.element("fill").container(
-			Container::default()
-				.width(240.0.into())
-				.height(14.0.into())
-				.corner_radius(7.0)
-				.hit_testable(false)
-				.style(color),
-		)
+	async fn bar<C: 'static>(parent: &mut EvaluationContext<C>, key: &str, color: ConcreteLayer) -> EvaluationContext<C> {
+		let mut track = parent
+			.element(key)
+			.container(|c| {
+				c.width(240.0.into())
+					.height(14.0.into())
+					.corner_radius(7.0)
+					.flow(flow::row)
+					.hit_testable(false)
+					.style(fill(0.0, 0.0, 0.0, 0.5))
+			})
+			.await;
+		track
+			.element("fill")
+			.container(|c| {
+				c.width(240.0.into())
+					.height(14.0.into())
+					.corner_radius(7.0)
+					.hit_testable(false)
+					.style(color)
+			})
+			.await
 	}
 
 	/// Places a HUD group at a window position.
-	fn anchored<C: 'static>(
+	async fn anchored<C: 'static>(
 		parent: &mut EvaluationContext<C>,
 		name: &'static str,
 		(x, y): (f32, f32),
 		(width, height): (f32, f32),
 		flow: impl flow::FlowFunction + 'static,
-		style: impl Into<ConcreteStyle>,
+		style: impl IntoIterator<Item = ConcreteLayer>,
 	) -> EvaluationContext<C> {
-		parent.element(name).container(
-			Container::default()
-				.absolute_position(x, y)
-				.width(width.into())
-				.height(height.into())
-				.corner_radius(12.0)
-				.flow(flow)
-				.hit_testable(false)
-				.style(style),
-		)
+		parent
+			.element(name)
+			.container(|c| {
+				c.absolute_position(x, y)
+					.width(width.into())
+					.height(height.into())
+					.corner_radius(12.0)
+					.flow(flow)
+					.hit_testable(false)
+					.style(style)
+			})
+			.await
 	}
 
 	// Keep the HUD as one component, as games write it: build every widget, then present game state each frame.
@@ -761,7 +796,8 @@ mod hud {
 	async fn hud(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(Container::default().hit_testable(false).style(ConcreteStyle::new()));
+			.container(|c| c.hit_testable(false).style(ConcreteStyle::new()))
+			.await;
 
 		let mut player = anchored(
 			&mut root,
@@ -770,46 +806,41 @@ mod hud {
 			(372.0, 120.0),
 			flow::row_with_gap(16),
 			panel(0.04, 0.05, 0.07),
-		);
-		player.element("portrait").container(
-			Container::default()
-				.width(96.0.into())
-				.height(96.0.into())
-				.corner_radius(10.0)
-				.hit_testable(false)
-				.style(panel(0.3, 0.22, 0.18)),
-		);
-		let mut vitals = player.element("vitals").container(
-			Container::default()
-				.width(240.0.into())
-				.height(112.0.into())
-				.flow(flow::column_with_gap(4))
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
-		cell(
-			&mut vitals,
-			("cell", 7usize),
-			240.0,
-			28.0,
-			Text::new("Kestrel").font_size(20.0).style(text_color()),
-		);
-		let mut health_fill = bar(&mut vitals, "health_bar", fill(0.85, 0.25, 0.25, 1.0));
-		let mut health_text = cell(
-			&mut vitals,
-			("cell", 19usize),
-			240.0,
-			20.0,
-			Text::new("").font_size(14.0).style(text_color()),
-		);
-		let mut mana_fill = bar(&mut vitals, "mana_bar", fill(0.25, 0.5, 0.95, 1.0));
-		let mut mana_text = cell(
-			&mut vitals,
-			("cell", 20usize),
-			240.0,
-			20.0,
-			Text::new("").font_size(14.0).style(text_color()),
-		);
+		)
+		.await;
+		player
+			.element("portrait")
+			.container(|c| {
+				c.size(96.0.into())
+					.corner_radius(10.0)
+					.hit_testable(false)
+					.style(panel(0.3, 0.22, 0.18))
+			})
+			.await;
+		let mut vitals = player
+			.element("vitals")
+			.container(|c| {
+				c.width(240.0.into())
+					.height(112.0.into())
+					.flow(flow::column_with_gap(4))
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
+		cell(&mut vitals, ("cell", 7usize), 240.0, 28.0, "Kestrel", |t| {
+			t.font_size(20.0).style(text_color())
+		})
+		.await;
+		let mut health_fill = bar(&mut vitals, "health_bar", fill(0.85, 0.25, 0.25, 1.0)).await;
+		let mut health_text = cell(&mut vitals, ("cell", 19usize), 240.0, 20.0, "", |t| {
+			t.font_size(14.0).style(text_color())
+		})
+		.await;
+		let mut mana_fill = bar(&mut vitals, "mana_bar", fill(0.25, 0.5, 0.95, 1.0)).await;
+		let mut mana_text = cell(&mut vitals, ("cell", 20usize), 240.0, 20.0, "", |t| {
+			t.font_size(14.0).style(text_color())
+		})
+		.await;
 
 		let mut clock_panel = anchored(
 			&mut root,
@@ -818,21 +849,21 @@ mod hud {
 			(400.0, 72.0),
 			flow::centered_column,
 			panel(0.04, 0.05, 0.07),
-		);
-		let mut clock = cell(
-			&mut clock_panel,
-			("cell", 8usize),
-			400.0,
-			40.0,
-			Text::new("").font_size(28.0).style(text_color()),
-		);
+		)
+		.await;
+		let mut clock = cell(&mut clock_panel, ("cell", 8usize), 400.0, 40.0, "", |t| {
+			t.font_size(28.0).style(text_color())
+		})
+		.await;
 		cell(
 			&mut clock_panel,
 			("cell", 9usize),
 			400.0,
 			24.0,
-			Text::new("Capture the relay (2/3)").font_size(15.0).style(muted_color()),
-		);
+			"Capture the relay (2/3)",
+			|t| t.font_size(15.0).style(muted_color()),
+		)
+		.await;
 
 		let mut minimap = anchored(
 			&mut root,
@@ -841,26 +872,28 @@ mod hud {
 			(240.0, 240.0),
 			flow::center,
 			panel(0.06, 0.09, 0.08),
-		);
+		)
+		.await;
 		let mut markers = Vec::with_capacity(MARKERS);
 		for index in 0..MARKERS {
 			let enemy = index < MOVING_MARKERS;
 			let angle = index as f32 / MARKERS as f32 * TAU;
 			let radius = 30.0 + (index % 4) as f32 * 20.0;
 			markers.push(
-				minimap.element(("marker", index)).container(
-					Container::default()
-						.width(10.0.into())
-						.height(10.0.into())
-						.corner_radius(5.0)
-						.hit_testable(false)
-						.transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
-						.style(if enemy {
-							fill(0.95, 0.3, 0.3, 1.0)
-						} else {
-							fill(0.35, 0.85, 0.5, 1.0)
-						}),
-				),
+				minimap
+					.element(("marker", index))
+					.container(|c| {
+						c.size(10.0.into())
+							.corner_radius(5.0)
+							.hit_testable(false)
+							.transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
+							.style(if enemy {
+								fill(0.95, 0.3, 0.3, 1.0)
+							} else {
+								fill(0.35, 0.85, 0.5, 1.0)
+							})
+					})
+					.await,
 			);
 		}
 
@@ -872,34 +905,40 @@ mod hud {
 			(bar_width, SLOT_SIZE),
 			flow::row_with_gap(8),
 			ConcreteStyle::new(),
-		);
+		)
+		.await;
 		let mut slots = Vec::with_capacity(SLOTS);
 		for (index, key) in ["1", "2", "3", "4", "Q", "E", "R", "F"].into_iter().enumerate() {
-			let mut slot = abilities.element(("slot", index)).container(
-				Container::default()
-					.width(SLOT_SIZE.into())
-					.height(SLOT_SIZE.into())
-					.corner_radius(10.0)
-					.flow(flow::center)
-					.hit_testable(false)
-					.style(panel(0.12 + index as f32 * 0.04, 0.14, 0.2)),
-			);
-			slot.element("key").text(
-				Text::new(key)
-					.font_size(12.0)
-					.style(muted_color())
-					.transform(Transform::identity().translate(-22.0, -22.0)),
-			);
-			let overlay = slot.element("cooldown").container(
-				Container::default()
-					.width(SLOT_SIZE.into())
-					.height(0.0.into())
-					.hit_testable(false)
-					.style(fill(0.0, 0.0, 0.0, 0.6)),
-			);
+			let mut slot = abilities
+				.element(("slot", index))
+				.container(|c| {
+					c.size(SLOT_SIZE.into())
+						.corner_radius(10.0)
+						.flow(flow::center)
+						.hit_testable(false)
+						.style(panel(0.12 + index as f32 * 0.04, 0.14, 0.2))
+				})
+				.await;
+			slot.element("key")
+				.text(key, |t| {
+					t.font_size(12.0)
+						.style(muted_color())
+						.transform(Transform::identity().translate(-22.0, -22.0))
+				})
+				.await;
+			let overlay = slot
+				.element("cooldown")
+				.container(|c| {
+					c.width(SLOT_SIZE.into())
+						.height(0.0.into())
+						.hit_testable(false)
+						.style(fill(0.0, 0.0, 0.0, 0.6))
+				})
+				.await;
 			let seconds = slot
 				.element("seconds")
-				.text(Text::new("").font_size(20.0).style(text_color()));
+				.text("", |t| t.font_size(20.0).style(text_color()))
+				.await;
 			slots.push((overlay, seconds));
 		}
 
@@ -910,18 +949,17 @@ mod hud {
 			(360.0, FEED_LINES as f32 * 28.0),
 			flow::column,
 			ConcreteStyle::new(),
-		);
-		let mut feed: Vec<_> = (0..FEED_LINES)
-			.map(|line| {
-				cell(
-					&mut feed_panel,
-					("line", line),
-					360.0,
-					28.0,
-					Text::new("").font_size(16.0).style(text_color()),
-				)
-			})
-			.collect();
+		)
+		.await;
+		let mut feed = Vec::with_capacity(FEED_LINES);
+		for line in 0..FEED_LINES {
+			feed.push(
+				cell(&mut feed_panel, ("line", line), 360.0, 28.0, "", |t| {
+					t.font_size(16.0).style(text_color())
+				})
+				.await,
+			);
+		}
 
 		let mut fps_panel = anchored(
 			&mut root,
@@ -930,10 +968,12 @@ mod hud {
 			(96.0, 24.0),
 			flow::centered_row,
 			ConcreteStyle::new(),
-		);
+		)
+		.await;
 		let mut fps = fps_panel
 			.element("value")
-			.text(Text::new("").font_size(14.0).style(muted_color()));
+			.text("", |t| t.font_size(14.0).style(muted_color()))
+			.await;
 
 		// Game state drives the HUD; only widgets whose presented value changed are touched.
 		let mut shown: Option<Shown> = None;
@@ -965,49 +1005,62 @@ mod hud {
 			});
 
 			if state.health != previous.health {
-				health_fill.update_container(move |bar| bar.width = (2.4 * state.health as f32).into());
-				health_text.update_text(move |text| text.set_content(format!("{} / 100", state.health)));
+				health_fill
+					.update_container(|c| c.width((2.4 * state.health as f32).into()))
+					.await;
+				health_text
+					.update_text(|t| t.content(format_args!("{} / 100", state.health)))
+					.await;
 			}
 			if state.mana != previous.mana {
-				mana_fill.update_container(move |bar| bar.width = (2.4 * state.mana as f32).into());
-				mana_text.update_text(move |text| text.set_content(format!("{} / 100", state.mana)));
+				mana_fill
+					.update_container(|c| c.width((2.4 * state.mana as f32).into()))
+					.await;
+				mana_text
+					.update_text(|t| t.content(format_args!("{} / 100", state.mana)))
+					.await;
 			}
 			// Enemy markers track their units every frame; friendly markers stay put.
 			for (index, marker) in markers.iter_mut().take(MOVING_MARKERS).enumerate() {
 				let angle = index as f32 / MOVING_MARKERS as f32 * TAU + phase;
 				let radius = 40.0 + 50.0 * (phase * 3.0 + index as f32).sin().abs();
-				marker.update_container(move |marker| {
-					marker.set_transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
-				});
+				marker
+					.update_container(|c| {
+						c.transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
+					})
+					.await;
 			}
 			for (slot, (overlay, seconds)) in slots.iter_mut().enumerate() {
 				let remaining = state.cooldowns[slot];
 				if remaining == previous.cooldowns[slot] {
 					continue;
 				}
-				overlay.update_container(move |overlay| {
-					overlay.height = (SLOT_SIZE * remaining as f32 * 6.0 / COOLDOWN_FRAMES as f32).into()
-				});
-				seconds.update_text(move |text| {
-					if remaining == 0 {
-						text.set_content("");
-					} else {
-						text.set_content(format!("{:.1}", remaining as f32 * 0.1));
-					}
-				});
+				overlay
+					.update_container(|c| c.height((SLOT_SIZE * remaining as f32 * 6.0 / COOLDOWN_FRAMES as f32).into()))
+					.await;
+				if remaining == 0 {
+					seconds.update_text(|t| t.content("")).await;
+				} else {
+					seconds
+						.update_text(|t| t.content(format_args!("{:.1}", remaining as f32 * 0.1)))
+						.await;
+				}
 			}
 			if state.seconds != previous.seconds {
-				clock.update_text(move |text| text.set_content(format!("12:{:02}", 59 - state.seconds)));
+				clock
+					.update_text(|t| t.content(format_args!("12:{:02}", 59 - state.seconds)))
+					.await;
 			}
 			if state.feed != previous.feed {
 				for (line, text) in feed.iter_mut().enumerate() {
 					let entry = FEED[(state.feed as usize + line) % FEED.len()];
-					text.update_text(move |text| text.set_content(entry));
+					text.update_text(|t| t.content(entry)).await;
 				}
 			}
 			if state.fps != previous.fps {
 				const RATES: [u32; 6] = [144, 143, 141, 144, 139, 142];
-				fps.update_text(move |text| text.set_content(format!("{} FPS", RATES[state.fps as usize % RATES.len()])));
+				fps.update_text(|t| t.content(format_args!("{} FPS", RATES[state.fps as usize % RATES.len()])))
+					.await;
 			}
 			shown = Some(state);
 			ctx.render().await;
@@ -1017,7 +1070,7 @@ mod hud {
 	/// Measures a HUD frame during play: moving minimap markers, draining bars, recharging abilities, and ticking text.
 	#[divan::bench]
 	fn gameplay(bencher: Bencher) {
-		let mut window = Window::new(Model::default(), |ctx| Box::pin(hud(ctx)));
+		let mut window = Window::new(Model::default(), async move |ctx| hud(ctx).await);
 		for _ in 0..PERIOD {
 			window.model().frame.set(window.model().frame.get() + 1);
 			assert!(window.tick(), "A gameplay frame left the HUD unchanged.");
@@ -1056,7 +1109,7 @@ mod leaderboard {
 			round: Cell::new(0),
 			body: Cell::new(None),
 		};
-		Window::new(model, |ctx| Box::pin(host(ctx)))
+		Window::new(model, async move |ctx| host(ctx).await)
 	}
 
 	/// Scores stay within a bounded set so live updates reach a steady state.
@@ -1074,15 +1127,13 @@ mod leaderboard {
 
 	/// Opens the leaderboard while it is visible, like a menu navigating to and from it.
 	async fn host(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx.element("root").container(
-			Container::default()
-				.flow(flow::center)
-				.hit_testable(false)
-				.style(fill(0.05, 0.06, 0.08, 1.0)),
-		);
+		let mut root = ctx
+			.element("root")
+			.container(|c| c.flow(flow::center).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.await;
 		loop {
 			if ctx.with(|c| c.visible.get()).await {
-				root.element("board").mount(|ctx| Box::pin(board(ctx))).await;
+				root.element("board").mount(async move |ctx| board(ctx).await).await;
 			} else {
 				ctx.render().await;
 			}
@@ -1091,80 +1142,80 @@ mod leaderboard {
 
 	async fn board(ctx: &mut EvaluationContext<Model>) {
 		let rows = ctx.with(|c| c.rows).await;
-		let mut table = ctx.element("table").container(
-			Container::default()
-				.width(TABLE_WIDTH.into())
-				.height((BODY_HEIGHT + 48.0).into())
-				.corner_radius(12.0)
-				.flow(flow::column)
-				.hit_testable(false)
-				.style(panel(0.07, 0.08, 0.1)),
-		);
-		let mut header = table.element("header").container(
-			Container::default()
-				.height(48.0.into())
-				.flow(flow::row)
-				.hit_testable(false)
-				.style(fill(1.0, 1.0, 1.0, 0.06)),
-		);
+		let mut table = ctx
+			.element("table")
+			.container(|c| {
+				c.width(TABLE_WIDTH.into())
+					.height((BODY_HEIGHT + 48.0).into())
+					.corner_radius(12.0)
+					.flow(flow::column)
+					.hit_testable(false)
+					.style(panel(0.07, 0.08, 0.1))
+			})
+			.await;
+		let mut header = table
+			.element("header")
+			.container(|c| {
+				c.height(48.0.into())
+					.flow(flow::row)
+					.hit_testable(false)
+					.style(fill(1.0, 1.0, 1.0, 0.06))
+			})
+			.await;
 		const COLUMNS: [(&str, f32); 4] = [("#", 80.0), ("Player", 560.0), ("Score", 280.0), ("Status", 280.0)];
 		for (title, width) in COLUMNS {
-			cell(
-				&mut header,
-				title,
-				width,
-				48.0,
-				Text::new(title).font_size(15.0).style(muted_color()),
-			);
+			cell(&mut header, title, width, 48.0, title, |t| {
+				t.font_size(15.0).style(muted_color())
+			})
+			.await;
 		}
 		// Rows share the body as their pointer target; the pointer's height picks the row.
-		let mut body = table.element("body").container(
-			Container::default()
-				.height(BODY_HEIGHT.into())
-				.flow(flow::column)
-				.style(ConcreteStyle::new()),
-		);
+		let mut body = table
+			.element("body")
+			.container(|c| c.height(BODY_HEIGHT.into()).flow(flow::column).style(ConcreteStyle::new()))
+			.await;
 		ctx.with(|c| c.body.set(Some(body.id()))).await;
 
 		let mut lines = Vec::with_capacity(rows);
 		let round = ctx.with(|c| c.round.get()).await;
 		for index in 0..rows {
-			let mut row = body.element(("row", index)).container(
-				Container::default()
-					.height(ROW_HEIGHT.into())
-					.flow(flow::row)
-					.hit_testable(false)
-					.style(row_style(index, false)),
-			);
-			let text = |content: String| Text::new(content).font_size(16.0).style(text_color());
-			cell(
-				&mut row,
-				("cell", 21usize),
-				COLUMNS[0].1,
-				ROW_HEIGHT,
-				text((index + 1).to_string()),
-			);
+			let mut row = body
+				.element(("row", index))
+				.container(|c| {
+					c.height(ROW_HEIGHT.into())
+						.flow(flow::row)
+						.hit_testable(false)
+						.style(row_style(index, false))
+				})
+				.await;
+			cell(&mut row, ("cell", 21usize), COLUMNS[0].1, ROW_HEIGHT, index + 1, row_text).await;
 			cell(
 				&mut row,
 				("cell", 12usize),
 				COLUMNS[1].1,
 				ROW_HEIGHT,
-				text(format!("{}{}", HANDLES[index % HANDLES.len()], index)),
-			);
+				format_args!("{}{}", HANDLES[index % HANDLES.len()], index),
+				row_text,
+			)
+			.await;
 			let score_cell = cell(
 				&mut row,
 				("cell", 22usize),
 				COLUMNS[2].1,
 				ROW_HEIGHT,
-				text(score(index, round).to_string()),
-			);
+				score(index, round),
+				row_text,
+			)
+			.await;
 			cell(
 				&mut row,
 				("cell", 23usize),
 				COLUMNS[3].1,
 				ROW_HEIGHT,
-				text(STATUS[index % STATUS.len()].into()),
-			);
+				STATUS[index % STATUS.len()],
+				row_text,
+			)
+			.await;
 			lines.push((row, score_cell));
 		}
 
@@ -1178,9 +1229,9 @@ mod leaderboard {
 					let index = ((pointer_y - geometry.y()) / ROW_HEIGHT) as usize;
 					if index < rows && selected != Some(index) {
 						if let Some(previous) = selected {
-							lines[previous].0.update_container(move |row| row.set_style(row_style(previous, false)));
+							lines[previous].0.update_container(|c| c.style(row_style(previous, false))).await;
 						}
-						lines[index].0.update_container(move |row| row.set_style(row_style(index, true)));
+						lines[index].0.update_container(|c| c.style(row_style(index, true))).await;
 						selected = Some(index);
 					}
 				},
@@ -1192,7 +1243,7 @@ mod leaderboard {
 					if round != shown_round {
 						shown_round = round;
 						for (index, (_, score_cell)) in lines.iter_mut().enumerate().step_by(10) {
-							score_cell.update_text(move |text| text.set_content(score(index, round).to_string()));
+							score_cell.update_text(|t| t.content(score(index, round))).await;
 						}
 					}
 				},
@@ -1313,27 +1364,31 @@ mod board {
 	async fn board(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(Container::default().hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)));
+			.container(|c| c.hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.await;
 		let root_id = root.id();
-		let mut columns = std::array::from_fn::<_, { COLUMNS.len() }, _>(|index| {
-			let mut column = root.element(COLUMNS[index]).container(
-				Container::default()
-					.absolute_position(160.0 + index as f32 * (COLUMN_WIDTH + COLUMN_GAP), BOARD_TOP)
-					.width(COLUMN_WIDTH.into())
-					.height(760.0.into())
-					.corner_radius(10.0)
-					.flow(flow::column_with_gap(CARD_GAP))
-					.style(panel(0.08, 0.09, 0.1)),
-			);
-			cell(
-				&mut column,
-				("cell", 13usize),
-				COLUMN_WIDTH,
-				44.0,
-				Text::new(COLUMNS[index]).font_size(16.0).style(text_color()),
-			);
-			column
-		});
+		let mut columns = Vec::with_capacity(COLUMNS.len());
+		for index in 0..COLUMNS.len() {
+			let mut column = root
+				.element(COLUMNS[index])
+				.container(|c| {
+					c.absolute_position(160.0 + index as f32 * (COLUMN_WIDTH + COLUMN_GAP), BOARD_TOP)
+						.width(COLUMN_WIDTH.into())
+						.height(760.0.into())
+						.corner_radius(10.0)
+						.flow(flow::column_with_gap(CARD_GAP))
+						.style(panel(0.08, 0.09, 0.1))
+				})
+				.await;
+			cell(&mut column, ("cell", 13usize), COLUMN_WIDTH, 44.0, COLUMNS[index], |t| {
+				t.font_size(16.0).style(text_color())
+			})
+			.await;
+			columns.push(column);
+		}
+		let Ok(mut columns): Result<[_; COLUMNS.len()], _> = columns.try_into() else {
+			unreachable!("one column is declared per name")
+		};
 		let column_ids = columns.each_ref().map(|column| column.id());
 		ctx.with(|c| c.columns.set(column_ids.map(Some))).await;
 
@@ -1341,20 +1396,22 @@ mod board {
 		let mut cards = Vec::with_capacity(TASKS.len());
 		for (index, title) in TASKS.into_iter().enumerate() {
 			let column = index % COLUMNS.len();
-			let mut card = columns[column].element(title).container(
-				Container::default()
-					.width((COLUMN_WIDTH - CARD_INSET * 2.0).into())
-					.height(CARD_HEIGHT.into())
-					.corner_radius(8.0)
-					.transform(placed_at(CARD_INSET, 0.0))
-					.style(panel(0.16, 0.18, 0.22)),
-			);
-			card.text(
-				Text::new(title)
-					.font_size(15.0)
+			let mut card = columns[column]
+				.element(title)
+				.container(|c| {
+					c.width((COLUMN_WIDTH - CARD_INSET * 2.0).into())
+						.height(CARD_HEIGHT.into())
+						.corner_radius(8.0)
+						.transform(placed_at(CARD_INSET, 0.0))
+						.style(panel(0.16, 0.18, 0.22))
+				})
+				.await;
+			card.text(title, |t| {
+				t.font_size(15.0)
 					.style(text_color())
-					.transform(Transform::identity().translate(12.0, 22.0)),
-			);
+					.transform(Transform::identity().translate(12.0, 22.0))
+			})
+			.await;
 			if index == 0 {
 				ctx.with(|c| c.first_card.set(Some(card.id()))).await;
 			}
@@ -1394,26 +1451,25 @@ mod board {
 					.geometry()
 					.await
 					.map_or(UiPoint::zero(), |geometry| UiPoint::new(geometry.x(), geometry.y()));
-				card.reparent(root_id);
-				card.update_container(move |card| card.depth = Depth::absolute(1));
+				card.reparent(root_id).await;
+				card.update_container(|c| c.depth(Depth::absolute(1))).await;
 				held = Some((task, origin));
 			}
 			if let Some((task, origin)) = held {
 				let (card, home) = &mut cards[task];
 				if ended {
-					card.reparent(column_ids[*home]);
-					card.update_container(move |card| {
-						card.depth = Depth::relative(1);
-						card.set_transform(placed_at(CARD_INSET, 0.0));
-					});
+					card.reparent(column_ids[*home]).await;
+					card.update_container(|c| c.depth(Depth::relative(1)).transform(placed_at(CARD_INSET, 0.0)))
+						.await;
 					held = None;
 				} else if let Some(capture) = drag {
-					card.update_container(move |card| {
-						card.set_transform(placed_at(
+					card.update_container(|c| {
+						c.transform(placed_at(
 							origin.x + capture.position.x - capture.origin.x,
 							origin.y + capture.position.y - capture.origin.y,
-						));
-					});
+						))
+					})
+					.await;
 				}
 			}
 		}
@@ -1442,7 +1498,7 @@ mod board {
 	/// Measures a whole card move between columns, including the two reparents.
 	#[divan::bench]
 	fn drag_card_between_columns(bencher: Bencher) {
-		let mut window = Window::new(Model::default(), |ctx| Box::pin(board(ctx)));
+		let mut window = Window::new(Model::default(), async move |ctx| board(ctx).await);
 		let card = window
 			.model()
 			.first_card
@@ -1472,115 +1528,109 @@ mod sign_in {
 		typed: Cell<usize>,
 	}
 
-	fn field<C: 'static>(parent: &mut EvaluationContext<C>, name: &'static str, content: &str) -> EvaluationContext<C> {
-		let mut frame = parent.element(name).container(
-			Container::default()
-				.width(440.0.into())
-				.height(44.0.into())
-				.corner_radius(8.0)
-				.flow(flow::centered_row)
-				.style(panel(0.05, 0.06, 0.08)),
-		);
-		frame.element("field").text_field(
-			TextField::new(content)
-				.font_size(18.0)
-				.style(text_color())
-				.transform(Transform::identity().translate_x(12.0)),
-		)
+	async fn field<C: 'static>(
+		parent: &mut EvaluationContext<C>,
+		name: &'static str,
+		content: impl std::fmt::Display,
+	) -> EvaluationContext<C> {
+		let mut frame = parent
+			.element(name)
+			.container(|c| {
+				c.width(440.0.into())
+					.height(44.0.into())
+					.corner_radius(8.0)
+					.flow(flow::centered_row)
+					.style(panel(0.05, 0.06, 0.08))
+			})
+			.await;
+		frame
+			.element("field")
+			.text_field(content, |f| {
+				f.font_size(18.0)
+					.style(text_color())
+					.transform(Transform::identity().translate_x(12.0))
+			})
+			.await
 	}
 
 	async fn form(ctx: &mut EvaluationContext<Model>) {
-		let mut root = ctx.element("root").container(
-			Container::default()
-				.flow(flow::center)
-				.hit_testable(false)
-				.style(fill(0.05, 0.06, 0.08, 1.0)),
-		);
-		let mut form = root.element("form").container(
-			Container::default()
-				.width(480.0.into())
-				.height(440.0.into())
-				.corner_radius(16.0)
-				.flow(flow::centered_column)
-				.hit_testable(false)
-				.style(panel(0.09, 0.1, 0.12)),
-		);
-		cell(
-			&mut form,
-			("cell", 14usize),
-			440.0,
-			64.0,
-			Text::new("Sign in").font_size(32.0).style(text_color()),
-		);
+		let mut root = ctx
+			.element("root")
+			.container(|c| c.flow(flow::center).hit_testable(false).style(fill(0.05, 0.06, 0.08, 1.0)))
+			.await;
+		let mut form = root
+			.element("form")
+			.container(|c| {
+				c.width(480.0.into())
+					.height(440.0.into())
+					.corner_radius(16.0)
+					.flow(flow::centered_column)
+					.hit_testable(false)
+					.style(panel(0.09, 0.1, 0.12))
+			})
+			.await;
+		cell(&mut form, ("cell", 14usize), 440.0, 64.0, "Sign in", |t| {
+			t.font_size(32.0).style(text_color())
+		})
+		.await;
 		cell(
 			&mut form,
 			("cell", 15usize),
 			440.0,
 			32.0,
-			Text::new("Use the account you play with on every platform.")
-				.font_size(14.0)
-				.style(muted_color()),
-		);
-		cell(
-			&mut form,
-			("cell", 16usize),
-			440.0,
-			28.0,
-			Text::new("Email").font_size(14.0).style(muted_color()),
-		);
-		let mut email = field(&mut form, "email", "");
-		cell(
-			&mut form,
-			("cell", 17usize),
-			440.0,
-			28.0,
-			Text::new("Password").font_size(14.0).style(muted_color()),
-		);
-		field(&mut form, "password", "••••••••••");
-		let mut remember = form.element("remember").container(
-			Container::default()
-				.width(440.0.into())
-				.height(48.0.into())
-				.flow(flow::centered_row)
-				.hit_testable(false)
-				.style(ConcreteStyle::new()),
-		);
-		remember.element("check").container(
-			Container::default()
-				.width(20.0.into())
-				.height(20.0.into())
-				.corner_radius(4.0)
-				.style(panel(0.25, 0.6, 0.95)),
-		);
-		cell(
-			&mut remember,
-			("cell", 18usize),
-			400.0,
-			48.0,
-			Text::new("Keep me signed in")
-				.font_size(15.0)
+			"Use the account you play with on every platform.",
+			|t| t.font_size(14.0).style(muted_color()),
+		)
+		.await;
+		cell(&mut form, ("cell", 16usize), 440.0, 28.0, "Email", |t| {
+			t.font_size(14.0).style(muted_color())
+		})
+		.await;
+		let mut email = field(&mut form, "email", "").await;
+		cell(&mut form, ("cell", 17usize), 440.0, 28.0, "Password", |t| {
+			t.font_size(14.0).style(muted_color())
+		})
+		.await;
+		field(&mut form, "password", "••••••••••").await;
+		let mut remember = form
+			.element("remember")
+			.container(|c| {
+				c.width(440.0.into())
+					.height(48.0.into())
+					.flow(flow::centered_row)
+					.hit_testable(false)
+					.style(ConcreteStyle::new())
+			})
+			.await;
+		remember
+			.element("check")
+			.container(|c| c.size(20.0.into()).corner_radius(4.0).style(panel(0.25, 0.6, 0.95)))
+			.await;
+		cell(&mut remember, ("cell", 18usize), 400.0, 48.0, "Keep me signed in", |t| {
+			t.font_size(15.0)
 				.style(text_color())
-				.transform(Transform::identity().translate_x(12.0)),
-		);
-		let mut submit = form.element("submit").container(
-			Container::default()
-				.width(440.0.into())
-				.height(48.0.into())
-				.corner_radius(10.0)
-				.flow(flow::center)
-				.style(panel(0.25, 0.5, 0.9)),
-		);
-		submit.text(Text::new("Sign In").font_size(18.0).style(text_color()));
+				.transform(Transform::identity().translate_x(12.0))
+		})
+		.await;
+		let mut submit = form
+			.element("submit")
+			.container(|c| {
+				c.width(440.0.into())
+					.height(48.0.into())
+					.corner_radius(10.0)
+					.flow(flow::center)
+					.style(panel(0.25, 0.5, 0.9))
+			})
+			.await;
+		submit.text("Sign In", |t| t.font_size(18.0).style(text_color())).await;
 
 		// The application owns the text; the field reports edits and displays the result.
-		email.request_focus();
+		email.request_focus().await;
 		let mut content = String::new();
 		loop {
 			let edit = email.on_text_edit().await;
 			edit.edit.apply_to(&mut content);
-			// The edit is applied after this poll, so it carries its own copy of the text.
-			let shown = content.clone();
-			email.update_text_field(move |field| field.set_content(&shown));
+			email.update_text_field(|f| f.content(&content)).await;
 			ctx.with(|c| c.typed.set(content.len())).await;
 		}
 	}
@@ -1602,7 +1652,7 @@ mod sign_in {
 	/// Measures a tick with one keystroke in a focused text field.
 	#[divan::bench]
 	fn type_email(bencher: Bencher) {
-		let mut window = Window::new(Model::default(), |ctx| Box::pin(form(ctx)));
+		let mut window = Window::new(Model::default(), async move |ctx| form(ctx).await);
 		for step in 0..2 * EMAIL.len() {
 			keystroke(&mut window, step);
 			let expected = if step < EMAIL.len() {
@@ -1645,46 +1695,52 @@ mod tooltip {
 	async fn screen(ctx: &mut EvaluationContext<Model>) {
 		let mut root = ctx
 			.element("root")
-			.container(Container::default().size(Sizing::Relative(1, 1)).hit_testable(false));
+			.container(|c| c.size(Sizing::Relative(1, 1)).hit_testable(false))
+			.await;
 		for index in 0..CARDS {
-			let mut card = root.element(("card", index)).container(
-				Container::default()
-					.absolute_position((index % COLUMNS * 60) as u32, (index / COLUMNS * 48) as u32)
-					.width(56.into())
-					.height(44.into())
-					.clip(true)
-					.corner_radius(4.0)
-					.style(panel(0.16, 0.18, 0.22)),
-			);
+			let mut card = root
+				.element(("card", index))
+				.container(|c| {
+					c.absolute_position((index % COLUMNS * 60) as u32, (index / COLUMNS * 48) as u32)
+						.width(56.into())
+						.height(44.into())
+						.clip(true)
+						.corner_radius(4.0)
+						.style(panel(0.16, 0.18, 0.22))
+				})
+				.await;
 			if index % 3 == 0 {
-				card.element("label").text(Text::new("Card").font_size(12.0));
+				card.element("label").text("Card", |t| t.font_size(12.0)).await;
 			}
 		}
-		let mut tooltip = root.element("tooltip").container(
-			Container::default()
-				.absolute_position(0u32, 0u32)
-				.width(160.into())
-				.height(56.into())
-				.clip(true)
-				.corner_radius(6.0)
-				.style(panel(0.16, 0.18, 0.22)),
-		);
-		tooltip.element("label").text(Text::new("Tooltip").font_size(14.0));
+		let mut tooltip = root
+			.element("tooltip")
+			.container(|c| {
+				c.absolute_position(0u32, 0u32)
+					.width(160.into())
+					.height(56.into())
+					.clip(true)
+					.corner_radius(6.0)
+					.style(panel(0.16, 0.18, 0.22))
+			})
+			.await;
+		tooltip.element("label").text("Tooltip", |t| t.font_size(14.0)).await;
 		tooltip
 			.element("hint")
-			.container(Container::default().size(20.into()).style(panel(0.16, 0.18, 0.22)));
+			.container(|c| c.size(20.into()).style(panel(0.16, 0.18, 0.22)))
+			.await;
 		loop {
 			let frame = (ctx.with(|c| c.frame.get()).await % PERIOD) as f32;
-			tooltip.update_container(move |value| {
-				value.set_transform(Transform::identity().translate(frame * 7.0, frame * 3.5));
-			});
+			tooltip
+				.update_container(|c| c.transform(Transform::identity().translate(frame * 7.0, frame * 3.5)))
+				.await;
 			ctx.render().await;
 		}
 	}
 
 	#[divan::bench]
 	fn move_over_cards(bencher: Bencher) {
-		let mut window = Window::new(Model::default(), |ctx| Box::pin(screen(ctx)));
+		let mut window = Window::new(Model::default(), async move |ctx| screen(ctx).await);
 		window.model().frame.set(window.model().frame.get() + 1);
 		assert!(window.tick(), "Moving the tooltip left the screen unchanged.");
 		bencher.bench_local(|| {

@@ -182,7 +182,7 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 			exponent: container.corner_exponent,
 		}
 		.bbox(available),
-		Primitives::Shape(shape) => shape.shape.bbox(available),
+		Primitives::Shape(shape) => shape.outline().bbox(available),
 		Primitives::Curve(curve) => curve.path().size(available),
 		Primitives::Path(path) => path.path().size(available),
 		Primitives::Image(image) => Shapes::Box {
@@ -330,8 +330,12 @@ fn layout_elements<'a>(
 				_ => siblings.push((1, child)),
 			}
 		}
-		// The sort is stable, so children at the same depth keep their declaration order.
-		siblings[start..].sort_by_key(|&(depth, _)| depth);
+		// The sort is stable, so children at the same depth keep their declaration order. Siblings usually share one
+		// depth, and skipping their sort also skips the scratch buffer a stable sort of a long list allocates.
+		let level = &mut siblings[start..];
+		if !level.is_sorted_by_key(|&(depth, _)| depth) {
+			level.sort_by_key(|&(depth, _)| depth);
+		}
 		let end = siblings.len();
 		for sibling in start..end {
 			let child = siblings[sibling].1;
@@ -578,7 +582,6 @@ impl From<f32> for Sizing {
 
 #[cfg(test)]
 mod tests {
-
 	use super::super::{
 		Element,
 		components::container::Container,
@@ -587,6 +590,7 @@ mod tests {
 		layout::{ConcreteElement, Depth, Position, Sizing},
 	};
 	use super::LayoutElement;
+	use super::engine::properties::detached_container;
 	use crate::ui::{
 		font::TextSystem,
 		layout::IdedElement,
@@ -663,7 +667,8 @@ mod tests {
 
 	#[test]
 	fn layout_root_half_size() {
-		let elements = layout([Container::default().size(Sizing::Relative(1, 2))], &[], Size::new(1024, 10));
+		let root = detached_container(|c| c.size(Sizing::Relative(1, 2)));
+		let elements = layout([root], &[], Size::new(1024, 10));
 
 		assert_eq!(elements.len(), 1);
 		assert_eq!(elements[0].size, Size::new(512, 5));
@@ -671,7 +676,7 @@ mod tests {
 
 	#[test]
 	fn layout_half_children() {
-		let half = || Container::default().size(Sizing::Relative(1, 2));
+		let half = || detached_container(|c| c.size(Sizing::Relative(1, 2)));
 		let elements = layout(
 			[Container::default(), half(), half(), half(), half()],
 			&[(0, 1), (1, 2), (2, 3), (3, 4)],
@@ -686,9 +691,10 @@ mod tests {
 
 	#[test]
 	fn layout_column() {
-		let child = || Container::default().size(Sizing::pixels(64));
+		let child = || detached_container(|c| c.size(Sizing::pixels(64)));
+		let root = detached_container(|c| c.flow(flow::column));
 		let elements = layout(
-			[Container::default().flow(flow::column), child(), child(), child(), child()],
+			[root, child(), child(), child(), child()],
 			&[(0, 1), (0, 2), (0, 3), (0, 4)],
 			Size::new(1024, 1024),
 		);
@@ -723,7 +729,7 @@ mod tests {
 
 	#[test]
 	fn layout_relative_depth_orders_siblings_inside_their_parent() {
-		let raised = Container::default().depth(Depth::relative(2));
+		let raised = detached_container(|c| c.depth(Depth::relative(2)));
 		// root -> [raised -> raised_child, regular]
 		let depths = depths(
 			[Container::default(), raised, Container::default(), Container::default()],
@@ -736,7 +742,7 @@ mod tests {
 
 	#[test]
 	fn layout_relative_depth_cannot_cross_into_another_component() {
-		let overlay = Container::default().depth(Depth::relative(8));
+		let overlay = detached_container(|c| c.depth(Depth::relative(8)));
 		// root -> [first -> overlay -> overlay_child, second -> second_child]
 		let depths = depths(
 			[
@@ -756,8 +762,8 @@ mod tests {
 
 	#[test]
 	fn layout_absolute_depth_paints_above_a_deeper_later_component() {
-		let modal = Container::default().depth(Depth::absolute(1));
-		let overlay = Container::default().depth(Depth::relative(8));
+		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
+		let overlay = detached_container(|c| c.depth(Depth::relative(8)));
 		// root -> [toolbar -> modal -> modal_child, graph -> overlay -> overlay_child]
 		let depths = depths(
 			[
@@ -777,10 +783,10 @@ mod tests {
 
 	#[test]
 	fn layout_absolute_depth_layers_stack_by_value_and_above_their_host() {
-		let toast = Container::default().depth(Depth::absolute(4));
-		let modal = Container::default().depth(Depth::absolute(1));
-		let nested_modal = Container::default().depth(Depth::absolute(1));
-		let popup = Container::default().depth(Depth::absolute(1));
+		let toast = detached_container(|c| c.depth(Depth::absolute(4)));
+		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
+		let nested_modal = detached_container(|c| c.depth(Depth::absolute(1)));
+		let popup = detached_container(|c| c.depth(Depth::absolute(1)));
 		// root -> [toast -> popup, modal -> nested_modal]
 		let depths = depths(
 			[Container::default(), toast, modal, nested_modal, popup],
@@ -795,8 +801,8 @@ mod tests {
 	fn layout_absolute_depth_siblings_stack_in_layout_order() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default();
-		let first_modal = Container::default().depth(Depth::absolute(1));
-		let second_modal = Container::default().depth(Depth::absolute(1));
+		let first_modal = detached_container(|c| c.depth(Depth::absolute(1)));
+		let second_modal = detached_container(|c| c.depth(Depth::absolute(1)));
 
 		let elements = make_elements([root, first_modal, second_modal]);
 
@@ -822,12 +828,9 @@ mod tests {
 	#[test]
 	fn layout_absolute_depth_resets_position_to_root_origin() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::row_with_gap(10));
-		let menu_item = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
-		let modal = Container::default()
-			.width(Sizing::pixels(30))
-			.height(Sizing::pixels(30))
-			.depth(Depth::absolute(1));
+		let root = detached_container(|c| c.flow(flow::row_with_gap(10)));
+		let menu_item = detached_container(|c| c.size(Sizing::pixels(20)));
+		let modal = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)));
 
 		let elements = make_elements([root, menu_item, modal]);
 
@@ -852,13 +855,10 @@ mod tests {
 	#[test]
 	fn layout_absolute_position_places_child_without_advancing_flow() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::row);
-		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
-		let positioned = Container::default()
-			.width(Sizing::pixels(30))
-			.height(Sizing::pixels(30))
-			.position(Position::absolute(70, 12));
-		let second = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
+		let root = detached_container(|c| c.flow(flow::row));
+		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		let positioned = detached_container(|c| c.size(Sizing::pixels(30)).position(Position::absolute(70, 12)));
+		let second = detached_container(|c| c.size(Sizing::pixels(20)));
 
 		let elements = make_elements([root, first, positioned, second]);
 
@@ -889,14 +889,10 @@ mod tests {
 	#[test]
 	fn layout_absolute_depth_uses_absolute_position_in_root_space() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::row);
-		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
-		let dropdown = Container::default()
-			.width(Sizing::pixels(30))
-			.height(Sizing::pixels(30))
-			.depth(Depth::absolute(1))
-			.absolute_position(24, 32);
-		let child = Container::default().width(Sizing::pixels(10)).height(Sizing::pixels(10));
+		let root = detached_container(|c| c.flow(flow::row));
+		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		let dropdown = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)).absolute_position(24, 32));
+		let child = detached_container(|c| c.size(Sizing::pixels(10)));
 
 		let elements = make_elements([root, first, dropdown, child]);
 
@@ -928,10 +924,7 @@ mod tests {
 	fn layout_absolute_position_keeps_negative_coordinates() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default();
-		let child = Container::default()
-			.width(Sizing::pixels(30))
-			.height(Sizing::pixels(30))
-			.position(Position::absolute(-10, -20));
+		let child = detached_container(|c| c.size(Sizing::pixels(30)).position(Position::absolute(-10, -20)));
 
 		let elements = make_elements([root, child]);
 
@@ -956,13 +949,10 @@ mod tests {
 	#[test]
 	fn layout_absolute_depth_does_not_advance_parent_flow_cursor() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::row_with_gap(10));
-		let first = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
-		let modal = Container::default()
-			.width(Sizing::pixels(30))
-			.height(Sizing::pixels(30))
-			.depth(Depth::absolute(1));
-		let second = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(20));
+		let root = detached_container(|c| c.flow(flow::row_with_gap(10)));
+		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		let modal = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)));
+		let second = detached_container(|c| c.size(Sizing::pixels(20)));
 
 		let elements = make_elements([root, first, modal, second]);
 
@@ -992,7 +982,7 @@ mod tests {
 	fn layout_absolute_depth_resolves_after_relative_siblings_even_when_declared_first() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = Container::default();
-		let modal = Container::default().depth(Depth::absolute(1));
+		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
 		let background = Container::default();
 
 		let elements = make_elements([root, modal, background]);
@@ -1022,9 +1012,9 @@ mod tests {
 	#[test]
 	fn layout_centered_column() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::centered_column);
-		let a = Container::default().width(Sizing::pixels(64)).height(Sizing::pixels(32));
-		let b = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(16));
+		let root = detached_container(|c| c.flow(flow::centered_column));
+		let a = detached_container(|c| c.width(Sizing::pixels(64)).height(Sizing::pixels(32)));
+		let b = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(16)));
 
 		let elements = make_elements([root, a, b]);
 
@@ -1058,9 +1048,9 @@ mod tests {
 	#[test]
 	fn layout_centered_row_keeps_siblings_on_same_baseline() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::centered_row);
-		let a = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
-		let b = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
+		let root = detached_container(|c| c.flow(flow::centered_row));
+		let a = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
+		let b = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
 
 		let elements = make_elements([root, a, b]);
 
@@ -1086,9 +1076,9 @@ mod tests {
 	#[test]
 	fn layout_center() {
 		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default().flow(flow::center);
-		let a = Container::default().width(Sizing::pixels(20)).height(Sizing::pixels(10));
-		let b = Container::default().width(Sizing::pixels(40)).height(Sizing::pixels(20));
+		let root = detached_container(|c| c.flow(flow::center));
+		let a = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
+		let b = detached_container(|c| c.width(Sizing::pixels(40)).height(Sizing::pixels(20)));
 
 		let elements = make_elements([root, a, b]);
 

@@ -32,16 +32,14 @@ enum Scene {
 /// Builds a visible grid and retains its render independently of the layout engine.
 fn scene(count: usize, kind: Scene, alternate: bool) -> engine::Render {
 	let mut engine = Engine::new();
-	engine.mount(move |ctx| {
-		std::boxed::Box::pin(async move {
-			let mut root = ctx
-				.element("root")
-				.container(Container::default().style(ConcreteStyle::new()));
-			for index in 0..count {
-				let fill = ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.7, if alternate { 0.7 } else { 0.9 }).into());
-				let mut card = root.element("card").container(
-					Container::default()
-						.absolute_position((index % 40 * 48) as u32, (index / 40 * 40) as u32)
+	engine.mount(async move |ctx| {
+		let mut root = ctx.element("root").container(|c| c.style(ConcreteStyle::new())).await;
+		for index in 0..count {
+			let fill = ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.7, if alternate { 0.7 } else { 0.9 }).into());
+			let mut card = root
+				.element("card")
+				.container(|c| {
+					c.absolute_position((index % 40 * 48) as u32, (index / 40 * 40) as u32)
 						.width(46.into())
 						.height(38.into())
 						.depth(crate::ui::Depth::Relative((index % 4) as i32 + 1))
@@ -50,29 +48,30 @@ fn scene(count: usize, kind: Scene, alternate: bool) -> engine::Render {
 							ConcreteStyle::from_layers([fill.clone().backdrop_blur(8.0), fill.clone().stroke(1.0)])
 						} else {
 							fill.clone().into()
-						}),
-				);
-				if matches!(kind, Scene::Text | Scene::Mixed) {
-					card.element("label")
-						.text(Text::new(format!("{} {index:04}", if alternate { "B" } else { "A" })).font_size(10.0));
-				}
-				if matches!(kind, Scene::Curves | Scene::Mixed) {
-					card.element("curve").curve(
-						Curve::new(CurvePath::new(40.into(), 30.into()).cubic(
-							(1.0, 25.0),
-							(8.0, 0.0),
-							(32.0, 30.0),
-							(39.0, 5.0),
-						))
-						.style(fill.stroke(2.0)),
-					);
-				}
-				if matches!(kind, Scene::Images) {
-					card.element("image")
-						.image(Image::from_rgba(4, 4, vec![255; 64]).size(24.into()));
-				}
+						})
+				})
+				.await;
+			if matches!(kind, Scene::Text | Scene::Mixed) {
+				card.element("label")
+					.text(format!("{} {index:04}", if alternate { "B" } else { "A" }), |t| {
+						t.font_size(10.0)
+					})
+					.await;
 			}
-		})
+			if matches!(kind, Scene::Curves | Scene::Mixed) {
+				card.element("curve")
+					.curve(|c| {
+						c.width(40.into())
+							.height(30.into())
+							.cubic((1.0, 25.0), (8.0, 0.0), (32.0, 30.0), (39.0, 5.0))
+							.style(fill.stroke(2.0))
+					})
+					.await;
+			}
+			if matches!(kind, Scene::Images) {
+				card.element("image").image(4, 4, vec![255; 64], |i| i.size(24.into())).await;
+			}
+		}
 	});
 	let allocator = bumpalo::Bump::new();
 	let mut snapshot = engine.evaluate(Size::new(1920, 1080), &allocator);

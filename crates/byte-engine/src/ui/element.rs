@@ -1,20 +1,10 @@
 //! Concrete UI elements emitted by layout components.
 //!
-//! Components typically construct elements through a
-//! [`crate::ui::layout::context::Context`] rather than using
-//! [`ConcreteElement`] directly. Implement [`Element`] for reusable element
-//! wrappers that expose a primitive.
+//! Components declare elements through a [`crate::ui::layout::context::Context`], and the engine creates and owns
+//! the [`ConcreteElement`] behind each one. Implement [`Element`] for reusable element wrappers that expose a
+//! primitive.
 
-use super::{
-	flow::FlowFunction,
-	primitive::{BasePrimitive, Primitive},
-};
-use crate::ui::{
-	Container,
-	components::{curve::Curve, image::Image, path::Path, shape::Shape, text::Text, text_field::TextField},
-	flow::{Offset, Size},
-	primitive::{Primitives, Shapes},
-};
+use super::primitive::{BasePrimitive, Primitives};
 
 /// The [`Element`] trait exposes the primitive represented by a UI element.
 pub trait Element {
@@ -37,59 +27,7 @@ pub trait ElementHandle {
 	fn id(&self) -> Id;
 }
 
-/// The [`ConcreteElement`] struct stores one built-in primitive produced by a
-/// layout component.
+/// The [`ConcreteElement`] struct stores one built-in primitive the engine created for a declaration.
 pub struct ConcreteElement {
 	pub(crate) primitive: Primitives,
-}
-
-impl ConcreteElement {
-	/// Creates an element backed by a container primitive.
-	pub fn container(container: Container) -> Self {
-		let primitive = Primitives::Container(container);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by a shape primitive.
-	pub fn shape(shape: Shape) -> Self {
-		let primitive = Primitives::Shape(shape);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by a curve primitive.
-	pub fn curve(curve: Curve) -> Self {
-		let primitive = Primitives::Curve(curve);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by an image primitive.
-	pub fn image(image: Image) -> Self {
-		let primitive = Primitives::Image(image);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by a filled path primitive.
-	pub fn path(path: Path) -> Self {
-		let primitive = Primitives::Path(path);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by a text primitive.
-	pub fn text(text: Text) -> Self {
-		let primitive = Primitives::Text(text);
-
-		Self { primitive }
-	}
-
-	/// Creates an element backed by a text field primitive.
-	pub fn text_field(text_field: TextField) -> Self {
-		let primitive = Primitives::TextField(text_field);
-
-		Self { primitive }
-	}
 }

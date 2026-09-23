@@ -423,62 +423,62 @@ mod tests {
 		use std::f32::consts::{FRAC_PI_2, TAU};
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		engine.mount(move |ctx| {
-			Box::pin(async move {
-				let mut root = ctx.element("root").container(
-					Container::default()
-						.width(1920.into())
-						.height(1080.into())
-						.hit_testable(false),
-				);
-				let mut row = root
-					.element("row")
-					.container(Container::default().width(300.into()).height(32.into()).clip(false));
-				let _button = row
-					.element("button")
-					.container(Container::default().width(96.into()).height(32.into()));
-				// Parked off-screen with collapsed petals, as a menu is before it opens.
-				let mut dial = row.element("dial").container(
-					Container::default()
-						.depth(crate::ui::layout::Depth::absolute(3))
+		engine.mount(async move |ctx| {
+			let mut root = ctx
+				.element("root")
+				.container(|c| c.width(1920.into()).height(1080.into()).hit_testable(false))
+				.await;
+			let mut row = root
+				.element("row")
+				.container(|c| c.width(300.into()).height(32.into()).clip(false))
+				.await;
+			let _button = row
+				.element("button")
+				.container(|c| c.width(96.into()).height(32.into()))
+				.await;
+			// Parked off-screen with collapsed petals, as a menu is before it opens.
+			let mut dial = row
+				.element("dial")
+				.container(|c| {
+					c.depth(crate::ui::layout::Depth::absolute(3))
 						.absolute_position(2000, 2000)
-						.width(236.into())
-						.height(236.into())
+						.size(236.into())
 						.clip(false)
 						.hit_testable(false)
-						.opacity(0.0),
-				);
-				let mut petals = std::vec::Vec::new();
-				for index in 0..6 {
-					let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
-					petals.push(
-						dial.element(format!("petal{index}")).container(
-							Container::default()
-								.absolute_position(0, 0)
-								.width(236.into())
-								.height(236.into())
+						.opacity(0.0)
+				})
+				.await;
+			let mut petals = std::vec::Vec::new();
+			for index in 0..6 {
+				let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
+				petals.push(
+					dial.element(format!("petal{index}"))
+						.container(|c| {
+							c.absolute_position(0, 0)
+								.size(236.into())
 								.clip(false)
-								.sector(Sector::new(middle, 0.0, 0.4).inset(3.0)),
-						),
-					);
-				}
-				ctx.render().await;
-				// Open: move the dial under the button, transform it, and grow the petals.
-				dial.update_container(move |container| {
-					container.set_position((1530, 46));
-					container.set_opacity(1.0);
-					container.set_transform(crate::ui::Transform::identity().rotate(rotation).scale(scale));
-				});
-				for (index, petal) in petals.iter_mut().enumerate() {
-					let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
-					petal.update_container(move |container| {
-						container.set_sector(Some(Sector::new(middle - TAU / 12.0, TAU / 6.0, 0.4).inset(3.0)));
-					});
-				}
-				loop {
-					ctx.render().await;
-				}
+								.sector(Sector::new(middle, 0.0, 0.4).inset(3.0))
+						})
+						.await,
+				);
+			}
+			ctx.render().await;
+			// Open: move the dial under the button, transform it, and grow the petals.
+			dial.update_container(|c| {
+				c.position((1530, 46))
+					.opacity(1.0)
+					.transform(crate::ui::Transform::identity().rotate(rotation).scale(scale))
 			})
+			.await;
+			for (index, petal) in petals.iter_mut().enumerate() {
+				let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
+				petal
+					.update_container(|c| c.sector(Some(Sector::new(middle - TAU / 12.0, TAU / 6.0, 0.4).inset(3.0))))
+					.await;
+			}
+			loop {
+				ctx.render().await;
+			}
 		});
 		let mut hits = super::HitTest::default();
 		for _ in 0..3 {
@@ -511,21 +511,20 @@ mod tests {
 	fn sector_containers_are_hit_inside_their_wedge_only() {
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
-				// A quarter ring in a 100 by 100 square at the origin, sweeping from right to down.
-				let _wedge = root.element("wedge").container(
-					Container::default()
-						.absolute_position(0, 0)
-						.width(100.into())
-						.height(100.into())
-						.sector(Sector::new(0.0, std::f32::consts::FRAC_PI_2, 0.5).inset(6.0)),
-				);
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			// A quarter ring in a 100 by 100 square at the origin, sweeping from right to down.
+			let _wedge = root
+				.element("wedge")
+				.container(|c| {
+					c.absolute_position(0, 0)
+						.size(100.into())
+						.sector(Sector::new(0.0, std::f32::consts::FRAC_PI_2, 0.5).inset(6.0))
+				})
+				.await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let mut hits = super::HitTest::default();
 		{
@@ -553,19 +552,15 @@ mod tests {
 	fn retained_layout_coordinates_and_bounds_support_drag_offsets_after_frame_reset() {
 		let mut allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
-				let _source = root.element("source").container(
-					Container::default()
-						.absolute_position(20, 30)
-						.width(80.into())
-						.height(40.into()),
-				);
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let _source = root
+				.element("source")
+				.container(|c| c.absolute_position(20, 30).width(80.into()).height(40.into()))
+				.await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let mut hits = super::HitTest::default();
 		{
@@ -726,4 +721,3 @@ mod tests {
 		}
 	}
 }
-

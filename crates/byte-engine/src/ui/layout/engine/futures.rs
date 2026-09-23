@@ -1,6 +1,9 @@
 //! Futures used by mounted UI components.
 
-use std::{sync::mpsc::Sender, time::Instant};
+use std::{
+	sync::mpsc::{Receiver, Sender},
+	time::Instant,
+};
 
 use super::*;
 
@@ -13,68 +16,50 @@ type BoxedMountedUiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 pub struct MountedComponentFuture<F, T, C = ()> {
 	pub(super) component: Option<F>,
 	pub(super) future: Option<BoxedMountedUiFuture<T>>,
-	pub(super) commands: Sender<UiCommand>,
 	/// The id and attach target of the context the scope was declared from, which the scope's context inherits.
 	pub(super) id: Id,
 	pub(super) parent: Option<Id>,
 	pub(super) parent_path: u64,
 	/// The path of the mounted scope, computed from the parent's path and the slot key.
 	pub(super) path: u64,
-	/// The identity that owns the started scope's tasks.
-	pub(super) scope: Option<ScopeId>,
+	/// The started scope's task owner, and the channel its removal goes through when this future is dropped before
+	/// the component ends; a destructor cannot reach the engine any other way.
+	pub(super) scope: Option<(ScopeId, Sender<UiCommand>)>,
 	pub(super) complete: bool,
 	pub(super) output: PhantomData<fn() -> (T, C)>,
 }
 
 impl<F, T, C> Unpin for MountedComponentFuture<F, T, C> {}
 
-impl<F, T, C> MountedComponentFuture<F, T, C> {
-	/// Asks the engine to remove the scope's elements and end the tasks spawned inside it.
-	fn cleanup_scope(&mut self) {
-		let Some(owner) = self.scope.take() else {
-			return;
-		};
-		// Nothing is left to clean up once the engine was dropped, so a failed send is ignored.
-		let _ = self.commands.send(UiCommand::Remove {
-			path: self.path,
-			owner: Some(owner),
-		});
-	}
-}
-
 impl<F, T, C> MountedComponentFuture<F, T, C>
 where
 	C: 'static,
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
+	T: 'static,
+	F: AsyncFnOnce(&mut EvaluationContext<C>) -> T + 'static,
 {
-	/// Starts the scope on the first poll, taking its task-ownership identity from the polling engine.
+	/// Starts the scope on the first poll: declares it in the tree and takes its task-ownership identity.
 	fn start(&mut self, poll: &mut UiPoll<C>) {
 		let Some(component) = self.component.take() else {
 			return;
 		};
-
+		poll.apply_commands();
 		let owner = poll.runtime.next_scope();
-		let ctx = EvaluationContext::new(self.commands.clone(), self.id, self.parent, self.path, owner);
-		ctx.send(UiCommand::DeclareScope {
-			path: self.path,
-			declared_in: self.parent_path,
-			task: None,
-		});
-
+		poll.tree.declare_scope(self.path, self.parent_path);
+		let ctx = EvaluationContext::new(self.id, self.parent, self.path, owner);
 		// Keep the context and its borrowing component future in one owned future.
-		let future = Box::pin(async move {
+		self.future = Some(Box::pin(async move {
 			let mut ctx = ctx;
 			component(&mut ctx).await
-		});
-		self.scope = Some(owner);
-		self.future = Some(future);
+		}));
+		self.scope = Some((owner, poll.sender.clone()));
 	}
 }
 
 impl<F, T, C> Future for MountedComponentFuture<F, T, C>
 where
 	C: 'static,
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
+	T: 'static,
+	F: AsyncFnOnce(&mut EvaluationContext<C>) -> T + 'static,
 {
 	type Output = T;
 
@@ -93,7 +78,13 @@ where
 			Poll::Ready(output) => {
 				self.complete = true;
 				self.future = None;
-				self.cleanup_scope();
+				if let Some((owner, _)) = self.scope.take() {
+					let path = self.path;
+					UiPoll::<C>::from_context(cx).apply(UiCommand::Remove {
+						path,
+						owner: Some(owner),
+					});
+				}
 				Poll::Ready(output)
 			}
 			Poll::Pending => Poll::Pending,
@@ -103,10 +94,17 @@ where
 
 impl<F, T, C> Drop for MountedComponentFuture<F, T, C> {
 	fn drop(&mut self) {
-		if !self.complete {
-			// Drop the component's future first: the scope ends after everything it owns.
-			self.future = None;
-			self.cleanup_scope();
+		if self.complete {
+			return;
+		}
+		// Drop the component's future first: the scope ends after everything it owns.
+		self.future = None;
+		if let Some((owner, sender)) = self.scope.take() {
+			// Nothing is left to clean up once the engine was dropped, so a failed send is ignored.
+			let _ = sender.send(UiCommand::Remove {
+				path: self.path,
+				owner: Some(owner),
+			});
 		}
 	}
 }
@@ -114,11 +112,28 @@ impl<F, T, C> Drop for MountedComponentFuture<F, T, C> {
 impl<F, T, C> FusedFuture for MountedComponentFuture<F, T, C>
 where
 	C: 'static,
-	F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> MountedUiFuture<'ctx, T> + 'static,
+	T: 'static,
+	F: AsyncFnOnce(&mut EvaluationContext<C>) -> T + 'static,
 {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}
+}
+
+/// Returns a future that runs `write` on its first poll with the engine state lent to the polling task.
+///
+/// Declarations, edits, and structural changes are these futures, so they write straight into [`UiPoll::tree`] and
+/// [`UiPoll::runtime`]. The removals of mounts dropped earlier in the poll land first, as they happened first.
+pub(super) fn direct<C: 'static, T>(write: impl FnOnce(&mut UiPoll<C>) -> T) -> impl Future<Output = T> {
+	let mut write = Some(write);
+	std::future::poll_fn(move |cx| {
+		let write = write
+			.take()
+			.expect("A UI write was polled after it completed. The most likely cause is polling a finished future again.");
+		let poll = UiPoll::<C>::from_context(cx);
+		poll.apply_commands();
+		Poll::Ready(write(poll))
+	})
 }
 
 /// The `UiPoll` struct is the engine state a UI future reaches while its task is polled.
@@ -126,7 +141,8 @@ where
 /// The [`Engine`] owns it as a plain field and lends it by `&mut` to every task poll through [`TaskContext::ext`],
 /// so no future or context keeps a handle to the engine. Wait futures such as [`RenderFuture`] and [`EventFuture`]
 /// hold only identifiers and register through it; reads such as [`Read`] and [`With`] complete from it on their first
-/// poll. Writes do not go through it: contexts send [`UiCommand`]s instead.
+/// poll. Element declarations, edits, and structural changes write through it into [`Self::tree`] and
+/// [`Self::runtime`] directly; see [`direct`].
 ///
 /// A wait stays registered only while its task keeps polling it: after each poll, the runtime drops the waits that
 /// poll did not register again. Dropping a wait future, as a losing `select!` branch is, cancels it that way.
@@ -140,6 +156,12 @@ pub(crate) struct UiPoll<C> {
 	pub(super) ctx: C,
 	/// The task being polled and the number of its poll; see [`Registration::polled`]. `None` between polls.
 	pub(super) current: Option<(TaskId, u64)>,
+	/// The live elements, which declarations and edits write into while their task is polled.
+	pub(super) tree: RetainedTree,
+	/// Receives the removals that dropped mounts send; see [`MountedComponentFuture`].
+	pub(super) commands: Receiver<UiCommand>,
+	/// Handed to every mount as it starts, so its destructor can send its removal.
+	pub(super) sender: Sender<UiCommand>,
 }
 
 impl<C: 'static> UiPoll<C> {
@@ -148,6 +170,22 @@ impl<C: 'static> UiPoll<C> {
 		cx.ext().downcast_mut::<Self>().expect(
 			"A UI future was polled outside a UI engine. The most likely cause is polling a UI future from another executor instead of awaiting it inside a mounted component.",
 		)
+	}
+
+	/// Applies the removals dropped mounts sent so far, including the ones that applying them sends, so a direct
+	/// write lands after the changes that happened before it.
+	pub(super) fn apply_commands(&mut self) {
+		while let Ok(command) = self.commands.try_recv() {
+			apply(command, &mut self.runtime, &mut self.tree);
+		}
+	}
+
+	/// Applies one structural change in order with the removals of dropped mounts.
+	pub(super) fn apply(&mut self, command: UiCommand) {
+		self.apply_commands();
+		apply(command, &mut self.runtime, &mut self.tree);
+		// A removal drops the futures of the tasks it ends, and dropped mounts among them send their own removal.
+		self.apply_commands();
 	}
 
 	/// Returns the task being polled and the number of its poll.
@@ -352,21 +390,19 @@ mod frame_wait_tests {
 	/// Mounts a surface that selects over its drag events and frames, events first, and counts each.
 	fn selecting_surface() -> Engine<std::cell::Cell<(u32, u32)>> {
 		let mut engine = Engine::with_context(std::cell::Cell::new((0, 0)));
-		engine.mount(move |ctx| {
-			Box::pin(async move {
-				let mut surface = ctx.element("surface").container(Container::default());
-				loop {
-					let dragged = utils::r#async::select_biased! {
-						_ = surface.on(Events::Dragged) => true,
-						_ = surface.render() => false,
-					};
-					ctx.with(|counts| {
-						let (events, frames) = counts.get();
-						counts.set(if dragged { (events + 1, frames) } else { (events, frames + 1) });
-					})
-					.await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let mut surface = ctx.element("surface").container(|c| c).await;
+			loop {
+				let dragged = utils::r#async::select_biased! {
+					_ = surface.on(Events::Dragged) => true,
+					_ = surface.render() => false,
+				};
+				ctx.with(|counts| {
+					let (events, frames) = counts.get();
+					counts.set(if dragged { (events + 1, frames) } else { (events, frames + 1) });
+				})
+				.await;
+			}
 		});
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		engine
@@ -388,20 +424,18 @@ mod frame_wait_tests {
 	#[test]
 	fn a_frame_wait_after_idle_frames_still_waits_for_the_next_frame() {
 		let mut engine = Engine::with_context(std::cell::Cell::new(0));
-		engine.mount(move |ctx| {
-			Box::pin(async move {
-				let mut surface = ctx.element("surface").container(Container::default());
-				loop {
-					// The frame wait loses once and is abandoned while the task idles on events alone.
-					utils::r#async::select_biased! {
-						_ = surface.on(Events::Grabbed) => {},
-						_ = surface.render() => {},
-					};
-					surface.on(Events::DragEnded).await;
-					surface.render().await;
-					ctx.with(|ticks| ticks.set(ticks.get() + 1)).await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let mut surface = ctx.element("surface").container(|c| c).await;
+			loop {
+				// The frame wait loses once and is abandoned while the task idles on events alone.
+				utils::r#async::select_biased! {
+					_ = surface.on(Events::Grabbed) => {},
+					_ = surface.render() => {},
+				};
+				surface.on(Events::DragEnded).await;
+				surface.render().await;
+				ctx.with(|ticks| ticks.set(ticks.get() + 1)).await;
+			}
 		});
 		let frame = |engine: &mut Engine<std::cell::Cell<u32>>| {
 			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
@@ -421,16 +455,14 @@ mod frame_wait_tests {
 	#[test]
 	fn a_frame_wait_its_task_stopped_polling_stops_requesting_frames() {
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut surface = ctx.element("surface").container(Container::default());
-				// The frame wait loses the selection, and the task then waits for events alone.
-				utils::r#async::select_biased! {
-					_ = surface.on(Events::Grabbed) => {},
-					_ = surface.render() => {},
-				};
-				surface.on(Events::DragEnded).await;
-			})
+		engine.mount(async move |ctx| {
+			let mut surface = ctx.element("surface").container(|c| c).await;
+			// The frame wait loses the selection, and the task then waits for events alone.
+			utils::r#async::select_biased! {
+				_ = surface.on(Events::Grabbed) => {},
+				_ = surface.render() => {},
+			};
+			surface.on(Events::DragEnded).await;
 		});
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		assert!(engine.next_tick().is_some(), "a pending frame wait did not request a frame");

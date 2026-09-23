@@ -1,7 +1,7 @@
 // Element ids are already well-mixed hashes, so the fast hasher is enough for every id-keyed map.
 use utils::hash::{HashMap, HashSet};
 
-use super::{ConcreteElement, Id, IdedElement, LayoutElement};
+use super::{ConcreteElement, Id, IdedElement, LayoutElement, engine::properties::Spares};
 use crate::ui::{
 	components::{
 		container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings, text_field::TextFieldSettings,
@@ -89,7 +89,7 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 			width: path.path.width,
 			height: path.path.height,
 		},
-		Primitives::Shape(shape) => PlacementInputs::Shape(shape.shape.clone()),
+		Primitives::Shape(shape) => PlacementInputs::Shape(shape.outline()),
 	}
 }
 
@@ -97,7 +97,6 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 #[derive(PartialEq)]
 enum PropertyInputs {
 	Container(ContainerProperties),
-	Shape(crate::ui::primitive::Shapes, ContainerProperties),
 	Image {
 		content: (u64, u64, u32, u32),
 		width: super::Sizing,
@@ -122,7 +121,7 @@ enum PropertyInputs {
 fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
 	Some(match primitive {
 		Primitives::Container(container) => PropertyInputs::Container(container.properties()?),
-		Primitives::Shape(shape) => PropertyInputs::Shape(shape.shape.clone(), shape.settings.properties()?),
+		Primitives::Shape(shape) => PropertyInputs::Container(shape.settings.properties()?),
 		Primitives::Image(image) => PropertyInputs::Image {
 			content: image.content_key(),
 			width: image.width,
@@ -202,9 +201,10 @@ fn clip_inputs(
 
 /// The `RetainedTree` struct owns the live UI elements and the topology layout walks.
 ///
-/// Components never write to it directly: their contexts send [`super::engine::UiCommand`]s, and the engine applies
-/// them here between task polls. Element ids are computed by the contexts (see [`super::context::ElementKey`]), so the
-/// tree only records what it needs to follow declaration ancestry and to keep a compact render order.
+/// Components write to it while their task is polled: declarations and edits reach it through the poll state the
+/// engine lends them; see [`super::engine::properties`]. Element ids are computed by the contexts (see
+/// [`super::context::ElementKey`]), so the tree only records what it needs to follow declaration ancestry and to keep
+/// a compact render order.
 #[derive(Default)]
 pub(super) struct RetainedTree {
 	pub(super) elements: Vec<IdedElement>,
@@ -224,8 +224,12 @@ pub(super) struct RetainedTree {
 	/// The compact render order of every id this tree has held. A remounted element keeps its order.
 	serials: HashMap<Id, u32>,
 	next_serial: u32,
+	/// The last id given to an image's or a path's contents; see [`Self::add_element`].
+	next_content_id: u64,
 	/// Reused during scope cleanup; the caller consumes these IDs before the next removal.
 	removed: HashSet<Id>,
+	/// The heap buffers of removed elements, which new elements take instead of allocating.
+	spares: Spares,
 	/// Advances on every structural or property change so consumers can retain derived state.
 	revision: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
@@ -297,15 +301,25 @@ impl RetainedTree {
 	///
 	/// A declaration of an id the tree already holds keeps the existing element and its properties. Declaring the
 	/// same id twice in one frame, or under a parent the tree does not hold, is logged and ignored.
-	pub(super) fn add_element(&mut self, parent: Option<Id>, declared_in: u64, id: Id, element: ConcreteElement) {
+	///
+	/// `create` builds the element from a fresh content id and the storage removed elements left, and runs only when
+	/// the declaration creates it. Returns the new element with that storage, so its initial properties are written in
+	/// place; a new element needs no change tracking, since creating it invalidated everything it affects.
+	pub(super) fn add_element(
+		&mut self,
+		parent: Option<Id>,
+		declared_in: u64,
+		id: Id,
+		create: impl FnOnce(u64, &mut Spares) -> Primitives,
+	) -> Option<(&mut Primitives, &mut Spares)> {
 		let parent_index = match parent.map(|parent| self.element_indices.get(&parent).copied()) {
 			Some(Some(index)) => Some(index),
 			Some(None) => {
-				// Commands from one task arrive in order, so this parent was removed before its child was declared.
+				// Writes from one task land in order, so this parent was removed before its child was declared.
 				log::error!(
 					"A UI element was declared under a parent that no longer exists. The most likely cause is declaring an element from a context whose element was removed."
 				);
-				return;
+				return None;
 			}
 			None => None,
 		};
@@ -314,28 +328,31 @@ impl RetainedTree {
 				"A UI element key was declared twice under the same parent in one frame. The most likely cause is declaring siblings in a loop with one key; give each one a distinct key, such as `(\"row\", index)`."
 			);
 			debug_assert!(false, "UI element {id} was declared twice under the same parent in one frame");
-			return;
+			return None;
 		}
 		self.declarations.insert(id.get(), declared_in);
-		if self.element_indices.contains_key(&id) {
-			return;
-		}
+		let std::collections::hash_map::Entry::Vacant(entry) = self.element_indices.entry(id) else {
+			return None;
+		};
+		entry.insert(self.elements.len());
 
 		let next_serial = &mut self.next_serial;
 		let serial = *self.serials.entry(id).or_insert_with(|| {
 			*next_serial += 1;
 			*next_serial
 		});
-		self.element_indices.insert(id, self.elements.len());
 		self.revision += 1;
 		self.non_transform_revision = self.revision;
 		self.placement_revision = self.revision;
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
+		self.next_content_id += 1;
 		self.elements.push(IdedElement {
 			id,
-			element,
+			element: ConcreteElement {
+				primitive: create(self.next_content_id, &mut self.spares),
+			},
 			serial,
 			revision: self.revision,
 		});
@@ -350,6 +367,7 @@ impl RetainedTree {
 			self.relations.push((self.elements[parent_index].id, id));
 			self.children[parent_index].push(index);
 		}
+		Some((&mut self.elements[index].element.primitive, &mut self.spares))
 	}
 
 	/// Moves an element under another parent as its last child.
@@ -394,8 +412,9 @@ impl RetainedTree {
 
 	/// Invalidates the changed node's measurement and any affected inherited appearance.
 	///
-	/// Returns what `update` returned, or `None` when the tree holds no element `id`.
-	pub(super) fn update_element(&mut self, id: Id, update: impl FnOnce(&mut Primitives) -> bool) -> Option<bool> {
+	/// `update` writes the element in place with the storage removed elements left. Returns what it returned, or
+	/// `None` when the tree holds no element `id`.
+	pub(super) fn update_element(&mut self, id: Id, update: impl FnOnce(&mut Primitives, &mut Spares) -> bool) -> Option<bool> {
 		let index = *self.element_indices.get(&id)?;
 		let element = &mut self.elements[index];
 		let primitive = &mut element.element.primitive;
@@ -429,7 +448,7 @@ impl RetainedTree {
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
-		let updated = update(primitive);
+		let updated = update(primitive, &mut self.spares);
 		// An edit that wrote the values already present changes nothing, so every revision stays put and consumers
 		// keep their retained renders.
 		if properties.is_some()
@@ -493,15 +512,17 @@ impl RetainedTree {
 			declarations,
 			removed,
 			declared,
+			spares,
 			..
 		} = self;
-		elements.retain(|element| {
+		elements.retain_mut(|element| {
 			// Scope ownership follows declaration paths, never the current visual parent.
 			let should_remove = is_declared_under(declarations, element.id.get(), scope);
 			if should_remove {
 				removed.insert(element.id);
 				// The same key may be declared again in this frame once its element is gone.
 				declared.remove(&element.id);
+				spares.recycle(&mut element.element.primitive);
 			}
 			!should_remove
 		});

@@ -217,18 +217,6 @@ impl ConcreteStyle {
 	pub fn layers(&self) -> &[ConcreteLayer] {
 		&self.layers
 	}
-
-	/// Replaces the layers in place, keeping this style's storage.
-	///
-	/// Equal layers leave the style untouched, and different ones reuse its capacity, so a
-	/// per-frame edit that passes a layer array allocates nothing.
-	pub fn set_layers(&mut self, layers: impl AsRef<[ConcreteLayer]>) {
-		let layers = layers.as_ref();
-		if self.layers.as_slice() != layers {
-			self.layers.clear();
-			self.layers.extend(layers.iter().cloned());
-		}
-	}
 }
 
 #[derive(Clone, PartialEq)]
@@ -366,6 +354,25 @@ impl AsRef<[ConcreteLayer]> for ConcreteStyle {
 impl AsRef<[ConcreteLayer]> for ConcreteLayer {
 	fn as_ref(&self) -> &[ConcreteLayer] {
 		std::slice::from_ref(self)
+	}
+}
+
+/// Lets one layer stand in for a whole style, such as in [`crate::ui::Properties::style`].
+impl IntoIterator for ConcreteLayer {
+	type Item = ConcreteLayer;
+	type IntoIter = std::iter::Once<ConcreteLayer>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		std::iter::once(self)
+	}
+}
+
+impl IntoIterator for ConcreteStyle {
+	type Item = ConcreteLayer;
+	type IntoIter = smallvec::IntoIter<[ConcreteLayer; 1]>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.layers.into_iter()
 	}
 }
 

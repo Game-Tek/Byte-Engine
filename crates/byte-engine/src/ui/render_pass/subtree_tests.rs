@@ -11,60 +11,61 @@ use crate::ui::{
 /// Builds a graph-like workload with an explicit content-transform boundary.
 pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 	let mut engine = Engine::with_context(Cell::new((0.0, 1.0)));
-	engine.mount(move |ctx| {
-		std::boxed::Box::pin(async move {
-			let mut root = ctx
-				.element("root")
-				.container(Container::default().style(ConcreteStyle::new()));
-			let mut viewport = root.element("viewport").container(
-				Container::default()
-					.width(900.into())
-					.height(900.into())
-					.style(ConcreteStyle::new()),
-			);
-			let mut content = viewport.element("content").container(
-				Container::default()
-					.width(900.into())
-					.height(900.into())
-					.clip(false)
-					.style(ConcreteStyle::new()),
-			);
-			for index in 0..count {
-				let mut node = content.element(("node", index)).container(
-					Container::default()
-						.absolute_position((index % 8 * 100) as i32, (index / 8 * 90) as i32)
+	engine.mount(async move |ctx| {
+		let mut root = ctx.element("root").container(|c| c.style(ConcreteStyle::new())).await;
+		let mut viewport = root
+			.element("viewport")
+			.container(|c| c.size(900.into()).style(ConcreteStyle::new()))
+			.await;
+		let mut content = viewport
+			.element("content")
+			.container(|c| c.size(900.into()).clip(false).style(ConcreteStyle::new()))
+			.await;
+		for index in 0..count {
+			let mut node = content
+				.element(("node", index))
+				.container(|c| {
+					c.absolute_position((index % 8 * 100) as i32, (index / 8 * 90) as i32)
 						.width(90.into())
-						.height(65.into()),
-				);
-				node.element("label").text(Text::new(format!("Node {index}")).font_size(12.));
-				node.element("wire").curve(
-					Curve::new(CurvePath::new(80.into(), 30.into()).cubic((0., 0.), (25., 30.), (50., 0.), (80., 30.)))
+						.height(65.into())
+				})
+				.await;
+			node.element("label")
+				.text(format!("Node {index}"), |t| t.font_size(12.))
+				.await;
+			node.element("wire")
+				.curve(|c| {
+					c.width(80.into())
+						.height(30.into())
+						.cubic((0., 0.), (25., 30.), (50., 0.), (80., 30.))
 						.style(ConcreteLayer::default().stroke(2.))
-						.hit_testable(6.),
-				);
-			}
-			for index in 0..32 {
-				let mut card = root.element(("toolbar", index as usize)).container(
-					Container::default()
-						.absolute_position(1000 + (index % 4 * 180), index / 4 * 100)
+						.hit_width(6.)
+				})
+				.await;
+		}
+		for index in 0..32 {
+			let mut card = root
+				.element(("toolbar", index as usize))
+				.container(|c| {
+					c.absolute_position(1000 + (index % 4 * 180), index / 4 * 100)
 						.width(170.into())
-						.height(90.into()),
-				);
-				card.element("label").text(Text::new(format!("Stationary card {index}")));
-				card.element("image").image(Image::from_rgba(2, 2, vec![255; 16]));
+						.height(90.into())
+				})
+				.await;
+			card.element("label").text(format!("Stationary card {index}"), |t| t).await;
+			card.element("image").image(2, 2, vec![255; 16], |i| i).await;
+		}
+		let mut applied = (0.0, 1.0);
+		loop {
+			let camera = ctx.with(|c| c.get()).await;
+			if camera != applied {
+				content
+					.update_container(|c| c.transform(Transform::identity().translate(camera.0, 13.25).scale(camera.1)))
+					.await;
+				applied = camera;
 			}
-			let mut applied = (0.0, 1.0);
-			loop {
-				let camera = ctx.with(|c| c.get()).await;
-				if camera != applied {
-					content.update_container(move |value| {
-						value.set_transform(Transform::identity().translate(camera.0, 13.25).scale(camera.1))
-					});
-					applied = camera;
-				}
-				ctx.render().await;
-			}
-		})
+			ctx.render().await;
+		}
 	});
 	engine
 }

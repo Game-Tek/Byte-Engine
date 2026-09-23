@@ -465,13 +465,11 @@ mod ui_source_tests {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			std::boxed::Box::pin(async move {
-				let _root = ctx.element("root").container(Container::default());
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let _root = ctx.element("root").container(|c| c).await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
@@ -493,13 +491,11 @@ mod ui_source_tests {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			std::boxed::Box::pin(async move {
-				let _root = ctx.element("root").container(Container::default());
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let _root = ctx.element("root").container(|c| c).await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {

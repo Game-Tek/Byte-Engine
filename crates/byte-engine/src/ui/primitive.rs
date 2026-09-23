@@ -181,6 +181,21 @@ impl From<TextField> for Primitives {
 	}
 }
 
+impl Primitives {
+	/// Returns the style the engine writes a declaration's or an edit's layers into.
+	pub(crate) fn style_mut(&mut self) -> &mut ConcreteStyle {
+		match self {
+			Primitives::Container(container) => &mut container.style,
+			Primitives::Image(image) => &mut image.style,
+			Primitives::Text(text) => &mut text.style,
+			Primitives::TextField(text_field) => &mut text_field.style,
+			Primitives::Shape(shape) => &mut shape.style,
+			Primitives::Curve(curve) => &mut curve.style,
+			Primitives::Path(path) => &mut path.style,
+		}
+	}
+}
+
 impl Primitive for Primitives {
 	fn shape(&self) -> Shapes {
 		match self {
@@ -199,7 +214,7 @@ impl Primitive for Primitives {
 				radius: 0.0,
 				exponent: 2.0,
 			},
-			Primitives::Shape(shape) => shape.shape.clone(),
+			Primitives::Shape(shape) => shape.outline(),
 			Primitives::Curve(_) | Primitives::Path(_) => Shapes::Box {
 				half: (Sizing::pixels(0.0), Sizing::pixels(0.0)),
 				radius: 0.0,

@@ -14,56 +14,13 @@ pub struct TextField {
 }
 
 impl TextField {
-	pub fn new(content: impl Into<String>) -> Self {
+	pub(crate) fn new(content: String) -> Self {
 		Self {
-			content: content.into(),
+			content,
 			settings: TextFieldSettings::default(),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),
 			visual: Visual::default(),
-		}
-	}
-
-	pub fn font_size(mut self, font_size: f32) -> Self {
-		self.settings.font_size = font_size;
-		self
-	}
-
-	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
-		self.style = style.into();
-		self
-	}
-
-	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
-		self.transform = transform.into();
-		self
-	}
-
-	pub fn opacity(mut self, opacity: f32) -> Self {
-		self.visual.opacity = opacity;
-		self
-	}
-
-	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
-	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
-		self.style.set_layers(style);
-	}
-
-	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
-		self.transform = transform.into();
-	}
-
-	pub fn set_opacity(&mut self, opacity: f32) {
-		self.visual.opacity = opacity;
-	}
-
-	/// Replaces the content in place; equal content leaves it untouched and different
-	/// content reuses the existing capacity, so per-frame labels allocate nothing.
-	pub fn set_content(&mut self, content: impl AsRef<str>) {
-		let content = content.as_ref();
-		if self.content != content {
-			self.content.clear();
-			self.content.push_str(content);
 		}
 	}
 

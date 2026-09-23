@@ -18,6 +18,7 @@ pub(super) type BoxedUiFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
 /// The task also owns the waits its futures registered. A wait stays registered only while the task keeps polling
 /// the future that made it: after each poll, [`Runtime::poll_ready_tasks`] drops the waits that poll did not
 /// register again. See [`UiPoll`] for how a wait future reaches its task.
+#[derive(Default)]
 pub(super) struct UiTask {
 	/// Empty while the task is being polled.
 	pub(super) future: Option<BoxedUiFuture>,
@@ -37,6 +38,19 @@ pub(super) struct UiTask {
 }
 
 impl UiTask {
+	/// Empties an ended task's storage, keeping its capacity and waker for the next spawned task.
+	fn clear(&mut self) {
+		self.future = None;
+		self.inbox.clear();
+		self.key_inbox.clear();
+		self.text_edit_inbox.clear();
+		self.frame_waits.clear();
+		self.event_waits.clear();
+		self.key_waits.clear();
+		self.text_edit_waits.clear();
+		self.timer_waits.clear();
+	}
+
 	/// Wakes the task so the next [`Runtime::poll_ready_tasks`] polls it.
 	fn wake(&self) {
 		if let Some(waker) = &self.waker {
@@ -93,7 +107,7 @@ pub(super) type TaskId = StableVecHandle;
 ///
 /// Scope paths can repeat between live mounts, so ownership uses this identity instead,
 /// which an engine never hands out twice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ScopeId(u64);
 
 impl ScopeId {
@@ -107,6 +121,10 @@ pub(super) fn sanitize_opacity(opacity: f32) -> f32 {
 
 pub struct Runtime {
 	pub(super) tasks: StableVec<UiTask>,
+	/// Ended tasks whose storage and waker the next spawned tasks reuse, so a screen that opens again allocates none.
+	spare_tasks: Vec<UiTask>,
+	/// Reused by [`Self::end_tasks`] to collect the tasks it ends.
+	ending: Vec<TaskId>,
 	next_scope: u64,
 	/// Shared with every [`TaskWaker`] so a wake from any thread schedules its task.
 	pub(super) wakes: Arc<WakeQueue>,
@@ -160,6 +178,8 @@ impl Runtime {
 		const TASK_CAPACITY: usize = 16;
 		Self {
 			tasks: StableVec::with_capacity(TASK_CAPACITY),
+			spare_tasks: Vec::new(),
+			ending: Vec::new(),
 			next_scope: ScopeId::ROOT.0,
 			wakes: Arc::new(WakeQueue {
 				ready: Mutex::new(VecDeque::with_capacity(TASK_CAPACITY)),
@@ -195,42 +215,52 @@ impl Runtime {
 	}
 
 	/// Starts a task owned by `owner` and declared at `path`, and schedules its first poll.
+	///
+	/// The task reuses the storage of an ended one when there is one, and its waker too when nothing else holds it.
 	pub(super) fn spawn(&mut self, owner: ScopeId, path: u64, future: BoxedUiFuture) {
-		let id = self.tasks.push(UiTask {
-			future: Some(future),
-			waker: None,
-			owner,
-			path,
-			inbox: VecDeque::new(),
-			key_inbox: VecDeque::new(),
-			text_edit_inbox: VecDeque::new(),
-			frame_waits: Vec::new(),
-			event_waits: Vec::new(),
-			key_waits: Vec::new(),
-			text_edit_waits: Vec::new(),
-			timer_waits: Vec::new(),
-		});
-		// The waker names its task, so it is made once the task has a slot; it is reused across polls.
-		let waker = Arc::new(TaskWaker {
-			task: id,
-			queue: Arc::clone(&self.wakes),
-			queued: AtomicBool::new(false),
-		});
-		waker.wake_by_ref();
-		self.tasks.get_mut(id).expect("A UI task was removed while it was spawned.").waker = Some(waker);
+		let mut task = self.spare_tasks.pop().unwrap_or_default();
+		task.future = Some(future);
+		task.owner = owner;
+		task.path = path;
+		let id = self.tasks.push(task);
+		let task = self.tasks.get_mut(id).expect("A UI task was removed while it was spawned.");
+		// The waker names its task, so it is set once the task has a slot. A waker something else still holds could
+		// wake the new task for the old one, so only a uniquely held one is renamed.
+		match task.waker.as_mut().and_then(Arc::get_mut) {
+			Some(waker) => {
+				waker.task = id;
+				*waker.queued.get_mut() = false;
+			}
+			None => {
+				task.waker = Some(Arc::new(TaskWaker {
+					task: id,
+					queue: Arc::clone(&self.wakes),
+					queued: AtomicBool::new(false),
+				}))
+			}
+		}
+		task.wake();
 	}
 
-	/// Removes every task the predicate selects and hands their futures to the caller.
+	/// Removes a task that ended and keeps its storage for the next spawned task.
+	fn recycle(&mut self, id: TaskId) {
+		if let Some(mut task) = self.tasks.remove(id) {
+			task.clear();
+			self.spare_tasks.push(task);
+		}
+	}
+
+	/// Ends every task the predicate selects and drops its future.
 	///
-	/// A dropped future may own mounted scopes, which send the commands that end them; see [`apply_commands`].
-	pub(super) fn detach_tasks(&mut self, select: impl Fn(&UiTask) -> bool) -> Vec<UiTask> {
-		let selected = self
-			.tasks
-			.handled_iter()
-			.filter(|(_, task)| select(task))
-			.map(|(id, _)| id)
-			.collect::<Vec<_>>();
-		selected.into_iter().filter_map(|id| self.tasks.remove(id)).collect()
+	/// A dropped future may own mounted scopes, which send the commands that end them; see
+	/// [`UiPoll::apply_commands`].
+	pub(super) fn end_tasks(&mut self, select: impl Fn(&UiTask) -> bool) {
+		let mut ending = std::mem::take(&mut self.ending);
+		ending.extend(self.tasks.handled_iter().filter(|(_, task)| select(task)).map(|(id, _)| id));
+		for id in ending.drain(..) {
+			self.recycle(id);
+		}
+		self.ending = ending;
 	}
 
 	/// Starts a frame: wakes the tasks that wait for one and the timers that are due.
@@ -421,13 +451,12 @@ impl Runtime {
 	}
 }
 
-/// Polls every woken task and applies the commands each poll sent before polling the next one.
+/// Polls every woken task, applying the removals of mounts each poll dropped before polling the next one.
 ///
-/// Each poll lends `core` to the task's futures through [`TaskContext::ext`]; see [`UiPoll`]. After the poll, the
-/// task keeps only the waits that poll registered, which cancels the waits of futures it dropped or stopped polling.
-/// Applying commands after every poll makes a change made in the middle of a component visible to the tasks polled
-/// after it and to the next layout.
-pub(super) fn poll_ready_tasks<C: 'static>(core: &mut UiPoll<C>, tree: &mut RetainedTree, commands: &Receiver<UiCommand>) {
+/// Each poll lends `core` to the task's futures through [`TaskContext::ext`], so their writes land during the poll;
+/// see [`UiPoll`]. After the poll, the task keeps only the waits that poll registered, which cancels the waits of
+/// futures it dropped or stopped polling.
+pub(super) fn poll_ready_tasks<C: 'static>(core: &mut UiPoll<C>) {
 	loop {
 		let runtime = &mut core.runtime;
 		let Some(id) = runtime.wakes.ready.lock().pop_front() else {
@@ -457,7 +486,7 @@ pub(super) fn poll_ready_tasks<C: 'static>(core: &mut UiPoll<C>, tree: &mut Reta
 		match result {
 			Poll::Ready(()) => {
 				drop(future);
-				runtime.tasks.remove(id);
+				runtime.recycle(id);
 			}
 			Poll::Pending => {
 				if let Some(task) = runtime.tasks.get_mut(id) {
@@ -466,6 +495,6 @@ pub(super) fn poll_ready_tasks<C: 'static>(core: &mut UiPoll<C>, tree: &mut Reta
 				}
 			}
 		}
-		apply_commands(commands, runtime, tree);
+		core.apply_commands();
 	}
 }

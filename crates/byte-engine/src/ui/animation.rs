@@ -371,12 +371,17 @@ impl AnimationDriver for Smoothing {
 	}
 }
 
+/// Drives `animation` one frame at a time and applies each value to `target` until the animation settles.
+///
+/// `apply` is an async closure that edits the elements for one value, such as
+/// `async |frame, t| frame.update_container(|c| c.opacity(t)).await`. It may also edit other elements it borrows, so
+/// one animation can move a card and fade its content together.
 pub async fn animate<C: 'static, A, F>(target: &mut EvaluationContext<C>, mut animation: A, mut apply: F)
 where
 	A: AnimationDriver,
-	F: FnMut(&mut EvaluationContext<C>, f32),
+	F: AsyncFnMut(&mut EvaluationContext<C>, f32),
 {
-	apply(target, animation.value());
+	apply(target, animation.value()).await;
 
 	let mut last_frame = Instant::now();
 	while !animation.is_complete() {
@@ -384,10 +389,10 @@ where
 		let now = Instant::now();
 		animation.advance(capped_frame_duration(MediaTime::from_std(now.duration_since(last_frame))));
 		last_frame = now;
-		apply(target, animation.value());
+		apply(target, animation.value()).await;
 	}
 
-	apply(target, animation.finish());
+	apply(target, animation.finish()).await;
 }
 
 pub struct Animation<V: Interpolate> {

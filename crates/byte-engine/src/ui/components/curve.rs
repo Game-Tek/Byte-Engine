@@ -250,6 +250,10 @@ impl CurvePath {
 	}
 }
 
+/// The `Curve` struct is the retained state of a stroked open outline, such as a wire between two nodes.
+///
+/// The engine owns every curve. Declare one with [`crate::ui::ElementContext::curve`] and edit it with
+/// [`crate::ui::EvaluationContext::update_curve`].
 pub struct Curve {
 	pub(crate) path: CurvePath,
 	pub(crate) style: ConcreteStyle,
@@ -259,9 +263,10 @@ pub struct Curve {
 }
 
 impl Curve {
-	pub fn new(path: CurvePath) -> Self {
+	/// Creates a full-size curve with no segments.
+	pub(crate) fn new() -> Self {
 		Self {
-			path,
+			path: CurvePath::new(Sizing::full(), Sizing::full()),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),
 			visual: Visual::default(),
@@ -269,63 +274,16 @@ impl Curve {
 		}
 	}
 
-	/// Lets the pointer find this curve within `width` layout units of its stroke,
-	/// so a wire can be clicked, hovered, and dropped on like a container.
-	///
-	/// The width is measured before any inherited scale. Pass a width wider than
-	/// the stroke for a comfortable target.
-	pub fn hit_testable(mut self, width: f32) -> Self {
-		self.set_hit_testable(Some(width));
-		self
-	}
-
-	pub fn set_hit_testable(&mut self, width: Option<f32>) {
-		self.hit_width = width.filter(|width| width.is_finite() && *width > 0.0);
-	}
+	/// Curves repaint from their segments on every change, so there is nothing to record; see
+	/// [`super::path::Path::outline_changed`], which a path needs to repack.
+	pub(crate) fn outline_changed(&mut self) {}
 
 	pub fn hit_width(&self) -> Option<f32> {
 		self.hit_width
 	}
 
-	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
-		self.style = style.into();
-		self
-	}
-
-	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
-		self.transform = transform.into();
-		self
-	}
-
-	pub fn opacity(mut self, opacity: f32) -> Self {
-		self.visual.opacity = opacity;
-		self
-	}
-
-	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
-	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
-		self.style.set_layers(style);
-	}
-
-	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
-		self.transform = transform.into();
-	}
-
-	pub fn set_opacity(&mut self, opacity: f32) {
-		self.visual.opacity = opacity;
-	}
-
-	pub fn set_path(&mut self, path: CurvePath) {
-		self.path = path;
-	}
-
 	pub fn path(&self) -> &CurvePath {
 		&self.path
-	}
-
-	/// Edits the path in place; prefer this over [`Self::set_path`] to reuse its segment buffer.
-	pub fn path_mut(&mut self) -> &mut CurvePath {
-		&mut self.path
 	}
 
 	pub fn style_ref(&self) -> &ConcreteStyle {

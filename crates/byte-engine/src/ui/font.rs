@@ -14,7 +14,6 @@ const FALLBACK_ASCENT_FACTOR: f32 = 0.8;
 const FALLBACK_LINE_HEIGHT_FACTOR: f32 = 1.2;
 const FONT_SEARCH_DEPTH: usize = 3;
 
-
 /// The `LoadedFont` struct retains font data for on-demand outlines and optional bitmap rendering.
 struct LoadedFont {
 	/// Only the bitmap path needs the rasterizer's eagerly compiled glyph geometry.
@@ -137,6 +136,8 @@ pub(crate) struct TextSystem {
 	previous_measure_cache: HashMap<u32, HashMap<String, Size>>,
 	measure_cache_entries: usize,
 	measure_cache_bytes: usize,
+	/// Emptied keys of the generation that rotated out, which new measurements reuse instead of allocating.
+	spare_measure_keys: Vec<String>,
 	glyph_cache: HashMap<GlyphKey, Glyph>,
 	/// Outlines by the font's glyph index, read on first use.
 	outlines: Vec<Option<GlyphOutline>>,
@@ -160,6 +161,7 @@ impl TextSystem {
 			previous_measure_cache: HashMap::new(),
 			measure_cache_entries: 0,
 			measure_cache_bytes: 0,
+			spare_measure_keys: Vec::new(),
 			glyph_cache: HashMap::new(),
 			outlines: Vec::new(),
 			em_line_metrics: None,
@@ -198,14 +200,19 @@ impl TextSystem {
 				|| self.measure_cache_bytes + text.len() > MEASURE_CACHE_BYTES
 			{
 				std::mem::swap(&mut self.measure_cache, &mut self.previous_measure_cache);
-				self.measure_cache.clear();
+				// The rotated-out generation leaves its key storage to the measurements that replace it.
+				for sizes in self.measure_cache.values_mut() {
+					self.spare_measure_keys.extend(sizes.drain().map(|(mut key, _)| {
+						key.clear();
+						key
+					}));
+				}
 				self.measure_cache_entries = 0;
 				self.measure_cache_bytes = 0;
 			}
-			self.measure_cache
-				.entry(font_size_key)
-				.or_default()
-				.insert(text.to_owned(), size);
+			let mut key = self.spare_measure_keys.pop().unwrap_or_default();
+			key.push_str(text);
+			self.measure_cache.entry(font_size_key).or_default().insert(key, size);
 			self.measure_cache_entries += 1;
 			self.measure_cache_bytes += text.len();
 			debug_assert!(

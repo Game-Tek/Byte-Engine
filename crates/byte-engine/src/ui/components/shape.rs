@@ -1,7 +1,10 @@
 use crate::ui::{Transform, Visual, components::container::Container, primitive::Shapes, style::ConcreteStyle};
 
+/// The `Shape` struct is the retained state of a painted box that has no children.
+///
+/// The engine owns every shape. Declare one with [`crate::ui::ElementContext::shape`] and edit it with
+/// [`crate::ui::EvaluationContext::update_shape`].
 pub struct Shape {
-	pub(crate) shape: Shapes,
 	pub(crate) settings: Container,
 	pub(crate) style: ConcreteStyle,
 	pub(crate) transform: Transform,
@@ -9,47 +12,23 @@ pub struct Shape {
 }
 
 impl Shape {
-	pub fn new(settings: Container) -> Self {
-		let visual = settings.visual;
+	/// Creates a full-size box with the default container settings.
+	pub(crate) fn new() -> Self {
 		Self {
-			shape: Shapes::Box {
-				half: (settings.width, settings.height),
-				radius: settings.corner_radius,
-				exponent: settings.corner_exponent,
-			},
-			settings,
+			settings: Container::default(),
 			style: ConcreteStyle::default(),
 			transform: Transform::default(),
-			visual,
+			visual: Visual::default(),
 		}
 	}
 
-	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
-		self.style = style.into();
-		self
-	}
-
-	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
-		self.transform = transform.into();
-		self
-	}
-
-	pub fn opacity(mut self, opacity: f32) -> Self {
-		self.visual.opacity = opacity;
-		self
-	}
-
-	/// Replaces the style in place; see [`ConcreteStyle::set_layers`].
-	pub fn set_style(&mut self, style: impl AsRef<[crate::ui::style::ConcreteLayer]>) {
-		self.style.set_layers(style);
-	}
-
-	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
-		self.transform = transform.into();
-	}
-
-	pub fn set_opacity(&mut self, opacity: f32) {
-		self.visual.opacity = opacity;
+	/// Returns the box drawn for this shape's settings.
+	pub(crate) fn outline(&self) -> Shapes {
+		Shapes::Box {
+			half: (self.settings.width, self.settings.height),
+			radius: self.settings.corner_radius,
+			exponent: self.settings.corner_exponent,
+		}
 	}
 
 	pub fn settings(&self) -> &Container {

@@ -1,8 +1,9 @@
 //! Retained UI components, layout evaluation, styling, and rendering.
 //!
 //! Implement an async component function to describe a UI tree and evaluate it with
-//! [`layout::engine::Engine`]. Components create [`Container`], [`Text`], and
-//! other [`Primitive`] values through the layout context. Send the resulting
+//! [`layout::engine::Engine`]. Components declare [`Container`], [`Text`], and
+//! other elements through the layout context and set their properties with
+//! [`Properties`] setters; the engine creates and owns the elements. Send the resulting
 //! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
 //! integrating UI into a graphics application.
 //! For pointer gestures, capture a hit-tested source with
@@ -61,8 +62,11 @@ pub use element::{ConcreteElement, Element, ElementHandle, Id};
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{
 	Depth, Geometry, Position, Sizing,
-	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot, MountedUiFuture, UiFuture},
-	engine::{Engine, EvaluationContext, PointerState, Render, RenderRevision, Runtime, UiEvent, UiKeyEvent, UiTextEditEvent},
+	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot},
+	engine::{
+		ElementKind, Engine, EvaluationContext, MountedComponentFuture, PointerState, Properties, Render, RenderRevision,
+		Runtime, Setup, UiEvent, UiKeyEvent, UiTextEditEvent,
+	},
 };
 pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};

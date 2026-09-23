@@ -9,28 +9,30 @@ use crate::ui::{
 /// Varies content, visibility, and stroke layers between snapshots.
 fn changing_render(count: usize, phase: usize) -> engine::Render {
 	let mut engine = Engine::new();
-	engine.mount(move |ctx| {
-		std::boxed::Box::pin(async move {
-			let mut root = ctx.element("root").container(Container::default());
-			for index in 0..count {
-				let color = RGBA::new(0.2, 0.4, 0.6, if (index + phase).is_multiple_of(3) { 0.0 } else { 1.0 });
-				root.element(("label", index)).text(
-					Text::new(format!("{phase}: {}", "label".repeat(index + 1)))
-						.font_size(10.0 + phase as f32)
-						.style(ConcreteLayer::default().color(color.into())),
-				);
-				root.element(("curve", index)).curve(
-					Curve::new(CurvePath::new(40.into(), 30.into()).line((0.0, phase as f32), (30.0, 20.0))).style(
-						ConcreteStyle::from_layers([
+	engine.mount(async move |ctx| {
+		let mut root = ctx.element("root").container(|c| c).await;
+		for index in 0..count {
+			let color = RGBA::new(0.2, 0.4, 0.6, if (index + phase).is_multiple_of(3) { 0.0 } else { 1.0 });
+			root.element(("label", index))
+				.text(format!("{phase}: {}", "label".repeat(index + 1)), |t| {
+					t.font_size(10.0 + phase as f32)
+						.style(ConcreteLayer::default().color(color.into()))
+				})
+				.await;
+			root.element(("curve", index))
+				.curve(|c| {
+					c.width(40.into())
+						.height(30.into())
+						.line((0.0, phase as f32), (30.0, 20.0))
+						.style(ConcreteStyle::from_layers([
 							ConcreteLayer::default().color(color.into()).stroke(1.0 + phase as f32),
 							ConcreteLayer::default()
 								.color(color.into())
 								.stroke(if phase.is_multiple_of(2) { 2.0 } else { 0.0 }),
-						]),
-					),
-				);
-			}
-		})
+						]))
+				})
+				.await;
+		}
 	});
 	let arena = bumpalo::Bump::new();
 	let mut snapshot = engine.evaluate(Size::new(800, 800), &arena);
@@ -207,21 +209,24 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 #[test]
 fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 	let mut engine = Engine::new();
-	engine.mount(|ctx| {
-		std::boxed::Box::pin(async move {
-			let mut canvas = ctx.element("canvas").container(
-				Container::default()
-					.width(100.into())
-					.height(100.into())
+	engine.mount(async move |ctx| {
+		let mut canvas = ctx
+			.element("canvas")
+			.container(|c| {
+				c.size(100.into())
 					.flow(flow::center)
-					.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0)),
-			);
-			canvas.element("wire").curve(
-				Curve::new(CurvePath::new(100.into(), 100.into()).cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0)))
-					.style(ConcreteLayer::default().color(RGBA::white().into()).stroke(1.5)),
-			);
-			canvas.element("label").text(Text::new("node").font_size(10.0));
-		})
+					.transform(Transform::identity().origin(UiPoint::zero()).scale(2.0))
+			})
+			.await;
+		canvas
+			.element("wire")
+			.curve(|c| {
+				c.size(100.into())
+					.cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0))
+					.style(ConcreteLayer::default().color(RGBA::white().into()).stroke(1.5))
+			})
+			.await;
+		canvas.element("label").text("node", |t| t.font_size(10.0)).await;
 	});
 	let arena = bumpalo::Bump::new();
 	let mut snapshot = engine.evaluate(Size::new(400, 400), &arena);
@@ -253,58 +258,64 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 #[test]
 fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	let mut engine = Engine::new();
-	engine.mount(|ctx| {
-		std::boxed::Box::pin(async move {
-			let mut root = ctx.element("root").container(Container::default().hit_testable(false));
-			let mut viewport = root.element("viewport").container(
-				Container::default()
-					.absolute_position(100, 100)
-					.width(400.into())
-					.height(300.into()),
-			);
-			let mut content = viewport.element("content").container(
-				Container::default()
-					.absolute_position(0, 0)
+	engine.mount(async move |ctx| {
+		let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+		let mut viewport = root
+			.element("viewport")
+			.container(|c| c.absolute_position(100, 100).width(400.into()).height(300.into()))
+			.await;
+		let mut content = viewport
+			.element("content")
+			.container(|c| {
+				c.absolute_position(0, 0)
 					.width(400.into())
 					.height(300.into())
 					.hit_testable(false)
 					.clip(false)
-					.transform(Transform::identity().origin(UiPoint::zero())),
-			);
-			let mut wires = content.element("wires").container(
-				Container::default()
-					.absolute_position(0, 0)
+					.transform(Transform::identity().origin(UiPoint::zero()))
+			})
+			.await;
+		let mut wires = content
+			.element("wires")
+			.container(|c| {
+				c.absolute_position(0, 0)
 					.width(400.into())
 					.height(300.into())
 					.hit_testable(false)
-					.clip(false),
-			);
-			wires.element("wire-1").component(|ctx| {
-				std::boxed::Box::pin(async move {
-					let mut curve = ctx.element("curve").curve(
-						Curve::new(CurvePath::new(400.into(), 300.into()))
+					.clip(false)
+			})
+			.await;
+		wires
+			.element("wire-1")
+			.component(async move |ctx| {
+				let mut curve = ctx
+					.element("curve")
+					.curve(|c| {
+						c.width(400.into())
+							.height(300.into())
 							.style(ConcreteLayer::default().color(RGBA::white().into()).stroke(3.0))
-							.hit_testable(12.0),
-					);
-					let mut routed = false;
-					loop {
-						crate::utils::r#async::select! {
-							_ = curve.on(crate::ui::Events::PointerEntered) => {},
-							_ = curve.on(crate::ui::Events::Actuated) => {},
-							_ = ctx.render() => {},
-						}
-						if !routed {
-							routed = true;
-							curve.update_curve(move |curve| {
-								let path = curve.path_mut();
-								path.clear();
-								path.push_cubic((20.0, 20.0), (80.0, 20.0), (120.0, 200.0), (200.0, 200.0));
-							});
-						}
+							.hit_width(12.0)
+					})
+					.await;
+				let mut routed = false;
+				loop {
+					crate::utils::r#async::select! {
+						_ = curve.on(crate::ui::Events::PointerEntered) => {},
+						_ = curve.on(crate::ui::Events::Actuated) => {},
+						_ = ctx.render() => {},
 					}
-				})
-			});
-		})
+					if !routed {
+						routed = true;
+						curve
+							.update_curve(|c| {
+								c.clear_segments()
+									.cubic((20.0, 20.0), (80.0, 20.0), (120.0, 200.0), (200.0, 200.0))
+							})
+							.await;
+					}
+				}
+			})
+			.await;
 	});
 	let arena = bumpalo::Bump::new();
 	let mut draw_list = UiDrawList::default();
@@ -351,15 +362,15 @@ fn cached_surface_primitives_follow_content_and_layer_edits() {
 #[test]
 fn root_transform_preserves_viewport_units() {
 	let mut engine = Engine::new();
-	engine.mount(|ctx| {
-		std::boxed::Box::pin(async move {
-			let mut root = ctx.element("root").container(
-				Container::default()
-					.style(ConcreteStyle::new())
-					.transform(Transform::identity().origin(UiPoint::zero()).translate(10., 20.).scale(2.)),
-			);
-			root.element("child").container(Container::default().size(10.into()));
-		})
+	engine.mount(async move |ctx| {
+		let mut root = ctx
+			.element("root")
+			.container(|c| {
+				c.style(ConcreteStyle::new())
+					.transform(Transform::identity().origin(UiPoint::zero()).translate(10., 20.).scale(2.))
+			})
+			.await;
+		root.element("child").container(|c| c.size(10.into())).await;
 	});
 	let arena = bumpalo::Bump::new();
 	let mut snapshot = engine.evaluate(Size::new(100, 100), &arena);
@@ -378,38 +389,34 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 
 	let frame_allocator = bumpalo::Bump::new();
 	let mut engine = Engine::new();
-	engine.mount(|ctx| {
-		std::boxed::Box::pin(async move {
-			let mut frame = ctx.element("frame").container(
-				Container::default()
-					.width(40.into())
-					.height(40.into())
-					.clip(false)
-					.flow(crate::ui::flow::center),
-			);
-			let square = || {
-				CurvePath::new(40.into(), 40.into())
-					.line((0.0, 0.0), (20.0, 0.0))
-					.line((20.0, 0.0), (20.0, 20.0))
-					.line((20.0, 20.0), (0.0, 20.0))
-			};
-			frame.element("body").path(Path::new(square()));
-			frame.element("glass").path(
-				Path::new(square()).style(
+	engine.mount(async move |ctx| {
+		let mut frame = ctx
+			.element("frame")
+			.container(|c| c.size(40.into()).clip(false).flow(crate::ui::flow::center))
+			.await;
+		let square = || {
+			CurvePath::new(40.into(), 40.into())
+				.line((0.0, 0.0), (20.0, 0.0))
+				.line((20.0, 0.0), (20.0, 20.0))
+				.line((20.0, 20.0), (0.0, 20.0))
+		};
+		frame.element("body").path(|p| p.outline(square())).await;
+		frame
+			.element("glass")
+			.path(|p| {
+				p.outline(square()).style(
 					ConcreteStyle::new()
 						.layer(ConcreteLayer::default().backdrop_blur(8.0))
 						.layer(ConcreteLayer::default()),
-				),
-			);
-			frame.element("highlight").path(Path::new(square()));
-			// A later rectangle blur lands in the blur list first, since rectangles are walked before paths.
-			frame.element("pill").container(
-				Container::default()
-					.width(10.into())
-					.height(10.into())
-					.style(ConcreteLayer::default().backdrop_blur(4.0)),
-			);
-		})
+				)
+			})
+			.await;
+		frame.element("highlight").path(|p| p.outline(square())).await;
+		// A later rectangle blur lands in the blur list first, since rectangles are walked before paths.
+		frame
+			.element("pill")
+			.container(|c| c.size(10.into()).style(ConcreteLayer::default().backdrop_blur(4.0)))
+			.await;
 	});
 	let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 	let render = engine.render(&mut snapshot);

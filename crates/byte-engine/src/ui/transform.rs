@@ -7,7 +7,7 @@ use super::{Location3, Size, UiPoint, layout::Geometry};
 ///
 /// Scaling uses the element's center by default. Choose [`Self::origin`] when
 /// an edge or corner must stay anchored, then pass the transform to
-/// [`super::Container::transform`] or another UI primitive.
+/// [`crate::ui::Properties::transform`] in an element's setup or edit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transform {
 	/// The horizontal displacement in layout units, applied after scaling.

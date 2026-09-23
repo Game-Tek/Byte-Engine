@@ -2941,10 +2941,8 @@ mod tests {
 	#[test]
 	fn prepared_frame_only_matches_its_own_revision_extent_and_glyph_generation() {
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				ctx.element("root").container(Container::default());
-			})
+		engine.mount(async move |ctx| {
+			ctx.element("root").container(|c| c).await;
 		});
 		let frame_allocator = bumpalo::Bump::new();
 		let mut snapshot = engine.evaluate(Size::new(10, 10), &frame_allocator);
@@ -2970,14 +2968,12 @@ mod tests {
 	#[test]
 	fn update_ignores_a_render_whose_revision_was_already_adopted() {
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
-				frame.element("label").text(Text::new("Stable"));
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let mut frame = ctx.element("frame").container(|c| c).await;
+			frame.element("label").text("Stable", |t| t).await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let frame_allocator = bumpalo::Bump::new();
 		let mut draw_list = UiDrawList::default();
@@ -3798,11 +3794,9 @@ mod tests {
 		let mut draw_list = UiDrawList::default();
 
 		let mut text_engine = Engine::new();
-		text_engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
-				frame.element("label").text(Text::new("Option"));
-			})
+		text_engine.mount(async move |ctx| {
+			let mut frame = ctx.element("frame").container(|c| c).await;
+			frame.element("label").text("Option", |t| t).await;
 		});
 		let mut text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let text_render = text_engine.render(&mut text_snapshot);
@@ -3811,10 +3805,8 @@ mod tests {
 		assert_eq!(draw_list.texts.len(), 1);
 
 		let mut no_text_engine = Engine::new();
-		no_text_engine.mount(|ctx| {
-			Box::pin(async move {
-				ctx.element("frame").container(Container::default());
-			})
+		no_text_engine.mount(async move |ctx| {
+			ctx.element("frame").container(|c| c).await;
 		});
 		let mut no_text_snapshot = no_text_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let no_text_render = no_text_engine.render(&mut no_text_snapshot);
@@ -3829,11 +3821,9 @@ mod tests {
 		let mut draw_list = UiDrawList::default();
 
 		let mut image_engine = Engine::new();
-		image_engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default());
-				frame.element("preview").image(Image::from_rgba(2, 2, image_pixels(2, 2)));
-			})
+		image_engine.mount(async move |ctx| {
+			let mut frame = ctx.element("frame").container(|c| c).await;
+			frame.element("preview").image(2, 2, image_pixels(2, 2), |i| i).await;
 		});
 		let mut image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let image_render = image_engine.render(&mut image_snapshot);
@@ -3842,10 +3832,8 @@ mod tests {
 		assert_eq!(draw_list.images.len(), 1);
 
 		let mut no_image_engine = Engine::new();
-		no_image_engine.mount(|ctx| {
-			Box::pin(async move {
-				ctx.element("frame").container(Container::default());
-			})
+		no_image_engine.mount(async move |ctx| {
+			ctx.element("frame").container(|c| c).await;
 		});
 		let mut no_image_snapshot = no_image_engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let no_image_render = no_image_engine.render(&mut no_image_snapshot);
@@ -3859,10 +3847,11 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(
-					Container::default().opacity(0.5).style(
+		engine.mount(async move |ctx| {
+			let mut frame = ctx
+				.element("frame")
+				.container(|c| {
+					c.opacity(0.5).style(
 						ConcreteStyle::new()
 							.layer(ConcreteLayer::default().color(RGBA::new(1.0, 0.0, 0.0, 0.8).into()))
 							.layer(
@@ -3870,12 +3859,15 @@ mod tests {
 									.color(RGBA::new(0.0, 1.0, 0.0, 0.6).into())
 									.stroke(2.0),
 							),
-					),
-				);
-				frame
-					.element("label")
-					.text(Text::new("Visible").style(ConcreteLayer::default().color(RGBA::new(1.0, 1.0, 1.0, 0.4).into())));
-			})
+					)
+				})
+				.await;
+			frame
+				.element("label")
+				.text("Visible", |t| {
+					t.style(ConcreteLayer::default().color(RGBA::new(1.0, 1.0, 1.0, 0.4).into()))
+				})
+				.await;
 		});
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
@@ -3894,32 +3886,32 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let _ = ctx.element("ring").container(
-					Container::default()
-						.sector(Sector {
-							start: 0.0,
-							sweep: 3.0,
-							inner: 0.5,
-							inset: 0.0,
-						})
-						.style(
-							ConcreteStyle::new()
-								.layer(
-									ConcreteLayer::default()
-										.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
-										.drop_shadow([1.0, 2.0], 3.0),
-								)
-								.layer(ConcreteLayer::default().color(RGBA::white().into()))
-								.layer(
-									ConcreteLayer::default()
-										.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
-										.inset_shadow([0.0, 1.0], 1.0),
-								),
-						),
-				);
-			})
+		engine.mount(async move |ctx| {
+			let _ = ctx
+				.element("ring")
+				.container(|c| {
+					c.sector(Sector {
+						start: 0.0,
+						sweep: 3.0,
+						inner: 0.5,
+						inset: 0.0,
+					})
+					.style(
+						ConcreteStyle::new()
+							.layer(
+								ConcreteLayer::default()
+									.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
+									.drop_shadow([1.0, 2.0], 3.0),
+							)
+							.layer(ConcreteLayer::default().color(RGBA::white().into()))
+							.layer(
+								ConcreteLayer::default()
+									.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
+									.inset_shadow([0.0, 1.0], 1.0),
+							),
+					)
+				})
+				.await;
 		});
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
@@ -3942,13 +3934,12 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut frame = ctx.element("frame").container(Container::default().opacity(0.5));
-				frame
-					.element("preview")
-					.image(Image::from_rgba(4, 4, image_pixels(4, 4)).opacity(0.4));
-			})
+		engine.mount(async move |ctx| {
+			let mut frame = ctx.element("frame").container(|c| c.opacity(0.5)).await;
+			frame
+				.element("preview")
+				.image(4, 4, image_pixels(4, 4), |i| i.opacity(0.4))
+				.await;
 		});
 
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);

@@ -12,6 +12,20 @@ elements in stable keyed slots, waits for events, and can mount child components
 that return values. The runtime keeps state between evaluations, so your
 application does not rebuild each interaction from the beginning.
 
+```rust
+engine.mount(async |ctx| {
+    let mut panel = ctx
+        .element("panel")
+        .container(|c| card(c).width(240.into()).flow(flow::column))
+        .await;
+    panel.element("title").text("Settings", |t| t.font_size(20.0)).await;
+    panel.element("clock").component(clock).await;
+});
+```
+
+Pass components as async closures or async functions that take
+`&mut EvaluationContext`, such as `async fn clock(ctx: &mut EvaluationContext)`.
+
 ## Choose the main API
 
 - `layout::engine::Engine` evaluates retained UI and produces render data.
@@ -39,12 +53,46 @@ the focused element.
 
 ## Read and change engine state
 
-A component never holds the engine. Changes it makes, such as declaring an
-element, `update_container`, `remove`, `reparent`, and focus requests, are sent
-to the engine right away and applied after the component yields, in the order
-they were made. The next layout sees them, and so do components that run after
-it in the same evaluation. Because an edit runs later, its closure owns what it
-uses: write `move |container| ...` and copy or clone the values it needs.
+A component never holds the engine. Every change it makes is a future: declaring
+an element, `update_container`, `remove`, `reparent`, focus requests, and
+starting a component. Await it, and it writes straight into the engine while
+your component runs, in the order you awaited them. The next layout sees the
+change, and so do components that run after yours in the same evaluation.
+
+Declarations and edits take a setup function that sets properties in place,
+such as `|c| c.width(240.into()).clip(false)`. The setters write into the
+element where the engine stores it, so nothing is built, copied, or sent on the
+way. Setup runs only when the declaration creates the element; an element that
+already exists keeps its properties until you edit it. A plain function over
+`Properties` holds a reusable look for both declarations and edits:
+
+```rust
+fn card(card: Properties<'_, Container>) -> Properties<'_, Container> {
+    card.corner_radius(8.0).style([fill, border])
+}
+
+let mut panel = ctx.element("panel").container(|c| card(c).width(240.into())).await;
+panel.update_container(|c| card(c).opacity(0.5)).await;
+```
+
+To keep steady screens free of allocations, pass text as a `&str`, a number, or
+`format_args!("{name} {score}")` instead of a formatted `String`, and style
+layers as an array, such as `.style([fill, border])`. The engine reuses the
+storage of removed elements, render entries, and ended components, so a screen
+that opens again allocates only one box for each component or mount it starts.
+
+To animate, pass `animate` an element, a driver such as `emphasized_out` or
+`spring`, and an async closure that writes one frame's value. The closure can
+edit other elements it borrows, so one animation can move a card and fade its
+content together:
+
+```rust
+animate(&mut card, emphasized_out(0.3), async |card, t| {
+    card.update_container(|c| c.opacity(t)).await;
+    label.update_text(|l| l.opacity(t)).await;
+})
+.await;
+```
 
 Reads are futures that complete at once. Await them in the component:
 
@@ -80,12 +128,13 @@ change nothing.
 `Context::element` takes an `ElementKey`. An element's id is computed from its
 parent's path and its key, so the same key under the same parent always
 resolves the same retained element. A static name identifies a fixed part of a
-component. An owned `String` names an element created from data, such as one
-node of a graph, and the slot is keyed by the string's content:
+component. A name made from data, such as one node of a graph, is keyed by its
+content. Pass it as `format_args!`, which is hashed while it is formatted
+without allocating; an owned `String` with the same content gives the same key:
 
 ```rust
-let mut node = canvas.element(format!("node-{id}")).container(node_frame(position));
-let mut wire = canvas.element(format!("wire-{from}-{to}")).curve(wire_between(a, b));
+let mut node = canvas.element(format_args!("node-{id}")).container(|c| node_frame(c, position)).await;
+let mut wire = canvas.element(format_args!("wire-{from}-{to}")).curve(|c| wire_between(c, a, b)).await;
 ```
 
 Siblings under one parent need distinct keys. For a list, pair a name with the
@@ -93,7 +142,7 @@ item's index:
 
 ```rust
 for (index, row) in rows.iter().enumerate() {
-    list.element(("row", index)).container(row_frame(row));
+    list.element(("row", index)).container(|c| row_frame(c, row)).await;
 }
 ```
 
@@ -107,12 +156,8 @@ without replaying layout. Remove a node or a wire with
 `EvaluationContext::remove`:
 
 ```rust
-wire.update_curve(move |curve| {
-    let path = curve.path_mut();
-    path.clear();
-    path.push_cubic(from, from + tangent, to - tangent, to);
-});
-node.remove();
+wire.update_curve(|c| c.clear_segments().cubic(from, from + tangent, to - tangent, to)).await;
+node.remove().await;
 ```
 
 ## Drag a UI item onto an application target
@@ -170,19 +215,16 @@ loop {
     match event.kind {
         Events::Grabbed => {
             origin = card.geometry().await;
-            card.update_container(move |card| card.depth = Depth::absolute(1));
+            card.update_container(|c| c.depth(Depth::absolute(1))).await;
         }
         Events::Dragged => {
             if let (Some(origin), Some(delta)) = (origin, event.delta) {
-                card.update_container(move |card| card.set_transform(placed_at(origin.x() + delta.x, origin.y() + delta.y)));
+                card.update_container(|c| c.transform(placed_at(origin.x() + delta.x, origin.y() + delta.y))).await;
             }
         }
         _ => {
             origin = None;
-            card.update_container(move |card| {
-                card.depth = Depth::relative(1);
-                card.set_transform(Transform::identity());
-            });
+            card.update_container(|c| c.depth(Depth::relative(1)).transform(Transform::identity())).await;
         }
     }
 }
@@ -206,7 +248,7 @@ makes it the target's last flow child while keeping its id and properties:
 loop {
     let event = stack.on(Events::Dropped).await;
     if let Some(card) = event.source {
-        stack.adopt(card);
+        stack.adopt(card).await;
     }
 }
 ```
@@ -237,8 +279,8 @@ children. A held drag source is skipped, so a drop target under a dragged item
 still receives `PointerEntered`. `Engine::hovered` answers the same question at
 the application level, for a cursor shape for example.
 
-Curves take part once given a hit width: `Curve::hit_testable(width)` lets the
-pointer find the curve within `width` layout units of its stroke, along its
+Curves take part once given a hit width: `hit_width(width)` in a curve's setup
+lets the pointer find the curve within `width` layout units of its stroke, along its
 whole length even where it runs beyond its declared size. A wire can then be
 hovered, clicked, and dropped on like a container. The width follows the
 inherited transform scale.
@@ -273,10 +315,10 @@ retains its result and reuses it while its inputs repeat. The contract is one
 chain of revisions:
 
 - The retained tree advances a revision whenever an element is added, removed,
-  or handed out for mutation through `update_container`, `update_text`,
-  `update_curve`, and the other update methods. Every such call counts, so only call them when state
-  actually changed. Re-declaring the same element path on a later frame does
-  not count.
+  or changed through `update_container`, `update_text`, `update_curve`, and the
+  other update methods. The engine compares the element before and after each
+  edit, so an edit that writes the values it already has changes nothing, and
+  re-declaring the same element path on a later frame does not count either.
 - `Engine::evaluate` reuses the retained layout while the tree revision and the
   viewport size repeat. Input routing and task polling still run every frame.
 - `Engine::render` returns a reference to the render retained by the engine.

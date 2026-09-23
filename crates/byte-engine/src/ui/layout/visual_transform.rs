@@ -145,21 +145,22 @@ mod tests {
 		] {
 			let allocator = bumpalo::Bump::new();
 			let mut engine = Engine::new();
-			engine.mount(move |ctx| {
-				Box::pin(async move {
-					let mut root = ctx.element("root").container(Container::default().hit_testable(false));
-					let mut parent = root.element("parent").container(
-						Container::default()
-							.absolute_position(20, 30)
+			engine.mount(async move |ctx| {
+				let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+				let mut parent = root
+					.element("parent")
+					.container(|c| {
+						c.absolute_position(20, 30)
 							.width(80.into())
 							.height(60.into())
 							.hit_testable(false)
-							.transform(Transform::identity().origin(origin).scale(0.5).translate(10.0, 5.0)),
-					);
-					parent
-						.element("child")
-						.container(Container::default().width(20.into()).height(10.into()));
-				})
+							.transform(Transform::identity().origin(origin).scale(0.5).translate(10.0, 5.0))
+					})
+					.await;
+				parent
+					.element("child")
+					.container(|c| c.width(20.into()).height(10.into()))
+					.await;
 			});
 			let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
 			let render = engine.render(&mut snapshot).clone();
@@ -181,26 +182,24 @@ mod tests {
 	fn rotation_turns_a_subtree_around_the_translated_pivot_and_keeps_bounds_unrotated() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			Box::pin(async move {
-				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
-				let mut parent = root.element("parent").container(
-					Container::default()
-						.absolute_position(20, 30)
-						.width(80.into())
-						.height(60.into())
-						.transform(
-							Transform::identity()
-								.origin(UiPoint::zero())
-								.scale(0.5)
-								.rotate(std::f32::consts::FRAC_PI_2)
-								.translate(10.0, 5.0),
-						),
-				);
-				parent
-					.element("child")
-					.container(Container::default().width(20.into()).height(10.into()));
-			})
+		engine.mount(async move |ctx| {
+			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
+			let mut parent = root
+				.element("parent")
+				.container(|c| {
+					c.absolute_position(20, 30).width(80.into()).height(60.into()).transform(
+						Transform::identity()
+							.origin(UiPoint::zero())
+							.scale(0.5)
+							.rotate(std::f32::consts::FRAC_PI_2)
+							.translate(10.0, 5.0),
+					)
+				})
+				.await;
+			parent
+				.element("child")
+				.container(|c| c.width(20.into()).height(10.into()))
+				.await;
 		});
 		let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
 		let render = engine.render(&mut snapshot);

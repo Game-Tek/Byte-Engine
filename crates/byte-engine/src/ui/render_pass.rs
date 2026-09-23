@@ -186,7 +186,10 @@ impl UiRenderPass {
 	/// Creates a UI pass and all GPU resources used to draw layout primitives.
 	// Keep the UI pipeline and fixed buffer setup together because every handle is required by frame preparation.
 	#[allow(clippy::too_many_lines)]
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
+	///
+	/// `font` is the file to draw text with, or `None` for a system font. It must match the
+	/// font the UI [`crate::ui::Engine`] measured with.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
 		let main_attachment = render_pass_builder.create_render_target(
@@ -546,7 +549,7 @@ impl UiRenderPass {
 			reported_dropped_glyphs: false,
 			reported_image_limit: false,
 			reported_dropped_paths: false,
-			text_system: TextSystem::new(),
+			text_system: TextSystem::with_font(font.map(std::path::Path::to_path_buf)),
 		}
 	}
 

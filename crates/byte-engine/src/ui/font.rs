@@ -14,6 +14,7 @@ const FALLBACK_ASCENT_FACTOR: f32 = 0.8;
 const FALLBACK_LINE_HEIGHT_FACTOR: f32 = 1.2;
 const FONT_SEARCH_DEPTH: usize = 3;
 
+
 /// The `LoadedFont` struct retains font data for on-demand outlines and optional bitmap rendering.
 struct LoadedFont {
 	/// Only the bitmap path needs the rasterizer's eagerly compiled glyph geometry.
@@ -129,6 +130,8 @@ const MEASURE_CACHE_BYTES: usize = 512 * 1024;
 /// drawing never disagree and neither rasterizes anything. Glyph bitmaps exist only for the
 /// atlas renderer, which rasterizes them once per character and pixel size.
 pub(crate) struct TextSystem {
+	/// The font file to load instead of a system font, when the application chose one.
+	font_path: Option<PathBuf>,
 	font_state: FontState,
 	measure_cache: HashMap<u32, HashMap<String, Size>>,
 	previous_measure_cache: HashMap<u32, HashMap<String, Size>>,
@@ -144,7 +147,14 @@ pub(crate) struct TextSystem {
 
 impl TextSystem {
 	pub fn new() -> Self {
+		Self::with_font(None)
+	}
+
+	/// Creates a text system that loads the font at `path`, falling back to a system font
+	/// when it is missing or unreadable.
+	pub fn with_font(path: Option<PathBuf>) -> Self {
 		Self {
+			font_path: path,
 			font_state: FontState::Uninitialized,
 			measure_cache: HashMap::new(),
 			previous_measure_cache: HashMap::new(),
@@ -398,7 +408,7 @@ impl TextSystem {
 	/// Loads font tables on first use without preparing every glyph for CPU rasterization.
 	fn font(&mut self) -> Option<&LoadedFont> {
 		if matches!(self.font_state, FontState::Uninitialized) {
-			self.font_state = match load_system_font() {
+			self.font_state = match load_font(self.font_path.as_deref()) {
 				Ok(font) => {
 					log::debug!("Loaded UI font from '{}'.", font.path.display());
 					FontState::Ready(font)
@@ -576,7 +586,23 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 }
 
 /// Finds a readable font and validates its tables before retaining its bytes.
-fn load_system_font() -> Result<LoadedFont, String> {
+fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
+	if let Some(path) = preferred {
+		match fs::read(path) {
+			Ok(bytes) if ttf_parser::Face::parse(&bytes, 0).is_ok() => {
+				return Ok(LoadedFont {
+					rasterizer: OnceCell::new(),
+					glyph_indices: HashMap::new(),
+					data: bytes,
+					path: path.to_path_buf(),
+				});
+			}
+			_ => log::warn!(
+				"The UI font at '{}' could not be used; falling back to a system font. The most likely cause is a missing or corrupt font file.",
+				path.display()
+			),
+		}
+	}
 	for path in explicit_font_candidates().into_iter().chain(
 		font_search_roots()
 			.into_iter()

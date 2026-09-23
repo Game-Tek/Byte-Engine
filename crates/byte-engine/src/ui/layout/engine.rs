@@ -217,6 +217,14 @@ impl<C: 'static> Engine<C> {
 	///
 	/// Next, call [`Self::mount`] with the root component, then begin the per-frame
 	/// [`Self::evaluate`] and [`Self::render`] sequence.
+	/// Measures text with the font at `path` instead of a system font.
+	///
+	/// Give the UI render pass the same file, so layout and drawing agree on glyph sizes.
+	pub fn with_font(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+		self.text_system = TextSystem::with_font(Some(path.into()));
+		self
+	}
+
 	pub fn with_context(ctx: C) -> Self {
 		Self {
 			viewports: Vec::new(),

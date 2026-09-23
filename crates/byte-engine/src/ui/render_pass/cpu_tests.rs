@@ -170,6 +170,7 @@ fn blur_kernels_match_independent_items_after_radius_and_scale_changes() {
 				sector: None,
 				radius,
 				path: None,
+				shadow: None,
 			})
 			.into(),
 		..UiDrawList::default()
@@ -454,4 +455,184 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 			UI_KIND_BLUR
 		]
 	);
+}
+
+fn shadow_element(shadow: crate::ui::Shadow) -> UiDrawElement {
+	UiDrawElement {
+		depth: 0,
+		order: 0,
+		position: [20.0, 20.0],
+		size: [20.0, 10.0],
+		clip: None,
+		clip_mask: None,
+		paint: UiPaint::flat([0.0, 0.0, 0.0, 0.5]),
+		corner_radius: 4.0,
+		corner_exponent: 2.0,
+		sector: None,
+		layer_kind: LayerKind::Shadow(shadow),
+		stroke_width: 0.0,
+	}
+}
+
+/// An outer shadow's quad covers the moved, spread shape out to three sigma; an inset one stays in its element.
+#[test]
+fn shadow_primitives_cover_their_blur_reach() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		elements: vec![
+			shadow_element(crate::ui::Shadow::new([2.0, 4.0], 3.0).spread(1.0)),
+			shadow_element(crate::ui::Shadow::new([2.0, 4.0], 3.0).inset()),
+		],
+		..UiDrawList::default()
+	};
+	let output = primitives(&data, Extent::square(100), &arena);
+	let (outer, inset) = (output.primitives[1], output.primitives[2]);
+	let reach = 1.0 + 9.0 + 1.0;
+	assert_eq!(outer.kind, UI_KIND_SHADOW);
+	assert_eq!(outer.bounds, [22.0 - reach, 24.0 - reach, 42.0 + reach, 34.0 + reach]);
+	assert_eq!(outer.a, [20.0, 20.0, 20.0, 10.0]);
+	assert_eq!(outer.b, [4.0, 2.0, 3.0, 1.0]);
+	assert_eq!(
+		[outer.data0, outer.data1],
+		[encode_shadow_offset(2.0), encode_shadow_offset(4.0)]
+	);
+	assert_eq!(inset.kind, UI_KIND_INSET_SHADOW);
+	assert_eq!(inset.bounds, [20.0, 20.0, 40.0, 30.0]);
+}
+
+/// A negative spread larger than the shape leaves no shadow at all.
+#[test]
+fn shadow_swallowed_by_its_spread_draws_nothing() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		elements: vec![shadow_element(crate::ui::Shadow::new([0.0, 0.0], 2.0).spread(-6.0))],
+		..UiDrawList::default()
+	};
+	assert_eq!(primitives(&data, Extent::square(100), &arena).primitives.len(), 1);
+}
+
+/// Damage touching only a shadow's tail, outside its element, still redraws the shadow.
+#[test]
+fn damage_outside_the_element_redraws_its_shadow_tail() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		elements: vec![shadow_element(crate::ui::Shadow::new([0.0, 8.0], 4.0))],
+		..UiDrawList::default()
+	};
+	let mut masks = UiMaskTable::default();
+	let damage = [UiPixelRegion::from_bounds([28.0, 44.0, 32.0, 48.0], 0.0, Extent::square(100)).unwrap()];
+	let output = build_ui_primitives(
+		&data,
+		Extent::square(100),
+		&arena,
+		None,
+		&mut masks,
+		None,
+		None,
+		Some(&damage),
+	);
+	assert_eq!(output.primitives.len(), 2);
+}
+
+fn sector_shadow(sigma: f32) -> UiBlurDrawElement {
+	UiBlurDrawElement {
+		depth: 0,
+		order: 0,
+		position: [20.0, 20.0],
+		size: [20.0, 20.0],
+		clip: None,
+		clip_mask: None,
+		color: [0.0, 0.0, 0.0, 0.5],
+		corner_radius: 0.0,
+		corner_exponent: 2.0,
+		sector: Some(Sector {
+			start: 0.0,
+			sweep: std::f32::consts::PI,
+			inner: 0.5,
+			inset: 0.0,
+		}),
+		radius: 0.0,
+		path: None,
+		shadow: Some(UiShapeShadow {
+			offset: [2.0, 5.0],
+			sigma,
+		}),
+	}
+}
+
+/// A sector's shadow blurs its moved, filled sector in white and composites the result.
+#[test]
+fn sector_shadow_blurs_a_moved_white_caster() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		blurs: vec![sector_shadow(3.0)],
+		..UiDrawList::default()
+	};
+	let output = primitives(&data, Extent::square(100), &arena);
+	let (caster, composite) = (output.primitives[1], output.primitives[2]);
+	assert_eq!(caster.kind, UI_KIND_SECTOR);
+	assert_eq!(caster.color, [1.0; 4]);
+	assert_eq!(caster.a, [22.0, 25.0, 20.0, 20.0]);
+	assert_eq!(caster.b[3], 0.0);
+	assert_eq!(composite.kind, UI_KIND_SAMPLED_SHADOW);
+	assert_eq!(composite.bounds, [12.0, 15.0, 52.0, 55.0]);
+	assert!(matches!(
+		output.steps.as_slice(),
+		[
+			UiStep::Draw { first: 1, count: 0 },
+			UiStep::Blur(UiBlurDispatch {
+				source: UiBlurSource::Shape { first: 1, count: 1 },
+				..
+			}),
+			UiStep::Draw { first: 2, count: 1 }
+		]
+	));
+}
+
+/// Unlike a backdrop blur, a shadow reads nothing that changes under it, so it is only redrawn where damaged.
+#[test]
+fn undamaged_sector_shadow_is_not_redrawn() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		blurs: vec![sector_shadow(3.0)],
+		..UiDrawList::default()
+	};
+	let mut masks = UiMaskTable::default();
+	let damage = [UiPixelRegion::from_bounds([80.0, 80.0, 90.0, 90.0], 0.0, Extent::square(100)).unwrap()];
+	let output = build_ui_primitives(
+		&data,
+		Extent::square(100),
+		&arena,
+		None,
+		&mut masks,
+		None,
+		None,
+		Some(&damage),
+	);
+	assert_eq!(output.primitives.len(), 1);
+	assert_eq!(output.steps.as_slice(), [UiStep::Draw { first: 1, count: 0 }]);
+	let mut footprints = Vec::new();
+	blur_footprints(&data, Extent::square(100), &mut footprints);
+	assert!(footprints.is_empty());
+}
+
+/// Shadow sigmas past the blur filter's reach are clamped to it.
+#[test]
+fn sector_shadow_sigma_is_clamped_to_the_filter_reach() {
+	let arena = bumpalo::Bump::new();
+	let data = UiDrawList {
+		layout_size: [100.0, 100.0],
+		blurs: vec![sector_shadow(100.0)],
+		..UiDrawList::default()
+	};
+	let output = primitives(&data, Extent::square(100), &arena);
+	let UiStep::Blur(blur) = output.steps[1] else {
+		panic!("Expected a blur step");
+	};
+	assert_eq!(blur.resolution_mix, blur_resolution_mix(UI_MAX_SAMPLED_SHADOW_SIGMA));
 }

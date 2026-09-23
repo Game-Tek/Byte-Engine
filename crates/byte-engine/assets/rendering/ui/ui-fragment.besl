@@ -105,6 +105,51 @@ rect_coverage: fn (rect: vec4f, shape: vec4f, pixel: vec2f) -> f32 {
 	return max(fill_coverage - inner_coverage, 0.0);
 }
 
+// The error function, within 5e-4 (Abramowitz and Stegun 7.1.27).
+shadow_erf: fn (x: f32) -> f32 {
+	let a: f32 = abs(x);
+	let p: f32 = 1.0 + (0.278393 + (0.230389 + 0.078108 * a * a) * a) * a;
+	let p2: f32 = p * p;
+	let magnitude: f32 = 1.0 - 1.0 / (p2 * p2);
+	if (x < 0.0) {
+		return 0.0 - magnitude;
+	}
+	return magnitude;
+}
+
+// The blurred share of one row of a rounded rectangle centered at the origin, measured at `x`
+// on a row `y` away from the center. A Gaussian blurs a row of constant coverage in closed form.
+shadow_row: fn (x: f32, y: f32, sigma: f32, corner_radius: f32, half_size: vec2f) -> f32 {
+	let delta: f32 = min(half_size.y - corner_radius - abs(y), 0.0);
+	let curved: f32 = half_size.x - corner_radius + sqrt(max(0.0, corner_radius * corner_radius - delta * delta));
+	let scale: f32 = 0.70710678 / sigma;
+	return 0.5 * (shadow_erf((x + curved) * scale) - shadow_erf((x - curved) * scale));
+}
+
+// Coverage of a rounded rectangle blurred by a Gaussian of standard deviation `sigma`. `rect` is
+// (x, y, width, height) in pixels. Rows are blurred exactly and four samples integrate the column
+// over the part of the shape within three sigma of the pixel. Superellipse corners are drawn
+// circular, which no blur wide enough to see can tell apart.
+shadow_coverage: fn (rect: vec4f, corner_radius: f32, sigma: f32, pixel: vec2f) -> f32 {
+	let half_size: vec2f = vec2f(rect.z, rect.w) * 0.5;
+	if (min(half_size.x, half_size.y) <= 0.0) {
+		return 0.0;
+	}
+	let point: vec2f = pixel - vec2f(rect.x, rect.y) - half_size;
+	let radius: f32 = clamp(corner_radius, 0.0, min(half_size.x, half_size.y));
+	let reach: f32 = sigma * 3.0;
+	let start: f32 = clamp(0.0 - reach, point.y - half_size.y, point.y + half_size.y);
+	let end: f32 = clamp(reach, point.y - half_size.y, point.y + half_size.y);
+	let step: f32 = (end - start) * 0.25;
+	let y: f32 = start + step * 0.5;
+	let value: f32 = 0.0;
+	for (let i: u32 = 0; i < 4; i = i + 1) {
+		value = value + shadow_row(point.x, point.y - y, sigma, radius, half_size) * exp((0.0 - y * y) / (2.0 * sigma * sigma)) * step;
+		y = y + step;
+	}
+	return clamp(value * 0.39894228 / sigma, 0.0, 1.0);
+}
+
 // Coverage of an annular sector layer. `rect` is the container's (x, y, width, height) in pixels
 // and `shape` is the inner radius as a ratio of the outer one, the start angle, the sweep, and
 // the stroke width, where zero fills. `inset` pulls both straight edges inward by that many
@@ -664,6 +709,34 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 	// Atlas glyph.
 	if (kind == 5) {
 		return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x);
+	}
+	// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
+	// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
+	if (kind == 12) {
+		let blurred_caster: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
+		return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
+	}
+	// Shadow. `a` is the element's rectangle, `b` the corner radius, corner exponent, sigma, and
+	// spread, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
+	// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
+	if (kind == 10 || kind == 11) {
+		let rect: vec4f = primitives[index].a;
+		let shape: vec4f = primitives[index].b;
+		let offset: vec2f = vec2f(
+			(f32(primitives[index].data0) - 8388608.0) / 64.0,
+			(f32(primitives[index].data1) - 8388608.0) / 64.0
+		);
+		let sigma: f32 = max(shape.z, 0.5);
+		let spread: f32 = shape.w;
+		if (kind == 10) {
+			let caster: vec4f = vec4f(rect.x + offset.x - spread, rect.y + offset.y - spread, rect.z + spread * 2.0, rect.w + spread * 2.0);
+			return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, shape.x + spread, sigma, pixel));
+		}
+		// An inset shadow darkens the element around a hole moved by the offset and shrunk by the spread.
+		let hole: vec4f = vec4f(rect.x + offset.x + spread, rect.y + offset.y + spread, rect.z - spread * 2.0, rect.w - spread * 2.0);
+		let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), pixel);
+		let shadowed: f32 = 1.0 - shadow_coverage(hole, shape.x - spread, sigma, pixel);
+		return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
 	let resolution_mix: f32 = primitives[index].b.w;

@@ -96,6 +96,19 @@ pub(super) struct UiBlurDrawElement {
 	pub(super) radius: f32,
 	/// A path outline instead of the rectangle or sector; the path geometry pass builds its primitive.
 	pub(super) path: Option<UiPathShape>,
+	/// Blurs this shape itself instead of the backdrop behind it. `radius` is unused and zero, and
+	/// `color` is the shadow's.
+	pub(super) shadow: Option<UiShapeShadow>,
+}
+
+/// The `UiShapeShadow` struct is an outer shadow of a sector or a path, in layout units.
+///
+/// Neither shape has a closed-form blur, so its caster is drawn offscreen and put through the
+/// backdrop blur's filter. The filter's widest Gaussian caps `sigma`, and `spread` is not supported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiShapeShadow {
+	pub(super) offset: [f32; 2],
+	pub(super) sigma: f32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -359,6 +372,16 @@ pub(super) const UI_KIND_SECTOR_BLUR: u32 = 7;
 pub(super) const UI_KIND_PATH: u32 = 8;
 /// A backdrop blur shaped by a path. Its resolution mix rides in `color.w` because its other slots are the path's.
 pub(super) const UI_KIND_PATH_BLUR: u32 = 9;
+/// A Gaussian-blurred rounded rectangle. `a` is the element's rectangle, `b` holds the corner
+/// radius, the corner exponent, the sigma, and the spread in pixels, and `data0` and `data1` hold
+/// the offset in [`encode_shadow_offset`] fixed point.
+pub(super) const UI_KIND_SHADOW: u32 = 10;
+/// An inset shadow, encoded like [`UI_KIND_SHADOW`].
+pub(super) const UI_KIND_INSET_SHADOW: u32 = 11;
+/// A shadow read back from a blurred caster. `b.w` holds the resolution mix.
+pub(super) const UI_KIND_SAMPLED_SHADOW: u32 = 12;
+/// The widest shadow sigma, in pixels, that the backdrop blur's filter can reach.
+pub(super) const UI_MAX_SAMPLED_SHADOW_SIGMA: f32 = UI_BLUR_SIGMA_SCALE * 8.0;
 /// Fixed point steps per pixel of a sector primitive's edge inset in `data0`.
 pub(super) const SECTOR_INSET_SCALE: f32 = 256.0;
 /// Curve piece flags: the piece's segment rounds off its start or its end.
@@ -637,6 +660,16 @@ pub(super) struct UiBlurDispatch {
 	pub(super) half_regions: UiBlurHalfPathRegions,
 	/// Scene and layer pixels both blur paths may read; resolved before filtering.
 	pub(super) backdrop: UiPixelRegion,
+	pub(super) source: UiBlurSource,
+}
+
+/// What a blur filters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum UiBlurSource {
+	/// The scene under the UI drawn so far.
+	Backdrop,
+	/// A shadow caster: consecutive primitives outside every draw, drawn in white over a cleared `backdrop` region.
+	Shape { first: u32, count: u32 },
 }
 
 /// The `UiStep` enum is one recorded step of a UI frame, in painter order.
@@ -877,8 +910,19 @@ pub(super) fn stroke_width(kind: LayerKind) -> f32 {
 	match kind {
 		LayerKind::Fill => 0.0,
 		LayerKind::Stroke { width } if width.is_finite() && width > 0.0 => width,
-		LayerKind::Stroke { .. } => 0.0,
+		LayerKind::Stroke { .. } | LayerKind::Shadow(_) => 0.0,
 	}
+}
+
+/// Steps per pixel and zero point of a shadow offset stored in a `u32`. The shader reads it
+/// through an `f32`, which is exact below 2^24, so offsets up to 2^17 pixels either way round-trip.
+pub(super) const SHADOW_OFFSET_SCALE: f32 = 64.0;
+pub(super) const SHADOW_OFFSET_BIAS: f32 = 8_388_608.0;
+
+pub(super) fn encode_shadow_offset(offset: f32) -> u32 {
+	(offset * SHADOW_OFFSET_SCALE + SHADOW_OFFSET_BIAS)
+		.round()
+		.clamp(0.0, 16_777_215.0) as u32
 }
 
 pub(super) fn backdrop_blur_radius(radius: f32) -> f32 {
@@ -1078,6 +1122,30 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
 				continue;
 			}
+			// A sector has no closed-form blur, so its outer shadow is blurred offscreen; inset ones are not drawn.
+			if let (LayerKind::Shadow(shadow), Some(sector)) = (layer.kind, element.sector) {
+				if !shadow.inset && paint.alpha() > 0.0 {
+					draw_list.blurs.push(UiBlurDrawElement {
+						depth: position.z(),
+						order: element.id,
+						position: [position.x(), position.y()],
+						size: [size.x(), size.y()],
+						clip: draw_clip_from_geometry(element.clip),
+						clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
+						color: paint.color,
+						corner_radius: element.corner_radius,
+						corner_exponent: element.corner_exponent,
+						sector: Some(sector),
+						radius: 0.0,
+						path: None,
+						shadow: Some(UiShapeShadow {
+							offset: shadow.offset,
+							sigma: shadow.sigma,
+						}),
+					});
+				}
+				continue;
+			}
 
 			draw_list.elements.push(UiDrawElement {
 				depth: position.z(),
@@ -1122,6 +1190,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				sector: element.sector,
 				radius,
 				path: None,
+				shadow: None,
 			});
 		}
 	}
@@ -1203,6 +1272,32 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		// the outline, like a container's does, and every other fill paints the outline.
 		let mut blurred = false;
 		for layer in path.style.layers() {
+			// A path's outer shadow is blurred offscreen like a sector's; inset ones are not drawn.
+			if let LayerKind::Shadow(shadow) = layer.kind {
+				let paint = UiPaint::resolve(&layer.color, path.opacity);
+				if !shadow.inset && paint.alpha() > 0.0 {
+					let (depth, order, position, size, clip, clip_mask) = placed(position.z());
+					draw_list.blurs.push(UiBlurDrawElement {
+						depth,
+						order,
+						position,
+						size,
+						clip,
+						clip_mask,
+						color: paint.color,
+						corner_radius: 0.0,
+						corner_exponent: 2.0,
+						sector: None,
+						radius: 0.0,
+						path: Some(shape.clone()),
+						shadow: Some(UiShapeShadow {
+							offset: shadow.offset,
+							sigma: shadow.sigma,
+						}),
+					});
+				}
+				continue;
+			}
 			if !matches!(layer.kind, LayerKind::Fill) {
 				continue;
 			}
@@ -1224,6 +1319,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 						sector: None,
 						radius,
 						path: Some(shape.clone()),
+						shadow: None,
 					});
 				}
 			} else if paint.alpha() > 0.0 {

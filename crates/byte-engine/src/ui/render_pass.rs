@@ -14,7 +14,7 @@ use utils::{Box, Extent, RGBA};
 use super::{
 	element::ElementHandle as _,
 	layout::{ClipMask, Geometry, engine},
-	style::{Color, EdgeFeather, LayerKind},
+	style::{Color, EdgeFeather, LayerKind, SHADOW_EXTENT_SIGMAS, Shadow},
 	transform::Rotation,
 };
 use crate::{
@@ -373,8 +373,12 @@ impl UiRenderPass {
 		);
 		let blur_half_output_image: ghi::BaseImageHandle = blur_half_output.into();
 		let blur_backdrop = context.build_dynamic_image(
-			ghi::image::Builder::new(MAIN_ATTACHMENT_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
-				.name("UI Backdrop Blur Source"),
+			// Shadows draw their caster into it, so it is a render target as well as the resolve's output.
+			ghi::image::Builder::new(
+				MAIN_ATTACHMENT_FORMAT,
+				ghi::Uses::Image | ghi::Uses::Storage | ghi::Uses::RenderTarget,
+			)
+			.name("UI Backdrop Blur Source"),
 		);
 		let blur_backdrop_image: ghi::BaseImageHandle = blur_backdrop.into();
 		let main_attachment_image: ghi::BaseImageHandle = main_attachment.into();
@@ -887,6 +891,7 @@ impl RenderPass for UiRenderPass {
 		let blur_half_y_descriptor_set = self.blur_half_y_descriptor_set;
 		let blur_resolve_descriptor_set = self.blur_resolve_descriptor_set;
 		let layer = self.layer;
+		let blur_backdrop = self.blur_backdrop;
 		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(prepared_steps);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
 		// The recorded command brings the layer up to the adopted revision at this extent.
@@ -913,13 +918,45 @@ impl RenderPass for UiRenderPass {
 								UiStep::Draw { first, count } => (*first, *count),
 								UiStep::Blur(blur) => {
 									command_buffer.region(
-										|label| label.write_str("UI Backdrop Blur"),
+										|label| match blur.source {
+											UiBlurSource::Backdrop => label.write_str("UI Backdrop Blur"),
+											UiBlurSource::Shape { .. } => label.write_str("UI Shadow Blur"),
+										},
 										|command_buffer| {
-											// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
-											let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
-											compute.bind_descriptor_sets(&[blur_resolve_descriptor_set]);
-											compute.write_push_constant(0, UiRegionPush::from(blur.backdrop));
-											compute.dispatch(ghi::DispatchExtent::new(blur.backdrop.extent, region_workgroup));
+											match blur.source {
+												// The blur samples the scene under the UI drawn so far, resolved for its footprint only.
+												UiBlurSource::Backdrop => {
+													let compute = command_buffer.bind_compute_pipeline(composite_pipeline);
+													compute.bind_descriptor_sets(&[blur_resolve_descriptor_set]);
+													compute.write_push_constant(0, UiRegionPush::from(blur.backdrop));
+													compute.dispatch(ghi::DispatchExtent::new(
+														blur.backdrop.extent,
+														region_workgroup,
+													));
+												}
+												// A shadow blurs its caster alone: the footprint is cleared and the caster drawn in white.
+												UiBlurSource::Shape { first, count } => {
+													let attachments = [ghi::AttachmentInformation::new(
+														blur_backdrop,
+														ghi::Layouts::RenderTarget,
+														ghi::ClearValue::None,
+														true,
+														true,
+													)];
+													let render_pass = command_buffer.start_render_pass(extent, &attachments);
+													let clear = render_pass.bind_raster_pipeline(clear_pipeline);
+													clear.bind_descriptor_sets(&[descriptor_set]);
+													clear.write_push_constant(0, push(0));
+													clear.set_scissor(blur.backdrop.origin, blur.backdrop.extent);
+													clear.draw(UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+													let draw = render_pass.bind_raster_pipeline(pipeline);
+													draw.bind_descriptor_sets(&[descriptor_set]);
+													draw.write_push_constant(0, push(first));
+													draw.set_scissor(blur.backdrop.origin, blur.backdrop.extent);
+													draw.draw(count * UI_VERTICES_PER_PRIMITIVE, 1, 0, 0);
+													render_pass.end_render_pass();
+												}
+											}
 
 											if blur_uses_full_resolution(blur.resolution_mix) {
 												let compute = command_buffer.bind_compute_pipeline(blur_filter_pipeline);
@@ -1044,13 +1081,14 @@ mod tests {
 		CURVE_QUADRATIC_TOLERANCE_PIXELS, DrawClip, DrawClipMask, MAX_CURVE_PIECES, MAX_UI_PRIMITIVES, SECTOR_INSET_SCALE,
 		Sector, UI_ATLAS_TEXTURE_SLOT, UI_BLUR_FULL_SLOT, UI_BLUR_GAUSSIAN_PAIR_COUNT, UI_BLUR_GAUSSIAN_SUPPORT,
 		UI_BLUR_HALF_DOWNSCALE, UI_BLUR_HALF_SLOT, UI_CURVE_CAP_END, UI_CURVE_CAP_START, UI_GLYPH_BAND_CAPACITY,
-		UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_RECT, UI_KIND_SECTOR,
-		UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement,
-		UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame,
-		UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions,
-		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma,
-		blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry,
-		clear_primitive, curve_piece_count, should_draw_image, should_rasterize_text, update_from_render,
+		UI_GLYPH_CURVE_CAPACITY, UI_KIND_ATLAS_GLYPH, UI_KIND_BLUR, UI_KIND_CURVE, UI_KIND_IMAGE, UI_KIND_INSET_SHADOW,
+		UI_KIND_RECT, UI_KIND_SAMPLED_SHADOW, UI_KIND_SECTOR, UI_KIND_SHADOW, UI_TEXTURES_SLOT, UiBlurDrawElement,
+		UiBlurFilterPush, UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves,
+		UiImageDrawElement, UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep,
+		UiTextDrawElement, blur_composite_region, blur_full_dispatch_regions, blur_half_dispatch_regions, blur_half_extent,
+		blur_half_sigma, blur_resolution_mix, blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution,
+		build_ui_primitives_uncached, build_ui_slug_geometry, clear_primitive, curve_piece_count, encode_shadow_offset,
+		should_draw_image, should_rasterize_text, update_from_render,
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
@@ -2442,6 +2480,7 @@ mod tests {
 				sector: None,
 				radius: 18.0,
 				path: None,
+				shadow: None,
 			}],
 			..UiDrawList::default()
 		};
@@ -2498,6 +2537,7 @@ mod tests {
 				sector: None,
 				radius: 8.0,
 				path: None,
+				shadow: None,
 			}],
 			paths: Vec::new(),
 			curves: vec![UiCurveDrawElement {
@@ -2973,6 +3013,139 @@ mod tests {
 		);
 
 		assert_vec4_close(color, [0.2, 0.4, 0.6, 0.4]);
+	}
+
+	/// Brute-force Gaussian blur of a rounded rectangle's coverage at `pixel`, the reference the
+	/// shader's closed-form shadow is checked against.
+	fn reference_shadow(rect: [f32; 4], corner_radius: f32, sigma: f32, pixel: [f32; 2]) -> f32 {
+		let inside = |x: f32, y: f32| {
+			let half = [rect[2] * 0.5, rect[3] * 0.5];
+			let radius = corner_radius.clamp(0.0, half[0].min(half[1]));
+			let dx = ((x - rect[0] - half[0]).abs() - (half[0] - radius)).max(0.0);
+			let dy = ((y - rect[1] - half[1]).abs() - (half[1] - radius)).max(0.0);
+			let within = (x - rect[0]).clamp(0.0, rect[2]) == x - rect[0] && (y - rect[1]).clamp(0.0, rect[3]) == y - rect[1];
+			within && dx * dx + dy * dy <= radius * radius + 0.0001
+		};
+		let step = 0.125;
+		let reach = (sigma * 5.0 / step).ceil() as i32;
+		let mut total = 0.0;
+		for i in -reach..=reach {
+			for j in -reach..=reach {
+				let (ox, oy) = ((i as f32 + 0.5) * step, (j as f32 + 0.5) * step);
+				if inside(pixel[0] + ox, pixel[1] + oy) {
+					total += (-(ox * ox + oy * oy) / (2.0 * sigma * sigma)).exp();
+				}
+			}
+		}
+		total * step * step / (2.0 * std::f32::consts::PI * sigma * sigma)
+	}
+
+	/// Verifies an outer shadow matches a brute-force blur of its moved and spread rounded rectangle.
+	#[test]
+	fn ui_fragment_besl_vm_shades_an_outer_shadow_like_a_gaussian_blur() {
+		let (rect, radius, sigma, spread, offset) = ([10.0, 10.0, 40.0, 30.0], 8.0, 4.0, 2.0, [3.0f32, 5.0f32]);
+		let shadow = UiPrimitive {
+			bounds: [0.0, 0.0, 80.0, 80.0],
+			color: [0.0, 0.0, 0.0, 1.0],
+			color_end: [0.0, 0.0, 0.0, 1.0],
+			a: rect,
+			b: [radius, 2.0, sigma, spread],
+			kind: UI_KIND_SHADOW,
+			data0: encode_shadow_offset(offset[0]),
+			data1: encode_shadow_offset(offset[1]),
+			..UiPrimitive::default()
+		};
+		let caster = [
+			rect[0] + offset[0] - spread,
+			rect[1] + offset[1] - spread,
+			rect[2] + spread * 2.0,
+			rect[3] + spread * 2.0,
+		];
+		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
+		for pixel in [
+			[33.0, 30.0],
+			[11.0, 30.0],
+			[8.0, 30.0],
+			[33.0, 49.0],
+			[12.0, 14.0],
+			[52.0, 52.0],
+			[1.0, 1.0],
+		] {
+			let alpha = vm.run(
+				UiVaryings {
+					pixel_position: pixel,
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3];
+			let expected = reference_shadow(caster, radius + spread, sigma, pixel);
+			assert!(
+				(alpha - expected).abs() < 0.02,
+				"At {pixel:?} expected {expected}, found {alpha}"
+			);
+		}
+	}
+
+	/// Verifies an inset shadow darkens the element's edges around a blurred hole and leaves its middle clear.
+	#[test]
+	fn ui_fragment_besl_vm_shades_an_inset_shadow_around_its_hole() {
+		let (rect, sigma, spread, offset) = ([0.0, 0.0, 40.0, 40.0], 3.0, 2.0, [0.0f32, 4.0f32]);
+		let shadow = UiPrimitive {
+			bounds: [0.0, 0.0, 40.0, 40.0],
+			color: [0.0, 0.0, 0.0, 1.0],
+			color_end: [0.0, 0.0, 0.0, 1.0],
+			a: rect,
+			b: [0.0, 2.0, sigma, spread],
+			kind: UI_KIND_INSET_SHADOW,
+			data0: encode_shadow_offset(offset[0]),
+			data1: encode_shadow_offset(offset[1]),
+			..UiPrimitive::default()
+		};
+		let hole = [
+			offset[0] + spread,
+			offset[1] + spread,
+			rect[2] - spread * 2.0,
+			rect[3] - spread * 2.0,
+		];
+		let mut vm = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None);
+		for pixel in [[20.0, 20.0], [20.0, 0.5], [20.0, 39.5], [0.5, 20.0], [3.0, 8.0]] {
+			let alpha = vm.run(
+				UiVaryings {
+					pixel_position: pixel,
+					..UiVaryings::default()
+				},
+				&mut [],
+			)[3];
+			let expected = 1.0 - reference_shadow(hole, 0.0, sigma, pixel);
+			assert!(
+				(alpha - expected).abs() < 0.02,
+				"At {pixel:?} expected {expected}, found {alpha}"
+			);
+		}
+	}
+
+	/// Verifies a sampled shadow paints its color with the blurred caster's alpha as coverage.
+	#[test]
+	fn ui_fragment_besl_vm_sampled_shadow_uses_the_blurred_caster_alpha() {
+		let shadow = UiPrimitive {
+			bounds: [0.0, 0.0, 4.0, 4.0],
+			color: [0.1, 0.2, 0.3, 0.8],
+			color_end: [0.1, 0.2, 0.3, 0.8],
+			b: [0.0, 0.0, 0.0, 0.0],
+			kind: UI_KIND_SAMPLED_SHADOW,
+			..UiPrimitive::default()
+		};
+		let mut full = texture_2d(4, 4, &[[0.25, 0.25, 0.25, 0.25]; 16]);
+		let mut half = texture_2d(2, 2, &[[0.0; 4]; 4]);
+		let color = UiFragmentVm::new(&[shadow], &[UiClipMaskEntry::NONE], None).run(
+			UiVaryings {
+				pixel_position: [1.5, 1.5],
+				..UiVaryings::default()
+			},
+			&mut [(UI_BLUR_FULL_SLOT.index(), &mut full), (UI_BLUR_HALF_SLOT.index(), &mut half)],
+		);
+
+		assert_vec4_close(color, [0.1, 0.2, 0.3, 0.2]);
 	}
 
 	/// Verifies the fragment shader samples an image from its texture slot and applies its opacity.
@@ -3712,6 +3885,55 @@ mod tests {
 		assert_eq!(draw_list.elements[0].paint.color[3], 0.4);
 		assert_eq!(draw_list.elements[1].paint.color[3], 0.3);
 		assert_eq!(draw_list.texts[0].color, RGBA::new(1.0, 1.0, 1.0, 0.2));
+	}
+
+	/// A sector's outer shadow becomes an offscreen blur under the sector, and its inset shadow is not drawn.
+	#[test]
+	fn draw_list_sends_sector_shadows_through_the_blur_list() {
+		let frame_allocator = bumpalo::Bump::new();
+		let mut engine = Engine::new();
+
+		engine.mount(|ctx| {
+			Box::pin(async move {
+				let _ = ctx.element("ring").container(
+					Container::default()
+						.sector(Sector {
+							start: 0.0,
+							sweep: 3.0,
+							inner: 0.5,
+							inset: 0.0,
+						})
+						.style(
+							ConcreteStyle::new()
+								.layer(
+									ConcreteLayer::default()
+										.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
+										.drop_shadow([1.0, 2.0], 3.0),
+								)
+								.layer(ConcreteLayer::default().color(RGBA::white().into()))
+								.layer(
+									ConcreteLayer::default()
+										.color(RGBA::new(0.0, 0.0, 0.0, 0.5).into())
+										.inset_shadow([0.0, 1.0], 1.0),
+								),
+						),
+				);
+			})
+		});
+
+		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render(&mut snapshot);
+		let mut draw_list = UiDrawList::default();
+		update_from_render(render, &mut draw_list);
+
+		assert_eq!(draw_list.elements.len(), 1);
+		assert_eq!(draw_list.blurs.len(), 1);
+		let shadow = draw_list.blurs[0]
+			.shadow
+			.expect("The sector's drop shadow should be a shadow blur");
+		assert_eq!((shadow.offset, shadow.sigma), ([1.0, 2.0], 3.0));
+		assert_eq!(draw_list.blurs[0].color, [0.0, 0.0, 0.0, 0.5]);
+		assert_eq!(draw_list.blurs[0].radius, 0.0);
 	}
 
 	#[test]

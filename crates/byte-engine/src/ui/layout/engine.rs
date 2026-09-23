@@ -978,7 +978,18 @@ impl<C: 'static> Engine<C> {
 						* state.scale[0].max(state.scale[1])
 						* 0.5
 				}
-				_ => 0.0,
+				// An outer shadow paints past the box, so its reach joins the damaged area.
+				_ => {
+					style
+						.layers()
+						.iter()
+						.map(|layer| match layer.kind() {
+							LayerKind::Shadow(shadow) => shadow.outset(),
+							_ => 0.0,
+						})
+						.fold(0.0f32, f32::max)
+						* state.scale[0].max(state.scale[1])
+				}
 			};
 			let footprint = Footprint {
 				id: element.id.get(),

@@ -102,6 +102,7 @@ fn blur_footprints_cover_the_kernel_reads_every_frame() {
 			sector: None,
 			radius: 8.0,
 			path: None,
+			shadow: None,
 		}],
 		..UiDrawList::default()
 	};

@@ -67,7 +67,7 @@ pub use layout::{
 pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};
 pub use render_pass::UiRenderPass;
-pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes};
+pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
 pub use timer::{WaitFuture, seconds, wait};
 pub use transform::Transform;
 pub use visual::Visual;

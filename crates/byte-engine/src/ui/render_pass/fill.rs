@@ -484,6 +484,36 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 	loop {
 		// Blurs are shaped by an outline the same way a fill is, but the merge places them itself.
 		for blur in &draw_list.blurs {
+			// A shadow's caster is the whole outline in white, moved by the offset. The composite
+			// quad carries the clip, so the caster ignores it and a clipped part still casts.
+			if let (Some(shape), Some(shadow)) = (&blur.path, blur.shadow) {
+				let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
+				let caster = match place_outline(paths, shape, blur.position, None, sx, sy, viewport_clip) {
+					Some(Ok(mut primitive)) => {
+						primitive.bounds = [
+							primitive.bounds[0] + offset[0],
+							primitive.bounds[1] + offset[1],
+							primitive.bounds[2] + offset[0],
+							primitive.bounds[3] + offset[1],
+						];
+						primitive.a[0] += offset[0];
+						primitive.a[1] += offset[1];
+						primitive.kind = UI_KIND_PATH;
+						primitive.color = [1.0; 4];
+						primitive.color_end = [1.0; 4];
+						// The caster turns with its element, so the composite reads it where it was turned to.
+						primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
+						Some(primitive)
+					}
+					Some(Err(Dropped)) => {
+						geometry.dropped_paths += 1;
+						None
+					}
+					None => None,
+				};
+				geometry.blurs.push(caster);
+				continue;
+			}
 			let placed = blur.path.as_ref().and_then(|shape| {
 				(blur.radius > 0.0)
 					.then(|| place_outline(paths, shape, blur.position, blur.clip, sx, sy, viewport_clip))
@@ -625,7 +655,9 @@ mod tests {
 	};
 	use crate::ui::{
 		components::{curve::CurveSegment, path::FillRule},
-		render_pass::{UI_KIND_PATH, UI_KIND_PATH_BLUR, UiStep, build_ui_primitives},
+		render_pass::{
+			UI_KIND_PATH, UI_KIND_PATH_BLUR, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives,
+		},
 	};
 
 	fn shape(id: u64, segments: Vec<CurveSegment>) -> UiPathShape {
@@ -669,6 +701,7 @@ mod tests {
 				sector: None,
 				radius: 8.0,
 				path: Some(shape(2, square(0.0, 0.0, 10.0))),
+				shadow: None,
 			}],
 			paths: vec![path_fill(2, square(0.0, 0.0, 10.0)), path_fill(3, square(2.0, 2.0, 4.0))],
 			..UiDrawList::default()
@@ -689,6 +722,79 @@ mod tests {
 			output.steps.as_slice(),
 			[UiStep::Draw { .. }, UiStep::Blur(_), UiStep::Draw { count: 3, .. }]
 		));
+	}
+
+	/// A path's shadow draws its moved outline in white outside every draw, blurs it, and composites
+	/// the result under the path's fill.
+	#[test]
+	fn path_shadow_blurs_a_moved_white_caster_under_its_fill() {
+		let draw_list = UiDrawList {
+			layout_size: [100.0, 100.0],
+			blurs: vec![UiBlurDrawElement {
+				depth: 0,
+				order: 2,
+				position: [10.0, 10.0],
+				size: [20.0, 20.0],
+				clip: None,
+				clip_mask: None,
+				color: [0.0, 0.0, 0.0, 0.5],
+				corner_radius: 0.0,
+				corner_exponent: 2.0,
+				sector: None,
+				radius: 0.0,
+				path: Some(shape(2, square(0.0, 0.0, 10.0))),
+				shadow: Some(UiShapeShadow {
+					offset: [3.0, 4.0],
+					sigma: 2.0,
+				}),
+			}],
+			paths: vec![path_fill(2, square(0.0, 0.0, 10.0))],
+			..UiDrawList::default()
+		};
+		let arena = bumpalo::Bump::new();
+		let mut masks = UiMaskTable::default();
+		let mut curves = UiPathCurves::new(UI_PATH_CURVE_CAPACITY, UI_PATH_BAND_CAPACITY);
+		let viewport = Extent::square(100);
+		let paths = build_ui_path_geometry_damaged(&draw_list, viewport, &mut curves, &mut masks, &arena, None);
+		let fill = paths.primitives[0];
+		let caster = paths.blurs[0].expect("A path shadow should have a caster");
+		assert_eq!(caster.kind, UI_KIND_PATH);
+		assert_eq!(caster.color, [1.0; 4]);
+		assert_eq!(caster.a, [fill.a[0] + 3.0, fill.a[1] + 4.0, fill.a[2], fill.a[3]]);
+		assert_eq!(
+			caster.bounds,
+			[
+				fill.bounds[0] + 3.0,
+				fill.bounds[1] + 4.0,
+				fill.bounds[2] + 3.0,
+				fill.bounds[3] + 4.0
+			]
+		);
+
+		let output = build_ui_primitives(&draw_list, viewport, &arena, None, &mut masks, None, Some(&paths), None);
+		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
+		assert_eq!(kinds, [UI_KIND_PATH, UI_KIND_SAMPLED_SHADOW, UI_KIND_PATH]);
+		let [
+			UiStep::Draw { first: 1, count: 0 },
+			UiStep::Blur(blur),
+			UiStep::Draw { first: 2, count: 2 },
+		] = output.steps.as_slice()
+		else {
+			panic!("Unexpected steps {:?}", output.steps);
+		};
+		assert_eq!(blur.source, UiBlurSource::Shape { first: 1, count: 1 });
+		let composite = output.primitives[2];
+		let reach = 2.0 * 3.0 + 1.0;
+		assert_eq!(
+			composite.bounds,
+			[
+				caster.bounds[0] - reach,
+				caster.bounds[1] - reach,
+				caster.bounds[2] + reach,
+				caster.bounds[3] + reach
+			]
+		);
+		assert_eq!(composite.color, [0.0, 0.0, 0.0, 0.5]);
 	}
 
 	fn square(x: f32, y: f32, size: f32) -> Vec<CurveSegment> {

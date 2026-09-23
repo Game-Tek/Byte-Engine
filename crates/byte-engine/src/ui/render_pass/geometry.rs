@@ -77,6 +77,77 @@ pub(super) fn build_ui_primitives<'a>(
 			0 => {
 				let blur = &draw_list.blurs[blurs];
 				blurs += 1;
+				if let Some(shadow) = blur.shadow {
+					let caster = match &blur.path {
+						Some(_) => paths.and_then(|paths| paths.blurs.get(blurs - 1).copied().flatten()),
+						None => sector_caster(blur, shadow, sx, sy),
+					};
+					let Some(mut caster) = caster else {
+						continue;
+					};
+					let sigma_pixels = (shadow.sigma * radius_scale).clamp(0.0, UI_MAX_SAMPLED_SHADOW_SIGMA);
+					let reach = sigma_pixels * SHADOW_EXTENT_SIGMAS + 1.0;
+					let mut bounds = [
+						(caster.bounds[0] - reach).max(0.0),
+						(caster.bounds[1] - reach).max(0.0),
+						(caster.bounds[2] + reach).min(viewport_width),
+						(caster.bounds[3] + reach).min(viewport_height),
+					];
+					if let Some(clip) = blur.clip {
+						let clip = snapped_rect(clip.position, clip.size, sx, sy);
+						bounds = [
+							bounds[0].max(clip[0]),
+							bounds[1].max(clip[1]),
+							bounds[2].min(clip[2]),
+							bounds[3].min(clip[3]),
+						];
+					}
+					if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+						continue;
+					}
+					let margin = UI_DAMAGE_MARGIN_PIXELS;
+					let damaged = [bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin];
+					if !damage_intersects(damage, turned_bounds(damaged, blur.clip_mask, sx, sy)) {
+						continue;
+					}
+					if output.primitives.len() + 2 > MAX_UI_PRIMITIVES {
+						output.truncated = true;
+						break;
+					}
+					let mask = masks.index(None, blur.clip_mask, sx, sy);
+					caster.mask = mask;
+					// The filter is planned from a backdrop blur radius, whose sigma is `scale * sqrt(radius)`.
+					let effective_radius = (sigma_pixels / UI_BLUR_SIGMA_SCALE).powi(2).clamp(0.0, 64.0);
+					let resolution_mix = blur_resolution_mix(sigma_pixels);
+					let (full_kernel, half_kernel) = blur_kernels(&mut cached_kernels, effective_radius);
+					output.steps.push(UiStep::Draw {
+						first: draw_first as u32,
+						count: (output.primitives.len() - draw_first) as u32,
+					});
+					let first = output.primitives.len() as u32;
+					output.primitives.push(caster);
+					draw_first = output.primitives.len();
+					output.steps.push(UiStep::Blur(UiBlurDispatch {
+						resolution_mix,
+						full_kernel,
+						half_kernel,
+						full_regions: blur_full_dispatch_regions(bounds, viewport),
+						half_regions: blur_half_dispatch_regions(bounds, viewport),
+						backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+							.unwrap_or(UiPixelRegion::full(viewport)),
+						source: UiBlurSource::Shape { first, count: 1 },
+					}));
+					output.primitives.push(UiPrimitive {
+						bounds,
+						color: blur.color,
+						color_end: blur.color,
+						b: [0.0, 0.0, 0.0, resolution_mix],
+						kind: UI_KIND_SAMPLED_SHADOW,
+						mask,
+						..UiPrimitive::default()
+					});
+					continue;
+				}
 				let effective_radius = (blur.radius * radius_scale).clamp(0.0, 64.0);
 				let sigma_pixels = blur_sigma(effective_radius);
 				let resolution_mix = blur_resolution_mix(sigma_pixels);
@@ -92,14 +163,7 @@ pub(super) fn build_ui_primitives<'a>(
 					break;
 				}
 				primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
-				if cached_kernels.as_ref().is_none_or(|(radius, ..)| *radius != effective_radius) {
-					cached_kernels = Some((
-						effective_radius,
-						UiBlurKernel::gaussian(sigma_pixels),
-						UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)),
-					));
-				}
-				let (_, full_kernel, half_kernel) = cached_kernels.unwrap();
+				let (full_kernel, half_kernel) = blur_kernels(&mut cached_kernels, effective_radius);
 				let bounds = primitive.bounds;
 				// The blur reads the layer below it, so the primitives so far are drawn first.
 				output.steps.push(UiStep::Draw {
@@ -115,6 +179,7 @@ pub(super) fn build_ui_primitives<'a>(
 					half_regions: blur_half_dispatch_regions(bounds, viewport),
 					backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
 						.unwrap_or(UiPixelRegion::full(viewport)),
+					source: UiBlurSource::Backdrop,
 				}));
 				output.primitives.push(primitive);
 			}
@@ -135,7 +200,13 @@ pub(super) fn build_ui_primitives<'a>(
 				if !damage_intersects(
 					damage,
 					turned_bounds(
-						element_bounds(element.position, [rect_width, rect_height], sx, sy, UI_DAMAGE_MARGIN_PIXELS),
+						element_bounds(
+							element.position,
+							[rect_width, rect_height],
+							sx,
+							sy,
+							UI_DAMAGE_MARGIN_PIXELS + shadow_outset(element.layer_kind, sx, sy),
+						),
 						element.clip_mask,
 						sx,
 						sy,
@@ -348,6 +419,9 @@ fn clipped_rect(position: [f32; 2], size: [f32; 2], clip: Option<DrawClip>, sx: 
 /// Resolves one rectangle layer's clipped quad. The shader measures the shape from the unclipped rectangle.
 #[inline]
 fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPrimitive> {
+	if let LayerKind::Shadow(shadow) = element.layer_kind {
+		return shadow_primitive(element, shadow, sx, sy);
+	}
 	let (original, bounds) = clipped_rect(element.position, element.size, element.clip, sx, sy)?;
 	let rect_width = (original[2] - original[0]).max(0.0);
 	let rect_height = (original[3] - original[1]).max(0.0);
@@ -377,6 +451,118 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 		b,
 		kind,
 		data0,
+		..UiPrimitive::default()
+	};
+	element
+		.paint
+		.placed([original[0], original[1]], [sx, sy])
+		.apply(&mut primitive);
+	Some(primitive)
+}
+
+/// Returns the full and half resolution kernels for a backdrop blur radius, reusing the last pair when the radius repeats.
+fn blur_kernels(cached: &mut Option<(f32, UiBlurKernel, UiBlurKernel)>, effective_radius: f32) -> (UiBlurKernel, UiBlurKernel) {
+	if cached.as_ref().is_none_or(|(radius, ..)| *radius != effective_radius) {
+		let sigma_pixels = blur_sigma(effective_radius);
+		*cached = Some((
+			effective_radius,
+			UiBlurKernel::gaussian(sigma_pixels),
+			UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)),
+		));
+	}
+	let (_, full_kernel, half_kernel) = cached.unwrap();
+	(full_kernel, half_kernel)
+}
+
+/// Resolves a sector shadow's caster: the filled sector in white, moved by the offset and unclipped.
+fn sector_caster(blur: &UiBlurDrawElement, shadow: UiShapeShadow, sx: f32, sy: f32) -> Option<UiPrimitive> {
+	let sector = blur.sector?;
+	let rect = snapped_rect(blur.position, blur.size, sx, sy);
+	let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
+	let rect = [
+		rect[0] + offset[0],
+		rect[1] + offset[1],
+		rect[2] + offset[0],
+		rect[3] + offset[1],
+	];
+	if rect[2] <= rect[0] || rect[3] <= rect[1] {
+		return None;
+	}
+	Some(UiPrimitive {
+		bounds: rect,
+		color: [1.0; 4],
+		color_end: [1.0; 4],
+		a: [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]],
+		b: sector_parameters(sector, 0.0),
+		kind: UI_KIND_SECTOR,
+		data0: sector_inset(sector, sx.min(sy)),
+		..UiPrimitive::default()
+	})
+}
+
+/// Pixels an outer shadow reaches past its element's rectangle, including the shader's anti-aliasing.
+#[inline]
+fn shadow_outset(kind: LayerKind, sx: f32, sy: f32) -> f32 {
+	match kind {
+		LayerKind::Shadow(shadow) if !shadow.inset => shadow.outset() * sx.max(sy) + 1.0,
+		_ => 0.0,
+	}
+}
+
+/// Resolves one shadow layer's quad. An outer shadow's quad covers the moved and grown shape out
+/// to where its Gaussian tail fades; an inset shadow's quad is the element's own rectangle.
+fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -> Option<UiPrimitive> {
+	let original = snapped_rect(element.position, element.size, sx, sy);
+	let (rect_width, rect_height) = ((original[2] - original[0]).max(0.0), (original[3] - original[1]).max(0.0));
+	let radius_scale = sx.min(sy);
+	let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
+	let sigma = shadow.sigma * radius_scale;
+	let spread = shadow.spread * radius_scale;
+	let quad = if shadow.inset {
+		original
+	} else {
+		let reach = spread + sigma * SHADOW_EXTENT_SIGMAS + 1.0;
+		let quad = [
+			original[0] + offset[0] - reach,
+			original[1] + offset[1] - reach,
+			original[2] + offset[0] + reach,
+			original[3] + offset[1] + reach,
+		];
+		// A spread that swallows the whole shape leaves nothing to cast.
+		if quad[2] - quad[0] <= 2.0 * (sigma * SHADOW_EXTENT_SIGMAS + 1.0)
+			|| quad[3] - quad[1] <= 2.0 * (sigma * SHADOW_EXTENT_SIGMAS + 1.0)
+		{
+			return None;
+		}
+		quad
+	};
+	let bounds = match element.clip {
+		Some(clip) => {
+			let clip = snapped_rect(clip.position, clip.size, sx, sy);
+			[
+				quad[0].max(clip[0]),
+				quad[1].max(clip[1]),
+				quad[2].min(clip[2]),
+				quad[3].min(clip[3]),
+			]
+		}
+		None => quad,
+	};
+	if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+		return None;
+	}
+	let mut primitive = UiPrimitive {
+		bounds,
+		a: [original[0], original[1], rect_width, rect_height],
+		b: [
+			resolved_corner_radius(element.corner_radius * radius_scale, rect_width, rect_height),
+			resolved_corner_exponent(element.corner_exponent),
+			sigma,
+			spread,
+		],
+		kind: if shadow.inset { UI_KIND_INSET_SHADOW } else { UI_KIND_SHADOW },
+		data0: encode_shadow_offset(offset[0]),
+		data1: encode_shadow_offset(offset[1]),
 		..UiPrimitive::default()
 	};
 	element

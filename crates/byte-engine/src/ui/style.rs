@@ -52,7 +52,63 @@ pub enum MixModes {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerKind {
 	Fill,
-	Stroke { width: f32 },
+	Stroke {
+		width: f32,
+	},
+	/// A blurred copy of the element's shape painted in the layer's color. See [`Shadow`].
+	Shadow(Shadow),
+}
+
+/// Standard deviations a shadow's Gaussian tail reaches before it stops being drawn.
+pub(crate) const SHADOW_EXTENT_SIGMAS: f32 = 3.0;
+
+/// A drop or inset shadow of an element's rectangle, in layout units.
+///
+/// The shape is moved by `offset`, grown by `spread` (negative values shrink it), and blurred
+/// with a Gaussian of standard deviation `sigma`, which is half of a CSS `box-shadow` blur radius.
+/// An inset shadow darkens the inside of the element around a hole cut out of that shape.
+/// Shadows never change layout or hit testing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+	pub offset: [f32; 2],
+	pub sigma: f32,
+	pub spread: f32,
+	pub inset: bool,
+}
+
+impl Shadow {
+	/// Creates an outer shadow with no spread.
+	pub fn new(offset: [f32; 2], sigma: f32) -> Self {
+		Self {
+			offset: [sanitize_shadow_length(offset[0]), sanitize_shadow_length(offset[1])],
+			sigma: sanitize_feather_width(sigma),
+			spread: 0.0,
+			inset: false,
+		}
+	}
+
+	pub fn spread(mut self, spread: f32) -> Self {
+		self.spread = sanitize_shadow_length(spread);
+		self
+	}
+
+	pub fn inset(mut self) -> Self {
+		self.inset = true;
+		self
+	}
+
+	/// Layout distance an outer shadow reaches past the element's box on its farthest side. Zero for an inset shadow.
+	pub(crate) fn outset(self) -> f32 {
+		if self.inset {
+			return 0.0;
+		}
+		let offset = self.offset[0].abs().max(self.offset[1].abs());
+		offset + self.spread.max(0.0) + self.sigma * SHADOW_EXTENT_SIGMAS
+	}
+}
+
+fn sanitize_shadow_length(length: f32) -> f32 {
+	if length.is_finite() { length } else { 0.0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,6 +264,24 @@ impl ConcreteLayer {
 		self
 	}
 
+	/// Turns this layer into a shadow of the element's shape, painted in the layer's color.
+	///
+	/// Layers paint in order, so add a drop shadow before the fill it sits under.
+	pub fn shadow(mut self, shadow: Shadow) -> Self {
+		self.kind = LayerKind::Shadow(shadow);
+		self
+	}
+
+	/// Turns this layer into an outer shadow moved by `offset` and blurred with standard deviation `sigma`.
+	pub fn drop_shadow(self, offset: [f32; 2], sigma: f32) -> Self {
+		self.shadow(Shadow::new(offset, sigma))
+	}
+
+	/// Turns this layer into an inset shadow moved by `offset` and blurred with standard deviation `sigma`.
+	pub fn inset_shadow(self, offset: [f32; 2], sigma: f32) -> Self {
+		self.shadow(Shadow::new(offset, sigma).inset())
+	}
+
 	pub fn feather(mut self, feather: EdgeFeather) -> Self {
 		self.feather = feather;
 		self
@@ -321,6 +395,18 @@ mod tests {
 			Color::Value(actual) => assert_eq!(*actual, color),
 			_ => panic!("expected value color"),
 		}
+	}
+
+	#[test]
+	fn shadow_sanitizes_and_measures_its_outset() {
+		let shadow = Shadow::new([f32::NAN, -4.0], -1.0).spread(f32::INFINITY);
+		assert_eq!(shadow.offset, [0.0, -4.0]);
+		assert_eq!(shadow.sigma, 0.0);
+		assert_eq!(shadow.spread, 0.0);
+		assert_eq!(Shadow::new([2.0, -4.0], 3.0).spread(1.0).outset(), 4.0 + 1.0 + 9.0);
+		assert_eq!(Shadow::new([2.0, -4.0], 3.0).inset().outset(), 0.0);
+		let layer = ConcreteLayer::default().drop_shadow([0.0, 2.0], 4.0);
+		assert_eq!(layer.kind(), LayerKind::Shadow(Shadow::new([0.0, 2.0], 4.0)));
 	}
 
 	#[test]

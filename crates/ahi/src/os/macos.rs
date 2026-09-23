@@ -882,7 +882,7 @@ mod tests {
 
 	#[test]
 	fn wait_for_available_write_blocks_until_space_is_freed() {
-		let ring = std::sync::Arc::new(SpscByteRing::new(4).unwrap());
+		let ring = SpscByteRing::new(4).unwrap();
 
 		assert_eq!(
 			ring.with_write_chunk(4, |chunk| {
@@ -893,60 +893,61 @@ mod tests {
 		);
 
 		let (sender, receiver) = mpsc::channel();
-		let waiting_ring = ring.clone();
 
-		let waiter = std::thread::spawn(move || {
-			waiting_ring.wait_for_available_write(0);
-			sender.send(()).unwrap();
+		// Scoped threads borrow the ring, and the scope joins the waiter before the ring drops.
+		std::thread::scope(|scope| {
+			scope.spawn(|| {
+				ring.wait_for_available_write(0);
+				sender.send(()).unwrap();
+			});
+
+			assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+
+			let mut destination = [0u8; 1];
+
+			assert_eq!(ring.pop_into_slice(&mut destination), 1);
+			assert_eq!(destination, [1]);
+
+			receiver.recv_timeout(Duration::from_millis(500)).unwrap();
 		});
-
-		assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
-
-		let mut destination = [0u8; 1];
-
-		assert_eq!(ring.pop_into_slice(&mut destination), 1);
-		assert_eq!(destination, [1]);
-
-		receiver.recv_timeout(Duration::from_millis(500)).unwrap();
-		waiter.join().unwrap();
 	}
 
 	#[test]
 	fn producer_never_misses_a_wakeup_under_contention() {
 		const TOTAL: usize = 200_000;
-		let ring = std::sync::Arc::new(SpscByteRing::new(4).unwrap());
-		let consumer_ring = ring.clone();
+		let ring = SpscByteRing::new(4).unwrap();
 		let (sender, receiver) = mpsc::channel();
 
-		let consumer = std::thread::spawn(move || {
-			let (mut expected, mut destination) = (0usize, [0u8; 3]);
-			while expected < TOTAL {
-				let read = consumer_ring.pop_into_slice(&mut destination);
-				for byte in &destination[..read] {
-					assert_eq!(*byte, expected as u8);
-					expected += 1;
-				}
-			}
-		});
-
-		let producer = std::thread::spawn(move || {
-			let mut written = 0usize;
-			while written < TOTAL {
-				ring.wait_for_available_write(1);
-				written += ring.with_write_chunk(TOTAL - written, |chunk| {
-					for (offset, byte) in chunk.iter_mut().enumerate() {
-						*byte = (written + offset) as u8;
+		// Scoped threads borrow the ring, and the scope joins both threads before the ring drops.
+		std::thread::scope(|scope| {
+			scope.spawn(|| {
+				let (mut expected, mut destination) = (0usize, [0u8; 3]);
+				while expected < TOTAL {
+					let read = ring.pop_into_slice(&mut destination);
+					for byte in &destination[..read] {
+						assert_eq!(*byte, expected as u8);
+						expected += 1;
 					}
-					chunk.len()
-				});
-			}
-			sender.send(()).unwrap();
-		});
+				}
+			});
 
-		// There is no timeout in the wait, so a lost wakeup shows up as a hang here.
-		receiver.recv_timeout(Duration::from_secs(30)).unwrap();
-		producer.join().unwrap();
-		consumer.join().unwrap();
+			scope.spawn(|| {
+				let mut written = 0usize;
+				while written < TOTAL {
+					ring.wait_for_available_write(1);
+					written += ring.with_write_chunk(TOTAL - written, |chunk| {
+						for (offset, byte) in chunk.iter_mut().enumerate() {
+							*byte = (written + offset) as u8;
+						}
+						chunk.len()
+					});
+				}
+				sender.send(()).unwrap();
+			});
+
+			// There is no timeout in the wait, so a lost wakeup shows up as a hang here.
+			receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+		});
 	}
 
 	#[test]

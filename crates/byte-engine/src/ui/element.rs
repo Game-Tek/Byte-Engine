@@ -22,10 +22,14 @@ pub trait Element {
 	fn primitive(&self) -> BasePrimitive;
 }
 
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 
-/// Stable non-zero identifier assigned to UI elements during layout.
-pub type Id = NonZeroU32;
+/// Stable non-zero identifier of a UI element.
+///
+/// An element's id is a hash of the path it was declared at: the declaring context's path and the element's
+/// [`crate::ui::layout::context::ElementKey`]. Declaring the same key under the same parent in a later frame gives the
+/// same id, so components can refer to elements across frames and remounts.
+pub type Id = NonZeroU64;
 
 /// The [`ElementHandle`] trait exposes the stable identity assigned during layout.
 pub trait ElementHandle {

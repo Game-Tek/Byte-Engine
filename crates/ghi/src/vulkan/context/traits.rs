@@ -159,7 +159,7 @@ impl crate::context::Context for Context {
 
 			for command_buffer in &mut self.command_buffers {
 				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
-				let vk_queue = queue.vk_queue.clone();
+				let vk_queue_index = queue.vk_queue_index;
 				let command_pool_create_info =
 					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
 
@@ -185,7 +185,7 @@ impl crate::context::Context for Context {
 				// self.set_name(vk_command_buffer, name);
 
 				command_buffer.frames.push(CommandBufferInternal {
-					vk_queue: vk_queue.clone(),
+					vk_queue_index,
 					command_pool,
 					command_buffer: vk_command_buffer,
 				});

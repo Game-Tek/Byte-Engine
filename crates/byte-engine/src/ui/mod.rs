@@ -61,14 +61,14 @@ pub use element::{ConcreteElement, Element, ElementHandle, Id};
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{
 	Depth, Geometry, Position, Sizing,
-	context::{ContainerContext, Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
+	context::{ContainerContext, Context, ElementContext, ElementKey, ElementSlot, MountedUiFuture, UiFuture},
 	engine::{Engine, EvaluationContext, PointerState, Render, RenderRevision, Runtime, UiEvent, UiKeyEvent, UiTextEditEvent},
 };
 pub use point::{UiPoint, UiVector};
 pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};
 pub use render_pass::UiRenderPass;
 pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
-pub use timer::{WaitFuture, seconds, wait};
+pub use timer::WaitFuture;
 pub use transform::Transform;
 pub use visual::Visual;
 pub use watch::{Subscriber, Watch};

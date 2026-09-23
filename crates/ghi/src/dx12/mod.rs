@@ -26,8 +26,6 @@ pub type Context = self::context::Device;
 	reason = "DX12 tests explicitly end frame borrows before inspecting their devices."
 )]
 mod tests {
-	use std::sync::atomic::{AtomicU64, Ordering};
-
 	use windows::Win32::Graphics::Direct3D12::D3D12_BARRIER_SYNC_COMPUTE_SHADING;
 
 	use super::*;
@@ -38,11 +36,11 @@ mod tests {
 	use crate::context::Context as _;
 	use crate::queue::{Queue as _, QueueExecution as _};
 
-	static DX12_DEBUG_TEST_LOGS: AtomicU64 = AtomicU64::new(0);
-
-	fn count_dx12_debug_test_message(message: &str) {
+	/// Reports the test message by panicking with it, since a plain `fn(&str)` log callback has no state to record into.
+	/// The test catches the unwind and reads the message from the panic payload.
+	fn panic_on_dx12_debug_test_message(message: &str) {
 		if message.contains("ghi dx12 test application message") {
-			DX12_DEBUG_TEST_LOGS.fetch_add(1, Ordering::Relaxed);
+			panic!("{message}");
 		}
 	}
 
@@ -85,10 +83,9 @@ mod tests {
 
 	#[test]
 	fn debug_info_queue_messages_use_device_log_function() {
-		DX12_DEBUG_TEST_LOGS.store(0, Ordering::Relaxed);
 		let features = crate::device::Features::new()
 			.validation(true)
-			.debug_log_function(count_dx12_debug_test_message);
+			.debug_log_function(panic_on_dx12_debug_test_message);
 		let Ok(mut instance) = Instance::new(features) else {
 			return;
 		};
@@ -103,10 +100,15 @@ mod tests {
 			return;
 		};
 
-		device.add_debug_message_for_test("ghi dx12 test application message");
+		let logged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.add_debug_message_for_test("ghi dx12 test application message");
+		}));
 
-		assert!(DX12_DEBUG_TEST_LOGS.load(Ordering::Relaxed) > 0);
-		assert!(device.has_errors());
+		let payload = logged.expect_err("The DX12 info-queue message should reach the device log function.");
+		let message = payload
+			.downcast_ref::<String>()
+			.expect("The log function should panic with the formatted message.");
+		assert!(message.contains("ghi dx12 test application message"));
 	}
 
 	#[test]

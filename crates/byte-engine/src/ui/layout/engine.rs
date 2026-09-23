@@ -25,8 +25,13 @@ pub struct Engine<C = ()> {
 	key_presses: VecDeque<Key>,
 	text_edits: VecDeque<TextEdit>,
 	text_system: TextSystem,
-	ctx: Rc<C>,
-	runtime: Rc<RefCell<Runtime>>,
+	/// The runtime and application context, lent to every task poll; see [`UiPoll`].
+	core: UiPoll<C>,
+	tree: RetainedTree,
+	/// Receives the changes components send; see [`UiCommand`].
+	commands: Receiver<UiCommand>,
+	/// Handed to the root component's context, which clones it into every context it creates.
+	sender: Sender<UiCommand>,
 	retained_layout: Option<RetainedLayout>,
 	retained_render: Option<RetainedRender>,
 	visual_state: Vec<VisualState>,
@@ -50,6 +55,8 @@ pub struct Engine<C = ()> {
 	dirty_stamps: Vec<u64>,
 	/// Each tree index's entry in the retained hit index, or `u32::MAX` when it has none.
 	hit_offsets: Vec<u32>,
+	/// The revision the next changed render receives. Each engine numbers its own renders.
+	next_render_revision: u64,
 }
 
 /// The `RetainedLayout` struct keeps the last computed layout so unchanged trees skip evaluation.
@@ -116,23 +123,11 @@ pub const MAX_DAMAGE_RECTS: usize = 8;
 /// Layout distance a captured pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD: f32 = 6.0;
 
-static NEXT_RENDER_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
 impl<C> Drop for Engine<C> {
 	fn drop(&mut self) {
-		// Detach tasks before dropping them because mounted-future cleanup may
-		// re-enter the runtime to remove its retained scope.
-		let tasks = {
-			let mut runtime = self.runtime.borrow_mut();
-			runtime.ready.lock().clear();
-			runtime.frame_waiters.clear();
-			runtime.event_waiters.clear();
-			runtime.key_waiters.clear();
-			runtime.text_edit_waiters.clear();
-			std::mem::take(&mut runtime.tasks)
-		};
-
-		drop(tasks);
+		// Tasks go first: their mounted scopes send cleanup to a channel nobody drains anymore.
+		self.core.runtime.wakes.ready.lock().clear();
+		drop(std::mem::take(&mut self.core.runtime.tasks));
 	}
 }
 
@@ -158,6 +153,7 @@ impl Default for PointerState {
 
 // Isolate clipping, evaluation, future, and runtime mechanics from the engine facade.
 mod clipping;
+mod commands;
 mod evaluation_context;
 mod futures;
 #[cfg(test)]
@@ -165,6 +161,8 @@ mod invalidation_tests;
 mod runtime;
 
 use clipping::*;
+use commands::UiCommand;
+use commands::apply_commands;
 pub use evaluation_context::*;
 pub use futures::*;
 pub use runtime::*;
@@ -226,6 +224,7 @@ impl<C: 'static> Engine<C> {
 	}
 
 	pub fn with_context(ctx: C) -> Self {
+		let (sender, commands) = std::sync::mpsc::channel();
 		Self {
 			viewports: Vec::new(),
 			state: Rc::new(RefCell::new(EngineState::new())),
@@ -240,7 +239,14 @@ impl<C: 'static> Engine<C> {
 			key_presses: VecDeque::new(),
 			text_edits: VecDeque::new(),
 			text_system: TextSystem::new(),
-			ctx: Rc::new(ctx),
+			core: UiPoll {
+				runtime: Runtime::new(),
+				ctx,
+				current: None,
+			},
+			tree: RetainedTree::new(),
+			commands,
+			sender,
 			retained_layout: None,
 			retained_render: None,
 			visual_state: Vec::new(),
@@ -258,7 +264,7 @@ impl<C: 'static> Engine<C> {
 			dirty_stamps: Vec::new(),
 			hit_offsets: Vec::new(),
 			placement_indices: Vec::new(),
-			runtime: Rc::new(RefCell::new(Runtime::new())),
+			next_render_revision: 1,
 		}
 	}
 
@@ -267,7 +273,7 @@ impl<C: 'static> Engine<C> {
 	/// A component woken from another thread, such as by a worker that finished loading, wakes this waker so the
 	/// host runs the tick that polls it. Pass `GraphicsApplication::waker` converted into a [`Waker`].
 	pub fn set_waker(&mut self, waker: Waker) {
-		*self.runtime.borrow().host.lock() = Some(waker);
+		*self.core.runtime.wakes.host.lock() = Some(waker);
 	}
 
 	/// Returns when this engine next needs an evaluation, or `None` when it only reacts to events.
@@ -276,14 +282,21 @@ impl<C: 'static> Engine<C> {
 	/// woken component waits to be polled. Otherwise the earliest UI timer decides. Hand the answer to the host
 	/// that drives the engine, such as `GraphicsApplication::schedule_tick`.
 	pub fn next_tick(&self) -> Option<std::time::Instant> {
-		if self.runtime.borrow().needs_tick() {
+		let runtime = &self.core.runtime;
+		if runtime.needs_tick() {
 			return Some(std::time::Instant::now());
 		}
-		crate::ui::timer::next_deadline()
+		runtime.next_deadline()
 	}
 
+	/// Returns the application context components read through [`Context::with`].
 	pub fn ctx(&self) -> &C {
-		self.ctx.as_ref()
+		&self.core.ctx
+	}
+
+	/// Returns the application context for the host to change between evaluations.
+	pub fn ctx_mut(&mut self) -> &mut C {
+		&mut self.core.ctx
 	}
 
 	pub(crate) fn add_viewport(&mut self, viewport: VirtualViewport) {
@@ -298,16 +311,13 @@ impl<C: 'static> Engine<C> {
 	where
 		F: for<'ctx> FnOnce(&'ctx mut EvaluationContext<C>) -> UiFuture<'ctx> + 'static,
 	{
-		let runtime = Rc::clone(&self.runtime);
-		let tree = Rc::clone(&runtime.borrow().tree);
-		let task_id = runtime.borrow_mut().reserve_task(ScopeId::ROOT, 0);
-		let ctx = EvaluationContext::new_root(Rc::clone(&self.ctx), Rc::clone(&runtime), tree, task_id);
+		let ctx = EvaluationContext::new_root(self.sender.clone());
 		// Store an owning future while preserving the borrowed component interface.
 		let future = Box::pin(async move {
 			let mut ctx = ctx;
 			root(&mut ctx).await;
 		});
-		runtime.borrow_mut().start_task(task_id, future);
+		self.core.runtime.spawn(ScopeId::ROOT, ROOT_PATH, future);
 	}
 
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
@@ -323,23 +333,23 @@ impl<C: 'static> Engine<C> {
 		self.sync_pointer_state();
 		self.route_drag();
 		self.route_drops();
-		Runtime::begin_frame(Rc::clone(&self.runtime));
-		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
+		self.core.runtime.begin_frame();
+		self.tree.begin_frame();
+		poll_ready_tasks(&mut self.core, &mut self.tree, &self.commands);
 
 		let mut snapshot = self.build_snapshot_from_ui_tree(size, frame_allocator);
 		self.route_input_events(&mut snapshot);
 		self.route_key_input_events();
 		self.route_text_edit_events();
 
-		Runtime::poll_ready_tasks(Rc::clone(&self.runtime));
+		poll_ready_tasks(&mut self.core, &mut self.tree, &self.commands);
 		snapshot
 	}
 
 	// Visual transforms reuse placement for every flow. Other edits can replay custom
 	// flows because their placement may depend on captured application state.
 	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
-		let tree = Rc::clone(&self.runtime.borrow().tree);
-		let mut tree = tree.borrow_mut();
+		let tree = &mut self.tree;
 		let revision = tree.revision();
 		let unchanged = self
 			.retained_layout
@@ -440,7 +450,17 @@ impl<C: 'static> Engine<C> {
 					.as_ref()
 					.filter(|_| placement_unchanged && transforms_changed)
 					.map(|retained| retained.revision);
-				self.prepare_appearance(elements, &tree, layout_revision, size, transformed_from);
+				Self::prepare_appearance(
+					&mut self.visual_state,
+					&mut self.visual_state_key,
+					&self.dirty,
+					&self.placement_indices,
+					elements,
+					tree,
+					layout_revision,
+					size,
+					transformed_from,
+				);
 				// Moved subtrees patch the retained hit index in place while nothing else holds it
 				// and the topology is stable; anything else rebuilds the index from every element.
 				let refreshed = transformed_from.is_some()
@@ -470,7 +490,7 @@ impl<C: 'static> Engine<C> {
 					.as_ref()
 					.filter(|retained| retained.clip_revision == tree.clip_revision)
 				{
-					let mut runtime = self.runtime.borrow_mut();
+					let runtime = &mut self.core.runtime;
 					debug_assert_eq!(previous.elements.len(), elements.len());
 					for (previous, element) in previous.elements.iter().zip(elements.iter()) {
 						debug_assert_eq!(previous.id, element.id);
@@ -484,7 +504,7 @@ impl<C: 'static> Engine<C> {
 					self.state
 						.borrow_mut()
 						.set_element_ids(elements.iter().map(|element| element.id));
-					self.runtime.borrow_mut().update_geometry(elements);
+					self.core.runtime.update_geometry(elements);
 				}
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
 					tree_revision: revision,
@@ -559,8 +579,14 @@ impl<C: 'static> Engine<C> {
 	/// `transformed_from` names the layout this geometry differs from by visual transforms
 	/// alone, within [`Self::dirty`]; appearance prepared for that layout is then refreshed
 	/// for those elements only, since state inherits strictly from the parent.
+	/// Refreshes inherited clipping and opacity for `elements`, or keeps them while the tree's appearance and the
+	/// layout are unchanged. Takes the engine's fields apart so callers can keep borrowing the tree.
+	#[allow(clippy::too_many_arguments)]
 	fn prepare_appearance(
-		&mut self,
+		visual_state: &mut Vec<VisualState>,
+		visual_state_key: &mut Option<(u64, u64, Size)>,
+		dirty: &[usize],
+		placement_indices: &[usize],
 		elements: &[LayoutElement],
 		tree: &RetainedTree,
 		layout_revision: u64,
@@ -568,23 +594,23 @@ impl<C: 'static> Engine<C> {
 		transformed_from: Option<u64>,
 	) {
 		let key = (tree.appearance_revision, layout_revision, size);
-		if self.visual_state_key == Some(key) {
+		if *visual_state_key == Some(key) {
 			return;
 		}
 		let previous = transformed_from.map(|revision| (tree.appearance_revision, revision, size));
-		if previous.is_some() && self.visual_state_key == previous && self.visual_state.len() == tree.elements.len() {
-			for &index in &self.dirty {
-				let element = &elements[self.placement_indices[index]];
-				self.visual_state[index] = inherited_visual_state(element, index, tree, &self.visual_state);
+		if previous.is_some() && *visual_state_key == previous && visual_state.len() == tree.elements.len() {
+			for &index in dirty {
+				let element = &elements[placement_indices[index]];
+				visual_state[index] = inherited_visual_state(element, index, tree, visual_state);
 			}
 		} else {
-			prepare_visual_state(elements, tree, &mut self.visual_state);
+			prepare_visual_state(elements, tree, visual_state);
 		}
-		self.visual_state_key = Some(key);
+		*visual_state_key = Some(key);
 	}
 
 	fn sync_pointer_state(&mut self) {
-		self.runtime.borrow_mut().pointer = PointerState {
+		self.core.runtime.pointer = PointerState {
 			position: self.cursor_position,
 			pressed: self.is_clicking,
 		};
@@ -594,7 +620,7 @@ impl<C: 'static> Engine<C> {
 		self.route_hover(snapshot);
 		while let Some(click) = self.clicks.pop() {
 			if click && let Some(target) = snapshot.click(self.cursor_position) {
-				self.runtime.borrow_mut().push_event(UiEvent {
+				self.core.runtime.push_event(UiEvent {
 					target,
 					kind: Events::Actuated,
 					delta: None,
@@ -615,18 +641,16 @@ impl<C: 'static> Engine<C> {
 	/// A held source is skipped so the surface beneath a dragged item is the one
 	/// that hears about the pointer, and the capture records it as its drop preview.
 	fn route_hover(&mut self, snapshot: &Snapshot<'_>) {
-		let held = self.runtime.borrow().drag.capture().map(|capture| capture.source);
+		let held = self.core.runtime.drag.capture().map(|capture| capture.source);
 		let hovered = snapshot.hover(self.cursor_position, held);
 		if held.is_some() {
-			self.runtime.borrow_mut().drag.set_over(hovered);
+			self.core.runtime.drag.set_over(hovered);
 		}
 		let previous = std::mem::replace(&mut self.hovered, hovered);
 		if previous == hovered {
 			return;
 		}
-		let runtime = Rc::clone(&self.runtime);
-		let tree = Rc::clone(&runtime.borrow().tree);
-		let tree = tree.borrow();
+		let tree = &self.tree;
 		let ancestors = |start: Option<Id>| {
 			let mut chain = std::vec::Vec::new();
 			let mut current = start;
@@ -641,7 +665,7 @@ impl<C: 'static> Engine<C> {
 			chain
 		};
 		let (exited, entered) = (ancestors(previous), ancestors(hovered));
-		let mut runtime = runtime.borrow_mut();
+		let runtime = &mut self.core.runtime;
 		// A surface containing both the old and the new target keeps the pointer and hears nothing.
 		for &target in exited.iter().filter(|id| !entered.contains(id)) {
 			runtime.push_event(drag_event(target, Events::PointerExited));
@@ -669,7 +693,7 @@ impl<C: 'static> Engine<C> {
 			if let Some(target) = target {
 				self.route_bubbling_event(target, Events::Dropped, None, Some(drop.source));
 			}
-			self.runtime.borrow_mut().push_event(UiEvent {
+			self.core.runtime.push_event(UiEvent {
 				target: drop.source,
 				kind: Events::DragEnded,
 				delta: None,
@@ -680,7 +704,7 @@ impl<C: 'static> Engine<C> {
 
 	/// Tells a dragged source where it is, once per evaluation and only after it moved.
 	fn route_drag(&mut self) {
-		let mut runtime = self.runtime.borrow_mut();
+		let runtime = &mut self.core.runtime;
 		let Some(capture) = runtime.drag.capture().filter(|capture| capture.dragging) else {
 			return;
 		};
@@ -721,13 +745,11 @@ impl<C: 'static> Engine<C> {
 
 	/// Delivers one event to a target and then to each of its ancestors.
 	fn route_bubbling_event(&mut self, target: Id, kind: Events, delta: Option<UiVector>, source: Option<Id>) {
-		let runtime = Rc::clone(&self.runtime);
-		let tree = Rc::clone(&runtime.borrow().tree);
-		let tree = tree.borrow();
+		let tree = &self.tree;
 		let mut current = Some(target);
 
 		while let Some(target) = current {
-			runtime.borrow_mut().push_event(UiEvent {
+			self.core.runtime.push_event(UiEvent {
 				target,
 				kind,
 				delta,
@@ -745,13 +767,11 @@ impl<C: 'static> Engine<C> {
 		while let Some(key) = self.key_presses.pop_front() {
 			let target = {
 				let state = self.state.borrow();
-				self.runtime
-					.borrow_mut()
-					.focused_target(|target| state.contains_element(target))
+				self.core.runtime.focused_target(|target| state.contains_element(target))
 			};
 
 			if let Some(target) = target {
-				self.runtime.borrow_mut().push_key_event(UiKeyEvent { target, key });
+				self.core.runtime.push_key_event(UiKeyEvent { target, key });
 			}
 		}
 	}
@@ -760,15 +780,11 @@ impl<C: 'static> Engine<C> {
 		while let Some(edit) = self.text_edits.pop_front() {
 			let target = {
 				let state = self.state.borrow();
-				self.runtime
-					.borrow_mut()
-					.focused_target(|target| state.contains_element(target))
+				self.core.runtime.focused_target(|target| state.contains_element(target))
 			};
 
 			if let Some(target) = target {
-				self.runtime
-					.borrow_mut()
-					.push_text_edit_event(UiTextEditEvent { target, edit });
+				self.core.runtime.push_text_edit_event(UiTextEditEvent { target, edit });
 			}
 		}
 	}
@@ -782,7 +798,7 @@ impl<C: 'static> Engine<C> {
 	/// the revision changed, since a retained clone forces the next build to
 	/// allocate fresh buffers instead of reusing the engine's.
 	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> &Render {
-		let tree_revision = self.runtime.borrow().tree.borrow().revision();
+		let tree_revision = self.tree.revision();
 		let retained = self.retained_render.as_ref().is_some_and(|retained| {
 			retained.tree_revision == tree_revision
 				&& retained.layout_revision == snapshot.layout_revision
@@ -801,8 +817,7 @@ impl<C: 'static> Engine<C> {
 	// Rebuild visible draw data while preserving its layout order and owned render buffers.
 	#[allow(clippy::too_many_lines)]
 	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> RetainedRender {
-		let tree = Rc::clone(&self.runtime.borrow().tree);
-		let tree = tree.borrow();
+		let tree = &self.tree;
 		let mut visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
 			retained.clip_revision == tree.clip_revision
 				&& retained.layout_revision == snapshot.layout_revision
@@ -830,7 +845,8 @@ impl<C: 'static> Engine<C> {
 			.as_ref()
 			.filter(|retained| retained.size == snapshot.size)
 			.map(|retained| retained.render.revision);
-		let render_revision = RenderRevision(NEXT_RENDER_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+		let render_revision = RenderRevision(self.next_render_revision);
+		self.next_render_revision += 1;
 		// Keep live identities independently of culling so sinks retain hidden canvas data.
 		// Placement edits are a conservative boundary for refreshing membership.
 		let (surface_revision, surface_ids) = self
@@ -844,7 +860,7 @@ impl<C: 'static> Engine<C> {
 				)
 			})
 			.unwrap_or_else(|| {
-				let mut ids: Vec<_> = tree.elements.iter().map(|element| element.id.get()).collect();
+				let mut ids: Vec<_> = tree.elements.iter().map(|element| element.serial).collect();
 				ids.sort_unstable();
 				(render_revision, std::sync::Arc::from(ids))
 			});
@@ -890,7 +906,17 @@ impl<C: 'static> Engine<C> {
 		let mut damage: Vec<Geometry> = Vec::new();
 		self.rendered_revisions.resize(tree.elements.len(), 0);
 		// Input callbacks can change appearance after layout. The cache key includes those changes.
-		self.prepare_appearance(&snapshot.elements, &tree, snapshot.layout_revision, snapshot.size, None);
+		Self::prepare_appearance(
+			&mut self.visual_state,
+			&mut self.visual_state_key,
+			&self.dirty,
+			&self.placement_indices,
+			&snapshot.elements,
+			tree,
+			snapshot.layout_revision,
+			snapshot.size,
+			None,
+		);
 		let stamp = snapshot.layout_revision;
 		if incremental {
 			self.dirty_stamps.resize(tree.elements.len(), 0);
@@ -992,7 +1018,7 @@ impl<C: 'static> Engine<C> {
 				}
 			};
 			let footprint = Footprint {
-				id: element.id.get(),
+				id: retained_element.serial,
 				revision: retained_element.revision,
 				rect: {
 					let rect = geometry_from_layout_element(element).expanded(outset);
@@ -1022,7 +1048,7 @@ impl<C: 'static> Engine<C> {
 			let mut push_rectangle = |corner_radius, corner_exponent, sector| {
 				if let Some(entry) = elements
 					.get_mut(element_count)
-					.filter(|entry| local_unchanged && entry.id == element.id.get())
+					.filter(|entry| local_unchanged && entry.id == retained_element.serial)
 				{
 					entry.position = element.position;
 					entry.size = element.size;
@@ -1039,7 +1065,7 @@ impl<C: 'static> Engine<C> {
 					.unwrap_or_default();
 				layers.clone_from(&style.layers);
 				let rendered = RenderElement {
-					id: element.id.get(),
+					id: retained_element.serial,
 					position: element.position,
 					size: element.size,
 					clip,
@@ -1066,7 +1092,7 @@ impl<C: 'static> Engine<C> {
 			let mut push_text = |content: &str, font_size| {
 				if let Some(entry) = text_elements
 					.get_mut(text_count)
-					.filter(|entry| local_unchanged && entry.id == element.id.get())
+					.filter(|entry| local_unchanged && entry.id == retained_element.serial)
 				{
 					entry.position = element.position;
 					entry.size = element.size;
@@ -1085,7 +1111,7 @@ impl<C: 'static> Engine<C> {
 				retained_content.clear();
 				retained_content.push_str(content);
 				let rendered = RenderTextElement {
-					id: element.id.get(),
+					id: retained_element.serial,
 					position: element.position,
 					size: element.size,
 					clip,
@@ -1123,7 +1149,7 @@ impl<C: 'static> Engine<C> {
 				Primitives::Curve(curve) => {
 					if let Some(entry) = curve_elements
 						.get_mut(curve_count)
-						.filter(|entry| local_unchanged && entry.id == element.id.get())
+						.filter(|entry| local_unchanged && entry.id == retained_element.serial)
 					{
 						entry.position = element.position;
 						entry.size = element.size;
@@ -1143,7 +1169,7 @@ impl<C: 'static> Engine<C> {
 					segments.clear();
 					segments.extend_from_slice(curve.path().segments());
 					let rendered = RenderCurveElement {
-						id: element.id.get(),
+						id: retained_element.serial,
 						position: element.position,
 						size: element.size,
 						clip,
@@ -1164,7 +1190,7 @@ impl<C: 'static> Engine<C> {
 				Primitives::Path(path) => {
 					if let Some(entry) = path_elements
 						.get_mut(path_count)
-						.filter(|entry| local_unchanged && entry.id == element.id.get())
+						.filter(|entry| local_unchanged && entry.id == retained_element.serial)
 					{
 						entry.position = element.position;
 						entry.size = element.size;
@@ -1189,7 +1215,7 @@ impl<C: 'static> Engine<C> {
 						.map(|entry| std::sync::Arc::clone(&entry.segments))
 						.unwrap_or_else(|| std::sync::Arc::from(path.path().segments()));
 					let rendered = RenderPathElement {
-						id: element.id.get(),
+						id: retained_element.serial,
 						path_id: path.id(),
 						version: path.version(),
 						fill_rule: path.fill_rule,
@@ -1213,7 +1239,7 @@ impl<C: 'static> Engine<C> {
 				}
 				Primitives::Image(image) => {
 					let rendered = RenderImageElement {
-						id: element.id.get(),
+						id: retained_element.serial,
 						image_id: image.id(),
 						version: image.version(),
 						source_width: image.width_pixels(),
@@ -1341,7 +1367,7 @@ impl<C: 'static> Engine<C> {
 		let Some(point) = self.layout_point(position) else {
 			return false;
 		};
-		let mut runtime = self.runtime.borrow_mut();
+		let runtime = &mut self.core.runtime;
 		if !runtime.drag.press(source, point) {
 			return false;
 		}
@@ -1359,7 +1385,7 @@ impl<C: 'static> Engine<C> {
 		let Some(point) = self.layout_point(position) else {
 			return false;
 		};
-		self.runtime.borrow_mut().drag.move_to(point)
+		self.core.runtime.drag.move_to(point)
 	}
 
 	/// Releases the captured source and returns a drop only after activation.
@@ -1371,7 +1397,7 @@ impl<C: 'static> Engine<C> {
 	/// source gets [`Events::DragEnded`] either way.
 	pub fn release(&mut self, position: UiPoint) -> Option<DragDrop> {
 		let point = self.layout_point(position)?;
-		let mut runtime = self.runtime.borrow_mut();
+		let runtime = &mut self.core.runtime;
 		let held = runtime.drag.capture()?.source;
 		let dropped = runtime.drag.release(point);
 		match dropped {
@@ -1383,7 +1409,7 @@ impl<C: 'static> Engine<C> {
 
 	/// Returns the captured drag gesture, if a source is held.
 	pub fn drag(&self) -> Option<DragCapture> {
-		self.runtime.borrow().drag.capture()
+		self.core.runtime.drag.capture()
 	}
 
 	/// Returns the surface under the pointer after the last evaluation, skipping a held source.
@@ -1406,22 +1432,24 @@ impl<C: 'static> Engine<C> {
 		self.key_states.clear();
 		self.key_presses.clear();
 		self.text_edits.clear();
-		let mut runtime = self.runtime.borrow_mut();
+		let runtime = &mut self.core.runtime;
 		let source = runtime.drag.cancel()?;
 		runtime.push_event(drag_event(source, Events::DragEnded));
 		Some(source)
 	}
 
+	/// Returns the compact id render data carries for the element `id`.
+	#[cfg(test)]
+	pub(crate) fn render_id(&self, id: Id) -> u32 {
+		self.tree.element(id).expect("the element is in the tree").serial
+	}
+
 	fn focused_text_field_last_char(&mut self) -> Option<char> {
 		let target = {
 			let state = self.state.borrow();
-			self.runtime
-				.borrow_mut()
-				.focused_target(|target| state.contains_element(target))?
+			self.core.runtime.focused_target(|target| state.contains_element(target))?
 		};
-		let runtime = self.runtime.borrow();
-		let tree = runtime.tree.borrow();
-		let element = tree.element(target)?;
+		let element = self.tree.element(target)?;
 		let Primitives::TextField(text_field) = &element.element.primitive else {
 			return None;
 		};
@@ -1448,8 +1476,8 @@ fn collapse_damage(mut damage: Vec<Geometry>) -> Vec<Geometry> {
 
 /// The `RenderRevision` struct identifies the content of one [`Render`].
 ///
-/// Revisions are unique across engines. Two renders with equal revisions
-/// describe identical visuals, so consumers keep the revision they last adopted
+/// Revisions are unique within one [`Engine`]. Two renders from the same engine
+/// with equal revisions describe identical visuals, so consumers keep the revision they last adopted
 /// and skip work while it repeats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RenderRevision(u64);
@@ -1619,12 +1647,9 @@ mod tests {
 	}
 
 	/// Mounts a 20 by 20 source at the origin and records the drag it sees on every frame.
-	fn drag_observer() -> (Engine, Arc<StdMutex<Vec<Option<DragCapture>>>>) {
-		let observed = Arc::new(StdMutex::new(Vec::new()));
-		let observed_for_task = Arc::clone(&observed);
-		let mut engine = Engine::new();
+	fn drag_observer() -> Engine<StdMutex<Vec<Option<DragCapture>>>> {
+		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
 		engine.mount(move |ctx| {
-			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
 				root.element("source").container(
@@ -1634,18 +1659,19 @@ mod tests {
 						.height(20.into()),
 				);
 				loop {
-					observed.lock().expect("expected test value").push(ctx.drag());
+					let drag = ctx.drag().await;
+					ctx.with(|observed| observed.lock().expect("expected test value").push(drag)).await;
 					ctx.render().await;
 				}
 			})
 		});
-		(engine, observed)
+		engine
 	}
 
 	#[test]
 	fn press_activates_after_the_threshold_and_release_yields_the_drop_once() {
 		let frame_allocator = bumpalo::Bump::new();
-		let (mut engine, observed) = drag_observer();
+		let mut engine = drag_observer();
 		// Nothing can be grabbed before a frame supplies hit geometry.
 		assert!(!engine.press(window(10.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
@@ -1654,7 +1680,7 @@ mod tests {
 		assert!(!engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(12.0, 12.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		let held = observed.lock().expect("expected test value")[1].expect("expected test value");
+		let held = engine.ctx().lock().expect("expected test value")[1].expect("expected test value");
 		assert!(!held.dragging);
 		assert_eq!(held.origin, UiPoint::new(10.0, 10.0));
 		assert_eq!(held.position, UiPoint::new(12.0, 12.0));
@@ -1670,7 +1696,7 @@ mod tests {
 	#[test]
 	fn click_restores_source_without_a_drop() {
 		let frame_allocator = bumpalo::Bump::new();
-		let (mut engine, _) = drag_observer();
+		let mut engine = drag_observer();
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.release(window(12.0, 12.0)).is_none());
@@ -1680,7 +1706,7 @@ mod tests {
 	#[test]
 	fn cancel_restores_the_source_and_discards_queued_input() {
 		let frame_allocator = bumpalo::Bump::new();
-		let (mut engine, observed) = drag_observer();
+		let mut engine = drag_observer();
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		let source = engine.hit(window(10.0, 10.0)).expect("expected test value");
 		engine.press(window(10.0, 10.0));
@@ -1690,20 +1716,20 @@ mod tests {
 		assert_eq!(engine.cancel(), None);
 		assert!(engine.release(window(20.0, 10.0)).is_none());
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		assert_eq!(observed.lock().expect("expected test value")[1], None);
-		assert!(!engine.runtime.borrow().pointer.pressed);
+		assert_eq!(engine.ctx().lock().expect("expected test value")[1], None);
+		assert!(!engine.core.runtime.pointer.pressed);
 		assert!(engine.press(window(10.0, 10.0)));
 	}
 
 	#[test]
 	fn resized_viewport_cancels_the_held_source_before_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let (mut engine, observed) = drag_observer();
+		let mut engine = drag_observer();
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		engine.press(window(10.0, 10.0));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		let _ = engine.evaluate(Size::new(64, 128), &frame_allocator);
-		let observed = observed.lock().expect("expected test value");
+		let observed = engine.ctx().lock().expect("expected test value");
 		assert!(observed[1].is_some());
 		assert_eq!(observed[2], None);
 	}
@@ -1723,12 +1749,9 @@ mod tests {
 	}
 
 	/// Mounts a target with a hit-testable child and a source drawn over the target's corner.
-	fn drag_board() -> (Engine, Arc<StdMutex<DragLog>>) {
-		let log = Arc::new(StdMutex::new(DragLog::default()));
-		let log_for_task = Arc::clone(&log);
-		let mut engine = Engine::new();
+	fn drag_board() -> Engine<StdMutex<DragLog>> {
+		let mut engine = Engine::with_context(StdMutex::new(DragLog::default()));
 		engine.mount(move |ctx| {
-			let log = Arc::clone(&log_for_task);
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
 				let mut target = root.element("target").container(
@@ -1749,46 +1772,50 @@ mod tests {
 						.width(20.into())
 						.height(20.into()),
 				);
-				log.lock().expect("expected test value").ids = Some((target.id(), inner.id(), source.id()));
+				let ids = (target.id(), inner.id(), source.id());
+				ctx.with(|log| log.lock().expect("expected test value").ids = Some(ids)).await;
 				loop {
 					// A biased select takes the queued drop before the end, as a client would.
 					utils::r#async::select_biased! {
-						event = target.on(Events::Dropped) => log.lock().expect("expected test value").drops.push(event.source),
-						_ = source.on(Events::Grabbed) => log.lock().expect("expected test value").grabbed += 1,
-						event = source.on(Events::Dragged) => log.lock().expect("expected test value").dragged.push(event.delta.expect("expected test value")),
+						event = target.on(Events::Dropped) => ctx.with(|log| log.lock().expect("expected test value").drops.push(event.source)).await,
+						_ = source.on(Events::Grabbed) => ctx.with(|log| log.lock().expect("expected test value").grabbed += 1).await,
+						event = source.on(Events::Dragged) => ctx.with(|log| log.lock().expect("expected test value").dragged.push(event.delta.expect("expected test value"))).await,
 						event = source.on(Events::DragEnded) => {
-							let mut log = log.lock().expect("expected test value");
-							log.ended.push(event.source);
-							let drops = log.drops.len();
-							log.drops_before_end.push(drops);
+							ctx.with(|log| {
+								let mut log = log.lock().expect("expected test value");
+								log.ended.push(event.source);
+								let drops = log.drops.len();
+								log.drops_before_end.push(drops);
+							})
+							.await;
 						},
 					}
 				}
 			})
 		});
-		(engine, log)
+		engine
 	}
 
 	#[test]
 	fn drag_events_reach_the_source_and_the_surface_under_the_release() {
 		let allocator = bumpalo::Bump::new();
-		let (mut engine, log) = drag_board();
+		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let (target, inner, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+		let (target, inner, source) = engine.ctx().lock().expect("expected test value").ids.expect("expected test value");
 
 		// Motion past the threshold starts the drag; the drop lands on the target's child and bubbles up.
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(40.0, 40.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = log.lock().expect("expected test value");
+			let observed = engine.ctx().lock().expect("expected test value");
 			assert_eq!(observed.grabbed, 1);
 			assert_eq!(observed.dragged, vec![UiVector::new(30.0, 30.0)]);
 		}
 		assert!(engine.release(window(40.0, 40.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = log.lock().expect("expected test value");
+			let observed = engine.ctx().lock().expect("expected test value");
 			assert_eq!(observed.drops, vec![Some(source)]);
 			assert_eq!(observed.ended, vec![Some(inner)]);
 		}
@@ -1799,7 +1826,7 @@ mod tests {
 		assert!(engine.release(window(19.0, 19.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = log.lock().expect("expected test value");
+			let observed = engine.ctx().lock().expect("expected test value");
 			assert_eq!(observed.grabbed, 2);
 			assert_eq!(observed.drops, vec![Some(source), Some(source)]);
 			assert_eq!(observed.ended, vec![Some(inner), Some(target)]);
@@ -1812,7 +1839,7 @@ mod tests {
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.release(window(12.0, 12.0)).is_none());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let observed = log.lock().expect("expected test value");
+		let observed = engine.ctx().lock().expect("expected test value");
 		assert_eq!(observed.grabbed, 4);
 		assert_eq!(observed.drops.len(), 2);
 		// Every grab ends once, and the target's drop is recorded before the source's end.
@@ -1823,26 +1850,26 @@ mod tests {
 	#[test]
 	fn motion_reaches_the_source_once_per_evaluation() {
 		let allocator = bumpalo::Bump::new();
-		let (mut engine, log) = drag_board();
+		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(12.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		// Motion inside the threshold is not a drag.
-		assert!(log.lock().expect("expected test value").dragged.is_empty());
+		assert!(engine.ctx().lock().expect("expected test value").dragged.is_empty());
 		assert!(engine.drag_to(window(30.0, 10.0)));
 		assert!(engine.drag_to(window(40.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		assert_eq!(
-			log.lock().expect("expected test value").dragged,
+			engine.ctx().lock().expect("expected test value").dragged,
 			vec![UiVector::new(30.0, 0.0)]
 		);
 		assert!(engine.drag_to(window(40.0, 20.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		assert_eq!(
-			log.lock().expect("expected test value").dragged,
+			engine.ctx().lock().expect("expected test value").dragged,
 			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
 		);
 	}
@@ -1850,9 +1877,9 @@ mod tests {
 	#[test]
 	fn cancel_ends_every_grab() {
 		let allocator = bumpalo::Bump::new();
-		let (mut engine, log) = drag_board();
+		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let (_, _, source) = log.lock().expect("expected test value").ids.expect("expected test value");
+		let (_, _, source) = engine.ctx().lock().expect("expected test value").ids.expect("expected test value");
 
 		assert!(engine.press(window(10.0, 10.0)));
 		assert_eq!(engine.cancel(), Some(source));
@@ -1861,7 +1888,7 @@ mod tests {
 		assert!(engine.drag_to(window(40.0, 40.0)));
 		assert_eq!(engine.cancel(), Some(source));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let observed = log.lock().expect("expected test value");
+		let observed = engine.ctx().lock().expect("expected test value");
 		assert_eq!(observed.grabbed, 2);
 		assert_eq!(observed.ended, vec![None, None]);
 		assert!(observed.dragged.is_empty());
@@ -1871,11 +1898,8 @@ mod tests {
 	#[test]
 	fn reparent_appends_to_the_new_parent_and_refuses_cycles() {
 		let allocator = bumpalo::Bump::new();
-		let log = Arc::new(StdMutex::new((None, Vec::new())));
-		let log_for_task = Arc::clone(&log);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(std::cell::Cell::new(None));
 		engine.mount(move |ctx| {
-			let log = Arc::clone(&log_for_task);
 			Box::pin(async move {
 				let mut root = ctx
 					.element("root")
@@ -1892,30 +1916,30 @@ mod tests {
 				second
 					.element("inner")
 					.container(Container::default().width(5.into()).height(5.into()));
-				log.lock().expect("expected test value").0 = Some((first.id(), second.id()));
+				let ids = (first.id(), second.id());
+				ctx.with(|log| log.set(Some(ids))).await;
 				ctx.render().await;
-				let moved = first.reparent(second.id());
-				let cycle = second.reparent(first.id());
-				log.lock().expect("expected test value").1 = vec![moved, cycle];
+				first.reparent(second.id());
+				// A cycle is refused when applied, so `first` stays under `second`.
+				second.reparent(first.id());
 				loop {
 					ctx.render().await;
 				}
 			})
 		});
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let (first, second) = log.lock().expect("expected test value").0.expect("expected test value");
-		assert_eq!(engine.runtime.borrow().geometry[&first].y(), 0.0);
-		assert_eq!(engine.runtime.borrow().geometry[&second].y(), 10.0);
+		let (first, second) = engine.ctx().get().expect("expected test value");
+		assert_eq!(engine.core.runtime.geometry[&first].y(), 0.0);
+		assert_eq!(engine.core.runtime.geometry[&second].y(), 10.0);
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		assert_eq!(log.lock().expect("expected test value").1, vec![true, false]);
-		let runtime = engine.runtime.borrow();
+		let runtime = &engine.core.runtime;
 		assert_eq!(runtime.geometry[&second].y(), 0.0);
 		assert_eq!(runtime.geometry[&first].y(), 5.0);
 	}
 
 	/// Evaluates and renders one frame, returning the revision and a copy of the damage.
-	fn damage_frame(engine: &mut Engine<()>, size: Size) -> (RenderRevision, Option<(RenderRevision, Vec<Geometry>)>) {
+	fn damage_frame<C: 'static>(engine: &mut Engine<C>, size: Size) -> (RenderRevision, Option<(RenderRevision, Vec<Geometry>)>) {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut snapshot = engine.evaluate(size, &frame_allocator);
 		let render = engine.render(&mut snapshot);
@@ -1932,11 +1956,19 @@ mod tests {
 		})
 	}
 
-	/// Mounts a root with one absolutely positioned box whose position and color follow shared cells.
-	fn mount_box(engine: &mut Engine<()>) -> (Rc<std::cell::Cell<(i32, i32)>>, Rc<std::cell::Cell<f32>>) {
-		let position = Rc::new(std::cell::Cell::new((0, 0)));
-		let red = Rc::new(std::cell::Cell::new(1.0f32));
-		let (shared_position, shared_red) = (Rc::clone(&position), Rc::clone(&red));
+	/// The `BoxState` struct lets a test drive the box that [`mount_box`] mounts through the engine context.
+	#[derive(Default)]
+	struct BoxState {
+		position: std::cell::Cell<(i32, i32)>,
+		red: std::cell::Cell<f32>,
+	}
+
+	/// Mounts a root with one absolutely positioned box whose position and color follow the engine's [`BoxState`].
+	fn mount_box() -> Engine<BoxState> {
+		let mut engine = Engine::with_context(BoxState {
+			position: std::cell::Cell::new((0, 0)),
+			red: std::cell::Cell::new(1.0),
+		});
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
@@ -1948,13 +1980,14 @@ mod tests {
 				);
 				let (mut last_position, mut last_red) = ((0, 0), 1.0f32);
 				loop {
-					if shared_position.get() != last_position {
-						last_position = shared_position.get();
-						r#box.update_container(|container| container.set_position(last_position));
+					let (position, red) = ctx.with(|state| (state.position.get(), state.red.get())).await;
+					if position != last_position {
+						last_position = position;
+						r#box.update_container(move |container| container.set_position(last_position));
 					}
-					if shared_red.get() != last_red {
-						last_red = shared_red.get();
-						r#box.update_container(|container| {
+					if red != last_red {
+						last_red = red;
+						r#box.update_container(move |container| {
 							container.set_style(ConcreteLayer::default().color(RGBA::new(last_red, 0.0, 0.0, 1.0).into()));
 						});
 					}
@@ -1962,13 +1995,12 @@ mod tests {
 				}
 			})
 		});
-		(position, red)
+		engine
 	}
 
 	#[test]
 	fn first_render_and_viewport_change_damage_everything() {
-		let mut engine = Engine::new();
-		let _ = mount_box(&mut engine);
+		let mut engine = mount_box();
 		let (first, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		assert!(damage.is_none(), "The first render has no base to be relative to.");
 		let (second, damage) = damage_frame(&mut engine, Size::new(120, 100));
@@ -1978,10 +2010,9 @@ mod tests {
 
 	#[test]
 	fn moved_element_damages_old_and_new_bounds() {
-		let mut engine = Engine::new();
-		let (position, _) = mount_box(&mut engine);
+		let mut engine = mount_box();
 		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
-		position.set((50, 50));
+		engine.ctx().position.set((50, 50));
 		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("a second render is relative to the first");
 		assert_ne!(first, second);
@@ -1998,15 +2029,13 @@ mod tests {
 	/// box's old and new bounds and nothing of the untouched sibling.
 	#[test]
 	fn transformed_element_damages_old_and_new_bounds_only() {
-		let mut engine = Engine::new();
-		let offset = Rc::new(std::cell::Cell::new(0.0f32));
-		let shared = Rc::clone(&offset);
+		let mut engine = Engine::with_context(std::cell::Cell::new(0.0f32));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
 				// Enough untouched siblings that the moved subtree is a small share of the tree.
 				for slot in 0..12 {
-					root.element("static").container(
+					root.element(("static", slot as usize)).container(
 						Container::default()
 							.width(10.into())
 							.height(10.into())
@@ -2029,9 +2058,10 @@ mod tests {
 				);
 				let mut applied = 0.0f32;
 				loop {
-					if shared.get() != applied {
-						applied = shared.get();
-						moved.update_container(|container| {
+					let offset = ctx.with(|offset| offset.get()).await;
+					if offset != applied {
+						applied = offset;
+						moved.update_container(move |container| {
 							container.set_transform(Transform::identity().translate(applied, applied))
 						});
 					}
@@ -2040,7 +2070,7 @@ mod tests {
 			})
 		});
 		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
-		offset.set(50.0);
+		engine.ctx().set(50.0);
 		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("a second render is relative to the first");
 		assert_ne!(first, second);
@@ -2056,7 +2086,7 @@ mod tests {
 			"the untouched sibling is not damaged: {damage:?}"
 		);
 		// A second move damages the previous and the next bounds again, without the first.
-		offset.set(20.0);
+		engine.ctx().set(20.0);
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("relative damage");
 		assert_eq!(base, second);
@@ -2067,10 +2097,9 @@ mod tests {
 
 	#[test]
 	fn style_change_damages_one_rectangle() {
-		let mut engine = Engine::new();
-		let (_, red) = mount_box(&mut engine);
+		let mut engine = mount_box();
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		red.set(0.5);
+		engine.ctx().red.set(0.5);
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert_eq!(damage.len(), 1, "{damage:?}");
@@ -2079,17 +2108,16 @@ mod tests {
 
 	#[test]
 	fn added_and_removed_elements_damage_their_bounds() {
-		let mut engine = Engine::new();
-		let visible = Rc::new(std::cell::Cell::new(false));
-		let shared = Rc::clone(&visible);
+		let mut engine = Engine::with_context(std::cell::Cell::new(false));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
 				let mut shown = false;
 				let mut node = None;
 				loop {
-					if shared.get() != shown {
-						shown = shared.get();
+					let visible = ctx.with(|visible| visible.get()).await;
+					if visible != shown {
+						shown = visible;
 						if shown {
 							node = Some(
 								root.element("node").container(
@@ -2108,11 +2136,11 @@ mod tests {
 			})
 		});
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		visible.set(true);
+		engine.ctx().set(true);
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "added: {damage:?}");
-		visible.set(false);
+		engine.ctx().set(false);
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "removed: {damage:?}");
@@ -2121,9 +2149,7 @@ mod tests {
 
 	#[test]
 	fn child_of_moved_parent_is_damaged_and_long_lists_collapse() {
-		let mut engine = Engine::new();
-		let offset = Rc::new(std::cell::Cell::new(0));
-		let shared = Rc::clone(&offset);
+		let mut engine = Engine::with_context(std::cell::Cell::new(0));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
@@ -2143,16 +2169,17 @@ mod tests {
 				}
 				let mut last = 0;
 				loop {
-					if shared.get() != last {
-						last = shared.get();
-						panel.update_container(|container| container.set_position((last, last)));
+					let offset = ctx.with(|offset| offset.get()).await;
+					if offset != last {
+						last = offset;
+						panel.update_container(move |container| container.set_position((last, last)));
 					}
 					ctx.render().await;
 				}
 			})
 		});
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		offset.set(20);
+		engine.ctx().set(20);
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		// Twelve children plus the panel exceed the cap, so one union remains.
@@ -2188,15 +2215,13 @@ mod tests {
 
 	#[test]
 	fn property_mutation_and_resize_advance_the_render_revision() {
-		let mut engine = Engine::new();
-		let opacity = Rc::new(std::cell::Cell::new(1.0f32));
-		let shared = Rc::clone(&opacity);
+		let mut engine = Engine::with_context(std::cell::Cell::new(1.0f32));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
 				loop {
-					let opacity = shared.get();
-					root.update_container(|container| container.set_opacity(opacity));
+					let opacity = ctx.with(|opacity| opacity.get()).await;
+					root.update_container(move |container| container.set_opacity(opacity));
 					ctx.render().await;
 				}
 			})
@@ -2206,7 +2231,7 @@ mod tests {
 		let baseline = engine.render(&mut snapshot).revision();
 
 		// The mounted task mutates the container every frame, so revisions must move.
-		opacity.set(0.5);
+		engine.ctx().set(0.5);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let mutated = engine.render(&mut snapshot);
 		assert_ne!(baseline, mutated.revision());
@@ -2223,30 +2248,34 @@ mod tests {
 	fn retained_tree_revision_tracks_insertion_mutation_and_removal() {
 		let mut tree = RetainedTree::new();
 		let start = tree.revision();
-		let (id, _) = tree.add_element(None, 0, "root".into(), ConcreteElement::container(Container::default()));
+		let id = crate::ui::layout::context::slot_path(ROOT_PATH, "root".into());
+		tree.add_element(None, ROOT_PATH, id, ConcreteElement::container(Container::default()));
 		assert!(tree.revision() > start);
 
 		let after_insert = tree.revision();
 		// Re-declaring the same path on a later frame is idempotent and must not invalidate retained state.
 		tree.begin_frame();
-		tree.add_element(None, 0, "root".into(), ConcreteElement::container(Container::default()));
+		tree.add_element(None, ROOT_PATH, id, ConcreteElement::container(Container::default()));
 		assert_eq!(tree.revision(), after_insert);
 
 		// An edit that writes nothing new keeps retained state valid.
-		assert!(tree.update_element(id, |_| true));
+		assert_eq!(tree.update_element(id, |_| true), Some(true));
 		assert_eq!(tree.revision(), after_insert);
 
-		assert!(tree.update_element(id, |primitive| {
+		let updated = tree.update_element(id, |primitive| {
 			let Primitives::Container(container) = primitive else {
 				return false;
 			};
 			container.set_opacity(0.5);
 			true
-		}));
+		});
+		assert_eq!(updated, Some(true));
 		assert!(tree.revision() > after_insert);
 
 		let after_mutation = tree.revision();
-		let (_, child_path) = tree.add_element(Some(id), 0, "child".into(), ConcreteElement::container(Container::default()));
+		let child = crate::ui::layout::context::slot_path(id.get(), "child".into());
+		let child_path = child.get();
+		tree.add_element(Some(id), id.get(), child, ConcreteElement::container(Container::default()));
 		let after_child = tree.revision();
 		assert!(after_child > after_mutation);
 		assert!(!tree.remove_scope(child_path).is_empty());
@@ -2254,23 +2283,29 @@ mod tests {
 		assert!(tree.remove_scope(child_path).is_empty());
 	}
 
-	/// Mounts a scope that spawns a component counting the frames it runs, until `open` clears.
+	/// The `ScopeCounters` struct lets a test observe and close the scopes that [`counting_scope`] mounts.
+	#[derive(Default)]
+	struct ScopeCounters {
+		ticks: [std::cell::Cell<u32>; 2],
+		open: [std::cell::Cell<bool>; 2],
+	}
+
+	/// Mounts a scope that spawns a component counting the frames it runs in `ticks[scope]`, until `open[scope]` clears.
 	fn counting_scope(
-		ticks: Rc<std::cell::Cell<u32>>,
-		open: Rc<std::cell::Cell<bool>>,
-	) -> impl for<'ctx> FnOnce(&'ctx mut EvaluationContext) -> MountedUiFuture<'ctx, ()> + 'static {
+		scope: usize,
+	) -> impl for<'ctx> FnOnce(&'ctx mut EvaluationContext<ScopeCounters>) -> MountedUiFuture<'ctx, ()> + 'static {
 		move |ctx| {
 			Box::pin(async move {
 				ctx.element("body").container(Container::default());
 				ctx.element("ticker").component(move |ctx| {
 					Box::pin(async move {
 						loop {
-							ticks.set(ticks.get() + 1);
+							ctx.with(|counters| counters.ticks[scope].set(counters.ticks[scope].get() + 1)).await;
 							ctx.render().await;
 						}
 					})
 				});
-				while open.get() {
+				while ctx.with(|counters| counters.open[scope].get()).await {
 					ctx.render().await;
 				}
 			})
@@ -2280,56 +2315,50 @@ mod tests {
 	#[test]
 	fn removing_a_mounted_scope_ends_the_components_spawned_inside_it() {
 		let allocator = bumpalo::Bump::new();
-		let ticks = Rc::new(std::cell::Cell::new(0));
-		let open = Rc::new(std::cell::Cell::new(true));
-		let (task_ticks, task_open) = (Rc::clone(&ticks), Rc::clone(&open));
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(ScopeCounters::default());
+		engine.ctx().open[0].set(true);
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
 				loop {
-					if task_open.get() {
-						root.element("menu")
-							.mount(counting_scope(Rc::clone(&task_ticks), Rc::clone(&task_open)))
-							.await;
+					if ctx.with(|counters| counters.open[0].get()).await {
+						root.element("menu").mount(counting_scope(0)).await;
 					} else {
 						ctx.render().await;
 					}
 				}
 			})
 		});
-		let mut frames = |count: usize| {
+		let frames = |engine: &mut Engine<ScopeCounters>, count: usize| {
 			for _ in 0..count {
 				let _ = engine.evaluate(Size::new(100, 100), &allocator);
 			}
 		};
 
-		frames(3);
-		assert!(ticks.get() > 0);
-		open.set(false);
-		frames(2);
-		let closed = ticks.get();
-		frames(3);
-		assert_eq!(ticks.get(), closed, "A component kept running after its scope was removed.");
+		frames(&mut engine, 3);
+		assert!(engine.ctx().ticks[0].get() > 0);
+		engine.ctx().open[0].set(false);
+		frames(&mut engine, 2);
+		let closed = engine.ctx().ticks[0].get();
+		frames(&mut engine, 3);
+		assert_eq!(engine.ctx().ticks[0].get(), closed, "A component kept running after its scope was removed.");
 
 		// Reopening spawns a fresh component that runs again.
-		open.set(true);
-		frames(3);
-		assert!(ticks.get() > closed);
+		engine.ctx().open[0].set(true);
+		frames(&mut engine, 3);
+		assert!(engine.ctx().ticks[0].get() > closed);
 	}
 
 	#[test]
 	fn removing_a_mounted_scope_keeps_tasks_of_a_live_scope_with_the_same_path() {
 		let allocator = bumpalo::Bump::new();
-		let first_ticks = Rc::new(std::cell::Cell::new(0));
-		let second_ticks = Rc::new(std::cell::Cell::new(0));
-		let first_open = Rc::new(std::cell::Cell::new(true));
-		let (first, second, open) = (Rc::clone(&first_ticks), Rc::clone(&second_ticks), Rc::clone(&first_open));
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(ScopeCounters::default());
+		engine.ctx().open[0].set(true);
+		engine.ctx().open[1].set(true);
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
-				let mut first = root.element("toast").mount(counting_scope(first, open));
+				let mut first = root.element("toast").mount(counting_scope(0));
 				utils::r#async::select_biased! {
 					_ = first => {},
 					_ = ctx.render() => {},
@@ -2337,7 +2366,7 @@ mod tests {
 				// Declared on a later frame under the same parent and name, so its path repeats the first's.
 				let mut second = root
 					.element("toast")
-					.mount(counting_scope(second, Rc::new(std::cell::Cell::new(true))));
+					.mount(counting_scope(1));
 				loop {
 					utils::r#async::select_biased! {
 						_ = first => {},
@@ -2347,21 +2376,21 @@ mod tests {
 				}
 			})
 		});
-		let mut frames = |count: usize| {
+		let frames = |engine: &mut Engine<ScopeCounters>, count: usize| {
 			for _ in 0..count {
 				let _ = engine.evaluate(Size::new(100, 100), &allocator);
 			}
 		};
 
-		frames(3);
-		assert!(first_ticks.get() > 0 && second_ticks.get() > 0);
-		first_open.set(false);
-		frames(2);
-		let (first_closed, second_closed) = (first_ticks.get(), second_ticks.get());
-		frames(3);
-		assert_eq!(first_ticks.get(), first_closed);
+		frames(&mut engine, 3);
+		assert!(engine.ctx().ticks[0].get() > 0 && engine.ctx().ticks[1].get() > 0);
+		engine.ctx().open[0].set(false);
+		frames(&mut engine, 2);
+		let (first_closed, second_closed) = (engine.ctx().ticks[0].get(), engine.ctx().ticks[1].get());
+		frames(&mut engine, 3);
+		assert_eq!(engine.ctx().ticks[0].get(), first_closed);
 		assert!(
-			second_ticks.get() > second_closed,
+			engine.ctx().ticks[1].get() > second_closed,
 			"Removing one scope ended a live scope's component."
 		);
 	}
@@ -2400,17 +2429,14 @@ mod tests {
 	#[test]
 	fn retained_button_receives_later_click_event() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut button = ctx.element("button").container(Container::default());
 				loop {
 					button.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -2420,29 +2446,27 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn context_pointer_reflects_engine_pointer_state() {
 		let frame_allocator = bumpalo::Bump::new();
-		let observed = Arc::new(StdMutex::new(None));
-		let observed_for_task = Arc::clone(&observed);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.set_cursor_position(UiPoint::new(0.25, -0.5));
 		engine.update_click_state(true);
 		engine.mount(move |ctx| {
-			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
-				*observed.lock().expect("expected test value") = Some(ctx.pointer());
+				let value = Some(ctx.pointer().await);
+				ctx.with(|observed| *observed.lock().expect("expected test value") = value).await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*observed.lock().expect("expected test value"),
+			*engine.ctx().lock().expect("expected test value"),
 			Some(PointerState {
 				position: UiPoint::new(0.25, -0.5),
 				pressed: true,
@@ -2453,16 +2477,15 @@ mod tests {
 	#[test]
 	fn context_pointer_updates_across_render_await_frames() {
 		let frame_allocator = bumpalo::Bump::new();
-		let observed = Arc::new(StdMutex::new(Vec::new()));
-		let observed_for_task = Arc::clone(&observed);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
 
 		engine.mount(move |ctx| {
-			let observed = Arc::clone(&observed_for_task);
 			Box::pin(async move {
-				observed.lock().expect("expected test value").push(ctx.pointer());
+				let value = ctx.pointer().await;
+				ctx.with(|observed| observed.lock().expect("expected test value").push(value)).await;
 				ctx.render().await;
-				observed.lock().expect("expected test value").push(ctx.pointer());
+				let value = ctx.pointer().await;
+				ctx.with(|observed| observed.lock().expect("expected test value").push(value)).await;
 			})
 		});
 
@@ -2474,7 +2497,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*observed.lock().expect("expected test value"),
+			*engine.ctx().lock().expect("expected test value"),
 			vec![
 				PointerState {
 					position: UiPoint::new(-1.0, -1.0),
@@ -2491,17 +2514,15 @@ mod tests {
 	#[test]
 	fn scroll_event_bubbles_from_hovered_child_to_parent() {
 		let frame_allocator = bumpalo::Bump::new();
-		let received = Arc::new(StdMutex::new(None));
-		let received_for_task = Arc::clone(&received);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let received = Arc::clone(&received_for_task);
 			Box::pin(async move {
 				let mut parent = ctx.element("parent").container(Container::default());
 				parent.element("child").container(Container::default());
 				let event = parent.on(Events::Scrolled).await;
-				*received.lock().expect("expected test value") = event.delta;
+				let value = event.delta;
+				ctx.with(|received| *received.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -2510,7 +2531,7 @@ mod tests {
 		engine.update_scroll_state(UiVector::new(0.0, -1.0));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().expect("expected test value"), Some(UiVector::new(0.0, -1.0)));
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(UiVector::new(0.0, -1.0)));
 	}
 
 	#[test]
@@ -2543,15 +2564,15 @@ mod tests {
 	}
 
 	#[test]
-	fn repeated_sibling_names_keep_stable_ids_across_frames() {
+	fn indexed_sibling_keys_keep_stable_ids_across_frames() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 
 		engine.mount(|ctx| {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default().flow(flow::column));
-				for _ in 0..64 {
-					frame.element("item").container(Container::default().size(1.into()));
+				for index in 0..64usize {
+					frame.element(("item", index)).container(Container::default().size(1.into()));
 				}
 			})
 		});
@@ -2662,7 +2683,7 @@ mod tests {
 					.mount(move |ctx| {
 						Box::pin(async move {
 							let mut child = ctx.element("child").container(Container::default());
-							assert!(child.reparent(destination));
+							child.reparent(destination);
 							child.element("grandchild").container(Container::default());
 							ctx.render().await;
 						})
@@ -2687,27 +2708,24 @@ mod tests {
 	#[test]
 	fn context_wait_wakes_from_runtime_frame_loop() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				ctx.wait(Duration::from_millis(1)).await;
-				hits.fetch_add(1, Ordering::SeqCst);
+				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
 
 		std::thread::sleep(Duration::from_millis(2));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
@@ -2860,12 +2878,9 @@ mod tests {
 	#[test]
 	fn clipping_prunes_descendants_from_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
 				let mut parent = root
@@ -2880,7 +2895,7 @@ mod tests {
 
 				loop {
 					child.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -2890,18 +2905,15 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
 	}
 
 	#[test]
 	fn clip_false_preserves_descendant_hit_testing_overflow() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
 				let mut parent = root
@@ -2916,7 +2928,7 @@ mod tests {
 
 				loop {
 					child.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -2926,7 +2938,7 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
@@ -2995,12 +3007,9 @@ mod tests {
 	#[test]
 	fn absolute_depth_container_escapes_ancestor_clip_in_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut root = ctx
 					.element("root")
@@ -3015,7 +3024,7 @@ mod tests {
 
 				loop {
 					toast.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -3025,18 +3034,15 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn retained_geometry_is_available_after_layout_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
-		let geometry_for_task = Arc::clone(&geometry);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None::<Geometry>));
 
 		engine.mount(move |ctx| {
-			let geometry = Arc::clone(&geometry_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default().clip(false));
 				let mut button = frame.element("button").container(
@@ -3046,20 +3052,21 @@ mod tests {
 						.absolute_position(12, 18),
 				);
 
-				assert_eq!(button.geometry(), None);
+				assert_eq!(button.geometry().await, None);
 				button.render().await;
-				*geometry.lock().expect("expected test value") = button.geometry();
+				let value = button.geometry().await;
+				ctx.with(|geometry| *geometry.lock().expect("expected test value") = value).await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*geometry.lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*geometry.lock().expect("expected test value"),
+			*engine.ctx().lock().expect("expected test value"),
 			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
 		);
 	}
@@ -3067,12 +3074,9 @@ mod tests {
 	#[test]
 	fn retained_geometry_updates_after_property_mutation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let geometry = Arc::new(StdMutex::new(None::<Geometry>));
-		let geometry_for_task = Arc::clone(&geometry);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None::<Geometry>));
 
 		engine.mount(move |ctx| {
-			let geometry = Arc::clone(&geometry_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default().clip(false));
 				let mut button = frame.element("button").container(
@@ -3084,12 +3088,13 @@ mod tests {
 
 				button.render().await;
 
-				assert!(button.update_container(|container| {
+				button.update_container(move |container| {
 					container.width = Sizing::pixels(40);
 					container.set_position((24, 36));
-				}));
+				});
 				button.render().await;
-				*geometry.lock().expect("expected test value") = button.geometry();
+				let value = button.geometry().await;
+				ctx.with(|geometry| *geometry.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -3098,7 +3103,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*geometry.lock().expect("expected test value"),
+			*engine.ctx().lock().expect("expected test value"),
 			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
 		);
 	}
@@ -3106,78 +3111,64 @@ mod tests {
 	#[test]
 	fn wait_future_resumes_mounted_task_after_duration() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
-		engine.mount(move |_| {
-			let hits = Arc::clone(&hits_for_task);
+		engine.mount(move |ctx| {
 			Box::pin(async move {
-				crate::ui::wait(Duration::from_millis(5)).await;
-				hits.fetch_add(1, Ordering::SeqCst);
+				ctx.wait(Duration::from_millis(5)).await;
+				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
 
 		std::thread::sleep(Duration::from_millis(20));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn context_seconds_returns_timer_future() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				ctx.seconds(0).await;
-				hits.fetch_add(1, Ordering::SeqCst);
+				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn focused_key_goes_to_most_recent_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let first_hits = Arc::new(AtomicUsize::new(0));
-		let second_hits = Arc::new(AtomicUsize::new(0));
-		let first_hits_for_task = Arc::clone(&first_hits);
-		let second_hits_for_task = Arc::clone(&second_hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
 
 		engine.mount(move |ctx| {
-			let first_hits = Arc::clone(&first_hits_for_task);
-			let second_hits = Arc::clone(&second_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.element("first").component(move |ctx| {
-					let first_hits = Arc::clone(&first_hits);
 					Box::pin(async move {
 						let mut first = ctx.element("button").container(Container::default());
 						first.request_focus();
 						first.on_key(Key::Escape).await;
-						first_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 				frame.element("second").component(move |ctx| {
-					let second_hits = Arc::clone(&second_hits);
 					Box::pin(async move {
 						let mut second = ctx.element("button").container(Container::default());
 						second.request_focus();
 						second.on_key(Key::Escape).await;
-						second_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 			})
@@ -3187,22 +3178,16 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(first_hits.load(Ordering::SeqCst), 0);
-		assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn requesting_focus_again_moves_target_without_duplication() {
 		let frame_allocator = bumpalo::Bump::new();
-		let first_hits = Arc::new(AtomicUsize::new(0));
-		let second_hits = Arc::new(AtomicUsize::new(0));
-		let first_hits_for_task = Arc::clone(&first_hits);
-		let second_hits_for_task = Arc::clone(&second_hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
 
 		engine.mount(move |ctx| {
-			let first_hits = Arc::clone(&first_hits_for_task);
-			let second_hits = Arc::clone(&second_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				let mut first = frame.element("first").container(Container::default());
@@ -3212,11 +3197,11 @@ mod tests {
 				first.request_focus();
 
 				first.on_key(Key::Escape).await;
-				first_hits.fetch_add(1, Ordering::SeqCst);
+				ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
 				first.release_focus();
 				ctx.render().await;
 				second.on_key(Key::Escape).await;
-				second_hits.fetch_add(1, Ordering::SeqCst);
+				ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
 			})
 		});
 
@@ -3229,41 +3214,33 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(first_hits.load(Ordering::SeqCst), 1);
-		assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn releasing_focus_reveals_previous_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let first_hits = Arc::new(AtomicUsize::new(0));
-		let second_hits = Arc::new(AtomicUsize::new(0));
-		let first_hits_for_task = Arc::clone(&first_hits);
-		let second_hits_for_task = Arc::clone(&second_hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
 
 		engine.mount(move |ctx| {
-			let first_hits = Arc::clone(&first_hits_for_task);
-			let second_hits = Arc::clone(&second_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.element("first").component(move |ctx| {
-					let first_hits = Arc::clone(&first_hits);
 					Box::pin(async move {
 						let mut first = ctx.element("button").container(Container::default());
 						first.request_focus();
 						first.on_key(Key::Escape).await;
-						first_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 				frame.element("second").component(move |ctx| {
-					let second_hits = Arc::clone(&second_hits);
 					Box::pin(async move {
 						let mut second = ctx.element("button").container(Container::default());
 						second.request_focus();
 						second.release_focus();
 						second.on_key(Key::Escape).await;
-						second_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 			})
@@ -3273,24 +3250,21 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(first_hits.load(Ordering::SeqCst), 1);
-		assert_eq!(second_hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 0);
 	}
 
 	#[test]
 	fn escape_release_does_not_wake_key_future() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut button = ctx.element("button").container(Container::default());
 				button.request_focus();
 				button.on_key(Key::Escape).await;
-				hits.fetch_add(1, Ordering::SeqCst);
+				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 			})
 		});
 
@@ -3298,17 +3272,27 @@ mod tests {
 		engine.update_key_state(Key::Escape, false);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
 
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
-	#[derive(Clone)]
+	/// The `TestContext` struct is the application context these tests lend to components, with a slot for what they observe.
 	struct TestContext {
 		value: u32,
+		seen: StdMutex<Vec<u32>>,
+	}
+
+	impl TestContext {
+		fn new(value: u32) -> Self {
+			Self {
+				value,
+				seen: StdMutex::new(Vec::new()),
+			}
+		}
 	}
 
 	trait TestUiContext = Context<TestContext>;
@@ -3316,20 +3300,18 @@ mod tests {
 	#[test]
 	fn components_can_access_engine_context() {
 		let frame_allocator = bumpalo::Bump::new();
-		let seen = Arc::new(StdMutex::new(Vec::new()));
-		let seen_for_task = Arc::clone(&seen);
-		let mut engine = Engine::with_context(TestContext { value: 7 });
+		let mut engine = Engine::with_context(TestContext::new(7));
 
 		engine.mount(move |ctx| {
-			let seen = Arc::clone(&seen_for_task);
 			Box::pin(async move {
-				seen.lock().expect("expected test value").push(ctx.ctx().value);
+				ctx.with(|c| c.seen.lock().expect("expected test value").push(c.value))
+					.await;
 
 				ctx.element("child")
 					.component(move |ctx: &mut EvaluationContext<TestContext>| {
-						let seen = Arc::clone(&seen);
 						Box::pin(async move {
-							seen.lock().expect("expected test value").push(ctx.ctx().value + 1);
+							ctx.with(|c| c.seen.lock().expect("expected test value").push(c.value + 1))
+								.await;
 						})
 					});
 			})
@@ -3337,42 +3319,37 @@ mod tests {
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*seen.lock().expect("expected test value"), vec![7, 8]);
+		assert_eq!(*engine.ctx().seen.lock().expect("expected test value"), vec![7, 8]);
 	}
 
 	#[test]
 	fn mounted_component_can_access_engine_context() {
 		async fn modal(ctx: &mut impl TestUiContext) -> u32 {
-			ctx.ctx().value
+			ctx.with(|c| c.value).await
 		}
 
 		let frame_allocator = bumpalo::Bump::new();
-		let result = Arc::new(StdMutex::new(None));
-		let result_for_task = Arc::clone(&result);
-		let mut engine = Engine::with_context(TestContext { value: 11 });
+		let mut engine = Engine::with_context(TestContext::new(11));
 
 		engine.mount(move |ctx| {
-			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let value = ctx.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
-				*result.lock().expect("expected test value") = Some(value);
+				ctx.with(|c| c.seen.lock().expect("expected test value").push(value))
+					.await;
 			})
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().expect("expected test value"), Some(11));
+		assert_eq!(*engine.ctx().seen.lock().expect("expected test value"), vec![11]);
 	}
 
 	#[test]
 	fn awaited_modal_blocks_caller_until_component_returns_value() {
 		let frame_allocator = bumpalo::Bump::new();
-		let result = Arc::new(StdMutex::new(None));
-		let result_for_task = Arc::clone(&result);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				let value = frame
@@ -3385,20 +3362,21 @@ mod tests {
 						})
 					})
 					.await;
-				*result.lock().expect("expected test value") = Some(value);
+				let value = Some(value);
+				ctx.with(|result| *result.lock().expect("expected test value") = value).await;
 			})
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(first.elements.len(), 2);
-		assert_eq!(*result.lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
 
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().expect("expected test value"), Some(42));
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(42));
 	}
 
 	#[test]
@@ -3470,21 +3448,17 @@ mod tests {
 	#[test]
 	fn removing_focused_mounted_modal_reveals_previous_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let background_hits = Arc::new(AtomicUsize::new(0));
-		let background_hits_for_task = Arc::clone(&background_hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let background_hits = Arc::clone(&background_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.element("background").component(move |ctx| {
-					let background_hits = Arc::clone(&background_hits);
 					Box::pin(async move {
 						let mut background = ctx.element("button").container(Container::default());
 						background.request_focus();
 						background.on_key(Key::Escape).await;
-						background_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|background_hits| background_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 
@@ -3514,7 +3488,7 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(background_hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
@@ -3525,7 +3499,7 @@ mod tests {
 			Cancelled,
 		}
 
-		async fn modal(ctx: &mut impl Context) -> Result {
+		async fn modal<C: 'static>(ctx: &mut impl Context<C>) -> Result {
 			let mut window = ctx.element("window").container(Container::default());
 			let mut ok = window.element("ok").container(Container::default());
 			window.request_focus();
@@ -3537,16 +3511,14 @@ mod tests {
 		}
 
 		let frame_allocator = bumpalo::Bump::new();
-		let result = Arc::new(StdMutex::new(None));
-		let result_for_task = Arc::clone(&result);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let result = Arc::clone(&result_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				let value = frame.element("modal").mount(|ctx| Box::pin(modal(ctx))).await;
-				*result.lock().expect("expected test value") = Some(value);
+				let value = Some(value);
+				ctx.with(|result| *result.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -3554,7 +3526,7 @@ mod tests {
 		engine.update_key_state(Key::Escape, true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*result.lock().expect("expected test value"), Some(Result::Cancelled));
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(Result::Cancelled));
 	}
 
 	#[test]
@@ -3562,23 +3534,19 @@ mod tests {
 	#[allow(clippy::excessive_nesting)]
 	fn reopening_awaited_modal_reuses_stable_ids() {
 		let frame_allocator = bumpalo::Bump::new();
-		let ids = Arc::new(StdMutex::new(Vec::new()));
-		let ids_for_task = Arc::clone(&ids);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
 
 		engine.mount(move |ctx| {
-			let ids = Arc::clone(&ids_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				for _ in 0..2 {
-					let ids = Arc::clone(&ids);
 					frame
 						.element("modal")
 						.mount(move |ctx| {
-							let ids = Arc::clone(&ids);
 							Box::pin(async move {
 								let mut button = ctx.element("button").container(Container::default());
-								ids.lock().expect("expected test value").push(button.id());
+								let id = button.id();
+								ctx.with(|ids| ids.lock().expect("expected test value").push(id)).await;
 								button.on(Events::Actuated).await;
 							})
 						})
@@ -3599,7 +3567,7 @@ mod tests {
 
 		assert_eq!(second.elements.len(), 2);
 
-		let ids = ids.lock().expect("expected test value");
+		let ids = engine.ctx().lock().expect("expected test value");
 
 		assert_eq!(ids.len(), 2);
 		assert_eq!(ids[0], ids[1]);
@@ -3698,9 +3666,9 @@ mod tests {
 					.element("text")
 					.text(Text::new("tie"));
 				ctx.render().await;
-				low.update_container(|value| value.set_opacity(0.5));
+				low.update_container(move |value| value.set_opacity(0.5));
 				ctx.render().await;
-				high.update_container(|value| value.depth = Depth::relative(0));
+				high.update_container(move |value| value.depth = Depth::relative(0));
 			})
 		});
 
@@ -4259,12 +4227,9 @@ mod tests {
 	#[test]
 	fn hit_testing_uses_transformed_visual_bounds() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut button = ctx.element("button").container(
 					Container::default()
@@ -4275,7 +4240,7 @@ mod tests {
 
 				loop {
 					button.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -4285,24 +4250,21 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
 	fn opacity_does_not_disable_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(AtomicUsize::new(0));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
 			Box::pin(async move {
 				let mut button = ctx.element("button").container(Container::default().opacity(0.0));
 
 				loop {
 					button.on(Events::Actuated).await;
-					hits.fetch_add(1, Ordering::SeqCst);
+					ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
 				}
 			})
 		});
@@ -4312,7 +4274,7 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
 	}
 
 	#[test]
@@ -4327,10 +4289,10 @@ mod tests {
 					.container(Container::default().width(10.into()).height(10.into()));
 				frame.render().await;
 
-				assert!(frame.update_container(|container| {
+				frame.update_container(move |container| {
 					container.width = Sizing::pixels(30);
 					container.set_style(ConcreteLayer::default().color(RGBA::new(0.4, 0.5, 0.6, 1.0).into()));
-				}));
+				});
 			})
 		});
 
@@ -4359,9 +4321,9 @@ mod tests {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.render().await;
 
-				assert!(frame.update_container(|container| {
+				frame.update_container(move |container| {
 					container.set_opacity(0.25);
-				}));
+				});
 			})
 		});
 
@@ -4396,19 +4358,20 @@ mod tests {
 		engine.mount(|ctx| {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
-				crate::ui::timer::wait(std::time::Duration::from_secs(3600)).await;
+				ctx.wait(std::time::Duration::from_secs(3600)).await;
 				frame.on(Events::Actuated).await;
 			})
 		});
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 
-		// Timers are process-wide, so another test's earlier timer may come first; this one bounds the answer.
 		let tick = engine.next_tick().expect("A pending UI timer did not schedule a tick.");
-		assert!(tick <= std::time::Instant::now() + std::time::Duration::from_secs(3600));
+		let now = std::time::Instant::now();
+		assert!(tick > now + std::time::Duration::from_secs(3500));
+		assert!(tick <= now + std::time::Duration::from_secs(3600));
 	}
 
 	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.
-	fn mount_edited_elements(engine: &mut Engine, edit: Rc<std::cell::Cell<u8>>) {
+	fn mount_edited_elements(engine: &mut Engine<std::cell::Cell<u8>>) {
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(
@@ -4427,39 +4390,39 @@ mod tests {
 						.image(crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]));
 				loop {
 					ctx.render().await;
-					match edit.replace(0) {
+					match ctx.with(|edit| edit.replace(0)).await {
 						// Write the values already present.
 						1 => {
-							frame.update_container(|container| {
+							frame.update_container(move |container| {
 								container.width = Sizing::pixels(40);
 								container.set_opacity(1.0);
 								container.set_style(ConcreteLayer::default().color(RGBA::new(0.1, 0.2, 0.3, 1.0).into()));
 							});
-							label.update_text(|text| {
+							label.update_text(move |text| {
 								text.set_content("Hello");
 								text.set_opacity(1.0);
 							});
-							wire.update_curve(|curve| {
+							wire.update_curve(move |curve| {
 								let path = curve.path_mut();
 								path.clear();
 								path.push_line((0.0, 0.0), (10.0, 10.0));
 							});
-							picture.update_image(|image| image.set_opacity(1.0));
+							picture.update_image(move |image| image.set_opacity(1.0));
 						}
 						// Change a value and restore it within the same edit.
 						2 => {
-							label.update_text(|text| {
+							label.update_text(move |text| {
 								text.set_content("Changed");
 								text.set_content("Hello");
 							});
 						}
 						3 => {
-							frame.update_container(|container| {
+							frame.update_container(move |container| {
 								container.set_style(ConcreteLayer::default().color(RGBA::new(0.9, 0.2, 0.3, 1.0).into()));
 							});
 						}
 						4 => {
-							picture.update_image(|image| {
+							picture.update_image(move |image| {
 								*image = crate::ui::components::image::Image::from_rgba(1, 1, vec![255; 4]);
 							});
 						}
@@ -4473,14 +4436,13 @@ mod tests {
 	#[test]
 	fn updates_that_change_nothing_keep_the_render_revision() {
 		let allocator = bumpalo::Bump::new();
-		let edit = Rc::new(std::cell::Cell::new(0));
-		let mut engine = Engine::new();
-		mount_edited_elements(&mut engine, Rc::clone(&edit));
+		let mut engine = Engine::with_context(std::cell::Cell::new(0));
+		mount_edited_elements(&mut engine);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 		let first = engine.render(&mut snapshot).revision();
 
 		for step in [1, 2] {
-			edit.set(step);
+			engine.ctx().set(step);
 			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 			assert_eq!(
 				engine.render(&mut snapshot).revision(),
@@ -4494,13 +4456,12 @@ mod tests {
 	fn updates_that_change_style_or_image_contents_advance_the_render_revision() {
 		for step in [3, 4] {
 			let allocator = bumpalo::Bump::new();
-			let edit = Rc::new(std::cell::Cell::new(0));
-			let mut engine = Engine::new();
-			mount_edited_elements(&mut engine, Rc::clone(&edit));
+			let mut engine = Engine::with_context(std::cell::Cell::new(0));
+			mount_edited_elements(&mut engine);
 			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 			let first = engine.render(&mut snapshot).revision();
 
-			edit.set(step);
+			engine.ctx().set(step);
 			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 			assert_ne!(
 				engine.render(&mut snapshot).revision(),
@@ -4520,10 +4481,10 @@ mod tests {
 				let mut text = ctx.element("label").text(Text::new("Hello"));
 				text.render().await;
 
-				assert!(text.update_text(|text| {
+				text.update_text(move |text| {
 					text.set_content("Updated");
 					text.set_style(ConcreteLayer::default().color(RGBA::new(0.7, 0.8, 0.9, 1.0).into()));
-				}));
+				});
 			})
 		});
 
@@ -4576,17 +4537,15 @@ mod tests {
 	#[test]
 	fn focused_text_field_receives_inserted_text_edit() {
 		let frame_allocator = bumpalo::Bump::new();
-		let received = Arc::new(StdMutex::new(None));
-		let received_for_task = Arc::clone(&received);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let received = Arc::clone(&received_for_task);
 			Box::pin(async move {
 				let mut field = ctx.element("field").text_field(TextField::new(""));
 				field.request_focus();
 				let event = field.on_text_edit().await;
-				*received.lock().expect("expected test value") = Some(event.edit);
+				let value = Some(event.edit);
+				ctx.with(|received| *received.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -4594,22 +4553,20 @@ mod tests {
 		engine.input_character('a');
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().expect("expected test value"), Some(TextEdit::Inserted('a')));
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(TextEdit::Inserted('a')));
 	}
 
 	#[test]
 	fn unfocused_text_field_does_not_receive_inserted_text_edit() {
 		let frame_allocator = bumpalo::Bump::new();
-		let received = Arc::new(StdMutex::new(None));
-		let received_for_task = Arc::clone(&received);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let received = Arc::clone(&received_for_task);
 			Box::pin(async move {
 				let mut field = ctx.element("field").text_field(TextField::new(""));
 				let event = field.on_text_edit().await;
-				*received.lock().expect("expected test value") = Some(event.edit);
+				let value = Some(event.edit);
+				ctx.with(|received| *received.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -4617,23 +4574,21 @@ mod tests {
 		engine.input_character('a');
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
 	}
 
 	#[test]
 	fn focused_text_field_delete_emits_deleted_last_character() {
 		let frame_allocator = bumpalo::Bump::new();
-		let received = Arc::new(StdMutex::new(None));
-		let received_for_task = Arc::clone(&received);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(None));
 
 		engine.mount(move |ctx| {
-			let received = Arc::clone(&received_for_task);
 			Box::pin(async move {
 				let mut field = ctx.element("field").text_field(TextField::new("Hié"));
 				field.request_focus();
 				let event = field.on_text_edit().await;
-				*received.lock().expect("expected test value") = Some(event.edit);
+				let value = Some(event.edit);
+				ctx.with(|received| *received.lock().expect("expected test value") = value).await;
 			})
 		});
 
@@ -4641,30 +4596,28 @@ mod tests {
 		engine.delete_text_backward();
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*received.lock().expect("expected test value"), Some(TextEdit::Deleted('é')));
+		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(TextEdit::Deleted('é')));
 	}
 
 	#[test]
 	fn app_owned_string_update_changes_later_text_field_render() {
 		let frame_allocator = bumpalo::Bump::new();
-		let content = Arc::new(StdMutex::new(String::from("a")));
-		let content_for_task = Arc::clone(&content);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(StdMutex::new(String::from("a")));
 
 		engine.mount(move |ctx| {
-			let content = Arc::clone(&content_for_task);
 			Box::pin(async move {
-				let initial = content.lock().expect("expected test value").clone();
+				let initial = ctx.with(|content| content.lock().expect("expected test value").clone()).await;
 				let mut field = ctx.element("field").text_field(TextField::new(initial));
 				field.request_focus();
 				let event = field.on_text_edit().await;
-				{
-					let mut content = content.lock().expect("expected test value");
-					event.edit.apply_to(&mut content);
-					let updated = content.clone();
-
-					assert!(field.update_text_field(|field| field.set_content(updated)));
-				}
+				let updated = ctx
+					.with(|content| {
+						let mut content = content.lock().expect("expected test value");
+						event.edit.apply_to(&mut content);
+						content.clone()
+					})
+					.await;
+				field.update_text_field(move |field| field.set_content(updated));
 				field.render().await;
 			})
 		});
@@ -4673,10 +4626,11 @@ mod tests {
 		engine.input_character('b');
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let content = engine.ctx().lock().expect("expected test value").clone();
 		let render = engine.render(&mut snapshot);
 		let text = render.texts().next().expect("expected test value");
 
-		assert_eq!(*content.lock().expect("expected test value"), "ab");
+		assert_eq!(content, "ab");
 		assert_eq!(text.content, "ab");
 	}
 
@@ -4719,27 +4673,28 @@ mod tests {
 	#[test]
 	fn owned_names_declare_distinct_elements_and_repeat_by_content() {
 		let allocator = bumpalo::Bump::new();
-		let ids = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let out = Rc::clone(&ids);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(std::cell::Cell::new(std::vec::Vec::new()));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
+				let mut ids = std::vec::Vec::new();
 				for index in 0..3 {
 					let node = root
 						.element(format!("node-{index}"))
 						.container(Container::default().width(10.into()).height(10.into()));
-					out.borrow_mut().push(node.id());
+					ids.push(node.id());
 				}
+				ctx.with(|out| out.set(ids.clone())).await;
 				ctx.render().await;
 				// The same content on a later frame resolves the same retained element.
 				let again = root.element(String::from("node-1")).container(Container::default());
-				out.borrow_mut().push(again.id());
+				ids.push(again.id());
+				ctx.with(|out| out.set(ids)).await;
 			})
 		});
 		engine.evaluate(Size::new(100, 100), &allocator);
 		engine.evaluate(Size::new(100, 100), &allocator);
-		let ids = ids.borrow();
+		let ids = engine.ctx().take();
 		assert_eq!(ids.len(), 4);
 		assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
 		assert_eq!(ids[3], ids[1]);
@@ -4748,12 +4703,15 @@ mod tests {
 	#[test]
 	fn removing_an_element_drops_its_subtree_and_ends_components_declared_under_it() {
 		let allocator = bumpalo::Bump::new();
-		let ticks = Rc::new(std::cell::Cell::new(0u32));
-		// 0 idle, 1 remove the node, 2 declare it again.
-		let stage = Rc::new(std::cell::Cell::new(0u8));
-		let ids = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let (task_ticks, task_stage, out) = (Rc::clone(&ticks), Rc::clone(&stage), Rc::clone(&ids));
-		let mut engine = Engine::new();
+		/// The `Removal` struct carries what the test drives and observes through the engine context.
+		#[derive(Default)]
+		struct Removal {
+			ticks: std::cell::Cell<u32>,
+			/// 0 idle, 1 remove the node, 2 declare it again.
+			stage: std::cell::Cell<u8>,
+			ids: std::cell::Cell<Option<(Id, Id, Id)>>,
+		}
+		let mut engine = Engine::with_context(Removal::default());
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
@@ -4764,7 +4722,7 @@ mod tests {
 				node.element("ticker").component(move |ctx| {
 					Box::pin(async move {
 						loop {
-							task_ticks.set(task_ticks.get() + 1);
+							ctx.with(|state| state.ticks.set(state.ticks.get() + 1)).await;
 							ctx.render().await;
 						}
 					})
@@ -4772,16 +4730,20 @@ mod tests {
 				let keep = root
 					.element("keep")
 					.container(Container::default().width(10.into()).height(10.into()));
-				out.borrow_mut().extend([node.id(), label.id(), keep.id()]);
+				let ids = (node.id(), label.id(), keep.id());
+				ctx.with(|state| state.ids.set(Some(ids))).await;
 				loop {
 					ctx.render().await;
-					match task_stage.replace(0) {
+					match ctx.with(|state| state.stage.replace(0)).await {
 						1 => {
-							assert!(node.geometry().is_some());
-							assert!(node.remove());
-							assert!(!node.remove(), "A second removal found something to remove.");
-							assert!(node.geometry().is_none());
-							assert!(!node.update_container(|_| {}));
+							assert!(node.geometry().await.is_some());
+							node.remove();
+							// Removing twice and editing a removed element change nothing.
+							node.remove();
+							node.update_container(move |_| {});
+							// The removal is applied after this poll.
+							ctx.render().await;
+							assert!(node.geometry().await.is_none());
 						}
 						2 => {
 							let again = root
@@ -4794,7 +4756,7 @@ mod tests {
 				}
 			})
 		});
-		let mut frames = |count: usize| {
+		let frames = |engine: &mut Engine<Removal>, count: usize| {
 			let mut snapshot = None;
 			for _ in 0..count {
 				snapshot = Some(engine.evaluate(Size::new(100, 100), &allocator));
@@ -4803,24 +4765,21 @@ mod tests {
 		};
 		let contains = |snapshot: &Snapshot<'_>, id: Id| snapshot.elements.iter().any(|element| element.id == id);
 
-		let snapshot = frames(3);
-		let (node, label, keep) = {
-			let ids = ids.borrow();
-			(ids[0], ids[1], ids[2])
-		};
+		let snapshot = frames(&mut engine, 3);
+		let (node, label, keep) = engine.ctx().ids.get().expect("expected test value");
 		assert!(contains(&snapshot, node) && contains(&snapshot, label) && contains(&snapshot, keep));
-		assert!(ticks.get() > 0);
+		assert!(engine.ctx().ticks.get() > 0);
 
-		stage.set(1);
-		let snapshot = frames(2);
+		engine.ctx().stage.set(1);
+		let snapshot = frames(&mut engine, 2);
 		assert!(!contains(&snapshot, node) && !contains(&snapshot, label));
 		assert!(contains(&snapshot, keep), "Removing one element removed its sibling.");
-		let closed = ticks.get();
-		frames(3);
-		assert_eq!(ticks.get(), closed, "A component kept running after its element was removed.");
+		let closed = engine.ctx().ticks.get();
+		frames(&mut engine, 3);
+		assert_eq!(engine.ctx().ticks.get(), closed, "A component kept running after its element was removed.");
 
-		stage.set(2);
-		let snapshot = frames(2);
+		engine.ctx().stage.set(2);
+		let snapshot = frames(&mut engine, 2);
 		assert!(
 			contains(&snapshot, node),
 			"A removed element declared again was not laid out."
@@ -4830,9 +4789,7 @@ mod tests {
 	#[test]
 	fn update_curve_repaints_segments_without_replaying_placement() {
 		let allocator = bumpalo::Bump::new();
-		let reroute = Rc::new(std::cell::Cell::new(false));
-		let flag = Rc::clone(&reroute);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(std::cell::Cell::new(false));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default());
@@ -4842,12 +4799,12 @@ mod tests {
 				);
 				loop {
 					ctx.render().await;
-					if flag.replace(false) {
-						assert!(wire.update_curve(|curve| {
+					if ctx.with(|reroute| reroute.replace(false)).await {
+						wire.update_curve(move |curve| {
 							let path = curve.path_mut();
 							path.clear();
 							path.push_cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0));
-						}));
+						});
 					}
 				}
 			})
@@ -4857,17 +4814,16 @@ mod tests {
 		let first = render.revision();
 		let curve = render.curves().next().unwrap();
 		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Line { .. }]));
-		let placement = engine.runtime.borrow().tree.borrow().placement_revision;
+		let placement = engine.tree.placement_revision;
 
-		reroute.set(true);
+		engine.ctx().set(true);
 		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 		let render = engine.render(&mut snapshot);
 		assert_ne!(render.revision(), first);
 		let curve = render.curves().next().unwrap();
 		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Cubic { .. }]));
 		assert_eq!(
-			engine.runtime.borrow().tree.borrow().placement_revision,
-			placement,
+			engine.tree.placement_revision, placement,
 			"Re-routing a curve replayed placement."
 		);
 	}
@@ -4910,8 +4866,25 @@ mod tests {
 		assert_eq!(text.scale, 2.0, "Text takes the smaller axis of an anisotropic scale.");
 	}
 
-	/// Records every hover event a surface receives, in order.
-	fn hover_log(ctx: &mut EvaluationContext, log: Rc<RefCell<std::vec::Vec<(&'static str, Events)>>>, name: &'static str) {
+	/// The engine context of the hover tests: every hover event a surface received, in order.
+	type HoverLog = std::cell::Cell<std::vec::Vec<(&'static str, Events)>>;
+
+	/// Appends `entry` to a log kept in a [`std::cell::Cell`], so components can record into the engine context.
+	fn push_entry<T>(log: &std::cell::Cell<std::vec::Vec<T>>, entry: T) {
+		let mut entries = log.take();
+		entries.push(entry);
+		log.set(entries);
+	}
+
+	/// Returns a copy of a log kept in a [`std::cell::Cell`] and leaves the log in place.
+	fn entries<T: Clone>(log: &std::cell::Cell<std::vec::Vec<T>>) -> std::vec::Vec<T> {
+		let entries = log.take();
+		log.set(entries.clone());
+		entries
+	}
+
+	/// Records every hover event a surface receives, in order, into the engine's [`HoverLog`].
+	fn hover_log(ctx: &mut EvaluationContext<HoverLog>, name: &'static str) {
 		ctx.element("hover").component(move |ctx| {
 			Box::pin(async move {
 				loop {
@@ -4919,7 +4892,7 @@ mod tests {
 						event = ctx.on(Events::PointerEntered) => event,
 						event = ctx.on(Events::PointerExited) => event,
 					};
-					log.borrow_mut().push((name, event.kind));
+					ctx.with(|log| push_entry(log, (name, event.kind))).await;
 				}
 			})
 		});
@@ -4930,9 +4903,7 @@ mod tests {
 	#[test]
 	fn dropping_an_event_wait_discards_events_until_the_next_wait() {
 		let allocator = bumpalo::Bump::new();
-		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let out = Rc::clone(&log);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(std::cell::Cell::new(std::vec::Vec::new()));
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
@@ -4944,21 +4915,24 @@ mod tests {
 				);
 				// Wait for one click, start and abandon a second wait, then look away for frames.
 				let _ = target.on(Events::Actuated).await;
-				out.borrow_mut().push("first");
+				ctx.with(|log| push_entry(log, "first")).await;
 				let mut abandoned = target.on(Events::Actuated);
-				utils::r#async::select! {
-					_ = abandoned => out.borrow_mut().push("unexpected"),
-					_ = ctx.render() => {}
+				let unexpected = utils::r#async::select! {
+					_ = abandoned => true,
+					_ = ctx.render() => false,
+				};
+				if unexpected {
+					ctx.with(|log| push_entry(log, "unexpected")).await;
 				}
 				drop(abandoned);
 				for _ in 0..3 {
 					ctx.render().await;
 				}
 				let _ = target.on(Events::Actuated).await;
-				out.borrow_mut().push("second");
+				ctx.with(|log| push_entry(log, "second")).await;
 			})
 		});
-		let mut frame = |click: bool| {
+		let frame = |engine: &mut Engine<std::cell::Cell<std::vec::Vec<&'static str>>>, click: bool| {
 			engine.set_cursor_position(UiPoint::new(-0.5, 0.5));
 			if click {
 				engine.update_click_state(true);
@@ -4966,18 +4940,18 @@ mod tests {
 			}
 			let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		};
-		frame(false);
-		frame(true);
-		assert_eq!(*log.borrow(), vec!["first"]);
+		frame(&mut engine, false);
+		frame(&mut engine, true);
+		assert_eq!(entries(engine.ctx()), vec!["first"]);
 		// The abandoned wait ends this frame; clicks during the look-away frames must not replay later.
-		frame(false);
-		frame(true);
-		frame(true);
-		frame(false);
-		frame(false);
-		assert_eq!(*log.borrow(), vec!["first"], "a click fired while no wait was live was kept");
-		frame(true);
-		assert_eq!(*log.borrow(), vec!["first", "second"]);
+		frame(&mut engine, false);
+		frame(&mut engine, true);
+		frame(&mut engine, true);
+		frame(&mut engine, false);
+		frame(&mut engine, false);
+		assert_eq!(entries(engine.ctx()), vec!["first"], "a click fired while no wait was live was kept");
+		frame(&mut engine, true);
+		assert_eq!(entries(engine.ctx()), vec!["first", "second"]);
 	}
 
 	/// While a source is held, the pointer still enters and leaves other surfaces, including ones that
@@ -4992,9 +4966,7 @@ mod tests {
 
 	fn held_hover_probe(hold: bool, sector: bool) {
 		let allocator = bumpalo::Bump::new();
-		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let out = Rc::clone(&log);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
@@ -5034,7 +5006,7 @@ mod tests {
 				} else {
 					let _ = source.on(Events::Actuated).await;
 				}
-				dial.update_container(|container| container.set_position((0, 0)));
+				dial.update_container(move |container| container.set_position((0, 0)));
 				let mut step = 0;
 				loop {
 					let event = utils::r#async::select! {
@@ -5043,11 +5015,11 @@ mod tests {
 						_ = ctx.render() => None,
 					};
 					match event {
-						Some(kind) => out.borrow_mut().push(("target", kind)),
+						Some(kind) => ctx.with(|log| push_entry(log, ("target", kind))).await,
 						None if sector && step < 4 => {
 							step += 1;
 							let sweep = std::f32::consts::FRAC_PI_2 * step as f32 / 4.0;
-							target.update_container(|container| {
+							target.update_container(move |container| {
 								container.set_sector(Some(crate::ui::Sector::new(
 									std::f32::consts::FRAC_PI_4 - sweep * 0.5,
 									sweep,
@@ -5061,14 +5033,14 @@ mod tests {
 			})
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
-		let frame = |engine: &mut Engine, position: UiPoint| {
+		let frame = |engine: &mut Engine<HoverLog>, position: UiPoint| {
 			engine.set_cursor_position(position);
 			engine.drag_to(position);
 			for _ in 0..2 {
 				let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
 				let _ = engine.render(&mut snapshot);
 			}
-			std::mem::take(&mut *log.borrow_mut())
+			engine.ctx().take()
 		};
 		frame(&mut engine, window(10.0, 10.0));
 		if hold {
@@ -5096,9 +5068,7 @@ mod tests {
 	#[test]
 	fn pointer_enter_and_exit_follow_the_hovered_surface_and_its_ancestors() {
 		let allocator = bumpalo::Bump::new();
-		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let out = Rc::clone(&log);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
@@ -5109,15 +5079,15 @@ mod tests {
 						.height(50.into())
 						.flow(flow::row),
 				);
-				hover_log(&mut panel, Rc::clone(&out), "panel");
+				hover_log(&mut panel, "panel");
 				let mut left = panel
 					.element("left")
 					.container(Container::default().width(50.into()).height(50.into()));
-				hover_log(&mut left, Rc::clone(&out), "left");
+				hover_log(&mut left, "left");
 				let mut right = panel
 					.element("right")
 					.container(Container::default().width(50.into()).height(50.into()));
-				hover_log(&mut right, Rc::clone(&out), "right");
+				hover_log(&mut right, "right");
 			})
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
@@ -5125,7 +5095,7 @@ mod tests {
 			engine.set_cursor_position(position);
 			let _ = engine.evaluate(Size::new(100, 100), &allocator);
 			let _ = engine.evaluate(Size::new(100, 100), &allocator);
-			std::mem::take(&mut *log.borrow_mut())
+			engine.ctx().take()
 		};
 
 		// The first frames only register the waiters.
@@ -5149,9 +5119,7 @@ mod tests {
 	#[test]
 	fn a_held_source_is_skipped_so_the_surface_beneath_it_is_hovered_and_previewed() {
 		let allocator = bumpalo::Bump::new();
-		let log = Rc::new(RefCell::new(std::vec::Vec::new()));
-		let out = Rc::clone(&log);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context(HoverLog::default());
 		engine.mount(move |ctx| {
 			Box::pin(async move {
 				let mut root = ctx.element("root").container(Container::default().hit_testable(false));
@@ -5161,7 +5129,7 @@ mod tests {
 						.width(50.into())
 						.height(100.into()),
 				);
-				hover_log(&mut target, Rc::clone(&out), "target");
+				hover_log(&mut target, "target");
 				root.element("card").container(
 					Container::default()
 						.absolute_position(0, 0)
@@ -5191,7 +5159,7 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
 		assert_eq!(engine.hovered(), Some(target));
 		assert_eq!(engine.drag().unwrap().over, Some(target));
-		assert_eq!(*log.borrow(), vec![("target", Events::PointerEntered)]);
+		assert_eq!(engine.ctx().take(), vec![("target", Events::PointerEntered)]);
 	}
 
 	#[test]
@@ -5303,7 +5271,7 @@ mod tests {
 					.element("frame")
 					.container(Container::default().width(10.into()).height(10.into()));
 				animate(&mut frame, spring(0.0, 1.0), |frame, t| {
-					frame.update_container(|container| {
+					frame.update_container(move |container| {
 						container.width = Sizing::pixels(10 + (90.0 * t.clamp(0.0, 1.0)) as u32);
 					});
 				})
@@ -5326,35 +5294,27 @@ mod tests {
 	#[test]
 	fn backdrop_style_modal_receives_actuated_event() {
 		let frame_allocator = bumpalo::Bump::new();
-		let hits = Arc::new(AtomicUsize::new(0));
-		let hits_for_task = Arc::clone(&hits);
-		let background_hits = Arc::new(AtomicUsize::new(0));
-		let background_hits_for_task = Arc::clone(&background_hits);
-		let mut engine = Engine::new();
+		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
 
 		engine.mount(move |ctx| {
-			let hits = Arc::clone(&hits_for_task);
-			let background_hits = Arc::clone(&background_hits_for_task);
 			Box::pin(async move {
 				let mut frame = ctx.element("frame").container(Container::default());
 				frame.element("background").component(move |ctx| {
-					let background_hits = Arc::clone(&background_hits);
 					Box::pin(async move {
 						let mut background = ctx.element("button").container(Container::default());
 						background.on(Events::Actuated).await;
-						background_hits.fetch_add(1, Ordering::SeqCst);
+						ctx.with(|(_, background_hits)| background_hits.fetch_add(1, Ordering::SeqCst)).await;
 					})
 				});
 				frame
 					.element("modal")
 					.mount(move |ctx| {
-						let hits = Arc::clone(&hits);
 						Box::pin(async move {
 							let mut backdrop = ctx
 								.element("backdrop")
 								.container(Container::default().depth(Depth::absolute(1)));
 							backdrop.on(Events::Actuated).await;
-							hits.fetch_add(1, Ordering::SeqCst);
+							ctx.with(|(hits, _)| hits.fetch_add(1, Ordering::SeqCst)).await;
 						})
 					})
 					.await;
@@ -5366,8 +5326,8 @@ mod tests {
 		engine.update_click_state(true);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
-		assert_eq!(background_hits.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 0);
 	}
 }
 
@@ -5380,7 +5340,10 @@ use std::{
 	marker::PhantomData,
 	pin::Pin,
 	rc::Rc,
-	sync::Arc,
+	sync::{
+		Arc,
+		mpsc::{Receiver, Sender},
+	},
 	task::{Context as TaskContext, Poll, Wake, Waker},
 };
 
@@ -5389,11 +5352,11 @@ use utils::{RGBA, StableVec, StableVecHandle, r#async::FusedFuture, sync::Mutex}
 use super::{
 	ClipMask, ConcreteElement, Geometry, IdedElement, LayoutElement, RenderCurveElement, RenderElement, RenderImageElement,
 	RenderPathElement, RenderTextElement,
-	context::{Context, ElementContext, ElementSlot, MountedUiFuture, UiFuture},
+	context::{Context, ElementContext, ElementKey, ElementSlot, MountedUiFuture, UiFuture},
 	element::{ElementHandle, Id},
 	flow::{Location, Location3, Size},
 	layout_elements,
-	retained_tree::RetainedTree,
+	retained_tree::{ROOT_PATH, RetainedTree},
 	snapshot::Snapshot,
 	visual_transform::Affine2,
 };

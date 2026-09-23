@@ -246,7 +246,7 @@ impl InnerDevice {
 	#[cfg(any(debug_assertions, test))]
 	fn get_log_count(&self) -> u64 {
 		use std::sync::atomic::Ordering;
-		self.debug_data.error_count.load(Ordering::SeqCst)
+		self.debug_data.get().error_count.load(Ordering::SeqCst)
 	}
 
 	#[cfg(any(debug_assertions, test))]

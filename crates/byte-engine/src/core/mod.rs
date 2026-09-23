@@ -38,7 +38,6 @@ pub use entity::Entity;
 pub use entity::EntityHandle;
 pub use factory::Creator;
 pub use task::Task;
-use utils::sync::{Arc, RwLock};
 
 #[cfg(test)]
 mod tests {

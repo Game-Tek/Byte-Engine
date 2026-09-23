@@ -23,33 +23,33 @@ fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 				.container(Container::default().width(20.into()).height(20.into()));
 			let mut applied = 0;
 			loop {
-				let target = ctx.ctx().get();
+				let target = ctx.with(|c| c.get()).await;
 				for stage in applied + 1..=target {
 					match stage {
 						1 => {
-							panel.update_container(|value| {
+							panel.update_container(move |value| {
 								value.set_style(ConcreteLayer::default().color(RGBA::new(1.0, 0.0, 0.0, 1.0).into()))
 							});
 						}
 						2 => {
-							panel.update_container(|value| value.set_opacity(0.5));
+							panel.update_container(move |value| value.set_opacity(0.5));
 						}
 						3 => {
-							label.update_text(|value| *value = Text::new("A much wider label").font_size(24.0));
+							label.update_text(move |value| *value = Text::new("A much wider label").font_size(24.0));
 						}
 						4 => {
-							panel.update_container(|value| value.width = Sizing::pixels(80));
+							panel.update_container(move |value| value.width = Sizing::pixels(80));
 						}
 						5 => {
-							panel.update_container(|value| {
+							panel.update_container(move |value| {
 								value.set_transform(Transform::identity().translate(8.0, 6.0).scale(0.75))
 							});
 						}
 						6 => {
-							panel.update_container(|value| value.set_clip(false));
+							panel.update_container(move |value| value.set_clip(false));
 						}
 						7 => {
-							panel.update_container(|value| {
+							panel.update_container(move |value| {
 								value.set_clip(true);
 								value.corner_radius = 8.0;
 								value.set_style(
@@ -60,13 +60,13 @@ fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 							});
 						}
 						8 => {
-							panel.update_container(|value| value.depth = Depth::Absolute(2));
+							panel.update_container(move |value| value.depth = Depth::Absolute(2));
 						}
 						9 => {
-							assert!(label.reparent(sibling.id()));
+							label.reparent(sibling.id());
 						}
 						10 => {
-							sibling.update_container(|value| {
+							sibling.update_container(move |value| {
 								value.width = Sizing::Relative(1, 2);
 								value.flow =
 									utils::InlineCopyFn::<fn(crate::ui::flow::FlowInput) -> crate::ui::flow::FlowOutput>::new(
@@ -75,7 +75,7 @@ fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 							});
 						}
 						11 => {
-							label.update_text(|value| value.set_opacity(0.25));
+							label.update_text(move |value| value.set_opacity(0.25));
 						}
 						_ => unreachable!(),
 					}
@@ -195,7 +195,7 @@ fn changing_content_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 				root.element("screen")
 					.mount(|ctx| {
 						Box::pin(async move {
-							let stage = ctx.ctx().get();
+							let stage = ctx.with(|c| c.get()).await;
 							let mut root = ctx
 								.element("root")
 								.container(Container::default().clip(false).flow(flow::row));
@@ -229,7 +229,7 @@ fn changing_content_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 								}
 								panel.element("curve").curve(Curve::new(path).style(style));
 							}
-							while ctx.ctx().get() == stage {
+							while ctx.with(|c| c.get()).await == stage {
 								ctx.render().await;
 							}
 						})
@@ -302,44 +302,44 @@ fn text_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 			root.element("target").container(Container::default().size(20.into()));
 			let mut applied = 0;
 			loop {
-				let target = ctx.ctx().get();
+				let target = ctx.with(|c| c.get()).await;
 				for stage in applied + 1..=target {
 					match stage {
 						1 => {
 							// Reversing two advances preserves width while content and appearance change.
-							label.update_text(|value| {
+							label.update_text(move |value| {
 								value.set_content("ba");
 								value.set_style(ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.6, 1.0).into()));
 							});
-							field.update_text_field(|value| {
+							field.update_text_field(move |value| {
 								value.set_content("ba");
 								value.set_opacity(0.5);
 							});
 						}
 						2 => {
 							// Multiple edits before evaluation must compare the final content's size.
-							label.update_text(|value| value.set_content("temporary wider content"));
-							label.update_text(|value| value.set_content("ab"));
+							label.update_text(move |value| value.set_content("temporary wider content"));
+							label.update_text(move |value| value.set_content("ab"));
 						}
 						3 => {
-							label.update_text(|value| value.set_content("wider label"));
-							field.update_text_field(|value| value.set_content("wider field"));
+							label.update_text(move |value| value.set_content("wider label"));
+							field.update_text_field(move |value| value.set_content("wider field"));
 						}
 						4 => {
-							label.update_text(|value| value.settings.font_size = 24.0);
-							field.update_text_field(|value| value.settings.font_size = 24.0);
+							label.update_text(move |value| value.settings.font_size = 24.0);
+							field.update_text_field(move |value| value.settings.font_size = 24.0);
 						}
 						5 => {
-							label.update_text(|value| value.set_content("two\nlines"));
-							field.update_text_field(|value| value.set_content(""));
+							label.update_text(move |value| value.set_content("two\nlines"));
+							field.update_text_field(move |value| value.set_content(""));
 						}
 						6 => {
-							label.update_text(|value| value.set_transform(Transform::identity().translate_x(10.0)));
-							field.update_text_field(|value| value.set_transform(Transform::identity().scale(0.5)));
+							label.update_text(move |value| value.set_transform(Transform::identity().translate_x(10.0)));
+							field.update_text_field(move |value| value.set_transform(Transform::identity().scale(0.5)));
 						}
 						7 => {
-							label.update_text(|value| value.set_content("lines\ntwo"));
-							field.update_text_field(|value| value.set_content("ba"));
+							label.update_text(move |value| value.set_content("lines\ntwo"));
+							field.update_text_field(move |value| value.set_content("ba"));
 						}
 						_ => unreachable!(),
 					}
@@ -391,14 +391,14 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 						Box::pin(async move {
 							let mut label = ctx.element("label").text(Text::new(content));
 							ctx.render().await;
-							label.update_text(|value| value.set_content("removed before layout"));
+							label.update_text(move |value| value.set_content("removed before layout"));
 						})
 					})
 					.await;
 			}
 			let mut field = root.element("field").text_field(TextField::new("kept"));
 			ctx.render().await;
-			field.update_text_field(|value| value.set_content("much wider replacement"));
+			field.update_text_field(move |value| value.set_content("much wider replacement"));
 		})
 	});
 	let mut allocator = bumpalo::Bump::new();
@@ -431,32 +431,32 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 			root.element("b")
 				.container(Container::default().width(20.into()).height(10.into()));
 			ctx.render().await;
-			root.update_container(|value| value.set_opacity(0.5));
+			root.update_container(move |value| value.set_opacity(0.5));
 			ctx.render().await;
-			root.update_container(|value| {
+			root.update_container(move |value| {
 				value.flow =
 					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::row_with_gap(7))
 			});
 			ctx.render().await;
-			root.update_container(|value| value.set_opacity(0.25));
+			root.update_container(move |value| value.set_opacity(0.25));
 			ctx.render().await;
-			root.update_container(|value| {
+			root.update_container(move |value| {
 				value.flow =
 					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::column_with_gap(4))
 			});
 			ctx.render().await;
-			root.update_container(|value| {
+			root.update_container(move |value| {
 				value.flow = utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(flow::center)
 			});
 			ctx.render().await;
 			// Replacing a built-in through the public field must enable the custom-flow fallback.
-			root.update_container(|value| {
+			root.update_container(move |value| {
 				value.flow =
 					utils::InlineCopyFn::<fn(crate::ui::FlowInput) -> crate::ui::FlowOutput>::new(stateful as fn(_) -> _)
 			});
 			ctx.render().await;
 			OFFSET.with(|offset| offset.set(13.0));
-			first.update_container(|value| value.set_opacity(0.5));
+			first.update_container(move |value| value.set_opacity(0.5));
 		})
 	});
 	let mut allocator = bumpalo::Bump::new();
@@ -495,10 +495,10 @@ fn custom_flow_observes_captured_state_after_a_paint_update() {
 			let mut label = root.element("label").text(Text::new("ab"));
 			ctx.render().await;
 			OFFSET.with(|offset| offset.set(40.0));
-			child.update_container(|value| value.set_opacity(0.5));
+			child.update_container(move |value| value.set_opacity(0.5));
 			ctx.render().await;
 			OFFSET.with(|offset| offset.set(60.0));
-			label.update_text(|value| value.set_content("ba"));
+			label.update_text(move |value| value.set_content("ba"));
 		})
 	});
 	let allocator = bumpalo::Bump::new();
@@ -547,7 +547,7 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 			root.element("child")
 				.container(Container::default().size(20.into()).position(Position::absolute(40, 0)));
 			root.on(Events::Actuated).await;
-			root.update_container(|value| {
+			root.update_container(move |value| {
 				value.set_opacity(0.25);
 				value.set_clip(false);
 			});
@@ -562,32 +562,30 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	let child = engine.render(&mut clicked).elements().nth(1).unwrap();
 	assert_eq!(child.opacity, 0.25);
 	assert_eq!(child.clip, None);
-	let child_id = Id::new(child.id).unwrap();
+	let child_id = child.id;
 	let mut hits = crate::ui::intersection::HitTest::default();
 	clicked.retain_hit_test(&mut hits);
 	let point = UiPoint::new(-0.1, 0.9);
 	assert_eq!(hits.query(point), None);
 	let next = engine.evaluate(Size::new(100, 100), &allocator);
 	next.retain_hit_test(&mut hits);
-	assert_eq!(hits.query(point), Some(child_id));
+	assert_eq!(hits.query(point).map(|id| engine.render_id(id)), Some(child_id));
 }
 
 #[test]
 fn remounting_the_same_id_restores_its_context_geometry() {
-	let observed = Rc::new(RefCell::new(Vec::new()));
-	let output = Rc::clone(&observed);
-	let mut engine = Engine::new();
+	let mut engine = Engine::with_context(std::sync::Mutex::new(Vec::new()));
 	engine.mount(move |ctx| {
 		Box::pin(async move {
 			let mut root = ctx.element("root").container(Container::default());
 			for _ in 0..2 {
-				let output = Rc::clone(&output);
 				root.element("scope")
 					.mount(move |ctx| {
 						Box::pin(async move {
 							let child = ctx.element("child").container(Container::default().size(20.into()));
 							ctx.render().await;
-							output.borrow_mut().push((child.id(), child.geometry()));
+							let observed = (child.id(), child.geometry().await);
+							ctx.with(|output| output.lock().expect("expected test value").push(observed)).await;
 						})
 					})
 					.await;
@@ -598,7 +596,7 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 	for _ in 0..3 {
 		engine.evaluate(Size::new(100, 100), &allocator);
 	}
-	let observed = observed.borrow();
+	let observed = engine.ctx().lock().expect("expected test value");
 	assert_eq!(observed.len(), 2);
 	assert_eq!(observed[0], observed[1]);
 	assert_eq!(observed[1].1.unwrap().size, Size::new(20, 20));
@@ -616,7 +614,7 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		let mut engine = Engine::with_context(std::cell::Cell::new((camera, nested)));
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				let (camera, nested) = ctx.ctx().get();
+				let (camera, nested) = ctx.with(|c| c.get()).await;
 				let mut applied = (camera, nested);
 				let mut root = ctx
 					.element("root")
@@ -634,12 +632,12 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 				);
 				root.element("toolbar").container(Container::default().size(40.into()));
 				loop {
-					let (camera, nested) = ctx.ctx().get();
+					let (camera, nested) = ctx.with(|c| c.get()).await;
 					if camera != applied.0 {
-						canvas.update_container(|value| value.set_transform(camera));
+						canvas.update_container(move |value| value.set_transform(camera));
 					}
 					if nested != applied.1 {
-						child.update_container(|value| value.set_transform(nested));
+						child.update_container(move |value| value.set_transform(nested));
 					}
 					applied = (camera, nested);
 					ctx.render().await;
@@ -689,18 +687,17 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 /// Editing a retained path must move its hit surface even when its declared size stays fixed.
 #[test]
 fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
-	let id = Rc::new(std::cell::Cell::new(None));
-	let output = Rc::clone(&id);
-	let mut engine = Engine::new();
+	let mut engine = Engine::with_context(std::cell::Cell::new(None));
 	engine.mount(move |ctx| {
 		Box::pin(async move {
 			let mut root = ctx.element("root").container(Container::default());
 			let mut wire = root
 				.element("wire")
 				.curve(Curve::new(CurvePath::new(100.into(), 100.into()).line((0., 0.), (40., 0.))).hit_testable(6.));
-			output.set(Some(wire.id()));
+			let id = wire.id();
+			ctx.with(|output| output.set(Some(id))).await;
 			ctx.render().await;
-			wire.update_curve(|curve| {
+			wire.update_curve(move |curve| {
 				let path = curve.path_mut();
 				path.clear();
 				path.push_line((0., 20.), (40., 20.));
@@ -710,11 +707,11 @@ fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
 	let arena = bumpalo::Bump::new();
 	let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
 	let mut first = engine.evaluate(Size::new(100, 100), &arena);
-	assert_eq!(first.click(window(20., 1.)), id.get());
+	assert_eq!(first.click(window(20., 1.)), engine.ctx().get());
 	let mut second = engine.evaluate(Size::new(100, 100), &arena);
-	assert_ne!(second.click(window(20., 1.)), id.get());
-	assert_eq!(second.click(window(20., 21.)), id.get());
-	assert_eq!(first.click(window(20., 1.)), id.get());
+	assert_ne!(second.click(window(20., 1.)), engine.ctx().get());
+	assert_eq!(second.click(window(20., 21.)), engine.ctx().get());
+	assert_eq!(first.click(window(20., 1.)), engine.ctx().get());
 }
 
 /// A transform edit refreshes clip and mask inheritance inside the moved subtree only,
@@ -726,7 +723,7 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 		let mut engine = Engine::with_context(std::cell::Cell::new((outer, inner)));
 		engine.mount(|ctx| {
 			Box::pin(async move {
-				let (outer, inner) = ctx.ctx().get();
+				let (outer, inner) = ctx.with(|c| c.get()).await;
 				let mut applied = (outer, inner);
 				let mut root = ctx
 					.element("root")
@@ -759,12 +756,12 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 					.element("sibling_leaf")
 					.container(Container::default().size(90.into()));
 				loop {
-					let (outer, inner) = ctx.ctx().get();
+					let (outer, inner) = ctx.with(|c| c.get()).await;
 					if outer != applied.0 {
-						moved.update_container(|value| value.set_transform(outer));
+						moved.update_container(move |value| value.set_transform(outer));
 					}
 					if inner != applied.1 {
-						nested.update_container(|value| value.set_transform(inner));
+						nested.update_container(move |value| value.set_transform(inner));
 					}
 					applied = (outer, inner);
 					ctx.render().await;

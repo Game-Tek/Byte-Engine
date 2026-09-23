@@ -6,6 +6,8 @@ pub struct Device {
 	device_configuration: ID3D12DeviceConfiguration,
 	// Reuse one validated compiler and cache identity for every runtime HLSL compilation.
 	dxc_compiler: DxcCompiler,
+	// DirectStorage is optional, so a missing runtime is kept as the load error and reported when a resource I/O queue is created.
+	direct_storage_runtime: Result<crate::dx12::io::DirectStorageRuntime, String>,
 	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
 	descriptor_handle_increment_sizes: [u32; 4],
 	// Native format support is immutable for a device, so descriptor validation reuses creation-time queries.
@@ -885,7 +887,7 @@ struct HlslSource {
 #[derive(Clone)]
 pub(crate) struct DxcCompiler {
 	native: IDxcCompiler3,
-	identity: Arc<str>,
+	identity: Box<str>,
 }
 
 impl DxcCompiler {
@@ -1305,10 +1307,7 @@ impl crate::context::Context for Device {
 use std::{
 	alloc::{self, Layout},
 	cell::{Cell, RefCell},
-	sync::{
-		Arc,
-		atomic::{AtomicU64, Ordering},
-	},
+	sync::atomic::{AtomicU64, Ordering},
 };
 
 use ::utils::Extent;

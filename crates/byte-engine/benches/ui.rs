@@ -26,9 +26,9 @@ use std::cell::Cell;
 
 use byte_engine::{
 	ui::{
-		ConcreteLayer, ConcreteStyle, Container, ContainerContext as _, Context, Depth, ElementContext as _, Engine,
-		EvaluationContext, Id, Key, Render, RenderRevision, Size, Sizing, Text, TextField, Transform, UiFuture, UiPoint,
-		UiVector, flow, intersection::HitTest, primitive::Events,
+		ConcreteLayer, ConcreteStyle, Container, ContainerContext as _, Context, Depth, ElementContext as _, ElementKey,
+		Engine, EvaluationContext, Id, Key, Render, RenderRevision, Size, Sizing, Text, TextField, Transform, UiFuture,
+		UiPoint, UiVector, flow, intersection::HitTest, primitive::Events,
 	},
 	utils::{RGBA, r#async::select_biased},
 };
@@ -150,9 +150,15 @@ fn muted_color() -> ConcreteLayer {
 }
 
 /// A non-interactive box that sizes and places one line of text.
-fn cell<C: 'static>(parent: &mut EvaluationContext<C>, width: f32, height: f32, text: Text) -> EvaluationContext<C> {
+fn cell<C: 'static>(
+	parent: &mut EvaluationContext<C>,
+	key: impl Into<ElementKey>,
+	width: f32,
+	height: f32,
+	text: Text,
+) -> EvaluationContext<C> {
 	parent
-		.element("cell")
+		.element(key)
 		.container(
 			Container::default()
 				.width(width.into())
@@ -265,13 +271,14 @@ mod settings {
 		);
 		cell(
 			&mut sidebar,
+			("cell", 1usize),
 			280.0,
 			72.0,
 			Text::new("Settings").font_size(28.0).style(text_color()),
 		);
 		for index in 0..CATEGORIES.len() {
 			sidebar
-				.element("category")
+				.element(("category", index))
 				.component(move |ctx| Box::pin(category_button(ctx, index)));
 		}
 
@@ -291,6 +298,7 @@ mod settings {
 		);
 		let mut title = cell(
 			&mut header,
+			("cell", 2usize),
 			1000.0,
 			72.0,
 			Text::new(CATEGORIES[0]).font_size(32.0).style(text_color()),
@@ -298,8 +306,8 @@ mod settings {
 		header.element("reset").component(|ctx| Box::pin(reset_button(ctx)));
 
 		loop {
-			let category = ctx.ctx().category.get();
-			title.update_text(|text| text.set_content(CATEGORIES[category]));
+			let category = ctx.with(|c| c.category.get()).await;
+			title.update_text(move |text| text.set_content(CATEGORIES[category]));
 			content
 				.element("list")
 				.mount(move |ctx| Box::pin(option_list(ctx, category)))
@@ -329,20 +337,20 @@ mod settings {
 				.style(text_color())
 				.transform(Transform::identity().translate_x(16.0)),
 		);
-		let mut ids = ctx.ctx().categories.get();
+		let mut ids = ctx.with(|c| c.categories.get()).await;
 		ids[index] = Some(button.id());
-		ctx.ctx().categories.set(ids);
+		ctx.with(|c| c.categories.set(ids)).await;
 
 		// Every button follows the shared selection, so a click restyles the old and new choice.
 		let mut selected = index == 0;
 		loop {
 			select_biased! {
-				_ = button.on(Events::Actuated) => ctx.ctx().category.set(index),
+				_ = button.on(Events::Actuated) => ctx.with(|c| c.category.set(index)).await,
 				_ = ctx.render() => {},
 			}
-			if selected != (ctx.ctx().category.get() == index) {
+			if selected != (ctx.with(|c| c.category.get()).await == index) {
 				selected = !selected;
-				button.update_container(|button| button.set_style(style(selected)));
+				button.update_container(move |button| button.set_style(style(selected)));
 			}
 		}
 	}
@@ -356,7 +364,7 @@ mod settings {
 				.flow(flow::column)
 				.style(panel(0.07, 0.08, 0.1)),
 		);
-		ctx.ctx().list.set(Some(viewport.id()));
+		ctx.with(|c| c.list.set(Some(viewport.id()))).await;
 		let mut rows = viewport.element("rows").container(
 			Container::default()
 				.height((ROW_HEIGHT * OPTIONS.len() as f32).into())
@@ -366,7 +374,7 @@ mod settings {
 		);
 		for index in 0..OPTIONS.len() {
 			let label = OPTIONS[(index + category * 5) % OPTIONS.len()];
-			rows.element("option")
+			rows.element(("option", index))
 				.component(move |ctx| Box::pin(option_row(ctx, index, label)));
 		}
 
@@ -377,9 +385,9 @@ mod settings {
 				event = viewport.on(Events::Scrolled) => {
 					let delta = event.delta.map_or(0.0, |delta| delta.y);
 					scroll = (scroll - delta * ROW_HEIGHT).clamp(0.0, max_scroll);
-					rows.update_container(|rows| rows.set_transform(Transform::identity().translate_y(-scroll)));
+					rows.update_container(move |rows| rows.set_transform(Transform::identity().translate_y(-scroll)));
 				},
-				_ = ctx.render() => if ctx.ctx().category.get() != category {
+				_ = ctx.render() => if ctx.with(|c| c.category.get()).await != category {
 					return;
 				},
 			}
@@ -403,6 +411,7 @@ mod settings {
 		);
 		cell(
 			&mut row,
+			("cell", 3usize),
 			900.0,
 			ROW_HEIGHT,
 			Text::new(label)
@@ -412,6 +421,7 @@ mod settings {
 		);
 		let mut value = cell(
 			&mut row,
+			("cell", 4usize),
 			120.0,
 			ROW_HEIGHT,
 			Text::new(state(on)).font_size(16.0).style(muted_color()),
@@ -434,15 +444,15 @@ mod settings {
 				.style(fill(0.96, 0.97, 0.98, 1.0)),
 		);
 		if index == 5 {
-			ctx.ctx().toggle.set(Some(track.id()));
+			ctx.with(|c| c.toggle.set(Some(track.id()))).await;
 		}
 
 		loop {
 			track.on(Events::Actuated).await;
 			on = !on;
-			value.update_text(|text| text.set_content(state(on)));
-			track.update_container(|track| track.set_style(track_style(on)));
-			knob.update_container(|knob| knob.set_transform(knob_offset(on)));
+			value.update_text(move |text| text.set_content(state(on)));
+			track.update_container(move |track| track.set_style(track_style(on)));
+			knob.update_container(move |knob| knob.set_transform(knob_offset(on)));
 		}
 	}
 
@@ -458,7 +468,7 @@ mod settings {
 		button
 			.element("label")
 			.text(Text::new("Reset to Defaults").font_size(16.0).style(text_color()));
-		ctx.ctx().reset.set(Some(button.id()));
+		ctx.with(|c| c.reset.set(Some(button.id()))).await;
 		loop {
 			button.on(Events::Actuated).await;
 			ctx.element("dialog").mount(|ctx| Box::pin(confirm_dialog(ctx))).await;
@@ -467,7 +477,7 @@ mod settings {
 
 	/// Fades a modal in over the menu, waits for a choice, and fades it out.
 	async fn confirm_dialog(ctx: &mut EvaluationContext<Model>) {
-		ctx.ctx().dialog_open.set(true);
+		ctx.with(|c| c.dialog_open.set(true)).await;
 		let mut backdrop = ctx.element("backdrop").container(
 			Container::default()
 				.depth(Depth::absolute(1))
@@ -485,12 +495,14 @@ mod settings {
 		);
 		cell(
 			&mut dialog,
+			("cell", 5usize),
 			600.0,
 			72.0,
 			Text::new("Reset all settings?").font_size(28.0).style(text_color()),
 		);
 		cell(
 			&mut dialog,
+			("cell", 6usize),
 			600.0,
 			72.0,
 			Text::new("Every option in every category returns to its default value.")
@@ -521,12 +533,12 @@ mod settings {
 		};
 		let mut cancel = choice("cancel", "Cancel", panel(0.16, 0.18, 0.22));
 		let mut confirm = choice("confirm", "Reset", panel(0.7, 0.2, 0.2));
-		ctx.ctx().cancel.set(Some(cancel.id()));
+		ctx.with(|c| c.cancel.set(Some(cancel.id()))).await;
 
 		// Frame-counted easing keeps every round trip the same length regardless of wall-clock time.
 		let mut present = |t: f32| {
-			backdrop.update_container(|backdrop| backdrop.set_style(fill(0.0, 0.0, 0.0, 0.6 * t)));
-			dialog.update_container(|dialog| {
+			backdrop.update_container(move |backdrop| backdrop.set_style(fill(0.0, 0.0, 0.0, 0.6 * t)));
+			dialog.update_container(move |dialog| {
 				dialog.set_transform(Transform::identity().translate_y((1.0 - t) * 24.0).scale(0.965 + 0.035 * t));
 				dialog.set_opacity(t);
 			});
@@ -543,7 +555,7 @@ mod settings {
 			present(1.0 - frame as f32 / EXIT_FRAMES as f32);
 			ctx.render().await;
 		}
-		ctx.ctx().dialog_open.set(false);
+		ctx.with(|c| c.dialog_open.set(false)).await;
 	}
 
 	/// Measures the frame a menu costs while nobody touches it.
@@ -703,8 +715,8 @@ mod hud {
 		fps: u32,
 	}
 
-	fn bar<C: 'static>(parent: &mut EvaluationContext<C>, color: ConcreteLayer) -> EvaluationContext<C> {
-		let mut track = parent.element("bar").container(
+	fn bar<C: 'static>(parent: &mut EvaluationContext<C>, key: &str, color: ConcreteLayer) -> EvaluationContext<C> {
+		let mut track = parent.element(key).container(
 			Container::default()
 				.width(240.0.into())
 				.height(14.0.into())
@@ -777,14 +789,27 @@ mod hud {
 		);
 		cell(
 			&mut vitals,
+			("cell", 7usize),
 			240.0,
 			28.0,
 			Text::new("Kestrel").font_size(20.0).style(text_color()),
 		);
-		let mut health_fill = bar(&mut vitals, fill(0.85, 0.25, 0.25, 1.0));
-		let mut health_text = cell(&mut vitals, 240.0, 20.0, Text::new("").font_size(14.0).style(text_color()));
-		let mut mana_fill = bar(&mut vitals, fill(0.25, 0.5, 0.95, 1.0));
-		let mut mana_text = cell(&mut vitals, 240.0, 20.0, Text::new("").font_size(14.0).style(text_color()));
+		let mut health_fill = bar(&mut vitals, "health_bar", fill(0.85, 0.25, 0.25, 1.0));
+		let mut health_text = cell(
+			&mut vitals,
+			("cell", 19usize),
+			240.0,
+			20.0,
+			Text::new("").font_size(14.0).style(text_color()),
+		);
+		let mut mana_fill = bar(&mut vitals, "mana_bar", fill(0.25, 0.5, 0.95, 1.0));
+		let mut mana_text = cell(
+			&mut vitals,
+			("cell", 20usize),
+			240.0,
+			20.0,
+			Text::new("").font_size(14.0).style(text_color()),
+		);
 
 		let mut clock_panel = anchored(
 			&mut root,
@@ -796,12 +821,14 @@ mod hud {
 		);
 		let mut clock = cell(
 			&mut clock_panel,
+			("cell", 8usize),
 			400.0,
 			40.0,
 			Text::new("").font_size(28.0).style(text_color()),
 		);
 		cell(
 			&mut clock_panel,
+			("cell", 9usize),
 			400.0,
 			24.0,
 			Text::new("Capture the relay (2/3)").font_size(15.0).style(muted_color()),
@@ -821,7 +848,7 @@ mod hud {
 			let angle = index as f32 / MARKERS as f32 * TAU;
 			let radius = 30.0 + (index % 4) as f32 * 20.0;
 			markers.push(
-				minimap.element("marker").container(
+				minimap.element(("marker", index)).container(
 					Container::default()
 						.width(10.0.into())
 						.height(10.0.into())
@@ -848,7 +875,7 @@ mod hud {
 		);
 		let mut slots = Vec::with_capacity(SLOTS);
 		for (index, key) in ["1", "2", "3", "4", "Q", "E", "R", "F"].into_iter().enumerate() {
-			let mut slot = abilities.element("slot").container(
+			let mut slot = abilities.element(("slot", index)).container(
 				Container::default()
 					.width(SLOT_SIZE.into())
 					.height(SLOT_SIZE.into())
@@ -885,9 +912,10 @@ mod hud {
 			ConcreteStyle::new(),
 		);
 		let mut feed: Vec<_> = (0..FEED_LINES)
-			.map(|_| {
+			.map(|line| {
 				cell(
 					&mut feed_panel,
+					("line", line),
 					360.0,
 					28.0,
 					Text::new("").font_size(16.0).style(text_color()),
@@ -910,7 +938,7 @@ mod hud {
 		// Game state drives the HUD; only widgets whose presented value changed are touched.
 		let mut shown: Option<Shown> = None;
 		loop {
-			let frame = ctx.ctx().frame.get() % PERIOD;
+			let frame = ctx.with(|c| c.frame.get()).await % PERIOD;
 			let phase = frame as f32 / PERIOD as f32 * TAU;
 			let state = Shown {
 				health: (70.0 + 25.0 * phase.sin()).round() as u32,
@@ -937,18 +965,18 @@ mod hud {
 			});
 
 			if state.health != previous.health {
-				health_fill.update_container(|bar| bar.width = (2.4 * state.health as f32).into());
-				health_text.update_text(|text| text.set_content(format!("{} / 100", state.health)));
+				health_fill.update_container(move |bar| bar.width = (2.4 * state.health as f32).into());
+				health_text.update_text(move |text| text.set_content(format!("{} / 100", state.health)));
 			}
 			if state.mana != previous.mana {
-				mana_fill.update_container(|bar| bar.width = (2.4 * state.mana as f32).into());
-				mana_text.update_text(|text| text.set_content(format!("{} / 100", state.mana)));
+				mana_fill.update_container(move |bar| bar.width = (2.4 * state.mana as f32).into());
+				mana_text.update_text(move |text| text.set_content(format!("{} / 100", state.mana)));
 			}
 			// Enemy markers track their units every frame; friendly markers stay put.
 			for (index, marker) in markers.iter_mut().take(MOVING_MARKERS).enumerate() {
 				let angle = index as f32 / MOVING_MARKERS as f32 * TAU + phase;
 				let radius = 40.0 + 50.0 * (phase * 3.0 + index as f32).sin().abs();
-				marker.update_container(|marker| {
+				marker.update_container(move |marker| {
 					marker.set_transform(Transform::identity().translate(angle.cos() * radius, angle.sin() * radius))
 				});
 			}
@@ -957,10 +985,10 @@ mod hud {
 				if remaining == previous.cooldowns[slot] {
 					continue;
 				}
-				overlay.update_container(|overlay| {
+				overlay.update_container(move |overlay| {
 					overlay.height = (SLOT_SIZE * remaining as f32 * 6.0 / COOLDOWN_FRAMES as f32).into()
 				});
-				seconds.update_text(|text| {
+				seconds.update_text(move |text| {
 					if remaining == 0 {
 						text.set_content("");
 					} else {
@@ -969,17 +997,17 @@ mod hud {
 				});
 			}
 			if state.seconds != previous.seconds {
-				clock.update_text(|text| text.set_content(format!("12:{:02}", 59 - state.seconds)));
+				clock.update_text(move |text| text.set_content(format!("12:{:02}", 59 - state.seconds)));
 			}
 			if state.feed != previous.feed {
 				for (line, text) in feed.iter_mut().enumerate() {
 					let entry = FEED[(state.feed as usize + line) % FEED.len()];
-					text.update_text(|text| text.set_content(entry));
+					text.update_text(move |text| text.set_content(entry));
 				}
 			}
 			if state.fps != previous.fps {
 				const RATES: [u32; 6] = [144, 143, 141, 144, 139, 142];
-				fps.update_text(|text| text.set_content(format!("{} FPS", RATES[state.fps as usize % RATES.len()])));
+				fps.update_text(move |text| text.set_content(format!("{} FPS", RATES[state.fps as usize % RATES.len()])));
 			}
 			shown = Some(state);
 			ctx.render().await;
@@ -1053,7 +1081,7 @@ mod leaderboard {
 				.style(fill(0.05, 0.06, 0.08, 1.0)),
 		);
 		loop {
-			if ctx.ctx().visible.get() {
+			if ctx.with(|c| c.visible.get()).await {
 				root.element("board").mount(|ctx| Box::pin(board(ctx))).await;
 			} else {
 				ctx.render().await;
@@ -1062,7 +1090,7 @@ mod leaderboard {
 	}
 
 	async fn board(ctx: &mut EvaluationContext<Model>) {
-		let rows = ctx.ctx().rows;
+		let rows = ctx.with(|c| c.rows).await;
 		let mut table = ctx.element("table").container(
 			Container::default()
 				.width(TABLE_WIDTH.into())
@@ -1083,6 +1111,7 @@ mod leaderboard {
 		for (title, width) in COLUMNS {
 			cell(
 				&mut header,
+				title,
 				width,
 				48.0,
 				Text::new(title).font_size(15.0).style(muted_color()),
@@ -1095,12 +1124,12 @@ mod leaderboard {
 				.flow(flow::column)
 				.style(ConcreteStyle::new()),
 		);
-		ctx.ctx().body.set(Some(body.id()));
+		ctx.with(|c| c.body.set(Some(body.id()))).await;
 
 		let mut lines = Vec::with_capacity(rows);
-		let round = ctx.ctx().round.get();
+		let round = ctx.with(|c| c.round.get()).await;
 		for index in 0..rows {
-			let mut row = body.element("row").container(
+			let mut row = body.element(("row", index)).container(
 				Container::default()
 					.height(ROW_HEIGHT.into())
 					.flow(flow::row)
@@ -1108,15 +1137,34 @@ mod leaderboard {
 					.style(row_style(index, false)),
 			);
 			let text = |content: String| Text::new(content).font_size(16.0).style(text_color());
-			cell(&mut row, COLUMNS[0].1, ROW_HEIGHT, text((index + 1).to_string()));
 			cell(
 				&mut row,
+				("cell", 21usize),
+				COLUMNS[0].1,
+				ROW_HEIGHT,
+				text((index + 1).to_string()),
+			);
+			cell(
+				&mut row,
+				("cell", 12usize),
 				COLUMNS[1].1,
 				ROW_HEIGHT,
 				text(format!("{}{}", HANDLES[index % HANDLES.len()], index)),
 			);
-			let score_cell = cell(&mut row, COLUMNS[2].1, ROW_HEIGHT, text(score(index, round).to_string()));
-			cell(&mut row, COLUMNS[3].1, ROW_HEIGHT, text(STATUS[index % STATUS.len()].into()));
+			let score_cell = cell(
+				&mut row,
+				("cell", 22usize),
+				COLUMNS[2].1,
+				ROW_HEIGHT,
+				text(score(index, round).to_string()),
+			);
+			cell(
+				&mut row,
+				("cell", 23usize),
+				COLUMNS[3].1,
+				ROW_HEIGHT,
+				text(STATUS[index % STATUS.len()].into()),
+			);
 			lines.push((row, score_cell));
 		}
 
@@ -1125,26 +1173,26 @@ mod leaderboard {
 		loop {
 			select_biased! {
 				_ = body.on(Events::Actuated) => {
-					let Some(geometry) = body.geometry() else { continue };
-					let pointer_y = (1.0 - ctx.pointer().position.y) * 0.5 * HEIGHT;
+					let Some(geometry) = body.geometry().await else { continue };
+					let pointer_y = (1.0 - ctx.pointer().await.position.y) * 0.5 * HEIGHT;
 					let index = ((pointer_y - geometry.y()) / ROW_HEIGHT) as usize;
 					if index < rows && selected != Some(index) {
 						if let Some(previous) = selected {
-							lines[previous].0.update_container(|row| row.set_style(row_style(previous, false)));
+							lines[previous].0.update_container(move |row| row.set_style(row_style(previous, false)));
 						}
-						lines[index].0.update_container(|row| row.set_style(row_style(index, true)));
+						lines[index].0.update_container(move |row| row.set_style(row_style(index, true)));
 						selected = Some(index);
 					}
 				},
 				_ = ctx.render() => {
-					if !ctx.ctx().visible.get() {
+					if !ctx.with(|c| c.visible.get()).await {
 						return;
 					}
-					let round = ctx.ctx().round.get();
+					let round = ctx.with(|c| c.round.get()).await;
 					if round != shown_round {
 						shown_round = round;
 						for (index, (_, score_cell)) in lines.iter_mut().enumerate().step_by(10) {
-							score_cell.update_text(|text| text.set_content(score(index, round).to_string()));
+							score_cell.update_text(move |text| text.set_content(score(index, round).to_string()));
 						}
 					}
 				},
@@ -1210,8 +1258,6 @@ mod leaderboard {
 
 /// A kanban board whose cards are dragged between columns, as in `sandbox/ui`.
 mod board {
-	use std::cell::RefCell;
-
 	use super::*;
 
 	const COLUMNS: [&str; 3] = ["To do", "Doing", "Done"];
@@ -1253,7 +1299,8 @@ mod board {
 	/// The `Model` struct exposes the board's identities and counts accepted drops.
 	#[derive(Default)]
 	struct Model {
-		cards: RefCell<Vec<Id>>,
+		/// The card the benchmark drags; the board mounts it first.
+		first_card: Cell<Option<Id>>,
 		columns: Cell<[Option<Id>; COLUMNS.len()]>,
 		landed: Cell<u32>,
 	}
@@ -1280,6 +1327,7 @@ mod board {
 			);
 			cell(
 				&mut column,
+				("cell", 13usize),
 				COLUMN_WIDTH,
 				44.0,
 				Text::new(COLUMNS[index]).font_size(16.0).style(text_color()),
@@ -1287,7 +1335,7 @@ mod board {
 			column
 		});
 		let column_ids = columns.each_ref().map(|column| column.id());
-		ctx.ctx().columns.set(column_ids.map(Some));
+		ctx.with(|c| c.columns.set(column_ids.map(Some))).await;
 
 		// Each card with the column it belongs to.
 		let mut cards = Vec::with_capacity(TASKS.len());
@@ -1307,7 +1355,9 @@ mod board {
 					.style(text_color())
 					.transform(Transform::identity().translate(12.0, 22.0)),
 			);
-			ctx.ctx().cards.borrow_mut().push(card.id());
+			if index == 0 {
+				ctx.with(|c| c.first_card.set(Some(card.id()))).await;
+			}
 			cards.push((card, column));
 		}
 
@@ -1330,10 +1380,10 @@ mod board {
 				&& let Some((_, home)) = cards.iter_mut().find(|(card, _)| card.id() == source)
 			{
 				*home = column;
-				ctx.ctx().landed.set(ctx.ctx().landed.get() + 1);
+				ctx.with(|c| c.landed.set(c.landed.get() + 1)).await;
 			}
 
-			let drag = ctx.drag();
+			let drag = ctx.drag().await;
 			if held.is_none()
 				&& let Some(capture) = drag.filter(|capture| capture.dragging)
 				&& let Some(task) = cards.iter().position(|(card, _)| card.id() == capture.source)
@@ -1342,22 +1392,23 @@ mod board {
 				// Lift the card out of its column; an absolute depth keeps it from displacing the root's children.
 				let origin = card
 					.geometry()
+					.await
 					.map_or(UiPoint::zero(), |geometry| UiPoint::new(geometry.x(), geometry.y()));
 				card.reparent(root_id);
-				card.update_container(|card| card.depth = Depth::absolute(1));
+				card.update_container(move |card| card.depth = Depth::absolute(1));
 				held = Some((task, origin));
 			}
 			if let Some((task, origin)) = held {
 				let (card, home) = &mut cards[task];
 				if ended {
 					card.reparent(column_ids[*home]);
-					card.update_container(|card| {
+					card.update_container(move |card| {
 						card.depth = Depth::relative(1);
 						card.set_transform(placed_at(CARD_INSET, 0.0));
 					});
 					held = None;
 				} else if let Some(capture) = drag {
-					card.update_container(|card| {
+					card.update_container(move |card| {
 						card.set_transform(placed_at(
 							origin.x + capture.position.x - capture.origin.x,
 							origin.y + capture.position.y - capture.origin.y,
@@ -1392,7 +1443,11 @@ mod board {
 	#[divan::bench]
 	fn drag_card_between_columns(bencher: Bencher) {
 		let mut window = Window::new(Model::default(), |ctx| Box::pin(board(ctx)));
-		let card = window.model().cards.borrow()[0];
+		let card = window
+			.model()
+			.first_card
+			.get()
+			.expect("The board did not mount its first card.");
 		drag_card(&mut window, card, 1);
 		assert_eq!(window.model().landed.get(), 1, "Dragging a card did not drop it on a column.");
 		assert!(!window.tick(), "The board did not settle after a drop.");
@@ -1452,12 +1507,14 @@ mod sign_in {
 		);
 		cell(
 			&mut form,
+			("cell", 14usize),
 			440.0,
 			64.0,
 			Text::new("Sign in").font_size(32.0).style(text_color()),
 		);
 		cell(
 			&mut form,
+			("cell", 15usize),
 			440.0,
 			32.0,
 			Text::new("Use the account you play with on every platform.")
@@ -1466,6 +1523,7 @@ mod sign_in {
 		);
 		cell(
 			&mut form,
+			("cell", 16usize),
 			440.0,
 			28.0,
 			Text::new("Email").font_size(14.0).style(muted_color()),
@@ -1473,6 +1531,7 @@ mod sign_in {
 		let mut email = field(&mut form, "email", "");
 		cell(
 			&mut form,
+			("cell", 17usize),
 			440.0,
 			28.0,
 			Text::new("Password").font_size(14.0).style(muted_color()),
@@ -1495,6 +1554,7 @@ mod sign_in {
 		);
 		cell(
 			&mut remember,
+			("cell", 18usize),
 			400.0,
 			48.0,
 			Text::new("Keep me signed in")
@@ -1518,8 +1578,10 @@ mod sign_in {
 		loop {
 			let edit = email.on_text_edit().await;
 			edit.edit.apply_to(&mut content);
-			email.update_text_field(|field| field.set_content(&content));
-			ctx.ctx().typed.set(content.len());
+			// The edit is applied after this poll, so it carries its own copy of the text.
+			let shown = content.clone();
+			email.update_text_field(move |field| field.set_content(&shown));
+			ctx.with(|c| c.typed.set(content.len())).await;
 		}
 	}
 
@@ -1585,7 +1647,7 @@ mod tooltip {
 			.element("root")
 			.container(Container::default().size(Sizing::Relative(1, 1)).hit_testable(false));
 		for index in 0..CARDS {
-			let mut card = root.element("card").container(
+			let mut card = root.element(("card", index)).container(
 				Container::default()
 					.absolute_position((index % COLUMNS * 60) as u32, (index / COLUMNS * 48) as u32)
 					.width(56.into())
@@ -1612,8 +1674,8 @@ mod tooltip {
 			.element("hint")
 			.container(Container::default().size(20.into()).style(panel(0.16, 0.18, 0.22)));
 		loop {
-			let frame = (ctx.ctx().frame.get() % PERIOD) as f32;
-			tooltip.update_container(|value| {
+			let frame = (ctx.with(|c| c.frame.get()).await % PERIOD) as f32;
+			tooltip.update_container(move |value| {
 				value.set_transform(Transform::identity().translate(frame * 7.0, frame * 3.5));
 			});
 			ctx.render().await;

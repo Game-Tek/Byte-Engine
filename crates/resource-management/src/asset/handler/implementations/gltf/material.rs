@@ -37,7 +37,7 @@ pub(crate) async fn material_for_gltf_primitive(
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<&dyn ProgramGenerator>,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	if let Some(override_asset) = material_override(spec, &material) {
@@ -53,7 +53,7 @@ pub(crate) async fn generate_gltf_material_variant(
 	gltf: &gltf::Gltf,
 	buffers: &[gltf::buffer::Data],
 	material: gltf::Material<'_>,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<&dyn ProgramGenerator>,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
@@ -82,7 +82,7 @@ pub(crate) async fn generate_gltf_material_variant(
 	let material_json = generated_material_json(&texture_variables);
 
 	let (shader, shader_bytes) =
-		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
+		compile_shader_program(generator, &shader_name, program, "World", &material_json, "Compute")
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 

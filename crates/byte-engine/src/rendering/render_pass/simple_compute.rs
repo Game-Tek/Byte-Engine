@@ -1,7 +1,5 @@
 //! Reusable construction for flat-resource BESL compute render passes.
 
-use std::sync::Arc;
-
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -210,7 +208,7 @@ impl Pass {
 		if self.failed {
 			return None;
 		}
-		let compiled = match self.pipeline_manager.get(self.pipeline) {
+		match self.pipeline_manager.get(self.pipeline) {
 			crate::rendering::PipelineState::Pending => return None,
 			crate::rendering::PipelineState::Failed => {
 				log::error!(
@@ -219,17 +217,20 @@ impl Pass {
 				self.failed = true;
 				return None;
 			}
-			crate::rendering::PipelineState::Ready(_) => self.pipeline_manager.compute_pipeline(self.pipeline).expect(
-				"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
-			),
-		};
+			crate::rendering::PipelineState::Ready(_) => {}
+		}
+		// Borrow the reflected bindings under one read view instead of copying them.
+		let pipelines = self.pipeline_manager.compute_pipelines();
+		let compiled = pipelines.get(self.pipeline).expect(
+			"Published compute pipeline metadata is missing. The most likely cause is that a raster pipeline was supplied to a simple compute pass.",
+		);
 		if let Err(error) = validate_binding_schema(&compiled.bindings) {
 			log::error!("Simple compute pipeline adoption failed: {error}");
 			self.failed = true;
 			return None;
 		}
 		if let Some(shared) = self.shared_layout {
-			let shared = self.pipeline_manager.compute_pipeline(shared)?;
+			let shared = pipelines.get(shared)?;
 			if let Err(error) = validate_shared_schema(&shared.bindings, &compiled.bindings) {
 				log::error!("Simple compute pipeline adoption failed: {error}");
 				self.failed = true;
@@ -258,6 +259,7 @@ impl Pass {
 			label: self.label,
 			workgroup: compiled.workgroup,
 		};
+		drop(pipelines);
 		self.ready = Some(ready);
 		self.revision = revision;
 		Some(ready)

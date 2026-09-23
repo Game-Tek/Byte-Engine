@@ -24,12 +24,6 @@ use crate::ui::{
 	style::{ConcreteStyle, EdgeFeather},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct PathSegment {
-	pub(crate) name: std::borrow::Cow<'static, str>,
-	pub(crate) ordinal: u32,
-}
-
 /// The `LayoutElement` struct stores an element positioned and sized for a viewport.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct LayoutElement {
@@ -157,7 +151,9 @@ fn random_color_from_id(id: u32) -> RGBA {
 pub struct IdedElement {
 	pub(crate) id: Id,
 	pub(crate) element: ConcreteElement,
-	pub(crate) path: usize,
+	/// The element's compact render order: its place among the elements the tree created, which render data and
+	/// render-pass caches use instead of the 64-bit id.
+	pub(crate) serial: u32,
 	/// Last mutation of this node, used by its measurement cache.
 	pub(crate) revision: u64,
 }
@@ -627,7 +623,7 @@ mod tests {
 					element: ConcreteElement {
 						primitive: Primitives::Container(e),
 					},
-					path: 0,
+					serial: id.get() as u32,
 					revision: 0,
 				}
 			})

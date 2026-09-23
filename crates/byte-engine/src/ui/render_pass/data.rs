@@ -1,5 +1,7 @@
 //! UI draw-list data, blur planning, and text-overlay preparation.
 
+use std::sync::Arc;
+
 use super::*;
 
 pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = crate::rendering::SCENE_COLOR_FORMAT;

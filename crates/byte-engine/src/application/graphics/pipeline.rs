@@ -650,8 +650,8 @@ fn setup_color_grading_render_pass(
 ///
 /// Load the resource once with
 /// [`crate::rendering::render_passes::lut::PreparedLut::load`] on
-/// application-owned asynchronous work. Each sink shares those immutable bytes
-/// while creating its own renderer-owned image. Call this after passes that
+/// application-owned asynchronous work. Each sink receives its own copy of the
+/// bytes, which its pass drops after the first upload. Call this after passes that
 /// produce the HDR `main` target and before tone mapping.
 pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut: crate::rendering::render_passes::lut::PreparedLut) {
 	application

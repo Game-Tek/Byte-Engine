@@ -1,7 +1,6 @@
 use std::{
 	borrow::Cow,
 	hash::{Hash as _, Hasher},
-	sync::Arc,
 };
 
 use maths_rs::Vec3f;
@@ -9,6 +8,7 @@ use maths_rs::Vec3f;
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
 /// The `BoxMeshGenerator` struct provides unbranded mesh-space streams for a six-faced box.
+#[derive(Clone)]
 pub struct BoxMeshGenerator {
 	size: Vec3f,
 }
@@ -124,17 +124,21 @@ impl MeshGenerator for BoxMeshGenerator {
 		self.size.z.to_bits().hash(&mut hasher);
 		hasher.finish()
 	}
+
+	fn clone_box(&self) -> Box<dyn MeshGenerator> {
+		Box::new(self.clone())
+	}
 }
 
-impl From<BoxMeshGenerator> for Arc<dyn MeshGenerator> {
+impl From<BoxMeshGenerator> for Box<dyn MeshGenerator> {
 	fn from(value: BoxMeshGenerator) -> Self {
-		Arc::new(value)
+		Box::new(value)
 	}
 }
 
 impl From<BoxMeshGenerator> for MeshSource {
 	fn from(value: BoxMeshGenerator) -> Self {
-		Into::<Arc<dyn MeshGenerator>>::into(value).into()
+		MeshSource::Generated(Box::new(value))
 	}
 }
 

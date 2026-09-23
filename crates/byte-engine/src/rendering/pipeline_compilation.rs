@@ -59,11 +59,20 @@ pub enum PipelineState {
 }
 
 /// The `ComputePipeline` struct provides a compiled handle and its reflected dispatch contract.
-#[derive(Clone)]
 pub(crate) struct ComputePipeline {
 	pub(crate) handle: ghi::PipelineHandle,
 	pub(crate) workgroup: utils::Extent,
-	pub(crate) bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	pub(crate) bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
+}
+
+/// The `ComputePipelines` struct lends published compute pipelines to descriptor adoption without copying their reflected bindings.
+pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineKey, ComputePipeline>>);
+
+impl ComputePipelines<'_> {
+	/// Returns a published compute pipeline, or `None` while it is unavailable.
+	pub(crate) fn get(&self, pipeline: PipelineRef) -> Option<&ComputePipeline> {
+		self.0.get(&pipeline.0)
+	}
 }
 
 /// The `PipelineManagerClient` struct lets renderer dependants request and poll
@@ -148,9 +157,12 @@ impl PipelineManagerClient {
 		}
 	}
 
-	/// Returns a published compute pipeline with the metadata needed for descriptor adoption.
-	pub(crate) fn compute_pipeline(&self, pipeline: PipelineRef) -> Option<ComputePipeline> {
-		self.shared.compute_pipelines.read().get(&pipeline.0).cloned()
+	/// Borrows the published compute pipelines and the metadata needed for descriptor adoption.
+	///
+	/// Keep the returned view short-lived: it holds a read lock that blocks
+	/// [`PipelineManager::publish`] until it is dropped.
+	pub(crate) fn compute_pipelines(&self) -> ComputePipelines<'_> {
+		ComputePipelines(self.shared.compute_pipelines.read())
 	}
 
 	/// Coalesces a request before placing compilation work on the shared queue.
@@ -240,7 +252,8 @@ impl PipelineManagerServer {
 						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
 					)
 				})?;
-				let bindings = prepared.bindings.clone();
+				let mut prepared = prepared;
+				let bindings = std::mem::take(&mut prepared.bindings);
 				let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
 				let ranges = push_constants
 					.iter()
@@ -377,7 +390,8 @@ impl PipelineManagerServer {
 				"Specialized compute pipeline '{material_variant_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
 			)
 		})?;
-		let bindings = prepared.bindings.clone();
+		let mut prepared = prepared;
+		let bindings = std::mem::take(&mut prepared.bindings);
 		let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
 		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(&specialization_map_entries);
 
@@ -398,7 +412,7 @@ struct PreparedShader {
 	artifact: resource_management::resources::material::ShaderArtifact,
 	workgroup: Option<(u32, u32, u32)>,
 	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
-	bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
 	backing: resource_management::resource::reader::ResourceReaderBacking,
 }
 
@@ -864,7 +878,7 @@ enum DetachedPipeline {
 	Compute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+		bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
 	},
 	Raster(ghi::factory::RasterPipeline),
 }

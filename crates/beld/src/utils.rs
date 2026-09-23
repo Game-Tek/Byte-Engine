@@ -74,11 +74,8 @@ where
 
 		let mut material_asset_handler = BEMAAssetHandler::new();
 
-		let shader_generator = std::sync::Arc::new({
-			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
-
-			byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new()
-		});
+		// Each handler owns its own generator; building one only assembles a small BESL scope.
+		let shader_generator = byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new();
 
 		material_asset_handler.set_shader_generator(shader_generator.clone());
 

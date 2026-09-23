@@ -58,12 +58,12 @@ pub enum AnimationPlayback {
 /// The `AnimationLease` struct keeps a stable clip identity across arena residency and eviction.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnimationLease {
-	resource_id: Arc<str>,
+	resource_id: Box<str>,
 }
 
 impl AnimationLease {
 	/// Creates a lease handle for a clip that the pool may load, evict, and load again.
-	pub fn new(resource_id: impl Into<Arc<str>>) -> Self {
+	pub fn new(resource_id: impl Into<Box<str>>) -> Self {
 		Self {
 			resource_id: resource_id.into(),
 		}
@@ -84,7 +84,7 @@ pub struct AnimationClip {
 
 impl AnimationClip {
 	/// Creates a clip that restarts from its first sample after reaching its duration.
-	pub fn looping(resource_id: impl Into<Arc<str>>) -> Self {
+	pub fn looping(resource_id: impl Into<Box<str>>) -> Self {
 		Self {
 			lease: AnimationLease::new(resource_id),
 			playback: AnimationPlayback::Loop,
@@ -92,7 +92,7 @@ impl AnimationClip {
 	}
 
 	/// Creates a clip that holds its final sample after reaching its duration.
-	pub fn once(resource_id: impl Into<Arc<str>>) -> Self {
+	pub fn once(resource_id: impl Into<Box<str>>) -> Self {
 		Self {
 			lease: AnimationLease::new(resource_id),
 			playback: AnimationPlayback::Once,
@@ -424,9 +424,12 @@ impl Default for AnimationGraphBuilder {
 impl AnimationGraphBuilder {
 	/// Creates an empty animation graph builder.
 	pub fn new() -> Self {
-		static NEXT_GRAPH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-		let graph = NEXT_GRAPH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-		assert_ne!(graph, 0, "animation graph identity space is exhausted");
+		use std::hash::BuildHasher as _;
+
+		// Each `RandomState` gets fresh keys from the standard library, so every
+		// builder gets a distinct 64-bit identity without an engine-owned counter.
+		// The identity only guards against mixing state IDs from different graphs.
+		let graph = std::hash::RandomState::new().hash_one(0u64);
 		Self {
 			graph,
 			data: RefCell::new(Some(AnimationGraphBuilderData {

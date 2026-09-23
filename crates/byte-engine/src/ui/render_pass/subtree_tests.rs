@@ -30,7 +30,7 @@ pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 					.style(ConcreteStyle::new()),
 			);
 			for index in 0..count {
-				let mut node = content.element("node").container(
+				let mut node = content.element(("node", index)).container(
 					Container::default()
 						.absolute_position((index % 8 * 100) as i32, (index / 8 * 90) as i32)
 						.width(90.into())
@@ -44,7 +44,7 @@ pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 				);
 			}
 			for index in 0..32 {
-				let mut card = root.element("toolbar").container(
+				let mut card = root.element(("toolbar", index as usize)).container(
 					Container::default()
 						.absolute_position(1000 + (index % 4 * 180), index / 4 * 100)
 						.width(170.into())
@@ -55,9 +55,9 @@ pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 			}
 			let mut applied = (0.0, 1.0);
 			loop {
-				let camera = ctx.ctx().get();
+				let camera = ctx.with(|c| c.get()).await;
 				if camera != applied {
-					content.update_container(|value| {
+					content.update_container(move |value| {
 						value.set_transform(Transform::identity().translate(camera.0, 13.25).scale(camera.1))
 					});
 					applied = camera;

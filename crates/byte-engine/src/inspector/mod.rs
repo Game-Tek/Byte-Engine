@@ -109,7 +109,7 @@ pub struct InspectedMessage {
 	#[serde(rename = "topic")]
 	pub topic_id: usize,
 	/// The diagnostic name of the route's owning scope.
-	pub scope: Arc<str>,
+	pub scope: Box<str>,
 	/// The complete Rust type name, including generic arguments.
 	#[serde(rename = "type")]
 	pub message_type: &'static str,
@@ -264,7 +264,7 @@ impl Inspector for DefaultInspector {
 					.expect("An observed publication must retain its registered message topic");
 				InspectedMessage {
 					topic_id: observation.topic_id(),
-					scope: Arc::clone(&topic.scope),
+					scope: topic.scope.clone(),
 					message_type: topic.message_type,
 					first_sequence: observation.first_sequence(),
 					count: observation.count(),

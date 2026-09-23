@@ -1,13 +1,9 @@
 use std::{
 	collections::{HashMap, HashSet},
 	ffi::CString,
-	sync::{
-		Arc,
-		atomic::{AtomicBool, Ordering},
-		mpsc::{self, Receiver},
-	},
+	sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
 	thread::{self, JoinHandle},
-	time::{Duration, Instant},
+	time::Duration,
 };
 
 use hidapi::{HidApi, HidDevice};
@@ -86,7 +82,8 @@ pub(crate) struct GamepadSystem {
 	api: HidApi,
 	devices: HashMap<String, GamepadDevice>,
 	refresh_receiver: Receiver<Result<Vec<GamepadCandidate>, String>>,
-	refresh_stop: Arc<AtomicBool>,
+	// Dropping this sender tells the refresh thread to stop.
+	refresh_stop: Option<Sender<()>>,
 	refresh_thread: Option<JoinHandle<()>>,
 }
 
@@ -104,7 +101,7 @@ impl GamepadSystem {
 			api,
 			devices: HashMap::new(),
 			refresh_receiver,
-			refresh_stop,
+			refresh_stop: Some(refresh_stop),
 			refresh_thread: Some(refresh_thread),
 		})
 	}
@@ -204,7 +201,8 @@ impl GamepadSystem {
 
 impl Drop for GamepadSystem {
 	fn drop(&mut self) {
-		self.refresh_stop.store(true, Ordering::Relaxed);
+		// Disconnect the stop channel first so the thread wakes up and exits before the join.
+		drop(self.refresh_stop.take());
 		if let Some(thread) = self.refresh_thread.take() {
 			let _ = thread.join();
 		}
@@ -221,14 +219,9 @@ struct GamepadCandidate {
 	product_name: Option<String>,
 }
 
-fn spawn_refresh_thread() -> (
-	Receiver<Result<Vec<GamepadCandidate>, String>>,
-	Arc<AtomicBool>,
-	JoinHandle<()>,
-) {
+fn spawn_refresh_thread() -> (Receiver<Result<Vec<GamepadCandidate>, String>>, Sender<()>, JoinHandle<()>) {
 	let (sender, receiver) = mpsc::channel();
-	let stop = Arc::new(AtomicBool::new(false));
-	let thread_stop = Arc::clone(&stop);
+	let (stop, stop_receiver) = mpsc::channel::<()>();
 	let thread = thread::spawn(move || {
 		let mut api = match HidApi::new() {
 			Ok(api) => api,
@@ -241,18 +234,17 @@ fn spawn_refresh_thread() -> (
 			}
 		};
 
-		while !thread_stop.load(Ordering::Relaxed) {
+		loop {
 			let result = refresh_gamepad_candidates(&mut api);
 			if sender.send(result).is_err() {
 				return;
 			}
 
-			let sleep_until = Instant::now() + Duration::from_secs(1);
-			while Instant::now() < sleep_until {
-				if thread_stop.load(Ordering::Relaxed) {
-					return;
-				}
-				thread::sleep(Duration::from_millis(10));
+			// Wait one second between refreshes. The owner stops the thread by
+			// dropping its sender, which ends the wait right away.
+			match stop_receiver.recv_timeout(Duration::from_secs(1)) {
+				Err(RecvTimeoutError::Timeout) => {}
+				Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
 			}
 		}
 	});

@@ -5,6 +5,10 @@ impl Context {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let memory_properties = device.memory_properties;
 		let queues = std::mem::take(&mut device.queues);
+		let vk_queues = std::mem::take(&mut device.vk_queues)
+			.into_iter()
+			.map(std::sync::Mutex::new)
+			.collect();
 		let settings = device.settings.clone();
 		let swapchain_native_supports_formatless_storage_write = device.swapchain_native_supports_formatless_storage_write;
 		let swapchain_proxy_supports_formatless_storage_write = device.swapchain_proxy_supports_formatless_storage_write;
@@ -17,6 +21,7 @@ impl Context {
 			frames: 2, // Assuming double buffering
 
 			queues,
+			vk_queues,
 			allocations: Vec::new(),
 			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
@@ -81,7 +86,7 @@ impl Context {
 		let command_buffer_handle = graphics_hardware_interface::CommandBufferHandle(self.command_buffers.len() as u64);
 
 		let queue = &self.queues[queue_handle.0 as usize];
-		let vk_queue = queue.vk_queue.clone();
+		let vk_queue_index = queue.vk_queue_index;
 
 		let command_buffers = (0..self.frames)
 			.map(|_| {
@@ -111,7 +116,7 @@ impl Context {
 				self.set_name(command_buffer, name);
 
 				CommandBufferInternal {
-					vk_queue: vk_queue.clone(),
+					vk_queue_index,
 					command_pool,
 					command_buffer,
 				}

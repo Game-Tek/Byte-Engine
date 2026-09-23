@@ -280,6 +280,7 @@ impl Device {
 			device,
 			device_configuration,
 			dxc_compiler,
+			direct_storage_runtime: crate::dx12::io::DirectStorageRuntime::load(),
 			descriptor_handle_increment_sizes,
 			format_support_cache: RefCell::new(HashMap::default()),
 			settings,

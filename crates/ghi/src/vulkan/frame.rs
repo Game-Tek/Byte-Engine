@@ -101,8 +101,7 @@ impl<'a> Frame<'a> {
 			.map(|synchronizer| self.get_synchronizer(synchronizer).fence)
 			.unwrap_or(vk::Fence::null());
 
-		let vk_queue = command_buffer
-			.vk_queue
+		let vk_queue = self.device.vk_queues[command_buffer.vk_queue_index]
 			.lock()
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 
@@ -162,8 +161,7 @@ impl<'a> Frame<'a> {
 
 	pub(crate) fn complete_without_submissions(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		let synchronizer = self.get_synchronizer(synchronizer);
-		let queue = self.device.queues[0]
-			.vk_queue
+		let queue = self.device.vk_queues[self.device.queues[0].vk_queue_index]
 			.lock()
 			.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 		let submit_info = vk::SubmitInfo2::default();

@@ -11,7 +11,7 @@ use crate::ui::{
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct QueryElement {
-	id: u32,
+	id: u64,
 	position: Location3,
 	size: Size,
 	/// Index of the polyline a curve is hit along, within its bounds.
@@ -23,7 +23,7 @@ struct QueryElement {
 /// The `HitCurve` struct describes a hit-testable curve as a polyline in layout units.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct HitCurve {
-	pub(crate) id: u32,
+	pub(crate) id: u64,
 	pub(crate) half_width: f32,
 	/// The polyline's points, as a range of the shared point list.
 	pub(crate) first: u32,
@@ -283,12 +283,12 @@ impl MouseClickAcceleration {
 	}
 
 	/// Returns the ID of the topmost element under the pointer position.
-	pub(crate) fn query(&self, mouse_position: Location) -> Option<u32> {
+	pub(crate) fn query(&self, mouse_position: Location) -> Option<u64> {
 		self.query_excluding(mouse_position, None)
 	}
 
 	/// Finds the frontmost surface at a point, skipping one element such as a held drag source.
-	pub(crate) fn query_excluding(&self, mouse_position: Location, excluded: Option<u32>) -> Option<u32> {
+	pub(crate) fn query_excluding(&self, mouse_position: Location, excluded: Option<u64>) -> Option<u64> {
 		let (x, y) = mouse_position.into();
 		if x < 0.0 || y < 0.0 || x >= self.bounds.0 || y >= self.bounds.1 {
 			return None;
@@ -464,14 +464,14 @@ mod tests {
 				}
 				ctx.render().await;
 				// Open: move the dial under the button, transform it, and grow the petals.
-				dial.update_container(|container| {
+				dial.update_container(move |container| {
 					container.set_position((1530, 46));
 					container.set_opacity(1.0);
 					container.set_transform(crate::ui::Transform::identity().rotate(rotation).scale(scale));
 				});
 				for (index, petal) in petals.iter_mut().enumerate() {
 					let middle = -FRAC_PI_2 + index as f32 * TAU / 6.0;
-					petal.update_container(|container| {
+					petal.update_container(move |container| {
 						container.set_sector(Some(Sector::new(middle - TAU / 12.0, TAU / 6.0, 0.4).inset(3.0)));
 					});
 				}
@@ -726,3 +726,4 @@ mod tests {
 		}
 	}
 }
+

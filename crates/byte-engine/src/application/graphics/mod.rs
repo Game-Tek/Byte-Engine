@@ -91,7 +91,7 @@ pub struct GraphicsApplication {
 
 	window_factory: (Factory<Window>, DefaultListener<CreateMessage<Window>>),
 
-	generator_factory: Factory<Arc<dyn Generator>>,
+	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
 
 	world: DefaultWorld,
 	cameras_listener: DefaultListener<crate::core::factory::CreateMessage<Camera>>,
@@ -873,7 +873,7 @@ impl GraphicsApplication {
 	}
 
 	/// Returns the audio generator factory used by default audio setup.
-	pub fn generator_factory(&self) -> &Factory<Arc<dyn Generator>> {
+	pub fn generator_factory(&self) -> &Factory<std::boxed::Box<dyn Generator>> {
 		&self.generator_factory
 	}
 
@@ -1227,7 +1227,7 @@ mod tests {
 }
 
 use core::time;
-use std::{sync::Arc, thread};
+use std::thread;
 
 use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
 use resource_management::{

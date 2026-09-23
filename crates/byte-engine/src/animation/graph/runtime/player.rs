@@ -142,7 +142,7 @@ struct RootMotionTarget {
 
 /// Retains root-motion configuration until the initial clip supplies the canonical skeleton.
 struct OwnedRootMotionSettings {
-	node_name: Arc<str>,
+	node_name: Box<str>,
 	translation: RootMotionTranslation,
 	rotation: RootMotionRotation,
 }

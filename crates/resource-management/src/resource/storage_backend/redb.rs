@@ -17,6 +17,9 @@ pub struct ReDBStorageBackend {
 	storage_mode: ResourceStorageMode,
 	image_compression: ResourceGpuCompressionPolicy,
 	packed_allocator: Option<PackedResourceAllocator>,
+	/// Suffix for the next staging file name. Name clashes with other processes or
+	/// backends sharing the directory are resolved by retrying with the next value.
+	next_staging_file: AtomicU64,
 }
 
 /// The `RedbDatabase` enum lets applications read compatible stores without writes while tools and cache recovery can update them.
@@ -61,6 +64,7 @@ impl ReDBStorageBackend {
 			storage_mode: ResourceStorageMode::Files,
 			image_compression: ResourceGpuCompressionPolicy::Disabled,
 			packed_allocator: None,
+			next_staging_file: AtomicU64::new(0),
 		};
 		let settings = backend.persisted_settings()?;
 		backend.storage_mode = settings.storage_mode;
@@ -184,6 +188,7 @@ impl ReDBStorageBackend {
 			storage_mode: settings.storage_mode,
 			image_compression: settings.image_compression,
 			packed_allocator,
+			next_staging_file: AtomicU64::new(0),
 		})
 	}
 
@@ -196,15 +201,13 @@ impl ReDBStorageBackend {
 
 	/// Creates and pre-sizes a unique staging file before returning it to a processor.
 	async fn reserve_staged_file(&self, resource_id: ResourceId, size: usize) -> Result<ResourceWriter, ()> {
-		static NEXT_STAGING_FILE: AtomicU64 = AtomicU64::new(0);
-
 		if !matches!(&self.db, RedbDatabase::Writable(_)) {
 			return Err(());
 		}
 
 		let file_size = u64::try_from(size).map_err(|_| ())?;
 		loop {
-			let sequence = NEXT_STAGING_FILE.fetch_add(1, Ordering::Relaxed);
+			let sequence = self.next_staging_file.fetch_add(1, Ordering::Relaxed);
 			let path = self.base_path.join(format!(
 				"{STAGED_RESOURCE_FILE_PREFIX}-{}-{}-{sequence}.tmp",
 				resource_id,
@@ -1346,15 +1349,27 @@ mod tests {
 		}
 	}
 
-	fn backend_with_mode(storage_mode: ResourceStorageMode) -> ReDBStorageBackend {
-		static NEXT_BACKEND_ID: AtomicUsize = AtomicUsize::new(0);
+	/// Creates a fresh, empty directory under the system temp directory.
+	///
+	/// `create_dir` fails when the path already exists, so retrying with a new
+	/// timestamp suffix gives each caller its own directory without shared counters.
+	fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+		loop {
+			let nanos = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos();
+			let path = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+			match std::fs::create_dir(&path) {
+				Ok(()) => return path,
+				Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+				Err(error) => panic!("Failed to create a test directory: {error}. The most likely cause is an unwritable temp directory."),
+			}
+		}
+	}
 
-		let unique = format!(
-			"byte-engine-redb-tests-{}-{}",
-			std::process::id(),
-			NEXT_BACKEND_ID.fetch_add(1, Ordering::Relaxed)
-		);
-		ReDBStorageBackend::new_writable_with_mode(std::env::temp_dir().join(unique), storage_mode).unwrap()
+	fn backend_with_mode(storage_mode: ResourceStorageMode) -> ReDBStorageBackend {
+		ReDBStorageBackend::new_writable_with_mode(unique_temp_dir("byte-engine-redb-tests"), storage_mode).unwrap()
 	}
 
 	fn backend() -> ReDBStorageBackend {
@@ -1495,8 +1510,6 @@ mod tests {
 	#[cfg(all(target_os = "macos", feature = "gpu-processing"))]
 	#[crate::r#async::test]
 	async fn metal_lz4_image_files_return_gpu_backing() {
-		static NEXT_COMPRESSED_IMAGE_ID: AtomicUsize = AtomicUsize::new(0);
-
 		use crate::{
 			StreamDescription,
 			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
@@ -1504,11 +1517,7 @@ mod tests {
 			types::{Formats, Gamma},
 		};
 
-		let path = std::env::temp_dir().join(format!(
-			"byte-engine-compressed-image-tests-{}-{}",
-			std::process::id(),
-			NEXT_COMPRESSED_IMAGE_ID.fetch_add(1, Ordering::Relaxed)
-		));
+		let path = unique_temp_dir("byte-engine-compressed-image-tests");
 		let backend = ReDBStorageBackend::new_writable_with_settings(
 			path.clone(),
 			ResourceStorageSettings::new(ResourceStorageMode::Files)
@@ -2078,12 +2087,7 @@ mod tests {
 
 	#[test]
 	fn read_only_signature_validation_rejects_missing_and_stale_resource_stores() {
-		static NEXT_SIGNATURE_VALIDATION_ID: AtomicUsize = AtomicUsize::new(0);
-		let resources_path = std::env::temp_dir().join(format!(
-			"byte-engine-read-only-signature-tests-{}-{}",
-			std::process::id(),
-			NEXT_SIGNATURE_VALIDATION_ID.fetch_add(1, Ordering::Relaxed)
-		));
+		let resources_path = unique_temp_dir("byte-engine-read-only-signature-tests");
 		std::fs::create_dir_all(&resources_path).unwrap();
 
 		assert!(validate_resource_management_signature(&resources_path).is_err());

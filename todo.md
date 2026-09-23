@@ -192,3 +192,8 @@
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
 - Build a level manager on top of `Scene`/`SceneNode` (`crates/byte-engine/src/gameplay/scene.rs`): active-scene switching, loading levels from assets, and optional re-parenting of scene members.
+
+## Ownership cleanup (deferred)
+
+- Replace the process-wide `COUNTER` in `crates/byte-engine/src/core/factory.rs` with an id counter owned by the world or message bus and passed to the factories. Deferred on request during the Rc/Arc and globals cleanup.
+- Remove the shared `Arc<AssetManagerState>` in `crates/resource-management/src/asset/manager.rs` (and the dependent file-watcher `Weak`, `in_flight_bakes` Arc, bake-memory Arcs, shared storage backend, material mip generator Arc, and test counters). compio dispatch requires `'static` jobs; the options considered (no dispatcher + owned-data compute pool, coordinator/actor, whole pool inside `std::thread::scope`) were rejected, so a different design is needed.

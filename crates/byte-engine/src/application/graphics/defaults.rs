@@ -146,7 +146,7 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// must receive their complete resource store from BELD.
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
-	generator: impl ProgramGenerator + 'static,
+	generator: impl ProgramGenerator + Clone + 'static,
 ) {
 	#[cfg(not(debug_assertions))]
 	{
@@ -157,8 +157,6 @@ pub fn setup_default_resource_and_asset_management(
 
 	#[cfg(debug_assertions)]
 	{
-		let generator = std::sync::Arc::new(generator);
-
 		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
@@ -411,9 +409,6 @@ use crate::{
 
 #[cfg(all(test, debug_assertions))]
 mod tests {
-
-	use std::sync::atomic::{AtomicUsize, Ordering};
-
 	use resource_management::{
 		asset::{FileStorageBackend, manager::AssetManager},
 		resource::storage_backend::redb::ReDBStorageBackend,
@@ -423,13 +418,8 @@ mod tests {
 
 	#[test]
 	fn default_image_handlers_support_ies_profiles() {
-		static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-		let root = std::env::temp_dir().join(format!(
-			"byte-engine-default-image-handlers-{}-{}",
-			std::process::id(),
-			NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
-		));
+		// This test runs once per process, so the process ID keeps its directory unique.
+		let root = std::env::temp_dir().join(format!("byte-engine-default-image-handlers-{}", std::process::id()));
 
 		let assets = root.join("assets");
 

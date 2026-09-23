@@ -1140,7 +1140,6 @@ use std::{
 	collections::VecDeque,
 	io::Write,
 	ops::{Deref, DerefMut},
-	rc::Rc,
 };
 
 use ghi::{

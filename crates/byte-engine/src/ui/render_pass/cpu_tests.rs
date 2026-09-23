@@ -14,12 +14,12 @@ fn changing_render(count: usize, phase: usize) -> engine::Render {
 			let mut root = ctx.element("root").container(Container::default());
 			for index in 0..count {
 				let color = RGBA::new(0.2, 0.4, 0.6, if (index + phase).is_multiple_of(3) { 0.0 } else { 1.0 });
-				root.element("label").text(
+				root.element(("label", index)).text(
 					Text::new(format!("{phase}: {}", "label".repeat(index + 1)))
 						.font_size(10.0 + phase as f32)
 						.style(ConcreteLayer::default().color(color.into())),
 				);
-				root.element("curve").curve(
+				root.element(("curve", index)).curve(
 					Curve::new(CurvePath::new(40.into(), 30.into()).line((0.0, phase as f32), (30.0, 20.0))).style(
 						ConcreteStyle::from_layers([
 							ConcreteLayer::default().color(color.into()).stroke(1.0 + phase as f32),
@@ -295,7 +295,7 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 						}
 						if !routed {
 							routed = true;
-							curve.update_curve(|curve| {
+							curve.update_curve(move |curve| {
 								let path = curve.path_mut();
 								path.clear();
 								path.push_cubic((20.0, 20.0), (80.0, 20.0), (120.0, 200.0), (200.0, 200.0));

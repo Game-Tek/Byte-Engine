@@ -1,9 +1,7 @@
-use std::{
-	borrow::Cow,
-	collections::{HashMap, HashSet},
-};
+// Element ids are already well-mixed hashes, so the fast hasher is enough for every id-keyed map.
+use utils::hash::{HashMap, HashSet};
 
-use super::{ConcreteElement, Id, IdedElement, LayoutElement, PathSegment};
+use super::{ConcreteElement, Id, IdedElement, LayoutElement};
 use crate::ui::{
 	components::{
 		container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings, text_field::TextFieldSettings,
@@ -12,6 +10,22 @@ use crate::ui::{
 	primitive::{Primitive, Primitives},
 	style::{ConcreteLayer, EdgeFeather, Layer},
 };
+
+/// The path of the root context. Nothing is declared above it, so it can never be removed.
+pub(super) const ROOT_PATH: u64 = 0;
+
+/// Reports whether `path` is `ancestor` or was declared somewhere under it, following `declarations`.
+fn is_declared_under(declarations: &HashMap<u64, u64>, mut path: u64, ancestor: u64) -> bool {
+	loop {
+		if path == ancestor {
+			return true;
+		}
+		match declarations.get(&path) {
+			Some(&declared_in) if path != ROOT_PATH => path = declared_in,
+			_ => return false,
+		}
+	}
+}
 
 /// Properties that can change placement independently of text measurements.
 #[derive(PartialEq)]
@@ -186,7 +200,11 @@ fn clip_inputs(
 	))
 }
 
-/// The `RetainedTree` struct owns stable UI identities and the live topology used by layout.
+/// The `RetainedTree` struct owns the live UI elements and the topology layout walks.
+///
+/// Components never write to it directly: their contexts send [`super::engine::UiCommand`]s, and the engine applies
+/// them here between task polls. Element ids are computed by the contexts (see [`super::context::ElementKey`]), so the
+/// tree only records what it needs to follow declaration ancestry and to keep a compact render order.
 #[derive(Default)]
 pub(super) struct RetainedTree {
 	pub(super) elements: Vec<IdedElement>,
@@ -196,13 +214,18 @@ pub(super) struct RetainedTree {
 	/// Spare child lists keep their capacity after a scope closes.
 	pub(super) children: Vec<Vec<usize>>,
 	pub(super) parents: Vec<Option<usize>>,
-	path_counts: HashMap<(Option<Id>, Cow<'static, str>), u32>,
-	path_ids: HashMap<(usize, PathSegment), usize>,
-	/// Interned paths retain their original scope ancestry even after visual reparenting.
-	paths: Vec<(usize, Option<Id>)>,
+	/// The path each declared element or component scope was declared in, by its own path.
+	///
+	/// Scope removal follows these links, so a visually reparented element still belongs to the context that
+	/// declared it. Entries outlive their elements so a context can declare again after a removal.
+	declarations: HashMap<u64, u64>,
+	/// Elements created in the current frame, to detect a key declared twice under the same parent.
+	declared: HashSet<Id>,
+	/// The compact render order of every id this tree has held. A remounted element keeps its order.
+	serials: HashMap<Id, u32>,
+	next_serial: u32,
 	/// Reused during scope cleanup; the caller consumes these IDs before the next removal.
 	removed: HashSet<Id>,
-	next_id: u32,
 	/// Advances on every structural or property change so consumers can retain derived state.
 	revision: u64,
 	/// Advances when a mutation may change element positions, sizes, or hit participation.
@@ -231,26 +254,23 @@ impl RetainedTree {
 	pub(super) fn new() -> Self {
 		// Reserve a small screen up front; larger screens grow these collections normally.
 		const ELEMENT_CAPACITY: usize = 256;
-		let mut paths = Vec::with_capacity(ELEMENT_CAPACITY);
-		paths.push((0, None));
 		Self {
-			next_id: 1,
 			elements: Vec::with_capacity(ELEMENT_CAPACITY),
-			element_indices: HashMap::with_capacity(ELEMENT_CAPACITY),
+			element_indices: HashMap::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
 			relations: Vec::with_capacity(ELEMENT_CAPACITY),
 			children: Vec::with_capacity(ELEMENT_CAPACITY),
 			parents: Vec::with_capacity(ELEMENT_CAPACITY),
-			path_counts: HashMap::with_capacity(ELEMENT_CAPACITY),
-			path_ids: HashMap::with_capacity(ELEMENT_CAPACITY),
-			paths,
-			removed: HashSet::with_capacity(ELEMENT_CAPACITY),
+			declarations: HashMap::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
+			declared: HashSet::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
+			serials: HashMap::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
+			removed: HashSet::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
 			text_changes: Vec::with_capacity(ELEMENT_CAPACITY),
 			..Self::default()
 		}
 	}
 
 	pub(super) fn begin_frame(&mut self) {
-		self.path_counts.clear();
+		self.declared.clear();
 	}
 
 	/// Returns a value that changes whenever elements are added, removed, or mutated.
@@ -260,55 +280,52 @@ impl RetainedTree {
 		self.revision
 	}
 
-	/// Interns a structural path so mounted contexts share ancestry without copying it.
-	///
-	/// Names are declared once per element, so an owned name is cloned only at that time.
-	pub(super) fn scope_path(&mut self, parent: Option<Id>, parent_path: usize, name: Cow<'static, str>) -> usize {
-		let count = self.path_counts.entry((parent, name.clone())).or_insert(0);
-		*count += 1;
-		let key = (parent_path, PathSegment { name, ordinal: *count });
-		*self.path_ids.entry(key).or_insert_with(|| {
-			let index = self.paths.len();
-			self.paths.push((parent_path, None));
-			index
-		})
+	/// Records that the component scope `path` was declared in `declared_in`, so removing an ancestor ends it.
+	pub(super) fn declare_scope(&mut self, path: u64, declared_in: u64) {
+		self.declarations.insert(path, declared_in);
 	}
 
 	/// Reports whether `path` is `ancestor` or was declared somewhere under it.
 	///
 	/// Declaration ancestry is what scope removal follows, so a visually reparented
 	/// element still belongs to the context that declared it.
-	pub(super) fn path_is_under(&self, mut path: usize, ancestor: usize) -> bool {
-		while path != 0 && path != ancestor {
-			path = self.paths[path].0;
-		}
-		path == ancestor
-	}
-
-	/// Returns the stable element identity assigned to an interned path.
-	fn id_for_path(&mut self, path: usize) -> Id {
-		*self.paths[path].1.get_or_insert_with(|| {
-			let id = Id::new(self.next_id).expect("UI id counter must stay non-zero");
-			self.next_id += 1;
-			id
-		})
+	pub(super) fn path_is_under(&self, path: u64, ancestor: u64) -> bool {
+		is_declared_under(&self.declarations, path, ancestor)
 	}
 
 	/// Adds a declaration once and connects it to the retained layout topology.
-	pub(super) fn add_element(
-		&mut self,
-		parent: Option<Id>,
-		parent_path: usize,
-		name: Cow<'static, str>,
-		element: ConcreteElement,
-	) -> (Id, usize) {
-		let path = self.scope_path(parent, parent_path, name);
-		let id = self.id_for_path(path);
-
+	///
+	/// A declaration of an id the tree already holds keeps the existing element and its properties. Declaring the
+	/// same id twice in one frame, or under a parent the tree does not hold, is logged and ignored.
+	pub(super) fn add_element(&mut self, parent: Option<Id>, declared_in: u64, id: Id, element: ConcreteElement) {
+		let parent_index = match parent.map(|parent| self.element_indices.get(&parent).copied()) {
+			Some(Some(index)) => Some(index),
+			Some(None) => {
+				// Commands from one task arrive in order, so this parent was removed before its child was declared.
+				log::error!(
+					"A UI element was declared under a parent that no longer exists. The most likely cause is declaring an element from a context whose element was removed."
+				);
+				return;
+			}
+			None => None,
+		};
+		if !self.declared.insert(id) {
+			log::error!(
+				"A UI element key was declared twice under the same parent in one frame. The most likely cause is declaring siblings in a loop with one key; give each one a distinct key, such as `(\"row\", index)`."
+			);
+			debug_assert!(false, "UI element {id} was declared twice under the same parent in one frame");
+			return;
+		}
+		self.declarations.insert(id.get(), declared_in);
 		if self.element_indices.contains_key(&id) {
-			return (id, path);
+			return;
 		}
 
+		let next_serial = &mut self.next_serial;
+		let serial = *self.serials.entry(id).or_insert_with(|| {
+			*next_serial += 1;
+			*next_serial
+		});
 		self.element_indices.insert(id, self.elements.len());
 		self.revision += 1;
 		self.non_transform_revision = self.revision;
@@ -319,12 +336,11 @@ impl RetainedTree {
 		self.elements.push(IdedElement {
 			id,
 			element,
-			path,
+			serial,
 			revision: self.revision,
 		});
 
 		let index = self.elements.len() - 1;
-		let parent_index = parent.map(|parent| self.element_indices[&parent]);
 		self.parents.push(parent_index);
 		if index == self.children.len() {
 			self.children.push(Vec::new());
@@ -334,28 +350,32 @@ impl RetainedTree {
 			self.relations.push((self.elements[parent_index].id, id));
 			self.children[parent_index].push(index);
 		}
-
-		(id, path)
 	}
 
 	/// Moves an element under another parent as its last child.
 	///
-	/// The element keeps its id, path, and properties. Returns false when either
-	/// id is unknown or `parent` is the element itself or one of its descendants.
-	pub(super) fn reparent(&mut self, child: Id, parent: Id) -> bool {
+	/// The element keeps its id, declaration path, and properties. An unknown id, or a `parent` that is the element
+	/// itself or one of its descendants, is logged and changes nothing.
+	pub(super) fn reparent(&mut self, child: Id, parent: Id) {
 		let (Some(&child_index), Some(&parent_index)) = (self.element_indices.get(&child), self.element_indices.get(&parent))
 		else {
-			return false;
+			log::error!(
+				"A UI element could not be reparented because it or its new parent does not exist. The most likely cause is an element that was removed before the reparent was applied."
+			);
+			return;
 		};
 		let mut ancestor = Some(parent_index);
 		while let Some(current) = ancestor {
 			if current == child_index {
-				return false;
+				log::error!(
+					"A UI element could not be moved under itself or one of its descendants. The most likely cause is adopting an ancestor of the adopting element."
+				);
+				return;
 			}
 			ancestor = self.parents[current];
 		}
 		if self.parents[child_index] == Some(parent_index) {
-			return true;
+			return;
 		}
 		if let Some(previous) = self.parents[child_index] {
 			self.children[previous].retain(|&sibling| sibling != child_index);
@@ -370,14 +390,13 @@ impl RetainedTree {
 		self.flow_revision = self.revision;
 		self.clip_revision = self.revision;
 		self.appearance_revision = self.revision;
-		true
 	}
 
 	/// Invalidates the changed node's measurement and any affected inherited appearance.
-	pub(super) fn update_element(&mut self, id: Id, update: impl FnOnce(&mut Primitives) -> bool) -> bool {
-		let Some(&index) = self.element_indices.get(&id) else {
-			return false;
-		};
+	///
+	/// Returns what `update` returned, or `None` when the tree holds no element `id`.
+	pub(super) fn update_element(&mut self, id: Id, update: impl FnOnce(&mut Primitives) -> bool) -> Option<bool> {
+		let index = *self.element_indices.get(&id)?;
 		let element = &mut self.elements[index];
 		let primitive = &mut element.element.primitive;
 		let placement = placement_inputs(primitive);
@@ -429,7 +448,7 @@ impl RetainedTree {
 			self.flow_revision = old_flow_revision;
 			self.clip_revision = old_clip_revision;
 			self.appearance_revision = old_appearance_revision;
-			return updated;
+			return Some(updated);
 		}
 		if transform != *primitive.transform() && !self.transform_changes.contains(&index) {
 			self.transform_changes.push(index);
@@ -454,7 +473,7 @@ impl RetainedTree {
 				self.appearance_revision = old_appearance_revision;
 			}
 		}
-		updated
+		Some(updated)
 	}
 
 	pub(super) fn element(&self, id: Id) -> Option<&IdedElement> {
@@ -463,27 +482,26 @@ impl RetainedTree {
 	}
 
 	/// Removes the scope and lends its identities to runtime cleanup without reallocating the set.
-	pub(super) fn remove_scope(&mut self, scope: usize) -> &HashSet<Id> {
+	pub(super) fn remove_scope(&mut self, scope: u64) -> &HashSet<Id> {
 		self.removed.clear();
-		if scope == 0 {
+		if scope == ROOT_PATH {
 			return &self.removed;
 		}
 
 		let Self {
 			elements,
-			paths,
+			declarations,
 			removed,
+			declared,
 			..
 		} = self;
 		elements.retain(|element| {
 			// Scope ownership follows declaration paths, never the current visual parent.
-			let mut path = element.path;
-			while path != 0 && path != scope {
-				path = paths[path].0;
-			}
-			let should_remove = path == scope;
+			let should_remove = is_declared_under(declarations, element.id.get(), scope);
 			if should_remove {
 				removed.insert(element.id);
+				// The same key may be declared again in this frame once its element is gone.
+				declared.remove(&element.id);
 			}
 			!should_remove
 		});

@@ -1,4 +1,12 @@
-use std::{borrow::Cow, future::Future, pin::Pin, time::Duration};
+use std::{
+	future::Future,
+	hash::{Hash, Hasher},
+	num::NonZeroU64,
+	pin::Pin,
+	time::Duration,
+};
+
+use utils::hash::FxHasher;
 
 use crate::ui::{
 	Container, Text,
@@ -8,27 +16,92 @@ use crate::ui::{
 	layout::{
 		Geometry,
 		engine::{
-			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, RenderFuture, TextEditFuture,
+			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, Read, RenderFuture,
+			TextEditFuture, With,
 		},
 	},
 	primitive::{Events, Key},
-	timer::{WaitFuture, seconds as wait_seconds, wait},
+	timer::WaitFuture,
 };
 
 pub type UiFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
 pub type MountedUiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
+/// The `ElementKey` struct names one slot under a context: an element, a component, or a mount.
+///
+/// Pass it to [`Context::element`]. A static name identifies a fixed part of a component, such as `"title"`. An
+/// owned `String` names a slot created at runtime, such as one node of a graph; the key is its content, not its
+/// address. Siblings declared from one list use a `(name, index)` pair, such as `("row", index)`.
+///
+/// Keys under one parent must be distinct: declaring the same key twice under the same parent in one frame is an
+/// error. A key is hashed when it is made, so it never allocates or keeps the name alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ElementKey(u64);
+
+impl ElementKey {
+	/// Hashes a name and, for one slot of a list, its index. A plain name and the same name with an index differ.
+	fn new(name: &str, index: Option<usize>) -> Self {
+		let mut hasher = FxHasher::default();
+		(name, index).hash(&mut hasher);
+		Self(hasher.finish())
+	}
+}
+
+impl From<&str> for ElementKey {
+	fn from(name: &str) -> Self {
+		Self::new(name, None)
+	}
+}
+
+impl From<String> for ElementKey {
+	fn from(name: String) -> Self {
+		Self::new(&name, None)
+	}
+}
+
+impl From<(&str, usize)> for ElementKey {
+	fn from((name, index): (&str, usize)) -> Self {
+		Self::new(name, Some(index))
+	}
+}
+
+/// Returns the path, and so the element id, of the slot `key` declared in the context at path `parent`.
+///
+/// This is a pure function of its inputs: the same key under the same parent always gives the same id, and no tree
+/// lookup is needed to compute it. The root context's path is `0`, which no slot can have.
+pub(crate) fn slot_path(parent: u64, key: ElementKey) -> NonZeroU64 {
+	let mut hasher = FxHasher::default();
+	hasher.write_u64(parent);
+	hasher.write_u64(key.0);
+	// Spread every bit so sibling and nested ids are unrelated; the multiply-rotate hash alone leaves weak high bits.
+	let mut id = hasher.finish();
+	id ^= id >> 33;
+	id = id.wrapping_mul(0xff51_afd7_ed55_8ccd);
+	id ^= id >> 33;
+	NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN)
+}
+
 /// Element-construction API available to async UI components.
+///
+/// Writes such as declaring elements, updates, and removals are sent to the engine and applied after the current
+/// task poll, in the order they were made. Reads such as [`Self::geometry`] and [`Self::with`] are futures that
+/// complete on their first poll.
 pub trait Context<C: 'static = ()>: Sized {
 	fn id(&self) -> Id;
-	fn ctx(&self) -> &C;
 
-	/// Declares a named slot under this context for an element, component, or mount.
+	/// Reads the engine's application context, which the engine lends while it polls this component.
 	///
-	/// A static name identifies a fixed part of a component. An owned `String`
-	/// names an element created at runtime, such as one node of a graph, so the
-	/// slot is keyed by the string's content rather than its address.
-	fn element<'a>(&'a mut self, name: impl Into<Cow<'static, str>>) -> ElementSlot<'a, C>;
+	/// Await the result: `let value = ctx.with(|app: &App| app.value).await;`. The host reaches the same value
+	/// through [`crate::ui::Engine::ctx`] and [`crate::ui::Engine::ctx_mut`].
+	fn with<F, T>(&self, read: F) -> With<C, F>
+	where
+		F: FnOnce(&C) -> T;
+
+	/// Declares a keyed slot under this context for an element, component, or mount.
+	///
+	/// The slot's id is computed from this context's path and `key`, so declaring the same key in a later frame
+	/// finds the same element. See [`ElementKey`] for the keys you can pass and the rule for siblings.
+	fn element<'a>(&'a mut self, key: impl Into<ElementKey>) -> ElementSlot<'a, C>;
 
 	fn text(&mut self, text: Text) -> EvaluationContext<C> {
 		self.element("text").text(text)
@@ -54,14 +127,16 @@ pub trait Context<C: 'static = ()>: Sized {
 		self.element("path").path(path)
 	}
 
-	fn render(&mut self) -> RenderFuture;
+	fn render(&mut self) -> RenderFuture<C>;
 
-	fn geometry(&self) -> Option<Geometry>;
+	/// Reads this element's bounds from the last layout, or `None` before it was laid out.
+	fn geometry(&self) -> Read<C, Option<Geometry>>;
 
-	fn pointer(&self) -> PointerState;
+	/// Reads the pointer state the engine last synchronized.
+	fn pointer(&self) -> Read<C, PointerState>;
 
-	/// Returns the engine's captured drag gesture, if a source is held.
-	fn drag(&self) -> Option<DragCapture>;
+	/// Reads the engine's captured drag gesture, if a source is held.
+	fn drag(&self) -> Read<C, Option<DragCapture>>;
 
 	fn request_focus(&mut self);
 
@@ -69,20 +144,21 @@ pub trait Context<C: 'static = ()>: Sized {
 
 	/// Removes everything declared under this context, including the component
 	/// itself when called from one. See [`EvaluationContext::remove`].
-	fn remove(&mut self) -> bool;
+	fn remove(&mut self);
 
-	fn wait(&mut self, duration: Duration) -> WaitFuture {
-		wait(duration)
+	/// Returns a future that completes after `duration`. See [`WaitFuture`].
+	fn wait(&mut self, duration: Duration) -> WaitFuture<C> {
+		WaitFuture::new(duration)
 	}
 
-	fn seconds(&mut self, seconds: u64) -> WaitFuture {
-		wait_seconds(seconds)
+	fn seconds(&mut self, seconds: u64) -> WaitFuture<C> {
+		WaitFuture::new(Duration::from_secs(seconds))
 	}
 }
 
 pub struct ElementSlot<'a, C: 'static = ()> {
 	pub(crate) parent: &'a mut EvaluationContext<C>,
-	pub(crate) name: Cow<'static, str>,
+	pub(crate) key: ElementKey,
 }
 
 pub trait ElementContext<C: 'static = ()> {
@@ -103,7 +179,7 @@ pub trait ElementContext<C: 'static = ()> {
 }
 
 pub trait ContainerContext<C: 'static = ()>: Context<C> {
-	fn on(&mut self, event: Events) -> EventFuture;
-	fn on_key(&mut self, key: Key) -> KeyFuture;
-	fn on_text_edit(&mut self) -> TextEditFuture;
+	fn on(&mut self, event: Events) -> EventFuture<C>;
+	fn on_key(&mut self, key: Key) -> KeyFuture<C>;
+	fn on_text_edit(&mut self) -> TextEditFuture<C>;
 }

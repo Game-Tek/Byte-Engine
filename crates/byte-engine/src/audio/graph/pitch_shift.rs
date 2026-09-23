@@ -1,12 +1,12 @@
 use std::{
 	f32::consts::{PI, TAU},
-	sync::{Arc, OnceLock},
+	sync::Arc,
 };
 
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 
-use super::{AudioGraphTime, RuntimeAudioProcessor};
+use super::{AudioGraphTime, AudioProcessContext, RuntimeAudioProcessor};
 
 const WINDOW_SIZE: usize = 1024;
 pub(super) const PITCH_SHIFT_LATENCY: usize = WINDOW_SIZE;
@@ -14,19 +14,22 @@ const HOP_SIZE: usize = WINDOW_SIZE / 8;
 const BIN_COUNT: usize = WINDOW_SIZE / 2 + 1;
 const WINDOW_MASK: usize = WINDOW_SIZE - 1;
 const _: () = assert!(WINDOW_SIZE.is_power_of_two());
-static SHARED: OnceLock<PitchShiftShared> = OnceLock::new();
-
-/// The `PitchShiftShared` struct avoids rebuilding immutable FFT plans for
-/// every pitch-shift playback.
-struct PitchShiftShared {
+/// The `PitchShiftPlans` struct lets every pitch-shift playback on one audio
+/// worker reuse the same FFT plans and scratch storage.
+///
+/// The audio worker owns one value inside its
+/// [`AudioProcessContext`](super::AudioProcessContext) and lends it to each
+/// [`PitchShiftProcessor`] while that processor runs.
+pub(crate) struct PitchShiftPlans {
+	// `realfft` hands out its plans as `Arc`s. This struct is their only owner.
 	forward: Arc<dyn RealToComplex<f32>>,
 	inverse: Arc<dyn ComplexToReal<f32>>,
-	scratch_len: usize,
+	scratch: Box<[Complex32]>,
 }
 
-impl PitchShiftShared {
-	/// Builds the reusable real forward and inverse transforms once.
-	fn new() -> Self {
+impl PitchShiftPlans {
+	/// Builds the real forward and inverse transforms and their shared scratch buffer.
+	pub(crate) fn new() -> Self {
 		let mut planner = RealFftPlanner::new();
 		let forward = planner.plan_fft_forward(WINDOW_SIZE);
 		let inverse = planner.plan_fft_inverse(WINDOW_SIZE);
@@ -34,7 +37,7 @@ impl PitchShiftShared {
 		Self {
 			forward,
 			inverse,
-			scratch_len,
+			scratch: vec![Complex32::ZERO; scratch_len].into_boxed_slice(),
 		}
 	}
 }
@@ -53,8 +56,6 @@ struct PitchBinMapping {
 /// real-time pitch-shift node.
 pub(crate) struct PitchShiftProcessor {
 	ratio: f32,
-	forward: Arc<dyn RealToComplex<f32>>,
-	inverse: Arc<dyn ComplexToReal<f32>>,
 	input: Box<[f32]>,
 	output: Box<[f32]>,
 	normalization: Box<[f32]>,
@@ -62,7 +63,6 @@ pub(crate) struct PitchShiftProcessor {
 	transform_buffer: Box<[f32]>,
 	spectrum: Box<[Complex32]>,
 	shifted_spectrum: Box<[Complex32]>,
-	scratch: Box<[Complex32]>,
 	bin_mappings: Box<[PitchBinMapping]>,
 	previous_phase: Box<[f32]>,
 	output_phase: Box<[f32]>,
@@ -74,7 +74,6 @@ impl PitchShiftProcessor {
 	/// Precomputes ratio-specific bin mappings and allocates all mutable DSP
 	/// state before this processor reaches the audio worker.
 	pub(super) fn new(ratio: f32) -> Self {
-		let shared = SHARED.get_or_init(PitchShiftShared::new);
 		let window = (0..WINDOW_SIZE)
 			.map(|index| 0.5 - 0.5 * (TAU * index as f32 / WINDOW_SIZE as f32).cos())
 			.collect::<Vec<_>>()
@@ -101,8 +100,6 @@ impl PitchShiftProcessor {
 
 		Self {
 			ratio,
-			forward: Arc::clone(&shared.forward),
-			inverse: Arc::clone(&shared.inverse),
 			input: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			output: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			normalization: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
@@ -110,7 +107,6 @@ impl PitchShiftProcessor {
 			transform_buffer: vec![0.0; WINDOW_SIZE].into_boxed_slice(),
 			spectrum: vec![Complex32::ZERO; BIN_COUNT].into_boxed_slice(),
 			shifted_spectrum: vec![Complex32::ZERO; BIN_COUNT].into_boxed_slice(),
-			scratch: vec![Complex32::ZERO; shared.scratch_len].into_boxed_slice(),
 			bin_mappings: bin_mappings.into_boxed_slice(),
 			previous_phase: vec![0.0; active_bin_count].into_boxed_slice(),
 			output_phase: vec![0.0; active_bin_count].into_boxed_slice(),
@@ -121,15 +117,15 @@ impl PitchShiftProcessor {
 
 	/// Processes one block through the persistent phase-vocoder state. Every
 	/// working buffer is allocated during construction.
-	pub(super) fn process(&mut self, samples: &mut [f32]) {
+	pub(super) fn process(&mut self, plans: &mut PitchShiftPlans, samples: &mut [f32]) {
 		for sample in samples {
-			*sample = self.process_sample(*sample);
+			*sample = self.process_sample(plans, *sample);
 		}
 	}
 
 	/// Buffers one sample and periodically transforms a complete overlapping
 	/// frame.
-	fn process_sample(&mut self, sample: f32) -> f32 {
+	fn process_sample(&mut self, plans: &mut PitchShiftPlans, sample: f32) -> f32 {
 		let divisor = self.normalization[self.cursor];
 		let output = if divisor > f32::EPSILON {
 			self.output[self.cursor] / divisor
@@ -143,7 +139,7 @@ impl PitchShiftProcessor {
 		self.samples_until_transform -= 1;
 
 		if self.samples_until_transform == 0 {
-			self.transform_frame();
+			self.transform_frame(plans);
 			self.samples_until_transform = HOP_SIZE;
 		}
 		output
@@ -151,14 +147,15 @@ impl PitchShiftProcessor {
 
 	/// Estimates each source bin's true frequency, maps it by the requested
 	/// ratio, and overlap-adds the reconstructed frame into the output ring.
-	fn transform_frame(&mut self) {
+	fn transform_frame(&mut self, plans: &mut PitchShiftPlans) {
 		for index in 0..WINDOW_SIZE {
 			let source_index = (self.cursor + index) & WINDOW_MASK;
 			self.transform_buffer[index] = self.input[source_index] * self.window[index];
 		}
 		self.shifted_spectrum.fill(Complex32::ZERO);
-		self.forward
-			.process_with_scratch(&mut self.transform_buffer, &mut self.spectrum, &mut self.scratch)
+		plans
+			.forward
+			.process_with_scratch(&mut self.transform_buffer, &mut self.spectrum, &mut plans.scratch)
 			.expect("Preallocated real FFT buffers must retain their planned lengths.");
 
 		for (bin, mapping) in self.bin_mappings.iter().enumerate() {
@@ -183,8 +180,9 @@ impl PitchShiftProcessor {
 		// complex transform discarded their imaginary output components too.
 		self.shifted_spectrum[0].im = 0.0;
 		self.shifted_spectrum[BIN_COUNT - 1].im = 0.0;
-		self.inverse
-			.process_with_scratch(&mut self.shifted_spectrum, &mut self.transform_buffer, &mut self.scratch)
+		plans
+			.inverse
+			.process_with_scratch(&mut self.shifted_spectrum, &mut self.transform_buffer, &mut plans.scratch)
 			.expect("Preallocated inverse real FFT buffers must retain their planned lengths and real endpoints.");
 		let fft_scale = 1.0 / WINDOW_SIZE as f32;
 		for index in 0..WINDOW_SIZE {
@@ -197,8 +195,8 @@ impl PitchShiftProcessor {
 }
 
 impl RuntimeAudioProcessor for PitchShiftProcessor {
-	fn process(&mut self, _time: AudioGraphTime, samples: &mut [f32]) {
-		PitchShiftProcessor::process(self, samples);
+	fn process(&mut self, context: &mut AudioProcessContext, _time: AudioGraphTime, samples: &mut [f32]) {
+		PitchShiftProcessor::process(self, &mut context.pitch_shift, samples);
 	}
 }
 
@@ -249,7 +247,7 @@ fn nyquist_taper(target_bin: f32, ratio: f32) -> f32 {
 mod tests {
 	use std::f32::consts::{PI, TAU};
 
-	use super::{HOP_SIZE, PitchShiftProcessor, WINDOW_SIZE, advance_output_phase, wrap_phase};
+	use super::{HOP_SIZE, PitchShiftPlans, PitchShiftProcessor, WINDOW_SIZE, advance_output_phase, wrap_phase};
 
 	const SAMPLE_RATE: f32 = 48_000.0;
 	const SAMPLE_COUNT: usize = 16_384;
@@ -264,13 +262,14 @@ mod tests {
 	}
 
 	fn render_samples(input: &[f32], ratio: f32, chunks: &[usize]) -> Vec<f32> {
+		let mut plans = PitchShiftPlans::new();
 		let mut processor = PitchShiftProcessor::new(ratio);
 		let mut output = Vec::with_capacity(input.len() + WINDOW_SIZE);
 		let mut cursor = 0;
 		for &chunk_size in chunks {
 			let end = (cursor + chunk_size).min(input.len());
 			let mut block = input[cursor..end].to_vec();
-			processor.process(&mut block);
+			processor.process(&mut plans, &mut block);
 			output.extend(block);
 			cursor = end;
 			if cursor == input.len() {
@@ -278,25 +277,16 @@ mod tests {
 			}
 		}
 		let mut remainder = input[cursor..].to_vec();
-		processor.process(&mut remainder);
+		processor.process(&mut plans, &mut remainder);
 		output.extend(remainder);
 		let mut tail = vec![0.0; WINDOW_SIZE];
-		processor.process(&mut tail);
+		processor.process(&mut plans, &mut tail);
 		output.extend(tail);
 		output
 	}
 
 	fn render(ratio: f32, chunks: &[usize]) -> Vec<f32> {
 		render_samples(&sine_wave(), ratio, chunks)
-	}
-
-	#[test]
-	fn processors_share_immutable_fft_plans() {
-		let first = PitchShiftProcessor::new(0.5);
-		let second = PitchShiftProcessor::new(2.0);
-
-		assert!(std::sync::Arc::ptr_eq(&first.forward, &second.forward));
-		assert!(std::sync::Arc::ptr_eq(&first.inverse, &second.inverse));
 	}
 
 	fn magnitude_at(samples: &[f32], frequency: f32) -> f32 {

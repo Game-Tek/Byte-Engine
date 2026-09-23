@@ -8,7 +8,7 @@ Use the early UI module to build retained, asynchronous interfaces inside the
 Byte Engine render loop.
 
 An asynchronous component function receives a layout `Context`. It creates
-elements in stable named slots, waits for events, and can mount child components
+elements in stable keyed slots, waits for events, and can mount child components
 that return values. The runtime keeps state between evaluations, so your
 application does not rebuild each interaction from the beginning.
 
@@ -37,6 +37,28 @@ Text input is app-owned: `TextField` emits edit deltas such as inserted and dele
 Components request and release focus explicitly. Send key and text-edit events to
 the focused element.
 
+## Read and change engine state
+
+A component never holds the engine. Changes it makes, such as declaring an
+element, `update_container`, `remove`, `reparent`, and focus requests, are sent
+to the engine right away and applied after the component yields, in the order
+they were made. The next layout sees them, and so do components that run after
+it in the same evaluation. Because an edit runs later, its closure owns what it
+uses: write `move |container| ...` and copy or clone the values it needs.
+
+Reads are futures that complete at once. Await them in the component:
+
+```rust
+let bounds = card.geometry().await;
+let pointer = ctx.pointer().await;
+let held = ctx.drag().await;
+let score = ctx.with(|app: &App| app.score.get()).await;
+```
+
+`Context::with` lends the application context you passed to
+`Engine::with_context`. The host reaches the same value between evaluations
+through `Engine::ctx` and `Engine::ctx_mut`.
+
 ## Understand component lifetime
 
 A component started with `component` runs until its future returns or until the
@@ -48,23 +70,35 @@ return or the engine is dropped.
 
 `EvaluationContext::remove` removes one element together with everything
 declared under it: its descendants and the components started there. The
-context it was called on stays valid only to declare the same name again, which
-gets the same id on a later frame. A mounted component awaited from outside the
-removed element keeps running until its own future ends; its elements are gone,
-so its updates report `false`.
+context it was called on stays valid only to declare the same key again, which
+gets the same id. A mounted component awaited from outside the removed element
+keeps running until its own future ends; its elements are gone, so its updates
+change nothing.
 
 ## Build content at runtime
 
-`Context::element` takes any name that converts into `Cow<'static, str>`. A
-static name identifies a fixed part of a component. An owned `String` names an
-element created from data, such as one node of a graph, and the slot is keyed by
-the string's content, so the same content on a later frame resolves the same
-retained element:
+`Context::element` takes an `ElementKey`. An element's id is computed from its
+parent's path and its key, so the same key under the same parent always
+resolves the same retained element. A static name identifies a fixed part of a
+component. An owned `String` names an element created from data, such as one
+node of a graph, and the slot is keyed by the string's content:
 
 ```rust
 let mut node = canvas.element(format!("node-{id}")).container(node_frame(position));
 let mut wire = canvas.element(format!("wire-{from}-{to}")).curve(wire_between(a, b));
 ```
+
+Siblings under one parent need distinct keys. For a list, pair a name with the
+item's index:
+
+```rust
+for (index, row) in rows.iter().enumerate() {
+    list.element(("row", index)).container(row_frame(row));
+}
+```
+
+Declaring the same key twice under the same parent in one frame is an error:
+the engine logs it, ignores the second declaration, and fails a debug assertion.
 
 Keep the element contexts as the handles to that content. Re-route a wire while
 its ends move with `EvaluationContext::update_curve`, editing the path in place
@@ -73,7 +107,7 @@ without replaying layout. Remove a node or a wire with
 `EvaluationContext::remove`:
 
 ```rust
-wire.update_curve(|curve| {
+wire.update_curve(move |curve| {
     let path = curve.path_mut();
     path.clear();
     path.push_cubic(from, from + tangent, to - tangent, to);
@@ -135,17 +169,17 @@ loop {
     };
     match event.kind {
         Events::Grabbed => {
-            origin = card.geometry();
-            card.update_container(|card| card.depth = Depth::absolute(1));
+            origin = card.geometry().await;
+            card.update_container(move |card| card.depth = Depth::absolute(1));
         }
         Events::Dragged => {
             if let (Some(origin), Some(delta)) = (origin, event.delta) {
-                card.update_container(|card| card.set_transform(placed_at(origin.x() + delta.x, origin.y() + delta.y)));
+                card.update_container(move |card| card.set_transform(placed_at(origin.x() + delta.x, origin.y() + delta.y)));
             }
         }
         _ => {
             origin = None;
-            card.update_container(|card| {
+            card.update_container(move |card| {
                 card.depth = Depth::relative(1);
                 card.set_transform(Transform::identity());
             });

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use ghi::{
 	command_buffer::{
@@ -619,7 +619,8 @@ impl UiRenderPass {
 	/// Adopts submitted UI data; the caller can share one render across sinks.
 	///
 	/// Renders carry a revision; adopting the same revision again leaves the
-	/// prepared frame valid, so unchanged UI never rebuilds geometry.
+	/// prepared frame valid, so unchanged UI never rebuilds geometry. Revisions
+	/// are unique only within one [`engine::Engine`], so feed a render pass from a single engine.
 	pub fn update(&mut self, render: &engine::Render) {
 		if self.render_revision == Some(render.revision()) {
 			return;

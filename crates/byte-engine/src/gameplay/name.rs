@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 /// The `Name` struct gives an entity a human-readable identity for inspection and tooling.
 ///
 /// Attach a name while spawning an entity with
@@ -7,11 +5,11 @@ use std::sync::Arc;
 /// then return or filter the entity by this exact value. Names are not unique,
 /// so one query can return multiple entities.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Name(Arc<str>);
+pub struct Name(Box<str>);
 
 impl Name {
 	/// Creates a name from borrowed or owned text.
-	pub fn new(name: impl Into<Arc<str>>) -> Self {
+	pub fn new(name: impl Into<Box<str>>) -> Self {
 		let name = name.into();
 		assert!(
 			!name.is_empty(),

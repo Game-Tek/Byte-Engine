@@ -420,7 +420,6 @@ fn native_error_message(error: &NSError) -> String {
 mod tests {
 	use std::fs;
 	use std::path::Path;
-	use std::sync::atomic::{AtomicU64, Ordering};
 
 	use super::*;
 	use crate::command_buffer::CommandBufferRecording as _;
@@ -460,13 +459,10 @@ mod tests {
 			.bytes
 	}
 
+	/// Returns a temporary file path for one test. Each test passes its own name and the process ID separates concurrent
+	/// test processes, so paths never collide.
 	fn temporary_path(name: &str) -> std::path::PathBuf {
-		static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
-		std::env::temp_dir().join(format!(
-			"byte-engine-metal-resource-io-{name}-{}-{}",
-			std::process::id(),
-			NEXT_FILE.fetch_add(1, Ordering::Relaxed)
-		))
+		std::env::temp_dir().join(format!("byte-engine-metal-resource-io-{name}-{}", std::process::id()))
 	}
 
 	/// Produces a native Metal compression container for exercising runtime decode.

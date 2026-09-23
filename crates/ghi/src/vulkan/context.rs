@@ -46,6 +46,9 @@ pub struct Context {
 	pub(super) frames: u8,
 
 	pub(super) queues: Vec<StoredQueue>,
+	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. Vulkan requires external synchronization for
+	/// submissions, and several GHI queues can map to one Vulkan queue, so each gets one lock.
+	pub(super) vk_queues: Vec<std::sync::Mutex<ash::vk::Queue>>,
 	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<Sampler>,

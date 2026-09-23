@@ -131,7 +131,7 @@ fn clamp_coordinate(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-	use std::num::NonZeroU32;
+	use std::num::NonZeroU64;
 
 	use super::*;
 	use crate::ui::{Container, Context, ElementContext, Engine, UiPoint, intersection::HitTest};
@@ -162,13 +162,14 @@ mod tests {
 				})
 			});
 			let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
-			let render = engine.render(&mut snapshot);
+			let render = engine.render(&mut snapshot).clone();
 			let mut hits = HitTest::default();
 			snapshot.retain_hit_test(&mut hits);
 			let pointer = UiPoint::new((expected.x + 1.0) / 100.0 - 1.0, 1.0 - (expected.y + 1.0) / 75.0);
 			let child = hits.query(pointer).expect("the transformed child accepts the pointer");
 			let bounds = hits.bounds(child).unwrap();
-			let visual = render.elements().find(|element| element.id == child.get()).unwrap();
+			let child = engine.render_id(child);
+			let visual = render.elements().find(|element| element.id == child).unwrap();
 			assert_eq!((bounds.x(), bounds.y()), (expected.x, expected.y));
 			assert_eq!((bounds.width(), bounds.height()), (10.0, 5.0));
 			assert_eq!(visual.position, bounds.position);
@@ -221,7 +222,7 @@ mod tests {
 	#[test]
 	fn transformed_rect_preserves_subpixel_motion_at_retina_scale() {
 		let element = LayoutElement {
-			id: NonZeroU32::new(1).expect("expected test value"),
+			id: NonZeroU64::new(1).expect("expected test value"),
 			index: 0,
 			position: Location3::new(10, 10, 0),
 			size: Size::new(100, 40),

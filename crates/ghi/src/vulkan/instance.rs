@@ -1,7 +1,4 @@
-use std::sync::{
-	Arc,
-	atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ash::vk::{self, TaggedStructure as _};
 
@@ -11,7 +8,8 @@ pub struct Instance {
 	pub(crate) instance: ash::Instance,
 	pub(crate) entry: ash::Entry,
 
-	pub(crate) debug_data: Arc<DebugCallbackData>,
+	/// Boxed so the debug messenger's `pUserData` pointer and every [`DebugDataRef`](super::device::DebugDataRef) keep a stable address.
+	pub(crate) debug_data: Box<DebugCallbackData>,
 
 	debug_utils: Option<ash::ext::debug_utils::Instance>,
 	debug_utils_messenger: Option<vk::DebugUtilsMessengerEXT>,
@@ -175,7 +173,7 @@ impl Instance {
 			Ok(instance) => Ok(instance),
 		}?;
 
-		let debug_data = Arc::new(DebugCallbackData {
+		let debug_data = Box::new(DebugCallbackData {
 			error_count: AtomicU64::new(0),
 			error_log_function: settings.debug_log_function.unwrap_or(|message| {
 				println!("{}", message);
@@ -197,7 +195,7 @@ impl Instance {
 						| vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
 				)
 				.pfn_user_callback(Some(vulkan_debug_utils_callback))
-				.user_data(Arc::as_ptr(&debug_data).cast_mut().cast());
+				.user_data(std::ptr::from_ref::<DebugCallbackData>(&*debug_data).cast_mut().cast());
 
 			let debug_utils_messenger = unsafe {
 				debug_utils
@@ -273,7 +271,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 		return vk::FALSE;
 	};
 
-	// SAFETY: The instance retains this Arc until the messenger is destroyed.
+	// SAFETY: The instance owns this boxed data and destroys the messenger before dropping it.
 	// Callbacks may run concurrently, so only borrow the atomic callback state immutably.
 	let user_data = if let Some(p_user_data) = unsafe { p_user_data.cast::<DebugCallbackData>().as_ref() } {
 		p_user_data

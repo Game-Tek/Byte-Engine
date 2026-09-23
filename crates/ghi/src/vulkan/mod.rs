@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, atomic::AtomicU64};
+use std::sync::atomic::AtomicU64;
 
 use ::utils::Extent;
 use ::utils::hash::HashMap;
@@ -352,7 +352,8 @@ impl Sampler {
 
 #[derive(Clone)]
 pub(super) struct CommandBufferInternal {
-	vk_queue: Arc<Mutex<vk::Queue>>,
+	/// Index into [`Context::vk_queues`] of the Vulkan queue this command buffer submits to.
+	vk_queue_index: usize,
 	command_pool: vk::CommandPool,
 	command_buffer: vk::CommandBuffer,
 }
@@ -539,7 +540,8 @@ impl Task {
 /// The `StoredQueue` struct provides per-queue device data to internal submission paths.
 #[derive(Clone)]
 pub(super) struct StoredQueue {
-	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
+	/// Index into [`InnerDevice::vk_queues`] and [`Context::vk_queues`]. Several GHI queues can share one Vulkan queue.
+	pub(crate) vk_queue_index: usize,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
 }

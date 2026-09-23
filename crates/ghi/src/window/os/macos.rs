@@ -2,7 +2,6 @@ use std::{
 	cell::{Cell, RefCell},
 	collections::VecDeque,
 	rc::Rc,
-	sync::Mutex,
 };
 
 use objc2::rc::Retained;
@@ -33,6 +32,8 @@ pub struct App {
 	events: EventQueue,
 	/// Modifier state is keyboard-wide, so it survives focus moving between windows.
 	modifier_state: ModifierState,
+	/// Top-left point where the next window cascades from, so each new window of this app is offset from the last one.
+	next_window_cascade_top_left: Option<(f64, f64)>,
 }
 
 pub struct Window {
@@ -88,8 +89,6 @@ struct WindowDelegateIvars {
 struct ApplicationDelegateIvars {
 	events: EventQueue,
 }
-
-static NEXT_WINDOW_CASCADE_TOP_LEFT: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 define_class!(
 	#[unsafe(super = NSObject)]
@@ -414,6 +413,7 @@ impl AppLike for App {
 			_delegate: delegate,
 			events,
 			modifier_state: ModifierState::default(),
+			next_window_cascade_top_left: None,
 		})
 	}
 
@@ -456,23 +456,17 @@ impl AppLike for App {
 		window.setHidesOnDeactivate(false);
 		window.setAcceptsMouseMovedEvents(true);
 
-		{
-			let mut top_left = NEXT_WINDOW_CASCADE_TOP_LEFT
-				.lock()
-				.expect("Window cascade mutex poisoned while positioning a macOS window.");
+		// The first window is centered; every later one cascades from the point the previous window returned.
+		let seed = if let Some(seed) = self.next_window_cascade_top_left {
+			seed
+		} else {
+			window.center();
 
-			if let Some(seed) = *top_left {
-				let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
-				*top_left = Some((next.x as f64, next.y as f64));
-			} else {
-				window.center();
-
-				let frame = window.frame();
-				let centered_top_left = (frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64);
-				let next = window.cascadeTopLeftFromPoint(NSPoint::new(centered_top_left.0, centered_top_left.1));
-				*top_left = Some((next.x as f64, next.y as f64));
-			}
+			let frame = window.frame();
+			(frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64)
 		};
+		let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
+		self.next_window_cascade_top_left = Some((next.x as f64, next.y as f64));
 
 		window.makeKeyAndOrderFront(None);
 		app.activate();

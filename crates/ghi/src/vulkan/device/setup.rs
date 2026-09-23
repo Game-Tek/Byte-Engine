@@ -494,30 +494,30 @@ impl InnerDevice {
 		};
 
 		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
-		// This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
-		let mut shared_queues = Vec::<(u32, std::sync::Arc<std::sync::Mutex<vk::Queue>>)>::new();
+		// The context wraps each distinct queue in one mutex (see `Context::vk_queues`). This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
+		// Each distinct Vulkan queue is stored once in `vk_queues`; `vk_queue_families` records its family so later requests reuse it.
+		let mut vk_queues = Vec::<vk::Queue>::new();
+		let mut vk_queue_families = Vec::<u32>::new();
 		let queues = queues
 			.iter_mut()
 			.zip(queue_family_indices.iter().copied())
 			.enumerate()
 			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				let vk_queue = if let Some((_, vk_queue)) = shared_queues
+				let vk_queue_index = if let Some(vk_queue_index) = vk_queue_families
 					.iter()
-					.find(|(stored_queue_family_index, _)| *stored_queue_family_index == queue_family_index)
+					.position(|stored_queue_family_index| *stored_queue_family_index == queue_family_index)
 				{
-					vk_queue.clone()
+					vk_queue_index
 				} else {
-					let vk_queue = std::sync::Arc::new(std::sync::Mutex::new(unsafe {
-						device.get_device_queue(queue_family_index, 0)
-					}));
-					shared_queues.push((queue_family_index, vk_queue.clone()));
-					vk_queue
+					vk_queues.push(unsafe { device.get_device_queue(queue_family_index, 0) });
+					vk_queue_families.push(queue_family_index);
+					vk_queues.len() - 1
 				};
 
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
 
 				StoredQueue {
-					vk_queue,
+					vk_queue_index,
 					queue_family_index,
 					_queue_index: 0,
 				}
@@ -546,7 +546,9 @@ impl InnerDevice {
 
 		Ok(InnerDevice {
 			debug_utils,
-			debug_data: instance.debug_data.clone(),
+			debug_data: super::DebugDataRef::new(&instance.debug_data),
+
+			vk_queues,
 
 			memory_properties,
 			queues,

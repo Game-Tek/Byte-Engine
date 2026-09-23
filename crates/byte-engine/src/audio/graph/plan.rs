@@ -113,7 +113,26 @@ impl AudioProcessor {
 /// The `RuntimeAudioProcessor` trait provides allocation-free block processing
 /// after a graph has been prepared.
 pub(crate) trait RuntimeAudioProcessor {
-	fn process(&mut self, time: AudioGraphTime, samples: &mut [f32]);
+	fn process(&mut self, context: &mut AudioProcessContext, time: AudioGraphTime, samples: &mut [f32]);
+}
+
+/// The `AudioProcessContext` struct holds state that every playback on one
+/// audio worker can reuse, such as FFT plans.
+///
+/// The audio worker owns one context and lends it to each
+/// [`RuntimeAudioProcessor::process`] call, so processors do not keep their
+/// own copy of that state.
+pub(crate) struct AudioProcessContext {
+	pub(super) pitch_shift: pitch_shift::PitchShiftPlans,
+}
+
+impl AudioProcessContext {
+	/// Builds the reusable processing state. Call this off the audio thread, because it plans FFTs.
+	pub(crate) fn new() -> Self {
+		Self {
+			pitch_shift: pitch_shift::PitchShiftPlans::new(),
+		}
+	}
 }
 
 /// The `GainProcessor` struct keeps one multiplier inline in its runtime node
@@ -121,7 +140,7 @@ pub(crate) trait RuntimeAudioProcessor {
 struct GainProcessor(f32);
 
 impl RuntimeAudioProcessor for GainProcessor {
-	fn process(&mut self, _time: AudioGraphTime, samples: &mut [f32]) {
+	fn process(&mut self, _context: &mut AudioProcessContext, _time: AudioGraphTime, samples: &mut [f32]) {
 		for sample in samples {
 			*sample *= self.0;
 		}
@@ -133,7 +152,7 @@ impl RuntimeAudioProcessor for GainProcessor {
 struct CustomFunctionProcessor(RuntimeCustomFunction);
 
 impl RuntimeAudioProcessor for CustomFunctionProcessor {
-	fn process(&mut self, time: AudioGraphTime, samples: &mut [f32]) {
+	fn process(&mut self, _context: &mut AudioProcessContext, time: AudioGraphTime, samples: &mut [f32]) {
 		(self.0)(time, samples);
 	}
 }

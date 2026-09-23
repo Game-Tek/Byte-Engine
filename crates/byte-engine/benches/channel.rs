@@ -5,10 +5,10 @@
 
 use std::{
 	sync::{
-		Arc, Barrier,
+		Barrier,
 		atomic::{AtomicBool, Ordering},
 	},
-	thread::{self, JoinHandle},
+	thread,
 };
 
 use byte_engine::core::{
@@ -181,49 +181,37 @@ fn shared_bus_broadcast_fanout(bencher: Bencher, listener_count: usize) {
 	});
 }
 
-/// The `ContendedFixture` struct keeps producer and consumer threads alive across Divan samples.
+/// The `ContendedFixture` struct coordinates producer and consumer threads that stay alive across Divan samples.
+///
+/// The benchmark owns the fixture and its workers borrow it inside one
+/// [`thread::scope`], so no shared ownership is needed.
 struct ContendedFixture {
-	start: Arc<Barrier>,
-	finish: Arc<Barrier>,
-	stop: Arc<AtomicBool>,
-	workers: Vec<JoinHandle<()>>,
+	start: Barrier,
+	finish: Barrier,
+	stop: AtomicBool,
 }
 
 impl ContendedFixture {
-	/// Starts one consumer and the requested number of producers on a shared channel.
+	/// Sizes the barriers for the requested producers, one consumer, and the measuring thread.
 	fn new(producer_count: usize) -> Self {
+		let participant_count = producer_count + 2;
+		Self {
+			start: Barrier::new(participant_count),
+			finish: Barrier::new(participant_count),
+			stop: AtomicBool::new(false),
+		}
+	}
+
+	/// Starts one consumer and the requested number of producers on a shared channel.
+	fn spawn_workers<'scope>(&'scope self, threads: &'scope thread::Scope<'scope, '_>, producer_count: usize) {
 		let channel = DefaultChannel::new();
 		let listener = channel.listener();
-		let participant_count = producer_count + 2;
-		let start = Arc::new(Barrier::new(participant_count));
-		let finish = Arc::new(Barrier::new(participant_count));
-		let stop = Arc::new(AtomicBool::new(false));
-		let mut workers = Vec::with_capacity(producer_count + 1);
-
-		workers.push(Self::spawn_consumer(
-			listener,
-			Arc::clone(&start),
-			Arc::clone(&finish),
-			Arc::clone(&stop),
-		));
+		threads.spawn(move || self.consume(listener));
 
 		let messages_per_producer = CONTENDED_MESSAGE_COUNT / producer_count;
 		for producer_index in 0..producer_count {
-			workers.push(Self::spawn_producer(
-				channel.clone(),
-				producer_index,
-				messages_per_producer,
-				Arc::clone(&start),
-				Arc::clone(&finish),
-				Arc::clone(&stop),
-			));
-		}
-
-		Self {
-			start,
-			finish,
-			stop,
-			workers,
+			let channel = channel.clone();
+			threads.spawn(move || self.produce(channel, producer_index, messages_per_producer));
 		}
 	}
 
@@ -233,68 +221,48 @@ impl ContendedFixture {
 		self.finish.wait();
 	}
 
-	/// Runs the consumer until it has observed every message in the current cycle.
-	fn spawn_consumer(
-		mut listener: DefaultListener<u64>,
-		start: Arc<Barrier>,
-		finish: Arc<Barrier>,
-		stop: Arc<AtomicBool>,
-	) -> JoinHandle<()> {
-		thread::spawn(move || {
-			loop {
-				start.wait();
-				if stop.load(Ordering::Acquire) {
-					break;
-				}
-
-				let mut received = 0;
-				while received < CONTENDED_MESSAGE_COUNT {
-					if let Some(message) = listener.read() {
-						divan::black_box(message);
-						received += 1;
-					} else {
-						std::hint::spin_loop();
-					}
-				}
-				finish.wait();
-			}
-		})
-	}
-
-	/// Publishes one disjoint portion of the cycle's messages.
-	fn spawn_producer(
-		channel: DefaultChannel<u64>,
-		producer_index: usize,
-		message_count: usize,
-		start: Arc<Barrier>,
-		finish: Arc<Barrier>,
-		stop: Arc<AtomicBool>,
-	) -> JoinHandle<()> {
-		thread::spawn(move || {
-			loop {
-				start.wait();
-				if stop.load(Ordering::Acquire) {
-					break;
-				}
-
-				for sequence in 0..message_count {
-					let message = ((producer_index as u64) << 48) | sequence as u64;
-					channel.send(divan::black_box(message));
-				}
-				finish.wait();
-			}
-		})
-	}
-}
-
-impl Drop for ContendedFixture {
-	fn drop(&mut self) {
+	/// Makes every worker exit so the enclosing scope can join them.
+	fn stop(&self) {
 		// Workers are waiting at `start` between samples, so one release is enough
 		// to make each of them observe the stop flag and exit.
 		self.stop.store(true, Ordering::Release);
 		self.start.wait();
-		for worker in self.workers.drain(..) {
-			worker.join().expect("Channel benchmark worker must exit cleanly");
+	}
+
+	/// Runs the consumer until it has observed every message in the current cycle.
+	fn consume(&self, mut listener: DefaultListener<u64>) {
+		loop {
+			self.start.wait();
+			if self.stop.load(Ordering::Acquire) {
+				break;
+			}
+
+			let mut received = 0;
+			while received < CONTENDED_MESSAGE_COUNT {
+				if let Some(message) = listener.read() {
+					divan::black_box(message);
+					received += 1;
+				} else {
+					std::hint::spin_loop();
+				}
+			}
+			self.finish.wait();
+		}
+	}
+
+	/// Publishes one disjoint portion of the cycle's messages.
+	fn produce(&self, channel: DefaultChannel<u64>, producer_index: usize, message_count: usize) {
+		loop {
+			self.start.wait();
+			if self.stop.load(Ordering::Acquire) {
+				break;
+			}
+
+			for sequence in 0..message_count {
+				let message = ((producer_index as u64) << 48) | sequence as u64;
+				channel.send(divan::black_box(message));
+			}
+			self.finish.wait();
 		}
 	}
 }
@@ -305,7 +273,11 @@ fn contended_producers(bencher: Bencher, producer_count: usize) {
 	assert_eq!(CONTENDED_MESSAGE_COUNT % producer_count, 0);
 	let fixture = ContendedFixture::new(producer_count);
 
-	bencher
-		.counter(ItemsCount::new(CONTENDED_MESSAGE_COUNT))
-		.bench_local(|| fixture.run());
+	thread::scope(|threads| {
+		fixture.spawn_workers(threads, producer_count);
+		bencher
+			.counter(ItemsCount::new(CONTENDED_MESSAGE_COUNT))
+			.bench_local(|| fixture.run());
+		fixture.stop();
+	});
 }

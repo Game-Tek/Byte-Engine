@@ -4,7 +4,7 @@ pub struct LutRenderPass {
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
-	lut_bytes: Option<std::sync::Arc<[u8]>>,
+	lut_bytes: Option<StdBox<[u8]>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
 }
@@ -248,7 +248,7 @@ fn expected_lut_payload_size(lut: &Lut) -> usize {
 #[derive(Clone)]
 pub struct PreparedLut {
 	pub(super) metadata: Lut,
-	pub(super) bytes: std::sync::Arc<[u8]>,
+	pub(super) bytes: StdBox<[u8]>,
 }
 
 impl PreparedLut {
@@ -264,7 +264,7 @@ impl PreparedLut {
 			)
 		})?;
 		let metadata = reference.resource().clone();
-		let bytes = load_lut_bytes(&mut reference).await?.into();
+		let bytes = load_lut_bytes(&mut reference).await?;
 		Ok(Self { metadata, bytes })
 	}
 }

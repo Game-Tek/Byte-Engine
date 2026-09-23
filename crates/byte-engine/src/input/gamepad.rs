@@ -109,7 +109,7 @@ impl GamepadSystem {
 		})
 	}
 
-	pub(crate) fn poll(&mut self) -> (Vec<(String, GamepadKind, HidDevice)>, Vec<GamepadEvent>) {
+	pub(crate) fn poll(&mut self) -> (Vec<(String, GamepadKind, bool, HidDevice)>, Vec<GamepadEvent>) {
 		let new_devices = self.drain_device_refreshes();
 		let mut events = Vec::new();
 
@@ -125,11 +125,19 @@ impl GamepadSystem {
 		!self.devices.is_empty()
 	}
 
-	pub(crate) fn add_device(&mut self, path: String, kind: GamepadKind, device: HidDevice, device_handle: DeviceHandle) {
-		self.devices.insert(path, GamepadDevice::new(kind, device, device_handle));
+	pub(crate) fn add_device(
+		&mut self,
+		path: String,
+		kind: GamepadKind,
+		negate_stick_y: bool,
+		device: HidDevice,
+		device_handle: DeviceHandle,
+	) {
+		self.devices
+			.insert(path, GamepadDevice::new(kind, negate_stick_y, device, device_handle));
 	}
 
-	fn drain_device_refreshes(&mut self) -> Vec<(String, GamepadKind, HidDevice)> {
+	fn drain_device_refreshes(&mut self) -> Vec<(String, GamepadKind, bool, HidDevice)> {
 		let mut latest_snapshot = None;
 		for refresh in self.refresh_receiver.try_iter() {
 			match refresh {
@@ -181,7 +189,12 @@ impl GamepadSystem {
 				candidate.product_name.as_deref().unwrap_or("<unknown>")
 			);
 
-			new_devices.push((candidate.path_key, candidate.kind, device));
+			new_devices.push((
+				candidate.path_key,
+				candidate.kind,
+				stick_up_is_negative(candidate.kind, candidate.product_name.as_deref()),
+				device,
+			));
 		}
 
 		self.devices.retain(|path, _| present_paths.contains(path));
@@ -280,6 +293,8 @@ fn refresh_gamepad_candidates(api: &mut HidApi) -> Result<Vec<GamepadCandidate>,
 
 struct GamepadDevice {
 	kind: GamepadKind,
+	/// Steam's virtual pad already reports stick-up as negative. Hardware reports do not.
+	negate_stick_y: bool,
 	device: HidDevice,
 	device_handle: DeviceHandle,
 	state: GamepadState,
@@ -287,9 +302,10 @@ struct GamepadDevice {
 }
 
 impl GamepadDevice {
-	fn new(kind: GamepadKind, device: HidDevice, device_handle: DeviceHandle) -> Self {
+	fn new(kind: GamepadKind, negate_stick_y: bool, device: HidDevice, device_handle: DeviceHandle) -> Self {
 		Self {
 			kind,
+			negate_stick_y,
 			device,
 			device_handle,
 			state: GamepadState::default(),
@@ -319,7 +335,7 @@ impl GamepadDevice {
 				GamepadKind::DualShock4 => parse_dualshock4(report),
 				GamepadKind::DualSense => parse_dualsense(report),
 				GamepadKind::GenericJoystick => parse_generic_joystick(report),
-				GamepadKind::Xbox => parse_xbox(report),
+				GamepadKind::Xbox => parse_xbox(report, self.negate_stick_y),
 			};
 
 			if let Some(state) = state {
@@ -444,7 +460,8 @@ fn classify_gamepad(
 			0x0CE6 | 0x0DF2 => Some(GamepadKind::DualSense),
 			_ => None,
 		},
-		0x045E => Some(GamepadKind::Xbox),
+		// The vendor interface on the same controller is not a stick report.
+		0x045E if usage_page == 0x01 && (usage == 0x04 || usage == 0x05) => Some(GamepadKind::Xbox),
 		_ => {
 			let product = product_string.unwrap_or_default();
 			if contains_ascii_case_insensitive(product, "xbox") {
@@ -723,7 +740,134 @@ fn parse_dualsense(report: &[u8]) -> Option<GamepadState> {
 	})
 }
 
-fn parse_xbox(report: &[u8]) -> Option<GamepadState> {
+/// Hardware Xbox sticks report up as a positive Y. Steam's virtual `GamePad-*` pad
+/// already stores up as negative, so only that source needs another flip.
+fn stick_up_is_negative(kind: GamepadKind, product_name: Option<&str>) -> bool {
+	matches!(kind, GamepadKind::Xbox) && product_name.is_some_and(|name| name.starts_with("GamePad-"))
+}
+
+fn parse_xbox(report: &[u8], negate_y: bool) -> Option<GamepadState> {
+	// Xbox One and Series pads send a GIP input command. Reading that packet with the
+	// Xbox 360 offsets places the physical left stick in the right-stick fields.
+	if report.first().copied() == Some(0x20) {
+		return parse_xbox_one(report, negate_y);
+	}
+
+	parse_xbox_360(report, negate_y)
+}
+
+/// Decodes an Xbox One GIP input packet. The state begins after the variable-length header.
+fn parse_xbox_one(report: &[u8], negate_y: bool) -> Option<GamepadState> {
+	let report = if report.len() >= 2 && report[1] == 0x20 {
+		&report[1..]
+	} else {
+		report
+	};
+	if report.first().copied() != Some(0x20) {
+		return None;
+	}
+
+	let options = *report.get(1)?;
+	// Expansion and internal packets are not the thumbstick state.
+	if options & 0x0F != 0 || options & 0x20 != 0 {
+		return None;
+	}
+
+	let header_len = gip_header_length(report)?;
+	let data = report.get(header_len..)?;
+	if data.len() < 14 {
+		return None;
+	}
+
+	let buttons = data[0];
+	let buttons2 = data[1];
+	let mut mask = 0u32;
+	if buttons & 0x04 != 0 {
+		mask |= BUTTON_START;
+	}
+	if buttons & 0x08 != 0 {
+		mask |= BUTTON_SELECT;
+	}
+	if buttons & 0x10 != 0 {
+		mask |= BUTTON_A;
+	}
+	if buttons & 0x20 != 0 {
+		mask |= BUTTON_B;
+	}
+	if buttons & 0x40 != 0 {
+		mask |= BUTTON_X;
+	}
+	if buttons & 0x80 != 0 {
+		mask |= BUTTON_Y;
+	}
+	if buttons2 & 0x01 != 0 {
+		mask |= BUTTON_DPAD_UP;
+	}
+	if buttons2 & 0x02 != 0 {
+		mask |= BUTTON_DPAD_DOWN;
+	}
+	if buttons2 & 0x04 != 0 {
+		mask |= BUTTON_DPAD_LEFT;
+	}
+	if buttons2 & 0x08 != 0 {
+		mask |= BUTTON_DPAD_RIGHT;
+	}
+	if buttons2 & 0x10 != 0 {
+		mask |= BUTTON_LEFT_BUMPER;
+	}
+	if buttons2 & 0x20 != 0 {
+		mask |= BUTTON_RIGHT_BUMPER;
+	}
+	if buttons2 & 0x40 != 0 {
+		mask |= BUTTON_LEFT_STICK;
+	}
+	if buttons2 & 0x80 != 0 {
+		mask |= BUTTON_RIGHT_STICK;
+	}
+
+	let left_trigger = normalize_trigger_u16(u16::from_le_bytes([data[2], data[3]]));
+	let right_trigger = normalize_trigger_u16(u16::from_le_bytes([data[4], data[5]]));
+	let left_y = signed_stick(i16::from_le_bytes([data[8], data[9]]), negate_y);
+	let right_y = signed_stick(i16::from_le_bytes([data[12], data[13]]), negate_y);
+
+	Some(GamepadState {
+		left_stick: Axis2::new(normalize_axis_i16(i16::from_le_bytes([data[6], data[7]])), left_y),
+		right_stick: Axis2::new(normalize_axis_i16(i16::from_le_bytes([data[10], data[11]])), right_y),
+		left_trigger,
+		right_trigger,
+		buttons: mask,
+	})
+}
+
+/// Returns the number of bytes occupied by a GIP header, including its variable-length size.
+fn gip_header_length(report: &[u8]) -> Option<usize> {
+	let mut index = 3;
+	let mut guard = 0;
+	loop {
+		let byte = *report.get(index)?;
+		index += 1;
+		guard += 1;
+		if byte & 0x80 == 0 || guard == 4 {
+			break;
+		}
+	}
+
+	if report[1] & 0x80 != 0 {
+		guard = 0;
+		loop {
+			let byte = *report.get(index)?;
+			index += 1;
+			guard += 1;
+			if byte & 0x80 == 0 || guard == 4 {
+				break;
+			}
+		}
+	}
+
+	Some(index)
+}
+
+fn parse_xbox_360(report: &[u8], negate_y: bool) -> Option<GamepadState> {
 	let report = if report.first().copied() == Some(0x01) {
 		&report[1..]
 	} else {
@@ -739,15 +883,11 @@ fn parse_xbox(report: &[u8]) -> Option<GamepadState> {
 	let left_trigger = normalize_trigger_u8(report[4]);
 	let right_trigger = normalize_trigger_u8(report[5]);
 
-	let left_stick = Axis2::new(
-		normalize_axis_i16(i16::from_le_bytes([report[6], report[7]])),
-		-normalize_axis_i16(i16::from_le_bytes([report[8], report[9]])),
-	);
+	let left_y = signed_stick(i16::from_le_bytes([report[8], report[9]]), negate_y);
+	let right_y = signed_stick(i16::from_le_bytes([report[12], report[13]]), negate_y);
 
-	let right_stick = Axis2::new(
-		normalize_axis_i16(i16::from_le_bytes([report[10], report[11]])),
-		-normalize_axis_i16(i16::from_le_bytes([report[12], report[13]])),
-	);
+	let left_stick = Axis2::new(normalize_axis_i16(i16::from_le_bytes([report[6], report[7]])), left_y);
+	let right_stick = Axis2::new(normalize_axis_i16(i16::from_le_bytes([report[10], report[11]])), right_y);
 
 	let mut mask = 0u32;
 
@@ -826,6 +966,16 @@ fn normalize_trigger_u8(value: u8) -> f32 {
 	(value as f32) / 255.0
 }
 
+/// Xbox One triggers are 10-bit values stored in a 16-bit field.
+fn normalize_trigger_u16(value: u16) -> f32 {
+	(value as f32 / 1023.0).clamp(0.0, 1.0)
+}
+
+fn signed_stick(value: i16, negate_y: bool) -> f32 {
+	let axis = normalize_axis_i16(value);
+	if negate_y { -axis } else { axis }
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -849,7 +999,11 @@ mod tests {
 	fn classifies_known_controllers_without_case_sensitive_product_names() {
 		assert_eq!(classify_gamepad(0x054C, 0x05C4, None, 0, 0), Some(GamepadKind::DualShock4));
 		assert_eq!(classify_gamepad(0x054C, 0x0CE6, None, 0, 0), Some(GamepadKind::DualSense));
-		assert_eq!(classify_gamepad(0x045E, 0, None, 0, 0), Some(GamepadKind::Xbox));
+		assert_eq!(
+			classify_gamepad(0x045E, 0x0B12, Some("Controller"), 0x01, 0x05),
+			Some(GamepadKind::Xbox)
+		);
+		assert_eq!(classify_gamepad(0x045E, 0x0B12, Some("BTM"), 0xFF00, 72), None);
 		assert_eq!(
 			classify_gamepad(0, 0, Some("Wireless XBOX Controller"), 0, 0),
 			Some(GamepadKind::Xbox)
@@ -931,10 +1085,11 @@ mod tests {
 		payload[10..12].copy_from_slice(&i16::MAX.to_le_bytes());
 		payload[12..14].copy_from_slice(&i16::MIN.to_le_bytes());
 
-		let raw = parse_xbox(&payload).expect("valid Xbox report");
+		let raw = parse_xbox(&payload, false).expect("valid Xbox report");
 
-		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
-		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
+		// i16::MAX on Y is stick-up, which stays positive. X at i16::MIN stays left.
+		assert_eq!(raw.left_stick, Axis2::new(-1.0, 1.0));
+		assert_eq!(raw.right_stick, Axis2::new(1.0, -1.0));
 		assert_eq!(raw.left_trigger, 0.0);
 		assert_eq!(raw.right_trigger, 1.0);
 		assert_eq!(
@@ -943,7 +1098,31 @@ mod tests {
 		);
 
 		let prefixed = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
-		assert_states_equal(parse_xbox(&prefixed).expect("valid prefixed Xbox report"), raw);
+		assert_states_equal(parse_xbox(&prefixed, false).expect("valid prefixed Xbox report"), raw);
+
+		let steam = parse_xbox(&payload, true).expect("valid Steam virtual report");
+		assert_eq!(steam.left_stick, Axis2::new(-1.0, -1.0));
+		assert_eq!(steam.right_stick, Axis2::new(1.0, 1.0));
+		assert!(stick_up_is_negative(GamepadKind::Xbox, Some("GamePad-1")));
+		assert!(!stick_up_is_negative(GamepadKind::Xbox, Some("Controller")));
+
+		// GIP puts the left stick after the triggers. The 360 offsets would call that the right stick.
+		let mut gip = vec![0x20, 0x00, 0x01, 14];
+		gip.extend_from_slice(&[0x10, 0x01]);
+		gip.extend_from_slice(&1023u16.to_le_bytes());
+		gip.extend_from_slice(&0u16.to_le_bytes());
+		gip.extend_from_slice(&16_000i16.to_le_bytes());
+		gip.extend_from_slice(&16_000i16.to_le_bytes());
+		gip.extend_from_slice(&(-16_000i16).to_le_bytes());
+		gip.extend_from_slice(&(-8_000i16).to_le_bytes());
+		let one = parse_xbox(&gip, false).expect("valid Xbox One report");
+		assert!(one.left_stick.x > 0.4, "physical left stick stays on the left stick");
+		assert!(one.left_stick.y > 0.4);
+		assert!(one.right_stick.x < -0.4);
+		assert!(one.right_stick.y < -0.2);
+		assert!((one.left_trigger - 1.0).abs() < 0.001);
+		assert_eq!(one.right_trigger, 0.0);
+		assert_eq!(one.buttons, BUTTON_A | BUTTON_DPAD_UP);
 	}
 
 	#[test]
@@ -975,7 +1154,7 @@ mod tests {
 		assert!(parse_dualshock4(&[0; 8]).is_none());
 		assert!(parse_dualsense(&[0; 8]).is_none());
 		assert!(parse_generic_joystick(&[0; 4]).is_none());
-		assert!(parse_xbox(&[0; 13]).is_none());
+		assert!(parse_xbox(&[0; 13], false).is_none());
 	}
 
 	#[test]

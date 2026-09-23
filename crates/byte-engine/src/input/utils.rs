@@ -74,7 +74,7 @@ pub fn register_keyboard_device_class(registry: &mut impl TriggerRegistry) -> De
 ///
 /// # Triggers
 ///
-/// - `LeftStick` and `RightStick`: 2D vectors from -1 to 1.
+/// - `LeftStick` and `RightStick`: 2D vectors from -1 to 1. Positive X is right and positive Y is up.
 /// - `LeftTrigger` and `RightTrigger`: floats from 0 to 1.
 /// - Face, bumper, stick, menu, and directional-pad buttons: Boolean values.
 pub fn register_gamepad_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {

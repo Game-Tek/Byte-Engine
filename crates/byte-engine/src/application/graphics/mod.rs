@@ -486,10 +486,10 @@ impl GraphicsApplication {
 		};
 		let (new_devices, events) = gamepad_system.poll();
 		if let Some(device_class) = self.gamepad_device_class_handle {
-			for (path, kind, device) in new_devices {
+			for (path, kind, negate_stick_y, device) in new_devices {
 				// Keep physical HID identity distinct so player and device routing is preserved.
 				let device_handle = self.input.create_device(&device_class);
-				gamepad_system.add_device(path, kind, device, device_handle);
+				gamepad_system.add_device(path, kind, negate_stick_y, device, device_handle);
 			}
 		} else if !new_devices.is_empty() {
 			log::warn!(

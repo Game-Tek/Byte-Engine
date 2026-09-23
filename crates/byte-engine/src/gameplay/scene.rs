@@ -2,10 +2,10 @@
 //!
 //! Create a scene root with [`Scene`], then attach entities to it, or to any
 //! other scene member, by chaining [`SceneNode::under`] while spawning them.
-//! Deleting a scene, or any member with children, through
-//! [`DefaultWorld::delete`](crate::gameplay::DefaultWorld::delete) publishes a
-//! [`DeleteMessage`](crate::core::message::DeleteMessage) for every nested
-//! element.
+//! [`DefaultWorld::delete`](crate::gameplay::DefaultWorld::delete) publishes the
+//! deleted handle immediately. The next
+//! [`DefaultWorld::update`](crate::gameplay::DefaultWorld::update) publishes every
+//! nested element, children before their parents.
 
 use std::collections::HashMap;
 
@@ -59,8 +59,23 @@ pub(crate) struct SceneGraph {
 }
 
 impl SceneGraph {
-	/// Links `child` as the first child of `parent`, registering `parent` as a root when it is unknown.
+	/// Records `scene` so members can attach under it.
+	///
+	/// Registration survives until the scene is deleted.
+	pub(crate) fn register(&mut self, scene: Handle) {
+		self.nodes.entry(scene).or_default();
+	}
+
+	/// Links `child` as the first child of `parent`.
+	///
+	/// `parent` is a registered scene or a member already linked under one. A missing parent is a
+	/// handle whose scene was deleted.
 	pub(crate) fn attach(&mut self, child: Handle, parent: Handle) {
+		debug_assert!(
+			self.nodes.contains_key(&parent),
+			"Scene parent {} is not alive. The most likely cause is a stale scene handle.",
+			parent.id()
+		);
 		let parent_links = self.nodes.entry(parent).or_default();
 		let next_sibling = parent_links.first_child.replace(child);
 		self.nodes.insert(
@@ -73,36 +88,37 @@ impl SceneGraph {
 		);
 	}
 
-	/// Removes `root` and everything nested under it, reporting each handle children-first and `root` last.
+	/// Removes `root` and reports every nested member, children before their parents.
 	///
-	/// `root` is reported even when it is not tracked.
+	/// `root` itself is not reported. An unknown root reports nothing.
 	pub(crate) fn remove_subtree(&mut self, root: Handle, mut removed: impl FnMut(Handle)) {
 		let Some(links) = self.nodes.remove(&root) else {
-			return removed(root);
+			return;
 		};
 		if let Some(parent) = links.parent {
 			self.unlink_child(parent, root, links.next_sibling);
 		}
 
-		// Post-order walk without a stack: descend to a leaf, which is always its
-		// parent's first child, pop it, and resume from the parent.
-		let mut current = links.first_child;
-		while let Some(mut node) = current {
-			while let Some(child) = self.nodes[&node].first_child {
-				node = child;
-			}
-			let leaf = self.nodes.remove(&node).expect("Walked scene nodes are tracked.");
-			removed(node);
-
-			let parent = leaf.parent.expect("Nested scene nodes have a parent.");
-			if parent == root {
-				current = leaf.next_sibling;
-			} else {
-				self.nodes.get_mut(&parent).expect("Parents are tracked.").first_child = leaf.next_sibling;
-				current = Some(parent);
+		// Record a preorder walk, then report it backwards so every child precedes its parent.
+		let mut stack = Vec::new();
+		let mut sibling = links.first_child;
+		while let Some(node) = sibling {
+			sibling = self.nodes[&node].next_sibling;
+			stack.push(node);
+		}
+		let mut preorder = Vec::new();
+		while let Some(node) = stack.pop() {
+			preorder.push(node);
+			let mut child = self.nodes[&node].first_child;
+			while let Some(next) = child {
+				child = self.nodes[&next].next_sibling;
+				stack.push(next);
 			}
 		}
-		removed(root);
+		for node in preorder.into_iter().rev() {
+			self.nodes.remove(&node).expect("Walked scene nodes are tracked.");
+			removed(node);
+		}
 	}
 
 	/// Replaces `child` in `parent`'s sibling list with `next`.

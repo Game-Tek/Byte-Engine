@@ -305,7 +305,7 @@ mod tests {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("named-entity-test-world");
-		let mut world = DefaultWorld::with_messages(messages.clone());
+		let world = DefaultWorld::with_messages(messages.clone());
 		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 
 		let handle: Handle = world.create(String::from("crate-model")).with(Name::new("crate")).into();

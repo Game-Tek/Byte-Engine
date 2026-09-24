@@ -75,7 +75,7 @@ fn scene(count: usize, kind: Scene, alternate: bool) -> engine::Render {
 	});
 	let allocator = bumpalo::Bump::new();
 	let mut snapshot = engine.evaluate(Size::new(1920, 1080), &allocator);
-	engine.render(&mut snapshot).clone()
+	engine.render().clone()
 }
 
 /// Converts a real render once so geometry benchmarks exclude data adoption.

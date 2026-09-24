@@ -1,25 +1,21 @@
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
-
 use super::{
 	LayoutElement,
 	element::Id,
-	engine::EngineState,
 	flow::{Location, Size},
 };
 use crate::ui::{UiPoint, UiVector, intersection::MouseClickAcceleration};
 
-/// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
+/// The `Snapshot` struct lets a host inspect one evaluated frame's layout and move the UI cursor through it.
+///
+/// It borrows the engine's retained layout, so it lives only until the engine is used again. Get one from
+/// [`crate::ui::Engine::evaluate`], then drop it and call [`crate::ui::Engine::render`].
 pub struct Snapshot<'a> {
-	pub(super) elements: Rc<Vec<LayoutElement>>,
-	pub(super) relations: Rc<Vec<(Id, Id)>>,
-	pub(super) acceleration: Rc<MouseClickAcceleration>,
-	// Keep the public frame lifetime even though retained geometry now owns its storage.
-	pub(super) frame_allocator: PhantomData<&'a bumpalo::Bump>,
-	pub(super) cursor: Option<Id>,
-	pub(super) engine_state: Rc<RefCell<EngineState>>,
+	pub(super) elements: &'a [LayoutElement],
+	pub(super) relations: &'a [(Id, Id)],
+	pub(super) acceleration: &'a MouseClickAcceleration,
+	/// The engine's cursor, which clicks and spatial navigation move in place.
+	pub(super) cursor: &'a mut Option<Id>,
 	pub(super) size: Size,
-	/// Identifies this geometry independently of tree mutations and viewport size.
-	pub(super) layout_revision: u64,
 }
 
 impl Snapshot<'_> {
@@ -30,15 +26,13 @@ impl Snapshot<'_> {
 		self.acceleration.retain(target, self.size);
 	}
 	pub fn cursor(&self) -> Option<Id> {
-		self.cursor
+		*self.cursor
 	}
 
 	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
-		self.cursor = self
-			.engine_state
-			.borrow_mut()
-			.set_cursor(cursor.filter(|id| self.element(*id).is_some()));
-		self.cursor
+		let cursor = cursor.filter(|id| self.element(*id).is_some());
+		*self.cursor = cursor;
+		cursor
 	}
 
 	pub fn clear_cursor(&mut self) {
@@ -47,7 +41,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor(&mut self, axis: UiVector) -> Option<Id> {
 		if axis.x.abs() < SPATIAL_CURSOR_DEADZONE && axis.y.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		if axis.x.abs() >= axis.y.abs() {
@@ -59,7 +53,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor_sideways(&mut self, axis: f32) -> Option<Id> {
 		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		let direction = if axis.is_sign_positive() {
@@ -73,7 +67,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor_longitudinally(&mut self, axis: f32) -> Option<Id> {
 		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		let direction = if axis.is_sign_positive() {
@@ -111,7 +105,7 @@ impl Snapshot<'_> {
 	}
 
 	fn move_cursor_in_direction(&mut self, direction: SpatialCursorDirection) -> Option<Id> {
-		let current_cursor = self.cursor;
+		let current_cursor = *self.cursor;
 		let origin = current_cursor
 			.and_then(|id| self.element(id))
 			.map(NavigationFrame::from_element)
@@ -147,7 +141,7 @@ impl Snapshot<'_> {
 			let _ = self.set_cursor(Some(candidate_id));
 		}
 
-		self.cursor
+		*self.cursor
 	}
 
 	fn snapshot_frame(&self) -> NavigationFrame {

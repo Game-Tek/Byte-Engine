@@ -2945,8 +2945,8 @@ mod tests {
 			ctx.element("root").container(|c| c).await;
 		});
 		let frame_allocator = bumpalo::Bump::new();
-		let mut snapshot = engine.evaluate(Size::new(10, 10), &frame_allocator);
-		let revision = Some(engine.render(&mut snapshot).revision());
+		let snapshot = engine.evaluate(Size::new(10, 10), &frame_allocator);
+		let revision = Some(engine.render().revision());
 		let damage = vec![UiPixelRegion::full(Extent::square(64))];
 		let prepared = UiPreparedFrame {
 			revision,
@@ -2977,12 +2977,12 @@ mod tests {
 		});
 		let frame_allocator = bumpalo::Bump::new();
 		let mut draw_list = UiDrawList::default();
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let first = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let first = engine.render();
 		update_from_render(first, &mut draw_list);
 		let first = first.revision();
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let second = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second = engine.render();
 
 		assert_eq!(first, second.revision());
 		assert_eq!(draw_list.texts.len(), 1);
@@ -3798,8 +3798,8 @@ mod tests {
 			let mut frame = ctx.element("frame").container(|c| c).await;
 			frame.element("label").text("Option", |t| t).await;
 		});
-		let mut text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let text_render = text_engine.render(&mut text_snapshot);
+		let text_snapshot = text_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let text_render = text_engine.render();
 		update_from_render(text_render, &mut draw_list);
 
 		assert_eq!(draw_list.texts.len(), 1);
@@ -3808,8 +3808,8 @@ mod tests {
 		no_text_engine.mount(async move |ctx| {
 			ctx.element("frame").container(|c| c).await;
 		});
-		let mut no_text_snapshot = no_text_engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let no_text_render = no_text_engine.render(&mut no_text_snapshot);
+		let no_text_snapshot = no_text_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let no_text_render = no_text_engine.render();
 		update_from_render(no_text_render, &mut draw_list);
 
 		assert!(draw_list.texts.is_empty());
@@ -3825,8 +3825,8 @@ mod tests {
 			let mut frame = ctx.element("frame").container(|c| c).await;
 			frame.element("preview").image(2, 2, image_pixels(2, 2), |i| i).await;
 		});
-		let mut image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let image_render = image_engine.render(&mut image_snapshot);
+		let image_snapshot = image_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let image_render = image_engine.render();
 		update_from_render(image_render, &mut draw_list);
 
 		assert_eq!(draw_list.images.len(), 1);
@@ -3835,8 +3835,8 @@ mod tests {
 		no_image_engine.mount(async move |ctx| {
 			ctx.element("frame").container(|c| c).await;
 		});
-		let mut no_image_snapshot = no_image_engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let no_image_render = no_image_engine.render(&mut no_image_snapshot);
+		let no_image_snapshot = no_image_engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let no_image_render = no_image_engine.render();
 		update_from_render(no_image_render, &mut draw_list);
 
 		assert!(draw_list.images.is_empty());
@@ -3870,8 +3870,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let mut draw_list = UiDrawList::default();
 		update_from_render(render, &mut draw_list);
 
@@ -3914,8 +3914,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let mut draw_list = UiDrawList::default();
 		update_from_render(render, &mut draw_list);
 
@@ -3942,8 +3942,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let mut draw_list = UiDrawList::default();
 		update_from_render(render, &mut draw_list);
 

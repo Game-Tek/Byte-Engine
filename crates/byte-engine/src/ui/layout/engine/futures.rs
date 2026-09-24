@@ -222,7 +222,7 @@ impl<C: 'static, T> Future for Read<C, T> {
 	}
 }
 
-/// The `With` struct reads the engine's application context while its task is polled.
+/// The `With` struct reads or changes the engine's application context while its task is polled.
 ///
 /// Get one from [`Context::with`] and await it. It completes on its first poll with what `read` returned.
 pub struct With<C, F> {
@@ -232,14 +232,14 @@ pub struct With<C, F> {
 
 impl<C, F> Unpin for With<C, F> {}
 
-impl<C: 'static, F: FnOnce(&C) -> T, T> Future for With<C, F> {
+impl<C: 'static, F: FnOnce(&mut C) -> T, T> Future for With<C, F> {
 	type Output = T;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
 		let read = self.read.take().expect(
 			"A UI context read was polled after it completed. The most likely cause is polling a finished future again.",
 		);
-		Poll::Ready(read(&UiPoll::<C>::from_context(cx).ctx))
+		Poll::Ready(read(&mut UiPoll::<C>::from_context(cx).ctx))
 	}
 }
 
@@ -388,8 +388,8 @@ mod frame_wait_tests {
 	use crate::ui::layout::context::ContainerContext as _;
 
 	/// Mounts a surface that selects over its drag events and frames, events first, and counts each.
-	fn selecting_surface() -> Engine<std::cell::Cell<(u32, u32)>> {
-		let mut engine = Engine::with_context(std::cell::Cell::new((0, 0)));
+	fn selecting_surface() -> Engine<(u32, u32)> {
+		let mut engine = Engine::with_context((0, 0));
 		engine.mount(async move |ctx| {
 			let mut surface = ctx.element("surface").container(|c| c).await;
 			loop {
@@ -397,11 +397,7 @@ mod frame_wait_tests {
 					_ = surface.on(Events::Dragged) => true,
 					_ = surface.render() => false,
 				};
-				ctx.with(|counts| {
-					let (events, frames) = counts.get();
-					counts.set(if dragged { (events + 1, frames) } else { (events, frames + 1) });
-				})
-				.await;
+				ctx.with(|(events, frames)| if dragged { *events += 1 } else { *frames += 1 }).await;
 			}
 		});
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
@@ -416,14 +412,14 @@ mod frame_wait_tests {
 			engine.drag_to(UiPoint::new(step as f32 * 0.04, 0.0));
 			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		}
-		let (events, frames) = engine.ctx().get();
+		let (events, frames) = *engine.ctx();
 		assert!(events >= 15, "the drag did not reach the surface every frame: {events}");
 		assert_eq!(frames, 20, "continuous events starved the frame wait");
 	}
 
 	#[test]
 	fn a_frame_wait_after_idle_frames_still_waits_for_the_next_frame() {
-		let mut engine = Engine::with_context(std::cell::Cell::new(0));
+		let mut engine = Engine::with_context(0);
 		engine.mount(async move |ctx| {
 			let mut surface = ctx.element("surface").container(|c| c).await;
 			loop {
@@ -434,10 +430,10 @@ mod frame_wait_tests {
 				};
 				surface.on(Events::DragEnded).await;
 				surface.render().await;
-				ctx.with(|ticks| ticks.set(ticks.get() + 1)).await;
+				ctx.with(|ticks| *ticks += 1).await;
 			}
 		});
-		let frame = |engine: &mut Engine<std::cell::Cell<u32>>| {
+		let frame = |engine: &mut Engine<u32>| {
 			engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());
 		};
 		frame(&mut engine);
@@ -447,9 +443,9 @@ mod frame_wait_tests {
 		}
 		engine.release(UiPoint::new(0.0, 0.0));
 		frame(&mut engine);
-		assert_eq!(engine.ctx().get(), 0, "a stale frame wait resolved without a new frame");
+		assert_eq!(*engine.ctx(), 0, "a stale frame wait resolved without a new frame");
 		frame(&mut engine);
-		assert_eq!(engine.ctx().get(), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]

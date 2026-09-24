@@ -35,8 +35,8 @@ fn changing_render(count: usize, phase: usize) -> engine::Render {
 		}
 	});
 	let arena = bumpalo::Bump::new();
-	let mut snapshot = engine.evaluate(Size::new(800, 800), &arena);
-	engine.render(&mut snapshot).clone()
+	let snapshot = engine.evaluate(Size::new(800, 800), &arena);
+	engine.render().clone()
 }
 
 /// Builds a frame's primitives without caches or text.
@@ -229,8 +229,8 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 		canvas.element("label").text("node", |t| t.font_size(10.0)).await;
 	});
 	let arena = bumpalo::Bump::new();
-	let mut snapshot = engine.evaluate(Size::new(400, 400), &arena);
-	let render = engine.render(&mut snapshot).clone();
+	let snapshot = engine.evaluate(Size::new(400, 400), &arena);
+	let render = engine.render().clone();
 	let mut draw_list = UiDrawList::default();
 	update_from_render(&render, &mut draw_list);
 
@@ -320,8 +320,8 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	let arena = bumpalo::Bump::new();
 	let mut draw_list = UiDrawList::default();
 	for _ in 0..3 {
-		let mut snapshot = engine.evaluate(Size::new(800, 600), &arena);
-		let render = engine.render(&mut snapshot).clone();
+		let snapshot = engine.evaluate(Size::new(800, 600), &arena);
+		let render = engine.render().clone();
 		update_from_render(&render, &mut draw_list);
 	}
 	assert_eq!(draw_list.curves.len(), 1);
@@ -373,9 +373,9 @@ fn root_transform_preserves_viewport_units() {
 		root.element("child").container(|c| c.size(10.into())).await;
 	});
 	let arena = bumpalo::Bump::new();
-	let mut snapshot = engine.evaluate(Size::new(100, 100), &arena);
+	let snapshot = engine.evaluate(Size::new(100, 100), &arena);
 	let mut data = UiDrawList::default();
-	update_from_render(engine.render(&mut snapshot), &mut data);
+	update_from_render(engine.render(), &mut data);
 	let output = primitives(&data, Extent::square(100), &arena);
 	assert_eq!(output.primitives.len(), 2);
 	assert_eq!(output.primitives[1].bounds, [10., 20., 30., 40.]);
@@ -418,8 +418,8 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 			.container(|c| c.size(10.into()).style(ConcreteLayer::default().backdrop_blur(4.0)))
 			.await;
 	});
-	let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-	let render = engine.render(&mut snapshot);
+	let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+	let render = engine.render();
 	let mut data = UiDrawList::default();
 	update_from_render(&render, &mut data);
 

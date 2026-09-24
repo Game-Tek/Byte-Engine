@@ -1,5 +1,4 @@
 use std::{
-	cell::OnceCell,
 	collections::HashMap,
 	fs,
 	path::{Path, PathBuf},
@@ -17,11 +16,19 @@ const FONT_SEARCH_DEPTH: usize = 3;
 /// The `LoadedFont` struct retains font data for on-demand outlines and optional bitmap rendering.
 struct LoadedFont {
 	/// Only the bitmap path needs the rasterizer's eagerly compiled glyph geometry.
-	rasterizer: OnceCell<Option<Font>>,
+	rasterizer: Rasterizer,
 	glyph_indices: HashMap<char, u16>,
 	/// The font file, kept because outlines are read from it on a character's first use.
 	data: Vec<u8>,
 	path: PathBuf,
+}
+
+/// The `Rasterizer` enum records whether the bitmap rasterizer was built from the font data yet.
+enum Rasterizer {
+	Unbuilt,
+	Ready(Font),
+	/// The font data parsed for outlines but not for the rasterizer.
+	Unavailable,
 }
 
 enum FontState {
@@ -312,14 +319,19 @@ impl TextSystem {
 		if matches!(self.font_state, FontState::Uninitialized) {
 			self.font()?;
 		}
-		let FontState::Ready(font) = &self.font_state else {
+		let FontState::Ready(font) = &mut self.font_state else {
 			return None;
 		};
-		// Bitmap consumers initialize the rasterizer once; layout and GPU outlines never need it.
-		let rasterizer = font
-			.rasterizer
-			.get_or_init(|| Font::from_bytes(font.data.as_slice(), FontSettings::default()).ok())
-			.as_ref()?;
+		// Bitmap consumers build the rasterizer once; layout and GPU outlines never need it.
+		if matches!(font.rasterizer, Rasterizer::Unbuilt) {
+			font.rasterizer = match Font::from_bytes(font.data.as_slice(), FontSettings::default()) {
+				Ok(rasterizer) => Rasterizer::Ready(rasterizer),
+				Err(_) => Rasterizer::Unavailable,
+			};
+		}
+		let Rasterizer::Ready(rasterizer) = &font.rasterizer else {
+			return None;
+		};
 		// Borrow the loaded font separately so a cache hit needs only one lookup.
 		Some(self.glyph_cache.entry(key).or_insert_with(|| {
 			let (metrics, bitmap) = rasterizer.rasterize(key.character, f32::from_bits(key.font_size_bits));
@@ -598,7 +610,7 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 		match fs::read(path) {
 			Ok(bytes) if ttf_parser::Face::parse(&bytes, 0).is_ok() => {
 				return Ok(LoadedFont {
-					rasterizer: OnceCell::new(),
+					rasterizer: Rasterizer::Unbuilt,
 					glyph_indices: HashMap::new(),
 					data: bytes,
 					path: path.to_path_buf(),
@@ -628,7 +640,7 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 		};
 
 		return Ok(LoadedFont {
-			rasterizer: OnceCell::new(),
+			rasterizer: Rasterizer::Unbuilt,
 			glyph_indices: HashMap::new(),
 			data: bytes,
 			path,

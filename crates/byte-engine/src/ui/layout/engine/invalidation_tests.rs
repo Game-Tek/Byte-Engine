@@ -7,8 +7,8 @@ use crate::ui::{
 };
 
 /// Builds a scene by applying the requested changes before its next frame.
-fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
-	let mut engine = Engine::with_context(std::cell::Cell::new(stage));
+fn scene(stage: usize) -> Engine<usize> {
+	let mut engine = Engine::with_context(stage);
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.flow(flow::row).clip(false)).await;
 		let mut panel = root
@@ -19,7 +19,7 @@ fn scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 		let mut sibling = root.element("sibling").container(|c| c.size(20.into())).await;
 		let mut applied = 0;
 		loop {
-			let target = ctx.with(|c| c.get()).await;
+			let target = ctx.with(|c| *c).await;
 			for stage in applied + 1..=target {
 				match stage {
 					1 => {
@@ -177,14 +177,14 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 }
 
 /// Replaces a scope with different text, layers, paths, depths, and element counts.
-fn changing_content_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
-	let mut engine = Engine::with_context(std::cell::Cell::new(stage));
+fn changing_content_scene(stage: usize) -> Engine<usize> {
+	let mut engine = Engine::with_context(stage);
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.clip(false)).await;
 		loop {
 			root.element("screen")
 				.mount(async move |ctx| {
-					let stage = ctx.with(|c| c.get()).await;
+					let stage = ctx.with(|c| *c).await;
 					let mut root = ctx.element("root").container(|c| c.clip(false).flow(flow::row)).await;
 					for index in 0..[3, 3, 1, 0, 4, 2][stage] {
 						let style = ConcreteStyle::from_layers((0..[1, 3, 0, 1, 2, 1][stage]).map(|layer| {
@@ -223,7 +223,7 @@ fn changing_content_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 							})
 							.await;
 					}
-					while ctx.with(|c| c.get()).await == stage {
+					while ctx.with(|c| *c).await == stage {
 						ctx.render().await;
 					}
 				})
@@ -240,12 +240,12 @@ fn rebuilt_render_matches_fresh_content_and_preserves_older_clones() {
 	let mut original = None;
 	for stage in 0..6 {
 		allocator.reset();
-		engine.ctx().set(stage);
+		*engine.ctx_mut() = stage;
 		let mut fresh = changing_content_scene(stage);
-		let mut actual = engine.evaluate(Size::new(200, 200), &allocator);
-		let mut expected = fresh.evaluate(Size::new(200, 200), &allocator);
-		let actual = engine.render(&mut actual);
-		let expected = fresh.render(&mut expected);
+		let actual = engine.evaluate(Size::new(200, 200), &allocator);
+		let expected = fresh.evaluate(Size::new(200, 200), &allocator);
+		let actual = engine.render();
+		let expected = fresh.render();
 		assert_same_render(actual, expected);
 		let (original, expected_original) = original.get_or_insert_with(|| (actual.clone(), expected.clone()));
 		assert_same_render(original, expected_original);
@@ -258,20 +258,18 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 	let mut allocator = bumpalo::Bump::new();
 	for stage in 0..=11 {
 		allocator.reset();
-		engine.ctx().set(stage);
+		*engine.ctx_mut() = stage;
 		let mut fresh = scene(stage);
 		let size = if stage == 10 {
 			Size::new(160, 120)
 		} else {
 			Size::new(100, 100)
 		};
-		let mut actual = engine.evaluate(size, &allocator);
-		let mut expected = fresh.evaluate(size, &allocator);
-		assert_same_render(engine.render(&mut actual), fresh.render(&mut expected));
 		let mut actual_hits = crate::ui::intersection::HitTest::default();
 		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		actual.retain_hit_test(&mut actual_hits);
-		expected.retain_hit_test(&mut expected_hits);
+		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
+		fresh.evaluate(size, &allocator).retain_hit_test(&mut expected_hits);
+		assert_same_render(engine.render(), fresh.render());
 		for x in [0.0, 10.0, 30.0, 50.0, 90.0] {
 			for y in [0.0, 20.0, 80.0] {
 				let point = UiPoint::new(x * 2.0 / size.x() - 1.0, 1.0 - y * 2.0 / size.y());
@@ -282,8 +280,8 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 }
 
 /// Builds adjacent text, an editable field, and a hit target to expose stale flow sizes.
-fn text_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
-	let mut engine = Engine::with_context(std::cell::Cell::new(stage));
+fn text_scene(stage: usize) -> Engine<usize> {
+	let mut engine = Engine::with_context(stage);
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.flow(flow::row).clip(false)).await;
 		let mut label = root.element("label").text("ab", |t| t).await;
@@ -291,7 +289,7 @@ fn text_scene(stage: usize) -> Engine<std::cell::Cell<usize>> {
 		root.element("target").container(|c| c.size(20.into())).await;
 		let mut applied = 0;
 		loop {
-			let target = ctx.with(|c| c.get()).await;
+			let target = ctx.with(|c| *c).await;
 			for stage in applied + 1..=target {
 				match stage {
 					1 => {
@@ -350,21 +348,21 @@ fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
 	let mut original = None;
 	for stage in 0..=7 {
 		allocator.reset();
-		engine.ctx().set(stage);
+		*engine.ctx_mut() = stage;
 		let mut fresh = text_scene(stage);
 		let size = Size::new(if stage == 7 { 500 } else { 400 }, 200);
-		let mut actual = engine.evaluate(size, &allocator);
-		let mut expected = fresh.evaluate(size, &allocator);
-		let actual_render = engine.render(&mut actual);
-		let expected_render = fresh.render(&mut expected);
+		let mut actual_hits = crate::ui::intersection::HitTest::default();
+		let mut expected_hits = crate::ui::intersection::HitTest::default();
+		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
+		let expected = fresh.evaluate(size, &allocator);
+		expected.retain_hit_test(&mut expected_hits);
+		let expected_ids = expected.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+		let actual_render = engine.render();
+		let expected_render = fresh.render();
 		assert_same_render(actual_render, expected_render);
 		let (original, original_expected) = original.get_or_insert_with(|| (actual_render.clone(), expected_render.clone()));
 		assert_same_render(original, original_expected);
-		let mut actual_hits = crate::ui::intersection::HitTest::default();
-		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		actual.retain_hit_test(&mut actual_hits);
-		expected.retain_hit_test(&mut expected_hits);
-		for id in expected.elements.iter().map(|element| element.id) {
+		for id in expected_ids {
 			assert_eq!(actual_hits.bounds(id), expected_hits.bounds(id), "stage {stage}");
 		}
 	}
@@ -391,8 +389,8 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 	let mut allocator = bumpalo::Bump::new();
 	for content in ["ab", "ba", "kept", "much wider replacement"] {
 		allocator.reset();
-		let mut snapshot = engine.evaluate(Size::new(400, 200), &allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(400, 200), &allocator);
+		let render = engine.render();
 		assert_eq!(render.texts().count(), 1);
 		let text = render.texts().next().unwrap();
 		assert_eq!(text.content, content);
@@ -440,8 +438,8 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 		(13.0, 0.0),
 	] {
 		allocator.reset();
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-		let position = engine.render(&mut snapshot).elements().last().unwrap().position;
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let position = engine.render().elements().last().unwrap().position;
 		assert_eq!((position.x(), position.y()), (x, y));
 	}
 }
@@ -472,18 +470,18 @@ fn custom_flow_observes_captured_state_after_a_paint_update() {
 		label.update_text(|t| t.content("ba")).await;
 	});
 	let allocator = bumpalo::Bump::new();
-	let mut first = engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render(&mut first).elements().nth(1).unwrap().position.x(), 0.0);
-	let mut second = engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render(&mut second).elements().nth(1).unwrap().position.x(), 40.0);
-	let mut third = engine.evaluate(Size::new(100, 100), &allocator);
-	let render = engine.render(&mut third);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 0.0);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 40.0);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	let render = engine.render();
 	assert_eq!(render.elements().nth(1).unwrap().position.x(), 60.0);
 	assert_eq!(render.texts().next().unwrap().content, "ba");
 }
 
 #[test]
-fn snapshots_keep_distinct_geometry_when_custom_flow_changes_across_resizes() {
+fn custom_flow_changes_across_resizes_refresh_geometry() {
 	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
 	let mut engine = Engine::new();
 	engine.mount(async move |ctx| {
@@ -502,12 +500,13 @@ fn snapshots_keep_distinct_geometry_when_custom_flow_changes_across_resizes() {
 			.await;
 	});
 	let allocator = bumpalo::Bump::new();
-	let mut first = engine.evaluate(Size::new(100, 100), &allocator);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 0.0);
 	OFFSET.with(|offset| offset.set(40.0));
 	engine.evaluate(Size::new(200, 100), &allocator);
-	let mut latest = engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render(&mut latest).elements().nth(1).unwrap().position.x(), 40.0);
-	assert_eq!(engine.render(&mut first).elements().nth(1).unwrap().position.x(), 0.0);
+	// Returning to the first size must lay the flow out again instead of reusing that size's earlier geometry.
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 40.0);
 }
 
 #[test]
@@ -522,17 +521,16 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 		root.update_container(|c| c.opacity(0.25).clip(false)).await;
 	});
 	let allocator = bumpalo::Bump::new();
-	let mut initial = engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render(&mut initial).elements().count(), 1);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.render().elements().count(), 1);
 	engine.set_cursor_position(UiPoint::new(-0.8, 0.8));
 	engine.update_click_state(true);
-	let mut clicked = engine.evaluate(Size::new(100, 100), &allocator);
-	let child = engine.render(&mut clicked).elements().nth(1).unwrap();
+	let mut hits = crate::ui::intersection::HitTest::default();
+	engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut hits);
+	let child = engine.render().elements().nth(1).unwrap();
 	assert_eq!(child.opacity, 0.25);
 	assert_eq!(child.clip, None);
 	let child_id = child.id;
-	let mut hits = crate::ui::intersection::HitTest::default();
-	clicked.retain_hit_test(&mut hits);
 	let point = UiPoint::new(-0.1, 0.9);
 	assert_eq!(hits.query(point), None);
 	let next = engine.evaluate(Size::new(100, 100), &allocator);
@@ -542,7 +540,7 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 
 #[test]
 fn remounting_the_same_id_restores_its_context_geometry() {
-	let mut engine = Engine::with_context(std::sync::Mutex::new(Vec::new()));
+	let mut engine = Engine::with_context(Vec::new());
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c).await;
 		for _ in 0..2 {
@@ -551,8 +549,7 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 					let child = ctx.element("child").container(|c| c.size(20.into())).await;
 					ctx.render().await;
 					let observed = (child.id(), child.geometry().await);
-					ctx.with(|output| output.lock().expect("expected test value").push(observed))
-						.await;
+					ctx.with(|output| output.push(observed)).await;
 				})
 				.await;
 		}
@@ -561,7 +558,7 @@ fn remounting_the_same_id_restores_its_context_geometry() {
 	for _ in 0..3 {
 		engine.evaluate(Size::new(100, 100), &allocator);
 	}
-	let observed = engine.ctx().lock().expect("expected test value");
+	let observed = engine.ctx();
 	assert_eq!(observed.len(), 2);
 	assert_eq!(observed[0], observed[1]);
 	assert_eq!(observed[1].1.unwrap().size, Size::new(20, 20));
@@ -575,10 +572,10 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		CALLS.with(|calls| calls.set(calls.get() + 1));
 		flow::row(input)
 	}
-	fn scene(camera: Transform, nested: Transform) -> Engine<std::cell::Cell<(Transform, Transform)>> {
-		let mut engine = Engine::with_context(std::cell::Cell::new((camera, nested)));
+	fn scene(camera: Transform, nested: Transform) -> Engine<(Transform, Transform)> {
+		let mut engine = Engine::with_context((camera, nested));
 		engine.mount(async move |ctx| {
-			let (camera, nested) = ctx.with(|c| c.get()).await;
+			let (camera, nested) = ctx.with(|c| *c).await;
 			let mut applied = (camera, nested);
 			let mut root = ctx.element("root").container(|c| c.flow(counted as fn(_) -> _)).await;
 			let mut canvas = root
@@ -600,7 +597,7 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 				.await;
 			root.element("toolbar").container(|c| c.size(40.into())).await;
 			loop {
-				let (camera, nested) = ctx.with(|c| c.get()).await;
+				let (camera, nested) = ctx.with(|c| *c).await;
 				if camera != applied.0 {
 					canvas.update_container(|c| c.transform(camera)).await;
 				}
@@ -616,8 +613,7 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 	let arena = bumpalo::Bump::new();
 	let identity = Transform::identity();
 	let mut retained = scene(identity, identity);
-	let original = retained.evaluate(Size::new(300, 200), &arena);
-	let original_elements = original.elements.to_vec();
+	retained.evaluate(Size::new(300, 200), &arena);
 	for (camera, nested) in [
 		(identity.translate(12.25, 6.5), identity.scale(0.75)),
 		(
@@ -627,7 +623,7 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		(identity.translate(500., 0.), identity),
 		(identity, identity),
 	] {
-		retained.ctx().set((camera, nested));
+		*retained.ctx_mut() = (camera, nested);
 		let calls = CALLS.with(std::cell::Cell::get);
 		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(
@@ -638,7 +634,6 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		let mut fresh = scene(camera, nested);
 		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(actual.elements, expected.elements);
-		assert_same_render(retained.render(&mut actual), fresh.render(&mut expected));
 		for y in (0..200).step_by(5) {
 			for x in (0..300).step_by(5) {
 				assert_eq!(
@@ -647,14 +642,14 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 				);
 			}
 		}
-		assert_eq!(*original.elements, original_elements);
+		assert_same_render(retained.render(), fresh.render());
 	}
 }
 
 /// Editing a retained path must move its hit surface even when its declared size stays fixed.
 #[test]
-fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
-	let mut engine = Engine::with_context(std::cell::Cell::new(None));
+fn edited_curve_paths_refresh_hits() {
+	let mut engine = Engine::with_context(None);
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c).await;
 		let mut wire = root
@@ -662,18 +657,18 @@ fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
 			.curve(|c| c.size(100.into()).line((0., 0.), (40., 0.)).hit_width(6.))
 			.await;
 		let id = wire.id();
-		ctx.with(|output| output.set(Some(id))).await;
+		ctx.with(|output| *output = Some(id)).await;
 		ctx.render().await;
 		wire.update_curve(|c| c.clear_segments().line((0., 20.), (40., 20.))).await;
 	});
 	let arena = bumpalo::Bump::new();
 	let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
-	let mut first = engine.evaluate(Size::new(100, 100), &arena);
-	assert_eq!(first.click(window(20., 1.)), engine.ctx().get());
+	let first = engine.evaluate(Size::new(100, 100), &arena).click(window(20., 1.));
+	assert_eq!(first, *engine.ctx());
 	let mut second = engine.evaluate(Size::new(100, 100), &arena);
-	assert_ne!(second.click(window(20., 1.)), engine.ctx().get());
-	assert_eq!(second.click(window(20., 21.)), engine.ctx().get());
-	assert_eq!(first.click(window(20., 1.)), engine.ctx().get());
+	let (old, new) = (second.click(window(20., 1.)), second.click(window(20., 21.)));
+	assert_ne!(old, *engine.ctx());
+	assert_eq!(new, *engine.ctx());
 }
 
 /// A transform edit refreshes clip and mask inheritance inside the moved subtree only,
@@ -681,10 +676,10 @@ fn edited_curve_paths_refresh_hits_and_preserve_older_snapshots() {
 /// all match a scene mounted with the transform already applied.
 #[test]
 fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
-	fn scene(outer: Transform, inner: Transform) -> Engine<std::cell::Cell<(Transform, Transform)>> {
-		let mut engine = Engine::with_context(std::cell::Cell::new((outer, inner)));
+	fn scene(outer: Transform, inner: Transform) -> Engine<(Transform, Transform)> {
+		let mut engine = Engine::with_context((outer, inner));
 		engine.mount(async move |ctx| {
-			let (outer, inner) = ctx.with(|c| c.get()).await;
+			let (outer, inner) = ctx.with(|c| *c).await;
 			let mut applied = (outer, inner);
 			let mut root = ctx
 				.element("root")
@@ -716,7 +711,7 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 				.await;
 			sibling.element("sibling_leaf").container(|c| c.size(90.into())).await;
 			loop {
-				let (outer, inner) = ctx.with(|c| c.get()).await;
+				let (outer, inner) = ctx.with(|c| *c).await;
 				if outer != applied.0 {
 					moved.update_container(|c| c.transform(outer)).await;
 				}
@@ -732,7 +727,7 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 	let arena = bumpalo::Bump::new();
 	let identity = Transform::identity();
 	let mut retained = scene(identity, identity);
-	let _ = retained.evaluate(Size::new(300, 200), &arena);
+	retained.evaluate(Size::new(300, 200), &arena);
 	for (outer, inner) in [
 		(identity.translate(15.5, 7.25), identity),
 		(identity.translate(15.5, 7.25), identity.scale(1.6)),
@@ -743,17 +738,17 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 		(identity.translate(-40., 20.), identity.translate(12., -8.)),
 		(identity, identity),
 	] {
-		retained.ctx().set((outer, inner));
+		*retained.ctx_mut() = (outer, inner);
 		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
 		let mut fresh = scene(outer, inner);
 		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(actual.elements, expected.elements);
-		assert_same_render(retained.render(&mut actual), fresh.render(&mut expected));
 		for y in (0..200).step_by(4) {
 			for x in (0..300).step_by(4) {
 				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0);
 				assert_eq!(actual.click(point), expected.click(point));
 			}
 		}
+		assert_same_render(retained.render(), fresh.render());
 	}
 }

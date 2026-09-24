@@ -116,13 +116,15 @@ pub(crate) fn slot_path(parent: u64, key: ElementKey) -> NonZeroU64 {
 pub trait Context<C: 'static = ()>: Sized {
 	fn id(&self) -> Id;
 
-	/// Reads the engine's application context, which the engine lends while it polls this component.
+	/// Reads or changes the engine's application context, which the engine lends mutably while it polls this
+	/// component.
 	///
-	/// Await the result: `let value = ctx.with(|app: &App| app.value).await;`. The host reaches the same value
+	/// Await the result: `let value = ctx.with(|app: &mut App| app.value).await;`. The closure runs to completion
+	/// before the future resolves, so the borrow never spans an `.await`. The host reaches the same value
 	/// through [`crate::ui::Engine::ctx`] and [`crate::ui::Engine::ctx_mut`].
 	fn with<F, T>(&self, read: F) -> With<C, F>
 	where
-		F: FnOnce(&C) -> T;
+		F: FnOnce(&mut C) -> T;
 
 	/// Declares a keyed slot under this context for an element, component, or mount.
 	///

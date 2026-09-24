@@ -10,7 +10,7 @@
 /// for component, event, focus, and render-pass integration.
 pub struct Engine<C = ()> {
 	viewports: Vec<VirtualViewport>,
-	state: Rc<RefCell<EngineState>>,
+	state: EngineState,
 	cursor_position: UiPoint,
 	is_clicking: bool,
 	clicks: Vec<bool>,
@@ -71,18 +71,22 @@ struct RetainedLayout {
 	/// The layout this one differs from by visual transforms inside the engine's dirty roots alone.
 	transformed_from: Option<u64>,
 	size: Size,
-	elements: Rc<Vec<LayoutElement>>,
-	relations: Rc<Vec<(Id, Id)>>,
-	acceleration: Rc<MouseClickAcceleration>,
+	elements: Vec<LayoutElement>,
+	relations: Vec<(Id, Id)>,
+	acceleration: MouseClickAcceleration,
 }
 
-/// Reuses uniquely owned snapshot storage without copying obsolete contents on a shared update.
-fn retain_snapshot_data<T: Copy>(target: &mut Rc<Vec<T>>, source: &[T]) {
-	if let Some(target) = Rc::get_mut(target) {
-		target.clear();
-		target.extend_from_slice(source);
-	} else {
-		*target = Rc::new(source.to_vec());
+/// Lends a host the retained layout together with the engine's cursor.
+///
+/// It takes the two fields rather than the engine, so input routing can hit-test while it keeps changing the
+/// engine's other state.
+fn snapshot_of<'a>(retained: &'a RetainedLayout, cursor: &'a mut Option<Id>) -> Snapshot<'a> {
+	Snapshot {
+		elements: &retained.elements,
+		relations: &retained.relations,
+		acceleration: &retained.acceleration,
+		cursor,
+		size: retained.size,
 	}
 }
 
@@ -236,7 +240,7 @@ impl<C: 'static> Engine<C> {
 		let (sender, commands) = std::sync::mpsc::channel();
 		Self {
 			viewports: Vec::new(),
-			state: Rc::new(RefCell::new(EngineState::new())),
+			state: EngineState::new(),
 			cursor_position: UiPoint::zero(),
 			is_clicking: false,
 			clicks: Vec::new(),
@@ -334,9 +338,9 @@ impl<C: 'static> Engine<C> {
 	/// Evaluates mounted UI tasks and returns a snapshot of the resulting layout.
 	///
 	/// A changed viewport size first ends the interaction in progress as
-	/// [`Self::cancel`] does. Next, pass the mutable snapshot to [`Self::render`]
-	/// and submit the returned render data through [`crate::ui::UiRenderPass`].
-	pub fn evaluate<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
+	/// [`Self::cancel`] does. The snapshot borrows the engine, so inspect it or move the cursor with it, then drop
+	/// it. Next, call [`Self::render`] and submit the returned render data through [`crate::ui::UiRenderPass`].
+	pub fn evaluate(&mut self, size: Size, frame_allocator: &bumpalo::Bump) -> Snapshot<'_> {
 		// Layout distances and the held source's place change with the viewport.
 		if self.retained_layout.as_ref().is_some_and(|retained| retained.size != size) {
 			self.cancel();
@@ -348,18 +352,22 @@ impl<C: 'static> Engine<C> {
 		self.core.tree.begin_frame();
 		poll_ready_tasks(&mut self.core);
 
-		let mut snapshot = self.build_snapshot_from_ui_tree(size, frame_allocator);
-		self.route_input_events(&mut snapshot);
+		self.build_layout(size, frame_allocator);
+		self.route_input_events();
 		self.route_key_input_events();
 		self.route_text_edit_events();
 
 		poll_ready_tasks(&mut self.core);
-		snapshot
+		let retained = self
+			.retained_layout
+			.as_ref()
+			.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
+		snapshot_of(retained, &mut self.state.cursor)
 	}
 
 	// Visual transforms reuse placement for every flow. Other edits can replay custom
 	// flows because their placement may depend on captured application state.
-	fn build_snapshot_from_ui_tree<'a>(&mut self, size: Size, frame_allocator: &'a bumpalo::Bump) -> Snapshot<'a> {
+	fn build_layout(&mut self, size: Size, frame_allocator: &bumpalo::Bump) {
 		let tree = &mut self.core.tree;
 		let revision = tree.revision();
 		let unchanged = self
@@ -382,11 +390,13 @@ impl<C: 'static> Engine<C> {
 					})
 			});
 			let transforms_changed = !tree.transform_changes.is_empty();
+			// Unchanged placement reuses the retained elements. They are moved out while the rest of the retained
+			// layout is updated, and moved back once this evaluation no longer reads them.
 			let previous = self
 				.retained_layout
-				.as_ref()
+				.as_mut()
 				.filter(|_| placement_unchanged && !transforms_changed)
-				.map(|retained| Rc::clone(&retained.elements));
+				.map(|retained| std::mem::take(&mut retained.elements));
 			let mut placed = Vec::new_in(frame_allocator);
 			self.dirty.clear();
 			if placement_unchanged && transforms_changed {
@@ -439,7 +449,7 @@ impl<C: 'static> Engine<C> {
 				}
 				self.dirty.clear();
 			}
-			let elements = previous.as_deref().map_or(placed.as_slice(), |elements| elements.as_slice());
+			let elements = previous.as_deref().unwrap_or(placed.as_slice());
 			let has_custom_flows = self.retained_layout.as_ref()
 				.filter(|retained| retained.flow_revision == tree.flow_revision)
 				.map_or_else(|| tree.elements.iter().any(|element| {
@@ -478,19 +488,17 @@ impl<C: 'static> Engine<C> {
 					&& self.hit_offsets.len() == tree.elements.len()
 					&& self.retained_layout.as_mut().is_some_and(|retained| {
 						retained.clip_revision == tree.clip_revision
-							&& Rc::get_mut(&mut retained.acceleration).is_some_and(|acceleration| {
-								refresh_hit_entries(
-									&self.dirty,
-									elements,
-									&tree,
-									&self.visual_state,
-									&self.placement_indices,
-									&self.hit_offsets,
-									&mut self.hit_curves,
-									acceleration,
-									frame_allocator,
-								)
-							})
+							&& refresh_hit_entries(
+								&self.dirty,
+								elements,
+								&tree,
+								&self.visual_state,
+								&self.placement_indices,
+								&self.hit_offsets,
+								&mut self.hit_curves,
+								&mut retained.acceleration,
+								frame_allocator,
+							)
 					});
 				let hit = (!refreshed)
 					.then(|| clipped_hit_elements(elements, &tree, &self.visual_state, &mut self.hit_curves, frame_allocator));
@@ -512,9 +520,7 @@ impl<C: 'static> Engine<C> {
 						}
 					}
 				} else {
-					self.state
-						.borrow_mut()
-						.set_element_ids(elements.iter().map(|element| element.id));
+					self.state.set_element_ids(elements.iter().map(|element| element.id));
 					self.core.runtime.update_geometry(elements);
 				}
 				let retained = self.retained_layout.get_or_insert_with(|| RetainedLayout {
@@ -527,27 +533,22 @@ impl<C: 'static> Engine<C> {
 					revision: layout_revision,
 					transformed_from,
 					size,
-					elements: Rc::default(),
-					relations: Rc::default(),
-					acceleration: Rc::default(),
+					elements: Vec::new(),
+					relations: Vec::new(),
+					acceleration: MouseClickAcceleration::default(),
 				});
 				retained.revision = layout_revision;
 				retained.transformed_from = transformed_from;
 				retained.clip_revision = tree.clip_revision;
 				retained.size = size;
 				if !placement_unchanged || transforms_changed {
-					retain_snapshot_data(&mut retained.elements, elements);
+					retained.elements.clear();
+					retained.elements.extend_from_slice(elements);
 				}
-				retain_snapshot_data(&mut retained.relations, &tree.relations);
+				retained.relations.clear();
+				retained.relations.extend_from_slice(&tree.relations);
 				if let Some(hit) = hit {
-					// An older snapshot owns its index until it is dropped. Replace shared storage
-					// instead of copying an obsolete grid; otherwise refill it in place.
-					if Rc::get_mut(&mut retained.acceleration).is_none() {
-						retained.acceleration = Rc::default();
-					}
-					Rc::get_mut(&mut retained.acceleration)
-						.unwrap()
-						.update(&hit.elements, &hit.curves, &hit.points);
+					retained.acceleration.update(&hit.elements, &hit.curves, &hit.points);
 					self.hit_offsets.clear();
 					self.hit_offsets.resize(tree.elements.len(), u32::MAX);
 					for (offset, element) in hit.elements.iter().enumerate() {
@@ -566,22 +567,11 @@ impl<C: 'static> Engine<C> {
 			retained.non_transform_revision = tree.non_transform_revision;
 			retained.flow_revision = tree.flow_revision;
 			retained.has_custom_flows = has_custom_flows;
+			if let Some(previous) = previous {
+				retained.elements = previous;
+			}
 			tree.text_changes.clear();
 			tree.transform_changes.clear();
-		}
-		let retained = self
-			.retained_layout
-			.as_ref()
-			.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
-		Snapshot {
-			elements: Rc::clone(&retained.elements),
-			relations: Rc::clone(&retained.relations),
-			acceleration: Rc::clone(&retained.acceleration),
-			frame_allocator: PhantomData,
-			cursor: self.state.borrow().cursor(),
-			engine_state: Rc::clone(&self.state),
-			size,
-			layout_revision: retained.revision,
 		}
 	}
 
@@ -627,10 +617,23 @@ impl<C: 'static> Engine<C> {
 		};
 	}
 
-	fn route_input_events(&mut self, snapshot: &mut Snapshot<'_>) {
-		self.route_hover(snapshot);
+	/// Hit-tests this frame's pointer once, then delivers hover changes, clicks, and scrolls.
+	fn route_input_events(&mut self) {
+		let held = self.core.runtime.drag.capture().map(|capture| capture.source);
+		let position = self.cursor_position;
+		let retained = self
+			.retained_layout
+			.as_ref()
+			.expect("UI layout was not retained. Evaluation did not prepare its snapshot.");
+		let mut snapshot = snapshot_of(retained, &mut self.state.cursor);
+		let hovered = snapshot.hover(position, held);
+		// Every click and scroll this frame lands on the same position, and a hit also moves the cursor there.
+		let pressed = self.clicks.contains(&true) || !self.scrolls.is_empty();
+		let target = if pressed { snapshot.click(position) } else { None };
+
+		self.route_hover(hovered, held);
 		while let Some(click) = self.clicks.pop() {
-			if click && let Some(target) = snapshot.click(self.cursor_position) {
+			if click && let Some(target) = target {
 				self.core.runtime.push_event(UiEvent {
 					target,
 					kind: Events::Actuated,
@@ -641,7 +644,7 @@ impl<C: 'static> Engine<C> {
 		}
 
 		while let Some(delta) = self.scrolls.pop() {
-			if let Some(target) = snapshot.click(self.cursor_position) {
+			if let Some(target) = target {
 				self.route_bubbling_event(target, Events::Scrolled, Some(delta), None);
 			}
 		}
@@ -651,9 +654,7 @@ impl<C: 'static> Engine<C> {
 	///
 	/// A held source is skipped so the surface beneath a dragged item is the one
 	/// that hears about the pointer, and the capture records it as its drop preview.
-	fn route_hover(&mut self, snapshot: &Snapshot<'_>) {
-		let held = self.core.runtime.drag.capture().map(|capture| capture.source);
-		let hovered = snapshot.hover(self.cursor_position, held);
+	fn route_hover(&mut self, hovered: Option<Id>, held: Option<Id>) {
 		if held.is_some() {
 			self.core.runtime.drag.set_over(hovered);
 		}
@@ -778,7 +779,7 @@ impl<C: 'static> Engine<C> {
 	fn route_key_input_events(&mut self) {
 		while let Some(key) = self.key_presses.pop_front() {
 			let target = {
-				let state = self.state.borrow();
+				let state = &self.state;
 				self.core.runtime.focused_target(|target| state.contains_element(target))
 			};
 
@@ -791,7 +792,7 @@ impl<C: 'static> Engine<C> {
 	fn route_text_edit_events(&mut self) {
 		while let Some(edit) = self.text_edits.pop_front() {
 			let target = {
-				let state = self.state.borrow();
+				let state = &self.state;
 				self.core.runtime.focused_target(|target| state.contains_element(target))
 			};
 
@@ -801,7 +802,7 @@ impl<C: 'static> Engine<C> {
 		}
 	}
 
-	/// Builds render data from an evaluated UI snapshot.
+	/// Builds render data from the layout the last [`Self::evaluate`] produced.
 	///
 	/// Next, give the returned data to [`crate::ui::UiRenderPass`] for GPU drawing.
 	/// The render is retained by the engine: while the tree, its layout, and the
@@ -809,15 +810,22 @@ impl<C: 'static> Engine<C> {
 	/// is returned again. Cloning shares its contents; publish a clone only when
 	/// the revision changed, since a retained clone forces the next build to
 	/// allocate fresh buffers instead of reusing the engine's.
-	pub fn render(&mut self, snapshot: &mut Snapshot<'_>) -> &Render {
+	pub fn render(&mut self) -> &Render {
+		let layout = self.retained_layout.as_mut().expect(
+			"UI render has no layout to draw. The most likely cause is calling render before the first evaluate.",
+		);
+		let (layout_revision, size) = (layout.revision, layout.size);
 		let tree_revision = self.core.tree.revision();
 		let retained = self.retained_render.as_ref().is_some_and(|retained| {
-			retained.tree_revision == tree_revision
-				&& retained.layout_revision == snapshot.layout_revision
-				&& retained.size == snapshot.size
+			retained.tree_revision == tree_revision && retained.layout_revision == layout_revision && retained.size == size
 		});
 		if !retained {
-			self.retained_render = Some(self.build_render(snapshot));
+			// The elements are moved out for the build, which reads them while it changes the engine's other state.
+			let elements = std::mem::take(&mut layout.elements);
+			self.retained_render = Some(self.build_render(&elements, layout_revision, size));
+			if let Some(layout) = self.retained_layout.as_mut() {
+				layout.elements = elements;
+			}
 		}
 		&self
 			.retained_render
@@ -828,12 +836,12 @@ impl<C: 'static> Engine<C> {
 
 	// Rebuild visible draw data while preserving its layout order and owned render buffers.
 	#[allow(clippy::too_many_lines)]
-	fn build_render(&mut self, snapshot: &mut Snapshot<'_>) -> RetainedRender {
+	fn build_render(&mut self, layout_elements: &[LayoutElement], layout_revision: u64, size: Size) -> RetainedRender {
 		let tree = &self.core.tree;
 		let mut visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
 			retained.clip_revision == tree.clip_revision
-				&& retained.layout_revision == snapshot.layout_revision
-				&& retained.size == snapshot.size
+				&& retained.layout_revision == layout_revision
+				&& retained.size == size
 		});
 		// Geometry that moved by visual transforms alone, with appearance and clipping as
 		// the retained render saw them, leaves every entry outside the dirty subtrees as it is.
@@ -843,10 +851,10 @@ impl<C: 'static> Engine<C> {
 			.zip(self.retained_layout.as_ref())
 			.is_some_and(|(render, layout)| {
 				layout.transformed_from == Some(render.layout_revision)
-					&& layout.revision == snapshot.layout_revision
+					&& layout.revision == layout_revision
 					&& render.clip_revision == tree.clip_revision
 					&& render.appearance_revision == tree.appearance_revision
-					&& render.size == snapshot.size
+					&& render.size == size
 					&& self.transforms.len() == tree.elements.len()
 					// Once most of the tree moved, patching costs more than the plain rebuild.
 					&& self.dirty.len() * 4 < tree.elements.len()
@@ -855,7 +863,7 @@ impl<C: 'static> Engine<C> {
 		let damage_base = self
 			.retained_render
 			.as_ref()
-			.filter(|retained| retained.size == snapshot.size)
+			.filter(|retained| retained.size == size)
 			.map(|retained| retained.render.revision);
 		let render_revision = RenderRevision(self.next_render_revision);
 		self.next_render_revision += 1;
@@ -917,13 +925,13 @@ impl<C: 'static> Engine<C> {
 			&mut self.visual_state_key,
 			&self.dirty,
 			&self.placement_indices,
-			&snapshot.elements,
+			layout_elements,
 			tree,
-			snapshot.layout_revision,
-			snapshot.size,
+			layout_revision,
+			size,
 			None,
 		);
-		let stamp = snapshot.layout_revision;
+		let stamp = layout_revision;
 		if incremental {
 			self.dirty_stamps.resize(tree.elements.len(), 0);
 			// Depth is a placement property, so order holds; only membership can flip, and a
@@ -932,7 +940,7 @@ impl<C: 'static> Engine<C> {
 			for &index in &self.dirty {
 				self.dirty_stamps[index] = stamp;
 				let offset = self.placement_indices[index];
-				let element = snapshot.elements[offset];
+				let element = layout_elements[offset];
 				let now_visible = self.visual_state[index]
 					.clip
 					.apply(geometry_from_layout_element(&element))
@@ -954,7 +962,7 @@ impl<C: 'static> Engine<C> {
 			// at equal depth without the scratch buffer a stable element sort would allocate.
 			self.depth_order.clear();
 			self.depth_order
-				.extend(snapshot.elements.iter().enumerate().filter_map(|(offset, element)| {
+				.extend(layout_elements.iter().enumerate().filter_map(|(offset, element)| {
 					let visible = tree.index_of(element).is_some_and(|index| {
 						self.visual_state[index]
 							.clip
@@ -965,7 +973,7 @@ impl<C: 'static> Engine<C> {
 				}));
 			self.depth_order.sort_unstable();
 			visible.clear();
-			visible.extend(self.depth_order.iter().map(|&(_, offset)| snapshot.elements[offset as usize]));
+			visible.extend(self.depth_order.iter().map(|&(_, offset)| layout_elements[offset as usize]));
 		}
 		for element in &visible {
 			let Some(index) = tree.index_of(element) else {
@@ -1299,7 +1307,7 @@ impl<C: 'static> Engine<C> {
 			None => damage.clear(),
 		}
 		contents.revision = render_revision;
-		contents.viewport_size = snapshot.size;
+		contents.viewport_size = size;
 		contents.damage_base = damage_base;
 
 		RetainedRender {
@@ -1307,8 +1315,8 @@ impl<C: 'static> Engine<C> {
 			placement_revision: tree.placement_revision,
 			clip_revision: tree.clip_revision,
 			appearance_revision: tree.appearance_revision,
-			layout_revision: snapshot.layout_revision,
-			size: snapshot.size,
+			layout_revision: layout_revision,
+			size: size,
 			visible,
 			render: Render { contents: shared },
 		}
@@ -1319,15 +1327,15 @@ impl<C: 'static> Engine<C> {
 	}
 
 	pub fn cursor(&self) -> Option<Id> {
-		self.state.borrow().cursor()
+		self.state.cursor()
 	}
 
 	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
-		self.state.borrow_mut().set_cursor(cursor)
+		self.state.set_cursor(cursor)
 	}
 
 	pub fn clear_cursor(&mut self) {
-		self.state.borrow_mut().set_cursor(None);
+		self.state.set_cursor(None);
 	}
 
 	pub fn update_click_state(&mut self, v: bool) {
@@ -1449,7 +1457,7 @@ impl<C: 'static> Engine<C> {
 
 	fn focused_text_field_last_char(&mut self) -> Option<char> {
 		let target = {
-			let state = self.state.borrow();
+			let state = &self.state;
 			self.core.runtime.focused_target(|target| state.contains_element(target))?
 		};
 		let element = self.core.tree.element(target)?;
@@ -1628,11 +1636,7 @@ pub struct UiTextEditEvent {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::{
-		Arc, Mutex as StdMutex,
-		atomic::{AtomicUsize, Ordering},
-	};
-	use std::time::Duration;
+	use std::{sync::mpsc, time::Duration};
 
 	use super::*;
 	use crate::ui::{
@@ -1653,12 +1657,12 @@ mod tests {
 		style::{ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind},
 	};
 
-	/// The `DropCounter` struct verifies that engine-owned UI context is released with the engine.
-	struct DropCounter(Arc<AtomicUsize>);
+	/// The `DropCounter` struct reports its drop on a channel, so a test can see the engine release the context it owns.
+	struct DropCounter(mpsc::Sender<()>);
 
 	impl Drop for DropCounter {
 		fn drop(&mut self) {
-			self.0.fetch_add(1, Ordering::Relaxed);
+			let _ = self.0.send(());
 		}
 	}
 
@@ -1668,8 +1672,8 @@ mod tests {
 	}
 
 	/// Mounts a 20 by 20 source at the origin and records the drag it sees on every frame.
-	fn drag_observer() -> Engine<StdMutex<Vec<Option<DragCapture>>>> {
-		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
+	fn drag_observer() -> Engine<Vec<Option<DragCapture>>> {
+		let mut engine = Engine::with_context(Vec::new());
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
 			root.element("source")
@@ -1677,8 +1681,7 @@ mod tests {
 				.await;
 			loop {
 				let drag = ctx.drag().await;
-				ctx.with(|observed| observed.lock().expect("expected test value").push(drag))
-					.await;
+				ctx.with(|observed| observed.push(drag)).await;
 				ctx.render().await;
 			}
 		});
@@ -1696,8 +1699,8 @@ mod tests {
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(!engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(12.0, 12.0)));
-		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		let held = engine.ctx().lock().expect("expected test value")[1].expect("expected test value");
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		let held = engine.ctx()[1].expect("expected test value");
 		assert!(!held.dragging);
 		assert_eq!(held.origin, UiPoint::new(10.0, 10.0));
 		assert_eq!(held.position, UiPoint::new(12.0, 12.0));
@@ -1714,7 +1717,7 @@ mod tests {
 	fn click_restores_source_without_a_drop() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = drag_observer();
-		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.release(window(12.0, 12.0)).is_none());
 		assert!(engine.drag().is_none());
@@ -1732,8 +1735,8 @@ mod tests {
 		assert_eq!(engine.cancel(), Some(source));
 		assert_eq!(engine.cancel(), None);
 		assert!(engine.release(window(20.0, 10.0)).is_none());
-		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		assert_eq!(engine.ctx().lock().expect("expected test value")[1], None);
+		engine.evaluate(Size::new(128, 128), &frame_allocator);
+		assert_eq!(engine.ctx()[1], None);
 		assert!(!engine.core.runtime.pointer.pressed);
 		assert!(engine.press(window(10.0, 10.0)));
 	}
@@ -1745,8 +1748,8 @@ mod tests {
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
 		engine.press(window(10.0, 10.0));
 		let _ = engine.evaluate(Size::new(128, 128), &frame_allocator);
-		let _ = engine.evaluate(Size::new(64, 128), &frame_allocator);
-		let observed = engine.ctx().lock().expect("expected test value");
+		engine.evaluate(Size::new(64, 128), &frame_allocator);
+		let observed = engine.ctx();
 		assert!(observed[1].is_some());
 		assert_eq!(observed[2], None);
 	}
@@ -1766,24 +1769,23 @@ mod tests {
 	}
 
 	/// Mounts a target with a hit-testable child and a source drawn over the target's corner.
-	fn drag_board() -> Engine<StdMutex<DragLog>> {
-		let mut engine = Engine::with_context(StdMutex::new(DragLog::default()));
+	fn drag_board() -> Engine<DragLog> {
+		let mut engine = Engine::with_context(DragLog::default());
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
 			let mut target = root.element("target").container(|c| c.absolute_position(0, 0).size(50.into())).await;
 			let inner = target.element("inner").container(|c| c.absolute_position(30, 30).size(20.into())).await;
 			let mut source = root.element("source").container(|c| c.absolute_position(0, 0).size(20.into())).await;
 			let ids = (target.id(), inner.id(), source.id());
-			ctx.with(|log| log.lock().expect("expected test value").ids = Some(ids)).await;
+			ctx.with(|log| log.ids = Some(ids)).await;
 			loop {
 				// A biased select takes the queued drop before the end, as a client would.
 				utils::r#async::select_biased! {
-					event = target.on(Events::Dropped) => ctx.with(|log| log.lock().expect("expected test value").drops.push(event.source)).await,
-					_ = source.on(Events::Grabbed) => ctx.with(|log| log.lock().expect("expected test value").grabbed += 1).await,
-					event = source.on(Events::Dragged) => ctx.with(|log| log.lock().expect("expected test value").dragged.push(event.delta.expect("expected test value"))).await,
+					event = target.on(Events::Dropped) => ctx.with(|log| log.drops.push(event.source)).await,
+					_ = source.on(Events::Grabbed) => ctx.with(|log| log.grabbed += 1).await,
+					event = source.on(Events::Dragged) => ctx.with(|log| log.dragged.push(event.delta.expect("expected test value"))).await,
 					event = source.on(Events::DragEnded) => {
 						ctx.with(|log| {
-							let mut log = log.lock().expect("expected test value");
 							log.ended.push(event.source);
 							let drops = log.drops.len();
 							log.drops_before_end.push(drops);
@@ -1801,26 +1803,21 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let (target, inner, source) = engine
-			.ctx()
-			.lock()
-			.expect("expected test value")
-			.ids
-			.expect("expected test value");
+		let (target, inner, source) = engine.ctx().ids.expect("expected test value");
 
 		// Motion past the threshold starts the drag; the drop lands on the target's child and bubbles up.
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(40.0, 40.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = engine.ctx().lock().expect("expected test value");
+			let observed = engine.ctx();
 			assert_eq!(observed.grabbed, 1);
 			assert_eq!(observed.dragged, vec![UiVector::new(30.0, 30.0)]);
 		}
 		assert!(engine.release(window(40.0, 40.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = engine.ctx().lock().expect("expected test value");
+			let observed = engine.ctx();
 			assert_eq!(observed.drops, vec![Some(source)]);
 			assert_eq!(observed.ended, vec![Some(inner)]);
 		}
@@ -1831,7 +1828,7 @@ mod tests {
 		assert!(engine.release(window(19.0, 19.0)).is_some());
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		{
-			let observed = engine.ctx().lock().expect("expected test value");
+			let observed = engine.ctx();
 			assert_eq!(observed.grabbed, 2);
 			assert_eq!(observed.drops, vec![Some(source), Some(source)]);
 			assert_eq!(observed.ended, vec![Some(inner), Some(target)]);
@@ -1843,8 +1840,8 @@ mod tests {
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.release(window(12.0, 12.0)).is_none());
-		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let observed = engine.ctx().lock().expect("expected test value");
+		engine.evaluate(Size::new(128, 128), &allocator);
+		let observed = engine.ctx();
 		assert_eq!(observed.grabbed, 4);
 		assert_eq!(observed.drops.len(), 2);
 		// Every grab ends once, and the target's drop is recorded before the source's end.
@@ -1862,21 +1859,15 @@ mod tests {
 		assert!(engine.drag_to(window(12.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		// Motion inside the threshold is not a drag.
-		assert!(engine.ctx().lock().expect("expected test value").dragged.is_empty());
+		assert!(engine.ctx().dragged.is_empty());
 		assert!(engine.drag_to(window(30.0, 10.0)));
 		assert!(engine.drag_to(window(40.0, 10.0)));
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		assert_eq!(
-			engine.ctx().lock().expect("expected test value").dragged,
-			vec![UiVector::new(30.0, 0.0)]
-		);
+		assert_eq!(engine.ctx().dragged, vec![UiVector::new(30.0, 0.0)]);
 		assert!(engine.drag_to(window(40.0, 20.0)));
-		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		assert_eq!(
-			engine.ctx().lock().expect("expected test value").dragged,
-			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
-		);
+		engine.evaluate(Size::new(128, 128), &allocator);
+		assert_eq!(engine.ctx().dragged, vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]);
 	}
 
 	#[test]
@@ -1884,12 +1875,7 @@ mod tests {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = drag_board();
 		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let (_, _, source) = engine
-			.ctx()
-			.lock()
-			.expect("expected test value")
-			.ids
-			.expect("expected test value");
+		let (_, _, source) = engine.ctx().ids.expect("expected test value");
 
 		assert!(engine.press(window(10.0, 10.0)));
 		assert_eq!(engine.cancel(), Some(source));
@@ -1897,8 +1883,8 @@ mod tests {
 		assert!(engine.press(window(10.0, 10.0)));
 		assert!(engine.drag_to(window(40.0, 40.0)));
 		assert_eq!(engine.cancel(), Some(source));
-		let _ = engine.evaluate(Size::new(128, 128), &allocator);
-		let observed = engine.ctx().lock().expect("expected test value");
+		engine.evaluate(Size::new(128, 128), &allocator);
+		let observed = engine.ctx();
 		assert_eq!(observed.grabbed, 2);
 		assert_eq!(observed.ended, vec![None, None]);
 		assert!(observed.dragged.is_empty());
@@ -1908,7 +1894,7 @@ mod tests {
 	#[test]
 	fn reparent_appends_to_the_new_parent_and_refuses_cycles() {
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(None));
+		let mut engine = Engine::with_context(None);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.flow(flow::column_with_gap(0))).await;
 			let mut first = root.element("first").container(|c| c.size(10.into())).await;
@@ -1918,7 +1904,7 @@ mod tests {
 				.await;
 			second.element("inner").container(|c| c.size(5.into())).await;
 			let ids = (first.id(), second.id());
-			ctx.with(|log| log.set(Some(ids))).await;
+			ctx.with(|log| *log = Some(ids)).await;
 			ctx.render().await;
 			first.reparent(second.id()).await;
 			// A cycle is refused when applied, so `first` stays under `second`.
@@ -1928,11 +1914,11 @@ mod tests {
 			}
 		});
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let (first, second) = engine.ctx().get().expect("expected test value");
+		let (first, second) = engine.ctx().expect("expected test value");
 		assert_eq!(engine.core.runtime.geometry[&first].y(), 0.0);
 		assert_eq!(engine.core.runtime.geometry[&second].y(), 10.0);
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		engine.evaluate(Size::new(100, 100), &allocator);
 		let runtime = &engine.core.runtime;
 		assert_eq!(runtime.geometry[&second].y(), 0.0);
 		assert_eq!(runtime.geometry[&first].y(), 5.0);
@@ -1944,8 +1930,8 @@ mod tests {
 		size: Size,
 	) -> (RenderRevision, Option<(RenderRevision, Vec<Geometry>)>) {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut snapshot = engine.evaluate(size, &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(size, &frame_allocator);
+		let render = engine.render();
 		(render.revision(), render.damage().map(|(base, rects)| (base, rects.to_vec())))
 	}
 
@@ -1962,15 +1948,15 @@ mod tests {
 	/// The `BoxState` struct lets a test drive the box that [`mount_box`] mounts through the engine context.
 	#[derive(Default)]
 	struct BoxState {
-		position: std::cell::Cell<(i32, i32)>,
-		red: std::cell::Cell<f32>,
+		position: (i32, i32),
+		red: f32,
 	}
 
 	/// Mounts a root with one absolutely positioned box whose position and color follow the engine's [`BoxState`].
 	fn mount_box() -> Engine<BoxState> {
 		let mut engine = Engine::with_context(BoxState {
-			position: std::cell::Cell::new((0, 0)),
-			red: std::cell::Cell::new(1.0),
+			position: (0, 0),
+			red: 1.0,
 		});
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -1980,7 +1966,7 @@ mod tests {
 				.await;
 			let (mut last_position, mut last_red) = ((0, 0), 1.0f32);
 			loop {
-				let (position, red) = ctx.with(|state| (state.position.get(), state.red.get())).await;
+				let (position, red) = ctx.with(|state| (state.position, state.red)).await;
 				if position != last_position {
 					last_position = position;
 					r#box.update_container(|c| c.position(last_position)).await;
@@ -2013,7 +1999,7 @@ mod tests {
 	fn moved_element_damages_old_and_new_bounds() {
 		let mut engine = mount_box();
 		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
-		engine.ctx().position.set((50, 50));
+		engine.ctx_mut().position = (50, 50);
 		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("a second render is relative to the first");
 		assert_ne!(first, second);
@@ -2030,7 +2016,7 @@ mod tests {
 	/// box's old and new bounds and nothing of the untouched sibling.
 	#[test]
 	fn transformed_element_damages_old_and_new_bounds_only() {
-		let mut engine = Engine::with_context(std::cell::Cell::new(0.0f32));
+		let mut engine = Engine::with_context(0.0f32);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
 			// Enough untouched siblings that the moved subtree is a small share of the tree.
@@ -2050,7 +2036,7 @@ mod tests {
 				.await;
 			let mut applied = 0.0f32;
 			loop {
-				let offset = ctx.with(|offset| offset.get()).await;
+				let offset = ctx.with(|offset| *offset).await;
 				if offset != applied {
 					applied = offset;
 					moved
@@ -2061,7 +2047,7 @@ mod tests {
 			}
 		});
 		let (first, _) = damage_frame(&mut engine, Size::new(100, 100));
-		engine.ctx().set(50.0);
+		*engine.ctx_mut() = 50.0;
 		let (second, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("a second render is relative to the first");
 		assert_ne!(first, second);
@@ -2077,7 +2063,7 @@ mod tests {
 			"the untouched sibling is not damaged: {damage:?}"
 		);
 		// A second move damages the previous and the next bounds again, without the first.
-		engine.ctx().set(20.0);
+		*engine.ctx_mut() = 20.0;
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (base, damage) = damage.expect("relative damage");
 		assert_eq!(base, second);
@@ -2090,7 +2076,7 @@ mod tests {
 	fn style_change_damages_one_rectangle() {
 		let mut engine = mount_box();
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		engine.ctx().red.set(0.5);
+		engine.ctx_mut().red = 0.5;
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert_eq!(damage.len(), 1, "{damage:?}");
@@ -2099,13 +2085,13 @@ mod tests {
 
 	#[test]
 	fn added_and_removed_elements_damage_their_bounds() {
-		let mut engine = Engine::with_context(std::cell::Cell::new(false));
+		let mut engine = Engine::with_context(false);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			let mut shown = false;
 			let mut node = None;
 			loop {
-				let visible = ctx.with(|visible| visible.get()).await;
+				let visible = ctx.with(|visible| *visible).await;
 				if visible != shown {
 					shown = visible;
 					if shown {
@@ -2122,11 +2108,11 @@ mod tests {
 			}
 		});
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		engine.ctx().set(true);
+		*engine.ctx_mut() = true;
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "added: {damage:?}");
-		engine.ctx().set(false);
+		*engine.ctx_mut() = false;
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		assert!(damage_covers(&damage, 30.0, 40.0, 20.0, 20.0), "removed: {damage:?}");
@@ -2135,7 +2121,7 @@ mod tests {
 
 	#[test]
 	fn child_of_moved_parent_is_damaged_and_long_lists_collapse() {
-		let mut engine = Engine::with_context(std::cell::Cell::new(0));
+		let mut engine = Engine::with_context(0);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			let mut panel = root
@@ -2150,7 +2136,7 @@ mod tests {
 			}
 			let mut last = 0;
 			loop {
-				let offset = ctx.with(|offset| offset.get()).await;
+				let offset = ctx.with(|offset| *offset).await;
 				if offset != last {
 					last = offset;
 					panel.update_container(|c| c.position((last, last))).await;
@@ -2159,7 +2145,7 @@ mod tests {
 			}
 		});
 		let _ = damage_frame(&mut engine, Size::new(100, 100));
-		engine.ctx().set(20);
+		*engine.ctx_mut() = 20;
 		let (_, damage) = damage_frame(&mut engine, Size::new(100, 100));
 		let (_, damage) = damage.expect("relative damage");
 		// Twelve children plus the panel exceed the cap, so one union remains.
@@ -2179,13 +2165,15 @@ mod tests {
 		});
 		let frame_allocator = bumpalo::Bump::new();
 
-		let mut first = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let first_render = engine.render(&mut first);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let first_layout = engine.retained_layout.as_ref().map(|layout| layout.revision);
+		let first_render = engine.render();
 		let (first_revision, first_size) = (first_render.revision(), first_render.size());
-		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let second_render = engine.render(&mut second);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second_layout = engine.retained_layout.as_ref().map(|layout| layout.revision);
+		let second_render = engine.render();
 
-		assert_eq!(first.layout_revision, second.layout_revision);
+		assert_eq!(first_layout, second_layout);
 		assert_eq!(first_revision, second_render.revision());
 		assert_eq!(first_size, second_render.size());
 		assert!(engine.retained_layout.is_some());
@@ -2193,29 +2181,29 @@ mod tests {
 
 	#[test]
 	fn property_mutation_and_resize_advance_the_render_revision() {
-		let mut engine = Engine::with_context(std::cell::Cell::new(1.0f32));
+		let mut engine = Engine::with_context(1.0f32);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			loop {
-				let opacity = ctx.with(|opacity| opacity.get()).await;
+				let opacity = ctx.with(|opacity| *opacity).await;
 				root.update_container(|c| c.opacity(opacity)).await;
 				ctx.render().await;
 			}
 		});
 		let frame_allocator = bumpalo::Bump::new();
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let baseline = engine.render(&mut snapshot).revision();
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let baseline = engine.render().revision();
 
 		// The mounted task mutates the container every frame, so revisions must move.
-		engine.ctx().set(0.5);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let mutated = engine.render(&mut snapshot);
+		*engine.ctx_mut() = 0.5;
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let mutated = engine.render();
 		assert_ne!(baseline, mutated.revision());
 		assert_eq!(mutated.elements().next().unwrap().opacity, 0.5);
 		let mutated = mutated.revision();
 
-		let mut snapshot = engine.evaluate(Size::new(200, 100), &frame_allocator);
-		let resized = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(200, 100), &frame_allocator);
+		let resized = engine.render();
 		assert_ne!(mutated, resized.revision());
 		assert_eq!(resized.root().size, Size::new(200, 100));
 	}
@@ -2263,8 +2251,8 @@ mod tests {
 	/// The `ScopeCounters` struct lets a test observe and close the scopes that [`counting_scope`] mounts.
 	#[derive(Default)]
 	struct ScopeCounters {
-		ticks: [std::cell::Cell<u32>; 2],
-		open: [std::cell::Cell<bool>; 2],
+		ticks: [u32; 2],
+		open: [bool; 2],
 	}
 
 	/// Mounts a scope that spawns a component counting the frames it runs in `ticks[scope]`, until `open[scope]` clears.
@@ -2274,13 +2262,12 @@ mod tests {
 			ctx.element("ticker")
 				.component(async move |ctx| {
 					loop {
-						ctx.with(|counters| counters.ticks[scope].set(counters.ticks[scope].get() + 1))
-							.await;
+						ctx.with(|counters| counters.ticks[scope] += 1).await;
 						ctx.render().await;
 					}
 				})
 				.await;
-			while ctx.with(|counters| counters.open[scope].get()).await {
+			while ctx.with(|counters| counters.open[scope]).await {
 				ctx.render().await;
 			}
 		}
@@ -2290,11 +2277,11 @@ mod tests {
 	fn removing_a_mounted_scope_ends_the_components_spawned_inside_it() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(ScopeCounters::default());
-		engine.ctx().open[0].set(true);
+		engine.ctx_mut().open[0] = true;
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			loop {
-				if ctx.with(|counters| counters.open[0].get()).await {
+				if ctx.with(|counters| counters.open[0]).await {
 					root.element("menu").mount(counting_scope(0)).await;
 				} else {
 					ctx.render().await;
@@ -2303,34 +2290,34 @@ mod tests {
 		});
 		let frames = |engine: &mut Engine<ScopeCounters>, count: usize| {
 			for _ in 0..count {
-				let _ = engine.evaluate(Size::new(100, 100), &allocator);
+				engine.evaluate(Size::new(100, 100), &allocator);
 			}
 		};
 
 		frames(&mut engine, 3);
-		assert!(engine.ctx().ticks[0].get() > 0);
-		engine.ctx().open[0].set(false);
+		assert!(engine.ctx().ticks[0] > 0);
+		engine.ctx_mut().open[0] = false;
 		frames(&mut engine, 2);
-		let closed = engine.ctx().ticks[0].get();
+		let closed = engine.ctx().ticks[0];
 		frames(&mut engine, 3);
 		assert_eq!(
-			engine.ctx().ticks[0].get(),
+			engine.ctx().ticks[0],
 			closed,
 			"A component kept running after its scope was removed."
 		);
 
 		// Reopening spawns a fresh component that runs again.
-		engine.ctx().open[0].set(true);
+		engine.ctx_mut().open[0] = true;
 		frames(&mut engine, 3);
-		assert!(engine.ctx().ticks[0].get() > closed);
+		assert!(engine.ctx().ticks[0] > closed);
 	}
 
 	#[test]
 	fn removing_a_mounted_scope_keeps_tasks_of_a_live_scope_with_the_same_path() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::with_context(ScopeCounters::default());
-		engine.ctx().open[0].set(true);
-		engine.ctx().open[1].set(true);
+		engine.ctx_mut().open[0] = true;
+		engine.ctx_mut().open[1] = true;
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			let mut first = root.element("toast").mount(counting_scope(0));
@@ -2350,32 +2337,32 @@ mod tests {
 		});
 		let frames = |engine: &mut Engine<ScopeCounters>, count: usize| {
 			for _ in 0..count {
-				let _ = engine.evaluate(Size::new(100, 100), &allocator);
+				engine.evaluate(Size::new(100, 100), &allocator);
 			}
 		};
 
 		frames(&mut engine, 3);
-		assert!(engine.ctx().ticks[0].get() > 0 && engine.ctx().ticks[1].get() > 0);
-		engine.ctx().open[0].set(false);
+		assert!(engine.ctx().ticks[0] > 0 && engine.ctx().ticks[1] > 0);
+		engine.ctx_mut().open[0] = false;
 		frames(&mut engine, 2);
-		let (first_closed, second_closed) = (engine.ctx().ticks[0].get(), engine.ctx().ticks[1].get());
+		let (first_closed, second_closed) = (engine.ctx().ticks[0], engine.ctx().ticks[1]);
 		frames(&mut engine, 3);
-		assert_eq!(engine.ctx().ticks[0].get(), first_closed);
+		assert_eq!(engine.ctx().ticks[0], first_closed);
 		assert!(
-			engine.ctx().ticks[1].get() > second_closed,
+			engine.ctx().ticks[1] > second_closed,
 			"Removing one scope ended a live scope's component."
 		);
 	}
 
 	#[test]
 	fn dropping_engine_releases_mounted_context() {
-		let drops = Arc::new(AtomicUsize::new(0));
-		let mut engine = Engine::with_context(DropCounter(Arc::clone(&drops)));
+		let (sender, drops) = mpsc::channel();
+		let mut engine = Engine::with_context(DropCounter(sender));
 
 		engine.mount(async move |_ctx| {});
 		drop(engine);
 
-		assert_eq!(drops.load(Ordering::Relaxed), 1);
+		assert_eq!(drops.try_iter().count(), 1);
 	}
 
 	#[test]
@@ -2387,53 +2374,52 @@ mod tests {
 			ctx.element("root").container(|c| c.flow(flow::column)).await;
 		});
 
-		let mut first = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.render(&mut first).size(), 1);
+		assert_eq!(engine.render().size(), 1);
 
-		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.render(&mut second).size(), 1);
+		assert_eq!(engine.render().size(), 1);
 	}
 
 	#[test]
 	fn retained_button_receives_later_click_event() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut button = ctx.element("button").container(|c| c).await;
 			loop {
 				button.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn context_pointer_reflects_engine_pointer_state() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.set_cursor_position(UiPoint::new(0.25, -0.5));
 		engine.update_click_state(true);
 		engine.mount(async move |ctx| {
 			let value = Some(ctx.pointer().await);
-			ctx.with(|observed| *observed.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|observed| *observed = value).await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
+			*engine.ctx(),
 			Some(PointerState {
 				position: UiPoint::new(62.5, 75.0),
 				pressed: true,
@@ -2444,16 +2430,14 @@ mod tests {
 	#[test]
 	fn context_pointer_updates_across_render_await_frames() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
+		let mut engine = Engine::with_context(Vec::new());
 
 		engine.mount(async move |ctx| {
 			let value = ctx.pointer().await;
-			ctx.with(|observed| observed.lock().expect("expected test value").push(value))
-				.await;
+			ctx.with(|observed| observed.push(value)).await;
 			ctx.render().await;
 			let value = ctx.pointer().await;
-			ctx.with(|observed| observed.lock().expect("expected test value").push(value))
-				.await;
+			ctx.with(|observed| observed.push(value)).await;
 		});
 
 		engine.set_cursor_position(UiPoint::new(-1.0, -1.0));
@@ -2461,10 +2445,10 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.75, 0.5));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
+			*engine.ctx(),
 			vec![
 				PointerState {
 					position: UiPoint::new(0.0, 100.0),
@@ -2481,26 +2465,22 @@ mod tests {
 	#[test]
 	fn scroll_event_bubbles_from_hovered_child_to_parent() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut parent = ctx.element("parent").container(|c| c).await;
 			parent.element("child").container(|c| c).await;
 			let event = parent.on(Events::Scrolled).await;
 			let value = event.delta;
-			ctx.with(|received| *received.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|received| *received = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_scroll_state(UiVector::new(0.0, -1.0));
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
-			Some(UiVector::new(0.0, -1.0))
-		);
+		assert_eq!(*engine.ctx(), Some(UiVector::new(0.0, -1.0)));
 	}
 
 	#[test]
@@ -2520,15 +2500,16 @@ mod tests {
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let first_ids = first.elements.iter().map(|element| element.id).collect::<Vec<_>>();
+		let first_relations = first.relations.to_vec();
 
-		assert_eq!(first.elements.len(), 2);
-		assert_eq!(first.relations.as_slice(), &[(first_ids[0], first_ids[1])]);
+		assert_eq!(first_ids.len(), 2);
+		assert_eq!(first_relations, [(first_ids[0], first_ids[1])]);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let second_ids = second.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 
 		assert_eq!(second_ids, first_ids);
-		assert_eq!(second.relations, first.relations);
+		assert_eq!(second.relations, first_relations.as_slice());
 	}
 
 	#[test]
@@ -2557,20 +2538,20 @@ mod tests {
 	#[test]
 	fn formatted_and_owned_names_key_the_same_element() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let node = 7;
 			let formatted = ctx.element(format_args!("node-{node}")).container(|c| c).await.id();
 			ctx.render().await;
 			let owned = ctx.element(format!("node-{node}")).container(|c| c).await.id();
-			ctx.with(|ids| ids.set(Some((formatted, owned)))).await;
+			ctx.with(|ids| *ids = Some((formatted, owned))).await;
 		});
 		for _ in 0..2 {
-			let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+			engine.evaluate(Size::new(100, 100), &frame_allocator);
 		}
 
-		let (formatted, owned) = engine.ctx().get().expect("The component did not declare both keys.");
+		let (formatted, owned) = engine.ctx().expect("The component did not declare both keys.");
 		assert_eq!(formatted, owned);
 	}
 
@@ -2590,38 +2571,32 @@ mod tests {
 				.await;
 		});
 
-		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		assert_eq!(first.elements.len(), 2);
-
-		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
-
-		assert_eq!(second.elements.len(), 1);
+		assert_eq!(engine.evaluate(Size::new(100, 100), &frame_allocator).elements.len(), 2);
+		assert_eq!(engine.evaluate(Size::new(100, 100), &frame_allocator).elements.len(), 1);
 	}
 
 	#[test]
-	fn earlier_snapshots_and_render_clones_keep_their_geometry_after_resize() {
+	fn retained_hits_and_render_clones_keep_their_geometry_after_resize() {
 		let allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
 			ctx.element("root").container(|c| c.size(Sizing::Relative(1, 1))).await;
 		});
-		let mut first = engine.evaluate(Size::new(100, 100), &allocator);
-		let first_render = engine.render(&mut first).clone();
-		let mut hits = crate::ui::intersection::HitTest::default();
-		first.retain_hit_test(&mut hits);
-		let root = hits.query(UiPoint::zero()).unwrap();
-		assert_eq!(hits.query(UiPoint::new(2.0, -2.0)), None);
-		let mut second = engine.evaluate(Size::new(200, 200), &allocator);
-		second.retain_hit_test(&mut hits);
-		assert_eq!(hits.query(UiPoint::new(0.5, -0.5)), Some(root));
+		let mut first_hits = crate::ui::intersection::HitTest::default();
+		engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut first_hits);
+		let first_render = engine.render().clone();
+		let root = first_hits.query(UiPoint::zero()).unwrap();
+		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
+		let mut second_hits = crate::ui::intersection::HitTest::default();
+		engine.evaluate(Size::new(200, 200), &allocator).retain_hit_test(&mut second_hits);
+		assert_eq!(second_hits.query(UiPoint::new(0.5, -0.5)), Some(root));
 		assert_eq!(
-			engine.render(&mut second).elements().next().unwrap().size,
+			engine.render().elements().next().unwrap().size,
 			Size::new(200, 200)
 		);
-		first.retain_hit_test(&mut hits);
-		assert_eq!(hits.query(UiPoint::zero()), Some(root));
-		assert_eq!(hits.query(UiPoint::new(2.0, -2.0)), None);
+		// Geometry a host copied out and a render it cloned belong to the host, so a later frame leaves them as they were.
+		assert_eq!(first_hits.query(UiPoint::zero()), Some(root));
+		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
 		assert_eq!(first_render.elements().next().unwrap().size, Size::new(100, 100));
 	}
 
@@ -2673,7 +2648,7 @@ mod tests {
 		assert_eq!([second.elements[0].id, second.elements[1].id], survivors);
 		assert_eq!(second.elements[2].size, Size::new(15, 15));
 		assert_eq!(
-			second.relations.as_slice(),
+			second.relations,
 			&[(survivors[0], survivors[1]), (survivors[0], second.elements[2].id)]
 		);
 	}
@@ -2681,32 +2656,32 @@ mod tests {
 	#[test]
 	fn context_wait_wakes_from_runtime_frame_loop() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			ctx.wait(Duration::from_millis(1)).await;
-			ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|hits| *hits += 1).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
+		assert_eq!(*engine.ctx(), 0);
 
 		std::thread::sleep(Duration::from_millis(2));
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn empty_retained_tree_does_not_panic() {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut engine = Engine::new();
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert!(snapshot.elements.is_empty());
-		assert_eq!(engine.render(&mut snapshot).size(), 0);
+		assert_eq!(engine.render().size(), 0);
 	}
 
 	#[test]
@@ -2723,8 +2698,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let ids = render.elements().map(|element| element.id).collect::<Vec<_>>();
 
 		assert_eq!(ids.len(), 2);
@@ -2746,8 +2721,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 3)
@@ -2772,8 +2747,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 3)
@@ -2822,7 +2797,7 @@ mod tests {
 	#[test]
 	fn clipping_prunes_descendants_from_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -2834,22 +2809,22 @@ mod tests {
 
 			loop {
 				child.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
+		assert_eq!(*engine.ctx(), 0);
 	}
 
 	#[test]
 	fn clip_false_preserves_descendant_hit_testing_overflow() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
@@ -2861,16 +2836,16 @@ mod tests {
 
 			loop {
 				child.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
@@ -2885,8 +2860,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		let toast = render
 			.elements()
@@ -2908,8 +2883,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		let toast = render
 			.elements()
@@ -2923,7 +2898,7 @@ mod tests {
 	#[test]
 	fn absolute_depth_container_escapes_ancestor_clip_in_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.size(50.into())).await;
@@ -2934,22 +2909,22 @@ mod tests {
 
 			loop {
 				toast.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.5, 0.8));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn retained_geometry_is_available_after_layout_evaluation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None::<Geometry>));
+		let mut engine = Engine::with_context(None::<Geometry>);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c.clip(false)).await;
@@ -2961,26 +2936,22 @@ mod tests {
 			assert_eq!(button.geometry().await, None);
 			button.render().await;
 			let value = button.geometry().await;
-			ctx.with(|geometry| *geometry.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|geometry| *geometry = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx(), None);
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
-			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
-		);
+		assert_eq!(*engine.ctx(), Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20))));
 	}
 
 	#[test]
 	fn retained_geometry_updates_after_property_mutation() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None::<Geometry>));
+		let mut engine = Engine::with_context(None::<Geometry>);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c.clip(false)).await;
@@ -2996,59 +2967,55 @@ mod tests {
 				.await;
 			button.render().await;
 			let value = button.geometry().await;
-			ctx.with(|geometry| *geometry.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|geometry| *geometry = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
-			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
-		);
+		assert_eq!(*engine.ctx(), Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20))));
 	}
 
 	#[test]
 	fn wait_future_resumes_mounted_task_after_duration() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			ctx.wait(Duration::from_millis(5)).await;
-			ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|hits| *hits += 1).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
+		assert_eq!(*engine.ctx(), 0);
 
 		std::thread::sleep(Duration::from_millis(20));
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn context_seconds_returns_timer_future() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			ctx.seconds(0).await;
-			ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|hits| *hits += 1).await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn focused_key_goes_to_most_recent_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
+		let mut engine = Engine::with_context((0, 0));
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3058,7 +3025,7 @@ mod tests {
 					let mut first = ctx.element("button").container(|c| c).await;
 					first.request_focus().await;
 					first.on_key(Key::Escape).await;
-					ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
+					ctx.with(|(first_hits, _)| *first_hits += 1).await;
 				})
 				.await;
 			frame
@@ -3067,23 +3034,23 @@ mod tests {
 					let mut second = ctx.element("button").container(|c| c).await;
 					second.request_focus().await;
 					second.on_key(Key::Escape).await;
-					ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
+					ctx.with(|(_, second_hits)| *second_hits += 1).await;
 				})
 				.await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 0);
-		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().0, 0);
+		assert_eq!(engine.ctx().1, 1);
 	}
 
 	#[test]
 	fn requesting_focus_again_moves_target_without_duplication() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
+		let mut engine = Engine::with_context((0, 0));
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3094,11 +3061,11 @@ mod tests {
 			first.request_focus().await;
 
 			first.on_key(Key::Escape).await;
-			ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|(first_hits, _)| *first_hits += 1).await;
 			first.release_focus().await;
 			ctx.render().await;
 			second.on_key(Key::Escape).await;
-			ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|(_, second_hits)| *second_hits += 1).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
@@ -3108,16 +3075,16 @@ mod tests {
 		engine.update_key_state(Key::Escape, false);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
-		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 1);
+		assert_eq!(engine.ctx().0, 1);
+		assert_eq!(engine.ctx().1, 1);
 	}
 
 	#[test]
 	fn releasing_focus_reveals_previous_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
+		let mut engine = Engine::with_context((0, 0));
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3127,7 +3094,7 @@ mod tests {
 					let mut first = ctx.element("button").container(|c| c).await;
 					first.request_focus().await;
 					first.on_key(Key::Escape).await;
-					ctx.with(|(first_hits, _)| first_hits.fetch_add(1, Ordering::SeqCst)).await;
+					ctx.with(|(first_hits, _)| *first_hits += 1).await;
 				})
 				.await;
 			frame
@@ -3137,54 +3104,54 @@ mod tests {
 					second.request_focus().await;
 					second.release_focus().await;
 					second.on_key(Key::Escape).await;
-					ctx.with(|(_, second_hits)| second_hits.fetch_add(1, Ordering::SeqCst)).await;
+					ctx.with(|(_, second_hits)| *second_hits += 1).await;
 				})
 				.await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
-		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().0, 1);
+		assert_eq!(engine.ctx().1, 0);
 	}
 
 	#[test]
 	fn escape_release_does_not_wake_key_future() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut button = ctx.element("button").container(|c| c).await;
 			button.request_focus().await;
 			button.on_key(Key::Escape).await;
-			ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+			ctx.with(|hits| *hits += 1).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, false);
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 0);
+		assert_eq!(*engine.ctx(), 0);
 
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	/// The `TestContext` struct is the application context these tests lend to components, with a slot for what they observe.
 	struct TestContext {
 		value: u32,
-		seen: StdMutex<Vec<u32>>,
+		seen: Vec<u32>,
 	}
 
 	impl TestContext {
 		fn new(value: u32) -> Self {
 			Self {
 				value,
-				seen: StdMutex::new(Vec::new()),
+				seen: Vec::new(),
 			}
 		}
 	}
@@ -3197,19 +3164,18 @@ mod tests {
 		let mut engine = Engine::with_context(TestContext::new(7));
 
 		engine.mount(async move |ctx| {
-			ctx.with(|c| c.seen.lock().expect("expected test value").push(c.value)).await;
+			ctx.with(|c| c.seen.push(c.value)).await;
 
 			ctx.element("child")
 				.component(async move |ctx: &mut EvaluationContext<TestContext>| {
-					ctx.with(|c| c.seen.lock().expect("expected test value").push(c.value + 1))
-						.await;
+					ctx.with(|c| c.seen.push(c.value + 1)).await;
 				})
 				.await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().seen.lock().expect("expected test value"), vec![7, 8]);
+		assert_eq!(engine.ctx().seen, vec![7, 8]);
 	}
 
 	#[test]
@@ -3223,18 +3189,18 @@ mod tests {
 
 		engine.mount(async move |ctx| {
 			let value = ctx.element("modal").mount(async move |ctx| modal(ctx).await).await;
-			ctx.with(|c| c.seen.lock().expect("expected test value").push(value)).await;
+			ctx.with(|c| c.seen.push(value)).await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().seen.lock().expect("expected test value"), vec![11]);
+		assert_eq!(engine.ctx().seen, vec![11]);
 	}
 
 	#[test]
 	fn awaited_modal_blocks_caller_until_component_returns_value() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3247,19 +3213,19 @@ mod tests {
 				})
 				.await;
 			let value = Some(value);
-			ctx.with(|result| *result.lock().expect("expected test value") = value).await;
+			ctx.with(|result| *result = value).await;
 		});
 
 		let first = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(first.elements.len(), 2);
-		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx(), None);
 
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(42));
+		assert_eq!(*engine.ctx(), Some(42));
 	}
 
 	#[test]
@@ -3323,7 +3289,7 @@ mod tests {
 	#[test]
 	fn removing_focused_mounted_modal_reveals_previous_focus_target() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3333,8 +3299,7 @@ mod tests {
 					let mut background = ctx.element("button").container(|c| c).await;
 					background.request_focus().await;
 					background.on_key(Key::Escape).await;
-					ctx.with(|background_hits| background_hits.fetch_add(1, Ordering::SeqCst))
-						.await;
+					ctx.with(|background_hits| *background_hits += 1).await;
 				})
 				.await;
 
@@ -3359,9 +3324,9 @@ mod tests {
 		assert_eq!(second.elements.len(), 2);
 
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
@@ -3384,20 +3349,20 @@ mod tests {
 		}
 
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
 			let value = frame.element("modal").mount(async move |ctx| modal(ctx).await).await;
 			let value = Some(value);
-			ctx.with(|result| *result.lock().expect("expected test value") = value).await;
+			ctx.with(|result| *result = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.update_key_state(Key::Escape, true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().lock().expect("expected test value"), Some(Result::Cancelled));
+		assert_eq!(*engine.ctx(), Some(Result::Cancelled));
 	}
 
 	#[test]
@@ -3405,7 +3370,7 @@ mod tests {
 	#[allow(clippy::excessive_nesting)]
 	fn reopening_awaited_modal_reuses_stable_ids() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(Vec::new()));
+		let mut engine = Engine::with_context(Vec::new());
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -3415,7 +3380,7 @@ mod tests {
 					.mount(async move |ctx| {
 						let mut button = ctx.element("button").container(|c| c).await;
 						let id = button.id();
-						ctx.with(|ids| ids.lock().expect("expected test value").push(id)).await;
+						ctx.with(|ids| ids.push(id)).await;
 						button.on(Events::Actuated).await;
 					})
 					.await;
@@ -3428,13 +3393,13 @@ mod tests {
 
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(second.elements.len(), 2);
 
-		let ids = engine.ctx().lock().expect("expected test value");
+		let ids = engine.ctx();
 
 		assert_eq!(ids.len(), 2);
 		assert_eq!(ids[0], ids[1]);
@@ -3494,8 +3459,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		let modal = render
 			.elements()
@@ -3530,8 +3495,8 @@ mod tests {
 			high.update_container(|c| c.depth(Depth::relative(0))).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let depths = render.elements().map(|element| element.position.z()).collect::<Vec<_>>();
 
 		// Depth is the rank in the paint order, and each container is followed by its text.
@@ -3542,16 +3507,16 @@ mod tests {
 			["low", "tie", "high"]
 		);
 
-		let mut painted = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut painted);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		assert_eq!(render.elements().map(|element| element.id).collect::<Vec<_>>(), ids);
 		assert_eq!(
 			render.texts().map(|element| element.content.as_str()).collect::<Vec<_>>(),
 			["low", "tie", "high"]
 		);
 
-		let mut reordered = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut reordered);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		assert_eq!(
 			render.elements().map(|element| element.id).collect::<Vec<_>>(),
 			[ids[0], ids[3], ids[1], ids[2]]
@@ -3573,8 +3538,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().style.layers().len(), 1);
 		assert_eq!(render.elements().next().unwrap().style.layers()[0].kind(), LayerKind::Fill);
@@ -3595,8 +3560,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().backdrop_blur_radius, 18.0);
 	}
@@ -3616,8 +3581,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().backdrop_blur_radius, 12.0);
 		assert_eq!(render.elements().next().unwrap().opacity, 0.5);
@@ -3645,8 +3610,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().style.layers().len(), 2);
 		assert_eq!(render.elements().next().unwrap().style.layers()[0].kind(), LayerKind::Fill);
@@ -3676,8 +3641,8 @@ mod tests {
 			frame.element("label").text("Masked", |t| t).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let parent = render
 			.elements()
 			.find(|element| element.id == 1)
@@ -3717,8 +3682,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(10.into())).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -3747,8 +3712,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(10.into())).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -3784,8 +3749,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(10.into())).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -3815,8 +3780,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(60.into())).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -3840,8 +3805,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(10.into())).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let parent = render
 			.elements()
 			.find(|element| element.id == 1)
@@ -3865,8 +3830,8 @@ mod tests {
 			frame.element("child").container(|c| c.size(10.into()).opacity(0.25)).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -3890,8 +3855,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.opacity, 0.5);
@@ -3907,8 +3872,8 @@ mod tests {
 			ctx.element("shape").shape(|s| s.size(10.into()).opacity(0.4)).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().opacity, 0.4);
 	}
@@ -3926,8 +3891,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(
 			render
@@ -3958,8 +3923,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().corner_radius, 8.0);
 		assert_eq!(render.elements().next().unwrap().corner_exponent, 4.0);
@@ -3976,8 +3941,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().corner_radius, 6.0);
 		assert_eq!(render.elements().next().unwrap().corner_exponent, 4.0);
@@ -3998,8 +3963,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let frame = render.elements().next().expect("expected test value");
 
 		assert_eq!(frame.position, Location3::new(5.0, 8.5, 0));
@@ -4026,8 +3991,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| element.id == 2)
@@ -4040,7 +4005,7 @@ mod tests {
 	#[test]
 	fn hit_testing_uses_transformed_visual_bounds() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut button = ctx
@@ -4050,38 +4015,38 @@ mod tests {
 
 			loop {
 				button.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
 	fn opacity_does_not_disable_hit_testing() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(AtomicUsize::new(0));
+		let mut engine = Engine::with_context(0);
 
 		engine.mount(async move |ctx| {
 			let mut button = ctx.element("button").container(|c| c.opacity(0.0)).await;
 
 			loop {
 				button.on(Events::Actuated).await;
-				ctx.with(|hits| hits.fetch_add(1, Ordering::SeqCst)).await;
+				ctx.with(|hits| *hits += 1).await;
 			}
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::new(0.0, 0.0));
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().load(Ordering::SeqCst), 1);
+		assert_eq!(*engine.ctx(), 1);
 	}
 
 	#[test]
@@ -4105,11 +4070,11 @@ mod tests {
 
 		assert_eq!(first.elements[0].size, Size::new(10, 10));
 
-		let mut second = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let second = engine.evaluate(Size::new(100, 100), &frame_allocator);
 
 		assert_eq!(second.elements[0].size, Size::new(30, 10));
 
-		let render = engine.render(&mut second);
+		let render = engine.render();
 		match Layer::fill(&render.elements().next().unwrap().style.layers()[0]) {
 			Color::Value(color) => assert_eq!(*color, RGBA::new(0.4, 0.5, 0.6, 1.0)),
 			_ => panic!("expected value color"),
@@ -4128,9 +4093,9 @@ mod tests {
 			frame.update_container(|c| c.opacity(0.25)).await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 
 		assert_eq!(render.elements().next().unwrap().opacity, 0.25);
 	}
@@ -4145,7 +4110,7 @@ mod tests {
 				ctx.render().await;
 			}
 		});
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		engine.evaluate(Size::new(100, 100), &allocator);
 
 		assert!(engine.next_tick().is_some_and(|tick| tick <= std::time::Instant::now()));
 	}
@@ -4159,7 +4124,7 @@ mod tests {
 			ctx.wait(std::time::Duration::from_secs(3600)).await;
 			frame.on(Events::Actuated).await;
 		});
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		engine.evaluate(Size::new(100, 100), &allocator);
 
 		let tick = engine.next_tick().expect("A pending UI timer did not schedule a tick.");
 		let now = std::time::Instant::now();
@@ -4168,7 +4133,7 @@ mod tests {
 	}
 
 	/// Mounts a container, text, curve, and image, and applies the edit selected by `edit` on every frame.
-	fn mount_edited_elements(engine: &mut Engine<std::cell::Cell<u8>>) {
+	fn mount_edited_elements(engine: &mut Engine<u8>) {
 		engine.mount(async move |ctx| {
 			let mut frame = ctx
 				.element("frame")
@@ -4189,7 +4154,7 @@ mod tests {
 			let mut picture = ctx.element("picture").image(1, 1, vec![255; 4], |i| i).await;
 			loop {
 				ctx.render().await;
-				match ctx.with(|edit| edit.replace(0)).await {
+				match ctx.with(|edit| std::mem::replace(edit, 0)).await {
 					// Write the values already present.
 					1 => {
 						frame
@@ -4224,16 +4189,16 @@ mod tests {
 	#[test]
 	fn updates_that_change_nothing_keep_the_render_revision() {
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(0));
+		let mut engine = Engine::with_context(0);
 		mount_edited_elements(&mut engine);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-		let first = engine.render(&mut snapshot).revision();
+		let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let first = engine.render().revision();
 
 		for step in [1, 2] {
-			engine.ctx().set(step);
-			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			*engine.ctx_mut() = step;
+			engine.evaluate(Size::new(100, 100), &allocator);
 			assert_eq!(
-				engine.render(&mut snapshot).revision(),
+				engine.render().revision(),
 				first,
 				"Edit {step} changed the render revision."
 			);
@@ -4244,15 +4209,15 @@ mod tests {
 	fn updates_that_change_style_or_image_contents_advance_the_render_revision() {
 		for step in [3, 4] {
 			let allocator = bumpalo::Bump::new();
-			let mut engine = Engine::with_context(std::cell::Cell::new(0));
+			let mut engine = Engine::with_context(0);
 			mount_edited_elements(&mut engine);
-			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-			let first = engine.render(&mut snapshot).revision();
+			let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			let first = engine.render().revision();
 
-			engine.ctx().set(step);
-			let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			*engine.ctx_mut() = step;
+			engine.evaluate(Size::new(100, 100), &allocator);
 			assert_ne!(
-				engine.render(&mut snapshot).revision(),
+				engine.render().revision(),
 				first,
 				"Edit {step} kept the render revision."
 			);
@@ -4275,9 +4240,9 @@ mod tests {
 			.await;
 		});
 
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.content, "Updated");
@@ -4310,8 +4275,8 @@ mod tests {
 			ctx.element("field").text_field("Hello", |f| f).await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let render = engine.render();
 		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(text.content, "Hello");
@@ -4322,85 +4287,75 @@ mod tests {
 	#[test]
 	fn focused_text_field_receives_inserted_text_edit() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut field = ctx.element("field").text_field("", |f| f).await;
 			field.request_focus().await;
 			let event = field.on_text_edit().await;
 			let value = Some(event.edit);
-			ctx.with(|received| *received.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|received| *received = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.input_character('a');
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
-			Some(TextEdit::Inserted('a'))
-		);
+		assert_eq!(*engine.ctx(), Some(TextEdit::Inserted('a')));
 	}
 
 	#[test]
 	fn unfocused_text_field_does_not_receive_inserted_text_edit() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut field = ctx.element("field").text_field("", |f| f).await;
 			let event = field.on_text_edit().await;
 			let value = Some(event.edit);
-			ctx.with(|received| *received.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|received| *received = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.input_character('a');
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx().lock().expect("expected test value"), None);
+		assert_eq!(*engine.ctx(), None);
 	}
 
 	#[test]
 	fn focused_text_field_delete_emits_deleted_last_character() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(None));
+		let mut engine = Engine::with_context(None);
 
 		engine.mount(async move |ctx| {
 			let mut field = ctx.element("field").text_field("Hié", |f| f).await;
 			field.request_focus().await;
 			let event = field.on_text_edit().await;
 			let value = Some(event.edit);
-			ctx.with(|received| *received.lock().expect("expected test value") = value)
-				.await;
+			ctx.with(|received| *received = value).await;
 		});
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.delete_text_backward();
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(
-			*engine.ctx().lock().expect("expected test value"),
-			Some(TextEdit::Deleted('é'))
-		);
+		assert_eq!(*engine.ctx(), Some(TextEdit::Deleted('é')));
 	}
 
 	#[test]
 	fn app_owned_string_update_changes_later_text_field_render() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(StdMutex::new(String::from("a")));
+		let mut engine = Engine::with_context(String::from("a"));
 
 		engine.mount(async move |ctx| {
-			let initial = ctx.with(|content| content.lock().expect("expected test value").clone()).await;
+			let initial = ctx.with(|content| content.clone()).await;
 			let mut field = ctx.element("field").text_field(initial, |f| f).await;
 			field.request_focus().await;
 			let event = field.on_text_edit().await;
 			let updated = ctx
 				.with(|content| {
-					let mut content = content.lock().expect("expected test value");
-					event.edit.apply_to(&mut content);
+					event.edit.apply_to(content);
 					content.clone()
 				})
 				.await;
@@ -4410,10 +4365,10 @@ mod tests {
 
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.input_character('b');
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
-		let content = engine.ctx().lock().expect("expected test value").clone();
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
+		let content = engine.ctx().clone();
+		let render = engine.render();
 		let text = render.texts().next().expect("expected test value");
 
 		assert_eq!(content, "ab");
@@ -4444,8 +4399,8 @@ mod tests {
 				.await;
 		});
 
-		let mut snapshot = engine.evaluate(Size::new(200, 100), &frame_allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(200, 100), &frame_allocator);
+		let render = engine.render();
 		let curves: std::vec::Vec<_> = render.curves().collect();
 
 		assert_eq!(curves.len(), 2);
@@ -4460,7 +4415,7 @@ mod tests {
 	#[test]
 	fn owned_names_declare_distinct_elements_and_repeat_by_content() {
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(std::vec::Vec::new()));
+		let mut engine = Engine::with_context(std::vec::Vec::new());
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			let mut ids = std::vec::Vec::new();
@@ -4468,16 +4423,16 @@ mod tests {
 				let node = root.element(format!("node-{index}")).container(|c| c.size(10.into())).await;
 				ids.push(node.id());
 			}
-			ctx.with(|out| out.set(ids.clone())).await;
+			ctx.with(|out| *out = ids.clone()).await;
 			ctx.render().await;
 			// The same content on a later frame resolves the same retained element.
 			let again = root.element(String::from("node-1")).container(|c| c).await;
 			ids.push(again.id());
-			ctx.with(|out| out.set(ids)).await;
+			ctx.with(|out| *out = ids).await;
 		});
 		engine.evaluate(Size::new(100, 100), &allocator);
 		engine.evaluate(Size::new(100, 100), &allocator);
-		let ids = engine.ctx().take();
+		let ids = std::mem::take(engine.ctx_mut());
 		assert_eq!(ids.len(), 4);
 		assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2]);
 		assert_eq!(ids[3], ids[1]);
@@ -4489,10 +4444,10 @@ mod tests {
 		/// The `Removal` struct carries what the test drives and observes through the engine context.
 		#[derive(Default)]
 		struct Removal {
-			ticks: std::cell::Cell<u32>,
+			ticks: u32,
 			/// 0 idle, 1 remove the node, 2 declare it again.
-			stage: std::cell::Cell<u8>,
-			ids: std::cell::Cell<Option<(Id, Id, Id)>>,
+			stage: u8,
+			ids: Option<(Id, Id, Id)>,
 		}
 		let mut engine = Engine::with_context(Removal::default());
 		engine.mount(async move |ctx| {
@@ -4502,17 +4457,17 @@ mod tests {
 			node.element("ticker")
 				.component(async move |ctx| {
 					loop {
-						ctx.with(|state| state.ticks.set(state.ticks.get() + 1)).await;
+						ctx.with(|state| state.ticks += 1).await;
 						ctx.render().await;
 					}
 				})
 				.await;
 			let keep = root.element("keep").container(|c| c.size(10.into())).await;
 			let ids = (node.id(), label.id(), keep.id());
-			ctx.with(|state| state.ids.set(Some(ids))).await;
+			ctx.with(|state| state.ids = Some(ids)).await;
 			loop {
 				ctx.render().await;
-				match ctx.with(|state| state.stage.replace(0)).await {
+				match ctx.with(|state| std::mem::replace(&mut state.stage, 0)).await {
 					1 => {
 						assert!(node.geometry().await.is_some());
 						node.remove().await;
@@ -4531,33 +4486,34 @@ mod tests {
 				}
 			}
 		});
+		// Runs `count` frames and returns the ids the last one laid out.
 		let frames = |engine: &mut Engine<Removal>, count: usize| {
-			let mut snapshot = None;
-			for _ in 0..count {
-				snapshot = Some(engine.evaluate(Size::new(100, 100), &allocator));
+			for _ in 1..count {
+				engine.evaluate(Size::new(100, 100), &allocator);
 			}
-			snapshot.unwrap()
+			let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+			snapshot.elements.iter().map(|element| element.id).collect::<Vec<_>>()
 		};
-		let contains = |snapshot: &Snapshot<'_>, id: Id| snapshot.elements.iter().any(|element| element.id == id);
+		let contains = |ids: &Vec<Id>, id: Id| ids.contains(&id);
 
 		let snapshot = frames(&mut engine, 3);
-		let (node, label, keep) = engine.ctx().ids.get().expect("expected test value");
+		let (node, label, keep) = engine.ctx().ids.expect("expected test value");
 		assert!(contains(&snapshot, node) && contains(&snapshot, label) && contains(&snapshot, keep));
-		assert!(engine.ctx().ticks.get() > 0);
+		assert!(engine.ctx().ticks > 0);
 
-		engine.ctx().stage.set(1);
+		engine.ctx_mut().stage = 1;
 		let snapshot = frames(&mut engine, 2);
 		assert!(!contains(&snapshot, node) && !contains(&snapshot, label));
 		assert!(contains(&snapshot, keep), "Removing one element removed its sibling.");
-		let closed = engine.ctx().ticks.get();
+		let closed = engine.ctx().ticks;
 		frames(&mut engine, 3);
 		assert_eq!(
-			engine.ctx().ticks.get(),
+			engine.ctx().ticks,
 			closed,
 			"A component kept running after its element was removed."
 		);
 
-		engine.ctx().stage.set(2);
+		engine.ctx_mut().stage = 2;
 		let snapshot = frames(&mut engine, 2);
 		assert!(
 			contains(&snapshot, node),
@@ -4568,7 +4524,7 @@ mod tests {
 	#[test]
 	fn update_curve_repaints_segments_without_replaying_placement() {
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(false));
+		let mut engine = Engine::with_context(false);
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c).await;
 			let mut wire = root
@@ -4581,22 +4537,22 @@ mod tests {
 				.await;
 			loop {
 				ctx.render().await;
-				if ctx.with(|reroute| reroute.replace(false)).await {
+				if ctx.with(|reroute| std::mem::replace(reroute, false)).await {
 					wire.update_curve(|c| c.clear_segments().cubic((0.0, 0.0), (5.0, 0.0), (5.0, 10.0), (10.0, 10.0)))
 						.await;
 				}
 			}
 		});
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-		let render = engine.render(&mut snapshot);
+		let snapshot = engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render();
 		let first = render.revision();
 		let curve = render.curves().next().unwrap();
 		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Line { .. }]));
 		let placement = engine.core.tree.placement_revision;
 
-		engine.ctx().set(true);
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-		let render = engine.render(&mut snapshot);
+		*engine.ctx_mut() = true;
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render();
 		assert_ne!(render.revision(), first);
 		let curve = render.curves().next().unwrap();
 		assert!(matches!(curve.segments.as_slice(), [CurveSegment::Cubic { .. }]));
@@ -4640,8 +4596,8 @@ mod tests {
 				.await;
 			canvas.element("label").text("node", |t| t.font_size(10.0)).await;
 		});
-		let mut snapshot = engine.evaluate(Size::new(400, 400), &allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(400, 400), &allocator);
+		let render = engine.render();
 		let curves: std::vec::Vec<_> = render.curves().collect();
 		assert_eq!(curves.len(), 2);
 		assert_eq!(curves[0].scale, [1.0, 1.0]);
@@ -4652,21 +4608,7 @@ mod tests {
 	}
 
 	/// The engine context of the hover tests: every hover event a surface received, in order.
-	type HoverLog = std::cell::Cell<std::vec::Vec<(&'static str, Events)>>;
-
-	/// Appends `entry` to a log kept in a [`std::cell::Cell`], so components can record into the engine context.
-	fn push_entry<T>(log: &std::cell::Cell<std::vec::Vec<T>>, entry: T) {
-		let mut entries = log.take();
-		entries.push(entry);
-		log.set(entries);
-	}
-
-	/// Returns a copy of a log kept in a [`std::cell::Cell`] and leaves the log in place.
-	fn entries<T: Clone>(log: &std::cell::Cell<std::vec::Vec<T>>) -> std::vec::Vec<T> {
-		let entries = log.take();
-		log.set(entries.clone());
-		entries
-	}
+	type HoverLog = std::vec::Vec<(&'static str, Events)>;
 
 	/// Records every hover event a surface receives, in order, into the engine's [`HoverLog`].
 	async fn hover_log(ctx: &mut EvaluationContext<HoverLog>, name: &'static str) {
@@ -4677,7 +4619,7 @@ mod tests {
 						event = ctx.on(Events::PointerEntered) => event,
 						event = ctx.on(Events::PointerExited) => event,
 					};
-					ctx.with(|log| push_entry(log, (name, event.kind))).await;
+					ctx.with(|log| log.push((name, event.kind))).await;
 				}
 			})
 			.await;
@@ -4688,7 +4630,7 @@ mod tests {
 	#[test]
 	fn dropping_an_event_wait_discards_events_until_the_next_wait() {
 		let allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context(std::cell::Cell::new(std::vec::Vec::new()));
+		let mut engine = Engine::with_context(std::vec::Vec::new());
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
 			let mut target = root
@@ -4697,46 +4639,42 @@ mod tests {
 				.await;
 			// Wait for one click, start and abandon a second wait, then look away for frames.
 			let _ = target.on(Events::Actuated).await;
-			ctx.with(|log| push_entry(log, "first")).await;
+			ctx.with(|log| log.push("first")).await;
 			let mut abandoned = target.on(Events::Actuated);
 			let unexpected = utils::r#async::select! {
 				_ = abandoned => true,
 				_ = ctx.render() => false,
 			};
 			if unexpected {
-				ctx.with(|log| push_entry(log, "unexpected")).await;
+				ctx.with(|log| log.push("unexpected")).await;
 			}
 			drop(abandoned);
 			for _ in 0..3 {
 				ctx.render().await;
 			}
 			let _ = target.on(Events::Actuated).await;
-			ctx.with(|log| push_entry(log, "second")).await;
+			ctx.with(|log| log.push("second")).await;
 		});
-		let frame = |engine: &mut Engine<std::cell::Cell<std::vec::Vec<&'static str>>>, click: bool| {
+		let frame = |engine: &mut Engine<std::vec::Vec<&'static str>>, click: bool| {
 			engine.set_cursor_position(UiPoint::new(-0.5, 0.5));
 			if click {
 				engine.update_click_state(true);
 				engine.update_click_state(false);
 			}
-			let _ = engine.evaluate(Size::new(100, 100), &allocator);
+			engine.evaluate(Size::new(100, 100), &allocator);
 		};
 		frame(&mut engine, false);
 		frame(&mut engine, true);
-		assert_eq!(entries(engine.ctx()), vec!["first"]);
+		assert_eq!(*engine.ctx(), vec!["first"]);
 		// The abandoned wait ends this frame; clicks during the look-away frames must not replay later.
 		frame(&mut engine, false);
 		frame(&mut engine, true);
 		frame(&mut engine, true);
 		frame(&mut engine, false);
 		frame(&mut engine, false);
-		assert_eq!(
-			entries(engine.ctx()),
-			vec!["first"],
-			"a click fired while no wait was live was kept"
-		);
+		assert_eq!(*engine.ctx(), vec!["first"], "a click fired while no wait was live was kept");
 		frame(&mut engine, true);
-		assert_eq!(entries(engine.ctx()), vec!["first", "second"]);
+		assert_eq!(*engine.ctx(), vec!["first", "second"]);
 	}
 
 	/// While a source is held, the pointer still enters and leaves other surfaces, including ones that
@@ -4798,7 +4736,7 @@ mod tests {
 					_ = ctx.render() => None,
 				};
 				match event {
-					Some(kind) => ctx.with(|log| push_entry(log, ("target", kind))).await,
+					Some(kind) => ctx.with(|log| log.push(("target", kind))).await,
 					None if sector && step < 4 => {
 						step += 1;
 						let sweep = std::f32::consts::FRAC_PI_2 * step as f32 / 4.0;
@@ -4821,10 +4759,10 @@ mod tests {
 			engine.set_cursor_position(position);
 			engine.drag_to(position);
 			for _ in 0..2 {
-				let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-				let _ = engine.render(&mut snapshot);
+				engine.evaluate(Size::new(100, 100), &allocator);
+				let _ = engine.render();
 			}
-			engine.ctx().take()
+			std::mem::take(engine.ctx_mut())
 		};
 		frame(&mut engine, window(10.0, 10.0));
 		if hold {
@@ -4869,8 +4807,8 @@ mod tests {
 		let mut frame = |position: UiPoint| {
 			engine.set_cursor_position(position);
 			let _ = engine.evaluate(Size::new(100, 100), &allocator);
-			let _ = engine.evaluate(Size::new(100, 100), &allocator);
-			engine.ctx().take()
+			engine.evaluate(Size::new(100, 100), &allocator);
+			std::mem::take(engine.ctx_mut())
 		};
 
 		// The first frames only register the waiters.
@@ -4923,10 +4861,10 @@ mod tests {
 
 		engine.set_cursor_position(window(75.0, 50.0));
 		let _ = engine.evaluate(Size::new(100, 100), &allocator);
-		let _ = engine.evaluate(Size::new(100, 100), &allocator);
+		engine.evaluate(Size::new(100, 100), &allocator);
 		assert_eq!(engine.hovered(), Some(target));
 		assert_eq!(engine.drag().unwrap().over, Some(target));
-		assert_eq!(engine.ctx().take(), vec![("target", Events::PointerEntered)]);
+		assert_eq!(std::mem::take(engine.ctx_mut()), vec![("target", Events::PointerEntered)]);
 	}
 
 	#[test]
@@ -4949,8 +4887,8 @@ mod tests {
 				.container(|c| c.absolute_position(-20, -10).width(80.into()).height(40.into()))
 				.await;
 		});
-		let mut snapshot = engine.evaluate(Size::new(100, 100), &allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(100, 100), &allocator);
+		let render = engine.render();
 		let node = render.elements().find(|element| element.size == Size::new(80, 40)).unwrap();
 		assert_eq!((node.position.x(), node.position.y()), (-50.0, -10.0));
 		// Only the part inside the viewport can be hit.
@@ -4992,7 +4930,8 @@ mod tests {
 				.await;
 		});
 		let window = |x: f32, y: f32| UiPoint::new(x / 100.0 - 1.0, 1.0 - y / 100.0);
-		let snapshot = engine.evaluate(Size::new(200, 200), &allocator);
+		let mut hits = crate::ui::intersection::HitTest::default();
+		engine.evaluate(Size::new(200, 200), &allocator).retain_hit_test(&mut hits);
 		let frame = engine.hit(window(90.0, 10.0)).unwrap();
 		let wire = engine.hit(window(50.0, 50.0)).unwrap();
 		assert_ne!(wire, frame, "The wire was not hit on its stroke.");
@@ -5018,8 +4957,6 @@ mod tests {
 		assert_eq!(engine.hit(window(150.0, 55.0)), Some(zoomed), "The hit width did not scale.");
 		assert_eq!(engine.hit(window(150.0, 60.0)), None);
 
-		let mut hits = crate::ui::intersection::HitTest::default();
-		snapshot.retain_hit_test(&mut hits);
 		assert_eq!(hits.query(window(50.0, 50.0)), Some(wire));
 		assert_eq!(hits.query(window(150.0, 50.0)), Some(zoomed));
 	}
@@ -5054,7 +4991,7 @@ mod tests {
 	#[test]
 	fn backdrop_style_modal_receives_actuated_event() {
 		let frame_allocator = bumpalo::Bump::new();
-		let mut engine = Engine::with_context((AtomicUsize::new(0), AtomicUsize::new(0)));
+		let mut engine = Engine::with_context((0, 0));
 
 		engine.mount(async move |ctx| {
 			let mut frame = ctx.element("frame").container(|c| c).await;
@@ -5063,8 +5000,7 @@ mod tests {
 				.component(async move |ctx| {
 					let mut background = ctx.element("button").container(|c| c).await;
 					background.on(Events::Actuated).await;
-					ctx.with(|(_, background_hits)| background_hits.fetch_add(1, Ordering::SeqCst))
-						.await;
+					ctx.with(|(_, background_hits)| *background_hits += 1).await;
 				})
 				.await;
 			frame
@@ -5072,7 +5008,7 @@ mod tests {
 				.mount(async move |ctx| {
 					let mut backdrop = ctx.element("backdrop").container(|c| c.depth(Depth::absolute(1))).await;
 					backdrop.on(Events::Actuated).await;
-					ctx.with(|(hits, _)| hits.fetch_add(1, Ordering::SeqCst)).await;
+					ctx.with(|(hits, _)| *hits += 1).await;
 				})
 				.await;
 		});
@@ -5080,22 +5016,20 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.set_cursor_position(UiPoint::zero());
 		engine.update_click_state(true);
-		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
+		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(engine.ctx().0.load(Ordering::SeqCst), 1);
-		assert_eq!(engine.ctx().1.load(Ordering::SeqCst), 0);
+		assert_eq!(engine.ctx().0, 1);
+		assert_eq!(engine.ctx().1, 0);
 	}
 }
 
 use std::{
 	borrow::Cow,
 	boxed::Box,
-	cell::RefCell,
 	collections::{HashMap, HashSet, VecDeque},
 	future::Future,
 	marker::PhantomData,
 	pin::Pin,
-	rc::Rc,
 	sync::{
 		Arc,
 		mpsc::{Receiver, Sender},

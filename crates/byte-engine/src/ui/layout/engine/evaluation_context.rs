@@ -136,7 +136,7 @@ impl<C: 'static> Context<C> for EvaluationContext<C> {
 
 	fn with<F, T>(&self, read: F) -> With<C, F>
 	where
-		F: FnOnce(&C) -> T,
+		F: FnOnce(&mut C) -> T,
 	{
 		With {
 			read: Some(read),

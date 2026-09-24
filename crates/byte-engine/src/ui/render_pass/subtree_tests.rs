@@ -1,7 +1,5 @@
 //! A camera-controlled canvas beside stationary labels and images.
 
-use std::cell::Cell;
-
 use super::*;
 use crate::ui::{
 	ConcreteLayer, ConcreteStyle, Container, ContainerContext, Context, Curve, CurvePath, ElementContext, Engine, Image, Size,
@@ -9,8 +7,8 @@ use crate::ui::{
 };
 
 /// Builds a graph-like workload with an explicit content-transform boundary.
-pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
-	let mut engine = Engine::with_context(Cell::new((0.0, 1.0)));
+pub(super) fn graph_engine(count: usize) -> Engine<(f32, f32)> {
+	let mut engine = Engine::with_context((0.0, 1.0));
 	engine.mount(async move |ctx| {
 		let mut root = ctx.element("root").container(|c| c.style(ConcreteStyle::new())).await;
 		let mut viewport = root
@@ -57,7 +55,7 @@ pub(super) fn graph_engine(count: usize) -> Engine<Cell<(f32, f32)>> {
 		}
 		let mut applied = (0.0, 1.0);
 		loop {
-			let camera = ctx.with(|c| c.get()).await;
+			let camera = ctx.with(|c| *c).await;
 			if camera != applied {
 				content
 					.update_container(|c| c.transform(Transform::identity().translate(camera.0, 13.25).scale(camera.1)))
@@ -89,9 +87,9 @@ fn camera_primitives_match_fresh_preparation() {
 		(0., 1., 1920),
 	] {
 		arena.reset();
-		engine.ctx().set((pan, scale));
-		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
-		update_from_render(engine.render(&mut snapshot), &mut data);
+		*engine.ctx_mut() = (pan, scale);
+		engine.evaluate(Size::new(1920, 1080), &arena);
+		update_from_render(engine.render(), &mut data);
 		let extent = Extent::rectangle(extent, 1080);
 		let mut masks = UiMaskTable::default();
 		let actual = build_ui_primitives(&data, extent, &arena, Some(&mut caches), &mut masks, None, None, None);
@@ -121,12 +119,12 @@ fn graph_camera_evaluate_render(bencher: divan::Bencher, zoom: bool) {
 	bencher.bench_local(|| {
 		arena.reset();
 		frame += 1;
-		engine.ctx().set((
+		*engine.ctx_mut() = (
 			if frame % 2 == 0 { 12.25 } else { -12.25 },
 			if zoom && frame % 2 == 0 { 1.125 } else { 1.0 },
-		));
+		);
 		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
-		divan::black_box(engine.render(&mut snapshot).revision());
+		divan::black_box(engine.render().revision());
 	});
 }
 
@@ -137,9 +135,9 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 	let mut engine = graph_engine(64);
 	let mut arena = bumpalo::Bump::new();
 	let frames = [(-12.25, 1.0), (12.25, if zoom { 1.125 } else { 1.0 })].map(|camera| {
-		engine.ctx().set(camera);
+		*engine.ctx_mut() = camera;
 		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
-		engine.render(&mut snapshot).clone()
+		engine.render().clone()
 	});
 	let mut data = UiDrawList::default();
 	let mut caches = UiGeometryCaches::default();

@@ -473,8 +473,8 @@ mod ui_source_tests {
 		});
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
-			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render(&mut snapshot).clone());
+			engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render().clone());
 		};
 		publish(100);
 		let mut sink = 0;
@@ -499,8 +499,8 @@ mod ui_source_tests {
 		});
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
-			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render(&mut snapshot).clone());
+			engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render().clone());
 		};
 		// No sink exists when the first render is submitted.
 		publish(100);

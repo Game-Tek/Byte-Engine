@@ -84,7 +84,7 @@ impl<C: 'static> Window<C> {
 		self.frame_allocator.reset();
 		let mut snapshot = self.engine.evaluate(self.size, &self.frame_allocator);
 		snapshot.retain_hit_test(&mut self.hits);
-		let render = self.engine.render(&mut snapshot);
+		let render = self.engine.render();
 		if self.published == Some(render.revision()) {
 			return false;
 		}

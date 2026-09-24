@@ -162,10 +162,9 @@ mod tests {
 					.container(|c| c.width(20.into()).height(10.into()))
 					.await;
 			});
-			let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
-			let render = engine.render(&mut snapshot).clone();
 			let mut hits = HitTest::default();
-			snapshot.retain_hit_test(&mut hits);
+			engine.evaluate(Size::new(200, 150), &allocator).retain_hit_test(&mut hits);
+			let render = engine.render().clone();
 			let pointer = UiPoint::new((expected.x + 1.0) / 100.0 - 1.0, 1.0 - (expected.y + 1.0) / 75.0);
 			let child = hits.query(pointer).expect("the transformed child accepts the pointer");
 			let bounds = hits.bounds(child).unwrap();
@@ -201,8 +200,8 @@ mod tests {
 				.container(|c| c.width(20.into()).height(10.into()))
 				.await;
 		});
-		let mut snapshot = engine.evaluate(Size::new(200, 150), &allocator);
-		let render = engine.render(&mut snapshot);
+		engine.evaluate(Size::new(200, 150), &allocator);
+		let render = engine.render();
 		let child = render
 			.elements()
 			.find(|element| (element.size.x(), element.size.y()) == (10.0, 5.0))

@@ -126,6 +126,7 @@ impl From<crate::rendering::renderer::RendererScreenshotError> for ScreenshotErr
 /// Encodes a supported texture readback as an RGBA8 PNG image.
 pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Vec<u8>, String> {
 	let bytes_per_pixel = match readback.format {
+		ghi::Formats::R8UNORM => 1,
 		ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => 4,
 		ghi::Formats::RGBA16UNORM | ghi::Formats::RGBA16F => 8,
 		_ => return Err(ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string()),
@@ -150,6 +151,12 @@ pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Ve
 	let mut rgba = Vec::with_capacity(width * 4 * height);
 	for row in readback.bytes.chunks_exact(bytes_per_row).take(height) {
 		match readback.format {
+			// Single-channel masks, such as contact shadows, read back as gray.
+			ghi::Formats::R8UNORM => {
+				for &value in &row[..row_size] {
+					rgba.extend_from_slice(&[value, value, value, 255]);
+				}
+			}
 			ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => {
 				for pixel in row[..row_size].as_chunks::<4>().0 {
 					rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
@@ -241,6 +248,12 @@ mod tests {
 		bytes.extend_from_slice(&[99; 8]);
 		let png = encode_screenshot_png(readback(bytes, ghi::Formats::RGBA16UNORM, 16)).expect("encode PNG");
 		assert_eq!(decode(&png), [0, 128, 255, 1]);
+	}
+
+	#[test]
+	fn png_converts_r8_unorm_to_gray_and_ignores_pitched_padding() {
+		let png = encode_screenshot_png(readback(vec![128, 99, 99, 99], ghi::Formats::R8UNORM, 4)).expect("encode PNG");
+		assert_eq!(decode(&png), [128, 128, 128, 255]);
 	}
 
 	#[test]

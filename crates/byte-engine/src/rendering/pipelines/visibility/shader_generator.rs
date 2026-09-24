@@ -325,6 +325,7 @@ impl VisibilityShaderScope {
 			read_buffer("materials", "MaterialBuffer", "materials", MATERIAL_ARRAY, 1046),
 			sampled("ao", Node::combined_image_sampler(), 1051),
 			sampled("indirect_diffuse", Node::combined_image_sampler(), 1056),
+			sampled("contact_shadows", Node::combined_image_sampler(), 1058),
 			sampled("depth_shadow_map", Node::combined_array_image_sampler(), 1052),
 			sampled("directional_shadow_depth_pyramid", Node::combined_image_sampler(), 1053),
 			sampled("environment_irradiance", Node::combined_cube_image_sampler(), 1054),

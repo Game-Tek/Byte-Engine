@@ -1880,3 +1880,98 @@ fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
 	}
 	assert!(hits > 0, "Expected some floor rays to hit the pillar.");
 }
+
+/* Contact shadows */
+
+const CONTACT_SHADOW_EXTENT: u32 = 128;
+const CONTACT_SHADOW_CAMERA_HEIGHT: f32 = 2.0;
+const CONTACT_SHADOW_WALL_Z: f32 = 4.0;
+const CONTACT_SHADOW_WALL_HEIGHT: f32 = 0.25;
+
+/// Returns the depth a pixel ray sees on a floor [`CONTACT_SHADOW_CAMERA_HEIGHT`] below the camera and, optionally,
+/// a low wall facing the camera at [`CONTACT_SHADOW_WALL_Z`], or zero for the sky.
+fn contact_shadow_scene_depth(ray: [f32; 2], wall: bool) -> f32 {
+	let wall_height = ray[1] * CONTACT_SHADOW_WALL_Z + CONTACT_SHADOW_CAMERA_HEIGHT;
+	if wall && (0.0..=CONTACT_SHADOW_WALL_HEIGHT).contains(&wall_height) {
+		return CONTACT_SHADOW_WALL_Z;
+	}
+	if ray[1] < 0.0 { -CONTACT_SHADOW_CAMERA_HEIGHT / ray[1] } else { 0.0 }
+}
+
+/// Runs the contact-shadow trace at one pixel of the floor scene and returns the value it writes: one where the ray
+/// toward the light is clear, zero where it is blocked.
+fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
+	let program = asset!("contact-shadows.besl");
+	let extent = CONTACT_SHADOW_EXTENT;
+	let range = GTAO_FAR - GTAO_NEAR;
+	let device_depth: Vec<[f32; 4]> = (0..extent * extent)
+		.map(|index| {
+			let z = contact_shadow_scene_depth(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent), wall);
+			let depth = if z == 0.0 { 0.0 } else { (GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range };
+			[depth, 0.0, 0.0, 1.0]
+		})
+		.collect();
+	let [x, y, z] = direction_to_light;
+	let length = (x * x + y * y + z * z).sqrt();
+	let mut view = gtao_view_data(&program, extent, extent);
+	let mut parameters = buffer(&program, ResourceSlot::new(1));
+	parameters
+		.write("direction_to_light", Value::Vec4F([x / length, y / length, z / length, 0.0]))
+		.expect("contact shadow parameters");
+	let mut depth = texture_2d(extent, extent, &device_depth);
+	let mut output = empty_image(extent, extent);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_buffer(ResourceSlot::new(1), &mut parameters);
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	run_at(&program, &mut descriptors, pixel);
+	drop(descriptors);
+	rgba(&output, pixel)[0]
+}
+
+/// Returns the floor's depth at a pixel row of the center column, or zero where that row does not see the floor.
+fn contact_shadow_floor_z(row: u32) -> f32 {
+	let ray = ssgi_ray_at((CONTACT_SHADOW_EXTENT / 2) as f32, row as f32, CONTACT_SHADOW_EXTENT);
+	let z = contact_shadow_scene_depth(ray, true);
+	if z == CONTACT_SHADOW_WALL_Z { 0.0 } else { z }
+}
+
+/// Verifies the floor just in front of a low wall is shadowed when the sun shines over the wall toward the camera,
+/// and that floor further away than the ray reaches stays lit.
+#[test]
+fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
+	// The sun is 45 degrees high behind the wall, so the wall's shadow reaches 0.25 units toward the camera. The rays
+	// reach 0.3 units, about 0.21 units along the floor.
+	let direction_to_light = [0.0, 1.0, 1.0];
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	let rows_at = |near: f32, far: f32| {
+		(0..CONTACT_SHADOW_EXTENT)
+			.filter(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
+			.collect::<Vec<_>>()
+	};
+	let shadowed_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.18, CONTACT_SHADOW_WALL_Z);
+	let lit_rows = rows_at(3.0, CONTACT_SHADOW_WALL_Z - 0.3);
+	assert!(!shadowed_rows.is_empty() && !lit_rows.is_empty());
+
+	for row in shadowed_rows {
+		let value = run_contact_shadows(true, direction_to_light, [column, row]);
+		assert_eq!(value, 0.0, "Expected floor row {row} at z={} to be shadowed.", contact_shadow_floor_z(row));
+	}
+	for row in lit_rows {
+		let value = run_contact_shadows(true, direction_to_light, [column, row]);
+		assert_eq!(value, 1.0, "Expected floor row {row} at z={} to be lit.", contact_shadow_floor_z(row));
+	}
+}
+
+/// Verifies an open floor never shadows itself, even under a low sun whose rays barely leave it.
+#[test]
+fn contact_shadows_leave_an_open_floor_lit() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	for direction_to_light in [[0.0, 1.0, 0.0], [0.0, 0.1, 1.0], [0.0, 0.1, -1.0], [1.0, 0.1, 0.0]] {
+		for row in (CONTACT_SHADOW_EXTENT / 2 + 4..CONTACT_SHADOW_EXTENT).step_by(5) {
+			let value = run_contact_shadows(false, direction_to_light, [column, row]);
+			assert_eq!(value, 1.0, "Expected open floor row {row} to be lit toward {direction_to_light:?}.");
+		}
+	}
+}

@@ -410,9 +410,14 @@ material_evaluation_suffix: fn () -> void {
 					shadow_view3,
 					world_space_vertex_position,
 					view_space_surface_position,
-					world_space_vertex_normal,
-					L
+					position_derivative_x,
+					position_derivative_y
 				));
+				// Contact shadows fill gaps smaller than a shadow-map texel. They trace the opaque depth buffer, so a
+				// transparent surface in front of it has none.
+				if (push_constant.blend == 0) {
+					occlusion_factor = occlusion_factor * f16(fetch(contact_shadows, pixel_coordinates).x);
+				}
 				if (occlusion_factor == 0.0) {
 					continue;
 				}

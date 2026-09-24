@@ -116,14 +116,14 @@ sample_rotated_shadow_tap: fn (
 }
 "#;
 
-// Directional shadows have one depth for the whole PCF kernel. Interior taps stay
-// in texel space after one kernel-wide bounds check, avoiding eight normalize,
-// bounds, clamp, receiver-plane, and denormalize sequences.
+// Interior directional taps stay in texel space after one kernel-wide bounds check, avoiding eight normalize,
+// bounds, and clamp sequences. The receiver plane is expressed per texel for the same reason.
 pub(crate) const DIRECTIONAL_SHADOW_TAP_SOURCE: &str = r#"
 sample_directional_shadow_tap: fn (
 	shadow_map: ArrayTexture2D,
 	shadow_texel_position: vec2f,
 	surface_depth: f32,
+	depth_gradient_per_texel: vec2f,
 	poisson_offset: vec2f16,
 	rotation: vec2f16,
 	shadow_layer: u32
@@ -132,7 +132,10 @@ sample_directional_shadow_tap: fn (
 	let tap_position: vec2f = shadow_texel_position + vec2f(rotated_offset);
 	let shadow_texel: vec2u = vec2u(u32(tap_position.x), u32(tap_position.y));
 	let closest_depth: f32 = fetch(shadow_map, shadow_texel, shadow_layer).x;
-	return step(closest_depth, surface_depth);
+	// The map holds each texel's depth at its center, so the receiver is compared at that same point on its plane.
+	let texel_center: vec2f = vec2f(f32(shadow_texel.x), f32(shadow_texel.y)) + vec2f(0.5, 0.5);
+	let tap_surface_depth: f32 = surface_depth + dot(depth_gradient_per_texel, texel_center - shadow_texel_position);
+	return step(closest_depth, tap_surface_depth);
 }
 "#;
 
@@ -450,8 +453,8 @@ sample_directional_shadow: fn (
 	shadow_view3: u32,
 	world_space_position: vec3f,
 	view_space_position: vec3f,
-	surface_normal: vec3f,
-	surface_to_light_direction: vec3f
+	world_space_position_derivative_x: vec3f,
+	world_space_position_derivative_y: vec3f
 ) -> f32 {
 	let depth_value: f32 = abs(view_space_position.z);
 	// Descend only while the surface lies beyond a split. This avoids testing
@@ -487,16 +490,11 @@ sample_directional_shadow: fn (
 		surface_light_ndc_position.x * 0.5 + 0.5,
 		0.5 - surface_light_ndc_position.y * 0.5
 	);
-	let bias_scale: f32 = f32(cascade_index + 1);
-	let normal_alignment: f32 = max(dot(surface_normal, surface_to_light_direction), 0.0);
-	let cascade_depth_range: f32 = max(
-		views.views[shadow_view_index].far - views.views[shadow_view_index].near,
-		0.0001
-	);
-	let slope_scaled_bias: f32 = 0.0002 * bias_scale * (1.0 - normal_alignment);
-	let constant_bias: f32 = 0.00002 * bias_scale;
-	let cascade_range_bias: f32 = cascade_depth_range * 0.0000025;
-	let surface_depth: f32 = surface_light_ndc_position.z + max(slope_scaled_bias + cascade_range_bias, constant_bias);
+	// PCF taps compare the receiver's own plane at each fetched texel center, which is exact for flat receivers at
+	// any light angle and texel size. The constant margin only absorbs rounding between the shadow and material
+	// transforms; coarser cascades span more depth per texel, so it grows with the cascade.
+	let constant_bias: f32 = 0.00002 * f32(cascade_index + 1);
+	let surface_depth: f32 = surface_light_ndc_position.z + constant_bias;
 	if (surface_depth < 0.0 || surface_depth > 1.0) {
 		return 1.0;
 	}
@@ -511,8 +509,15 @@ sample_directional_shadow: fn (
 		return 1.0;
 	}
 
-	// Only PCF fallbacks need a rotation; fully lit footprints return above without trigonometry.
+	// Only PCF fallbacks need a rotation and a receiver plane; fully lit footprints return above without them.
 	let pcf_rotation: vec2f16 = compute_shadow_rotation(world_space_position);
+	let receiver_plane_depth_gradient: vec2f = shadow_receiver_plane_depth_gradient(
+		shadow_view_projection,
+		surface_light_clip_position,
+		surface_light_ndc_position,
+		world_space_position_derivative_x,
+		world_space_position_derivative_y
+	);
 	// Poisson offsets are expressed in texels. Keep the interior fallback in texel space.
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
 	let shadow_map_extent_f: vec2f = vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
@@ -521,28 +526,29 @@ sample_directional_shadow: fn (
 		&& shadow_texel_position.x <= shadow_map_extent_f.x - 1.5
 		&& shadow_texel_position.y <= shadow_map_extent_f.y - 1.5;
 	if (footprint_is_inside) {
+		let depth_gradient_per_texel: vec2f = receiver_plane_depth_gradient / shadow_map_extent_f;
 		let occlusion: f32 = 0.0;
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.645680, 0.493210), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.421003, 0.027070), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, shadow_layer);
-		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.645680, 0.493210), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.421003, 0.027070), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, shadow_layer);
+		occlusion = occlusion + sample_directional_shadow_tap(shadow_map, shadow_texel_position, surface_depth, depth_gradient_per_texel, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, shadow_layer);
 		return occlusion / 8.0;
 	}
 
 	let texel_size: vec2f16 = vec2f16(1.0, 1.0) / vec2f16(shadow_map_extent_f);
 	let occlusion: f32 = 0.0;
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.645680, 0.493210), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
-	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, vec2f(0.0, 0.0), vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.613392, 0.617481), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.170019, 0.0 - 0.040254), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.299417, 0.791925), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.645680, 0.493210), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.651784, 0.717887), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.421003, 0.027070), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.817194, 0.0 - 0.271096), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
+	occlusion = occlusion + sample_rotated_shadow_tap(shadow_map, shadow_uv, surface_depth, receiver_plane_depth_gradient, vec2f16(0.0 - 0.705374, 0.0 - 0.668203), pcf_rotation, texel_size, shadow_layer, shadow_map_extent);
 	return occlusion / 8.0;
 }
 "#;

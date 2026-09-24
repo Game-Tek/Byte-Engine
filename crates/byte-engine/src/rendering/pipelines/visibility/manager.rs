@@ -29,7 +29,8 @@ use super::layout::{
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkTargets, VisibilityRenderPass, create_ssgi_targets,
+	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkTargets, VisibilityRenderPass, create_contact_shadow_target,
+	create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
 use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
@@ -963,7 +964,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.scene
 			.write_lighting(frame, &shadows, |light| resolved_ies_profile_texture(light, profiles));
 		let shadow_work = ShadowWork {
-			directional: shadows.directional.is_some(),
+			directional: shadows.directional.map(|(_, direction)| direction),
 			cone_count: shadows.cone_count(),
 			point_count: shadows.point_count(),
 		};
@@ -1026,6 +1027,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
 		let ssgi = create_ssgi_targets(render_pass_builder);
+		let contact_shadows = create_contact_shadow_target(render_pass_builder);
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1039,6 +1041,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
 				ssgi,
+				contact_shadows,
 			},
 			self.cone_shadow_pool_capacity,
 			self.point_shadow_pool_capacity,

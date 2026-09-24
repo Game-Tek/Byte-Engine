@@ -520,19 +520,25 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 	}
 }
 
-/// Verifies the interior texel-space directional fallback preserves reverse-Z shadow comparison.
+/// Verifies the interior texel-space directional tap preserves reverse-Z shadow comparison, and compares a sloped
+/// receiver on its own plane at the fetched texel center so the receiver does not shadow itself.
 #[test]
 fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+	const SLOPED_SLOT: ResourceSlot = ResourceSlot::new(2);
 	let executable = compile_with_helpers(
 		r#"
 		main: fn () -> void {
 			results.lit = sample_directional_shadow_tap(
-				shadow_map, vec2f(1.0, 1.0), 0.8, vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
+				shadow_map, vec2f(1.0, 1.0), 0.8, vec2f(0.0, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
 			);
 			results.blocked = sample_directional_shadow_tap(
-				shadow_map, vec2f(2.0, 2.0), 0.8, vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
+				shadow_map, vec2f(2.0, 2.0), 0.8, vec2f(0.0, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
+			);
+			// The receiver lies on the stored slope, 0.3 texels before the center of the texel it fetches.
+			results.sloped_receiver = sample_directional_shadow_tap(
+				sloped_map, vec2f(1.2, 1.5), 0.5121, vec2f(0.01, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
 			);
 		}
 		"#,
@@ -545,6 +551,13 @@ fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 				true,
 				false,
 			),
+			besl::ParserNode::binding(
+				"sloped_map",
+				besl::ParserNode::combined_array_image_sampler(),
+				SLOPED_SLOT.slot(),
+				true,
+				false,
+			),
 			parse_besl_function(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
 			parse_besl_function(DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap"),
 			results_binding(
@@ -552,6 +565,7 @@ fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 				vec![
 					besl::ParserNode::member("lit", "f32"),
 					besl::ParserNode::member("blocked", "f32"),
+					besl::ParserNode::member("sloped_receiver", "f32"),
 				],
 				RESULT_SLOT,
 			),
@@ -568,15 +582,30 @@ fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 	shadow_map
 		.write_3d([2, 2, 0], [0.9, 0.0, 0.0, 1.0])
 		.expect("directional shadow blocker");
+	// A surface sloped toward the light along x stores its depth at each texel center.
+	let mut sloped_map = Texture::new_3d(4, 4, 1).expect("sloped shadow fixture");
+	for y in 0..4 {
+		for x in 0..4 {
+			sloped_map
+				.write_3d([x, y, 0], [0.5 + 0.01 * (x as f32 + 0.5), 0.0, 0.0, 1.0])
+				.expect("sloped shadow fixture");
+		}
+	}
 	let mut results = buffer(&executable, RESULT_SLOT);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
+	descriptors.bind_texture(SLOPED_SLOT, &mut sloped_map);
 	descriptors.bind_buffer(RESULT_SLOT, &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
 	assert_eq!(read_f32(&results, "lit"), 1.0);
 	assert_eq!(read_f32(&results, "blocked"), 0.0);
+	assert_eq!(
+		read_f32(&results, "sloped_receiver"),
+		1.0,
+		"A sloped receiver shadowed itself. The most likely cause is comparing its center depth instead of its plane at the fetched texel center."
+	);
 }
 
 /// Runs `source` with only buffer-free point-shadow helpers bound and returns the results buffer.

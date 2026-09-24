@@ -1,0 +1,223 @@
+// Marks full-resolution pixels whose short ray toward the sun is blocked by visible geometry. The directional shadow
+// map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. Material
+// evaluation multiplies the sun's shadow by this result: one where the ray is clear, zero where it is blocked.
+ScreenView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+ContactShadowParameters: struct {
+	// The view-space unit direction from a surface toward the sun. W is unused.
+	direction_to_light: vec4f,
+}
+
+// One ray's screen-space path. Screen position and 1/z are both linear along a projected line. The ray starts on the
+// pixel's own surface, whose 1/z changes across the screen by `surface_gradient` per pixel.
+ContactShadowRay: struct {
+	start_pixel: vec2f,
+	end_pixel: vec2f,
+	surface_gradient: vec2f,
+	inverse_start_z: f32,
+	inverse_end_z: f32,
+}
+
+screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
+contact_shadow_parameters: descriptor<{ type: ContactShadowParameters, binding: 1, access: read }>;
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+contact_shadow_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+
+CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
+// World-space reach of one ray. Occluders further away are left to the shadow map.
+CONTACT_SHADOW_MAX_DISTANCE: const f32 = 0.3;
+// Screen-space reach in pixels. It bounds the march cost for pixels close to the camera.
+CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 64.0;
+// A ray is blocked only while it is less than this far behind the depth buffer. The depth buffer stores only front
+// faces, so without a thickness every ray that passes behind a thin object would count as blocked.
+CONTACT_SHADOW_THICKNESS_BASE: const f32 = 0.05;
+CONTACT_SHADOW_THICKNESS_SCALE: const f32 = 0.02;
+// A ray must be at least this far behind the depth buffer, relative to the pixel's depth, to count as blocked. It
+// absorbs floating-point error.
+CONTACT_SHADOW_BIAS_SCALE: const f32 = 0.002;
+// A depth sample within this relative distance of the pixel's own surface plane belongs to that surface.
+CONTACT_SHADOW_PLANE_TOLERANCE: const f32 = 0.005;
+// Bisection steps that locate where a ray crossed behind the depth buffer between two march steps.
+CONTACT_SHADOW_REFINEMENT_STEPS: const u32 = 4;
+
+// Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly. It stays fixed over time:
+// without temporal accumulation, animated noise would flicker.
+interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
+	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// Returns the positive linear view depth of a pixel, or zero where no surface was drawn or outside the image.
+fetch_linear_depth: fn (column: f32, row: f32, extent: vec2u) -> f32 {
+	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
+		return 0.0;
+	}
+	let depth: f32 = fetch(visibility_depth, vec2u(u32(column), u32(row))).x;
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return screen_view.depth_unproject_numerator / (depth + screen_view.depth_unproject_denominator_offset);
+}
+
+// Returns the view-space position at continuous pixel coordinates, where integers are pixel centers.
+view_position: fn (pixel: vec2f, z: f32) -> vec3f {
+	let ray: vec2f = pixel * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+	return vec3f(ray.x * z, ray.y * z, z);
+}
+
+// Projects a view-space position to continuous pixel coordinates, where integers are pixel centers.
+project_to_pixel: fn (position: vec3f) -> vec2f {
+	let ray: vec2f = vec2f(position.x / position.z, position.y / position.z);
+	return (ray - screen_view.pixel_to_ray_add) / screen_view.pixel_to_ray_mul;
+}
+
+ray_pixel: fn (ray: ContactShadowRay, fraction: f32) -> vec2f {
+	return mix(ray.start_pixel, ray.end_pixel, fraction);
+}
+
+// Returns how far behind the depth buffer the ray is at `fraction` of its screen path. Negative is in front.
+// Background holds nothing to block the ray, so the ray is in front of it.
+//
+// A plane cannot shadow itself, so depth samples on the pixel's own surface never block the ray. Rays sample depth at
+// pixel centers, off the ray's own screen position, and on a surface seen at a grazing angle that offset alone would
+// put the surface several centimeters in front of a ray leaving it.
+ray_penetration: fn (ray: ContactShadowRay, fraction: f32, extent: vec2u) -> f32 {
+	let texel: vec2f = round(ray_pixel(ray, fraction));
+	let scene_z: f32 = fetch_linear_depth(texel.x, texel.y, extent);
+	if (scene_z == 0.0) {
+		return 0.0 - 1.0;
+	}
+	let surface_inverse_z: f32 = ray.inverse_start_z + dot(ray.surface_gradient, texel - ray.start_pixel);
+	if (abs(1.0 / scene_z - surface_inverse_z) <= CONTACT_SHADOW_PLANE_TOLERANCE * surface_inverse_z) {
+		return 0.0 - 1.0;
+	}
+	// Screen-space interpolation is linear in 1/z, which keeps the ray depth perspective-correct.
+	return 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, fraction) - scene_z;
+}
+
+// Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
+// 1/z is linear across the screen on a plane, so a side on the center's own surface predicts it exactly.
+side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
+	if (near_z == 0.0 || far_z == 0.0) {
+		return 1000000.0;
+	}
+	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
+}
+
+// Returns how much 1/z of the pixel's own surface changes per pixel along one screen axis, or zero without a
+// neighbor. It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal
+// Reconstruction from Depth Buffer", 2020), so a floor pixel next to a foot takes its slope from the floor.
+inverse_depth_gradient: fn (column: f32, row: f32, axis: vec2f, center_z: f32, extent: vec2u) -> f32 {
+	let positive_z: f32 = fetch_linear_depth(column + axis.x, row + axis.y, extent);
+	let negative_z: f32 = fetch_linear_depth(column - axis.x, row - axis.y, extent);
+	let positive_error: f32 = side_error(
+		center_z,
+		positive_z,
+		fetch_linear_depth(column + 2.0 * axis.x, row + 2.0 * axis.y, extent)
+	);
+	let negative_error: f32 = side_error(
+		center_z,
+		negative_z,
+		fetch_linear_depth(column - 2.0 * axis.x, row - 2.0 * axis.y, extent)
+	);
+	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
+		return 1.0 / positive_z - 1.0 / center_z;
+	}
+	if (negative_z != 0.0) {
+		return 1.0 / center_z - 1.0 / negative_z;
+	}
+	return 0.0;
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(contact_shadow_output, pixel);
+	let extent: vec2u = image_size(contact_shadow_output);
+	let column: f32 = f32(pixel.x);
+	let row: f32 = f32(pixel.y);
+	let center_z: f32 = fetch_linear_depth(column, row, extent);
+	if (center_z == 0.0) {
+		write(contact_shadow_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
+		return;
+	}
+
+	let direction: vec3f = vec3f(
+		contact_shadow_parameters.direction_to_light.x,
+		contact_shadow_parameters.direction_to_light.y,
+		contact_shadow_parameters.direction_to_light.z
+	);
+	let pixel_f: vec2f = vec2f(column, row);
+	let origin: vec3f = view_position(pixel_f, center_z);
+	let ray_length: f32 = CONTACT_SHADOW_MAX_DISTANCE;
+	// Stop rays in front of the camera plane so every step keeps a positive depth.
+	let minimum_z: f32 = center_z * 0.05;
+	if (origin.z + direction.z * ray_length < minimum_z) {
+		ray_length = (minimum_z - origin.z) / direction.z;
+	}
+	let end: vec3f = origin + direction * ray_length;
+	let end_pixel: vec2f = project_to_pixel(end);
+	let inverse_end_z: f32 = 1.0 / end.z;
+	let screen_length: f32 = length(end_pixel - pixel_f);
+	// Shorten long rays on screen. Screen position and 1/z are both linear along the projected ray, so cutting both
+	// at the same fraction keeps the ray on its line.
+	if (screen_length > CONTACT_SHADOW_MAX_SCREEN_DISTANCE) {
+		let kept_fraction: f32 = CONTACT_SHADOW_MAX_SCREEN_DISTANCE / screen_length;
+		end_pixel = mix(pixel_f, end_pixel, kept_fraction);
+		inverse_end_z = mix(1.0 / center_z, inverse_end_z, kept_fraction);
+	}
+	let surface_gradient: vec2f = vec2f(
+		inverse_depth_gradient(column, row, vec2f(1.0, 0.0), center_z, extent),
+		inverse_depth_gradient(column, row, vec2f(0.0, 1.0), center_z, extent)
+	);
+	let ray: ContactShadowRay = ContactShadowRay(pixel_f, end_pixel, surface_gradient, 1.0 / center_z, inverse_end_z);
+	let bias: f32 = CONTACT_SHADOW_BIAS_SCALE * center_z;
+	let jitter: f32 = interleaved_gradient_noise(pixel_f);
+	// The ray starts on the front side of its own surface.
+	let previous_fraction: f32 = 0.0;
+	let previous_in_front: bool = true;
+
+	for (let step: u32 = 0; step < CONTACT_SHADOW_STEP_COUNT; step = step + 1) {
+		let fraction: f32 = (f32(step) + jitter) / f32(CONTACT_SHADOW_STEP_COUNT);
+		let sample_pixel: vec2f = ray_pixel(ray, fraction);
+		if (sample_pixel.x < 0.0 - 0.5 || sample_pixel.y < 0.0 - 0.5 || sample_pixel.x >= f32(extent.x) - 0.5 || sample_pixel.y >= f32(extent.y) - 0.5) {
+			break;
+		}
+		if (ray_penetration(ray, fraction, extent) <= bias) {
+			previous_fraction = fraction;
+			previous_in_front = true;
+			continue;
+		}
+		// A ray that is still behind the same surface it went behind at an earlier step crosses nothing new.
+		if (previous_in_front == false) {
+			continue;
+		}
+		previous_in_front = false;
+
+		// The ray went behind the depth buffer since the last step. One step can go far behind a surface seen at a
+		// grazing angle, so bisect for where it crossed, then check that it crossed within the surface's thickness
+		// instead of passing behind a thin object.
+		let front: f32 = previous_fraction;
+		let behind: f32 = fraction;
+		for (let refinement: u32 = 0; refinement < CONTACT_SHADOW_REFINEMENT_STEPS; refinement = refinement + 1) {
+			let middle: f32 = 0.5 * (front + behind);
+			if (ray_penetration(ray, middle, extent) > bias) {
+				behind = middle;
+				continue;
+			}
+			front = middle;
+		}
+		let crossing_z: f32 = 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind);
+		if (ray_penetration(ray, behind, extent) < CONTACT_SHADOW_THICKNESS_BASE + CONTACT_SHADOW_THICKNESS_SCALE * crossing_z) {
+			write(contact_shadow_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+			return;
+		}
+	}
+
+	write(contact_shadow_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
+}

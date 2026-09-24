@@ -29,14 +29,15 @@ const DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderR
 /// The `ShadowWork` struct says which shadow views received lights this frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ShadowWork {
-	pub(crate) directional: bool,
+	/// The world-space direction the shadow-casting sun's light travels, or `None` without a sun.
+	pub(crate) directional: Option<math::UnitVector>,
 	pub(crate) cone_count: usize,
 	pub(crate) point_count: usize,
 }
 
 impl ShadowWork {
 	pub(crate) fn any(self) -> bool {
-		self.directional || self.cone_count > 0 || self.point_count > 0
+		self.directional.is_some() || self.cone_count > 0 || self.point_count > 0
 	}
 }
 
@@ -180,7 +181,7 @@ impl ShadowPass {
 		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
 		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
 
-		if work.directional {
+		if work.directional.is_some() {
 			frame.resize_image(directional_shadow_map, directional_extent);
 		}
 		if work.cone_count > 0 {
@@ -233,7 +234,7 @@ impl ShadowPass {
 					c.end_region();
 				};
 
-				if work.directional {
+				if work.directional.is_some() {
 					record_maps(
 						c,
 						"Directional Shadow Map",

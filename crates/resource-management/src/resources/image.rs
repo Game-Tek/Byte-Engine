@@ -124,7 +124,7 @@ mod tests {
 		};
 		let model = ReferenceModel::new("texture.image", 99, 3, &image, None);
 		let storage = TestStorageBackend::new();
-		storage
+		let stored = storage
 			.store(ProcessedAsset::new(ResourceId::new("texture.image"), image), &[1, 2, 3])
 			.await
 			.unwrap();
@@ -132,7 +132,8 @@ mod tests {
 		let reference = model.solve(&storage).await.expect("stored image metadata");
 
 		assert_eq!(reference.id(), "texture.image");
-		assert_eq!(reference.hash(), 99);
+		// The hash describes the stored payload, so it comes from the record rather than the requesting model.
+		assert_eq!(reference.hash(), stored.hash());
 		assert_eq!(reference.size, 3);
 		assert_eq!(reference.resource.format, Formats::BC7SRGB);
 		assert_eq!(reference.resource.gamma, Gamma::SRGB);

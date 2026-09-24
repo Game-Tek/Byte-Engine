@@ -89,7 +89,7 @@ pub use reference::Reference;
 pub use reference::ReferenceModel;
 pub use resource::Resource;
 pub use resource::resource_manager::ResourceManager;
-pub use solver::Solver;
+pub use solver::{Solver, StoredModel};
 pub use stream::Stream;
 
 pub(crate) type DataStorage = Vec<u8>;
@@ -230,6 +230,7 @@ impl ProcessedAsset {
 			resource: self.resource,
 			streams: self.streams,
 			queryable_properties: self.queryable_properties,
+			baked_at: unix_time_nanos(),
 		}
 	}
 
@@ -355,6 +356,15 @@ pub struct SerializableResource {
 	resource: DataStorage,
 	streams: Option<Vec<StreamDescription>>,
 	queryable_properties: Vec<QueryableProperty>,
+	/// When the resource was stored, in nanoseconds since the Unix epoch.
+	baked_at: u64,
+}
+
+/// Returns the current time in nanoseconds since the Unix epoch, the unit of [`SerializableResource::baked_at`].
+pub(crate) fn unix_time_nanos() -> u64 {
+	std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 impl SerializableResource {
@@ -385,7 +395,13 @@ impl SerializableResource {
 			resource,
 			streams,
 			queryable_properties,
+			baked_at: unix_time_nanos(),
 		}
+	}
+
+	/// Returns when the resource was stored, in nanoseconds since the Unix epoch.
+	pub(crate) fn baked_at(&self) -> u64 {
+		self.baked_at
 	}
 
 	pub fn id(&self) -> &str {

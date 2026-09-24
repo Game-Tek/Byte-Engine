@@ -1,9 +1,22 @@
 use super::*;
 
 pub(crate) fn load_fbx_scene(data: &[u8], filename: &str) -> Result<ufbx::SceneRoot, FbxImportError> {
+	load_fbx_scene_with(data, filename, false)
+}
+
+/// Parses an FBX for its textures only, skipping geometry and animation data.
+///
+/// Elements keep the indices a full parse gives them, so texture IDs match [`load_fbx_scene`].
+pub(crate) fn load_fbx_scene_textures(data: &[u8], filename: &str) -> Result<ufbx::SceneRoot, FbxImportError> {
+	load_fbx_scene_with(data, filename, true)
+}
+
+fn load_fbx_scene_with(data: &[u8], filename: &str, textures_only: bool) -> Result<ufbx::SceneRoot, FbxImportError> {
 	ufbx::load_memory(
 		data,
 		ufbx::LoadOpts {
+			ignore_geometry: textures_only,
+			ignore_animation: textures_only,
 			filename: ufbx::StringOpt::Ref(filename),
 			target_axes: ufbx::CoordinateAxes::left_handed_y_up(),
 			target_unit_meters: 1.0,

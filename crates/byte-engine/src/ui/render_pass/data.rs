@@ -263,7 +263,7 @@ pub(super) struct UiPathDrawElement {
 	pub(super) shape: UiPathShape,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct UiDrawList {
 	pub(super) layout_size: [f32; 2],
 	pub(super) elements: Vec<UiDrawElement>,
@@ -282,6 +282,31 @@ impl UiDrawList {
 			&& self.paths.is_empty()
 			&& self.images.is_empty()
 			&& self.texts.is_empty()
+	}
+}
+
+impl Clone for UiDrawList {
+	/// Copies every draw list entry and its owned local data.
+	fn clone(&self) -> Self {
+		Self {
+			layout_size: self.layout_size,
+			elements: self.elements.clone(),
+			blurs: self.blurs.clone(),
+			curves: self.curves.clone(),
+			paths: self.paths.clone(),
+			images: self.images.clone(),
+			texts: self.texts.clone(),
+		}
+	}
+	/// Reuses each list and each entry's owned storage, so a sink copying a same-shaped list allocates nothing.
+	fn clone_from(&mut self, source: &Self) {
+		self.layout_size = source.layout_size;
+		self.elements.clone_from(&source.elements);
+		self.blurs.clone_from(&source.blurs);
+		self.curves.clone_from(&source.curves);
+		self.paths.clone_from(&source.paths);
+		self.images.clone_from(&source.images);
+		self.texts.clone_from(&source.texts);
 	}
 }
 

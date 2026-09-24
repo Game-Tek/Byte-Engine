@@ -42,6 +42,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			ids,
 			memory_budget,
 			texture_compression,
+			force,
 		} => {
 			beld::bake(
 				source_path,
@@ -50,6 +51,7 @@ async fn run(cli: Cli) -> Result<(), i32> {
 				storage_mode,
 				texture_compression.map(Into::into),
 				bake_memory_budget(memory_budget),
+				force,
 			)
 			.await
 		}
@@ -179,6 +181,11 @@ enum Commands {
 		/// Native transport compression for baked texture files.
 		#[arg(long, value_enum)]
 		texture_compression: Option<TextureCompression>,
+		/// Rebake every selected asset, even when its resource is current with its source files.
+		/// Use it after changing an asset processor or `--texture-compression`, which source versions don't track.
+		/// Example: `beld bake --force`
+		#[arg(long)]
+		force: bool,
 		/// The asset IDs to bake. If omitted, BELD recursively bakes all supported assets under the source directory.
 		/// Example: `beld bake audio.wav mesh.gltf mesh.gltf#image`
 		#[clap(value_delimiter = ' ', num_args = 0..)]

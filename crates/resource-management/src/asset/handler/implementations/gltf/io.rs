@@ -157,7 +157,6 @@ pub(crate) async fn load_gltf_image_data(
 	asset_storage_backend: &dyn asset::DynStorageBackend,
 	mesh_url: ResourceId<'_>,
 	image: gltf::Image<'_>,
-	buffers: &[gltf::buffer::Data],
 	allocator: &dyn std::alloc::Allocator,
 ) -> Result<gltf::image::Data, LoadErrors> {
 	match image.source() {
@@ -171,7 +170,8 @@ pub(crate) async fn load_gltf_image_data(
 
 			decode_external_gltf_image(&bytes)
 		}
-		_ => gltf::image::Data::from_source(image.source(), None, buffers).map_err(|_| LoadErrors::FailedToProcess),
+		// Buffer views are read by `load_gltf_fragment_image`; only data URIs reach this arm.
+		_ => gltf::image::Data::from_source(image.source(), None, &[]).map_err(|_| LoadErrors::FailedToProcess),
 	}
 }
 
@@ -350,71 +350,115 @@ pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semant
 	}
 }
 
-pub(crate) async fn store_gltf_texture_dependencies(
-	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	gltf: &gltf::Gltf,
-	buffers: &[gltf::buffer::Data],
-	dependencies: &[GltfTextureDependency],
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<Vec<VariantVariableModel>, LoadErrors> {
-	use utils::r#async::StreamExt as _;
-
-	let requests = dependencies.iter().map(|dependency| async move {
-		let image = gltf
-			.images()
-			.find(|image| image.index() == dependency.image_index as usize)
-			.ok_or(LoadErrors::FailedToProcess)?;
-
-		let id = generated_gltf_image_id(mesh_url, image.index() as u32, image.name());
-
-		let image_ref =
-			load_and_store_gltf_image(context, mesh_url, &id, image, buffers, dependency.semantic, mip_backend).await?;
-
-		Ok(VariantVariableModel {
-			name: material_texture_variable_name(dependency.image_index),
-			r#type: "Texture2D".to_string(),
-			value: ValueModel::Image(image_ref),
-		})
-	});
-
-	// Distinct image dependencies can overlap file I/O; ordered buffering keeps material variables deterministic.
-	utils::r#async::stream::iter(requests)
-		.buffered(4)
-		.collect::<Vec<_>>()
-		.await
-		.into_iter()
-		.collect()
+/// Returns how the glTF's materials sample one image, merged across every material that references it.
+///
+/// Image fragments bake with this semantic so a texture decodes the same way whether a material or a direct request
+/// bakes it. Returns `None` when no material samples the image.
+pub(crate) fn gltf_image_semantic(gltf: &gltf::Gltf, image_index: u32) -> Option<Semantic> {
+	gltf.materials()
+		.filter_map(|material| collect_gltf_texture_dependencies(&brdf_material_from_gltf(&material)).ok())
+		.flatten()
+		.filter(|dependency| dependency.image_index == image_index)
+		.map(|dependency| dependency.semantic)
+		.reduce(merge_texture_semantics)
 }
 
-/// Loads one glTF image dependency and stores its processed resource.
-pub(crate) async fn load_and_store_gltf_image(
+/// Loads one glTF image, reading only the bytes of the buffer view that holds it.
+///
+/// A texture baked on its own must not copy the whole binary chunk, which would repeat the copy for every texture
+/// in the container.
+pub(crate) async fn load_gltf_fragment_image(
 	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	id: &str,
+	source_id: ResourceId<'_>,
 	image: gltf::Image<'_>,
-	buffers: &[gltf::buffer::Data],
-	semantic: Semantic,
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<ReferenceModel<Image>, LoadErrors> {
-	let image_data =
-		load_gltf_image_data(context.asset_storage_backend(), mesh_url, image, buffers, context.allocator()).await?;
+	binary_blob: Option<&[u8]>,
+) -> Result<gltf::image::Data, LoadErrors> {
+	let gltf::image::Source::View { view, mime_type } = image.source() else {
+		return load_gltf_image_data(context.asset_storage_backend(), source_id, image, context.allocator()).await;
+	};
 
-	store_gltf_image(context, ResourceId::new(id), image_data, semantic, mip_backend)
-		.await
-		.map(Into::into)
+	let range = view.offset()..view.offset().checked_add(view.length()).ok_or(LoadErrors::FailedToProcess)?;
+
+	let missing_view = || {
+		log::error!(
+			"glTF image {} is outside its buffer view. The most likely cause is a truncated or malformed buffer.",
+			image.index()
+		);
+
+		LoadErrors::FailedToProcess
+	};
+
+	match view.buffer().source() {
+		gltf::buffer::Source::Bin => {
+			let blob = binary_blob.ok_or_else(|| {
+				log::error!("glTF binary buffer is missing. The most likely cause is a GLB without its required BIN chunk.");
+
+				LoadErrors::FailedToProcess
+			})?;
+
+			decode_gltf_view_image(blob.get(range).ok_or_else(missing_view)?, mime_type)
+		}
+		gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => {
+			let data = decode_gltf_buffer_data_uri(uri)?;
+
+			decode_gltf_view_image(data.get(range).ok_or_else(missing_view)?, mime_type)
+		}
+		gltf::buffer::Source::Uri(uri) => {
+			let buffer_url = resolve_gltf_uri(source_id, uri)?;
+
+			let (bytes, ..) = context
+				.asset_storage_backend()
+				.resolve_in(ResourceId::new(&buffer_url), context.allocator())
+				.await
+				.map_err(|_| {
+					log::error!(
+						"glTF external buffer could not be loaded. The most likely cause is a missing file-local URI '{buffer_url}'."
+					);
+
+					LoadErrors::AssetCouldNotBeLoaded
+				})?;
+
+			decode_gltf_view_image(bytes.get(range).ok_or_else(missing_view)?, mime_type)
+		}
+	}
 }
 
-pub(crate) fn generated_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {
-	let variables = variables
-		.iter()
-		.map(|variable| serde_json::json!({ "name": variable.name, "data_type": variable.r#type }))
-		.collect::<Vec<_>>();
+/// Decodes an image stored in a glTF buffer view, keeping the channel layout the `gltf` importer would report.
+pub(crate) fn decode_gltf_view_image(encoded: &[u8], mime_type: &str) -> Result<gltf::image::Data, LoadErrors> {
+	let format = match mime_type {
+		"image/png" => image::ImageFormat::Png,
+		"image/jpeg" => image::ImageFormat::Jpeg,
+		_ => {
+			log::error!(
+				"glTF image uses unsupported MIME type '{mime_type}'. The most likely cause is an image encoding other than PNG or JPEG."
+			);
 
-	serde_json::json!({ "variables": variables })
-		.as_object()
-		.expect("generated material JSON should be an object")
-		.clone()
+			return Err(LoadErrors::UnsupportedType);
+		}
+	};
+
+	let decoded = image::load_from_memory_with_format(encoded, format).map_err(|_| LoadErrors::FailedToProcess)?;
+
+	let (width, height) = (decoded.width(), decoded.height());
+
+	let format = match &decoded {
+		image::DynamicImage::ImageLuma8(_) => gltf::image::Format::R8,
+		image::DynamicImage::ImageLumaA8(_) => gltf::image::Format::R8G8,
+		image::DynamicImage::ImageRgb8(_) => gltf::image::Format::R8G8B8,
+		image::DynamicImage::ImageRgba8(_) => gltf::image::Format::R8G8B8A8,
+		image::DynamicImage::ImageLuma16(_) => gltf::image::Format::R16,
+		image::DynamicImage::ImageLumaA16(_) => gltf::image::Format::R16G16,
+		image::DynamicImage::ImageRgb16(_) => gltf::image::Format::R16G16B16,
+		image::DynamicImage::ImageRgba16(_) => gltf::image::Format::R16G16B16A16,
+		_ => return Err(LoadErrors::UnsupportedType),
+	};
+
+	Ok(gltf::image::Data {
+		pixels: decoded.into_bytes(),
+		format,
+		width,
+		height,
+	})
 }
 
 pub(crate) fn generated_gltf_image_id(mesh_url: ResourceId<'_>, image_index: u32, image_name: Option<&str>) -> String {

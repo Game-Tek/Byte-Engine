@@ -314,12 +314,47 @@ impl MetalBarrier {
 	}
 }
 
+/// The `DescriptorUses` struct holds the resource uses of one bound descriptor table, so repeated draws and dispatches
+/// in one encoder only replan the uses that can still need a barrier.
+///
+/// Build it once per descriptor materialization with [`Self::new`], then pass it to
+/// [`MetalResourceTracker::consume_descriptors`] for every command that binds the table.
+#[derive(Clone, Default)]
+pub(crate) struct DescriptorUses {
+	/// Consolidated uses, writable ones first. Every command replans the writable ones, because each command's writes
+	/// conflict with the next command's accesses.
+	uses: SmallVec<[MetalResourceUse; 16]>,
+	/// How many of `uses` write.
+	writable: usize,
+	/// The encoder scope and tracker generation right after this table's uses were last applied. While both still
+	/// match, the read-only uses already have every barrier they need in that encoder.
+	settled: Option<(MetalEncoderScope, u64)>,
+}
+
+impl DescriptorUses {
+	/// Consolidates `uses` and orders the writable ones first.
+	pub(crate) fn new(mut uses: SmallVec<[MetalResourceUse; 16]>) -> Self {
+		MetalResourceTracker::consolidate_in_place(&mut uses);
+		// Consolidation merged overlapping uses of a resource, so a read-only use never overlaps a writable one.
+		uses.sort_by_key(|resource_use| !resource_use.access.intersects(crate::AccessPolicies::WRITE));
+		let writable = uses.partition_point(|resource_use| resource_use.access.intersects(crate::AccessPolicies::WRITE));
+		Self {
+			uses,
+			writable,
+			settled: None,
+		}
+	}
+}
+
 /// The `MetalResourceTracker` struct retains region-aware access history for one Metal command queue.
 #[derive(Default)]
 pub(crate) struct MetalResourceTracker {
 	states: HashMap<MetalResourceKey, SmallVec<[MetalResourceState; 2]>>,
 	undo_states: HashMap<MetalResourceKey, Option<SmallVec<[MetalResourceState; 2]>>>,
 	recording: bool,
+	/// Advances whenever the history changes in a way that could give an earlier read a new hazard: a new or changed
+	/// write, removed states, or a finished or abandoned recording. [`DescriptorUses`] compares it to skip reads.
+	generation: u64,
 }
 
 impl MetalResourceTracker {
@@ -345,6 +380,7 @@ impl MetalResourceTracker {
 				self.states.remove(&key);
 			}
 		}
+		self.generation += 1;
 		true
 	}
 
@@ -355,40 +391,71 @@ impl MetalResourceTracker {
 		uses: impl IntoIterator<Item = MetalResourceUse>,
 	) -> MetalBarrier {
 		let consolidated = Self::consolidate(uses);
-		self.consume_preconsolidated(scope, &consolidated, [])
+		self.consume_consolidated(scope, &consolidated, &[], false).0
 	}
 
-	/// Plans one command from an immutable use table plus its small command-specific use list.
-	pub(crate) fn consume_preconsolidated(
+	/// Plans one draw or dispatch that binds the descriptor table `descriptors`, plus its command-specific uses.
+	///
+	/// When the table's uses were last applied in this same encoder and the history has not changed since, its
+	/// read-only uses are skipped: the barriers encoded for that earlier command still order every later command in
+	/// the encoder, and reapplying the same reads would leave the history as it is.
+	pub(crate) fn consume_descriptors(
 		&mut self,
 		scope: MetalEncoderScope,
-		primary_uses: &[MetalResourceUse],
+		descriptors: &mut DescriptorUses,
 		additional_uses: impl IntoIterator<Item = MetalResourceUse>,
 	) -> MetalBarrier {
 		let additional_uses = Self::consolidate(additional_uses);
-		let mut barrier = MetalBarrier::default();
-		self.plan(scope, primary_uses, &mut barrier);
-		self.plan(scope, &additional_uses, &mut barrier);
-
 		let aliases_primary = additional_uses.iter().any(|additional_use| {
-			primary_uses
+			descriptors
+				.uses
 				.iter()
 				.any(|primary_use| primary_use.key == additional_use.key && primary_use.region.overlaps(additional_use.region))
 		});
+		let settled = !aliases_primary && descriptors.settled == Some((scope, self.generation));
+		let primary_uses = if settled {
+			&descriptors.uses[..descriptors.writable]
+		} else {
+			&descriptors.uses[..]
+		};
+		let (barrier, generation) = self.consume_consolidated(scope, primary_uses, &additional_uses, aliases_primary);
+		descriptors.settled = generation.map(|generation| (scope, generation));
+		barrier
+	}
+
+	/// Plans and applies one command's consolidated uses.
+	///
+	/// Returns the barrier and, unless the uses alias, the generation right after the primary uses were applied, so the
+	/// primary table's own writes do not stop its reads from being skipped by the next command.
+	fn consume_consolidated(
+		&mut self,
+		scope: MetalEncoderScope,
+		primary_uses: &[MetalResourceUse],
+		additional_uses: &[MetalResourceUse],
+		aliases_primary: bool,
+	) -> (MetalBarrier, Option<u64>) {
+		let mut barrier = MetalBarrier::default();
+		self.plan(scope, primary_uses, &mut barrier);
+		self.plan(scope, additional_uses, &mut barrier);
+
 		if aliases_primary {
 			// The uncommon alias path may copy descriptors so overlapping uses become one atomic command state.
 			let mut uses = primary_uses.iter().copied().collect::<SmallVec<[_; 16]>>();
-			uses.extend(additional_uses);
+			uses.extend_from_slice(additional_uses);
 			Self::consolidate_in_place(&mut uses);
 			for resource_use in uses {
 				self.apply_use(scope, resource_use);
 			}
-		} else {
-			for resource_use in primary_uses.iter().copied().chain(additional_uses) {
-				self.apply_use(scope, resource_use);
-			}
+			return (barrier, None);
 		}
-		barrier
+		for &resource_use in primary_uses {
+			self.apply_use(scope, resource_use);
+		}
+		let generation = self.generation;
+		for &resource_use in additional_uses {
+			self.apply_use(scope, resource_use);
+		}
+		(barrier, Some(generation))
 	}
 
 	/// Records accesses that occurred throughout an encoder without adding an artificial trailing command.
@@ -402,7 +469,9 @@ impl MetalResourceTracker {
 	pub(crate) fn forget_drawable(&mut self, texture: &ProtocolObject<dyn mtl::MTLTexture>) {
 		let key = MetalResourceKey::drawable(texture);
 		self.remember(key);
-		self.states.remove(&key);
+		if self.states.remove(&key).is_some() {
+			self.generation += 1;
+		}
 	}
 
 	/// Converts command-local encoder scopes into queue history and commits the recording transaction.
@@ -428,6 +497,8 @@ impl MetalResourceTracker {
 			}
 		}
 		self.undo_states.clear();
+		// Every state moved to queue scope, so hazards now need queue barriers rather than encoder barriers.
+		self.generation += 1;
 	}
 
 	/// Consolidates one materialized use table once so command recording can consume it by reference.
@@ -501,13 +572,28 @@ impl MetalResourceTracker {
 			.any(|state| Self::has_hazard(state.access, resource_use.access));
 
 		if has_hazard {
+			// Recording the same access again with nothing in between, such as a render pass's attachment writes after
+			// each draw, replaces the only state it would remove with an identical one, so the history stays as it is.
+			let mut covered = states.iter().filter(|state| resource_use.region.covers(state.region));
+			if let (Some(state), None) = (covered.next(), covered.next())
+				&& state.scope == scope
+				&& state.region == resource_use.region
+				&& state.access == resource_use.access
+				&& state.stages == resource_use.stages
+			{
+				return;
+			}
 			states.retain(|state| !resource_use.region.covers(state.region));
+			self.generation += 1;
 		} else if let Some(state) = states
 			.iter_mut()
 			.find(|state| state.scope == scope && state.region == resource_use.region && state.access == resource_use.access)
 		{
+			// Without a hazard this use is a read, and widening a read's stages cannot give another read a hazard.
 			state.stages |= resource_use.stages;
 			return;
+		} else if resource_use.access.intersects(crate::AccessPolicies::WRITE) {
+			self.generation += 1;
 		}
 
 		states.push(MetalResourceState {
@@ -529,6 +615,10 @@ mod tests {
 
 	fn buffer(access: crate::AccessPolicies, stages: mtl::MTLStages) -> MetalResourceUse {
 		MetalResourceUse::buffer(BufferHandle(1), 0, 64, stages, access)
+	}
+
+	fn descriptor_table(uses: &[MetalResourceUse]) -> DescriptorUses {
+		DescriptorUses::new(uses.iter().copied().collect())
 	}
 
 	#[test]
@@ -651,10 +741,12 @@ mod tests {
 	fn descriptor_read_after_an_intervening_blit_write_is_synchronized() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let descriptors = [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)];
-		tracker.consume_preconsolidated(scope, &descriptors, []);
+		let mut descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		tracker.consume_descriptors(scope, &mut descriptors, []);
+		// The second command settles the reads, so the third must still notice the write in between.
+		tracker.consume_descriptors(scope, &mut descriptors, []);
 		tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
-		let barrier = tracker.consume_preconsolidated(scope, &descriptors, []);
+		let barrier = tracker.consume_descriptors(scope, &mut descriptors, []);
 
 		assert_eq!(barrier.encoder_after, mtl::MTLStages::Blit);
 		assert_eq!(barrier.encoder_before, mtl::MTLStages::Dispatch);
@@ -665,16 +757,16 @@ mod tests {
 	fn overlapping_uses_in_one_command_preserve_the_write() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let descriptors = [MetalResourceUse::buffer(
+		let mut descriptors = descriptor_table(&[MetalResourceUse::buffer(
 			BufferHandle(1),
 			0,
 			64,
 			mtl::MTLStages::Fragment,
 			crate::AccessPolicies::WRITE,
-		)];
-		tracker.consume_preconsolidated(
+		)]);
+		tracker.consume_descriptors(
 			scope,
-			&descriptors,
+			&mut descriptors,
 			[MetalResourceUse::buffer(
 				BufferHandle(1),
 				0,
@@ -697,6 +789,54 @@ mod tests {
 		assert_eq!(barrier.encoder_after, mtl::MTLStages::Vertex | mtl::MTLStages::Fragment);
 		assert_eq!(barrier.encoder_before, mtl::MTLStages::Blit);
 		assert_eq!(barrier.encoder_visibility, mtl::MTL4VisibilityOptions::Device);
+	}
+
+	#[test]
+	fn repeated_descriptor_reads_still_order_a_later_write() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		let mut descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Fragment)]);
+		tracker.consume_descriptors(scope, &mut descriptors, []);
+		tracker.consume_descriptors(scope, &mut descriptors, []);
+
+		let barrier = tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
+
+		assert_eq!(barrier.encoder_after, mtl::MTLStages::Fragment);
+		assert_eq!(barrier.encoder_before, mtl::MTLStages::Blit);
+	}
+
+	#[test]
+	fn repeated_descriptor_writes_order_each_command() {
+		let mut tracker = MetalResourceTracker::default();
+		let scope = MetalEncoderScope::Encoder(1);
+		let mut descriptors = descriptor_table(&[
+			buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
+			MetalResourceUse::buffer(BufferHandle(2), 0, 64, mtl::MTLStages::Dispatch, crate::AccessPolicies::READ),
+		]);
+		tracker.consume_descriptors(scope, &mut descriptors, []);
+
+		let barrier = tracker.consume_descriptors(scope, &mut descriptors, []);
+
+		assert_eq!(barrier.encoder_after, mtl::MTLStages::Dispatch);
+		assert_eq!(barrier.encoder_before, mtl::MTLStages::Dispatch);
+	}
+
+	#[test]
+	fn descriptor_reads_in_each_encoder_wait_for_an_earlier_write() {
+		let mut tracker = MetalResourceTracker::default();
+		// Reading one mip level leaves the whole-image write in the history, so every encoder must wait for it.
+		let image = |mip_level, stages, access| MetalResourceUse::image(ImageHandle(1), mip_level, None, stages, access);
+		let mut descriptors = descriptor_table(&[image(Some(0), mtl::MTLStages::Fragment, crate::AccessPolicies::READ)]);
+		tracker.consume(
+			MetalEncoderScope::Queue,
+			[image(None, mtl::MTLStages::Dispatch, crate::AccessPolicies::WRITE)],
+		);
+		tracker.consume_descriptors(MetalEncoderScope::Encoder(1), &mut descriptors, []);
+
+		let barrier = tracker.consume_descriptors(MetalEncoderScope::Encoder(2), &mut descriptors, []);
+
+		assert_eq!(barrier.queue_after, mtl::MTLStages::Dispatch);
+		assert_eq!(barrier.queue_before, mtl::MTLStages::Fragment);
 	}
 
 	#[test]

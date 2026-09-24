@@ -1,5 +1,5 @@
 use math::{AABB, Point, Vector};
-use maths_rs::{Mat3f, mat::MatNew3 as _};
+use maths_rs::Vec3f;
 
 use crate::{physics::LocalSpace, space::Positionable};
 
@@ -118,12 +118,15 @@ impl Shapes {
 		}
 	}
 
-	/// Returns the raw local inertia tensor for a unit-mass collider.
-	pub fn inertia_tensor(&self) -> Mat3f {
+	/// Returns the unit-mass moments of inertia about the collider's local axes.
+	///
+	/// Every supported shape is symmetric about its local axes, so these moments are the diagonal of its local
+	/// inertia tensor and every other entry is zero. Bodies invert the tensor by taking reciprocals of these values.
+	pub fn principal_inertia(&self) -> Vec3f {
 		let half_extents = match self {
 			Self::Sphere { radius } => {
 				let inertia = 0.4 * radius * radius;
-				return Mat3f::new(inertia, 0.0, 0.0, 0.0, inertia, 0.0, 0.0, 0.0, inertia);
+				return Vec3f::new(inertia, inertia, inertia);
 			}
 			Self::Cube { size } => *size,
 			Self::ConvexHull { bounds, .. } => bounds.half_extents(),
@@ -131,17 +134,7 @@ impl Shapes {
 		let x = 2.0 * half_extents.x().abs();
 		let y = 2.0 * half_extents.y().abs();
 		let z = 2.0 * half_extents.z().abs();
-		Mat3f::new(
-			(y * y + z * z) / 12.0,
-			0.0,
-			0.0,
-			0.0,
-			(x * x + z * z) / 12.0,
-			0.0,
-			0.0,
-			0.0,
-			(x * x + y * y) / 12.0,
-		)
+		Vec3f::new((y * y + z * z) / 12.0, (x * x + z * z) / 12.0, (x * x + y * y) / 12.0)
 	}
 
 	/// Returns local axis-aligned bounds for this shape.

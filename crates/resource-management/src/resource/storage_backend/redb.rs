@@ -302,11 +302,20 @@ impl ReDBStorageBackend {
 		packed_lease: Option<std::sync::Arc<()>>,
 	) -> Option<MultiResourceReader> {
 		let stored_size = u64::try_from(resource.stored_size()).ok()?;
-		let (file, offset) = match self.storage_mode {
+		// Materials, variants, and other metadata-only resources have no payload, so no file is opened for them.
+		if stored_size == 0 && !resource.encoding().is_gpu_backed() {
+			return Some(Box::new(StoredResourceReader::new(
+				ResourceReaderBacking::Buffer(Box::new([])),
+				resource.encoding(),
+				0,
+			)));
+		}
+		let (file, file_size, offset) = match self.storage_mode {
 			ResourceStorageMode::Files => {
 				let path = resource_payload_path(&self.base_path, id, resource.hash(), resource.encoding());
 				let file = AsyncFile::open(&path).await.ok()?;
-				if file.metadata().await.ok()?.len() != stored_size {
+				let file_size = file.metadata().await.ok()?.len();
+				if file_size != stored_size {
 					log::error!(
 						"Resource payload size does not match its metadata. The most likely cause is a corrupt or incomplete resource file."
 					);
@@ -315,14 +324,14 @@ impl ReDBStorageBackend {
 				if resource.encoding().is_gpu_backed() {
 					return Some(Box::new(FileResourceReader::new_gpu(path, resource.encoding())));
 				}
-				(file, 0)
+				(file, file_size, 0)
 			}
 			ResourceStorageMode::Packed => {
 				let file = AsyncFile::open(self.base_path.join(PACKED_RESOURCES_FILE)).await.ok()?;
-				(file, packed_offset?)
+				let file_size = file.metadata().await.ok()?.len();
+				(file, file_size, packed_offset?)
 			}
 		};
-		let file_size = file.metadata().await.ok()?.len();
 		let reader = FileResourceReader::new_stored_range(
 			&file,
 			file_size,
@@ -766,7 +775,7 @@ impl WriteStorageBackend for ReDBStorageBackend {
 
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, id: asset::ResourceId<'_>, items: &[ResourceTraceItem]) -> Result<(), String> {
-		let write = match &self.db {
+		let mut write = match &self.db {
 			RedbDatabase::Writable(db) => db
 				.begin_write()
 				.map_err(|_| "Failed to begin resource trace write".to_string())?,
@@ -774,6 +783,10 @@ impl WriteStorageBackend for ReDBStorageBackend {
 				return Err("Cannot write traces to a read-only resources database".to_string());
 			}
 		};
+		// Traces are made durable with the resources of the same bake by `persist`.
+		write
+			.set_durability(redb::Durability::None)
+			.map_err(|_| "Failed to defer resource trace durability".to_string())?;
 		let id = ResourceId::from(id.as_ref());
 		{
 			let mut table = write
@@ -791,6 +804,24 @@ impl WriteStorageBackend for ReDBStorageBackend {
 		}
 
 		write.commit().map_err(|_| "Failed to commit resource trace".to_string())
+	}
+
+	/// Flushes every deferred commit to disk with one durable commit.
+	///
+	/// Payload files are synchronized before their metadata is committed, so the flush never publishes a record whose
+	/// payload could be missing after a crash.
+	fn persist(&self) -> Result<(), String> {
+		let RedbDatabase::Writable(db) = &self.db else {
+			return Ok(());
+		};
+		let write = db.begin_write().map_err(|error| {
+			format!("Failed to persist baked resources. The resource database could not begin a write. Error: {error}")
+		})?;
+		write.commit().map_err(|error| {
+			format!(
+				"Failed to persist baked resources. The most likely cause is that the disk is full or unavailable. Error: {error}"
+			)
+		})
 	}
 }
 
@@ -843,10 +874,13 @@ impl ResourceTransactionCommit for ReDBStorageBackend {
 		let packed_allocator = self.packed_allocator.as_ref();
 		let mut allocator_state = packed_allocator.map(|allocator| allocator.lock_state());
 
-		let write = match &self.db {
+		let mut write = match &self.db {
 			RedbDatabase::Writable(db) => db.begin_write().map_err(|_| ())?,
 			RedbDatabase::ReadOnly(_) => return Err(()),
 		};
+		// A durable commit per resource costs a full disk flush each; `persist` makes a whole bake durable at once.
+		// The record stays consistent after a crash either way, because redb rolls back to the last durable commit.
+		write.set_durability(redb::Durability::None).map_err(|_| ())?;
 
 		let mut replaced_range = None;
 		{
@@ -2367,7 +2401,8 @@ use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource, asset,
 	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{
-		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, reader::redb::FileResourceReader,
+		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking,
+		reader::{StoredResourceReader, redb::FileResourceReader},
 		resource_handler::MultiResourceReader,
 	},
 };

@@ -16,11 +16,29 @@ pub(crate) struct AssetManagerState {
 	resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
+	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
+	rebuild_cutoff: Option<u64>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	#[cfg(debug_assertions)]
 	resource_trace: ResourceTrace,
 	#[cfg(debug_assertions)]
 	hot_reload: Mutex<HotReloadState>,
+}
+
+/// The `BakeOrigin` enum tells a dispatched bake whether it answers a caller directly or runs inside a parent bake.
+pub(crate) enum BakeOrigin {
+	/// A bake requested through [`AssetManager`]; it waits for memory admission and makes its outputs durable.
+	Root,
+	/// A dependency of a running bake; it shares the parent's memory scope and leaves durability to the root.
+	Dependency(Option<Arc<BakeMemoryScope>>),
+}
+
+/// The `BakeOutcome` enum reports whether a freshness-checked bake wrote anything.
+enum BakeOutcome {
+	/// The stored resource was current and reused.
+	Current,
+	/// The resource was baked and stored.
+	Baked,
 }
 
 impl AssetManager {
@@ -68,6 +86,7 @@ impl AssetManager {
 				resource_storage_backend,
 				in_flight_bakes: Arc::new(Mutex::new(HashMap::with_capacity_and_hasher(32, Default::default()))),
 				bake_memory_budget: None,
+				rebuild_cutoff: None,
 				dispatcher,
 				#[cfg(debug_assertions)]
 				resource_trace: ResourceTrace::default(),
@@ -86,6 +105,23 @@ impl AssetManager {
 		Arc::get_mut(&mut self.state)
 			.expect("The bake memory budget must be configured before the asset manager starts processing requests.")
 			.bake_memory_budget = Some(Arc::new(BakeMemoryBudget::new(byte_budget.get())));
+	}
+
+	/// Makes every resource stored before `time` stale, so the next bakes rebuild it once.
+	///
+	/// Use it when stored output must be rebuilt although its sources did not change, such as after an asset
+	/// processor or a storage setting changed. Dependencies shared by several roots are rebuilt only once, because a
+	/// rebuilt resource is newer than the cutoff.
+	///
+	/// Next, call [`Self::bake_if_stale`] for each root.
+	pub fn rebuild_resources_baked_before(&mut self, time: std::time::SystemTime) {
+		let cutoff = time
+			.duration_since(std::time::UNIX_EPOCH)
+			.map_or(0, |elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+
+		Arc::get_mut(&mut self.state)
+			.expect("The rebuild cutoff must be configured before the asset manager starts processing requests.")
+			.rebuild_cutoff = Some(cutoff);
 	}
 
 	/// Registers a handler for one family of source assets.
@@ -180,10 +216,23 @@ impl AssetManager {
 
 	/// Bakes the asset at `id` without checking for an existing stored resource.
 	///
+	/// Its dependencies are still reused when current. To rebuild a whole tree, call
+	/// [`Self::rebuild_resources_baked_before`] and then [`Self::bake_if_stale`].
+	///
 	/// Next, await [`crate::ResourceManager::request`] for the stored output or
 	/// inspect it through the storage backend.
 	pub async fn bake(&self, id: &str) -> Result<(), LoadMessages> {
-		self.state.dispatch_bake_in_scope(id, false, None).await
+		self.state.dispatch_bake_in_scope(id, false, BakeOrigin::Root).await
+	}
+
+	/// Bakes the asset at `id` only when its resource is missing or its recorded source versions changed.
+	///
+	/// Freshness only covers source files and the cutoff set by [`Self::rebuild_resources_baked_before`], which
+	/// is how a changed asset processor or storage setting is picked up.
+	///
+	/// Next, await [`crate::ResourceManager::request`] for the stored output.
+	pub async fn bake_if_stale(&self, id: &str) -> Result<(), LoadMessages> {
+		self.state.dispatch_bake_in_scope(id, true, BakeOrigin::Root).await
 	}
 
 	/// Returns the stored asset, or bakes it when it is missing or its recorded source versions changed.
@@ -193,7 +242,7 @@ impl AssetManager {
 
 	/// Returns the stored resource after ensuring its complete source provenance is current.
 	pub(crate) async fn bake_if_not_exists_serialized(&self, id: &str) -> Result<crate::SerializableResource, LoadMessages> {
-		self.state.dispatch_bake_in_scope(id, true, None).await?;
+		self.bake_if_stale(id).await?;
 
 		self.state
 			.resource_storage_backend
@@ -423,7 +472,11 @@ impl AssetManagerState {
 			let allocator = BakeAllocator::new(self.bake_memory_budget.as_ref()).await;
 
 			// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
-			self.ensure_baked_in(&id, &allocator).await
+			let result = self.ensure_baked_in(&id, &allocator).await;
+
+			self.persist_resources();
+
+			result
 		} else {
 			Ok(())
 		};
@@ -471,18 +524,20 @@ impl AssetManagerState {
 		self: &Arc<Self>,
 		id: &str,
 		only_when_stale: bool,
-		memory_scope: Option<Arc<BakeMemoryScope>>,
+		origin: BakeOrigin,
 	) -> Result<(), LoadMessages> {
 		if let Some(notification) = self.bake_listener(id) {
 			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 		}
 
+		let is_root = matches!(origin, BakeOrigin::Root);
+
 		// Independent roots wait before becoming leaders. This lets an admitted parent claim and run a dependency
 		// instead of following a root that cannot start until the parent releases memory.
-		let memory_scope = match (memory_scope, &self.bake_memory_budget) {
-			(Some(memory_scope), _) => Some(memory_scope),
-			(None, Some(memory_budget)) => Some(memory_budget.acquire().await),
-			(None, None) => None,
+		let memory_scope = match (origin, &self.bake_memory_budget) {
+			(BakeOrigin::Dependency(memory_scope), _) => memory_scope,
+			(BakeOrigin::Root, Some(memory_budget)) => Some(memory_budget.acquire().await),
+			(BakeOrigin::Root, None) => None,
 		};
 
 		let notification = match self.register_bake(id) {
@@ -512,8 +567,15 @@ impl AssetManagerState {
 				let result = if only_when_stale {
 					state.ensure_baked_uncoalesced(&id, &allocator).await
 				} else {
-					state.bake_uncoalesced(&id, &allocator).await
+					state.bake_uncoalesced(&id, &allocator).await.map(|()| BakeOutcome::Baked)
 				};
+
+				// A root that reused a current resource wrote nothing, so it skips the flush.
+				if is_root && !matches!(result, Ok(BakeOutcome::Current)) {
+					state.persist_resources();
+				}
+
+				let result = result.map(|_| ());
 
 				let _ = notification.announce(result.clone());
 
@@ -522,6 +584,15 @@ impl AssetManagerState {
 			.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 
 		task.await.map_err(|_| LoadMessages::ExecutionUnavailable)?
+	}
+
+	/// Makes every resource stored so far durable with one flush, instead of one flush per stored resource.
+	///
+	/// A failure leaves this bake's resources usable in this process; they may only be lost if the process then crashes.
+	fn persist_resources(&self) {
+		if let Err(error) = self.resource_storage_backend.persist() {
+			log::warn!("{error}");
+		}
 	}
 
 	/// Returns a listener when the requested resource is already being baked.
@@ -714,7 +785,7 @@ impl AssetManagerState {
 			InFlightBakeRole::Leader(notification) => {
 				let _registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, id);
 
-				let result = self.ensure_baked_uncoalesced(id, allocator).await;
+				let result = self.ensure_baked_uncoalesced(id, allocator).await.map(|_| ());
 
 				let _ = notification.announce(result.clone());
 
@@ -727,12 +798,16 @@ impl AssetManagerState {
 	}
 
 	/// Checks freshness and runs one bake without consulting the in-flight registry.
-	async fn ensure_baked_uncoalesced(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	async fn ensure_baked_uncoalesced(
+		self: &Arc<Self>,
+		id: &str,
+		allocator: &BakeAllocator,
+	) -> Result<BakeOutcome, LoadMessages> {
 		let id = ResourceId::new(id);
 
 		if let Some((resource, _)) = self.resource_storage_backend.read(id).await {
 			if !self.resource_is_stale(&resource).await {
-				return Ok(());
+				return Ok(BakeOutcome::Current);
 			}
 
 			log::info!(
@@ -741,12 +816,18 @@ impl AssetManagerState {
 			);
 		}
 
-		self.bake_uncoalesced(id.as_ref(), allocator).await
+		self.bake_uncoalesced(id.as_ref(), allocator)
+			.await
+			.map(|()| BakeOutcome::Baked)
 	}
 
 	/// Returns whether any source version recorded by a stored resource differs from the current asset backend.
 	async fn resource_is_stale(&self, resource: &crate::SerializableResource) -> bool {
 		use utils::r#async::StreamExt as _;
+
+		if self.rebuild_cutoff.is_some_and(|cutoff| resource.baked_at() < cutoff) {
+			return true;
+		}
 
 		let checks = resource.asset_dependencies().iter().map(|dependency| async move {
 			let id = ResourceId::new(dependency.id());
@@ -1391,6 +1472,77 @@ pub mod tests {
 			.expect("changed child should rebake the child and parent");
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 4);
+	}
+
+	#[r#async::test]
+	async fn bake_if_stale_skips_current_resources_and_bake_always_rebakes() {
+		let asset_storage = TestStorageBackend::new();
+
+		asset_storage.add_file("current.test", b"source");
+
+		let resource_storage = ResourceTestStorageBackend::new();
+
+		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
+
+		asset_manager
+			.bake_if_stale("current.test")
+			.await
+			.expect("missing resource should bake");
+		asset_manager
+			.bake_if_stale("current.test")
+			.await
+			.expect("current resource should be reused");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 1);
+
+		asset_manager.bake("current.test").await.expect("forced bake should run");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+
+		asset_storage.add_file("current.test", b"changed source");
+
+		asset_manager
+			.bake_if_stale("current.test")
+			.await
+			.expect("changed source should rebake");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 3);
+	}
+
+	#[r#async::test]
+	async fn rebuild_cutoff_rebakes_current_dependencies_once() {
+		let asset_storage = TestStorageBackend::new();
+
+		asset_storage.add_file("parent.test", b"parent");
+
+		asset_storage.add_file("child.test", b"child");
+
+		let resource_storage = ResourceTestStorageBackend::new();
+
+		let (first_run, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
+
+		first_run
+			.bake_if_stale("parent.test")
+			.await
+			.expect("parent and child should bake");
+
+		assert_eq!(invocations.load(Ordering::SeqCst), 2);
+
+		let (mut forced_run, invocations) = versioned_asset_manager(asset_storage, resource_storage);
+
+		forced_run.rebuild_resources_baked_before(std::time::SystemTime::now());
+
+		forced_run.bake_if_stale("parent.test").await.expect("parent should rebuild");
+		forced_run
+			.bake_if_stale("child.test")
+			.await
+			.expect("child should already be rebuilt");
+
+		assert_eq!(
+			invocations.load(Ordering::SeqCst),
+			2,
+			"the parent and its child should each rebuild exactly once"
+		);
 	}
 
 	#[r#async::test]

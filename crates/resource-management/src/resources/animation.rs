@@ -265,21 +265,23 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 	}
 }
 
-impl<'de> Solver<'de, Reference<Animation>> for ReferenceModel<AnimationModel> {
+impl crate::StoredModel for AnimationModel {
+	type Resource = Animation;
+
 	/// Resolves a stored clip and its skeleton dependency for CPU pose sampling and blending.
-	fn solve(
-		self,
+	fn solve_stored<'de>(
+		stored: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Animation>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let model: AnimationModel = crate::from_slice(stored.resource()).map_err(|error| {
 				SolveErrors::DeserializationFailed(format!(
 					"Animation resource could not be deserialized. The most likely cause is incompatible or corrupted clip data: {error}."
 				))
 			})?;
 			let animation = model.solve(storage_backend).await?;
-			Ok(Reference::from_model(self, animation, reader))
+			Ok(Reference::from_stored(stored, animation, reader))
 		})
 	}
 }

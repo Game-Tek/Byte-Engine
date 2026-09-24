@@ -303,7 +303,7 @@ impl CommandBufferRecording<'_> {
 	}
 
 	/// Resolves the resource accesses represented by one immutable descriptor materialization.
-	fn descriptor_resource_uses(&self, layout: &PipelineLayout) -> SmallVec<[synchronization::MetalResourceUse; 16]> {
+	fn descriptor_resource_uses(&self, layout: &PipelineLayout) -> synchronization::DescriptorUses {
 		let mut uses = SmallVec::new();
 		for resource in &layout.resources {
 			let Some(descriptors) = self.descriptors_at_slot(resource.descriptor.slot()) else {
@@ -343,8 +343,7 @@ impl CommandBufferRecording<'_> {
 				uses.push(resource_use);
 			}
 		}
-		synchronization::MetalResourceTracker::consolidate_in_place(&mut uses);
-		uses
+		synchronization::DescriptorUses::new(uses)
 	}
 
 	/// Encodes the argument-buffer snapshot for the bound sets.
@@ -518,10 +517,10 @@ impl CommandBufferRecording<'_> {
 		self.ensure_compute_encoder();
 		self.apply_bound_compute_pipeline();
 		self.apply_bound_compute_descriptors();
-		let binding = self.applied_compute_descriptor_binding.take().expect(
+		let mut binding = self.applied_compute_descriptor_binding.take().expect(
 			"Metal compute descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
 		);
-		self.consume_resources_with_descriptors(&binding.resource_uses, additional_uses);
+		self.consume_resources_with_descriptors(&mut binding.resource_uses, additional_uses);
 		self.applied_compute_descriptor_binding = Some(binding);
 	}
 
@@ -529,10 +528,10 @@ impl CommandBufferRecording<'_> {
 	pub(super) fn prepare_render_draw(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
 		self.apply_bound_render_pipeline();
 		self.apply_bound_render_descriptors();
-		let binding = self.applied_render_descriptor_binding.take().expect(
+		let mut binding = self.applied_render_descriptor_binding.take().expect(
 			"Metal render descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
 		);
-		self.consume_resources_with_descriptors(&binding.resource_uses, additional_uses);
+		self.consume_resources_with_descriptors(&mut binding.resource_uses, additional_uses);
 		self.applied_render_descriptor_binding = Some(binding);
 	}
 

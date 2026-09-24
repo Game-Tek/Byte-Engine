@@ -29,7 +29,7 @@ struct AppliedDescriptorBinding {
 	pipeline: graphics_hardware_interface::PipelineHandle,
 	descriptor_sets: SmallVec<[DescriptorSetHandle; 4]>,
 	versions: SmallVec<[u64; 4]>,
-	resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
+	resource_uses: synchronization::DescriptorUses,
 }
 
 /// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.

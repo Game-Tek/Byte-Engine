@@ -159,12 +159,20 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 		Vec::new()
 	};
 
-	// Pipe MSL source via stdin and read AIR from stdout to avoid writing the source file to disk.
+	// The Metal driver compiles and links in one process when it writes a library, so no AIR intermediate is written
+	// and `metallib` is not started separately. Source is piped through stdin to avoid writing it to disk.
+	let safe_name = sanitize_shader_name(name);
+	let temp_dir = TempShaderDir::new(&safe_name)?;
+	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
+	let metallib_path_argument = metallib_path
+		.to_str()
+		.ok_or_else(|| error("Failed to compile MSL shader", "The temporary file path was not valid UTF-8"))?;
+
 	let mut metal_cmd = crate::r#async::Command::new("xcrun");
 	metal_cmd
-		.args(["-sdk", "macosx", "metal", "-c", "-x", "metal"])
+		.args(["-sdk", "macosx", "metal", "-x", "metal"])
 		.args(debug_args.iter())
-		.args(["-", "-o", "-"]);
+		.args(["-", "-o", metallib_path_argument]);
 	metal_cmd
 		.stdin(std::process::Stdio::piped())
 		.map_err(|_| error("Failed to configure Metal compiler stdin", "Stdio pipe failed"))?;
@@ -221,53 +229,12 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 		));
 	}
 
-	// metallib requires a file path for its input, so we write the AIR to a temp file.
-	let safe_name = sanitize_shader_name(name);
-	let temp_dir = TempShaderDir::new(&safe_name)?;
-	let air_path = temp_dir.path().join(format!("{safe_name}.air"));
-	let metallib_path = temp_dir.path().join(format!("{safe_name}.metallib"));
-
-	crate::r#async::write(&air_path, metal_output.stdout).await.0.map_err(|_| {
+	let binary = crate::r#async::read(&metallib_path).await.map_err(|_| {
 		error(
-			"Failed to write AIR intermediate to disk",
-			"The temporary directory could not be written",
+			"Failed to read compiled Metal library",
+			"The Metal compiler did not create the library",
 		)
 	})?;
-
-	let metallib_output = crate::r#async::Command::new("xcrun")
-		.args([
-			"-sdk",
-			"macosx",
-			"metallib",
-			air_path
-				.to_str()
-				.ok_or_else(|| error("Failed to link Metal library", "The temporary file path was not valid UTF-8"))?,
-			"-o",
-			metallib_path
-				.to_str()
-				.ok_or_else(|| error("Failed to link Metal library", "The temporary file path was not valid UTF-8"))?,
-		])
-		.output()
-		.await
-		.map_err(|_| error("Failed to invoke metallib", "The Xcode command line tools may be missing"))?;
-
-	if !metallib_output.status.success() {
-		let exit_status = metallib_output
-			.status
-			.code()
-			.map_or_else(|| metallib_output.status.to_string(), |code| code.to_string());
-		return Err(format_tool_failure(
-			"Failed to link Metal library",
-			"The metallib tool reported an error",
-			&exit_status,
-			&metallib_output.stdout,
-			&metallib_output.stderr,
-		));
-	}
-
-	let binary = crate::r#async::read(&metallib_path)
-		.await
-		.map_err(|_| error("Failed to read compiled Metal library", "The metallib output was not created"))?;
 
 	Ok(binary.into_boxed_slice())
 }

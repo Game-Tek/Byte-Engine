@@ -58,6 +58,20 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		}
 	}
 
+	/// Builds a reference from the record storage returned for it, keeping `reader` for its binary data.
+	///
+	/// [`StoredModel`](crate::StoredModel) implementations call this once they have solved the record's model.
+	pub fn from_stored(stored: crate::SerializableResource, resource: T, reader: MultiResourceReader) -> Self {
+		Reference {
+			id: stored.id,
+			hash: stored.hash,
+			size: stored.size,
+			resource,
+			reader: Some(reader),
+			streams: stored.streams,
+		}
+	}
+
 	pub fn from_model(model: ReferenceModel<T::Model>, resource: T, reader: MultiResourceReader) -> Self {
 		Reference {
 			id: model.id,

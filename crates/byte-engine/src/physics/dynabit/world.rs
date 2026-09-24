@@ -30,6 +30,8 @@ pub struct World {
 	body_listener: DefaultListener<CreateMessage<Body>>,
 	body_delete_listener: DefaultListener<DeleteMessage>,
 	handles_to_bodies: HashMap<Handle, StableVecHandle>,
+	/// Scratch buffer, indexed by body slot, recording how far into the current step each body has advanced.
+	body_times: Vec<MediaTime>,
 }
 
 impl World {
@@ -44,6 +46,7 @@ impl World {
 			body_listener,
 			body_delete_listener,
 			handles_to_bodies: HashMap::with_capacity_and_hasher(1024, Default::default()),
+			body_times: Vec::new(),
 		}
 	}
 
@@ -111,15 +114,25 @@ impl World {
 		contacts.extend(self.detect_collisions_from_pairs(&pairs, dt.as_seconds_f32()));
 		contacts.sort();
 
+		// Each body records how far into the step it has advanced. A contact then only advances its own two bodies,
+		// so the loop costs O(contacts + bodies) instead of advancing every body once per contact.
+		self.body_times.clear();
+		self.body_times.resize(self.bodies.slots_len(), MediaTime::ZERO);
 		let mut accumulated = MediaTime::ZERO;
 		for contact in &contacts {
+			// Contacts are sorted by time of impact, so contact times never go backwards.
 			let contact_time = MediaTime::from_seconds_f32(contact.toi.max(0.0));
-			let advance = contact_time.saturating_sub(accumulated);
-			for body in self.bodies.iter_mut() {
-				body.update(advance);
+			for index in [contact.a.object, contact.b.object] {
+				if let Some(body) = self.bodies.get_slot_mut(index) {
+					advance_body(body, &mut self.body_times[index], contact_time);
+				}
 			}
 			self.resolve_contact(contact);
-			accumulated += advance;
+			accumulated = contact_time;
+		}
+		// Catch up the bodies that no contact touched, or that were last touched earlier in the step.
+		for (index, body) in self.bodies.indexed_iter_mut() {
+			advance_body(body, &mut self.body_times[index], accumulated);
 		}
 		accumulated
 	}
@@ -144,6 +157,8 @@ impl World {
 					(self.bodies.get_slot(pair.b)?, pair.b),
 				))
 			})
+			// Two bodies without mass cannot exchange an impulse, so their contact would be discarded when resolved.
+			.filter(|((a, _), (b, _))| a.inv_mass + b.inv_mass != 0.0)
 			.filter_map(move |(a, b)| intersect(a, b, dt))
 	}
 
@@ -279,6 +294,16 @@ impl World {
 			.remove(&handle)
 			.and_then(|index| self.bodies.remove(index))
 	}
+}
+
+/// Advances a dynamic `body` from `body_time` to `time`, which is never earlier, within the current step.
+///
+/// Only dynamic bodies move, matching [`World::update_bodies`].
+fn advance_body(body: &mut PhysicsBody, body_time: &mut MediaTime, time: MediaTime) {
+	if body.body_type == BodyTypes::Dynamic && time > *body_time {
+		body.update(time - *body_time);
+	}
+	*body_time = time;
 }
 
 #[cfg(test)]
@@ -480,6 +505,27 @@ mod tests {
 
 		assert!(ground_first <= 1e-4);
 		assert!(sphere_first <= 1e-4);
+	}
+
+	#[test]
+	fn bodies_outside_contacts_reach_the_end_of_the_step() {
+		let mut world = make_world();
+		let velocity = Vector::new(0.0, 0.0, 2.0);
+		world.bodies = [
+			make_ground_body(),
+			make_dynamic_sphere_body(math::Point::new(0.0, 1.4, 0.0), Vector::zero(), 0.5),
+			make_dynamic_sphere_body(math::Point::new(20.0, 0.0, 0.0), velocity, 0.5),
+		]
+		.into_iter()
+		.collect();
+		let transforms = DefaultChannel::new();
+		let step = MediaTime::from_seconds_f32(0.5);
+
+		let remaining = step - world.update_collisions(step, &mut bumpalo::Bump::new());
+		world.update_bodies(remaining, &transforms);
+
+		let free_body = world.bodies.get_slot(2).expect("free test body");
+		assert!((free_body.position - math::Point::new(20.0, 0.0, 1.0)).length() <= 1e-4);
 	}
 
 	#[test]

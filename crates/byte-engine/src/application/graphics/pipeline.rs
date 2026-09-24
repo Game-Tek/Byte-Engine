@@ -448,10 +448,12 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 
 /// The `UiRenderSource` struct retains submitted UI independently of sink startup.
 ///
-/// Subscribe during setup, then give each sink its own revision for [`Self::latest`].
+/// It keeps the UI in drawable form rather than the submitted [`Render`], so the UI engine gets its render buffers
+/// back and rewrites them in place for the next change. Subscribe during setup, then give each sink its own revision
+/// for [`Self::latest`].
 struct UiRenderSource {
 	listener: DefaultListener<CreateMessage<Render>>,
-	render: Option<Render>,
+	adopted: AdoptedRender,
 	revision: u64,
 }
 
@@ -474,7 +476,9 @@ mod ui_source_tests {
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render().clone());
+			let render = engine.render();
+			factory.create(render.clone());
+			render.revision()
 		};
 		publish(100);
 		let mut sink = 0;
@@ -482,8 +486,33 @@ mod ui_source_tests {
 		// The same tree at the same size yields the same revision.
 		publish(100);
 		assert!(source.latest(&mut sink).is_none());
-		publish(120);
-		assert_eq!(source.latest(&mut sink).unwrap().root().size, Size::new(120, 120));
+		let resized = publish(120);
+		assert_eq!(source.latest(&mut sink).unwrap().revision(), Some(resized));
+	}
+
+	#[test]
+	fn adopted_ui_returns_render_buffers_to_the_engine() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let _root = ctx.element("root").container(|c| c).await;
+			loop {
+				ctx.render().await;
+			}
+		});
+		let allocator = bumpalo::Bump::new();
+		let mut publish = |size| {
+			engine.evaluate(Size::new(size, size), &allocator);
+			let render = engine.render();
+			factory.create(render.clone());
+			std::ptr::from_ref::<crate::ui::layout::engine::RenderContents>(render)
+		};
+		let first = publish(100);
+		let mut sink = 0;
+		assert!(source.latest(&mut sink).is_some());
+		// Once the source has adopted the render, nothing else holds it, so the next change is written in place.
+		assert_eq!(publish(120), first);
 	}
 
 	#[test]
@@ -500,19 +529,21 @@ mod ui_source_tests {
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render().clone());
+			let render = engine.render();
+			factory.create(render.clone());
+			render.revision()
 		};
 		// No sink exists when the first render is submitted.
-		publish(100);
+		let submitted = publish(100);
 		let mut first = 0;
-		assert_eq!(source.latest(&mut first).unwrap().root().size, Size::new(100, 100));
+		assert_eq!(source.latest(&mut first).unwrap().revision(), Some(submitted));
 		let mut late = 0;
-		assert_eq!(source.latest(&mut late).unwrap().root().size, Size::new(100, 100));
+		assert_eq!(source.latest(&mut late).unwrap().revision(), Some(submitted));
 		assert!(source.latest(&mut first).is_none());
 		publish(150);
-		publish(200);
-		assert_eq!(source.latest(&mut first).unwrap().root().size, Size::new(200, 200));
-		assert_eq!(source.latest(&mut late).unwrap().root().size, Size::new(200, 200));
+		let newest = publish(200);
+		assert_eq!(source.latest(&mut first).unwrap().revision(), Some(newest));
+		assert_eq!(source.latest(&mut late).unwrap().revision(), Some(newest));
 	}
 }
 
@@ -520,31 +551,28 @@ impl UiRenderSource {
 	fn new(listener: DefaultListener<CreateMessage<Render>>) -> Self {
 		Self {
 			listener,
-			render: None,
+			adopted: AdoptedRender::default(),
 			revision: 0,
 		}
 	}
 
-	/// Returns the newest render when this sink has not adopted it yet.
-	fn latest(&mut self, sink_revision: &mut u64) -> Option<&Render> {
-		drain_render_pass_messages(&mut self.listener, |message| {
-			let render = message.into_data();
-			// A republished unchanged render must not make every sink rebuild its draw list.
-			if self
-				.render
-				.as_ref()
-				.is_some_and(|current| current.revision() == render.revision())
-			{
-				return;
-			}
-			self.render = Some(render);
+	/// Returns the newest adopted UI when this sink has not taken it yet.
+	fn latest(&mut self, sink_revision: &mut u64) -> Option<&AdoptedRender> {
+		// Only the newest pending render is drawn, so older ones are dropped without converting them.
+		let mut newest = None;
+		drain_render_pass_messages(&mut self.listener, |message| newest = Some(message.into_data()));
+		// A republished unchanged render must not make every sink rebuild its draw list. The render drops at the end
+		// of this block, which hands the UI engine its buffers back.
+		if let Some(render) = newest
+			&& self.adopted.adopt(&render)
+		{
 			self.revision += 1;
-		});
+		}
 		if *sink_revision == self.revision {
 			return None;
 		}
 		*sink_revision = self.revision;
-		self.render.as_ref()
+		Some(&self.adopted)
 	}
 }
 

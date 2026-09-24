@@ -670,6 +670,7 @@ mod tests {
 				channel: 0,
 			}],
 			streams: Vec::new(),
+			materials: Vec::new(),
 			primitives: Vec::new(),
 		};
 		assert!(matches!(
@@ -686,6 +687,7 @@ mod tests {
 				channel: 0,
 			}],
 			streams: Vec::new(),
+			materials: Vec::new(),
 			primitives: Vec::new(),
 		};
 		assert!(matches!(

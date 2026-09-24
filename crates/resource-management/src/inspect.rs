@@ -11,7 +11,7 @@ use crate::{
 		image::Image,
 		lut::Lut,
 		material::{MaterialModel, Shader, VariantModel},
-		mesh::{MeshModel, PrimitiveModel},
+		mesh::{MeshModel, Primitive},
 		skeleton::SkeletonModel,
 	},
 };
@@ -80,7 +80,7 @@ fn inspect_resource_section(resource: &SerializableResource) -> Result<(Value, b
 		"Lut" => deserialize_resource::<Lut>(resource)?,
 		"Material" => deserialize_resource::<MaterialModel>(resource)?,
 		"Mesh" => deserialize_resource::<MeshModel>(resource)?,
-		"Primitive" => deserialize_resource::<PrimitiveModel>(resource)?,
+		"Primitive" => deserialize_resource::<Primitive>(resource)?,
 		"Shader" => deserialize_resource::<Shader>(resource)?,
 		"Skeleton" => deserialize_resource::<SkeletonModel>(resource)?,
 		"Variant" => deserialize_resource::<VariantModel>(resource)?,

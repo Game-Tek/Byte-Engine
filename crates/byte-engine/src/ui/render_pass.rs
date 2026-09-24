@@ -101,7 +101,6 @@ impl UiText {
 /// vertex or index buffers. A frame is one draw per damaged region, plus one more for each
 /// backdrop blur, because a blur reads the layer drawn below it.
 pub struct UiRenderPass {
-	surface_revision: Option<engine::RenderRevision>,
 	caches: UiGeometryCaches,
 	masks: UiMaskTable,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
@@ -143,11 +142,8 @@ pub struct UiRenderPass {
 	blur_resolve_descriptor_set: ghi::DescriptorSetHandle,
 	region_workgroup: Extent,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
-	data: UiDrawList,
-	render_revision: Option<engine::RenderRevision>,
-	/// Layout-unit damage of the adopted render and the revision it is relative to.
-	damage_base: Option<engine::RenderRevision>,
-	damage_rects: Vec<Geometry>,
+	/// This sink's copy of the adopted UI, so each sink draws it on its own schedule.
+	adopted: AdoptedRender,
 	/// Revision and extent whose pixels the layer currently holds.
 	layer_revision: Option<engine::RenderRevision>,
 	layer_extent: Option<Extent>,
@@ -161,6 +157,74 @@ pub struct UiRenderPass {
 }
 
 impl Entity for UiRenderPass {}
+
+/// The `AdoptedRender` struct keeps a published UI render in drawable form, so sinks can draw it without holding the
+/// render itself.
+///
+/// A [`engine::Render`] shares the UI engine's buffers, and the engine only rewrites them in place while no clone is
+/// alive. Convert each published render once with [`Self::adopt`] and drop it. Then pass this to every sink's
+/// [`UiRenderPass::update`], including sinks created after the render was published.
+#[derive(Default)]
+pub struct AdoptedRender {
+	data: UiDrawList,
+	revision: Option<engine::RenderRevision>,
+	surface_revision: Option<engine::RenderRevision>,
+	/// Live surface identities, copied only when the surface set changes.
+	surface_ids: Vec<u32>,
+	/// Layout-unit damage of the adopted render and the revision it is relative to.
+	damage_base: Option<engine::RenderRevision>,
+	damage_rects: Vec<Geometry>,
+}
+
+impl Clone for AdoptedRender {
+	fn clone(&self) -> Self {
+		Self {
+			data: self.data.clone(),
+			revision: self.revision,
+			surface_revision: self.surface_revision,
+			surface_ids: self.surface_ids.clone(),
+			damage_base: self.damage_base,
+			damage_rects: self.damage_rects.clone(),
+		}
+	}
+	/// Reuses every list and entry buffer, so a sink taking a same-shaped render allocates nothing.
+	fn clone_from(&mut self, source: &Self) {
+		self.data.clone_from(&source.data);
+		self.revision = source.revision;
+		self.surface_revision = source.surface_revision;
+		self.surface_ids.clone_from(&source.surface_ids);
+		self.damage_base = source.damage_base;
+		self.damage_rects.clone_from(&source.damage_rects);
+	}
+}
+
+impl AdoptedRender {
+	/// Converts `render` into drawable form and returns `true`, or returns `false` when its revision is already adopted.
+	///
+	/// Next, drop `render` and give this to [`UiRenderPass::update`].
+	pub fn adopt(&mut self, render: &engine::Render) -> bool {
+		if self.revision == Some(render.revision()) {
+			return false;
+		}
+		if self.surface_revision != Some(render.surface_revision) {
+			self.surface_ids.clone_from(&render.surface_ids);
+			self.surface_revision = Some(render.surface_revision);
+		}
+		update_from_render(render, &mut self.data);
+		self.revision = Some(render.revision());
+		self.damage_rects.clear();
+		self.damage_base = render.damage().map(|(base, rects)| {
+			self.damage_rects.extend_from_slice(rects);
+			base
+		});
+		true
+	}
+
+	/// Returns the revision of the adopted render, or `None` before the first one.
+	pub fn revision(&self) -> Option<engine::RenderRevision> {
+		self.revision
+	}
+}
 
 impl UiRenderPass {
 	/// Requests shared shader resources before sink-local images and descriptors are needed.
@@ -503,7 +567,6 @@ impl UiRenderPass {
 		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
 
 		Self {
-			surface_revision: None,
 			caches: UiGeometryCaches::default(),
 			masks: UiMaskTable::default(),
 			pipeline_manager,
@@ -541,10 +604,7 @@ impl UiRenderPass {
 			blur_resolve_descriptor_set,
 			region_workgroup,
 			bypass_pass,
-			data: UiDrawList::default(),
-			render_revision: None,
-			damage_base: None,
-			damage_rects: Vec::new(),
+			adopted: AdoptedRender::default(),
 			layer_revision: None,
 			layer_extent: None,
 			damage: Vec::new(),
@@ -561,7 +621,7 @@ impl UiRenderPass {
 	///
 	/// Returns `None` when every element holds an image the UI still shows.
 	fn ensure_image_texture(&mut self, frame: &mut ghi::implementation::Frame, source: usize) -> Option<u32> {
-		let image = &self.data.images[source];
+		let image = &self.adopted.data.images[source];
 		if !self.image_textures.contains_key(&image.image_id) {
 			let free = (UI_FIRST_IMAGE_TEXTURE_SLOT..UI_TEXTURE_SLOTS)
 				.find(|slot| self.image_textures.values().all(|texture| texture.slot != *slot));
@@ -590,7 +650,7 @@ impl UiRenderPass {
 				}
 			} else {
 				// Every element is taken. An image the UI no longer shows hands over its texture and its element.
-				let shown = &self.data.images;
+				let shown = &self.adopted.data.images;
 				let stale = self
 					.image_textures
 					.keys()
@@ -616,29 +676,22 @@ impl UiRenderPass {
 		Some(texture.slot)
 	}
 
-	/// Adopts submitted UI data; the caller can share one render across sinks.
+	/// Takes the adopted UI for drawing; every sink can take the same [`AdoptedRender`].
 	///
-	/// Renders carry a revision; adopting the same revision again leaves the
+	/// Adopted renders carry a revision; taking the same revision again leaves the
 	/// prepared frame valid, so unchanged UI never rebuilds geometry. Revisions
 	/// are unique only within one [`engine::Engine`], so feed a render pass from a single engine.
-	pub fn update(&mut self, render: &engine::Render) {
-		if self.render_revision == Some(render.revision()) {
+	pub fn update(&mut self, adopted: &AdoptedRender) {
+		if self.adopted.revision == adopted.revision {
 			return;
 		}
-		if self.surface_revision != Some(render.surface_revision) {
-			self.caches.retain_surfaces(&render.surface_ids);
+		if self.adopted.surface_revision != adopted.surface_revision {
+			self.caches.retain_surfaces(&adopted.surface_ids);
 			if let UiText::Atlas { atlas, .. } = &mut self.text {
-				atlas.retain_surfaces(&render.surface_ids);
+				atlas.retain_surfaces(&adopted.surface_ids);
 			}
-			self.surface_revision = Some(render.surface_revision);
 		}
-		update_from_render(render, &mut self.data);
-		self.render_revision = Some(render.revision());
-		self.damage_rects.clear();
-		self.damage_base = render.damage().map(|(base, rects)| {
-			self.damage_rects.extend_from_slice(rects);
-			base
-		});
+		self.adopted.clone_from(adopted);
 	}
 
 	/// Computes this frame's pixel damage: engine damage when the layer holds its base revision, else everything.
@@ -646,14 +699,20 @@ impl UiRenderPass {
 	/// Visible backdrop blurs are always damaged because they sample the scene rendered this frame.
 	fn frame_damage(&mut self, extent: Extent) {
 		self.damage.clear();
-		let relative =
-			self.layer_revision.is_some() && self.layer_revision == self.damage_base && self.layer_extent == Some(extent);
+		let relative = self.layer_revision.is_some()
+			&& self.layer_revision == self.adopted.damage_base
+			&& self.layer_extent == Some(extent);
 		if relative {
-			pixel_damage(&self.damage_rects, self.data.layout_size, extent, &mut self.damage);
-		} else if self.layer_revision != self.render_revision || self.layer_extent != Some(extent) {
+			pixel_damage(
+				&self.adopted.damage_rects,
+				self.adopted.data.layout_size,
+				extent,
+				&mut self.damage,
+			);
+		} else if self.layer_revision != self.adopted.revision || self.layer_extent != Some(extent) {
 			self.damage.push(UiPixelRegion::full(extent));
 		}
-		blur_footprints(&self.data, extent, &mut self.damage);
+		blur_footprints(&self.adopted.data, extent, &mut self.damage);
 		merge_damage(&mut self.damage, extent);
 	}
 
@@ -668,20 +727,20 @@ impl UiRenderPass {
 	) {
 		let damage = Some(self.damage.as_slice());
 		assert!(
-			self.data.texts.is_empty() || (extent.width() > 0 && extent.height() > 0),
+			self.adopted.data.texts.is_empty() || (extent.width() > 0 && extent.height() > 0),
 			"UI text geometry requires a non-zero viewport extent. The most likely cause is that text rendering ran before swapchain extent validation."
 		);
 		self.masks.clear();
 		// Each renderer packs its own glyph data; both produce primitives for the same shader.
 		let text = match &mut self.text {
-			_ if self.data.texts.is_empty() => None,
+			_ if self.adopted.data.texts.is_empty() => None,
 			UiText::Slug {
 				glyphs,
 				curve_buffer,
 				band_buffer,
 			} => {
 				let geometry = build_ui_slug_geometry_damaged(
-					&self.data,
+					&self.adopted.data,
 					extent,
 					&mut self.text_system,
 					glyphs,
@@ -694,7 +753,7 @@ impl UiRenderPass {
 			}
 			UiText::Atlas { atlas, image } => {
 				let geometry = build_ui_text_geometry_damaged(
-					&self.data,
+					&self.adopted.data,
 					extent,
 					&mut self.text_system,
 					atlas,
@@ -706,16 +765,22 @@ impl UiRenderPass {
 				Some(geometry)
 			}
 		};
-		let paths = if self.data.paths.is_empty() {
+		let paths = if self.adopted.data.paths.is_empty() {
 			None
 		} else {
-			let geometry =
-				build_ui_path_geometry_damaged(&self.data, extent, &mut self.paths, &mut self.masks, frame_allocator, damage);
+			let geometry = build_ui_path_geometry_damaged(
+				&self.adopted.data,
+				extent,
+				&mut self.paths,
+				&mut self.masks,
+				frame_allocator,
+				damage,
+			);
 			self.paths.upload(frame, self.path_curve_buffer, self.path_band_buffer);
 			Some(geometry)
 		};
 		let mut primitives = build_ui_primitives(
-			&self.data,
+			&self.adopted.data,
 			extent,
 			frame_allocator,
 			Some(&mut self.caches),
@@ -804,7 +869,7 @@ impl UiRenderPass {
 		steps.extend_from_slice(&primitives.steps);
 
 		self.prepared = Some(UiPreparedFrame {
-			revision: self.render_revision,
+			revision: self.adopted.revision,
 			extent,
 			glyph_generation: self.text.generation(),
 			path_generation: self.paths.generation(),
@@ -830,7 +895,7 @@ impl RenderPass for UiRenderPass {
 	fn needs_frame(&mut self) -> bool {
 		// The layer lags the adopted render until a recorded frame brings it up to date. An empty UI that never
 		// drew anything has nothing to show.
-		self.layer_revision != self.render_revision && !(self.data.is_empty() && self.layer_revision.is_none())
+		self.layer_revision != self.adopted.revision && !(self.adopted.data.is_empty() && self.layer_revision.is_none())
 	}
 
 	// Keep ordered UI step recording in one function so clears, blur barriers, and painter order cannot diverge.
@@ -841,7 +906,7 @@ impl RenderPass for UiRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		if self.data.is_empty() && self.layer_revision.is_none() {
+		if self.adopted.data.is_empty() && self.layer_revision.is_none() {
 			// Nothing was ever drawn into the layer, so the scene is the complete output.
 			return self.bypass_pass.prepare(frame, sink, frame_allocator);
 		}
@@ -857,7 +922,7 @@ impl RenderPass for UiRenderPass {
 		let path_generation = self.paths.generation();
 		if !self.damage.is_empty()
 			&& !self.prepared.as_ref().is_some_and(|prepared| {
-				prepared.matches(self.render_revision, extent, glyph_generation, path_generation, &self.damage)
+				prepared.matches(self.adopted.revision, extent, glyph_generation, path_generation, &self.damage)
 			}) {
 			self.rebuild_prepared_frame(frame, extent, frame_allocator);
 		}
@@ -896,7 +961,7 @@ impl RenderPass for UiRenderPass {
 		let steps: &'a [UiStep] = frame_allocator.alloc_slice_copy(prepared_steps);
 		let damage: &'a [UiPixelRegion] = frame_allocator.alloc_slice_copy(&self.damage);
 		// The recorded command brings the layer up to the adopted revision at this extent.
-		self.layer_revision = self.render_revision;
+		self.layer_revision = self.adopted.revision;
 		self.layer_extent = Some(extent);
 
 		Some(crate::rendering::render_pass::allocate_render_command(

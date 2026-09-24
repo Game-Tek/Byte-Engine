@@ -61,6 +61,7 @@ impl MeshProcessor {
 			skeleton_nodes,
 			skins,
 			blocks: stream_order.into_iter().map(PackedStreamBlock::new).collect(),
+			materials: Vec::new(),
 			primitives: Vec::new(),
 			scratch: MeshProcessingScratch::default(),
 		})
@@ -82,7 +83,9 @@ pub struct MeshProcessorSession {
 	skeleton_nodes: Option<usize>,
 	skins: Vec<SkinBinding>,
 	blocks: Vec<PackedStreamBlock>,
-	primitives: Vec<PrimitiveModel>,
+	/// Distinct material variants in first-use order; primitives store an index into this list.
+	materials: Vec<ReferenceModel<VariantModel>>,
+	primitives: Vec<Primitive>,
 	scratch: MeshProcessingScratch,
 }
 
@@ -203,8 +206,10 @@ impl MeshProcessorSession {
 			}
 		}));
 
-		self.primitives.push(PrimitiveModel {
-			material: primitive.material().clone(),
+		let material = self.material_index(primitive.material());
+
+		self.primitives.push(Primitive {
+			material,
 			transform_node: primitive.transform_node(),
 			skin: primitive.skin(),
 			streams: primitive_streams,
@@ -339,6 +344,24 @@ impl MeshProcessorSession {
 		}
 	}
 
+	/// Returns the index of `material` in the mesh's material list, adding it the first time a primitive uses it.
+	fn material_index(&mut self, material: &ReferenceModel<VariantModel>) -> u32 {
+		// Meshes use few distinct materials, so a linear search beats hashing each variant ID.
+		let index = match self
+			.materials
+			.iter()
+			.position(|existing| existing.id().as_ref() == material.id().as_ref())
+		{
+			Some(index) => index,
+			None => {
+				self.materials.push(material.clone());
+				self.materials.len() - 1
+			}
+		};
+
+		index as u32
+	}
+
 	/// Builds final stream metadata once before a caller moves each completed block to its selected sink.
 	fn finish_parts(mut self) -> (MeshModel, Vec<StreamDescription>, Vec<PackedStreamBlock>) {
 		let active_vertex_components = self
@@ -372,6 +395,7 @@ impl MeshProcessorSession {
 				skins: self.skins,
 				vertex_components: active_vertex_components,
 				streams,
+				materials: self.materials,
 				primitives: self.primitives,
 			},
 			stream_descriptions,
@@ -638,7 +662,8 @@ use super::{
 use crate::{
 	ReferenceModel, StreamDescription,
 	resources::{
-		mesh::{MeshModel, PrimitiveModel},
+		material::VariantModel,
+		mesh::{MeshModel, Primitive},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
 	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},

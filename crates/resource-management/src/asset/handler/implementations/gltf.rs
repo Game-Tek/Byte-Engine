@@ -43,6 +43,7 @@ mod tests {
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
 			image::Image,
+			material::{ValueModel, VariantModel},
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
@@ -212,6 +213,54 @@ mod tests {
 		}]);
 
 		document["meshes"][0]["primitives"][0]["material"] = 0.into();
+
+		package_fixture_glb(&document, binary)
+	}
+
+	/// Builds a triangle GLB drawn twice, each time with a material that samples a different image through the same graph.
+	fn generated_two_material_textured_glb() -> Vec<u8> {
+		let (mut document, mut binary) = generated_triangle_gltf();
+
+		let png = generated_rgba8_png();
+
+		let first = append_fixture_bytes(&mut binary, &png);
+
+		let second = append_fixture_bytes(&mut binary, &png);
+
+		document["buffers"][0]["byteLength"] = binary.len().into();
+
+		let views = document["bufferViews"]
+			.as_array_mut()
+			.expect("fixture buffer views should be an array");
+
+		let first_view = views.len();
+
+		views.push(serde_json::json!({ "buffer": 0, "byteOffset": first.0, "byteLength": first.1 }));
+
+		views.push(serde_json::json!({ "buffer": 0, "byteOffset": second.0, "byteLength": second.1 }));
+
+		document["images"] = serde_json::json!([
+			{ "name": "First", "bufferView": first_view, "mimeType": "image/png" },
+			{ "name": "Second", "bufferView": first_view + 1, "mimeType": "image/png" }
+		]);
+
+		document["textures"] = serde_json::json!([{ "source": 0 }, { "source": 1 }]);
+
+		document["materials"] = serde_json::json!([
+			{ "name": "First Material", "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } } },
+			{ "name": "Second Material", "pbrMetallicRoughness": { "baseColorTexture": { "index": 1 } } }
+		]);
+
+		let mut second_primitive = document["meshes"][0]["primitives"][0].clone();
+
+		second_primitive["material"] = 1.into();
+
+		document["meshes"][0]["primitives"][0]["material"] = 0.into();
+
+		document["meshes"][0]["primitives"]
+			.as_array_mut()
+			.expect("fixture primitives should be an array")
+			.push(second_primitive);
 
 		package_fixture_glb(&document, binary)
 	}
@@ -1160,9 +1209,136 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 0]);
+		assert_eq!(image.mip_count, 1, "no mip generator is installed");
+	}
+
+	#[r#async::test]
+	async fn materials_with_matching_graphs_share_one_shader_and_bind_their_own_images() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file("two_materials.glb", &generated_two_material_textured_glb());
+
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake("two_materials.glb")
+			.await
+			.expect("textured GLB with two materials should bake");
+
+		let resources = resource_storage_backend.get_resources();
+
+		let of_class = |class: &str| {
+			resources
+				.iter()
+				.filter(|resource| resource.class == class)
+				.collect::<Vec<_>>()
+		};
+
 		assert_eq!(
-			image.mip_count, 1,
-			"explicit image fragments are not material-generated textures"
+			of_class("Shader").len(),
+			1,
+			"materials with the same graph should share one shader"
+		);
+
+		let mut image_ids = of_class("Image")
+			.iter()
+			.map(|resource| resource.id.clone())
+			.collect::<Vec<_>>();
+
+		image_ids.sort();
+
+		assert_eq!(
+			image_ids,
+			["two_materials.glb#images/0_First", "two_materials.glb#images/1_Second"]
+		);
+
+		let mut bound_images = of_class("Variant")
+			.iter()
+			.map(|resource| {
+				let variant: VariantModel = crate::from_slice(&resource.resource).expect("variant should deserialize");
+
+				assert_eq!(variant.variables.len(), 1);
+				assert_eq!(variant.variables[0].name, "material_texture_0");
+
+				let ValueModel::Image(image) = &variant.variables[0].value else {
+					panic!("base color texture should become an image variable");
+				};
+
+				image.id().as_ref().to_string()
+			})
+			.collect::<Vec<_>>();
+
+		bound_images.sort();
+
+		assert_eq!(bound_images, image_ids, "each material should bind its own image");
+
+		let mesh = of_class("Mesh").into_iter().next().expect("the mesh should be stored");
+		let mesh: MeshModel = crate::from_slice(&mesh.resource).expect("mesh should deserialize");
+
+		assert_eq!(mesh.materials.len(), 2, "each material should be stored once on the mesh");
+		assert_eq!(
+			mesh.primitives
+				.iter()
+				.map(|primitive| mesh.materials[primitive.material as usize].id().as_ref().to_string())
+				.collect::<Vec<_>>(),
+			[
+				"two_materials.glb#materials/First_Material.variant",
+				"two_materials.glb#materials/Second_Material.variant"
+			]
+		);
+	}
+
+	#[r#async::test]
+	async fn primitives_that_share_a_material_share_one_mesh_material_entry() {
+		let (mut document, binary) = generated_triangle_gltf();
+
+		document["materials"] = serde_json::json!([{ "name": "Shared" }]);
+
+		document["meshes"][0]["primitives"][0]["material"] = 0.into();
+
+		let primitive = document["meshes"][0]["primitives"][0].clone();
+
+		document["meshes"][0]["primitives"]
+			.as_array_mut()
+			.expect("fixture primitives should be an array")
+			.push(primitive);
+
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file("shared.glb", &package_fixture_glb(&document, binary));
+
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake("shared.glb")
+			.await
+			.expect("GLB with a shared material should bake");
+
+		let mesh = resource_storage_backend
+			.get_resource(ResourceId::new("shared.glb"))
+			.expect("the mesh should be stored");
+		let mesh: MeshModel = crate::from_slice(&mesh.resource).expect("mesh should deserialize");
+
+		assert_eq!(mesh.materials.len(), 1);
+		assert_eq!(
+			mesh.primitives.iter().map(|primitive| primitive.material).collect::<Vec<_>>(),
+			[0, 0]
 		);
 	}
 
@@ -1191,10 +1367,7 @@ mod tests {
 
 		assert_eq!(resource.class, "Image");
 		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(
-			image.mip_count, 1,
-			"explicit image fragments are not material-generated textures"
-		);
+		assert_eq!(image.mip_count, 1, "no mip generator is installed");
 	}
 }
 
@@ -1210,18 +1383,15 @@ use super::{
 	ContainerDefaultResource, ResourceId, container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, store_model_owned,
+	sanitize_material_name, store_model,
 };
-use crate::asset::handler::implementations::bema::{ProgramGenerator, compile_shader_program};
+use crate::asset::handler::implementations::bema::{GeneratedMaterial, ProgramGenerator, store_generated_materials};
 pub use crate::processors::processor::implementations::mesh::TriangleFrontFaceWinding;
 use crate::{
 	ProcessedAsset, ReferenceModel,
 	asset::{self},
 	r#async::spawn_cpu_task,
-	pbr::{
-		BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, BrdfValue, brdf_material_from_gltf,
-		generate_textured_brdf_program, material_texture_variable_name,
-	},
+	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
 	processors::{
 		processor::implementations::image::{
 			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
@@ -1233,11 +1403,11 @@ use crate::{
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
-		material::{MaterialCoverage, MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		material::VariantModel,
 		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},
 	},
-	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
+	types::{Formats, VertexComponent, VertexSemantics},
 };

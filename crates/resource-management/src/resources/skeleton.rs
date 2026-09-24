@@ -314,21 +314,23 @@ impl<'de> Solver<'de, Skeleton> for SkeletonModel {
 	}
 }
 
-impl<'de> Solver<'de, Reference<Skeleton>> for ReferenceModel<SkeletonModel> {
+impl crate::StoredModel for SkeletonModel {
+	type Resource = Skeleton;
+
 	/// Resolves a stored hierarchy for animation graphs after validating its serialized node model.
-	fn solve(
-		self,
+	fn solve_stored<'de>(
+		stored: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Skeleton>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let model: SkeletonModel = crate::from_slice(stored.resource()).map_err(|error| {
 				SolveErrors::DeserializationFailed(format!(
 					"Skeleton resource could not be deserialized. The most likely cause is incompatible or corrupted skeleton data: {error}."
 				))
 			})?;
 			let skeleton = model.solve(storage_backend).await?;
-			Ok(Reference::from_model(self, skeleton, reader))
+			Ok(Reference::from_stored(stored, skeleton, reader))
 		})
 	}
 }

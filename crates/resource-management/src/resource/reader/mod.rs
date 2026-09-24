@@ -91,26 +91,29 @@ impl MappedFileBacking {
 	}
 
 	/// Creates a mapped-file backing for one optionally leased range of a shared payload file.
+	///
+	/// Only the pages covering the range are mapped, so reading one resource from a large packed file does not map
+	/// the whole file.
 	pub(crate) fn new_range(
 		file: impl memmap2::MmapAsRawDesc,
+		file_size: u64,
 		offset: u64,
 		size: u64,
 		lease: Option<Arc<()>>,
 	) -> Result<Self, ()> {
-		// Map once and keep the logical range separate so consumers can borrow
-		// exactly one payload without copying it out of the shared file.
-		// SAFETY: The mapping owns its OS mapping independently of the borrowed
-		// descriptor and exposes it only as immutable bytes for the backing lifetime.
-		let map = unsafe { MmapOptions::new().map(file) }.map_err(|_| ())?;
-		let start = usize::try_from(offset).map_err(|_| ())?;
-		let size = usize::try_from(size).map_err(|_| ())?;
-		let end = start.checked_add(size).ok_or(())?;
-		if end > map.len() {
+		let end = offset.checked_add(size).ok_or(())?;
+		// Mapping past the end of the file would fault on access instead of failing here.
+		if end > file_size {
 			return Err(());
 		}
+		let size = usize::try_from(size).map_err(|_| ())?;
+		// SAFETY: The mapping owns its OS mapping independently of the borrowed
+		// descriptor and exposes it only as immutable bytes for the backing lifetime.
+		// The mapped window was checked above to lie within the file. memmap2 aligns the offset to a page itself.
+		let map = unsafe { MmapOptions::new().offset(offset).len(size).map(file) }.map_err(|_| ())?;
 		Ok(Self {
 			map,
-			range: start..end,
+			range: 0..size,
 			_lease: lease,
 		})
 	}

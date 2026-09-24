@@ -99,7 +99,7 @@ beld --destination "$PWD/resources" list
 beld --destination "$PWD/resources" inspect scene.glb
 ```
 
-Run `beld bake` again after changing a source asset or an engine asset processor. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
+Run `beld bake` again after changing a source asset. BELD rebakes only the assets whose source files changed. After updating an engine asset processor, run `beld bake --force` instead, because processor changes don't change source file versions. Baking requested IDs updates their generated output but does not remove unrelated old resources. Use `beld clear` only when you intentionally want to discard the entire resource directory.
 
 ## Use resources in development and release
 

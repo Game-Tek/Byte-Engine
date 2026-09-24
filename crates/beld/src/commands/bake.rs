@@ -10,6 +10,9 @@ use crate::{commands::shared::offload_file_operation, utils::get_asset_manager};
 
 /// Bakes selected source assets, or every discoverable asset when `ids` is empty.
 ///
+/// Assets whose stored resource is current with its source files are skipped unless `force` is set. Force a bake
+/// after changing an asset processor or `texture_compression`, because source versions don't record those.
+///
 /// Call [`crate::list`] next to inspect the resource IDs written to the destination.
 pub async fn bake(
 	source_path: String,
@@ -18,6 +21,7 @@ pub async fn bake(
 	storage_mode: Option<ResourceStorageMode>,
 	texture_compression: Option<ResourceGpuCompressionPolicy>,
 	memory_budget: NonZeroUsize,
+	force: bool,
 ) -> Result<(), i32> {
 	let source_path = std::path::PathBuf::from(source_path);
 	let asset_storage_backend = FileStorageBackend::open(source_path.clone()).await.map_err(|error| {
@@ -48,6 +52,11 @@ pub async fn bake(
 
 	asset_manager.set_bake_memory_budget(memory_budget);
 
+	// A forced run treats everything stored before it started as stale, so shared dependencies rebuild once.
+	if force {
+		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
+	}
+
 	log::info!(
 		"Using a {} MiB soft memory budget for concurrent asset bakes.",
 		memory_budget.get() / (1024 * 1024)
@@ -75,9 +84,10 @@ pub async fn bake(
 	let tasks = ids.into_iter().map(async |id| {
 		log::info!("Baking resource '{}'", id);
 
-		match asset_manager.bake(&id).await {
+		match asset_manager.bake_if_stale(&id).await {
 			Ok(_) => {
-				log::info!("Baked resource '{}'", id);
+				// A current resource is reused rather than baked, so report the outcome both paths share.
+				log::info!("Resource '{}' is up to date", id);
 
 				true
 			}

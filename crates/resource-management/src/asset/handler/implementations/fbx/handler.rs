@@ -163,9 +163,45 @@ impl FBXAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Selects the offline backend used only for image resources generated from FBX materials.
+	/// Selects the offline backend that generates mips for the texture resources an FBX contains.
 	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
 		self.material_mip_generator = Some(generator);
+	}
+
+	/// Bakes one texture of an FBX as its own image resource.
+	///
+	/// Materials request these as dependencies, so the scene is parsed without geometry or animation data.
+	async fn store_texture(
+		&self,
+		context: BakeContext<'_>,
+		url: ResourceId<'_>,
+		source_id: ResourceId<'_>,
+		data: &[u8],
+		texture_index: usize,
+	) -> Result<(), LoadErrors> {
+		let scene = load_fbx_scene_textures(data, source_id.as_ref()).map_err(|error| {
+			context.error(format_args!("Failed to import FBX asset '{}': {error}", url.as_ref()));
+
+			LoadErrors::FailedToProcess
+		})?;
+
+		let texture = scene.textures.as_ref().get(texture_index).ok_or_else(|| {
+			context.error(format_args!(
+				"FBX texture '{}' does not exist. The most likely cause is that the FBX changed after the material referencing it was baked.",
+				url.as_ref()
+			));
+
+			LoadErrors::FailedToProcess
+		})?;
+
+		load_and_store_fbx_texture(
+			context,
+			source_id,
+			url.as_ref(),
+			texture,
+			self.material_mip_generator.as_deref(),
+		)
+		.await
 	}
 }
 
@@ -193,6 +229,13 @@ impl AssetHandler for FBXAssetHandler {
 
 		if !self.can_handle(&source_type) {
 			return Err(LoadErrors::UnsupportedType);
+		}
+
+		if let Some(texture_index) = url
+			.get_fragment()
+			.and_then(|fragment| fbx_image_fragment_texture_index(fragment.as_ref()))
+		{
+			return self.store_texture(context, url, source_id, &data, texture_index).await;
 		}
 
 		let scene = load_fbx_scene(&data, base.as_ref()).map_err(|error| {
@@ -282,15 +325,7 @@ impl AssetHandler for FBXAssetHandler {
 			(None, Vec::new())
 		};
 
-		let materials = resolve_fbx_materials(
-			context,
-			spec.as_ref(),
-			source_id,
-			&scene,
-			self.generator.as_deref(),
-			self.material_mip_generator.as_deref(),
-		)
-		.await?;
+		let materials = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, self.generator.as_deref()).await?;
 
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
 

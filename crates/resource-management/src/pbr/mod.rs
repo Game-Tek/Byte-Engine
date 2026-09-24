@@ -6,8 +6,9 @@ pub mod shader;
 pub use gltf::brdf_material_from_gltf;
 pub use shader::{BrdfShaderGenerationError, generate_solid_brdf_program, generate_textured_brdf_program};
 
-pub(crate) fn material_texture_variable_name(image_index: u32) -> String {
-	format!("material_texture_{image_index}")
+/// Names the generated shader variable that holds one material texture slot.
+pub(crate) fn material_texture_variable_name(slot: u32) -> String {
+	format!("material_texture_{slot}")
 }
 
 /// The `BrdfMaterialDescription` struct stores a backend-neutral material graph for surface BRDFs.
@@ -21,6 +22,18 @@ pub struct BrdfMaterialDescription {
 }
 
 impl BrdfMaterialDescription {
+	/// Rewrites every texture node's image index into the material slot that binds it.
+	///
+	/// Importers call this before shader generation so materials that bind different images through the same graph
+	/// produce the same program. `slot_for` receives the imported image index and returns its slot.
+	pub(crate) fn assign_texture_slots(&mut self, mut slot_for: impl FnMut(u32) -> u32) {
+		for node in &mut self.nodes {
+			if let BrdfNode::Texture(texture) = node {
+				texture.image_index = slot_for(texture.image_index);
+			}
+		}
+	}
+
 	/// Validates that all node references point to existing nodes and that the graph root is a surface node.
 	pub fn validate(&self) -> Result<(), BrdfMaterialValidationError> {
 		self.ensure_node_exists(self.surface)?;

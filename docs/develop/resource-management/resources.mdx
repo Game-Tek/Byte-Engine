@@ -22,8 +22,10 @@ The binary payload contains the actual bytes consumed by a renderer, audio syste
 `ResourceManager::request<T>().await` returns a typed `Reference<T>`.
 The reference contains the typed resource metadata and a reader for the payload.
 
-For example, a material reference resolves shader references and parameter resources.
-A mesh reference resolves primitive materials and exposes stream descriptions for packed vertex and index data.
+`request` reads each resource from storage once and passes that record to the model's `StoredModel` implementation, which builds the reference and resolves its dependencies.
+For example, a material reference resolves its shader and parameter resources concurrently.
+A mesh reference exposes stream descriptions for packed vertex and index data, and lists its distinct material variants in `Mesh::materials` without resolving them.
+Each primitive names its variant by index. Request a variant by its ID when your system needs it, so a mesh load does not read every material's shaders and textures once per primitive.
 
 ## Resource storage backends
 

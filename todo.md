@@ -17,6 +17,7 @@
 - Make Linux audio pause return an error when the device does not support ALSA pause. `crates/ahi/src/os/linux.rs` uses `pcm.pause(true).unwrap()`, and `play` panics for a channel count other than 1 or 2. On Windows, reject a closest match the renderer cannot play, request 32-bit streams as float rather than integer PCM, and treat `CoInitializeEx` returning `S_FALSE` as already initialized. `play` panics outside 16- or 32-bit mono and stereo, and a 32-bit stream is requested as `KSDATAFORMAT_SUBTYPE_PCM` while samples are written as `f32`.
 - Migrate the Vulkan and DX12 GHI backends from legacy descriptor templates to retained flat `ResourceSlot` writes and pipeline-derived native layouts.
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
+- Give every BESL specialization member its own constant index on every backend. MSL numbers each specialization's members from 0 (`crates/resource-management/src/shader/besl/backends/msl/emit.rs`), so two specializations both use `function_constant(0)`, while the renderer passes the variant variable index (`crates/byte-engine/src/rendering/pipeline_compilation.rs`). HLSL emits each member as `static const … = 1.0f` (`crates/resource-management/src/shader/besl/backends/hlsl/generate.rs`), so DX12 ignores the values.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
 - Give UI element paths an identity that cannot repeat between live scopes. `RetainedTree::begin_frame` clears `path_counts`, and `scope_path` assigns the ordinal from that per-frame counter (`crates/byte-engine/src/ui/layout/retained_tree.rs`). Two mounts with the same name under one parent started on different frames share a path, share element ids, and removing one removes the other's elements. Task ownership already uses `ScopeId` and is unaffected.
 
@@ -75,8 +76,8 @@
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
 - Flatten glTF traversal into one caller-owned primitive record buffer rather than separate tree and primitive collections.
 - Bake each unique glTF material once, resolve primitive material references concurrently, and reuse generated resources.
+- Move generated glTF and FBX material factors (base color, metallic, roughness, emission, normal scale, occlusion strength) out of the BESL source into per-material GPU data, so materials that differ only in factors share one compiled shader. Generated shaders are already shared per graph (`store_generated_brdf_shaders`), but factors are still written into the program as literals. Specialization constants can't carry them yet (see the P0 specialization entry); a factor array in the visibility `Material` struct, filled from variant variables, would.
 - Extract independent glTF primitive attributes concurrently before constructing the mesh source.
-- Store glTF texture dependencies concurrently while preserving variable order.
 - Run independent BEMA shader loading/compilation and material/variant variable resolution concurrently while preserving order.
 - Compress generated image mip levels concurrently after mip-chain generation.
 - Drain BELD's buffered task stream directly instead of collecting unit results.

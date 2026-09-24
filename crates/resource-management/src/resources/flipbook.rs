@@ -37,26 +37,25 @@ pub struct FlipbookModel {
 }
 super::impl_resource_model!(Flipbook, FlipbookModel, "Flipbook");
 
-impl<'de> Solver<'de, Reference<Flipbook>> for ReferenceModel<FlipbookModel> {
+impl crate::StoredModel for FlipbookModel {
+	type Resource = Flipbook;
+
 	/// Restores the flipbook and solves every image it plays.
-	fn solve(
-		self,
+	fn solve_stored<'de>(
+		stored: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Flipbook>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let FlipbookModel {
 				frames_per_second,
 				images: models,
 			} = crate::from_slice(&stored.resource).map_err(|error| SolveErrors::DeserializationFailed(error.to_string()))?;
 
-			let mut images = Vec::with_capacity(models.len());
-			for image in models {
-				images.push(image.solve(storage_backend).await?);
-			}
+			let images = super::solve_all(models, storage_backend).await?;
 
-			Ok(Reference::from_model(
-				self,
+			Ok(Reference::from_stored(
+				stored,
 				Flipbook {
 					frames_per_second,
 					images,

@@ -70,7 +70,7 @@ impl GLTFAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Selects the offline backend used only for image resources generated from glTF materials.
+	/// Selects the offline backend that generates mips for the image resources a glTF contains.
 	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
 		self.material_mip_generator = Some(generator);
 	}
@@ -105,26 +105,12 @@ impl GLTFAssetHandler {
 		url: ResourceId<'_>,
 		spec: Option<&serde_json::Value>,
 		gltf: &gltf::Gltf,
-		buffers: &[gltf::buffer::Data],
 		primitives: &[gltf::Primitive<'a>],
 	) -> Result<(Vec<ReferenceModel<VariantModel>>, Vec<usize>), LoadErrors> {
 		let (unique_materials, material_indices) = unique_gltf_materials(primitives);
-		let mut resolved_materials = Vec::with_capacity(unique_materials.len());
-		for material in unique_materials {
-			resolved_materials.push(
-				material_for_gltf_primitive(
-					context,
-					spec,
-					url,
-					gltf,
-					buffers,
-					material,
-					self.generator.as_deref(),
-					self.material_mip_generator.as_deref(),
-				)
-				.await?,
-			);
-		}
+
+		let resolved_materials =
+			resolve_gltf_materials(context, spec, url, gltf, &unique_materials, self.generator.as_deref()).await?;
 
 		Ok((resolved_materials, material_indices))
 	}
@@ -281,7 +267,7 @@ impl GLTFAssetHandler {
 		} else {
 			None
 		};
-		let (materials, material_indices) = self.resolve_materials(context, url, spec, gltf, buffers, &primitives).await?;
+		let (materials, material_indices) = self.resolve_materials(context, url, spec, gltf, &primitives).await?;
 
 		self.store_mesh(
 			context,
@@ -309,10 +295,6 @@ impl AssetHandler for GLTFAssetHandler {
 		{
 			return Err(LoadErrors::UnsupportedType);
 		}
-
-		let asset_storage_backend = context.asset_storage_backend();
-
-		let allocator = context.allocator();
 
 		// Resolve the container base so generated skeleton and animation fragments never become part of the source filename.
 		let base = url.get_base();
@@ -349,6 +331,22 @@ impl AssetHandler for GLTFAssetHandler {
 			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
 		}
 
+		if let Some(fragment) = url.get_fragment()
+			&& !is_gltf_animation_fragment(fragment.as_ref())
+		{
+			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
+
+			// Materials decide how an image is sampled; a standalone image falls back to its file name.
+			let semantic =
+				gltf_image_semantic(&gltf, image.index() as u32).unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
+
+			let image = load_gltf_fragment_image(context, source_id, image, binary_blob.as_deref()).await?;
+
+			store_gltf_image(context, url, image, semantic, self.material_mip_generator.as_deref()).await?;
+
+			return Ok(());
+		}
+
 		let default_resource = if url.get_fragment().is_none() {
 			Some(select_unfragmented_gltf_resource(&gltf, spec.as_ref()).map_err(|error| {
 				log::error!(
@@ -361,13 +359,10 @@ impl AssetHandler for GLTFAssetHandler {
 			None
 		};
 
-		let animation_fragment = url
-			.get_fragment()
-			.filter(|fragment| is_gltf_animation_fragment(fragment.as_ref()))
-			.map(|fragment| fragment.as_ref().to_string())
-			.or_else(|| {
-				(default_resource == Some(ContainerDefaultResource::Animation)).then(|| DEFAULT_ANIMATION_FRAGMENT.to_string())
-			});
+		// Skeleton and image fragments returned above, so any fragment left names an animation.
+		let animation_fragment = url.get_fragment().map(|fragment| fragment.as_ref().to_string()).or_else(|| {
+			(default_resource == Some(ContainerDefaultResource::Animation)).then(|| DEFAULT_ANIMATION_FRAGMENT.to_string())
+		});
 
 		let required_buffers = animation_fragment
 			.as_deref()
@@ -380,29 +375,17 @@ impl AssetHandler for GLTFAssetHandler {
 			})?;
 
 		let buffers = load_gltf_buffers(
-			asset_storage_backend,
+			context.asset_storage_backend(),
 			source_id,
 			&gltf,
 			binary_blob,
 			required_buffers.as_deref(),
-			allocator,
+			context.allocator(),
 		)
 		.await?;
 
 		if let Some(fragment) = url.get_fragment() {
-			if is_gltf_animation_fragment(fragment.as_ref()) {
-				return Self::store_animation(context, url, source_id, &gltf, &buffers, fragment.as_ref()).await;
-			}
-
-			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
-
-			let image = load_gltf_image_data(asset_storage_backend, url, image, &buffers, allocator).await?;
-
-			let semantic = guess_semantic_from_name(url.get_base());
-
-			store_gltf_image(context, url, image, semantic, None).await?;
-
-			return Ok(());
+			return Self::store_animation(context, url, source_id, &gltf, &buffers, fragment.as_ref()).await;
 		}
 
 		if default_resource == Some(ContainerDefaultResource::Animation) {

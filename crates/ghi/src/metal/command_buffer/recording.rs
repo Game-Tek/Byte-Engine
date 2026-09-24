@@ -247,7 +247,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Applies the dependencies one command needs on the active encoder without copying its descriptor-use table.
 	pub(super) fn consume_resources_with_descriptors(
 		&mut self,
-		descriptor_uses: &[synchronization::MetalResourceUse],
+		descriptor_uses: &mut synchronization::DescriptorUses,
 		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
 	) {
 		let scope = self.active_encoder_scope.expect(
@@ -255,7 +255,7 @@ impl<'a> CommandBufferRecording<'a> {
 		);
 		let barrier = self
 			.resource_tracker
-			.consume_preconsolidated(scope, descriptor_uses, additional_uses);
+			.consume_descriptors(scope, descriptor_uses, additional_uses);
 		// Starting either encoder ends the other, so at most one is active.
 		match (&self.active_compute_encoder, &self.active_render_encoder) {
 			(Some(encoder), _) => barrier.encode(&**encoder),
@@ -268,7 +268,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Applies only the queue and encoder dependencies required by the resources one command consumes.
 	pub(super) fn consume_resources(&mut self, uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
-		self.consume_resources_with_descriptors(&[], uses);
+		self.consume_resources_with_descriptors(&mut synchronization::DescriptorUses::default(), uses);
 	}
 
 	/// Publishes this finalized recording's resource history to its queue.

@@ -36,7 +36,7 @@ mod tests {
 		};
 		let model = ReferenceModel::new("sound.audio", 7, 5, &audio, None);
 		let storage = TestStorageBackend::new();
-		storage
+		let stored = storage
 			.store(ProcessedAsset::new(ResourceId::new("sound.audio"), audio), &[1, 2, 3, 4, 5])
 			.await
 			.unwrap();
@@ -44,7 +44,8 @@ mod tests {
 		let reference = model.solve(&storage).await.expect("stored audio metadata");
 
 		assert_eq!(reference.id(), "sound.audio");
-		assert_eq!(reference.hash(), 7);
+		// The hash describes the stored payload, so it comes from the record rather than the requesting model.
+		assert_eq!(reference.hash(), stored.hash());
 		assert_eq!(reference.size, 5);
 		assert_eq!(reference.resource.bit_depth, BitDepths::TwentyFour);
 		assert_eq!(reference.resource.channel_count, 2);

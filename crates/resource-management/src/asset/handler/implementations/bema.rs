@@ -365,6 +365,267 @@ pub(crate) async fn compile_shader_program(
 	Ok((shader, payload))
 }
 
+/// Bounds concurrent generated-material shader compiles so platform compiler processes do not oversubscribe the machine.
+const GENERATED_SHADER_COMPILE_CONCURRENCY: usize = 4;
+
+/// Bounds concurrent texture bakes so decoded images and compression buffers stay within a predictable memory footprint.
+const TEXTURE_BAKE_CONCURRENCY: usize = 8;
+
+/// The `GeneratedMaterial` struct describes one importer material whose shader, textures, and variant are generated.
+pub(crate) struct GeneratedMaterial {
+	/// The material and variant are stored as `<base_id>.material` and `<base_id>.variant`.
+	pub(crate) base_id: String,
+	/// The material graph. Each texture node's `image_index` indexes the container's image IDs.
+	pub(crate) brdf: BrdfMaterialDescription,
+}
+
+/// Generates and stores the variants of a container's materials, in the order given.
+///
+/// glTF and FBX importers describe each material as a BRDF graph and call this once per container. Every image the
+/// graphs sample bakes once, as its own dependency, while materials whose graphs match share one compiled shader.
+/// `image_ids` holds the resource ID of each container image, indexed by the graphs' texture nodes.
+///
+/// Next, reference the returned variants from the container's mesh primitives.
+pub(crate) async fn store_generated_materials(
+	context: BakeContext<'_>,
+	generator: Option<&dyn ProgramGenerator>,
+	container_id: ResourceId<'_>,
+	image_ids: &[String],
+	materials: Vec<GeneratedMaterial>,
+) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+	if materials.is_empty() {
+		return Ok(Vec::new());
+	}
+
+	let generator = generator.ok_or_else(|| {
+		context.error(
+			"Material generation is unavailable. The most likely cause is that the asset handler has no shader generator.",
+		);
+
+		LoadErrors::FailedToProcess
+	})?;
+
+	// Slots follow each graph's first use of an image, so graphs that differ only in their images become identical.
+	let mut materials = materials
+		.into_iter()
+		.map(|mut material| {
+			let slots = assign_first_use_texture_slots(&mut material.brdf);
+			(material, slots)
+		})
+		.collect::<Vec<_>>();
+
+	let mut baked_images = Vec::new();
+
+	for &image_index in materials.iter().flat_map(|(_, slots)| slots) {
+		if !baked_images.contains(&image_index) {
+			baked_images.push(image_index);
+		}
+	}
+
+	let baked_image_ids = baked_images
+		.iter()
+		.map(|&image_index| {
+			image_ids
+				.get(image_index as usize)
+				.cloned()
+				.ok_or(LoadErrors::FailedToProcess)
+		})
+		.collect::<Result<Vec<_>, _>>()?;
+
+	let brdfs = materials.iter().map(|(material, _)| &material.brdf).collect::<Vec<_>>();
+
+	// Texture bakes and shader compiles do not depend on each other, so they run together.
+	let (images, shaders) = std::future::join!(
+		context.bake_dependencies::<Image>(&baked_image_ids, TEXTURE_BAKE_CONCURRENCY),
+		store_generated_brdf_shaders(context, generator, container_id, &brdfs),
+	)
+	.await;
+
+	let (images, shaders) = (images?, shaders?);
+
+	let mut variants = Vec::with_capacity(materials.len());
+
+	for ((material, slots), shader) in materials.into_iter().zip(shaders) {
+		let variables = slots
+			.iter()
+			.enumerate()
+			.map(|(slot, image_index)| {
+				let image = baked_images
+					.iter()
+					.position(|baked| baked == image_index)
+					.map(|position| images[position].clone())
+					.expect("every sampled image was baked");
+
+				VariantVariableModel {
+					name: material_texture_variable_name(slot as u32),
+					r#type: "Texture2D".to_string(),
+					value: ValueModel::Image(image),
+				}
+			})
+			.collect();
+
+		variants.push(store_generated_variant(context, material, shader, variables).await?);
+	}
+
+	Ok(variants)
+}
+
+/// Renumbers a graph's texture nodes into slots in first-use order and returns the image index of each slot.
+fn assign_first_use_texture_slots(brdf: &mut BrdfMaterialDescription) -> Vec<u32> {
+	let mut slots = Vec::new();
+
+	brdf.assign_texture_slots(|image_index| {
+		let slot = slots.iter().position(|&used| used == image_index).unwrap_or_else(|| {
+			slots.push(image_index);
+			slots.len() - 1
+		});
+
+		slot as u32
+	});
+
+	slots
+}
+
+/// Stores one generated material and its variant.
+async fn store_generated_variant(
+	context: BakeContext<'_>,
+	material: GeneratedMaterial,
+	shader: ReferenceModel<Shader>,
+	variables: Vec<VariantVariableModel>,
+) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
+	let GeneratedMaterial { base_id, brdf } = material;
+
+	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
+
+	let material = MaterialModel {
+		double_sided: brdf.double_sided,
+		alpha_mode: alpha_mode.clone(),
+		coverage: generated_material_coverage(&brdf),
+		model: RenderModel {
+			name: "Visibility".to_string(),
+			pass: "MaterialEvaluation".to_string(),
+		},
+		shaders: vec![shader],
+		parameters: Vec::new(),
+	};
+
+	let material = store_model::<MaterialModel>(context, &format!("{base_id}.material"), material, &[]).await?;
+
+	let variant = VariantModel {
+		material,
+		variables,
+		alpha_mode,
+	};
+
+	store_model::<VariantModel>(context, &format!("{base_id}.variant"), variant, &[]).await
+}
+
+/// Extracts the base-color alpha expression of a slot-numbered graph into the compact masked-raster contract.
+fn generated_material_coverage(material: &BrdfMaterialDescription) -> MaterialCoverage {
+	fn collect(material: &BrdfMaterialDescription, node: BrdfNodeId, factor: &mut f32, slot: &mut Option<u32>) {
+		match material.node(node) {
+			Ok(BrdfNode::Constant(BrdfValue::Vector4(value))) => *factor *= value[3],
+			Ok(BrdfNode::Texture(texture)) => *slot = Some(texture.image_index),
+			Ok(BrdfNode::Multiply { left, right }) => {
+				collect(material, *left, factor, slot);
+				collect(material, *right, factor, slot);
+			}
+			_ => {}
+		}
+	}
+
+	let mut coverage = MaterialCoverage {
+		factor: 1.0,
+		texture_slot: None,
+	};
+
+	if let Ok(BrdfNode::MetallicRoughness(surface)) = material.node(material.surface) {
+		collect(material, surface.base_color, &mut coverage.factor, &mut coverage.texture_slot);
+	}
+
+	coverage
+}
+
+/// Compiles each distinct generated BRDF graph once and stores it under an ID derived from the graph.
+///
+/// Texture nodes must already use slot indices. Returns one shader reference per entry in `materials`, in order.
+async fn store_generated_brdf_shaders(
+	context: BakeContext<'_>,
+	generator: &dyn ProgramGenerator,
+	container_id: ResourceId<'_>,
+	materials: &[&BrdfMaterialDescription],
+) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
+	use utils::r#async::StreamExt as _;
+
+	// Only the node graph reaches the program; names, sidedness, and alpha mode stay in the material resource.
+	let mut unique_by_hash: HashMap<u64, usize> = HashMap::new();
+	let mut unique = Vec::new();
+	let mut unique_index_per_material = Vec::with_capacity(materials.len());
+
+	for &material in materials {
+		let key = serde_json::to_vec(&(&material.nodes, material.surface)).map_err(|_| LoadErrors::FailedToProcess)?;
+		let hash = crate::resource::compression::payload_hash(&key);
+		let index = *unique_by_hash.entry(hash).or_insert_with(|| {
+			unique.push((hash, material));
+			unique.len() - 1
+		});
+		unique_index_per_material.push(index);
+	}
+
+	let requests = unique.into_iter().map(|(hash, material)| async move {
+		let shader_id = format!("{}#shaders/{hash:016x}", container_id.as_ref());
+
+		let program = generate_textured_brdf_program(material).map_err(|_| LoadErrors::FailedToProcess)?;
+		let material_json = generated_brdf_material_json(material);
+
+		let (shader, shader_bytes) = compile_shader_program(generator, &shader_id, program, "World", &material_json, "Compute")
+			.await
+			.map_err(|_| {
+				context.error(format_args!(
+					"Failed to compile generated material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
+				));
+				LoadErrors::FailedToProcess
+			})?;
+
+		store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await
+	});
+
+	// Ordered buffering keeps the stored shader order deterministic while platform compiler processes overlap.
+	let unique_shaders = utils::r#async::stream::iter(requests)
+		.buffered(GENERATED_SHADER_COMPILE_CONCURRENCY)
+		.collect::<Vec<_>>()
+		.await
+		.into_iter()
+		.collect::<Result<Vec<_>, _>>()?;
+
+	Ok(unique_index_per_material
+		.into_iter()
+		.map(|index| unique_shaders[index].clone())
+		.collect())
+}
+
+/// Declares one `Texture2D` material variable per texture slot used by a generated BRDF graph.
+fn generated_brdf_material_json(material: &BrdfMaterialDescription) -> JsonObject {
+	let slot_count = material
+		.nodes
+		.iter()
+		.filter_map(|node| match node {
+			BrdfNode::Texture(texture) => Some(texture.image_index + 1),
+			_ => None,
+		})
+		.max()
+		.unwrap_or(0);
+
+	let variables = (0..slot_count)
+		.map(|slot| serde_json::json!({ "name": material_texture_variable_name(slot), "data_type": "Texture2D" }))
+		.collect::<Vec<_>>();
+
+	serde_json::json!({ "variables": variables })
+		.as_object()
+		.expect("generated material JSON should be an object")
+		.clone()
+}
+
 /// Compiles a shader definition and stores the resulting resource and binary payload.
 async fn compile_and_store_shader(
 	context: BakeContext<'_>,
@@ -794,7 +1055,7 @@ pub mod tests {
 	}
 }
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
 use utils::Extent;
@@ -803,7 +1064,12 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
+	store_model, store_model_owned,
 };
+use crate::pbr::{
+	BrdfMaterialDescription, BrdfNode, BrdfNodeId, BrdfValue, generate_textured_brdf_program, material_texture_variable_name,
+};
+use crate::resources::image::Image;
 use crate::shader::{
 	artifact::finalize_platform_shader_artifact,
 	besl::{

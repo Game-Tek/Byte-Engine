@@ -1288,7 +1288,10 @@ use crate::{
 		renderable, renderer,
 	},
 	time::MediaTime,
-	ui::{layout::engine::Render, render_pass::UiRenderPass},
+	ui::{
+		layout::engine::Render,
+		render_pass::{AdoptedRender, UiRenderPass},
+	},
 };
 impl Creator<Window> for GraphicsApplication {
 	fn publish(&self, handle: Option<crate::core::factory::Handle>, window: Window) -> crate::core::factory::Handle {

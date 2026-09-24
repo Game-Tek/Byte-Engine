@@ -3,9 +3,9 @@
 //! Implement an async component function to describe a UI tree and evaluate it with
 //! [`layout::engine::Engine`]. Components declare [`Container`], [`Text`], and
 //! other elements through the layout context and set their properties with
-//! [`Properties`] setters; the engine creates and owns the elements. Send the resulting
-//! [`layout::engine::Render`] data to [`render_pass::UiRenderPass`] when
-//! integrating UI into a graphics application.
+//! [`Properties`] setters; the engine creates and owns the elements. Convert the resulting
+//! [`layout::engine::Render`] with [`render_pass::AdoptedRender`] and give it to
+//! [`render_pass::UiRenderPass`] when integrating UI into a graphics application.
 //! For pointer gestures, capture a hit-tested source with
 //! [`layout::engine::Engine::press`] and validate the released [`DragDrop`]
 //! against an application-owned drop target.

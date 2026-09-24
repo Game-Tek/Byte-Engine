@@ -3,8 +3,8 @@ use math::{
 	collision::{aabb_vs_aabb, sphere_vs_aabb, sphere_vs_sphere_dynamic},
 };
 use maths_rs::{
-	Mat3f, Vec3f,
-	mat::{MatInverse as _, MatScale as _, MatTranspose as _},
+	Mat3f,
+	mat::{MatScale as _, MatTranspose as _},
 	vec::Magnitude as _,
 };
 
@@ -77,8 +77,8 @@ impl PhysicsBody {
 
 	/// Returns the inverse local inertia tensor as a raw matrix boundary value.
 	pub fn inverse_body_space_inertia_tensor(&self) -> Mat3f {
-		self.collision_shape.inertia_tensor().inverse()
-			* Mat3f::from_scale(Vec3f::new(self.inv_mass, self.inv_mass, self.inv_mass))
+		// The local tensor is diagonal, so its inverse is the reciprocal of each moment.
+		Mat3f::from_scale(maths_rs::recip(self.collision_shape.principal_inertia()) * self.inv_mass)
 	}
 
 	/// Returns the inverse world inertia tensor as a raw matrix boundary value.
@@ -95,10 +95,15 @@ impl PhysicsBody {
 		let center_of_mass = self.world_space_center_of_mass();
 		let center_offset = self.position - center_of_mass;
 		let rotation = self.orientation.into_maths().get_matrix();
-		let inertia = rotation * self.collision_shape.inertia_tensor() * rotation.transpose();
+		let rotation_transpose = rotation.transpose();
+		// Rotating the diagonal local tensor and its reciprocal gives the world tensor and its inverse
+		// without a general 3x3 inversion.
+		let local_inertia = self.collision_shape.principal_inertia();
+		let inertia = rotation * Mat3f::from_scale(local_inertia) * rotation_transpose;
+		let inverse_inertia = rotation * Mat3f::from_scale(maths_rs::recip(local_inertia)) * rotation_transpose;
 		let angular_momentum = Vector::from_maths(inertia * self.angular_velocity.into_maths());
 		let angular_acceleration =
-			Vector::from_maths(inertia.inverse() * self.angular_velocity.cross(angular_momentum).into_maths());
+			Vector::from_maths(inverse_inertia * self.angular_velocity.cross(angular_momentum).into_maths());
 		self.angular_velocity += angular_acceleration * seconds;
 
 		let angular_step = self.angular_velocity * seconds;

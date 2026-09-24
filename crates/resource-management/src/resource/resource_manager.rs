@@ -57,6 +57,26 @@ impl ResourceUpdateBroadcaster {
 
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/resource-management/baking-app-resources";
 
+/// Formats the failure for a resource that is absent from storage when no asset manager can bake it.
+fn missing_resource_error(id: &str) -> String {
+	let (cause, fix) = if cfg!(debug_assertions) {
+		(
+			"The resource does not exist and no asset manager is available.",
+			"Install an asset manager or bake the application resources with BELD.",
+		)
+	} else {
+		(
+			"The resource is missing from the baked release store.",
+			"Bake the application resources with BELD and include the resource store in the application bundle.",
+		)
+	};
+
+	format!(
+		"Could not load resource.\n\n  Resource: {id}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {}",
+		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
+	)
+}
+
 /// Formats one asset-loading failure with its cause and recovery workflow.
 #[cfg(debug_assertions)]
 fn asset_request_error(id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
@@ -228,52 +248,39 @@ impl ResourceManager {
 	/// typed metadata through [`Reference::resource`](crate::Reference::resource).
 	pub async fn request<T: Resource>(&self, id: &str) -> Result<Reference<T>, String>
 	where
-		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
-		SerializableResource: TryInto<ReferenceModel<T::Model>>,
+		T::Model: StoredModel<Resource = T>,
 	{
 		let storage_backend = self.get_storage_backend();
 
-		let reference_model: ReferenceModel<T::Model> = {
+		#[cfg(debug_assertions)]
+		let asset_manager = self.asset_manager.get();
+
+		#[cfg(debug_assertions)]
+		if let Some(asset_manager) = asset_manager {
+			asset_manager
+				.bake_if_stale(id)
+				.await
+				.map_err(|error| asset_request_error(id, &error, asset_manager))?;
+		}
+
+		// The record read here is solved directly, so the requested resource is read from storage once.
+		let Some((stored, reader)) = storage_backend.read(ResourceId::new(id)).await else {
 			#[cfg(debug_assertions)]
-			{
-				if let Some(asset_manager) = self.asset_manager.get() {
-					let resource = asset_manager
-						.bake_if_not_exists_serialized(id)
-						.await
-						.map_err(|error| asset_request_error(id, &error, asset_manager))?;
-
-					asset_manager.track_resource(&resource);
-
-					resource.into()
-				} else if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
-					resource.into()
-				} else {
-					return Err(format!(
-						"Could not load resource.\n\n  Resource: {id}\n  Cause: The resource does not exist and no asset manager is available.\n  Fix: Install an asset manager or bake the application resources with BELD.\n  Guide: {}",
-						online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-					));
-				}
+			if let Some(asset_manager) = asset_manager {
+				return Err(asset_request_error(id, &LoadMessages::NoAsset, asset_manager));
 			}
 
-			#[cfg(not(debug_assertions))]
-			{
-				if let Some((resource, _)) = storage_backend.read(ResourceId::new(id)).await {
-					resource.into()
-				} else {
-					return Err(format!(
-						"Could not load resource.\n\n  Resource: {id}\n  Cause: The resource is missing from the baked release store.\n  Fix: Bake the application resources with BELD and include the resource store in the application bundle.\n  Guide: {}",
-						online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-					));
-				}
-			}
+			return Err(missing_resource_error(id));
 		};
 
-		let reference: Reference<T> = reference_model
-			.solve(self.get_storage_backend())
-			.await
-			.map_err(|error| Into::<&'static str>::into(error).to_string())?;
+		#[cfg(debug_assertions)]
+		if let Some(asset_manager) = asset_manager {
+			asset_manager.track_resource(&stored);
+		}
 
-		Ok(reference)
+		T::Model::solve_stored(stored, reader, storage_backend)
+			.await
+			.map_err(|error| Into::<&'static str>::into(error).to_string())
 	}
 
 	/// Loads independent resources concurrently while preserving the requested order.
@@ -282,8 +289,7 @@ impl ResourceManager {
 	/// needed. `max_concurrency` bounds debug baking and storage pressure.
 	pub async fn request_many<T: Resource>(&self, ids: &[String], max_concurrency: usize) -> Result<Vec<Reference<T>>, String>
 	where
-		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
-		SerializableResource: TryInto<ReferenceModel<T::Model>>,
+		T::Model: StoredModel<Resource = T>,
 	{
 		use utils::r#async::StreamExt as _;
 
@@ -312,8 +318,7 @@ impl ResourceManager {
 	/// needed.
 	pub async fn query<T: Resource>(&self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
 	where
-		for<'de> ReferenceModel<T::Model>: Solver<'de, Reference<T>>,
-		SerializableResource: Into<ReferenceModel<T::Model>>,
+		T::Model: StoredModel<Resource = T>,
 	{
 		let page = self
 			.get_storage_backend()
@@ -325,10 +330,13 @@ impl ResourceManager {
 
 		let mut items = Vec::with_capacity(page.items.len());
 
-		for (resource, _) in page.items {
-			let model: ReferenceModel<T::Model> = resource.into();
-
-			items.push(model.solve(self.get_storage_backend()).await.unwrap());
+		// Each query item already carries its record and reader, so solving it needs no second read.
+		for (stored, reader) in page.items {
+			items.push(
+				T::Model::solve_stored(stored, reader, self.get_storage_backend())
+					.await
+					.unwrap(),
+			);
 		}
 
 		Ok(QueryPage {
@@ -733,4 +741,4 @@ use crate::asset::{
 	handler::LoadErrors,
 	manager::{AssetManager, LoadMessages},
 };
-use crate::{Model, Reference, ReferenceModel, Resource, SerializableResource, Solver, asset::ResourceId, online_docs_url};
+use crate::{Model, Reference, Resource, StoredModel, asset::ResourceId, online_docs_url};

@@ -30,131 +30,59 @@ pub(crate) fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (
 	(unique_materials, material_indices_per_primitive)
 }
 
-pub(crate) async fn material_for_gltf_primitive(
+/// Bounds concurrent BEAD material override bakes.
+const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
+
+/// Resolves glTF materials into variants, in the order given.
+///
+/// BEAD overrides bake as dependencies. Every other material is generated through [`store_generated_materials`].
+pub(crate) async fn resolve_gltf_materials(
 	context: BakeContext<'_>,
 	spec: Option<&serde_json::Value>,
 	mesh_url: ResourceId<'_>,
 	gltf: &gltf::Gltf,
-	buffers: &[gltf::buffer::Data],
-	material: gltf::Material<'_>,
+	materials: &[gltf::Material<'_>],
 	generator: Option<&dyn ProgramGenerator>,
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	if let Some(override_asset) = material_override(spec, &material) {
-		return context.bake_dependency::<VariantModel>(&override_asset).await;
-	}
+) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+	let override_ids = materials
+		.iter()
+		.map(|material| material_override(spec, material))
+		.collect::<Vec<_>>();
 
-	generate_gltf_material_variant(context, mesh_url, gltf, buffers, material, generator, mip_backend).await
-}
+	let generated = materials
+		.iter()
+		.zip(&override_ids)
+		.filter(|(_, override_id)| override_id.is_none())
+		.map(|(material, _)| GeneratedMaterial {
+			base_id: generated_material_base_id(mesh_url, material),
+			brdf: brdf_material_from_gltf(material),
+		})
+		.collect::<Vec<_>>();
 
-pub(crate) async fn generate_gltf_material_variant(
-	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	gltf: &gltf::Gltf,
-	buffers: &[gltf::buffer::Data],
-	material: gltf::Material<'_>,
-	generator: Option<&dyn ProgramGenerator>,
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	let generator = generator.ok_or(LoadErrors::FailedToProcess)?;
+	let image_ids = gltf
+		.images()
+		.map(|image| generated_gltf_image_id(mesh_url, image.index() as u32, image.name()))
+		.collect::<Vec<_>>();
 
-	let brdf = brdf_material_from_gltf(&material);
+	let overrides = override_ids.iter().flatten().cloned().collect::<Vec<_>>();
 
-	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
+	let (overridden, generated) = std::future::join!(
+		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
+		store_generated_materials(context, generator, mesh_url, &image_ids, generated),
+	)
+	.await;
 
-	let texture_dependencies = collect_gltf_texture_dependencies(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
+	let (mut overridden, mut generated) = (overridden?.into_iter(), generated?.into_iter());
 
-	let texture_variables =
-		store_gltf_texture_dependencies(context, mesh_url, gltf, buffers, &texture_dependencies, mip_backend).await?;
-
-	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
-
-	let base_id = generated_material_base_id(mesh_url, &material);
-
-	let shader_id = format!("{base_id}.shader");
-
-	let material_id = format!("{base_id}.material");
-
-	let variant_id = format!("{base_id}.variant");
-
-	let shader_name = shader_id.clone();
-
-	let material_json = generated_material_json(&texture_variables);
-
-	let (shader, shader_bytes) =
-		compile_shader_program(generator, &shader_name, program, "World", &material_json, "Compute")
-			.await
-			.map_err(|_| LoadErrors::FailedToProcess)?;
-
-	let shader = store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await?;
-
-	let material = MaterialModel {
-		double_sided: brdf.double_sided,
-		alpha_mode: alpha_mode.clone(),
-		coverage: material_coverage(&brdf, &texture_dependencies),
-		model: RenderModel {
-			name: "Visibility".to_string(),
-			pass: "MaterialEvaluation".to_string(),
-		},
-		shaders: vec![shader],
-		parameters: Vec::new(),
-	};
-
-	let material = store_model::<MaterialModel>(context, &material_id, material, &[]).await?;
-
-	let variant = VariantModel {
-		material,
-		variables: texture_variables,
-		alpha_mode,
-	};
-
-	store_model::<VariantModel>(context, &variant_id, variant, &[]).await
-}
-
-/// Extracts the glTF base-color alpha expression into the compact masked-raster contract.
-pub(crate) fn material_coverage(
-	material: &BrdfMaterialDescription,
-	dependencies: &[GltfTextureDependency],
-) -> MaterialCoverage {
-	let Ok(BrdfNode::MetallicRoughness(surface)) = material.node(material.surface) else {
-		return MaterialCoverage {
-			factor: 1.0,
-			texture_slot: None,
-		};
-	};
-
-	let mut factor = 1.0;
-
-	let mut image_index = None;
-
-	collect_base_color_coverage(material, surface.base_color, &mut factor, &mut image_index);
-
-	let texture_slot = image_index.and_then(|image_index| {
-		dependencies
-			.iter()
-			.position(|dependency| dependency.image_index == image_index)
-			.map(|slot| slot as u32)
-	});
-
-	MaterialCoverage { factor, texture_slot }
-}
-
-pub(crate) fn collect_base_color_coverage(
-	material: &BrdfMaterialDescription,
-	node: BrdfNodeId,
-	factor: &mut f32,
-	image_index: &mut Option<u32>,
-) {
-	match material.node(node) {
-		Ok(BrdfNode::Constant(BrdfValue::Vector4(value))) => *factor *= value[3],
-		Ok(BrdfNode::Texture(texture)) => *image_index = Some(texture.image_index),
-		Ok(BrdfNode::Multiply { left, right }) => {
-			collect_base_color_coverage(material, *left, factor, image_index);
-
-			collect_base_color_coverage(material, *right, factor, image_index);
-		}
-		_ => {}
-	}
+	// Put overridden and generated variants back in material order.
+	override_ids
+		.iter()
+		.map(|override_id| match override_id {
+			Some(_) => overridden.next(),
+			None => generated.next(),
+		})
+		.collect::<Option<Vec<_>>>()
+		.ok_or(LoadErrors::FailedToProcess)
 }
 
 pub(crate) fn material_override(spec: Option<&serde_json::Value>, material: &gltf::Material<'_>) -> Option<String> {

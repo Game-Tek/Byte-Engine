@@ -47,14 +47,10 @@ impl FileResourceReader {
 		encoding: crate::resource::ResourcePayloadEncoding,
 		lease: Option<std::sync::Arc<()>>,
 	) -> Result<Self, ()> {
-		let end = offset.checked_add(stored_size).ok_or(())?;
-		if end > file_size {
-			return Err(());
-		}
 		let backing = if stored_size == 0 {
 			ResourceReaderBacking::Buffer(Box::new([]))
 		} else {
-			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, offset, stored_size, lease)?)
+			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, file_size, offset, stored_size, lease)?)
 		};
 		Ok(Self {
 			reader: StoredResourceReader::new(backing, encoding, decoded_size),
@@ -93,11 +89,7 @@ impl ResourceReader for FileResourceReader {
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		fs,
-		io::Write,
-		path::PathBuf,
-	};
+	use std::{fs, io::Write, path::PathBuf};
 
 	use super::*;
 
@@ -174,6 +166,23 @@ mod tests {
 		let backing = reader.into_backing_storage().await.unwrap();
 
 		assert_eq!(backing.as_slice(), b"second");
+		fs::remove_file(path).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn ranged_reader_maps_an_unaligned_range_deep_in_a_large_file() {
+		let path = temporary_file_path();
+		let contents = (0..300_000_u32).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+		fs::write(&path, &contents).unwrap();
+		let file = fs::File::open(&path).unwrap();
+
+		// The offset sits past several mapping-alignment boundaries and between them.
+		let reader: Box<dyn ResourceReader> =
+			Box::new(FileResourceReader::new_range(&file, contents.len() as u64, 200_003, 1_000, None).unwrap());
+		let backing = reader.into_backing_storage().await.unwrap();
+
+		assert_eq!(backing.as_slice(), &contents[200_003..201_003]);
+		assert!(FileResourceReader::new_range(&file, contents.len() as u64, 299_500, 1_000, None).is_err());
 		fs::remove_file(path).unwrap();
 	}
 

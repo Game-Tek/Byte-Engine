@@ -1,27 +1,19 @@
 use crate::{
 	Reference, ReferenceModel, Solver, resource,
-	resources::material::{Variant, VariantModel},
+	resources::material::VariantModel,
 	resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint},
 	solver::SolveErrors,
 	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
 };
 
 /// The `Primitive` struct supplies one renderable geometry range and its skeletal bindings to runtime rendering.
-#[derive(Debug, serde::Serialize)]
-pub struct Primitive {
-	pub material: Reference<Variant>,
-	pub transform_node: Option<u32>,
-	pub skin: Option<u32>,
-	pub streams: Vec<Stream>,
-	pub quantization: Option<QuantizationSchemes>,
-	pub bounding_box: [[f32; 3]; 2],
-	pub vertex_count: u32,
-}
-
-/// The `PrimitiveModel` struct preserves a serializable primitive for mesh processing and resource storage.
+///
+/// The same type is stored and loaded: a primitive names its material by index into [`Mesh::materials`], so
+/// primitives that share a material share one reference and nothing is solved per primitive.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct PrimitiveModel {
-	pub material: ReferenceModel<VariantModel>,
+pub struct Primitive {
+	/// Index of this primitive's material variant in [`Mesh::materials`].
+	pub material: u32,
 	pub transform_node: Option<u32>,
 	pub skin: Option<u32>,
 	pub streams: Vec<Stream>,
@@ -40,48 +32,7 @@ impl Primitive {
 	}
 }
 
-super::impl_resource_model!(Primitive, PrimitiveModel, "Primitive");
-
-impl<'de> Solver<'de, Primitive> for PrimitiveModel {
-	fn solve(
-		self,
-		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Primitive, SolveErrors>> {
-		crate::r#async::future(async move {
-			let PrimitiveModel {
-				material,
-				transform_node,
-				skin,
-				streams,
-				quantization,
-				bounding_box,
-				vertex_count,
-			} = self;
-
-			Ok(Primitive {
-				material: material.solve(storage_backend).await?,
-				transform_node,
-				skin,
-				streams,
-				quantization,
-				bounding_box,
-				vertex_count,
-			})
-		})
-	}
-}
-
-/// The `SubMesh` struct groups runtime primitives that callers want to address as one mesh section.
-#[derive(Debug, serde::Serialize)]
-pub struct SubMesh {
-	pub primitives: Vec<Primitive>,
-}
-
-/// The `SubMeshModel` struct preserves a serializable group of primitives for mesh section workflows.
-#[derive(Debug, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub struct SubMeshModel {
-	pub primitives: Vec<PrimitiveModel>,
-}
+super::impl_resource_model!(Primitive, Primitive, "Primitive");
 
 /// The `Mesh` struct supplies packed geometry, material primitives, and optional skeletal bindings to runtime rendering.
 ///
@@ -90,12 +41,17 @@ pub struct SubMeshModel {
 /// - `Vertices` entries index the vertex buffer.
 /// - `Meshlets` entries index the `Vertices` stream.
 /// - `Triangles` entries index the vertex buffer.
+///
+/// Material variants stay unsolved: request each one by its ID when it is needed, which lets renderers load and
+/// deduplicate materials on their own schedule instead of once per primitive.
 #[derive(Debug, serde::Serialize)]
 pub struct Mesh {
 	pub skeleton: Option<Reference<Skeleton>>,
 	pub skins: Vec<SkinBinding>,
 	pub vertex_components: Vec<VertexComponent>,
 	pub streams: Vec<Stream>,
+	/// The distinct material variants the primitives draw with.
+	pub materials: Vec<ReferenceModel<VariantModel>>,
 	pub primitives: Vec<Primitive>,
 }
 
@@ -111,6 +67,11 @@ macro_rules! cloned_stream_accessor {
 impl Mesh {
 	pub fn primitives(&self) -> impl Iterator<Item = &Primitive> {
 		self.primitives.iter()
+	}
+
+	/// Returns the material variant a primitive draws with.
+	pub fn material(&self, primitive: &Primitive) -> &ReferenceModel<VariantModel> {
+		&self.materials[primitive.material as usize]
 	}
 
 	pub fn stream(&self, stream_type: Streams) -> Option<&Stream> {
@@ -160,24 +121,29 @@ pub struct MeshModel {
 	pub skins: Vec<SkinBinding>,
 	pub vertex_components: Vec<VertexComponent>,
 	pub streams: Vec<Stream>,
-	pub primitives: Vec<PrimitiveModel>,
+	/// The distinct material variants, each stored once however many primitives use it.
+	pub materials: Vec<ReferenceModel<VariantModel>>,
+	pub primitives: Vec<Primitive>,
 }
 
 super::impl_resource_model!(Mesh, MeshModel, "Mesh");
 
-impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
+impl crate::StoredModel for MeshModel {
+	type Resource = Mesh;
+
 	/// Resolves mesh dependencies only after confirming its skin tables are safe for CPU pose and GPU palette workflows.
-	fn solve(
-		self,
+	fn solve_stored<'de>(
+		gr: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Mesh>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let MeshModel {
 				skeleton,
 				skins,
 				vertex_components,
 				streams,
+				materials,
 				primitives,
 			} = crate::from_slice(&gr.resource).map_err(|error| {
 				SolveErrors::DeserializationFailed(format!(
@@ -190,24 +156,35 @@ impl<'de> Solver<'de, Reference<Mesh>> for ReferenceModel<MeshModel> {
 				None => None,
 			};
 			validate_skin_metadata(skeleton.as_ref(), &skins, &vertex_components, &primitives)?;
+			validate_material_indices(materials.len(), &primitives)?;
 
-			let mut resolved_primitives = Vec::with_capacity(primitives.len());
-			for primitive in primitives {
-				resolved_primitives.push(primitive.solve(storage_backend).await?);
-			}
-
-			Ok(Reference::from_model(
-				self,
+			Ok(Reference::from_stored(
+				gr,
 				Mesh {
 					skeleton,
 					skins,
 					vertex_components,
 					streams,
-					primitives: resolved_primitives,
+					materials,
+					primitives,
 				},
 				reader,
 			))
 		})
+	}
+}
+
+/// Rejects a primitive whose material index falls outside the mesh's material list.
+fn validate_material_indices(material_count: usize, primitives: &[Primitive]) -> Result<(), SolveErrors> {
+	match primitives
+		.iter()
+		.position(|primitive| primitive.material as usize >= material_count)
+	{
+		Some(index) => Err(SolveErrors::DeserializationFailed(format!(
+			"Mesh primitive {index} references material {} of {material_count}. The most likely cause is corrupted mesh metadata.",
+			primitives[index].material
+		))),
+		None => Ok(()),
 	}
 }
 
@@ -216,7 +193,7 @@ fn validate_skin_metadata(
 	skeleton: Option<&Reference<Skeleton>>,
 	skins: &[SkinBinding],
 	vertex_components: &[VertexComponent],
-	primitives: &[PrimitiveModel],
+	primitives: &[Primitive],
 ) -> Result<(), SolveErrors> {
 	if !skins.is_empty() && skeleton.is_none() {
 		return invalid_mesh_skeletal_metadata("skin bindings exist without a skeleton");
@@ -341,19 +318,16 @@ fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-	use super::{Mesh, PrimitiveModel, validate_skin_metadata};
+	use super::{Mesh, Primitive, validate_material_indices, validate_skin_metadata};
 	use crate::{
 		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		resources::{
-			material::VariantModel,
-			skeleton::{
-				LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-				identity_affine_matrix4x3_columns,
-			},
+		resources::skeleton::{
+			LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
+			identity_affine_matrix4x3_columns,
 		},
-		types::{AlphaMode, IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
+		types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 	};
 
 	fn stream(stream_type: Streams, offset: usize, size: usize, stride: usize) -> Stream {
@@ -379,6 +353,7 @@ mod tests {
 				stream(Streams::Vertices(VertexSemantics::UV), 156, 24, 8),
 				stream(Streams::Vertices(VertexSemantics::Color), 180, 48, 16),
 			],
+			materials: Vec::new(),
 			primitives: Vec::new(),
 		};
 
@@ -403,6 +378,7 @@ mod tests {
 				stream(Streams::Indices(IndexStreamTypes::Triangles), 60, 18, 1),
 				stream(Streams::Meshlets, 78, 64, 32),
 			],
+			materials: Vec::new(),
 			primitives: Vec::new(),
 		};
 
@@ -423,6 +399,7 @@ mod tests {
 			skins: Vec::new(),
 			vertex_components: Vec::new(),
 			streams: Vec::new(),
+			materials: Vec::new(),
 			primitives: Vec::new(),
 		};
 
@@ -527,7 +504,7 @@ mod tests {
 		reference.solve(storage).await.expect("Test skeleton should solve")
 	}
 
-	fn test_primitive(skin: Option<u32>, joints: bool, weights: bool) -> PrimitiveModel {
+	fn test_primitive(skin: Option<u32>, joints: bool, weights: bool) -> Primitive {
 		let mut streams = Vec::new();
 		if joints {
 			streams.push(stream(Streams::Vertices(VertexSemantics::Joints), 0, 8, 8));
@@ -535,19 +512,8 @@ mod tests {
 		if weights {
 			streams.push(stream(Streams::Vertices(VertexSemantics::Weights), 8, 16, 16));
 		}
-		PrimitiveModel {
-			material: ReferenceModel::new_serialized(
-				"materials/test.variant",
-				0,
-				0,
-				crate::to_vec(&VariantModel {
-					material: ReferenceModel::new_serialized("materials/test.material", 0, 0, Vec::new(), None),
-					variables: Vec::new(),
-					alpha_mode: AlphaMode::Opaque,
-				})
-				.expect("Variant should serialize"),
-				None,
-			),
+		Primitive {
+			material: 0,
 			transform_node: None,
 			skin,
 			streams,
@@ -555,5 +521,16 @@ mod tests {
 			bounding_box: [[0.0; 3]; 2],
 			vertex_count: 1,
 		}
+	}
+
+	#[test]
+	fn material_indices_must_address_the_mesh_material_list() {
+		let mut primitive = test_primitive(None, false, false);
+
+		assert!(validate_material_indices(1, std::slice::from_ref(&primitive)).is_ok());
+
+		primitive.material = 1;
+
+		assert!(validate_material_indices(1, std::slice::from_ref(&primitive)).is_err());
 	}
 }

@@ -517,7 +517,7 @@ pub(crate) struct Materialization {
 	pub(crate) versions: SmallVec<[u64; 4]>,
 	/// One encoded range per stage layout: the stage, its backing buffer, and the range's byte offset.
 	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize); 5]>,
-	pub(crate) resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
+	pub(crate) resource_uses: synchronization::DescriptorUses,
 	// Metal argument buffers do not retain texture views. Keep selected mip views alive with their bindings.
 	pub(crate) _texture_views: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLTexture>>; 4]>,
 }

@@ -717,7 +717,12 @@ mod tests {
 			.mesh
 			.primitives
 			.iter()
-			.map(|primitive| primitive.material.id().as_ref().to_string())
+			.map(|primitive| {
+				processed.mesh.materials[primitive.material as usize]
+					.id()
+					.as_ref()
+					.to_string()
+			})
 			.collect::<Vec<_>>();
 
 		assert_eq!(processed.mesh.primitives.len(), 2);
@@ -804,10 +809,7 @@ mod tests {
 		assert_eq!(variant.alpha_mode, AlphaMode::Opaque);
 		assert_eq!(variant.variables.len(), 1);
 		assert_eq!(variant.variables[0].r#type, "Texture2D");
-		assert_eq!(
-			variant.variables[0].name,
-			crate::pbr::material_texture_variable_name(image_index)
-		);
+		assert_eq!(variant.variables[0].name, crate::pbr::material_texture_variable_name(0));
 
 		let ValueModel::Image(image) = &variant.variables[0].value else {
 			panic!("Phong diffuse texture should become an image variable");
@@ -1260,23 +1262,20 @@ use std::{
 	sync::Arc,
 };
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use utils::Extent;
 
 use super::{
 	ContainerDefaultResource, ResourceId, container_default_resource,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model, store_model_owned,
+	sanitize_material_name, store_model,
 };
-use crate::asset::handler::implementations::bema::{ProgramGenerator, compile_shader_program};
+use crate::asset::handler::implementations::bema::{GeneratedMaterial, ProgramGenerator, store_generated_materials};
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,
 	r#async::spawn_cpu_task,
-	pbr::{
-		BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue,
-		generate_textured_brdf_program, material_texture_variable_name,
-	},
+	pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 	processors::{
 		processor::implementations::image::{
 			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
@@ -1291,11 +1290,11 @@ use crate::{
 	resources::{
 		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
 		image::Image,
-		material::{MaterialCoverage, MaterialModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel},
+		material::VariantModel,
 		mips::MipGenerationBackend,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},
 	},
-	types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
+	types::{Formats, VertexComponent, VertexSemantics},
 };

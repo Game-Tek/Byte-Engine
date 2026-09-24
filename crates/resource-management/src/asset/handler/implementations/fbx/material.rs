@@ -15,35 +15,62 @@ impl ResolvedFbxMaterials {
 	}
 }
 
-/// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a solid fallback.
+/// Bounds concurrent BEAD material override bakes.
+const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
+
+/// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a fallback.
+///
+/// Overrides bake as dependencies. Every other material is generated through [`store_generated_materials`].
 pub(crate) async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
 	spec: Option<&Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
 	generator: Option<&dyn ProgramGenerator>,
-	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ResolvedFbxMaterials, LoadErrors> {
-	let allocator = context.allocator();
+	let keys = used_material_keys(scene, context.allocator());
 
-	let keys = used_material_keys(scene, allocator);
+	let mut override_keys = Vec::new();
+	let mut overrides = Vec::new();
+	let mut generated_keys = Vec::new();
+	let mut generated = Vec::new();
 
-	let mut materials = HashMap::with_capacity(keys.len());
-
-	for key in keys {
+	for &key in &keys {
 		let material = match key {
 			MaterialKey::Default => None,
 			MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
 		};
 
-		let resolved = if let Some(override_id) = fbx_material_override(spec, material) {
-			context.bake_dependency::<VariantModel>(&override_id).await?
+		if let Some(override_id) = fbx_material_override(spec, material) {
+			override_keys.push(key);
+			overrides.push(override_id);
 		} else {
-			generate_fbx_material(context, url, key, material, generator, mip_backend).await?
-		};
-
-		materials.insert(key, resolved);
+			generated_keys.push(key);
+			generated.push(GeneratedMaterial {
+				base_id: generated_fbx_material_base_id(url, key, material),
+				brdf: fbx_brdf_material(material),
+			});
+		}
 	}
+
+	// FBX graphs index textures by their position in the scene's texture list.
+	let image_ids = scene
+		.textures
+		.iter()
+		.map(|texture| generated_fbx_image_id(url, texture))
+		.collect::<Vec<_>>();
+
+	let (overridden, generated) = std::future::join!(
+		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
+		store_generated_materials(context, generator, url, &image_ids, generated),
+	)
+	.await;
+
+	let materials = override_keys
+		.into_iter()
+		.zip(overridden?)
+		.chain(generated_keys.into_iter().zip(generated?))
+		.collect();
 
 	Ok(ResolvedFbxMaterials { materials })
 }
@@ -142,130 +169,6 @@ pub(crate) fn fbx_material_override(spec: Option<&Value>, material: Option<&ufbx
 	material["asset"].as_str().map(ToString::to_string)
 }
 
-/// Generates an FBX material and stores its shader, material, texture, and variant resource chain.
-pub(crate) async fn generate_fbx_material(
-	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	key: MaterialKey,
-	material: Option<&ufbx::Material>,
-	generator: Option<&dyn ProgramGenerator>,
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	let generator = generator.ok_or_else(|| {
-		context.error(
-			"FBX material generation is unavailable. The most likely cause is that the FBX asset handler has no shader generator.",
-		);
-
-		LoadErrors::FailedToProcess
-	})?;
-
-	let brdf = fbx_brdf_material(material);
-
-	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
-
-	let texture_variables = store_fbx_texture_variables(context, mesh_url, material, mip_backend).await?;
-
-	let program = generate_textured_brdf_program(&brdf).map_err(|_| LoadErrors::FailedToProcess)?;
-
-	let base_id = generated_fbx_material_base_id(mesh_url, key, material);
-
-	let shader_id = format!("{base_id}.shader");
-
-	let material_id = format!("{base_id}.material");
-
-	let variant_id = format!("{base_id}.variant");
-
-	let shader_name = shader_id.clone();
-
-	let material_json = generated_fbx_material_json(&texture_variables);
-
-	let (shader, shader_bytes) =
-		compile_shader_program(generator, &shader_name, program, "World", &material_json, "Compute")
-			.await
-		.map_err(|_| {
-			context.error(format_args!(
-				"Failed to compile generated FBX material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
-			));
-			LoadErrors::FailedToProcess
-		})?;
-
-	let shader = store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await?;
-
-	let material = MaterialModel {
-		double_sided: brdf.double_sided,
-		alpha_mode: alpha_mode.clone(),
-		coverage: fbx_material_coverage(&brdf),
-		model: RenderModel {
-			name: "Visibility".to_string(),
-			pass: "MaterialEvaluation".to_string(),
-		},
-		shaders: vec![shader],
-		parameters: Vec::new(),
-	};
-
-	let material = store_model::<MaterialModel>(context, &material_id, material, &[]).await?;
-
-	let variant = VariantModel {
-		material,
-		variables: texture_variables,
-		alpha_mode,
-	};
-
-	store_model::<VariantModel>(context, &variant_id, variant, &[]).await
-}
-
-pub(crate) fn fbx_material_coverage(material: &crate::pbr::BrdfMaterialDescription) -> MaterialCoverage {
-	let BrdfNode::MetallicRoughness(surface) = material.node(material.surface).expect("validated FBX material surface") else {
-		return MaterialCoverage {
-			factor: 1.0,
-			texture_slot: None,
-		};
-	};
-
-	let factor = base_color_alpha_factor(material, surface.base_color);
-
-	let texture_slot = material
-		.nodes
-		.iter()
-		.any(|node| matches!(node, BrdfNode::Texture(_)))
-		.then_some(0);
-
-	MaterialCoverage { factor, texture_slot }
-}
-
-pub(crate) fn base_color_alpha_factor(material: &crate::pbr::BrdfMaterialDescription, node: crate::pbr::BrdfNodeId) -> f32 {
-	match material.node(node).expect("validated base-color node") {
-		BrdfNode::Constant(BrdfValue::Vector4(value)) => value[3],
-		BrdfNode::Multiply { left, right } => {
-			base_color_alpha_factor(material, *left) * base_color_alpha_factor(material, *right)
-		}
-		BrdfNode::Texture(_) => 1.0,
-		_ => 1.0,
-	}
-}
-
-/// Stores the diffuse texture selected by the FBX BRDF graph as a generated material variable.
-pub(crate) async fn store_fbx_texture_variables(
-	context: BakeContext<'_>,
-	mesh_url: ResourceId<'_>,
-	material: Option<&ufbx::Material>,
-	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<Vec<VariantVariableModel>, LoadErrors> {
-	let Some(texture) = material.and_then(fbx_base_color_texture) else {
-		return Ok(Vec::new());
-	};
-
-	let image_id = generated_fbx_image_id(mesh_url, texture);
-
-	let image = load_and_store_fbx_texture(context, mesh_url, &image_id, texture, mip_backend).await?;
-
-	Ok(vec![VariantVariableModel {
-		name: material_texture_variable_name(texture.element.typed_id),
-		r#type: "Texture2D".to_string(),
-		value: ValueModel::Image(image),
-	}])
-}
-
 /// Loads an embedded or file-local FBX texture, processes its RGBA pixels, and stores its image resource.
 pub(crate) async fn load_and_store_fbx_texture(
 	context: BakeContext<'_>,
@@ -273,7 +176,7 @@ pub(crate) async fn load_and_store_fbx_texture(
 	id: &str,
 	texture: &ufbx::Texture,
 	mip_backend: Option<&dyn MipGenerationBackend>,
-) -> Result<ReferenceModel<Image>, LoadErrors> {
+) -> Result<(), LoadErrors> {
 	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
 
 	let description = ImageDescription {
@@ -291,7 +194,7 @@ pub(crate) async fn load_and_store_fbx_texture(
 	let (resource, data) =
 		process_image_with_mip_backend_in(ResourceId::new(id), description, source, context.allocator(), mip_backend)?;
 
-	context.store_resource(resource, &data).await.map(Into::into)
+	context.store_resource(resource, &data).await.map(|_| ())
 }
 
 /// Decodes a texture embedded in the FBX or resolves its file-local image through the current asset backend.
@@ -383,22 +286,21 @@ pub(crate) fn resolve_fbx_texture_path(mesh_url: ResourceId<'_>, texture_path: &
 	}
 }
 
-/// Produces the material declarations used while compiling a generated FBX material shader.
-pub(crate) fn generated_fbx_material_json(variables: &[VariantVariableModel]) -> crate::asset::JsonObject {
-	let variables = variables
-		.iter()
-		.map(|variable| json!({ "name": variable.name, "data_type": variable.r#type }))
-		.collect::<Vec<_>>();
-
-	json!({ "variables": variables })
-		.as_object()
-		.expect("generated FBX material JSON should be an object")
-		.clone()
-}
-
 /// Builds a deterministic resource ID for one texture owned by an FBX source asset.
 pub(crate) fn generated_fbx_image_id(mesh_url: ResourceId<'_>, texture: &ufbx::Texture) -> String {
-	format!("{}#images/{}", mesh_url.as_ref(), texture.element.typed_id)
+	format!(
+		"{}#{FBX_IMAGE_FRAGMENT_PREFIX}{}",
+		mesh_url.as_ref(),
+		texture.element.typed_id
+	)
+}
+
+/// Prefixes the fragment of every generated FBX texture resource.
+pub(crate) const FBX_IMAGE_FRAGMENT_PREFIX: &str = "images/";
+
+/// Returns the texture index addressed by a generated FBX image fragment.
+pub(crate) fn fbx_image_fragment_texture_index(fragment: &str) -> Option<usize> {
+	fragment.strip_prefix(FBX_IMAGE_FRAGMENT_PREFIX)?.parse().ok()
 }
 
 /// Converts ufbx's normalized PBR values into the engine's metallic-roughness graph.

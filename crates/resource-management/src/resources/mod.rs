@@ -22,21 +22,20 @@ macro_rules! impl_direct_resource {
 	($resource:ty, $class:literal) => {
 		$crate::resources::impl_resource_model!($resource, $resource, $class);
 
-		impl<'de> $crate::Solver<'de, $crate::Reference<$resource>> for $crate::ReferenceModel<$resource> {
+		impl $crate::StoredModel for $resource {
+			type Resource = $resource;
+
 			/// Restores direct resource metadata while retaining its binary-data reader.
-			fn solve(
-				self,
-				storage_backend: &'de dyn $crate::resource::DynReadStorageBackend,
+			fn solve_stored<'de>(
+				stored: $crate::SerializableResource,
+				reader: $crate::resource::resource_handler::MultiResourceReader,
+				_: &'de dyn $crate::resource::DynReadStorageBackend,
 			) -> $crate::r#async::BoxedFuture<'de, Result<$crate::Reference<$resource>, $crate::solver::SolveErrors>> {
 				$crate::r#async::future(async move {
-					let (stored, reader) = storage_backend
-						.read(self.id())
-						.await
-						.ok_or($crate::solver::SolveErrors::StorageError)?;
 					let resource: $resource = $crate::from_slice(stored.resource())
 						.map_err(|error| $crate::solver::SolveErrors::DeserializationFailed(error.to_string()))?;
 
-					Ok($crate::Reference::from_model(self, resource, reader))
+					Ok($crate::Reference::from_stored(stored, resource, reader))
 				})
 			}
 		}
@@ -44,6 +43,29 @@ macro_rules! impl_direct_resource {
 }
 
 pub(crate) use impl_direct_resource;
+
+/// Bounds how many independent dependencies of one resource are read from storage at once.
+const DEPENDENCY_SOLVE_CONCURRENCY: usize = 8;
+
+/// Solves independent dependencies concurrently and returns them in input order.
+///
+/// Solvers call this for lists such as a material's shaders or a variant's variables, which do not depend on
+/// one another, so their storage reads overlap instead of running one after another.
+pub(crate) async fn solve_all<'de, M, T>(
+	models: Vec<M>,
+	storage_backend: &'de dyn crate::resource::DynReadStorageBackend,
+) -> Result<Vec<T>, crate::solver::SolveErrors>
+where
+	M: crate::Solver<'de, T> + 'de,
+{
+	use utils::r#async::stream::{self, TryStreamExt as _};
+
+	// The first failure ends the solve instead of waiting for the remaining dependencies.
+	stream::iter(models.into_iter().map(|model| Ok(model.solve(storage_backend))))
+		.try_buffered(DEPENDENCY_SOLVE_CONCURRENCY)
+		.try_collect()
+		.await
+}
 
 pub mod animation;
 pub mod audio;
@@ -64,7 +86,7 @@ mod tests {
 		image::Image,
 		lut::Lut,
 		material::{Material, MaterialModel, Shader, Variant, VariantModel},
-		mesh::{Mesh, MeshModel, Primitive, PrimitiveModel},
+		mesh::{Mesh, MeshModel, Primitive},
 		skeleton::{Skeleton, SkeletonModel},
 	};
 	use crate::{Model, Resource};
@@ -85,7 +107,7 @@ mod tests {
 		assert_resource_model::<Material, MaterialModel>();
 		assert_resource_model::<Variant, VariantModel>();
 		assert_resource_model::<Shader, Shader>();
-		assert_resource_model::<Primitive, PrimitiveModel>();
+		assert_resource_model::<Primitive, Primitive>();
 		assert_resource_model::<Mesh, MeshModel>();
 		assert_resource_model::<Skeleton, SkeletonModel>();
 
@@ -97,7 +119,7 @@ mod tests {
 			(<MaterialModel as Model>::get_class(), "Material"),
 			(<VariantModel as Model>::get_class(), "Variant"),
 			(<Shader as Model>::get_class(), "Shader"),
-			(<PrimitiveModel as Model>::get_class(), "Primitive"),
+			(<Primitive as Model>::get_class(), "Primitive"),
 			(<MeshModel as Model>::get_class(), "Mesh"),
 			(<SkeletonModel as Model>::get_class(), "Skeleton"),
 		];

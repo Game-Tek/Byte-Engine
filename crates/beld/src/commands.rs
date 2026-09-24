@@ -260,6 +260,7 @@ mod tests {
 				None,
 				None,
 				std::num::NonZeroUsize::new(1024 * 1024).unwrap(),
+				false,
 			)),
 			Err(1)
 		);

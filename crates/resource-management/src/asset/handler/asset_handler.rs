@@ -309,7 +309,11 @@ impl<'a> BakeContext<'a> {
 
 		let requests = ids.iter().enumerate().map(|(index, id)| async move {
 			self.asset_manager
-				.dispatch_bake_in_scope(id, true, self.allocator.memory_scope().cloned())
+				.dispatch_bake_in_scope(
+					id,
+					true,
+					crate::asset::manager::BakeOrigin::Dependency(self.allocator.memory_scope().cloned()),
+				)
 				.await
 				.map_err(|error| match error {
 					crate::asset::manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,

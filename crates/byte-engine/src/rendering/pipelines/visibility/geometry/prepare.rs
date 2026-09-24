@@ -582,7 +582,7 @@ fn build_resource_primitives(
 			None => None,
 		};
 		primitives.push(PreparedPrimitive {
-			material_id: primitive.material.id().to_string(),
+			material_id: mesh.material(primitive).id().as_ref().to_string(),
 			primitive: MeshPrimitive {
 				material_index: 0,
 				meshlet_count: (source.len() / RESOURCE_MESHLET_STRIDE) as u32,

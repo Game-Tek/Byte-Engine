@@ -159,6 +159,14 @@ pub trait WriteStorageBackend: Sync + Send {
 	}
 
 	fn start(&self, _: ResourceId<'_>) {}
+
+	/// Makes every resource committed so far survive a crash or power loss.
+	///
+	/// Backends may publish individual resources without waiting for the disk so a bake with many outputs does not
+	/// flush once per resource. Call this once a batch of writes is complete, such as when a root bake finishes.
+	fn persist(&self) -> Result<(), String> {
+		Ok(())
+	}
 }
 
 /// The `DynWriteStorageBackend` trait provides object-safe resource authoring for runtime-selected storage.
@@ -179,6 +187,9 @@ pub trait DynWriteStorageBackend: Send + Sync {
 		Ok(())
 	}
 	fn start(&self, _: ResourceId<'_>) {}
+	fn persist(&self) -> Result<(), String> {
+		Ok(())
+	}
 }
 
 /// The `QueryCursor` struct provides an opaque continuation point for paginated resource queries.
@@ -356,6 +367,10 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 
 	fn start(&self, id: ResourceId<'_>) {
 		self.start(id)
+	}
+
+	fn persist(&self) -> Result<(), String> {
+		WriteStorageBackend::persist(self)
 	}
 }
 

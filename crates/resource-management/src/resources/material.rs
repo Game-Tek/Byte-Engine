@@ -55,13 +55,15 @@ impl Material {
 
 super::impl_resource_model!(Material, MaterialModel, "Material");
 
-impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
-	fn solve(
-		self,
+impl crate::StoredModel for MaterialModel {
+	type Resource = Material;
+
+	fn solve_stored<'de>(
+		gr: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let MaterialModel {
 				double_sided,
 				alpha_mode,
@@ -71,17 +73,11 @@ impl<'de> Solver<'de, Reference<Material>> for ReferenceModel<MaterialModel> {
 				parameters,
 			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
-			let mut resolved_shaders = Vec::with_capacity(shaders.len());
-			for shader in shaders {
-				resolved_shaders.push(shader.solve(storage_backend).await?);
-			}
-			let mut resolved_parameters = Vec::with_capacity(parameters.len());
-			for parameter in parameters {
-				resolved_parameters.push(parameter.solve(storage_backend).await?);
-			}
+			let resolved_shaders = super::solve_all(shaders, storage_backend).await?;
+			let resolved_parameters = super::solve_all(parameters, storage_backend).await?;
 
-			Ok(Reference::from_model(
-				self,
+			Ok(Reference::from_stored(
+				gr,
 				Material {
 					double_sided,
 					alpha_mode,
@@ -176,13 +172,15 @@ pub struct VariantModel {
 }
 super::impl_resource_model!(Variant, VariantModel, "Variant");
 
-impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
-	fn solve(
-		self,
+impl crate::StoredModel for VariantModel {
+	type Resource = Variant;
+
+	fn solve_stored<'de>(
+		gr: crate::SerializableResource,
+		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveErrors>> {
 		crate::r#async::future(async move {
-			let (gr, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
 			let VariantModel {
 				material,
 				variables,
@@ -190,13 +188,10 @@ impl<'de> Solver<'de, Reference<Variant>> for ReferenceModel<VariantModel> {
 			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
 
 			let material = material.solve(storage_backend).await?;
-			let mut resolved_variables = Vec::with_capacity(variables.len());
-			for variable in variables {
-				resolved_variables.push(variable.solve(storage_backend).await?);
-			}
+			let resolved_variables = super::solve_all(variables, storage_backend).await?;
 
-			Ok(Reference::from_model(
-				self,
+			Ok(Reference::from_stored(
+				gr,
 				Variant {
 					material,
 					variables: resolved_variables,

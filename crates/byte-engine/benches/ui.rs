@@ -1225,7 +1225,7 @@ mod leaderboard {
 			select_biased! {
 				_ = body.on(Events::Actuated) => {
 					let Some(geometry) = body.geometry().await else { continue };
-					let pointer_y = (1.0 - ctx.pointer().await.position.y) * 0.5 * HEIGHT;
+					let pointer_y = ctx.pointer().await.position.y;
 					let index = ((pointer_y - geometry.y()) / ROW_HEIGHT) as usize;
 					if index < rows && selected != Some(index) {
 						if let Some(previous) = selected {

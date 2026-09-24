@@ -137,6 +137,8 @@ pub(super) struct EngineState {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerState {
+	/// Where the pointer is in layout units of the frame being evaluated, so it compares directly with
+	/// [`Geometry`](crate::ui::layout::Geometry).
 	pub position: UiPoint,
 	pub pressed: bool,
 }
@@ -148,6 +150,11 @@ impl Default for PointerState {
 			pressed: false,
 		}
 	}
+}
+
+/// Maps normalized window coordinates, -1 to 1 with y up, onto a layout of `size` with y down.
+fn normalized_to_layout(position: UiPoint, size: Size) -> UiPoint {
+	UiPoint::new((position.x + 1.0) * 0.5 * size.x(), (1.0 - position.y) * 0.5 * size.y())
 }
 
 // Isolate clipping, evaluation, future, and runtime mechanics from the engine facade.
@@ -334,7 +341,7 @@ impl<C: 'static> Engine<C> {
 		if self.retained_layout.as_ref().is_some_and(|retained| retained.size != size) {
 			self.cancel();
 		}
-		self.sync_pointer_state();
+		self.sync_pointer_state(size);
 		self.route_drag();
 		self.route_drops();
 		self.core.runtime.begin_frame();
@@ -613,9 +620,9 @@ impl<C: 'static> Engine<C> {
 		*visual_state_key = Some(key);
 	}
 
-	fn sync_pointer_state(&mut self) {
+	fn sync_pointer_state(&mut self, size: Size) {
 		self.core.runtime.pointer = PointerState {
-			position: self.cursor_position,
+			position: normalized_to_layout(self.cursor_position, size),
 			pressed: self.is_clicking,
 		};
 	}
@@ -734,10 +741,7 @@ impl<C: 'static> Engine<C> {
 	/// Converts normalized window coordinates to the last evaluated frame's layout units.
 	fn layout_point(&self, position: UiPoint) -> Option<UiPoint> {
 		let size = self.retained_layout.as_ref()?.size;
-		Some(UiPoint::new(
-			(position.x + 1.0) * 0.5 * size.x(),
-			(1.0 - position.y) * 0.5 * size.y(),
-		))
+		Some(normalized_to_layout(position, size))
 	}
 
 	/// Returns the frontmost surface at normalized window coordinates in the
@@ -2431,7 +2435,7 @@ mod tests {
 		assert_eq!(
 			*engine.ctx().lock().expect("expected test value"),
 			Some(PointerState {
-				position: UiPoint::new(0.25, -0.5),
+				position: UiPoint::new(62.5, 75.0),
 				pressed: true,
 			})
 		);
@@ -2463,11 +2467,11 @@ mod tests {
 			*engine.ctx().lock().expect("expected test value"),
 			vec![
 				PointerState {
-					position: UiPoint::new(-1.0, -1.0),
+					position: UiPoint::new(0.0, 100.0),
 					pressed: false,
 				},
 				PointerState {
-					position: UiPoint::new(0.75, 0.5),
+					position: UiPoint::new(87.5, 25.0),
 					pressed: true,
 				},
 			]

@@ -39,8 +39,6 @@ pub struct Renderer {
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
 	cameras: SmallVec<[(Handle, Camera, Transform); 16]>,
-	/// The view and extent each sink rendered with in the last recorded frame. Temporal passes reproject from it.
-	previous_sink_views: SmallVec<[(SinkId, View, Extent); 16]>,
 
 	render_targets: RenderTargets,
 	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
@@ -219,7 +217,6 @@ impl Renderer {
 			present_interval: None,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
-			previous_sink_views: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
 			resource_manager: None,
@@ -698,7 +695,6 @@ impl Renderer {
 		let swapchains = &self.acquisitions.1;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
-		let previous_sink_views = &mut self.previous_sink_views;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
 		let pipeline_compilation_client = &self.pipeline_compilation_client;
@@ -751,21 +747,15 @@ impl Renderer {
 							};
 
 							let view = make_perspective_view_from_camera(camera, transform, extent);
-							sinks.push(with_previous_view(
-								Sink::new(view, extent, *sink_id),
-								previous_sink_views,
-							));
+							sinks.push(Sink::new(view, extent, *sink_id));
 						}
-						previous_sink_views.clear();
-						previous_sink_views.extend(sinks.iter().map(|sink| (sink.index(), sink.view(), sink.extent())));
 					}
 
 					{
 						let span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len());
 						let _enter = span.enter();
 						for sink in &sinks {
-							// Get images for the current sink and render pass and resize them to window extent
-							// Resize images to the sink extent, divided for reduced-resolution targets.
+							// Resize the sink's images to its extent, divided for reduced-resolution targets.
 							for (image, extent) in render_targets.get_images_for_sink(sink.index(), sink.extent()) {
 								frame.resize_image(image, extent);
 							}
@@ -1164,48 +1154,6 @@ impl Settings {
 	pub fn mesh_shading(mut self, value: bool) -> Self {
 		self.mesh_shading = value;
 		self
-	}
-}
-
-/// Attaches the previous frame's view to `sink` when that sink rendered last frame at the same extent.
-///
-/// A resize or a sink that did not render last frame leaves the sink without history, so temporal passes discard
-/// images that were never written or no longer match the sink.
-fn with_previous_view(sink: Sink, previous_sink_views: &[(SinkId, View, Extent)]) -> Sink {
-	let previous_view = previous_sink_views
-		.iter()
-		.find(|(sink_id, _, extent)| *sink_id == sink.index() && *extent == sink.extent())
-		.map(|(_, view, _)| *view);
-	match previous_view {
-		Some(view) => sink.with_previous_view(view),
-		None => sink,
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use math::{Degrees, Point, UnitVector};
-	use utils::Extent;
-
-	use super::with_previous_view;
-	use crate::rendering::{Sink, View};
-
-	fn view_at(x: f32) -> View {
-		View::new_perspective(Degrees::new(60.0), 1.0, 0.1, 100.0, Point::new(x, 0.0, 0.0), UnitVector::z_axis())
-	}
-
-	#[test]
-	fn sinks_keep_history_only_when_the_same_sink_rendered_last_frame_at_the_same_extent() {
-		let extent = Extent::rectangle(64, 32);
-		let previous = [(0, view_at(1.0), extent), (1, view_at(2.0), Extent::rectangle(32, 32))];
-
-		let kept = with_previous_view(Sink::new(view_at(0.0), extent, 0), &previous);
-		let resized = with_previous_view(Sink::new(view_at(0.0), extent, 1), &previous);
-		let new_sink = with_previous_view(Sink::new(view_at(0.0), extent, 2), &previous);
-
-		assert_eq!(kept.previous_view().map(|view| view.view()), Some(view_at(1.0).view()));
-		assert!(resized.previous_view().is_none());
-		assert!(new_sink.previous_view().is_none());
 	}
 }
 

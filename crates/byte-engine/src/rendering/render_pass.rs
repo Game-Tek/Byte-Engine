@@ -299,11 +299,10 @@ impl<'a> RenderPassBuilder<'a> {
 	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, but never binds it as an
 	/// attachment, so no pass clears it.
 	/// The creating pass writes this frame's copy. Any pass reads the previous frame's copy by binding the handle
-	/// with [`ghi::DescriptorWrite::combined_image_sampler_with_frame`] and an offset of `-1`. Next, look the image
-	/// up by name from other passes with [`Self::history_target`].
+	/// with [`ghi::DescriptorWrite::combined_image_sampler_with_frame`] and an offset of `-1`.
 	///
-	/// A previous-frame copy holds no usable data on a sink's first frame or right after a resize.
-	/// [`crate::rendering::Sink::previous_view`] returns `None` for those frames.
+	/// A previous-frame copy holds no usable data on a sink's first frame or right after a resize, so the reading pass
+	/// must track whether it recorded the sink at the same extent in the previous frame.
 	pub fn create_history_target(
 		&mut self,
 		builder: ghi::image::Builder<'a>,
@@ -318,11 +317,6 @@ impl<'a> RenderPassBuilder<'a> {
 		self.images
 			.insert_history(name.to_string(), self.sink_id, image, resolution_divisor);
 		image
-	}
-
-	/// Returns the history image another pass created with [`Self::create_history_target`].
-	pub fn history_target(&self, name: &str) -> Option<ghi::DynamicImageHandle> {
-		self.images.history(name, self.sink_id)
 	}
 
 	/// Creates a replacement for the color image named `main`.

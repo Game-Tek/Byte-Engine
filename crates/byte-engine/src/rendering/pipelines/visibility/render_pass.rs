@@ -38,7 +38,7 @@ use super::scene::RenderInfo;
 use super::shader_data::LightingData;
 use super::skinning::SkinningPass;
 use crate::rendering::render_pass::RenderPassFunction;
-use crate::rendering::{PipelineManagerClient, Sink};
+use crate::rendering::{PipelineManagerClient, Sink, View};
 
 /// The `SinkTargets` struct names the render-graph images a sink gives the visibility pass.
 #[derive(Clone, Copy)]
@@ -281,8 +281,8 @@ impl VisibilityRenderPass {
 	/// Prepares one opaque visibility layer and one nearest-surface transparent layer.
 	///
 	/// Returns `None` while any fixed pipeline is still compiling. `skinning` is passed only by the first sink
-	/// so deformation runs once per frame. `history_valid` must be false unless this pass recorded for the sink in
-	/// the previous frame, because only then do the previous frame's images hold this sink's data.
+	/// so deformation runs once per frame. `previous_view` is the view this pass recorded the sink with in the
+	/// previous frame at the same extent, or `None` when the previous frame's images do not hold this sink's data.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
@@ -291,7 +291,7 @@ impl VisibilityRenderPass {
 		dispatches: PhaseDispatches,
 		render_info: &'a RenderInfo,
 		shadow_work: ShadowWork,
-		history_valid: bool,
+		previous_view: Option<View>,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
 		let skinning = match skinning {
@@ -306,7 +306,7 @@ impl VisibilityRenderPass {
 		let ssgi_pipelines = self.ssgi.pipelines(pipeline_manager)?;
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
 		let gtao = self.gtao.prepare(frame, sink, gtao_pipelines);
-		let ssgi = self.ssgi.prepare(frame, sink, history_valid, ssgi_pipelines);
+		let ssgi = self.ssgi.prepare(frame, sink, previous_view, ssgi_pipelines);
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_materials,
 			&render_info.opaque_material_mask,

@@ -162,35 +162,19 @@ main: fn (input: StageInput) -> void {
 	let total_weight: f32 = 0.0;
 
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
-		let offset: vec2u = vec2u(tap % 2, tap / 2);
-		let tap_x: u32 = base.x + offset.x;
-		let tap_y: u32 = base.y + offset.y;
-		if (tap_x >= source_extent.x) {
-			tap_x = source_extent.x - 1;
-		}
-		if (tap_y >= source_extent.y) {
-			tap_y = source_extent.y - 1;
-		}
-		let tap_coordinate: vec2u = vec2u(tap_x, tap_y);
+		let tap_coordinate: vec2u = vec2u(min(base.x + tap % 2, source_extent.x - 1), min(base.y + tap / 2, source_extent.y - 1));
 		let sample_z: f32 = fetch_low_resolution_depth(tap_coordinate, source_extent);
 		if (sample_z == 0.0) {
 			continue;
 		}
-		let bilinear_x: f32 = 1.0 - fraction.x;
-		if (offset.x == 1) {
-			bilinear_x = fraction.x;
-		}
-		let bilinear_y: f32 = 1.0 - fraction.y;
-		if (offset.y == 1) {
-			bilinear_y = fraction.y;
-		}
+		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
 		// A small floor keeps a tap that lands exactly on the far side of the bilinear footprint eligible.
-		let weight: f32 = max(bilinear_x * bilinear_y, 0.001)
+		let weight: f32 = max(bilinear, 0.001)
 			* surface_weight(
 				center_normal,
 				center_position,
 				fetch_low_resolution_normal(tap_coordinate),
-				view_position(vec2f(f32(tap_x), f32(tap_y)), sample_z)
+				view_position(vec2f(f32(tap_coordinate.x), f32(tap_coordinate.y)), sample_z)
 			);
 		sum = sum + fetch(radiance_source, tap_coordinate) * weight;
 		total_weight = total_weight + weight;

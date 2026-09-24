@@ -107,7 +107,6 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let z00: f32 = fetch_linear_depth(clamped_texel(base_x, base_y, extent), extent);
 	let z10: f32 = fetch_linear_depth(clamped_texel(base_x + 1.0, base_y, extent), extent);
 	let z01: f32 = fetch_linear_depth(clamped_texel(base_x, base_y + 1.0, extent), extent);
-	let z11: f32 = fetch_linear_depth(clamped_texel(base_x + 1.0, base_y + 1.0, extent), extent);
 	let continuous_x: bool = depths_are_continuous(
 		fetch_linear_depth(clamped_texel(base_x - 1.0, base_y, extent), extent),
 		z00,
@@ -121,24 +120,20 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 		fetch_linear_depth(clamped_texel(base_x, base_y + 2.0, extent), extent)
 	);
 	if (continuous_x && continuous_y) {
-		let hit_texel: vec2u = clamped_texel(floor(hit_pixel.x + 0.5), floor(hit_pixel.y + 0.5), extent);
+		let hit_texel: vec2u = clamped_texel(round(hit_pixel.x), round(hit_pixel.y), extent);
 		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch_linear_depth(hit_texel, extent));
 	}
 
 	// At a silhouette, the object in front is the nearest nonzero texel of the footprint.
-	let nearest_z: f32 = z00;
-	let nearest_texel: vec2u = clamped_texel(base_x, base_y, extent);
-	if (z10 != 0.0 && (nearest_z == 0.0 || z10 < nearest_z)) {
-		nearest_z = z10;
-		nearest_texel = clamped_texel(base_x + 1.0, base_y, extent);
-	}
-	if (z01 != 0.0 && (nearest_z == 0.0 || z01 < nearest_z)) {
-		nearest_z = z01;
-		nearest_texel = clamped_texel(base_x, base_y + 1.0, extent);
-	}
-	if (z11 != 0.0 && (nearest_z == 0.0 || z11 < nearest_z)) {
-		nearest_z = z11;
-		nearest_texel = clamped_texel(base_x + 1.0, base_y + 1.0, extent);
+	let nearest_z: f32 = 0.0;
+	let nearest_texel: vec2u = vec2u(0, 0);
+	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+		let texel: vec2u = clamped_texel(base_x + f32(tap % 2), base_y + f32(tap / 2), extent);
+		let z: f32 = fetch_linear_depth(texel, extent);
+		if (z != 0.0 && (nearest_z == 0.0 || z < nearest_z)) {
+			nearest_z = z;
+			nearest_texel = texel;
+		}
 	}
 	let behind_nearest: f32 = hit_ray_z - nearest_z;
 	if (nearest_z == 0.0 || behind_nearest < 0.0 || behind_nearest >= SSGI_THICKNESS_BASE + SSGI_THICKNESS_SCALE * nearest_z) {
@@ -147,12 +142,14 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	return vec3f(f32(nearest_texel.x), f32(nearest_texel.y), nearest_z);
 }
 
-view_ray_xy: fn (pixel: vec2f) -> vec2f {
-	return pixel * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+// Returns the view-space position at continuous half-resolution pixel coordinates, where integers are texel centers.
+view_position: fn (pixel: vec2f, z: f32) -> vec3f {
+	let ray: vec2f = pixel * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+	return vec3f(ray.x * z, ray.y * z, z);
 }
 
 ray_pixel: fn (ray: SsgiRay, fraction: f32) -> vec2f {
-	return ray.start_pixel + (ray.end_pixel - ray.start_pixel) * fraction;
+	return mix(ray.start_pixel, ray.end_pixel, fraction);
 }
 
 // Screen-space interpolation is linear in 1/z, which keeps the ray depth perspective-correct.
@@ -164,14 +161,12 @@ ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 // Background holds nothing to hit, so the ray is in front of it.
 ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
 	let sample_pixel: vec2f = ray_pixel(ray, fraction);
-	let texel: vec2u = vec2u(u32(floor(sample_pixel.x + 0.5)), u32(floor(sample_pixel.y + 0.5)));
-	let scene_z: f32 = fetch_linear_depth(texel, extent);
+	let scene_z: f32 = fetch_linear_depth(clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent), extent);
 	if (scene_z == 0.0) {
 		return 0.0 - 1.0;
 	}
 	return ray_depth(ray, fraction) - scene_z;
 }
-
 
 // Projects a view-space position to continuous half-resolution pixel coordinates, where integers are texel centers.
 project_to_pixel: fn (position: vec3f) -> vec2f {
@@ -214,12 +209,10 @@ axis_tangent: fn (pixel: vec2u, axis: vec2f, center_position: vec3f, extent: vec
 	);
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
-		let ray: vec2f = view_ray_xy(pixel_f + axis);
-		return vec3f(ray.x * positive_z, ray.y * positive_z, positive_z) - center_position;
+		return view_position(pixel_f + axis, positive_z) - center_position;
 	}
 	if (negative_z != 0.0) {
-		let ray: vec2f = view_ray_xy(pixel_f - axis);
-		return center_position - vec3f(ray.x * negative_z, ray.y * negative_z, negative_z);
+		return center_position - view_position(pixel_f - axis, negative_z);
 	}
 	return vec3f(0.0, 0.0, 0.0);
 }
@@ -302,7 +295,8 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	if (brightest > SSGI_MAX_RADIANCE) {
 		radiance = radiance * (SSGI_MAX_RADIANCE / brightest);
 	}
-	return vec4f(max(radiance.x, 0.0), max(radiance.y, 0.0), max(radiance.z, 0.0), 1.0);
+	radiance = max(radiance, vec3f(0.0, 0.0, 0.0));
+	return vec4f(radiance.x, radiance.y, radiance.z, 1.0);
 }
 
 main: fn (input: StageInput) -> void {
@@ -317,8 +311,7 @@ main: fn (input: StageInput) -> void {
 	}
 
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
-	let center_ray: vec2f = view_ray_xy(pixel_f);
-	let center_position: vec3f = vec3f(center_ray.x * center_z, center_ray.y * center_z, center_z);
+	let center_position: vec3f = view_position(pixel_f, center_z);
 	let normal: vec3f = reconstruct_normal(pixel, extent, center_position);
 	// A zero normal marks a degenerate neighborhood; the denoiser then compares depth only.
 	write(normal_output, pixel, vec4f(normal.x, normal.y, normal.z, 0.0));
@@ -348,15 +341,14 @@ main: fn (input: StageInput) -> void {
 	let start_pixel: vec2f = project_to_pixel(origin);
 	let end_pixel: vec2f = project_to_pixel(end);
 	let inverse_end_z: f32 = 1.0 / end.z;
-	let screen_delta: vec2f = end_pixel - start_pixel;
-	let screen_length: f32 = sqrt(dot(screen_delta, screen_delta));
+	let screen_length: f32 = length(end_pixel - start_pixel);
 	// Shorten long rays on screen, not in the world. Screen position and 1/z are both linear along the projected
 	// ray, so cutting both at the same fraction keeps the ray on its line. Scaling the world-space length instead
 	// would cut a ray that heads toward the camera, whose projection grows without bound near the camera plane,
 	// down to a few centimeters.
 	if (screen_length > SSGI_MAX_SCREEN_DISTANCE) {
 		let kept_fraction: f32 = SSGI_MAX_SCREEN_DISTANCE / screen_length;
-		end_pixel = start_pixel + screen_delta * kept_fraction;
+		end_pixel = mix(start_pixel, end_pixel, kept_fraction);
 		inverse_end_z = mix(1.0 / origin.z, inverse_end_z, kept_fraction);
 	}
 	let ray: SsgiRay = SsgiRay(start_pixel, end_pixel, 1.0 / origin.z, inverse_end_z);
@@ -387,17 +379,14 @@ main: fn (input: StageInput) -> void {
 		let behind: f32 = fraction;
 		for (let refinement: u32 = 0; refinement < SSGI_REFINEMENT_STEPS; refinement = refinement + 1) {
 			let middle: f32 = 0.5 * (front + behind);
-			let middle_is_behind: bool = ray_penetration(ray, middle, extent) > 0.0;
-			if (middle_is_behind) {
+			if (ray_penetration(ray, middle, extent) > 0.0) {
 				behind = middle;
+				continue;
 			}
-			if (middle_is_behind == false) {
-				front = middle;
-			}
+			front = middle;
 		}
 		let surface: vec3f = hit_surface(ray_pixel(ray, behind), ray_depth(ray, behind), extent);
-		let surface_ray: vec2f = view_ray_xy(vec2f(surface.x, surface.y));
-		let surface_position: vec3f = vec3f(surface_ray.x * surface.z, surface_ray.y * surface.z, surface.z);
+		let surface_position: vec3f = view_position(vec2f(surface.x, surface.y), surface.z);
 		// Rays only hit surfaces that face them. This rejects a surface occluding itself: a ray that leaves a floor
 		// almost parallel to it can land behind the next floor texel, whose depth is quantized.
 		let faces_ray: bool = surface.z != 0.0

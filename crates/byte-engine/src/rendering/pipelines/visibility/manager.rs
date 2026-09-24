@@ -395,8 +395,9 @@ pub struct VisibilityPipelineManager {
 	point_shadow_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
-	/// Sinks whose visibility pass recorded in the previous frame. Only their per-frame images hold usable history.
-	recorded_sinks: SmallVec<[usize; 4]>,
+	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
+	/// per-frame images hold usable history, and only while the extent is unchanged.
+	recorded_sinks: SmallVec<[Sink; 4]>,
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -970,7 +971,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let skinning_pass = &self.skinning_pass;
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
-		let mut recorded_sinks = SmallVec::<[usize; 4]>::new();
+		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -981,7 +982,11 @@ impl PipelineManager for VisibilityPipelineManager {
 			.filter_map(|(command_index, (sink, render_pass))| {
 				// Skinning runs once per frame, with the first sink.
 				let skinning = (command_index == 0).then_some(skinning_pass);
-				let history_valid = previously_recorded_sinks.contains(&sink.index());
+				// A sink that did not record last frame, or was resized since, has no usable history.
+				let previous_view = previously_recorded_sinks
+					.iter()
+					.find(|previous| previous.index() == sink.index() && previous.extent() == sink.extent())
+					.map(Sink::view);
 				let command = render_pass.prepare(
 					frame,
 					sink,
@@ -989,9 +994,9 @@ impl PipelineManager for VisibilityPipelineManager {
 					dispatches,
 					render_info,
 					shadow_work,
-					history_valid,
+					previous_view,
 				)?;
-				recorded_sinks.push(sink.index());
+				recorded_sinks.push(*sink);
 				Some(allocate_render_command(frame_allocator, command))
 			})
 			.collect();

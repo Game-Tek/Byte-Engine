@@ -553,6 +553,8 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 				None
 			} else if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
 				infer_member_type(left)
+			} else if is_index(right) {
+				indexed_element_type(left)
 			} else {
 				infer_expression_type(right)
 			}
@@ -689,10 +691,39 @@ pub(super) fn infer_member_type(source: &NodeReference) -> Option<NodeReference>
 		Nodes::Expression(Expressions::Accessor { left, right }) => {
 			if matches!(left.borrow().node(), Nodes::Workgroup { .. } | Nodes::TaskPayload { .. }) {
 				infer_member_type(left)
+			} else if is_index(right) {
+				indexed_element_type(left)
 			} else {
 				infer_expression_type(right)
 			}
 		}
+		_ => None,
+	}
+}
+
+/// Reports whether the right side of an accessor is a bracketed index rather than a member name.
+fn is_index(right: &NodeReference) -> bool {
+	matches!(right.borrow().node(), Nodes::Expression(Expressions::Expression { .. }))
+}
+
+/// Returns the element type that indexing `indexed` selects, or `None` when it is unknown.
+///
+/// The index expression's own type says nothing about the element, so overload selection must not use it.
+fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
+	let source = expression_source(indexed).unwrap_or_else(|| indexed.clone());
+	let indexed_type = match source.borrow().node() {
+		Nodes::Workgroup { format, count, .. } | Nodes::Output { format, count, .. } if count.is_some() => {
+			return Some(format.clone());
+		}
+		Nodes::Member { r#type, count: Some(_), .. } => return Some(r#type.clone()),
+		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
+		_ => infer_member_type(&source)?,
+	};
+	// Array types are structs whose template is the element type.
+	match indexed_type.borrow().node() {
+		Nodes::Struct {
+			template: Some(element), ..
+		} => Some(element.clone()),
 		_ => None,
 	}
 }

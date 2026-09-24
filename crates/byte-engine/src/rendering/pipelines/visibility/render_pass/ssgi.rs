@@ -261,18 +261,17 @@ impl SsgiPass {
 
 	/// Uploads this frame's reprojection and noise seed, resizes the images, and returns the three-stage recording.
 	///
-	/// `history_valid` must be false unless this sink recorded SSGI and the radiance history in the previous frame.
-	/// The sink must also carry [`Sink::previous_view`]; without it the stages ignore history.
+	/// `previous_view` is the view this pass recorded the sink with in the previous frame, or `None` when the previous
+	/// frame's SSGI and radiance images do not hold this sink's data. Without it the stages ignore history.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		history_valid: bool,
+		previous_view: Option<View>,
 		pipelines: SsgiPipelines,
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
 		let half_extent = half_resolution_extent(extent);
-		let previous_view = sink.previous_view().filter(|_| history_valid);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_view
 				.map(|previous| current_view_to_previous_clip(sink.view(), previous))

@@ -1945,6 +1945,44 @@ main: fn () -> void {
 		}
 	}
 
+	/// Verifies an indexed array selects overloads by its element type, not by the type of the index.
+	#[test]
+	fn lex_indexed_array_arguments_select_element_overloads() {
+		let script = r#"
+		shared_depth: workgroup<f32, 4>;
+		WEIGHTS: const f32[2] = f32[2](0.25, 0.75);
+		main: fn () -> void {
+			let index: u32 = 1;
+			let shared_maximum: f32 = max(shared_depth[index], shared_depth[index + 1]);
+			let constant_minimum: f32 = min(WEIGHTS[index], WEIGHTS[0]);
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		for (statement, expected_name) in [(&statements[1], "max"), (&statements[2], "min")] {
+			match statement.borrow().node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, expected_name);
+							assert_type(&r#return.borrow(), "f32");
+						}
+						_ => panic!("Expected intrinsic"),
+					},
+					_ => panic!("Expected intrinsic call"),
+				},
+				_ => panic!("Expected assignment"),
+			}
+		}
+	}
+
 	/// Verifies the vector `mix`, integer ordering and scalar `round` overloads screen-space shaders lean on resolve to their own types.
 	#[test]
 	fn lex_vector_mix_integer_ordering_and_scalar_round_overloads() {

@@ -56,23 +56,14 @@ fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 }
 
 // Returns `value + offset - radius` clamped to the image, for a filter tap `offset` steps along one axis.
+// Offsets are unsigned, so the lower clamp happens before subtracting the radius.
 tap_coordinate: fn (value: u32, offset: u32, extent: u32) -> u32 {
-	let shifted: u32 = value + offset;
-	if (shifted < SSGI_FILTER_RADIUS) {
-		return 0;
-	}
-	let coordinate: u32 = shifted - SSGI_FILTER_RADIUS;
-	if (coordinate >= extent) {
-		return extent - 1;
-	}
-	return coordinate;
+	return min(max(value + offset, SSGI_FILTER_RADIUS) - SSGI_FILTER_RADIUS, extent - 1);
 }
 
+// Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
 filter_weight: fn (offset: u32) -> f32 {
-	if (offset < SSGI_FILTER_RADIUS) {
-		return SSGI_FILTER_WEIGHTS[SSGI_FILTER_RADIUS - offset];
-	}
-	return SSGI_FILTER_WEIGHTS[offset - SSGI_FILTER_RADIUS];
+	return SSGI_FILTER_WEIGHTS[max(offset, SSGI_FILTER_RADIUS) - min(offset, SSGI_FILTER_RADIUS)];
 }
 
 // Reads last frame's positive linear depth at a texel.
@@ -109,6 +100,7 @@ normal_agreement: fn (a: vec3f, b: vec3f) -> f32 {
 	);
 }
 
+// Returns the view-space position of a half-resolution texel at view depth `z`.
 view_position: fn (coordinate: vec2u, z: f32) -> vec3f {
 	let ray: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y)) * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
 	return vec3f(ray.x * z, ray.y * z, z);
@@ -129,9 +121,7 @@ surface_weight: fn (center_normal: vec3f, center_position: vec3f, tap_normal: ve
 }
 
 // Averages this frame's rays over the 5x5 neighbors on the center's surface.
-spatial_estimate: fn (pixel: vec2u, extent: vec2u, center_z: f32) -> vec4f {
-	let center_position: vec3f = view_position(pixel, center_z);
-	let center_normal: vec3f = fetch_normal(pixel);
+spatial_estimate: fn (pixel: vec2u, extent: vec2u, center_position: vec3f, center_normal: vec3f) -> vec4f {
 	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total_weight: f32 = 0.0;
 	for (let y_offset: u32 = 0; y_offset <= SSGI_FILTER_RADIUS * 2; y_offset = y_offset + 1) {
@@ -169,21 +159,13 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 
-	let estimate: vec4f = spatial_estimate(pixel, extent, center_z);
+	let center_position: vec3f = view_position(pixel, center_z);
+	let center_normal: vec3f = fetch_normal(pixel);
+	let estimate: vec4f = spatial_estimate(pixel, extent, center_position, center_normal);
+	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip
+		* vec4f(center_position.x, center_position.y, center_position.z, 1.0);
 	// History is selected with a branch, not weighted by zero, because an unwritten history texel may hold NaN.
-	if (ssgi_parameters.history_valid == 0) {
-		write(history_output, pixel, estimate);
-		return;
-	}
-
-	let ray: vec2f = vec2f(f32(pixel.x), f32(pixel.y)) * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
-	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip * vec4f(ray.x * center_z, ray.y * center_z, center_z, 1.0);
-	if (clip.w <= 0.0) {
-		write(history_output, pixel, estimate);
-		return;
-	}
-	let uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+	if (ssgi_parameters.history_valid == 0 || clip.w <= 0.0) {
 		write(history_output, pixel, estimate);
 		return;
 	}
@@ -192,8 +174,9 @@ main: fn (input: StageInput) -> void {
 	// where last frame saw this surface: its depth matches the previous camera's clip w, which is its view depth, and
 	// its normal agrees with this pixel's. Depth alone would hand a floor the history of a foot standing on it, since
 	// both share a depth where they touch. The normals of consecutive frames differ only by the camera's rotation
-	// between them, which is small next to the agreement window.
-	let center_normal: vec3f = fetch_normal(pixel);
+	// between them, which is small next to the agreement window. Texels outside the image are skipped, so a point
+	// that left the screen gets no history.
+	let uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
 	let history_position: vec2f = vec2f(uv.x * f32(extent.x) - 0.5, uv.y * f32(extent.y) - 0.5);
 	let base_x: f32 = floor(history_position.x);
 	let base_y: f32 = floor(history_position.y);
@@ -212,27 +195,18 @@ main: fn (input: StageInput) -> void {
 		if (previous_z == 0.0 || abs(previous_z - clip.w) > clip.w * SSGI_DISOCCLUSION_TOLERANCE) {
 			continue;
 		}
-		let bilinear_x: f32 = 1.0 - fraction_x;
-		if (tap % 2 == 1) {
-			bilinear_x = fraction_x;
-		}
-		let bilinear_y: f32 = 1.0 - fraction_y;
-		if (tap / 2 == 1) {
-			bilinear_y = fraction_y;
-		}
-		let weight: f32 = bilinear_x * bilinear_y * normal_agreement(center_normal, fetch_previous_normal(coordinate));
+		let bilinear: f32 = mix(1.0 - fraction_x, fraction_x, f32(tap % 2)) * mix(1.0 - fraction_y, fraction_y, f32(tap / 2));
+		let weight: f32 = bilinear * normal_agreement(center_normal, fetch_previous_normal(coordinate));
 		if (weight <= 0.0) {
 			continue;
 		}
 		history_sum = history_sum + fetch(previous_history, coordinate) * weight;
 		history_weight = history_weight + weight;
 	}
-	// Without a matching texel this surface was hidden last frame. History is selected with a branch, not weighted by
-	// zero, because an unwritten history texel may hold NaN.
+	// Without a matching texel this surface was hidden or off screen last frame.
 	if (history_weight < 0.001) {
 		write(history_output, pixel, estimate);
 		return;
 	}
-	let history: vec4f = history_sum * (1.0 / history_weight);
-	write(history_output, pixel, estimate * (1.0 - SSGI_HISTORY_WEIGHT) + history * SSGI_HISTORY_WEIGHT);
+	write(history_output, pixel, mix(estimate, history_sum * (1.0 / history_weight), SSGI_HISTORY_WEIGHT));
 }

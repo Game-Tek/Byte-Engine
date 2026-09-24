@@ -660,7 +660,7 @@ mod tests {
 			let floats: f32[3] = scalar_f32();
 			let shorts: u16[3] = scalar_u16();
 			let indices: u32[3] = mirror_indices(scalar_u32());
-			let sum: f32 = floats[1] + f32(shorts[1]) + f32(indices[1]);
+			let sum: f32 = floats[1] + f32(u32(shorts[1])) + f32(indices[1]);
 			sum;
 		}
 		"#;

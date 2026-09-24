@@ -103,11 +103,14 @@ mod tests {
 				.duration_since(std::time::UNIX_EPOCH)
 				.unwrap()
 				.as_nanos();
-			let path = std::env::temp_dir().join(format!("byte-engine-file-resource-reader-{}-{nanos}.bin", std::process::id()));
+			let path =
+				std::env::temp_dir().join(format!("byte-engine-file-resource-reader-{}-{nanos}.bin", std::process::id()));
 			match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
 				Ok(_) => return path,
 				Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-				Err(error) => panic!("Failed to create a test file: {error}. The most likely cause is an unwritable temp directory."),
+				Err(error) => {
+					panic!("Failed to create a test file: {error}. The most likely cause is an unwritable temp directory.")
+				}
 			}
 		}
 	}

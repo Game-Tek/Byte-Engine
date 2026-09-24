@@ -811,9 +811,10 @@ impl<C: 'static> Engine<C> {
 	/// the revision changed, since a retained clone forces the next build to
 	/// allocate fresh buffers instead of reusing the engine's.
 	pub fn render(&mut self) -> &Render {
-		let layout = self.retained_layout.as_mut().expect(
-			"UI render has no layout to draw. The most likely cause is calling render before the first evaluate.",
-		);
+		let layout = self
+			.retained_layout
+			.as_mut()
+			.expect("UI render has no layout to draw. The most likely cause is calling render before the first evaluate.");
 		let (layout_revision, size) = (layout.revision, layout.size);
 		let tree_revision = self.core.tree.revision();
 		let retained = self.retained_render.as_ref().is_some_and(|retained| {
@@ -839,9 +840,7 @@ impl<C: 'static> Engine<C> {
 	fn build_render(&mut self, layout_elements: &[LayoutElement], layout_revision: u64, size: Size) -> RetainedRender {
 		let tree = &self.core.tree;
 		let mut visibility_unchanged = self.retained_render.as_ref().is_some_and(|retained| {
-			retained.clip_revision == tree.clip_revision
-				&& retained.layout_revision == layout_revision
-				&& retained.size == size
+			retained.clip_revision == tree.clip_revision && retained.layout_revision == layout_revision && retained.size == size
 		});
 		// Geometry that moved by visual transforms alone, with appearance and clipping as
 		// the retained render saw them, leaves every entry outside the dirty subtrees as it is.
@@ -1315,8 +1314,8 @@ impl<C: 'static> Engine<C> {
 			placement_revision: tree.placement_revision,
 			clip_revision: tree.clip_revision,
 			appearance_revision: tree.appearance_revision,
-			layout_revision: layout_revision,
-			size: size,
+			layout_revision,
+			size,
 			visible,
 			render: Render { contents: shared },
 		}
@@ -1773,9 +1772,18 @@ mod tests {
 		let mut engine = Engine::with_context(DragLog::default());
 		engine.mount(async move |ctx| {
 			let mut root = ctx.element("root").container(|c| c.hit_testable(false)).await;
-			let mut target = root.element("target").container(|c| c.absolute_position(0, 0).size(50.into())).await;
-			let inner = target.element("inner").container(|c| c.absolute_position(30, 30).size(20.into())).await;
-			let mut source = root.element("source").container(|c| c.absolute_position(0, 0).size(20.into())).await;
+			let mut target = root
+				.element("target")
+				.container(|c| c.absolute_position(0, 0).size(50.into()))
+				.await;
+			let inner = target
+				.element("inner")
+				.container(|c| c.absolute_position(30, 30).size(20.into()))
+				.await;
+			let mut source = root
+				.element("source")
+				.container(|c| c.absolute_position(0, 0).size(20.into()))
+				.await;
 			let ids = (target.id(), inner.id(), source.id());
 			ctx.with(|log| log.ids = Some(ids)).await;
 			loop {
@@ -1867,7 +1875,10 @@ mod tests {
 		assert_eq!(engine.ctx().dragged, vec![UiVector::new(30.0, 0.0)]);
 		assert!(engine.drag_to(window(40.0, 20.0)));
 		engine.evaluate(Size::new(128, 128), &allocator);
-		assert_eq!(engine.ctx().dragged, vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]);
+		assert_eq!(
+			engine.ctx().dragged,
+			vec![UiVector::new(30.0, 0.0), UiVector::new(30.0, 10.0)]
+		);
 	}
 
 	#[test]
@@ -2583,17 +2594,18 @@ mod tests {
 			ctx.element("root").container(|c| c.size(Sizing::Relative(1, 1))).await;
 		});
 		let mut first_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut first_hits);
+		engine
+			.evaluate(Size::new(100, 100), &allocator)
+			.retain_hit_test(&mut first_hits);
 		let first_render = engine.render().clone();
 		let root = first_hits.query(UiPoint::zero()).unwrap();
 		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
 		let mut second_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(Size::new(200, 200), &allocator).retain_hit_test(&mut second_hits);
+		engine
+			.evaluate(Size::new(200, 200), &allocator)
+			.retain_hit_test(&mut second_hits);
 		assert_eq!(second_hits.query(UiPoint::new(0.5, -0.5)), Some(root));
-		assert_eq!(
-			engine.render().elements().next().unwrap().size,
-			Size::new(200, 200)
-		);
+		assert_eq!(engine.render().elements().next().unwrap().size, Size::new(200, 200));
 		// Geometry a host copied out and a render it cloned belong to the host, so a later frame leaves them as they were.
 		assert_eq!(first_hits.query(UiPoint::zero()), Some(root));
 		assert_eq!(first_hits.query(UiPoint::new(2.0, -2.0)), None);
@@ -2945,7 +2957,10 @@ mod tests {
 
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx(), Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20))));
+		assert_eq!(
+			*engine.ctx(),
+			Some(Geometry::new(Location3::new(12, 18, 1), Size::new(30, 20)))
+		);
 	}
 
 	#[test]
@@ -2974,7 +2989,10 @@ mod tests {
 		let _ = engine.evaluate(Size::new(100, 100), &frame_allocator);
 		engine.evaluate(Size::new(100, 100), &frame_allocator);
 
-		assert_eq!(*engine.ctx(), Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20))));
+		assert_eq!(
+			*engine.ctx(),
+			Some(Geometry::new(Location3::new(24, 36, 1), Size::new(40, 20)))
+		);
 	}
 
 	#[test]
@@ -3149,10 +3167,7 @@ mod tests {
 
 	impl TestContext {
 		fn new(value: u32) -> Self {
-			Self {
-				value,
-				seen: Vec::new(),
-			}
+			Self { value, seen: Vec::new() }
 		}
 	}
 
@@ -4197,11 +4212,7 @@ mod tests {
 		for step in [1, 2] {
 			*engine.ctx_mut() = step;
 			engine.evaluate(Size::new(100, 100), &allocator);
-			assert_eq!(
-				engine.render().revision(),
-				first,
-				"Edit {step} changed the render revision."
-			);
+			assert_eq!(engine.render().revision(), first, "Edit {step} changed the render revision.");
 		}
 	}
 
@@ -4216,11 +4227,7 @@ mod tests {
 
 			*engine.ctx_mut() = step;
 			engine.evaluate(Size::new(100, 100), &allocator);
-			assert_ne!(
-				engine.render().revision(),
-				first,
-				"Edit {step} kept the render revision."
-			);
+			assert_ne!(engine.render().revision(), first, "Edit {step} kept the render revision.");
 		}
 	}
 

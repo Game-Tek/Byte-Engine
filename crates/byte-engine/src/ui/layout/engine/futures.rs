@@ -397,7 +397,8 @@ mod frame_wait_tests {
 					_ = surface.on(Events::Dragged) => true,
 					_ = surface.render() => false,
 				};
-				ctx.with(|(events, frames)| if dragged { *events += 1 } else { *frames += 1 }).await;
+				ctx.with(|(events, frames)| if dragged { *events += 1 } else { *frames += 1 })
+					.await;
 			}
 		});
 		engine.evaluate(Size::new(100, 100), &bumpalo::Bump::new());

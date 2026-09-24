@@ -66,7 +66,10 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		let source_hash = hash_shader_source(&id_string, &source, settings);
 
-		let generator = self.generator.as_deref().map(|generator| (generator, &self.standalone_context));
+		let generator = self
+			.generator
+			.as_deref()
+			.map(|generator| (generator, &self.standalone_context));
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = self
@@ -658,7 +661,10 @@ mod tests {
 			source: &'a str,
 			settings: BESLShaderSettings,
 			source_hash: u64,
-			generator: Option<(&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator, &'a crate::asset::JsonObject)>,
+			generator: Option<(
+				&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator,
+				&'a crate::asset::JsonObject,
+			)>,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
 				assert_eq!(id, "passes/resolve.besl");
@@ -1104,11 +1110,7 @@ mod tests {
 	}
 }
 
-use std::{
-	collections::hash_map::DefaultHasher,
-	fmt,
-	hash::Hasher as _,
-	};
+use std::{collections::hash_map::DefaultHasher, fmt, hash::Hasher as _};
 
 use serde::Deserialize as _;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};

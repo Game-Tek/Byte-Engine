@@ -6,6 +6,7 @@ use ghi::{
 		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
+	frame::Frame as _,
 };
 
 use crate::{

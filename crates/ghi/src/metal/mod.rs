@@ -10,16 +10,19 @@ use ::utils::hash::HashMap;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSView;
-use objc2_foundation::{NSArray, NSRange, NSSize};
+use objc2_foundation::{NSArray, NSRange};
 use objc2_metal as mtl;
+use objc2_metal::MTL4CommandBuffer as _;
 use objc2_metal::MTLAccelerationStructure as _;
 use objc2_metal::MTLArgumentEncoder as _;
 use objc2_metal::MTLDevice as _;
+use objc2_metal::MTLResource as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
 use crate::PrivateHandles;
 use crate::buffer::BufferHandle;
+use crate::context::{Context as _, ContextCreate as _};
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 
@@ -173,20 +176,18 @@ pub(crate) mod utils {
 		}
 	}
 
-	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> Option<(usize, usize, usize)> {
-		Some(format.compact_copy_layout(extent.width().max(1), extent.height().max(1)))
+	/// Returns the compact row pitch, row count, and image pitch of one texture subresource.
+	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> (usize, usize, usize) {
+		format.compact_copy_layout(extent.width().max(1), extent.height().max(1))
 	}
 
-	pub(crate) fn texture_copy_size(_format: Formats, extent: Extent) -> mtl::MTLSize {
+	/// Converts an extent to a Metal size, raising each empty dimension to one.
+	pub(crate) fn mtl_size(extent: Extent) -> mtl::MTLSize {
 		mtl::MTLSize {
 			width: extent.width().max(1) as _,
 			height: extent.height().max(1) as _,
 			depth: extent.depth().max(1) as _,
 		}
-	}
-
-	pub(crate) fn is_block_compressed(format: Formats) -> bool {
-		format.bc_bytes_per_block().is_some()
 	}
 
 	pub(crate) fn vertex_format(format: crate::DataTypes) -> mtl::MTLVertexFormat {
@@ -283,19 +284,6 @@ pub(crate) mod utils {
 		}
 	}
 
-	#[cfg(not(debug_assertions))]
-	pub(crate) fn debug_compressed_upload(
-		_enabled: bool,
-		_format: Formats,
-		_mip_index: usize,
-		_slice_index: usize,
-		_extent: Extent,
-		_bytes_per_row: usize,
-		_bytes_per_image: usize,
-		_source_offset: usize,
-	) {
-	}
-
 	#[cfg(test)]
 	mod tests {
 		use super::*;
@@ -304,24 +292,12 @@ pub(crate) mod utils {
 		fn upload_layout_preserves_bc_block_rows_and_minimum_extent() {
 			let extent = Extent::rectangle(5, 7);
 
-			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent).unwrap();
+			let (bytes_per_row, row_count, bytes_per_image) = texture_upload_layout(Formats::BC7, extent);
 
 			assert_eq!(bytes_per_row, 2 * 16);
 			assert_eq!(row_count, 2);
 			assert_eq!(bytes_per_image, 2 * 2 * 16);
-			assert_eq!(
-				texture_upload_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)),
-				Some((4, 1, 4))
-			);
-		}
-
-		#[test]
-		fn bc_copy_size_uses_texel_extent_not_padded_block_extent() {
-			let size = texture_copy_size(Formats::BC7, Extent::rectangle(5, 7));
-
-			assert_eq!(size.width, 5);
-			assert_eq!(size.height, 7);
-			assert_eq!(size.depth, 1);
+			assert_eq!(texture_upload_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)), (4, 1, 4));
 		}
 
 		#[test]
@@ -359,6 +335,25 @@ pub(crate) use pipeline::*;
 pub(crate) use resources::*;
 pub use state::{buffer, descriptor_set, image, sampler, swapchain, synchronizer};
 pub(crate) use types::*;
+
+/// Creates a real Metal context with one queue for the requested workloads, for tests that run GPU work.
+#[cfg(test)]
+pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::QueueHandle) {
+	use crate::device::Device as _;
+
+	let features = crate::device::Features::new().debug_labels(true);
+	let mut instance = Instance::new(features)
+		.expect("Failed to create a Metal test instance. The most likely cause is that no Metal device is available.");
+	let mut queue_handle = None;
+	let context = instance
+		.create_device(features, &mut [(crate::QueueSelection::new(workloads), &mut queue_handle)])
+		.expect("Failed to create a Metal test device. The most likely cause is that the device lacks the requested queue.")
+		.create_context()
+		.expect("Failed to create a Metal test context. The most likely cause is unavailable Metal 4 support.");
+	let queue_handle = queue_handle
+		.expect("Missing Metal test queue. The most likely cause is that device selection did not return the requested queue.");
+	(context, queue_handle)
+}
 
 #[cfg(test)]
 mod flat_binding_tests {
@@ -506,7 +501,6 @@ mod flat_binding_tests {
 
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			device::Device as _,
 			queue::{FrameRequest, Queue as _, QueueExecution as _},
 		};
 
@@ -541,21 +535,7 @@ mod flat_binding_tests {
 			}
 		"#;
 
-		let features = crate::device::Features::new().debug_labels(true);
-		let mut instance = super::Instance::new(features)
-			.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
-		let mut queue_handle = None;
-		let mut context = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
-			)
-			.expect("Failed to create a Metal device. The most likely cause is unavailable compute queue support.")
-			.create_context()
-			.expect("Failed to create a Metal context. The most likely cause is unavailable Metal command support.");
-		let queue_handle = queue_handle.expect(
-			"Missing Metal compute queue. The most likely cause is that device selection did not return the requested queue.",
-		);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
 
 		let texture_resource = resource(
 			TEXTURES_SLOT.index(),
@@ -693,7 +673,6 @@ mod flat_binding_tests {
 	fn metal4_specialized_function_descriptor_reaches_pipeline_compiler() {
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			device::Device as _,
 			queue::{FrameRequest, Queue as _, QueueExecution as _},
 		};
 
@@ -710,25 +689,7 @@ mod flat_binding_tests {
 				if (gid == 0) { resources.output[0] = specialized_value; }
 			}
 		"#;
-		let features = crate::device::Features::new();
-		let mut instance = super::Instance::new(features)
-			.expect("Metal 4 specialization test setup failed. The most likely cause is unavailable Metal device support.");
-		let mut queue_handle = None;
-		let mut context = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
-			)
-			.expect(
-				"Metal 4 specialization device creation failed. The most likely cause is unavailable compute queue support.",
-			)
-			.create_context()
-			.expect(
-				"Metal 4 specialization context creation failed. The most likely cause is unavailable Metal command support.",
-			);
-		let queue_handle = queue_handle.expect(
-			"Metal 4 specialization queue is missing. The most likely cause is that device selection did not return the requested queue.",
-		);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
 		let output_resource = resource(
 			OUTPUT_SLOT.index(),
 			crate::shader::ResourceKind::StorageBuffer,
@@ -790,7 +751,6 @@ mod flat_binding_tests {
 	fn argument_buffers_and_upload_pages_are_retained_across_frames_and_refreshed_on_writes() {
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			device::Device as _,
 			queue::{FrameRequest, Queue as _, QueueExecution as _},
 		};
 
@@ -808,21 +768,7 @@ mod flat_binding_tests {
 				if (gid == 0) { resources.output[0] = resources.input[0] + push; }
 			}
 		"#;
-		let features = crate::device::Features::new();
-		let mut instance = super::Instance::new(features)
-			.expect("Metal retention test setup failed. The most likely cause is unavailable Metal device support.");
-		let mut queue_handle = None;
-		let mut context = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
-			)
-			.expect("Metal retention device creation failed. The most likely cause is unavailable compute queue support.")
-			.create_context()
-			.expect("Metal retention context creation failed. The most likely cause is unavailable Metal command support.");
-		let queue_handle = queue_handle.expect(
-			"Metal retention queue is missing. The most likely cause is that device selection did not return the requested queue.",
-		);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
 		let shader = context
 			.create_shader(
 				Some("Metal Retention Probe"),
@@ -942,7 +888,6 @@ mod flat_binding_tests {
 	fn dynamic_storage_mips_survive_alternating_frame_sequences() {
 		use crate::{
 			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			device::Device as _,
 			queue::{FrameRequest, Queue as _, QueueExecution as _},
 		};
 
@@ -998,21 +943,7 @@ mod flat_binding_tests {
 			}
 		"#;
 
-		let features = crate::device::Features::new().debug_labels(true);
-		let mut instance = super::Instance::new(features)
-			.expect("Failed to create a Metal instance. The most likely cause is unavailable Metal device support.");
-		let mut queue_handle = None;
-		let mut context = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::COMPUTE), &mut queue_handle)],
-			)
-			.expect("Failed to create a Metal device. The most likely cause is unavailable compute queue support.")
-			.create_context()
-			.expect("Failed to create a Metal context. The most likely cause is unavailable Metal command support.");
-		let queue_handle = queue_handle.expect(
-			"Missing Metal compute queue. The most likely cause is that device selection did not return the requested queue.",
-		);
+		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
 		context.set_frames_in_flight(2);
 
 		let mip_one = crate::shader::ShaderResourceDescriptor::single(

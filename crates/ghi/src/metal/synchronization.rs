@@ -1,3 +1,4 @@
+use objc2::runtime::ImplementedBy;
 use objc2_metal::MTL4CommandEncoder as _;
 
 use super::*;
@@ -290,16 +291,12 @@ impl MetalBarrier {
 		!self.encoder_after.is_empty()
 	}
 
-	pub(crate) fn encode_compute(self, encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>) {
-		self.encode(ProtocolObject::from_ref(encoder));
-	}
-
-	pub(crate) fn encode_render(self, encoder: &ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>) {
-		self.encode(ProtocolObject::from_ref(encoder));
-	}
-
-	/// Encodes this dependency through the stage-independent Metal 4 encoder protocol.
-	fn encode(self, encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder>) {
+	/// Encodes this dependency on a compute or render encoder.
+	pub(crate) fn encode<E: objc2::Message + ?Sized>(self, encoder: &E)
+	where
+		dyn mtl::MTL4CommandEncoder: ImplementedBy<E>,
+	{
+		let encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder> = ProtocolObject::from_ref(encoder);
 		if self.has_queue_dependency() {
 			encoder.barrierAfterQueueStages_beforeStages_visibilityOptions(
 				self.queue_after,

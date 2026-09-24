@@ -11,7 +11,7 @@ pub(crate) struct NativeCommand {
 	residency_set: Retained<ProtocolObject<dyn mtl::MTLResidencySet>>,
 	retained_allocations: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLAllocation>>; 32]>,
 	retained_addresses: ::utils::hash::HashSet<usize>,
-	retained_objects: SmallVec<[Retained<AnyObject>; 4]>,
+	retained_objects: SmallVec<[Retained<ProtocolObject<dyn NSObjectProtocol>>; 4]>,
 }
 
 impl NativeCommand {
@@ -50,80 +50,13 @@ impl NativeCommand {
 		}
 	}
 
-	/// Returns a Metal 4 compute encoder for resource-tracked dispatch and transfer commands.
-	pub(crate) fn compute_command_encoder(&self) -> Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>> {
-		self.command_buffer.computeCommandEncoder()
-	}
-
-	/// Returns a Metal 4 render encoder for a resource-tracked render pass.
-	pub(crate) fn render_command_encoder(
-		&self,
-		descriptor: &mtl::MTL4RenderPassDescriptor,
-	) -> Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>> {
-		self.command_buffer.renderCommandEncoderWithDescriptor(descriptor)
-	}
-
-	/// Retains a Metal buffer and declares its allocation in this command's residency set.
-	pub(crate) fn retain_buffer(&mut self, buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>) {
-		// SAFETY: Every MTLBuffer is also an MTLAllocation in Metal's object model.
-		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(buffer) };
-		self.retain_allocation(allocation);
-	}
-
-	/// Retains a Metal texture and declares its allocation in this command's residency set.
-	pub(crate) fn retain_texture(&mut self, texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>) {
-		// SAFETY: Every MTLTexture is also an MTLAllocation in Metal's object model.
-		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(texture) };
-		self.retain_allocation(allocation);
-	}
-
-	/// Retains a compute pipeline and declares its compiled allocation in this command's residency set.
-	pub(crate) fn retain_compute_pipeline(&mut self, pipeline: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>) {
-		// SAFETY: Metal pipeline states conform to MTLAllocation and may be placed in a residency set.
-		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
-		self.retain_allocation(allocation);
-	}
-
-	/// Retains a render pipeline and declares its compiled allocation in this command's residency set.
-	pub(crate) fn retain_render_pipeline(&mut self, pipeline: Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>) {
-		// SAFETY: Metal pipeline states conform to MTLAllocation and may be placed in a residency set.
-		let allocation = unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(pipeline) };
-		self.retain_allocation(allocation);
-	}
-
-	/// Retains a sampler referenced from a nested argument buffer until GPU completion.
-	pub(crate) fn retain_sampler(&mut self, sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>) {
-		// SAFETY: Erasing the Objective-C protocol preserves the same retained object and lifetime.
-		let sampler = unsafe { Retained::cast_unchecked::<AnyObject>(sampler) };
-		self.retained_objects.push(sampler);
-	}
-
-	/// Retains a Metal 4 argument table until every command snapshot that references it completes.
-	pub(crate) fn retain_argument_table(&mut self, table: Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>) {
-		// SAFETY: Erasing the Objective-C protocol preserves the same retained object and lifetime.
-		let table = unsafe { Retained::cast_unchecked::<AnyObject>(table) };
-		self.retained_objects.push(table);
-	}
-
-	/// Retains a drawable and its texture until Metal completes the submitted batch.
-	pub(crate) fn retain_drawable(&mut self, drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>) {
-		self.retain_texture(drawable.texture());
-		// SAFETY: Erasing the Objective-C protocol preserves the same retained drawable and lifetime.
-		let drawable = unsafe { Retained::cast_unchecked::<AnyObject>(drawable) };
-		self.retained_objects.push(drawable);
-	}
-
-	/// Retains native allocations referenced indirectly by this command.
-	pub(crate) fn retain_allocations(
-		&mut self,
-		allocations: impl IntoIterator<Item = Retained<ProtocolObject<dyn mtl::MTLAllocation>>>,
-	) {
-		for allocation in allocations {
-			self.retain_allocation(allocation);
-		}
-	}
-
-	fn retain_allocation(&mut self, allocation: Retained<ProtocolObject<dyn mtl::MTLAllocation>>) {
+	/// Retains a buffer, texture, pipeline state, or acceleration structure until GPU completion and declares it
+	/// in this command's residency set.
+	pub(crate) fn retain_allocation<T: Message + 'static>(&mut self, allocation: Retained<T>)
+	where
+		dyn mtl::MTLAllocation: ImplementedBy<T>,
+	{
+		let allocation = ProtocolObject::<dyn mtl::MTLAllocation>::from_retained(allocation);
 		// Commands retain the same buffers and textures once per encoder; a set keeps repeats constant time.
 		let address = Retained::as_ptr(&allocation) as *const () as usize;
 		if !self.retained_addresses.insert(address) {
@@ -131,6 +64,20 @@ impl NativeCommand {
 		}
 		self.residency_set.addAllocation(allocation.as_ref());
 		self.retained_allocations.push(allocation);
+	}
+
+	/// Retains an object that needs no residency, such as a sampler or an argument table, until GPU completion.
+	pub(crate) fn retain_object<T: Message + 'static>(&mut self, object: Retained<T>)
+	where
+		dyn NSObjectProtocol: ImplementedBy<T>,
+	{
+		self.retained_objects.push(ProtocolObject::from_retained(object));
+	}
+
+	/// Retains a drawable and its texture until Metal completes the submitted batch.
+	pub(crate) fn retain_drawable(&mut self, drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>) {
+		self.retain_allocation(drawable.texture());
+		self.retain_object(drawable);
 	}
 
 	// Ends recording and commits residency changes before queue submission.
@@ -158,12 +105,6 @@ impl Deref for NativeCommand {
 	}
 }
 
-impl AsRef<NativeCommand> for NativeCommand {
-	fn as_ref(&self) -> &NativeCommand {
-		self
-	}
-}
-
 /// The `SubmittedBatch` struct owns one queue submission until Metal reports completion.
 pub(crate) struct SubmittedBatch {
 	queue_handle: graphics_hardware_interface::QueueHandle,
@@ -173,14 +114,8 @@ pub(crate) struct SubmittedBatch {
 }
 
 impl SubmittedBatch {
-	// Waits for Metal's completion message and returns the commands for queue-local recycling.
-	pub(crate) fn wait(
-		mut self,
-	) -> (
-		graphics_hardware_interface::QueueHandle,
-		SmallVec<[NativeCommand; 4]>,
-		Option<String>,
-	) {
+	/// Waits for Metal's completion message, returns the commands to their queue's pool, and reports any GPU error.
+	pub(crate) fn wait(mut self, queues: &mut [StoredQueue]) -> Option<String> {
 		let feedback = self.feedback.recv().unwrap_or(BatchCommitFeedbackStatus::HandlerFailed);
 		let error = match feedback {
 			BatchCommitFeedbackStatus::Succeeded => None,
@@ -194,23 +129,22 @@ impl SubmittedBatch {
 		for command in &mut self.commands {
 			command.reset();
 		}
-		(self.queue_handle, self.commands, error)
+		queues[self.queue_handle.0 as usize].command_pool.extend(self.commands);
+		error
 	}
 }
 
 /// The `StoredQueue` struct owns one Metal 4 queue and its context-local native command pool.
 pub(crate) struct StoredQueue {
 	pub(crate) queue: Retained<ProtocolObject<dyn mtl::MTL4CommandQueue>>,
-	pub(crate) workloads: crate::WorkloadTypes,
 	pub(crate) resource_tracker: synchronization::MetalResourceTracker,
 	command_pool: Vec<NativeCommand>,
 }
 
 impl StoredQueue {
-	pub(crate) fn new(queue: Retained<ProtocolObject<dyn mtl::MTL4CommandQueue>>, workloads: crate::WorkloadTypes) -> Self {
+	pub(crate) fn new(queue: Retained<ProtocolObject<dyn mtl::MTL4CommandQueue>>) -> Self {
 		Self {
 			queue,
-			workloads,
 			resource_tracker: synchronization::MetalResourceTracker::default(),
 			command_pool: Vec::new(),
 		}
@@ -272,17 +206,12 @@ impl StoredQueue {
 			_commit_options: commit_options,
 		}
 	}
-
-	/// Returns completed commands to this queue's exclusive reuse pool.
-	pub(crate) fn recycle(&mut self, commands: impl IntoIterator<Item = NativeCommand>) {
-		self.command_pool.extend(commands);
-	}
 }
 
 impl Clone for StoredQueue {
 	fn clone(&self) -> Self {
 		// Every Context gets an independent completion timeline and native command pool.
-		Self::new(self.queue.clone(), self.workloads)
+		Self::new(self.queue.clone())
 	}
 }
 
@@ -333,7 +262,7 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		let frame = self.frame.as_mut().expect(
 				"Frame is required to record a frame command buffer. The most likely cause is that Queue::execute was called with None and the closure tried to record frame work.",
 			);
-		let mut command_buffer = frame.create_command_buffer_recording(command_buffer_handle);
+		let mut command_buffer = crate::frame::Frame::create_command_buffer_recording(frame, command_buffer_handle);
 		record(&mut command_buffer);
 		self.command_buffers.push(command_buffer.into_finished());
 	}
@@ -395,7 +324,8 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 
 use block2::StackBlock;
-use objc2::runtime::AnyObject;
+use objc2::Message;
+use objc2::runtime::{ImplementedBy, NSObjectProtocol};
 use objc2_foundation::NSString;
 use objc2_metal::{MTL4CommandAllocator, MTL4CommandBuffer, MTL4CommandQueue, MTL4CommitFeedback, MTLDevice, MTLResidencySet};
 

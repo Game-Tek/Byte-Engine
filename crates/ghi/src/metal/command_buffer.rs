@@ -32,54 +32,25 @@ struct AppliedDescriptorBinding {
 	resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
 }
 
-fn attachment_texture_view(
-	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+/// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.
+fn texture_view_2d(
+	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
-	array_layers: u32,
-	layer: Option<u32>,
+	mip_level: u32,
+	layer: u32,
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	if let Some(layer) = layer {
-		if array_layers > 1 {
-			// SAFETY: The requested layer is validated against the image's array-layer count by the caller.
-			unsafe {
-				return texture
-					.newTextureViewWithPixelFormat_textureType_levels_slices(
-						utils::to_pixel_format(format),
-						mtl::MTLTextureType::Type2D,
-						NSRange::new(0, 1),
-						NSRange::new(layer as usize, 1),
-					)
-					.expect(
-						"Metal texture view creation failed. The most likely cause is an invalid array-layer render target view.",
-					);
-			}
-		}
+	// SAFETY: Callers validate the mip level and layer against the image before recording the view.
+	unsafe {
+		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
+			utils::to_pixel_format(format),
+			mtl::MTLTextureType::Type2D,
+			NSRange::new(mip_level as usize, 1),
+			NSRange::new(layer as usize, 1),
+		)
 	}
-
-	texture.clone()
-}
-
-/// Creates a descriptor-visible view when a descriptor selects one mip.
-fn descriptor_texture_view(
-	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
-	format: crate::Formats,
-	mip_level: Option<u32>,
-) -> Option<Retained<ProtocolObject<dyn mtl::MTLTexture>>> {
-	let mip_level = mip_level?;
-
-	// SAFETY: The requested mip is validated against the image's mip-level count by the caller.
-	Some(unsafe {
-		texture
-			.newTextureViewWithPixelFormat_textureType_levels_slices(
-				utils::to_pixel_format(format),
-				mtl::MTLTextureType::Type2D,
-				NSRange::new(mip_level as usize, 1),
-				NSRange::new(0, 1),
-			)
-			.expect(
-				"Metal texture mip view creation failed. The most likely cause is that the selected mip exceeds the image mip count.",
-			)
-	})
+	.expect(
+		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layer does not exist in the image.",
+	)
 }
 
 /// Validates one attachment's declared layer selection against the native texture.
@@ -134,15 +105,15 @@ pub(in crate::metal) fn encode_texture_upload(
 	array_layers: u32,
 	staging: &[u8],
 	region: Option<crate::image::Region>,
-) -> Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>> {
-	let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent)?;
+) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+	let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent);
 	if let Some(region) = region {
 		region.validate(extent, format, array_layers);
 	}
 	let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
 	let origin = region.map_or([0, 0], |region| region.offset);
 	let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
-	let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent)?;
+	let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent);
 	let expected_size = source_image_pitch
 		.checked_mul(array_layers as usize)
 		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
@@ -152,7 +123,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
 		staging.len(),
 	);
-	if utils::is_block_compressed(format) {
+	if format.bc_bytes_per_block().is_some() {
 		assert_eq!(
 			staging.len(),
 			expected_size,
@@ -187,7 +158,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		}
 	}
 
-	let mut source_size = utils::texture_copy_size(format, copy_extent);
+	let mut source_size = utils::mtl_size(copy_extent);
 	source_size.depth = 1;
 	let destination_origin = mtl::MTLOrigin {
 		x: origin[0] as _,
@@ -211,7 +182,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		}
 	}
 
-	Some(upload_buffer)
+	upload_buffer
 }
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
@@ -221,7 +192,6 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(super) samplers: &'a [sampler::Sampler],
 	pub(super) acceleration_structures: &'a [AccelerationStructure],
-	pub(super) pipeline_layouts: &'a [PipelineLayout],
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) swapchains: &'a [Swapchain],
@@ -447,7 +417,6 @@ pub struct CommandBufferRecording<'a> {
 	render_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	encoder_block_index: usize,
-	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,
 	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,

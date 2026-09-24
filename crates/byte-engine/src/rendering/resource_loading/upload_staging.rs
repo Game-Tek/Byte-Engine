@@ -1,6 +1,9 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use ghi::Device as _;
+use ghi::{
+	Device as _,
+	context::{Context as _, ContextCreate as _},
+};
 
 /// The `UploadStagingArena` struct gives loader lanes exclusive regions of one persistently mapped transfer buffer.
 ///

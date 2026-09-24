@@ -19,16 +19,12 @@ use crate::io::{
 	ResourceIoQueueType, ResourceIoRequest, ResourceIoSourceKinds, ResourceIoStatus, validate_source_range,
 };
 
-/// The `OpenFile` struct retains one source registered with a Metal I/O queue.
-struct OpenFile {
-	handle: Retained<ProtocolObject<dyn MTLIOFileHandle>>,
-}
-
 /// The `ResourceIoQueue` struct owns a Metal I/O command queue and its opened source files.
 pub struct ResourceIoQueue {
 	device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
 	queue: Retained<ProtocolObject<dyn mtl::MTLIOCommandQueue>>,
-	files: Vec<OpenFile>,
+	/// Source files registered with this queue; a [`ResourceIoFileHandle`] indexes this list.
+	files: Vec<Retained<ProtocolObject<dyn MTLIOFileHandle>>>,
 	debug_labels: bool,
 }
 
@@ -86,9 +82,12 @@ impl ResourceIoQueue {
 		})
 	}
 
-	fn file(&self, region: ResourceIoFileRegion) -> Result<&OpenFile, ResourceIoError> {
+	fn file(&self, region: ResourceIoFileRegion) -> Result<&ProtocolObject<dyn MTLIOFileHandle>, ResourceIoError> {
 		let index = usize::try_from(region.file.index).map_err(|_| ResourceIoError::InvalidFileHandle)?;
-		self.files.get(index).ok_or(ResourceIoError::InvalidFileHandle)
+		self.files
+			.get(index)
+			.map(|file| &**file)
+			.ok_or(ResourceIoError::InvalidFileHandle)
 	}
 
 	/// Validates and encodes one file-to-buffer request without committing the command buffer.
@@ -119,7 +118,7 @@ impl ResourceIoQueue {
 				destination.buffer.as_ref(),
 				load.destination_offset,
 				load.size,
-				source.handle.as_ref(),
+				source,
 				load.source.decoded_offset,
 			);
 		}
@@ -140,15 +139,16 @@ impl ResourceIoQueue {
 			.images
 			.get_single(load.destination)
 			.ok_or(ResourceIoError::InvalidImageHandle)?;
-		if load.mip_level >= destination.mip_levels || load.array_layer >= destination.array_layers {
+		if load.mip_level >= destination.description.mip_levels || load.array_layer >= destination.description.array_layers {
 			return Err(ResourceIoError::InvalidDestinationRange { request: request_index });
 		}
 
-		let mip_extent = crate::image::mip_extent(destination.extent, load.mip_level);
+		let mip_extent = crate::image::mip_extent(destination.description.extent, load.mip_level);
 		let requested_extent = [load.extent.width(), load.extent.height().max(1), load.extent.depth().max(1)];
 		let origin = [load.origin.width(), load.origin.height(), load.origin.depth()];
 		let destination_extent = [mip_extent.width(), mip_extent.height().max(1), mip_extent.depth().max(1)];
 		let (minimum_row_bytes, source_row_count, _) = destination
+			.description
 			.format
 			.compact_copy_layout(requested_extent[0], requested_extent[1]);
 		let minimum_image_bytes = load.source_bytes_per_row.checked_mul(source_row_count);
@@ -171,11 +171,7 @@ impl ResourceIoQueue {
 					destination.texture.as_ref(),
 					load.array_layer as usize,
 					load.mip_level as usize,
-					mtl::MTLSize {
-						width: requested_extent[0] as usize,
-						height: requested_extent[1] as usize,
-						depth: requested_extent[2] as usize,
-					},
+					super::utils::mtl_size(load.extent),
 					load.source_bytes_per_row,
 					load.source_bytes_per_image,
 					mtl::MTLOrigin {
@@ -183,7 +179,7 @@ impl ResourceIoQueue {
 						y: origin[1] as usize,
 						z: origin[2] as usize,
 					},
-					source.handle.as_ref(),
+					source,
 					load.source.decoded_offset,
 				);
 		}
@@ -217,7 +213,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 		}
 
 		let handle_index = self.files.len() as u64;
-		self.files.push(OpenFile { handle });
+		self.files.push(handle);
 		Ok(ResourceIoFileHandle { index: handle_index })
 	}
 
@@ -423,25 +419,11 @@ mod tests {
 
 	use super::*;
 	use crate::command_buffer::CommandBufferRecording as _;
-	use crate::device::Device as _;
+	use crate::context::{Context as _, ContextCreate as _};
 	use crate::io::{ResourceIoQueue as _, ResourceIoTicket as _};
 
 	fn test_context() -> context::Context {
-		let features = crate::device::Features::new();
-		let mut instance = crate::metal::Instance::new(features).expect(
-			"Failed to create the Metal resource-I/O test instance. The most likely cause is that no Metal device is available.",
-		);
-		let mut queue_handle = None;
-		let device = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER), &mut queue_handle)],
-			)
-			.expect("Failed to create the Metal resource-I/O test device. The most likely cause is unavailable Metal support.");
-		assert_eq!(queue_handle, Some(crate::QueueHandle(0)));
-		device.create_context().expect(
-			"Failed to create the Metal resource-I/O test context. The most likely cause is unavailable Metal 4 support.",
-		)
+		crate::metal::test_context(crate::WorkloadTypes::TRANSFER).0
 	}
 
 	/// Transfers one test image through the public per-invocation readback API.

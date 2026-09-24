@@ -22,20 +22,8 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-	pub fn new(
-		device: &'a mut context::Context,
-		frame_key: graphics_hardware_interface::FrameKey,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> Self {
-		assert!(
-			!device.queues.is_empty(),
-			"Metal frame creation failed. The most likely cause is that the context has no command queues.",
-		);
-		Self::new_for_queue(device, frame_key, graphics_hardware_interface::QueueHandle(0), allocator)
-	}
-
 	/// Creates a frame that batches command buffers through the selected queue.
-	pub(crate) fn new_for_queue(
+	pub(crate) fn new(
 		device: &'a mut context::Context,
 		frame_key: graphics_hardware_interface::FrameKey,
 		queue_handle: graphics_hardware_interface::QueueHandle,
@@ -59,166 +47,26 @@ impl<'a> Frame<'a> {
 			.unwrap()
 	}
 
-	fn get_current_buffer_handle(
-		&self,
-		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-	) -> crate::buffer::BufferHandle {
-		self.device
-			.buffers
-			.nth_handle(buffer_handle, self.frame_key.sequence_index as _)
-			.expect(
-				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
-			)
-	}
-
-	fn frame_buffer_parts(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> (*mut u8, usize) {
-		let buffer = self.device.buffers.resource(self.get_current_buffer_handle(buffer_handle));
-		let buffer = buffer
-			.staging
-			.map(|staging_handle| self.device.buffers.resource(staging_handle))
-			.unwrap_or(buffer);
-
-		(buffer.pointer, buffer.size)
-	}
-
-	fn frame_texture_staging_parts(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> (*mut u8, usize) {
-		let image = self.device.images.resource(self.get_current_image_handle(image_handle));
-		let staging = image.staging.as_ref().expect(
-			"Missing Metal texture staging data. The most likely cause is that CPU texture access was requested for a device-only image.",
-		);
-
-		(staging.as_ptr() as *mut u8, staging.len())
-	}
-}
-
-impl Frame<'_> {
-	pub fn intern_raster_pipeline(
-		&mut self,
-		pipeline: crate::metal::device::Pipeline,
-	) -> graphics_hardware_interface::PipelineHandle {
+	pub fn intern_raster_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_raster_pipeline(pipeline)
 	}
 
-	pub fn intern_compute_pipeline(
-		&mut self,
-		pipeline: crate::metal::device::ComputePipeline,
-	) -> graphics_hardware_interface::PipelineHandle {
+	pub fn intern_compute_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
 		self.device.intern_compute_pipeline(pipeline)
 	}
 
 	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: crate::metal::device::Image) -> graphics_hardware_interface::ImageHandle {
+	pub fn intern_image(&mut self, image: image::Image) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
 	}
 
 	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(&mut self, sampler: crate::metal::device::Sampler) -> graphics_hardware_interface::SamplerHandle {
+	pub fn intern_sampler(&mut self, sampler: sampler::Sampler) -> graphics_hardware_interface::SamplerHandle {
 		self.device.intern_sampler(sampler)
-	}
-
-	pub fn get_mut_buffer_slice<T: crate::Pod>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
-	}
-
-	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		self.device.sync_buffer(buffer_handle);
-	}
-
-	pub fn get_mut_dynamic_buffer_slice<T: crate::Pod>(
-		&mut self,
-		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
-	) -> &mut T {
-		let (pointer, byte_count) = self.frame_buffer_parts(buffer_handle.into());
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
-			"Failed to map a typed Metal frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
-		);
-		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
-		unsafe { &mut *pointer }
-	}
-
-	pub fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
-		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
-
-		// SAFETY: `frame_texture_staging_parts` returns the live exclusive staging allocation and its exact size.
-		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
-	}
-
-	pub fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
-		let handle = self.get_current_image_handle(image_handle);
-		self.device.pending_image_syncs.push_back((handle, None));
-	}
-
-	/// Schedules a rectangular upload from this frame's image staging storage.
-	pub fn sync_texture_region(
-		&mut self,
-		image_handle: graphics_hardware_interface::BaseImageHandle,
-		region: crate::image::Region,
-	) {
-		let handle = self.get_current_image_handle(image_handle);
-		let image = self.device.images.resource(handle);
-		region.validate(image.extent, image.format, image.array_layers);
-		self.device.pending_image_syncs.push_back((handle, Some(region)));
-	}
-
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		self.device.write(descriptor_set_writes);
-	}
-
-	/// Resizes the current image and schedules the other frame-local images for safe replacement.
-	pub fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
-		let handle = self.get_current_image_handle(image_handle);
-		if self.device.resize_image_internal(handle, extent) {
-			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
-			self.device
-				.resize_image_on_other_frames(image_handle, extent, self.frame_key.sequence_index);
-		}
-	}
-
-	pub fn create_command_buffer_recording<'a>(
-		&'a mut self,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> super::CommandBufferRecording<'a> {
-		let mut drawables = Vec::new_in(self.allocator);
-		drawables.extend(self.device.swapchains.iter().enumerate().filter_map(|(index, swapchain)| {
-			swapchain
-				.pending_drawable
-				.as_ref()
-				.map(|drawable| (SwapchainHandle(index as u64), drawable.clone()))
-		}));
-		let mut recording = self.device.create_command_buffer_recording_with_frame_key_in(
-			command_buffer_handle,
-			Some(self.frame_key),
-			self.allocator,
-		);
-		recording.attach_drawables(drawables.into_iter());
-		recording
-	}
-
-	/// Acquires a drawable from inside the started frame. The sequence synchronizer was already waited by `start_frame`.
-	pub fn acquire_swapchain_image(
-		&mut self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-	) -> Option<crate::frame::SwapchainAcquisition> {
-		self.device
-			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 
 	pub fn device(&mut self) -> &mut context::Context {
 		self.device
-	}
-
-	pub fn execute_finished(
-		&mut self,
-		command_buffer: super::FinishedCommandBuffer<'_>,
-		present_keys: &[graphics_hardware_interface::PresentKey],
-		synchronizer: graphics_hardware_interface::SynchronizerHandle,
-	) {
-		let mut command_buffers = SmallVec::new();
-		command_buffers.push(command_buffer);
-		self.execute_finished_batch(command_buffers, present_keys, synchronizer);
 	}
 
 	/// Takes the pending drawables for this submission while preserving a missing drawable as an explicit skipped present.
@@ -281,7 +129,7 @@ impl Frame<'_> {
 			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
 			let mut resolve_command = self.device.queues[self.queue_handle.0 as usize]
 				.acquire_native_command(Some("Present Resolve"), self.device.settings.debug_labels);
-			let copy_encoder = resolve_command.compute_command_encoder().expect(
+			let copy_encoder = resolve_command.computeCommandEncoder().expect(
 				"Metal 4 present resolve encoder creation failed. The most likely cause is that the resolve command was not recording.",
 			);
 			let queue_index = self.queue_handle.0 as usize;
@@ -306,8 +154,8 @@ impl Frame<'_> {
 				};
 				let source_texture = self.device.images.resource(proxy_image).texture.clone();
 				let destination_texture = drawable.texture();
-				resolve_command.retain_texture(source_texture.clone());
-				resolve_command.retain_texture(destination_texture.clone());
+				resolve_command.retain_allocation(source_texture.clone());
+				resolve_command.retain_allocation(destination_texture.clone());
 				let barrier = resource_tracker.consume(
 					resolve_scope,
 					[
@@ -325,7 +173,7 @@ impl Frame<'_> {
 						),
 					],
 				);
-				barrier.encode_compute(copy_encoder.as_ref());
+				barrier.encode(&*copy_encoder);
 
 				// SAFETY: Source and drawable textures are retained and validated for the proxy resolve copy.
 				unsafe {
@@ -431,10 +279,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
-		let (pointer, length) = self.frame_texture_staging_parts(texture_handle);
-
-		// SAFETY: `frame_texture_staging_parts` returns the live exclusive staging allocation and its exact size.
-		unsafe { std::slice::from_raw_parts_mut(pointer, length) }
+		let handle = self.get_current_image_handle(texture_handle);
+		self.device.images.resource_mut(handle).staging.as_deref_mut().expect(
+			"Missing Metal texture staging data. The most likely cause is that CPU texture access was requested for a device-only image.",
+		)
 	}
 
 	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
@@ -442,12 +290,20 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.pending_image_syncs.push_back((handle, None));
 	}
 
+	/// Schedules a rectangular upload from this frame's image staging storage.
 	fn sync_texture_region(
 		&mut self,
 		image_handle: graphics_hardware_interface::BaseImageHandle,
 		region: crate::image::Region,
 	) {
-		Frame::sync_texture_region(self, image_handle, region);
+		let handle = self.get_current_image_handle(image_handle);
+		let image = self.device.images.resource(handle);
+		region.validate(
+			image.description.extent,
+			image.description.format,
+			image.description.array_layers,
+		);
+		self.device.pending_image_syncs.push_back((handle, Some(region)));
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
@@ -458,25 +314,58 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
-		Frame::get_mut_dynamic_buffer_slice(self, buffer_handle)
+		let handle = self
+			.device
+			.buffers
+			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
+			.expect(
+				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
+			);
+		let buffer = self.device.buffers.resource(handle);
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Metal frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
+		unsafe { &mut *pointer }
 	}
 
+	/// Resizes the current image and schedules the other frame-local images for safe replacement.
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
-		Frame::resize_image(self, image_handle, extent);
+		let handle = self.get_current_image_handle(image_handle);
+		if self.device.resize_image_internal(handle, extent) {
+			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
+			self.device
+				.resize_image_on_other_frames(image_handle, extent, self.frame_key.sequence_index);
+		}
 	}
 
 	fn create_command_buffer_recording<'record>(
 		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		Frame::create_command_buffer_recording(self, command_buffer_handle)
+		let mut drawables = Vec::new_in(self.allocator);
+		drawables.extend(self.device.swapchains.iter().enumerate().filter_map(|(index, swapchain)| {
+			swapchain
+				.pending_drawable
+				.as_ref()
+				.map(|drawable| (SwapchainHandle(index as u64), drawable.clone()))
+		}));
+		let mut recording = self.device.create_command_buffer_recording_with_frame_key_in(
+			command_buffer_handle,
+			Some(self.frame_key),
+			self.allocator,
+		);
+		recording.attach_drawables(drawables.into_iter());
+		recording
 	}
 
+	/// Acquires a drawable from inside the started frame. The sequence synchronizer was already waited by `start_frame`.
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		Frame::acquire_swapchain_image(self, swapchain_handle)
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 }
 

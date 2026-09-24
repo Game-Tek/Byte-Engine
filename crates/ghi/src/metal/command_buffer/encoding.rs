@@ -8,19 +8,15 @@ fn retain_descriptor_resources(
 	descriptor_sets: &[DescriptorSet],
 	command_buffer: &mut NativeCommandSlot,
 	bound_descriptor_set_handles: &[DescriptorSetHandle],
-	drawables: &[(
-		graphics_hardware_interface::SwapchainHandle,
-		Retained<ProtocolObject<dyn CAMetalDrawable>>,
-	)],
 	sequence_index: u8,
 	layout: &PipelineLayout,
 	materialization: &Materialization,
 ) {
 	for (_, argument_buffer, _) in materialization.argument_buffers.iter() {
-		command_buffer.retain_buffer(argument_buffer.clone());
+		command_buffer.retain_allocation(argument_buffer.clone());
 	}
 	for texture_view in materialization._texture_views.iter() {
-		command_buffer.retain_texture(texture_view.clone());
+		command_buffer.retain_allocation(texture_view.clone());
 	}
 
 	for resource in &layout.resources {
@@ -34,38 +30,26 @@ fn retain_descriptor_resources(
 		for descriptor in descriptors.values().copied() {
 			match descriptor {
 				Descriptor::Image { image, .. } => {
-					command_buffer.retain_texture(device.images.resource(image).texture.clone());
+					command_buffer.retain_allocation(device.images.resource(image).texture.clone());
 				}
 				Descriptor::CombinedImageSampler { image, sampler, .. } => {
-					command_buffer.retain_texture(device.images.resource(image).texture.clone());
-					command_buffer.retain_sampler(device.samplers[sampler.0 as usize].sampler.clone());
+					command_buffer.retain_allocation(device.images.resource(image).texture.clone());
+					command_buffer.retain_object(device.samplers[sampler.0 as usize].sampler.clone());
 				}
 				Descriptor::Buffer { buffer, .. } => {
-					command_buffer.retain_buffer(device.buffers.resource(buffer).buffer.clone());
+					command_buffer.retain_allocation(device.buffers.resource(buffer).buffer.clone());
 				}
+				// Acquired drawables are retained when they are attached to the recording, so only proxies remain.
 				Descriptor::Swapchain { handle } => {
 					if let Some(proxy) = device.swapchains[handle.0 as usize].images[sequence_index as usize] {
-						command_buffer.retain_texture(device.images.resource(proxy).texture.clone());
-					} else {
-						let texture = drawables
-								.iter()
-								.find(|(swapchain, _)| swapchain.0 == handle.0)
-								.map(|(_, drawable)| drawable.texture())
-								.expect(
-									"Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.",
-								);
-						command_buffer.retain_texture(texture);
+						command_buffer.retain_allocation(device.images.resource(proxy).texture.clone());
 					}
 				}
 				Descriptor::AccelerationStructure { handle } => {
-					let structure = &device.acceleration_structures[handle.0 as usize].structure;
-					// SAFETY: Metal acceleration structures conform to MTLAllocation for residency tracking.
-					let allocation =
-						unsafe { Retained::cast_unchecked::<ProtocolObject<dyn mtl::MTLAllocation>>(structure.clone()) };
-					command_buffer.retain_allocations(std::iter::once(allocation));
+					command_buffer.retain_allocation(device.acceleration_structures[handle.0 as usize].structure.clone());
 				}
 				Descriptor::Sampler { sampler } => {
-					command_buffer.retain_sampler(device.samplers[sampler.0 as usize].sampler.clone());
+					command_buffer.retain_object(device.samplers[sampler.0 as usize].sampler.clone());
 				}
 			}
 		}
@@ -116,7 +100,8 @@ impl CommandBufferRecording<'_> {
 					// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Image { image, mip_level, .. }) => unsafe {
 						let image = self.device.images.resource(image);
-						let texture_view = descriptor_texture_view(&image.texture, image.format, mip_level);
+						let texture_view =
+							mip_level.map(|mip_level| texture_view_2d(&image.texture, image.description.format, mip_level, 0));
 						let texture = texture_view.as_ref().unwrap_or(&image.texture);
 						layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _);
 						if let Some(texture_view) = texture_view {
@@ -124,19 +109,12 @@ impl CommandBufferRecording<'_> {
 						}
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => {
-						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
-							let image = self.device.images.resource(proxy);
-							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
-							unsafe {
-								layout
-									.argument_encoder
-									.setTexture_atIndex(Some(image.texture.as_ref()), slot as _)
-							};
-						} else {
-							let texture = self.drawable_texture(handle);
-							// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
-							unsafe { layout.argument_encoder.setTexture_atIndex(Some(texture.as_ref()), slot as _) };
-						}
+						let texture = match self.swapchain_proxy(handle) {
+							Some(proxy) => self.device.images.resource(proxy).texture.clone(),
+							None => self.drawable_texture(handle),
+						};
+						// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
+						unsafe { layout.argument_encoder.setTexture_atIndex(Some(&texture), slot as _) };
 					}
 					// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 					(DescriptorBindingSlot::Sampler(slot), Descriptor::Sampler { sampler }) => unsafe {
@@ -249,13 +227,12 @@ impl CommandBufferRecording<'_> {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 		mut bind: impl FnMut(&mut Self, crate::Stages, mtl::MTLGPUAddress),
 	) -> AppliedDescriptorBinding {
-		let pipeline_layouts = self.device.pipeline_layouts;
-		let layout = self.device.pipelines[pipeline_handle.0 as usize].layout;
+		let layout = &self.device.pipelines[pipeline_handle.0 as usize].layout;
 		let owner = self.bound_descriptor_set_handles.first().map(|handle| handle.0 as usize);
 		let existing = owner.and_then(|owner| {
 			let snapshots = &self.commit.descriptor_sets[owner].argument_buffers;
 			let index = snapshots.iter().position(|snapshot| {
-				snapshot.layout == layout && snapshot.descriptor_sets == self.bound_descriptor_set_handles
+				snapshot.pipeline == pipeline_handle && snapshot.descriptor_sets == self.bound_descriptor_set_handles
 			})?;
 			Some((index, snapshots[index].versions == self.bound_descriptor_set_versions))
 		});
@@ -263,7 +240,7 @@ impl CommandBufferRecording<'_> {
 		// Either the owner set's retained snapshot, or a transient one encoded into the frame arena.
 		let source: Result<(usize, usize), Materialization> = match (owner, existing) {
 			(Some(owner), Some((index, true))) => Ok((owner, index)),
-			(Some(owner), existing) if !self.bound_descriptors_reference_swapchain(&pipeline_layouts[layout.0 as usize]) => {
+			(Some(owner), existing) if !self.bound_descriptors_reference_swapchain(layout) => {
 				let snapshot = self.materialize_argument_buffers(pipeline_handle, false);
 				let snapshots = &mut self.commit.descriptor_sets[owner].argument_buffers;
 				let index = match existing {
@@ -286,7 +263,6 @@ impl CommandBufferRecording<'_> {
 			commit,
 			command_buffer,
 			bound_descriptor_set_handles,
-			drawables,
 			sequence_index,
 			..
 		} = self;
@@ -299,9 +275,8 @@ impl CommandBufferRecording<'_> {
 			commit.descriptor_sets,
 			command_buffer,
 			bound_descriptor_set_handles,
-			drawables,
 			*sequence_index,
-			&pipeline_layouts[layout.0 as usize],
+			layout,
 			snapshot,
 		);
 		let addresses = snapshot
@@ -353,7 +328,7 @@ impl CommandBufferRecording<'_> {
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}
 					Descriptor::Swapchain { handle } => {
-						if let Some(proxy) = self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize] {
+						if let Some(proxy) = self.swapchain_proxy(handle) {
 							synchronization::MetalResourceUse::image(proxy, None, None, stages, access)
 						} else {
 							let drawable = self.drawable_texture(handle);
@@ -382,8 +357,7 @@ impl CommandBufferRecording<'_> {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 		transient: bool,
 	) -> Materialization {
-		let layout_handle = self.device.pipelines[pipeline_handle.0 as usize].layout;
-		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
+		let layout = &self.device.pipelines[pipeline_handle.0 as usize].layout;
 		self.validate_bound_descriptor_sets(layout);
 		let mut argument_buffers = layout
 			.stage_argument_layouts
@@ -420,7 +394,7 @@ impl CommandBufferRecording<'_> {
 			self.encode_stage_argument_buffer(stage_layout, buffer, *offset, &mut texture_views);
 		}
 		Materialization {
-			layout: layout_handle,
+			pipeline: pipeline_handle,
 			descriptor_sets: self.bound_descriptor_set_handles.clone(),
 			versions: self.bound_descriptor_set_versions.clone(),
 			argument_buffers,
@@ -446,7 +420,7 @@ impl CommandBufferRecording<'_> {
 				"Cannot dispatch a raster Metal pipeline. The most likely cause is that a raster pipeline handle was passed to bind_compute_pipeline."
 			),
 		};
-		self.command_buffer.retain_compute_pipeline(compute_pipeline_state.clone());
+		self.command_buffer.retain_allocation(compute_pipeline_state.clone());
 		self.ensure_compute_encoder()
 			.setComputePipelineState(compute_pipeline_state.as_ref());
 		self.encoded_compute_pipeline = Some(pipeline_handle);
@@ -472,7 +446,7 @@ impl CommandBufferRecording<'_> {
 		let face_winding = pipeline.face_winding;
 		let cull_mode = pipeline.cull_mode;
 		let fill_mode = pipeline.fill_mode;
-		self.command_buffer.retain_render_pipeline(render_pipeline_state.clone());
+		self.command_buffer.retain_allocation(render_pipeline_state.clone());
 		let encoder = self
 			.active_render_encoder
 			.as_ref()
@@ -547,7 +521,7 @@ impl CommandBufferRecording<'_> {
 		let binding = self.applied_compute_descriptor_binding.take().expect(
 			"Metal compute descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
 		);
-		self.consume_compute_resources_with_descriptors(&binding.resource_uses, additional_uses);
+		self.consume_resources_with_descriptors(&binding.resource_uses, additional_uses);
 		self.applied_compute_descriptor_binding = Some(binding);
 	}
 
@@ -558,7 +532,7 @@ impl CommandBufferRecording<'_> {
 		let binding = self.applied_render_descriptor_binding.take().expect(
 			"Metal render descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
 		);
-		self.consume_render_resources_with_descriptors(&binding.resource_uses, additional_uses);
+		self.consume_resources_with_descriptors(&binding.resource_uses, additional_uses);
 		self.applied_render_descriptor_binding = Some(binding);
 	}
 
@@ -569,15 +543,15 @@ impl CommandBufferRecording<'_> {
 		};
 		let first_image = self.device.images.resource(*first_handle);
 		let rpd = mtl::MTL4RenderPassDescriptor::new();
-		if first_image.array_layers > 1 {
-			rpd.setRenderTargetArrayLength(first_image.array_layers as _);
+		if first_image.description.array_layers > 1 {
+			rpd.setRenderTargetArrayLength(first_image.description.array_layers as _);
 		}
 
 		let mut color_index = 0;
 		for (handle, clear_value) in images {
 			let image = self.device.images.resource(*handle);
-			self.command_buffer.retain_texture(image.texture.clone());
-			if image.format.is_depth() {
+			self.command_buffer.retain_allocation(image.texture.clone());
+			if image.description.format.is_depth() {
 				let attachment = rpd.depthAttachment();
 				attachment.setTexture(Some(image.texture.as_ref()));
 				attachment.setLoadAction(mtl::MTLLoadAction::Clear);
@@ -594,17 +568,16 @@ impl CommandBufferRecording<'_> {
 			}
 		}
 
-		let encoder = self.command_buffer.render_command_encoder(&rpd).expect(
+		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
 			"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 		);
 		#[cfg(debug_assertions)]
-		if self.device.debug_labels {
-			encoder.setLabel(Some(&self.next_encoder_block_label()));
-			self.push_active_render_debug_regions(encoder.as_ref());
+		{
+			self.render_debug_region_depth = self.begin_encoder_debug_regions(&*encoder);
 		}
 		self.active_encoder_scope = Some(self.allocate_encoder_scope());
 		self.active_render_encoder = Some(encoder);
-		self.consume_render_resources(images.iter().map(|(handle, _)| {
+		self.consume_resources(images.iter().map(|(handle, _)| {
 			synchronization::MetalResourceUse::image(
 				*handle,
 				Some(0),

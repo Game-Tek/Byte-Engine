@@ -269,7 +269,10 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	}
 }
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::{
+	context::{Context as _, ContextCreate as _},
+	frame::Frame as _,
+};
 use math::AffineShaderMatrix;
 use smallvec::SmallVec;
 use utils::hash::HashMap;

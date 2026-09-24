@@ -5,6 +5,7 @@ use ghi::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
+	frame::Frame as _,
 };
 use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
 use smallvec::SmallVec;

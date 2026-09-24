@@ -1,14 +1,6 @@
 use super::super::*;
 
 impl Context {
-	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let handle = self.buffers.nth_handle(buffer_handle.into(), 0).unwrap();
-		let buffer = self.buffers.resource(handle);
-		if buffer.staging.is_some() {
-			self.pending_buffer_syncs.push_back(handle);
-		}
-	}
-
 	/// Appends every pending buffer and image upload to one Metal 4 compute submission.
 	pub(super) fn flush_pending_uploads(
 		&mut self,
@@ -22,7 +14,7 @@ impl Context {
 
 		let queue_index = queue_handle.0 as usize;
 		let mut command_buffer = self.create_metal_command_buffer(queue_handle, Some("Pending Uploads"));
-		let transfer_encoder = command_buffer.compute_command_encoder().expect(
+		let transfer_encoder = command_buffer.computeCommandEncoder().expect(
 			"Metal 4 transfer encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
 		);
 		let mut resource_tracker = std::mem::take(&mut self.queues[queue_index].resource_tracker);
@@ -39,8 +31,8 @@ impl Context {
 				continue;
 			};
 			let staging = self.buffers.resource(staging_handle);
-			command_buffer.retain_buffer(buffer.buffer.clone());
-			command_buffer.retain_buffer(staging.buffer.clone());
+			command_buffer.retain_allocation(buffer.buffer.clone());
+			command_buffer.retain_allocation(staging.buffer.clone());
 			let barrier = resource_tracker.consume(
 				scope,
 				[
@@ -60,7 +52,7 @@ impl Context {
 					),
 				],
 			);
-			barrier.encode_compute(transfer_encoder.as_ref());
+			barrier.encode(&*transfer_encoder);
 			// SAFETY: The staging and destination buffers are retained and each covers the recorded upload size.
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
@@ -78,7 +70,7 @@ impl Context {
 			let Some(staging) = image.staging.as_ref() else {
 				continue;
 			};
-			command_buffer.retain_texture(image.texture.clone());
+			command_buffer.retain_allocation(image.texture.clone());
 			let barrier = resource_tracker.consume(
 				scope,
 				[synchronization::MetalResourceUse::image(
@@ -89,20 +81,19 @@ impl Context {
 					crate::AccessPolicies::WRITE,
 				)],
 			);
-			barrier.encode_compute(transfer_encoder.as_ref());
-			if let Some(upload_buffer) = crate::metal::command_buffer::encode_texture_upload(
+			barrier.encode(&*transfer_encoder);
+			let upload_buffer = crate::metal::command_buffer::encode_texture_upload(
 				self.device.as_ref(),
 				&mut self.upload_arenas[arena_index],
 				transfer_encoder.as_ref(),
 				image.texture.as_ref(),
-				image.format,
-				image.extent,
-				image.array_layers,
+				image.description.format,
+				image.description.extent,
+				image.description.array_layers,
 				staging,
 				region,
-			) {
-				command_buffer.retain_buffer(upload_buffer);
-			}
+			);
+			command_buffer.retain_allocation(upload_buffer);
 		}
 
 		transfer_encoder.endEncoding();

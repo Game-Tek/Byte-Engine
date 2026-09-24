@@ -21,10 +21,10 @@ pub mod image {
 	use super::*;
 	use crate::{DeviceAccesses, Formats, Uses};
 
-	#[derive(Clone)]
-	pub(crate) struct Image {
-		pub(crate) name: Option<String>,
-		pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+	/// The `ImageDescription` struct keeps the creation parameters that rebuilding an image, for example at a new
+	/// extent, reuses.
+	#[derive(Clone, Copy)]
+	pub(crate) struct ImageDescription {
 		pub(crate) extent: Extent,
 		pub(crate) format: Formats,
 		pub(crate) uses: Uses,
@@ -33,15 +33,44 @@ pub mod image {
 		pub(crate) cube_compatible: bool,
 		pub(crate) cube_array_compatible: bool,
 		pub(crate) mip_levels: u32,
+	}
+
+	impl ImageDescription {
+		pub(crate) fn new(builder: &crate::image::Builder) -> Self {
+			Self {
+				extent: builder.extent,
+				format: builder.format,
+				uses: builder.resource_uses,
+				access: builder.device_accesses,
+				array_layers: builder.array_layers.map_or(1, std::num::NonZeroU32::get),
+				cube_compatible: builder.cube_compatible,
+				cube_array_compatible: builder.cube_array_compatible,
+				mip_levels: builder.mip_levels,
+			}
+		}
+	}
+
+	/// The `Image` struct owns one Metal texture, the description it was created from, and its CPU staging bytes.
+	///
+	/// A [`Factory`] can build one away from the render thread; [`Frame::intern_image`] hands it to a context.
+	pub struct Image {
+		pub(crate) name: Option<String>,
+		pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+		pub(crate) description: ImageDescription,
+		/// Present only for images the CPU may access.
 		pub(crate) staging: Option<Vec<u8>>,
 	}
+
+	// SAFETY: The image owns a retained Metal texture, which Metal documents as usable from any thread, and plain
+	// metadata. Moving it between threads adds no shared state.
+	unsafe impl Send for Image {}
 }
 
 pub mod sampler {
 	use super::*;
 
-	#[derive(Clone)]
-	pub(crate) struct Sampler {
+	/// The `Sampler` struct owns one Metal sampler state; a [`Factory`] can build it for later interning.
+	pub struct Sampler {
 		pub(crate) sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>,
 	}
 }
@@ -63,66 +92,38 @@ pub mod descriptor_set {
 
 pub mod synchronizer {
 	use super::*;
+	use crate::metal::queue::{StoredQueue, SubmittedBatch};
 	use crate::synchronizer::SynchronizerHandle;
 
 	/// The `Synchronizer` struct owns the Metal workloads associated with one GHI synchronization point.
+	///
+	/// A synchronizer with no pending workloads is signaled.
 	pub(crate) struct Synchronizer {
 		pub next: Option<SynchronizerHandle>,
-		signaled: bool,
-		workloads: SmallVec<[crate::metal::queue::SubmittedBatch; 4]>,
+		workloads: SmallVec<[SubmittedBatch; 4]>,
 	}
 
 	impl Synchronizer {
-		pub(crate) fn new(signaled: bool) -> Self {
+		pub(crate) fn new() -> Self {
 			Self {
 				next: None,
-				signaled,
 				workloads: SmallVec::new(),
 			}
 		}
 
-		pub(crate) fn reset(&mut self) {
-			assert!(
-				self.signaled,
-				"Metal synchronizer reset failed. The most likely cause is that its previous workloads were not completed first.",
-			);
-			self.signaled = false;
-		}
-
-		pub(crate) fn signal(&mut self, workload: crate::metal::queue::SubmittedBatch) {
-			self.signaled = false;
+		pub(crate) fn signal(&mut self, workload: SubmittedBatch) {
 			self.workloads.push(workload);
 		}
 
-		/// Waits for every submitted batch and returns commands to their owning context for recycling.
-		pub(crate) fn wait(
-			&mut self,
-		) -> (
-			SmallVec<
-				[(
-					graphics_hardware_interface::QueueHandle,
-					SmallVec<[crate::metal::queue::NativeCommand; 4]>,
-				); 4],
-			>,
-			Option<String>,
-		) {
-			if self.signaled {
-				return (SmallVec::new(), None);
-			}
-
-			let workloads = std::mem::take(&mut self.workloads);
-			let mut completed = SmallVec::new();
+		/// Waits for every submitted batch, returns its commands to `queues` for reuse, and reports the first GPU error.
+		pub(crate) fn wait(&mut self, queues: &mut [StoredQueue]) -> Option<String> {
 			let mut first_error = None;
-			for workload in workloads {
-				let (queue, commands, error) = workload.wait();
-				completed.push((queue, commands));
-				if let Some(error) = error {
+			for workload in self.workloads.drain(..) {
+				if let Some(error) = workload.wait(queues) {
 					first_error.get_or_insert(error);
 				}
 			}
-
-			self.signaled = true;
-			(completed, first_error)
+			first_error
 		}
 	}
 }
@@ -137,8 +138,8 @@ pub mod swapchain {
 	pub(crate) struct Swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
-		/// Proxy images exist only when the declared uses cannot be applied to a drawable texture.
-		pub images: [Option<ImageHandle>; MAX_SWAPCHAIN_IMAGES],
+		/// One proxy image per frame sequence, present only when the declared uses cannot be applied to a drawable texture.
+		pub images: [Option<ImageHandle>; MAX_FRAMES_IN_FLIGHT],
 		pub uses_proxy: bool,
 		pub uses: crate::Uses,
 		pub extent: Extent,

@@ -58,7 +58,6 @@ impl Context {
 			images: &self.images,
 			samplers: &self.samplers,
 			acceleration_structures: &self.acceleration_structures,
-			pipeline_layouts: &self.pipeline_layouts,
 			meshes: &self.meshes,
 			pipelines: &self.pipelines,
 			swapchains: &self.swapchains,
@@ -80,7 +79,6 @@ impl Context {
 			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
-			Vec::new_in(allocator),
 			autorelease_pool,
 			allocator,
 		)

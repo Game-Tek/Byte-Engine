@@ -1,0 +1,238 @@
+// Denoises the one-ray-per-pixel SSGI trace in two steps. An edge-aware 5x5 filter averages this frame's rays over
+// neighbors on the same surface. An exponential moving average then blends that estimate with the reprojected
+// history of earlier frames, unless the previous frame saw a different surface at that point.
+// Both steps compare the view-space normals the trace rebuilt from depth, this frame's and last frame's.
+ScreenView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+SsgiParameters: struct {
+	current_view_to_previous_clip: mat4f,
+	frame_index: u32,
+	history_valid: u32,
+	padding_0: u32,
+	padding_1: u32,
+}
+
+screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
+ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+raw_radiance: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1035, access: write }>;
+previous_history: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+previous_depth_pyramid: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
+surface_normals: descriptor<{ type: Texture2D, binding: 1038, access: read }>;
+previous_surface_normals: descriptor<{ type: Texture2D, binding: 1039, access: read }>;
+
+SSGI_FILTER_RADIUS: const u32 = 2;
+// Gaussian weights for offsets zero, one, and two. The product of two gives the 5x5 kernel.
+SSGI_FILTER_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
+// A 5% relative-depth sigma keeps neighbors on the same surface where no normal is known.
+SSGI_FILTER_INVERSE_DEPTH_VARIANCE: const f32 = 200.0;
+// A 1% sigma, relative to the center's depth, for a neighbor's distance from the center's tangent plane.
+SSGI_FILTER_INVERSE_PLANE_VARIANCE: const f32 = 10000.0;
+// Neighbors whose normal differs from the center's by more than about 45 degrees lie on another surface. Up to about
+// 25 degrees, as across a curved limb, they count fully.
+SSGI_FILTER_NORMAL_REJECT_COSINE: const f32 = 0.7;
+SSGI_FILTER_NORMAL_ACCEPT_COSINE: const f32 = 0.9;
+// The share of the new value is 1 - SSGI_HISTORY_WEIGHT, so history converges over about ten frames.
+SSGI_HISTORY_WEIGHT: const f32 = 0.9;
+// A history texel is reused only when last frame's depth there is within this relative distance of the reprojected
+// point's depth.
+SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
+
+// Reads the positive linear depth stored in physical mip one, which matches the SSGI resolution.
+fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(depth_pyramid, uv, 1.0).x;
+}
+
+// Returns `value + offset - radius` clamped to the image, for a filter tap `offset` steps along one axis.
+tap_coordinate: fn (value: u32, offset: u32, extent: u32) -> u32 {
+	let shifted: u32 = value + offset;
+	if (shifted < SSGI_FILTER_RADIUS) {
+		return 0;
+	}
+	let coordinate: u32 = shifted - SSGI_FILTER_RADIUS;
+	if (coordinate >= extent) {
+		return extent - 1;
+	}
+	return coordinate;
+}
+
+filter_weight: fn (offset: u32) -> f32 {
+	if (offset < SSGI_FILTER_RADIUS) {
+		return SSGI_FILTER_WEIGHTS[SSGI_FILTER_RADIUS - offset];
+	}
+	return SSGI_FILTER_WEIGHTS[offset - SSGI_FILTER_RADIUS];
+}
+
+// Reads last frame's positive linear depth at a texel.
+fetch_previous_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(previous_depth_pyramid, uv, 1.0).x;
+}
+
+// Reads the view-space normal the trace rebuilt for a texel, or zero where it had none.
+fetch_normal: fn (coordinate: vec2u) -> vec3f {
+	let stored: vec4f = fetch(surface_normals, coordinate);
+	return vec3f(stored.x, stored.y, stored.z);
+}
+
+// Reads the view-space normal the trace rebuilt for a texel last frame, or zero where it had none.
+fetch_previous_normal: fn (coordinate: vec2u) -> vec3f {
+	let stored: vec4f = fetch(previous_surface_normals, coordinate);
+	return vec3f(stored.x, stored.y, stored.z);
+}
+
+// Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing
+// normal agrees with any other, so depth decides alone.
+normal_agreement: fn (a: vec3f, b: vec3f) -> f32 {
+	if (dot(a, a) == 0.0 || dot(b, b) == 0.0) {
+		return 1.0;
+	}
+	return clamp(
+		(dot(a, b) - SSGI_FILTER_NORMAL_REJECT_COSINE) / (SSGI_FILTER_NORMAL_ACCEPT_COSINE - SSGI_FILTER_NORMAL_REJECT_COSINE),
+		0.0,
+		1.0
+	);
+}
+
+view_position: fn (coordinate: vec2u, z: f32) -> vec3f {
+	let ray: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y)) * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+	return vec3f(ray.x * z, ray.y * z, z);
+}
+
+// Returns how much a neighbor belongs to the center's surface: one on the center's tangent plane with a similar
+// normal, falling to zero for another surface. Depth alone cannot separate surfaces that touch: where a boot stands
+// on a floor, both have the same depth, but the boot's normal and its distance from the floor's plane differ.
+// Without normals, it compares depth only.
+surface_weight: fn (center_normal: vec3f, center_position: vec3f, tap_normal: vec3f, tap_position: vec3f) -> f32 {
+	if (dot(center_normal, center_normal) == 0.0 || dot(tap_normal, tap_normal) == 0.0) {
+		let relative_delta: f32 = (tap_position.z - center_position.z) / center_position.z;
+		return exp(0.0 - relative_delta * relative_delta * SSGI_FILTER_INVERSE_DEPTH_VARIANCE);
+	}
+	let plane_distance: f32 = dot(center_normal, tap_position - center_position) / center_position.z;
+	return normal_agreement(center_normal, tap_normal)
+		* exp(0.0 - plane_distance * plane_distance * SSGI_FILTER_INVERSE_PLANE_VARIANCE);
+}
+
+// Averages this frame's rays over the 5x5 neighbors on the center's surface.
+spatial_estimate: fn (pixel: vec2u, extent: vec2u, center_z: f32) -> vec4f {
+	let center_position: vec3f = view_position(pixel, center_z);
+	let center_normal: vec3f = fetch_normal(pixel);
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total_weight: f32 = 0.0;
+	for (let y_offset: u32 = 0; y_offset <= SSGI_FILTER_RADIUS * 2; y_offset = y_offset + 1) {
+		for (let x_offset: u32 = 0; x_offset <= SSGI_FILTER_RADIUS * 2; x_offset = x_offset + 1) {
+			let coordinate: vec2u = vec2u(
+				tap_coordinate(pixel.x, x_offset, extent.x),
+				tap_coordinate(pixel.y, y_offset, extent.y)
+			);
+			let sample_z: f32 = fetch_linear_depth(coordinate, extent);
+			if (sample_z == 0.0) {
+				continue;
+			}
+			let weight: f32 = filter_weight(x_offset) * filter_weight(y_offset)
+				* surface_weight(
+					center_normal,
+					center_position,
+					fetch_normal(coordinate),
+					view_position(coordinate, sample_z)
+				);
+			sum = sum + fetch(raw_radiance, coordinate) * weight;
+			total_weight = total_weight + weight;
+		}
+	}
+	// The center tap always has full surface weight, so the total is never zero.
+	return sum * (1.0 / total_weight);
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(history_output, pixel);
+	let extent: vec2u = image_size(history_output);
+	let center_z: f32 = fetch_linear_depth(pixel, extent);
+	if (center_z == 0.0) {
+		write(history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		return;
+	}
+
+	let estimate: vec4f = spatial_estimate(pixel, extent, center_z);
+	// History is selected with a branch, not weighted by zero, because an unwritten history texel may hold NaN.
+	if (ssgi_parameters.history_valid == 0) {
+		write(history_output, pixel, estimate);
+		return;
+	}
+
+	let ray: vec2f = vec2f(f32(pixel.x), f32(pixel.y)) * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip * vec4f(ray.x * center_z, ray.y * center_z, center_z, 1.0);
+	if (clip.w <= 0.0) {
+		write(history_output, pixel, estimate);
+		return;
+	}
+	let uv: vec2f = vec2f(0.5 + 0.5 * clip.x / clip.w, 0.5 - 0.5 * clip.y / clip.w);
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+		write(history_output, pixel, estimate);
+		return;
+	}
+
+	// Reprojects history from the four texels around the reprojected point, weighted bilinearly. A texel counts only
+	// where last frame saw this surface: its depth matches the previous camera's clip w, which is its view depth, and
+	// its normal agrees with this pixel's. Depth alone would hand a floor the history of a foot standing on it, since
+	// both share a depth where they touch. The normals of consecutive frames differ only by the camera's rotation
+	// between them, which is small next to the agreement window.
+	let center_normal: vec3f = fetch_normal(pixel);
+	let history_position: vec2f = vec2f(uv.x * f32(extent.x) - 0.5, uv.y * f32(extent.y) - 0.5);
+	let base_x: f32 = floor(history_position.x);
+	let base_y: f32 = floor(history_position.y);
+	let fraction_x: f32 = history_position.x - base_x;
+	let fraction_y: f32 = history_position.y - base_y;
+	let history_sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let history_weight: f32 = 0.0;
+	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+		let tap_x: f32 = base_x + f32(tap % 2);
+		let tap_y: f32 = base_y + f32(tap / 2);
+		if (tap_x < 0.0 || tap_y < 0.0 || tap_x >= f32(extent.x) || tap_y >= f32(extent.y)) {
+			continue;
+		}
+		let coordinate: vec2u = vec2u(u32(tap_x), u32(tap_y));
+		let previous_z: f32 = fetch_previous_depth(coordinate, extent);
+		if (previous_z == 0.0 || abs(previous_z - clip.w) > clip.w * SSGI_DISOCCLUSION_TOLERANCE) {
+			continue;
+		}
+		let bilinear_x: f32 = 1.0 - fraction_x;
+		if (tap % 2 == 1) {
+			bilinear_x = fraction_x;
+		}
+		let bilinear_y: f32 = 1.0 - fraction_y;
+		if (tap / 2 == 1) {
+			bilinear_y = fraction_y;
+		}
+		let weight: f32 = bilinear_x * bilinear_y * normal_agreement(center_normal, fetch_previous_normal(coordinate));
+		if (weight <= 0.0) {
+			continue;
+		}
+		history_sum = history_sum + fetch(previous_history, coordinate) * weight;
+		history_weight = history_weight + weight;
+	}
+	// Without a matching texel this surface was hidden last frame. History is selected with a branch, not weighted by
+	// zero, because an unwritten history texel may hold NaN.
+	if (history_weight < 0.001) {
+		write(history_output, pixel, estimate);
+		return;
+	}
+	let history: vec4f = history_sum * (1.0 / history_weight);
+	write(history_output, pixel, estimate * (1.0 - SSGI_HISTORY_WEIGHT) + history * SSGI_HISTORY_WEIGHT);
+}

@@ -28,7 +28,9 @@ use super::layout::{
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
-use super::render_pass::{GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkTargets, VisibilityRenderPass};
+use super::render_pass::{
+	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkTargets, VisibilityRenderPass, create_ssgi_targets,
+};
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
 use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
@@ -393,6 +395,8 @@ pub struct VisibilityPipelineManager {
 	point_shadow_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
+	/// Sinks whose visibility pass recorded in the previous frame. Only their per-frame images hold usable history.
+	recorded_sinks: SmallVec<[usize; 4]>,
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -467,6 +471,7 @@ impl VisibilityPipelineManager {
 			point_shadow_pool_capacity: settings.point_shadow_map_pool_capacity,
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
+			recorded_sinks: SmallVec::new(),
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
@@ -964,6 +969,8 @@ impl PipelineManager for VisibilityPipelineManager {
 
 		let skinning_pass = &self.skinning_pass;
 		let render_info = &self.scene.render_info;
+		let previously_recorded_sinks = &self.recorded_sinks;
+		let mut recorded_sinks = SmallVec::<[usize; 4]>::new();
 		let commands = sinks
 			.iter()
 			.filter_map(|sink| {
@@ -974,11 +981,21 @@ impl PipelineManager for VisibilityPipelineManager {
 			.filter_map(|(command_index, (sink, render_pass))| {
 				// Skinning runs once per frame, with the first sink.
 				let skinning = (command_index == 0).then_some(skinning_pass);
-				render_pass
-					.prepare(frame, sink, skinning, dispatches, render_info, shadow_work)
-					.map(|command| allocate_render_command(frame_allocator, command))
+				let history_valid = previously_recorded_sinks.contains(&sink.index());
+				let command = render_pass.prepare(
+					frame,
+					sink,
+					skinning,
+					dispatches,
+					render_info,
+					shadow_work,
+					history_valid,
+				)?;
+				recorded_sinks.push(sink.index());
+				Some(allocate_render_command(frame_allocator, command))
 			})
 			.collect();
+		self.recorded_sinks = recorded_sinks;
 		Some(commands)
 	}
 
@@ -1003,6 +1020,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
+		let ssgi = create_ssgi_targets(render_pass_builder);
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1015,6 +1033,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				depth: depth.into(),
 				primitive_index: primitive_index.into(),
 				instance_id: instance_id.into(),
+				ssgi,
 			},
 			self.cone_shadow_pool_capacity,
 			self.point_shadow_pool_capacity,

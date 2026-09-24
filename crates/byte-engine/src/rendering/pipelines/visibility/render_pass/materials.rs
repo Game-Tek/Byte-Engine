@@ -115,8 +115,12 @@ impl MaterialPrepasses {
 }
 
 /// The `MaterialEvaluationPass` struct shades every material's pixel list into the lit target.
+///
+/// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history, which the next
+/// frame's rays read.
 pub(super) struct MaterialEvaluationPass {
 	lit: ghi::BaseImageHandle,
+	diffuse_radiance_history: ghi::DynamicImageHandle,
 	base_descriptor_set: ghi::DescriptorSetHandle,
 	visibility_descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
@@ -126,6 +130,7 @@ pub(super) struct MaterialEvaluationPass {
 impl MaterialEvaluationPass {
 	pub(super) fn new(
 		lit: ghi::BaseImageHandle,
+		diffuse_radiance_history: ghi::DynamicImageHandle,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility_descriptor_set: ghi::DescriptorSetHandle,
 		descriptor_set: ghi::DescriptorSetHandle,
@@ -133,6 +138,7 @@ impl MaterialEvaluationPass {
 	) -> Self {
 		Self {
 			lit,
+			diffuse_radiance_history,
 			base_descriptor_set,
 			visibility_descriptor_set,
 			descriptor_set,
@@ -140,7 +146,7 @@ impl MaterialEvaluationPass {
 		}
 	}
 
-	/// Prepares one material phase; the opaque phase clears the lit target, the transparent phase composites over it.
+	/// Prepares one material phase; the opaque phase clears its targets, the transparent phase composites over the lit one.
 	pub(super) fn prepare<'a>(
 		&self,
 		materials: &'a [MaterialEntry],
@@ -148,6 +154,7 @@ impl MaterialEvaluationPass {
 		phase: VisibilityPhase,
 	) -> impl RenderPassFunction + use<'a> {
 		let lit = self.lit;
+		let diffuse_radiance_history = self.diffuse_radiance_history.into();
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
 
@@ -158,7 +165,9 @@ impl MaterialEvaluationPass {
 			};
 
 			if phase == VisibilityPhase::Opaque {
-				c.clear_images(&[(lit, ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0)))]);
+				// Clearing the history keeps background pixels from holding light of an older frame.
+				let transparent_black = ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0));
+				c.clear_images(&[(lit, transparent_black), (diffuse_radiance_history, transparent_black)]);
 			}
 			let active = materials
 				.iter()

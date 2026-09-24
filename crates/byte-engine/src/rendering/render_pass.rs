@@ -267,6 +267,14 @@ impl<'a> RenderPassBuilder<'a> {
 
 	/// Creates a transferable render-target image and returns it for writing by this render pass.
 	pub fn create_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
+		self.create_scaled_render_target(builder, 1)
+	}
+
+	/// Creates a transferable render-target image at a fraction of the sink resolution.
+	///
+	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, so `2` gives a
+	/// half-resolution target. Like every render target, it can be captured by name for debugging.
+	pub fn create_scaled_render_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> RenderToResult {
 		let name = builder.get_name().expect(
 			"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
 		);
@@ -275,13 +283,46 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 
-		let image_index = self.images.insert(name.to_string(), self.sink_id, image.into(), format);
+		let image_index = self
+			.images
+			.insert(name.to_string(), self.sink_id, image.into(), format, resolution_divisor);
 		self.written_image_indices.push(image_index);
 
 		RenderToResult {
 			image: image.into(),
 			format,
 		}
+	}
+
+	/// Creates a sink-sized image that keeps one copy per frame in flight, so later frames can read it as history.
+	///
+	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, but never binds it as an
+	/// attachment, so no pass clears it.
+	/// The creating pass writes this frame's copy. Any pass reads the previous frame's copy by binding the handle
+	/// with [`ghi::DescriptorWrite::combined_image_sampler_with_frame`] and an offset of `-1`. Next, look the image
+	/// up by name from other passes with [`Self::history_target`].
+	///
+	/// A previous-frame copy holds no usable data on a sink's first frame or right after a resize.
+	/// [`crate::rendering::Sink::previous_view`] returns `None` for those frames.
+	pub fn create_history_target(
+		&mut self,
+		builder: ghi::image::Builder<'a>,
+		resolution_divisor: u32,
+	) -> ghi::DynamicImageHandle {
+		let name = builder.get_name().expect(
+			"History target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
+		);
+		let image = self
+			.context
+			.build_dynamic_image(builder.additional_uses(ghi::Uses::TransferSource));
+		self.images
+			.insert_history(name.to_string(), self.sink_id, image, resolution_divisor);
+		image
+	}
+
+	/// Returns the history image another pass created with [`Self::create_history_target`].
+	pub fn history_target(&self, name: &str) -> Option<ghi::DynamicImageHandle> {
+		self.images.history(name, self.sink_id)
 	}
 
 	/// Creates a replacement for the color image named `main`.

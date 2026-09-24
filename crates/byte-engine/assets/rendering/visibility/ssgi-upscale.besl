@@ -1,0 +1,205 @@
+// Reconstructs full-resolution indirect diffuse light from the half-resolution SSGI history. Bilinear taps are
+// weighted by how well they lie on the full-resolution pixel's surface, so light does not bleed across edges.
+ScreenView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+radiance_source: descriptor<{ type: Texture2D, binding: 1034, access: read }>;
+radiance_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1035, access: write }>;
+low_resolution_depth: descriptor<{ type: Texture2D, binding: 1036, access: read }>;
+low_resolution_normals: descriptor<{ type: Texture2D, binding: 1037, access: read }>;
+
+// A 2% relative-depth sigma gives a Gaussian inverse variance of 1,250. It applies where no normal is known.
+SSGI_UPSCALE_INVERSE_DEPTH_VARIANCE: const f32 = 1250.0;
+// A 1% sigma, relative to the pixel's depth, for a tap's distance from the pixel's tangent plane.
+SSGI_UPSCALE_INVERSE_PLANE_VARIANCE: const f32 = 10000.0;
+// Taps whose normal differs from the pixel's by more than about 45 degrees lie on another surface.
+SSGI_UPSCALE_NORMAL_REJECT_COSINE: const f32 = 0.7;
+SSGI_UPSCALE_NORMAL_ACCEPT_COSINE: const f32 = 0.9;
+// Matches the finite-difference degeneracy test the trace uses for reconstructed normals.
+SSGI_UPSCALE_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
+
+linearize_depth: fn (depth: f32) -> f32 {
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return screen_view.depth_unproject_numerator / (depth + screen_view.depth_unproject_denominator_offset);
+}
+
+// Reads the positive linear depth stored in physical mip one, which matches the source resolution.
+fetch_low_resolution_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
+	let uv: vec2f = vec2f(
+		(f32(coordinate.x) + 0.5) / f32(extent.x),
+		(f32(coordinate.y) + 0.5) / f32(extent.y)
+	);
+	return texture_lod(low_resolution_depth, uv, 1.0).x;
+}
+
+// Reads the view-space normal the trace rebuilt for a half-resolution texel, or zero where it had none.
+fetch_low_resolution_normal: fn (coordinate: vec2u) -> vec3f {
+	let stored: vec4f = fetch(low_resolution_normals, coordinate);
+	return vec3f(stored.x, stored.y, stored.z);
+}
+
+// Returns the view-space position at continuous half-resolution coordinates, where integers are texel centers.
+// The screen view constants describe the half-resolution image.
+view_position: fn (half_resolution_coordinate: vec2f, z: f32) -> vec3f {
+	let ray: vec2f = half_resolution_coordinate * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
+	return vec3f(ray.x * z, ray.y * z, z);
+}
+
+// Maps a full-resolution pixel center to continuous half-resolution coordinates.
+half_resolution_coordinate: fn (column: f32, row: f32) -> vec2f {
+	return vec2f((column + 0.5) * 0.5 - 0.5, (row + 0.5) * 0.5 - 0.5);
+}
+
+// Reads the full-resolution linear depth `offset` pixels away, or zero outside the image.
+neighbor_depth: fn (coordinate: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -> f32 {
+	let column: f32 = f32(coordinate.x) + offset_x;
+	let row: f32 = f32(coordinate.y) + offset_y;
+	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
+		return 0.0;
+	}
+	return linearize_depth(fetch(visibility_depth, vec2u(u32(column), u32(row))).x);
+}
+
+// Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
+side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
+	if (near_z == 0.0 || far_z == 0.0) {
+		return 1000000.0;
+	}
+	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
+}
+
+// Returns the view-space tangent along one screen axis from the side whose neighbors best extend the center's
+// surface (atyuwen, "Accurate Normal Reconstruction from Depth Buffer", 2020), or zero without one. Where a boot
+// stands on a floor, the floor pixel next to the boot takes its tangent from the floor side.
+axis_tangent: fn (coordinate: vec2u, axis: vec2f, center_position: vec3f, extent: vec2u) -> vec3f {
+	let center_z: f32 = center_position.z;
+	let positive_z: f32 = neighbor_depth(coordinate, axis.x, axis.y, extent);
+	let negative_z: f32 = neighbor_depth(coordinate, 0.0 - axis.x, 0.0 - axis.y, extent);
+	let positive_error: f32 = side_error(center_z, positive_z, neighbor_depth(coordinate, 2.0 * axis.x, 2.0 * axis.y, extent));
+	let negative_error: f32 = side_error(
+		center_z,
+		negative_z,
+		neighbor_depth(coordinate, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
+	);
+	let column: f32 = f32(coordinate.x);
+	let row: f32 = f32(coordinate.y);
+	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
+		return view_position(half_resolution_coordinate(column + axis.x, row + axis.y), positive_z) - center_position;
+	}
+	if (negative_z != 0.0) {
+		return center_position - view_position(half_resolution_coordinate(column - axis.x, row - axis.y), negative_z);
+	}
+	return vec3f(0.0, 0.0, 0.0);
+}
+
+// Rebuilds a camera-facing view-space normal from full-resolution depth, or returns zero when it is degenerate.
+reconstruct_normal: fn (coordinate: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
+	let dx: vec3f = axis_tangent(coordinate, vec2f(1.0, 0.0), center_position, extent);
+	let dy: vec3f = axis_tangent(coordinate, vec2f(0.0, 1.0), center_position, extent);
+	let unnormalized: vec3f = cross(dx, dy);
+	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
+	let tangent_product: f32 = dot(dx, dx) * dot(dy, dy);
+	if (tangent_product == 0.0 || normal_length_sq <= tangent_product * SSGI_UPSCALE_NORMAL_SIN_SQ_EPSILON) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+	let normal: vec3f = unnormalized * inversesqrt(normal_length_sq);
+	// Visible surfaces face the camera at the origin, which fixes the winding of the cross product.
+	if (dot(normal, center_position) > 0.0) {
+		return vec3f(0.0, 0.0, 0.0) - normal;
+	}
+	return normal;
+}
+
+// Returns how much a tap belongs to the pixel's surface: one on the pixel's tangent plane with a similar normal,
+// falling to zero for another surface. Without normals, it compares depth only.
+surface_weight: fn (center_normal: vec3f, center_position: vec3f, tap_normal: vec3f, tap_position: vec3f) -> f32 {
+	if (dot(center_normal, center_normal) == 0.0 || dot(tap_normal, tap_normal) == 0.0) {
+		let relative_delta: f32 = (tap_position.z - center_position.z) / center_position.z;
+		return exp(0.0 - relative_delta * relative_delta * SSGI_UPSCALE_INVERSE_DEPTH_VARIANCE);
+	}
+	let plane_distance: f32 = dot(center_normal, tap_position - center_position) / center_position.z;
+	let normal_agreement: f32 = clamp(
+		(dot(center_normal, tap_normal) - SSGI_UPSCALE_NORMAL_REJECT_COSINE)
+			/ (SSGI_UPSCALE_NORMAL_ACCEPT_COSINE - SSGI_UPSCALE_NORMAL_REJECT_COSINE),
+		0.0,
+		1.0
+	);
+	return normal_agreement * exp(0.0 - plane_distance * plane_distance * SSGI_UPSCALE_INVERSE_PLANE_VARIANCE);
+}
+
+main: fn (input: StageInput) -> void {
+	let coordinate: vec2u = input.thread_id;
+	guard_image_bounds(radiance_output, coordinate);
+	let extent: vec2u = image_size(radiance_output);
+	let center_z: f32 = linearize_depth(fetch(visibility_depth, coordinate).x);
+	if (center_z == 0.0) {
+		write(radiance_output, coordinate, vec4f(0.0, 0.0, 0.0, 0.0));
+		return;
+	}
+	let source_position: vec2f = half_resolution_coordinate(f32(coordinate.x), f32(coordinate.y));
+	let center_position: vec3f = view_position(source_position, center_z);
+	let center_normal: vec3f = reconstruct_normal(coordinate, extent, center_position);
+
+	let source_extent: vec2u = texture_size(radiance_source);
+	// Full-resolution pixel centers land at quarter and three-quarter positions between half-resolution centers.
+	let clamped_position: vec2f = vec2f(
+		clamp(source_position.x, 0.0, f32(source_extent.x - 1)),
+		clamp(source_position.y, 0.0, f32(source_extent.y - 1))
+	);
+	let base: vec2u = vec2u(u32(floor(clamped_position.x)), u32(floor(clamped_position.y)));
+	let fraction: vec2f = vec2f(clamped_position.x - f32(base.x), clamped_position.y - f32(base.y));
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total_weight: f32 = 0.0;
+
+	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
+		let offset: vec2u = vec2u(tap % 2, tap / 2);
+		let tap_x: u32 = base.x + offset.x;
+		let tap_y: u32 = base.y + offset.y;
+		if (tap_x >= source_extent.x) {
+			tap_x = source_extent.x - 1;
+		}
+		if (tap_y >= source_extent.y) {
+			tap_y = source_extent.y - 1;
+		}
+		let tap_coordinate: vec2u = vec2u(tap_x, tap_y);
+		let sample_z: f32 = fetch_low_resolution_depth(tap_coordinate, source_extent);
+		if (sample_z == 0.0) {
+			continue;
+		}
+		let bilinear_x: f32 = 1.0 - fraction.x;
+		if (offset.x == 1) {
+			bilinear_x = fraction.x;
+		}
+		let bilinear_y: f32 = 1.0 - fraction.y;
+		if (offset.y == 1) {
+			bilinear_y = fraction.y;
+		}
+		// A small floor keeps a tap that lands exactly on the far side of the bilinear footprint eligible.
+		let weight: f32 = max(bilinear_x * bilinear_y, 0.001)
+			* surface_weight(
+				center_normal,
+				center_position,
+				fetch_low_resolution_normal(tap_coordinate),
+				view_position(vec2f(f32(tap_x), f32(tap_y)), sample_z)
+			);
+		sum = sum + fetch(radiance_source, tap_coordinate) * weight;
+		total_weight = total_weight + weight;
+	}
+
+	// Without a matching tap, report every ray as missed so the environment lights the pixel instead of a neighbor.
+	let result: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (total_weight > 0.00001) {
+		result = sum * (1.0 / total_weight);
+	}
+	write(radiance_output, coordinate, result);
+}

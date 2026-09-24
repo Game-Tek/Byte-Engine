@@ -147,14 +147,12 @@ impl<A: Allocator + Clone> Generator<A> {
 			return Ok(source);
 		}
 
-		let fallback_helper_capacity = if self.downsample_strategy == DownsampleStrategy::ShaderGather
-			&& (intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max)
-		{
+		let downsample_helper_capacity = if intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max {
 			4096
 		} else {
 			0
 		};
-		let mut string = String::with_capacity(2048 + fallback_helper_capacity);
+		let mut string = String::with_capacity(2048 + downsample_helper_capacity);
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings, &intrinsic_requirements);
 

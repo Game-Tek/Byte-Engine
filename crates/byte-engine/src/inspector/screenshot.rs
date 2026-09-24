@@ -60,6 +60,10 @@ impl ScreenshotBroker {
 pub enum ScreenshotCapture {
 	FinalSwapchain,
 	AfterPass { pass: String, target: String },
+	/// A named render-graph target of a scene pipeline, such as an intermediate lighting buffer.
+	///
+	/// The renderer reads it after every scene pipeline has recorded its work for the frame, before post-processing.
+	SceneTarget { target: String },
 }
 
 /// The `ScreenshotRequest` struct carries one selected capture and its one-shot completion channel.
@@ -123,7 +127,7 @@ impl From<crate::rendering::renderer::RendererScreenshotError> for ScreenshotErr
 pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Vec<u8>, String> {
 	let bytes_per_pixel = match readback.format {
 		ghi::Formats::BGRAu8 | ghi::Formats::BGRAsRGB => 4,
-		ghi::Formats::RGBA16UNORM => 8,
+		ghi::Formats::RGBA16UNORM | ghi::Formats::RGBA16F => 8,
 		_ => return Err(ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string()),
 	};
 	let width = readback.extent.width() as usize;
@@ -155,6 +159,15 @@ pub(crate) fn encode_screenshot_png(readback: ghi::TextureReadback) -> Result<Ve
 				for channel in row[..row_size].as_chunks::<2>().0 {
 					let value = u32::from(u16::from_ne_bytes([channel[0], channel[1]]));
 					rgba.push(((value * 255 + 32_767) / 65_535) as u8);
+				}
+			}
+			// HDR intermediates are written as linear values clamped to [0, 1], without tone mapping, so each
+			// channel reads back as the stored value.
+			ghi::Formats::RGBA16F => {
+				for channel in row[..row_size].as_chunks::<2>().0 {
+					let value = half::f16::from_bits(u16::from_ne_bytes([channel[0], channel[1]])).to_f32();
+					let value = if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) };
+					rgba.push((value * 255.0).round() as u8);
 				}
 			}
 			_ => unreachable!("screenshot format was validated before encoding"),

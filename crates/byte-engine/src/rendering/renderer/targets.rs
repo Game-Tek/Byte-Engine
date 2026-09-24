@@ -1,13 +1,20 @@
 use smallvec::SmallVec;
+use utils::Extent;
 use utils::RGBA;
 
 /// The `RenderTargets` struct tracks sink-scoped render images and attachment access.
 pub struct RenderTargets {
 	pub(super) images: Vec<(ghi::BaseImageHandle, ghi::Formats)>,
+	/// Divides the sink extent to size each image in `images`, at the same index. One means full sink resolution.
+	pub(super) resolution_divisors: Vec<u32>,
 	/// Maps a sink-scoped name to an image index.
 	pub(super) by_name: Vec<(usize, String, usize)>,
 	/// Maps sink indices to image indices and access policies, making attachments.
 	pub(super) by_sink_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
+	/// Maps a sink-scoped name to a per-frame image that later frames read as history.
+	///
+	/// History targets are never attachments, so no pass can clear them by accident.
+	pub(super) histories: Vec<(usize, String, ghi::DynamicImageHandle, u32)>,
 }
 
 impl Default for RenderTargets {
@@ -20,8 +27,10 @@ impl RenderTargets {
 	pub fn new() -> Self {
 		Self {
 			images: Vec::with_capacity(32),
+			resolution_divisors: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
 			by_sink_index: Vec::with_capacity(32),
+			histories: Vec::with_capacity(8),
 		}
 	}
 
@@ -32,7 +41,20 @@ impl RenderTargets {
 	}
 
 	/// Inserts a render-target image for a sink and returns its storage index.
-	pub fn insert(&mut self, name: String, sink_id: usize, image: ghi::BaseImageHandle, format: ghi::Formats) -> usize {
+	///
+	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, rounded down and at least one.
+	pub fn insert(
+		&mut self,
+		name: String,
+		sink_id: usize,
+		image: ghi::BaseImageHandle,
+		format: ghi::Formats,
+		resolution_divisor: u32,
+	) -> usize {
+		assert!(
+			resolution_divisor > 0,
+			"Render target '{name}' has a zero resolution divisor. The most likely cause is a divisor computed from an empty value."
+		);
 		if self.get_image_index(&name, sink_id).is_some() {
 			panic!(
 				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
@@ -47,10 +69,34 @@ impl RenderTargets {
 
 		let index = self.images.len();
 		self.images.push((image, format));
+		self.resolution_divisors.push(resolution_divisor);
 		self.by_name.push((sink_id, name, index));
 		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
 
 		index
+	}
+
+	/// Registers a per-frame history image for a sink, sized like [`Self::insert`] sizes images.
+	pub fn insert_history(&mut self, name: String, sink_id: usize, image: ghi::DynamicImageHandle, resolution_divisor: u32) {
+		assert!(
+			resolution_divisor > 0,
+			"History target '{name}' has a zero resolution divisor. The most likely cause is a divisor computed from an empty value."
+		);
+		if self.history(&name, sink_id).is_some() || self.get_image_index(&name, sink_id).is_some() {
+			panic!(
+				"Render target image '{name}' already exists for sink {sink_id}. The most likely cause is that two render pipeline setup paths create the same named target."
+			);
+		}
+
+		self.histories.push((sink_id, name, image, resolution_divisor));
+	}
+
+	/// Returns the per-frame history image registered under `name` for a sink.
+	pub fn history(&self, name: &str, sink_id: usize) -> Option<ghi::DynamicImageHandle> {
+		self.histories
+			.iter()
+			.find(|(sink, history_name, _, _)| *sink == sink_id && history_name == name)
+			.map(|(_, _, image, _)| *image)
 	}
 
 	pub fn read_from(&mut self, name: &str, sink_id: usize) {
@@ -213,20 +259,59 @@ impl RenderTargets {
 			.find_map(|(v, (i, _))| if *v == sink_id && *i == image_index { Some(*i) } else { None })
 	}
 
-	pub(super) fn get_images_for_sink(&self, index: usize) -> impl Iterator<Item = &ghi::BaseImageHandle> {
-		self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
+	/// Returns every image, including history images, that follows the sink's extent, with the extent it needs.
+	pub(super) fn get_images_for_sink(
+		&self,
+		index: usize,
+		sink_extent: Extent,
+	) -> impl Iterator<Item = (ghi::BaseImageHandle, Extent)> {
+		let targets = self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
 			if *v != index {
 				return None;
 			}
 
-			self.images.get(*i).map(|(image, _)| image)
-		})
+			let (image, _) = self.images.get(*i)?;
+			Some((*image, scaled_extent(sink_extent, self.resolution_divisors[*i])))
+		});
+		let histories = self
+			.histories
+			.iter()
+			.filter(move |(sink, _, _, _)| *sink == index)
+			.map(move |(_, _, image, divisor)| ((*image).into(), scaled_extent(sink_extent, *divisor)));
+		targets.chain(histories)
 	}
+}
+
+/// Divides a sink extent for a reduced-resolution target, keeping every dimension at least one.
+fn scaled_extent(extent: Extent, resolution_divisor: u32) -> Extent {
+	Extent::rectangle(
+		(extent.width() / resolution_divisor).max(1),
+		(extent.height() / resolution_divisor).max(1),
+	)
 }
 
 #[cfg(test)]
 mod tests {
+	use utils::Extent;
+
 	use super::RenderTargets;
+
+	#[test]
+	fn history_targets_follow_the_sink_extent_without_becoming_attachments() {
+		let history = ghi::debug::Device::new()
+			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image).name("History"));
+		let mut targets = RenderTargets::new();
+
+		targets.insert_history("History".into(), 0, history, 2);
+
+		assert_eq!(targets.history("History", 0), Some(history));
+		assert_eq!(targets.history("History", 1), None);
+		assert_eq!(
+			targets.get_images_for_sink(0, Extent::rectangle(1919, 1080)).collect::<Vec<_>>(),
+			[(history.into(), Extent::rectangle(959, 540))]
+		);
+		assert!(targets.get_attachment_infos(0).is_empty());
+	}
 
 	#[test]
 	fn writable_snapshot_excludes_read_only_images() {

@@ -83,6 +83,16 @@ pub struct FrameKey {
 	pub(crate) sequence_index: u8,
 }
 
+impl FrameKey {
+	/// Returns the monotonically increasing index of this frame.
+	///
+	/// Use it to seed per-frame noise or other state that must change every frame. Use
+	/// [`crate::DescriptorWrite::image_with_frame`] to address another frame's resources instead.
+	pub fn frame_index(&self) -> u64 {
+		self.frame_index
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PresentKey {
 	/// The index of the acquired swapchain image.

@@ -182,9 +182,9 @@ mod tests {
 		let second_image = image_handle(2);
 		let other_sink_image = image_handle(3);
 
-		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM);
-		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM);
-		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32);
+		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM, 1);
+		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM, 1);
+		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32, 1);
 		rt.alias(0, "first", "main");
 		rt.alias(0, "second", "main");
 

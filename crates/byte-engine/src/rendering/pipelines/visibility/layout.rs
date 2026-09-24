@@ -147,9 +147,11 @@ pub(crate) const INSTANCE_ID_BINDING: ShaderResourceDescriptor = storage_image(1
 /* Material evaluation descriptor set */
 
 pub(crate) const LIT_BINDING: ShaderResourceDescriptor = storage_image(1041, AccessPolicies::READ_WRITE);
+pub(crate) const DIFFUSE_RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = storage_image(1057, AccessPolicies::WRITE);
 pub(crate) const LIGHTING_DATA_BINDING: ShaderResourceDescriptor =
 	buffer(1045, AccessPolicies::READ, std::mem::size_of::<LightingData>() as u32);
 pub(crate) const AO_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1051);
+pub(crate) const INDIRECT_DIFFUSE_MAP_BINDING: ShaderResourceDescriptor = sampled_image(1056);
 pub(crate) const SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1052).texture_view_type(TextureViewTypes::Texture2DArray);
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1053);

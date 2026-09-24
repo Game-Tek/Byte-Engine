@@ -164,41 +164,27 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str("))");
 				return;
 			}
+			// The helpers gather and reduce in shader code; see `generate_msl_header_block`.
 			"downsample_min" | "downsample_max" => {
-				if self.downsample_strategy == DownsampleStrategy::ShaderGather {
-					string.push_str(if name == "downsample_min" {
-						"_besl_downsample_min("
-					} else {
-						"_besl_downsample_max("
-					});
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str(", ");
-					self.emit_sampler(string, &arguments[0]);
-					string.push_str(", ");
-					self.emit_node_string(string, &arguments[1]);
-					string.push_str(", ");
-					if arguments.len() == 4 {
-						self.emit_node_string(string, &arguments[2]);
-						string.push_str(", ");
-						self.emit_node_string(string, &arguments[3]);
-					} else {
-						self.emit_node_string(string, &arguments[2]);
-					}
-					string.push(')');
+				string.push_str(if name == "downsample_min" {
+					"_besl_downsample_min("
 				} else {
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str(".sample(");
-					self.emit_sampler(string, &arguments[0]);
+					"_besl_downsample_max("
+				});
+				self.emit_node_string(string, &arguments[0]);
+				string.push_str(", ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
+				self.emit_node_string(string, &arguments[1]);
+				string.push_str(", ");
+				if arguments.len() == 4 {
+					self.emit_node_string(string, &arguments[2]);
 					string.push_str(", ");
-					self.emit_node_string(string, &arguments[1]);
-					if arguments.len() == 4 {
-						string.push_str(", ");
-						self.emit_node_string(string, &arguments[2]);
-					}
-					string.push_str(", metal::level(");
-					self.emit_node_string(string, &arguments[if arguments.len() == 4 { 3 } else { 2 }]);
-					string.push_str(")).x");
+					self.emit_node_string(string, &arguments[3]);
+				} else {
+					self.emit_node_string(string, &arguments[2]);
 				}
+				string.push(')');
 				return;
 			}
 			_ => {}

@@ -520,11 +520,11 @@ impl<A: Allocator + Clone> Generator<A> {
 	) {
 		msl_block.push_str("#include <metal_stdlib>\n");
 		msl_block.push_str("using namespace metal;\n");
-		if self.downsample_strategy == DownsampleStrategy::ShaderGather
-			&& (requirements.uses_downsample_min || requirements.uses_downsample_max)
-		{
-			// Metal gather has no explicit-LOD overload. Use it for mip zero and preserve explicit
-			// pyramid levels with four reads. Native reduction needs no fallback source.
+		if requirements.uses_downsample_min || requirements.uses_downsample_max {
+			// Metal executes min/max sampler reduction only on Apple10 GPUs and falls back to averaging elsewhere,
+			// which would blend a near and a far surface into a depth that exists in neither. Gathering the four
+			// texels and reducing them here is exact on every GPU and costs the same single texture instruction.
+			// Metal gather has no explicit-LOD overload, so explicit pyramid levels use four reads instead.
 			msl_block.push_str(
 			"inline float _besl_downsample_min(texture2d<float> texture, sampler texture_sampler, float2 uv, float lod) {\n\
 			 \tfloat4 samples;\n\

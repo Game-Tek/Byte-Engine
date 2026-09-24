@@ -207,7 +207,7 @@ fn screenshot_response(inspector: &dyn Inspector, waker: &LoopWaker, query: Opti
 		Err(()) => {
 			return response(
 				StatusCode::BAD_REQUEST,
-				"Screenshot query is malformed. The most likely cause is a missing sink, an unknown or duplicate parameter, or specifying only one of `pass` and `target`.",
+				"Screenshot query is malformed. The most likely cause is a missing sink, an unknown or duplicate parameter, or `pass` without `target`.",
 			);
 		}
 	};
@@ -268,6 +268,7 @@ fn parse_screenshot_query(query: Option<&str>) -> Result<(usize, ScreenshotCaptu
 	match (pass, target) {
 		(None, None) => Ok((sink, ScreenshotCapture::FinalSwapchain)),
 		(Some(pass), Some(target)) => Ok((sink, ScreenshotCapture::AfterPass { pass, target })),
+		(None, Some(target)) => Ok((sink, ScreenshotCapture::SceneTarget { target })),
 		_ => Err(()),
 	}
 }
@@ -578,6 +579,22 @@ mod tests {
 	}
 
 	#[test]
+	fn screenshot_query_without_a_pass_selects_a_scene_target() {
+		use crate::inspector::screenshot::ScreenshotCapture;
+
+		assert_eq!(
+			super::parse_screenshot_query(Some("sink=1&target=SSGI+History")),
+			Ok((
+				1,
+				ScreenshotCapture::SceneTarget {
+					target: "SSGI History".to_string(),
+				}
+			))
+		);
+		assert_eq!(super::parse_screenshot_query(Some("sink=1&pass=bloom")), Err(()));
+	}
+
+	#[test]
 	fn screenshot_query_decodes_fields_in_any_order() {
 		use crate::inspector::screenshot::ScreenshotCapture;
 
@@ -628,7 +645,6 @@ mod tests {
 			"sink=2&pass=bad%2G&target=main",
 			"sink=2&pass=%FF&target=main",
 			"sink=2&pass=bloom",
-			"sink=2&target=main",
 			"sink=2&pass=bloom&target=main&extra=x",
 			"sink=2&sink=3",
 		] {

@@ -1,0 +1,1 @@
+{"name":"SSGI Trace","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/ssgi-trace.besl"}}

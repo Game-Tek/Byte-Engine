@@ -338,9 +338,17 @@ material_evaluation_suffix: fn () -> void {
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
 	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
-	let ao_factor: f16 = 1.0;
+	// GTAO darkens only specular image-based light. SSGI rays already stop at nearby geometry, so indirect diffuse
+	// light carries its own occlusion.
+	let specular_ao_factor: f16 = 1.0;
+	let indirect_diffuse_radiance: vec3f = sample_environment_irradiance(vec3f(normal));
 	if (push_constant.blend == 0) {
-		ao_factor = f16(fetch(ao, pixel_coordinates).x);
+		specular_ao_factor = f16(fetch(ao, pixel_coordinates).x);
+		// RGB holds light from rays that hit on-screen geometry; alpha is the fraction of rays that hit.
+		// The environment lights the rays that missed.
+		let screen_space_indirect: vec4f = fetch(indirect_diffuse, pixel_coordinates);
+		indirect_diffuse_radiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)
+			+ indirect_diffuse_radiance * (1.0 - screen_space_indirect.w);
 	}
 	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
 	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
@@ -518,14 +526,13 @@ material_evaluation_suffix: fn () -> void {
 		specular = specular + vec3f(local_specular) * irradiance;
 	}
 
-	let ambient_irradiance: vec3f = sample_environment_irradiance(vec3f(normal));
 	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
 	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness));
 	let one_minus_roughness: f16 = f16(1.0) - roughness;
 	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
 	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
-	let ibl_diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * ambient_irradiance;
+	let ibl_diffuse: vec3f = vec3f(kD_ibl * albedo_rgb) * indirect_diffuse_radiance;
 
 	let c0: vec4f16 = vec4f16(0.0 - 1.0, 0.0 - 0.0275, 0.0 - 0.572, 0.022);
 	let c1: vec4f16 = vec4f16(1.0, 0.0425, 1.04, 0.0 - 0.04);
@@ -533,9 +540,9 @@ material_evaluation_suffix: fn () -> void {
 	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
 	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
 	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
-	let ambient: vec3f = ibl_diffuse + ibl_specular;
-	ao_factor = ao_factor * occlusion;
-	let lit: vec3f = (diffuse + specular) * f32(ao_factor) + ambient * f32(ao_factor) + vec3f(emission);
+	// Material occlusion, like baked AO, applies to indirect light only. Direct light has its own shadows.
+	let ambient: vec3f = (ibl_diffuse + ibl_specular * f32(specular_ao_factor)) * f32(occlusion);
+	let lit: vec3f = diffuse + specular + ambient + vec3f(emission);
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
 	if (push_constant.blend != 0) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
@@ -546,6 +553,17 @@ material_evaluation_suffix: fn () -> void {
 		);
 	}
 	write(lit_map, pixel_coordinates, output_color);
+	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
+	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
+	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
+	if (push_constant.blend == 0) {
+		let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);
+		write(
+			diffuse_radiance_map,
+			pixel_coordinates,
+			vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
+		);
+	}
 }
 "#;
 

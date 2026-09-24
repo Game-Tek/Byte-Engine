@@ -1350,3 +1350,533 @@ fn gtao_upscale_is_depth_aware_and_preserves_uniform_ao() {
 		"Expected reconstruction to preserve the AO edge, found left={left:?} and right={right:?}. The most likely cause is missing low-resolution depth rejection."
 	);
 }
+
+/* SSGI */
+
+const SSGI_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
+const SSGI_EXTENT: u32 = 32;
+/// The uniform diffuse radiance of the previous frame in trace fixtures, as the trace reports it for a hit.
+const SSGI_LIT_COLOR: [f32; 4] = [2.0, 1.0, 0.5, 1.0];
+
+/// Returns the square fixture projection that [`gtao_view_data`] also encodes.
+fn ssgi_projection() -> maths_rs::Mat4f {
+	math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR)
+}
+
+/// Converts a row-major matrix to the column-major element order the BESL VM multiplies with.
+fn column_major(matrix: maths_rs::Mat4f) -> [f32; 16] {
+	std::array::from_fn(|index| matrix[(index % 4) * 4 + index / 4])
+}
+
+/// Creates SSGI per-frame parameters. `previous_clip` is `None` when the frame has no usable history.
+fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::Mat4f>, frame_index: u32) -> besl::vm::Buffer {
+	let mut parameters = buffer(program, SSGI_PARAMETERS_SLOT);
+	for (member, value) in [
+		(
+			"current_view_to_previous_clip",
+			Value::Mat4F(column_major(previous_clip.unwrap_or_else(maths_rs::Mat4f::identity))),
+		),
+		("frame_index", Value::U32(frame_index)),
+		("history_valid", Value::U32(previous_clip.is_some() as u32)),
+	] {
+		parameters.write(member, value).expect("SSGI parameters");
+	}
+	parameters
+}
+
+/// Builds a linear depth pyramid whose physical mip one holds `linear_depth` at `width` x `height`.
+fn ssgi_depth_pyramid(width: u32, height: u32, linear_depth: &[[f32; 4]]) -> Texture {
+	let mut pyramid = texture_2d(
+		width * 2,
+		height * 2,
+		&vec![[0.0, 0.0, 0.0, 1.0]; (width * 2 * height * 2) as usize],
+	);
+	pyramid.add_mip(texture_2d(width, height, linear_depth));
+	pyramid
+}
+
+/// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image.
+fn ssgi_ray_at(x: f32, y: f32, extent: u32) -> [f32; 2] {
+	let projection = ssgi_projection();
+	[
+		(2.0 * (x + 0.5) / extent as f32 - 1.0) / projection[0],
+		(1.0 - 2.0 * (y + 0.5) / extent as f32) / projection[5],
+	]
+}
+
+/// Returns the depth a ray sees in a scene with a floor one unit below the camera and, optionally, a facing wall.
+fn ssgi_floor_depth(ray: [f32; 2], wall_z: Option<f32>) -> f32 {
+	let floor_z = if ray[1] < 0.0 { -1.0 / ray[1] } else { f32::INFINITY };
+	let depth = wall_z.map_or(floor_z, |wall_z| floor_z.min(wall_z));
+	if depth <= GTAO_FAR { depth } else { 0.0 }
+}
+
+/// Renders `scene` into the half-resolution depth the trace marches, `extent` pixels square, and the full-resolution
+/// diffuse radiance it reads, whose alpha holds each pixel's depth. `scene` maps a pixel ray to its depth and radiance.
+fn ssgi_scene_images(extent: u32, scene: impl Fn([f32; 2]) -> (f32, [f32; 3])) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+	let image = |extent: u32| {
+		(0..extent * extent)
+			.map(|index| scene(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent)))
+			.collect::<Vec<_>>()
+	};
+	let depth = image(extent).into_iter().map(|(z, _)| [z, 0.0, 0.0, 1.0]).collect();
+	let radiance = image(extent * 2).into_iter().map(|(z, [r, g, b])| [r, g, b, z]).collect();
+	(depth, radiance)
+}
+
+/// Builds the floor and optional wall scene lit uniformly with [`SSGI_LIT_COLOR`], `extent` pixels square.
+fn ssgi_floor_scene(extent: u32, wall_z: Option<f32>) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+	let [r, g, b, _] = SSGI_LIT_COLOR;
+	ssgi_scene_images(extent, |ray| (ssgi_floor_depth(ray, wall_z), [r, g, b]))
+}
+
+/// Runs the SSGI trace at one pixel of the floor and optional wall scene and returns the raw radiance it writes.
+fn run_ssgi_trace(program: &ExecutableProgram, wall_z: Option<f32>, history: bool, frame_index: u32, pixel: [u32; 2]) -> [f32; 4] {
+	let (depth, radiance) = ssgi_floor_scene(SSGI_EXTENT, wall_z);
+	run_ssgi_trace_with_radiance(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, pixel)
+}
+
+/// Runs the SSGI trace at `extent` pixels square with a full-resolution previous radiance image, twice the trace
+/// extent on each axis.
+fn run_ssgi_trace_with_radiance(
+	program: &ExecutableProgram,
+	extent: u32,
+	depth: &[[f32; 4]],
+	radiance: &[[f32; 4]],
+	history: bool,
+	frame_index: u32,
+	pixel: [u32; 2],
+) -> [f32; 4] {
+	let mut view = gtao_view_data(program, extent, extent);
+	// A static camera reprojects through the unchanged projection.
+	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
+	let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, depth);
+	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
+	let mut output = empty_image(extent, extent);
+	let mut normals = empty_image(extent, extent);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
+	descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
+	run_at(program, &mut descriptors, pixel);
+	drop(descriptors);
+	rgba(&output, pixel)
+}
+
+/// Verifies rays that hit visible geometry return last frame's light there, and that some rays do hit a nearby wall.
+#[test]
+fn ssgi_trace_gathers_last_frame_light_from_geometry_that_rays_hit() {
+	let program = asset!("ssgi-trace.besl");
+	let (depth, _) = ssgi_floor_scene(SSGI_EXTENT, Some(4.0));
+	// This floor pixel lies about 0.3 units in front of the wall, so rays leaning toward the wall hit it.
+	let pixel = [SSGI_EXTENT / 2, 23];
+	assert!(depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0] < 4.0);
+
+	let mut hits = 0;
+	for frame_index in 0..32 {
+		let radiance = run_ssgi_trace(&program, Some(4.0), true, frame_index, pixel);
+		if radiance[3] == 0.0 {
+			assert_rgba_close(radiance, [0.0; 4], 0.0);
+		} else {
+			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
+			hits += 1;
+		}
+	}
+	assert!(
+		hits > 4 && hits < 32,
+		"Expected some but not all rays to hit the wall, found {hits} hits in 32 frames."
+	);
+}
+
+/// Verifies a flat floor never occludes itself, so every ray misses and the environment lights the pixel.
+#[test]
+fn ssgi_trace_reports_misses_on_an_unoccluded_floor() {
+	let program = asset!("ssgi-trace.besl");
+	for frame_index in 0..16 {
+		assert_rgba_close(
+			run_ssgi_trace(&program, None, true, frame_index, [SSGI_EXTENT / 2, 23]),
+			[0.0; 4],
+			0.0,
+		);
+	}
+}
+
+/// Verifies that without history the trace gathers nothing, because no radiance of this sink exists yet.
+#[test]
+fn ssgi_trace_reports_misses_without_history() {
+	let program = asset!("ssgi-trace.besl");
+	for frame_index in 0..16 {
+		assert_rgba_close(
+			run_ssgi_trace(&program, Some(4.0), false, frame_index, [SSGI_EXTENT / 2, 23]),
+			[0.0; 4],
+			0.0,
+		);
+	}
+}
+
+const SSGI_TEMPORAL_EXTENT: u32 = 8;
+/// The view-space normal of a wall that faces the camera. View space is y-up and the camera looks down positive z.
+const SSGI_WALL_NORMAL: [f32; 4] = [0.0, 0.0, -1.0, 0.0];
+/// The view-space normal of the floor below the camera.
+const SSGI_FLOOR_NORMAL: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
+
+/// The inputs of one SSGI temporal fixture. Every image is `extent` pixels square.
+struct SsgiTemporalFixture {
+	extent: u32,
+	depth: Vec<[f32; 4]>,
+	normals: Vec<[f32; 4]>,
+	raw: Vec<[f32; 4]>,
+	previous_depth: Vec<[f32; 4]>,
+	previous_normals: Vec<[f32; 4]>,
+	previous_history: [f32; 4],
+	history: bool,
+}
+
+impl SsgiTemporalFixture {
+	/// A camera-facing wall at depth five with uniform inputs and matching previous depth.
+	fn uniform(raw: [f32; 4], previous_history: [f32; 4], history: bool) -> Self {
+		let texel_count = (SSGI_TEMPORAL_EXTENT * SSGI_TEMPORAL_EXTENT) as usize;
+		Self {
+			extent: SSGI_TEMPORAL_EXTENT,
+			depth: vec![[5.0, 0.0, 0.0, 1.0]; texel_count],
+			normals: vec![SSGI_WALL_NORMAL; texel_count],
+			raw: vec![raw; texel_count],
+			previous_depth: vec![[5.0, 0.0, 0.0, 1.0]; texel_count],
+			previous_normals: vec![SSGI_WALL_NORMAL; texel_count],
+			previous_history,
+			history,
+		}
+	}
+
+	fn run(&self, pixel: [u32; 2]) -> [f32; 4] {
+		let program = asset!("ssgi-temporal.besl");
+		let extent = self.extent;
+		let texel_count = (extent * extent) as usize;
+		let mut view = gtao_view_data(&program, extent, extent);
+		let mut parameters = ssgi_parameters(&program, self.history.then(ssgi_projection), 0);
+		let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.depth);
+		let mut raw = texture_2d(extent, extent, &self.raw);
+		let mut output = empty_image(extent, extent);
+		let mut previous_history = texture_2d(extent, extent, &vec![self.previous_history; texel_count]);
+		let mut previous_depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.previous_depth);
+		let mut normals = texture_2d(extent, extent, &self.normals);
+		let mut previous_normals = texture_2d(extent, extent, &self.previous_normals);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+		descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
+		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
+		descriptors.bind_texture(ResourceSlot::new(1034), &mut raw);
+		descriptors.bind_image(ResourceSlot::new(1035), &mut output);
+		descriptors.bind_texture(ResourceSlot::new(1036), &mut previous_history);
+		descriptors.bind_texture(ResourceSlot::new(1037), &mut previous_depth_pyramid);
+		descriptors.bind_texture(ResourceSlot::new(1038), &mut normals);
+		descriptors.bind_texture(ResourceSlot::new(1039), &mut previous_normals);
+		run_at(&program, &mut descriptors, pixel);
+		drop(descriptors);
+		rgba(&output, pixel)
+	}
+}
+
+/// Verifies the temporal stage uses only this frame's rays when there is no history.
+#[test]
+fn ssgi_temporal_ignores_history_when_it_is_invalid() {
+	let raw = [0.4, 0.2, 0.1, 0.5];
+	assert_rgba_close(
+		SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], false).run([4, 4]),
+		raw,
+		0.00001,
+	);
+}
+
+/// Verifies reprojected history of the same surface is blended in with a 90% weight.
+#[test]
+fn ssgi_temporal_accumulates_history_of_the_same_surface() {
+	let raw = [1.0, 1.0, 1.0, 1.0];
+	let history = [0.0, 0.5, 0.0, 0.0];
+	assert_rgba_close(
+		SsgiTemporalFixture::uniform(raw, history, true).run([4, 4]),
+		[0.1, 0.55, 0.1, 0.1],
+		0.00001,
+	);
+}
+
+/// Verifies history is rejected where the previous frame saw a different surface.
+#[test]
+fn ssgi_temporal_rejects_history_of_a_disoccluded_surface() {
+	let raw = [0.4, 0.2, 0.1, 0.5];
+	let mut fixture = SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], true);
+	fixture.previous_depth = vec![[8.0, 0.0, 0.0, 1.0]; fixture.previous_depth.len()];
+	assert_rgba_close(fixture.run([4, 4]), raw, 0.00001);
+}
+
+/// Verifies history is rejected where the previous frame saw a surface facing another way at the same depth, as
+/// where a foot meets the floor.
+#[test]
+fn ssgi_temporal_rejects_history_of_a_surface_facing_another_way() {
+	let raw = [0.4, 0.2, 0.1, 0.5];
+	let mut fixture = SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], true);
+	fixture.previous_normals = vec![SSGI_FLOOR_NORMAL; fixture.previous_normals.len()];
+	assert_rgba_close(fixture.run([4, 4]), raw, 0.00001);
+}
+
+/// Verifies the spatial filter does not average rays from a surface at a different depth.
+#[test]
+fn ssgi_temporal_filter_keeps_light_on_its_own_surface() {
+	let mut fixture = SsgiTemporalFixture::uniform([0.0; 4], [0.0; 4], false);
+	let half = SSGI_TEMPORAL_EXTENT / 2;
+	for index in 0..fixture.depth.len() {
+		let near = (index as u32 % SSGI_TEMPORAL_EXTENT) < half;
+		fixture.depth[index] = [if near { 2.0 } else { 10.0 }, 0.0, 0.0, 1.0];
+		fixture.raw[index] = if near { [1.0; 4] } else { [0.0; 4] };
+	}
+	assert_rgba_close(fixture.run([half - 1, 4]), [1.0; 4], 0.0001);
+	assert_rgba_close(fixture.run([half, 4]), [0.0; 4], 0.0001);
+}
+
+/// Returns the depth and view-space normal of the wall at depth `wall_z` standing on the floor of
+/// [`ssgi_floor_depth`], at pixel `(x, y)` of an `extent` square image.
+fn ssgi_contact_surface(x: u32, y: u32, extent: u32, wall_z: f32) -> (f32, [f32; 4]) {
+	let depth = ssgi_floor_depth(ssgi_ray_at(x as f32, y as f32, extent), Some(wall_z));
+	(depth, if depth == wall_z { SSGI_WALL_NORMAL } else { SSGI_FLOOR_NORMAL })
+}
+
+/// Verifies the spatial filter keeps light off a surface that touches the center's surface at the same depth, as a
+/// floor meets a wall or a foot.
+#[test]
+fn ssgi_temporal_filter_keeps_light_off_a_touching_surface() {
+	const EXTENT: u32 = 16;
+	const WALL_Z: f32 = 4.0;
+	let mut fixture = SsgiTemporalFixture::uniform([0.0; 4], [0.0; 4], false);
+	let surfaces: Vec<_> = (0..EXTENT * EXTENT)
+		.map(|index| ssgi_contact_surface(index % EXTENT, index / EXTENT, EXTENT, WALL_Z))
+		.collect();
+	fixture.extent = EXTENT;
+	fixture.depth = surfaces.iter().map(|&(z, _)| [z, 0.0, 0.0, 1.0]).collect();
+	fixture.normals = surfaces.iter().map(|&(_, normal)| normal).collect();
+	fixture.previous_depth = fixture.depth.clone();
+	fixture.previous_normals = fixture.normals.clone();
+	// Only the wall gathered light.
+	fixture.raw = surfaces
+		.iter()
+		.map(|&(z, _)| if z == WALL_Z { [1.0; 4] } else { [0.0; 4] })
+		.collect();
+	let column = EXTENT / 2;
+	let floor_row = (0..EXTENT)
+		.find(|&row| surfaces[(row * EXTENT + column) as usize].0 != WALL_Z)
+		.expect("the wall stands on the floor");
+	let floor_z = surfaces[(floor_row * EXTENT + column) as usize].0;
+	assert!(
+		(WALL_Z - floor_z) / WALL_Z < 0.02,
+		"The fixture floor next to the wall must share its depth, found {floor_z}."
+	);
+
+	let floor = fixture.run([column, floor_row]);
+	let wall = fixture.run([column, floor_row - 1]);
+	assert!(floor[0] < 0.01, "Expected no wall light on the floor next to it, found {floor:?}.");
+	assert!(wall[0] > 0.99, "Expected the wall to keep its light, found {wall:?}.");
+}
+
+/// Runs the SSGI upscale at one full-resolution pixel. Low-resolution inputs are half the full extent.
+fn run_ssgi_upscale(
+	full_extent: u32,
+	device_depth: &[[f32; 4]],
+	low_resolution_depth: &[[f32; 4]],
+	low_resolution_normals: &[[f32; 4]],
+	radiance: &[[f32; 4]],
+	pixel: [u32; 2],
+) -> [f32; 4] {
+	let program = asset!("ssgi-upscale.besl");
+	let low_extent = full_extent / 2;
+	let mut view = gtao_view_data(&program, low_extent, low_extent);
+	let mut visibility_depth = texture_2d(full_extent, full_extent, device_depth);
+	let mut source = texture_2d(low_extent, low_extent, radiance);
+	let mut output = empty_image(full_extent, full_extent);
+	let mut depth_pyramid = ssgi_depth_pyramid(low_extent, low_extent, low_resolution_depth);
+	let mut normals = texture_2d(low_extent, low_extent, low_resolution_normals);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut visibility_depth);
+	descriptors.bind_texture(ResourceSlot::new(1034), &mut source);
+	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
+	descriptors.bind_texture(ResourceSlot::new(1036), &mut depth_pyramid);
+	descriptors.bind_texture(ResourceSlot::new(1037), &mut normals);
+	run_at(&program, &mut descriptors, pixel);
+	drop(descriptors);
+	rgba(&output, pixel)
+}
+
+/// Verifies upscaling keeps indirect light on its own side of a depth edge and leaves the background unlit.
+#[test]
+fn ssgi_upscale_keeps_light_on_its_own_side_of_a_depth_edge() {
+	const FULL: u32 = 16;
+	const LOW: u32 = FULL / 2;
+	let device_depth_for = |linear_depth: f32| {
+		let range = GTAO_FAR - GTAO_NEAR;
+		(GTAO_NEAR * GTAO_FAR / range) / linear_depth - GTAO_NEAR / range
+	};
+	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
+		.map(|index| {
+			let (x, y) = (index % FULL, index / FULL);
+			let depth = if y == FULL - 1 {
+				0.0
+			} else if x < FULL / 2 {
+				device_depth_for(2.0)
+			} else {
+				device_depth_for(10.0)
+			};
+			[depth, 0.0, 0.0, 1.0]
+		})
+		.collect();
+	let low_depth: Vec<[f32; 4]> = (0..LOW * LOW)
+		.map(|index| [if index % LOW < LOW / 2 { 2.0 } else { 10.0 }, 0.0, 0.0, 1.0])
+		.collect();
+	let radiance: Vec<[f32; 4]> = (0..LOW * LOW)
+		.map(|index| if index % LOW < LOW / 2 { [1.0, 0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] })
+		.collect();
+	// Both walls face the camera.
+	let normals = vec![SSGI_WALL_NORMAL; (LOW * LOW) as usize];
+
+	let near = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [FULL / 2 - 1, 4]);
+	let far = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [FULL / 2, 4]);
+	let background = run_ssgi_upscale(FULL, &device_depth, &low_depth, &normals, &radiance, [3, FULL - 1]);
+
+	assert_rgba_close(near, [1.0, 0.0, 0.0, 1.0], 0.0001);
+	assert_rgba_close(far, [0.0, 1.0, 0.0, 1.0], 0.0001);
+	assert_rgba_close(background, [0.0; 4], 0.0);
+}
+
+/// Verifies upscaling keeps light off a surface that touches the pixel's surface at nearly the same depth.
+#[test]
+fn ssgi_upscale_keeps_light_off_a_touching_surface() {
+	const FULL: u32 = 32;
+	const LOW: u32 = FULL / 2;
+	const WALL_Z: f32 = 4.0;
+	let range = GTAO_FAR - GTAO_NEAR;
+	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
+		.map(|index| {
+			let (z, _) = ssgi_contact_surface(index % FULL, index / FULL, FULL, WALL_Z);
+			let depth = if z == 0.0 { 0.0 } else { (GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range };
+			[depth, 0.0, 0.0, 1.0]
+		})
+		.collect();
+	let low_surfaces: Vec<_> = (0..LOW * LOW)
+		.map(|index| ssgi_contact_surface(index % LOW, index / LOW, LOW, WALL_Z))
+		.collect();
+	let low_depth: Vec<[f32; 4]> = low_surfaces.iter().map(|&(z, _)| [z, 0.0, 0.0, 1.0]).collect();
+	let low_normals: Vec<[f32; 4]> = low_surfaces.iter().map(|&(_, normal)| normal).collect();
+	// Only the wall gathered light.
+	let radiance: Vec<[f32; 4]> = low_surfaces
+		.iter()
+		.map(|&(z, _)| if z == WALL_Z { [1.0; 4] } else { [0.0; 4] })
+		.collect();
+	let column = FULL / 2;
+	let floor_row = (0..FULL)
+		.find(|&row| ssgi_contact_surface(column, row, FULL, WALL_Z).0 != WALL_Z)
+		.expect("the wall stands on the floor");
+
+	let wall = run_ssgi_upscale(FULL, &device_depth, &low_depth, &low_normals, &radiance, [column, floor_row - 1]);
+	let floor = run_ssgi_upscale(FULL, &device_depth, &low_depth, &low_normals, &radiance, [column, floor_row]);
+	assert!(wall[0] > 0.99, "Expected the wall next to the floor to keep its light, found {wall:?}.");
+	assert!(floor[0] < 0.01, "Expected no wall light on the floor next to it, found {floor:?}.");
+}
+
+/// Verifies rays from a wall find the floor in front of it, a surface seen at a grazing angle that one march step
+/// can cross by more than the hit thickness.
+#[test]
+fn ssgi_trace_finds_a_grazing_floor_that_rays_cross_between_steps() {
+	let program = asset!("ssgi-trace.besl");
+	let (depth, _) = ssgi_floor_scene(SSGI_EXTENT, Some(4.0));
+	// This wall pixel sits just above the floor, so about half of its cosine-weighted rays point down into it.
+	let pixel = [SSGI_EXTENT / 2, 22];
+	assert_eq!(depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0], 4.0);
+
+	let mut hits = 0;
+	for frame_index in 0..64 {
+		let radiance = run_ssgi_trace(&program, Some(4.0), true, frame_index, pixel);
+		if radiance[3] != 0.0 {
+			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
+			hits += 1;
+		}
+	}
+	assert!(hits >= 24, "Expected about half the rays to hit the floor, found {hits} hits in 64 frames.");
+}
+
+/// Verifies rays from a surface that faces the camera reach the floor between it and the camera.
+///
+/// Every ray from such a surface heads toward the camera, and its projection grows without bound near the camera
+/// plane. Cutting the ray to the screen-space reach must not also shrink its world-space path.
+#[test]
+fn ssgi_trace_rays_toward_the_camera_reach_the_floor_in_front_of_a_wall() {
+	const EXTENT: u32 = 256;
+	const WALL_Z: f32 = 4.0;
+	let program = asset!("ssgi-trace.besl");
+	let (depth, radiance) = ssgi_floor_scene(EXTENT, Some(WALL_Z));
+	// This wall pixel sits half a unit above the floor, whose nearest visible part lies about 35 pixels lower.
+	let pixel = [EXTENT / 2, 155];
+	assert_eq!(depth[(pixel[1] * EXTENT + pixel[0]) as usize][0], WALL_Z);
+
+	let mut hits = 0;
+	for frame_index in 0..64 {
+		let radiance = run_ssgi_trace_with_radiance(&program, EXTENT, &depth, &radiance, true, frame_index, pixel);
+		if radiance[3] != 0.0 {
+			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
+			hits += 1;
+		}
+	}
+	// About a third of cosine-weighted rays point down steeply enough to land on the floor within reach.
+	assert!(hits >= 16, "Expected about a third of the rays to hit the floor, found {hits} hits in 64 frames.");
+}
+
+/// Returns the view-space depth that a ray through `ray` sees in a scene with a floor one unit below the camera
+/// and a pillar whose front face stands at depth three, and whether that surface is the pillar.
+fn ssgi_pillar_scene(ray: [f32; 2]) -> (f32, bool) {
+	const PILLAR_Z: f32 = 3.0;
+	let pillar = (ray[0] * PILLAR_Z).abs() <= 0.25 && (-1.0..=0.5).contains(&(ray[1] * PILLAR_Z));
+	if pillar {
+		return (PILLAR_Z, true);
+	}
+	let floor_z = if ray[1] < 0.0 { -1.0 / ray[1] } else { 0.0 };
+	(if floor_z <= GTAO_FAR { floor_z } else { 0.0 }, false)
+}
+
+/// Verifies floor rays that reach a pillar take its light and never read the floor seen past the pillar's edge.
+///
+/// A floor cannot light itself, so every hit from a floor pixel in front of the pillar must carry the pillar's red.
+#[test]
+fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
+	let program = asset!("ssgi-trace.besl");
+	let (depth, radiance) = ssgi_scene_images(SSGI_EXTENT, |ray| {
+		let (z, pillar) = ssgi_pillar_scene(ray);
+		(z, if pillar { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] })
+	});
+	// Floor pixels just in front of the pillar's base and beside it, where rays that lean forward reach its face.
+	let pillar_columns: Vec<u32> = (0..SSGI_EXTENT).filter(|&column| depth[(20 * SSGI_EXTENT + column) as usize][0] == 3.0).collect();
+	let first_floor_row = (0..SSGI_EXTENT)
+		.find(|&row| row > 20 && depth[(row * SSGI_EXTENT + pillar_columns[0]) as usize][0] != 3.0)
+		.expect("the pillar stands on the floor");
+	let pixels: Vec<[u32; 2]> = (first_floor_row..first_floor_row + 3)
+		.flat_map(|row| {
+			(pillar_columns[0] - 2..=pillar_columns[pillar_columns.len() - 1] + 2).map(move |column| [column, row])
+		})
+		.collect();
+	assert!(pixels.iter().all(|pixel| depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0] < 3.0));
+
+	let mut hits = 0;
+	for pixel in pixels {
+		for frame_index in 0..32 {
+			let radiance =
+				run_ssgi_trace_with_radiance(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, pixel);
+			if radiance[3] != 0.0 {
+				hits += 1;
+				assert!(
+					radiance[0] > radiance[1],
+					"Floor pixel {pixel:?} read {radiance:?}, the floor behind the pillar, in frame {frame_index}."
+				);
+			}
+		}
+	}
+	assert!(hits > 0, "Expected some floor rays to hit the pillar.");
+}

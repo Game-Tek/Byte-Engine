@@ -1,0 +1,1 @@
+{"name":"SSGI Temporal","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/ssgi-temporal.besl"}}

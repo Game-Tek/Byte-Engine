@@ -167,7 +167,8 @@ pub(super) mod tests {
 			} if handle == buffer
 		));
 
-		let image_write = descriptors::DescriptorWrite::image_with_frame(set, slot, image, Layouts::General, -1);
+		let image_write =
+			descriptors::DescriptorWrite::image_with_frame(set, slot, DynamicImageHandle(BaseImageHandle(3)), Layouts::General, -1);
 
 		assert_eq!(image_write.frame_offset, Some(-1));
 		assert!(matches!(
@@ -192,7 +193,7 @@ pub(super) mod tests {
 		let array_write = descriptors::DescriptorWrite::combined_image_sampler_array_with_frame(
 			set,
 			slot,
-			image,
+			DynamicImageHandle(BaseImageHandle(3)),
 			sampler,
 			Layouts::Read,
 			7,

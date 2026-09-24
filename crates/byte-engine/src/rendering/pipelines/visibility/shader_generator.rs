@@ -306,6 +306,7 @@ impl VisibilityShaderScope {
 		];
 		let material_evaluation_bindings = vec![
 			Node::binding("lit_map", Node::image("rgba16f"), 1041, true, true),
+			Node::binding("diffuse_radiance_map", Node::image("rgba16f"), 1057, false, true),
 			Node::constant_buffer_binding(
 				"lighting_data",
 				Node::buffer(
@@ -323,6 +324,7 @@ impl VisibilityShaderScope {
 			),
 			read_buffer("materials", "MaterialBuffer", "materials", MATERIAL_ARRAY, 1046),
 			sampled("ao", Node::combined_image_sampler(), 1051),
+			sampled("indirect_diffuse", Node::combined_image_sampler(), 1056),
 			sampled("depth_shadow_map", Node::combined_array_image_sampler(), 1052),
 			sampled("directional_shadow_depth_pyramid", Node::combined_image_sampler(), 1053),
 			sampled("environment_irradiance", Node::combined_cube_image_sampler(), 1054),

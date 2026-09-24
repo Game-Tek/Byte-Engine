@@ -27,7 +27,7 @@ mod raster;
 pub(crate) use bindings::*;
 pub(crate) use emit::*;
 pub(crate) use facade::*;
-pub use facade::{ComputeBindingMode, DownsampleStrategy, Generator};
+pub use facade::{ComputeBindingMode, Generator};
 pub(crate) use generate::*;
 pub(crate) use raster::*;
 #[cfg(test)]
@@ -530,17 +530,12 @@ mod tests {
 			"kernel void besl_main(uint2 gid [[thread_position_in_grid]],uint thread_index [[thread_index_in_threadgroup]],uint2 threadgroup_position [[threadgroup_position_in_grid]],constant _resources& resources [[buffer(16)]])"
 		);
 		assert_string_contains!(shader, "resources.buff;resources.image;resources.texture;");
-		assert!(
-			!shader.contains("_besl_downsample_"),
-			"Native sampler reduction must not emit unused gather fallback helpers: {shader}"
-		);
 	}
 
 	#[test]
-	fn unused_shader_gather_fallback_helpers_are_not_emitted() {
+	fn unused_downsample_helpers_are_not_emitted() {
 		let shader = Generator::new()
 			.minified(true)
-			.downsample_strategy(DownsampleStrategy::ShaderGather)
 			.generate(
 				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
 				&generator::tests::bindings(),
@@ -548,7 +543,7 @@ mod tests {
 			.expect("Expected MSL without downsampling to generate");
 		assert!(
 			!shader.contains("_besl_downsample_"),
-			"Unused shader-gather fallbacks increased generated MSL size: {shader}"
+			"Unused downsampling helpers increased generated MSL size: {shader}"
 		);
 	}
 
@@ -605,7 +600,7 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn conservative_downsampling_defaults_to_native_sampler_reduction_and_keeps_a_gather_fallback() {
+	async fn conservative_downsampling_gathers_and_reduces_in_shader_code() {
 		let source = r#"
 			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
@@ -623,39 +618,26 @@ mod tests {
 			.get_main()
 			.expect("Expected conservative downsample source to define main");
 		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		let fallback = Generator::new()
-			.minified(true)
-			.downsample_strategy(DownsampleStrategy::ShaderGather)
-			.generate(&settings, &main)
-			.expect("Expected gather fallback MSL");
-		let native = Generator::new()
+		let shader = Generator::new()
 			.minified(true)
 			.generate(&settings, &main)
-			.expect("Expected native sampler-reduction MSL");
+			.expect("Expected downsampling MSL");
 		assert_string_contains!(
-			fallback,
+			shader,
 			"_besl_downsample_min(resources.depth_texture, resources.depth_texture_sampler"
 		);
 		assert_string_contains!(
-			fallback,
+			shader,
 			"_besl_downsample_max(resources.depth_texture, resources.depth_texture_sampler"
 		);
-		assert_string_contains!(fallback, ".gather(texture_sampler, uv, int2(0), component::x)");
-		assert_string_contains!(fallback, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
-		assert_string_contains!(fallback, "texture.read(a, level).x");
-		assert_string_contains!(
-			native,
-			".sample(resources.depth_texture_sampler, float2(0.5,0.5), metal::level(0.0)).x"
-		);
-		assert_string_contains!(
-			native,
-			".sample(resources.array_depth_texture_sampler, float2(0.5,0.5), 1, metal::level(0.0)).x"
-		);
+		assert_string_contains!(shader, ".gather(texture_sampler, uv, int2(0), component::x)");
+		assert_string_contains!(shader, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
+		assert_string_contains!(shader, "texture.read(a, level).x");
 
 		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&fallback, "besl-downsample-gather")
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-downsample-gather")
 			.await
-			.expect("Expected gather fallback MSL to compile natively");
+			.expect("Expected gather downsampling MSL to compile natively");
 	}
 
 	#[compio::test]

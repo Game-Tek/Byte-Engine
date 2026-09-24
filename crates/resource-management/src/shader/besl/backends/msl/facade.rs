@@ -37,7 +37,6 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
 	pub(crate) in_buffer_binding_struct: bool,
 	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
-	pub(crate) downsample_strategy: DownsampleStrategy,
 }
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -55,15 +54,6 @@ pub(crate) fn buffer_address_space(memory_class: besl::BufferMemoryClass, write:
 pub enum ComputeBindingMode {
 	ArgumentBuffers,
 	BareResources,
-}
-
-/// Selects how BESL conservative 2x2 downsampling is implemented in MSL.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DownsampleStrategy {
-	/// Gather four texels and reduce them in shader code for Metal targets without sampler reduction.
-	ShaderGather,
-	/// Use the texture's min/max reduction sampler. This is the default because engine depth-pyramid samplers require reduction support.
-	NativeSamplerReduction,
 }
 
 #[derive(Clone, Debug)]
@@ -160,17 +150,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
-			downsample_strategy: DownsampleStrategy::NativeSamplerReduction,
 		}
-	}
-
-	/// Selects the MSL implementation for `downsample_min` and `downsample_max`.
-	///
-	/// Select [`DownsampleStrategy::ShaderGather`] only for targets without hardware min/max sampler reduction.
-	/// The bound sampler must use the matching reduction mode.
-	pub fn downsample_strategy(mut self, strategy: DownsampleStrategy) -> Self {
-		self.downsample_strategy = strategy;
-		self
 	}
 
 	pub fn minified(mut self, minified: bool) -> Self {

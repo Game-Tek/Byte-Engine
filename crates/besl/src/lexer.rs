@@ -1945,6 +1945,60 @@ main: fn () -> void {
 		}
 	}
 
+	/// Verifies the vector `mix`, integer ordering and scalar `round` overloads screen-space shaders lean on resolve to their own types.
+	#[test]
+	fn lex_vector_mix_integer_ordering_and_scalar_round_overloads() {
+		let script = r#"
+		main: fn () -> void {
+			let magnitude: f32 = length(vec2f(3.0, 4.0));
+			let blended: vec2f = mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.5);
+			let rounded: f32 = round(1.5);
+			let blended3: vec3f = mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5);
+			let blended4: vec4f = mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5);
+			let signed: i32 = 0 - 3;
+			let unsigned: u32 = 7;
+			let smallest: i32 = min(signed, signed);
+			let largest: u32 = max(unsigned, unsigned);
+			let held_i: i32 = clamp(signed, signed, signed);
+			let held_u: u32 = clamp(unsigned, unsigned, unsigned);
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		for (statement, expected_name, expected_type) in [
+			(&statements[0], "length", "f32"),
+			(&statements[1], "mix", "vec2f"),
+			(&statements[2], "round", "f32"),
+			(&statements[3], "mix", "vec3f"),
+			(&statements[4], "mix", "vec4f"),
+			(&statements[7], "min", "i32"),
+			(&statements[8], "max", "u32"),
+			(&statements[9], "clamp", "i32"),
+			(&statements[10], "clamp", "u32"),
+		] {
+			match statement.borrow().node() {
+				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
+					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
+						Nodes::Intrinsic { name, r#return, .. } => {
+							assert_eq!(name, expected_name);
+							assert_type(&r#return.borrow(), expected_type);
+						}
+						_ => panic!("Expected intrinsic"),
+					},
+					_ => panic!("Expected intrinsic call"),
+				},
+				_ => panic!("Expected assignment"),
+			}
+		}
+	}
+
 	/// Verifies mesh index helpers can widen packed byte and word values through portable BESL.
 	#[test]
 	fn lex_u32_widening_intrinsic_overloads() {

@@ -742,14 +742,33 @@ impl<'a> Compiler<'a> {
 			"smoothstep" | "mix" | "clamp" | "fma" => {
 				require_argument_count(arguments, 3)?;
 
-				let argument_type = if name == "clamp" || name == "fma" {
+				let argument_type = if name == "clamp" || name == "fma" || name == "mix" {
 					return_type.clone()
 				} else {
 					ValueType::F32
 				};
 				let first = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
 				let second = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
-				let third = self.compile_value_expression(&arguments[2], &argument_type, descriptor_layouts)?;
+				// `mix` on a vector takes one scalar factor. The ternary instruction works component-wise on
+				// same-typed operands, so the factor is broadcast into a vector before the blend.
+				let lane_count = match argument_type {
+					ValueType::Vec2F => Some(2),
+					ValueType::Vec3F => Some(3),
+					ValueType::Vec4F => Some(4),
+					_ => None,
+				};
+				let third = if let (true, Some(lane_count)) = (name == "mix", lane_count) {
+					let factor = self.compile_value_expression(&arguments[2], &ValueType::F32, descriptor_layouts)?;
+					let register = self.allocate_register();
+					self.instructions.push(Instruction::Construct {
+						register,
+						value_type: argument_type.clone(),
+						components: vec![factor; lane_count],
+					});
+					register
+				} else {
+					self.compile_value_expression(&arguments[2], &argument_type, descriptor_layouts)?
+				};
 				let register = self.allocate_register();
 				self.instructions.push(Instruction::TernaryScalar {
 					register,

@@ -1760,6 +1760,86 @@ fn executable_program_evaluates_length_intrinsics() {
 }
 
 #[test]
+fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
+	let script = r#"
+	main: fn () -> void {
+		buff.magnitude = length(vec2f(3.0, 4.0));
+		buff.blended = mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.25);
+		buff.rounded = round(2.5);
+		buff.blended3 = mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5);
+		buff.blended4 = mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5);
+		let negative: i32 = 0 - 3;
+		let positive: i32 = 5;
+		let low: i32 = 0 - 4;
+		let high: i32 = 4;
+		let three: u32 = 3;
+		let five: u32 = 5;
+		let zero: u32 = 0;
+		let four: u32 = 4;
+		buff.smallest = min(negative, positive);
+		buff.largest = max(three, five);
+		buff.held_i = clamp(low - 3, low, high);
+		buff.held_u = clamp(five + 2, zero, four);
+	}
+	"#;
+
+	let mut root = Node::root();
+	let f32_type = root.get_child("f32").expect("Expected f32");
+	let i32_type = root.get_child("i32").expect("Expected i32");
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	let vec2f_type = root.get_child("vec2f").expect("Expected vec2f");
+	let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
+	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("magnitude", f32_type.clone()).into(),
+					Node::member("blended", vec2f_type).into(),
+					Node::member("rounded", f32_type).into(),
+					Node::member("blended3", vec3f_type).into(),
+					Node::member("blended4", vec4f_type).into(),
+					Node::member("smallest", i32_type.clone()).into(),
+					Node::member("largest", u32_type.clone()).into(),
+					Node::member("held_i", i32_type).into(),
+					Node::member("held_u", u32_type).into(),
+				],
+			},
+			19,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+
+	let slot = ResourceSlot::new(19);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	assert_eq!(buffer.read_f32("magnitude").expect("Expected f32 member"), 5.0);
+	assert_eq!(
+		buffer.read("blended").expect("Expected vec2f member"),
+		Value::Vec2F([1.0, 3.0])
+	);
+	assert_eq!(buffer.read_f32("rounded").expect("Expected f32 member"), 3.0);
+	assert_eq!(
+		buffer.read("blended3").expect("Expected vec3f member"),
+		Value::Vec3F([2.0, 4.0, 6.0])
+	);
+	assert_eq!(
+		buffer.read("blended4").expect("Expected vec4f member"),
+		Value::Vec4F([2.0, 4.0, 6.0, 8.0])
+	);
+	assert_eq!(buffer.read("smallest").expect("Expected i32 member"), Value::I32(-3));
+	assert_eq!(buffer.read("largest").expect("Expected u32 member"), Value::U32(5));
+	assert_eq!(buffer.read("held_i").expect("Expected i32 member"), Value::I32(-4));
+	assert_eq!(buffer.read("held_u").expect("Expected u32 member"), Value::U32(4));
+}
+
+#[test]
 fn executable_program_evaluates_normalize_intrinsics() {
 	let script = r#"
 	main: fn () -> void {

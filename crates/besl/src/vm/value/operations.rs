@@ -788,6 +788,14 @@ pub(crate) fn apply_scalar_binary(operator: ScalarBinaryOperator, left: &Value, 
 			ScalarBinaryOperator::Atan2 => left.atan2(right),
 		}
 	}
+	// Integers only support the ordering operators. The lexer's overload table admits no other integer form.
+	match (operator, left, right) {
+		(ScalarBinaryOperator::Min, Value::I32(left), Value::I32(right)) => return Ok(Value::I32(*left.min(right))),
+		(ScalarBinaryOperator::Max, Value::I32(left), Value::I32(right)) => return Ok(Value::I32(*left.max(right))),
+		(ScalarBinaryOperator::Min, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(*left.min(right))),
+		(ScalarBinaryOperator::Max, Value::U32(left), Value::U32(right)) => return Ok(Value::U32(*left.max(right))),
+		_ => {}
+	}
 	match (left, right) {
 		(Value::F16(left), Value::F16(right)) => Ok(Value::F16(f16::from_f32(apply(operator, left.to_f32(), right.to_f32())))),
 		(Value::F32(left), Value::F32(right)) => Ok(Value::F32(apply(operator, *left, *right))),
@@ -902,6 +910,16 @@ pub(crate) fn apply_scalar_ternary(
 		} else {
 			f16::from_f32(apply(operator, first.to_f32(), second.to_f32(), third.to_f32()))
 		}
+	}
+	// Integers only support `clamp`. The lexer's overload table admits no other integer form.
+	match (operator, first, second, third) {
+		(ScalarTernaryOperator::Clamp, Value::I32(value), Value::I32(minimum), Value::I32(maximum)) => {
+			return Ok(Value::I32(*value.clamp(minimum, maximum)));
+		}
+		(ScalarTernaryOperator::Clamp, Value::U32(value), Value::U32(minimum), Value::U32(maximum)) => {
+			return Ok(Value::U32(*value.clamp(minimum, maximum)));
+		}
+		_ => {}
 	}
 	match (first, second, third) {
 		(Value::F16(first), Value::F16(second), Value::F16(third)) => {

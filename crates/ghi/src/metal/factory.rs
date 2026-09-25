@@ -66,7 +66,14 @@ impl crate::device::Device for Factory {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = build_shader(&self.device, name, shader_source_type, stage, shader_resource_descriptors)?;
+		let shader = build_shader(
+			&self.device,
+			name,
+			shader_source_type,
+			stage,
+			shader_resource_descriptors,
+			self.settings.debug_labels,
+		)?;
 		self.shaders.push(shader);
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
 	}
@@ -115,7 +122,7 @@ impl crate::device::Device for Factory {
 
 	/// Builds a Metal sampler that can be interned by a device later.
 	fn build_sampler(&mut self, builder: crate::sampler::Builder) -> Self::Sampler {
-		build_sampler(&self.device, &builder)
+		build_sampler(&self.device, &builder, self.settings.debug_labels)
 	}
 }
 

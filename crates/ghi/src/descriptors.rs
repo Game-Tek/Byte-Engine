@@ -279,6 +279,6 @@ impl HandleLike for DescriptorSetHandle {
 
 use crate::{
 	BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle,
-	HandleLike, Layouts,
-	Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle, shader::ResourceSlot,
+	HandleLike, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
+	shader::ResourceSlot,
 };

@@ -69,9 +69,9 @@ pub(crate) fn create_ssgi_targets(render_pass_builder: &mut crate::rendering::re
 		indirect_diffuse: render_pass_builder
 			.create_render_target(radiance_image(SSGI_INDIRECT_DIFFUSE_TARGET))
 			.into(),
-		// Material evaluation clears and writes this image, so it also needs transfer-destination use.
+		// Material evaluation clears and writes this image, so it also needs clear use.
 		diffuse_radiance_history: render_pass_builder.create_history_target(
-			radiance_image(DIFFUSE_RADIANCE_HISTORY_TARGET).additional_uses(ghi::Uses::TransferDestination),
+			radiance_image(DIFFUSE_RADIANCE_HISTORY_TARGET).additional_uses(ghi::Uses::Clear),
 			1,
 		),
 	}

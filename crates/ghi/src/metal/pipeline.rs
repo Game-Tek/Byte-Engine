@@ -1,6 +1,8 @@
 use dispatch2::DispatchData;
 use objc2_foundation::NSString;
 use objc2_metal::MTL4Compiler as _;
+#[cfg(debug_assertions)]
+use objc2_metal::MTLLibrary as _;
 
 use super::*;
 
@@ -220,8 +222,18 @@ pub(crate) fn build_sampler_descriptor(builder: &crate::sampler::Builder) -> Ret
 pub(crate) fn build_sampler(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	builder: &crate::sampler::Builder,
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
 ) -> sampler::Sampler {
 	let descriptor = build_sampler_descriptor(builder);
+	// Samplers carry no name, so the label spells out the state that distinguishes them.
+	#[cfg(debug_assertions)]
+	if debug_labels {
+		let label = format!(
+			"Sampler: {:?}, mip {:?}, {:?}, {:?}",
+			builder.filtering_mode, builder.mip_map_mode, builder.addressing_mode, builder.reduction_mode
+		);
+		descriptor.setLabel(Some(&NSString::from_str(&label)));
+	}
 	let reduction_mode =
 		sampler_reduction_mode_for_device(descriptor.reductionMode(), device.supportsFamily(mtl::MTLGPUFamily::Apple10));
 	descriptor.setReductionMode(reduction_mode);
@@ -844,6 +856,7 @@ pub(crate) fn build_shader(
 	source: crate::shader::Sources,
 	stage: crate::ShaderTypes,
 	shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
 ) -> Result<Shader, ()> {
 	let (library, entry_point, threadgroup_size) = match source {
 		crate::shader::Sources::SPIRV(_) => {
@@ -878,6 +891,12 @@ pub(crate) fn build_shader(
 			(library, entry_point, threadgroup_size)
 		}
 	};
+
+	// Every generated entry point is `besl_main`, so the library label is what tells shaders apart in captures.
+	#[cfg(debug_assertions)]
+	if let Some(name) = name.filter(|_| debug_labels) {
+		library.setLabel(Some(&NSString::from_str(name)));
+	}
 
 	Ok(Shader {
 		name: crate::debug_name(name),
@@ -957,6 +976,10 @@ pub(crate) fn build_raster_pipeline(
 			let descriptor = mtl::MTLDepthStencilDescriptor::new();
 			descriptor.setDepthCompareFunction(mtl::MTLCompareFunction::GreaterEqual);
 			descriptor.setDepthWriteEnabled(builder.depth_write);
+			#[cfg(debug_assertions)]
+			if debug_labels {
+				descriptor.setLabel(builder.name.map(NSString::from_str).as_deref());
+			}
 			device.newDepthStencilStateWithDescriptor(&descriptor)
 		})
 		.flatten();

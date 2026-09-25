@@ -40,7 +40,7 @@ fn texture_view_2d(
 	layer: u32,
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
 	// SAFETY: Callers validate the mip level and layer against the image before recording the view.
-	unsafe {
+	let view = unsafe {
 		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
 			utils::to_pixel_format(format),
 			mtl::MTLTextureType::Type2D,
@@ -50,7 +50,15 @@ fn texture_view_2d(
 	}
 	.expect(
 		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layer does not exist in the image.",
-	)
+	);
+	// Images are labeled only when debug labels are enabled, so views follow the same setting.
+	#[cfg(debug_assertions)]
+	if let Some(label) = texture.label() {
+		view.setLabel(Some(&NSString::from_str(&format!(
+			"{label} (mip {mip_level}, layer {layer})"
+		))));
+	}
+	view
 }
 
 /// Validates one attachment's declared layer selection against the native texture.
@@ -256,6 +264,18 @@ pub(super) enum ArgumentTableStage {
 }
 
 impl ArgumentTableStage {
+	/// Names this stage's argument table in capture tools.
+	#[cfg(debug_assertions)]
+	fn label(self) -> &'static str {
+		match self {
+			Self::Compute => "Compute Argument Table",
+			Self::Vertex => "Vertex Argument Table",
+			Self::Fragment => "Fragment Argument Table",
+			Self::Object => "Object Argument Table",
+			Self::Mesh => "Mesh Argument Table",
+		}
+	}
+
 	fn index(self) -> usize {
 		match self {
 			Self::Compute => 0,
@@ -320,9 +340,18 @@ struct UploadPage {
 #[derive(Default)]
 pub(crate) struct UploadArena {
 	pages: Vec<UploadPage>,
+	debug_labels: bool,
 }
 
 impl UploadArena {
+	/// Creates an empty arena whose pages get capture labels when `debug_labels` is set.
+	pub(crate) fn new(debug_labels: bool) -> Self {
+		Self {
+			pages: Vec::new(),
+			debug_labels,
+		}
+	}
+
 	/// Rewinds every resident page; the caller guarantees no in-flight command still reads them.
 	pub(crate) fn reset(&mut self) {
 		self.pages.retain(|page| !page.dedicated);
@@ -367,6 +396,11 @@ impl UploadArena {
 					.expect(
 						"Metal upload page allocation failed. The most likely cause is that the device is out of shared memory.",
 					);
+				#[cfg(debug_assertions)]
+				if self.debug_labels {
+					let label = if dedicated { "Dedicated Upload Page" } else { "Upload Page" };
+					buffer.setLabel(Some(&NSString::from_str(label)));
+				}
 				self.pages.push(UploadPage {
 					buffer,
 					cursor: 0,
@@ -417,8 +451,6 @@ pub struct CommandBufferRecording<'a> {
 	compute_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	render_debug_region_depth: usize,
-	#[cfg(debug_assertions)]
-	encoder_block_index: usize,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,
 	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,

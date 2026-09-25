@@ -346,6 +346,16 @@ impl DescriptorUses {
 	}
 }
 
+/// The `MetalHazard` struct records one earlier access that forced a barrier, so capture tools can show why it exists.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct MetalHazard {
+	pub(crate) key: MetalResourceKey,
+	pub(crate) region: MetalResourceRegion,
+	pub(crate) previous: crate::AccessPolicies,
+	pub(crate) next: crate::AccessPolicies,
+}
+
 /// The `MetalResourceTracker` struct retains region-aware access history for one Metal command queue.
 #[derive(Default)]
 pub(crate) struct MetalResourceTracker {
@@ -355,9 +365,18 @@ pub(crate) struct MetalResourceTracker {
 	/// Advances whenever the history changes in a way that could give an earlier read a new hazard: a new or changed
 	/// write, removed states, or a finished or abandoned recording. [`DescriptorUses`] compares it to skip reads.
 	generation: u64,
+	/// The hazards behind the barrier of the most recently planned command.
+	#[cfg(debug_assertions)]
+	hazards: SmallVec<[MetalHazard; 4]>,
 }
 
 impl MetalResourceTracker {
+	/// Returns the hazards behind the barrier of the most recently planned command.
+	#[cfg(debug_assertions)]
+	pub(crate) fn hazards(&self) -> &[MetalHazard] {
+		&self.hazards
+	}
+
 	/// Starts a sparse transaction so abandoning a command recording can restore queue history.
 	pub(crate) fn begin_recording(&mut self) {
 		assert!(
@@ -435,6 +454,8 @@ impl MetalResourceTracker {
 		aliases_primary: bool,
 	) -> (MetalBarrier, Option<u64>) {
 		let mut barrier = MetalBarrier::default();
+		#[cfg(debug_assertions)]
+		self.hazards.clear();
 		self.plan(scope, primary_uses, &mut barrier);
 		self.plan(scope, additional_uses, &mut barrier);
 
@@ -524,7 +545,7 @@ impl MetalResourceTracker {
 		consolidated
 	}
 
-	fn plan(&self, scope: MetalEncoderScope, uses: &[MetalResourceUse], barrier: &mut MetalBarrier) {
+	fn plan(&mut self, scope: MetalEncoderScope, uses: &[MetalResourceUse], barrier: &mut MetalBarrier) {
 		for resource_use in uses {
 			let Some(states) = self.states.get(&resource_use.key) else {
 				continue;
@@ -532,6 +553,18 @@ impl MetalResourceTracker {
 			for state in states.iter().filter(|state| state.region.overlaps(resource_use.region)) {
 				if !Self::has_hazard(state.access, resource_use.access) {
 					continue;
+				}
+				#[cfg(debug_assertions)]
+				{
+					let hazard = MetalHazard {
+						key: resource_use.key,
+						region: resource_use.region,
+						previous: state.access,
+						next: resource_use.access,
+					};
+					if !self.hazards.contains(&hazard) {
+						self.hazards.push(hazard);
+					}
 				}
 				let (after, before, visibility) = if state.scope == scope {
 					(

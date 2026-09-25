@@ -383,6 +383,10 @@ impl CommandBufferRecording<'_> {
 						.expect(
 							"Metal argument buffer allocation failed. The most likely cause is that the device is out of memory.",
 						);
+					#[cfg(debug_assertions)]
+					if self.device.debug_labels {
+						buffer.setLabel(Some(&NSString::from_str("Argument Buffer")));
+					}
 					(buffer, 0)
 				};
 				(stage_layout.stage, buffer, offset)
@@ -572,7 +576,8 @@ impl CommandBufferRecording<'_> {
 		);
 		#[cfg(debug_assertions)]
 		{
-			self.render_debug_region_depth = self.begin_encoder_debug_regions(&*encoder);
+			self.render_debug_region_depth =
+				self.begin_encoder_debug_regions(&*encoder, "Clear", images.iter().map(|(handle, _)| Some(*handle)));
 		}
 		self.active_encoder_scope = Some(self.allocate_encoder_scope());
 		self.active_render_encoder = Some(encoder);

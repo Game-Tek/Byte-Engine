@@ -138,7 +138,8 @@ pub(crate) mod utils {
 			usage |= mtl::MTLTextureUsage::ShaderWrite;
 		}
 
-		if uses.intersects(Uses::RenderTarget | Uses::DepthStencil) {
+		// Metal clears images by loading them as render-pass attachments.
+		if uses.intersects(Uses::RenderTarget | Uses::DepthStencil | Uses::Clear) {
 			usage |= mtl::MTLTextureUsage::RenderTarget;
 		}
 

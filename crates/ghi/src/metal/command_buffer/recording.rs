@@ -76,8 +76,6 @@ impl<'a> CommandBufferRecording<'a> {
 			compute_debug_region_depth: 0,
 			#[cfg(debug_assertions)]
 			render_debug_region_depth: 0,
-			#[cfg(debug_assertions)]
-			encoder_block_index: 0,
 			drawables: Vec::new_in(allocator),
 			bound_pipeline: None,
 			bound_descriptor_set_roots: SmallVec::new(),
@@ -109,27 +107,91 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Labels a new native encoder and mirrors every active logical debug region into it.
 	///
-	/// Returns how many regions it pushed, which the encoder pops before it ends.
+	/// The label reads `<kind>: <region path> → <targets>`, so capture tools list what each encoder does and writes.
+	/// A `None` target is a drawable. Returns how many regions it pushed, which the encoder pops before it ends.
 	#[cfg(debug_assertions)]
-	pub(super) fn begin_encoder_debug_regions<E: objc2::Message + ?Sized>(&mut self, encoder: &E) -> usize
+	pub(super) fn begin_encoder_debug_regions<E: objc2::Message + ?Sized>(
+		&mut self,
+		encoder: &E,
+		kind: &str,
+		targets: impl IntoIterator<Item = Option<ImageHandle>>,
+	) -> usize
 	where
 		dyn mtl::MTL4CommandEncoder: objc2::runtime::ImplementedBy<E>,
 	{
-		use std::fmt::Write as _;
-
 		if !self.device.debug_labels {
 			return 0;
 		}
 		let encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder> = ProtocolObject::from_ref(encoder);
-		self.encoder_block_index += 1;
 		let mut label = crate::command_buffer::DebugLabelWriter::new();
-		write!(label, "Block {}", self.encoder_block_index)
-			.expect("Invalid encoder block label. The most likely cause is that the debug label writer rejected an integer.");
+		let _ = label.write_str(kind);
+		for (index, region) in self.debug_regions.iter().enumerate() {
+			let _ = label.write_str(if index == 0 { ": " } else { " › " });
+			let _ = label.write_str(&region.to_string());
+		}
+		for (index, target) in targets.into_iter().enumerate() {
+			let _ = label.write_str(if index == 0 { " → " } else { ", " });
+			let name = match target {
+				Some(handle) => self.device.images.resource(handle).name.as_deref().unwrap_or("Unnamed Image"),
+				None => "Drawable",
+			};
+			let _ = label.write_str(name);
+		}
 		encoder.setLabel(Some(&NSString::from_str(label.as_str())));
 		for region in &self.debug_regions {
 			encoder.pushDebugGroup(region);
 		}
 		self.debug_regions.len()
+	}
+
+	/// Inserts a signpost that names the resources and accesses behind the barrier the tracker just planned.
+	///
+	/// The label reads `Barrier: <resource> (<earlier access> → <next access>), ...`.
+	#[cfg(debug_assertions)]
+	fn signpost_barrier_hazards<E: objc2::Message + ?Sized>(&self, encoder: &E)
+	where
+		dyn mtl::MTL4CommandEncoder: objc2::runtime::ImplementedBy<E>,
+	{
+		use std::fmt::Write as _;
+
+		let hazards = self.resource_tracker.hazards();
+		if !self.device.debug_labels || hazards.is_empty() {
+			return;
+		}
+		let access = |access: crate::AccessPolicies| {
+			if access.contains(crate::AccessPolicies::READ | crate::AccessPolicies::WRITE) {
+				"read-write"
+			} else if access.intersects(crate::AccessPolicies::WRITE) {
+				"write"
+			} else {
+				"read"
+			}
+		};
+		let mut label = crate::command_buffer::DebugLabelWriter::new();
+		let _ = label.write_str("Barrier: ");
+		for (index, hazard) in hazards.iter().enumerate() {
+			if index > 0 {
+				let _ = label.write_str(", ");
+			}
+			let name = match hazard.key {
+				synchronization::MetalResourceKey::Buffer(handle) => self.device.buffers.resource(handle).name.as_deref(),
+				synchronization::MetalResourceKey::Image(handle) => self.device.images.resource(handle).name.as_deref(),
+				synchronization::MetalResourceKey::SwapchainDrawable(_) => Some("Drawable"),
+				synchronization::MetalResourceKey::AccelerationStructure(_) => Some("Acceleration Structure"),
+			};
+			let _ = label.write_str(name.unwrap_or("Unnamed Resource"));
+			if let synchronization::MetalResourceRegion::Texture { mip_level, layer } = hazard.region {
+				if let Some(mip_level) = mip_level {
+					let _ = write!(label, " mip {mip_level}");
+				}
+				if let Some(layer) = layer {
+					let _ = write!(label, " layer {layer}");
+				}
+			}
+			let _ = write!(label, " ({} → {})", access(hazard.previous), access(hazard.next));
+		}
+		let encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder> = ProtocolObject::from_ref(encoder);
+		encoder.insertDebugSignpost(&NSString::from_str(label.as_str()));
 	}
 
 	/// Ends the active compute encoder and resets state that is native-encoder-local.
@@ -223,7 +285,7 @@ impl<'a> CommandBufferRecording<'a> {
 			);
 			#[cfg(debug_assertions)]
 			{
-				self.compute_debug_region_depth = self.begin_encoder_debug_regions(&*encoder);
+				self.compute_debug_region_depth = self.begin_encoder_debug_regions(&*encoder, "Compute", []);
 			}
 			self.active_compute_encoder = Some(encoder);
 			self.active_encoder_scope = Some(self.allocate_encoder_scope());
@@ -258,8 +320,16 @@ impl<'a> CommandBufferRecording<'a> {
 			.consume_descriptors(scope, descriptor_uses, additional_uses);
 		// Starting either encoder ends the other, so at most one is active.
 		match (&self.active_compute_encoder, &self.active_render_encoder) {
-			(Some(encoder), _) => barrier.encode(&**encoder),
-			(None, Some(encoder)) => barrier.encode(&**encoder),
+			(Some(encoder), _) => {
+				#[cfg(debug_assertions)]
+				self.signpost_barrier_hazards(&**encoder);
+				barrier.encode(&**encoder)
+			}
+			(None, Some(encoder)) => {
+				#[cfg(debug_assertions)]
+				self.signpost_barrier_hazards(&**encoder);
+				barrier.encode(&**encoder)
+			}
 			(None, None) => unreachable!(
 				"Metal resource tracking failed. The most likely cause is that the active encoder was ended before its resource barrier."
 			),
@@ -286,6 +356,10 @@ impl<'a> CommandBufferRecording<'a> {
 		let descriptor = mtl::MTL4ArgumentTableDescriptor::new();
 		descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
 		descriptor.setInitializeBindings(true);
+		#[cfg(debug_assertions)]
+		if self.device.debug_labels {
+			descriptor.setLabel(Some(&NSString::from_str(stage.label())));
+		}
 		let table = self.device.metal_device.newArgumentTableWithDescriptor_error(&descriptor);
 		let table = table.expect(
 			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",

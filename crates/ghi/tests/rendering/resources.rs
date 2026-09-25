@@ -349,7 +349,11 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 	}
 }
 
-pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, use_case: UseCases) {
+pub(super) fn resize_render_target_in_flight(
+	device: &mut impl ghi::context::Context,
+	queue_handle: QueueHandle,
+	use_case: UseCases,
+) {
 	//! Tests that resizing a render target while earlier frames still render to it keeps the old image alive for them.
 	//! Unlike [`resize`], no frame waits for the GPU, so frames overlap across each resize.
 
@@ -394,9 +398,11 @@ pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Con
 	let render_finished_synchronizer = device.create_synchronizer(None, true);
 
 	for i in 0..FRAME_COUNT {
-		device
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(i, render_finished_synchronizer)), &[], render_finished_synchronizer, |execution| {
+		device.queue(queue_handle).execute(
+			Some(FrameRequest::new(i, render_finished_synchronizer)),
+			&[],
+			render_finished_synchronizer,
+			|execution| {
 				let frame = execution.frame().unwrap();
 				if i == 4 || i == 7 {
 					extent = Extent::rectangle(extent.width() + 320, extent.height() + 180);
@@ -417,7 +423,8 @@ pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Con
 					raster_pipeline_command.end_render_pass();
 				});
 				[]
-			});
+			},
+		);
 	}
 
 	device.wait();
@@ -443,14 +450,17 @@ pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, que
 			device.resize_buffer(buffer, 4096);
 		}
 
-		device
-			.queue(queue_handle)
-			.execute(Some(FrameRequest::new(i, render_finished_synchronizer)), &[], render_finished_synchronizer, |execution| {
+		device.queue(queue_handle).execute(
+			Some(FrameRequest::new(i, render_finished_synchronizer)),
+			&[],
+			render_finished_synchronizer,
+			|execution| {
 				let frame = execution.frame().unwrap();
 				*frame.get_mut_dynamic_buffer_slice(buffer) = [i as u8; 64];
 				execution.record(command_buffer_handle, |_| {});
 				[]
-			});
+			},
+		);
 	}
 
 	device.wait();

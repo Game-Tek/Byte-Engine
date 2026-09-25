@@ -404,6 +404,10 @@ impl crate::context::ContextCreate for Context {
 			.device
 			.newBufferWithLength_options(size as _, options)
 			.expect("Metal allocation failed. The most likely cause is that the device is out of memory.");
+		#[cfg(debug_assertions)]
+		if self.settings.debug_labels {
+			buffer.setLabel(Some(&NSString::from_str(&format!("Allocation {}", self.allocations.len()))));
+		}
 		self.allocations.push(buffer);
 		graphics_hardware_interface::AllocationHandle((self.allocations.len() - 1) as u64)
 	}
@@ -426,6 +430,13 @@ impl crate::context::ContextCreate for Context {
 				.newBufferWithBytes_length_options(index_ptr, indices.len() as _, options)
 		}
 		.expect("Metal index buffer creation failed. The most likely cause is that the device is out of memory.");
+		// Meshes carry no name, so labels identify them by handle.
+		#[cfg(debug_assertions)]
+		let mesh_index = self.meshes.len();
+		#[cfg(debug_assertions)]
+		if self.settings.debug_labels {
+			index_buffer.setLabel(Some(&NSString::from_str(&format!("Mesh {mesh_index} Indices"))));
+		}
 		let vertex_size: usize = vertex_layout.iter().map(|element| element.format.size()).sum();
 		let max_binding = vertex_layout
 			.iter()
@@ -449,7 +460,8 @@ impl crate::context::ContextCreate for Context {
 
 		let vertex_buffers = binding_spans
 			.iter()
-			.map(|spans| {
+			.enumerate()
+			.map(|(_binding, spans)| {
 				if spans.is_empty() {
 					return None;
 				}
@@ -475,14 +487,19 @@ impl crate::context::ContextCreate for Context {
 
 				let vertex_ptr = NonNull::new(binding_vertices.as_ptr() as *mut std::ffi::c_void)
 					.expect("Vertex data pointer was null. The most likely cause is an empty vertex slice.");
-				Some(
-					// SAFETY: `vertex_ptr` references the initialized packed binding bytes for the duration of buffer creation.
-					unsafe {
-						self.device
-							.newBufferWithBytes_length_options(vertex_ptr, binding_vertices.len() as _, options)
-					}
-					.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory."),
-				)
+				// SAFETY: `vertex_ptr` references the initialized packed binding bytes for the duration of buffer creation.
+				let buffer = unsafe {
+					self.device
+						.newBufferWithBytes_length_options(vertex_ptr, binding_vertices.len() as _, options)
+				}
+				.expect("Metal vertex buffer creation failed. The most likely cause is that the device is out of memory.");
+				#[cfg(debug_assertions)]
+				if self.settings.debug_labels {
+					buffer.setLabel(Some(&NSString::from_str(&format!(
+						"Mesh {mesh_index} Vertices (binding {_binding})"
+					))));
+				}
+				Some(buffer)
 			})
 			.collect::<Vec<_>>();
 
@@ -502,7 +519,14 @@ impl crate::context::ContextCreate for Context {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = build_shader(&self.device, name, shader_source_type, stage, shader_resource_descriptors)?;
+		let shader = build_shader(
+			&self.device,
+			name,
+			shader_source_type,
+			stage,
+			shader_resource_descriptors,
+			self.settings.debug_labels,
+		)?;
 		self.shaders.push(shader);
 		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
 	}
@@ -625,7 +649,8 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {
-		self.samplers.push(build_sampler(&self.device, &builder));
+		self.samplers
+			.push(build_sampler(&self.device, &builder, self.settings.debug_labels));
 		graphics_hardware_interface::SamplerHandle((self.samplers.len() - 1) as u64)
 	}
 

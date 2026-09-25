@@ -167,8 +167,13 @@ pub(super) mod tests {
 			} if handle == buffer
 		));
 
-		let image_write =
-			descriptors::DescriptorWrite::image_with_frame(set, slot, DynamicImageHandle(BaseImageHandle(3)), Layouts::General, -1);
+		let image_write = descriptors::DescriptorWrite::image_with_frame(
+			set,
+			slot,
+			DynamicImageHandle(BaseImageHandle(3)),
+			Layouts::General,
+			-1,
+		);
 
 		assert_eq!(image_write.frame_offset, Some(-1));
 		assert!(matches!(

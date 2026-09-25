@@ -135,6 +135,10 @@ impl CommandBufferRecording<'_> {
 			.metal_device
 			.newBufferWithLength_options(size, mtl::MTLResourceOptions::StorageModeShared)
 			.ok_or(crate::TextureTransferError::AllocationFailed)?;
+		#[cfg(debug_assertions)]
+		if let Some(label) = source_texture.label() {
+			staging.setLabel(Some(&NSString::from_str(&format!("{label} Readback"))));
+		}
 
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([source_use]);
@@ -489,7 +493,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		);
 		#[cfg(debug_assertions)]
 		{
-			self.render_debug_region_depth = self.begin_encoder_debug_regions(&*rce);
+			self.render_debug_region_depth =
+				self.begin_encoder_debug_regions(&*rce, "Render", attachments.iter().map(|(_, image, ..)| *image));
 		}
 
 		let scope = self.allocate_encoder_scope();

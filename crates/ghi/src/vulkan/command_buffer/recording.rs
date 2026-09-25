@@ -347,16 +347,19 @@ impl CommandBufferRecording<'_> {
 			return TransitionStateUpdates {
 				states: planned.state_updates,
 				buffer_states: planned.buffer_state_updates,
+				acquire_waits: SmallVec::new(),
 			};
 		}
 
 		let folded_memory_barriers = planned.memory_barriers;
 
+		let mut planned_image_barriers = planned.image_barriers;
+		let acquire_waits = command_buffer.chain_acquired_swapchain_images(&mut planned_image_barriers);
+
 		let image_memory_barriers = if active_rendering {
 			Vec::new()
 		} else {
-			planned
-				.image_barriers
+			planned_image_barriers
 				.iter()
 				.map(|barrier| {
 					vk::ImageMemoryBarrier2::default()
@@ -415,6 +418,7 @@ impl CommandBufferRecording<'_> {
 		let updates = TransitionStateUpdates {
 			states: planned.state_updates,
 			buffer_states: planned.buffer_state_updates,
+			acquire_waits,
 		};
 
 		if image_memory_barriers.is_empty() && buffer_memory_barriers.is_empty() && memory_barriers.is_empty() {
@@ -436,6 +440,50 @@ impl CommandBufferRecording<'_> {
 		};
 
 		updates
+	}
+
+	/// Chains the first barrier on each freshly acquired swapchain image to the acquire semaphore wait.
+	///
+	/// The submission waits on the acquire semaphore at the returned first-use stages. A barrier's source scope must
+	/// include the wait's stage for its layout transition to follow the presentation engine's release of the image.
+	fn chain_acquired_swapchain_images(
+		&self,
+		image_barriers: &mut [PlannedImageBarrier],
+	) -> SmallVec<[(usize, vk::PipelineStageFlags2); 2]> {
+		let mut acquire_waits = SmallVec::new();
+		if self.frame_key.is_none() || image_barriers.is_empty() {
+			return acquire_waits;
+		}
+
+		let sequence_index = self.sequence_index as usize;
+		for (swapchain_index, swapchain) in self.device.swapchains.iter().enumerate() {
+			let native_image = swapchain.native_images[swapchain.acquired_image_indices[sequence_index] as usize];
+			let vk_image = self.device.images[native_image.0 as usize].image;
+			let first_use_stage = Self::chain_barriers_to_acquire(image_barriers, vk_image);
+			if !first_use_stage.is_empty() {
+				acquire_waits.push((swapchain_index, first_use_stage));
+			}
+		}
+
+		acquire_waits
+	}
+
+	/// Sources each barrier on a freshly acquired image from its own destination stage and returns those stages.
+	///
+	/// Acquisition resets the image to an empty source state, so only its first barrier in a frame matches.
+	pub(super) fn chain_barriers_to_acquire(
+		image_barriers: &mut [PlannedImageBarrier],
+		acquired_image: vk::Image,
+	) -> vk::PipelineStageFlags2 {
+		let mut first_use_stage = vk::PipelineStageFlags2::NONE;
+		for barrier in image_barriers
+			.iter_mut()
+			.filter(|barrier| barrier.image == acquired_image && barrier.src_stage.is_empty())
+		{
+			barrier.src_stage = barrier.dst_stage;
+			first_use_stage |= barrier.dst_stage;
+		}
+		first_use_stage
 	}
 
 	pub(super) fn plan_vulkan_resource_transitions(
@@ -825,17 +873,7 @@ impl CommandBufferRecording<'_> {
 			return;
 		}
 
-		self.states.insert(
-			Handles::Image(destination_image_handle),
-			TransitionState::new(
-				vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-					| vk::PipelineStageFlags2::BLIT
-					| vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::NONE,
-				vk::ImageLayout::UNDEFINED,
-			),
-		);
-
+		// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the acquire wait.
 		self.consume_resources([
 			Consumption {
 				handle: Handles::Image(source_image_handle),

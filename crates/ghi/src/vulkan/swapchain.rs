@@ -27,6 +27,8 @@ pub(crate) struct Swapchain {
 	pub format: Formats,
 	pub supported_usage_flags: vk::ImageUsageFlags,
 	pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
+	/// Stages of the first access to each sequence's acquired image, where the submission waits on the acquire semaphore.
+	pub acquire_wait_stages: [vk::PipelineStageFlags2; MAX_FRAMES_IN_FLIGHT],
 	pub extent: vk::Extent2D,
 	pub vk_present_mode: vk::PresentModeKHR,
 	pub min_image_count: u32,

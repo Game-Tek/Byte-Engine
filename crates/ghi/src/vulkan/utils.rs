@@ -273,8 +273,10 @@ pub(super) fn to_pipeline_stage_flags(
 	if stages.contains(crate::Stages::TRANSFER) {
 		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
 	}
+	// Presentation is external to the pipeline; TOP_OF_PIPE would be NONE in a first scope, leaving the pre-present
+	// barrier and semaphore signal unordered with the frame's last write, whichever stage made it.
 	if stages.contains(crate::Stages::PRESENTATION) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::TOP_OF_PIPE
+		pipeline_stage_flags |= vk::PipelineStageFlags2::ALL_COMMANDS
 	}
 	if stages.contains(crate::Stages::RAYGEN) {
 		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
@@ -955,7 +957,7 @@ mod tests {
 
 		let value = to_pipeline_stage_flags(crate::Stages::PRESENTATION, None, None);
 
-		assert_eq!(value, vk::PipelineStageFlags2::TOP_OF_PIPE);
+		assert_eq!(value, vk::PipelineStageFlags2::ALL_COMMANDS);
 
 		let value = to_pipeline_stage_flags(crate::Stages::RAYGEN, None, None);
 

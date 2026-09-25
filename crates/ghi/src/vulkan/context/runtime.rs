@@ -499,6 +499,7 @@ impl Context {
 			format,
 			supported_usage_flags: supported_image_usage,
 			acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
+			acquire_wait_stages: [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT],
 			min_image_count,
 			max_image_count: image_count,
 			vk_present_mode,
@@ -634,6 +635,7 @@ impl Context {
 		swapchain.min_image_count = capabilities.min_image_count;
 		swapchain.max_image_count = vk_images.len() as u32;
 		swapchain.acquired_image_indices = [0; MAX_FRAMES_IN_FLIGHT];
+		swapchain.acquire_wait_stages = [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT];
 		swapchain.needs_recreation = false;
 
 		true

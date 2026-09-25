@@ -63,10 +63,16 @@ impl<'a> Frame<'a> {
 				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
 					.access(&self.device.synchronizers)
 					.semaphore;
+				// Waiting only at the image's first-use stage lets earlier work in the submission run before acquisition;
+				// that first barrier's source scope is the same stage, so its layout transition still follows the wait.
+				let first_use_stage = swapchain.acquire_wait_stages[present_key.sequence_index as usize];
+				let stage_mask = if first_use_stage.is_empty() {
+					vk::PipelineStageFlags2::ALL_COMMANDS
+				} else {
+					first_use_stage
+				};
 
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(semaphore)
-					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+				vk::SemaphoreSubmitInfo::default().semaphore(semaphore).stage_mask(stage_mask)
 			}))
 			.collect::<Vec<_>>();
 
@@ -81,19 +87,16 @@ impl<'a> Frame<'a> {
 			})
 			.chain(present_keys.iter().map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
-				let presentable_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
-				let wait_stage = states
-					.get(&super::Handles::Image(presentable_image_handle))
-					.map(|state| state.stage)
-					.unwrap_or(vk::PipelineStageFlags2::ALL_COMMANDS);
 
+				// ALL_COMMANDS orders the signal after the pre-present layout transition whatever stage wrote last,
+				// as the Khronos swapchain synchronization example allows.
 				vk::SemaphoreSubmitInfo::default()
 					.semaphore(
 						swapchain.submit_synchronizers[present_key.image_index as usize]
 							.access(&self.device.synchronizers)
 							.semaphore,
 					)
-					.stage_mask(wait_stage)
+					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
 			}))
 			.collect::<Vec<_>>();
 
@@ -281,8 +284,22 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
 		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
+		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
+		let native_image = swapchain.native_images[index as usize];
+		let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
 
-		(present_key, Extent::rectangle(swapchain.extent.width, swapchain.extent.height))
+		// The presentation engine hands the image back with undefined contents and no prior GPU work to order against;
+		// recording chains its first barrier to the acquire semaphore instead.
+		self.device.states.insert(
+			super::Handles::Image(native_image),
+			super::TransitionState::new(
+				vk::PipelineStageFlags2::NONE,
+				vk::AccessFlags2::NONE,
+				vk::ImageLayout::UNDEFINED,
+			),
+		);
+
+		(present_key, extent)
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {

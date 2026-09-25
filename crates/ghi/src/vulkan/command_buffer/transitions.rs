@@ -103,6 +103,8 @@ pub(super) struct PlannedMemoryBarrier {
 pub(super) struct TransitionStateUpdates {
 	pub(super) states: SmallVec<[(Handles, TransitionState); 64]>,
 	pub(super) buffer_states: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
+	/// Swapchain indices and the stages at which their acquired image is first used.
+	pub(super) acquire_waits: SmallVec<[(usize, vk::PipelineStageFlags2); 2]>,
 }
 
 impl TransitionStateUpdates {
@@ -112,6 +114,10 @@ impl TransitionStateUpdates {
 		}
 		for (handle, states) in self.buffer_states {
 			recording.buffer_states.insert(handle, states);
+		}
+		let sequence_index = recording.sequence_index as usize;
+		for (swapchain_index, stage) in self.acquire_waits {
+			recording.device.swapchains[swapchain_index].acquire_wait_stages[sequence_index] |= stage;
 		}
 	}
 }

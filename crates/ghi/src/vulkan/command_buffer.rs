@@ -441,6 +441,61 @@ mod tests {
 	}
 
 	#[test]
+	fn acquired_swapchain_image_barrier_is_sourced_from_its_first_use_stage() {
+		let handle = Handles::Image(ImageHandle(26));
+		let acquired = vk::Image::from_raw(26);
+		let mut states = HashMap::default();
+		states.insert(
+			handle,
+			transition(
+				vk::PipelineStageFlags2::NONE,
+				vk::AccessFlags2::NONE,
+				vk::ImageLayout::UNDEFINED,
+			),
+		);
+
+		let mut planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&states,
+			&HashMap::default(),
+			[consumption(
+				handle,
+				vk::PipelineStageFlags2::COMPUTE_SHADER,
+				vk::AccessFlags2::SHADER_STORAGE_WRITE,
+				vk::ImageLayout::GENERAL,
+			)],
+			|_| Some((acquired, vk::Format::B8G8R8A8_UNORM)),
+			|_| None,
+		);
+
+		let first_use_stage = CommandBufferRecording::chain_barriers_to_acquire(&mut planned.image_barriers, acquired);
+
+		assert!(first_use_stage == vk::PipelineStageFlags2::COMPUTE_SHADER);
+		let barrier = planned.image_barriers[0];
+		assert!(barrier.src_stage == vk::PipelineStageFlags2::COMPUTE_SHADER);
+		assert!(barrier.old_layout == vk::ImageLayout::UNDEFINED);
+		assert!(barrier.new_layout == vk::ImageLayout::GENERAL);
+	}
+
+	#[test]
+	fn barriers_on_other_images_are_not_chained_to_acquire() {
+		let mut barriers = [PlannedImageBarrier {
+			old_layout: vk::ImageLayout::UNDEFINED,
+			src_stage: vk::PipelineStageFlags2::NONE,
+			src_access: vk::AccessFlags2::NONE,
+			new_layout: vk::ImageLayout::GENERAL,
+			dst_stage: vk::PipelineStageFlags2::COMPUTE_SHADER,
+			dst_access: vk::AccessFlags2::SHADER_STORAGE_WRITE,
+			image: vk::Image::from_raw(27),
+			aspect_mask: vk::ImageAspectFlags::COLOR,
+		}];
+
+		let first_use_stage = CommandBufferRecording::chain_barriers_to_acquire(&mut barriers, vk::Image::from_raw(28));
+
+		assert!(first_use_stage.is_empty());
+		assert!(barriers[0].src_stage.is_empty());
+	}
+
+	#[test]
 	fn planner_skips_non_overlapping_buffer_ranges() {
 		let handle = Handles::Buffer(BufferHandle(12));
 		let mut buffer_states = HashMap::default();

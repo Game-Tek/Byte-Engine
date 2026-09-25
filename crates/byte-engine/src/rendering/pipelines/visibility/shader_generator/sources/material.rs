@@ -358,9 +358,6 @@ material_evaluation_suffix: fn () -> void {
 	// These terms depend only on the shaded pixel. Evaluate them once instead of once per light.
 	let geometry_view: f16 = NdotV / (NdotV * (1.0 - geometry_k) + geometry_k);
 	let light_count: u32 = lighting_data.light_count;
-	// Local shadows have no hierarchy early-out, so they share one lazily generated PCF rotation.
-	let local_shadow_rotation: vec2f16 = vec2f16(0.0, 0.0);
-	let has_local_shadow_rotation: bool = false;
 
 	// Visit only the lights the light-cluster pass bucketed into this pixel's cluster: 16 columns, 8 rows, and 24
 	// depth slices that grow exponentially with view depth. Each cluster stores one bit per light.
@@ -449,14 +446,9 @@ material_evaluation_suffix: fn () -> void {
 				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view_index != 0) {
 					let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
-					if (has_local_shadow_rotation == false) {
-						local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-						has_local_shadow_rotation = true;
-					}
 					occlusion_factor = f16(sample_point_shadow(
 						shadow_view_index,
 						shadow_cube_index,
-						local_shadow_rotation,
 						world_space_vertex_position,
 						light_position,
 						position_derivative_x,
@@ -486,15 +478,10 @@ material_evaluation_suffix: fn () -> void {
 				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
 				if (shadow_view_index != 0) {
 					let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-					if (has_local_shadow_rotation == false) {
-						local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-						has_local_shadow_rotation = true;
-					}
 					occlusion_factor = f16(sample_cone_shadow(
 						cone_shadow_map,
 						shadow_view_index,
 						shadow_layer,
-						local_shadow_rotation,
 						world_space_vertex_position,
 						position_derivative_x,
 						position_derivative_y

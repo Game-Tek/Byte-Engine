@@ -520,26 +520,27 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 	}
 }
 
-/// Verifies the interior texel-space directional tap preserves reverse-Z shadow comparison, and compares a sloped
-/// receiver on its own plane at the fetched texel center so the receiver does not shadow itself.
+/// Verifies the tent shadow filter turns a hard shadow-map edge into a smooth ramp, keeps reverse-Z comparison, compares
+/// a sloped receiver on its own plane so it does not shadow itself, and treats texels outside the map as lit.
 #[test]
-fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
+fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
 	const SLOPED_SLOT: ResourceSlot = ResourceSlot::new(2);
 	let executable = compile_with_helpers(
 		r#"
 		main: fn () -> void {
-			results.lit = sample_directional_shadow_tap(
-				shadow_map, vec2f(1.0, 1.0), 0.8, vec2f(0.0, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
-			);
-			results.blocked = sample_directional_shadow_tap(
-				shadow_map, vec2f(2.0, 2.0), 0.8, vec2f(0.0, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
-			);
-			// The receiver lies on the stored slope, 0.3 texels before the center of the texel it fetches.
-			results.sloped_receiver = sample_directional_shadow_tap(
-				sloped_map, vec2f(1.2, 1.5), 0.5121, vec2f(0.01, 0.0), vec2f16(0.0, 0.0), vec2f16(1.0, 0.0), u32(0)
-			);
+			let flat: vec2f = vec2f(0.0, 0.0);
+			// Texels from column four on hold a blocker. The tent reaches two texels to each side of the receiver.
+			results.clear = sample_directional_shadow_tent(shadow_map, vec2f(2.0, 4.0), 0.8, flat, u32(0));
+			results.quarter_covered = sample_directional_shadow_tent(shadow_map, vec2f(3.5, 4.0), 0.8, flat, u32(0));
+			results.on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0), 0.8, flat, u32(0));
+			results.covered = sample_directional_shadow_tent(shadow_map, vec2f(6.0, 4.0), 0.8, flat, u32(0));
+			// The receiver lies 0.0001 in front of the stored slope.
+			results.sloped_receiver = sample_directional_shadow_tent(sloped_map, vec2f(3.2, 3.5), 0.5321, vec2f(0.01, 0.0), u32(0));
+			results.bounded_on_edge = sample_shadow_tent(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), vec2u(8, 8));
+			// One quarter of this footprint's weight falls past the map's right edge.
+			results.bounded_past_border = sample_shadow_tent(shadow_map, vec2f(7.5 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8));
 		}
 		"#,
 		&[],
@@ -558,34 +559,36 @@ fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 				true,
 				false,
 			),
-			parse_besl_function(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
-			parse_besl_function(DIRECTIONAL_SHADOW_TAP_SOURCE, "sample_directional_shadow_tap"),
+			parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
+			parse_besl_function(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
+			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
 			results_binding(
-				"DirectionalShadowTapResults",
+				"ShadowTentResults",
 				vec![
-					besl::ParserNode::member("lit", "f32"),
-					besl::ParserNode::member("blocked", "f32"),
+					besl::ParserNode::member("clear", "f32"),
+					besl::ParserNode::member("quarter_covered", "f32"),
+					besl::ParserNode::member("on_edge", "f32"),
+					besl::ParserNode::member("covered", "f32"),
 					besl::ParserNode::member("sloped_receiver", "f32"),
+					besl::ParserNode::member("bounded_on_edge", "f32"),
+					besl::ParserNode::member("bounded_past_border", "f32"),
 				],
 				RESULT_SLOT,
 			),
 		],
 	);
-	let mut shadow_map = Texture::new_3d(4, 4, 1).expect("directional shadow fixture");
-	for y in 0..4 {
-		for x in 0..4 {
-			shadow_map
-				.write_3d([x, y, 0], [0.2, 0.0, 0.0, 1.0])
-				.expect("directional shadow fixture");
+	// Reverse-Z: 0.9 is closer to the light than a 0.8 receiver, so it blocks it; 0.2 does not.
+	let mut shadow_map = Texture::new_3d(8, 8, 1).expect("tent shadow fixture");
+	for y in 0..8 {
+		for x in 0..8 {
+			let depth = if x >= 4 { 0.9 } else { 0.2 };
+			shadow_map.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0]).expect("tent shadow fixture");
 		}
 	}
-	shadow_map
-		.write_3d([2, 2, 0], [0.9, 0.0, 0.0, 1.0])
-		.expect("directional shadow blocker");
 	// A surface sloped toward the light along x stores its depth at each texel center.
-	let mut sloped_map = Texture::new_3d(4, 4, 1).expect("sloped shadow fixture");
-	for y in 0..4 {
-		for x in 0..4 {
+	let mut sloped_map = Texture::new_3d(8, 8, 1).expect("sloped shadow fixture");
+	for y in 0..8 {
+		for x in 0..8 {
 			sloped_map
 				.write_3d([x, y, 0], [0.5 + 0.01 * (x as f32 + 0.5), 0.0, 0.0, 1.0])
 				.expect("sloped shadow fixture");
@@ -599,13 +602,21 @@ fn directional_shadow_tap_uses_texel_coordinates_in_the_besl_vm() {
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
-	assert_eq!(read_f32(&results, "lit"), 1.0);
-	assert_eq!(read_f32(&results, "blocked"), 0.0);
-	assert_eq!(
-		read_f32(&results, "sloped_receiver"),
-		1.0,
-		"A sloped receiver shadowed itself. The most likely cause is comparing its center depth instead of its plane at the fetched texel center."
-	);
+	for (name, expected) in [
+		("clear", 1.0),
+		("quarter_covered", 0.75),
+		("on_edge", 0.5),
+		("covered", 0.0),
+		("sloped_receiver", 1.0),
+		("bounded_on_edge", 0.5),
+		("bounded_past_border", 0.25),
+	] {
+		let actual = read_f32(&results, name);
+		assert!(
+			(actual - expected).abs() <= 0.00001,
+			"Unexpected tent shadow result for {name}: {actual}, expected {expected}. The most likely cause is incorrect tent weights or texel addressing."
+		);
+	}
 }
 
 /// Runs `source` with only buffer-free point-shadow helpers bound and returns the results buffer.

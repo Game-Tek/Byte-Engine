@@ -5,6 +5,8 @@ SkyParameters: struct {
 	planet_center: vec4f,
 	atmosphere: vec4f,
 	misc: vec4f,
+	sun_illuminance: vec4f,
+	sun_disk_radiance: vec4f,
 }
 
 depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
@@ -61,8 +63,11 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 
+	// The sky-view LUT holds scattering per lux, so the sun light's RGB illuminance sets the sky's brightness and color.
+	// The uploaded illuminance and disk radiance already include the camera exposure, so the sky is written pre-exposed.
 	let sampled_sky: vec4f = texture_lod(sky_view_lut, octahedral_encode(direction));
-	let sky_scattering: vec3f = vec3f(sampled_sky.x, sampled_sky.y, sampled_sky.z);
+	let sky_scattering: vec3f = vec3f(sampled_sky.x, sampled_sky.y, sampled_sky.z)
+		* vec3f(parameters.sun_illuminance.x, parameters.sun_illuminance.y, parameters.sun_illuminance.z);
 	let sun_direction: vec3f = get_sun_direction();
 	let cosine_theta: f32 = dot(direction, sun_direction);
 	let sun_disk: f32 = smoothstep(
@@ -82,9 +87,9 @@ main: fn (input: StageInput) -> void {
 		let sampled_transmittance: vec4f = texture_lod(transmittance_lut, transmittance_uv);
 		sun_radiance = sun_disk
 			* vec3f(sampled_transmittance.x, sampled_transmittance.y, sampled_transmittance.z)
-			* vec3f(20.0, 18.0, 16.0);
+			* vec3f(parameters.sun_disk_radiance.x, parameters.sun_disk_radiance.y, parameters.sun_disk_radiance.z);
 	}
-	// Keep atmosphere and sun radiance scene-linear for the final tonemap pass.
+	// Keep atmosphere and sun radiance linear and unclamped for the final tonemap pass.
 	let sky: vec3f = sky_scattering + sun_radiance;
 	let foreground_source: vec4f = vec4f(foreground.x, foreground.y, foreground.z, clamp(foreground.w, 0.0, 1.0));
 	let destination: vec4f = vec4f(sky.x, sky.y, sky.z, 1.0);

@@ -266,20 +266,53 @@ the cone factor when applicable. For a directional light, the incident RGB quant
 value directly. Shadows and material BRDF terms then reduce or redistribute that incident light;
 they do not change the authored unit conversion.
 
-<Callout type="info" title="Camera exposure not available">
-	The current camera doesn't apply photographic exposure. Don't treat its
-	`aperture` field as a lighting exposure control.
-</Callout>
-
-Bright real-world values can look clipped or overly bright through AGX or ACES
-tone mapping. Keep physical values in your scene instead of compensating with
-arbitrary light scaling.
+If you install the atmosphere sky with `setup_atmosphere_sky_render_pass`, the newest directional
+light is also the sky's sun. Its lux and color set how bright and what color the sky is, so a
+brighter sun brightens the sky too. Without a directional light, the sky is black. The sky includes
+light that scatters more than once in the air, and sunlight the ground reflects back up, so a
+100,000 lux sun gives a clear sky of about 2,000 to 8,000 nits, brightest near the horizon.
 
 <Callout type="info" title="Physical calibration limits">
-	Environment maps and emissive materials don't have a unified physical
-	calibration with analytic lights. Radiometric units such as watts and watts
-	per square meter aren't supported.
+	Emissive materials don't have a unified physical calibration with analytic
+	lights. Radiometric units such as watts and watts per square meter aren't
+	supported.
 </Callout>
+
+## Set camera exposure
+
+Real-world light values are far brighter than a display can show, so pair them with a matching
+camera exposure. Exposure is measured in stops, and each stop halves or doubles the light that the
+camera shows. To use a photographic exposure value, convert it with `-(EV100 + log2(1.2))`:
+
+```rust
+use byte_engine::rendering::Camera;
+
+// A sunny day at EV100 15, the sunny-16 rule.
+let camera = Camera::new().with_exposure(-(15.0 + 1.2_f32.log2()));
+```
+
+Typical EV100 values are 15 for a sunny day, 12 to 13 for an overcast one, and 5 to 7 for a lit
+room at night. An exposure of `0.0` shows scene values unchanged.
+
+The PBR visibility pipeline and the atmosphere sky apply the exposure as they write scene light,
+so a 100,000 lux sun on a glossy surface stays within the range of the half-float scene image.
+Later passes, such as bloom and tone mapping, receive exposed light. Scenes drawn with other
+pipelines ignore exposure. The camera's `aperture` field doesn't change it.
+
+## Calibrate the environment map
+
+Environment maps store light in arbitrary units. Give the environment the illuminance it should
+deliver to an upward-facing surface, so it lights the scene in the same units as your lights:
+
+```rust
+use byte_engine::rendering::Environment;
+
+// Clear-sky light on the ground, next to a 100,000 lux sun.
+let environment = Environment::new("sky.environment.bead").with_illuminance(15_000.0);
+```
+
+A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one about 1,000 to
+10,000. Without `with_illuminance`, the map's own values are used unchanged.
 
 ## Rust API
 
@@ -287,6 +320,8 @@ arbitrary light scaling.
 - [`PointLight`](/docs/api/latest/byte_engine/rendering)
 - [`ConeLight`](/docs/api/latest/byte_engine/rendering)
 - [`IesProfile`](/docs/api/latest/byte_engine/rendering)
+- [`Camera`](/docs/api/latest/byte_engine/rendering)
+- [`Environment`](/docs/api/latest/byte_engine/rendering)
 - [`LightColor`](/docs/api/latest/byte_engine/rendering)
 - [`PhotometricIntensity`](/docs/api/latest/byte_engine/rendering)
 

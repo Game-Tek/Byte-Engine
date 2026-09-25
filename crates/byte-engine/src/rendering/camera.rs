@@ -5,16 +5,18 @@ pub struct Camera {
 	aspect_ratio: f32,
 	aperture: f32,
 	focus_distance: f32,
+	exposure: f32,
 }
 
 impl Camera {
-	/// Creates a camera with a world-origin position and default perspective settings.
+	/// Creates a camera with a world-origin position, default perspective settings, and neutral exposure.
 	pub fn new() -> Self {
 		Self {
 			fov: Degrees::new(45.0),
 			aspect_ratio: 1.0,
 			aperture: 0.0,
 			focus_distance: 0.0,
+			exposure: 0.0,
 		}
 	}
 
@@ -47,6 +49,40 @@ impl Camera {
 	/// Sets the vertical field of view used by perspective rendering.
 	pub fn set_fov(&mut self, fov: Degrees) {
 		self.fov = fov;
+	}
+
+	/// Returns the camera exposure in stops. See [`Self::set_exposure`].
+	pub fn exposure(&self) -> f32 {
+		self.exposure
+	}
+
+	/// Returns the linear factor that the camera exposure applies to scene light, `2^exposure`.
+	pub fn exposure_scale(&self) -> f32 {
+		self.exposure.exp2()
+	}
+
+	/// Sets the camera exposure in stops. See [`Self::set_exposure`].
+	pub fn with_exposure(mut self, stops: f32) -> Self {
+		self.set_exposure(stops);
+		self
+	}
+
+	/// Sets how much the camera brightens or darkens scene light before it is mapped to the display.
+	///
+	/// Each stop doubles or halves the light: `0.0` shows scene values unchanged, `-1.0` halves them, and `1.0`
+	/// doubles them. Scenes lit with real-world values need a matching photographic exposure: a camera at EV100 `e`
+	/// uses `-(e + log2(1.2))` stops, so a sunny day at EV100 15 is about `-15.26`.
+	///
+	/// The PBR visibility pipeline, set up by
+	/// [`crate::application::graphics::setup_pbr_visibility_shading_render_pipeline`], and the atmosphere sky apply it
+	/// as they write scene light. Storing light already exposed keeps real-world intensities within the half-float
+	/// range of the scene color target. Scenes drawn with other pipelines ignore it.
+	pub fn set_exposure(&mut self, stops: f32) {
+		debug_assert!(
+			stops.is_finite() && stops.abs() <= 64.0,
+			"Camera exposure is invalid. The most likely cause is a non-finite or out-of-range number of stops."
+		);
+		self.exposure = stops;
 	}
 }
 
@@ -88,6 +124,14 @@ mod tests {
 		assert_eq!(camera.aspect_ratio(), 1.0);
 		assert_eq!(camera.aperture(), 0.0);
 		assert_eq!(camera.focus_distance(), 0.0);
+		assert_eq!(camera.exposure(), 0.0);
+		assert_eq!(camera.exposure_scale(), 1.0);
+	}
+
+	#[test]
+	fn exposure_stops_double_or_halve_scene_light() {
+		assert_eq!(Camera::new().with_exposure(-2.0).exposure_scale(), 0.25);
+		assert_eq!(Camera::new().with_exposure(1.0).exposure_scale(), 2.0);
 	}
 }
 

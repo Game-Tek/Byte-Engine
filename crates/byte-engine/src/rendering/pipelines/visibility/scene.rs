@@ -177,11 +177,16 @@ impl VisibilityScene {
 		}
 	}
 
-	/// Uploads the current scene lights to the GPU buffer used by material evaluation.
+	/// Uploads the current scene lights and the frame's lighting scales to the GPU buffer used by material evaluation.
+	///
+	/// `exposure` is the camera's linear exposure and `environment_intensity` calibrates the environment map; see
+	/// [`LightingData`].
 	pub(crate) fn write_lighting(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		shadows: &ShadowLightSelection<'_>,
+		exposure: f32,
+		environment_intensity: f32,
 		mut resolve_ies_profile: impl FnMut(&Lights) -> Option<IesProfileTexture>,
 	) {
 		if self.lights.len() > MAX_LIGHTS {
@@ -191,7 +196,11 @@ impl VisibilityScene {
 		}
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
 		// Rewrite the complete record so recycled frame sequences cannot retain stale counts, lights, or padding.
-		*lighting_data = LightingData::default();
+		*lighting_data = LightingData {
+			exposure,
+			environment_intensity,
+			..LightingData::default()
+		};
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
 			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), resolve_ies_profile(light));
 			lighting_data.count = index as u32 + 1;

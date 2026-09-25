@@ -700,6 +700,12 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 }
 
 /// Installs the atmosphere sky pass used as a post-scene background.
+///
+/// The newest [`DirectionalLight`] is the sky's sun: its illuminance sets the sky's brightness and color, and its
+/// transform sets the sun's direction. Without one, the sky stays black.
+///
+/// Each window's sky subscribes to lights when the renderer adopts the window, at the end of the tick that creates it,
+/// and doesn't see lights created before then. Create the window in one tick and the light in a later one.
 pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
 	let light_factory = application.world().factory::<DirectionalLight>();

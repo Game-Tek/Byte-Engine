@@ -1,0 +1,1 @@
+{"name":"Sky Multiple Scattering LUT","kind":{"type":"compute","shader":"byte-engine/rendering/sky-multiple-scattering.besl"}}

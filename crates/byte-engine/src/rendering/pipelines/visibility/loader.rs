@@ -109,6 +109,9 @@ pub(crate) struct ResidentEnvironment {
 	pub(crate) diffuse_image: ghi::BaseImageHandle,
 	pub(crate) specular_image: ghi::BaseImageHandle,
 	pub(crate) sampler: ghi::SamplerHandle,
+	/// The illuminance, in the map's own units, that the environment delivers to an upward-facing surface. It's what
+	/// [`crate::rendering::Environment::with_illuminance`] scales to the requested lux.
+	pub(crate) upward_illuminance: f32,
 }
 
 /// The `VisibilityResident` enum keeps generic loader results private to the loader boundary.
@@ -624,6 +627,19 @@ impl VisibilityLoader {
 				))
 			})?;
 		}
+		// Measure before packing rows, while the diffuse cube is still tightly packed face after face.
+		let upward_illuminance = if diffuse_format == ghi::Formats::RGBA16F {
+			upward_illuminance(
+				&staging.bytes_mut()[diffuse_upload.offset..diffuse_upload.offset + diffuse_upload.compact_size],
+				diffuse_extent.width(),
+				diffuse_extent.height(),
+			)
+		} else {
+			log::warn!(
+				"Visibility environment {id} can't be calibrated to an illuminance. The most likely cause is a diffuse irradiance map that isn't RGBA16F, so its own values are used."
+			);
+			0.0
+		};
 		for upload in std::iter::once(&diffuse_upload).chain(&specular_uploads) {
 			upload.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.padded_size]);
 		}
@@ -672,9 +688,33 @@ impl VisibilityLoader {
 				diffuse_image,
 				specular_image,
 				sampler,
+				upward_illuminance,
 			},
 		})
 	}
+}
+
+/// Returns the illuminance that a baked diffuse irradiance cube delivers to an upward-facing surface.
+///
+/// The cube holds six tightly packed RGBA16F faces of irradiance divided by π, with +Y as the third face. The center
+/// of that face is the irradiance for a normal pointing straight up, so the luminance there times π is the upward
+/// illuminance. Even-sized faces have no center texel, so the four texels around the center are averaged.
+fn upward_illuminance(diffuse_cube: &[u8], face_width: u32, face_height: u32) -> f32 {
+	const BYTES_PER_TEXEL: usize = 8;
+	const POSITIVE_Y_FACE: usize = 2;
+	let (width, height) = (face_width as usize, face_height as usize);
+	let face = &diffuse_cube[POSITIVE_Y_FACE * width * height * BYTES_PER_TEXEL..][..width * height * BYTES_PER_TEXEL];
+	let channel = |texel: &[u8], index: usize| half::f16::from_le_bytes([texel[index * 2], texel[index * 2 + 1]]).to_f32();
+	let center_rows = [(height - 1) / 2, height / 2];
+	let center_columns = [(width - 1) / 2, width / 2];
+	let mut luminance = 0.0;
+	for y in center_rows {
+		for x in center_columns {
+			let texel = &face[(y * width + x) * BYTES_PER_TEXEL..][..BYTES_PER_TEXEL];
+			luminance += 0.2126 * channel(texel, 0) + 0.7152 * channel(texel, 1) + 0.0722 * channel(texel, 2);
+		}
+	}
+	std::f32::consts::PI * luminance / 4.0
 }
 
 impl LoadPipeline for VisibilityLoader {
@@ -743,5 +783,30 @@ mod tests {
 		assert!(!photometric_profile_metadata_is_valid(&mipmapped, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&volume, &photometry));
 		assert!(!photometric_profile_metadata_is_valid(&valid, &invalid_scale));
+	}
+
+	/// Verifies that the measurement reads the +Y face the IBL baker writes third, at the texels around its center.
+	#[test]
+	fn upward_illuminance_reads_the_center_of_the_positive_y_face() {
+		const FACE_SIZE: u32 = 8;
+		let mut cube = Vec::new();
+		for face in 0..6 {
+			for y in 0..FACE_SIZE {
+				for x in 0..FACE_SIZE {
+					// Irradiance over π of 2 faces straight up; every other texel holds a distinct decoy.
+					let center = (3..=4).contains(&x) && (3..=4).contains(&y);
+					let value = if face == 2 && center { 2.0 } else { 10.0 + face as f32 };
+					for channel in [value, value, value, 1.0] {
+						cube.extend_from_slice(&half::f16::from_f32(channel).to_le_bytes());
+					}
+				}
+			}
+		}
+
+		let illuminance = upward_illuminance(&cube, FACE_SIZE, FACE_SIZE);
+		assert!(
+			(illuminance - 2.0 * std::f32::consts::PI).abs() < 1e-3,
+			"upward illuminance = {illuminance}"
+		);
 	}
 }

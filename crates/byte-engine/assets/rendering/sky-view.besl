@@ -5,11 +5,14 @@ SkyParameters: struct {
 	planet_center: vec4f,
 	atmosphere: vec4f,
 	misc: vec4f,
+	sun_illuminance: vec4f,
+	sun_disk_radiance: vec4f,
 }
 
 transmittance_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 sky_view_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
 parameters: descriptor<{ type: SkyParameters, binding: 2, access: read, memory: constant }>;
+multiple_scattering_lut: descriptor<{ type: Texture2D, binding: 3, access: read }>;
 
 get_camera_position: fn () -> vec3f {
 	return vec3f(parameters.camera_position.x, parameters.camera_position.y, parameters.camera_position.z);
@@ -28,11 +31,24 @@ get_atmosphere_radius: fn () -> f32 { return parameters.atmosphere.y; }
 get_rayleigh_scale_height: fn () -> f32 { return parameters.atmosphere.z; }
 get_mie_scale_height: fn () -> f32 { return parameters.atmosphere.w; }
 get_mie_anisotropy: fn () -> f32 { return parameters.sun_direction.w; }
-get_sun_intensity: fn () -> f32 { return parameters.camera_position.w; }
 get_ozone_strength: fn () -> f32 { return parameters.misc.x; }
 
 should_skip_below_horizon: fn () -> bool {
 	return parameters.misc.y > 0.5;
+}
+
+// Reads the light from every scattering order after the first, per lux of sunlight. The LUT's texel centers span the full
+// sun-angle and altitude ranges, so the parameters map onto them rather than onto the texture's edges.
+sample_multiple_scattering: fn (sun_zenith_cosine: f32, altitude_fraction: f32) -> vec3f {
+	let extent: vec2u = texture_size(multiple_scattering_lut);
+	let size: vec2f = vec2f(f32(extent.x), f32(extent.y));
+	let parameters_uv: vec2f = vec2f(
+		clamp(sun_zenith_cosine * 0.5 + 0.5, 0.0, 1.0),
+		clamp(altitude_fraction, 0.0, 1.0)
+	);
+	let uv: vec2f = (parameters_uv * (size - vec2f(1.0, 1.0)) + vec2f(0.5, 0.5)) / size;
+	let sampled: vec4f = texture_lod(multiple_scattering_lut, uv);
+	return vec3f(sampled.x, sampled.y, sampled.z);
 }
 
 phase_rayleigh: fn (cosine_theta: f32) -> f32 {
@@ -109,8 +125,16 @@ main: fn (input: StageInput) -> void {
 		let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
 		let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
 		let scattering: vec3f = density.x * beta_rayleigh * phase_r + density.y * beta_mie * phase_m;
-		luminance = luminance + transmittance_to_camera * transmittance_to_sun * scattering * (t1 - t0);
+		// Light scattered more than once arrives evenly from all directions, so it needs no phase function.
+		let sample_up: vec3f = normalize(sample_position - planet_center);
+		let altitude_fraction: f32 = (length(sample_position - planet_center) - get_ground_radius())
+			/ (get_atmosphere_radius() - get_ground_radius());
+		let higher_orders: vec3f = sample_multiple_scattering(dot(sample_up, sun_direction), altitude_fraction);
+		let total_scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie;
+		luminance = luminance
+			+ transmittance_to_camera * (transmittance_to_sun * scattering + total_scattering * higher_orders) * (t1 - t0);
 	}
-	let color: vec3f = luminance * get_sun_intensity();
-	write(sky_view_lut, pixel, vec4f(color.x, color.y, color.z, 1.0));
+	// Store scattering per lux of sunlight. The composite multiplies by the sun light's illuminance each frame, so a
+	// brighter or recolored light doesn't rebuild this LUT.
+	write(sky_view_lut, pixel, vec4f(luminance.x, luminance.y, luminance.z, 1.0));
 }

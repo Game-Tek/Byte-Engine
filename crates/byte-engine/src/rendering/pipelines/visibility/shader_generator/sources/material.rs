@@ -341,7 +341,8 @@ material_evaluation_suffix: fn () -> void {
 	// GTAO darkens only specular image-based light. SSGI rays already stop at nearby geometry, so indirect diffuse
 	// light carries its own occlusion.
 	let specular_ao_factor: f16 = 1.0;
-	let indirect_diffuse_radiance: vec3f = sample_environment_irradiance(vec3f(normal));
+	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
+	let indirect_diffuse_radiance: vec3f = sample_environment_irradiance(vec3f(normal)) * lighting_data.environment_intensity;
 	if (push_constant.blend == 0) {
 		specular_ao_factor = f16(fetch(ao, pixel_coordinates).x);
 		// RGB holds light from rays that hit on-screen geometry; alpha is the fraction of rays that hit.
@@ -533,7 +534,8 @@ material_evaluation_suffix: fn () -> void {
 
 	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
-	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness));
+	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness))
+		* lighting_data.environment_intensity;
 	let one_minus_roughness: f16 = f16(1.0) - roughness;
 	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
 	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
@@ -547,7 +549,9 @@ material_evaluation_suffix: fn () -> void {
 	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
 	// Material occlusion, like baked AO, applies to indirect light only. Direct light has its own shadows.
 	let ambient: vec3f = (ibl_diffuse + ibl_specular * f32(specular_ao_factor)) * f32(occlusion);
-	let lit: vec3f = diffuse + specular + ambient + vec3f(emission);
+	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a
+	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
+	let lit: vec3f = (diffuse + specular + ambient + vec3f(emission)) * lighting_data.exposure;
 	let output_color: vec4f = vec4f(lit.x, lit.y, lit.z, 1.0);
 	if (push_constant.blend != 0) {
 		let source_alpha: f32 = f32(clamp(albedo.w, f16(0.0), f16(1.0)));
@@ -560,6 +564,7 @@ material_evaluation_suffix: fn () -> void {
 	write(lit_map, pixel_coordinates, output_color);
 	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
 	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
+	// It stays unexposed because SSGI feeds it back in as incident light, which the exposure above then applies to once.
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	if (push_constant.blend == 0) {
 		let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);

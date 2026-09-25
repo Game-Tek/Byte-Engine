@@ -5,6 +5,8 @@ SkyParameters: struct {
 	planet_center: vec4f,
 	atmosphere: vec4f,
 	misc: vec4f,
+	sun_illuminance: vec4f,
+	sun_disk_radiance: vec4f,
 }
 
 transmittance_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: write }>;

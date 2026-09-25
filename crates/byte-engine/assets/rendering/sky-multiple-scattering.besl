@@ -1,0 +1,126 @@
+SkyParameters: struct {
+	inverse_view_projection: mat4f,
+	camera_position: vec4f,
+	sun_direction: vec4f,
+	planet_center: vec4f,
+	atmosphere: vec4f,
+	misc: vec4f,
+	sun_illuminance: vec4f,
+	sun_disk_radiance: vec4f,
+}
+
+transmittance_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+multiple_scattering_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+parameters: descriptor<{ type: SkyParameters, binding: 2, access: read, memory: constant }>;
+
+// Light that has scattered more than once arrives from nearly every direction evenly, so its contribution depends only
+// on altitude and the sun's angle. Each texel stores that light for one altitude (y) and one sun zenith cosine (x), per
+// lux of sunlight, following Hillaire 2020, "A Scalable and Production Ready Sky and Atmosphere Rendering Technique".
+
+get_planet_center: fn () -> vec3f {
+	return vec3f(parameters.planet_center.x, parameters.planet_center.y, parameters.planet_center.z);
+}
+
+get_ground_radius: fn () -> f32 { return parameters.atmosphere.x; }
+get_atmosphere_radius: fn () -> f32 { return parameters.atmosphere.y; }
+get_ground_albedo: fn () -> f32 { return parameters.misc.z; }
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(multiple_scattering_lut, pixel);
+	let extent: vec2u = image_size(multiple_scattering_lut);
+	// Texel centers span the full parameter range, so lookups reach both ends of it exactly.
+	let uv: vec2f = vec2f(f32(pixel.x), f32(pixel.y))
+		/ vec2f(max(f32(extent.x) - 1.0, 1.0), max(f32(extent.y) - 1.0, 1.0));
+	let planet_center: vec3f = get_planet_center();
+	let ground_radius: f32 = get_ground_radius();
+	let atmosphere_radius: f32 = get_atmosphere_radius();
+	let sun_zenith_cosine: f32 = uv.x * 2.0 - 1.0;
+	let sun_direction: vec3f = vec3f(sqrt(max(0.0, 1.0 - sun_zenith_cosine * sun_zenith_cosine)), sun_zenith_cosine, 0.0);
+	// Start a meter above the ground so rays toward the horizon begin inside the atmosphere.
+	let altitude: f32 = max((atmosphere_radius - ground_radius) * uv.y, 1.0);
+	let origin: vec3f = planet_center + vec3f(0.0, ground_radius + altitude, 0.0);
+
+	let pi: f32 = 3.14159265359;
+	let isotropic_phase: f32 = 1.0 / (4.0 * pi);
+	let beta_rayleigh: vec3f = vec3f(0.000005802, 0.000013558, 0.000033100);
+	let beta_mie: vec3f = vec3f(0.000003996, 0.000003996, 0.000003996);
+	let minimum_extinction: vec3f = vec3f(0.000000000001, 0.000000000001, 0.000000000001);
+	let second_order: vec3f = vec3f(0.0, 0.0, 0.0);
+	let scattered_fraction: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let i: u32 = 0; i < 8; i = i + 1) {
+		for (let j: u32 = 0; j < 8; j = j + 1) {
+			// Stratified directions that cover the sphere uniformly.
+			let cos_theta: f32 = 1.0 - 2.0 * ((f32(i) + 0.5) / 8.0);
+			let sin_theta: f32 = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+			let phi: f32 = 6.28318530718 * ((f32(j) + 0.5) / 8.0);
+			let direction: vec3f = vec3f(sin_theta * cos(phi), cos_theta, sin_theta * sin(phi));
+			let atmosphere_roots: vec2f = atmosphere_ray_sphere_roots(origin, direction, planet_center, atmosphere_radius);
+			let ray_length: f32 = max(0.0, atmosphere_roots.y);
+			let ground_roots: vec2f = atmosphere_ray_sphere_roots(origin, direction, planet_center, ground_radius);
+			let hits_ground: bool = ground_roots.x <= ground_roots.y && ground_roots.x > 0.0;
+			if (hits_ground) {
+				ray_length = ground_roots.x;
+			}
+
+			let throughput: vec3f = vec3f(1.0, 1.0, 1.0);
+			for (let s: u32 = 0; s < 20; s = s + 1) {
+				let t0: f32 = ray_length * (f32(s) / 20.0);
+				let t1: f32 = ray_length * (f32(s + 1) / 20.0);
+				let step_length: f32 = t1 - t0;
+				let sample_position: vec3f = origin + direction * (0.5 * (t0 + t1));
+				let density: vec3f = atmosphere_density_profile(
+					sample_position,
+					planet_center,
+					ground_radius,
+					parameters.atmosphere.z,
+					parameters.atmosphere.w,
+					parameters.misc.x
+				);
+				let extinction: vec3f = max(atmosphere_extinction_from_density(density), minimum_extinction);
+				let scattering: vec3f = density.x * beta_rayleigh + density.y * beta_mie;
+				let step_transmittance: vec3f = exp(vec3f(0.0, 0.0, 0.0) - extinction * step_length);
+				// Shared atmosphere helpers only resolve from `main`, so the sun's transmittance is read inline.
+				let sun_uv: vec2f = atmosphere_transmittance_uv(
+					sample_position,
+					sun_direction,
+					planet_center,
+					ground_radius,
+					atmosphere_radius
+				);
+				let sampled_sun: vec4f = texture_lod(transmittance_lut, sun_uv);
+				let transmittance_to_sun: vec3f = vec3f(sampled_sun.x, sampled_sun.y, sampled_sun.z);
+				// Integrate each step analytically, so the thick steps near the ground don't overshoot.
+				let scattered_along_step: vec3f = (scattering - scattering * step_transmittance) / extinction;
+				second_order = second_order + throughput * scattered_along_step * transmittance_to_sun * isotropic_phase;
+				scattered_fraction = scattered_fraction + throughput * scattered_along_step;
+				throughput = throughput * step_transmittance;
+			}
+
+			// The ground reflects the sunlight that reaches it back into the atmosphere.
+			if (hits_ground) {
+				let ground_position: vec3f = origin + direction * ray_length;
+				let ground_normal: vec3f = normalize(ground_position - planet_center);
+				let sun_cosine: f32 = max(dot(ground_normal, sun_direction), 0.0);
+				let ground_sun_uv: vec2f = atmosphere_transmittance_uv(
+					ground_position,
+					sun_direction,
+					planet_center,
+					ground_radius,
+					atmosphere_radius
+				);
+				let sampled_ground_sun: vec4f = texture_lod(transmittance_lut, ground_sun_uv);
+				let ground_transmittance_to_sun: vec3f = vec3f(sampled_ground_sun.x, sampled_ground_sun.y, sampled_ground_sun.z);
+				second_order = second_order + throughput * ground_transmittance_to_sun * (sun_cosine * get_ground_albedo() / pi);
+			}
+		}
+	}
+
+	// Average over the 64 directions. Each further scattering order is the previous one times the scattered fraction,
+	// so every order after the first sums to second_order / (1 - scattered_fraction).
+	second_order = second_order / 64.0;
+	scattered_fraction = scattered_fraction / 64.0;
+	let higher_orders: vec3f = second_order
+		/ max(vec3f(1.0, 1.0, 1.0) - scattered_fraction, vec3f(0.001, 0.001, 0.001));
+	write(multiple_scattering_lut, pixel, vec4f(higher_orders.x, higher_orders.y, higher_orders.z, 1.0));
+}

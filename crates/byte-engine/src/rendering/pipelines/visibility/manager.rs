@@ -173,12 +173,15 @@ fn create_fallback_environment(context: &mut ghi::implementation::Context) -> Re
 		diffuse_image: image.into(),
 		specular_image: image.into(),
 		sampler,
+		upward_illuminance: 0.0,
 	}
 }
 
 /// Environment selection: the requested resource, every environment that finished uploading, and what is bound.
 struct EnvironmentState {
 	requested: Option<String>,
+	/// The lux the requested environment should deliver to an upward-facing surface, if it's calibrated.
+	illuminance: Option<f32>,
 	bound: ResidentEnvironment,
 	/// The bound environment changed and existing sinks must be rewritten.
 	descriptors_dirty: bool,
@@ -188,6 +191,21 @@ impl EnvironmentState {
 	fn bind(&mut self, environment: ResidentEnvironment) {
 		self.bound = environment;
 		self.descriptors_dirty = true;
+	}
+
+	/// Returns the factor material evaluation applies to the bound environment map.
+	fn intensity(&self) -> f32 {
+		environment_intensity(self.illuminance, self.bound.upward_illuminance)
+	}
+}
+
+/// Returns the factor that makes an environment delivering `upward_illuminance` deliver `requested` lux instead.
+///
+/// Without a request, or for a black map that can't be scaled, the map's own values are used unchanged.
+fn environment_intensity(requested: Option<f32>, upward_illuminance: f32) -> f32 {
+	match requested {
+		Some(lux) if upward_illuminance > 0.0 => lux / upward_illuminance,
+		_ => 1.0,
 	}
 }
 
@@ -466,6 +484,7 @@ impl VisibilityPipelineManager {
 			),
 			environment: EnvironmentState {
 				requested: None,
+				illuminance: None,
 				bound: environment,
 				descriptors_dirty: false,
 			},
@@ -539,6 +558,7 @@ impl VisibilityPipelineManager {
 	pub(crate) fn create_environment(&mut self, environment: Environment) {
 		let id = environment.resource_id().to_owned();
 		self.environment.requested = Some(id.clone());
+		self.environment.illuminance = environment.illuminance();
 		if let Some(resident) = self.loader.request_environment(id) {
 			self.environment.bind(resident);
 		}
@@ -961,8 +981,12 @@ impl PipelineManager for VisibilityPipelineManager {
 		if let Some(sink) = sinks.first() {
 			self.write_views(frame, sink.view(), &shadows);
 		}
+		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
+		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
-			.write_lighting(frame, &shadows, |light| resolved_ies_profile_texture(light, profiles));
+			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), |light| {
+				resolved_ies_profile_texture(light, profiles)
+			});
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
 			cone_count: shadows.cone_count(),
@@ -1225,5 +1249,13 @@ mod tests {
 			Some((17, SkinningPaletteKind::Matrix))
 		);
 		assert_eq!(frame.cached(second_handle, Arc::as_ptr(&second_binding)), None);
+	}
+
+	#[test]
+	fn environment_intensity_calibrates_to_the_requested_illuminance() {
+		assert_eq!(environment_intensity(Some(20_000.0), 2.0), 10_000.0);
+		assert_eq!(environment_intensity(None, 2.0), 1.0);
+		// The black fallback bound while a map loads can't be scaled, so it keeps its own values.
+		assert_eq!(environment_intensity(Some(20_000.0), 0.0), 1.0);
 	}
 }

@@ -747,7 +747,7 @@ impl Renderer {
 							};
 
 							let view = make_perspective_view_from_camera(camera, transform, extent);
-							sinks.push(Sink::new(view, extent, *sink_id));
+							sinks.push(Sink::new(view, extent, *sink_id).with_exposure_scale(camera.exposure_scale()));
 						}
 					}
 

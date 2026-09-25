@@ -313,8 +313,10 @@ impl VisibilityShaderScope {
 					"LightingBuffer",
 					vec![
 						Node::member("light_count", "u32"),
+						Node::member("exposure", "f32"),
+						Node::member("environment_intensity", "f32"),
 						// Keep the light array at the CPU record's 16-byte boundary on scalar-layout backends.
-						Node::member("_light_count_padding", "u32[3]"),
+						Node::member("_light_count_padding", "u32"),
 						Node::member("lights", LIGHT_ARRAY),
 					],
 				),

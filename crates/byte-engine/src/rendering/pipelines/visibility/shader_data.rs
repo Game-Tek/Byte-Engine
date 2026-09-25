@@ -129,12 +129,17 @@ impl Default for LightData {
 	}
 }
 
-/// The `LightingData` struct is the complete light table uploaded once per frame.
+/// The `LightingData` struct is the complete light table and per-frame lighting scales uploaded once per frame.
 #[repr(C)]
 #[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightingData {
 	pub count: u32,
-	pub(crate) _padding: [u32; 3],
+	/// The camera exposure as a linear factor. Material evaluation multiplies the light it writes by it, so scenes lit
+	/// with real-world intensities stay within the half-float range of the scene color target.
+	pub exposure: f32,
+	/// The linear factor that brings the environment map to the illuminance its [`crate::rendering::Environment`] requests.
+	pub environment_intensity: f32,
+	pub(crate) _padding: u32,
 	pub lights: [LightData; MAX_LIGHTS],
 }
 
@@ -218,7 +223,9 @@ const _: () = assert!(std::mem::offset_of!(LightData, _ies_padding) == 104);
 const _: () = assert!(std::mem::size_of::<LightingData>() == 1808);
 const _: () = assert!(std::mem::align_of::<LightingData>() == 16);
 const _: () = assert!(std::mem::offset_of!(LightingData, count) == 0);
-const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 4);
+const _: () = assert!(std::mem::offset_of!(LightingData, exposure) == 4);
+const _: () = assert!(std::mem::offset_of!(LightingData, environment_intensity) == 8);
+const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 12);
 const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 16);
 
 #[cfg(test)]

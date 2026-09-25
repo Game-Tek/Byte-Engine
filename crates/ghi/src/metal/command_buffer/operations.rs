@@ -3,9 +3,12 @@ use crate::metal::context::resources::acceleration_structures;
 
 impl CommandBufferRecording<'_> {
 	/// Resolves one public transfer source to the retained Metal texture and synchronization use recorded by a copy.
+	///
+	/// `frame_offset` selects another frame's copy of a per-frame image. Swapchains only have this frame's image.
 	fn resolve_transfer_texture_source(
 		&self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
+		frame_offset: i32,
 	) -> Result<
 		(
 			synchronization::MetalResourceUse,
@@ -22,7 +25,16 @@ impl CommandBufferRecording<'_> {
 				if self.device.images.get_single(image).is_none() {
 					return Err(crate::TextureTransferError::InvalidSource);
 				}
-				let handle = self.get_internal_image_handle(image);
+				let frame_index = crate::frame_resources::frame_index_with_offset(
+					self.sequence_index as usize,
+					frame_offset,
+					self.device.frames as usize,
+				);
+				let handle = self
+					.device
+					.images
+					.nth_handle(image, frame_index)
+					.ok_or(crate::TextureTransferError::InvalidSource)?;
 				let source = self.device.images.resource(handle);
 				(
 					synchronization::MetalResourceUse::image(
@@ -86,6 +98,81 @@ impl CommandBufferRecording<'_> {
 				}
 			}
 		})
+	}
+
+	/// Records one copy of a transfer source, or another frame's copy of a per-frame image, into shared staging.
+	fn record_texture_transfer(
+		&mut self,
+		source: graphics_hardware_interface::ImageOrSwapchain,
+		frame_offset: i32,
+	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		let (source_use, source_texture, format, extent, array_layers, uses) =
+			self.resolve_transfer_texture_source(source, frame_offset)?;
+		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
+		let bytes_per_row = layout.bytes_per_row;
+		let row_count = layout.row_count;
+		let bytes_per_image = layout.bytes_per_image;
+		let native_bytes_per_row = bytes_per_row
+			.checked_add(255)
+			.map(|bytes| bytes & !255)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let native_bytes_per_image = native_bytes_per_row
+			.checked_mul(row_count)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let size = native_bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let compact_size = bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let mut bytes = Vec::new();
+		bytes
+			.try_reserve_exact(compact_size)
+			.map_err(|_| crate::TextureTransferError::AllocationFailed)?;
+		bytes.resize(compact_size, 0);
+		let staging = self
+			.device
+			.metal_device
+			.newBufferWithLength_options(size, mtl::MTLResourceOptions::StorageModeShared)
+			.ok_or(crate::TextureTransferError::AllocationFailed)?;
+
+		let transfer_encoder = self.ensure_compute_encoder().clone();
+		self.consume_resources([source_use]);
+		self.command_buffer.retain_allocation(source_texture.clone());
+		self.command_buffer.retain_allocation(staging.clone());
+		let source_size = utils::mtl_size(extent);
+		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+		for slice in 0..array_layers as usize {
+			// SAFETY: The source subresource and readback buffer layout cover this array slice.
+			unsafe {
+				transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
+					source_texture.as_ref(),
+					slice,
+					0,
+					source_origin,
+					source_size,
+					staging.as_ref(),
+					(slice * native_bytes_per_image) as _,
+					native_bytes_per_row as _,
+					native_bytes_per_image as _,
+				);
+			}
+		}
+
+		let handle = self.commit.texture_readbacks.insert(context::TextureReadbackStorage {
+			buffer: staging,
+			bytes,
+			extent,
+			format,
+			bytes_per_row,
+			bytes_per_image,
+			native_bytes_per_row,
+			native_bytes_per_image,
+			row_count,
+			image_count: layout.depth_slices,
+		});
+		self.texture_readbacks.push(handle);
+		Ok(handle)
 	}
 }
 
@@ -702,72 +789,15 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let (source_use, source_texture, format, extent, array_layers, uses) = self.resolve_transfer_texture_source(source)?;
-		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
-		let bytes_per_row = layout.bytes_per_row;
-		let row_count = layout.row_count;
-		let bytes_per_image = layout.bytes_per_image;
-		let native_bytes_per_row = bytes_per_row
-			.checked_add(255)
-			.map(|bytes| bytes & !255)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let native_bytes_per_image = native_bytes_per_row
-			.checked_mul(row_count)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let size = native_bytes_per_image
-			.checked_mul(layout.depth_slices)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let compact_size = bytes_per_image
-			.checked_mul(layout.depth_slices)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let mut bytes = Vec::new();
-		bytes
-			.try_reserve_exact(compact_size)
-			.map_err(|_| crate::TextureTransferError::AllocationFailed)?;
-		bytes.resize(compact_size, 0);
-		let staging = self
-			.device
-			.metal_device
-			.newBufferWithLength_options(size, mtl::MTLResourceOptions::StorageModeShared)
-			.ok_or(crate::TextureTransferError::AllocationFailed)?;
+		self.record_texture_transfer(source, 0)
+	}
 
-		let transfer_encoder = self.ensure_compute_encoder().clone();
-		self.consume_resources([source_use]);
-		self.command_buffer.retain_allocation(source_texture.clone());
-		self.command_buffer.retain_allocation(staging.clone());
-		let source_size = utils::mtl_size(extent);
-		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
-		for slice in 0..array_layers as usize {
-			// SAFETY: The source subresource and readback buffer layout cover this array slice.
-			unsafe {
-				transfer_encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage(
-					source_texture.as_ref(),
-					slice,
-					0,
-					source_origin,
-					source_size,
-					staging.as_ref(),
-					(slice * native_bytes_per_image) as _,
-					native_bytes_per_row as _,
-					native_bytes_per_image as _,
-				);
-			}
-		}
-
-		let handle = self.commit.texture_readbacks.insert(context::TextureReadbackStorage {
-			buffer: staging,
-			bytes,
-			extent,
-			format,
-			bytes_per_row,
-			bytes_per_image,
-			native_bytes_per_row,
-			native_bytes_per_image,
-			row_count,
-			image_count: layout.depth_slices,
-		});
-		self.texture_readbacks.push(handle);
-		Ok(handle)
+	fn transfer_texture_with_frame(
+		&mut self,
+		image: graphics_hardware_interface::DynamicImageHandle,
+		frame_offset: i32,
+	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		self.record_texture_transfer(image.into(), frame_offset)
 	}
 
 	fn write_image_data(

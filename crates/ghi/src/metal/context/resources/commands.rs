@@ -61,6 +61,7 @@ impl Context {
 			meshes: &self.meshes,
 			pipelines: &self.pipelines,
 			swapchains: &self.swapchains,
+			frames: self.frames,
 			debug_labels: self.settings.debug_labels,
 		};
 		let commit = super::super::command_buffer::RecordingCommit {

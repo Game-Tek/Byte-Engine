@@ -621,6 +621,98 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 	}
 }
 
+pub(super) fn previous_frame_transfers(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	//! Tests that a frame-offset transfer reads the copy an earlier frame wrote, while a plain transfer reads this
+	//! frame's copy.
+
+	let extent = Extent::square(2);
+	let pixel_count = (extent.width() * extent.height()) as usize;
+
+	let upload_image = device.build_dynamic_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferSource)
+			.extent(extent)
+			.device_accesses(DeviceAccesses::HostToDevice),
+	);
+	let history_image = device.build_dynamic_image(
+		ghi::image::Builder::new(
+			Formats::RGBA8UNORM,
+			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
+		)
+		.extent(extent),
+	);
+
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+	let red = RGBAu8 {
+		r: 255,
+		g: 0,
+		b: 0,
+		a: 255,
+	};
+	let green = RGBAu8 {
+		r: 0,
+		g: 255,
+		b: 0,
+		a: 255,
+	};
+
+	let mut transfers = Vec::new();
+	for (frame_index, color) in [red, green].into_iter().enumerate() {
+		let mut queue = device.queue(queue_handle);
+		queue.execute(
+			Some(FrameRequest::new(frame_index as u64, render_finished_synchronizer)),
+			&[],
+			render_finished_synchronizer,
+			|execution| {
+				let frame = execution.frame().unwrap();
+
+				let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
+				for pixel in texture_slice.as_chunks_mut::<4>().0.iter_mut().take(pixel_count) {
+					pixel.copy_from_slice(&[color.r, color.g, color.b, color.a]);
+				}
+				frame.sync_texture(upload_image.into());
+
+				execution.record(command_buffer_handle, |command_buffer_recording| {
+					command_buffer_recording.blit_image(
+						upload_image.into(),
+						Layouts::Transfer,
+						history_image.into(),
+						Layouts::Transfer,
+					);
+					// Only the second frame has an earlier copy to read.
+					if frame_index == 1 {
+						transfers.push(command_buffer_recording.transfer_texture(history_image.into()).expect(
+							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
+						));
+						transfers.push(command_buffer_recording.transfer_texture_with_frame(history_image, -1).expect(
+							"Previous-frame texture transfer failed. The most likely cause is that the backend cannot resolve frame offsets for transfers.",
+						));
+					}
+				});
+				[]
+			},
+		);
+	}
+
+	device.wait();
+
+	let [current, previous] = transfers[..] else {
+		panic!("The second frame must record exactly two transfers.");
+	};
+	let current =
+		rgba_pixels(device.get_image_data(current).expect(
+			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+		));
+	let previous = rgba_pixels(device.get_image_data(previous).expect(
+		"Previous-frame texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
+	));
+
+	assert!(current.iter().all(|pixel| *pixel == green));
+	assert!(previous.iter().all(|pixel| *pixel == red));
+	assert!(!device.has_errors());
+}
+
 // The rendering scenario validates one resource set across its complete multi-frame lifetime.
 #[allow(clippy::too_many_lines)]
 pub(super) fn multiframe_resources(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {

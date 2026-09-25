@@ -3,8 +3,8 @@ use utils::Extent;
 
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, FrameKey,
-	ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle, TextureCopyHandle,
+	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle,
+	FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle, TextureCopyHandle,
 	TextureTransferError, rt,
 };
 
@@ -121,6 +121,17 @@ where
 	/// Each successful call returns a distinct handle, including repeated transfers from the same source.
 	/// Submit the command before mapping the handle with [`crate::Context::get_image_data`].
 	fn transfer_texture(&mut self, source: ImageOrSwapchain) -> Result<TextureCopyHandle, TextureTransferError>;
+
+	/// Records one copy of another frame's copy of a per-frame image into backend-owned CPU-readable staging.
+	///
+	/// Use this to read history images, such as the copy the previous frame wrote with an offset of `-1`. The offset
+	/// selects a frame the same way [`crate::DescriptorWrite::image_with_frame`] does, and it wraps around the
+	/// frames in flight. Submit the command before mapping the handle with [`crate::Context::get_image_data`].
+	fn transfer_texture_with_frame(
+		&mut self,
+		image: DynamicImageHandle,
+		frame_offset: i32,
+	) -> Result<TextureCopyHandle, TextureTransferError>;
 
 	/// Copies image data from a CPU accessible buffer to a GPU accessible image.
 	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]);

@@ -40,7 +40,8 @@ pub use message::{
 pub(crate) mod screenshot;
 #[cfg(feature = "headed")]
 pub use screenshot::{
-	Screenshot, ScreenshotCapture, ScreenshotError, ScreenshotResponse, ScreenshotResult, ScreenshotSubmitError,
+	MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotResponse, ScreenshotSelection,
+	ScreenshotSubmitError, Screenshots,
 };
 mod shape;
 
@@ -94,9 +95,12 @@ pub trait Inspector: Send + Sync {
 	/// Publishes one registered targeted world message from its reflected JSON payload.
 	fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String>;
 
-	/// Queues one screenshot request and returns its one-shot response.
+	/// Queues captures that must come from the same frame and returns their one-shot response.
+	///
+	/// Next, receive the [`Screenshots`] from the response and encode each readback with
+	/// [`ScreenshotFormat::encode`].
 	#[cfg(feature = "headed")]
-	fn request_screenshot(&self, sink: usize, capture: ScreenshotCapture) -> Result<ScreenshotResponse, ScreenshotSubmitError>;
+	fn request_screenshots(&self, captures: Vec<ScreenshotSelection>) -> Result<ScreenshotResponse, ScreenshotSubmitError>;
 
 	/// Requests application shutdown through the inspector event channel.
 	fn close_application(&self);
@@ -282,8 +286,8 @@ impl Inspector for DefaultInspector {
 	}
 
 	#[cfg(feature = "headed")]
-	fn request_screenshot(&self, sink: usize, capture: ScreenshotCapture) -> Result<ScreenshotResponse, ScreenshotSubmitError> {
-		self.screenshots.request(sink, capture)
+	fn request_screenshots(&self, captures: Vec<ScreenshotSelection>) -> Result<ScreenshotResponse, ScreenshotSubmitError> {
+		self.screenshots.request(captures)
 	}
 
 	fn close_application(&self) {

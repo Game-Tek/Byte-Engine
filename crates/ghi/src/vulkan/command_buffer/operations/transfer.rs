@@ -53,76 +53,31 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				)
 			}
 		};
-		let image = self
+		self.record_texture_transfer(source_handle, format, extent, declared_uses)
+	}
+
+	fn transfer_texture_with_frame(
+		&mut self,
+		image: graphics_hardware_interface::DynamicImageHandle,
+		frame_offset: i32,
+	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		let handle = graphics_hardware_interface::BaseImageHandle::from(image);
+		if self.device.images.get(handle.0 as usize).is_none() {
+			return Err(crate::TextureTransferError::InvalidSource);
+		}
+		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
+		let source_handle = self.device.resolve_descriptor_image_handle(
+			graphics_hardware_interface::ImageHandle(handle),
+			self.sequence_index as usize,
+			frame_offset,
+		);
+		let source_image = self
 			.device
 			.images
 			.get(source_handle.0 as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
-		let array_layers = image.layers.map_or(1, std::num::NonZeroU32::get);
-		let source_image = image.image;
-		if image.format == vk::Format::UNDEFINED {
-			return Err(crate::TextureTransferError::UnsupportedFormat(format));
-		}
-		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, declared_uses)?;
-		let size = layout
-			.bytes_per_image
-			.checked_mul(layout.depth_slices)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let (staging, memory, pointer) = self.device.create_texture_readback_buffer(size)?;
-
-		// Register staging before state tracking so unwinding the recording can reclaim every native object.
-		let handle = self.device.texture_readbacks.insert(TextureReadbackStorage {
-			buffer: staging,
-			memory,
-			pointer: crate::vulkan::MappedMemoryPointer(pointer),
-			extent,
-			format,
-			bytes_per_row: layout.bytes_per_row,
-			bytes_per_image: layout.bytes_per_image,
-			size,
-		});
-		self.texture_readbacks.push(handle);
-
-		self.consume_resources([Consumption {
-			handle: Handles::Image(source_handle),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Transfer,
-		}])
-		.apply(self);
-		self.vulkan_consume_resources([VulkanConsumption {
-			handle: Handles::VkBuffer(staging),
-			stages: vk::PipelineStageFlags2::TRANSFER,
-			access: vk::AccessFlags2::TRANSFER_WRITE,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: None,
-		}])
-		.apply(self);
-
-		let regions = [vk::BufferImageCopy2::default()
-			.buffer_offset(0)
-			.buffer_row_length(0)
-			.buffer_image_height(0)
-			.image_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.image_offset(vk::Offset3D::default())
-			.image_extent(extent_into_vk_extent(extent))];
-		let copy = vk::CopyImageToBufferInfo2::default()
-			.src_image(source_image)
-			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-			.dst_buffer(staging)
-			.regions(&regions);
-		let command_buffer = self.get_command_buffer().command_buffer;
-		unsafe {
-			self.device.device.cmd_copy_image_to_buffer2(command_buffer, &copy);
-		}
-
-		Ok(handle)
+		let (format, extent, uses) = (source_image.format_, source_image.extent, source_image.uses);
+		self.record_texture_transfer(source_handle, format, extent, uses)
 	}
 
 	fn start_render_pass(
@@ -816,5 +771,90 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		for (handle, states) in std::mem::take(&mut self.buffer_states) {
 			self.device.buffer_states.insert(handle, states);
 		}
+	}
+}
+
+impl CommandBufferRecording<'_> {
+	/// Records one copy of a resolved image into CPU-readable staging.
+	///
+	/// `declared_uses` are the uses the public source was created with, which differ from the native image's uses
+	/// for proxied swapchains.
+	fn record_texture_transfer(
+		&mut self,
+		source_handle: ImageHandle,
+		format: crate::Formats,
+		extent: Extent,
+		declared_uses: crate::Uses,
+	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
+		let image = self
+			.device
+			.images
+			.get(source_handle.0 as usize)
+			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		let array_layers = image.layers.map_or(1, std::num::NonZeroU32::get);
+		let source_image = image.image;
+		if image.format == vk::Format::UNDEFINED {
+			return Err(crate::TextureTransferError::UnsupportedFormat(format));
+		}
+		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, declared_uses)?;
+		let size = layout
+			.bytes_per_image
+			.checked_mul(layout.depth_slices)
+			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let (staging, memory, pointer) = self.device.create_texture_readback_buffer(size)?;
+
+		// Register staging before state tracking so unwinding the recording can reclaim every native object.
+		let handle = self.device.texture_readbacks.insert(TextureReadbackStorage {
+			buffer: staging,
+			memory,
+			pointer: crate::vulkan::MappedMemoryPointer(pointer),
+			extent,
+			format,
+			bytes_per_row: layout.bytes_per_row,
+			bytes_per_image: layout.bytes_per_image,
+			size,
+		});
+		self.texture_readbacks.push(handle);
+
+		self.consume_resources([Consumption {
+			handle: Handles::Image(source_handle),
+			stages: crate::Stages::TRANSFER,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Transfer,
+		}])
+		.apply(self);
+		self.vulkan_consume_resources([VulkanConsumption {
+			handle: Handles::VkBuffer(staging),
+			stages: vk::PipelineStageFlags2::TRANSFER,
+			access: vk::AccessFlags2::TRANSFER_WRITE,
+			layout: vk::ImageLayout::UNDEFINED,
+			range: None,
+		}])
+		.apply(self);
+
+		let regions = [vk::BufferImageCopy2::default()
+			.buffer_offset(0)
+			.buffer_row_length(0)
+			.buffer_image_height(0)
+			.image_subresource(
+				vk::ImageSubresourceLayers::default()
+					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.mip_level(0)
+					.base_array_layer(0)
+					.layer_count(1),
+			)
+			.image_offset(vk::Offset3D::default())
+			.image_extent(extent_into_vk_extent(extent))];
+		let copy = vk::CopyImageToBufferInfo2::default()
+			.src_image(source_image)
+			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+			.dst_buffer(staging)
+			.regions(&regions);
+		let command_buffer = self.get_command_buffer().command_buffer;
+		unsafe {
+			self.device.device.cmd_copy_image_to_buffer2(command_buffer, &copy);
+		}
+
+		Ok(handle)
 	}
 }

@@ -128,6 +128,12 @@ fn update_dynamic_textures() {
 }
 
 #[test]
+fn transfer_previous_frame_textures() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::previous_frame_transfers(&mut device, queue_handle);
+}
+
+#[test]
 fn render_with_descriptor_sets() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::descriptor_sets(&mut device, queue_handle);

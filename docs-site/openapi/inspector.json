@@ -24,7 +24,7 @@
 		},
 		{
 			"name": "Screenshots",
-			"description": "Capture a renderer sink or one render-pass target.",
+			"description": "Capture renderer sinks and render targets, one image at a time or several from the same frame, as PNG, lossless EXR, or raw bytes.",
 			"x-displayName": "Capture screenshots"
 		}
 	],
@@ -259,7 +259,7 @@
 			"get": {
 				"operationId": "captureScreenshot",
 				"summary": "Capture a screenshot",
-				"description": "Captures the final swapchain image for one renderer sink. To capture a named target immediately after a render pass, provide both `pass` and `target`. The request waits up to five seconds for a graphics frame to complete.",
+				"description": "Captures one image from a renderer sink. Without `pass` or `target`, the request reads the final swapchain image. Provide only `target` to read a scene-pipeline target after every scene pipeline has recorded, such as `Diffuse Radiance History`, or add `pass` to read a target right after that render pass. Add `previous=true` with a `target` to read the copy of a history target that the previous frame wrote, which is what the current frame's passes read as history. That copy holds no usable data on a sink's first frame or right after a resize. The request waits up to five seconds for a graphics frame to complete. To capture several images from the same frame, use `POST /screenshots`.",
 				"tags": ["Screenshots"],
 				"parameters": [
 					{
@@ -276,27 +276,39 @@
 					{
 						"name": "pass",
 						"in": "query",
-						"description": "Exact render-pass name. Requires `target`.",
+						"description": "Exact render-pass name. Requires `target`, and cannot be combined with `previous`.",
 						"schema": {
 							"type": "string",
 							"minLength": 1
 						},
-						"example": "visibility"
+						"example": "bloom"
 					},
 					{
 						"name": "target",
 						"in": "query",
-						"description": "Exact written target name. Requires `pass`.",
+						"description": "Exact target name. Without `pass`, the name of a scene-pipeline target or history target. With `pass`, a target that the pass writes.",
 						"schema": {
 							"type": "string",
 							"minLength": 1
 						},
-						"example": "color"
+						"example": "Diffuse Radiance History"
+					},
+					{
+						"name": "previous",
+						"in": "query",
+						"description": "Reads the previous frame's copy of a history target. Requires `target` without `pass`.",
+						"schema": {
+							"type": "boolean",
+							"default": false
+						}
+					},
+					{
+						"$ref": "#/components/parameters/ScreenshotFormat"
 					}
 				],
 				"responses": {
 					"200": {
-						"description": "PNG screenshot from the completed graphics frame.",
+						"description": "One image from the completed graphics frame, encoded in the requested `format`.",
 						"headers": {
 							"X-Byte-Engine-Frame": {
 								"description": "Engine frame number that produced the image.",
@@ -311,10 +323,49 @@
 									"type": "integer",
 									"minimum": 0
 								}
+							},
+							"X-Byte-Engine-Format": {
+								"description": "GHI format the texture is stored in, such as `RGBA16F` or `BGRAu8`.",
+								"schema": {
+									"type": "string"
+								}
+							},
+							"X-Byte-Engine-Width": {
+								"description": "Texture width in pixels.",
+								"schema": {
+									"type": "integer",
+									"minimum": 1
+								}
+							},
+							"X-Byte-Engine-Height": {
+								"description": "Texture height in pixels.",
+								"schema": {
+									"type": "integer",
+									"minimum": 1
+								}
+							},
+							"X-Byte-Engine-Bytes-Per-Row": {
+								"description": "Distance in bytes between rows of a `raw` body, which can include GPU padding. Only `raw` responses include it.",
+								"schema": {
+									"type": "integer",
+									"minimum": 1
+								}
 							}
 						},
 						"content": {
 							"image/png": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"image/x-exr": {
+								"schema": {
+									"type": "string",
+									"format": "binary"
+								}
+							},
+							"application/octet-stream": {
 								"schema": {
 									"type": "string",
 									"format": "binary"
@@ -326,7 +377,7 @@
 						"$ref": "#/components/responses/BadRequest"
 					},
 					"404": {
-						"description": "The sink, render pass, or written target was not found.",
+						"description": "The sink, render pass, or target was not found, or `previous` names a target that keeps no previous frame.",
 						"content": {
 							"text/plain": {
 								"schema": {
@@ -356,7 +407,126 @@
 						}
 					},
 					"500": {
-						"description": "Screenshot capture or PNG encoding failed.",
+						"description": "Screenshot capture or encoding failed. The most likely cause is a target format that the selected `format` cannot encode.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"504": {
+						"description": "No graphics frame completed within five seconds.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "captureScreenshots",
+				"summary": "Capture screenshots from the same frame",
+				"description": "Captures up to 16 images, from any sinks and capture points, in one graphics frame, so you can compare targets that belong together. Each capture takes the same fields as the `GET /screenshots` query. The response is `multipart/form-data` with one part per capture, in request order. Each part is named by its zero-based capture index, has a file name built from the capture, and carries the same `Content-Type` and `X-Byte-Engine-*` headers as a single-image response, except `X-Byte-Engine-Frame`, which the response itself carries. If any capture fails, the request fails, and the error message starts with the failing capture index.",
+				"tags": ["Screenshots"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ScreenshotBatch"
+							},
+							"example": {
+								"captures": [
+									{
+										"sink": 0
+									},
+									{
+										"sink": 0,
+										"target": "Diffuse Radiance History",
+										"format": "exr"
+									},
+									{
+										"sink": 0,
+										"target": "Diffuse Radiance History",
+										"previous": true,
+										"format": "exr"
+									}
+								]
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "One part per capture, all from the same completed graphics frame.",
+						"headers": {
+							"X-Byte-Engine-Frame": {
+								"description": "Engine frame number that produced the image.",
+								"schema": {
+									"type": "integer",
+									"minimum": 0
+								}
+							}
+						},
+						"content": {
+							"multipart/form-data": {
+								"schema": {
+									"type": "object",
+									"additionalProperties": {
+										"type": "string",
+										"format": "binary"
+									}
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The request body is malformed, has an unknown field, lists no captures or more than 16, or has an invalid capture.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "The sink, render pass, or target was not found, or `previous` names a target that keeps no previous frame.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "The sink is unavailable or the pass name is ambiguous.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "The bounded screenshot request queue is full.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "Screenshot capture or encoding failed. The most likely cause is a target format that the selected `format` cannot encode.",
 						"content": {
 							"text/plain": {
 								"schema": {
@@ -393,7 +563,69 @@
 		}
 	},
 	"components": {
+		"parameters": {
+			"ScreenshotFormat": {
+				"name": "format",
+				"in": "query",
+				"description": "Image encoding. `png` is an 8-bit preview that clamps HDR values to [0, 1]. `exr` is a lossless OpenEXR image that keeps the texture's precision: half floats stay half floats, normalized values become linear 32-bit floats, and `U32` stays `U32`. `raw` returns the texture bytes as the GPU stores them.",
+				"schema": {
+					"type": "string",
+					"enum": ["png", "exr", "raw"],
+					"default": "png"
+				}
+			}
+		},
 		"schemas": {
+			"ScreenshotBatch": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["captures"],
+				"properties": {
+					"captures": {
+						"type": "array",
+						"minItems": 1,
+						"maxItems": 16,
+						"items": {
+							"$ref": "#/components/schemas/ScreenshotCaptureRequest"
+						}
+					}
+				}
+			},
+			"ScreenshotCaptureRequest": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": ["sink"],
+				"description": "One capture. The fields work like the `GET /screenshots` query parameters.",
+				"properties": {
+					"sink": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Zero-based renderer sink index."
+					},
+					"pass": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Exact render-pass name. Requires `target`, and cannot be combined with `previous`."
+					},
+					"target": {
+						"type": "string",
+						"minLength": 1,
+						"description": "Exact target name. Without `pass`, the name of a scene-pipeline target or history target. With `pass`, a target that the pass writes."
+					},
+					"previous": {
+						"type": "boolean",
+						"default": false,
+						"description": "Reads the previous frame's copy of a history target. Requires `target` without `pass`."
+					},
+					"format": {
+						"type": "string",
+						"enum": ["png", "exr", "raw"],
+						"default": "png",
+						"description": "Image encoding. See the `format` query parameter of `GET /screenshots`."
+					}
+				}
+			}
+		,
 			"Entity": {
 				"type": "object",
 				"additionalProperties": false,

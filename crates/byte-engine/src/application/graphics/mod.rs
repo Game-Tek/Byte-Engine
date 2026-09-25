@@ -526,30 +526,33 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Renders one frame and completes every screenshot request with its encoded result.
+	/// Renders one frame and completes every screenshot request with its readbacks.
+	///
+	/// Every capture of every request is read from this one frame. Transports encode the readbacks on their own
+	/// threads, so encoding never delays the next frame.
 	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) {
 		let span = debug_span!("GraphicsApplication::render_frame");
 		let _enter = span.enter();
 		let captures = requests
 			.iter()
-			.map(|request| (request.sink, &request.capture))
+			.flat_map(|request| request.captures.iter().map(|selection| (selection.sink, &selection.capture)))
 			.collect::<Vec<_>>();
-		let results = self.renderer.prepare(
+		let (frame, results) = self.renderer.prepare(
 			&mut self.renderer_transforms_listener,
 			&self.application.frame_allocator,
 			&captures,
 			self.simulation_alpha,
 			time,
 		);
-		for (request, capture) in requests.into_iter().zip(results) {
-			let result = capture
-				.map_err(crate::inspector::screenshot::ScreenshotError::from)
-				.and_then(|(frame, readback)| {
-					crate::inspector::screenshot::encode_screenshot_png(readback)
-						.map(|png| crate::inspector::screenshot::Screenshot { frame, png })
-						.map_err(crate::inspector::screenshot::ScreenshotError::Internal)
-				});
-			request.complete(result);
+		// Results follow the flattened capture order, so each request takes the next run of its own length.
+		let mut results = results.into_iter();
+		for request in requests {
+			let captures = results
+				.by_ref()
+				.take(request.captures.len())
+				.map(|result| result.map_err(crate::inspector::screenshot::ScreenshotError::from))
+				.collect();
+			request.complete(crate::inspector::screenshot::Screenshots { frame, captures });
 		}
 	}
 

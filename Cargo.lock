@@ -245,6 +245,7 @@ dependencies = [
  "divan",
  "downcast-rs 2.0.2",
  "env_logger",
+ "exr",
  "facet",
  "facet-json",
  "flate2",

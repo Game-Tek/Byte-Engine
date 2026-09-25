@@ -67,6 +67,14 @@ impl<'a> CommandBufferRecording<'a> {
 		Err(TextureTransferError::Unsupported)
 	}
 
+	pub fn transfer_texture_with_frame(
+		&mut self,
+		_image: graphics_hardware_interface::DynamicImageHandle,
+		_frame_offset: i32,
+	) -> Result<TextureCopyHandle, TextureTransferError> {
+		Err(TextureTransferError::Unsupported)
+	}
+
 	pub fn write_image_data(&mut self, _image_handle: graphics_hardware_interface::BaseImageHandle, _data: &[RGBAu8]) {}
 
 	pub fn blit_image(

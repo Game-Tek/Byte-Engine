@@ -217,6 +217,26 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		Ok(copy)
 	}
 
+	fn transfer_texture_with_frame(
+		&mut self,
+		image: crate::DynamicImageHandle,
+		frame_offset: i32,
+	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
+		let handle = BaseImageHandle::from(image);
+		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
+		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
+		let sequence_index = self.device.frame_index_with_offset(
+			self.sequence_index() as usize,
+			Some(frame_offset),
+			self.device.frames as usize,
+		) as u8;
+
+		self.device
+			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(sequence_index));
+		self.device
+			.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(handle), sequence_index)
+	}
+
 	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]) {
 		self.device
 			.write_image_data_for_sequence(crate::ImageHandle(image_handle), data, self.sequence_index());

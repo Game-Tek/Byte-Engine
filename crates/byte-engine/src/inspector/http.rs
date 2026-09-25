@@ -1,5 +1,5 @@
 use std::{
-	io,
+	io::{self, Write as _},
 	net::{Ipv4Addr, Ipv6Addr, SocketAddr},
 	time::Duration,
 };
@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
 	application::LoopWaker,
 	core::{EntityHandle, factory::Handle},
-	inspector::{Inspector, ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
+	inspector::{
+		Inspector, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
+		ScreenshotSubmitError,
+	},
 };
 
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -43,6 +46,14 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// The server retains only an [`Inspector`] trait object. Pass the same inspector
 /// handle to another transport when clients need a second protocol surface.
+/// `GET /screenshots?sink=<index>` returns one image. Add `target=<name>` to read
+/// a scene target, `pass=<name>` to read it right after that pass, and
+/// `previous=true` to read the copy of a history target that the previous frame
+/// wrote. Add `format=exr` for a lossless HDR image or `format=raw` for the GPU
+/// bytes. To debug several targets from the same frame, `POST /screenshots` with
+/// a JSON `captures` list; the response is `multipart/form-data` with one part
+/// per capture.
+///
 /// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
@@ -97,6 +108,7 @@ impl HttpInspectorServer {
 fn handle_request(inspector: &dyn Inspector, waker: &LoopWaker, request: &mut Request<Body>) -> Response<Body> {
 	match (request.method(), request.uri().path()) {
 		(&Method::GET, "/screenshots") => screenshot_response(inspector, waker, request.uri().query()),
+		(&Method::POST, "/screenshots") => screenshots_response(inspector, waker, request.body_mut()),
 		(&Method::GET, "/messages") => messages_response(inspector),
 		(&Method::GET, "/messages/types") => message_types_response(inspector),
 		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
@@ -200,77 +212,333 @@ fn message_response(inspector: &dyn Inspector, body: &mut Body) -> Response<Body
 	}
 }
 
-/// Handles one screenshot request after HTTP routing has selected the endpoint.
+/// The `CaptureRequest` struct pairs one capture with the encoding its client asked for.
+#[derive(Debug, PartialEq, Eq)]
+struct CaptureRequest {
+	selection: ScreenshotSelection,
+	format: ScreenshotFormat,
+}
+
+/// The `EncodedCapture` struct keeps an encoded image with the texture layout that its HTTP headers describe.
+struct EncodedCapture {
+	format: ghi::Formats,
+	extent: utils::Extent,
+	bytes_per_row: usize,
+	image: Vec<u8>,
+}
+
+/// Handles one single-image screenshot request after HTTP routing has selected the endpoint.
 fn screenshot_response(inspector: &dyn Inspector, waker: &LoopWaker, query: Option<&str>) -> Response<Body> {
-	let (sink, capture) = match parse_screenshot_query(query) {
-		Ok(request) => request,
-		Err(()) => {
+	let Ok(capture) = parse_screenshot_query(query) else {
+		return response(
+			StatusCode::BAD_REQUEST,
+			"Screenshot query is malformed. The most likely cause is a missing sink, an unknown or duplicate parameter, `pass` without `target`, `previous` with `pass`, or an unknown `format`.",
+		);
+	};
+	let (frame, mut encoded) = match capture_screenshots(inspector, waker, std::slice::from_ref(&capture)) {
+		Ok(captures) => captures,
+		Err((status, message)) => return response(status, message),
+	};
+	let encoded = encoded
+		.pop()
+		.expect("A completed screenshot request has one result per capture.");
+
+	let mut builder = Response::builder()
+		.status(StatusCode::OK)
+		.header("X-Byte-Engine-Frame", frame.to_string());
+	for (name, value) in capture_headers(&capture, &encoded) {
+		builder = builder.header(name, value);
+	}
+	builder
+		.body(Body::from(encoded.image))
+		.expect("Screenshot HTTP response is valid. The most likely cause of failure is an invalid static header name.")
+}
+
+/// The `ScreenshotsBody` struct defines the JSON body of a same-frame screenshot batch.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenshotsBody {
+	captures: Vec<CaptureFields>,
+}
+
+/// The `CaptureFields` struct holds the capture fields shared by the single-image query and each batch capture.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CaptureFields {
+	sink: usize,
+	pass: Option<String>,
+	target: Option<String>,
+	#[serde(default)]
+	previous: bool,
+	format: Option<String>,
+}
+
+impl CaptureFields {
+	/// Resolves the fields into a capture, rejecting empty names and combinations that select nothing.
+	fn resolve(self) -> Result<CaptureRequest, ()> {
+		if self.pass.as_deref() == Some("") || self.target.as_deref() == Some("") {
+			return Err(());
+		}
+		let capture = match (self.pass, self.target, self.previous) {
+			(None, None, false) => ScreenshotCapture::FinalSwapchain,
+			(Some(pass), Some(target), false) => ScreenshotCapture::AfterPass { pass, target },
+			(None, Some(target), false) => ScreenshotCapture::SceneTarget { target },
+			(None, Some(target), true) => ScreenshotCapture::PreviousSceneTarget { target },
+			_ => return Err(()),
+		};
+		let format = match self.format.as_deref() {
+			None | Some("png") => ScreenshotFormat::Png,
+			Some("exr") => ScreenshotFormat::Exr,
+			Some("raw") => ScreenshotFormat::Raw,
+			Some(_) => return Err(()),
+		};
+		Ok(CaptureRequest {
+			selection: ScreenshotSelection {
+				sink: self.sink,
+				capture,
+			},
+			format,
+		})
+	}
+}
+
+/// Handles one same-frame screenshot batch and returns every image as one `multipart/form-data` part.
+fn screenshots_response(inspector: &dyn Inspector, waker: &LoopWaker, body: &mut Body) -> Response<Body> {
+	let captures = serde_json::from_reader::<_, ScreenshotsBody>(body)
+		.map_err(|error| error.to_string())
+		.and_then(|body| {
+			body.captures
+				.into_iter()
+				.enumerate()
+				.map(|(index, capture)| {
+					capture.resolve().map_err(|()| {
+						format!(
+							"capture {index} has an empty name, `pass` without `target`, `previous` with `pass`, or an unknown `format`"
+						)
+					})
+				})
+				.collect::<Result<Vec<_>, _>>()
+		});
+	let captures = match captures {
+		Ok(captures) => captures,
+		Err(error) => {
 			return response(
 				StatusCode::BAD_REQUEST,
-				"Screenshot query is malformed. The most likely cause is a missing sink, an unknown or duplicate parameter, or `pass` without `target`.",
+				format!(
+					"Screenshot request is invalid. The most likely cause is a malformed body or an invalid capture: {error}"
+				),
 			);
 		}
 	};
-	let response_receiver = match inspector.request_screenshot(sink, capture) {
+	let (frame, encoded) = match capture_screenshots(inspector, waker, &captures) {
+		Ok(captures) => captures,
+		Err((status, message)) => return response(status, message),
+	};
+
+	let boundary = multipart_boundary(frame, &encoded);
+	let mut body = Vec::with_capacity(encoded.iter().map(|capture| capture.image.len() + 512).sum());
+	for (index, (capture, encoded)) in captures.iter().zip(encoded).enumerate() {
+		// Writing into a vector cannot fail.
+		let _ = write!(
+			body,
+			"--{boundary}\r\nContent-Disposition: form-data; name=\"{index}\"; filename=\"{}\"\r\n",
+			capture_file_name(index, capture)
+		);
+		for (name, value) in capture_headers(capture, &encoded) {
+			let _ = write!(body, "{name}: {value}\r\n");
+		}
+		body.extend_from_slice(b"\r\n");
+		body.extend_from_slice(&encoded.image);
+		body.extend_from_slice(b"\r\n");
+	}
+	let _ = write!(body, "--{boundary}--\r\n");
+
+	Response::builder()
+		.status(StatusCode::OK)
+		.header("Content-Type", format!("multipart/form-data; boundary={boundary}"))
+		.header("X-Byte-Engine-Frame", frame.to_string())
+		.body(Body::from(body))
+		.expect("Screenshot HTTP response is valid. The most likely cause of failure is an invalid static header name.")
+}
+
+/// Captures every request in one frame and encodes each image, or returns the HTTP status and message of the first
+/// failure.
+///
+/// Encoding runs on this transport thread so HDR encoders never delay a graphics frame.
+fn capture_screenshots(
+	inspector: &dyn Inspector,
+	waker: &LoopWaker,
+	captures: &[CaptureRequest],
+) -> Result<(u64, Vec<EncodedCapture>), (StatusCode, String)> {
+	let selections = captures.iter().map(|capture| capture.selection.clone()).collect();
+	let response_receiver = match inspector.request_screenshots(selections) {
 		// Only a rendered frame answers the request, so the loop must run before this thread waits for it.
 		Ok(receiver) => {
 			waker.wake();
 			receiver
 		}
 		Err(ScreenshotSubmitError::QueueFull) => {
-			return response(
+			return Err((
 				StatusCode::TOO_MANY_REQUESTS,
-				"Screenshot queue is full. The most likely cause is that capture requests arrive faster than graphics frames can complete them.",
-			);
+				"Screenshot queue is full. The most likely cause is that capture requests arrive faster than graphics frames can complete them.".to_string(),
+			));
+		}
+		Err(ScreenshotSubmitError::CaptureCount) => {
+			return Err((
+				StatusCode::BAD_REQUEST,
+				format!(
+					"Screenshot request has an unsupported number of captures. The most likely cause is an empty `captures` list or more than {MAX_SCREENSHOT_CAPTURES} captures."
+				),
+			));
 		}
 	};
+	let Ok(screenshots) = response_receiver.recv_timeout(SCREENSHOT_TIMEOUT) else {
+		return Err((
+			StatusCode::GATEWAY_TIMEOUT,
+			"Screenshot request timed out. The most likely cause is that the graphics thread did not complete a frame before the deadline.".to_string(),
+		));
+	};
 
-	match response_receiver.recv_timeout(SCREENSHOT_TIMEOUT) {
-		Ok(Ok(screenshot)) => Response::builder()
-			.status(StatusCode::OK)
-			.header("Content-Type", "image/png")
-			.header("X-Byte-Engine-Frame", screenshot.frame.to_string())
-			.header("X-Byte-Engine-Sink", sink.to_string())
-			.body(Body::from(screenshot.png))
-			.expect("Screenshot HTTP response is valid. The most likely cause of failure is an invalid static header name."),
-		Ok(Err(ScreenshotError::SinkNotFound)) => response(
+	// Name the failing capture only in a batch, where the client cannot otherwise tell which one failed.
+	let batch = captures.len() > 1;
+	let encoded = captures
+		.iter()
+		.zip(screenshots.captures)
+		.enumerate()
+		.map(|(index, (capture, result))| {
+			result
+				.map_err(screenshot_error)
+				.and_then(|readback| {
+					let (format, extent, bytes_per_row) = (readback.format, readback.extent, readback.bytes_per_row);
+					let image = capture
+						.format
+						.encode(readback)
+						.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
+					Ok(EncodedCapture {
+						format,
+						extent,
+						bytes_per_row,
+						image,
+					})
+				})
+				.map_err(|(status, message)| {
+					(
+						status,
+						if batch {
+							format!("Capture {index}: {message}")
+						} else {
+							message
+						},
+					)
+				})
+		})
+		.collect::<Result<Vec<_>, _>>()?;
+	Ok((screenshots.frame, encoded))
+}
+
+/// Maps a capture failure to its HTTP status and client message.
+fn screenshot_error(error: ScreenshotError) -> (StatusCode, String) {
+	let (status, message) = match error {
+		ScreenshotError::SinkNotFound => (
 			StatusCode::NOT_FOUND,
 			"Screenshot sink was not found. The most likely cause is that the sink index does not identify a renderer window.",
 		),
-		Ok(Err(ScreenshotError::SinkUnavailable)) => response(
+		ScreenshotError::SinkUnavailable => (
 			StatusCode::CONFLICT,
 			"Screenshot sink is unavailable. The most likely cause is that its swapchain image could not be acquired for this frame.",
 		),
-		Ok(Err(ScreenshotError::PassNotFound)) => response(
+		ScreenshotError::PassNotFound => (
 			StatusCode::NOT_FOUND,
 			"Screenshot render pass was not found. The most likely cause is that the selected sink has no pass with the requested name.",
 		),
-		Ok(Err(ScreenshotError::PassAmbiguous)) => response(
+		ScreenshotError::PassAmbiguous => (
 			StatusCode::CONFLICT,
 			"Screenshot render pass is ambiguous. The most likely cause is that the selected sink has multiple passes with the requested name.",
 		),
-		Ok(Err(ScreenshotError::TargetNotWritten)) => response(
+		ScreenshotError::TargetNotWritten => (
 			StatusCode::NOT_FOUND,
 			"Screenshot target was not written by the render pass. The most likely cause is that the target name is missing, read-only, or belongs to another pass.",
 		),
-		Ok(Err(ScreenshotError::Internal(error))) => response(StatusCode::INTERNAL_SERVER_ERROR, error),
-		Err(_) => response(
-			StatusCode::GATEWAY_TIMEOUT,
-			"Screenshot request timed out. The most likely cause is that the graphics thread did not complete a frame before the deadline.",
+		ScreenshotError::TargetHasNoHistory => (
+			StatusCode::NOT_FOUND,
+			"Screenshot target has no previous frame. The most likely cause is that the target was not created as a history target, so each frame overwrites it.",
 		),
-	}
+		ScreenshotError::Internal(error) => return (StatusCode::INTERNAL_SERVER_ERROR, error),
+	};
+	(status, message.to_string())
+}
+
+/// Returns the HTTP headers that describe one encoded capture.
+///
+/// Raw images also report their row pitch, which can include GPU padding.
+fn capture_headers(capture: &CaptureRequest, encoded: &EncodedCapture) -> impl Iterator<Item = (&'static str, String)> {
+	[
+		Some(("Content-Type", capture.format.content_type().to_string())),
+		Some(("X-Byte-Engine-Sink", capture.selection.sink.to_string())),
+		Some(("X-Byte-Engine-Format", format!("{:?}", encoded.format))),
+		Some(("X-Byte-Engine-Width", encoded.extent.width().to_string())),
+		Some(("X-Byte-Engine-Height", encoded.extent.height().to_string())),
+		(capture.format == ScreenshotFormat::Raw).then(|| ("X-Byte-Engine-Bytes-Per-Row", encoded.bytes_per_row.to_string())),
+	]
+	.into_iter()
+	.flatten()
+}
+
+/// Names one batch part after its capture, so clients that save parts as files can tell them apart.
+fn capture_file_name(index: usize, capture: &CaptureRequest) -> String {
+	let sink = capture.selection.sink;
+	let label = match &capture.selection.capture {
+		ScreenshotCapture::FinalSwapchain => "swapchain".to_string(),
+		ScreenshotCapture::AfterPass { pass, target } => format!("{pass}-{target}"),
+		ScreenshotCapture::SceneTarget { target } => target.clone(),
+		ScreenshotCapture::PreviousSceneTarget { target } => format!("{target}-previous"),
+	};
+	// Keep only characters that are safe in a quoted header value and in file names on every platform.
+	let label = label
+		.chars()
+		.map(|character| {
+			if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+				character
+			} else {
+				'_'
+			}
+		})
+		.collect::<String>();
+	format!("{index}-sink{sink}-{label}.{}", capture.format.extension())
+}
+
+/// Returns a multipart boundary that no encoded image contains, so no part can end early.
+fn multipart_boundary(frame: u64, captures: &[EncodedCapture]) -> String {
+	(0u32..)
+		.map(|attempt| format!("byte-engine-frame-{frame}-{attempt}"))
+		.find(|boundary| {
+			let boundary = boundary.as_bytes();
+			captures
+				.iter()
+				.all(|capture| !capture.image.windows(boundary.len()).any(|window| window == boundary))
+		})
+		.expect("An unbounded attempt counter always finds a boundary absent from finite images.")
 }
 
 /// Parses the complete screenshot query without accepting unknown or duplicate parameters.
-fn parse_screenshot_query(query: Option<&str>) -> Result<(usize, ScreenshotCapture), ()> {
-	let [sink, pass, target] = parse_query(query.ok_or(())?, [&["sink"], &["pass"], &["target"]])?;
-	let sink = sink.ok_or(())?.parse().map_err(|_| ())?;
-	match (pass, target) {
-		(None, None) => Ok((sink, ScreenshotCapture::FinalSwapchain)),
-		(Some(pass), Some(target)) => Ok((sink, ScreenshotCapture::AfterPass { pass, target })),
-		(None, Some(target)) => Ok((sink, ScreenshotCapture::SceneTarget { target })),
-		_ => Err(()),
+fn parse_screenshot_query(query: Option<&str>) -> Result<CaptureRequest, ()> {
+	let [sink, pass, target, previous, format] = parse_query(
+		query.ok_or(())?,
+		[&["sink"], &["pass"], &["target"], &["previous"], &["format"]],
+	)?;
+	let previous = match previous.as_deref() {
+		None | Some("false") => false,
+		Some("true") => true,
+		Some(_) => return Err(()),
+	};
+	CaptureFields {
+		sink: sink.ok_or(())?.parse().map_err(|_| ())?,
+		pass,
+		target,
+		previous,
+		format,
 	}
+	.resolve()
 }
 
 /// Parses and decodes a fixed set of query fields without duplicates.
@@ -352,7 +620,10 @@ mod tests {
 			message_bus::MessageBus,
 		},
 		gameplay::{Name, TransformationUpdate},
-		inspector::{DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, Screenshot, TRANSFORMATION_UPDATE_MESSAGE_TYPE},
+		inspector::{
+			DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, ScreenshotCapture, ScreenshotError, ScreenshotFormat,
+			ScreenshotSelection, Screenshots, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::ScreenshotBroker,
+		},
 	};
 
 	/// Creates an inspector with live future-only control and transform listeners.
@@ -503,12 +774,12 @@ mod tests {
 		assert_eq!(events.read(), Some(Events::Close));
 	}
 
-	#[test]
-	fn server_returns_screenshot_with_capture_headers() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let screenshots = inspector.screenshot_broker();
-		let server = TestServer::new(inspector);
-		let responder = std::thread::spawn(move || {
+	/// Answers the next screenshot request on another thread, as the graphics application would.
+	fn respond_to_next_screenshot(
+		screenshots: std::sync::Arc<ScreenshotBroker>,
+		respond: impl FnOnce(&[ScreenshotSelection]) -> Screenshots + Send + 'static,
+	) -> std::thread::JoinHandle<()> {
+		std::thread::spawn(move || {
 			let request = (0..100)
 				.find_map(|_| {
 					let request = screenshots.drain().pop();
@@ -518,22 +789,219 @@ mod tests {
 					request
 				})
 				.expect("receive screenshot request");
-			request.complete(Ok(Screenshot {
+			let result = respond(&request.captures);
+			request.complete(result);
+		})
+	}
+
+	/// Returns a 1x1 readback that stores `bytes` in `format`.
+	fn pixel(format: ghi::Formats, bytes: &[u8]) -> ghi::TextureReadback {
+		ghi::TextureReadback {
+			bytes: bytes.to_vec(),
+			extent: utils::Extent::rectangle(1, 1),
+			format,
+			bytes_per_row: bytes.len(),
+			bytes_per_image: bytes.len(),
+		}
+	}
+
+	fn split_response(response: &[u8]) -> (&str, &[u8]) {
+		let headers_end = response.len() - response_body(response).len();
+		let headers = std::str::from_utf8(&response[..headers_end]).expect("UTF-8 headers");
+		(headers, &response[headers_end..])
+	}
+
+	#[test]
+	fn server_returns_screenshot_with_capture_headers() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let responder = respond_to_next_screenshot(inspector.screenshot_broker(), |captures| {
+			assert_eq!(
+				captures,
+				[ScreenshotSelection {
+					sink: 2,
+					capture: ScreenshotCapture::FinalSwapchain,
+				}]
+			);
+			Screenshots {
 				frame: 41,
-				png: b"fake-png".to_vec(),
-			}));
+				captures: vec![Ok(pixel(ghi::Formats::BGRAu8, &[1, 2, 3, 255]))],
+			}
 		});
+		let server = TestServer::new(inspector);
 
 		let response = server.request("GET", "/screenshots?sink=2", "");
 		responder.join().expect("join screenshot responder");
 
-		let headers_end = response.len() - response_body(&response).len();
-		let headers = std::str::from_utf8(&response[..headers_end]).expect("UTF-8 headers");
+		let (headers, body) = split_response(&response);
 		assert!(headers.starts_with("HTTP/1.1 200"), "unexpected response: {headers}");
 		assert!(headers.contains("content-type: image/png"));
 		assert!(headers.contains("x-byte-engine-frame: 41"));
 		assert!(headers.contains("x-byte-engine-sink: 2"));
-		assert_eq!(&response[headers_end..], b"fake-png");
+		assert!(headers.contains("x-byte-engine-format: BGRAu8"));
+		assert!(body.starts_with(b"\x89PNG\r\n\x1a\n"));
+	}
+
+	#[test]
+	fn server_returns_raw_previous_frame_bytes_with_their_layout() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let half = half::f16::from_f32(8.0).to_bits().to_ne_bytes();
+		let bytes = [half, half, half, half].concat();
+		let stored = bytes.clone();
+		let responder = respond_to_next_screenshot(inspector.screenshot_broker(), move |captures| {
+			assert_eq!(
+				captures[0].capture,
+				ScreenshotCapture::PreviousSceneTarget {
+					target: "Diffuse Radiance History".to_string(),
+				}
+			);
+			Screenshots {
+				frame: 7,
+				captures: vec![Ok(pixel(ghi::Formats::RGBA16F, &stored))],
+			}
+		});
+		let server = TestServer::new(inspector);
+
+		let response = server.request(
+			"GET",
+			"/screenshots?sink=0&target=Diffuse+Radiance+History&previous=true&format=raw",
+			"",
+		);
+		responder.join().expect("join screenshot responder");
+
+		let (headers, body) = split_response(&response);
+		assert!(headers.starts_with("HTTP/1.1 200"), "unexpected response: {headers}");
+		assert!(headers.contains("content-type: application/octet-stream"));
+		assert!(headers.contains("x-byte-engine-format: RGBA16F"));
+		assert!(headers.contains("x-byte-engine-width: 1"));
+		assert!(headers.contains("x-byte-engine-height: 1"));
+		assert!(headers.contains("x-byte-engine-bytes-per-row: 8"));
+		assert_eq!(body, bytes);
+	}
+
+	#[test]
+	fn server_returns_a_same_frame_batch_as_multipart_parts() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let responder = respond_to_next_screenshot(inspector.screenshot_broker(), |captures| {
+			assert_eq!(captures.len(), 2);
+			assert_eq!(
+				captures[1].capture,
+				ScreenshotCapture::AfterPass {
+					pass: "bloom".to_string(),
+					target: "main".to_string(),
+				}
+			);
+			Screenshots {
+				frame: 12,
+				captures: vec![
+					Ok(pixel(ghi::Formats::R8UNORM, &[200])),
+					Ok(pixel(ghi::Formats::RGBA8UNORM, &[1, 2, 3, 4])),
+				],
+			}
+		});
+		let server = TestServer::new(inspector);
+
+		let response = server.request(
+			"POST",
+			"/screenshots",
+			r#"{"captures":[{"sink":0,"target":"Contact Shadows","format":"exr"},{"sink":1,"pass":"bloom","target":"main","format":"raw"}]}"#,
+		);
+		responder.join().expect("join screenshot responder");
+
+		let (headers, body) = split_response(&response);
+		assert!(headers.starts_with("HTTP/1.1 200"), "unexpected response: {headers}");
+		assert!(headers.contains("x-byte-engine-frame: 12"));
+		let boundary = headers
+			.lines()
+			.find_map(|line| line.strip_prefix("content-type: multipart/form-data; boundary="))
+			.expect("multipart boundary")
+			.trim();
+
+		// Each part sits between two boundary lines and splits into its headers and its image.
+		let parts = split_bytes(body, format!("--{boundary}").as_bytes());
+		assert_eq!(
+			parts.len(),
+			4,
+			"expected two parts between the opening and closing boundaries"
+		);
+		assert_eq!(parts[3], b"--\r\n");
+
+		let (exr_headers, exr) = split_part(parts[1]);
+		assert!(exr_headers.contains(r#"name="0"; filename="0-sink0-Contact_Shadows.exr""#));
+		assert!(exr_headers.contains("Content-Type: image/x-exr"));
+		assert!(exr.starts_with(b"\x76\x2f\x31\x01"));
+
+		let (raw_headers, raw) = split_part(parts[2]);
+		assert!(raw_headers.contains(r#"filename="1-sink1-bloom-main.bin""#));
+		assert!(raw_headers.contains("X-Byte-Engine-Sink: 1"));
+		assert!(raw_headers.contains("X-Byte-Engine-Format: RGBA8UNORM"));
+		assert!(raw_headers.contains("X-Byte-Engine-Bytes-Per-Row: 4"));
+		assert_eq!(raw, b"\x01\x02\x03\x04\r\n");
+	}
+
+	/// Splits `bytes` at every occurrence of `separator`.
+	fn split_bytes<'a>(mut bytes: &'a [u8], separator: &[u8]) -> Vec<&'a [u8]> {
+		let mut parts = Vec::new();
+		while let Some(position) = bytes.windows(separator.len()).position(|window| window == separator) {
+			parts.push(&bytes[..position]);
+			bytes = &bytes[position + separator.len()..];
+		}
+		parts.push(bytes);
+		parts
+	}
+
+	/// Splits one multipart part at its first blank line into UTF-8 headers and binary content.
+	fn split_part(part: &[u8]) -> (&str, &[u8]) {
+		let end = part
+			.windows(4)
+			.position(|window| window == b"\r\n\r\n")
+			.expect("multipart part headers");
+		(
+			std::str::from_utf8(&part[..end]).expect("UTF-8 part headers"),
+			&part[end + 4..],
+		)
+	}
+
+	#[test]
+	fn batch_failure_names_the_failing_capture() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let responder = respond_to_next_screenshot(inspector.screenshot_broker(), |_| Screenshots {
+			frame: 3,
+			captures: vec![
+				Ok(pixel(ghi::Formats::R8UNORM, &[0])),
+				Err(ScreenshotError::TargetHasNoHistory),
+			],
+		});
+		let server = TestServer::new(inspector);
+
+		let response = server.request(
+			"POST",
+			"/screenshots",
+			r#"{"captures":[{"sink":0},{"sink":0,"target":"Contact Shadows","previous":true}]}"#,
+		);
+		responder.join().expect("join screenshot responder");
+
+		let (headers, body) = split_response(&response);
+		assert!(headers.starts_with("HTTP/1.1 404"), "unexpected response: {headers}");
+		assert!(body.starts_with(b"Capture 1: Screenshot target has no previous frame."));
+	}
+
+	#[test]
+	fn batch_rejects_invalid_captures_before_queueing() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		let server = TestServer::new(inspector);
+		for body in [
+			r#"{"captures":[]}"#,
+			r#"{"captures":[{"sink":0,"pass":"bloom"}]}"#,
+			r#"{"captures":[{"sink":0,"pass":"bloom","target":"main","previous":true}]}"#,
+			r#"{"captures":[{"sink":0,"format":"tiff"}]}"#,
+			r#"{"captures":[{"sink":0,"extra":1}]}"#,
+		] {
+			let response = server.request("POST", "/screenshots", body);
+			assert!(
+				response.starts_with(b"HTTP/1.1 400"),
+				"unexpected response for {body}: {response:?}"
+			);
+		}
 	}
 
 	#[test]
@@ -578,26 +1046,49 @@ mod tests {
 		assert!(inspector.entities(None, None).is_empty());
 	}
 
+	/// Builds the capture request a query is expected to parse into.
+	fn capture(sink: usize, capture: ScreenshotCapture, format: ScreenshotFormat) -> super::CaptureRequest {
+		super::CaptureRequest {
+			selection: ScreenshotSelection { sink, capture },
+			format,
+		}
+	}
+
 	#[test]
 	fn screenshot_query_without_a_pass_selects_a_scene_target() {
-		use crate::inspector::screenshot::ScreenshotCapture;
-
 		assert_eq!(
 			super::parse_screenshot_query(Some("sink=1&target=SSGI+History")),
-			Ok((
+			Ok(capture(
 				1,
 				ScreenshotCapture::SceneTarget {
 					target: "SSGI History".to_string(),
-				}
+				},
+				ScreenshotFormat::Png,
 			))
 		);
 		assert_eq!(super::parse_screenshot_query(Some("sink=1&pass=bloom")), Err(()));
 	}
 
 	#[test]
-	fn screenshot_query_decodes_fields_in_any_order() {
-		use crate::inspector::screenshot::ScreenshotCapture;
+	fn screenshot_query_selects_a_previous_frame_target_and_an_encoding() {
+		assert_eq!(
+			super::parse_screenshot_query(Some("sink=0&target=Diffuse+Radiance+History&previous=true&format=exr")),
+			Ok(capture(
+				0,
+				ScreenshotCapture::PreviousSceneTarget {
+					target: "Diffuse Radiance History".to_string(),
+				},
+				ScreenshotFormat::Exr,
+			))
+		);
+		assert_eq!(
+			super::parse_screenshot_query(Some("sink=0&previous=false&format=raw")),
+			Ok(capture(0, ScreenshotCapture::FinalSwapchain, ScreenshotFormat::Raw))
+		);
+	}
 
+	#[test]
+	fn screenshot_query_decodes_fields_in_any_order() {
 		for (query, pass, target) in [
 			("sink=2&pass=bloom&target=main", "bloom", "main"),
 			("target=main&sink=2&pass=bloom", "bloom", "main"),
@@ -606,12 +1097,13 @@ mod tests {
 		] {
 			assert_eq!(
 				super::parse_screenshot_query(Some(query)),
-				Ok((
+				Ok(capture(
 					2,
 					ScreenshotCapture::AfterPass {
 						pass: pass.to_string(),
 						target: target.to_string(),
-					}
+					},
+					ScreenshotFormat::Png,
 				))
 			);
 		}
@@ -647,6 +1139,10 @@ mod tests {
 			"sink=2&pass=bloom",
 			"sink=2&pass=bloom&target=main&extra=x",
 			"sink=2&sink=3",
+			"sink=2&previous=true",
+			"sink=2&pass=bloom&target=main&previous=true",
+			"sink=2&target=main&previous=yes",
+			"sink=2&format=tiff",
 		] {
 			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
 		}

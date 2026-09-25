@@ -620,7 +620,9 @@ impl Renderer {
 	/// Prepares a frame by invoking the configured render passes.
 	///
 	/// The renderer skips execution when no swapchain is available or when any
-	/// swapchain surface has a zero-sized dimension.
+	/// swapchain surface has a zero-sized dimension. It returns the frame that
+	/// every screenshot readback comes from, and one readback result per request
+	/// in request order.
 	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
 	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
@@ -631,7 +633,7 @@ impl Renderer {
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
 		alpha: f32,
 		time: crate::time::MediaTime,
-	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
+	) -> (u64, Vec<Result<ghi::TextureReadback, RendererScreenshotError>>) {
 		let span = debug_span!(
 			"Renderer::prepare",
 			frame = self.started_frame_count,
@@ -641,10 +643,11 @@ impl Renderer {
 
 		let Some(_) = self.windows.first() else {
 			log::debug!("No swapchains available to present to. Skipping rendering!");
-			return screenshot_requests
+			let screenshots = screenshot_requests
 				.iter()
 				.map(|_| Err(RendererScreenshotError::SinkNotFound))
 				.collect();
+			return (self.started_frame_count, screenshots);
 		};
 		// Acquire here when nothing was hoisted to the start of the tick, or for windows adopted since.
 		self.acquire_swapchain_images();
@@ -826,13 +829,17 @@ impl Renderer {
 					}
 
 					for (request_index, capture) in screenshot_captures.iter().enumerate() {
-						if let Ok(ResolvedScreenshotCapture::AfterScene { target }) = capture {
-							screenshot_transfers[request_index] = Some(
-								command_buffer_recording
-									.transfer_texture(*target)
-									.map_err(RendererScreenshotError::Transfer),
-							);
-						}
+						let transfer = match capture {
+							Ok(ResolvedScreenshotCapture::AfterScene { target }) => {
+								command_buffer_recording.transfer_texture(*target)
+							}
+							// No pass writes the previous frame's copy, so any point in the frame reads the same data.
+							Ok(ResolvedScreenshotCapture::PreviousFrame { target }) => {
+								command_buffer_recording.transfer_texture_with_frame(*target, -1)
+							}
+							_ => continue,
+						};
+						screenshot_transfers[request_index] = Some(transfer.map_err(RendererScreenshotError::Transfer));
 					}
 
 					{
@@ -874,7 +881,11 @@ impl Renderer {
 									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
 									.map_err(RendererScreenshotError::Transfer),
 							}),
-							Ok(ResolvedScreenshotCapture::AfterPass { .. } | ResolvedScreenshotCapture::AfterScene { .. }) => None,
+							Ok(
+								ResolvedScreenshotCapture::AfterPass { .. }
+								| ResolvedScreenshotCapture::AfterScene { .. }
+								| ResolvedScreenshotCapture::PreviousFrame { .. },
+							) => None,
 						};
 						if transfer.is_some() {
 							screenshot_transfers[request_index] = transfer;
@@ -890,16 +901,14 @@ impl Renderer {
 			context.wait_for_synchronizer(self.render_finished_synchronizer);
 		}
 
-		screenshot_transfers
+		let screenshots = screenshot_transfers
 			.into_iter()
 			.map(|transfer| {
 				let handle = transfer.unwrap_or(Err(RendererScreenshotError::SinkUnavailable))?;
-				context
-					.get_image_data(handle)
-					.map(|readback| (submitted_frame, readback))
-					.map_err(RendererScreenshotError::Transfer)
+				context.get_image_data(handle).map_err(RendererScreenshotError::Transfer)
 			})
-			.collect()
+			.collect();
+		(submitted_frame, screenshots)
 	}
 
 	/// Resolves a screenshot destination against immutable sink-local pass metadata.
@@ -922,6 +931,13 @@ impl Renderer {
 					.or_else(|| self.render_targets.history(target, sink).map(Into::into))
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
 				return Ok(ResolvedScreenshotCapture::AfterScene { target: image.into() });
+			}
+			ScreenshotCapture::PreviousSceneTarget { target } => {
+				return match self.render_targets.history(target, sink) {
+					Some(image) => Ok(ResolvedScreenshotCapture::PreviousFrame { target: image }),
+					None if self.render_targets.get(target, sink).is_some() => Err(RendererScreenshotError::TargetHasNoHistory),
+					None => Err(RendererScreenshotError::TargetNotWritten),
+				};
 			}
 			ScreenshotCapture::AfterPass { pass, target } => (pass, target),
 		};
@@ -1084,6 +1100,10 @@ pub(super) enum ResolvedScreenshotCapture {
 	AfterScene {
 		target: ghi::ImageOrSwapchain,
 	},
+	/// The copy of a history target that the previous frame wrote.
+	PreviousFrame {
+		target: ghi::DynamicImageHandle,
+	},
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1093,6 +1113,7 @@ pub(crate) enum RendererScreenshotError {
 	PassNotFound,
 	PassAmbiguous,
 	TargetNotWritten,
+	TargetHasNoHistory,
 	Transfer(ghi::TextureTransferError),
 }
 

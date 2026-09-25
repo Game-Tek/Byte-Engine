@@ -57,238 +57,44 @@ impl InnerDevice {
 
 		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
 
-		let flag_required_or_available = |feature: vk::Bool32, required: bool| {
-			if required { feature != 0 } else { true }
-		};
-
-		let mut barycentric_required_features =
-			vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default().fragment_shader_barycentric(false);
-
-		let mut physical_device_vulkan_11_required_features = vk::PhysicalDeviceVulkan11Features::default()
-			.uniform_and_storage_buffer16_bit_access(true)
-			.storage_buffer16_bit_access(true);
-
-		let mut physical_device_vulkan_12_required_features = vk::PhysicalDeviceVulkan12Features::default()
-			.descriptor_indexing(true)
-			.descriptor_binding_partially_bound(true)
-			.runtime_descriptor_array(true)
-			.descriptor_binding_variable_descriptor_count(true)
-			.shader_sampled_image_array_non_uniform_indexing(true)
-			.shader_storage_image_array_non_uniform_indexing(true)
-			.scalar_block_layout(true)
-			.buffer_device_address(true)
-			.separate_depth_stencil_layouts(true)
-			.shader_float16(true)
-			.shader_int8(true)
-			.storage_buffer8_bit_access(true)
-			.uniform_and_storage_buffer8_bit_access(true)
-			.vulkan_memory_model(true)
-			.vulkan_memory_model_device_scope(true)
-			.timeline_semaphore(true);
-
-		let mut physical_device_vulkan_13_required_features = vk::PhysicalDeviceVulkan13Features::default()
-			.pipeline_creation_cache_control(true)
-			.subgroup_size_control(true)
-			.compute_full_subgroups(true)
-			.synchronization2(true)
-			.dynamic_rendering(true)
-			.maintenance4(true);
-
-		let enabled_physical_device_required_features = vk::PhysicalDeviceFeatures::default()
-			.shader_int16(true)
-			.shader_int64(true)
-			.shader_uniform_buffer_array_dynamic_indexing(true)
-			.shader_storage_buffer_array_dynamic_indexing(true)
-			.shader_storage_image_array_dynamic_indexing(true)
-			.shader_storage_image_write_without_format(true)
-			.texture_compression_bc(true)
-			.fill_mode_non_solid(true)
-			.geometry_shader(settings.geometry_shader)
-			.shader_storage_image_write_without_format(true);
-
-		let mut shader_atomic_float_required_features =
-			vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT::default().shader_buffer_float32_atomics(true);
-
-		let mut physical_device_mesh_shading_required_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default()
-			.task_shader(settings.mesh_shading)
-			.mesh_shader(settings.mesh_shading);
-
 		let physical_devices = unsafe {
 			vk_instance
 				.enumerate_physical_devices()
 				.or(Err("Failed to enumerate physical devices"))?
 		};
 
-		let physical_device = if let Some(gpu_name) = settings.gpu {
-			let physical_device = physical_devices
-				.into_iter()
-				.find(|physical_device| {
-					let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
-
-					let name = properties.device_name_as_c_str();
-
-					name.unwrap().to_str().unwrap() == gpu_name
+		let physical_devices = physical_devices
+			.into_iter()
+			.filter(|&physical_device| {
+				settings.gpu.is_none_or(|gpu_name| {
+					let properties = unsafe { vk_instance.get_physical_device_properties(physical_device) };
+					properties
+						.device_name_as_c_str()
+						.ok()
+						.and_then(|name| name.to_str().ok())
+						.is_some_and(|name| name == gpu_name)
 				})
-				.ok_or("Failed to find physical device")?;
+			})
+			.collect::<Vec<_>>();
 
-			#[cfg(debug_assertions)]
-			{
-				let _ = unsafe { vk_instance.get_physical_device_properties(physical_device) };
-			}
+		if settings.gpu.is_some() && physical_devices.is_empty() {
+			return Err("Failed to find physical device");
+		}
 
-			physical_device
-		} else {
-			let physical_device = physical_devices
-				.into_iter()
-				.filter(|&physical_device| {
-					let mut tools = [vk::PhysicalDeviceToolProperties::default(); 8];
-
-					let tool_count = unsafe { vk_instance.get_physical_device_tool_properties_len(physical_device).unwrap() };
-
-					unsafe {
-						vk_instance
-							.get_physical_device_tool_properties(physical_device, &mut tools[0..tool_count])
-							.unwrap();
-					};
-
-					let mut vk_physical_device_memory_properties2 = vk::PhysicalDeviceMemoryProperties2::default();
-
-					unsafe {
-						vk_instance.get_physical_device_memory_properties2(
-							physical_device,
-							&mut vk_physical_device_memory_properties2,
-						);
-					}
-
-					for heap in &vk_physical_device_memory_properties2.memory_properties.memory_heaps
-						[..vk_physical_device_memory_properties2.memory_properties.memory_heap_count as usize]
-					{
-						if heap.size == 0 {
-							return false;
-						}
-					}
-
-					let buffer_device_address_capture_replay = tools.iter().take(tool_count as usize).any(|tool| {
-						let name = unsafe { std::ffi::CStr::from_ptr(tool.name.as_ptr()) };
-						name.to_str().unwrap() == "RenderDoc"
-					});
-
-					let mut physical_device_mesh_shading_features = vk::PhysicalDeviceMeshShaderFeaturesEXT::default();
-					let mut physical_device_vulkan_12_features = vk::PhysicalDeviceVulkan12Features::default();
-					let mut physical_device_barycentric_features =
-						vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR::default();
-					let mut physical_device_features = vk::PhysicalDeviceFeatures2::default()
-						.push(&mut physical_device_vulkan_12_features)
-						.push(&mut physical_device_barycentric_features)
-						.push(&mut physical_device_mesh_shading_features);
-
-					unsafe { vk_instance.get_physical_device_features2(physical_device, &mut physical_device_features) };
-
-					let features = physical_device_features.features;
-
-					let feature_validation = [
-						(features.sample_rate_shading != vk::FALSE, "Sample Rate Shading"),
-						(features.fill_mode_non_solid != vk::FALSE, "Non-solid Fill Mode"),
-						(
-							flag_required_or_available(
-								physical_device_vulkan_12_features.buffer_device_address_capture_replay,
-								buffer_device_address_capture_replay,
-							),
-							"Buffer Device Address Capture Replay",
-						),
-						(
-							flag_required_or_available(
-								physical_device_barycentric_features.fragment_shader_barycentric,
-								barycentric_required_features.fragment_shader_barycentric != 0,
-							),
-							"Fragment Shader Barycentric",
-						),
-						(
-							features.shader_storage_image_array_dynamic_indexing != vk::FALSE,
-							"Shader Storage Image Array Dynamic Indexing",
-						),
-						(
-							features.shader_sampled_image_array_dynamic_indexing != vk::FALSE,
-							"Shader Sampled Image Array Dynamic Indexing",
-						),
-						(
-							features.shader_storage_buffer_array_dynamic_indexing != vk::FALSE,
-							"Shader Storage Buffer Array Dynamic Indexing",
-						),
-						(
-							features.shader_uniform_buffer_array_dynamic_indexing != vk::FALSE,
-							"Shader Uniform Buffer Array Dynamic Indexing",
-						),
-						(
-							features.shader_storage_image_write_without_format != vk::FALSE,
-							"Shader Storage Image Write Without Format",
-						),
-						(
-							flag_required_or_available(features.geometry_shader, settings.geometry_shader),
-							"Geometry Shader",
-						),
-						(
-							flag_required_or_available(
-								physical_device_mesh_shading_features.mesh_shader,
-								physical_device_mesh_shading_required_features.mesh_shader != 0,
-							),
-							"Mesh Shader",
-						),
-						(
-							flag_required_or_available(
-								physical_device_mesh_shading_features.task_shader,
-								physical_device_mesh_shading_required_features.task_shader != 0,
-							),
-							"Task Shader",
-						),
-					];
-
-					let all_features_available = feature_validation.iter().all(|(available, _)| *available);
-
-					all_features_available
-				})
-				.max_by_key(|physical_device| {
-					let properties = unsafe { vk_instance.get_physical_device_properties(*physical_device) };
-
-					let mut device_score = 0u64;
-
-					device_score += match properties.device_type {
-						vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
-						vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
-						vk::PhysicalDeviceType::VIRTUAL_GPU => 250,
-						vk::PhysicalDeviceType::CPU => 100,
-						_ => 0,
-					};
-
-					device_score
-				})
-				.ok_or("Failed to choose a best physical device")?;
-
-			#[cfg(debug_assertions)]
-			{
-				let _ = unsafe { vk_instance.get_physical_device_properties(physical_device) };
-			}
-
-			physical_device
-		};
+		// Prefer the best-scoring suitable device. When none is suitable, report why the best-scoring one was rejected.
+		let (physical_device, suitability) = physical_devices
+			.into_iter()
+			.map(|physical_device| {
+				let suitability = Self::check_physical_device(vk_instance, physical_device, &settings);
+				(physical_device, suitability)
+			})
+			.max_by_key(|&(physical_device, suitability)| {
+				(suitability.is_ok(), Self::physical_device_score(vk_instance, physical_device))
+			})
+			.ok_or("Failed to choose a best physical device")?;
+		suitability?;
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
-
-		let mut subgroup_properties = vk::PhysicalDeviceSubgroupProperties::default();
-		let mut subgroup_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut subgroup_properties);
-		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut subgroup_device_properties) };
-		let required_subgroup_operations = vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT;
-		if !subgroup_properties.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
-			|| !subgroup_properties
-				.supported_operations
-				.contains(required_subgroup_operations)
-			|| subgroup_properties.subgroup_size == 0
-			|| subgroup_properties.subgroup_size > 128
-		{
-			return Err(
-				"Vulkan compute subgroups with ballot support are unavailable. The most likely cause is that the selected GPU or driver does not support the required Material Count subgroup operations.",
-			);
-		}
 
 		// Build all requested queue family indices
 		let queue_family_indices = queues
@@ -366,117 +172,33 @@ impl InnerDevice {
 
 		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
 
-		let available_device_extensions = unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }
-			.expect("Could not get supported device extensions");
-
-		let is_device_extension_available = |name: &str| {
-			available_device_extensions.iter().any(|extension| unsafe {
-				std::ffi::CStr::from_ptr(extension.extension_name.as_ptr()).to_str().unwrap() == name
-			})
-		};
-
-		if !is_device_extension_available(ash::ext::descriptor_heap::NAME.to_str().unwrap()) {
-			return Err(
-				"Vulkan descriptor heap extension is unavailable. The most likely cause is that the selected GPU driver does not support VK_EXT_descriptor_heap.",
-			);
-		}
-
-		let mut available_descriptor_heap_features = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default();
-		let mut available_features = vk::PhysicalDeviceFeatures2::default().push(&mut available_descriptor_heap_features);
-		unsafe { vk_instance.get_physical_device_features2(physical_device, &mut available_features) };
-		if available_descriptor_heap_features.descriptor_heap == vk::FALSE {
-			return Err(
-				"Vulkan descriptor heaps are unavailable. The most likely cause is that the selected GPU exposes VK_EXT_descriptor_heap without its required feature.",
-			);
-		}
-
 		let mut descriptor_heap_properties = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
 		let mut physical_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut descriptor_heap_properties);
 		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut physical_device_properties) };
-		if physical_device_properties.properties.api_version < vk::API_VERSION_1_4 {
-			return Err(
-				"Vulkan 1.4 is required for descriptor heaps. The most likely cause is that the selected device needs dependency extensions that this backend does not enable.",
-			);
+
+		let available_device_extensions = available_device_extensions(vk_instance, physical_device)?;
+		let mut device_extension_names = required_device_extensions(&settings)
+			.into_iter()
+			.map(|(name, _)| name.as_ptr())
+			.collect::<Vec<_>>();
+
+		// Implementations that expose the portability subset require applications to enable it. ash only names this
+		// provisional extension behind a feature flag, so it is spelled out here.
+		const PORTABILITY_SUBSET: &std::ffi::CStr = c"VK_KHR_portability_subset";
+		if has_extension(&available_device_extensions, PORTABILITY_SUBSET) {
+			device_extension_names.push(PORTABILITY_SUBSET.as_ptr());
 		}
 
-		let mut device_extension_names = Vec::new();
-		device_extension_names.push(ash::ext::descriptor_heap::NAME.as_ptr());
-		device_extension_names.push(ash::khr::swapchain::NAME.as_ptr());
-
-		if settings.ray_tracing {
-			device_extension_names.push(ash::khr::acceleration_structure::NAME.as_ptr());
-			device_extension_names.push(ash::khr::deferred_host_operations::NAME.as_ptr());
-			device_extension_names.push(ash::khr::ray_tracing_pipeline::NAME.as_ptr());
-			device_extension_names.push(ash::khr::ray_tracing_maintenance1::NAME.as_ptr());
+		let mut features = DeviceFeatures::default();
+		for (_, feature) in feature_requirements(&settings) {
+			*feature(&mut features) = vk::TRUE;
 		}
+		let mut enabled_features = features.chain(&settings);
 
-		#[cfg(target_os = "macos")]
-		{
-			device_extension_names.push(ash::khr::portability_subset::NAME.as_ptr());
-		}
-
-		let (mut physical_device_acceleration_structure_features, mut physical_device_ray_tracing_pipeline_features) =
-			if settings.ray_tracing {
-				let physical_device_acceleration_structure_features =
-					vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default().acceleration_structure(true);
-
-				let physical_device_ray_tracing_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default()
-					.ray_tracing_pipeline(true)
-					.ray_traversal_primitive_culling(true);
-
-				(
-					physical_device_acceleration_structure_features,
-					physical_device_ray_tracing_pipeline_features,
-				)
-			} else {
-				(
-					vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default(),
-					vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default(),
-				)
-			};
-
-		device_extension_names.push(ash::ext::shader_atomic_float::NAME.as_ptr());
-
-		let device_create_info = vk::DeviceCreateInfo::default();
-
-		let device_create_info = if settings.mesh_shading {
-			if is_device_extension_available(ash::ext::mesh_shader::NAME.to_str().unwrap().as_str()) {
-				device_extension_names.push(ash::ext::mesh_shader::NAME.as_ptr());
-				device_create_info.push(&mut physical_device_mesh_shading_required_features)
-			} else {
-				return Err("Mesh shader extension not available");
-			}
-		} else {
-			device_create_info
-		};
-
-		let mut descriptor_heap_features = vk::PhysicalDeviceDescriptorHeapFeaturesEXT::default().descriptor_heap(true);
-		let mut swapchain_maintenance_features =
-			vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default().swapchain_maintenance1(true);
-
-		device_extension_names.push(ash::ext::swapchain_maintenance1::NAME.as_ptr());
-
-		let device_create_info = device_create_info
-			.push(&mut descriptor_heap_features)
-			.push(&mut physical_device_vulkan_11_required_features)
-			.push(&mut physical_device_vulkan_12_required_features)
-			.push(&mut physical_device_vulkan_13_required_features)
-			.push(&mut shader_atomic_float_required_features)
-			.push(&mut barycentric_required_features)
-			.push(&mut swapchain_maintenance_features)
+		// SAFETY: The chain links only live structures of `features`, and its last structure is writable.
+		let device_create_info = unsafe { vk::DeviceCreateInfo::default().extend(&mut enabled_features) }
 			.queue_create_infos(&queue_create_infos)
-			.enabled_extension_names(&device_extension_names)
-			.enabled_features(&enabled_physical_device_required_features);
-
-		let device_create_info = if settings.ray_tracing {
-			device_create_info
-				.push(&mut physical_device_acceleration_structure_features)
-				.push(&mut physical_device_ray_tracing_pipeline_features)
-		} else {
-			device_create_info
-		};
-
-		let _physical_device_features = unsafe { vk_instance.get_physical_device_features(physical_device) };
+			.enabled_extension_names(&device_extension_names);
 
 		let device: ash::Device = unsafe {
 			vk_instance
@@ -581,6 +303,78 @@ impl InnerDevice {
 }
 
 impl InnerDevice {
+	/// Checks every capability the device must offer, returning the first one that is missing.
+	fn check_physical_device(
+		vk_instance: &ash::Instance,
+		physical_device: vk::PhysicalDevice,
+		settings: &crate::device::Features,
+	) -> Result<(), &'static str> {
+		let properties = unsafe { vk_instance.get_physical_device_properties(physical_device) };
+		if properties.api_version < vk::API_VERSION_1_4 {
+			return Err(
+				"Vulkan 1.4 is unavailable. The most likely cause is that the GPU driver predates Vulkan 1.4, which descriptor heaps require.",
+			);
+		}
+
+		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
+		if memory_properties.memory_heaps[..memory_properties.memory_heap_count as usize]
+			.iter()
+			.any(|heap| heap.size == 0)
+		{
+			return Err("Vulkan device reports an empty memory heap. The most likely cause is a misconfigured virtual GPU.");
+		}
+
+		let available_extensions = available_device_extensions(vk_instance, physical_device)?;
+		if let Some((_, error)) = required_device_extensions(settings)
+			.into_iter()
+			.find(|(name, _)| !has_extension(&available_extensions, name))
+		{
+			return Err(error);
+		}
+
+		// Only structures of available extensions may be queried, so features are checked after extensions.
+		let mut available = DeviceFeatures::default();
+		let mut chain = available.chain(settings);
+		unsafe { vk_instance.get_physical_device_features2(physical_device, &mut chain) };
+		available.core = chain.features;
+		if let Some((error, _)) = feature_requirements(settings)
+			.into_iter()
+			.find(|(_, feature)| *feature(&mut available) == vk::FALSE)
+		{
+			return Err(error);
+		}
+
+		let mut subgroup_properties = vk::PhysicalDeviceSubgroupProperties::default();
+		let mut subgroup_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut subgroup_properties);
+		unsafe { vk_instance.get_physical_device_properties2(physical_device, &mut subgroup_device_properties) };
+		let required_subgroup_operations = vk::SubgroupFeatureFlags::BASIC | vk::SubgroupFeatureFlags::BALLOT;
+		if !subgroup_properties.supported_stages.contains(vk::ShaderStageFlags::COMPUTE)
+			|| !subgroup_properties
+				.supported_operations
+				.contains(required_subgroup_operations)
+			|| subgroup_properties.subgroup_size == 0
+			|| subgroup_properties.subgroup_size > 128
+		{
+			return Err(
+				"Vulkan compute subgroups with ballot support are unavailable. The most likely cause is that the selected GPU or driver does not support the required Material Count subgroup operations.",
+			);
+		}
+
+		Ok(())
+	}
+
+	fn physical_device_score(vk_instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u64 {
+		let properties = unsafe { vk_instance.get_physical_device_properties(physical_device) };
+
+		match properties.device_type {
+			vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
+			vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
+			vk::PhysicalDeviceType::VIRTUAL_GPU => 250,
+			vk::PhysicalDeviceType::CPU => 100,
+			_ => 0,
+		}
+	}
+
 	fn format_supports_formatless_storage_write(
 		vk_instance: &ash::Instance,
 		physical_device: vk::PhysicalDevice,
@@ -596,5 +390,217 @@ impl InnerDevice {
 		format_properties_3
 			.optimal_tiling_features
 			.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
+	}
+}
+
+fn available_device_extensions(
+	vk_instance: &ash::Instance,
+	physical_device: vk::PhysicalDevice,
+) -> Result<Vec<vk::ExtensionProperties>, &'static str> {
+	unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.map_err(|_| {
+		"Failed to enumerate Vulkan device extensions. The most likely cause is that the GPU driver ran out of host memory."
+	})
+}
+
+fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {
+	available_extensions
+		.iter()
+		.any(|extension| extension.extension_name_as_c_str() == Ok(name))
+}
+
+macro_rules! extension {
+	($name:expr, $label:literal) => {
+		(
+			$name,
+			concat!(
+				"Vulkan device extension ",
+				$label,
+				" is unavailable. The most likely cause is that the GPU driver does not support it."
+			),
+		)
+	};
+}
+
+/// Every device extension the backend enables for `settings`, with the error reported when it is missing.
+fn required_device_extensions(settings: &crate::device::Features) -> Vec<(&'static std::ffi::CStr, &'static str)> {
+	let mut extensions = vec![
+		extension!(ash::khr::swapchain::NAME, "VK_KHR_swapchain"),
+		extension!(ash::ext::swapchain_maintenance1::NAME, "VK_EXT_swapchain_maintenance1"),
+		extension!(ash::ext::descriptor_heap::NAME, "VK_EXT_descriptor_heap"),
+		extension!(ash::ext::shader_atomic_float::NAME, "VK_EXT_shader_atomic_float"),
+	];
+
+	if settings.mesh_shading {
+		extensions.push(extension!(ash::ext::mesh_shader::NAME, "VK_EXT_mesh_shader"));
+	}
+
+	if settings.ray_tracing {
+		extensions.extend([
+			extension!(ash::khr::acceleration_structure::NAME, "VK_KHR_acceleration_structure"),
+			extension!(ash::khr::deferred_host_operations::NAME, "VK_KHR_deferred_host_operations"),
+			extension!(ash::khr::ray_tracing_pipeline::NAME, "VK_KHR_ray_tracing_pipeline"),
+			extension!(ash::khr::ray_tracing_maintenance1::NAME, "VK_KHR_ray_tracing_maintenance1"),
+		]);
+	}
+
+	extensions
+}
+
+/// The feature structures the backend enables, shared by the support query and device creation.
+#[derive(Default)]
+struct DeviceFeatures {
+	core: vk::PhysicalDeviceFeatures,
+	vulkan_11: vk::PhysicalDeviceVulkan11Features<'static>,
+	vulkan_12: vk::PhysicalDeviceVulkan12Features<'static>,
+	vulkan_13: vk::PhysicalDeviceVulkan13Features<'static>,
+	descriptor_heap: vk::PhysicalDeviceDescriptorHeapFeaturesEXT<'static>,
+	swapchain_maintenance1: vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT<'static>,
+	shader_atomic_float: vk::PhysicalDeviceShaderAtomicFloatFeaturesEXT<'static>,
+	mesh_shader: vk::PhysicalDeviceMeshShaderFeaturesEXT<'static>,
+	acceleration_structure: vk::PhysicalDeviceAccelerationStructureFeaturesKHR<'static>,
+	ray_tracing_pipeline: vk::PhysicalDeviceRayTracingPipelineFeaturesKHR<'static>,
+}
+
+impl DeviceFeatures {
+	/// Links the structures into one chain. Structures of extensions that `settings` leaves disabled stay out of it.
+	fn chain(&mut self, settings: &crate::device::Features) -> vk::PhysicalDeviceFeatures2<'_> {
+		let mut chain = vk::PhysicalDeviceFeatures2::default()
+			.features(self.core)
+			.push(&mut self.vulkan_11)
+			.push(&mut self.vulkan_12)
+			.push(&mut self.vulkan_13)
+			.push(&mut self.descriptor_heap)
+			.push(&mut self.swapchain_maintenance1)
+			.push(&mut self.shader_atomic_float);
+
+		if settings.mesh_shading {
+			chain = chain.push(&mut self.mesh_shader);
+		}
+
+		if settings.ray_tracing {
+			chain = chain
+				.push(&mut self.acceleration_structure)
+				.push(&mut self.ray_tracing_pipeline);
+		}
+
+		chain
+	}
+}
+
+type FeatureField = fn(&mut DeviceFeatures) -> &mut vk::Bool32;
+
+macro_rules! feature {
+	($($field:ident).+) => {{
+		fn field(features: &mut DeviceFeatures) -> &mut vk::Bool32 {
+			&mut features.$($field).+
+		}
+
+		(
+			concat!(
+				"Vulkan device feature ",
+				stringify!($($field).+),
+				" is unavailable. The most likely cause is that the GPU or driver does not support it."
+			),
+			field as FeatureField,
+		)
+	}};
+}
+
+/// Every device feature the backend enables for `settings`, with the error reported when it is unsupported.
+fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str, FeatureField)> {
+	let mut features = vec![
+		feature!(core.shader_int16),
+		feature!(core.shader_int64),
+		feature!(core.shader_uniform_buffer_array_dynamic_indexing),
+		feature!(core.shader_sampled_image_array_dynamic_indexing),
+		feature!(core.shader_storage_buffer_array_dynamic_indexing),
+		feature!(core.shader_storage_image_array_dynamic_indexing),
+		feature!(core.shader_storage_image_write_without_format),
+		feature!(core.texture_compression_bc),
+		feature!(core.fill_mode_non_solid),
+		feature!(vulkan_11.storage_buffer16_bit_access),
+		feature!(vulkan_11.uniform_and_storage_buffer16_bit_access),
+		feature!(vulkan_12.descriptor_indexing),
+		feature!(vulkan_12.descriptor_binding_partially_bound),
+		feature!(vulkan_12.descriptor_binding_variable_descriptor_count),
+		feature!(vulkan_12.runtime_descriptor_array),
+		feature!(vulkan_12.shader_sampled_image_array_non_uniform_indexing),
+		feature!(vulkan_12.shader_storage_image_array_non_uniform_indexing),
+		feature!(vulkan_12.scalar_block_layout),
+		feature!(vulkan_12.buffer_device_address),
+		feature!(vulkan_12.separate_depth_stencil_layouts),
+		feature!(vulkan_12.shader_float16),
+		feature!(vulkan_12.shader_int8),
+		feature!(vulkan_12.storage_buffer8_bit_access),
+		feature!(vulkan_12.uniform_and_storage_buffer8_bit_access),
+		feature!(vulkan_12.vulkan_memory_model),
+		feature!(vulkan_12.vulkan_memory_model_device_scope),
+		feature!(vulkan_12.timeline_semaphore),
+		feature!(vulkan_13.pipeline_creation_cache_control),
+		feature!(vulkan_13.subgroup_size_control),
+		feature!(vulkan_13.compute_full_subgroups),
+		feature!(vulkan_13.synchronization2),
+		feature!(vulkan_13.dynamic_rendering),
+		feature!(vulkan_13.maintenance4),
+		feature!(descriptor_heap.descriptor_heap),
+		feature!(swapchain_maintenance1.swapchain_maintenance1),
+		feature!(shader_atomic_float.shader_buffer_float32_atomics),
+	];
+
+	if settings.geometry_shader {
+		features.push(feature!(core.geometry_shader));
+	}
+
+	if settings.mesh_shading {
+		features.extend([feature!(mesh_shader.task_shader), feature!(mesh_shader.mesh_shader)]);
+	}
+
+	if settings.ray_tracing {
+		features.extend([
+			feature!(acceleration_structure.acceleration_structure),
+			feature!(ray_tracing_pipeline.ray_tracing_pipeline),
+			feature!(ray_tracing_pipeline.ray_traversal_primitive_culling),
+		]);
+	}
+
+	features
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn every_requirement_names_a_distinct_feature() {
+		let settings = crate::device::Features::new()
+			.mesh_shading(true)
+			.ray_tracing(true)
+			.geometry_shader(true);
+		let requirements = feature_requirements(&settings);
+		let mut features = DeviceFeatures::default();
+
+		// A field that is already enabled when its entry is reached appears in the table twice.
+		for (error, field) in &requirements {
+			assert!(*field(&mut features) == vk::FALSE, "{error} is listed twice");
+			*field(&mut features) = vk::TRUE;
+		}
+	}
+
+	#[test]
+	fn optional_extensions_follow_settings() {
+		let names = |settings: crate::device::Features| {
+			required_device_extensions(&settings)
+				.into_iter()
+				.map(|(name, _)| name)
+				.collect::<Vec<_>>()
+		};
+
+		let minimal = names(crate::device::Features::new().mesh_shading(false));
+		assert!(!minimal.contains(&ash::ext::mesh_shader::NAME));
+		assert!(!minimal.contains(&ash::khr::ray_tracing_pipeline::NAME));
+
+		let full = names(crate::device::Features::new().mesh_shading(true).ray_tracing(true));
+		assert!(full.contains(&ash::ext::mesh_shader::NAME));
+		assert!(full.contains(&ash::khr::acceleration_structure::NAME));
 	}
 }

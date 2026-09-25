@@ -286,10 +286,13 @@ impl InnerDevice {
 	}
 
 	/// Creates a Vulkan image view for images with view-capable usage flags.
+	///
+	/// The view matches the image's dimensionality; `layer_count` selects an arrayed view of 1D or 2D images.
 	pub(crate) fn create_vulkan_image_view(
 		&self,
 		name: Option<&str>,
 		texture: &vk::Image,
+		image_type: vk::ImageType,
 		format: crate::Formats,
 		usage: vk::ImageUsageFlags,
 		mip_levels: u32,
@@ -302,11 +305,7 @@ impl InnerDevice {
 
 		let image_view_create_info = vk::ImageViewCreateInfo::default()
 			.image(*texture)
-			.view_type(if layer_count.is_none() {
-				vk::ImageViewType::TYPE_2D
-			} else {
-				vk::ImageViewType::TYPE_2D_ARRAY
-			})
+			.view_type(crate::vulkan::utils::image_view_type(image_type, layer_count.is_some()))
 			.format(to_format(format))
 			.components(vk::ComponentMapping {
 				r: vk::ComponentSwizzle::IDENTITY,

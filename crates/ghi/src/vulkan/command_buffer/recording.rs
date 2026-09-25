@@ -495,6 +495,38 @@ impl CommandBufferRecording<'_> {
 		first_use_stage
 	}
 
+	/// Folds repeated whole-resource consumptions of one handle and layout into a single consumption.
+	///
+	/// Every consumption in a batch is planned against the state from before the batch. Planning a repeat separately,
+	/// such as one per uploaded mip, would emit a second barrier whose old layout the first barrier already replaced.
+	fn merge_repeated_consumptions(
+		consumptions: impl IntoIterator<Item = VulkanConsumption>,
+	) -> SmallVec<[VulkanConsumption; 16]> {
+		let mut merged = SmallVec::<[VulkanConsumption; 16]>::new();
+		let mut indices = HashMap::<(Handles, vk::ImageLayout), usize>::default();
+
+		for consumption in consumptions {
+			if consumption.range.is_some() {
+				merged.push(consumption);
+				continue;
+			}
+
+			match indices.entry((consumption.handle, consumption.layout)) {
+				std::collections::hash_map::Entry::Occupied(entry) => {
+					let existing = &mut merged[*entry.get()];
+					existing.stages |= consumption.stages;
+					existing.access |= consumption.access;
+				}
+				std::collections::hash_map::Entry::Vacant(entry) => {
+					entry.insert(merged.len());
+					merged.push(consumption);
+				}
+			}
+		}
+
+		merged
+	}
+
 	pub(super) fn plan_vulkan_resource_transitions(
 		states: &HashMap<Handles, TransitionState>,
 		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
@@ -504,7 +536,7 @@ impl CommandBufferRecording<'_> {
 	) -> PlannedTransitions {
 		let mut planned = PlannedTransitions::default();
 
-		for consumption in consumptions {
+		for consumption in Self::merge_repeated_consumptions(consumptions) {
 			let source_state = states.get(&consumption.handle).copied();
 			let mut transition_state = TransitionState::new(consumption.stages, consumption.access, consumption.layout);
 			let mut recorded_state = transition_state;
@@ -986,6 +1018,8 @@ impl CommandBufferRecording<'_> {
 	// Transition all resources which where written to but not consumed by any previous command
 	// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
 	pub(crate) fn consume_last_resources(&mut self) {
+		self.make_host_readable_writes_visible();
+
 		let consumptions = self.states.iter().filter_map(|(handle, ts)| match ts.access {
 			vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
 				access: crate::AccessPolicies::NONE,
@@ -997,6 +1031,38 @@ impl CommandBufferRecording<'_> {
 		});
 
 		self.consume_resources(consumptions).apply(self);
+	}
+
+	/// Makes pending GPU writes to CPU-readable buffers visible to host reads through their mappings.
+	///
+	/// The fence the host waits on only makes device writes available; a barrier to the host stage makes them visible.
+	fn make_host_readable_writes_visible(&self) {
+		let (src_stage, src_access) = self
+			.states
+			.iter()
+			.filter(|(handle, state)| {
+				TransitionState::access_includes_write(state.access)
+					&& matches!(handle, Handles::Buffer(buffer) if self.device.buffers.resource(*buffer).access.contains(crate::DeviceAccesses::CpuRead))
+			})
+			.fold(
+				(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty()),
+				|(stage, access), (_, state)| (stage | state.stage, access | state.access),
+			);
+		if src_access.is_empty() {
+			return;
+		}
+
+		let barriers = [vk::MemoryBarrier2::default()
+			.src_stage_mask(src_stage)
+			.src_access_mask(src_access)
+			.dst_stage_mask(vk::PipelineStageFlags2::HOST)
+			.dst_access_mask(vk::AccessFlags2::HOST_READ)];
+		unsafe {
+			self.device.device.cmd_pipeline_barrier2(
+				self.get_command_buffer().command_buffer,
+				&vk::DependencyInfo::default().memory_barriers(&barriers),
+			);
+		}
 	}
 
 	pub fn end_recording(&self) {
@@ -1073,6 +1139,7 @@ impl CommandBufferRecording<'_> {
 		for copy_texture in copied_textures {
 			let image = self.get_image(copy_texture.dst_texture);
 
+			// The staging buffer holds tightly packed mip-0 payloads for every array layer, one after another.
 			let regions = [vk::BufferImageCopy2::default()
 				.buffer_offset(0)
 				.buffer_row_length(0)
@@ -1082,7 +1149,7 @@ impl CommandBufferRecording<'_> {
 						.aspect_mask(image_aspect_mask(image.format))
 						.mip_level(0)
 						.base_array_layer(0)
-						.layer_count(1),
+						.layer_count(image.layers.map_or(1, std::num::NonZeroU32::get)),
 				)
 				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
 				.image_extent(extent_into_vk_extent(image.extent))];

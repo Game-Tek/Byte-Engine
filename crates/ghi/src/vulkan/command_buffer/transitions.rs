@@ -54,17 +54,22 @@ impl ImageCopy {
 	}
 }
 
+/// Width of BC compression blocks in texels.
+const BC_BLOCK_EXTENT: usize = 4;
+
+/// Converts a source row pitch into Vulkan's `bufferRowLength`, which counts texels even for block-compressed formats.
 pub(super) fn buffer_row_length(format: crate::Formats, source_bytes_per_row: usize) -> u32 {
-	match format {
-		crate::Formats::BC5 | crate::Formats::BC7 | crate::Formats::BC7SRGB => ((source_bytes_per_row / 16) * 4) as u32,
-		_ => (source_bytes_per_row / format.size()) as u32,
+	match format.bc_bytes_per_block() {
+		Some(bytes_per_block) => (source_bytes_per_row / bytes_per_block as usize * BC_BLOCK_EXTENT) as u32,
+		None => (source_bytes_per_row / format.size()) as u32,
 	}
 }
 
+/// Converts a source row count into Vulkan's `bufferImageHeight`, which counts texel rows rather than block rows.
 pub(super) fn buffer_image_height(format: crate::Formats, source_row_count: usize) -> u32 {
-	match format {
-		crate::Formats::BC5 | crate::Formats::BC7 | crate::Formats::BC7SRGB => (source_row_count * 4) as u32,
-		_ => source_row_count as u32,
+	match format.bc_bytes_per_block() {
+		Some(_) => (source_row_count * BC_BLOCK_EXTENT) as u32,
+		None => source_row_count as u32,
 	}
 }
 

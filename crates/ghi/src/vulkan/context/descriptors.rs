@@ -23,26 +23,8 @@ impl Context {
 			),
 			vk::BufferUsageFlags::DESCRIPTOR_HEAP_EXT | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
 		);
-		let host_device_local = self
-			.memory_properties
-			.memory_types
-			.iter()
-			.enumerate()
-			.take(self.memory_properties.memory_type_count as usize)
-			.any(|(index, memory_type)| {
-				creation.memory_flags & (1 << index) != 0
-					&& memory_type.property_flags.contains(
-						vk::MemoryPropertyFlags::HOST_VISIBLE
-							| vk::MemoryPropertyFlags::HOST_COHERENT
-							| vk::MemoryPropertyFlags::DEVICE_LOCAL,
-					)
-			});
-		let device_accesses = crate::DeviceAccesses::CpuWrite
-			| if host_device_local {
-				crate::DeviceAccesses::GpuRead
-			} else {
-				crate::DeviceAccesses::empty()
-			};
+		// Prefers device-local host-visible memory and falls back to plain host memory when the device has none.
+		let device_accesses = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
 		let (allocation, _) = self.create_allocation_internal(creation.size, creation.memory_flags.into(), device_accesses);
 		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
 		let aligned_address = crate::vulkan::align_up(device_address, heap_alignment);
@@ -587,14 +569,21 @@ impl Context {
 				} => {
 					let image = &self.images[image.0 as usize];
 					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
+					let descriptor_type = crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap();
+					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
+					let (base_mip_level, level_count) = match mip_level {
+						Some(mip_level) => (mip_level, 1),
+						None if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE => (0, image.mip_levels),
+						None => (0, 1),
+					};
 					image_writes.push((
-						crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap(),
+						descriptor_type,
 						self.descriptor_image_view_create_info(
 							image,
 							resource.descriptor.texture_view(),
 							None,
-							mip_level.unwrap_or(0),
-							1,
+							base_mip_level,
+							level_count,
 						),
 						vk_layout,
 						resource_offset.unwrap(),

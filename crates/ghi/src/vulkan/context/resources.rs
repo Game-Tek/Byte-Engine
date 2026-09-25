@@ -100,29 +100,15 @@ impl Context {
 				.map_err(|_| crate::TextureTransferError::AllocationFailed)?
 		};
 		let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-		let memory_type_index = self
-			.memory_properties
-			.memory_types
-			.iter()
-			.enumerate()
-			.find_map(|(index, memory_type)| {
-				let supported = requirements.memory_type_bits & (1 << index) != 0;
-				let visible = memory_type.property_flags.contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
-				(supported && visible).then_some(index as u32)
-			});
-		let Some(memory_type_index) = memory_type_index else {
+		let memory = self.allocate_memory_from_candidates(
+			requirements.size,
+			requirements.memory_type_bits,
+			crate::DeviceAccesses::CpuRead,
+			false,
+		);
+		let Some(memory) = memory else {
 			unsafe { self.device.destroy_buffer(buffer, None) };
 			return Err(crate::TextureTransferError::AllocationFailed);
-		};
-		let allocation_info = vk::MemoryAllocateInfo::default()
-			.allocation_size(requirements.size)
-			.memory_type_index(memory_type_index);
-		let memory = match unsafe { self.device.allocate_memory(&allocation_info, None) } {
-			Ok(memory) => memory,
-			Err(_) => {
-				unsafe { self.device.destroy_buffer(buffer, None) };
-				return Err(crate::TextureTransferError::AllocationFailed);
-			}
 		};
 		if unsafe { self.device.bind_buffer_memory(buffer, memory, 0) }.is_err() {
 			unsafe {
@@ -196,7 +182,16 @@ impl Context {
 		uses: crate::Uses,
 		image_usage_flags: vk::ImageUsageFlags,
 	) -> Image {
-		let image_views = vec![self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None)];
+		let image_views = vec![self.create_vulkan_image_view(
+			None,
+			&vk_image,
+			vk::ImageType::TYPE_2D,
+			format,
+			image_usage_flags,
+			1,
+			0,
+			None,
+		)];
 
 		Image {
 			next: None,
@@ -221,6 +216,32 @@ impl Context {
 		}
 	}
 
+	/// Allocates from the best memory type for `device_accesses`, moving to the next candidate when a heap is full.
+	///
+	/// Returns `None` when no memory type is compatible or every compatible type failed to allocate.
+	pub(crate) fn allocate_memory_from_candidates(
+		&self,
+		size: u64,
+		memory_type_bits: u32,
+		device_accesses: crate::DeviceAccesses,
+		device_address: bool,
+	) -> Option<vk::DeviceMemory> {
+		crate::vulkan::utils::memory_type_candidates(&self.memory_properties, memory_type_bits, device_accesses)
+			.into_iter()
+			.find_map(|memory_type_index| {
+				let mut memory_allocate_flags_info =
+					vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+				let mut memory_allocate_info = vk::MemoryAllocateInfo::default()
+					.allocation_size(size)
+					.memory_type_index(memory_type_index);
+				if device_address {
+					memory_allocate_info = memory_allocate_info.push(&mut memory_allocate_flags_info);
+				}
+
+				unsafe { self.device.allocate_memory(&memory_allocate_info, None) }.ok()
+			})
+	}
+
 	/// Allocates memory from the device.
 	pub(crate) fn create_allocation_internal(
 		&mut self,
@@ -228,60 +249,13 @@ impl Context {
 		memory_bits: Option<u32>,
 		device_accesses: crate::DeviceAccesses,
 	) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
-		let memory_property_flags = {
-			let mut memory_property_flags = vk::MemoryPropertyFlags::empty();
-
-			memory_property_flags |=
-				if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
-					vk::MemoryPropertyFlags::HOST_VISIBLE
-				} else {
-					vk::MemoryPropertyFlags::empty()
-				};
-			memory_property_flags |= if device_accesses.contains(crate::DeviceAccesses::CpuWrite) {
-				vk::MemoryPropertyFlags::HOST_COHERENT
-			} else {
-				vk::MemoryPropertyFlags::empty()
-			};
-			memory_property_flags |= if device_accesses.contains(crate::DeviceAccesses::GpuRead) {
-				vk::MemoryPropertyFlags::DEVICE_LOCAL
-			} else {
-				vk::MemoryPropertyFlags::empty()
-			};
-			memory_property_flags |= if device_accesses.contains(crate::DeviceAccesses::GpuWrite) {
-				vk::MemoryPropertyFlags::DEVICE_LOCAL
-			} else {
-				vk::MemoryPropertyFlags::empty()
-			};
-
-			memory_property_flags
-		};
-
-		let memory_properties = &self.memory_properties;
-
-		let memory_type_index = memory_properties
-			.memory_types
-			.iter()
-			.enumerate()
-			.find_map(|(index, memory_type)| {
-				let memory_type = memory_type.property_flags.contains(memory_property_flags);
-
-				if (memory_bits.unwrap_or(0) & (1 << index)) != 0 && memory_type {
-					Some(index as u32)
-				} else {
-					None
-				}
-			})
-			.expect("No memory type index found.");
-
-		let mut memory_allocate_flags_info =
-			vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
-
-		let memory_allocate_info = vk::MemoryAllocateInfo::default()
-			.allocation_size(size as u64)
-			.memory_type_index(memory_type_index)
-			.push(&mut memory_allocate_flags_info);
-
-		let memory = unsafe { self.device.allocate_memory(&memory_allocate_info, None).expect("No memory") };
+		// Allocations not tied to a resource yet may use any memory type.
+		let memory_type_bits = memory_bits.unwrap_or(u32::MAX);
+		let memory = self
+			.allocate_memory_from_candidates(size as u64, memory_type_bits, device_accesses, true)
+			.expect(
+				"Failed to allocate Vulkan memory. The most likely cause is that every memory heap compatible with the resource is exhausted or the device allocation count limit was reached.",
+			);
 
 		let mut mapped_memory = None;
 
@@ -605,6 +579,7 @@ impl Context {
 		// Vulkan only allows image views for images created with view-capable usage bits.
 		// Transfer-only staging/readback images intentionally keep null views.
 		let image_can_have_views = InnerDevice::image_usage_allows_views(image_usage_flags);
+		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
 
 		let full_image_view = image_can_have_views
 			.then(|| {
@@ -612,6 +587,7 @@ impl Context {
 					self.create_vulkan_image_view(
 						name,
 						&texture_creation_result.resource,
+						image_type,
 						format,
 						image_usage_flags,
 						mip_levels,
@@ -630,6 +606,7 @@ impl Context {
 					image_views.push(self.create_vulkan_image_view(
 						name,
 						&texture_creation_result.resource,
+						image_type,
 						format,
 						image_usage_flags,
 						mip_levels,
@@ -641,6 +618,7 @@ impl Context {
 				image_views.push(self.create_vulkan_image_view(
 					name,
 					&texture_creation_result.resource,
+					image_type,
 					format,
 					image_usage_flags,
 					mip_levels,

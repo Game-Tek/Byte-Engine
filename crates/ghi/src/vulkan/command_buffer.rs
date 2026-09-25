@@ -716,6 +716,55 @@ mod tests {
 	}
 
 	#[test]
+	fn planner_merges_repeated_image_consumptions_into_one_barrier() {
+		// Uploading several mips of one image consumes it once per mip in the same batch.
+		let handle = Handles::Image(ImageHandle(31));
+		let mut states = HashMap::default();
+		states.insert(
+			handle,
+			transition(
+				vk::PipelineStageFlags2::FRAGMENT_SHADER,
+				vk::AccessFlags2::SHADER_READ,
+				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+			),
+		);
+		let upload = || {
+			consumption(
+				handle,
+				vk::PipelineStageFlags2::TRANSFER,
+				vk::AccessFlags2::TRANSFER_WRITE,
+				vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			)
+		};
+
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&states,
+			&HashMap::default(),
+			[upload(), upload(), upload()],
+			|_| Some((vk::Image::from_raw(31), vk::Format::R8G8B8A8_UNORM)),
+			|_| None,
+		);
+
+		assert_eq!(planned.image_barriers.len(), 1);
+		assert!(planned.image_barriers[0].old_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+		assert_eq!(planned.state_updates.len(), 1);
+	}
+
+	#[test]
+	fn compressed_copy_rows_count_texels() {
+		// 64 texels wide is 16 blocks of 16 bytes; 8 block rows are 32 texel rows.
+		for format in [
+			crate::Formats::BC5,
+			crate::Formats::BC5SNORM,
+			crate::Formats::BC7,
+			crate::Formats::BC7SRGB,
+		] {
+			assert_eq!(buffer_row_length(format, 256), 64);
+			assert_eq!(buffer_image_height(format, 8), 32);
+		}
+	}
+
+	#[test]
 	fn planner_skips_null_image_and_does_not_update_state() {
 		let handle = Handles::Image(ImageHandle(5));
 		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
@@ -887,21 +936,12 @@ mod tests {
 	}
 
 	#[test]
-	fn planner_uses_original_state_for_each_duplicate_consumption() {
+	fn planner_merges_duplicate_consumptions_of_one_buffer() {
+		// A mesh buffer read as vertices and indices in one batch needs one barrier, and later writers must wait for both reads.
 		let handle = Handles::Buffer(BufferHandle(10));
 		let source = transition(
 			vk::PipelineStageFlags2::TRANSFER,
 			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let first = transition(
-			vk::PipelineStageFlags2::VERTEX_INPUT,
-			vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let second = transition(
-			vk::PipelineStageFlags2::INDEX_INPUT,
-			vk::AccessFlags2::INDEX_READ,
 			vk::ImageLayout::UNDEFINED,
 		);
 		let mut states = HashMap::default();
@@ -911,25 +951,35 @@ mod tests {
 			&states,
 			&HashMap::default(),
 			[
-				consumption(handle, first.stage, first.access, first.layout),
-				consumption(handle, second.stage, second.access, second.layout),
+				consumption(
+					handle,
+					vk::PipelineStageFlags2::VERTEX_INPUT,
+					vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+					vk::ImageLayout::UNDEFINED,
+				),
+				consumption(
+					handle,
+					vk::PipelineStageFlags2::INDEX_INPUT,
+					vk::AccessFlags2::INDEX_READ,
+					vk::ImageLayout::UNDEFINED,
+				),
 			],
 			|_| None,
 			|_| Some(vk::Buffer::from_raw(333)),
 		);
 
-		assert_eq!(planned.buffer_barriers.len(), 2);
-		let first_barrier = planned.buffer_barriers[0];
-		let second_barrier = planned.buffer_barriers[1];
-
-		assert!(first_barrier.src_stage == source.stage);
-		assert!(first_barrier.src_access == source.access);
-		assert!(second_barrier.src_stage == source.stage);
-		assert!(second_barrier.src_access == source.access);
-		assert_eq!(planned.state_updates.len(), 2);
-		let (_, first_state) = planned.state_updates[0];
-		let (_, second_state) = planned.state_updates[1];
-		assert_visible_state_eq(first_state, first);
-		assert_visible_state_eq(second_state, second);
+		let merged = transition(
+			vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::INDEX_INPUT,
+			vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
+			vk::ImageLayout::UNDEFINED,
+		);
+		assert_eq!(planned.buffer_barriers.len(), 1);
+		let barrier = planned.buffer_barriers[0];
+		assert!(barrier.src_stage == source.stage);
+		assert!(barrier.src_access == source.access);
+		assert!(barrier.dst_stage == merged.stage);
+		assert!(barrier.dst_access == merged.access);
+		assert_eq!(planned.state_updates.len(), 1);
+		assert_visible_state_eq(planned.state_updates[0].1, merged);
 	}
 }

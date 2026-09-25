@@ -458,15 +458,27 @@ pub(super) fn to_access_flags(
 	access_flags
 }
 
+/// A depth of 0 or 1 is one slice, so such extents make 2D images; descriptor views make the same distinction.
 pub(super) fn image_type_from_extent(extent: utils::Extent) -> Option<vk::ImageType> {
 	if extent.width() == 0 {
 		None
 	} else if extent.height() == 0 {
 		Some(vk::ImageType::TYPE_1D)
-	} else if extent.depth() == 0 {
+	} else if extent.depth() <= 1 {
 		Some(vk::ImageType::TYPE_2D)
 	} else {
 		Some(vk::ImageType::TYPE_3D)
+	}
+}
+
+/// Selects the view type that matches an image's dimensionality. 3D images cannot be arrayed, so `arrayed` is ignored for them.
+pub(super) fn image_view_type(image_type: vk::ImageType, arrayed: bool) -> vk::ImageViewType {
+	match (image_type, arrayed) {
+		(vk::ImageType::TYPE_1D, false) => vk::ImageViewType::TYPE_1D,
+		(vk::ImageType::TYPE_1D, true) => vk::ImageViewType::TYPE_1D_ARRAY,
+		(vk::ImageType::TYPE_3D, _) => vk::ImageViewType::TYPE_3D,
+		(_, false) => vk::ImageViewType::TYPE_2D,
+		(_, true) => vk::ImageViewType::TYPE_2D_ARRAY,
 	}
 }
 
@@ -619,6 +631,49 @@ impl From<crate::ShaderTypes> for vk::ShaderStageFlags {
 	}
 }
 
+/// Orders the memory types that can back an allocation with `device_accesses`, best first.
+///
+/// Host access requires mapped coherent memory, so host writes need no flush and host reads no invalidate. GPU access
+/// prefers device-local memory and host reads prefer cached memory. A preference is dropped when no type offers it or
+/// its heap is exhausted, such as CPU-writable GPU buffers on devices without resizable BAR.
+pub(super) fn memory_type_candidates(
+	memory_properties: &vk::PhysicalDeviceMemoryProperties,
+	memory_type_bits: u32,
+	device_accesses: crate::DeviceAccesses,
+) -> Vec<u32> {
+	let host_access = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
+	let required = if host_access {
+		vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+	} else {
+		vk::MemoryPropertyFlags::empty()
+	};
+	// Protected and AMD device-coherent memory need device features this backend does not enable.
+	let unsupported = vk::MemoryPropertyFlags::PROTECTED
+		| vk::MemoryPropertyFlags::DEVICE_COHERENT_AMD
+		| vk::MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
+	// Uncached host reads are far slower than a GPU reading host memory, so caching outranks device locality.
+	let score = |flags: vk::MemoryPropertyFlags| {
+		let cached = device_accesses.contains(crate::DeviceAccesses::CpuRead) && flags.contains(vk::MemoryPropertyFlags::HOST_CACHED);
+		let device_local = device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
+			&& flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
+		u8::from(cached) * 2 + u8::from(device_local)
+	};
+
+	let mut candidates = memory_properties.memory_types[..memory_properties.memory_type_count as usize]
+		.iter()
+		.enumerate()
+		.filter(|(index, memory_type)| {
+			memory_type_bits & (1 << index) != 0
+				&& memory_type.property_flags.contains(required)
+				&& !memory_type.property_flags.intersects(unsupported)
+		})
+		.map(|(index, memory_type)| (index as u32, score(memory_type.property_flags)))
+		.collect::<Vec<_>>();
+	// The stable sort keeps the implementation's order among equal scores, which lists types with fewer extra properties first.
+	candidates.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
+	candidates.into_iter().map(|(index, _)| index).collect()
+}
+
 #[cfg(test)]
 mod tests {
 	use utils::RGBA;
@@ -633,6 +688,64 @@ mod tests {
 			image_aspect_mask(vk::Format::D24_UNORM_S8_UINT) == vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
 		);
 		assert!(image_aspect_mask(to_format(crate::Formats::RGBA8UNORM)) == vk::ImageAspectFlags::COLOR);
+	}
+
+	fn memory_properties(types: &[vk::MemoryPropertyFlags]) -> vk::PhysicalDeviceMemoryProperties {
+		let mut properties = vk::PhysicalDeviceMemoryProperties::default();
+		properties.memory_type_count = types.len() as u32;
+		for (memory_type, &property_flags) in properties.memory_types.iter_mut().zip(types) {
+			memory_type.property_flags = property_flags;
+		}
+		properties
+	}
+
+	#[test]
+	fn memory_types_fall_back_when_preferences_are_unavailable() {
+		// A discrete GPU without resizable BAR.
+		type F = vk::MemoryPropertyFlags;
+		let properties = memory_properties(&[
+			F::DEVICE_LOCAL,
+			F::HOST_VISIBLE | F::HOST_COHERENT,
+			F::HOST_VISIBLE | F::HOST_COHERENT | F::HOST_CACHED,
+			F::DEVICE_LOCAL | F::PROTECTED,
+		]);
+
+		// Device memory comes first; host memory remains a fallback for when device memory runs out.
+		assert_eq!(memory_type_candidates(&properties, !0, crate::DeviceAccesses::GpuRead), vec![0, 1, 2]);
+		// No device-local host-visible type exists, so CPU-writable GPU buffers use host memory.
+		assert_eq!(
+			memory_type_candidates(
+				&properties,
+				!0,
+				crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead
+			),
+			vec![1, 2]
+		);
+		assert_eq!(memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead), vec![2, 1]);
+		assert_eq!(memory_type_candidates(&properties, 0b0010, crate::DeviceAccesses::CpuRead), vec![1]);
+	}
+
+	#[test]
+	fn memory_types_never_offer_non_coherent_memory_for_host_access() {
+		type F = vk::MemoryPropertyFlags;
+		let properties = memory_properties(&[
+			F::HOST_VISIBLE | F::HOST_CACHED,
+			F::DEVICE_LOCAL | F::HOST_VISIBLE | F::HOST_COHERENT,
+		]);
+
+		assert_eq!(memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead), vec![1]);
+	}
+
+	#[test]
+	fn image_views_match_image_dimensionality() {
+		let view_type = |extent| image_view_type(image_type_from_extent(extent).unwrap(), false);
+
+		assert!(view_type(utils::Extent::line(64)) == vk::ImageViewType::TYPE_1D);
+		assert!(view_type(utils::Extent::rectangle(64, 64)) == vk::ImageViewType::TYPE_2D);
+		assert!(view_type(utils::Extent::cube(64, 64, 1)) == vk::ImageViewType::TYPE_2D);
+		assert!(view_type(utils::Extent::cube(64, 64, 64)) == vk::ImageViewType::TYPE_3D);
+		assert!(image_view_type(vk::ImageType::TYPE_2D, true) == vk::ImageViewType::TYPE_2D_ARRAY);
+		assert!(image_view_type(vk::ImageType::TYPE_1D, true) == vk::ImageViewType::TYPE_1D_ARRAY);
 	}
 
 	#[test]

@@ -118,9 +118,24 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
 			.dst_buffer(staging)
 			.regions(&regions);
+		// Waiting on the fence only makes the copy available; mapped host reads also need it made visible to the host.
+		let host_read_barriers = [vk::BufferMemoryBarrier2::default()
+			.src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+			.src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+			.dst_stage_mask(vk::PipelineStageFlags2::HOST)
+			.dst_access_mask(vk::AccessFlags2::HOST_READ)
+			.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+			.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+			.buffer(staging)
+			.offset(0)
+			.size(vk::WHOLE_SIZE)];
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
 			self.device.device.cmd_copy_image_to_buffer2(command_buffer, &copy);
+			self.device.device.cmd_pipeline_barrier2(
+				command_buffer,
+				&vk::DependencyInfo::default().buffer_memory_barriers(&host_read_barriers),
+			);
 		}
 
 		Ok(handle)

@@ -57,6 +57,15 @@ pub(crate) fn parse_continue<'i, 'a: 'i>(
 	Ok((expressions, iterator))
 }
 
+pub(crate) fn parse_break<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+	mut expressions: Vec<Atoms<'a>>,
+) -> ExpressionParserResult<'i, 'a> {
+	iterator.next_str("break")?;
+	expressions.push(Atoms::Break);
+	Ok((expressions, iterator))
+}
+
 pub(crate) fn parse_discard<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
 	mut expressions: Vec<Atoms<'a>>,
@@ -247,6 +256,11 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			node: Nodes::Expression(Expressions::Continue),
 		};
 	}
+	if matches!(atoms.first(), Some(Atoms::Break)) {
+		return Node {
+			node: Nodes::Expression(Expressions::Break),
+		};
+	}
 	if matches!(atoms.first(), Some(Atoms::Discard)) {
 		return Node {
 			node: Nodes::Expression(Expressions::Discard),
@@ -262,6 +276,9 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			},
 			Atoms::Continue => Node {
 				node: Nodes::Expression(Expressions::Continue),
+			},
+			Atoms::Break => Node {
+				node: Nodes::Expression(Expressions::Break),
 			},
 			Atoms::Discard => Node {
 				node: Nodes::Expression(Expressions::Discard),
@@ -368,6 +385,7 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	let statement_parsers = vec![
 		parse_keywords,
 		parse_continue,
+		parse_break,
 		parse_discard,
 		parse_var_decl,
 		parse_function_call,
@@ -484,6 +502,7 @@ pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str
 	let parsers = vec![
 		parse_keywords,
 		parse_continue,
+		parse_break,
 		parse_discard,
 		parse_var_decl,
 		parse_function_call,

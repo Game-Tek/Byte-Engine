@@ -1,0 +1,1 @@
+{"name":"UI Composite","kind":{"type":"compute","shader":"byte-engine/rendering/ui/composite.besl","push_constants":[{"offset":0,"size":16}]}}

@@ -32,6 +32,11 @@ pub enum VmError {
 		slot: ResourceSlot,
 		access: &'static str,
 	},
+	DescriptorArrayIndexOutOfBounds {
+		slot: ResourceSlot,
+		index: usize,
+		count: usize,
+	},
 	DescriptorTypeMismatch {
 		slot: ResourceSlot,
 		expected: &'static str,
@@ -227,6 +232,11 @@ impl std::fmt::Display for VmError {
 				"Resource access denied at slot {}. The most likely cause is that the BESL resource was not declared with `{}` access.",
 				slot.slot(),
 				access
+			),
+			VmError::DescriptorArrayIndexOutOfBounds { slot, index, count } => write!(
+				f,
+				"Resource array index {index} is outside slot {}'s {count} elements. The most likely cause is that the shader selected an index beyond the descriptor's declared count.",
+				slot.slot(),
 			),
 			VmError::DescriptorTypeMismatch { slot, expected, found } => write!(
 				f,

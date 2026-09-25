@@ -69,6 +69,8 @@ impl Device {
 			acquired_image_indices: [0; 8],
 			acquired_sequences: [false; 8],
 			queue_handle,
+			present_interval: None,
+			next_present_slot: None,
 		});
 
 		SwapchainHandle((self.swapchains.len() - 1) as u64)
@@ -225,6 +227,68 @@ impl Device {
 		self.last_frame_synchronizers[frame_key.sequence_index as usize] = Some(synchronizer_handle);
 		self.process_tasks(frame_key.sequence_index);
 		super::super::Frame::new(self, frame_key, synchronizer_handle)
+	}
+
+	/// Acquires the backbuffer that `frame` will present before the frame is started.
+	///
+	/// The sequence's fences are waited first so `ResizeBuffers` and backbuffer reuse see released resources,
+	/// matching the guarantee `start_frame` gives for in-frame acquisition. Fences are monotonic, so the later
+	/// `start_frame` wait returns immediately.
+	pub fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain_handle: SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
+		if let Some(previous) = self.last_frame_synchronizers[sequence_index as usize] {
+			self.wait_for_synchronizer_sequence(previous, sequence_index);
+		}
+		self.wait_for_synchronizer_sequence(frame.synchronizer, sequence_index);
+		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
+	}
+
+	pub fn set_present_interval(&mut self, swapchain_handle: SwapchainHandle, interval: Option<std::time::Duration>) {
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+	}
+
+	/// Acquires the next backbuffer of `swapchain_handle` and records it as owned by `sequence_index`.
+	///
+	/// DXGI always has a current backbuffer, so this never returns `None`.
+	pub(crate) fn acquire_swapchain_image_for_sequence(
+		&mut self,
+		sequence_index: u8,
+		swapchain_handle: SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		{
+			// DXGI presents on the next vblank, so the cap paces acquisition instead of the present call.
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		}
+		{
+			let swapchain = self
+				.swapchains
+				.get(swapchain_handle.0 as usize)
+				.expect("Invalid DX12 swapchain handle. The most likely cause is that the handle came from another device.");
+			assert!(
+				swapchain.acquired_sequences.iter().all(|acquired| !acquired),
+				"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
+			);
+		}
+		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
+		let extent = self.swapchain_extent(swapchain_handle, sequence_index);
+		let image_index = self.next_swapchain_image_index(swapchain_handle);
+		let present_key = PresentKey {
+			image_index,
+			sequence_index,
+			swapchain: swapchain_handle,
+		};
+		self.swapchains[swapchain_handle.0 as usize].acquired_image_indices[sequence_index as usize] = image_index;
+		self.swapchains[swapchain_handle.0 as usize].acquired_sequences[sequence_index as usize] = true;
+		Some(crate::frame::SwapchainAcquisition {
+			present_key,
+			extent,
+			present_time: None,
+		})
 	}
 
 	/// Replaces CPU shadow storage immediately while retaining each native allocation through its owning sequence fence.

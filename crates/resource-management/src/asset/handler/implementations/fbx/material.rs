@@ -21,7 +21,7 @@ pub(crate) async fn resolve_fbx_materials(
 	spec: Option<&Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<&dyn ProgramGenerator>,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ResolvedFbxMaterials, LoadErrors> {
 	let allocator = context.allocator();
@@ -39,7 +39,7 @@ pub(crate) async fn resolve_fbx_materials(
 		let resolved = if let Some(override_id) = fbx_material_override(spec, material) {
 			context.bake_dependency::<VariantModel>(&override_id).await?
 		} else {
-			generate_fbx_material(context, url, key, material, generator.clone(), mip_backend).await?
+			generate_fbx_material(context, url, key, material, generator, mip_backend).await?
 		};
 
 		materials.insert(key, resolved);
@@ -148,7 +148,7 @@ pub(crate) async fn generate_fbx_material(
 	mesh_url: ResourceId<'_>,
 	key: MaterialKey,
 	material: Option<&ufbx::Material>,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<&dyn ProgramGenerator>,
 	mip_backend: Option<&dyn MipGenerationBackend>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
 	let generator = generator.ok_or_else(|| {
@@ -180,7 +180,7 @@ pub(crate) async fn generate_fbx_material(
 	let material_json = generated_fbx_material_json(&texture_variables);
 
 	let (shader, shader_bytes) =
-		compile_shader_program(generator.as_ref(), &shader_name, program, "World", &material_json, "Compute")
+		compile_shader_program(generator, &shader_name, program, "World", &material_json, "Compute")
 			.await
 		.map_err(|_| {
 			context.error(format_args!(

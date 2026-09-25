@@ -1,9 +1,0 @@
-in_position: input<vec2f, 0>;
-in_uv: input<vec2f, 1>;
-in_opacity: input<f32, 2>;
-
-main: fn() -> interface { position: vec4f, uv: vec2f, opacity: f32 } {
-	let position: vec4f = vec4f(in_position.x, in_position.y, 0.0, 1.0);
-
-	return { position, uv: in_uv, opacity: in_opacity };
-}

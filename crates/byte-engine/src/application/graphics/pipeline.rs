@@ -94,18 +94,22 @@ pub fn setup_simple_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn update(&mut self) {
+			while let Some(message) = self.mesh_receiver.read() {
+				let handle = message.handle();
+
+				self.pipeline_manager.request_mesh(handle, message.into_data());
+			}
+		}
+
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
+			alpha: f32,
+			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
-			while let Some(message) = self.mesh_receiver.read() {
-				let handle = message.handle();
-
-				self.pipeline_manager.request_mesh(frame, handle, message.into_data());
-			}
-
 			while let Some(message) = self.transforms_listener.read() {
 				self.pipeline_manager
 					.update_transform(frame, message.handle(), message.transform());
@@ -117,7 +121,7 @@ pub fn setup_simple_render_pipeline(
 				// TODO: handle light removal
 			}
 
-			self.pipeline_manager.prepare(frame, sinks, frame_allocator)
+			self.pipeline_manager.prepare(frame, sinks, frame_allocator, alpha, time)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
@@ -304,21 +308,31 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	impl PipelineManager for CustomPipelineManager {
+		fn update(&mut self) {
+			self.request_pending_lights();
+			self.request_pending_meshes();
+			self.request_pending_environments();
+		}
+
+		fn step(&mut self) {
+			self.visibility_pipeline_manager.step();
+		}
+
 		fn prepare<'a>(
 			&'a mut self,
 			frame: &mut ghi::implementation::Frame,
 			sinks: &[rendering::Sink],
 			frame_allocator: &'a bumpalo::Bump,
+			alpha: f32,
+			time: crate::time::MediaTime,
 		) -> Option<SmallVec<[rendering::render_pass::RenderPassReturn<'a>; 16]>> {
-			self.request_pending_lights();
-			self.request_pending_meshes();
-			self.request_pending_environments();
 			self.process_pose_updates();
 
-			self.visibility_pipeline_manager.process_transform_updates();
+			self.visibility_pipeline_manager.process_transform_updates(alpha);
 			self.process_deletions();
 
-			self.visibility_pipeline_manager.prepare(frame, sinks, frame_allocator)
+			self.visibility_pipeline_manager
+				.prepare(frame, sinks, frame_allocator, alpha, time)
 		}
 
 		fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut rendering::render_pass::RenderPassBuilder) {
@@ -364,8 +378,12 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 ///
 /// Register this pass before publishing renders that every sink must observe.
 /// The source subscribes immediately and retains the latest render for sinks
-/// initialized later.
-pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>) {
+/// initialized later. `font` is the file text is drawn with, or `None` for a system font;
+/// pass the same file to [`crate::ui::Engine::with_font`] so layout and drawing agree.
+pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<Render>, font: Option<&std::path::Path>) {
+	let font = font.map(std::path::Path::to_path_buf);
+	defaults::setup_default_pipeline_compilation(application);
+	UiRenderPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	let source = std::rc::Rc::new(std::cell::RefCell::new(UiRenderSource::new(ui.listener())));
 	let renderer = &mut application.renderer;
 
@@ -412,12 +430,18 @@ pub fn setup_ui_render_pass(application: &mut GraphicsApplication, ui: &Factory<
 
 				self.render_pass.bypass(frame, sink, frame_allocator)
 			}
+
+			fn needs_frame(&mut self) -> bool {
+				self.update();
+
+				self.render_pass.needs_frame()
+			}
 		}
 
 		Box::new(CustomRenderPass {
 			source: std::rc::Rc::clone(&source),
 			revision: 0,
-			render_pass: UiRenderPass::new(render_pass_builder),
+			render_pass: UiRenderPass::new(render_pass_builder, font.as_deref()),
 		})
 	});
 }
@@ -437,22 +461,46 @@ mod ui_source_tests {
 	use crate::ui::{Container, Context, ElementContext, Engine, Size};
 
 	#[test]
+	fn republished_unchanged_render_is_not_adopted_again() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = Engine::new();
+		engine.mount(async move |ctx| {
+			let _root = ctx.element("root").container(|c| c).await;
+			loop {
+				ctx.render().await;
+			}
+		});
+		let allocator = bumpalo::Bump::new();
+		let mut publish = |size| {
+			engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render().clone());
+		};
+		publish(100);
+		let mut sink = 0;
+		assert!(source.latest(&mut sink).is_some());
+		// The same tree at the same size yields the same revision.
+		publish(100);
+		assert!(source.latest(&mut sink).is_none());
+		publish(120);
+		assert_eq!(source.latest(&mut sink).unwrap().root().size, Size::new(120, 120));
+	}
+
+	#[test]
 	fn submitted_ui_reaches_late_sinks_without_republication() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
 		let mut engine = Engine::new();
-		engine.mount(|ctx| {
-			std::boxed::Box::pin(async move {
-				let _root = ctx.element("root").container(Container::default());
-				loop {
-					ctx.render().await;
-				}
-			})
+		engine.mount(async move |ctx| {
+			let _root = ctx.element("root").container(|c| c).await;
+			loop {
+				ctx.render().await;
+			}
 		});
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
-			let mut snapshot = engine.evaluate(Size::new(size, size), &allocator);
-			factory.create(engine.render(&mut snapshot));
+			engine.evaluate(Size::new(size, size), &allocator);
+			factory.create(engine.render().clone());
 		};
 		// No sink exists when the first render is submitted.
 		publish(100);
@@ -480,7 +528,16 @@ impl UiRenderSource {
 	/// Returns the newest render when this sink has not adopted it yet.
 	fn latest(&mut self, sink_revision: &mut u64) -> Option<&Render> {
 		drain_render_pass_messages(&mut self.listener, |message| {
-			self.render = Some(message.into_data());
+			let render = message.into_data();
+			// A republished unchanged render must not make every sink rebuild its draw list.
+			if self
+				.render
+				.as_ref()
+				.is_some_and(|current| current.revision() == render.revision())
+			{
+				return;
+			}
+			self.render = Some(render);
 			self.revision += 1;
 		});
 		if *sink_revision == self.revision {
@@ -516,6 +573,7 @@ pub fn setup_agx_tonemap_render_pass(application: &mut GraphicsApplication) {
 /// window; use `render.pass.srgb-display` to enable or bypass it at runtime.
 pub fn setup_srgb_display_render_pass(application: &mut GraphicsApplication) {
 	defaults::setup_default_pipeline_compilation(application);
+	rendering::render_passes::srgb_display::SrgbDisplayPass::request_pipelines(&application.renderer.pipeline_manager_client());
 	application
 		.renderer
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| {
@@ -588,8 +646,8 @@ fn setup_color_grading_render_pass(
 ///
 /// Load the resource once with
 /// [`crate::rendering::render_passes::lut::PreparedLut::load`] on
-/// application-owned asynchronous work. Each sink shares those immutable bytes
-/// while creating its own renderer-owned image. Call this after passes that
+/// application-owned asynchronous work. Each sink receives its own copy of the
+/// bytes, which its pass drops after the first upload. Call this after passes that
 /// produce the HDR `main` target and before tone mapping.
 pub fn setup_lut_render_pass(application: &mut GraphicsApplication, lut: crate::rendering::render_passes::lut::PreparedLut) {
 	application

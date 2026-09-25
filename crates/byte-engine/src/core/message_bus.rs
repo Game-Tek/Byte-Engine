@@ -252,7 +252,7 @@ impl std::error::Error for MessageRouteError {}
 pub struct TopicSnapshot {
 	pub topic_id: usize,
 	pub scope_id: u64,
-	pub scope: Arc<str>,
+	pub scope: Box<str>,
 	pub message_type: &'static str,
 	pub capacity: usize,
 	pub active_listeners: usize,
@@ -334,7 +334,7 @@ impl MessageBus {
 	///
 	/// Routes remain lazy: creating a scope does not claim a topic until code
 	/// requests a concrete message type from it.
-	pub fn new_scope(&self, name: impl Into<Arc<str>>) -> MessageScope {
+	pub fn new_scope(&self, name: impl Into<Box<str>>) -> MessageScope {
 		// Keep `u64::MAX` as an exhausted sentinel so catching the panic cannot
 		// wrap the counter and alias an existing namespace.
 		let id = self
@@ -368,7 +368,7 @@ impl MessageBus {
 	}
 
 	/// Creates the private root namespace used by standalone typed facades.
-	pub(crate) fn root_scope(&self, name: impl Into<Arc<str>>) -> MessageScope {
+	pub(crate) fn root_scope(&self, name: impl Into<Box<str>>) -> MessageScope {
 		MessageScope {
 			bus: self.clone(),
 			id: 0,
@@ -382,7 +382,7 @@ impl MessageBus {
 pub struct MessageScope {
 	bus: MessageBus,
 	id: u64,
-	name: Arc<str>,
+	name: Box<str>,
 }
 
 impl MessageScope {
@@ -464,7 +464,7 @@ impl MessageScope {
 			topic_index,
 			layout,
 			self.id,
-			Arc::clone(&self.name),
+			self.name.clone(),
 		));
 		let typed: Arc<dyn Any + Send + Sync> = topic.clone();
 		let diagnostics: Arc<dyn TopicDiagnostics> = topic.clone();
@@ -672,7 +672,7 @@ pub(crate) struct Topic<M> {
 	stamp_offset: usize,
 	listener_offset: usize,
 	scope_id: u64,
-	scope: Arc<str>,
+	scope: Box<str>,
 	_marker: PhantomData<M>,
 }
 
@@ -680,7 +680,7 @@ impl<M> Topic<M>
 where
 	M: Clone + Send + Sync + 'static,
 {
-	fn new(arena: Arc<Arena>, index: usize, layout: TopicLayout, scope_id: u64, scope: Arc<str>) -> Self {
+	fn new(arena: Arc<Arena>, index: usize, layout: TopicLayout, scope_id: u64, scope: Box<str>) -> Self {
 		let payload_byte_offset = index * arena.config.cells_per_topic * arena.config.cell_bytes;
 		let stamp_offset = index * arena.config.cells_per_topic;
 		let listener_offset = index * arena.config.max_listeners_per_topic;
@@ -915,7 +915,7 @@ where
 		TopicSnapshot {
 			topic_id: self.index,
 			scope_id: self.scope_id,
-			scope: Arc::clone(&self.scope),
+			scope: self.scope.clone(),
 			message_type: type_name::<M>(),
 			capacity: self.layout.capacity,
 			active_listeners: writer.active_listeners,
@@ -1150,8 +1150,8 @@ mod tests {
 	use std::{
 		any::type_name,
 		panic::{AssertUnwindSafe, catch_unwind},
+		sync::Barrier,
 		sync::atomic::{AtomicUsize, Ordering},
-		sync::{Arc, Barrier},
 		time::{Duration, Instant},
 	};
 
@@ -1172,7 +1172,7 @@ mod tests {
 	/// Publishes one producer's tagged sequence after every producer is ready.
 	fn publish_tagged_sequence(
 		channel: DefaultChannel<(usize, usize)>,
-		start: Arc<Barrier>,
+		start: &Barrier,
 		producer: usize,
 		message_count: usize,
 	) {
@@ -1415,10 +1415,15 @@ mod tests {
 		}
 	}
 
+	/// Leaks one counter so `'static` messages can report back to the test without shared ownership.
+	fn counter() -> &'static AtomicUsize {
+		Box::leak(Box::new(AtomicUsize::new(0)))
+	}
+
 	#[derive(Clone)]
 	/// The `DropTracked` struct counts destruction of retained values during bus shutdown.
 	struct DropTracked {
-		drops: Arc<AtomicUsize>,
+		drops: &'static AtomicUsize,
 	}
 
 	impl Drop for DropTracked {
@@ -1429,7 +1434,7 @@ mod tests {
 
 	#[test]
 	fn unread_values_drop_when_the_last_listener_leaves() {
-		let drops = Arc::new(AtomicUsize::new(0));
+		let drops = counter();
 		let bus = MessageBus::new(test_config(1, 2, 8, 2)).expect("valid test bus");
 		let messages = bus.new_scope("application");
 		let channel = messages.channel::<DropTracked>();
@@ -1437,11 +1442,7 @@ mod tests {
 		let second = channel.listener();
 
 		for _ in 0..2 {
-			channel
-				.try_send(DropTracked {
-					drops: Arc::clone(&drops),
-				})
-				.expect("retained value fits");
+			channel.try_send(DropTracked { drops }).expect("retained value fits");
 		}
 
 		drop(first);
@@ -1458,8 +1459,8 @@ mod tests {
 	/// The `CloneTracked` struct reports whether delivery cloned or moved its retained value.
 	struct CloneTracked {
 		value: u32,
-		clones: Arc<AtomicUsize>,
-		drops: Arc<AtomicUsize>,
+		clones: &'static AtomicUsize,
+		drops: &'static AtomicUsize,
 	}
 
 	impl Clone for CloneTracked {
@@ -1467,8 +1468,8 @@ mod tests {
 			self.clones.fetch_add(1, Ordering::Relaxed);
 			Self {
 				value: self.value,
-				clones: Arc::clone(&self.clones),
-				drops: Arc::clone(&self.drops),
+				clones: self.clones,
+				drops: self.drops,
 			}
 		}
 	}
@@ -1481,16 +1482,16 @@ mod tests {
 
 	#[test]
 	fn a_single_listener_moves_drop_bearing_messages_without_cloning() {
-		let clones = Arc::new(AtomicUsize::new(0));
-		let drops = Arc::new(AtomicUsize::new(0));
+		let clones = counter();
+		let drops = counter();
 		let bus = MessageBus::new(test_config(1, 2, 64, 1)).expect("valid test bus");
 		let channel = bus.new_scope("application").channel::<CloneTracked>();
 		let mut listener = channel.listener();
 		channel
 			.try_send(CloneTracked {
 				value: 41,
-				clones: Arc::clone(&clones),
-				drops: Arc::clone(&drops),
+				clones,
+				drops,
 			})
 			.expect("message fits");
 
@@ -1503,8 +1504,8 @@ mod tests {
 
 	#[test]
 	fn multiple_listeners_clone_then_move_one_retained_message() {
-		let clones = Arc::new(AtomicUsize::new(0));
-		let drops = Arc::new(AtomicUsize::new(0));
+		let clones = counter();
+		let drops = counter();
 		let bus = MessageBus::new(test_config(1, 2, 64, 2)).expect("valid test bus");
 		let channel = bus.new_scope("application").channel::<CloneTracked>();
 		let mut first = channel.listener();
@@ -1512,8 +1513,8 @@ mod tests {
 		channel
 			.try_send(CloneTracked {
 				value: 73,
-				clones: Arc::clone(&clones),
-				drops: Arc::clone(&drops),
+				clones,
+				drops,
 			})
 			.expect("message fits");
 
@@ -1528,8 +1529,8 @@ mod tests {
 	/// The `PanicClone` struct exercises unwind cleanup for a reserved clone reader.
 	struct PanicClone {
 		value: u32,
-		clone_attempts: Arc<AtomicUsize>,
-		drops: Arc<AtomicUsize>,
+		clone_attempts: &'static AtomicUsize,
+		drops: &'static AtomicUsize,
 	}
 
 	impl Clone for PanicClone {
@@ -1547,16 +1548,16 @@ mod tests {
 
 	#[test]
 	fn a_panicking_clone_advances_its_cursor_without_wedging_capacity() {
-		let clone_attempts = Arc::new(AtomicUsize::new(0));
-		let drops = Arc::new(AtomicUsize::new(0));
+		let clone_attempts = counter();
+		let drops = counter();
 		let bus = MessageBus::new(test_config(1, 1, 64, 2)).expect("valid test bus");
 		let channel = bus.new_scope("application").channel::<PanicClone>();
 		let mut panicking = channel.listener();
 		let mut last = channel.listener();
 		let make_message = |value| PanicClone {
 			value,
-			clone_attempts: Arc::clone(&clone_attempts),
-			drops: Arc::clone(&drops),
+			clone_attempts,
+			drops,
 		};
 		channel.try_send(make_message(1)).expect("first message fits");
 
@@ -1627,12 +1628,12 @@ mod tests {
 		let channel = bus.new_scope("application").channel::<(usize, usize)>();
 		let mut first_listener = channel.listener();
 		let mut second_listener = channel.listener();
-		let start = Arc::new(Barrier::new(PRODUCERS));
+		let start = Barrier::new(PRODUCERS);
 
 		std::thread::scope(|threads| {
 			for producer in 0..PRODUCERS {
 				let channel = channel.clone();
-				let start = Arc::clone(&start);
+				let start = &start;
 				threads.spawn(move || publish_tagged_sequence(channel, start, producer, MESSAGES_PER_PRODUCER));
 			}
 		});

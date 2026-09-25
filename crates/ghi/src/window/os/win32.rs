@@ -1,9 +1,23 @@
+use std::{
+	cell::{Cell, RefCell},
+	collections::VecDeque,
+	ffi::CString,
+	rc::Rc,
+	sync::Arc,
+};
+
 use windows::{
 	Win32::{
 		Devices::HumanInterfaceDevice::{HID_USAGE_GENERIC_KEYBOARD, HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
-		Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-		Graphics::Gdi::HBRUSH,
-		System::LibraryLoader::GetModuleHandleA,
+		Foundation::{CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+		Graphics::Gdi::{
+			DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONEAREST,
+			MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
+		},
+		System::{
+			LibraryLoader::GetModuleHandleA,
+			Threading::{CreateEventW, INFINITE, SetEvent},
+		},
 		UI::{
 			HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 			Input::{
@@ -11,12 +25,13 @@ use windows::{
 				RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER, RID_INPUT, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
 			},
 			WindowsAndMessaging::{
-				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GWLP_WNDPROC,
-				GetClientRect, GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, PM_REMOVE, PeekMessageA, PostQuitMessage,
-				RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE,
-				WM_CREATE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-				WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE,
-				WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
+				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GetClientRect,
+				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+				PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage,
+				UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+				WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_QUIT,
+				WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP,
+				WS_VISIBLE,
 			},
 		},
 	},
@@ -24,17 +39,64 @@ use windows::{
 };
 
 use crate::window::{
-	Events, Features, Seat,
+	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
-	os::WindowLike,
+	os::{AppLike, WindowLike},
 };
 
-pub struct Window {
+/// Events shared by the pump and every window procedure, in arrival order.
+type EventQueue = Rc<RefCell<VecDeque<Event>>>;
+
+pub struct App {
 	class_atom: u16,
+	class_name: CString,
+	hinstance: HINSTANCE,
+	events: EventQueue,
+	use_raw_mouse: bool,
+	use_raw_keyboard: bool,
+	wake_event: Arc<WakeEvent>,
+}
+
+/// The `WakeEvent` struct owns the auto-reset event a waiting poll also waits on.
+///
+/// Wakers share it so the handle stays valid for as long as any of them can signal it.
+struct WakeEvent(HANDLE);
+
+// SAFETY: Event handles are process-wide kernel objects that Win32 lets any thread signal and wait on.
+unsafe impl Send for WakeEvent {}
+// SAFETY: `SetEvent` and waits on the same handle are thread-safe kernel calls.
+unsafe impl Sync for WakeEvent {}
+
+impl Drop for WakeEvent {
+	fn drop(&mut self) {
+		// Drop cannot report the failure, and a failed close only leaks the handle.
+		unsafe {
+			let _ = CloseHandle(self.0);
+		}
+	}
+}
+
+/// The `AppWaker` struct signals the event a waiting poll waits on.
+///
+/// An event object survives the modal loops Windows runs while moving or resizing a window, where posted
+/// thread messages are dropped.
+#[derive(Clone)]
+pub struct AppWaker(Arc<WakeEvent>);
+
+impl AppWaker {
+	pub fn wake(&self) {
+		// A failed signal leaves the poll waiting for its next event or deadline, which is all it can do.
+		unsafe {
+			let _ = SetEvent(self.0.0);
+		}
+	}
+}
+
+pub struct Window {
 	hinstance: HINSTANCE,
 	hwnd: HWND,
-
-	state: State,
+	/// Kept alive and at a stable address for the window procedure until the window is destroyed.
+	data: Box<WindowData>,
 }
 
 pub struct Handles {
@@ -42,26 +104,37 @@ pub struct Handles {
 	pub hwnd: HWND,
 }
 
-impl WindowLike for Window {
-	fn try_new(name: &str, extent: utils::Extent, id_name: &str, _features: Features) -> Result<Window, String> {
+/// The `WindowData` struct gives the window procedure its window id and queue through `GWLP_USERDATA`.
+struct WindowData {
+	id: WindowId,
+	events: EventQueue,
+	use_raw_mouse: bool,
+	use_raw_keyboard: bool,
+	/// The monitor the window was last reported on, so moves report only real display changes.
+	monitor: Cell<HMONITOR>,
+}
+
+impl WindowData {
+	fn push(&self, event: Events) {
+		self.events.borrow_mut().push_back(Event::Window { window: self.id, event });
+	}
+}
+
+impl AppLike for App {
+	type Window = Window;
+
+	fn try_new(id_name: &str) -> Result<App, String> {
 		let hinstance = unsafe {
 			GetModuleHandleA(PCSTR(std::ptr::null()))
 				.map_err(|_| "Failed to acquire the module handle. The most likely cause is that the current process module handle could not be resolved.")?
 		};
 
 		// Create Cstrings becasue Win32 API uses null terminated strings
-		let id_name = std::ffi::CString::new(id_name).map_err(
+		let class_name = CString::new(id_name).map_err(
 			|_| "Failed to build the window class name. The most likely cause is that the id string contains an interior null byte.",
 		)?;
-		let name = std::ffi::CString::new(name).map_err(
-			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
-		)?;
 
-		let window_style = WS_POPUP | WS_VISIBLE;
-
-		let (width, height) = (extent.width() as i32, extent.height() as i32);
-
-		let (class, hwnd) = unsafe {
+		let class_atom = unsafe {
 			let wnd_class = WNDCLASSA {
 				style: WNDCLASS_STYLES::default(),
 				lpfnWndProc: Some(wnd_proc),
@@ -72,21 +145,67 @@ impl WindowLike for Window {
 				hCursor: HCURSOR::default(),
 				hbrBackground: HBRUSH::default(),
 				lpszMenuName: PCSTR(std::ptr::null()),
-				lpszClassName: PCSTR(id_name.as_ptr() as _),
+				lpszClassName: PCSTR(class_name.as_ptr() as _),
 			};
 
-			let class = RegisterClassA(&wnd_class);
+			RegisterClassA(&wnd_class)
+		};
 
-			if class == 0 {
-				return Err("Failed to register the window class. The most likely cause is that the class name already exists or is invalid.".to_string());
-			}
+		if class_atom == 0 {
+			return Err("Failed to register the window class. The most likely cause is that another app with the same id is alive in this process.".to_string());
+		}
 
-			SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-				.map_err(|_| "Failed to set the DPI awareness context. The most likely cause is that the process does not have permission to change DPI awareness.")?;
+		// Awareness is process-wide and can only be set once, so a later app in the same process keeps the first value.
+		unsafe {
+			let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+		}
 
-			let hwnd = CreateWindowExA(
+		// Raw input registration is process-wide. A null target delivers it to the focused window.
+		let register_raw_input = |usage| unsafe {
+			let rid = RAWINPUTDEVICE {
+				usUsagePage: HID_USAGE_PAGE_GENERIC,
+				usUsage: usage,
+				dwFlags: RAWINPUTDEVICE_FLAGS::default(),
+				hwndTarget: HWND::default(),
+			};
+
+			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).is_ok()
+		};
+
+		let use_raw_mouse = register_raw_input(HID_USAGE_GENERIC_MOUSE);
+		let use_raw_keyboard = register_raw_input(HID_USAGE_GENERIC_KEYBOARD);
+
+		// Auto-reset, so one wait consumes every wake signaled before it.
+		let wake_event = unsafe { CreateEventW(None, false, false, windows::core::PCWSTR::null()) }.map_err(|error| {
+			format!(
+				"Failed to create the wake event: {error}. The most likely cause is that the process ran out of kernel handles."
+			)
+		})?;
+
+		Ok(App {
+			class_atom,
+			class_name,
+			hinstance: hinstance.into(),
+			events: EventQueue::default(),
+			use_raw_mouse,
+			use_raw_keyboard,
+			wake_event: Arc::new(WakeEvent(wake_event)),
+		})
+	}
+
+	fn create_window(&mut self, name: &str, extent: utils::Extent, _features: Features) -> Result<Window, String> {
+		let name = CString::new(name).map_err(
+			|_| "Failed to build the window title. The most likely cause is that the window name contains an interior null byte.",
+		)?;
+
+		let window_style = WS_POPUP | WS_VISIBLE;
+
+		let (width, height) = (extent.width() as i32, extent.height() as i32);
+
+		let hwnd = unsafe {
+			CreateWindowExA(
 				WINDOW_EX_STYLE::default(),
-				PCSTR(id_name.as_ptr() as _),
+				PCSTR(self.class_name.as_ptr() as _),
 				PCSTR(name.as_ptr() as _),
 				window_style,
 				CW_USEDEFAULT,
@@ -95,63 +214,101 @@ impl WindowLike for Window {
 				height,
 				None,
 				None,
-				Some(hinstance.into()),
+				Some(self.hinstance),
 				None,
 			)
 			.map_err(
 				|_| "Failed to create the window. The most likely cause is that the window class registration or parameters are invalid.",
-			)?;
-			(class, hwnd)
+			)?
 		};
 
-		// Remove set WNDPROC, we don't want Windows to call this unless we are ready to handle messages
+		let data = Box::new(WindowData {
+			id: window_id(hwnd),
+			events: self.events.clone(),
+			use_raw_mouse: self.use_raw_mouse,
+			use_raw_keyboard: self.use_raw_keyboard,
+			monitor: Cell::new(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
+		});
+
+		// Messages sent during creation fall through to `DefWindowProcA` because no data is attached yet.
 		unsafe {
-			SetWindowLongPtrA(hwnd, GWLP_WNDPROC, 0);
+			SetWindowLongPtrA(hwnd, GWLP_USERDATA, &*data as *const WindowData as _);
 		}
 
-		let use_raw_mouse = unsafe {
-			let rid = RAWINPUTDEVICE {
-				usUsagePage: HID_USAGE_PAGE_GENERIC,      // Generic desktop controls
-				usUsage: HID_USAGE_GENERIC_MOUSE,         // Mouse
-				dwFlags: RAWINPUTDEVICE_FLAGS::default(), // Focused window only
-				hwndTarget: hwnd,
-			};
-
-			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).is_ok()
-		};
-
-		let use_raw_keyboard = unsafe {
-			let rid = RAWINPUTDEVICE {
-				usUsagePage: HID_USAGE_PAGE_GENERIC,      // Generic desktop controls
-				usUsage: HID_USAGE_GENERIC_KEYBOARD,      // Keyboard
-				dwFlags: RAWINPUTDEVICE_FLAGS::default(), // Focused window only
-				hwndTarget: hwnd,
-			};
-
-			RegisterRawInputDevices(&[rid], std::mem::size_of::<RAWINPUTDEVICE>() as _).is_ok()
-		};
+		// Creation-time sizing ran before the window procedure could observe it.
+		if let Some((width, height)) = client_extent(hwnd) {
+			data.push(Events::Resize {
+				width: width as u32,
+				height: height as u32,
+			});
+		}
+		data.push(Events::DisplayChanged {
+			refresh_interval: monitor_refresh_interval(data.monitor.get()),
+		});
 
 		Ok(Window {
-			class_atom: class,
 			hwnd,
-			hinstance: hinstance.into(),
-			state: State {
-				use_raw_mouse,
-				use_raw_keyboard,
-			},
+			hinstance: self.hinstance,
+			data,
 		})
 	}
 
-	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
-		// Set WNDPROC, we are ready to handle messages
-		unsafe {
-			SetWindowLongPtrA(self.hwnd, GWLP_WNDPROC, wnd_proc as *const () as _);
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		let timeout = match wait {
+			Wait::Immediate => None,
+			// Round up so the wait does not end just before the deadline and spin once more.
+			Wait::Until(deadline) => Some(
+				deadline
+					.saturating_duration_since(std::time::Instant::now())
+					.as_nanos()
+					.div_ceil(1_000_000)
+					.min(u128::from(INFINITE - 1)) as u32,
+			),
+			Wait::Forever => Some(INFINITE),
+		};
+		// Events queued by window procedures outside the pump must not sleep behind the wait.
+		if let Some(timeout) = timeout.filter(|_| self.events.borrow().is_empty()) {
+			// Input already in the queue ends the wait at once, including input seen but not removed by an earlier peek.
+			unsafe {
+				let _ = MsgWaitForMultipleObjectsEx(Some(&[self.wake_event.0]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+			}
 		}
 
-		WindowIterator {
-			state: self.state.clone(),
-			window: self,
+		let mut msg = MSG::default();
+
+		// A null window filter also receives thread messages such as `WM_QUIT`.
+		while unsafe { PeekMessageA(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+			if msg.message == WM_QUIT {
+				self.events.borrow_mut().push_back(Event::App(AppEvents::Quit));
+				continue;
+			}
+
+			unsafe {
+				let _ = TranslateMessage(&msg); // We don't care whether it translated or not
+				DispatchMessageA(&msg);
+			}
 		}
+
+		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker(Arc::clone(&self.wake_event))
+	}
+}
+
+impl Drop for App {
+	fn drop(&mut self) {
+		// Drop cannot report teardown failures, and the class stays registered if a window outlived the app.
+		unsafe {
+			let _ = UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
+		}
+	}
+}
+
+impl WindowLike for Window {
+	fn id(&self) -> WindowId {
+		self.data.id
 	}
 
 	fn handles(&self) -> Handles {
@@ -161,79 +318,49 @@ impl WindowLike for Window {
 		}
 	}
 
-	fn show_cursor(&mut self, _show: bool) {
-		// TODO: Wire cursor visibility control through the current win32 input path.
-	}
-
-	fn confine_cursor(&mut self, _confine: bool) {
-		// TODO: Wire cursor confinement through ClipCursor when the platform abstraction needs it.
+	fn refresh_interval(&self) -> Option<std::time::Duration> {
+		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
 	}
 }
 
 impl Drop for Window {
 	fn drop(&mut self) {
+		// `WM_DESTROY` is dispatched synchronously and still reads `data`, which is freed after this body.
 		// Drop cannot report teardown failures, and Windows may have already destroyed the window during shutdown.
 		unsafe {
 			let _ = DestroyWindow(self.hwnd);
-			let _ = UnregisterClassA(PCSTR(self.class_atom as _), Some(self.hinstance));
 		}
 	}
 }
 
-struct WindowData<'a> {
-	window: &'a Window,
-	state: State,
-	payload: Option<Events>,
-}
-
-pub struct WindowIterator<'a> {
-	window: &'a mut Window,
-	state: State,
-}
-
-impl Iterator for WindowIterator<'_> {
-	type Item = Events;
-
-	fn next(&mut self) -> Option<Events> {
-		let mut msg = MSG::default();
-
-		let mut window_data = WindowData {
-			window: self.window,
-			state: self.state.clone(),
-			payload: None,
-		};
-
-		unsafe {
-			let res = PeekMessageA(&mut msg, Some(self.window.hwnd), 0, 0, PM_REMOVE);
-
-			if res.0 != 0 {
-				SetWindowLongPtrA(self.window.hwnd, GWLP_USERDATA, &mut window_data as *mut _ as _); // Only bother setting the window data if there's a message to process
-				let _ = TranslateMessage(&msg); // We don't care whether it translated or not
-				DispatchMessageA(&msg);
-				SetWindowLongPtrA(self.window.hwnd, GWLP_USERDATA, 0); // Clear pointer to window data after processing message
-			}
+/// Returns the refresh interval of the monitor's current display mode.
+fn monitor_refresh_interval(monitor: HMONITOR) -> Option<std::time::Duration> {
+	let mut info = MONITORINFOEXW::default();
+	info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+	let mut mode = DEVMODEW {
+		dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+		..Default::default()
+	};
+	unsafe {
+		if !GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+			return None;
 		}
-
-		window_data.payload
-	}
-}
-
-impl Drop for WindowIterator<'_> {
-	fn drop(&mut self) {
-		unsafe {
-			// We are done handling messages, remove WNDPROC
-			SetWindowLongPtrA(self.window.hwnd, GWLP_WNDPROC, 0);
+		if !EnumDisplaySettingsW(
+			windows::core::PCWSTR(info.szDevice.as_ptr()),
+			ENUM_CURRENT_SETTINGS,
+			&mut mode,
+		)
+		.as_bool()
+		{
+			return None;
 		}
-
-		self.window.state = self.state.clone();
 	}
+	// Frequencies of 0 and 1 stand for the hardware default, which Windows does not name.
+	(mode.dmDisplayFrequency > 1).then(|| std::time::Duration::from_secs_f64(1.0 / mode.dmDisplayFrequency as f64))
 }
 
-/// The `WindowState` struct preserves Win32 state associated with a window procedure.
-#[derive(Debug, Clone, Default)]
-struct State {
-	use_raw_mouse: bool,
-	use_raw_keyboard: bool,
+fn window_id(hwnd: HWND) -> WindowId {
+	WindowId::from_raw(hwnd.0 as usize as u64)
 }
 
 fn client_extent(hwnd: HWND) -> Option<(f32, f32)> {
@@ -276,23 +403,14 @@ fn cursor_position_in_window(hwnd: HWND) -> Option<(f32, f32)> {
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 	unsafe {
-		let window_data = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut WindowData;
-		let window_data = {
-			let Some(r) = window_data.as_mut() else {
-				return DefWindowProcA(hwnd, msg, wparam, lparam);
-			};
-
-			r
-		};
-
-		if window_data.window.hwnd.0 != hwnd.0 {
-			// Check if the window handle is the same as the one we are handling messages for
+		let window_data = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *const WindowData;
+		let Some(window_data) = window_data.as_ref() else {
 			return DefWindowProcA(hwnd, msg, wparam, lparam);
-		}
+		};
 
 		if let Some((event, result)) = handle_event(hwnd, msg, wparam, lparam, window_data) {
 			if let Some(event) = event {
-				window_data.payload = Some(event);
+				window_data.push(event);
 			}
 
 			return result;
@@ -310,11 +428,9 @@ fn handle_event(
 	msg: u32,
 	wparam: WPARAM,
 	lparam: LPARAM,
-	window_data: &mut WindowData,
+	window_data: &WindowData,
 ) -> Option<(Option<Events>, LRESULT)> {
 	let result = match msg {
-		WM_NCCREATE => LRESULT(true as _),
-		WM_CREATE => LRESULT(0),
 		WM_CLOSE => {
 			return Some((Some(Events::Close), LRESULT(0)));
 		}
@@ -415,7 +531,7 @@ fn handle_event(
 
 			let raw_input = unsafe { &*(raw_input.as_ptr() as *const RAWINPUT) };
 
-			if raw_input.header.dwType == RIM_TYPEMOUSE.0 && window_data.state.use_raw_mouse {
+			if raw_input.header.dwType == RIM_TYPEMOUSE.0 && window_data.use_raw_mouse {
 				let mouse_data = unsafe { &raw_input.data.mouse };
 
 				if mouse_data.usFlags == MOUSE_MOVE_RELATIVE {
@@ -443,7 +559,7 @@ fn handle_event(
 						LRESULT(0),
 					));
 				}
-			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.state.use_raw_keyboard {
+			} else if raw_input.header.dwType == RIM_TYPEKEYBOARD.0 && window_data.use_raw_keyboard {
 				let keyboard_data = unsafe { &raw_input.data.keyboard };
 				let pressed = (keyboard_data.Flags as u32 & RI_KEY_BREAK) == 0;
 
@@ -480,7 +596,7 @@ fn handle_event(
 			));
 		}
 		WM_KEYDOWN => {
-			if window_data.state.use_raw_keyboard {
+			if window_data.use_raw_keyboard {
 				return None;
 			}
 
@@ -496,7 +612,7 @@ fn handle_event(
 			));
 		}
 		WM_KEYUP => {
-			if window_data.state.use_raw_keyboard {
+			if window_data.use_raw_keyboard {
 				return None;
 			}
 
@@ -512,17 +628,23 @@ fn handle_event(
 			));
 		}
 		WM_SIZE => {
-			let width = lparam.0 as u32;
-			let height = (lparam.0 >> 16) as u32;
+			let width = (lparam.0 & 0xffff) as u32;
+			let height = ((lparam.0 >> 16) & 0xffff) as u32;
 
 			return Some((Some(Events::Resize { width, height }), LRESULT(0)));
 		}
-		WM_DESTROY => {
-			unsafe {
-				PostQuitMessage(0);
+		// Both messages still need default handling: moves generate `WM_SIZE` and `WM_MOVE` from it.
+		WM_WINDOWPOSCHANGED | WM_DISPLAYCHANGE => {
+			let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+			if msg == WM_DISPLAYCHANGE || monitor != window_data.monitor.replace(monitor) {
+				window_data.push(Events::DisplayChanged {
+					refresh_interval: monitor_refresh_interval(monitor),
+				});
 			}
-
-			LRESULT(0)
+			return None;
+		}
+		WM_SETFOCUS | WM_KILLFOCUS => {
+			return Some((Some(Events::FocusChanged(msg == WM_SETFOCUS)), LRESULT(0)));
 		}
 		_ => {
 			return None;

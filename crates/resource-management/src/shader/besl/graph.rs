@@ -281,7 +281,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 							build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
 						}
 					}
-					besl::Expressions::Continue | besl::Expressions::Discard => {}
+					besl::Expressions::Continue | besl::Expressions::Break | besl::Expressions::Discard => {}
 					besl::Expressions::Accessor { left, right } => {
 						build_graph_impl(node.clone(), left.clone(), graph, expanded, active, allocator.clone());
 						build_graph_impl(node.clone(), right.clone(), graph, expanded, active, allocator);

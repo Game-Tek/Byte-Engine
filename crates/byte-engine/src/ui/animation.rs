@@ -269,12 +269,119 @@ impl AnimationDriver for Spring {
 	}
 }
 
+/// The `Smoothing` struct chases a target by closing a fixed share of the remaining distance per unit of time.
+///
+/// This is exponential smoothing: the value eases in fast, slows as it arrives, and never
+/// overshoots or oscillates. Steps of any size land on the same curve, so it needs no step clamp
+/// and looks the same at every frame rate. Use [`Spring`] when the motion should bounce.
+#[derive(Debug, Clone, Copy)]
+pub struct Smoothing {
+	value: f32,
+	target: f32,
+	velocity: f32,
+	retention: f32,
+}
+
+pub fn smooth(from: f32, to: f32) -> Smoothing {
+	Smoothing::new(from, to)
+}
+
+impl Smoothing {
+	pub fn new(from: f32, to: f32) -> Self {
+		Self {
+			value: from,
+			target: to,
+			velocity: 0.0,
+			retention: 0.01,
+		}
+	}
+
+	/// Sets the share of the distance that is still left after one second, between 0 and 1. Lower is snappier.
+	pub fn retention(mut self, retention: f32) -> Self {
+		self.retention = retention;
+		self
+	}
+
+	/// Sets the time in seconds it takes to close half of the remaining distance.
+	pub fn half_life(self, seconds: f32) -> Self {
+		self.retention(0.5f32.powf(1.0 / seconds.max(f32::EPSILON)))
+	}
+
+	pub fn value(&self) -> f32 {
+		self.value
+	}
+
+	pub fn target(&self) -> f32 {
+		self.target
+	}
+
+	/// The value's speed over the last step, in units per second.
+	pub fn velocity(&self) -> f32 {
+		self.velocity
+	}
+
+	/// Retargets the chase while it keeps its value, so a moving target is followed smoothly.
+	pub fn set_target(&mut self, target: f32) {
+		self.target = target;
+	}
+
+	pub fn step(&mut self, dt: MediaTime) -> f32 {
+		let dt = dt.as_seconds_f32();
+		debug_assert!(
+			dt.is_finite() && dt >= 0.0,
+			"Smoothing delta is invalid. The most likely cause is advancing UI animation with negative or non-finite time."
+		);
+		if dt <= 0.0 {
+			return self.value;
+		}
+
+		let kept = self.retention.clamp(0.0, 1.0).powf(dt);
+		let value = self.target + (self.value - self.target) * kept;
+		self.velocity = (value - self.value) / dt;
+		self.value = value;
+		self.value
+	}
+
+	pub fn is_settled(&self) -> bool {
+		(self.value - self.target).abs() <= SETTLE_EPSILON
+	}
+
+	pub fn finish(&mut self) -> f32 {
+		self.value = self.target;
+		self.velocity = 0.0;
+		self.value
+	}
+}
+
+impl AnimationDriver for Smoothing {
+	fn value(&self) -> f32 {
+		Smoothing::value(self)
+	}
+
+	fn advance(&mut self, dt: MediaTime) -> f32 {
+		Smoothing::step(self, dt)
+	}
+
+	fn is_complete(&self) -> bool {
+		Smoothing::is_settled(self)
+	}
+
+	fn finish(&mut self) -> f32 {
+		Smoothing::finish(self)
+	}
+}
+
+/// Drives `animation` one frame at a time and applies each value to `target` until the animation settles.
+///
+/// `apply` is an async closure that edits the elements for one value, such as
+/// `async |frame, t| frame.update_container(|c| c.opacity(t)).await`. It may also edit other elements it borrows, so
+/// one animation can move a card and fade its content together.
 pub async fn animate<C: 'static, A, F>(target: &mut EvaluationContext<C>, mut animation: A, mut apply: F)
 where
 	A: AnimationDriver,
-	F: FnMut(&mut EvaluationContext<C>, f32),
+	F: AsyncFnMut(&mut EvaluationContext<C>, f32),
 {
-	apply(target, animation.value());
+	apply(target, animation.value()).await;
 
 	let mut last_frame = Instant::now();
 	while !animation.is_complete() {
@@ -282,10 +389,10 @@ where
 		let now = Instant::now();
 		animation.advance(capped_frame_duration(MediaTime::from_std(now.duration_since(last_frame))));
 		last_frame = now;
-		apply(target, animation.value());
+		apply(target, animation.value()).await;
 	}
 
-	apply(target, animation.finish());
+	apply(target, animation.finish()).await;
 }
 
 pub struct Animation<V: Interpolate> {
@@ -354,6 +461,20 @@ impl Interpolate for f32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn smoothing_reaches_the_same_value_whatever_the_step_size() {
+		let mut coarse = smooth(0.0, 10.0).half_life(0.1);
+		let mut fine = coarse;
+		coarse.step(MediaTime::from_seconds_f32(0.2));
+		for _ in 0..20 {
+			fine.step(MediaTime::from_seconds_f32(0.01));
+		}
+		// Two half lives close three quarters of the distance, and never pass the target.
+		assert!((coarse.value() - 7.5).abs() < 0.001);
+		assert!((fine.value() - coarse.value()).abs() < 0.001);
+		assert!(fine.velocity() > 0.0 && !fine.is_settled());
+	}
 
 	#[test]
 	fn spring_moves_toward_target() {

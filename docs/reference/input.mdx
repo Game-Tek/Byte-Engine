@@ -7,10 +7,10 @@ icon: Gamepad2
 Define input as application actions so your gameplay code responds to intent
 instead of specific devices.
 
-Byte Engine records physical input as device-trigger values. The input manager
-resolves those values into actions such as `Move`, `Lookaround`, `RightHand`,
-`View`, or `Exit`. Your application listens for action events instead of checking
-raw keys and buttons throughout the codebase.
+Byte Engine records physical input as device-trigger values in one input
+collector. Input sinks resolve those values into actions such as `Move`,
+`Lookaround`, `RightHand`, `View`, or `Exit`. Your application listens for
+action events instead of checking raw keys and buttons throughout the codebase.
 
 This keeps your application code focused on intent.
 `Keyboard.W`, `Keyboard.S`, `Gamepad.LeftStick`, and a VR controller axis can all contribute to the same movement action without changing the movement system.
@@ -37,7 +37,7 @@ A device is a concrete instance of a class.
 One keyboard and two gamepads are three devices, even though the gamepads share one device class.
 
 The default graphics setup creates one mouse, one keyboard, and one gamepad device after registering the standard classes.
-Custom integrations can register their own classes and create devices directly through `InputManager`.
+Custom integrations can register their own classes and create devices directly through `InputCollector`.
 
 ### Seats
 
@@ -55,7 +55,7 @@ It can be boolean, float, unicode, vector, quaternion, color, or another support
 Window events are translated into trigger records.
 For example, a key press becomes a boolean value for `Keyboard.W`, mouse motion becomes a `Vector2` value for `Mouse.Movement`, and typed text becomes a unicode value for `Keyboard.Character`.
 
-Byte Engine queues records until the next input update. During the update, it
+The collector queues records until the sinks pull them. When the tick ends, it
 keeps the latest value for each seat, device, and trigger.
 
 ### Actions
@@ -72,8 +72,8 @@ For lookaround, mouse position and a gamepad stick can both contribute to the sa
 
 Create actions through `GraphicsApplication::world`. Attach a `Name` in the
 same creation chain when inspection tools need to find the action by name. The
-input manager listens to the world's action creation stream, resolves trigger
-names to handles, and starts emitting action events.
+application's sink listens to the world's action creation stream, resolves
+trigger names to handles, and starts emitting action events.
 
 ## Build actions
 
@@ -82,27 +82,57 @@ Follow this flow:
 1. Register device classes and triggers.
 2. Create concrete devices for those classes.
 3. Create application actions with trigger bindings.
-4. Translate platform events into trigger records.
-5. Update the input manager.
+4. Translate platform events into trigger records on the collector.
+5. Let every sink pull, then end the collector's tick.
 6. Listen for action events in application or engine systems.
 
 Most headed applications use `setup_default_input` for the first two steps and `process_default_window_input` for platform window events.
 That default path installs the standard mouse, keyboard, and gamepad names used by action bindings.
 
-## Publish a value when a button is pressed
+## Publish a value when a button is released
 
-A binding can publish one source's value when another source records a positive
-boolean value. For example, a mouse click can publish the current cursor position.
+A binding can publish one source's value when another source records a release
+(`false`). For example, a mouse click can publish the current cursor position.
 The application receives the position in one action without maintaining a
 separate cursor action or cached position.
 
 The trigger must be boolean and belong to the value source's device class.
-The input manager samples the latest recorded value from the same seat and device
-at each positive trigger record. Releases and movement alone do not emit this
-binding. If no value has been recorded yet, the trigger produces no event.
-Records are processed in queue order, so multiple presses in one update retain
+The sink samples the latest recorded value from the same seat and device at
+each release by default. Choose `TriggerMode::Press` with `trigger_on` to
+sample on press instead. Movement alone does not emit this binding. If no value has been recorded yet, the trigger produces no event.
+Records are processed in queue order, so multiple clicks in one update retain
 their own positions. Actions containing these bindings bypass their tick policy
 to avoid repeating a captured value on later ticks.
+
+## Follow a drag
+
+Use one action to receive the position at press, each movement while held, and
+release:
+
+```rust
+let drag = Action::new(
+    &[ActionBindingDescription::new("Mouse.Position").dragged_by("Mouse.LeftButton")],
+    Types::Vector2,
+);
+```
+
+Read `ActionEvent::phase()` to handle `ActionPhase::Started`, `Updated`, and
+`Ended`. Each event carries the current position in `value()`. Store the start
+position in your application if you need a displacement or selection rectangle.
+Drags start immediately on press and bypass tick policy, so an idle pointer does
+not repeat drag events. The position must have a recorded value when the button
+is pressed; moving after a press without a sample does not begin a drag.
+
+With several sinks, check `ResolvedAction::phase` and return
+`Capture::Captured` for a start inside your target. The sink then captures
+that drag's movement and release even outside the target. Keep pulling that
+sink until release or cancellation. A passed start can reach the next sink.
+
+Call `InputSink::cancel_action`, `cancel_seat`, or `cancel_device` when
+focus changes or a device disconnects. A cancelled drag emits
+`ActionPhase::Cancelled` with its last position. Discard the operation instead
+of committing it; the button needs a fresh press to start another drag.
+Cancellation events are delivered through the action event channel.
 
 ## Value mapping
 
@@ -122,9 +152,9 @@ following table lists the conversions that action bindings currently support:
 | Quaternion | None | Action bindings don't currently convert quaternion trigger values. |
 | RGBA | None | Action bindings don't currently convert color trigger values. |
 
-These rules apply when the input manager resolves device triggers through action
-bindings. A manually triggered action must receive a value whose type already
-matches the action type.
+These rules apply when a sink resolves device triggers through action
+bindings. An `ActionEvent` published directly, for example by the inspector,
+must carry a value whose type already matches the action type.
 
 For movement, boolean key triggers can map to direction vectors.
 When multiple movement keys are active, the input resolver combines the active mappings and normalizes the result.
@@ -142,6 +172,8 @@ Actions can emit with different policies:
 - `WhileActive`: emit every frame while the resolved value is non-default
 - `Always`: emit every frame after the action has a known value
 
+A repeating policy emits at most once per tick for each device: the record that
+changes the value is that tick's emission, and later ticks repeat the held value.
 Movement usually uses `WhileActive` so holding a key or stick keeps producing movement events.
 Discrete actions such as fire, view toggle, or exit usually use the default change-based behavior.
 
@@ -152,8 +184,8 @@ Read the filtered stream in your application tick loop or in the system that own
 the input-driven behavior.
 
 This is the same message pattern used elsewhere in the engine.
-Input systems publish action events, and gameplay/application code consumes the actions it understands.
-Raw devices stay behind the input manager.
+Sinks publish action events, and gameplay/application code consumes the actions it understands.
+Raw devices stay behind the collector.
 
 ## Trigger actions from the inspector
 
@@ -165,113 +197,129 @@ a value that matches the action's type. The inspector publishes the canonical
 `ActionEvent` directly to the same channel used by physical input. The message-type
 endpoint describes the supported value variants and their payload shapes.
 
-## Give each consumer its own input layer
+## Give each consumer its own sink
 
-Input arrives in two steps. `InputEvents` collects the raw control values once
-per tick. Then every distinct consumer — a UI, gameplay, a debug overlay — owns
-an `ActionProcessor` that turns the pending records into that layer's actions.
+Input arrives in two steps. Every source event ends up in one `InputCollector`:
+window keys and buttons, pointer motion, gamepad controls, and replayed
+samples all become control records there. Then every distinct consumer — a UI,
+gameplay, a debug overlay — owns an `InputSink` that declares its actions and
+pulls them from the collector once per tick.
 
-Register controls on `InputEvents` and create devices with `events.create_device(&class)`.
-Each processor retains its action values, so processing needs no frame allocator.
+Register controls on the collector and create devices with `collector.create_device(&class)`.
+Take one `SinkHandle` per sink with `collector.add_sink()`. Each sink retains its
+action values, so pulling needs no frame allocator.
 
-Process layers in priority order, and end the tick when the last one is done:
+Pull sinks in priority order; a record is dropped once every sink has pulled past it:
 
 ```rust
-let mut events = InputEvents::new();
-let mut ui = ActionProcessor::new(events.add_consumer(), ui_channel).with_declarations(ui_actions.listener());
-let mut game = ActionProcessor::new(events.add_consumer(), game_channel).with_declarations(game_actions.listener());
+let mut collector = InputCollector::new();
+let mut ui = InputSink::new(collector.add_sink(), ui_channel).with_declarations(ui_actions.listener());
+let mut game = InputSink::new(collector.add_sink(), game_channel).with_declarations(game_actions.listener());
 
-// Each tick, after recording window input into `events`:
-ui.process(&mut events, |action| {
-    if ui_handles(action) { Consumption::Consumed } else { Consumption::Ignored }
-});
-game.process(&mut events, |action| { play(action); Consumption::Ignored });
-events.end_tick();
+// Each tick, after recording window input into `collector`:
+ui.pull(&mut collector, |action| Capture::when(ui_handles(action)));
+game.pull(&mut collector, |action| { play(action); Capture::Passed });
 ```
 
-Use `InputEvents::new_in`, `ActionProcessor::new_in`, or `InputManager::new_in`
-to choose the allocator for retained input storage. The `new` constructors use
-Rust's global allocator. A queue and its layers can use different allocators.
+Use `InputCollector::new_in` and `InputSink::new_in` to choose the allocator for
+retained input storage. The `new` constructors use Rust's global allocator. A
+collector and its sinks can use different allocators.
 
 ```rust
 let storage = bumpalo::Bump::new();
-let mut events = InputEvents::new_in(&storage);
-let mut ui = ActionProcessor::new_in(events.add_consumer(), ui_channel, &storage);
+let mut collector = InputCollector::new_in(&storage);
+let mut ui = InputSink::new_in(collector.add_sink(), ui_channel, &storage);
 ```
 
-Keep the allocator alive for the input objects' lifetime. `end_tick` reuses queue
+Keep the allocator alive for the input objects' lifetime. The queue reuses its
 capacity and retains control state; reset an arena after dropping those objects.
 The allocator covers registered names, buffers, bindings, and action values.
 Channels and action factories keep their own allocation policies.
 
-A layer answers `Consumption::Consumed` for an action it handled. The record
-behind that action stops there, so no later layer turns the same input into
-another action. `Consumption::Ignored` lets the input continue down the chain.
-Each layer also publishes its actions to its own channel, so systems that only
+A sink's consumer answers `Capture::Captured` for an action it handled. The
+record behind that action stops there, so no later sink turns the same input
+into another action. `Capture::Passed` lets the input continue down the chain.
+Each sink also publishes its actions to its own channel, so systems that only
 observe actions can keep using listeners.
 
-Layers do not share actions. Give each one its own action factory, and bind the
-same control in as many layers as you need: only the layer that consumes it
+Sinks do not share actions. Give each one its own action factory, and bind the
+same control in as many sinks as you need: only the sink that captures it
 decides what the input means this tick.
 
-Use `ActionProcessor::consume_pending` for a context that must swallow input it
+Use `InputSink::capture_pending` for a context that must swallow input it
 has no action for, such as a modal dialog over a scene.
 
 ### Decide with the value, not with layout
 
 Bind the value your decision needs, instead of querying the UI mid-tick. A
-binding that publishes the cursor position when a button goes down gives the
-layer the exact click position:
+binding that publishes the cursor position when a button is released gives the
+sink the exact click position:
 
 ```rust
 ActionBindingDescription::new("Mouse.Position").triggered_by("Mouse.LeftButton")
 ```
 
-After evaluating a UI snapshot, call `snapshot.retain_hit_test(&mut hits)` on a
-reused `ui::intersection::HitTest`. Query those retained, clipped rectangles
-while deciding consumption. The query uses normalized window coordinates and
-neither allocates nor runs layout.
+Clicks default to release. To capture the position on press, choose the phase:
+
+```rust
+ActionBindingDescription::new("Mouse.Position")
+    .triggered_by("Mouse.LeftButton")
+    .trigger_on(TriggerMode::Press)
+```
+
+While deciding capture, ask the UI engine what is under the pointer with
+`Engine::hit`. The query takes normalized window coordinates, answers from the
+last evaluated frame's clipped rectangles, and neither allocates nor runs
+layout.
 
 Set decorative and full-screen transparent containers to
 `Container::hit_testable(false)` so uncovered areas pass through. Their children
 can remain interactive. The retained query uses rectangular bounds; it does not
 perform alpha or rounded-corner hit testing.
 
-Subscribe to `app.messages().channel::<ghi::window::Events>()` before creating a
-window. In the ordinary `tick_with` callback, translate those events with
-`process_default_window_input` into your own `InputEvents`, then process your
-layers. Omit `setup_default_input` when the app owns this pipeline, so the
-default manager does not publish competing actions. Window close and renderer
-lifecycle handling still belong to the graphics application.
+Subscribe to `app.messages().channel::<ghi::window::Event>()` before creating a
+window. In the ordinary `tick_with` callback, take the `Event::Window` values,
+record their `event` with `process_default_window_input` into your own
+`InputCollector`, then pull your sinks. Each window event carries the
+`WindowId` of the window it targets, so an app with several windows can route
+input per window. The function returns `true` when focus loss, minimizing, closing, or
+resizing discarded the seat, so cancel your sinks' held actions on that tick. Omit `setup_default_input` when the app owns this pipeline, so the
+application's own sink does not publish competing actions. Window close and
+renderer lifecycle handling still belong to the graphics application.
 
 ### Holds, impulses, and cancellation
 
-Consuming a press claims its control until it is released, so a drag keeps
+Capturing a press claims its control until it is released, so a drag keeps
 working when the pointer leaves the surface that started it, and the release
-reaches the layer that owns the drag. A control another layer claims contributes
-nothing to this layer's actions, so its held keys cannot join your movement
+reaches the sink that owns the drag. A control another sink captured contributes
+nothing to this sink's actions, so its held keys cannot join your movement
 vector. Repeated down records from platform key repeat are still one hold.
 
 Mark custom impulse controls with `TriggerDescription::transient()`. Standard
 mouse movement, scroll, and keyboard character controls already use this flag.
 An impulse never claims a control and never repeats through a tick policy.
 
-Call `ActionProcessor::cancel_action` when a layer loses focus while holding an
-action, or `ActionProcessor::cancel_device` when a device is suspended. The
+Call `InputSink::cancel_action` when a sink's consumer loses focus while holding
+an action, or `InputSink::cancel_device` when a device is suspended. The
 action publishes its neutral value with `ActionEvent::is_cancelled` and stops
-repeating. Cancellation needs no access to the queue. The interrupted press
-stays claimed until release, so a later layer needs a fresh press. End the
+repeating. Cancellation needs no access to the collector. The interrupted press
+stays captured until release, so a later sink needs a fresh press. End the
 interaction on a cancelled action instead of treating it as a successful release.
 
-### Or keep the convenience path
+Call `InputCollector::reset_seat` when a window loses focus, so a release the
+platform never delivers cannot keep a control captured.
 
-`InputManager` owns both steps and broadcasts every action, which is all a
-single-consumer application needs. It is also what `setup_default_input` and the
-standard `tick_with` loop install. Manual and inspector requests are addressed
-to one action directly and never compete for input.
+### Or keep the application's sink
 
-Choose one of the two paths per application. The manager broadcasts its whole
-queue, so a layer placed beside it cannot consume anything from it.
+`GraphicsApplication` owns one collector and one sink for the actions declared
+through its world. That sink pulls before your tick callback and captures
+nothing, which is all a single-consumer application needs. It is what
+`setup_default_input` and the standard `tick_with` loop install. Read its
+events from `app.world().messages().channel::<ActionEvent>()`.
+
+Choose one of the two paths per application. The application's sink pulls its
+whole collector before your callback runs, so a sink placed beside it cannot
+capture anything from it.
 
 ## Practical guidance
 
@@ -295,7 +343,8 @@ Input is hot-path code, so prefer compact values and local state over allocating
 ## Rust API
 
 - [`input` module](/docs/api/latest/byte_engine/input)
-- [`InputManager`](/docs/api/latest/byte_engine/input)
+- [`InputCollector`](/docs/api/latest/byte_engine/input#inputcollector)
+- [`InputSink`](/docs/api/latest/byte_engine/input#inputsink)
 - [`Action`](/docs/api/latest/byte_engine/input)
 - [`ActionEvent`](/docs/api/latest/byte_engine/input#actionevent)
 - [`process_default_window_input`](/docs/api/latest/byte_engine/application/graphics#process_default_window_input)

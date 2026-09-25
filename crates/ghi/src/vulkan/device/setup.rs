@@ -161,10 +161,11 @@ impl InnerDevice {
 			.map_err(|result| crate::vulkan::instance::creation_error(result, "Failed to create a device"))?;
 
 		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
-		// This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
-		let shared_queues = queue_families
+		// The context wraps each distinct queue in one mutex (see `Context::vk_queues`). This mutex is a temporary external
+		// synchronization fix; prefer internally synchronized Vulkan queues when available.
+		let vk_queues = queue_families
 			.iter()
-			.map(|&family| Arc::new(std::sync::Mutex::new(unsafe { device.get_device_queue(family, 0) })))
+			.map(|&family| unsafe { device.get_device_queue(family, 0) })
 			.collect::<Vec<_>>();
 		let queues = queues
 			.iter_mut()
@@ -172,12 +173,12 @@ impl InnerDevice {
 			.enumerate()
 			.map(|(index, ((_, queue_handle), queue_family_index))| {
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
-				let shared_queue = queue_families
+				let vk_queue_index = queue_families
 					.iter()
 					.position(|&family| family == queue_family_index)
 					.unwrap();
 				StoredQueue {
-					vk_queue: shared_queues[shared_queue].clone(),
+					vk_queue_index,
 					queue_family_index,
 				}
 			})
@@ -190,7 +191,8 @@ impl InnerDevice {
 			debug_utils: settings
 				.validation
 				.then(|| ash::ext::debug_utils::Device::load(vk_instance, &device)),
-			debug_data: instance.debug_data.clone(),
+			debug_data: super::DebugDataRef::new(&instance.debug_data),
+			vk_queues,
 			physical_device,
 			swapchain: ash::khr::swapchain::Device::load(vk_instance, &device),
 			surface: ash::khr::surface::Instance::load(vk_entry, vk_instance),

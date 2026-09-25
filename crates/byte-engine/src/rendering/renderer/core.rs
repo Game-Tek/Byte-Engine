@@ -29,6 +29,12 @@ pub struct Renderer {
 
 	/// Display windows and their swapchains.
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
+	app: Option<ghi::window::App>,
+	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
+	acquisitions: (u64, SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]>),
+	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
+	present_interval: Option<std::time::Duration>,
 	/// Sink indices and their camera handles.
 	sink_cameras: SmallVec<[(SinkId, Handle); 16]>,
 	/// Cameras and their stable handles.
@@ -62,6 +68,8 @@ pub struct Renderer {
 	render_command_buffer: ghi::CommandBufferHandle,
 	render_finished_synchronizer: ghi::SynchronizerHandle,
 	defer_first_frame_sink_setup: bool,
+	/// Whether renderer state changed in a way that the last presented frame does not show.
+	redraw_requested: bool,
 
 	/// The GHI context where all rendering resources and operations are performed.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
@@ -204,6 +212,9 @@ impl Renderer {
 			frame_queue_depth: frame_queue_depth as usize,
 
 			windows: SmallVec::with_capacity(16),
+			app: None,
+			acquisitions: (0, SmallVec::with_capacity(16)),
+			present_interval: None,
 			sink_cameras: SmallVec::with_capacity(16),
 			cameras: SmallVec::with_capacity(16),
 
@@ -233,6 +244,7 @@ impl Renderer {
 			render_command_buffer,
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
+			redraw_requested: true,
 		}
 	}
 
@@ -369,6 +381,7 @@ impl Renderer {
 	/// `name`. Pass names come from [`RenderPass::name`].
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
 		self.render_pass_states.insert(name.to_string(), state);
+		self.redraw_requested = true;
 		set_render_pass_state_by_name(&mut self.render_passes, name, state)
 	}
 
@@ -462,21 +475,162 @@ impl Renderer {
 		}
 	}
 
-	pub fn update_windows<'a>(&'a mut self) -> impl Iterator<Item = impl Iterator<Item = ghi::window::Events> + 'a> + 'a {
-		self.windows.iter_mut().map(|(window, _)| window.poll())
+	/// Waits as `wait` allows for the first event, then drains pending application and window events. Match
+	/// [`ghi::window::Event::Window`] ids against the windows created with [`Self::create_window`].
+	///
+	/// Without a window there is no event queue, so the call returns at once whatever `wait` says.
+	pub fn poll_windows(&mut self, wait: ghi::window::Wait) -> impl Iterator<Item = ghi::window::Event> + '_ {
+		self.app.iter_mut().flat_map(move |app| app.poll(wait))
+	}
+
+	/// Returns the handle that interrupts a waiting [`Self::poll_windows`], once a window connected the renderer
+	/// to the window system.
+	pub(crate) fn app_waker(&self) -> Option<ghi::window::AppWaker> {
+		self.app.as_ref().map(ghi::window::App::waker)
+	}
+
+	/// Caps the presentation rate by setting the minimum time between presented frames on every window,
+	/// including windows created later. `None` removes the cap so frames present on every refresh.
+	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
+		self.present_interval = interval;
+		let mut context = self.context.lock();
+		for (_window, swapchain) in &self.windows {
+			context.set_present_interval(*swapchain, interval);
+		}
+	}
+
+	/// Returns the shortest refresh interval among the displays showing a window, when any platform reports one.
+	///
+	/// The fastest display decides so that no window handles its events later than its display could show them.
+	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+		self.windows.iter().filter_map(|(window, _)| window.refresh_interval()).min()
+	}
+
+	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
+	/// primary window's most recently presented image, when the backend reports it.
+	///
+	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image.
+	/// The call is idempotent for one frame: windows already acquired are skipped, so [`Self::prepare`] can
+	/// call it to pick up windows adopted later in the tick or to acquire when nothing was hoisted.
+	pub(crate) fn acquire_swapchain_images(&mut self) -> Option<std::time::Instant> {
+		if self.acquisitions.0 != self.started_frame_count {
+			self.acquisitions = (self.started_frame_count, SmallVec::new());
+		}
+		if self.acquisitions.1.len() == self.windows.len() {
+			return None;
+		}
+
+		let span = debug_span!(
+			"Renderer::acquire_swapchains",
+			frame = self.started_frame_count,
+			windows = self.windows.len()
+		);
+		let _enter = span.enter();
+
+		let shared_context = self.context.clone();
+		let mut context = shared_context.lock();
+		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
+		let mut present_time = None;
+
+		for (_window, swapchain) in self.windows.iter().skip(self.acquisitions.1.len()) {
+			let Some(acquisition) = context.acquire_swapchain_image(frame, *swapchain) else {
+				log::warn!(
+					"No swapchain image was available for window {:?}. Rendering will be skipped.",
+					swapchain
+				);
+				self.acquisitions.1.push(None);
+				continue;
+			};
+			let extent = acquisition.extent();
+			if self.acquisitions.1.is_empty() {
+				present_time = acquisition.present_time();
+			}
+
+			if extent.width() == 0 || extent.height() == 0 {
+				log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
+				self.acquisitions.1.push(None);
+				continue;
+			}
+
+			if extent.width() >= 65535 || extent.height() >= 65535 {
+				log::warn!(
+					"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
+					extent
+				);
+				self.acquisitions.1.push(None);
+				continue;
+			}
+
+			self.acquisitions
+				.1
+				.push(Some((acquisition.present_key(), extent, *swapchain)));
+		}
+
+		present_time
+	}
+
+	/// Asks for a new frame when the application changed something the renderer cannot observe itself.
+	///
+	/// This only matters with the `render-on-demand` application parameter: scene pipelines do not report their
+	/// changes, so call this after moving cameras or scene objects. UI renders and window events request frames
+	/// on their own.
+	pub fn request_redraw(&mut self) {
+		self.redraw_requested = true;
+	}
+
+	/// Reports whether the next frame would show something the last presented frame does not.
+	///
+	/// Render passes adopt their pending inputs while answering, so call this after the tick published them.
+	pub(crate) fn needs_frame(&mut self) -> bool {
+		let mut needs_frame = self.redraw_requested || !self.pending_sink_initializations.is_empty();
+		// Ask every pass so each adopts its inputs this tick, even when an earlier one already answered.
+		for render_pass in &mut self.render_passes {
+			needs_frame |= render_pass.needs_frame();
+		}
+		needs_frame
+	}
+
+	/// Starts scene resource requests before window setup or frame preparation borrows the context.
+	pub(crate) fn update(&mut self) {
+		for pipeline_manager in &mut self.pipeline_managers {
+			pipeline_manager.update();
+		}
+	}
+
+	/// Tells every pipeline manager that one simulation step ended; see [`PipelineManager::step`].
+	pub(crate) fn step(&mut self) {
+		for pipeline_manager in &mut self.pipeline_managers {
+			pipeline_manager.step();
+		}
+	}
+
+	/// Returns whether any window holds an acquired swapchain image for the current frame.
+	///
+	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
+	/// and the caller must pace the tick itself.
+	pub(crate) fn presents_this_frame(&self) -> bool {
+		self.acquisitions.0 == self.started_frame_count && self.acquisitions.1.iter().any(Option::is_some)
+	}
+
+	/// Returns whether any frame has been submitted to a window since startup.
+	pub(crate) fn has_presented(&self) -> bool {
+		self.started_frame_count > 0
 	}
 
 	/// Prepares a frame by invoking the configured render passes.
 	///
 	/// The renderer skips execution when no swapchain is available or when any
 	/// swapchain surface has a zero-sized dimension.
-	// Keep the frame transaction contiguous so acquisition, recording, presentation, and screenshot transfers stay ordered.
+	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
+	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn prepare(
 		&'_ mut self,
 		transforms_listener: &mut impl Listener<TransformationUpdate>,
 		frame_allocator: &bumpalo::Bump,
 		screenshot_requests: &[(usize, &crate::inspector::screenshot::ScreenshotCapture)],
+		alpha: f32,
+		time: crate::time::MediaTime,
 	) -> Vec<Result<(u64, ghi::TextureReadback), RendererScreenshotError>> {
 		let span = debug_span!(
 			"Renderer::prepare",
@@ -492,6 +646,10 @@ impl Renderer {
 				.map(|_| Err(RendererScreenshotError::SinkNotFound))
 				.collect();
 		};
+		// Acquire here when nothing was hoisted to the start of the tick, or for windows adopted since.
+		self.acquire_swapchain_images();
+		self.redraw_requested = false;
+
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
 			self.initialize_pending_sink_resources();
 		}
@@ -534,7 +692,7 @@ impl Renderer {
 		let command_buffer = self.render_command_buffer;
 		let synchronizer = self.render_finished_synchronizer;
 		let wait_for = &[];
-		let windows = &self.windows;
+		let swapchains = &self.acquisitions.1;
 		let sink_cameras = &self.sink_cameras;
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
@@ -565,38 +723,12 @@ impl Renderer {
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains) = {
+				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
 					let _enter = span.enter();
 					let frame = execution.frame().expect(
 					"Frame is required to prepare renderer frame work. The most likely cause is that Renderer::render called Queue::execute without a frame request.",
 				);
-					let swapchains: SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]> = {
-						let span = debug_span!("Renderer::acquire_swapchains", count = windows.len());
-						let _enter = span.enter();
-						windows
-							.iter()
-							.map(|(_window, swapchain)| {
-								let (present_key, extent) = frame.acquire_swapchain_image(*swapchain);
-
-								if extent.width() == 0 || extent.height() == 0 {
-									log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-									return None;
-								}
-
-								if extent.width() >= 65535 || extent.height() >= 65535 {
-									log::warn!(
-										"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
-										extent
-									);
-									return None;
-								}
-
-								Some((present_key, extent, *swapchain))
-							})
-							.collect()
-					};
-
 					let mut sinks: SmallVec<[Sink; 16]> = SmallVec::new();
 
 					{
@@ -640,7 +772,8 @@ impl Renderer {
 						let _enter = span.enter();
 						pipeline_managers
 							.filter_map(|(pipeline_manager_id, sm)| {
-								sm.prepare(frame, &sinks, frame_allocator).map(|commands| (pipeline_manager_id, commands))
+								sm.prepare(frame, &sinks, frame_allocator, alpha, time)
+									.map(|commands| (pipeline_manager_id, commands))
 							})
 							.collect()
 					};
@@ -672,7 +805,7 @@ impl Renderer {
 						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys, swapchains)
+					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys)
 				};
 
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -835,7 +968,16 @@ impl Renderer {
 			ghi::window::Features::empty()
 		};
 
-		let window = ghi::Window::new_with_params(name, extent, "main_window", features);
+		// Connect on first use so headless renderers never touch the windowing system.
+		let app = match self.app.take() {
+			Some(app) => Ok(app),
+			None => ghi::window::App::new("main_window"),
+		};
+		let window = app.and_then(|mut app| {
+			let window = app.create_window(name, extent, features);
+			self.app = Some(app);
+			window
+		});
 
 		match window {
 			Ok(window) => {
@@ -845,12 +987,16 @@ impl Renderer {
 				// takes the same lock, and `SharedContext` is a plain mutex that does not re-enter.
 				let swapchain_handle = {
 					let mut context = self.context.lock();
-					context.bind_to_window(
+					let swapchain_handle = context.bind_to_window(
 						&os_handles,
 						ghi::PresentationModes::FIFO,
 						extent,
 						ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
-					)
+					);
+					if self.present_interval.is_some() {
+						context.set_present_interval(swapchain_handle, self.present_interval);
+					}
+					swapchain_handle
 				};
 
 				let sink_id = self.windows.len();
@@ -863,6 +1009,7 @@ impl Renderer {
 				};
 
 				self.windows.push((window, swapchain_handle));
+				self.redraw_requested = true;
 
 				if sink_has_camera {
 					if self.defer_first_frame_sink_setup && self.started_frame_count == 0 {
@@ -890,10 +1037,10 @@ impl Renderer {
 			.find(|(existing_handle, ..)| *existing_handle == handle)
 		{
 			*existing_camera = camera;
-			return;
+		} else {
+			self.cameras.push((handle, camera, Transform::default()));
 		}
-
-		self.cameras.push((handle, camera, Transform::default()));
+		self.redraw_requested = true;
 	}
 }
 /// Returns request slots transferred immediately after one prepared pass entry.
@@ -993,7 +1140,6 @@ use std::{
 	collections::VecDeque,
 	io::Write,
 	ops::{Deref, DerefMut},
-	rc::Rc,
 };
 
 use ghi::{

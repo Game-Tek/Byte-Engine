@@ -4,6 +4,10 @@ impl Context {
 	pub(crate) fn new(device: &Device) -> Result<Self, &'static str> {
 		let mut device = device.inner.clone().ok_or("Failed to create a Vulkan context. The most likely cause is that a detached device was used as the primary graphics device.")?;
 		let queues = std::mem::take(&mut device.queues);
+		let vk_queues = std::mem::take(&mut device.vk_queues)
+			.into_iter()
+			.map(std::sync::Mutex::new)
+			.collect();
 
 		let mut context = Context {
 			memory_properties: device.memory_properties,
@@ -13,6 +17,7 @@ impl Context {
 			frames: 2, // Assuming double buffering
 
 			queues,
+			vk_queues,
 			allocations: Vec::new(),
 			buffers: ResourceCollection::with_capacity(1024),
 			images: Vec::with_capacity(512),
@@ -104,7 +109,7 @@ impl Context {
 		self.set_name(command_buffer, name);
 
 		CommandBufferInternal {
-			vk_queue: queue.vk_queue.clone(),
+			vk_queue_index: queue.vk_queue_index,
 			command_pool,
 			command_buffer,
 		}
@@ -161,8 +166,8 @@ impl Context {
 		recording
 	}
 
-	/// Drains the staging uploads queued by CPU writes, as buffer copies and images to upload in full.
-	pub(crate) fn take_pending_syncs(&mut self) -> (Vec<BufferCopy>, Vec<ImageHandle>) {
+	/// Drains the staging uploads queued by CPU writes, as buffer copies and image uploads.
+	pub(crate) fn take_pending_syncs(&mut self) -> (Vec<BufferCopy>, Vec<ImageCopy>) {
 		let buffers = &self.buffers;
 		let buffer_copies = self
 			.pending_buffer_syncs
@@ -172,7 +177,12 @@ impl Context {
 				Some(BufferCopy::new(buffer.staging?, 0, handle, 0, buffer.size))
 			})
 			.collect();
-		(buffer_copies, self.pending_image_syncs.drain().collect())
+		let image_copies = self
+			.pending_image_syncs
+			.drain()
+			.map(|(dst_texture, region)| ImageCopy { dst_texture, region })
+			.collect();
+		(buffer_copies, image_copies)
 	}
 
 	pub(crate) fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -234,14 +244,14 @@ impl Context {
 			self.images[image_handle.0 as usize].staging_buffer.is_some(),
 			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
 		);
-		self.pending_image_syncs.insert(image_handle);
+		self.pending_image_syncs.insert((image_handle, None));
 	}
 
 	pub(crate) fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
 		let handle = ImageHandle(image_handle.0.0);
 		let texture = handle.access(&self.images);
 		f(unsafe { std::slice::from_raw_parts_mut(texture.pointer.unwrap().0, texture.size) });
-		self.pending_image_syncs.insert(handle);
+		self.pending_image_syncs.insert((handle, None));
 	}
 
 	pub(crate) fn write_instance(
@@ -393,6 +403,8 @@ impl Context {
 			min_image_count,
 			max_image_count: vk_images.len() as u32,
 			vk_present_mode,
+			present_interval: None,
+			next_present_slot: None,
 		});
 
 		swapchain_handle
@@ -644,6 +656,172 @@ impl Context {
 		self.release_retired_descriptor_materializations(sequence_index);
 
 		crate::queue::StartedFrame::new(Frame::new(self, frame_key), completed_frame)
+	}
+
+	/// Acquires the swapchain image that `frame` will present before the frame is started.
+	///
+	/// The sequence fence is waited (not reset) first: the acquire semaphore of this sequence was last waited by the
+	/// submission `frames_in_flight` frames ago, and that wait must have executed before the semaphore can be signaled
+	/// again. [`Self::start_frame`] later sees the same fence signaled, so its wait returns at once before the reset.
+	pub(crate) fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
+		let synchronizer_index = self.get_syncronizer_handles(frame.synchronizer)[sequence_index as usize].0 as usize;
+		let synchronizer = &self.synchronizers[synchronizer_index];
+		if synchronizer.armed {
+			unsafe {
+				self.device.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
+					"Failed to wait for the frame sequence fence before swapchain acquisition. The most likely cause is that the device was lost.",
+				);
+			}
+		}
+		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
+	}
+
+	pub(crate) fn set_present_interval(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		interval: Option<std::time::Duration>,
+	) {
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
+	}
+
+	/// Acquires the next image of `swapchain_handle` with the acquire synchronizer of `sequence_index`, recreating the
+	/// swapchain when it no longer matches its surface.
+	///
+	/// Returns `None` when no image could be acquired, such as while the window is minimized; callers must skip
+	/// rendering and presentation for that swapchain this frame.
+	pub(crate) fn acquire_swapchain_image_for_sequence(
+		&mut self,
+		sequence_index: u8,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		{
+			// Vulkan has no timed present in the extensions we enable, so the cap paces acquisition instead.
+			let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+			crate::swapchain::pace_present(&mut swapchain.next_present_slot, swapchain.present_interval);
+		}
+
+		let capabilities = self.query_swapchain_capabilities(swapchain_handle);
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let extent_changed = capabilities.current_extent.width != u32::MAX && capabilities.current_extent != swapchain.extent;
+		if (swapchain.needs_recreation || extent_changed) && !self.recreate_swapchain(swapchain_handle, &capabilities) {
+			return None;
+		}
+
+		let mut recreated = false;
+		let index = loop {
+			match self.acquire_next_swapchain_image(sequence_index, swapchain_handle) {
+				Ok((index, suboptimal)) => {
+					// The acquired image is still presentable, so rebuild on the next acquire instead of discarding it.
+					if suboptimal {
+						self.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+					}
+					break index;
+				}
+				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) if !recreated => {
+					recreated = true;
+					let capabilities = self.query_swapchain_capabilities(swapchain_handle);
+					if !self.recreate_swapchain(swapchain_handle, &capabilities) {
+						return None;
+					}
+				}
+				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+					self.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+					return None;
+				}
+				Err(error) => panic!(
+					"Failed to acquire a Vulkan swapchain image ({error:?}). The most likely cause is that the surface or the device was lost."
+				),
+			}
+		};
+
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
+		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
+		let native_image = swapchain.native_images[index as usize];
+		let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
+
+		// The presentation engine hands the image back with undefined contents and no prior GPU work to order against;
+		// recording chains its first barrier to the acquire semaphore instead.
+		self.states.insert(
+			crate::vulkan::Handles::Image(native_image),
+			TransitionState::new(
+				vk::PipelineStageFlags2::NONE,
+				vk::AccessFlags2::NONE,
+				vk::ImageLayout::UNDEFINED,
+			),
+		);
+
+		Some(crate::frame::SwapchainAcquisition {
+			present_key: graphics_hardware_interface::PresentKey {
+				image_index: index as u8,
+				sequence_index,
+				swapchain: swapchain_handle,
+			},
+			extent,
+			present_time: None,
+		})
+	}
+
+	fn query_swapchain_capabilities(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> vk::SurfaceCapabilitiesKHR {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		self.device
+			.query_swapchain_surface_capabilities(swapchain.surface, swapchain.vk_present_mode)
+	}
+
+	/// Runs one `vkAcquireNextImage2KHR` with the acquire synchronizer of `sequence_index`, tracking whether its fence will signal.
+	fn acquire_next_swapchain_image(
+		&mut self,
+		sequence_index: u8,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> Result<(u32, bool), vk::Result> {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let synchronizer_index = swapchain.acquire_synchronizers[sequence_index as usize].0 as usize;
+		let synchronizer = &self.synchronizers[synchronizer_index];
+
+		// Only one image can be held at a time when the swapchain has no spare images, so poll instead of blocking in the driver.
+		let use_vulkan_timeout = swapchain.max_image_count > swapchain.min_image_count;
+
+		let acquire_info = vk::AcquireNextImageInfoKHR::default()
+			.swapchain(swapchain.swapchain)
+			.timeout(if use_vulkan_timeout { u64::MAX } else { 0 })
+			.semaphore(synchronizer.semaphore)
+			.device_mask(1)
+			.fence(synchronizer.fence);
+
+		unsafe {
+			if synchronizer.armed {
+				self.device
+					.device
+					.wait_for_fences(&[synchronizer.fence], true, u64::MAX)
+					.expect(
+						"Failed to wait for the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
+					);
+			}
+			self.device.device.reset_fences(&[synchronizer.fence]).expect(
+				"Failed to reset the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
+			);
+		}
+
+		let result = loop {
+			match unsafe { self.device.swapchain.acquire_next_image2(&acquire_info) } {
+				Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) if !use_vulkan_timeout => {
+					std::thread::sleep(std::time::Duration::from_millis(1))
+				}
+				result => break result,
+			}
+		};
+
+		// A failed acquire never signals the fence, so a later wait on it must be skipped.
+		self.synchronizers[synchronizer_index].armed = result.is_ok();
+		result
 	}
 
 	pub(crate) fn get_swapchain_image_for_sequence(

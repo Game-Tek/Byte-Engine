@@ -1,57 +1,40 @@
 use std::{
 	future::Future,
+	marker::PhantomData,
 	pin::Pin,
-	sync::{Mutex, OnceLock},
-	task::{Context, Poll, Waker},
+	task::{Context, Poll},
 	time::{Duration, Instant},
 };
 
 use utils::r#async::FusedFuture;
 
-/// Returns a future that completes after `duration`.
-pub fn wait(duration: Duration) -> WaitFuture {
-	WaitFuture {
-		deadline: Instant::now() + duration,
-		armed: false,
-		complete: false,
-	}
-}
+use crate::ui::layout::engine::UiPoll;
 
-/// Returns a future that completes after `seconds`.
-pub fn seconds(seconds: u64) -> WaitFuture {
-	wait(Duration::from_secs(seconds))
-}
-
-pub struct WaitFuture {
+/// The `WaitFuture` struct lets a mounted UI component pause until a deadline.
+///
+/// Get one from [`crate::ui::Context::wait`] or [`crate::ui::Context::seconds`] and await it inside a component. The
+/// wait registers with the component's engine, which wakes it from [`crate::ui::Engine::evaluate`] once the deadline
+/// passes and schedules that evaluation through [`crate::ui::Engine::next_tick`]. Like other UI waits, it stays
+/// registered only while its task keeps polling it.
+pub struct WaitFuture<C = ()> {
 	deadline: Instant,
-	armed: bool,
 	complete: bool,
+	/// The engine context type, which names the poll state this wait reaches the runtime through.
+	ctx: PhantomData<fn() -> C>,
 }
 
-struct TimerWaiter {
-	deadline: Instant,
-	waker: Waker,
-}
-
-fn timer_waiters() -> &'static Mutex<Vec<TimerWaiter>> {
-	static WAITERS: OnceLock<Mutex<Vec<TimerWaiter>>> = OnceLock::new();
-	WAITERS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-pub(crate) fn wake_due_timers(now: Instant) {
-	let mut waiters = timer_waiters().lock().expect("UI timer waiter lock poisoned");
-	let mut i = 0;
-	while i < waiters.len() {
-		if waiters[i].deadline <= now {
-			let waiter = waiters.swap_remove(i);
-			waiter.waker.wake();
-		} else {
-			i += 1;
+impl<C> WaitFuture<C> {
+	/// Makes a wait that completes `duration` from now.
+	pub(crate) fn new(duration: Duration) -> Self {
+		Self {
+			deadline: Instant::now() + duration,
+			complete: false,
+			ctx: PhantomData,
 		}
 	}
 }
 
-impl Future for WaitFuture {
+impl<C: 'static> Future for WaitFuture<C> {
 	type Output = ();
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -59,28 +42,17 @@ impl Future for WaitFuture {
 			return Poll::Pending;
 		}
 
-		let now = Instant::now();
-		if now >= self.deadline {
+		if Instant::now() >= self.deadline {
 			self.complete = true;
 			return Poll::Ready(());
 		}
 
-		if !self.armed {
-			self.armed = true;
-			timer_waiters()
-				.lock()
-				.expect("UI timer waiter lock poisoned")
-				.push(TimerWaiter {
-					deadline: self.deadline,
-					waker: cx.waker().clone(),
-				});
-		}
-
+		UiPoll::<C>::from_context(cx).wait_until(self.deadline);
 		Poll::Pending
 	}
 }
 
-impl FusedFuture for WaitFuture {
+impl<C: 'static> FusedFuture for WaitFuture<C> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}

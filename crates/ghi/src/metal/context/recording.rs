@@ -66,9 +66,6 @@ impl Context {
 			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),
 			allocations: Vec::new(),
-			pipeline_layouts: Vec::new(),
-			vertex_layouts: Vec::new(),
-			vertex_layout_indices: HashMap::default(),
 			descriptor_sets: Vec::new(),
 			meshes: Vec::new(),
 			acceleration_structures: Vec::new(),
@@ -81,27 +78,19 @@ impl Context {
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			resource_to_descriptor: HashMap::default(),
-			descriptor_set_to_resource: HashMap::default(),
 			descriptor_sources: HashMap::default(),
 			settings,
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
 			tasks: Vec::new(),
-
-			#[cfg(debug_assertions)]
-			names: HashMap::default(),
+			upload_arenas: (0..=MAX_FRAMES_IN_FLIGHT)
+				.map(|_| command_buffer::UploadArena::default())
+				.collect(),
+			argument_tables: command_buffer::CommandArgumentTables::default(),
 		};
 		context.internal_upload_synchronizer = Some(context.create_synchronizer(Some("Metal Internal Upload Sync"), true));
 
 		Ok(context)
-	}
-
-	pub fn create_factory(&self) -> Option<crate::metal::factory::Factory> {
-		Some(crate::metal::factory::Factory::new(
-			self.device.clone(),
-			self.compiler.clone(),
-			self.settings,
-		))
 	}
 
 	pub(super) fn create_buffer_resource(
@@ -174,6 +163,17 @@ impl Context {
 		}
 	}
 
+	/// Returns the typed CPU mapping of a buffer. A device-only buffer maps its staging copy.
+	pub(super) fn typed_buffer_pointer<T: crate::Pod>(
+		&self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> *mut T {
+		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
+		)
+	}
+
 	/// Creates a Metal buffer and optionally links it after an existing private frame resource.
 	pub(super) fn create_buffer_internal(
 		&mut self,
@@ -207,89 +207,14 @@ impl Context {
 		handle
 	}
 
-	pub(super) fn create_image_resource(
-		&self,
-		name: Option<&str>,
-		extent: Extent,
-		format: crate::Formats,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-		array_layers: u32,
-		cube_compatible: bool,
-		cube_array_compatible: bool,
-		mip_levels: u32,
-	) -> image::Image {
-		let name = crate::debug_name(name);
-
-		let descriptor = build_texture_descriptor(
-			format,
-			extent,
-			resource_uses,
-			device_accesses,
-			array_layers,
-			cube_compatible,
-			cube_array_compatible,
-			mip_levels,
-		);
-
-		let texture = self
-			.device
-			.newTextureWithDescriptor(&descriptor)
-			.expect("Metal texture creation failed. The most likely cause is that the device is out of memory.");
-
-		#[cfg(debug_assertions)]
-		if self.settings.debug_labels {
-			if let Some(name) = name.as_deref() {
-				texture.setLabel(Some(&NSString::from_str(name)));
-			}
-		}
-
-		let staging = utils::texture_upload_layout(format, extent).map(|(_, _, bytes_per_image)| {
-			let depth = extent.depth().max(1) as usize;
-			let size = bytes_per_image * depth * array_layers as usize;
-			vec![0u8; size]
-		});
-
-		image::Image {
-			name,
-			texture,
-			extent,
-			format,
-			uses: resource_uses,
-			access: device_accesses,
-			array_layers,
-			cube_compatible,
-			cube_array_compatible,
-			mip_levels,
-			staging,
-		}
-	}
-
 	/// Creates a Metal image and optionally links it after an existing private frame resource.
 	pub(super) fn create_image_internal(
 		&mut self,
 		previous: Option<ImageHandle>,
 		name: Option<&str>,
-		extent: Extent,
-		format: crate::Formats,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-		array_layers: u32,
-		cube_compatible: bool,
-		cube_array_compatible: bool,
-		mip_levels: u32,
+		description: image::ImageDescription,
 	) -> ImageHandle {
-		let image = self.create_image_resource(
-			name,
-			extent,
-			format,
-			resource_uses,
-			device_accesses,
-			array_layers,
-			cube_compatible,
-			cube_array_compatible,
-			mip_levels,
-		);
+		let image = build_image(&self.device, name, description, self.settings.debug_labels);
 		let (_, handle) = self.images.add(image);
 
 		if let Some(previous) = previous {
@@ -308,74 +233,30 @@ impl Context {
 		frame_index: u8,
 		array_element: u32,
 	) {
-		let previous = self.descriptor_sets[set_handle.0 as usize]
-			.descriptors
-			.get(&slot)
-			.and_then(|descriptors| descriptors.get(&array_element))
-			.copied();
-		if previous == Some(descriptor) {
-			return;
-		}
-
-		self.clear_descriptor_tracking(set_handle, slot, array_element, frame_index);
 		let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
-		descriptor_set
+		let previous = descriptor_set
 			.descriptors
 			.entry(slot)
 			.or_default()
 			.insert(array_element, descriptor);
-		descriptor_set.version = descriptor_set.version.wrapping_add(1);
-		self.register_descriptor_tracking(set_handle, slot, descriptor, array_element, frame_index);
-	}
-
-	/// Removes reverse-tracking entries for the descriptor currently associated with one binding element in one frame.
-	pub(super) fn clear_descriptor_tracking(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
-		array_element: u32,
-		frame_index: u8,
-	) {
-		let key = (set_handle, slot, array_element, frame_index);
-		let Some(resources) = self.descriptor_set_to_resource.remove(&key) else {
+		if previous == Some(descriptor) {
 			return;
-		};
+		}
+		descriptor_set.version = descriptor_set.version.wrapping_add(1);
 
-		for resource in resources {
-			let should_remove = if let Some(descriptor_bindings) = self.resource_to_descriptor.get_mut(&resource) {
-				descriptor_bindings.remove(&(set_handle, slot, array_element, frame_index));
-				descriptor_bindings.is_empty()
-			} else {
-				false
-			};
-
-			if should_remove {
+		// Keep the reverse index in step so replacing a resource's backing can invalidate every set that binds it.
+		let binding = (set_handle, slot, array_element, frame_index);
+		if let Some(resource) = previous.and_then(Descriptor::tracked_resource)
+			&& let Some(bindings) = self.resource_to_descriptor.get_mut(&resource)
+		{
+			bindings.remove(&binding);
+			if bindings.is_empty() {
 				self.resource_to_descriptor.remove(&resource);
 			}
 		}
-	}
-
-	/// Registers reverse-tracking for resource-backed descriptors so later resource changes can re-encode the affected bindings.
-	pub(super) fn register_descriptor_tracking(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
-		descriptor: Descriptor,
-		array_element: u32,
-		frame_index: u8,
-	) {
-		let Some(resource) = descriptor.tracked_resource() else {
-			return;
-		};
-
-		self.descriptor_set_to_resource
-			.entry((set_handle, slot, array_element, frame_index))
-			.or_default()
-			.insert(resource);
-		self.resource_to_descriptor
-			.entry(resource)
-			.or_default()
-			.insert((set_handle, slot, array_element, frame_index));
+		if let Some(resource) = descriptor.tracked_resource() {
+			self.resource_to_descriptor.entry(resource).or_default().insert(binding);
+		}
 	}
 
 	/// Resolves a descriptor write into the concrete per-frame Metal resources referenced by the current sequence.
@@ -432,101 +313,25 @@ impl Context {
 		}
 	}
 
-	/// Resolves and applies a descriptor write for a single frame when the referenced resources are available.
-	pub(super) fn apply_descriptor_write_for_frame(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
-		descriptor: crate::descriptors::WriteData,
-		array_element: u32,
-		frame_offset: i32,
-		sequence_index: u8,
-	) {
-		self.descriptor_sources
-			.insert((set_handle, slot, array_element, sequence_index), (descriptor, frame_offset));
-		if let Some(descriptor) = self.resolve_descriptor_for_frame(descriptor, sequence_index, frame_offset) {
-			self.update_descriptor_slot(set_handle, slot, descriptor, sequence_index, array_element);
-		}
-	}
-
-	/// Applies the same descriptor write across every frame tracked by the Metal device.
-	/// Call this to update a descriptor binding for all frames.
-	pub(super) fn apply_descriptor_write_to_all_frames(
-		&mut self,
-		set_handle: DescriptorSetHandle,
-		slot: crate::shader::ResourceSlot,
-		descriptor: crate::descriptors::WriteData,
-		array_element: u32,
-		frame_offset: i32,
-	) {
-		let set_handles = set_handle.root(&self.descriptor_sets).get_all(&self.descriptor_sets);
-
-		for (sequence_index, &set_handle) in set_handles.iter().enumerate() {
-			self.apply_descriptor_write_for_frame(
-				set_handle,
-				slot,
-				descriptor,
-				array_element,
-				frame_offset,
-				sequence_index as u8,
-			);
-		}
-	}
-
 	/// Invalidates every retained set that references a resource whose native backing changed.
 	pub(crate) fn rewrite_descriptors_for_handle(&mut self, handle: PrivateHandles) {
-		let Some(descriptor_bindings) = self.resource_to_descriptor.get(&handle).cloned() else {
+		let Some(bindings) = self.resource_to_descriptor.get(&handle) else {
 			return;
 		};
 
-		for (set_handle, ..) in descriptor_bindings {
+		for (set_handle, ..) in bindings {
 			let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
 			descriptor_set.version = descriptor_set.version.wrapping_add(1);
 		}
 	}
 
-	/// Returns the private buffer handles currently known for one master buffer chain.
-	pub(super) fn buffer_chain_handles(&self, master: graphics_hardware_interface::BaseBufferHandle) -> Vec<PrivateHandles> {
-		let mut handles = Vec::with_capacity(self.frames as usize);
-
-		for frame_index in 0..self.frames as usize {
-			let Some(handle) = self.buffers.nth_handle(master, frame_index) else {
-				continue;
-			};
-			let handle = PrivateHandles::Buffer(handle);
-
-			if !handles.contains(&handle) {
-				handles.push(handle);
-			}
-		}
-
-		handles
-	}
-
-	/// Returns the private image handles currently known for one master image chain.
-	pub(super) fn image_chain_handles(&self, master: graphics_hardware_interface::BaseImageHandle) -> Vec<PrivateHandles> {
-		let mut handles = Vec::with_capacity(self.frames as usize);
-
-		for frame_index in 0..self.frames as usize {
-			let Some(handle) = self.images.nth_handle(master, frame_index) else {
-				continue;
-			};
-			let handle = PrivateHandles::Image(handle);
-
-			if !handles.contains(&handle) {
-				handles.push(handle);
-			}
-		}
-
-		handles
-	}
-
 	/// Re-resolves retained descriptor writes after a deferred frame resource extends its chain.
+	///
+	/// `candidates` are the chain's private handles; a set that resolved to one of them may now resolve to the new one.
 	pub(super) fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles]) {
 		let descriptor_bindings = candidates
 			.iter()
-			.copied()
-			.filter_map(|candidate| self.resource_to_descriptor.get(&candidate))
+			.filter_map(|candidate| self.resource_to_descriptor.get(candidate))
 			.flat_map(|bindings| bindings.iter().copied())
 			.collect::<HashSet<_>>();
 
@@ -552,43 +357,9 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		extent: Extent,
 	) {
-		let image_handles = self.swapchains[swapchain_handle.0 as usize].images;
 		let mut resized = false;
-
-		for image_handle in image_handles.into_iter().flatten() {
-			let (current_extent, format, uses, access, array_layers, cube_compatible, cube_array_compatible, mip_levels) = {
-				let image = self.images.resource(image_handle);
-				(
-					image.extent,
-					image.format,
-					image.uses,
-					image.access,
-					image.array_layers,
-					image.cube_compatible,
-					image.cube_array_compatible,
-					image.mip_levels,
-				)
-			};
-
-			if current_extent == extent {
-				continue;
-			}
-
-			let name = self.images.resource(image_handle).name.clone();
-			let replacement = self.create_image_resource(
-				name.as_deref(),
-				extent,
-				format,
-				uses,
-				access,
-				array_layers,
-				cube_compatible,
-				cube_array_compatible,
-				mip_levels,
-			);
-			*self.images.resource_mut(image_handle) = replacement;
-			self.rewrite_descriptors_for_handle(PrivateHandles::Image(image_handle));
-			resized = true;
+		for image_handle in self.swapchains[swapchain_handle.0 as usize].images.into_iter().flatten() {
+			resized |= self.resize_image_internal(image_handle, extent);
 		}
 
 		if resized {
@@ -599,99 +370,68 @@ impl Context {
 		}
 	}
 
+	/// Runs the tasks scheduled for `sequence_index` and keeps every other task for its own frame.
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
-		let mut tasks = std::mem::take(&mut self.tasks);
-		let mut deferred_frame_tasks = SmallVec::<[Task; 16]>::new(); // TODO: use frame allocator
-
-		tasks.retain(|task| {
-			if let Some(frame) = task.frame() {
-				if frame != sequence_index {
-					return true;
-				}
+		for task in std::mem::take(&mut self.tasks) {
+			if task.frame != sequence_index {
+				self.tasks.push(task);
+				continue;
 			}
 
-			match task.task() {
-				Tasks::UpdateBufferDescriptors { handle } => {
-					self.rewrite_descriptors_for_handle(PrivateHandles::Buffer(*handle));
-				}
-				Tasks::UpdateImageDescriptors { handle } => {
-					self.rewrite_descriptors_for_handle(PrivateHandles::Image(*handle));
-				}
-				Tasks::BuildImage(builder) => {
-					let previous = self.images.resource(builder.previous);
-					let name = previous.name.clone();
-					let extent = previous.extent;
-					let format = previous.format;
-					let uses = previous.uses;
-					let access = previous.access;
-					let array_layers = previous.array_layers;
-					let cube_compatible = previous.cube_compatible;
-					let cube_array_compatible = previous.cube_array_compatible;
-					let mip_levels = previous.mip_levels;
-					let handle = self.create_image_internal(
-						Some(builder.previous),
-						name.as_deref(),
-						extent,
-						format,
-						uses,
-						access,
-						array_layers,
-						cube_compatible,
-						cube_array_compatible,
-						mip_levels,
-					);
+			let next_frame = sequence_index + 1;
+			match task.task {
+				Tasks::BuildImage { previous, master } => {
+					let previous_image = self.images.resource(previous);
+					let (name, description) = (previous_image.name.clone(), previous_image.description);
+					let handle = self.create_image_internal(Some(previous), name.as_deref(), description);
 
-					let candidates = self.image_chain_handles(builder.master.0);
+					let candidates = (0..self.frames as usize)
+						.filter_map(|frame| self.images.nth_handle(master, frame).map(PrivateHandles::Image))
+						.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
 					self.rewrite_deferred_descriptors(&candidates);
 
-					let next_frame = sequence_index + 1;
 					if next_frame < self.frames {
-						deferred_frame_tasks.push(Task::new(
-							Tasks::BuildImage(BuildImage {
+						self.tasks.push(Task {
+							task: Tasks::BuildImage {
 								previous: handle,
-								master: builder.master,
-							}),
-							Some(next_frame),
-						));
+								master,
+							},
+							frame: next_frame,
+						});
 					}
 				}
-				Tasks::BuildBuffer(builder) => {
-					let previous = self.buffers.resource(builder.previous);
-					let name = previous.name.clone();
-					let size = previous.size;
-					let uses = previous.uses;
-					let access = previous.access;
-					let handle = self.create_buffer_internal(Some(builder.previous), name.as_deref(), size, uses, access);
+				Tasks::BuildBuffer { previous, master } => {
+					let previous_buffer = self.buffers.resource(previous);
+					let name = previous_buffer.name.clone();
+					let size = previous_buffer.size;
+					let uses = previous_buffer.uses;
+					let access = previous_buffer.access;
+					let handle = self.create_buffer_internal(Some(previous), name.as_deref(), size, uses, access);
 
-					let candidates = self.buffer_chain_handles(builder.master);
+					let candidates = (0..self.frames as usize)
+						.filter_map(|frame| self.buffers.nth_handle(master, frame).map(PrivateHandles::Buffer))
+						.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
 					self.rewrite_deferred_descriptors(&candidates);
 
-					let next_frame = sequence_index + 1;
 					if next_frame < self.frames {
-						deferred_frame_tasks.push(Task::new(
-							Tasks::BuildBuffer(BuildBuffer {
+						self.tasks.push(Task {
+							task: Tasks::BuildBuffer {
 								previous: handle,
-								master: builder.master,
-							}),
-							Some(next_frame),
-						));
+								master,
+							},
+							frame: next_frame,
+						});
 					}
 				}
 				Tasks::ResizeImage { handle, extent } => {
 					let handle = self
 						.images
-						.nth_handle(*handle, sequence_index as usize)
+						.nth_handle(handle, sequence_index as usize)
 						.expect("Missing Metal frame-local image. The most likely cause is an invalid dynamic image handle.");
-					self.resize_image_internal(handle, *extent);
+					self.resize_image_internal(handle, extent);
 				}
-				Tasks::DeleteMetalTexture { .. } | Tasks::DeleteMetalBuffer { .. } => {}
 			}
-
-			false
-		});
-
-		tasks.extend(deferred_frame_tasks);
-		self.tasks = tasks;
+		}
 	}
 
 	/// Replaces one frame-local image while preserving its private handle and descriptor references.
@@ -700,21 +440,15 @@ impl Context {
 	pub(crate) fn resize_image_internal(&mut self, handle: ImageHandle, extent: Extent) -> bool {
 		let image = self.images.resource(handle);
 
-		if image.extent == extent {
+		if image.description.extent == extent {
 			return false;
 		}
 
-		let replacement = self.create_image_resource(
-			image.name.as_deref(),
+		let description = image::ImageDescription {
 			extent,
-			image.format,
-			image.uses,
-			image.access,
-			image.array_layers,
-			image.cube_compatible,
-			image.cube_array_compatible,
-			image.mip_levels,
-		);
+			..image.description
+		};
+		let replacement = build_image(&self.device, image.name.as_deref(), description, self.settings.debug_labels);
 		*self.images.resource_mut(handle) = replacement;
 		self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 		true
@@ -728,8 +462,10 @@ impl Context {
 		current_frame: u8,
 	) {
 		for offset in 1..self.frames {
-			let frame = (current_frame + offset).rem_euclid(self.frames);
-			self.tasks.push(Task::new(Tasks::ResizeImage { handle, extent }, Some(frame)));
+			self.tasks.push(Task {
+				task: Tasks::ResizeImage { handle, extent },
+				frame: (current_frame + offset) % self.frames,
+			});
 		}
 	}
 }

@@ -1,7 +1,9 @@
 /// The `BESLShaderAssetHandler` struct exists to bake standalone BESL programs into runtime shader resources.
 pub struct BESLShaderAssetHandler {
-	compiler: Arc<dyn ShaderCompiler>,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	compiler: Box<dyn ShaderCompiler>,
+	generator: Option<Box<dyn ProgramGenerator>>,
+	/// Empty material context handed to [`ProgramGenerator::transform`], since standalone shaders have no material.
+	standalone_context: crate::asset::JsonObject,
 }
 
 impl Default for BESLShaderAssetHandler {
@@ -13,14 +15,15 @@ impl Default for BESLShaderAssetHandler {
 impl BESLShaderAssetHandler {
 	pub fn new() -> Self {
 		Self {
-			compiler: Arc::new(PlatformShaderCompilerAdapter),
+			compiler: Box::new(PlatformShaderCompilerAdapter),
 			generator: None,
+			standalone_context: standalone_shader_context(),
 		}
 	}
 
 	/// Configures the shared program scope applied before standalone shaders are linked and lowered.
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Arc::new(generator));
+		self.generator = Some(Box::new(generator));
 	}
 }
 
@@ -63,13 +66,12 @@ impl AssetHandler for BESLShaderAssetHandler {
 
 		let source_hash = hash_shader_source(&id_string, &source, settings);
 
-		let compiler = Arc::clone(&self.compiler);
-
-		let generator = self.generator.clone();
+		let generator = self.generator.as_deref().map(|generator| (generator, &self.standalone_context));
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
-		let (shader, bytes) = compiler
-			.compile(&id_string, &source, settings, source_hash, generator.as_deref())
+		let (shader, bytes) = self
+			.compiler
+			.compile(&id_string, &source, settings, source_hash, generator)
 			.await
 			.map_err(|error| {
 				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
@@ -88,7 +90,7 @@ trait ShaderCompiler: Send + Sync {
 		source: &'a str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
-		generator: Option<&'a dyn ProgramGenerator>,
+		generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
 
@@ -102,7 +104,7 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 		source: &'a str,
 		settings: BESLShaderSettings,
 		source_hash: u64,
-		generator: Option<&'a dyn ProgramGenerator>,
+		generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 		Box::pin(compile_shader(id, source, settings, source_hash, generator))
 	}
@@ -117,11 +119,11 @@ struct BESLShaderSettings {
 	maximum_primitives: Option<u32>,
 }
 
-static STANDALONE_SHADER_CONTEXT: OnceLock<crate::asset::JsonObject> = OnceLock::new();
-
-/// Returns the allocation-retaining empty material context used by standalone program generators.
-fn standalone_shader_context() -> &'static crate::asset::JsonObject {
-	STANDALONE_SHADER_CONTEXT.get_or_init(|| serde_json::json!({ "variables": [] }).as_object().unwrap().clone())
+/// Builds the empty material context that standalone program generators receive, since standalone shaders have no material.
+fn standalone_shader_context() -> crate::asset::JsonObject {
+	let mut context = crate::asset::JsonObject::new();
+	context.insert("variables".to_string(), serde_json::Value::Array(Vec::new()));
+	context
 }
 
 impl BESLShaderSettings {
@@ -371,14 +373,14 @@ fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
 fn prepare_shader(
 	source: &str,
 	workgroup_size: Option<(u32, u32, u32)>,
-	generator: Option<&dyn ProgramGenerator>,
+	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
 ) -> Result<(besl::NodeReference, ShaderInterface), String> {
 	let parsed = besl::parse(source).map_err(|error| {
 		format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid standalone shader syntax.")
 	})?;
 
 	let parsed = match generator {
-		Some(generator) => generator.transform(parsed, standalone_shader_context()),
+		Some((generator, context)) => generator.transform(parsed, context),
 		None => parsed,
 	};
 
@@ -421,7 +423,7 @@ async fn compile_shader(
 	source: &str,
 	settings: BESLShaderSettings,
 	source_hash: u64,
-	generator: Option<&dyn ProgramGenerator>,
+	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
 ) -> Result<(Shader, Box<[u8]>), String> {
 	let (program, interface) = prepare_shader(source, settings.workgroup_size, generator)?;
 
@@ -656,7 +658,7 @@ mod tests {
 			source: &'a str,
 			settings: BESLShaderSettings,
 			source_hash: u64,
-			generator: Option<&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator>,
+			generator: Option<(&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator, &'a crate::asset::JsonObject)>,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
 				assert_eq!(id, "passes/resolve.besl");
@@ -725,8 +727,9 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage, ResourceTestStorageBackend::new());
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
-			compiler: Arc::new(TestShaderCompiler),
+			compiler: Box::new(TestShaderCompiler),
 			generator: None,
+			standalone_context: super::standalone_shader_context(),
 		});
 
 		assert!(asset_manager.supports("passes/resolve.besl"));
@@ -745,8 +748,9 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
-			compiler: Arc::new(TestShaderCompiler),
+			compiler: Box::new(TestShaderCompiler),
 			generator: None,
+			standalone_context: super::standalone_shader_context(),
 		});
 
 		let result = asset_manager.bake("passes/no-settings.besl").await;
@@ -777,8 +781,9 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage.clone());
 
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
-			compiler: Arc::new(TestShaderCompiler),
+			compiler: Box::new(TestShaderCompiler),
 			generator: None,
+			standalone_context: super::standalone_shader_context(),
 		});
 
 		asset_manager
@@ -833,8 +838,9 @@ mod tests {
 		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
 
 		let mut handler = BESLShaderAssetHandler {
-			compiler: Arc::new(TestShaderCompiler),
+			compiler: Box::new(TestShaderCompiler),
 			generator: None,
+			standalone_context: super::standalone_shader_context(),
 		};
 
 		handler.set_shader_generator(TestStandaloneGenerator);
@@ -1102,8 +1108,7 @@ use std::{
 	collections::hash_map::DefaultHasher,
 	fmt,
 	hash::Hasher as _,
-	sync::{Arc, OnceLock},
-};
+	};
 
 use serde::Deserialize as _;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};

@@ -4,7 +4,7 @@ pub struct LutRenderPass {
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
-	lut_bytes: Option<std::sync::Arc<[u8]>>,
+	lut_bytes: Option<StdBox<[u8]>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
 }
@@ -220,10 +220,12 @@ pub(super) fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u
 	);
 
 	// The resource stores tightly packed RGB f32 texels, while the GPU texture expects RGBA16F texels.
-	for (rgb, rgba16f) in lut_bytes
-		.chunks_exact(3 * std::mem::size_of::<f32>())
-		.zip(upload_target.chunks_exact_mut(4 * std::mem::size_of::<u16>()))
-	{
+	for (rgb, rgba16f) in lut_bytes.as_chunks::<{ 3 * std::mem::size_of::<f32>() }>().0.iter().zip(
+		upload_target
+			.as_chunks_mut::<{ 4 * std::mem::size_of::<u16>() }>()
+			.0
+			.iter_mut(),
+	) {
 		let r = f32::from_le_bytes(rgb[0..4].try_into().unwrap());
 		let g = f32::from_le_bytes(rgb[4..8].try_into().unwrap());
 		let b = f32::from_le_bytes(rgb[8..12].try_into().unwrap());
@@ -246,7 +248,7 @@ fn expected_lut_payload_size(lut: &Lut) -> usize {
 #[derive(Clone)]
 pub struct PreparedLut {
 	pub(super) metadata: Lut,
-	pub(super) bytes: std::sync::Arc<[u8]>,
+	pub(super) bytes: StdBox<[u8]>,
 }
 
 impl PreparedLut {
@@ -262,7 +264,7 @@ impl PreparedLut {
 			)
 		})?;
 		let metadata = reference.resource().clone();
-		let bytes = load_lut_bytes(&mut reference).await?.into();
+		let bytes = load_lut_bytes(&mut reference).await?;
 		Ok(Self { metadata, bytes })
 	}
 }

@@ -43,8 +43,4 @@ impl Descriptor {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TopLevelAccelerationStructureHandle(pub(crate) u64);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct BottomLevelAccelerationStructureHandle(pub(crate) u64);
-
 pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
-pub(crate) const MAX_SWAPCHAIN_IMAGES: usize = 8;

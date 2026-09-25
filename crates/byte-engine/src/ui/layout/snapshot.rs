@@ -1,20 +1,20 @@
-use std::{cell::RefCell, rc::Rc};
-
 use super::{
 	LayoutElement,
 	element::Id,
-	engine::EngineState,
 	flow::{Location, Size},
 };
 use crate::ui::{UiPoint, UiVector, intersection::MouseClickAcceleration};
 
-/// The `Snapshot` struct preserves a laid-out UI tree with its interaction state.
+/// The `Snapshot` struct lets a host inspect one evaluated frame's layout and move the UI cursor through it.
+///
+/// It borrows the engine's retained layout, so it lives only until the engine is used again. Get one from
+/// [`crate::ui::Engine::evaluate`], then drop it and call [`crate::ui::Engine::render`].
 pub struct Snapshot<'a> {
-	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
-	pub(super) relations: Vec<(Id, Id), &'a bumpalo::Bump>,
-	pub(super) acceleration: MouseClickAcceleration<'a>,
-	pub(super) cursor: Option<Id>,
-	pub(super) engine_state: Rc<RefCell<EngineState>>,
+	pub(super) elements: &'a [LayoutElement],
+	pub(super) relations: &'a [(Id, Id)],
+	pub(super) acceleration: &'a MouseClickAcceleration,
+	/// The engine's cursor, which clicks and spatial navigation move in place.
+	pub(super) cursor: &'a mut Option<Id>,
 	pub(super) size: Size,
 }
 
@@ -26,15 +26,13 @@ impl Snapshot<'_> {
 		self.acceleration.retain(target, self.size);
 	}
 	pub fn cursor(&self) -> Option<Id> {
-		self.cursor
+		*self.cursor
 	}
 
 	pub fn set_cursor(&mut self, cursor: Option<Id>) -> Option<Id> {
-		self.cursor = self
-			.engine_state
-			.borrow_mut()
-			.set_cursor(cursor.filter(|id| self.element(*id).is_some()));
-		self.cursor
+		let cursor = cursor.filter(|id| self.element(*id).is_some());
+		*self.cursor = cursor;
+		cursor
 	}
 
 	pub fn clear_cursor(&mut self) {
@@ -43,7 +41,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor(&mut self, axis: UiVector) -> Option<Id> {
 		if axis.x.abs() < SPATIAL_CURSOR_DEADZONE && axis.y.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		if axis.x.abs() >= axis.y.abs() {
@@ -55,7 +53,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor_sideways(&mut self, axis: f32) -> Option<Id> {
 		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		let direction = if axis.is_sign_positive() {
@@ -69,7 +67,7 @@ impl Snapshot<'_> {
 
 	pub fn move_cursor_longitudinally(&mut self, axis: f32) -> Option<Id> {
 		if axis.abs() < SPATIAL_CURSOR_DEADZONE {
-			return self.cursor;
+			return *self.cursor;
 		}
 
 		let direction = if axis.is_sign_positive() {
@@ -82,6 +80,14 @@ impl Snapshot<'_> {
 	}
 
 	pub fn click(&mut self, mouse_pos: UiPoint) -> Option<Id> {
+		let id = self.hover(mouse_pos, None)?;
+		self.set_cursor(Some(id));
+		Some(id)
+	}
+
+	/// Returns the frontmost surface under normalized window coordinates without
+	/// moving the cursor, skipping `excluded` such as a held drag source.
+	pub fn hover(&self, mouse_pos: UiPoint, excluded: Option<Id>) -> Option<Id> {
 		let size = self.size;
 
 		// Window input is normalized around the origin, while hit testing uses a top-left UI origin.
@@ -89,13 +95,9 @@ impl Snapshot<'_> {
 		let mouse_y = (mouse_pos.y + 1.0) * 0.5 * size.y();
 		let mouse_pos = UiPoint::new(mouse_x, size.y() - mouse_y);
 
-		let id = self
-			.acceleration
-			.query(Location::new(mouse_pos.x, mouse_pos.y))
-			.and_then(Id::new)?;
-
-		self.set_cursor(Some(id));
-		Some(id)
+		self.acceleration
+			.query_excluding(Location::new(mouse_pos.x, mouse_pos.y), excluded.map(Id::get))
+			.and_then(Id::new)
 	}
 
 	pub fn click_cursor(&self) -> Option<Id> {
@@ -103,7 +105,7 @@ impl Snapshot<'_> {
 	}
 
 	fn move_cursor_in_direction(&mut self, direction: SpatialCursorDirection) -> Option<Id> {
-		let current_cursor = self.cursor;
+		let current_cursor = *self.cursor;
 		let origin = current_cursor
 			.and_then(|id| self.element(id))
 			.map(NavigationFrame::from_element)
@@ -139,14 +141,14 @@ impl Snapshot<'_> {
 			let _ = self.set_cursor(Some(candidate_id));
 		}
 
-		self.cursor
+		*self.cursor
 	}
 
 	fn snapshot_frame(&self) -> NavigationFrame {
 		let mut right: f32 = 1.0;
 		let mut bottom: f32 = 1.0;
 
-		for element in &self.elements {
+		for element in self.elements.iter() {
 			let frame = NavigationFrame::from_element(element);
 			right = right.max(frame.right);
 			bottom = bottom.max(frame.bottom);
@@ -168,7 +170,7 @@ impl Snapshot<'_> {
 		stack.push(ancestor);
 
 		while let Some(parent) = stack.pop() {
-			for &(candidate_parent, candidate_child) in &self.relations {
+			for &(candidate_parent, candidate_child) in self.relations.iter() {
 				if candidate_parent != parent {
 					continue;
 				}

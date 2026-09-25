@@ -317,6 +317,7 @@ impl Device {
 			extent.width() as usize * bytes_per_pixel,
 			extent.width() as usize * extent.height() as usize * bytes_per_pixel,
 			0,
+			None,
 		);
 	}
 }

@@ -2,11 +2,10 @@ use std::collections::VecDeque;
 use std::ptr::NonNull;
 
 use ::utils::hash::{HashMap, HashSet};
-use dispatch2::DispatchData;
 use objc2::ClassType;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSString};
-use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer, MTLResource};
+use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer};
 use smallvec::SmallVec;
 
 use super::*;
@@ -16,7 +15,6 @@ use crate::{
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
 	metal::swapchain::Swapchain,
-	metal::utils::parse_threadgroup_size_metadata,
 	pipelines::raster as raster_pipeline,
 	sampler::{self as sampler_builder, SamplerHandle},
 	window,
@@ -45,10 +43,7 @@ pub struct Context {
 	pub(crate) buffers: ResourceCollection<buffer::Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<sampler::Sampler>,
-	pub(crate) allocations: Vec<Allocation>,
-	pub(crate) pipeline_layouts: Vec<PipelineLayout>,
-	pub(crate) vertex_layouts: Vec<VertexLayout>,
-	vertex_layout_indices: HashMap<VertexLayoutKey, VertexLayoutHandle>,
+	pub(crate) allocations: Vec<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
 	pub(crate) descriptor_sets: Vec<descriptor_set::DescriptorSet>,
 	pub(crate) meshes: Vec<Mesh>,
 	pub(crate) acceleration_structures: Vec<AccelerationStructure>,
@@ -67,18 +62,16 @@ pub struct Context {
 
 	pub(crate) resource_to_descriptor:
 		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,
-	pub(crate) descriptor_set_to_resource:
-		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), HashSet<PrivateHandles>>,
 	descriptor_sources:
 		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), (crate::descriptors::WriteData, i32)>,
 
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
-	pub(crate) pending_image_syncs: VecDeque<ImageHandle>,
+	pub(crate) pending_image_syncs: VecDeque<(ImageHandle, Option<crate::image::Region>)>,
 	pub(crate) tasks: Vec<Task>,
-
-	#[cfg(debug_assertions)]
-	pub names: HashMap<graphics_hardware_interface::Handles, String>,
+	/// One retained upload arena per in-flight frame, followed by the transient arena for detached recordings.
+	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
+	pub(crate) argument_tables: command_buffer::CommandArgumentTables,
 }
 
 // SAFETY: Retained Metal objects are only `!Send` because objc2 cannot know an object's thread rules; Metal
@@ -110,32 +103,16 @@ fn drawable_supports_uses(uses: crate::Uses) -> bool {
 }
 
 mod recording;
-mod resources;
+pub(in crate::metal) mod resources;
 mod traits;
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::command_buffer::CommandBufferRecording as _;
-	use crate::device::Device as _;
 
-	/// Creates one real Metal context for transfer integration tests.
 	fn test_context() -> Context {
-		let features = crate::device::Features::new();
-		let mut instance = crate::metal::Instance::new(features).expect(
-			"Failed to create the Metal transfer test instance. The most likely cause is that no Metal device is available.",
-		);
-		let mut queue_handle = None;
-		let device = instance
-			.create_device(
-				features,
-				&mut [(crate::QueueSelection::new(crate::WorkloadTypes::TRANSFER), &mut queue_handle)],
-			)
-			.expect("Failed to create the Metal transfer test device. The most likely cause is unavailable Metal support.");
-		assert_eq!(queue_handle, Some(crate::QueueHandle(0)));
-		device
-			.create_context()
-			.expect("Failed to create the Metal transfer test context. The most likely cause is unavailable Metal 4 support.")
+		crate::metal::test_context(crate::WorkloadTypes::TRANSFER).0
 	}
 
 	#[test]
@@ -146,6 +123,12 @@ mod tests {
 	#[test]
 	fn drawable_uses_reject_non_texture_roles() {
 		assert!(!drawable_supports_uses(Uses::RenderTarget | Uses::Vertex));
+	}
+
+	#[test]
+	#[should_panic(expected = "Too many Metal frames in flight")]
+	fn frames_in_flight_beyond_the_backend_limit_are_rejected() {
+		test_context().set_frames_in_flight(MAX_FRAMES_IN_FLIGHT as u8 + 1);
 	}
 
 	#[test]

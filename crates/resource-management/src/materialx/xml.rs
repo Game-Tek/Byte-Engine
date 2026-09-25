@@ -8,10 +8,7 @@
 //! Next, hand the [`Tree`] to [`Document::read`](super::Document::read) to turn elements into typed
 //! MaterialX elements.
 
-use std::{
-	alloc::Global,
-	fmt::{Display, Formatter},
-};
+use std::fmt::{Display, Formatter};
 
 use super::{Alloc, error::TextPosition};
 
@@ -171,15 +168,11 @@ pub struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-	/// Reads one XML document from source text, using the global allocator.
-	///
-	/// Prefer [`Tree::parse_in`] when the document's storage should share an arena with everything
-	/// read from it.
-	pub fn parse(source: &'a str) -> Result<Self, XmlError> {
-		Self::parse_in(source, &Global)
-	}
-
 	/// Reads one XML document from source text, drawing its storage from `allocator`.
+	///
+	/// Pass an arena such as `bumpalo::Bump`. An attribute value that contains an entity is decoded
+	/// into `allocator` and never freed individually, because the text has to outlive this tree, so a
+	/// general-purpose allocator such as `&Global` retains that text for the life of the process.
 	///
 	/// Every name and value the tree hands out borrows from `source` or from `allocator`, never from
 	/// the tree itself, so the tree may be dropped as soon as it has been read.
@@ -620,8 +613,8 @@ impl<'a> Parser<'a> {
 	///
 	/// A value with no entity in it, which is nearly all of them, is borrowed straight from the
 	/// source. One that does carry an entity is decoded into the allocator and left there, so the
-	/// text outlives this tree exactly as a borrowed one does. With an arena that memory returns
-	/// when the arena does; with the global allocator it is retained.
+	/// text outlives this tree exactly as a borrowed one does. That memory returns when the arena does,
+	/// which is why [`Tree::parse_in`] asks for an arena.
 	fn decode(&self, raw: &'a str, offset: usize) -> Result<&'a str, XmlError> {
 		if !raw.contains('&') {
 			return Ok(raw);
@@ -697,6 +690,9 @@ mod tests {
 
 	#[test]
 	fn reads_nested_elements_and_attributes() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<?xml version="1.0"?>
 			<materialx version="1.39">
 				<!-- a comment -->
@@ -705,7 +701,7 @@ mod tests {
 				</nodegraph>
 			</materialx>"#;
 
-		let tree = Tree::parse(source).expect("The document should parse");
+		let tree = Tree::parse_in(source, allocator).expect("The document should parse");
 		let root = tree.root();
 
 		assert_eq!(root.name(), "materialx");
@@ -725,19 +721,25 @@ mod tests {
 
 	#[test]
 	fn decodes_predefined_and_numeric_entities() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<materialx doc="&quot;a&amp;b&quot; &lt;c&gt; &#65;&#x42;"/>"#;
 
-		let tree = Tree::parse(source).expect("The document should parse");
+		let tree = Tree::parse_in(source, allocator).expect("The document should parse");
 
 		assert_eq!(tree.root().attribute("doc"), Some(r#""a&b" <c> AB"#));
 	}
 
 	#[test]
 	fn keeps_prefixed_names_without_a_namespace_declaration() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		// MaterialX files routinely write <xi:include> without declaring the prefix.
 		let source = r#"<materialx version="1.39"><xi:include href="lib.mtlx"/></materialx>"#;
 
-		let tree = Tree::parse(source).expect("The document should parse");
+		let tree = Tree::parse_in(source, allocator).expect("The document should parse");
 		let include = tree.root().children().next().expect("The include should be read");
 
 		assert_eq!(include.name(), "xi:include");
@@ -746,48 +748,81 @@ mod tests {
 
 	#[test]
 	fn rejects_document_type_declarations() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<!DOCTYPE materialx [<!ENTITY x "y">]><materialx version="1.39"/>"#;
 
-		assert!(matches!(Tree::parse(source), Err(XmlError::DoctypeNotSupported { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::DoctypeNotSupported { .. })
+		));
 	}
 
 	#[test]
 	fn rejects_mismatched_end_tags() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<materialx version="1.39"><nodegraph name="NG"></materialx>"#;
 
-		assert!(matches!(Tree::parse(source), Err(XmlError::MismatchedEndTag { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::MismatchedEndTag { .. })
+		));
 	}
 
 	#[test]
 	fn rejects_unknown_entities() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<materialx doc="a &nbsp; b"/>"#;
 
-		assert!(matches!(Tree::parse(source), Err(XmlError::UnknownEntity { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::UnknownEntity { .. })
+		));
 	}
 
 	#[test]
 	fn rejects_duplicate_attributes() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let source = r#"<materialx version="1.39" version="1.38"/>"#;
 
-		assert!(matches!(Tree::parse(source), Err(XmlError::DuplicateAttribute { .. })));
+		assert!(matches!(
+			Tree::parse_in(source, allocator),
+			Err(XmlError::DuplicateAttribute { .. })
+		));
 	}
 
 	#[test]
 	fn rejects_documents_without_a_root_element() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		assert!(matches!(
-			Tree::parse("<!-- only a comment -->"),
+			Tree::parse_in("<!-- only a comment -->", allocator),
 			Err(XmlError::MissingRootElement)
 		));
 	}
 
 	#[test]
 	fn rejects_nesting_past_the_depth_limit() {
+		let arena = bumpalo::Bump::new();
+		let allocator = &&arena;
+
 		let mut source = String::new();
 
 		for _ in 0..(super::DEPTH_LIMIT + 2) {
 			source.push_str("<a>");
 		}
 
-		assert!(matches!(Tree::parse(&source), Err(XmlError::DepthLimitExceeded { .. })));
+		assert!(matches!(
+			Tree::parse_in(&source, allocator),
+			Err(XmlError::DepthLimitExceeded { .. })
+		));
 	}
 }

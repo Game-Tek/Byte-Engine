@@ -131,7 +131,7 @@ pub(crate) fn select_unfragmented_fbx_resource(
 #[derive(Default)]
 pub struct FBXAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<Box<dyn ProgramGenerator>>,
 	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
 
@@ -160,7 +160,7 @@ impl FBXAssetHandler {
 
 	/// Installs the renderer-specific shader transformation used for generated FBX materials.
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Arc::new(generator));
+		self.generator = Some(Box::new(generator));
 	}
 
 	/// Selects the offline backend used only for image resources generated from FBX materials.
@@ -287,7 +287,7 @@ impl AssetHandler for FBXAssetHandler {
 			spec.as_ref(),
 			source_id,
 			&scene,
-			self.generator.clone(),
+			self.generator.as_deref(),
 			self.material_mip_generator.as_deref(),
 		)
 		.await?;

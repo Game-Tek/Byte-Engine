@@ -108,6 +108,8 @@ impl<'a> CommandBufferRecording<'a> {
 	) {
 	}
 
+	pub fn set_scissor(&mut self, _origin: [u32; 2], _extent: Extent) {}
+
 	pub fn end_render_pass(&mut self) {}
 
 	pub fn bind_raster_pipeline(&mut self, _pipeline_handle: PipelineHandle) -> &mut Self {

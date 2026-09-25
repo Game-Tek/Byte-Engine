@@ -126,6 +126,7 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			besl::Expressions::Return { .. }
 			| besl::Expressions::Literal { .. }
 			| besl::Expressions::Continue
+			| besl::Expressions::Break
 			| besl::Expressions::Discard => {}
 		},
 		besl::Nodes::Raw { input, output, .. } => {
@@ -234,6 +235,7 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 			besl::Expressions::Return { .. }
 			| besl::Expressions::Literal { .. }
 			| besl::Expressions::Continue
+			| besl::Expressions::Break
 			| besl::Expressions::Discard => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input
@@ -339,6 +341,7 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 			besl::Expressions::Return { .. }
 			| besl::Expressions::Literal { .. }
 			| besl::Expressions::Continue
+			| besl::Expressions::Break
 			| besl::Expressions::Discard => false,
 		},
 		besl::Nodes::Raw { input, output, .. } => input

@@ -1,319 +1,261 @@
 use super::*;
 
-impl WindowLike for Window {
-	fn try_new(name: &str, extent: Extent, id_name: &str, _features: Features) -> Result<Self, String> {
+impl AppLike for App {
+	type Window = Window;
+
+	fn try_new(id_name: &str) -> Result<Self, String> {
 		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
 
 		let mut configuration_event_queue: wayland_client::EventQueue<Configuration> = conn.new_event_queue();
 		let configuration_qh = configuration_event_queue.handle();
 
-		let mut app_event_queue = conn.new_event_queue();
-		let app_event_qh = app_event_queue.handle();
+		let event_queue = conn.new_event_queue();
 
 		let display = conn.display();
 
 		let _ = display.get_registry(&configuration_qh, ());
 
 		// Get globals
-		let (compositor, wm_base, zwp_pointer_constraints, zwp_relative_pointer_manager) = {
+		let (compositor, xdg_wm_base, zwp_relative_pointer_manager) = {
 			let mut configuration = Configuration {
 				compositor: None,
 				xdg_wm_base: None,
 				wl_seat: None,
 				wl_output: None,
 
-				wl_surface: None,
 				wl_callback: None,
 
-				zwp_pointer_constraints: None,
 				zwp_relative_pointer_manager: None,
 
-				app_data_queue: app_event_qh.clone(),
+				app_data_queue: event_queue.handle(),
 			};
 
 			configuration_event_queue
 				.roundtrip(&mut configuration)
 				.map_err(|e| format!("Failed to roundtrip configuration event queue: {}", e))?;
 
-			if let (Some(compositor), Some(wm_base), Some(zwp_pointer_constraints), Some(zwp_relative_pointer_manager)) = (
+			if let (Some(compositor), Some(wm_base), Some(zwp_relative_pointer_manager)) = (
 				configuration.compositor,
 				configuration.xdg_wm_base,
-				configuration.zwp_pointer_constraints,
 				configuration.zwp_relative_pointer_manager,
 			) {
-				Ok((compositor, wm_base, zwp_pointer_constraints, zwp_relative_pointer_manager))
+				Ok((compositor, wm_base, zwp_relative_pointer_manager))
 			} else {
 				Err("Failed to acquire all required globals".to_string())
 			}
 		}?;
 
-		let surface = compositor.create_surface(&app_event_qh, ());
+		let wake = rustix::event::eventfd(
+			0,
+			rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
+		)
+		.map_err(|error| format!("Failed to create the wake eventfd: {error}"))?;
 
-		let xdg_surface = wm_base.get_xdg_surface(&surface, &app_event_qh, ());
-
-		let toplevel = xdg_surface.get_toplevel(&app_event_qh, ());
-
-		toplevel.set_title(name.to_string());
-		toplevel.set_app_id(id_name.to_string());
-
-		let state = {
-			let mut app_data = AppData {
-				wl_surface: surface.clone(),
-				zwp_pointer_constraints: zwp_pointer_constraints.clone(),
-				zwp_relative_pointer_manager: zwp_relative_pointer_manager.clone(),
-
+		let mut app = App {
+			connection: conn,
+			event_queue,
+			data: AppData {
+				compositor,
+				xdg_wm_base,
+				zwp_relative_pointer_manager,
+				windows: Vec::with_capacity(4),
+				output_scale: 1,
+				monitor_extent: None,
+				outputs: Vec::new(),
+				pointer_focus: None,
+				keyboard_focus: None,
+				keyboard_state: None,
 				events: VecDeque::with_capacity(64),
-				requests: VecDeque::with_capacity(16),
-
-				state: WindowState::default(),
-			};
-
-			app_event_queue
-				.roundtrip(&mut app_data)
-				.map_err(|e| format!("Failed to initialize Wayland app event queue: {}", e))?;
-
-			surface.set_buffer_scale(app_data.state.scale as _);
-			xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
-
-			surface.commit();
-
-			while !app_data.state.configured {
-				app_event_queue
-					.blocking_dispatch(&mut app_data)
-					.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {}", e))?;
-			}
-
-			app_data.state
+			},
+			id_name: id_name.to_owned(),
+			next_window: 1,
+			wake: Arc::new(wake),
 		};
 
-		let mut requests = VecDeque::with_capacity(16);
+		// Receive seat and output state before the first window picks its scale.
+		app.event_queue
+			.roundtrip(&mut app.data)
+			.map_err(|e| format!("Failed to initialize Wayland app event queue: {}", e))?;
 
-		requests.push_back(Requests::ConstrainPointer);
-		// requests.push_back(Requests::LockPointer);
-		// requests.push_back(Requests::HidePointer);
+		Ok(app)
+	}
 
-		Ok(Self {
-			connection: conn,
-			event_queue: app_event_queue,
-			xdg_wm_base: wm_base,
+	fn create_window(&mut self, name: &str, extent: Extent, _features: Features) -> Result<Window, String> {
+		let id = WindowId::from_raw(self.next_window);
+		self.next_window += 1;
+
+		let qh = self.event_queue.handle();
+
+		let surface = self.data.compositor.create_surface(&qh, id);
+		let xdg_surface = self.data.xdg_wm_base.get_xdg_surface(&surface, &qh, id);
+		let toplevel = xdg_surface.get_toplevel(&qh, id);
+
+		toplevel.set_title(name.to_string());
+		toplevel.set_app_id(self.id_name.clone());
+
+		let scale = self.data.output_scale;
+		let refresh = SharedRefresh::default();
+		self.data.windows.push(WindowState {
+			id,
+			surface: surface.clone(),
+			scale,
+			extent: None,
+			configured: false,
+			outputs: Vec::new(),
+			refresh: refresh.clone(),
+		});
+
+		surface.set_buffer_scale(scale as _);
+		xdg_surface.set_window_geometry(0, 0, extent.width() as _, extent.height() as _);
+
+		surface.commit();
+
+		// Other windows' events dispatched while waiting stay queued for the next poll.
+		while !self.data.window(id).is_some_and(|window| window.configured) {
+			self.event_queue
+				.blocking_dispatch(&mut self.data)
+				.map_err(|e| format!("Failed to wait for initial Wayland surface configuration: {}", e))?;
+		}
+
+		Ok(Window {
+			id,
+			display: self.connection.display(),
 			surface,
 			xdg_surface,
 			xdg_toplevel: toplevel,
-			zwp_pointer_constraints,
-			zwp_relative_pointer_manager,
-			requests,
-
-			state,
+			refresh,
 		})
+	}
+
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		self.data.forget_destroyed_windows();
+
+		self.event_queue
+			.flush()
+			.expect("Failed to flush Wayland requests. The most likely cause is that the compositor connection was lost.");
+
+		// A guard only exists when nothing is queued for dispatch, so waiting behind it cannot hide events.
+		if let Some(guard) = self.event_queue.prepare_read() {
+			let timeout = match wait {
+				Wait::Immediate => Some(Duration::ZERO),
+				Wait::Until(deadline) => Some(deadline.saturating_duration_since(std::time::Instant::now())),
+				Wait::Forever => None,
+			};
+			if timeout != Some(Duration::ZERO) && self.data.events.is_empty() {
+				let timeout = timeout.map(|timeout| rustix::event::Timespec {
+					tv_sec: timeout.as_secs() as _,
+					tv_nsec: timeout.subsec_nanos() as _,
+				});
+				let connection = guard.connection_fd();
+				let mut fds = [
+					rustix::event::PollFd::new(&connection, rustix::event::PollFlags::IN),
+					rustix::event::PollFd::new(&*self.wake, rustix::event::PollFlags::IN),
+				];
+				// An interrupted wait is an early return, which the caller treats like any wake.
+				let _ = rustix::event::poll(&mut fds, timeout.as_ref());
+				// Reset the counter so the next wait sleeps again; an empty counter reports `WouldBlock`.
+				let _ = rustix::io::read(&*self.wake, &mut [0u8; 8]);
+			}
+			match guard.read() {
+				Ok(_) => {}
+				// The socket is non-blocking, so an empty socket only means there is nothing new.
+				Err(wayland_client::backend::WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+				Err(error) => panic!(
+					"Failed to read Wayland events: {error}. The most likely cause is that the compositor connection was lost."
+				),
+			}
+		}
+
+		self.event_queue
+			.dispatch_pending(&mut self.data)
+			.expect("Failed to dispatch Wayland events. The most likely cause is a protocol error reported by the compositor.");
+
+		std::iter::from_fn(move || self.data.events.pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker(Arc::clone(&self.wake))
+	}
+}
+
+impl Drop for App {
+	fn drop(&mut self) {
+		self.data.xdg_wm_base.destroy();
+	}
+}
+
+impl WindowLike for Window {
+	fn id(&self) -> WindowId {
+		self.id
 	}
 
 	fn handles(&self) -> Handles {
 		Handles {
-			display: self.display().id().as_ptr() as _,
-			surface: self.surface().id().as_ptr() as _,
+			display: self.display.id().as_ptr() as _,
+			surface: self.surface.id().as_ptr() as _,
 		}
 	}
 
-	fn show_cursor(&mut self, show: bool) {
-		self.state.should_hide_pointer = !show;
-		self.requests.push_back(Requests::HidePointer);
-	}
-
-	fn confine_cursor(&mut self, confine: bool) {
-		self.state.should_confine_pointer = confine;
-		self.requests.push_back(Requests::ConstrainPointer);
-	}
-
-	fn poll<'a>(&'a mut self) -> impl Iterator<Item = Events> + 'a {
-		// This implementation first processes all events from the wayland event queue
-		// while producing `Events` which are then handed to an iterator
-		// which is then returned
-
-		let mut app_data = AppData {
-			wl_surface: self.surface.clone(),
-			zwp_pointer_constraints: self.zwp_pointer_constraints.clone(),
-			zwp_relative_pointer_manager: self.zwp_relative_pointer_manager.clone(),
-
-			events: VecDeque::with_capacity(64),
-			requests: self.requests.clone(),
-
-			state: self.state.clone(),
-		};
-
-		let event_queue = &mut self.event_queue;
-
-		event_queue.dispatch_pending(&mut app_data).unwrap();
-
-		// Copy updated state back to window
-		self.state = app_data.state;
-		self.requests = app_data.requests;
-
-		WindowIterator {
-			events: app_data.events,
-			_phantom: PhantomData,
+	fn refresh_interval(&self) -> Option<Duration> {
+		match self.refresh.load(Ordering::Relaxed) {
+			0 => None,
+			nanoseconds => Some(Duration::from_nanos(nanoseconds)),
 		}
-	}
-}
-
-impl Window {
-	pub fn display(&self) -> wl_display::WlDisplay {
-		self.connection.display()
-	}
-
-	pub fn surface(&self) -> wl_surface::WlSurface {
-		self.surface.clone()
-	}
-}
-
-/// The `WindowIterator` struct yields [`Events`] collected by the window's poll operation.
-pub struct WindowIterator<'a> {
-	events: VecDeque<Events>,
-	_phantom: PhantomData<&'a ()>,
-}
-
-impl<'a> Iterator for WindowIterator<'a> {
-	type Item = Events;
-
-	fn next(&mut self) -> Option<Events> {
-		self.events.pop_front()
 	}
 }
 
 impl Drop for Window {
 	fn drop(&mut self) {
-		if let Some(confined_pointer) = self.state.confined_pointer.take() {
-			confined_pointer.destroy();
-		}
-		if let Some(locked_pointer) = self.state.locked_pointer.take() {
-			locked_pointer.destroy();
-		}
-
 		self.xdg_toplevel.destroy();
 		self.xdg_surface.destroy();
 		self.surface.destroy();
-		self.xdg_wm_base.destroy();
 	}
 }
+
 impl AppData {
-	pub(super) fn process_requests(&mut self, qh: &wayland_client::QueueHandle<Self>) {
-		let surface = &self.wl_surface;
+	pub(super) fn window(&self, id: WindowId) -> Option<&WindowState> {
+		self.windows.iter().find(|window| window.id == id)
+	}
 
-		self.requests.retain(|e| match e {
-			Requests::ConstrainPointer => {
-				if !self.state.should_confine_pointer {
-					if let Some(confined_pointer) = self.state.confined_pointer.take() {
-						confined_pointer.destroy();
-					}
+	pub(super) fn window_mut(&mut self, id: WindowId) -> Option<&mut WindowState> {
+		self.windows.iter_mut().find(|window| window.id == id)
+	}
 
-					self.state.pointer_is_confined = false;
+	pub(super) fn push(&mut self, window: WindowId, event: Events) {
+		self.events.push_back(Event::Window { window, event });
+	}
 
-					return false;
-				}
+	/// Recomputes a window's refresh interval from the outputs it is on and reports a change.
+	pub(super) fn update_window_refresh(&mut self, id: WindowId) {
+		let Some(window) = self.windows.iter().find(|window| window.id == id) else {
+			return;
+		};
+		let interval = window
+			.outputs
+			.iter()
+			.filter_map(|output| self.outputs.iter().find(|(known, _)| known == output))
+			.filter_map(|(_, millihertz)| refresh_interval(*millihertz))
+			.min();
+		let nanoseconds = interval.map_or(0, |interval| interval.as_nanos() as u64);
+		if window.refresh.swap(nanoseconds, Ordering::Relaxed) != nanoseconds {
+			self.push(
+				id,
+				Events::DisplayChanged {
+					refresh_interval: interval,
+				},
+			);
+		}
+	}
 
-				if self.state.should_lock_pointer {
-					if let Some(confined_pointer) = self.state.confined_pointer.take() {
-						confined_pointer.destroy();
-					}
+	/// Drops the state of windows whose [`Window`] handle destroyed their surface, along with any focus on them.
+	fn forget_destroyed_windows(&mut self) {
+		self.windows.retain(|window| window.surface.is_alive());
 
-					self.state.pointer_is_confined = false;
-
-					return false;
-				}
-
-				if self.state.pointer_is_confined {
-					return false;
-				}
-
-				let focused_pointer = self.state.focused_pointer.clone();
-				let focused_keyboard = self.state.focused_keyboard.clone();
-
-				if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
-					if let Some(confined_pointer) = self.state.confined_pointer.take() {
-						confined_pointer.destroy();
-					}
-
-					let confined_pointer = self.zwp_pointer_constraints.confine_pointer(
-						surface,
-						&pointer,
-						None,
-						zwp_pointer_constraints_v1::Lifetime::Persistent,
-						&qh,
-						(),
-					);
-					self.state.confined_pointer = Some(confined_pointer);
-					self.state.pointer_is_confined = false;
-
-					surface.commit();
-
-					false
-				} else {
-					true
-				}
-			}
-			Requests::LockPointer => {
-				if !self.state.should_lock_pointer {
-					if let Some(locked_pointer) = self.state.locked_pointer.take() {
-						locked_pointer.destroy();
-					}
-
-					self.state.pointer_is_locked = false;
-
-					return false;
-				}
-
-				if self.state.pointer_is_locked {
-					return false;
-				}
-
-				let focused_pointer = self.state.focused_pointer.clone();
-				let focused_keyboard = self.state.focused_keyboard.clone();
-
-				if let (Some(pointer), Some(_)) = (focused_pointer, focused_keyboard) {
-					if let Some(locked_pointer) = self.state.locked_pointer.take() {
-						locked_pointer.destroy();
-					}
-
-					if let Some(confined_pointer) = self.state.confined_pointer.take() {
-						confined_pointer.destroy();
-					}
-
-					self.state.pointer_is_confined = false;
-
-					let locked_pointer = self.zwp_pointer_constraints.lock_pointer(
-						surface,
-						&pointer,
-						None,
-						zwp_pointer_constraints_v1::Lifetime::Persistent,
-						&qh,
-						(),
-					);
-					self.state.locked_pointer = Some(locked_pointer);
-					self.state.pointer_is_locked = false;
-
-					surface.commit();
-
-					false
-				} else {
-					true
-				}
-			}
-			Requests::HidePointer => {
-				if !self.state.should_hide_pointer {
-					self.state.pointer_is_hidden = false;
-					return false;
-				}
-
-				if let Some(pointer) = &self.state.focused_pointer {
-					pointer.set_cursor(0, None, 0, 0);
-					self.state.pointer_is_hidden = true;
-
-					surface.commit();
-
-					false
-				} else {
-					true
-				}
-			}
-		});
+		if self.pointer_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {
+			self.pointer_focus = None;
+		}
+		if self.keyboard_focus.as_ref().is_some_and(|(_, id)| self.window(*id).is_none()) {
+			self.keyboard_focus = None;
+		}
 	}
 }

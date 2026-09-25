@@ -280,6 +280,7 @@ impl Device {
 			device,
 			device_configuration,
 			dxc_compiler,
+			direct_storage_runtime: crate::dx12::io::DirectStorageRuntime::load(),
 			descriptor_handle_increment_sizes,
 			format_support_cache: RefCell::new(HashMap::default()),
 			settings,
@@ -509,7 +510,7 @@ impl Device {
 		self.frames = frames;
 		self.last_frame_synchronizers = [None; crate::MAX_FRAMES_IN_FLIGHT];
 		self.pending_texture_syncs
-			.retain(|(_, sequence_index)| *sequence_index < frames);
+			.retain(|(_, sequence_index, _)| *sequence_index < frames);
 
 		// Keep dormant chain nodes linked so repeated frame-count changes reuse their fences instead of growing device storage.
 		for master_index in 0..self.synchronizer_masters.len() {
@@ -600,7 +601,7 @@ impl Device {
 				if image.frame_data.is_some() {
 					for sequence_index in previous_frames..frames {
 						self.pending_texture_syncs
-							.push((crate::BaseImageHandle(image_index as u64), sequence_index));
+							.push((crate::BaseImageHandle(image_index as u64), sequence_index, None));
 					}
 				}
 			}

@@ -68,6 +68,19 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		}
 	}
 
+	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent) {
+		// The deferred begin sets a full-extent scissor, so it must run before this one.
+		self.begin_rendering_if_needed();
+		let (origin, extent) = crate::clamp_scissor(origin, extent, self.active_render_extent);
+		let rect = vk::Rect2D::default()
+			.offset(vk::Offset2D::default().x(origin[0] as i32).y(origin[1] as i32))
+			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
+		let command_buffer = self.get_command_buffer().command_buffer;
+		unsafe {
+			self.device.device.cmd_set_scissor(command_buffer, 0, &[rect]);
+		}
+	}
+
 	fn end_render_pass(&mut self) {
 		// A pass with no draws must still begin so attachment clear/load/store operations execute.
 		self.begin_rendering_if_needed();

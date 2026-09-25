@@ -21,63 +21,36 @@ use crate::{
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 const ARGUMENT_TABLE_BUFFER_COUNT: usize = 17;
-const PUSH_UPLOAD_ALIGNMENT: usize = 256;
-const PUSH_UPLOAD_PAGE_SIZE: usize = 64 * 1024;
+pub(super) const UPLOAD_ALIGNMENT: usize = 256;
+const UPLOAD_PAGE_SIZE: usize = 256 * 1024;
 
+/// The `AppliedDescriptorBinding` struct records which argument-buffer snapshot the active native encoder references.
 struct AppliedDescriptorBinding {
 	pipeline: graphics_hardware_interface::PipelineHandle,
 	descriptor_sets: SmallVec<[DescriptorSetHandle; 4]>,
-	materialization: Materialization,
+	versions: SmallVec<[u64; 4]>,
+	resource_uses: SmallVec<[synchronization::MetalResourceUse; 16]>,
 }
 
-fn attachment_texture_view(
-	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+/// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.
+fn texture_view_2d(
+	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
-	array_layers: u32,
-	layer: Option<u32>,
+	mip_level: u32,
+	layer: u32,
 ) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-	if let Some(layer) = layer {
-		if array_layers > 1 {
-			// SAFETY: The requested layer is validated against the image's array-layer count by the caller.
-			unsafe {
-				return texture
-					.newTextureViewWithPixelFormat_textureType_levels_slices(
-						utils::to_pixel_format(format),
-						mtl::MTLTextureType::Type2D,
-						NSRange::new(0, 1),
-						NSRange::new(layer as usize, 1),
-					)
-					.expect(
-						"Metal texture view creation failed. The most likely cause is an invalid array-layer render target view.",
-					);
-			}
-		}
+	// SAFETY: Callers validate the mip level and layer against the image before recording the view.
+	unsafe {
+		texture.newTextureViewWithPixelFormat_textureType_levels_slices(
+			utils::to_pixel_format(format),
+			mtl::MTLTextureType::Type2D,
+			NSRange::new(mip_level as usize, 1),
+			NSRange::new(layer as usize, 1),
+		)
 	}
-
-	texture.clone()
-}
-
-/// Creates a descriptor-visible view when a descriptor selects one mip.
-fn descriptor_texture_view(
-	texture: &Retained<ProtocolObject<dyn mtl::MTLTexture>>,
-	format: crate::Formats,
-	mip_level: Option<u32>,
-) -> Option<Retained<ProtocolObject<dyn mtl::MTLTexture>>> {
-	let mip_level = mip_level?;
-
-	// SAFETY: The requested mip is validated against the image's mip-level count by the caller.
-	Some(unsafe {
-		texture
-			.newTextureViewWithPixelFormat_textureType_levels_slices(
-				utils::to_pixel_format(format),
-				mtl::MTLTextureType::Type2D,
-				NSRange::new(mip_level as usize, 1),
-				NSRange::new(0, 1),
-			)
-			.expect(
-				"Metal texture mip view creation failed. The most likely cause is that the selected mip exceeds the image mip count.",
-			)
-	})
+	.expect(
+		"Metal texture view creation failed. The most likely cause is that the selected mip level or array layer does not exist in the image.",
+	)
 }
 
 /// Validates one attachment's declared layer selection against the native texture.
@@ -111,26 +84,37 @@ mod tests {
 	}
 
 	#[test]
-	fn push_upload_ranges_are_aligned_and_do_not_overlap() {
-		assert_eq!(super::push_upload_offset(0, 4, 1024), Some(0));
-		assert_eq!(super::push_upload_offset(4, 4, 1024), Some(256));
-		assert_eq!(super::push_upload_offset(260, 4, 1024), Some(512));
-		assert_eq!(super::push_upload_offset(1020, 8, 1024), None);
+	fn upload_ranges_are_aligned_and_do_not_overlap() {
+		assert_eq!(super::upload_offset(0, 4, 1024), Some(0));
+		assert_eq!(super::upload_offset(4, 4, 1024), Some(256));
+		assert_eq!(super::upload_offset(260, 4, 1024), Some(512));
+		assert_eq!(super::upload_offset(1020, 8, 1024), None);
 	}
 }
 
-/// Copies compact CPU texture data into an aligned shared buffer and records its Metal blits.
+/// Copies compact CPU texture data into an aligned upload range and records its Metal blits.
+///
+/// Returns the page that backs the range; the caller retains it in the command.
 pub(in crate::metal) fn encode_texture_upload(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	upload_arena: &mut UploadArena,
 	transfer_encoder: &ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>,
 	texture: &ProtocolObject<dyn mtl::MTLTexture>,
 	format: crate::Formats,
 	extent: Extent,
 	array_layers: u32,
 	staging: &[u8],
-) -> Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>> {
-	let (bytes_per_row, row_count, bytes_per_image) = utils::texture_upload_layout(format, extent)?;
-	let expected_size = bytes_per_image
+	region: Option<crate::image::Region>,
+) -> Retained<ProtocolObject<dyn mtl::MTLBuffer>> {
+	let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent);
+	if let Some(region) = region {
+		region.validate(extent, format, array_layers);
+	}
+	let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
+	let origin = region.map_or([0, 0], |region| region.offset);
+	let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
+	let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent);
+	let expected_size = source_image_pitch
 		.checked_mul(array_layers as usize)
 		.expect("Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.");
 
@@ -139,7 +123,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
 		staging.len(),
 	);
-	if utils::is_block_compressed(format) {
+	if format.bc_bytes_per_block().is_some() {
 		assert_eq!(
 			staging.len(),
 			expected_size,
@@ -155,18 +139,18 @@ pub(in crate::metal) fn encode_texture_upload(
 	let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
 		"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
 	);
-	let upload_buffer = device
-		.newBufferWithLength_options(upload_size as _, mtl::MTLResourceOptions::StorageModeShared)
-		.expect("Metal upload buffer creation failed. The most likely cause is that the device is out of memory.");
-	let destination = upload_buffer.contents().as_ptr() as *mut u8;
+	let (upload_buffer, upload_offset) = upload_arena.allocate(device, upload_size);
+	let upload_buffer = upload_buffer.clone();
+	// SAFETY: The arena range starts at `upload_offset` and spans `upload_size` writable bytes.
+	let destination = unsafe { upload_buffer.contents().as_ptr().cast::<u8>().add(upload_offset) };
 
 	for slice in 0..array_layers as usize {
-		let source_offset = slice * bytes_per_image;
+		let source_offset = slice * source_image_pitch;
 		let destination_offset = slice * aligned_bytes_per_image;
-		let source_bytes = &staging[source_offset..source_offset + bytes_per_image];
+		let source_bytes = &staging[source_offset..source_offset + source_image_pitch];
 		for row in 0..row_count {
 			// SAFETY: Slice bounds above validate the source row offset.
-			let source = unsafe { source_bytes.as_ptr().add(row * bytes_per_row) };
+			let source = unsafe { source_bytes.as_ptr().add(source_start + row * source_row_pitch) };
 			// SAFETY: The upload allocation covers every padded row in every array layer.
 			let destination = unsafe { destination.add(destination_offset + row * aligned_bytes_per_row) };
 			// SAFETY: Source and upload allocations do not overlap and both expose `bytes_per_row` bytes.
@@ -174,15 +158,19 @@ pub(in crate::metal) fn encode_texture_upload(
 		}
 	}
 
-	let mut source_size = utils::texture_copy_size(format, extent);
+	let mut source_size = utils::mtl_size(copy_extent);
 	source_size.depth = 1;
-	let destination_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
+	let destination_origin = mtl::MTLOrigin {
+		x: origin[0] as _,
+		y: origin[1] as _,
+		z: 0,
+	};
 	for slice in 0..array_layers as usize {
 		// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
 		unsafe {
 			transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
 				upload_buffer.as_ref(),
-				(slice * aligned_bytes_per_image) as _,
+				(upload_offset + slice * aligned_bytes_per_image) as _,
 				aligned_bytes_per_row as _,
 				aligned_bytes_per_image as _,
 				source_size,
@@ -194,7 +182,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		}
 	}
 
-	Some(upload_buffer)
+	upload_buffer
 }
 
 /// The `RecordingDevice` struct provides command recording with immutable access to backend resources.
@@ -204,8 +192,6 @@ pub(super) struct RecordingDevice<'a> {
 	pub(super) images: &'a ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(super) samplers: &'a [sampler::Sampler],
 	pub(super) acceleration_structures: &'a [AccelerationStructure],
-	pub(super) pipeline_layouts: &'a [PipelineLayout],
-	pub(super) descriptor_sets: &'a [DescriptorSet],
 	pub(super) meshes: &'a [Mesh],
 	pub(super) pipelines: &'a [Pipeline],
 	pub(super) swapchains: &'a [Swapchain],
@@ -222,6 +208,11 @@ pub(super) struct RecordingCommit<'a> {
 		crate::synchronizer::SynchronizerHandle,
 	>,
 	pub(super) texture_readbacks: &'a mut crate::context::TextureReadbackRegistry<context::TextureReadbackStorage>,
+	/// Frame-local sets are mutable so a recording can retain the argument buffers it encodes from them.
+	pub(super) descriptor_sets: &'a mut [DescriptorSet],
+	/// Upload pages owned by this recording's frame, or the transient arena for detached recordings.
+	pub(super) upload_arena: &'a mut UploadArena,
+	pub(super) argument_tables: &'a mut CommandArgumentTables,
 }
 
 /// The `NativeCommandSlot` struct permits a recording guard to move its uniquely owned command into the next lifecycle stage.
@@ -286,9 +277,13 @@ impl ArgumentTableStage {
 	}
 }
 
-/// The `CommandArgumentTables` struct keeps one mutable Metal 4 binding table per shader stage for command-local snapshots.
+/// The `CommandArgumentTables` struct keeps one mutable Metal 4 binding table per shader stage.
+///
+/// Draws and dispatches snapshot table contents when they are encoded, so one
+/// set of tables serves every recording; each command retains the tables it
+/// snapshots until completion.
 #[derive(Default)]
-pub(super) struct CommandArgumentTables {
+pub(crate) struct CommandArgumentTables {
 	tables: [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5],
 }
 
@@ -300,30 +295,109 @@ impl CommandArgumentTables {
 	fn insert(&mut self, stage: ArgumentTableStage, table: Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>) {
 		self.tables[stage.index()] = Some(table);
 	}
-}
 
-/// The `PushUploadPage` struct keeps immutable push-constant snapshots in one command-local shared Metal buffer.
-pub(super) struct PushUploadPage {
-	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
-	cursor: usize,
-}
-
-/// The `PushUploadArena` struct provides aligned, non-overlapping push-constant ranges for one command recording.
-pub(super) struct PushUploadArena<'a> {
-	pages: Vec<PushUploadPage, &'a dyn std::alloc::Allocator>,
-}
-
-impl<'a> PushUploadArena<'a> {
-	fn new_in(allocator: &'a dyn std::alloc::Allocator) -> Self {
-		Self {
-			pages: Vec::new_in(allocator),
-		}
+	fn iter(&self) -> impl Iterator<Item = &Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>> {
+		self.tables.iter().flatten()
 	}
 }
 
-/// Returns the next aligned upload offset when the requested range fits in the current page.
-fn push_upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usize> {
-	let aligned = cursor.checked_add(PUSH_UPLOAD_ALIGNMENT - 1)? & !(PUSH_UPLOAD_ALIGNMENT - 1);
+/// The `UploadPage` struct keeps immutable upload snapshots in one shared Metal buffer.
+struct UploadPage {
+	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	cursor: usize,
+	/// Sized for one oversized request; released at the next reset instead of being kept resident.
+	dedicated: bool,
+}
+
+/// The `UploadArena` struct suballocates aligned, non-overlapping upload ranges from retained shared pages.
+///
+/// A frame owns one arena per sequence index and resets it once that sequence's
+/// commands have completed, so pages are reused instead of reallocated. Every
+/// range handed out is immutable until the reset, which keeps push-constant and
+/// texture-upload snapshots valid for the commands that read them.
+#[derive(Default)]
+pub(crate) struct UploadArena {
+	pages: Vec<UploadPage>,
+}
+
+impl UploadArena {
+	/// Rewinds every resident page; the caller guarantees no in-flight command still reads them.
+	pub(crate) fn reset(&mut self) {
+		self.pages.retain(|page| !page.dedicated);
+		for page in &mut self.pages {
+			page.cursor = 0;
+		}
+	}
+
+	/// Drops every page so the next allocation starts fresh; commands that retained old pages keep them alive.
+	pub(crate) fn discard(&mut self) {
+		self.pages.clear();
+	}
+
+	#[cfg(test)]
+	pub(crate) fn page_count(&self) -> usize {
+		self.pages.len()
+	}
+
+	/// Returns an aligned range of `size` bytes and the page that backs it.
+	pub(crate) fn allocate(
+		&mut self,
+		device: &ProtocolObject<dyn mtl::MTLDevice>,
+		size: usize,
+	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
+		assert!(
+			size > 0,
+			"Empty Metal upload. The most likely cause is that a zero-sized upload was requested."
+		);
+		let page_index = self
+			.pages
+			.iter()
+			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.buffer.length()).is_some())
+			.unwrap_or_else(|| {
+				let dedicated = size > UPLOAD_PAGE_SIZE;
+				let capacity = if dedicated {
+					size.next_multiple_of(UPLOAD_ALIGNMENT)
+				} else {
+					UPLOAD_PAGE_SIZE
+				};
+				let buffer = device
+					.newBufferWithLength_options(capacity, mtl::MTLResourceOptions::StorageModeShared)
+					.expect(
+						"Metal upload page allocation failed. The most likely cause is that the device is out of shared memory.",
+					);
+				self.pages.push(UploadPage {
+					buffer,
+					cursor: 0,
+					dedicated,
+				});
+				self.pages.len() - 1
+			});
+		let page = &mut self.pages[page_index];
+		let offset = upload_offset(page.cursor, size, page.buffer.length()).expect(
+			"Metal upload range does not fit. The most likely cause is that the selected page is smaller than the request.",
+		);
+		page.cursor = offset + size;
+		(&page.buffer, offset)
+	}
+
+	/// Copies `bytes` into a fresh range and returns its page and offset.
+	pub(crate) fn upload(
+		&mut self,
+		device: &ProtocolObject<dyn mtl::MTLDevice>,
+		bytes: &[u8],
+	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
+		let (buffer, offset) = self.allocate(device, bytes.len());
+		// SAFETY: `offset` was computed against this page's capacity and leaves `bytes.len()` writable bytes.
+		let destination = unsafe { buffer.contents().as_ptr().cast::<u8>().add(offset) };
+		// SAFETY: Caller bytes and the shared upload page do not overlap and no command reads this range yet.
+		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+		(buffer, offset)
+	}
+}
+
+/// Returns the next aligned upload offset when the requested range fits in the page.
+fn upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usize> {
+	let aligned = cursor.checked_add(UPLOAD_ALIGNMENT - 1)? & !(UPLOAD_ALIGNMENT - 1);
 	(aligned.checked_add(size)? <= capacity).then_some(aligned)
 }
 
@@ -343,7 +417,6 @@ pub struct CommandBufferRecording<'a> {
 	render_debug_region_depth: usize,
 	#[cfg(debug_assertions)]
 	encoder_block_index: usize,
-	active_pipeline_layout: Option<graphics_hardware_interface::PipelineLayoutHandle>,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,
 	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,
@@ -357,11 +430,11 @@ pub struct CommandBufferRecording<'a> {
 	render_push_constants_dirty: bool,
 	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
 	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>>,
+	/// Extent of the render pass being encoded; scissors are clamped to it.
+	active_render_extent: Extent,
 	active_encoder_scope: Option<synchronization::MetalEncoderScope>,
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,
-	argument_tables: CommandArgumentTables,
-	push_upload_arena: PushUploadArena<'a>,
 	encoded_compute_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	encoded_render_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,

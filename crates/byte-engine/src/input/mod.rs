@@ -1,19 +1,20 @@
-//! Device-independent input actions and device registration.
+//! Device-independent input actions, collected once and pulled by layered sinks.
 //!
-//! Input runs in two steps. [`InputEvents`] collects raw control values once per
-//! tick; then one [`ActionProcessor`] per input layer turns the pending records
-//! into that layer's actions. A layer that answers [`Consumption::Consumed`]
-//! keeps its input from reaching later layers, which is how a UI takes a click
-//! before gameplay sees it.
+//! Input runs in two steps. Every source event, whether a window key, a mouse
+//! button, a gamepad control, or a replayed sample, is recorded into one
+//! [`InputCollector`]. Then each consumer owns an [`InputSink`] that declares
+//! its actions and pulls them from the collector once per tick. The sink's
+//! consumer answers [`Capture::Captured`] for the actions it handles, which
+//! keeps the source event from reaching later sinks. That is how a UI takes a
+//! click before gameplay sees it.
 //!
-//! Applications with a single consumer can use [`InputManager`] instead: it owns
-//! both steps and broadcasts every action. Typical headed applications call
-//! `setup_default_input`, translate window events with
-//! `process_default_window_input`, and create application-level [`Action`]
-//! values through
+//! Typical headed applications call `setup_default_input`, let
+//! `GraphicsApplication` record window and gamepad events, and declare
+//! [`Action`] values through
 //! [`GraphicsApplication::world`](crate::application::graphics::GraphicsApplication::world).
-//! Use [`utils`] when registering the standard mouse, keyboard, or gamepad
-//! classes in a custom application.
+//! Applications that layer input own the collector and its sinks; translate
+//! window events with `process_default_window_input`. Use [`utils`] to
+//! register the standard mouse, keyboard, or gamepad classes.
 //!
 //! [`Value`] is the erased value passed through the runtime; typed action
 //! declarations use [`action::InputValue`] to constrain supported value types.
@@ -25,12 +26,13 @@ use super::utils::RGBA;
 use crate::core::factory::Handle;
 
 mod axis;
-mod evaluator;
-mod events;
+mod collector;
 pub(crate) mod gamepad;
-#[doc(hidden)]
-pub mod manager;
-mod processor;
+mod gesture;
+mod queue;
+mod registry;
+mod resolve;
+mod sink;
 
 #[doc(hidden)]
 pub mod action;
@@ -45,14 +47,13 @@ pub mod utils;
 pub use action::Action;
 pub use action::ActionBindingDescription;
 pub use action::ActionHandle;
+pub use action::TriggerMode;
 pub use axis::{Axis2, Axis3};
+pub use collector::{InputCollector, SinkHandle, SourceEvent};
 pub use device::DeviceHandle;
-pub use events::{ConsumerHandle, InputEvents};
-pub use manager::InputActionError;
-pub use manager::InputManager;
 use math::Quaternion;
-pub use processor::{ActionProcessor, Consumption, ResolvedAction};
 pub use seat::SeatHandle;
+pub use sink::{Capture, InputSink, ResolvedAction};
 pub use trigger::{TriggerHandle, TriggerReference, TriggerRegistry};
 
 use self::action::InputValue;
@@ -380,6 +381,20 @@ impl From<Value> for ValueMapping {
 	}
 }
 
+/// Identifies the stage of an input interaction.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ActionPhase {
+	/// A drag begins at the current source value.
+	Started,
+	/// A value changes. Ordinary actions and click snapshots also use this phase.
+	#[default]
+	Updated,
+	/// A drag finishes on button release, carrying its final source value.
+	Ended,
+	/// An interaction is interrupted and must not be committed.
+	Cancelled,
+}
+
 #[derive(Clone, Debug)]
 /// The `ActionEvent` struct carries resolved action input to application code.
 ///
@@ -392,8 +407,8 @@ pub struct ActionEvent {
 	handle: Handle,
 	/// The value of the action that triggered the event.
 	value: Value,
-	/// Marks an interaction its layer ended without a physical release.
-	cancelled: bool,
+	/// Identifies the interaction stage for drag and cancellation handling.
+	phase: ActionPhase,
 }
 
 impl ActionEvent {
@@ -403,16 +418,27 @@ impl ActionEvent {
 			seat_handle,
 			handle,
 			value,
-			cancelled: false,
+			phase: ActionPhase::Updated,
 		}
 	}
 
-	/// Reports an interaction its layer ended instead of a physical release.
+	/// Creates an action event at a chosen interaction stage.
+	pub(super) fn with_phase(seat_handle: SeatHandle, handle: Handle, value: Value, phase: ActionPhase) -> Self {
+		Self {
+			seat_handle,
+			handle,
+			value,
+			phase,
+		}
+	}
+
+	/// Reports an interaction its sink ended instead of a physical release.
 	///
-	/// A cancelled action carries its neutral value. Check it before committing
+	/// A cancelled drag carries its last position; other actions carry their neutral
+	/// value. Check it before committing
 	/// an interaction that a release would normally complete, such as a drag.
 	pub fn is_cancelled(&self) -> bool {
-		self.cancelled
+		self.phase == ActionPhase::Cancelled
 	}
 
 	/// Creates the event that reports an interrupted interaction.
@@ -421,8 +447,13 @@ impl ActionEvent {
 			seat_handle,
 			handle,
 			value,
-			cancelled: true,
+			phase: ActionPhase::Cancelled,
 		}
+	}
+
+	/// Returns the interaction stage. Use it to begin, update, or finish a drag.
+	pub fn phase(&self) -> ActionPhase {
+		self.phase
 	}
 
 	/// Returns the seat that produced the action value.
@@ -450,3 +481,6 @@ impl crate::core::targeted_message::TargetedMessage for ActionEvent {
 		Self::new(SeatHandle::stub(), handle, value)
 	}
 }
+
+#[cfg(test)]
+mod tests;

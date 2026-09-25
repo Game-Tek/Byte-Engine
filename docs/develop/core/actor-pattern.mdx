@@ -19,7 +19,7 @@ channel-like boundary.
 
 Common examples:
 
-- The input manager owns device, trigger, and action state.
+- The input collector owns device and trigger state; each input sink owns its action state.
 - The world coordinates gameplay, physics, transforms, and deletion.
 - Render systems mirror the cameras, lights, meshes, and transforms that they need.
 - Audio workers receive generator-creation messages.
@@ -93,7 +93,7 @@ Messages then describe how the representations should stay in sync.
 Message passing can reduce allocation pressure when messages stay small and specific.
 Instead of cloning whole objects or rebuilding cross-system state every frame, the engine can pass handles, compact value updates, or short event payloads.
 
-The current input path follows the same principle during update: records are compacted to the latest value per source, action values are resolved from current state, and temporary per-frame work can use frame scratch allocation.
+The current input path follows the same principle during update: the collector retains the latest value per source, each sink resolves its action values from the records it may see, and no per-frame scratch allocation is needed.
 
 Send intent and small changes:
 

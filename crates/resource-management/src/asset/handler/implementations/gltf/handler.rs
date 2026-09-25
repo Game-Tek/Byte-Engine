@@ -43,7 +43,7 @@ pub(crate) fn select_unfragmented_gltf_resource(
 #[derive(Default)]
 pub struct GLTFAssetHandler {
 	triangle_front_face_winding: TriangleFrontFaceWinding,
-	generator: Option<Arc<dyn ProgramGenerator>>,
+	generator: Option<Box<dyn ProgramGenerator>>,
 	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
 
@@ -67,7 +67,7 @@ impl GLTFAssetHandler {
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Arc::new(generator));
+		self.generator = Some(Box::new(generator));
 	}
 
 	/// Selects the offline backend used only for image resources generated from glTF materials.
@@ -119,7 +119,7 @@ impl GLTFAssetHandler {
 					gltf,
 					buffers,
 					material,
-					self.generator.clone(),
+					self.generator.as_deref(),
 					self.material_mip_generator.as_deref(),
 				)
 				.await?,

@@ -4,7 +4,7 @@ use resource_management::{
 	asset::FileStorageBackend,
 	resource::{ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings},
 };
-use utils::{r#async::StreamExt, sync::Arc};
+use utils::r#async::StreamExt;
 
 use crate::{commands::shared::offload_file_operation, utils::get_asset_manager};
 
@@ -68,13 +68,11 @@ pub async fn bake(
 		return Ok(());
 	}
 
-	let asset_manager = Arc::new(asset_manager);
-
 	let resource_count = ids.len();
 
+	// Every bake borrows the same manager; the futures only run inside `tasks.await` below, while it is still alive.
+	let asset_manager = &asset_manager;
 	let tasks = ids.into_iter().map(async |id| {
-		let asset_manager = asset_manager.clone();
-
 		log::info!("Baking resource '{}'", id);
 
 		match asset_manager.bake(&id).await {

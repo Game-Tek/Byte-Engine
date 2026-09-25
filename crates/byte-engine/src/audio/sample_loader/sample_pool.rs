@@ -97,8 +97,15 @@ pub(super) struct AudioSampleLayout {
 	pub(super) scalar_count: usize,
 }
 
+/// The channel count of the engine mix bus. Resident PCM never keeps more channels
+/// than the mixer consumes, so stereo sources are mixed down once while decoding
+/// instead of at every read. Raise this when stereo mixing becomes an option; wider
+/// sources then stay resident as authored.
+pub(super) const MIX_CHANNEL_COUNT: u16 = 1;
+
 impl AudioSampleLayout {
-	/// Validates resource playback metadata before the pool reserves storage.
+	/// Validates resource playback metadata and describes the resident PCM the
+	/// pool reserves storage for.
 	pub(super) fn new(metadata: Audio) -> Result<Self, String> {
 		if metadata.channel_count != 1 && metadata.channel_count != 2 {
 			return Err("Unsupported audio sample channel count. The resource must contain mono or stereo PCM.".to_string());
@@ -112,11 +119,12 @@ impl AudioSampleLayout {
 
 		let frame_count = usize::try_from(metadata.sample_count)
 			.map_err(|_| "Invalid audio sample length. The frame count does not fit this platform.".to_string())?;
+		let channel_count = metadata.channel_count.min(MIX_CHANNEL_COUNT);
 		let scalar_count = frame_count
-			.checked_mul(usize::from(metadata.channel_count))
+			.checked_mul(usize::from(channel_count))
 			.ok_or_else(|| "Invalid audio sample layout. The channel sample count overflowed.".to_string())?;
 		Ok(Self {
-			channel_count: metadata.channel_count,
+			channel_count,
 			sample_rate: metadata.sample_rate,
 			frame_count,
 			scalar_count,
@@ -143,9 +151,11 @@ pub(super) fn decode_into(metadata: Audio, bytes: &[u8], samples: &mut [f32]) ->
 		BitDepths::TwentyFour => 3,
 		BitDepths::ThirtyTwo => 4,
 	};
+	let source_channel_count = usize::from(metadata.channel_count);
 	let expected_byte_count = layout
-		.scalar_count
-		.checked_mul(bytes_per_sample)
+		.frame_count
+		.checked_mul(source_channel_count)
+		.and_then(|scalar_count| scalar_count.checked_mul(bytes_per_sample))
 		.ok_or_else(|| "Invalid audio sample layout. The PCM byte count overflowed.".to_string())?;
 
 	if bytes.len() != expected_byte_count {
@@ -157,30 +167,35 @@ pub(super) fn decode_into(metadata: Audio, bytes: &[u8], samples: &mut [f32]) ->
 
 	match metadata.bit_depth {
 		// WAV PCM and the engine OGG baker both store 8-bit PCM as unsigned.
-		BitDepths::Eight => {
-			for (destination, byte) in samples.iter_mut().zip(bytes) {
-				*destination = (*byte as f32 - 128.0) / 128.0;
-			}
-		}
-		BitDepths::Sixteen => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(2)) {
-				*destination = i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32_768.0;
-			}
-		}
-		BitDepths::TwentyFour => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(3)) {
-				let sign = if sample[2] & 0x80 == 0 { 0 } else { 0xff };
-				*destination = i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0;
-			}
-		}
+		BitDepths::Eight => decode_frames::<1>(bytes, samples, |[byte]| (byte as f32 - 128.0) / 128.0),
+		BitDepths::Sixteen => decode_frames::<2>(bytes, samples, |sample| i16::from_le_bytes(sample) as f32 / 32_768.0),
+		BitDepths::TwentyFour => decode_frames::<3>(bytes, samples, |sample| {
+			let sign = if sample[2] & 0x80 == 0 { 0 } else { 0xff };
+			i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
+		}),
 		BitDepths::ThirtyTwo => {
-			for (destination, sample) in samples.iter_mut().zip(bytes.chunks_exact(4)) {
-				*destination = i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32 / 2_147_483_648.0;
-			}
+			decode_frames::<4>(bytes, samples, |sample| i32::from_le_bytes(sample) as f32 / 2_147_483_648.0)
 		}
 	}
 
 	Ok(layout)
+}
+
+/// Normalizes source PCM into resident samples. A resident region narrower than
+/// its source holds the equal-weight mixdown of each source frame.
+fn decode_frames<const BYTES: usize>(bytes: &[u8], samples: &mut [f32], decode: impl Fn([u8; BYTES]) -> f32) {
+	let source = bytes.as_chunks::<BYTES>().0;
+	if samples.len() == source.len() {
+		for (destination, sample) in samples.iter_mut().zip(source) {
+			*destination = decode(*sample);
+		}
+	} else {
+		let source_channel_count = source.len() / samples.len();
+		let weight = 1.0 / source_channel_count as f32;
+		for (destination, frame) in samples.iter_mut().zip(source.chunks_exact(source_channel_count)) {
+			*destination = frame.iter().map(|sample| decode(*sample)).sum::<f32>() * weight;
+		}
+	}
 }
 
 /// The `AudioSampleLeaseId` struct identifies one generation of a stable sample

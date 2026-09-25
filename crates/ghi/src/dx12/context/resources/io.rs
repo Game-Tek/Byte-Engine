@@ -8,6 +8,11 @@ impl Device {
 		&self.device
 	}
 
+	/// Returns the DirectStorage runtime this device loaded, or the error that explains why it is unavailable.
+	pub(crate) fn direct_storage_runtime(&self) -> Result<&crate::dx12::io::DirectStorageRuntime, String> {
+		self.direct_storage_runtime.as_ref().map_err(Clone::clone)
+	}
+
 	/// Resolves a static buffer and its current DirectStorage compatibility without changing resource state.
 	pub(crate) fn resource_io_buffer_destination(
 		&self,

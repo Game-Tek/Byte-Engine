@@ -4,12 +4,6 @@ pub trait ProgramGenerator: Send + Sync {
 	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a>;
 }
 
-impl<T: ProgramGenerator + ?Sized> ProgramGenerator for Arc<T> {
-	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
-		self.as_ref().transform(node, material)
-	}
-}
-
 /// The `ShaderCompiler` trait isolates BEMA resource orchestration from platform shader toolchains.
 trait ShaderCompiler: Send + Sync {
 	fn compile<'a>(
@@ -54,8 +48,8 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 }
 
 pub struct BEMAAssetHandler {
-	generator: Option<Arc<dyn ProgramGenerator>>,
-	compiler: Arc<dyn ShaderCompiler>,
+	generator: Option<Box<dyn ProgramGenerator>>,
+	compiler: Box<dyn ShaderCompiler>,
 }
 
 impl Default for BEMAAssetHandler {
@@ -68,12 +62,12 @@ impl BEMAAssetHandler {
 	pub fn new() -> BEMAAssetHandler {
 		BEMAAssetHandler {
 			generator: None,
-			compiler: Arc::new(PlatformShaderCompilerAdapter),
+			compiler: Box::new(PlatformShaderCompilerAdapter),
 		}
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
-		self.generator = Some(Arc::new(generator));
+		self.generator = Some(Box::new(generator));
 	}
 
 	/// Bakes a material definition and its independently compiled shader stages.
@@ -82,15 +76,15 @@ impl BEMAAssetHandler {
 
 		let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
 		let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
-		let generator = self.generator.clone().ok_or(LoadErrors::FailedToProcess)?;
+		let generator = self.generator.as_deref().ok_or(LoadErrors::FailedToProcess)?;
 		let asset_shaders = asset["shaders"].as_object().ok_or(LoadErrors::FailedToProcess)?;
 
 		// Compile independent stages together while preserving declaration order in the material model.
 		let shader_requests = asset_shaders.iter().map(|(shader_type, shader_json)| {
 			compile_and_store_shader(
 				context,
-				self.compiler.clone(),
-				generator.clone(),
+				self.compiler.as_ref(),
+				generator,
 				material_domain,
 				asset_object,
 				shader_json,
@@ -374,8 +368,8 @@ pub(crate) async fn compile_shader_program(
 /// Compiles a shader definition and stores the resulting resource and binary payload.
 async fn compile_and_store_shader(
 	context: BakeContext<'_>,
-	compiler: Arc<dyn ShaderCompiler>,
-	generator: Arc<dyn ProgramGenerator>,
+	compiler: &dyn ShaderCompiler,
+	generator: &dyn ProgramGenerator,
 	domain: &str,
 	material: &JsonObject,
 	shader_json: &Value,
@@ -405,7 +399,7 @@ async fn compile_and_store_shader(
 
 	let (shader, result_shader_bytes) = compiler
 		.compile(
-			generator.as_ref(),
+			generator,
 			&name,
 			&shader_code,
 			&format,
@@ -653,7 +647,7 @@ pub mod tests {
 
 		let mut asset_handler = BEMAAssetHandler::new();
 
-		asset_handler.compiler = Arc::new(TestShaderCompiler);
+		asset_handler.compiler = Box::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 
@@ -752,7 +746,7 @@ pub mod tests {
 
 		let mut asset_handler = BEMAAssetHandler::new();
 
-		asset_handler.compiler = Arc::new(TestShaderCompiler);
+		asset_handler.compiler = Box::new(TestShaderCompiler);
 
 		let shader_generator = RootTestShaderGenerator::new();
 

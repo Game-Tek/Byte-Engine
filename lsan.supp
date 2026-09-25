@@ -1,0 +1,16 @@
+# LeakSanitizer suppressions for Byte-Engine test runs.
+#
+# Use with: ASAN_OPTIONS=detect_leaks=1 LSAN_OPTIONS=suppressions=lsan.supp
+#
+# A thread that is still running when the process exits owns bookkeeping that Rust's thread startup
+# allocates (thread-local destructor registration, the `Thread` handle, its parking semaphore). LSan
+# reports it as leaked even though the thread would release it on exit. The frame below is the one every
+# such report has in common.
+#
+# The known sources are threads the engine cannot stop yet:
+# - HttpInspectorServer: oxhttp 0.3.3 has no way to stop its listener thread, so dropping the server
+#   leaves the thread running.
+# - Worker pools (asset manager, EXR decoding) that are still shutting down at process exit.
+#
+# This also hides a genuinely leaked thread, so drop this entry if a thread's cleanup needs auditing.
+leak:6thread7current11set_current

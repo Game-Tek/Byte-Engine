@@ -1,70 +1,64 @@
 use super::super::*;
 
+/// The byte size of one instance record Metal reads while building an instance acceleration structure.
+pub(in crate::metal) const INSTANCE_DESCRIPTOR_SIZE: usize =
+	std::mem::size_of::<mtl::MTLIndirectAccelerationStructureInstanceDescriptor>();
+
+/// Maps a GHI vertex-position encoding to the Metal attribute format acceleration structures read positions with.
+///
+/// Metal builds triangle geometry from three-component positions, so only the component encoding varies.
+pub(in crate::metal) fn to_vertex_format(encoding: crate::Encodings) -> mtl::MTLAttributeFormat {
+	match encoding {
+		crate::Encodings::FloatingPoint => mtl::MTLAttributeFormat::Float3,
+		crate::Encodings::SignedNormalized => mtl::MTLAttributeFormat::Short4Normalized,
+		crate::Encodings::UnsignedNormalized | crate::Encodings::sRGB => mtl::MTLAttributeFormat::UShort4Normalized,
+	}
+}
+
+/// Maps a GHI index data type to the Metal index type acceleration structures read triangle indices with.
+pub(in crate::metal) fn to_index_type(data_type: crate::DataTypes) -> mtl::MTLIndexType {
+	match data_type {
+		crate::DataTypes::U16 => mtl::MTLIndexType::UInt16,
+		crate::DataTypes::U32 | crate::DataTypes::UInt => mtl::MTLIndexType::UInt32,
+		_ => panic!(
+			"Metal acceleration structure index format is unsupported. The most likely cause is that a non 16 or 32-bit index type was used for ray tracing geometry.",
+		),
+	}
+}
+
 impl Context {
-	pub fn create_acceleration_structure_instance_buffer(
+	/// Allocates the Metal storage for one acceleration structure and records the scratch size its builds need.
+	///
+	/// Metal derives storage and scratch sizes from geometry counts and formats alone, so `sizing` carries no
+	/// buffers and the structure can be allocated before any build supplies geometry.
+	pub(in crate::metal) fn create_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
-		max_instance_count: u32,
-	) -> graphics_hardware_interface::BaseBufferHandle {
-		let size = max_instance_count as usize * std::mem::size_of::<mtl::MTLAccelerationStructureInstanceDescriptor>();
-		let buffer = self.create_buffer_resource(
-			name,
-			size,
-			crate::Uses::AccelerationStructure,
-			crate::DeviceAccesses::DeviceOnly,
+		sizing: &mtl::MTLAccelerationStructureDescriptor,
+	) -> u64 {
+		assert!(
+			self.device.supportsRaytracing(),
+			"Metal acceleration structure creation failed. The most likely cause is that the selected device does not support ray tracing.",
 		);
-		let mut creator = self.buffers.creator();
 
-		creator.add(buffer);
+		let sizes = self.device.accelerationStructureSizesWithDescriptor(sizing);
+		let structure = self
+			.device
+			.newAccelerationStructureWithSize(sizes.accelerationStructureSize)
+			.expect("Metal acceleration structure creation failed. The most likely cause is that the device is out of memory.");
 
-		creator.into()
-	}
+		#[cfg(debug_assertions)]
+		if let Some(name) = name.filter(|_| self.settings.debug_labels) {
+			structure.setLabel(Some(&NSString::from_str(name)));
+		}
+		#[cfg(not(debug_assertions))]
+		let _ = name;
 
-	pub fn create_top_level_acceleration_structure(
-		&mut self,
-		_name: Option<&str>,
-		_max_instance_count: u32,
-	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
 		self.acceleration_structures.push(AccelerationStructure {
-			structure: None,
-			buffer: None,
+			structure,
+			build_scratch_size: sizes.buildScratchBufferSize,
 		});
-		// TODO: Build MTLAccelerationStructure and backing buffer.
-		graphics_hardware_interface::TopLevelAccelerationStructureHandle((self.acceleration_structures.len() - 1) as u64)
-	}
 
-	pub fn create_bottom_level_acceleration_structure(
-		&mut self,
-		_description: &graphics_hardware_interface::BottomLevelAccelerationStructure,
-	) -> graphics_hardware_interface::BottomLevelAccelerationStructureHandle {
-		self.acceleration_structures.push(AccelerationStructure {
-			structure: None,
-			buffer: None,
-		});
-		// TODO: Build MTLAccelerationStructure for mesh or AABB.
-		graphics_hardware_interface::BottomLevelAccelerationStructureHandle((self.acceleration_structures.len() - 1) as u64)
-	}
-
-	pub fn write_instance(
-		&mut self,
-		_instances_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		_instance_index: usize,
-		_transform: [[f32; 4]; 3],
-		_custom_index: u16,
-		_mask: u8,
-		_sbt_record_offset: usize,
-		_acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) {
-		// TODO: Populate MTLAccelerationStructureInstanceDescriptor buffer.
-	}
-
-	pub fn write_sbt_entry(
-		&mut self,
-		_sbt_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
-		_sbt_record_offset: usize,
-		_pipeline_handle: graphics_hardware_interface::PipelineHandle,
-		_shader_handle: graphics_hardware_interface::ShaderHandle,
-	) {
-		// TODO: Metal ray tracing shader binding table mapping.
+		(self.acceleration_structures.len() - 1) as u64
 	}
 }

@@ -6,6 +6,8 @@ pub struct Device {
 	device_configuration: ID3D12DeviceConfiguration,
 	// Reuse one validated compiler and cache identity for every runtime HLSL compilation.
 	dxc_compiler: DxcCompiler,
+	// DirectStorage is optional, so a missing runtime is kept as the load error and reported when a resource I/O queue is created.
+	direct_storage_runtime: Result<crate::dx12::io::DirectStorageRuntime, String>,
 	// Descriptor strides are immutable for the lifetime of an ID3D12Device, so query them once.
 	descriptor_handle_increment_sizes: [u32; 4],
 	// Native format support is immutable for a device, so descriptor validation reuses creation-time queries.
@@ -42,7 +44,7 @@ pub struct Device {
 	allocations: Vec<Allocation>,
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
-	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
+	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	untracked_present_work: bool,
 	render_target_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
 	depth_stencil_views: HashMap<AttachmentViewKey, CpuDescriptorView>,
@@ -242,7 +244,7 @@ struct CommandBufferFrame {
 	descriptor_sync_scratch: SmallVec<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>,
 	present_resources: SmallVec<[ID3D12Resource; 2]>,
 	recorded_readbacks: SmallVec<[TextureCopyHandle; 4]>,
-	recorded_texture_syncs: Vec<(crate::BaseImageHandle, u8)>,
+	recorded_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	original_buffer_states: SmallVec<[(usize, Option<BufferBarrierState>); 16]>,
 	original_image_states: SmallVec<[(usize, Option<TextureBarrierState>); 16]>,
 	cbv_srv_uav_staging_heap: Option<DescriptorHeapArena>,
@@ -885,7 +887,7 @@ struct HlslSource {
 #[derive(Clone)]
 pub(crate) struct DxcCompiler {
 	native: IDxcCompiler3,
-	identity: Arc<str>,
+	identity: Box<str>,
 }
 
 impl DxcCompiler {
@@ -931,6 +933,10 @@ pub(crate) struct Swapchain {
 	pub(crate) acquired_image_indices: [u8; 8],
 	pub(crate) acquired_sequences: [bool; 8],
 	queue_handle: QueueHandle,
+	/// The minimum time between presented frames; `None` presents on the next refresh.
+	pub(crate) present_interval: Option<std::time::Duration>,
+	/// The earliest time the next acquisition may start when `present_interval` is set.
+	pub(crate) next_present_slot: Option<std::time::Instant>,
 }
 
 pub(crate) struct Synchronizer {
@@ -1256,6 +1262,18 @@ impl crate::context::Context for Device {
 		Device::bind_to_window(self, window_os_handles, presentation_mode, fallback_extent, _uses)
 	}
 
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		Device::acquire_swapchain_image(self, frame, swapchain)
+	}
+
+	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>) {
+		Device::set_present_interval(self, swapchain, interval);
+	}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: TextureCopyHandle,
@@ -1289,10 +1307,7 @@ impl crate::context::Context for Device {
 use std::{
 	alloc::{self, Layout},
 	cell::{Cell, RefCell},
-	sync::{
-		Arc,
-		atomic::{AtomicU64, Ordering},
-	},
+	sync::atomic::{AtomicU64, Ordering},
 };
 
 use ::utils::Extent;

@@ -1,7 +1,6 @@
 use std::{
 	borrow::Cow,
 	hash::{Hash, Hasher as _},
-	sync::Arc,
 };
 
 use maths_rs::{Vec3f, Vec4f, cross, normalize};
@@ -9,6 +8,7 @@ use maths_rs::{Vec3f, Vec4f, cross, normalize};
 use crate::rendering::{mesh::generator::MeshGenerator, renderable::mesh::MeshSource};
 
 /// The `SphereMeshGenerator` struct provides unbranded mesh-space streams for a UV sphere.
+#[derive(Clone)]
 pub struct SphereMeshGenerator {
 	radius: f32,
 	segments: u32,
@@ -157,17 +157,21 @@ impl MeshGenerator for SphereMeshGenerator {
 		self.segments.hash(&mut hasher);
 		hasher.finish()
 	}
+
+	fn clone_box(&self) -> Box<dyn MeshGenerator> {
+		Box::new(self.clone())
+	}
 }
 
-impl From<SphereMeshGenerator> for Arc<dyn MeshGenerator> {
+impl From<SphereMeshGenerator> for Box<dyn MeshGenerator> {
 	fn from(value: SphereMeshGenerator) -> Self {
-		Arc::new(value)
+		Box::new(value)
 	}
 }
 
 impl From<SphereMeshGenerator> for MeshSource {
 	fn from(value: SphereMeshGenerator) -> Self {
-		Into::<Arc<dyn MeshGenerator>>::into(value).into()
+		MeshSource::Generated(Box::new(value))
 	}
 }
 

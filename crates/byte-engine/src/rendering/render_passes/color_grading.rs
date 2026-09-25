@@ -54,7 +54,7 @@ pub struct ColorGradingPass {
 	bypass_pass: ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
-	lut_bytes: Option<std::sync::Arc<[u8]>>,
+	lut_bytes: Option<Box<[u8]>>,
 	lut_image: ghi::ImageHandle,
 	lut_uploaded: bool,
 	workflow: ColorGradingWorkflow,

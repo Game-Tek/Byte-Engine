@@ -24,13 +24,13 @@ impl<A: Allocator> Device<A> {
 		let mut created_queues = Vec::with_capacity(queues.len());
 
 		for (selection, output_handle) in queues.iter_mut() {
-			let workloads = select_metal_command_queue_workloads(device.as_ref(), selection.r#type)?;
+			validate_metal_command_queue_workloads(device.as_ref(), selection.r#type)?;
 			let queue = device.newMTL4CommandQueue().ok_or(
 				"Metal 4 command queue creation failed. The most likely cause is that the device ran out of command queue resources.",
 			)?;
 			let handle = graphics_hardware_interface::QueueHandle(created_queues.len() as u64);
 
-			created_queues.push(queue::StoredQueue::new(queue, workloads));
+			created_queues.push(queue::StoredQueue::new(queue));
 
 			**output_handle = Some(handle);
 		}
@@ -44,27 +44,13 @@ impl<A: Allocator> Device<A> {
 	}
 }
 
-impl Device<Global> {
-	/// Creates a Metal device that uses the global allocator.
-	pub fn new(
-		settings: crate::device::Features,
-		device: Retained<ProtocolObject<dyn mtl::MTLDevice>>,
-		queues: &mut [(
-			graphics_hardware_interface::QueueSelection,
-			&mut Option<graphics_hardware_interface::QueueHandle>,
-		)],
-	) -> Result<Self, &'static str> {
-		Self::new_in(settings, device, queues, Global)
-	}
-}
-
 impl<A: Allocator> crate::device::Device for Device<A> {
 	type Context = crate::metal::context::Context;
 	type Allocator = A;
-	type RasterPipeline = crate::metal::factory::RasterPipeline;
-	type ComputePipeline = crate::metal::factory::ComputePipeline;
-	type Image = crate::metal::factory::FactoryImage;
-	type Sampler = crate::metal::factory::FactorySampler;
+	type RasterPipeline = Pipeline;
+	type ComputePipeline = Pipeline;
+	type Image = image::Image;
+	type Sampler = sampler::Sampler;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&self.allocator
@@ -116,10 +102,11 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 	}
 }
 
-pub(super) fn select_metal_command_queue_workloads(
+/// Checks that one Metal 4 command queue can run every requested workload type.
+fn validate_metal_command_queue_workloads(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	requested: crate::WorkloadTypes,
-) -> Result<crate::WorkloadTypes, &'static str> {
+) -> Result<(), &'static str> {
 	if requested.is_empty() {
 		return Err("Failed to create a Metal command queue. The requested queue selection did not include any workload type.");
 	}
@@ -148,60 +135,9 @@ pub(super) fn select_metal_command_queue_workloads(
 		);
 	}
 
-	Ok(requested)
+	Ok(())
 }
 
-#[derive(Clone)]
-pub struct Pipeline {
-	pub(crate) pipeline: PipelineState,
-	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
-	pub(crate) layout: PipelineLayout,
-	pub(crate) vertex_layout: Option<VertexLayout>,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) compute_threadgroup_size: Option<Extent>,
-	pub(crate) object_threadgroup_size: Option<Extent>,
-	pub(crate) mesh_threadgroup_size: Option<Extent>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
-}
-
-// SAFETY: Metal pipeline states, depth state, and retained shader metadata are immutable and documented for cross-thread use.
-unsafe impl Send for Pipeline {}
-
-#[derive(Clone)]
-pub struct ComputePipeline {
-	pub(crate) pipeline: PipelineState,
-	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn MTLDepthStencilState>>>,
-	pub(crate) layout: PipelineLayout,
-	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
-	pub(crate) compute_threadgroup_size: Option<Extent>,
-	pub(crate) object_threadgroup_size: Option<Extent>,
-	pub(crate) mesh_threadgroup_size: Option<Extent>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
-}
-
-// SAFETY: Metal compute pipeline states and their immutable reflection metadata support cross-thread ownership transfer.
-unsafe impl Send for ComputePipeline {}
-
-/// The `Image` struct carries a Metal image built before it has a public GHI handle.
-pub struct Image {
-	pub(crate) image: crate::metal::image::Image,
-}
-
-// SAFETY: The prepared image owns a retained Metal texture and immutable metadata; mutation begins only after context adoption.
-unsafe impl Send for Image {}
-
-/// The `Sampler` struct carries a Metal sampler built before it has a public GHI handle.
-pub struct Sampler {
-	pub(crate) sampler: crate::metal::sampler::Sampler,
-}
-
-// SAFETY: Metal sampler states are immutable retained objects and support cross-thread ownership transfer.
-unsafe impl Send for Sampler {}
-
-use objc2_metal::{MTLDepthStencilState, MTLDevice};
+use objc2_metal::MTLDevice;
 
 use super::*;

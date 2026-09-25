@@ -74,7 +74,10 @@ impl Default for ScopeAccess {
 /// The `VisibilityShaderGenerator` struct turns portable material programs into visibility material-evaluation shaders.
 ///
 /// Install it on the material, FBX, and glTF asset handlers so every baked material targets this pipeline.
+#[derive(Clone)]
 pub struct VisibilityShaderGenerator {
+	// Parsed once at construction so each material build only clones it.
+	common: Node<'static>,
 	scope: Node<'static>,
 }
 
@@ -91,6 +94,7 @@ impl VisibilityShaderGenerator {
 
 	pub fn with_access(access: ScopeAccess) -> Self {
 		Self {
+			common: CommonShaderScope::new(),
 			scope: VisibilityShaderScope::new(access),
 		}
 	}
@@ -126,7 +130,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		}
 
 		root.add(declarations);
-		root.add(vec![CommonShaderScope::new(), self.scope.clone()]);
+		root.add(vec![self.common.clone(), self.scope.clone()]);
 		root
 	}
 }

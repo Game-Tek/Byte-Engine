@@ -5,12 +5,7 @@
 //! default audio worker validates and compiles each graph before its sample
 //! resources cross to the audio thread.
 
-use std::{
-	fmt,
-	sync::Arc,
-	sync::atomic::{AtomicU64, Ordering},
-	time::{SystemTime, UNIX_EPOCH},
-};
+use std::fmt;
 
 use smallbox::{SmallBox, smallbox, space::S4};
 use smallvec::SmallVec;
@@ -34,20 +29,18 @@ const INLINE_AUDIO_NODE_CAPACITY: usize = 8;
 const INLINE_SELECTOR_INPUT_CAPACITY: usize = 4;
 pub(crate) const MAX_AUDIO_GRAPH_NODES: usize = 64;
 const RANDOM_STATE_INCREMENT: u64 = 0x9E37_79B9_7F4A_7C15;
-static NEXT_RANDOM_SEED: AtomicU64 = AtomicU64::new(0x243F_6A88_85A3_08D3);
 pub(crate) type AudioProcessors = SmallVec<[AudioProcessor; INLINE_AUDIO_NODE_CAPACITY]>;
 pub(crate) type RuntimeAudioProcessors = SmallVec<[SmallBox<dyn RuntimeAudioProcessor + Send, S4>; INLINE_AUDIO_NODE_CAPACITY]>;
 pub(super) type SelectorInputs = SmallVec<[AudioNodeId; INLINE_SELECTOR_INPUT_CAPACITY]>;
 pub(super) type SelectorCommits = SmallVec<[SelectorCommit; MAX_AUDIO_GRAPH_NODES]>;
 pub(super) type RuntimeCustomFunction = Box<dyn FnMut(AudioGraphTime, &mut [f32]) + Send>;
-pub(super) type CustomFunctionFactory = Arc<dyn Fn() -> RuntimeCustomFunction + Send + Sync>;
 
 pub use authoring::{AudioGraph, AudioGraphFactory};
 pub(crate) use nodes::{
 	AudioNode, AudioNodeId, CustomAudioFunction, NodeProperties, RandomNode, RoundRobinNode, SelectorCommit,
 };
 pub(crate) use plan::{
-	AudioGraphRenderPlan, AudioProcessor, CompiledAudioGraph, PlaybackRate, PreparedAudioGraphRenderPlan,
+	AudioGraphRenderPlan, AudioProcessContext, AudioProcessor, CompiledAudioGraph, PlaybackRate, PreparedAudioGraphRenderPlan,
 	RuntimeAudioProcessor, SamplePlaybackMode,
 };
 pub use time::AudioGraphTime;
@@ -55,8 +48,9 @@ pub use time::AudioGraphTime;
 #[cfg(test)]
 mod tests {
 	use super::{
-		AudioGraph, AudioGraphFactory, AudioGraphTime, AudioNode, AudioNodeId, AudioProcessor, CompiledAudioGraph,
-		MAX_AUDIO_GRAPH_NODES, PlaybackRate, RandomNode, RoundRobinNode, SamplePlaybackMode, SelectorInputs,
+		AudioGraph, AudioGraphFactory, AudioGraphTime, AudioNode, AudioNodeId, AudioProcessContext, AudioProcessor,
+		CompiledAudioGraph, MAX_AUDIO_GRAPH_NODES, PlaybackRate, RandomNode, RoundRobinNode, SamplePlaybackMode,
+		SelectorInputs,
 		fns::{custom, gain, r#loop, pitch_shift, random, round_robin, sample, varispeed},
 		pitch_shift::PITCH_SHIFT_LATENCY,
 	};
@@ -680,12 +674,13 @@ mod tests {
 			0.5,
 		);
 		let (_, render_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut context = AudioProcessContext::new();
 		let mut prepared = render_plan.prepare();
 		let mut samples = [1.0, 2.0, 3.0];
 
 		assert_eq!(prepared.processors.len(), 1);
 		assert_eq!(prepared.output_gain, 0.5);
-		prepared.processors[0].process(AudioGraphTime::new(0, 48_000), &mut samples);
+		prepared.processors[0].process(&mut context, AudioGraphTime::new(0, 48_000), &mut samples);
 
 		assert_eq!(samples, [2.0, 3.0, 4.0]);
 	}
@@ -704,14 +699,15 @@ mod tests {
 
 		let (_, first_plan) = graph.compile().expect("valid graph").into_parts();
 		let (_, second_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut context = AudioProcessContext::new();
 		let mut first = first_plan.prepare();
 		let mut second = second_plan.prepare();
 		let mut first_samples = [0.0; 2];
 		let mut second_samples = [0.0; 2];
 
-		first.processors[0].process(AudioGraphTime::new(0, 48_000), &mut first_samples);
-		first.processors[0].process(AudioGraphTime::new(2, 48_000), &mut first_samples);
-		second.processors[0].process(AudioGraphTime::new(0, 48_000), &mut second_samples);
+		first.processors[0].process(&mut context, AudioGraphTime::new(0, 48_000), &mut first_samples);
+		first.processors[0].process(&mut context, AudioGraphTime::new(2, 48_000), &mut first_samples);
+		second.processors[0].process(&mut context, AudioGraphTime::new(0, 48_000), &mut second_samples);
 
 		assert_eq!(first_samples, [2.0; 2]);
 		assert_eq!(second_samples, [1.0; 2]);
@@ -725,10 +721,11 @@ mod tests {
 			}
 		});
 		let (_, render_plan) = graph.compile().expect("valid graph").into_parts();
+		let mut context = AudioProcessContext::new();
 		let mut prepared = render_plan.prepare();
 		let mut samples = [0.0; 3];
 
-		prepared.processors[0].process(AudioGraphTime::new(2, 4), &mut samples);
+		prepared.processors[0].process(&mut context, AudioGraphTime::new(2, 4), &mut samples);
 
 		assert_eq!(samples, [0.5, 0.75, 1.0]);
 	}

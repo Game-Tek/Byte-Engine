@@ -1,16 +1,24 @@
 # P0 - Correctness and stability
 
 - Fix the Cube test hang and gate renderer/window integration tests so normal test and `cargo llvm-cov` runs complete.
-- Fix visibility rendering to use scene instance indices instead of loaded mesh indices in `crates/byte-engine/src/rendering/pipelines/visibility/render_pass.rs`.
-- Fix texture/material upload ordering that causes black-object flashes, including correct synchronization before rendering starts.
-- Support applications with no audio endpoint.
-- Make Linux audio pause tolerate devices without ALSA pause support, make Windows format negotiation return an error instead of panicking, and implement or document Windows pause behavior.
-- Rebuild Metal dynamic resources correctly when swapchain frame counts change in `crates/ghi/src/metal/context.rs`.
-- Support Vulkan frame-count reductions and replace unimplemented internal-handle translation with explicit handling or a recoverable error.
+- Make the UDP client and server exchange canonical BETP datagrams. `crates/byte-engine/src/network/client/udp.rs` treats `WouldBlock` as `IoError`, never decodes the receive buffer, and always sends a 1024-byte buffer. A data packet is 1045 bytes, so `write_packet` fails and the socket sends zeros. Handshake packets that fit are padded, and `read_packet` rejects any length other than the exact size. `crates/byte-engine/src/network/server/udp.rs` blocks in `recv`, ignores the datagram, and never inserts a client. `crates/byte-engine/src/network/server/server.rs` still only logs connect and disconnect.
+- Deliver in-process channel `Data` only after the session is connected, and apply each reliable payload once. `crates/byte-engine/src/network/server/channel.rs` pushes every `Data` packet into `received` before accept, and reliable sends stay queued for eight attempts. Stop using `client_salt ^ 0x4254_4550` as the connection id.
+- Retransmit a lost challenge response. After a matching challenge, the BETP client enters `Connecting` and the next update, including an idle one, becomes `Connected` without sending the response again (`crates/betp/src/client/session.rs`). The server connects only when that response arrives.
+- Return a recoverable error from Vulkan `vkQueuePresentKHR` when the surface is out of date. `crates/ghi/src/vulkan/frame.rs` uses `.expect("No present")`, so a resize aborts the process. A second present in the same submit also waits again on a binary semaphore that was already signaled.
+- Release or present an acquired swapchain image when its extent is `0` or at least 65535. `crates/byte-engine/src/rendering/renderer/core.rs` drops the `PresentKey` and stores `None`, so a minimized window keeps the image acquired and later acquires fail.
+- Reject glTF and FBX URIs that escape the asset root. `resolve_gltf_uri` returns absolute paths and `..` joins unchanged (`crates/resource-management/src/asset/handler/implementations/gltf/io.rs`), and `read_asset_from_source` opens `base_path.join(url)`. On Unix an absolute URI replaces the base. FBX textures take the same path. Environment maps already reject this.
+- Make Vulkan `set_frames_in_flight` grow and shrink without sharing resources or panicking. Lowering the count hits `unimplemented!()` in `crates/ghi/src/vulkan/context/traits.rs`. Raising it extends image and synchronizer chains by one node and does not rebuild dynamic buffers, so two sequences can share one `VkBuffer`. The renderer currently stays at 2, which matches context creation.
+- Copy retained bytes on GHI buffer resize, and free Vulkan image memory when an image is resized. `crates/ghi/src/vulkan/context/resources.rs` still has the copy todo, asserts when the buffer has staging, and can delete the old `VkBuffer` after only one sequence fence. Image resize leaves the old `VkDeviceMemory` allocated until the context drops. Metal and DX12 also replace a resized buffer without copying the previous CPU contents.
+- Rebuild Metal dynamic resources when the frame count changes. `crates/ghi/src/metal/context/resources/allocation.rs` only retires upload slots and resizes `internal_upload_queues`. Descriptor sets, synchronizers, and dynamic buffers stay chained at their old length, so `nth_handle` reuses the last node.
+- Fail DX12 pipeline creation when no native pipeline state exists. `crates/ghi/src/dx12/context/pipelines.rs` still returns a handle, and later dispatch records no work when `pipeline_state` is `None`.
+- Return a parse error for a zero-length BESL array. `u32[0]` is accepted, then `Node::array` expects a non-zero size in `crates/besl/src/lexer/ast.rs`.
+- Emit `vec3u16` raster I/O as a non-interpolated integer on HLSL, GLSL, and MSL. `is_integer_type` lists the 2- and 4-component forms and omits `vec3u16`, so the stage output is interpolated or the backend compile fails.
+- Treat a forward BETP sequence gap above 32768 as newer, or reject it, so the receive window cannot stall. `sequence_greater_than` in `crates/betp/src/lib.rs` treats that distance as older, and the packet is dropped without moving `ack`.
+- Make Linux audio pause return an error when the device does not support ALSA pause. `crates/ahi/src/os/linux.rs` uses `pcm.pause(true).unwrap()`, and `play` panics for a channel count other than 1 or 2. On Windows, reject a closest match the renderer cannot play, request 32-bit streams as float rather than integer PCM, and treat `CoInitializeEx` returning `S_FALSE` as already initialized. `play` panics outside 16- or 32-bit mono and stereo, and a 32-bit stream is requested as `KSDATAFORMAT_SUBTYPE_PCM` while samples are written as `f32`.
 - Migrate the Vulkan and DX12 GHI backends from legacy descriptor templates to retained flat `ResourceSlot` writes and pipeline-derived native layouts.
 - Fix the macOS `NSWindow canBecomeKeyWindow` warning.
 - Define texture usage semantics for resources consumed by multiple unknown render passes.
-- Remove completed audio sources instead of retaining and revisiting them in `crates/byte-engine/src/audio/audio_system.rs`.
+- Give UI element paths an identity that cannot repeat between live scopes. `RetainedTree::begin_frame` clears `path_counts`, and `scope_path` assigns the ordinal from that per-frame counter (`crates/byte-engine/src/ui/layout/retained_tree.rs`). Two mounts with the same name under one parent started on different frames share a path, share element ids, and removing one removes the other's elements. Task ownership already uses `ScopeId` and is unaffected.
 
 # P1 - Runtime performance
 
@@ -52,7 +60,7 @@
 
 - Resolve named input triggers to handles during action registration and index device classes and triggers by name.
 - Reuse gamepad event, new-device, and present-path scratch storage; allocate owned HID paths only for confirmed new devices.
-- Decide how modifier keys behave across input layers: a layer that consumes `Ctrl` currently claims it, so a later layer's `Ctrl+S` no longer resolves. Consider modifier-only controls that layers read without claiming.
+- Decide how modifier keys behave across input sinks: a sink that captures `Ctrl` currently claims it, so a later sink's `Ctrl+S` no longer resolves. Consider modifier-only controls that sinks read without claiming.
 
 ## Metal-specific
 
@@ -62,7 +70,6 @@
 
 # P1 - Bake and asset performance
 
-- Make BELD bake concurrency and initial arena capacity configurable or memory-aware instead of reserving sixteen 32 MiB arenas.
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
 - Redesign `MeshProcessor` as a two-pass packer that computes offsets and writes directly into one final allocation.
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
@@ -79,20 +86,20 @@
 
 ## GHI and windows
 
-- Honor raster pipeline depth-write configuration in the Vulkan and DX12 backends.
 - Complete DX12 command recording and device support for resources, pipelines, uploads, mesh shading, DXR, shader tables, fences, and submission.
 - Implement Vulkan standalone command-buffer execution.
 - Implement Metal ray tracing pipelines, acceleration structures, instance data, shader binding tables, and ray dispatch.
 - Decide how GHI should handle potentially unused staging buffers.
 - Implement macOS cursor visibility and confinement.
-- Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input manager.
+- Wire real platform input seats across X11, Wayland, Win32, and the byte-engine input collector.
 
 ## Engine systems
 
 - Replace the fitted ACES grading output with the official ACES 2.0 Rec.709-D65 100-nit sRGB-piecewise transform, including AP1-to-AP0 conversion, precomputed hue/gamut tables, complete CAM/JMh tone/chroma/gamut processing, Apache-2.0 attribution, and Academy golden-image validation.
 - Support self-overlapping and intersecting transparent surfaces with forward per-fragment shading or OIT.
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
-- Implement server-side client entity lifecycle and replace the temporary UDP client identity strategy.
+- Spawn and despawn a server-side client entity when BETP reports `ClientConnected` and `ClientDisconnected`. `crates/byte-engine/src/network/server/server.rs` logs those events and leaves the entity empty.
+- Make the HTTP inspector opt-in, and keep a busy port 6680 from aborting startup. `HttpInspectorServer::new` starts with every headed application, panics if the port is taken, and accepts unauthenticated loopback requests. `POST /messages` can move or delete entities and trigger actions, and `DELETE /` closes the process.
 - Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
 ## Shader behavior
@@ -120,13 +127,13 @@
 
 - Add one smoke rendering path per supported backend to CI.
 - Test rendering a frame with no elements.
-- Fix or replace ignored Vulkan WSI and ray-tracing tests.
+- Fix or replace the ignored Vulkan WSI tests in `crates/ghi/tests/rendering.rs`.
 - Add targeted GHI backend tests or fakes for device, context, resource, and command lifecycle behavior.
 - Add focused window tests, including macOS keyboard consumption, cursor visibility, and confinement.
-- Replace ignored glTF, WAV, and PNG tests with committed or generated fixtures.
-- Fix ignored asset-manager dependency-injection and BESL member-lexer tests.
-- Test asset path handling.
-- Add an in-process UDP client connection test and server lifecycle coverage.
+- Test that glTF and FBX URI resolution stays inside the asset root, including absolute paths and `..` segments.
+- Add an in-process UDP client connection test and server lifecycle coverage. The current UDP adapters discard datagrams, so this test fails until that transport sends and decodes canonical packets.
+- Run CI once with the default `headed` and `network` features together. The workflow enables only one of those features per job, and the default nextest filter excludes the native GHI rendering binary.
+- Extend BETP and raw-datagram fuzzing past canonical packets. The current targets do not cover the UDP adapters, a lost challenge response, two clients on one socket, or a sequence gap above 32768.
 - Add UI tests for sampled colors, remaining layout behavior, primitive styles, and non-box bounds.
 - Review and remove or use dead `TestTransport` and `TestSynthesizer` helpers.
 
@@ -148,6 +155,7 @@
 ## Application and input
 
 - Move input trigger and evaluation documentation beside the implementation that owns those rules.
+- Move UI timer deadlines from the process-wide list in `crates/byte-engine/src/ui/timer.rs` into the runtime a `WaitFuture` is polled in, found through its task context, so `Engine::next_tick` reads only its own state and `timer::wait` keeps its signature.
 
 ## Assets and resource processing
 
@@ -171,6 +179,9 @@
 - Split each large backend context implementation into resources, descriptors, pipelines, synchronization, transfers, and acceleration-structure modules while keeping the public context type in `context/mod.rs`.
 - Move GHI handles, resource descriptions, and behavioral traits into their existing domain modules instead of declaring most contracts in `graphics_hardware_interface.rs`.
 - Reduce `graphics_hardware_interface.rs` to compatibility re-exports or remove it after callers migrate to domain modules.
+- Honor the swapchain present interval (`Context::set_present_interval`) natively on Vulkan and DX12. Both currently sleep in `pace_present` before acquisition, which is not phase-locked to vblank and can alternate between one and three refresh periods when the slot lands near a boundary. Use `VK_EXT_present_timing` (or `VK_GOOGLE_display_timing`) on Vulkan and a waitable swapchain with `SetMaximumFrameLatency` on DX12, the way Metal uses `presentAfterMinimumDuration`. Verify with `--max-frame-rate=30` on a 60 Hz display: deltas should sit at 33.3 ms as they do on Metal.
+- Drive Metal presentation with `CAMetalDisplayLink` (macOS 14+). It hands out the drawable together with a `targetPresentationTimestamp` per frame, so the swapchain acquisition can report the time the frame will be shown instead of only the time the previous one was, and it replaces the manual `presentAfterMinimumDuration` cap with `preferredFrameRateRange` (which also matters on ProMotion displays) and `preferredFrameLatency`. Keep the engine's pull loop: run the link on a dedicated run-loop thread, hand each update over a channel, and let `acquire_swapchain_image` block on that channel instead of `nextDrawable`. Fall back to `nextDrawable` on older systems. `NSView.displayLink(target:selector:)` is the lighter alternative if only the timing is wanted.
+- Add cursor visibility, confinement, and pointer lock to the GHI window API when relative mouse input needs them. The unreachable `WindowLike::show_cursor` and `confine_cursor` stubs and the Wayland `zwp_pointer_constraints_v1` state machine were removed with the app-wide event pump. Expose them as `ghi::window::App` operations that take a `WindowId`, since Wayland applies them through the shared connection state and only while the window holds pointer and keyboard focus (AppKit: `NSCursor::hide` and `CGAssociateMouseAndMouseCursorPosition`; Win32: `ShowCursor` and `ClipCursor`).
 
 ## Cross-cutting layout
 
@@ -180,3 +191,9 @@
 - Keep tests in the new owning submodules instead of retaining large centralized test sections.
 - Avoid creating additional crates until module-level splits show a stable dependency boundary that needs independent compilation or ownership.
 - Prioritize the visibility pipeline refactor first because it combines the greatest file size, dependency breadth, duplicated shader contracts, and constructor complexity.
+- Build a level manager on top of `Scene`/`SceneNode` (`crates/byte-engine/src/gameplay/scene.rs`): active-scene switching, loading levels from assets, and optional re-parenting of scene members.
+
+## Ownership cleanup (deferred)
+
+- Replace the process-wide `COUNTER` in `crates/byte-engine/src/core/factory.rs` with an id counter owned by the world or message bus and passed to the factories. Deferred on request during the Rc/Arc and globals cleanup.
+- Remove the shared `Arc<AssetManagerState>` in `crates/resource-management/src/asset/manager.rs` (and the dependent file-watcher `Weak`, `in_flight_bakes` Arc, bake-memory Arcs, shared storage backend, material mip generator Arc, and test counters). compio dispatch requires `'static` jobs; the options considered (no dispatcher + owned-data compute pool, coordinator/actor, whole pool inside `std::thread::scope`) were rejected, so a different design is needed.

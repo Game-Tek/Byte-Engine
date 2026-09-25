@@ -52,10 +52,23 @@ impl Device {
 		if !self
 			.pending_texture_syncs
 			.iter()
-			.any(|&(pending_image, pending_sequence)| pending_image == image_handle && pending_sequence == sequence_index)
-		{
-			self.pending_texture_syncs.push((image_handle, sequence_index));
+			.any(|&(pending_image, pending_sequence, region)| {
+				pending_image == image_handle && pending_sequence == sequence_index && region.is_none()
+			}) {
+			self.pending_texture_syncs.push((image_handle, sequence_index, None));
 		}
+	}
+
+	/// Queues one validated patch while keeping image storage owned by the device.
+	pub(crate) fn queue_texture_region_for_sequence(
+		&mut self,
+		image_handle: crate::BaseImageHandle,
+		sequence_index: u8,
+		region: crate::image::Region,
+	) {
+		let image = &self.images[image_handle.0 as usize];
+		region.validate(image.extent, image.format, image.array_layers);
+		self.pending_texture_syncs.push((image_handle, sequence_index, Some(region)));
 	}
 
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
@@ -128,7 +141,7 @@ impl Device {
 		if initializes_frame_resources {
 			// Committed textures have undefined contents. Upload each frame's zeroed staging image on first use.
 			for sequence_index in 0..self.frames {
-				self.pending_texture_syncs.push((handle, sequence_index));
+				self.pending_texture_syncs.push((handle, sequence_index, None));
 			}
 		}
 

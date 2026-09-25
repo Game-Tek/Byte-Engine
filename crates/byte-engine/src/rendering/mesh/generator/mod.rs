@@ -39,4 +39,16 @@ pub trait MeshGenerator: Send + Sync {
 
 	/// Returns a hash that uniquely identifies the mesh. If the consumer of this generator already has a mesh whose id matches this it can safely reuse the existing mesh.
 	fn hash(&self) -> u64;
+
+	/// Copies this generator into a new single-owner box.
+	///
+	/// [`MeshSource`](crate::rendering::renderable::mesh::MeshSource) uses this to stay
+	/// cloneable, because message channels hand each listener its own copy.
+	fn clone_box(&self) -> Box<dyn MeshGenerator>;
+}
+
+impl Clone for Box<dyn MeshGenerator> {
+	fn clone(&self) -> Self {
+		self.clone_box()
+	}
 }

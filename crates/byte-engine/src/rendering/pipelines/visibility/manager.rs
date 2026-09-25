@@ -301,6 +301,65 @@ fn resolved_ies_profile_texture(light: &Lights, profiles: &HashMap<String, IesPr
 	Some(texture)
 }
 
+/// The `TransformSamples` struct keeps the two most recent transforms of one renderable and which step the latest
+/// arrived in.
+struct TransformSamples {
+	previous: Transform,
+	current: Transform,
+	/// The step `current` was published in. Older than the latest step once the renderable stopped publishing.
+	step: u64,
+	/// Whether a frame still has to show the latest state.
+	dirty: bool,
+}
+
+impl TransformSamples {
+	/// Starts both samples at `transform`, so the renderable is shown there until a step moves it.
+	fn snapped(transform: &Transform) -> Self {
+		Self {
+			previous: transform.clone(),
+			current: transform.clone(),
+			step: 0,
+			dirty: true,
+		}
+	}
+
+	/// Keeps `transform` as the state at the end of `step`.
+	///
+	/// A second sample within the same step replaces the first, and a renderable that skipped steps starts the
+	/// new segment from where it stood still.
+	fn sample(&mut self, transform: &Transform, step: u64) {
+		if self.step != step {
+			self.previous = self.current.clone();
+			self.step = step;
+		}
+		self.current = transform.clone();
+		self.dirty = true;
+	}
+
+	/// Shows `transform` at once: a write made outside a step is a placement, not motion.
+	fn snap(&mut self, transform: &Transform) {
+		self.previous = transform.clone();
+		self.current = transform.clone();
+		self.dirty = true;
+	}
+
+	/// Returns the transform a frame should show, or `None` when the last shown one still stands.
+	///
+	/// A renderable published by the latest step (`step`) moves from `previous` to `current` with `alpha`; once a
+	/// step passes without a sample it rests at `current` and stops reporting.
+	fn shown(&mut self, step: u64, alpha: f32) -> Option<Transform> {
+		if !self.dirty {
+			return None;
+		}
+		if self.step == step {
+			Some(self.previous.interpolate(&self.current, alpha))
+		} else {
+			self.dirty = false;
+			Some(self.current.clone())
+		}
+	}
+}
+
 /// The `VisibilityPipelineManager` struct provides the visibility-buffer implementation of the world render domain.
 ///
 /// Register it through [`crate::rendering::Renderer::add_pipeline_manager`]. Scene changes arrive through the
@@ -320,8 +379,11 @@ pub struct VisibilityPipelineManager {
 	skinning_pass: SkinningPass,
 	skinning_frame: SkinningFrame,
 	pending_renderables: Vec<PendingRenderable>,
-	/// Latest transform per renderable, retained so a mesh that loads later starts in the right place.
-	renderable_transforms: HashMap<Handle, Transform>,
+	/// The two most recent transform samples per renderable, retained so a mesh that loads later starts in the
+	/// right place and so frames can show where a renderable was between two steps.
+	renderable_transforms: HashMap<Handle, TransformSamples>,
+	/// The number of simulation steps marked so far; a sample tagged with it belongs to the latest step.
+	step_count: u64,
 	loaded_materials: HashMap<u32, LoadedMaterial>,
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
@@ -389,6 +451,7 @@ impl VisibilityPipelineManager {
 			skinning_frame: SkinningFrame::default(),
 			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::default(),
+			step_count: 0,
 			loaded_materials: HashMap::default(),
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
@@ -421,16 +484,30 @@ impl VisibilityPipelineManager {
 
 	/* Scene changes */
 
-	/// Retains a renderable's latest world transform and applies it to every registered primitive and light.
-	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) {
-		self.renderable_transforms.insert(handle, transform.clone());
-		self.scene.update_transform(handle, transform);
+	/// Marks the end of one simulation step and keeps the transforms it published as the samples frames move toward.
+	pub(crate) fn step(&mut self) {
+		self.step_count += 1;
+		while let Some(message) = self.transforms_listener.read() {
+			self.renderable_transforms
+				.entry(message.handle())
+				.or_insert_with(|| TransformSamples::snapped(message.transform()))
+				.sample(message.transform(), self.step_count);
+		}
 	}
 
-	/// Applies queued transforms before resource adoption so late-loading meshes start in place.
-	pub(crate) fn process_transform_updates(&mut self) {
+	/// Shows transforms written outside a step where they are, then moves every renderable that changed since its
+	/// last shown transform to where it lies `alpha` of the way between its two samples.
+	pub(crate) fn process_transform_updates(&mut self, alpha: f32) {
 		while let Some(message) = self.transforms_listener.read() {
-			self.update_transform(message.handle(), message.transform());
+			self.renderable_transforms
+				.entry(message.handle())
+				.or_insert_with(|| TransformSamples::snapped(message.transform()))
+				.snap(message.transform());
+		}
+		for (handle, samples) in &mut self.renderable_transforms {
+			if let Some(transform) = samples.shown(self.step_count, alpha) {
+				self.scene.update_transform(*handle, &transform);
+			}
 		}
 	}
 
@@ -668,8 +745,7 @@ impl VisibilityPipelineManager {
 		let model = self
 			.renderable_transforms
 			.get(&handle)
-			.cloned()
-			.unwrap_or_default()
+			.map_or_else(Transform::default, |samples| samples.current.clone())
 			.get_matrix()
 			.into();
 		let availability = self.availability.get_or_insert(Availability::Renderable(handle), true);
@@ -835,11 +911,17 @@ impl VisibilityPipelineManager {
 }
 
 impl PipelineManager for VisibilityPipelineManager {
+	fn step(&mut self) {
+		Self::step(self);
+	}
+
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
+		_alpha: f32,
+		_time: crate::time::MediaTime,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
 		self.adopt_resource_completions(frame);
@@ -958,6 +1040,56 @@ mod tests {
 	use super::*;
 	use crate::core::factory::Factory;
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
+
+	fn at(x: f32) -> Transform {
+		Transform::from_position(math::Point::new(x, 0.0, 0.0))
+	}
+
+	fn shown_x(samples: &mut TransformSamples, step: u64, alpha: f32) -> Option<f32> {
+		samples.shown(step, alpha).map(|transform| transform.get_position().x())
+	}
+
+	#[test]
+	fn samples_move_from_the_previous_step_to_the_latest_then_rest() {
+		let mut samples = TransformSamples::snapped(&at(0.0));
+		samples.sample(&at(2.0), 1);
+
+		assert_eq!(shown_x(&mut samples, 1, 0.0), Some(0.0));
+		assert_eq!(shown_x(&mut samples, 1, 0.5), Some(1.0));
+		// No sample in step 2: the renderable rests at its latest state and reports once.
+		assert_eq!(shown_x(&mut samples, 2, 0.3), Some(2.0));
+		assert_eq!(shown_x(&mut samples, 2, 0.9), None);
+	}
+
+	#[test]
+	fn a_second_sample_in_one_step_replaces_the_first() {
+		let mut samples = TransformSamples::snapped(&at(0.0));
+		samples.sample(&at(1.0), 1);
+		samples.sample(&at(4.0), 1);
+
+		assert_eq!(shown_x(&mut samples, 1, 0.0), Some(0.0));
+		assert_eq!(shown_x(&mut samples, 1, 1.0), Some(4.0));
+	}
+
+	#[test]
+	fn a_renderable_that_paused_starts_its_next_segment_where_it_rested() {
+		let mut samples = TransformSamples::snapped(&at(0.0));
+		samples.sample(&at(2.0), 1);
+		assert_eq!(shown_x(&mut samples, 2, 0.5), Some(2.0));
+		samples.sample(&at(6.0), 3);
+
+		assert_eq!(shown_x(&mut samples, 3, 0.0), Some(2.0));
+		assert_eq!(shown_x(&mut samples, 3, 0.5), Some(4.0));
+	}
+
+	#[test]
+	fn a_snap_shows_at_once_and_ends_the_motion_in_progress() {
+		let mut samples = TransformSamples::snapped(&at(0.0));
+		samples.sample(&at(2.0), 1);
+		samples.snap(&at(10.0));
+
+		assert_eq!(shown_x(&mut samples, 1, 0.5), Some(10.0));
+	}
 
 	#[test]
 	fn visibility_pipeline_settings_bound_local_shadow_pool_capacities() {

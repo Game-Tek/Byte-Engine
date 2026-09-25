@@ -247,6 +247,22 @@ impl crate::context::Context for Context {
 		self.bind_to_window(window_os_handles, presentation_mode, fallback_extent, uses)
 	}
 
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: graphics_hardware_interface::SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition> {
+		Context::acquire_swapchain_image(self, frame, swapchain)
+	}
+
+	fn set_present_interval(
+		&mut self,
+		swapchain: graphics_hardware_interface::SwapchainHandle,
+		interval: Option<std::time::Duration>,
+	) {
+		Context::set_present_interval(self, swapchain, interval);
+	}
+
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,

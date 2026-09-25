@@ -27,6 +27,14 @@ impl BufferCopy {
 	}
 }
 
+/// The `ImageCopy` struct describes one pending staging-to-image upload for [`CommandBufferRecording::sync_textures`].
+#[derive(Clone, Copy)]
+pub(crate) struct ImageCopy {
+	pub dst_texture: ImageHandle,
+	/// The base-level rectangle to upload, or `None` to upload every layer of the image.
+	pub region: Option<crate::image::Region>,
+}
+
 /// Width of BC compression blocks in texels.
 const BC_BLOCK_EXTENT: usize = 4;
 

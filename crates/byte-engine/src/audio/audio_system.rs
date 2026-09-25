@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ahi::{
 	self, Device,
 	audio_hardware_interface::{AudioHardwareInterface, HardwareParameters, Streams},
@@ -7,7 +5,10 @@ use ahi::{
 
 use super::{
 	generator::{Generator, PlaybackSettings, PlaybackState},
-	graph::{AudioGraphTime, PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors, SamplePlaybackMode},
+	graph::{
+		AudioGraphTime, AudioProcessContext, PlaybackRate, PreparedAudioGraphRenderPlan, RuntimeAudioProcessors,
+		SamplePlaybackMode,
+	},
 	sample_loader::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId},
 };
 use crate::core::{Entity, factory::Handle};
@@ -46,6 +47,7 @@ pub struct DefaultAudioSystem {
 	params: HardwareParameters,
 	mix_buffer: Vec<f32>,
 	graph_buffer: Vec<f32>,
+	process_context: AudioProcessContext,
 	last_reported_underrun_count: usize,
 	released_sample_leases: Vec<AudioSampleLeaseId>,
 }
@@ -72,6 +74,7 @@ impl DefaultAudioSystem {
 			params,
 			mix_buffer: vec![0.0; period_size],
 			graph_buffer: vec![0.0; period_size],
+			process_context: AudioProcessContext::new(),
 			last_reported_underrun_count: 0,
 			released_sample_leases: Vec::with_capacity(AUDIO_SAMPLE_RELEASE_CAPACITY),
 		})
@@ -94,7 +97,8 @@ impl DefaultAudioSystem {
 		);
 	}
 
-	pub fn create_generator(&mut self, generator: Arc<dyn Generator>) {
+	/// Takes ownership of a generator and mixes it into every following period.
+	pub fn create_generator(&mut self, generator: Box<dyn Generator>) {
 		self.sources.push(Source {
 			generator,
 			current_sample: 0,
@@ -165,10 +169,16 @@ fn advance_source_timelines(sources: &mut [Source], frames: usize) {
 
 /// Mixes resource graphs after procedural generators so both source types use
 /// the same output buffer and clipping boundary.
-fn render_audio_graphs(audio_graphs: &mut [AudioGraphPlayer], sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
+fn render_audio_graphs(
+	audio_graphs: &mut [AudioGraphPlayer],
+	context: &mut AudioProcessContext,
+	sample_rate: u32,
+	buffer: &mut [f32],
+	graph_buffer: &mut [f32],
+) {
 	debug_assert!(graph_buffer.len() >= buffer.len());
 	for graph in audio_graphs {
-		graph.render(sample_rate, buffer, &mut graph_buffer[..buffer.len()]);
+		graph.render(context, sample_rate, buffer, &mut graph_buffer[..buffer.len()]);
 	}
 }
 
@@ -183,6 +193,7 @@ impl AudioSystem for DefaultAudioSystem {
 			params,
 			mix_buffer,
 			graph_buffer,
+			process_context,
 			..
 		} = self;
 		let sample_rate = params.get_sample_rate();
@@ -191,13 +202,13 @@ impl AudioSystem for DefaultAudioSystem {
 			Streams::MonoFloat32(buffer) => {
 				buffer.fill(0.0);
 				render_sources(sources, sample_rate, buffer);
-				render_audio_graphs(audio_graphs, sample_rate, buffer, graph_buffer);
+				render_audio_graphs(audio_graphs, process_context, sample_rate, buffer, graph_buffer);
 			}
 			Streams::Mono16Bit(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
+				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
 
 				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*destination = f32_to_i16(*sample);
@@ -207,7 +218,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
+				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					let sample = f32_to_i16(*sample);
@@ -219,7 +230,7 @@ impl AudioSystem for DefaultAudioSystem {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
 				mix_buffer.fill(0.0);
 				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, sample_rate, mix_buffer, graph_buffer);
+				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*left = *sample;
@@ -276,7 +287,7 @@ impl AudioSystem for DefaultAudioSystem {
 /// The `Source` struct retains one procedural generator and its output
 /// timeline.
 struct Source {
-	generator: Arc<dyn Generator>,
+	generator: Box<dyn Generator>,
 	current_sample: u64,
 }
 
@@ -347,6 +358,10 @@ impl SampleNode {
 		if phase_increment == phase_denominator && self.rate_phase == 0 {
 			return self.process_unity_block(sample_count, consume);
 		}
+		// Splitting the increment once lets the loop advance the exact rational
+		// phase with additions and a carry instead of a division per sample.
+		let step_frames = phase_increment / phase_denominator;
+		let step_phase = phase_increment % phase_denominator;
 		let mut rendered = 0;
 
 		for index in 0..sample_count {
@@ -364,15 +379,21 @@ impl SampleNode {
 			consume(index, current + (next - current) * fraction);
 			rendered += 1;
 
-			self.rate_phase += phase_increment;
-			self.source_frame += self.rate_phase / phase_denominator;
-			self.rate_phase %= phase_denominator;
+			self.rate_phase += step_phase;
+			self.source_frame += step_frames;
+			if self.rate_phase >= phase_denominator {
+				self.rate_phase -= phase_denominator;
+				self.source_frame += 1;
+			}
 
-			if self.playback_mode == SamplePlaybackMode::Loop {
-				self.source_frame %= frame_count;
-			} else if self.source_frame >= frame_count {
-				self.finished = true;
-				break;
+			if self.source_frame >= frame_count {
+				if self.playback_mode == SamplePlaybackMode::Loop {
+					// Fast rates can overshoot a short loop by more than one length.
+					self.source_frame %= frame_count;
+				} else {
+					self.finished = true;
+					break;
+				}
 			}
 		}
 
@@ -397,7 +418,7 @@ impl SampleNode {
 			} else {
 				let start = source_frame * channel_count;
 				let end = (source_frame + run_length) * channel_count;
-				for (offset, frame) in samples[start..end].chunks_exact(2).enumerate() {
+				for (offset, frame) in samples[start..end].as_chunks::<2>().0.iter().enumerate() {
 					consume(rendered + offset, (frame[0] + frame[1]) * 0.5);
 				}
 			}
@@ -480,7 +501,13 @@ impl AudioGraphPlayer {
 
 	/// Renders one graph period into reusable scratch storage, processes the
 	/// block through each compiled node, then mixes it into the destination.
-	fn render(&mut self, output_sample_rate: u32, buffer: &mut [f32], graph_buffer: &mut [f32]) {
+	fn render(
+		&mut self,
+		context: &mut AudioProcessContext,
+		output_sample_rate: u32,
+		buffer: &mut [f32],
+		graph_buffer: &mut [f32],
+	) {
 		debug_assert_eq!(buffer.len(), graph_buffer.len());
 		if self.muted {
 			let advanced = self.sample.advance_muted(output_sample_rate, buffer.len());
@@ -514,7 +541,7 @@ impl AudioGraphPlayer {
 		let rendered = &mut graph_buffer[..rendered_sample_count];
 		let time = AudioGraphTime::new(self.rendered_sample_count, output_sample_rate);
 		for processor in &mut self.processors {
-			processor.process(time, rendered);
+			processor.process(context, time, rendered);
 		}
 		self.rendered_sample_count = self
 			.rendered_sample_count
@@ -554,7 +581,7 @@ pub mod benchmarks {
 	use super::AudioGraphPlayer;
 	use crate::{
 		audio::{
-			graph::{AudioGraphRenderPlan, AudioProcessor, PlaybackRate, SamplePlaybackMode},
+			graph::{AudioGraphRenderPlan, AudioProcessContext, AudioProcessor, PlaybackRate, SamplePlaybackMode},
 			sample_loader::AudioSampleLease,
 		},
 		core::{factory::Factory, listener::Listener},
@@ -576,6 +603,7 @@ pub mod benchmarks {
 	/// reusable callback buffers.
 	pub struct AudioGraphBenchmarkState {
 		player: AudioGraphPlayer,
+		context: AudioProcessContext,
 		_samples: Box<[f32]>,
 		output: [f32; PERIOD_SIZE],
 		graph_buffer: [f32; PERIOD_SIZE],
@@ -613,6 +641,7 @@ pub mod benchmarks {
 			let sample = AudioSampleLease::for_benchmark(source_rate, 1, &samples);
 			let mut state = Self {
 				player: AudioGraphPlayer::new(handle, sample, render_plan),
+				context: AudioProcessContext::new(),
 				_samples: samples,
 				output: [0.0; PERIOD_SIZE],
 				graph_buffer: [0.0; PERIOD_SIZE],
@@ -624,7 +653,8 @@ pub mod benchmarks {
 
 		/// Evaluates and mixes one 256-sample hardware-style period.
 		pub fn render_period(&mut self) {
-			self.player.render(48_000, &mut self.output, &mut self.graph_buffer);
+			self.player
+				.render(&mut self.context, 48_000, &mut self.output, &mut self.graph_buffer);
 		}
 	}
 
@@ -642,21 +672,27 @@ pub mod benchmarks {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::{Arc, Mutex};
+	use std::sync::Mutex;
 
 	use super::{AudioGraphPlayer, SampleNode, Source, advance_source_timelines, f32_to_i16, i16_to_f32, render_sources};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
-			graph::{AudioGraphRenderPlan, AudioProcessor, PlaybackRate, SamplePlaybackMode},
+			graph::{AudioGraphRenderPlan, AudioProcessContext, AudioProcessor, PlaybackRate, SamplePlaybackMode},
 			sample_loader::AudioSampleLease,
 		},
 		core::{factory::Factory, listener::Listener},
 	};
 
+	#[derive(Clone)]
 	struct ConstantGenerator {
 		value: f32,
-		observed: Arc<Mutex<Vec<(u32, u64)>>>,
+		// Leaked so the `'static` boxed generator can report back to the test without shared ownership.
+		observed: &'static Mutex<Vec<(u32, u64)>>,
+	}
+
+	fn observations() -> &'static Mutex<Vec<(u32, u64)>> {
+		Box::leak(Box::new(Mutex::new(Vec::new())))
 	}
 
 	impl Generator for ConstantGenerator {
@@ -693,20 +729,14 @@ mod tests {
 
 	#[test]
 	fn render_sources_mixes_all_generators_and_forwards_timeline_state() {
-		let observed = Arc::new(Mutex::new(Vec::new()));
+		let observed = observations();
 		let sources = [
 			Source {
-				generator: Arc::new(ConstantGenerator {
-					value: 0.25,
-					observed: observed.clone(),
-				}),
+				generator: Box::new(ConstantGenerator { value: 0.25, observed }),
 				current_sample: 128,
 			},
 			Source {
-				generator: Arc::new(ConstantGenerator {
-					value: -0.1,
-					observed: observed.clone(),
-				}),
+				generator: Box::new(ConstantGenerator { value: -0.1, observed }),
 				current_sample: 256,
 			},
 		];
@@ -720,12 +750,9 @@ mod tests {
 
 	#[test]
 	fn generator_timeline_continues_past_u32_maximum() {
-		let observed = Arc::new(Mutex::new(Vec::new()));
+		let observed = observations();
 		let mut sources = [Source {
-			generator: Arc::new(ConstantGenerator {
-				value: 0.0,
-				observed: observed.clone(),
-			}),
+			generator: Box::new(ConstantGenerator { value: 0.0, observed }),
 			current_sample: u64::from(u32::MAX) - 1,
 		}];
 		let mut buffer = [0.0; 4];
@@ -797,7 +824,7 @@ mod tests {
 
 	fn render_graph(player: &mut AudioGraphPlayer, output_sample_rate: u32, buffer: &mut [f32]) {
 		let mut graph_buffer = vec![0.0; buffer.len()];
-		player.render(output_sample_rate, buffer, &mut graph_buffer);
+		player.render(&mut AudioProcessContext::new(), output_sample_rate, buffer, &mut graph_buffer);
 	}
 
 	fn assert_samples_close(actual: &[f32], expected: &[f32]) {

@@ -133,7 +133,58 @@ void main() {
 		"GHI ray generation test shader",
 		ShaderSource::PlatformNative {
 			glsl: raygen_shader_code,
-			msl: "#include <metal_stdlib>\nusing namespace metal; kernel void raygen_main() {}",
+			msl: r#"
+#include <metal_stdlib>
+#include <metal_raytracing>
+using namespace metal;
+using namespace raytracing;
+
+struct Resources {
+	instance_acceleration_structure top_level_as [[id(0)]];
+	texture2d<float, access::write> output_image [[id(2)]];
+	device const packed_float4* colors [[id(6)]];
+	device const ushort* indices [[id(8)]];
+};
+
+kernel void raygen_main(uint2 launch_id [[thread_position_in_grid]], constant Resources& resources [[buffer(16)]]) {
+	const float2 launch_size = float2(resources.output_image.get_width(), resources.output_image.get_height());
+	if (any(float2(launch_id) >= launch_size)) { return; }
+
+	const float2 pixel_center = float2(launch_id) + float2(0.5);
+	float2 d = (pixel_center / launch_size) * 2.0 - 1.0;
+	d.y *= -1.0;
+
+	ray r;
+	r.origin = float3(d, -1.0);
+	r.direction = float3(0.0, 0.0, 1.0);
+	r.min_distance = 0.001;
+	r.max_distance = 10.0;
+
+	intersector<instancing, triangle_data> traversal;
+	traversal.assume_geometry_type(geometry_type::triangle);
+	traversal.force_opacity(forced_opacity::opaque);
+
+	intersection_result<instancing, triangle_data> hit = traversal.intersect(r, resources.top_level_as, 0xFF);
+
+	float3 hit_value = float3(0.0);
+	if (hit.type == intersection_type::triangle) {
+		const float2 barycentrics = hit.triangle_barycentric_coord;
+		const float3 weights = float3(1.0 - barycentrics.x - barycentrics.y, barycentrics.x, barycentrics.y);
+		const uint primitive = hit.primitive_id;
+		const uint3 index = uint3(
+			resources.indices[3 * primitive + 0],
+			resources.indices[3 * primitive + 1],
+			resources.indices[3 * primitive + 2]
+		);
+		const float4 color = float4(resources.colors[index.x]) * weights.x
+			+ float4(resources.colors[index.y]) * weights.y
+			+ float4(resources.colors[index.z]) * weights.z;
+		hit_value = color.xyz;
+	}
+
+	resources.output_image.write(float4(hit_value, 1.0), launch_id);
+}
+"#,
 			msl_entry_point: "raygen_main",
 			hlsl: r#"
 struct [raypayload] Payload {
@@ -250,7 +301,14 @@ payload.hit_value = float3(0.0, 0.0, 0.0);
 			None,
 			raygen_shader_artifact.as_source(),
 			ShaderTypes::RayGen,
-			[acceleration_structure_resource, output_resource],
+			// Metal resolves hits inside the ray-generation function, so it reads the hit attributes that other
+			// backends reach through a closest-hit shader. Every backend already unions these into one layout.
+			[
+				acceleration_structure_resource,
+				output_resource,
+				color_resource,
+				index_resource,
+			],
 		)
 		.expect("Failed to create raygen shader");
 	let closest_hit_shader = renderer

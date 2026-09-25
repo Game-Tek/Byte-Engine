@@ -294,6 +294,26 @@ mod tests {
 	}
 
 	#[test]
+	fn descriptor_array_elements_reach_every_texture_intrinsic_in_hlsl() {
+		let root = besl::compile_to_besl(super::super::DESCRIPTOR_ARRAY_FRAGMENT, None)
+			.expect("Expected descriptor-array fragment source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::fragment(),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected descriptor-array fragment HLSL generation");
+
+		assert_string_contains!(shader, "textures[items[index].slot].GetDimensions(size.x, size.y);");
+		assert_string_contains!(shader, "textures[index+1].SampleLevel(textures_sampler[index+1], uv, 0.0)");
+		assert_string_contains!(
+			shader,
+			"textures[items[index].slot].Sample(textures_sampler[items[index].slot], uv)"
+		);
+	}
+
+	#[test]
 	fn sampled_descriptor_array_keeps_descriptor_indexing_in_hlsl() {
 		let root = besl::compile_to_besl(
 			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
@@ -1873,6 +1893,28 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
+	}
+
+	#[test]
+	fn break_lowers_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			for (let i: u32 = 0; i <= 4; i = i + 1) {
+				if (i >= 2) {
+					break;
+				}
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::vertex(), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){break;};};");
 	}
 
 	#[test]

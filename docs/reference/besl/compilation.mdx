@@ -54,7 +54,7 @@ can't inspect the backend source itself. The VM rejects reachable raw nodes with
 
 - removes unread local declarations when their initializer has no observable
   effect;
-- removes statements after a `return` or `continue` in the same block; and
+- removes statements after a `return`, `continue`, or `break` in the same block; and
 - repeats until removing one local doesn't expose another dead local.
 
 Calls, atomics, image writes, barriers, raw nodes, and assignments outside a

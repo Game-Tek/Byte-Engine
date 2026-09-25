@@ -69,6 +69,7 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 				| Expressions::VariableDeclaration { .. }
 				| Expressions::RawCode { .. }
 				| Expressions::Continue
+				| Expressions::Break
 				| Expressions::Discard => {}
 			}
 		}

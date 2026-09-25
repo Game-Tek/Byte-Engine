@@ -4,7 +4,6 @@ use std::ffi::{CString, c_void};
 use std::mem::ManuallyDrop;
 use std::os::windows::ffi::OsStrExt as _;
 use std::path::Path;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use direct_storage::{
@@ -35,29 +34,32 @@ use crate::io::{
 const DIRECT_STORAGE_RUNTIME_GUIDANCE: &str = "Install the Microsoft.Direct3D.DirectStorage 1.3 runtime DLLs beside the executable; see https://www.nuget.org/packages/Microsoft.Direct3D.DirectStorage/1.3.0";
 const COMPLETION_INDEX: u32 = 0;
 
-static DIRECT_STORAGE_RUNTIME: LazyLock<Result<DirectStorageRuntime, String>> = LazyLock::new(|| {
-	let core = unsafe { Library::new("dstoragecore.dll") }.map_err(runtime_load_message)?;
-	let storage = unsafe { Library::new("dstorage.dll") }.map_err(runtime_load_message)?;
-	Ok(DirectStorageRuntime { storage, _core: core })
-});
-
 type DStorageGetFactory = unsafe extern "system" fn(*const GUID, *mut *mut c_void) -> HRESULT;
 type DStorageCreateCompressionCodec =
 	unsafe extern "system" fn(direct_storage::DSTORAGE_COMPRESSION_FORMAT, u32, *const GUID, *mut *mut c_void) -> HRESULT;
 
 /// The `DirectStorageRuntime` struct keeps the app-local DirectStorage modules loaded while their COM objects are alive.
-struct DirectStorageRuntime {
+///
+/// The DX12 [`context::Device`] loads one when it is created. Every [`ResourceIoQueue`] and [`ResourceIoTicket`] keeps
+/// its own [`retain`](Self::retain)ed copy as its last field, so the modules stay loaded until their COM objects drop,
+/// even when a queue outlives the device that created it.
+pub(crate) struct DirectStorageRuntime {
 	storage: Library,
 	_core: Library,
 }
 
 impl DirectStorageRuntime {
 	/// Loads both redistributable modules so missing runtime files become recoverable GHI errors.
-	fn load() -> Result<&'static Self, String> {
-		match &*DIRECT_STORAGE_RUNTIME {
-			Ok(runtime) => Ok(runtime),
-			Err(error) => Err(error.clone()),
-		}
+	pub(crate) fn load() -> Result<Self, String> {
+		let core = unsafe { Library::new("dstoragecore.dll") }.map_err(runtime_load_message)?;
+		let storage = unsafe { Library::new("dstorage.dll") }.map_err(runtime_load_message)?;
+		Ok(Self { storage, _core: core })
+	}
+
+	/// Takes another reference to the already loaded modules for an object whose COM interfaces must keep them loaded.
+	/// The OS loader counts module references, so this does not load a second copy.
+	fn retain(&self) -> Result<Self, String> {
+		Self::load()
 	}
 
 	/// Creates a DirectStorage factory through the dynamically loaded ABI.
@@ -149,6 +151,8 @@ pub struct ResourceIoQueue {
 	queue: IDStorageQueue,
 	files: Vec<OpenFile>,
 	next_cancellation_tag: u64,
+	// Declared last so every DirectStorage interface above is released before the modules can unload.
+	runtime: DirectStorageRuntime,
 }
 
 /// The `ResourceIoTicket` struct retains one DirectStorage batch until callers finish observing it.
@@ -160,6 +164,8 @@ pub struct ResourceIoTicket {
 	cancellation_requested: AtomicBool,
 	_name: ManuallyDrop<Option<CString>>,
 	_requests: ManuallyDrop<Vec<ValidatedRequest>>,
+	// Declared last so the native queue and status array are released before the modules can unload.
+	_runtime: DirectStorageRuntime,
 }
 
 impl ResourceIoQueue {
@@ -177,7 +183,10 @@ impl ResourceIoQueue {
 		}
 
 		let capacity = direct_storage_queue_capacity(descriptor.max_commands_in_flight)?;
-		let runtime = DirectStorageRuntime::load().map_err(ResourceIoError::QueueCreation)?;
+		let runtime = context
+			.direct_storage_runtime()
+			.and_then(DirectStorageRuntime::retain)
+			.map_err(ResourceIoError::QueueCreation)?;
 		let factory = runtime.create_factory()?;
 		let name = native_name(descriptor.name);
 		let native_device = context.resource_io_native_device();
@@ -200,6 +209,7 @@ impl ResourceIoQueue {
 			queue,
 			files: Vec::new(),
 			next_cancellation_tag: 1,
+			runtime,
 		})
 	}
 
@@ -411,6 +421,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 		}
 		.map_err(|error| ResourceIoError::Execution(native_error_message(&error)))?;
 		let cancellation_tag = self.allocate_cancellation_tag()?;
+		let runtime = self.runtime.retain().map_err(ResourceIoError::Execution)?;
 		let request_name = native_name_pointer(name.as_ref());
 		for request in &validated {
 			self.enqueue_request(request, request_name, cancellation_tag);
@@ -429,6 +440,7 @@ impl crate::io::ResourceIoQueue for ResourceIoQueue {
 			cancellation_requested: AtomicBool::new(false),
 			_name: ManuallyDrop::new(name),
 			_requests: ManuallyDrop::new(validated),
+			_runtime: runtime,
 		})
 	}
 }
@@ -820,7 +832,6 @@ pub(crate) fn write_compressed_file(
 #[cfg(test)]
 mod tests {
 	use std::fs;
-	use std::sync::atomic::{AtomicU64, Ordering};
 
 	use super::*;
 	use crate::command_buffer::CommandBufferRecording as _;
@@ -838,13 +849,10 @@ mod tests {
 		Some((context, queue_handle?))
 	}
 
+	/// Returns a temporary file path for one test. Each test passes its own name and the process ID separates concurrent
+	/// test processes, so paths never collide.
 	fn temporary_path(name: &str) -> std::path::PathBuf {
-		static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
-		std::env::temp_dir().join(format!(
-			"byte-engine-dx12-resource-io-{name}-{}-{}",
-			std::process::id(),
-			NEXT_FILE.fetch_add(1, Ordering::Relaxed)
-		))
+		std::env::temp_dir().join(format!("byte-engine-dx12-resource-io-{name}-{}", std::process::id()))
 	}
 
 	/// Copies a DirectStorage destination buffer through a native readback heap.

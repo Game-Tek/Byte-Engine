@@ -122,6 +122,7 @@ impl Generator {
 				besl::Expressions::VariableDeclaration { .. }
 				| besl::Expressions::Literal { .. }
 				| besl::Expressions::Continue
+				| besl::Expressions::Break
 				| besl::Expressions::Discard => false,
 			},
 			_ => false,
@@ -300,6 +301,22 @@ impl Generator {
 		}
 	}
 
+	/// Emits the sampler paired with a texture argument. Inside a descriptor array it shares the texture's index.
+	pub(crate) fn emit_sampler(&mut self, string: &mut String, texture: &besl::NodeReference) {
+		let Some((kind, resource, index)) = resource_accessor(texture) else {
+			self.emit_node_string(string, texture);
+			string.push_str("_sampler");
+			return;
+		};
+		self.emit_node_string(string, &resource);
+		string.push_str("_sampler");
+		if kind == ResourceAccessorKind::DescriptorArray {
+			string.push('[');
+			self.emit_node_string(string, &index);
+			string.push(']');
+		}
+	}
+
 	// Keep the intrinsic table contiguous because each arm defines one exact HLSL lowering contract.
 	#[allow(clippy::too_many_lines)]
 	pub(crate) fn emit_intrinsic_call(
@@ -333,13 +350,7 @@ impl Generator {
 						string.push(']');
 					}
 					string.push_str(".Sample(");
-					self.emit_node_string(string, &resource);
-					string.push_str("_sampler");
-					if kind == ResourceAccessorKind::DescriptorArray {
-						string.push('[');
-						self.emit_node_string(string, &index);
-						string.push(']');
-					}
+					self.emit_sampler(string, &arguments[0]);
 					string.push_str(", ");
 					if kind == ResourceAccessorKind::Texture2DArrayLayer {
 						string.push_str("float3(");
@@ -353,8 +364,8 @@ impl Generator {
 				} else {
 					self.emit_node_string(string, &arguments[0]);
 					string.push_str(".Sample(");
-					self.emit_node_string(string, &arguments[0]);
-					string.push_str("_sampler, ");
+					self.emit_sampler(string, &arguments[0]);
+					string.push_str(", ");
 					self.emit_node_string(string, &arguments[1]);
 				}
 				string.push(')');
@@ -499,8 +510,8 @@ impl Generator {
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".SampleLevel(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, ");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", ");
 				if arguments.len() == 4 {
 					string.push_str("float3(");
 					self.emit_node_string(string, &arguments[1]);
@@ -524,8 +535,8 @@ impl Generator {
 			"texture_cube_array_lod" => {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".SampleLevel(");
-				self.emit_node_string(string, &arguments[0]);
-				string.push_str("_sampler, float4(");
+				self.emit_sampler(string, &arguments[0]);
+				string.push_str(", float4(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(", float(");
 				self.emit_node_string(string, &arguments[2]);

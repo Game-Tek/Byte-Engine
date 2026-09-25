@@ -6,11 +6,12 @@ use std::{
 
 use oxhttp::{
 	ListeningServer, Server,
-	model::{Body, Method, Response, StatusCode},
+	model::{Body, Method, Request, Response, StatusCode},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
+	application::LoopWaker,
 	core::{EntityHandle, factory::Handle},
 	inspector::{Inspector, ScreenshotCapture, ScreenshotError, ScreenshotSubmitError},
 };
@@ -51,9 +52,10 @@ impl HttpInspectorServer {
 	/// Starts the HTTP inspector transport on the loopback interface at port 6680.
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
-	pub fn new(inspector: EntityHandle<dyn Inspector>) -> Self {
+	pub fn new(inspector: EntityHandle<dyn Inspector>, waker: LoopWaker) -> Self {
 		Self::spawn(
 			inspector,
+			waker,
 			[
 				SocketAddr::from((Ipv4Addr::LOCALHOST, 6680)),
 				SocketAddr::from((Ipv6Addr::LOCALHOST, 6680)),
@@ -67,19 +69,16 @@ impl HttpInspectorServer {
 	}
 
 	/// Starts the inspector on each requested socket address.
-	fn spawn(inspector: EntityHandle<dyn Inspector>, addresses: impl IntoIterator<Item = SocketAddr>) -> io::Result<Self> {
-		let mut server = Server::new(move |request| match (request.method(), request.uri().path()) {
-			(&Method::GET, "/screenshots") => screenshot_response(&*inspector, request.uri().query()),
-			(&Method::GET, "/messages") => messages_response(&*inspector),
-			(&Method::GET, "/messages/types") => message_types_response(&*inspector),
-			(&Method::POST, "/messages") => message_response(&*inspector, request.body_mut()),
-			(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
-			(&Method::GET, "/entities") => entities_response(&*inspector, request.uri().query()),
-			(&Method::DELETE, "/") => {
-				inspector.close_application();
-				response(StatusCode::OK, Body::empty())
-			}
-			_ => response(StatusCode::NOT_FOUND, Body::empty()),
+	fn spawn(
+		inspector: EntityHandle<dyn Inspector>,
+		waker: LoopWaker,
+		addresses: impl IntoIterator<Item = SocketAddr>,
+	) -> io::Result<Self> {
+		let mut server = Server::new(move |request| {
+			let response = handle_request(&*inspector, &waker, request);
+			// A request is input to the application, like a window event, so an idle loop runs after it.
+			waker.wake();
+			response
 		});
 
 		for address in addresses {
@@ -91,6 +90,23 @@ impl HttpInspectorServer {
 		let server = server.spawn()?;
 
 		Ok(Self { _server: server })
+	}
+}
+
+/// Answers one inspector request.
+fn handle_request(inspector: &dyn Inspector, waker: &LoopWaker, request: &mut Request<Body>) -> Response<Body> {
+	match (request.method(), request.uri().path()) {
+		(&Method::GET, "/screenshots") => screenshot_response(inspector, waker, request.uri().query()),
+		(&Method::GET, "/messages") => messages_response(inspector),
+		(&Method::GET, "/messages/types") => message_types_response(inspector),
+		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
+		(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
+		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
+		(&Method::DELETE, "/") => {
+			inspector.close_application();
+			response(StatusCode::OK, Body::empty())
+		}
+		_ => response(StatusCode::NOT_FOUND, Body::empty()),
 	}
 }
 
@@ -185,7 +201,7 @@ fn message_response(inspector: &dyn Inspector, body: &mut Body) -> Response<Body
 }
 
 /// Handles one screenshot request after HTTP routing has selected the endpoint.
-fn screenshot_response(inspector: &dyn Inspector, query: Option<&str>) -> Response<Body> {
+fn screenshot_response(inspector: &dyn Inspector, waker: &LoopWaker, query: Option<&str>) -> Response<Body> {
 	let (sink, capture) = match parse_screenshot_query(query) {
 		Ok(request) => request,
 		Err(()) => {
@@ -196,7 +212,11 @@ fn screenshot_response(inspector: &dyn Inspector, query: Option<&str>) -> Respon
 		}
 	};
 	let response_receiver = match inspector.request_screenshot(sink, capture) {
-		Ok(receiver) => receiver,
+		// Only a rendered frame answers the request, so the loop must run before this thread waits for it.
+		Ok(receiver) => {
+			waker.wake();
+			receiver
+		}
 		Err(ScreenshotSubmitError::QueueFull) => {
 			return response(
 				StatusCode::TOO_MANY_REQUESTS,
@@ -368,7 +388,8 @@ mod tests {
 			let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
 			let address = reservation.local_addr().expect("read inspector test address");
 			drop(reservation);
-			let server = HttpInspectorServer::spawn(inspector, [address]).expect("start inspector test server");
+			let server = HttpInspectorServer::spawn(inspector, super::LoopWaker::default(), [address])
+				.expect("start inspector test server");
 			Self {
 				_server: server,
 				address,

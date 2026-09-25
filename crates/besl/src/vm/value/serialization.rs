@@ -378,8 +378,8 @@ pub(crate) fn read_f16_array<const N: usize>(bytes: &[u8]) -> Result<[f16; N], V
 	}
 
 	let mut values = [f16::from_f32(0.0); N];
-	for (index, chunk) in bytes.chunks_exact(2).enumerate() {
-		values[index] = f16::from_bits(u16::from_ne_bytes(chunk.try_into().expect("Invalid f16 byte count")));
+	for (index, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
+		values[index] = f16::from_bits(u16::from_ne_bytes(*chunk));
 	}
 	Ok(values)
 }
@@ -392,8 +392,8 @@ pub(crate) fn read_f32_array<const N: usize>(bytes: &[u8]) -> Result<[f32; N], V
 	}
 
 	let mut values = [0.0; N];
-	for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-		values[index] = f32::from_ne_bytes(chunk.try_into().expect("Invalid f32 byte count"));
+	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+		values[index] = f32::from_ne_bytes(*chunk);
 	}
 	Ok(values)
 }
@@ -406,8 +406,8 @@ pub(crate) fn read_u32_array<const N: usize>(bytes: &[u8]) -> Result<[u32; N], V
 	}
 
 	let mut values = [0; N];
-	for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-		values[index] = u32::from_ne_bytes(chunk.try_into().expect("Invalid u32 byte count"));
+	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+		values[index] = u32::from_ne_bytes(*chunk);
 	}
 	Ok(values)
 }
@@ -419,8 +419,8 @@ pub(crate) fn read_u16_array<const N: usize>(bytes: &[u8]) -> Result<[u16; N], V
 		});
 	}
 	let mut values = [0; N];
-	for (index, chunk) in bytes.chunks_exact(2).enumerate() {
-		values[index] = u16::from_ne_bytes(chunk.try_into().expect("Invalid u16 byte count"));
+	for (index, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
+		values[index] = u16::from_ne_bytes(*chunk);
 	}
 	Ok(values)
 }
@@ -432,8 +432,8 @@ pub(crate) fn read_i32_array<const N: usize>(bytes: &[u8]) -> Result<[i32; N], V
 		});
 	}
 	let mut values = [0; N];
-	for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-		values[index] = i32::from_ne_bytes(chunk.try_into().expect("Invalid i32 byte count"));
+	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+		values[index] = i32::from_ne_bytes(*chunk);
 	}
 	Ok(values)
 }

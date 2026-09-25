@@ -45,19 +45,71 @@ impl AudioNode {
 
 /// The `CustomAudioFunction` struct retains a closure prototype that can
 /// create independent mutable state for each playback.
-#[derive(Clone)]
-pub(crate) struct CustomAudioFunction(CustomFunctionFactory);
+///
+/// Clones keep the authored identity, so a cloned graph still compares equal
+/// to its source while owning an independent closure copy. The identity lives
+/// inside the box to keep this handle two words wide, which lets
+/// [`AudioNode`] stay inline in its small box.
+pub(crate) struct CustomAudioFunction(Box<dyn CustomFunctionPrototype>);
 
 impl CustomAudioFunction {
 	pub(crate) fn new<F>(function: F) -> Self
 	where
 		F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
 	{
-		Self(Arc::new(move || Box::new(function.clone())))
+		Self(Box::new(IdentifiedFunction {
+			// A fresh standard-library hash key gives each authored function a
+			// distinct identity without an engine-owned counter.
+			id: new_random_seed(),
+			function,
+		}))
 	}
 
 	pub(crate) fn create(&self) -> RuntimeCustomFunction {
-		(self.0)()
+		self.0.create()
+	}
+}
+
+impl Clone for CustomAudioFunction {
+	fn clone(&self) -> Self {
+		Self(self.0.clone_prototype())
+	}
+}
+
+/// The `CustomFunctionPrototype` trait lets a type-erased closure prototype
+/// hand out independent copies, both for new playbacks and for cloned graphs.
+trait CustomFunctionPrototype: Send + Sync {
+	/// Returns the identity shared by every clone of one authored function.
+	fn id(&self) -> u64;
+
+	/// Creates the mutable closure state owned by one playback.
+	fn create(&self) -> RuntimeCustomFunction;
+
+	/// Copies the prototype so each graph clone owns its own closure.
+	fn clone_prototype(&self) -> Box<dyn CustomFunctionPrototype>;
+}
+
+/// The `IdentifiedFunction` struct pairs an authored closure with its identity.
+#[derive(Clone)]
+struct IdentifiedFunction<F> {
+	id: u64,
+	function: F,
+}
+
+impl<F> CustomFunctionPrototype for IdentifiedFunction<F>
+where
+	F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
+{
+	fn id(&self) -> u64 {
+		self.id
+	}
+
+	fn create(&self) -> RuntimeCustomFunction {
+		Box::new(self.function.clone())
+	}
+
+	fn clone_prototype(&self) -> Box<dyn CustomFunctionPrototype> {
+		Box::new(self.clone())
 	}
 }
 
@@ -69,7 +121,7 @@ impl fmt::Debug for CustomAudioFunction {
 
 impl PartialEq for CustomAudioFunction {
 	fn eq(&self, other: &Self) -> bool {
-		Arc::ptr_eq(&self.0, &other.0)
+		self.0.id() == other.0.id()
 	}
 }
 
@@ -147,12 +199,14 @@ pub(crate) enum SelectorCommit {
 }
 
 /// Produces a distinct initial state without adding work to the audio thread.
+///
+/// Each [`RandomState`](std::hash::RandomState) gets fresh keys from the
+/// standard library, so every authored node starts from a different state
+/// without an engine-owned seed counter.
 fn new_random_seed() -> u64 {
-	let sequence = NEXT_RANDOM_SEED.fetch_add(RANDOM_STATE_INCREMENT, Ordering::Relaxed);
-	let time = SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.map_or(0, |duration| duration.as_nanos() as u64);
-	mix_random_bits(sequence ^ time.rotate_left(17))
+	use std::hash::BuildHasher as _;
+
+	mix_random_bits(std::hash::RandomState::new().hash_one(RANDOM_STATE_INCREMENT))
 }
 
 /// Mixes one generator state into well-distributed pseudo-random bits.

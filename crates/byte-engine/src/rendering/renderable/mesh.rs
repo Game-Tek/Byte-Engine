@@ -4,8 +4,6 @@
 //! rendering pipeline. Transform updates are published separately through the
 //! world transform channel.
 
-use std::sync::Arc;
-
 use maths_rs::Vec3f;
 
 use crate::rendering::mesh::generator::{BoxMeshGenerator, MeshGenerator, SphereMeshGenerator};
@@ -25,7 +23,7 @@ impl RenderableMesh {
 	}
 
 	/// Creates a renderable mesh backed by a procedural mesh generator.
-	pub fn generated(generator: Arc<dyn MeshGenerator>) -> Self {
+	pub fn generated(generator: Box<dyn MeshGenerator>) -> Self {
 		Self {
 			source: MeshSource::Generated(generator),
 		}
@@ -33,12 +31,12 @@ impl RenderableMesh {
 
 	/// Creates a procedurally generated sphere with the requested radius.
 	pub fn sphere(radius: f32) -> Self {
-		Self::generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
+		Self::generated(Box::new(SphereMeshGenerator::from_radius(radius)))
 	}
 
 	/// Creates a procedurally generated box from unbranded mesh-space half extents.
 	pub fn r#box(size: Vec3f) -> Self {
-		Self::generated(Arc::new(BoxMeshGenerator::from_size(size)))
+		Self::generated(Box::new(BoxMeshGenerator::from_size(size)))
 	}
 
 	/// Returns the geometry source consumed by the rendering pipeline.
@@ -51,7 +49,7 @@ impl RenderableMesh {
 #[derive(Clone)]
 pub enum MeshSource {
 	Resource(&'static str),
-	Generated(Arc<dyn MeshGenerator>),
+	Generated(Box<dyn MeshGenerator>),
 }
 
 /// The `MeshKey` enum identifies one geometry source independently of renderer storage or scene instances.
@@ -80,17 +78,17 @@ impl MeshSource {
 	}
 
 	pub fn sphere(radius: f32) -> Self {
-		MeshSource::Generated(Arc::new(SphereMeshGenerator::from_radius(radius)))
+		MeshSource::Generated(Box::new(SphereMeshGenerator::from_radius(radius)))
 	}
 
 	/// Creates a generated box from unbranded mesh-space half extents.
 	pub fn r#box(size: Vec3f) -> Self {
-		MeshSource::Generated(Arc::new(BoxMeshGenerator::from_size(size)))
+		MeshSource::Generated(Box::new(BoxMeshGenerator::from_size(size)))
 	}
 }
 
-impl From<Arc<dyn MeshGenerator>> for MeshSource {
-	fn from(generator: Arc<dyn MeshGenerator>) -> Self {
+impl From<Box<dyn MeshGenerator>> for MeshSource {
+	fn from(generator: Box<dyn MeshGenerator>) -> Self {
 		MeshSource::Generated(generator)
 	}
 }

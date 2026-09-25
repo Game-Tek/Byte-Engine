@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use resource_management::asset::{JsonObject, handler::implementations::bema::ProgramGenerator};
 
 // Keeping the shared helpers in portable BESL makes their VM tests exercise the
@@ -524,9 +522,7 @@ const COMMON_SHADER_SOURCE: &str = r#"
 	}
 "#;
 
-static COMMON_SHADER_SCOPE: OnceLock<besl::parser::Node<'static>> = OnceLock::new();
-
-/// Parses the common module once so repeated shader builds only clone its syntax tree.
+/// Parses the common module into its `Common` scope node.
 fn parse_common_shader_scope() -> besl::parser::Node<'static> {
 	let mut root = besl::parse(COMMON_SHADER_SOURCE)
 		.expect("Failed to parse the common BESL shader module. The most likely cause is invalid portable BESL syntax.");
@@ -543,7 +539,13 @@ fn parse_common_shader_scope() -> besl::parser::Node<'static> {
 pub struct CommonShaderScope {}
 
 /// The `CommonShaderGenerator` struct preserves common-module programs while they pass through asset generation.
-pub struct CommonShaderGenerator {}
+///
+/// It parses the common module once when it is created, so repeated shader
+/// builds only clone the owned syntax tree.
+#[derive(Clone)]
+pub struct CommonShaderGenerator {
+	scope: besl::parser::Node<'static>,
+}
 
 impl Default for CommonShaderGenerator {
 	fn default() -> Self {
@@ -553,13 +555,15 @@ impl Default for CommonShaderGenerator {
 
 impl CommonShaderGenerator {
 	pub fn new() -> Self {
-		Self {}
+		Self {
+			scope: CommonShaderScope::new(),
+		}
 	}
 }
 
 impl ProgramGenerator for CommonShaderGenerator {
 	fn transform<'a>(&self, mut root: besl::parser::Node<'a>, _: &JsonObject) -> besl::parser::Node<'a> {
-		root.add(vec![CommonShaderScope::new()]);
+		root.add(vec![self.scope.clone()]);
 
 		root
 	}
@@ -567,8 +571,11 @@ impl ProgramGenerator for CommonShaderGenerator {
 
 impl CommonShaderScope {
 	/// Builds the common scope from the single portable source used by VM tests and graphics backends.
+	///
+	/// This parses the source on every call. Shader generators call it once
+	/// when they are created and keep the result.
 	pub fn new() -> besl::parser::Node<'static> {
-		COMMON_SHADER_SCOPE.get_or_init(parse_common_shader_scope).clone()
+		parse_common_shader_scope()
 	}
 }
 

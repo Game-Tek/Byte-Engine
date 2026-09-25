@@ -1,13 +1,11 @@
-use std::sync::{
-	Arc,
-	atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use crate::ui::{Transform, Visual, layout::Sizing, style::ConcreteStyle};
 
-static NEXT_IMAGE_ID: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone)]
+/// The `Image` struct is the retained state of an RGBA bitmap drawn in a box.
+///
+/// The engine owns every image. Declare one with [`crate::ui::ElementContext::image`] and edit it with
+/// [`crate::ui::EvaluationContext::update_image`].
 pub struct Image {
 	id: u64,
 	version: u64,
@@ -22,18 +20,16 @@ pub struct Image {
 }
 
 impl Image {
-	pub fn from_rgba(width: u32, height: u32, pixels: impl Into<Vec<u8>>) -> Self {
-		let pixels = pixels.into();
-		let expected_len = width as usize * height as usize * 4;
+	/// Identifies the pixel contents without comparing them.
+	pub(crate) fn content_key(&self) -> (u64, u64, u32, u32) {
+		(self.id, self.version, self.width_pixels, self.height_pixels)
+	}
 
-		assert_eq!(
-			pixels.len(),
-			expected_len,
-			"RGBA image data must contain exactly width * height * 4 bytes"
-		);
-
+	/// Creates an image shown at its pixel size. `id` must differ from every other image's, so render caches can
+	/// tell bitmaps apart without comparing pixels. The caller checks that `pixels` matches the dimensions.
+	pub(crate) fn new(id: u64, width: u32, height: u32, pixels: &[u8]) -> Self {
 		Self {
-			id: NEXT_IMAGE_ID.fetch_add(1, Ordering::Relaxed),
+			id,
 			version: 0,
 			width_pixels: width,
 			height_pixels: height,
@@ -46,63 +42,12 @@ impl Image {
 		}
 	}
 
-	pub fn size(self, sizing: Sizing) -> Self {
-		Self {
-			width: sizing,
-			height: sizing,
-			..self
-		}
-	}
-
-	pub fn width(self, width: Sizing) -> Self {
-		Self { width, ..self }
-	}
-
-	pub fn height(self, height: Sizing) -> Self {
-		Self { height, ..self }
-	}
-
-	pub fn style(mut self, style: impl Into<ConcreteStyle>) -> Self {
-		self.style = style.into();
-		self
-	}
-
-	pub fn transform(mut self, transform: impl Into<Transform>) -> Self {
-		self.transform = transform.into();
-		self
-	}
-
-	pub fn opacity(mut self, opacity: f32) -> Self {
-		self.visual.opacity = opacity;
-		self
-	}
-
-	pub fn set_rgba(&mut self, width: u32, height: u32, pixels: impl Into<Vec<u8>>) {
-		let pixels = pixels.into();
-		let expected_len = width as usize * height as usize * 4;
-
-		assert_eq!(
-			pixels.len(),
-			expected_len,
-			"RGBA image data must contain exactly width * height * 4 bytes"
-		);
-
+	/// Replaces the pixels and advances the version. The caller checks that `pixels` matches the dimensions.
+	pub(crate) fn set_rgba(&mut self, width: u32, height: u32, pixels: &[u8]) {
 		self.width_pixels = width;
 		self.height_pixels = height;
 		self.pixels = Arc::from(pixels);
 		self.version = self.version.wrapping_add(1);
-	}
-
-	pub fn set_style(&mut self, style: impl Into<ConcreteStyle>) {
-		self.style = style.into();
-	}
-
-	pub fn set_transform(&mut self, transform: impl Into<Transform>) {
-		self.transform = transform.into();
-	}
-
-	pub fn set_opacity(&mut self, opacity: f32) {
-		self.visual.opacity = opacity;
 	}
 
 	pub fn id(&self) -> u64 {
@@ -121,7 +66,8 @@ impl Image {
 		self.height_pixels
 	}
 
-	/// Returns shared RGBA pixels. Clone the owner to retain this version across [`Self::set_rgba`] calls.
+	/// Returns shared RGBA pixels. Clone the owner to retain this version across [`crate::ui::Properties::pixels`]
+	/// edits.
 	pub fn pixels(&self) -> &Arc<[u8]> {
 		&self.pixels
 	}
@@ -145,11 +91,11 @@ mod tests {
 
 	#[test]
 	fn retained_pixels_preserve_their_version_after_replacement() {
-		let mut image = Image::from_rgba(1, 1, vec![255, 0, 0, 255]);
+		let mut image = Image::new(1, 1, 1, &[255, 0, 0, 255]);
 		let previous = image.pixels().clone();
 		let version = image.version();
 
-		image.set_rgba(1, 1, vec![0, 255, 0, 255]);
+		image.set_rgba(1, 1, &[0, 255, 0, 255]);
 
 		assert_eq!(&*previous, &[255, 0, 0, 255]);
 		assert_eq!(&**image.pixels(), &[0, 255, 0, 255]);

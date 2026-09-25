@@ -447,6 +447,7 @@ impl Generator {
 					}
 					besl::Expressions::Macro { body, .. } => vec![body.clone()],
 					besl::Expressions::Continue
+					| besl::Expressions::Break
 					| besl::Expressions::Discard
 					| besl::Expressions::Member { .. }
 					| besl::Expressions::VariableDeclaration { .. }
@@ -505,6 +506,7 @@ impl Generator {
 				}
 				besl::Expressions::Macro { body, .. } => Self::has_unsupported_hlsl_atomic_context(body),
 				besl::Expressions::Continue
+				| besl::Expressions::Break
 				| besl::Expressions::Discard
 				| besl::Expressions::Member { .. }
 				| besl::Expressions::VariableDeclaration { .. }
@@ -532,6 +534,7 @@ impl Generator {
 				}
 				besl::Expressions::Macro { body, .. } => vec![body.clone()],
 				besl::Expressions::Continue
+				| besl::Expressions::Break
 				| besl::Expressions::Discard
 				| besl::Expressions::Member { .. }
 				| besl::Expressions::VariableDeclaration { .. }

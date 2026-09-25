@@ -280,7 +280,9 @@ impl<'a> DecodedExr<'a> {
 		};
 
 		for (destination, channel) in pixel
-			.chunks_exact_mut(std::mem::size_of::<f16>())
+			.as_chunks_mut::<{ std::mem::size_of::<f16>() }>()
+			.0
+			.iter_mut()
 			.zip([channels.0, channels.1, channels.2, channels.3])
 		{
 			destination.copy_from_slice(&channel.to_le_bytes());
@@ -290,6 +292,7 @@ impl<'a> DecodedExr<'a> {
 
 /// Decodes EXR directly to half floats so highlights do not require an intermediate f32 surface.
 fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<DecodedImage<'a>, ImageDecodeError> {
+	// Bakes already run across the asset workers, and exr's rayon pool cannot be joined, so decode on the calling thread.
 	let image = exr::prelude::read()
 		.no_deep_data()
 		.largest_resolution_level()
@@ -299,6 +302,7 @@ fn decode_exr_in<'a>(encoded: &[u8], allocator: &'a dyn Allocator) -> Result<Dec
 		)
 		.first_valid_layer()
 		.all_attributes()
+		.non_parallel()
 		.from_buffered(Cursor::new(encoded))
 		.map_err(|_| ImageDecodeError::InvalidData)?;
 	let decoded = image.layer_data.channel_data.pixels;
@@ -426,7 +430,9 @@ mod tests {
 	}
 
 	fn rgba16f_values(data: &[u8]) -> Vec<f32> {
-		data.chunks_exact(2)
+		data.as_chunks::<2>()
+			.0
+			.iter()
 			.map(|bytes| exr::prelude::f16::from_le_bytes([bytes[0], bytes[1]]).to_f32())
 			.collect()
 	}

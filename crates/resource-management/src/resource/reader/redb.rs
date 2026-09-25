@@ -97,18 +97,27 @@ mod tests {
 		fs,
 		io::Write,
 		path::PathBuf,
-		sync::atomic::{AtomicUsize, Ordering},
 	};
 
 	use super::*;
 
+	/// Reserves a fresh file under the system temp directory.
+	///
+	/// `create_new` fails when the path already exists, so retrying with a new
+	/// timestamp suffix gives each test its own file without shared counters.
 	fn temporary_file_path() -> PathBuf {
-		static NEXT_FILE_ID: AtomicUsize = AtomicUsize::new(0);
-		std::env::temp_dir().join(format!(
-			"byte-engine-file-resource-reader-{}-{}.bin",
-			std::process::id(),
-			NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed)
-		))
+		loop {
+			let nanos = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos();
+			let path = std::env::temp_dir().join(format!("byte-engine-file-resource-reader-{}-{nanos}.bin", std::process::id()));
+			match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+				Ok(_) => return path,
+				Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+				Err(error) => panic!("Failed to create a test file: {error}. The most likely cause is an unwritable temp directory."),
+			}
+		}
 	}
 
 	#[crate::r#async::test]

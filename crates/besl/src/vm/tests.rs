@@ -10,18 +10,22 @@ use crate::{BindingTypes, Expressions, Node, NodeReference, Operators, compile_t
 fn read_f32s(buffer: &Buffer, count: usize) -> Vec<f32> {
 	buffer
 		.bytes()
-		.chunks_exact(4)
+		.as_chunks::<4>()
+		.0
+		.iter()
 		.take(count)
-		.map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("Expected four bytes")))
+		.map(|chunk| f32::from_ne_bytes(*chunk))
 		.collect()
 }
 
 fn read_u32s(buffer: &Buffer, count: usize) -> Vec<u32> {
 	buffer
 		.bytes()
-		.chunks_exact(4)
+		.as_chunks::<4>()
+		.0
+		.iter()
 		.take(count)
-		.map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("Expected four bytes")))
+		.map(|chunk| u32::from_ne_bytes(*chunk))
 		.collect()
 }
 
@@ -2151,6 +2155,50 @@ fn executable_program_executes_continue_and_comparisons() {
 	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(1));
 }
 
+/// Verifies `break` leaves only the innermost loop and execution resumes after it.
+#[test]
+fn executable_program_breaks_out_of_the_innermost_loop() {
+	let script = r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		for (let i: u32 = 0; i < 3; i = i + 1) {
+			for (let j: u32 = 0; j < 10; j = j + 1) {
+				if (j == 2) {
+					break;
+				}
+				sum = sum + 1;
+			}
+			sum = sum + 10;
+		}
+		buff.sum = sum;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("sum", u32_type).into()],
+			},
+			25,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+
+	let slot = ResourceSlot::new(25);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	// Each outer iteration counts two inner iterations before the break, then its own ten.
+	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(36));
+}
+
 #[test]
 fn executable_program_evaluates_scalar_math_intrinsics() {
 	let script = r#"
@@ -2388,6 +2436,80 @@ fn texture_descriptor_handles_flow_through_function_parameters() {
 	assert_eq!(
 		result.read("color").expect("Expected color"),
 		Value::Vec4F([0.25, 0.5, 0.75, 1.0])
+	);
+}
+
+const TEXTURE_DESCRIPTOR_ARRAY_SHADER: &str = r#"
+textures: descriptor<{ type: Texture2D, binding: 5, access: read, count: 3 }>;
+
+main: fn (pipeline_input: interface { index: u32, uv: vec2f }) -> output { color: vec4f } {
+	return { color: sample(textures[pipeline_input.index], pipeline_input.uv) };
+}
+"#;
+
+#[test]
+fn parsed_texture_descriptor_arrays_select_runtime_resources() {
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.5], [0.0, 0.0, 1.0, 0.25]];
+	let mut textures = colors.map(|color| {
+		let mut texture = Texture::new(1, 1).expect("Expected texture allocation");
+		texture.write([0, 0], color).expect("Expected texel write");
+		texture
+	});
+	let mut index_input = interface_buffer_for_input(&executable, 0);
+	let mut uv_input = interface_buffer_for_input(&executable, 1);
+	let mut output = interface_buffer_for_output(&executable, 0);
+	uv_input
+		.write("_besl_interface_uv", Value::Vec2F([0.5, 0.5]))
+		.expect("Expected UV input");
+	for index in [2, 0, 1] {
+		index_input
+			.write("_besl_interface_index", Value::U32(index))
+			.expect("Expected texture index");
+		{
+			let mut descriptors = DescriptorBindings::new();
+			// Inactive array elements need no host texture for this invocation.
+			descriptors.bind_texture(ResourceSlot::new(5 + index), &mut textures[index as usize]);
+			descriptors.bind_buffer(input_slot(0), &mut index_input);
+			descriptors.bind_buffer(input_slot(1), &mut uv_input);
+			descriptors.bind_buffer(output_slot(0), &mut output);
+			executable
+				.run_main(&mut descriptors)
+				.expect("Expected indexed texture sampling");
+		}
+		assert_eq!(
+			output.read("_besl_output_color").expect("Expected sampled color"),
+			Value::Vec4F(colors[index as usize])
+		);
+	}
+}
+
+#[test]
+fn texture_descriptor_array_indices_stay_inside_the_declared_range() {
+	let executable = compile_test_program(TEXTURE_DESCRIPTOR_ARRAY_SHADER, None);
+	let mut index_input = interface_buffer_for_input(&executable, 0);
+	let mut uv_input = interface_buffer_for_input(&executable, 1);
+	let mut output = interface_buffer_for_output(&executable, 0);
+	let mut adjacent_texture = Texture::new(1, 1).expect("Expected texture allocation");
+	index_input
+		.write("_besl_interface_index", Value::U32(3))
+		.expect("Expected texture index");
+	uv_input
+		.write("_besl_interface_uv", Value::Vec2F([0.5, 0.5]))
+		.expect("Expected UV input");
+	let mut descriptors = DescriptorBindings::new();
+	// A bound resource after the array must remain inaccessible through its index.
+	descriptors.bind_texture(ResourceSlot::new(8), &mut adjacent_texture);
+	descriptors.bind_buffer(input_slot(0), &mut index_input);
+	descriptors.bind_buffer(input_slot(1), &mut uv_input);
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	assert_eq!(
+		executable.run_main(&mut descriptors),
+		Err(VmError::DescriptorArrayIndexOutOfBounds {
+			slot: ResourceSlot::new(5),
+			index: 3,
+			count: 3
+		})
 	);
 }
 

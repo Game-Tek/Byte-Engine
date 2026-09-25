@@ -1,4 +1,13 @@
-use std::{cell::RefCell, collections::VecDeque, ffi::c_void, marker::PhantomData, rc::Rc};
+use std::{
+	collections::VecDeque,
+	ffi::c_void,
+	os::fd::OwnedFd,
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
+	time::Duration,
+};
 
 use utils::Extent;
 use wayland_client::{
@@ -14,12 +23,9 @@ use wayland_client::{
 	},
 };
 use wayland_protocols::{
-	wp::{
-		pointer_constraints::zv1::client::{zwp_confined_pointer_v1, zwp_locked_pointer_v1, zwp_pointer_constraints_v1},
-		relative_pointer::zv1::client::{
-			zwp_relative_pointer_manager_v1::{self},
-			zwp_relative_pointer_v1,
-		},
+	wp::relative_pointer::zv1::client::{
+		zwp_relative_pointer_manager_v1::{self},
+		zwp_relative_pointer_v1,
 	},
 	xdg::shell::client::{
 		xdg_surface, xdg_toplevel,
@@ -28,142 +34,112 @@ use wayland_protocols::{
 };
 use xkbcommon::xkb::{self, keysyms};
 
-use crate::{
-	window::os::{Features, WindowLike},
-	window::{
-		Events, Seat,
-		input::{Keys, MouseKeys},
-	},
+use crate::window::{
+	Event, Events, Features, Seat, Wait, WindowId,
+	input::{Keys, MouseKeys},
+	os::{AppLike, WindowLike},
 };
 
-pub struct Window {
+/// The `App` struct owns the process's single Wayland connection and its event queue.
+pub struct App {
 	connection: wayland_client::Connection,
 	event_queue: wayland_client::EventQueue<AppData>,
-	xdg_wm_base: xdg_wm_base::XdgWmBase,
+	data: AppData,
+	id_name: String,
+	next_window: u64,
+	/// The eventfd a waiting poll watches next to the display socket.
+	wake: Arc<OwnedFd>,
+}
+
+/// The `AppWaker` struct writes to the eventfd a waiting poll watches.
+#[derive(Clone)]
+pub struct AppWaker(Arc<OwnedFd>);
+
+impl AppWaker {
+	pub fn wake(&self) {
+		// A full counter already wakes the poll, so a failed write loses nothing.
+		let _ = rustix::io::write(&*self.0, &1u64.to_ne_bytes());
+	}
+}
+
+/// The `Window` struct owns a toplevel's protocol objects; dropping it destroys them, and the [`App`]
+/// forgets the window on its next poll.
+pub struct Window {
+	id: WindowId,
+	display: wl_display::WlDisplay,
 	surface: wl_surface::WlSurface,
 	xdg_surface: xdg_surface::XdgSurface,
 	xdg_toplevel: xdg_toplevel::XdgToplevel,
-	zwp_pointer_constraints: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
-	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
-
-	requests: VecDeque<Requests>,
-
-	state: WindowState,
+	/// The refresh interval the event queue last reported for this window.
+	refresh: SharedRefresh,
 }
 
-/// A window operation queued until Wayland can process it.
-#[derive(Clone, Debug)]
-enum Requests {
-	/// Constrain the pointer after the window receives pointer and keyboard focus.
-	ConstrainPointer,
-	/// Lock the pointer after the window receives pointer and keyboard focus.
-	LockPointer,
-	/// Hide the pointer after Wayland creates it.
-	HidePointer,
-}
-
-/// The `WindowIterator` struct yields [`Events`] collected by the window's poll operation.
-pub struct WindowIterator<'a> {
-	events: VecDeque<Events>,
-	_phantom: PhantomData<&'a ()>,
-}
-
-impl<'a> Iterator for WindowIterator<'a> {
-	type Item = Events;
-
-	fn next(&mut self) -> Option<Events> {
-		self.events.pop_front()
-	}
-}
+/// A refresh interval in nanoseconds, where `0` means unknown, shared between a window and the event queue.
+type SharedRefresh = Arc<AtomicU64>; // TODO: hmmmmm
 
 pub struct Handles {
 	pub display: *mut c_void,
 	pub surface: *mut c_void,
 }
 
-/// The `Configuration` struct provides Wayland registry state while a window connection starts.
+/// The `Configuration` struct provides Wayland registry state while the connection starts.
 #[derive(Debug)]
 struct Configuration {
 	compositor: Option<WlCompositor>,
 	xdg_wm_base: Option<XdgWmBase>,
 	wl_seat: Option<WlSeat>,
 	wl_output: Option<WlOutput>,
-	wl_surface: Option<wl_surface::WlSurface>,
 	wl_callback: Option<wl_callback::WlCallback>,
-	zwp_pointer_constraints: Option<zwp_pointer_constraints_v1::ZwpPointerConstraintsV1>,
 	zwp_relative_pointer_manager: Option<zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1>,
 
 	app_data_queue: wayland_client::QueueHandle<AppData>,
 }
 
-/// The `AppData` struct provides Wayland callback state for an active window.
+/// The `AppData` struct is the Wayland dispatch state shared by every window of the connection.
 #[derive(Debug)]
 struct AppData {
-	wl_surface: wl_surface::WlSurface,
-	zwp_pointer_constraints: zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+	compositor: WlCompositor,
+	xdg_wm_base: XdgWmBase,
 	zwp_relative_pointer_manager: zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
 
-	state: WindowState,
+	windows: Vec<WindowState>,
 
-	events: VecDeque<Events>,
-	requests: VecDeque<Requests>,
+	/// The largest output scale reported so far, used as the starting scale of new windows.
+	output_scale: u32,
+	/// The extent of the monitor.
+	monitor_extent: Option<Extent>,
+	/// Every output and the refresh rate of its current mode in millihertz, `0` when unknown.
+	outputs: Vec<(WlOutput, i32)>,
+	/// The pointer and the window it is over.
+	pointer_focus: Option<(wl_pointer::WlPointer, WindowId)>,
+	/// The keyboard and the window it targets.
+	keyboard_focus: Option<(wl_keyboard::WlKeyboard, WindowId)>,
+	/// The XKB state for translating keycodes into keysyms.
+	keyboard_state: Option<KeyboardState>,
+
+	events: VecDeque<Event>,
 }
 
-/// The `WindowState` struct preserves the latest state reported by the Wayland event queue.
-#[derive(Debug, Clone)]
+/// The `WindowState` struct preserves the latest state the Wayland event queue reported for one window.
+#[derive(Debug)]
 struct WindowState {
+	id: WindowId,
+	surface: wl_surface::WlSurface,
 	/// The scale factor of the window.
 	scale: u32,
 	/// The extent of the window.
 	extent: Option<Extent>,
-	/// The extent of the monitor.
-	monitor_extent: Option<Extent>,
 	/// Whether the initial xdg_surface configuration has been acknowledged.
 	configured: bool,
-	/// The focused pointer
-	focused_pointer: Option<wl_pointer::WlPointer>,
-	/// The focused keyboard
-	focused_keyboard: Option<wl_keyboard::WlKeyboard>,
-	/// Whether the pointer should remain confined to the window surface.
-	should_confine_pointer: bool,
-	/// Whether the compositor currently reports the pointer as confined.
-	pointer_is_confined: bool,
-	/// Whether the pointer should remain hidden.
-	should_hide_pointer: bool,
-	/// Whether the pointer is currently hidden.
-	pointer_is_hidden: bool,
-	/// Whether the pointer should remain locked.
-	should_lock_pointer: bool,
-	/// Whether the compositor currently reports the pointer as locked.
-	pointer_is_locked: bool,
-	/// The active confined pointer handle, if one is currently set.
-	confined_pointer: Option<zwp_confined_pointer_v1::ZwpConfinedPointerV1>,
-	/// The active locked pointer handle, if one is currently set.
-	locked_pointer: Option<zwp_locked_pointer_v1::ZwpLockedPointerV1>,
-	/// The XKB state for translating keycodes into keysyms.
-	keyboard_state: Option<Rc<RefCell<KeyboardState>>>,
+	/// The outputs the surface is shown on.
+	outputs: Vec<WlOutput>,
+	/// The refresh interval of the fastest output the surface is on.
+	refresh: SharedRefresh,
 }
 
-impl Default for WindowState {
-	fn default() -> Self {
-		Self {
-			scale: 1,
-			extent: None,
-			monitor_extent: None,
-			configured: false,
-			focused_pointer: None,
-			focused_keyboard: None,
-			should_confine_pointer: false,
-			pointer_is_confined: false,
-			should_hide_pointer: false,
-			pointer_is_hidden: false,
-			should_lock_pointer: false,
-			pointer_is_locked: false,
-			confined_pointer: None,
-			locked_pointer: None,
-			keyboard_state: None,
-		}
-	}
+/// Converts a refresh rate in millihertz to its interval, or `None` when unknown.
+fn refresh_interval(millihertz: i32) -> Option<Duration> {
+	(millihertz > 0).then(|| Duration::from_secs_f64(1000.0 / millihertz as f64))
 }
 
 mod dispatch;

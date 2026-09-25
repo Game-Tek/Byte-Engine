@@ -978,6 +978,24 @@ main: fn () -> void {
 	}
 
 	#[test]
+	fn parse_break_in_loop() {
+		let tokens = tokenize("main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { if (i == 2) { break; } } }")
+			.expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected function");
+		};
+		let Nodes::ForLoop { statements, .. } = &statements[0].node else {
+			panic!("Expected for loop");
+		};
+		let Nodes::Conditional { statements, .. } = &statements[0].node else {
+			panic!("Expected conditional");
+		};
+
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
+	}
+
+	#[test]
 	fn parse_discard_in_conditional() {
 		let tokens = tokenize("main: fn () -> void { if (true) { discard; } }").expect("Failed to tokenize");
 		let node = parse(&tokens).expect("Failed to parse");

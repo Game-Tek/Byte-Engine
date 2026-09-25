@@ -146,7 +146,7 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 /// must receive their complete resource store from BELD.
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
-	generator: impl ProgramGenerator + 'static,
+	generator: impl ProgramGenerator + Clone + 'static,
 ) {
 	#[cfg(not(debug_assertions))]
 	{
@@ -157,8 +157,6 @@ pub fn setup_default_resource_and_asset_management(
 
 	#[cfg(debug_assertions)]
 	{
-		let generator = std::sync::Arc::new(generator);
-
 		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
 
 		let storage_backend = FileStorageBackend::new(assets_path);
@@ -201,6 +199,8 @@ pub fn setup_default_resource_and_asset_management(
 
 		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::pipeline::PipelineAssetHandler);
 
+		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::flipbook::FlipbookAssetHandler);
+
 		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
 			log::warn!(
 				"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
@@ -242,21 +242,14 @@ fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
 /// The application tick translates window events and emits their resolved action
 /// values.
 pub fn setup_default_input(application: &mut GraphicsApplication) {
-	let input_system = &mut application.input_system;
-
-	let mouse = register_mouse_device_class(input_system);
-
-	let keyboard = register_keyboard_device_class(input_system);
-
-	let gamepad = register_gamepad_device_class(input_system);
-
+	let input = &mut application.input;
+	let mouse = register_mouse_device_class(input);
+	let keyboard = register_keyboard_device_class(input);
+	let gamepad = register_gamepad_device_class(input);
 	application.gamepad_device_class_handle = Some(gamepad);
-
-	input_system.create_device(&mouse);
-
-	input_system.create_device(&keyboard);
-
-	input_system.create_device(&gamepad);
+	input.create_device(&mouse);
+	input.create_device(&keyboard);
+	input.create_device(&gamepad);
 }
 
 /// Starts the audio worker, its byte-bounded global sample pool, and the
@@ -416,9 +409,6 @@ use crate::{
 
 #[cfg(all(test, debug_assertions))]
 mod tests {
-
-	use std::sync::atomic::{AtomicUsize, Ordering};
-
 	use resource_management::{
 		asset::{FileStorageBackend, manager::AssetManager},
 		resource::storage_backend::redb::ReDBStorageBackend,
@@ -428,13 +418,8 @@ mod tests {
 
 	#[test]
 	fn default_image_handlers_support_ies_profiles() {
-		static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-		let root = std::env::temp_dir().join(format!(
-			"byte-engine-default-image-handlers-{}-{}",
-			std::process::id(),
-			NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
-		));
+		// This test runs once per process, so the process ID keeps its directory unique.
+		let root = std::env::temp_dir().join(format!("byte-engine-default-image-handlers-{}", std::process::id()));
 
 		let assets = root.join("assets");
 

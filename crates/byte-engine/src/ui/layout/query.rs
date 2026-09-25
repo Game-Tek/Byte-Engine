@@ -97,7 +97,7 @@ impl<'a, T: ElementHandle> Fetcher<'a, T> {
 
 #[cfg(test)]
 mod tests {
-	use std::num::NonZeroU32;
+	use std::num::NonZeroU64;
 
 	use super::*;
 
@@ -113,7 +113,7 @@ mod tests {
 	}
 
 	fn id(value: u32) -> Id {
-		NonZeroU32::new(value).expect("non-zero test element identity")
+		NonZeroU64::new(value.into()).expect("non-zero test element identity")
 	}
 
 	#[test]

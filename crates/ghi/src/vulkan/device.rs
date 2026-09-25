@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU32, sync::Arc};
+use std::{borrow::Cow, num::NonZeroU32};
 
 use ash::vk::{self, TaggedStructure as _};
 use utils::{Extent, hash::HashMap};
@@ -24,11 +24,38 @@ pub struct Device {
 	shaders: Vec<crate::vulkan::Shader>,
 }
 
+/// The `DebugDataRef` struct lets a device read the validation error counter that its [`Instance`] owns.
+///
+/// The Vulkan debug messenger writes through a pointer to the instance's boxed [`DebugCallbackData`], so the data has a
+/// stable address for the instance's whole life. A Vulkan device must never outlive the instance it was created from,
+/// so the pointer stays valid for as long as any device or context that holds it.
+#[derive(Clone, Copy)]
+pub(crate) struct DebugDataRef(std::ptr::NonNull<DebugCallbackData>);
+
+// SAFETY: `DebugCallbackData` only holds an atomic counter and a function pointer, so shared access from any thread is sound.
+unsafe impl Send for DebugDataRef {}
+// SAFETY: See the `Send` implementation above.
+unsafe impl Sync for DebugDataRef {}
+
+impl DebugDataRef {
+	pub(crate) fn new(debug_data: &DebugCallbackData) -> Self {
+		Self(std::ptr::NonNull::from(debug_data))
+	}
+
+	pub(crate) fn get(&self) -> &DebugCallbackData {
+		// SAFETY: The instance owns the boxed data and outlives every device created from it. See the type docs.
+		unsafe { self.0.as_ref() }
+	}
+}
+
 #[derive(Clone)]
 pub struct InnerDevice {
 	pub(super) debug_utils: Option<ash::ext::debug_utils::Device>,
 
-	debug_data: Arc<DebugCallbackData>,
+	pub(super) debug_data: DebugDataRef,
+
+	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. [`Context::new`] moves them into its locked queue list.
+	pub(super) vk_queues: Vec<vk::Queue>,
 
 	pub(crate) physical_device: vk::PhysicalDevice,
 	pub(super) device: ash::Device,

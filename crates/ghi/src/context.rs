@@ -428,6 +428,24 @@ pub trait Context: ContextCreate {
 		uses: Uses,
 	) -> SwapchainHandle;
 
+	/// Acquires the swapchain image that `frame` will present.
+	///
+	/// This can run before the frame is started so simulation can follow the presentation cadence.
+	/// It blocks until the frame sequence's previous submission and the presentation engine allow reuse.
+	/// Returns `None` when the presentation engine has no image to give (an exhausted drawable pool, a hidden
+	/// window, or an out-of-date surface); the caller skips presenting that swapchain for the frame.
+	fn acquire_swapchain_image(
+		&mut self,
+		frame: crate::queue::FrameRequest<'_>,
+		swapchain: SwapchainHandle,
+	) -> Option<crate::frame::SwapchainAcquisition>;
+
+	/// Sets the minimum interval between presented frames of a swapchain, or removes it with `None`.
+	///
+	/// With display sync enabled, frames land on the first refresh at or after the interval, so an interval of
+	/// two refresh periods shows every other refresh. Backends without a timed present pace the acquisition instead.
+	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>);
+
 	/// Waits for queued GPU work, consumes one transfer handle, and returns its owned result.
 	///
 	/// A transfer handle is local to the context that created it. Handle values can overlap across contexts,

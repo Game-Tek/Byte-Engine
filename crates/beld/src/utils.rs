@@ -5,10 +5,11 @@ use resource_management::{
 		StorageBackend, handler::implementations::bema::BEMAAssetHandler,
 		handler::implementations::besl::BESLShaderAssetHandler,
 		handler::implementations::environment::EnvironmentMapAssetHandler, handler::implementations::exr::EXRAssetHandler,
-		handler::implementations::fbx::FBXAssetHandler, handler::implementations::gltf::GLTFAssetHandler,
-		handler::implementations::ies::IESAssetHandler, handler::implementations::lut::LUTAssetHandler,
-		handler::implementations::ogg::OGGAssetHandler, handler::implementations::pipeline::PipelineAssetHandler,
-		handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
+		handler::implementations::fbx::FBXAssetHandler, handler::implementations::flipbook::FlipbookAssetHandler,
+		handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
+		handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
+		handler::implementations::pipeline::PipelineAssetHandler, handler::implementations::png::PNGAssetHandler,
+		handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
 	},
 	ibl::IBLGenerator,
 	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
@@ -48,6 +49,8 @@ where
 
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 
+	asset_manager.add_asset_handler(FlipbookAssetHandler);
+
 	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
 
 	besl_shader_asset_handler
@@ -71,11 +74,8 @@ where
 
 		let mut material_asset_handler = BEMAAssetHandler::new();
 
-		let shader_generator = std::sync::Arc::new({
-			// let common_shader_generator = byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new();
-
-			byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new()
-		});
+		// Each handler owns its own generator; building one only assembles a small BESL scope.
+		let shader_generator = byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new();
 
 		material_asset_handler.set_shader_generator(shader_generator.clone());
 

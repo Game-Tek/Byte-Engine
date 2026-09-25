@@ -26,8 +26,6 @@ pub type Context = self::context::Device;
 	reason = "DX12 tests explicitly end frame borrows before inspecting their devices."
 )]
 mod tests {
-	use std::sync::atomic::{AtomicU64, Ordering};
-
 	use windows::Win32::Graphics::Direct3D12::D3D12_BARRIER_SYNC_COMPUTE_SHADING;
 
 	use super::*;
@@ -38,11 +36,11 @@ mod tests {
 	use crate::context::Context as _;
 	use crate::queue::{Queue as _, QueueExecution as _};
 
-	static DX12_DEBUG_TEST_LOGS: AtomicU64 = AtomicU64::new(0);
-
-	fn count_dx12_debug_test_message(message: &str) {
+	/// Reports the test message by panicking with it, since a plain `fn(&str)` log callback has no state to record into.
+	/// The test catches the unwind and reads the message from the panic payload.
+	fn panic_on_dx12_debug_test_message(message: &str) {
 		if message.contains("ghi dx12 test application message") {
-			DX12_DEBUG_TEST_LOGS.fetch_add(1, Ordering::Relaxed);
+			panic!("{message}");
 		}
 	}
 
@@ -85,10 +83,9 @@ mod tests {
 
 	#[test]
 	fn debug_info_queue_messages_use_device_log_function() {
-		DX12_DEBUG_TEST_LOGS.store(0, Ordering::Relaxed);
 		let features = crate::device::Features::new()
 			.validation(true)
-			.debug_log_function(count_dx12_debug_test_message);
+			.debug_log_function(panic_on_dx12_debug_test_message);
 		let Ok(mut instance) = Instance::new(features) else {
 			return;
 		};
@@ -103,10 +100,15 @@ mod tests {
 			return;
 		};
 
-		device.add_debug_message_for_test("ghi dx12 test application message");
+		let logged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			device.add_debug_message_for_test("ghi dx12 test application message");
+		}));
 
-		assert!(DX12_DEBUG_TEST_LOGS.load(Ordering::Relaxed) > 0);
-		assert!(device.has_errors());
+		let payload = logged.expect_err("The DX12 info-queue message should reach the device log function.");
+		let message = payload
+			.downcast_ref::<String>()
+			.expect("The log function should panic with the formatted message.");
+		assert!(message.contains("ghi dx12 test application message"));
 	}
 
 	#[test]
@@ -1825,7 +1827,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(65, 33);
-		let window = crate::window::Window::new("DX12 Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let mut app = crate::window::App::new("DX12 Present Proxy Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Present Proxy Test", extent, crate::window::Features::empty())
+			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
 		let vertices: [f32; 21] = [
 			0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
@@ -1894,7 +1899,10 @@ void main() {
 		let synchronizer = device.create_synchronizer(None, false);
 		let present_key = {
 			let mut frame = device.start_frame(0, synchronizer);
-			let (present_key, _) = frame.acquire_swapchain_image(swapchain);
+			let present_key = frame
+				.acquire_swapchain_image(swapchain)
+				.expect("acquire backbuffer")
+				.present_key();
 			let mut recording = frame.create_command_buffer_recording(command_buffer);
 			let attachments = [crate::AttachmentInformation::new(
 				swapchain,
@@ -1925,7 +1933,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window = crate::window::Window::new("DX12 Outstanding Acquisition Test", extent)
+		let mut app =
+			crate::window::App::new("DX12 Outstanding Acquisition Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Outstanding Acquisition Test", extent, crate::window::Features::empty())
 			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::RenderTarget);
 		let synchronizer = device.create_synchronizer(None, true);
@@ -1948,8 +1959,10 @@ void main() {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window =
-			crate::window::Window::new("DX12 Storage Present Proxy Test", extent).expect("Failed to create DX12 test window.");
+		let mut app = crate::window::App::new("DX12 Storage Present Proxy Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window("DX12 Storage Present Proxy Test", extent, crate::window::Features::empty())
+			.expect("Failed to create DX12 test window.");
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
 		let slot = crate::ResourceSlot::new(0);
 		let resource =
@@ -1988,7 +2001,12 @@ void main() {
 			&[],
 			synchronizer,
 			|execution| {
-				let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+				let present_key = execution
+					.frame()
+					.unwrap()
+					.acquire_swapchain_image(swapchain)
+					.expect("acquire backbuffer")
+					.present_key();
 				captured_present_key = Some(present_key);
 				let present_keys = [present_key];
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -3956,9 +3974,17 @@ void main(uint3 id : SV_DispatchThreadID) {
 			return;
 		};
 		let extent = ::utils::Extent::rectangle(4, 4);
-		let window = crate::window::Window::new("DX12 Missing Present Preparation Test", extent).expect(
-			"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
-		);
+		let mut app =
+			crate::window::App::new("DX12 Missing Present Preparation Test").expect("Failed to create the DX12 test app.");
+		let window = app
+			.create_window(
+				"DX12 Missing Present Preparation Test",
+				extent,
+				crate::window::Features::empty(),
+			)
+			.expect(
+				"Failed to create the DX12 present-validation test window. The most likely cause is that WSI is unavailable.",
+			);
 		let swapchain = device.bind_to_window(&window.os_handles(), Default::default(), extent, crate::Uses::Storage);
 		device.get_swapchain_image(swapchain, crate::Uses::Storage);
 		let synchronizer = device.create_synchronizer(None, false);
@@ -3968,7 +3994,12 @@ void main(uint3 id : SV_DispatchThreadID) {
 				&[],
 				synchronizer,
 				|execution| {
-					let (present_key, _) = execution.frame().unwrap().acquire_swapchain_image(swapchain);
+					let present_key = execution
+						.frame()
+						.unwrap()
+						.acquire_swapchain_image(swapchain)
+						.expect("acquire backbuffer")
+						.present_key();
 					[present_key]
 				},
 			);

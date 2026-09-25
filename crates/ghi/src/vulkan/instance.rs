@@ -1,9 +1,6 @@
 use std::{
 	ffi::{CStr, c_char},
-	sync::{
-		Arc,
-		atomic::{AtomicU64, Ordering},
-	},
+	sync::atomic::{AtomicU64, Ordering},
 };
 
 use ash::vk::{self, TaggedStructure as _};
@@ -14,7 +11,8 @@ pub struct Instance {
 	pub(crate) instance: ash::Instance,
 	pub(crate) entry: ash::Entry,
 
-	pub(crate) debug_data: Arc<DebugCallbackData>,
+	/// Boxed so the debug messenger's `pUserData` pointer and every [`DebugDataRef`](super::device::DebugDataRef) keep a stable address.
+	pub(crate) debug_data: Box<DebugCallbackData>,
 
 	debug_messenger: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
 }
@@ -97,7 +95,7 @@ impl Instance {
 		let instance = unsafe { entry.create_instance(&instance_create_info, None) }
 			.map_err(|result| creation_error(result, "Unknown error"))?;
 
-		let debug_data = Arc::new(DebugCallbackData {
+		let debug_data = Box::new(DebugCallbackData {
 			error_count: AtomicU64::new(0),
 			error_log_function: settings.debug_log_function.unwrap_or(|message| println!("{message}")),
 		});
@@ -117,7 +115,7 @@ impl Instance {
 						| vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
 				)
 				.pfn_user_callback(Some(vulkan_debug_utils_callback))
-				.user_data(Arc::as_ptr(&debug_data).cast_mut().cast());
+				.user_data(std::ptr::from_ref::<DebugCallbackData>(&*debug_data).cast_mut().cast());
 
 			let messenger = unsafe { debug_utils.create_debug_utils_messenger(&debug_utils_create_info, None) }
 				.or(Err("Failed to enable debug utils messanger"))?;
@@ -194,7 +192,7 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
 	p_user_data: *mut std::ffi::c_void,
 ) -> vk::Bool32 {
 	// SAFETY: Vulkan keeps the callback data and its null-terminated message valid for this invocation. The instance
-	// retains the user data Arc until the messenger is destroyed. Callbacks may run concurrently, so only borrow the
+	// owns the boxed user data and destroys the messenger before dropping it. Callbacks may run concurrently, so only borrow the
 	// atomic callback state immutably.
 	let (Some(message), Some(user_data)) = (unsafe {
 		(

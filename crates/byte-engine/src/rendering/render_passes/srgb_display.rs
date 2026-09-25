@@ -24,6 +24,12 @@ pub struct SrgbDisplayPass {
 impl Entity for SrgbDisplayPass {}
 
 impl SrgbDisplayPass {
+	/// Starts display and bypass shaders while window creation is still pending.
+	pub(crate) fn request_pipelines(manager: &crate::rendering::PipelineManagerClient) {
+		manager.request_pipeline(PIPELINE);
+		ImageBypassPass::request_pipeline(manager);
+	}
+
 	/// Creates one sink-local display encoder from the current `main` image.
 	///
 	/// Register the pass before creating a window. The renderer then supplies

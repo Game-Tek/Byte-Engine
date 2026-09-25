@@ -309,6 +309,14 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 			.bind_index_buffer_native(self.command_buffer, buffer_descriptor, self.sequence_index());
 	}
 
+	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent) {
+		let active = self
+			.active_extent
+			.expect("No active render pass. The most likely cause is that set_scissor was called outside start_render_pass.");
+		let (origin, extent) = crate::clamp_scissor(origin, extent, active);
+		self.device.set_scissor_native(self.command_buffer, origin, extent);
+	}
+
 	fn end_render_pass(&mut self) {
 		self.device.end_render_pass_native(self.command_buffer);
 		self.active_attachments.clear();

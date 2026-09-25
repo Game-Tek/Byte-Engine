@@ -1,0 +1,1 @@
+{"name":"UI","kind":{"type":"raster","shaders":["byte-engine/rendering/ui/ui-vertex.besl","byte-engine/rendering/ui/ui-fragment.besl"],"push_constants":[{"offset":0,"size":16}],"attachments":[{"format":"rgba16_float","blend":"alpha"}]}}

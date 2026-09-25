@@ -183,6 +183,6 @@ impl InnerDevice {
 
 	#[cfg(any(debug_assertions, test))]
 	pub(crate) fn has_errors(&self) -> bool {
-		self.debug_data.error_count.load(std::sync::atomic::Ordering::SeqCst) > 0
+		self.debug_data.get().error_count.load(std::sync::atomic::Ordering::SeqCst) > 0
 	}
 }

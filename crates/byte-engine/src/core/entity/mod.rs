@@ -9,7 +9,6 @@ pub mod handle;
 
 pub use container::Container as EntityContainer;
 pub use handle::Handle as EntityHandle;
-use utils::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// The [`Entity`] trait marks values that participate in engine-managed shared
 /// ownership.

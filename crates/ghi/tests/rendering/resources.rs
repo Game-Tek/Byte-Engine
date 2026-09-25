@@ -332,7 +332,9 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 			"Render-target readback size does not match its resized extent. The most likely cause is that one frame-local image kept its previous extent."
 		);
 		let pixels = image_data
-			.chunks_exact(4)
+			.as_chunks::<4>()
+			.0
+			.iter()
 			.map(|pixel| RGBAu8 {
 				r: pixel[0],
 				g: pixel[1],
@@ -696,7 +698,7 @@ pub(super) fn dynamic_textures(device: &mut impl ghi::context::Context, queue_ha
 					let frame = execution.frame().unwrap();
 
 					let texture_slice = frame.get_mut_dynamic_texture_slice(upload_image.into());
-					for pixel in texture_slice.chunks_exact_mut(4).take(pixel_count) {
+					for pixel in texture_slice.as_chunks_mut::<4>().0.iter_mut().take(pixel_count) {
 						pixel.copy_from_slice(&[expected_color.r, expected_color.g, expected_color.b, expected_color.a]);
 					}
 					frame.sync_texture(upload_image.into());
@@ -1442,4 +1444,69 @@ pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_han
 	// TODO: assert rendering results
 
 	assert!(!device.has_errors());
+}
+
+/// Checks partial R8 uploads against GPU readback, including untouched texels and image edges.
+pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	let extent = Extent::rectangle(37, 29);
+	let image = device.build_image(
+		ghi::image::Builder::new(
+			Formats::R8UNORM,
+			Uses::Image | Uses::TransferSource | Uses::TransferDestination,
+		)
+		.extent(extent)
+		.device_accesses(DeviceAccesses::HostToDevice),
+	);
+	let readback = device.build_image(
+		ghi::image::Builder::new(Formats::R8UNORM, Uses::TransferSource | Uses::TransferDestination)
+			.extent(extent)
+			.device_accesses(DeviceAccesses::DeviceToHost),
+	);
+	let commands = device.queue(queue_handle).create_command_buffer(None);
+	let finished = device.create_synchronizer(None, true);
+	let mut expected = vec![17u8; 37 * 29];
+	let patches = [
+		None,
+		Some(ghi::image::Region {
+			offset: [3, 5],
+			size: [7, 9],
+		}),
+		Some(ghi::image::Region {
+			offset: [31, 24],
+			size: [6, 5],
+		}),
+	];
+	for (index, patch) in patches.into_iter().enumerate() {
+		let mut transfer = None;
+		device
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(index as u64, finished)), &[], finished, |execution| {
+				let frame = execution.frame().unwrap();
+				let staging = frame.get_texture_slice_mut(image.into());
+				if let Some(region) = patch {
+					// Poison unrelated staging bytes: a full GPU copy must fail this test.
+					staging.fill(231);
+					for y in region.offset[1]..region.offset[1] + region.size[1] {
+						for x in region.offset[0]..region.offset[0] + region.size[0] {
+							let offset = (y * 37 + x) as usize;
+							expected[offset] = 40 + index as u8;
+							staging[offset] = expected[offset];
+						}
+					}
+					frame.sync_texture_region(image.into(), region);
+				} else {
+					staging.copy_from_slice(&expected);
+					frame.sync_texture(image.into());
+				}
+				execution.record(commands, |recording| {
+					recording.blit_image(image.into(), Layouts::Transfer, readback.into(), Layouts::Transfer);
+					transfer = Some(recording.transfer_texture(readback.into()).unwrap());
+				});
+				[]
+			});
+		device.wait();
+		let actual = device.get_image_data(transfer.unwrap()).unwrap();
+		assert_eq!(actual.bytes, expected);
+		assert!(!device.has_errors());
+	}
 }

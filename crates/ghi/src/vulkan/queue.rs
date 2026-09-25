@@ -67,10 +67,9 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		let frame = self.frame.as_mut().expect(
 			"Frame is required to record a frame command buffer. The most likely cause is that Queue::execute was called with None and the closure tried to record frame work.",
 		);
-		let present_keys = frame.acquired_present_keys(present_keys);
 		let mut command_buffer = frame.create_command_buffer_recording(command_buffer_handle);
 		record(&mut command_buffer);
-		self.command_buffers.push(command_buffer.into_submission(&present_keys));
+		self.command_buffers.push(command_buffer.into_submission(present_keys));
 	}
 }
 
@@ -114,8 +113,7 @@ impl crate::queue::Queue for Queue<'_> {
 		let Some(mut frame) = execution.frame.take() else {
 			return;
 		};
-		let present_keys = frame.acquired_present_keys(present_keys.as_ref());
-		let present_keys = present_keys.as_slice();
+		let present_keys = present_keys.as_ref();
 		let command_buffers = std::mem::take(&mut execution.command_buffers);
 		if command_buffers.is_empty() {
 			frame.complete_without_submissions(synchronizer);

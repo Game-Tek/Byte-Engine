@@ -2,7 +2,6 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
 
 use objc2_audio_toolbox::{
 	AURenderCallbackStruct, AudioComponent, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose,
@@ -21,6 +20,9 @@ use crate::audio_hardware_interface::{AudioPlayError, HardwareParameters, Stream
 
 const DEFAULT_PERIOD_SIZE: usize = 1024;
 const RING_PERIOD_COUNT: usize = 4;
+/// Render quanta kept queued beyond the one the next callback will consume.
+/// Lower values reduce output latency; raise this if underruns appear under load.
+const QUEUE_MARGIN_QUANTA: usize = 1;
 const AUDIO_UNIT_SUBTYPE_REMOTE_IO: u32 = u32::from_be_bytes(*b"rioc");
 const IO_ENABLED: u32 = 1;
 const IO_DISABLED: u32 = 0;
@@ -63,6 +65,7 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 		let callback_state = Box::new(CallbackState {
 			ring: SpscByteRing::new(ring_capacity)?,
 			underrun_count: AtomicUsize::new(0),
+			max_quantum_frames: AtomicUsize::new(0),
 		});
 		let callback_state_ptr = (&*callback_state as *const CallbackState).cast_mut().cast::<c_void>();
 
@@ -100,16 +103,23 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 	}
 
 	fn wait_for_playback_space(&self) {
-		let required_bytes = self.bytes_per_frame;
+		// Only the render callback frees space, so waiting on a stopped unit would never return.
+		if !self.started.load(Ordering::Acquire) {
+			return;
+		}
+		// Wake once the queue has drained below the target by at least one frame.
+		let required_bytes = self.callback_state.ring.capacity - self.target_queue_bytes() + self.bytes_per_frame;
 		self.callback_state.ring.wait_for_available_write(required_bytes);
 	}
 
 	fn play(&self, wpf: impl WritePlayFunction) -> Result<usize, AudioPlayError> {
-		let max_bytes = self.period_size * self.bytes_per_frame;
 		let bytes_per_frame = self.bytes_per_frame;
+		let ring = &self.callback_state.ring;
+		let queued_bytes = ring.capacity - ring.available_write();
+		let max_bytes = (self.period_size * bytes_per_frame).min(self.target_queue_bytes().saturating_sub(queued_bytes));
 		let params = self.parameters;
 
-		let bytes_written = self.callback_state.ring.with_write_chunk(max_bytes, |chunk| {
+		let bytes_written = ring.with_write_chunk(max_bytes, |chunk| {
 			let available_frames = chunk.len() / bytes_per_frame;
 			if available_frames == 0 {
 				return 0;
@@ -177,6 +187,19 @@ impl crate::audio_hardware_interface::AudioHardwareInterface for Device {
 				let _ = AudioOutputUnitStop(self.audio_unit);
 			}
 		}
+	}
+}
+
+impl Device {
+	// Returns the queued byte count to refill up to: the callback's quantum plus the margin.
+	// The ring capacity is only a ceiling; anything queued beyond this target is latency
+	// added to every new sound.
+	fn target_queue_bytes(&self) -> usize {
+		let quantum_frames = match self.callback_state.max_quantum_frames.load(Ordering::Relaxed) {
+			0 => self.period_size,
+			frames => frames,
+		};
+		(quantum_frames * (1 + QUEUE_MARGIN_QUANTA) * self.bytes_per_frame).min(self.callback_state.ring.capacity)
 	}
 }
 
@@ -341,7 +364,7 @@ unsafe extern "C-unwind" fn output_render_callback(
 	io_action_flags: NonNull<AudioUnitRenderActionFlags>,
 	_in_time_stamp: NonNull<AudioTimeStamp>,
 	_in_bus_number: u32,
-	_in_number_frames: u32,
+	in_number_frames: u32,
 	io_data: *mut AudioBufferList,
 ) -> i32 {
 	if io_data.is_null() {
@@ -352,6 +375,13 @@ unsafe extern "C-unwind" fn output_render_callback(
 	let callback_state = unsafe { &*(ref_con.as_ptr() as *const CallbackState) };
 	// SAFETY: Core Audio supplies a non-null buffer list that remains exclusively borrowed for this callback.
 	let buffer_list = unsafe { &mut *io_data };
+
+	if in_number_frames as usize > callback_state.max_quantum_frames.load(Ordering::Relaxed) {
+		// This callback is the only writer, so a plain store keeps the maximum.
+		callback_state
+			.max_quantum_frames
+			.store(in_number_frames as usize, Ordering::Relaxed);
+	}
 
 	let mut pulled_any_audio = false;
 	let mut had_underrun = false;
@@ -523,13 +553,59 @@ fn output_component_subtypes() -> [u32; 3] {
 	]
 }
 
+#[link(name = "System", kind = "dylib")]
+unsafe extern "C" {
+	fn dispatch_semaphore_create(value: isize) -> *mut c_void;
+	fn dispatch_semaphore_wait(semaphore: *mut c_void, timeout: u64) -> isize;
+	fn dispatch_semaphore_signal(semaphore: *mut c_void) -> isize;
+	fn dispatch_release(object: *mut c_void);
+}
+
+const DISPATCH_TIME_FOREVER: u64 = !0;
+
+/// The `WakeSemaphore` struct lets the render callback wake the producer without taking a lock.
+/// Signals persist until consumed, so a signal sent before the wait starts is not lost.
+struct WakeSemaphore(NonNull<c_void>);
+
+// SAFETY: Dispatch semaphores are thread-safe objects and may be signaled and awaited from any thread.
+unsafe impl Send for WakeSemaphore {}
+// SAFETY: Dispatch semaphores are thread-safe objects and may be signaled and awaited from any thread.
+unsafe impl Sync for WakeSemaphore {}
+
+impl WakeSemaphore {
+	fn new() -> Result<Self, String> {
+		// SAFETY: Creating a semaphore has no preconditions; failure is reported as null.
+		NonNull::new(unsafe { dispatch_semaphore_create(0) })
+			.map(Self)
+			.ok_or_else(|| "Failed to create wake semaphore. The most likely cause is that the system is out of memory.".into())
+	}
+
+	fn wait(&self) {
+		// SAFETY: The semaphore is live until `drop`.
+		unsafe { dispatch_semaphore_wait(self.0.as_ptr(), DISPATCH_TIME_FOREVER) };
+	}
+
+	fn signal(&self) {
+		// SAFETY: The semaphore is live until `drop`.
+		unsafe { dispatch_semaphore_signal(self.0.as_ptr()) };
+	}
+}
+
+impl Drop for WakeSemaphore {
+	fn drop(&mut self) {
+		// SAFETY: This releases the only reference. Every signal is matched by a wait, so the count is back at its initial value.
+		unsafe { dispatch_release(self.0.as_ptr()) };
+	}
+}
+
 struct SpscByteRing {
 	storage: Box<[u128]>,
 	capacity: usize,
 	read_index: AtomicUsize,
 	write_index: AtomicUsize,
-	space_available_mutex: Mutex<()>,
-	space_available_condvar: Condvar,
+	/// Set by the producer before it parks; claimed by the consumer, which then owes exactly one signal.
+	producer_waiting: AtomicBool,
+	space_available: WakeSemaphore,
 }
 
 impl SpscByteRing {
@@ -547,13 +623,14 @@ impl SpscByteRing {
 			capacity,
 			read_index: AtomicUsize::new(0),
 			write_index: AtomicUsize::new(0),
-			space_available_mutex: Mutex::new(()),
-			space_available_condvar: Condvar::new(),
+			producer_waiting: AtomicBool::new(false),
+			space_available: WakeSemaphore::new()?,
 		})
 	}
 
 	fn available_write(&self) -> usize {
-		let read = self.read_index.load(Ordering::Acquire);
+		// Sequentially consistent so the producer's re-check in `wait_for_available_write` pairs with the consumer's store.
+		let read = self.read_index.load(Ordering::SeqCst);
 		let write = self.write_index.load(Ordering::Acquire);
 		self.capacity - write.wrapping_sub(read)
 	}
@@ -589,14 +666,17 @@ impl SpscByteRing {
 	// Blocks until the ring has enough capacity for a write of the requested size.
 	fn wait_for_available_write(&self, required_bytes: usize) {
 		let required_bytes = required_bytes.max(1).min(self.capacity);
-		let mut lock = self.space_available_mutex.lock().unwrap();
 
 		while self.available_write() < required_bytes {
-			let waited = self
-				.space_available_condvar
-				.wait_timeout(lock, std::time::Duration::from_millis(2))
-				.unwrap();
-			lock = waited.0;
+			// Publish the intent to park, then look again. The consumer stores `read_index` and then
+			// checks this flag, both sequentially consistent, so one side always observes the other.
+			self.producer_waiting.store(true, Ordering::SeqCst);
+
+			// Park while the ring is still full. If space appeared instead, withdraw the flag; when the
+			// consumer already claimed it, a signal is owed and must be absorbed to keep the count balanced.
+			if self.available_write() < required_bytes || !self.producer_waiting.swap(false, Ordering::SeqCst) {
+				self.space_available.wait();
+			}
 		}
 	}
 
@@ -630,8 +710,11 @@ impl SpscByteRing {
 			}
 		}
 
-		self.read_index.store(read.wrapping_add(to_read), Ordering::Release);
-		self.space_available_condvar.notify_one();
+		self.read_index.store(read.wrapping_add(to_read), Ordering::SeqCst);
+		// Only a parked producer costs the render callback a wakeup call.
+		if self.producer_waiting.swap(false, Ordering::SeqCst) {
+			self.space_available.signal();
+		}
 		to_read
 	}
 }
@@ -639,6 +722,8 @@ impl SpscByteRing {
 struct CallbackState {
 	ring: SpscByteRing,
 	underrun_count: AtomicUsize,
+	/// The largest frame count the hardware has requested in one callback; zero until the first callback.
+	max_quantum_frames: AtomicUsize,
 }
 
 #[cfg(test)]
@@ -797,7 +882,7 @@ mod tests {
 
 	#[test]
 	fn wait_for_available_write_blocks_until_space_is_freed() {
-		let ring = std::sync::Arc::new(SpscByteRing::new(4).unwrap());
+		let ring = SpscByteRing::new(4).unwrap();
 
 		assert_eq!(
 			ring.with_write_chunk(4, |chunk| {
@@ -808,22 +893,61 @@ mod tests {
 		);
 
 		let (sender, receiver) = mpsc::channel();
-		let waiting_ring = ring.clone();
 
-		let waiter = std::thread::spawn(move || {
-			waiting_ring.wait_for_available_write(0);
-			sender.send(()).unwrap();
+		// Scoped threads borrow the ring, and the scope joins the waiter before the ring drops.
+		std::thread::scope(|scope| {
+			scope.spawn(|| {
+				ring.wait_for_available_write(0);
+				sender.send(()).unwrap();
+			});
+
+			assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+
+			let mut destination = [0u8; 1];
+
+			assert_eq!(ring.pop_into_slice(&mut destination), 1);
+			assert_eq!(destination, [1]);
+
+			receiver.recv_timeout(Duration::from_millis(500)).unwrap();
 		});
+	}
 
-		assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+	#[test]
+	fn producer_never_misses_a_wakeup_under_contention() {
+		const TOTAL: usize = 200_000;
+		let ring = SpscByteRing::new(4).unwrap();
+		let (sender, receiver) = mpsc::channel();
 
-		let mut destination = [0u8; 1];
+		// Scoped threads borrow the ring, and the scope joins both threads before the ring drops.
+		std::thread::scope(|scope| {
+			scope.spawn(|| {
+				let (mut expected, mut destination) = (0usize, [0u8; 3]);
+				while expected < TOTAL {
+					let read = ring.pop_into_slice(&mut destination);
+					for byte in &destination[..read] {
+						assert_eq!(*byte, expected as u8);
+						expected += 1;
+					}
+				}
+			});
 
-		assert_eq!(ring.pop_into_slice(&mut destination), 1);
-		assert_eq!(destination, [1]);
+			scope.spawn(|| {
+				let mut written = 0usize;
+				while written < TOTAL {
+					ring.wait_for_available_write(1);
+					written += ring.with_write_chunk(TOTAL - written, |chunk| {
+						for (offset, byte) in chunk.iter_mut().enumerate() {
+							*byte = (written + offset) as u8;
+						}
+						chunk.len()
+					});
+				}
+				sender.send(()).unwrap();
+			});
 
-		receiver.recv_timeout(Duration::from_millis(500)).unwrap();
-		waiter.join().unwrap();
+			// There is no timeout in the wait, so a lost wakeup shows up as a hang here.
+			receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+		});
 	}
 
 	#[test]

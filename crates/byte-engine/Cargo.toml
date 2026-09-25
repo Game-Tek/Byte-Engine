@@ -25,6 +25,7 @@ network = ["client"]
 client = ["dep:betp"]
 dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
+ui-render-bench = ["headed"]
 
 [[bench]]
 name = "alley"
@@ -54,6 +55,18 @@ required-features = ["headed"]
 [[bench]]
 name = "pathfinding"
 harness = false
+
+[[bench]]
+name = "ui"
+harness = false
+required-features = ["headed"]
+
+# Compile the private renderer stages directly, without exposing benchmark APIs.
+[[bench]]
+name = "ui_render"
+path = "benches/ui_render.rs"
+harness = false
+required-features = ["ui-render-bench"]
 
 [dependencies]
 base64 = { version = "0.13.1", optional = true }
@@ -89,6 +102,9 @@ realfft = "3.5.0"
 hidapi = "2.6.1"
 ctrlc = "3.5.1"
 fontdue = "0.9.3"
+# Reads glyph outlines for GPU text. Keep fontdue's feature set: with the default features unified into
+# fontdue's copy, the parser's variable font support returns no outlines for the macOS system font.
+ttf-parser = { version = "0.21.1", default-features = false }
 artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"
 bitflags = "2.11.1"

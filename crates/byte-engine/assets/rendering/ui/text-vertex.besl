@@ -1,8 +1,0 @@
-in_position: input<vec2f, 0>;
-
-main: fn() -> interface { position: vec4f, uv: vec2f } {
-	let position: vec4f = vec4f(in_position.x, in_position.y, 0.0, 1.0);
-	let uv: vec2f = vec2f(in_position.x * 0.5 + 0.5, 0.5 - in_position.y * 0.5);
-
-	return { position, uv };
-}

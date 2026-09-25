@@ -21,7 +21,8 @@ use crate::{
 	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
+		Tasks,
 	},
 	window,
 };
@@ -45,6 +46,9 @@ pub struct Context {
 	pub(super) frames: u8,
 
 	pub(super) queues: Vec<StoredQueue>,
+	/// Distinct Vulkan queues, indexed by [`StoredQueue::vk_queue_index`]. Vulkan requires external synchronization for
+	/// submissions, and several GHI queues can map to one Vulkan queue, so each gets one lock.
+	pub(super) vk_queues: Vec<std::sync::Mutex<ash::vk::Queue>>,
 	pub(super) buffers: ResourceCollection<Buffer, graphics_hardware_interface::BaseBufferHandle, BufferHandle>,
 	pub(super) images: Vec<Image>,
 	pub(super) samplers: Vec<Sampler>,
@@ -75,7 +79,7 @@ pub struct Context {
 	/// Tracks pending buffer host to device, or device to host synchronization operations.
 	pub(super) pending_buffer_syncs: HashSet<BufferHandle>,
 	/// Tracks pending image host to device, or device to host synchronization operations.
-	pub(super) pending_image_syncs: HashSet<ImageHandle>,
+	pub(super) pending_image_syncs: HashSet<(ImageHandle, Option<crate::image::Region>)>,
 
 	/// Tracks all dynamic buffer master handles that use the persistent write mode.
 	/// These buffers have their source buffer memcpy'd into the per-frame staging

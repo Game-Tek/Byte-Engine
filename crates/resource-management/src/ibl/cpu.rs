@@ -469,7 +469,7 @@ pub(super) fn decode_source_radiance<'a>(
 		.try_reserve_exact(pixel_count)
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
 
-	for pixel in source.chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+	for pixel in source.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0 {
 		radiance.push(decode_source_pixel(pixel));
 	}
 
@@ -490,7 +490,10 @@ fn decode_finite_half(bytes: &[u8]) -> f32 {
 }
 
 fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
-	for (radiance, pixel) in source.iter().zip(destination.chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL)) {
+	for (radiance, pixel) in source
+		.iter()
+		.zip(destination.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0.iter_mut())
+	{
 		write_rgba16f(pixel, *radiance);
 	}
 }
@@ -871,7 +874,7 @@ pub(super) fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
 mod tests {
 	fn constant_source(width: u32, height: u32, color: Radiance) -> Vec<u8> {
 		let mut source = vec![0; image_byte_size(width, height).unwrap()];
-		for pixel in source.chunks_exact_mut(BYTES_PER_RGBA16F_PIXEL) {
+		for pixel in source.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0 {
 			for (channel, value) in color.into_iter().enumerate() {
 				pixel[channel * 2..channel * 2 + 2].copy_from_slice(&f16::from_f32(value).to_le_bytes());
 			}
@@ -882,7 +885,7 @@ mod tests {
 
 	fn decode_pixel(pixel: &[u8]) -> [f32; 4] {
 		let mut values = [0.0; 4];
-		for (channel, bytes) in pixel.chunks_exact(2).enumerate() {
+		for (channel, bytes) in pixel.as_chunks::<2>().0.iter().enumerate() {
 			values[channel] = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
 		}
 		values
@@ -984,12 +987,15 @@ mod tests {
 		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		assert_eq!(first.streams.last().unwrap().name(), IBL_DIFFUSE_IRRADIANCE_STREAM_NAME);
 
-		for pixel in first.data[root.offset()..root.offset() + root.size()].chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+		for pixel in first.data[root.offset()..root.offset() + root.size()]
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
+		{
 			assert_eq!(decode_pixel(pixel), [color[0], color[1], color[2], 0.25]);
 		}
 		for stream in &first.streams[1..] {
 			let bytes = &first.data[stream.offset()..stream.offset() + stream.size()];
-			for pixel in bytes.chunks_exact(BYTES_PER_RGBA16F_PIXEL) {
+			for pixel in bytes.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0 {
 				assert_eq!(decode_pixel(pixel), [color[0], color[1], color[2], 1.0]);
 			}
 		}
@@ -1027,7 +1033,8 @@ mod tests {
 		assert_eq!(&baked.data[root.offset()..root.offset() + root.size()], source.as_slice());
 		assert_eq!(specular_zero.size(), CUBE_FACE_COUNT * BYTES_PER_RGBA16F_PIXEL);
 		for pixel in baked.data[specular_zero.offset()..specular_zero.offset() + specular_zero.size()]
-			.chunks_exact(BYTES_PER_RGBA16F_PIXEL)
+			.as_chunks::<BYTES_PER_RGBA16F_PIXEL>()
+			.0
 		{
 			assert_eq!(decode_pixel(pixel), [2.0, 3.0, 4.0, 1.0]);
 		}

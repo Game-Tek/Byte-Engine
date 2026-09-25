@@ -828,6 +828,7 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 			| Expressions::Member { .. }
 			| Expressions::Literal { .. }
 			| Expressions::Continue
+			| Expressions::Break
 			| Expressions::Discard => {}
 		},
 		Nodes::Scope { children, .. } => {
@@ -1008,6 +1009,7 @@ fn instantiate_intrinsic_expression(expression: &Expressions, instantiation: &In
 			value: value.as_ref().map(|value| instantiate_intrinsic_node(value, instantiation)),
 		},
 		Expressions::Continue => Expressions::Continue,
+		Expressions::Break => Expressions::Break,
 		Expressions::Discard => Expressions::Discard,
 		Expressions::Accessor { left, right } => Expressions::Accessor {
 			left: instantiate_intrinsic_node(left, instantiation),

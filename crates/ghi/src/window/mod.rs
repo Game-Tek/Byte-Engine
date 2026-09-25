@@ -1,11 +1,54 @@
 //! Creates platform windows and reports their input events.
+//!
+//! Every supported platform delivers events through one process-wide queue, so
+//! [`App`] owns the only pump and tags each event with the [`WindowId`] it
+//! targets. Input is routed to the window holding focus.
 
+pub mod app;
 pub mod input;
 pub(crate) mod os;
 pub mod window;
 
+pub use self::app::{App, AppWaker};
 pub use self::os::Handles;
 pub use self::window::Window;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The `WindowId` struct identifies the window an [`Event`] targets.
+pub struct WindowId(u64);
+
+impl WindowId {
+	pub(crate) fn from_raw(raw: u64) -> Self {
+		Self(raw)
+	}
+}
+
+/// How long [`App::poll`] may wait for the first event before draining the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+	/// Drain what is already queued and return.
+	Immediate,
+	/// Wait until an event arrives, an [`AppWaker`] wakes the app, or the instant passes.
+	Until(std::time::Instant),
+	/// Wait until an event arrives or an [`AppWaker`] wakes the app.
+	Forever,
+}
+
+/// An event reported by the application pump.
+#[derive(Debug, Clone, Copy)]
+pub enum Event {
+	/// The event belongs to the application rather than to one window.
+	App(AppEvents),
+	/// The event targets one window. Input targets the window with focus.
+	Window { window: WindowId, event: Events },
+}
+
+/// An event that belongs to the application as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppEvents {
+	/// The platform asked the application to quit, e.g. from the dock or a session end.
+	Quit,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The `Seat` struct identifies the input seat associated with a window input event.
@@ -21,8 +64,13 @@ impl Seat {
 /// An event reported by a window.
 #[derive(Debug, Clone, Copy)]
 pub enum Events {
-	/// The window changed size.
+	/// The window's drawable size changed, in pixels.
 	Resize { width: u32, height: u32 },
+	/// The window moved to another display, or its display changed mode. Carries the refresh interval of the display
+	/// the window is on now, when the platform reports it.
+	DisplayChanged { refresh_interval: Option<std::time::Duration> },
+	/// Keyboard focus changed. Cancel held interactions when focus is lost.
+	FocusChanged(bool),
 	/// The window was minimized.
 	Minimize,
 	/// The window was maximized.
@@ -49,7 +97,8 @@ pub enum Events {
 		time: u64,
 	},
 	/// The mouse moved to an absolute position.
-	/// Coordinates are normalized to the window in the range `-1.0..=1.0`.
+	/// Coordinates are normalized with window edges at `-1.0` and `1.0`.
+	/// Captured pointer positions may extend beyond the window edges.
 	MousePosition {
 		seat: Seat,
 		x: f32,

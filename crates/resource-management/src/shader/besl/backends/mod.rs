@@ -25,6 +25,23 @@ const STRUCTURAL_POSITION_VERTEX: &str = r#"
 	}
 "#;
 
+#[cfg(test)]
+const DESCRIPTOR_ARRAY_FRAGMENT: &str = r#"
+	Item: struct { slot: u32 }
+	items: descriptor<{ type: Item[], binding: 0, access: read }>;
+	textures: descriptor<{ type: Texture2D, binding: 1, access: read, count: 4 }>;
+	shade: fn (index: u32, uv: vec2f) -> vec4f {
+		let size: vec2u = texture_size(textures[items[index].slot]);
+		let lod: vec4f = texture_lod(textures[index + 1], uv);
+		let nested: vec4f = sample(textures[items[index].slot], uv);
+		return (lod + nested) * f32(size.x);
+	}
+	main: fn (input: StageInput, pipeline_input: interface { index: u32, uv: vec2f }) -> output { color: vec4f } {
+		let color: vec4f = shade(pipeline_input.index, pipeline_input.uv);
+		return { color };
+	}
+"#;
+
 /// Identifies the two resource operations that use BESL accessor syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceAccessorKind {

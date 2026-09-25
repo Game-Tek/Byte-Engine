@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use utils::Extent;
 
 use crate::{
@@ -32,6 +34,13 @@ where
 	/// Flushes or uploads pending writes for the provided image.
 	fn sync_texture(&mut self, image_handle: BaseImageHandle);
 
+	/// Uploads only the given rectangle from the image's existing CPU backing bytes.
+	///
+	/// Supports uncompressed 2D color images with one layer at mip zero. Rows keep the
+	/// full image's pitch; untouched texels retain their GPU contents. Initialize
+	/// the whole image with [`Self::sync_texture`] before using partial updates.
+	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region);
+
 	/// Writes descriptor set updates during the active frame.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
@@ -65,9 +74,36 @@ where
 		self.create_command_buffer_recording(command_buffer_handle)
 	}
 
-	/// Acquires a swapchain image for presentation.
+	/// Acquires a swapchain image for presentation from inside a started frame.
 	///
-	/// Returns a presentation key and the image extent.
-	/// # Errors
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent);
+	/// Use [`crate::context::Context::acquire_swapchain_image`] to acquire before the frame is started.
+	/// Returns `None` when the presentation engine has no image to give; skip presenting that swapchain this frame.
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<SwapchainAcquisition>;
+}
+
+/// The `SwapchainAcquisition` struct provides the image information needed to prepare a frame for presentation.
+/// Use [`Self::present_key`] when submitting the frame through [`crate::queue::Queue::execute`].
+#[derive(Clone, Copy, Debug)]
+pub struct SwapchainAcquisition {
+	pub(crate) present_key: PresentKey,
+	pub(crate) extent: Extent,
+	/// The display time of the most recently presented image of this swapchain, when the backend reports it.
+	pub(crate) present_time: Option<Instant>,
+}
+
+impl SwapchainAcquisition {
+	pub fn present_key(&self) -> PresentKey {
+		self.present_key
+	}
+
+	pub fn extent(&self) -> Extent {
+		self.extent
+	}
+
+	/// Returns the display time of the most recently presented image of this swapchain.
+	///
+	/// Backends without presentation feedback return `None`.
+	pub fn present_time(&self) -> Option<Instant> {
+		self.present_time
+	}
 }

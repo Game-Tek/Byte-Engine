@@ -1,43 +1,94 @@
-use std::{cell::Cell, sync::Mutex};
+use std::{
+	cell::{Cell, RefCell},
+	collections::VecDeque,
+	rc::Rc,
+};
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define_class, msg_send};
 use objc2_app_kit::{
-	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSCursor, NSEvent,
-	NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
+	NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate,
+	NSWindowStyleMask,
 };
 use objc2_foundation::{
-	NSAutoreleasePool, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+	NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+	NSString,
 };
 
 use crate::window::input::{Keys, MouseKeys};
-use crate::window::{Events, Features, Seat, os::WindowLike};
+use crate::window::{
+	AppEvents, Event, Events, Features, Seat, Wait, WindowId,
+	os::{AppLike, WindowLike},
+};
+
+/// Events shared by the pump and the AppKit delegates, in arrival order.
+type EventQueue = Rc<RefCell<VecDeque<Event>>>;
+
+pub struct App {
+	mtm: MainThreadMarker,
+	_delegate: Retained<ApplicationDelegate>,
+	events: EventQueue,
+	/// Modifier state is keyboard-wide, so it survives focus moving between windows.
+	modifier_state: ModifierState,
+	/// Top-left point where the next window cascades from, so each new window of this app is offset from the last one.
+	next_window_cascade_top_left: Option<(f64, f64)>,
+}
 
 pub struct Window {
 	window: Retained<NSWindow>,
-	_app_delegate: Retained<ApplicationDelegate>,
-	delegate: Retained<WindowDelegate>,
-	modifier_state: ModifierState,
+	_delegate: Retained<WindowDelegate>,
+}
+
+/// The `AppWaker` struct posts an empty application-defined event that ends a waiting poll.
+#[derive(Clone)]
+pub struct AppWaker;
+
+impl AppWaker {
+	pub fn wake(&self) {
+		post_wake_event();
+	}
+}
+
+/// Marks the application-defined events that only exist to end a waiting poll.
+const WAKE_EVENT_SUBTYPE: i16 = 0x4245;
+
+/// Posts an event that ends a waiting poll without producing an engine event.
+fn post_wake_event() {
+	let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+		NSEventType::ApplicationDefined,
+		NSPoint::new(0.0, 0.0),
+		NSEventModifierFlags::empty(),
+		0.0,
+		0,
+		None,
+		WAKE_EVENT_SUBTYPE,
+		0,
+		0,
+	) else {
+		return;
+	};
+	// SAFETY: AppKit documents `postEvent:atStart:` as callable from secondary threads, and the shared application
+	// object exists because the app that hands out wakers created it on the main thread.
+	let app = NSApplication::sharedApplication(unsafe { MainThreadMarker::new_unchecked() });
+	app.postEvent_atStart(&event, false);
 }
 
 pub struct Handles {
 	pub(crate) view: Retained<NSView>,
 }
 
-#[derive(Debug, Default)]
 struct WindowDelegateIvars {
-	close_requested: Cell<bool>,
-	minimize_requested: Cell<bool>,
-	maximize_requested: Cell<bool>,
+	/// Native callbacks share the app queue so focus transitions keep their arrival order across windows.
+	events: EventQueue,
+	window: WindowId,
 	zoomed: Cell<bool>,
 }
 
 struct ApplicationDelegateIvars {
-	window: Retained<NSWindow>,
+	events: EventQueue,
 }
-
-static NEXT_WINDOW_CASCADE_TOP_LEFT: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 
 define_class!(
 	#[unsafe(super = NSObject)]
@@ -52,22 +103,47 @@ define_class!(
 	unsafe impl NSWindowDelegate for WindowDelegate {
 		#[unsafe(method(windowWillClose:))]
 		fn window_will_close(&self, _notification: &NSNotification) {
-			self.ivars().close_requested.set(true);
+			self.push(Events::Close);
 		}
 
 		#[unsafe(method(windowDidMiniaturize:))]
 		fn window_did_miniaturize(&self, _notification: &NSNotification) {
-			self.ivars().minimize_requested.set(true);
+			self.push(Events::Minimize);
 		}
 
 		#[unsafe(method(windowDidResize:))]
 		fn window_did_resize(&self, notification: &NSNotification) {
-			self.update_zoom_state(notification);
+			self.update_window_state(notification);
+		}
+
+		#[unsafe(method(windowDidChangeBackingProperties:))]
+		fn window_did_change_backing_properties(&self, notification: &NSNotification) {
+			self.update_window_state(notification);
+		}
+
+		#[unsafe(method(windowDidChangeScreen:))]
+		fn window_did_change_screen(&self, notification: &NSNotification) {
+			let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) else {
+				return;
+			};
+			self.push(Events::DisplayChanged {
+				refresh_interval: screen_refresh_interval(&window),
+			});
+		}
+
+		#[unsafe(method(windowDidBecomeKey:))]
+		fn window_did_become_key(&self, _notification: &NSNotification) {
+			self.push(Events::FocusChanged(true));
+		}
+
+		#[unsafe(method(windowDidResignKey:))]
+		fn window_did_resign_key(&self, _notification: &NSNotification) {
+			self.push(Events::FocusChanged(false));
 		}
 
 		#[unsafe(method(windowDidEnterFullScreen:))]
 		fn window_did_enter_full_screen(&self, _notification: &NSNotification) {
-			self.ivars().maximize_requested.set(true);
+			self.push(Events::Maximize);
 			self.ivars().zoomed.set(true);
 		}
 
@@ -90,29 +166,76 @@ define_class!(
 	// SAFETY: Every exported selector has the signature required by NSApplicationDelegate and runs on the main thread.
 	unsafe impl NSApplicationDelegate for ApplicationDelegate {
 		#[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
-		fn application_should_handle_reopen(&self, _sender: &NSApplication, has_visible_windows: bool) -> bool {
-			if !has_visible_windows || self.ivars().window.isMiniaturized() {
-				self.restore_window();
+		fn application_should_handle_reopen(&self, sender: &NSApplication, has_visible_windows: bool) -> bool {
+			if !has_visible_windows || sender.keyWindow().is_none() {
+				restore_windows(sender);
 			}
 
 			true
 		}
 
 		#[unsafe(method(applicationDidBecomeActive:))]
-		fn application_did_become_active(&self, _notification: &NSNotification) {
-			self.restore_window();
+		fn application_did_become_active(&self, notification: &NSNotification) {
+			let Some(sender) = notification
+				.object()
+				.and_then(|object| object.downcast::<NSApplication>().ok())
+			else {
+				return;
+			};
+			if sender.keyWindow().is_none() {
+				restore_windows(&sender);
+			}
+		}
+
+		#[unsafe(method(applicationDidChangeScreenParameters:))]
+		fn application_did_change_screen_parameters(&self, _notification: &NSNotification) {
+			// A display mode change reaches the application, not the windows, so report it for every window.
+			let mtm = self.mtm();
+			let mut events = self.ivars().events.borrow_mut();
+			for window in NSApp(mtm).windows().iter() {
+				events.push_back(Event::Window {
+					window: window_id(&window),
+					event: Events::DisplayChanged {
+						refresh_interval: screen_refresh_interval(&window),
+					},
+				});
+			}
+			post_wake_event();
+		}
+
+		#[unsafe(method(applicationShouldTerminate:))]
+		fn application_should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+			// The engine owns shutdown, so AppKit must not exit the process underneath it.
+			self.ivars().events.borrow_mut().push_back(Event::App(AppEvents::Quit));
+			post_wake_event();
+			NSApplicationTerminateReply::TerminateCancel
 		}
 	}
 );
 
 impl WindowDelegate {
-	fn new(mtm: MainThreadMarker) -> Retained<Self> {
-		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars::default());
+	fn new(mtm: MainThreadMarker, events: EventQueue, window: WindowId) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(WindowDelegateIvars {
+			events,
+			window,
+			zoomed: Cell::new(false),
+		});
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
 
-	fn update_zoom_state(&self, notification: &NSNotification) {
+	fn push(&self, event: Events) {
+		let ivars = self.ivars();
+		ivars.events.borrow_mut().push_back(Event::Window {
+			window: ivars.window,
+			event,
+		});
+		// Notifications can arrive without an NSEvent, which would leave a waiting poll asleep.
+		post_wake_event();
+	}
+
+	/// Publishes the drawable pixel size so layout matches the swapchain after resize or display changes.
+	fn update_window_state(&self, notification: &NSNotification) {
 		let Some(window) = notification.object() else {
 			return;
 		};
@@ -120,6 +243,13 @@ impl WindowDelegate {
 		let Ok(window) = window.downcast::<NSWindow>() else {
 			return;
 		};
+		if let Some(view) = window.contentView() {
+			let size = view.convertRectToBacking(view.bounds()).size;
+			self.push(Events::Resize {
+				width: size.width.round() as u32,
+				height: size.height.round() as u32,
+			});
+		}
 
 		let is_zoomed = window.isZoomed();
 		let was_zoomed = self.ivars().zoomed.get();
@@ -128,34 +258,47 @@ impl WindowDelegate {
 			self.ivars().zoomed.set(is_zoomed);
 
 			if is_zoomed {
-				self.ivars().maximize_requested.set(true);
+				self.push(Events::Maximize);
 			}
 		}
 	}
 }
 
 impl ApplicationDelegate {
-	fn new(mtm: MainThreadMarker, window: Retained<NSWindow>) -> Retained<Self> {
-		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { window });
+	fn new(mtm: MainThreadMarker, events: EventQueue) -> Retained<Self> {
+		let this = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars { events });
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
 	}
+}
 
-	fn restore_window(&self) {
-		let window = &self.ivars().window;
+/// Brings minimized or hidden windows back and gives the first one key focus.
+fn restore_windows(app: &NSApplication) {
+	let windows = app.windows();
 
+	for window in windows.iter() {
 		if window.isMiniaturized() {
 			window.deminiaturize(None);
 		}
+	}
 
-		if !window.isVisible() || !window.isKeyWindow() {
-			window.makeKeyAndOrderFront(None);
-		}
+	if let Some(window) = windows.firstObject() {
+		window.makeKeyAndOrderFront(None);
 	}
 }
 
-/// Normalizes a mouse position inside the content view so the window center is `0`
-/// and the window edges stay within `-1..=1`.
+/// Returns the refresh interval of the screen showing most of the window.
+fn screen_refresh_interval(window: &NSWindow) -> Option<std::time::Duration> {
+	let frames_per_second = window.screen()?.maximumFramesPerSecond();
+	(frames_per_second > 0).then(|| std::time::Duration::from_secs_f64(1.0 / frames_per_second as f64))
+}
+
+fn window_id(window: &NSWindow) -> WindowId {
+	WindowId::from_raw(window as *const NSWindow as u64)
+}
+
+/// Normalizes the window center to `0` and edges to `-1` and `1`, preserving
+/// captured positions outside the window so callers can reject an outside drop.
 fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f32, f32)> {
 	let width = content_frame.size.width as f32;
 	let height = content_frame.size.height as f32;
@@ -170,8 +313,8 @@ fn normalize_mouse_position(point: NSPoint, content_frame: NSRect) -> Option<(f3
 	let half_width = width / 2.0;
 	let half_height = height / 2.0;
 
-	let x = ((x - half_width) / half_width).clamp(-1.0, 1.0);
-	let y = ((y - half_height) / half_height).clamp(-1.0, 1.0);
+	let x = (x - half_width) / half_width;
+	let y = (y - half_height) / half_height;
 
 	Some((x, y))
 }
@@ -186,20 +329,26 @@ fn pixel_extent_to_window_points(extent: utils::Extent, scale_factor: f64) -> NS
 }
 
 /// Appends relative and normalized absolute motion from one AppKit mouse event.
-fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, events: &mut Vec<Events>) {
-	events.push(Events::MouseMove {
+fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
+	push(Events::MouseMove {
 		seat: Seat::stub(),
 		dx: event.deltaX() as f32,
 		dy: event.deltaY() as f32,
 		time,
 	});
+	append_mouse_position(window, event, time, push);
+}
+
+/// Samples the event's position before a button transition so its drag endpoint
+/// stays correct when AppKit coalesces or omits a separate motion event.
+fn append_mouse_position(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
 	let Some(content_view) = window.contentView() else {
 		return;
 	};
 	let Some((x, y)) = normalize_mouse_position(event.locationInWindow(), content_view.frame()) else {
 		return;
 	};
-	events.push(Events::MousePosition {
+	push(Events::MousePosition {
 		seat: Seat::stub(),
 		x,
 		y,
@@ -208,10 +357,10 @@ fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, events: &m
 }
 
 /// Appends the physical key and any text produced by one AppKit keyboard event.
-fn append_key_event(event: &NSEvent, events: &mut Vec<Events>) {
+fn append_key_event(event: &NSEvent, push: &mut impl FnMut(Events)) {
 	let pressed = event.r#type() == NSEventType::KeyDown;
 	if let Some(key) = keycode_to_key(event.keyCode()) {
-		events.push(Events::Key {
+		push(Events::Key {
 			seat: Seat::stub(),
 			pressed,
 			key,
@@ -224,7 +373,7 @@ fn append_key_event(event: &NSEvent, events: &mut Vec<Events>) {
 		return;
 	};
 	for character in characters.to_string().chars().filter(|character| !character.is_control()) {
-		events.push(Events::Character {
+		push(Events::Character {
 			seat: Seat::stub(),
 			character,
 		});
@@ -232,28 +381,47 @@ fn append_key_event(event: &NSEvent, events: &mut Vec<Events>) {
 }
 
 /// Appends a modifier transition when AppKit reports a changed modifier bit.
-fn append_modifier_event(modifier_state: &mut ModifierState, event: &NSEvent, events: &mut Vec<Events>) {
+fn append_modifier_event(modifier_state: &mut ModifierState, event: &NSEvent, push: &mut impl FnMut(Events)) {
 	let Some(key) = modifier_keycode_to_key(event.keyCode()) else {
 		return;
 	};
 	let Some(pressed) = modifier_state.update(key, event.modifierFlags()) else {
 		return;
 	};
-	events.push(Events::Key {
+	push(Events::Key {
 		seat: Seat::stub(),
 		pressed,
 		key,
 	});
 }
 
-impl WindowLike for Window {
-	fn try_new(name: &str, extent: utils::Extent, _: &str, features: Features) -> Result<Self, String> {
+impl AppLike for App {
+	type Window = Window;
+
+	fn try_new(_: &str) -> Result<Self, String> {
+		let mtm = MainThreadMarker::new()
+			.ok_or("Failed to create MainThreadMarker. The app is probably being created on a non-main thread.")?;
+
+		let app = NSApp(mtm);
+		let events = EventQueue::default();
+		let delegate = ApplicationDelegate::new(mtm, events.clone());
+		app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+
+		Ok(App {
+			mtm,
+			_delegate: delegate,
+			events,
+			modifier_state: ModifierState::default(),
+			next_window_cascade_top_left: None,
+		})
+	}
+
+	fn create_window(&mut self, name: &str, extent: utils::Extent, features: Features) -> Result<Window, String> {
 		// SAFETY: Window construction is confined to the main thread and the pool is drained before returning.
 		let _pool = unsafe { NSAutoreleasePool::new() };
 
-		let mtm = MainThreadMarker::new()
-			.ok_or("Failed to create MainThreadMarker. Window is probably being created on a non-main thread.")?;
-
+		let mtm = self.mtm;
 		let app = NSApp(mtm);
 		let scale_factor = NSScreen::mainScreen(mtm)
 			.map(|screen| screen.backingScaleFactor())
@@ -275,10 +443,12 @@ impl WindowLike for Window {
 			let window = NSWindow::alloc(mtm);
 			NSWindow::initWithContentRect_styleMask_backing_defer(window, frame, style, NSBackingStoreType::Buffered, false)
 		};
+		// The window is owned by `Window`; AppKit must not free it when the user closes it.
+		// SAFETY: Disabling release-on-close only changes ownership bookkeeping for a window we retain.
+		unsafe { window.setReleasedWhenClosed(false) };
 
-		let app_delegate = ApplicationDelegate::new(mtm, window.clone());
-		let delegate = WindowDelegate::new(mtm);
-		app.setDelegate(Some(ProtocolObject::from_ref(&*app_delegate)));
+		let id = window_id(&window);
+		let delegate = WindowDelegate::new(mtm, self.events.clone(), id);
 		window.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
 		window.setTitle(&NSString::from_str(name));
@@ -286,152 +456,174 @@ impl WindowLike for Window {
 		window.setHidesOnDeactivate(false);
 		window.setAcceptsMouseMovedEvents(true);
 
-		{
-			let mut top_left = NEXT_WINDOW_CASCADE_TOP_LEFT
-				.lock()
-				.expect("Window cascade mutex poisoned while positioning a macOS window.");
+		// The first window is centered; every later one cascades from the point the previous window returned.
+		let seed = if let Some(seed) = self.next_window_cascade_top_left {
+			seed
+		} else {
+			window.center();
 
-			if let Some(seed) = *top_left {
-				let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
-				*top_left = Some((next.x as f64, next.y as f64));
-			} else {
-				window.center();
-
-				let frame = window.frame();
-				let centered_top_left = (frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64);
-				let next = window.cascadeTopLeftFromPoint(NSPoint::new(centered_top_left.0, centered_top_left.1));
-				*top_left = Some((next.x as f64, next.y as f64));
-			}
+			let frame = window.frame();
+			(frame.origin.x as f64, frame.origin.y as f64 + frame.size.height as f64)
 		};
+		let next = window.cascadeTopLeftFromPoint(NSPoint::new(seed.0, seed.1));
+		self.next_window_cascade_top_left = Some((next.x as f64, next.y as f64));
 
 		window.makeKeyAndOrderFront(None);
-
-		app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
 		app.activate();
+		// Placement can select a display with a different backing scale than the
+		// screen used to request the window. Publish the actual pixels before input.
+		if let Some(view) = window.contentView() {
+			let size = view.convertRectToBacking(view.bounds()).size;
+			delegate.push(Events::Resize {
+				width: size.width.round() as u32,
+				height: size.height.round() as u32,
+			});
+		}
+		delegate.push(Events::DisplayChanged {
+			refresh_interval: screen_refresh_interval(&window),
+		});
 
 		Ok(Window {
 			window,
-			_app_delegate: app_delegate,
-			delegate,
-			modifier_state: ModifierState::default(),
+			_delegate: delegate,
 		})
 	}
 
-	fn show_cursor(&mut self, show: bool) {
-		if show {
-			NSCursor::unhide();
-		} else {
-			NSCursor::hide();
-		}
-	}
+	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+		let app = NSApp(self.mtm);
 
-	fn confine_cursor(&mut self, _confine: bool) {
-		// AppKit has no window-scoped cursor confinement primitive. Relative-input support owns confinement when it is added.
-	}
-
-	fn poll(&mut self) -> impl Iterator<Item = Events> {
-		let mut events = Vec::new();
-		let app = MainThreadMarker::new().map(NSApp);
-
-		if self.delegate.ivars().close_requested.replace(false) {
-			events.push(Events::Close);
+		// Only the first dequeue waits; a nil date drains what is queued without waiting.
+		let mut expiration = match wait {
+			Wait::Immediate => None,
+			Wait::Until(deadline) => Some(NSDate::dateWithTimeIntervalSinceNow(
+				deadline.saturating_duration_since(std::time::Instant::now()).as_secs_f64(),
+			)),
+			Wait::Forever => Some(NSDate::distantFuture()),
+		};
+		// Events queued by delegates before the wait must not sleep behind it.
+		if !self.events.borrow().is_empty() {
+			expiration = None;
 		}
 
-		if self.delegate.ivars().minimize_requested.replace(false) {
-			events.push(Events::Minimize);
-		}
-
-		if self.delegate.ivars().maximize_requested.replace(false) {
-			events.push(Events::Maximize);
-		}
-
-		while let Some(event) = self.window.nextEventMatchingMask_untilDate_inMode_dequeue(
+		while let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
 			NSEventMask::Any,
-			None,
+			expiration.take().as_deref(),
 			// SAFETY: NSDefaultRunLoopMode is an immutable process-lifetime Foundation constant.
 			unsafe { NSDefaultRunLoopMode },
 			true,
 		) {
-			let time = (event.timestamp() * 1000.0) as u64;
+			if event.r#type() == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
+				continue;
+			}
 
-			match event.r#type() {
-				NSEventType::MouseMoved
-				| NSEventType::LeftMouseDragged
-				| NSEventType::RightMouseDragged
-				| NSEventType::OtherMouseDragged => {
-					append_mouse_motion(&self.window, &event, time, &mut events);
-				}
-				NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
-					let pressed = event.r#type() == NSEventType::LeftMouseDown;
+			// Input without a target window, such as motion over the desktop, still reaches AppKit below.
+			if let Some(window) = event.window(self.mtm) {
+				let time = (event.timestamp() * 1000.0) as u64;
+				let id = window_id(&window);
+				let mut queue = self.events.borrow_mut();
+				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
-					events.push(Events::Button {
-						seat: Seat::stub(),
-						pressed,
-						button: MouseKeys::Left,
-					});
-				}
-				NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
-					let pressed = event.r#type() == NSEventType::RightMouseDown;
+				match event.r#type() {
+					NSEventType::MouseMoved
+					| NSEventType::LeftMouseDragged
+					| NSEventType::RightMouseDragged
+					| NSEventType::OtherMouseDragged => {
+						append_mouse_motion(&window, &event, time, push);
+					}
+					NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
+						let pressed = event.r#type() == NSEventType::LeftMouseDown;
+						append_mouse_position(&window, &event, time, push);
 
-					events.push(Events::Button {
-						seat: Seat::stub(),
-						pressed,
-						button: MouseKeys::Right,
-					});
-				}
-				NSEventType::OtherMouseDown | NSEventType::OtherMouseUp => {
-					let pressed = event.r#type() == NSEventType::OtherMouseDown;
-
-					events.push(Events::Button {
-						seat: Seat::stub(),
-						pressed,
-						button: MouseKeys::Middle,
-					});
-				}
-				NSEventType::ScrollWheel => {
-					let dx = event.scrollingDeltaX() as f32;
-					let dy = event.scrollingDeltaY() as f32;
-
-					if dx != 0.0 || dy != 0.0 {
-						events.push(Events::Scroll {
+						push(Events::Button {
 							seat: Seat::stub(),
-							dx,
-							dy,
-							time,
+							pressed,
+							button: MouseKeys::Left,
 						});
 					}
+					NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
+						let pressed = event.r#type() == NSEventType::RightMouseDown;
+						append_mouse_position(&window, &event, time, push);
+
+						push(Events::Button {
+							seat: Seat::stub(),
+							pressed,
+							button: MouseKeys::Right,
+						});
+					}
+					NSEventType::OtherMouseDown | NSEventType::OtherMouseUp => {
+						let pressed = event.r#type() == NSEventType::OtherMouseDown;
+						append_mouse_position(&window, &event, time, push);
+
+						push(Events::Button {
+							seat: Seat::stub(),
+							pressed,
+							button: MouseKeys::Middle,
+						});
+					}
+					NSEventType::ScrollWheel => {
+						let dx = event.scrollingDeltaX() as f32;
+						let dy = event.scrollingDeltaY() as f32;
+
+						if dx != 0.0 || dy != 0.0 {
+							push(Events::Scroll {
+								seat: Seat::stub(),
+								dx,
+								dy,
+								time,
+							});
+						}
+					}
+					NSEventType::KeyDown | NSEventType::KeyUp => {
+						append_key_event(&event, push);
+					}
+					NSEventType::FlagsChanged => {
+						append_modifier_event(&mut self.modifier_state, &event, push);
+					}
+					_ => {}
 				}
-				NSEventType::KeyDown | NSEventType::KeyUp => {
-					append_key_event(&event, &mut events);
-				}
-				NSEventType::FlagsChanged => {
-					append_modifier_event(&mut self.modifier_state, &event, &mut events);
-				}
-				NSEventType::AppKitDefined => {}
-				_ => {}
 			}
 
 			// AppKit owns native window interactions such as title-bar drags,
 			// close controls, and live resize; re-dispatch after translating input.
+			// Delegates push into the same queue during `sendEvent`, keeping arrival order.
 			// Keyboard events are consumed here because the default responder chain
 			// treats unhandled key presses as errors and plays the system beep.
 			if !matches!(
 				event.r#type(),
 				NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
 			) {
-				if let Some(app) = &app {
-					app.sendEvent(&event);
-				}
+				app.sendEvent(&event);
 			}
 		}
 
-		events.into_iter()
+		std::iter::from_fn(|| self.events.borrow_mut().pop_front())
+	}
+
+	fn waker(&self) -> AppWaker {
+		AppWaker
+	}
+}
+
+impl WindowLike for Window {
+	fn id(&self) -> WindowId {
+		window_id(&self.window)
 	}
 
 	fn handles(&self) -> Handles {
 		Handles {
 			view: self.window.contentView().unwrap().retain(),
 		}
+	}
+
+	fn refresh_interval(&self) -> Option<std::time::Duration> {
+		screen_refresh_interval(&self.window)
+	}
+}
+
+impl Drop for Window {
+	fn drop(&mut self) {
+		self.window.setDelegate(None);
+		self.window.close();
 	}
 }
 
@@ -639,5 +831,15 @@ mod tests {
 
 		assert_eq!(top_left, (-1.0, 1.0));
 		assert_eq!(bottom_right, (1.0, -1.0));
+	}
+
+	#[test]
+	fn normalize_mouse_position_preserves_captured_positions_outside_the_window() {
+		let frame = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(200.0, 100.0));
+		assert_eq!(
+			normalize_mouse_position(NSPoint::new(-90.0, -30.0), frame),
+			Some((-2.0, -2.0))
+		);
+		assert_eq!(normalize_mouse_position(NSPoint::new(310.0, 170.0), frame), Some((2.0, 2.0)));
 	}
 }

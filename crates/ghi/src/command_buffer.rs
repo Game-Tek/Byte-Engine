@@ -173,6 +173,12 @@ pub trait RasterizationRenderPassMode: CommonCommandBufferMode {
 	/// Binds the index buffer for subsequent indexed draw commands.
 	fn bind_index_buffer(&mut self, buffer_descriptor: &BufferDescriptor);
 
+	/// Restricts subsequent draws to a pixel rectangle of the render area.
+	///
+	/// `start_render_pass` resets the scissor to the full extent. The rectangle is
+	/// clamped to the render area, so a region computed against a stale extent is safe.
+	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent);
+
 	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self);
 }

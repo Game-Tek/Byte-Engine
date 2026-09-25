@@ -866,6 +866,17 @@ impl<T: bytemuck::Pod> From<BufferHandle<T>> for BufferDescriptor {
 	}
 }
 
+impl From<BaseBufferHandle> for BufferDescriptor {
+	/// Describes a whole buffer whose element type was erased, such as one chosen at runtime among differently typed buffers.
+	fn from(buffer: BaseBufferHandle) -> Self {
+		BufferDescriptor {
+			buffer,
+			offset: 0,
+			index_type: None,
+		}
+	}
+}
+
 pub struct BufferStridedRange {
 	pub(super) buffer_offset: BufferDescriptor,
 	pub(super) stride: usize,

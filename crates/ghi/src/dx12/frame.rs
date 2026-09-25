@@ -120,6 +120,12 @@ impl Frame<'_> {
 			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
 	}
 
+	/// Schedules a rectangular upload from this frame's image staging storage.
+	pub fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
+		self.device
+			.queue_texture_region_for_sequence(image_handle, self.frame_key.sequence_index, region);
+	}
+
 	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		self.device.write(descriptor_set_writes);
 	}
@@ -158,29 +164,10 @@ impl Frame<'_> {
 		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
-	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
-		{
-			let swapchain =
-				self.device.swapchains.get(swapchain_handle.0 as usize).expect(
-					"Invalid DX12 swapchain handle. The most likely cause is that the handle came from another device.",
-				);
-			assert!(
-				swapchain.acquired_sequences.iter().all(|acquired| !acquired),
-				"DX12 swapchain already has an acquired image. The most likely cause is that an earlier present key was not submitted."
-			);
-		}
-		// ResizeBuffers invalidates every old backbuffer token, so ownership must be checked before extent maintenance.
-		let extent = self.device.swapchain_extent(swapchain_handle, self.frame_key.sequence_index);
-		let image_index = self.device.next_swapchain_image_index(swapchain_handle);
-		let present_key = PresentKey {
-			image_index,
-			sequence_index: self.frame_key.sequence_index,
-			swapchain: swapchain_handle,
-		};
-		self.device.swapchains[swapchain_handle.0 as usize].acquired_image_indices[self.frame_key.sequence_index as usize] =
-			image_index;
-		self.device.swapchains[swapchain_handle.0 as usize].acquired_sequences[self.frame_key.sequence_index as usize] = true;
-		(present_key, extent)
+	/// Acquires a backbuffer from inside the started frame. The sequence fences were already waited by `start_frame`.
+	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 
 	pub fn device(&mut self) -> &mut super::Device {
@@ -214,6 +201,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::sync_texture(self, image_handle);
 	}
 
+	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
+		Frame::sync_texture_region(self, image_handle, region);
+	}
+
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		Frame::write(self, descriptor_set_writes);
 	}
@@ -240,7 +231,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		Frame::create_command_buffer_recording_without_implicit_sync(self, command_buffer_handle)
 	}
 
-	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> (PresentKey, Extent) {
+	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
 		Frame::acquire_swapchain_image(self, swapchain_handle)
 	}
 }

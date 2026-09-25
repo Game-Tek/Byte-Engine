@@ -1127,7 +1127,7 @@ fn gtao_depth_pyramid_reduces_two_tiles_without_cross_tile_leakage() {
 	}
 }
 
-/// Verifies one SIMD group emits the retained 4x4 level for two adjacent tiles in every cascade.
+/// Verifies one SIMD group reduces two adjacent 8x8 tiles to one max-depth cell each in every cascade.
 #[test]
 fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape() {
 	let program = asset!("directional-shadow-depth-pyramid.besl");
@@ -1138,8 +1138,8 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 	for layer in 0..layer_count {
 		for y in 0..8 {
 			for x in 0..16 {
-				let maximum = cell_maximum(layer, x / 4, y / 4);
-				let depth = if x % 4 == layer && y % 4 == 3 - layer {
+				let maximum = cell_maximum(layer, x / 8, y / 8);
+				let depth = if x % 8 == 2 * layer + 1 && y % 8 == 7 - 2 * layer {
 					maximum
 				} else {
 					maximum * 0.5
@@ -1150,7 +1150,7 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 			}
 		}
 	}
-	let mut reduced = empty_image(4, 8);
+	let mut reduced = empty_image(2, 4);
 	for layer in 0..layer_count {
 		let configs = tile_configs::<DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_SIZE>(
 			DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH,
@@ -1166,14 +1166,12 @@ fn directional_shadow_depth_pyramid_reduces_every_cascade_in_one_dispatch_shape(
 			.expect("fused directional shadow pyramid execution");
 	}
 	for layer in 0..layer_count {
-		for cell_y in 0..2 {
-			for cell_x in 0..4 {
-				assert_rgba_close(
-					rgba(&reduced, [cell_x, layer * 2 + cell_y]),
-					[cell_maximum(layer, cell_x, cell_y), 0.0, 0.0, 1.0],
-					0.00001,
-				);
-			}
+		for cell_x in 0..2 {
+			assert_rgba_close(
+				rgba(&reduced, [cell_x, layer]),
+				[cell_maximum(layer, cell_x, 0), 0.0, 0.0, 1.0],
+				0.00001,
+			);
 		}
 	}
 }

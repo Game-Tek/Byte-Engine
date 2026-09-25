@@ -1,4 +1,4 @@
-// Build the 4x4 conservative max-depth level for every directional cascade in one dispatch.
+// Build the 8x8 conservative max-depth level for every directional cascade in one dispatch.
 // One SIMD group processes two adjacent 8x8 source tiles so all 32 lanes remain useful.
 source_depth: descriptor<{ type: Texture2DArray, binding: 1033, access: read }>;
 reduced_depth_1: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
@@ -7,7 +7,7 @@ shared_depth: workgroup<f32, 32>;
 
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH: const u32 = 8;
 DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT: const u32 = 4;
-DIRECTIONAL_SHADOW_LEVEL_1_TILE_WIDTH: const u32 = 4;
+DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH: const u32 = 4;
 
 main: fn (input: StageInput) -> void {
 	let source_quad_coordinate: vec2u = input.thread_id;
@@ -31,25 +31,21 @@ main: fn (input: StageInput) -> void {
 	shared_depth[lane] = downsample_max(source_depth, source_uv, shadow_layer, 0.0);
 	workgroup_barrier();
 
-	// Lanes 0-3 reduce the left tile and lanes 4-7 reduce the right tile into 4x4 cells.
-	if (lane < 8) {
-		let tile: u32 = lane / 4;
-		let tile_lane: u32 = lane % 4;
-		let level_coordinate: vec2u = vec2u(tile_lane % 2, tile_lane / 2);
-		let source_x: u32 = tile * DIRECTIONAL_SHADOW_LEVEL_1_TILE_WIDTH + level_coordinate.x * 2;
-		let source_y: u32 = level_coordinate.y * 2;
-		let source_index: u32 = source_y * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH + source_x;
-		let maximum_depth: f32 = max(
-			max(shared_depth[source_index], shared_depth[source_index + 1]),
-			max(
-				shared_depth[source_index + DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH],
-				shared_depth[source_index + DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH + 1]
-			)
-		);
-		shared_depth[lane] = maximum_depth;
+	// Lanes 0 and 1 each reduce the 4x4 source quads of one tile, the left and the right, into its cell.
+	if (lane < 2) {
+		let maximum_depth: f32 = 0.0;
+		for (let row: u32 = 0; row < DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT; row = row + 1) {
+			for (let column: u32 = 0; column < DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH; column = column + 1) {
+				let source_index: u32 = row * DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH
+					+ lane * DIRECTIONAL_SHADOW_TILE_QUAD_WIDTH
+					+ column;
+				maximum_depth = max(maximum_depth, shared_depth[source_index]);
+			}
+		}
 
-		let output_coordinate: vec2u = workgroup_origin / vec2u(2, 2)
-			+ vec2u(tile * 2 + level_coordinate.x, level_coordinate.y);
+		// The workgroup's first quad is a multiple of its 8x4-quad size, so dividing by four quads per cell names its
+		// first cell.
+		let output_coordinate: vec2u = workgroup_origin / vec2u(4, 4) + vec2u(lane, 0);
 		write(reduced_depth_1, output_coordinate, vec4f(maximum_depth, 0.0, 0.0, 1.0));
 	}
 }

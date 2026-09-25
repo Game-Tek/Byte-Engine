@@ -194,7 +194,7 @@ sample_directional_shadow_tent: fn (
 
 
 // Proves every texel the directional blocker search and penumbra filter can read is no closer to the light than the
-// receiver's center, so the receiver is fully lit. It covers the 4x4 block of four-texel max-depth cells that
+// receiver's center, so the receiver is fully lit. It covers the 4x4 block of eight-texel max-depth cells that
 // `directional_shadow_blocker_depth` searches with four maximum-reduction samples, each on the corner shared by four
 // cells.
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE: &str = r#"
@@ -209,13 +209,13 @@ directional_shadow_area_is_fully_lit: fn (
 	}
 
 	let shadow_texel_position: vec2f = shadow_uv * vec2f(f32(shadow_map_extent.x), f32(shadow_map_extent.y));
-	// Four cascades packed at quarter resolution make the pyramid W/4 cells wide and H cells tall.
-	let cell_extent: vec2u = shadow_map_extent / vec2u(4, 4);
+	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(shadow_map_extent.y));
+	let pyramid_extent: vec2f = vec2f(f32(cell_extent.x), f32(cell_extent.y * 4));
 	let first_cell: vec2f = vec2f(
-		floor(shadow_texel_position.x / 4.0 - 1.5),
-		floor(shadow_texel_position.y / 4.0 - 1.5)
+		floor(shadow_texel_position.x / 8.0 - 1.5),
+		floor(shadow_texel_position.y / 8.0 - 1.5)
 	);
 	// Corners are clamped to the cascade, so no sample reads a neighboring cascade's cells.
 	let maximum_corner: vec2f = vec2f(f32(cell_extent.x - 1), f32(cell_extent.y - 1));
@@ -242,8 +242,8 @@ directional_shadow_area_is_fully_lit: fn (
 // receiver whose depth is at least zero. Occluders that touch the receiver can be missed, and they need the sharpest
 // penumbra anyway.
 //
-// The search reads the 4x4 max-depth cells of the cascade's depth pyramid, four texels each, around the receiver: the
-// cells up to 16 texels wide that also hold every tap of the widest directional filter. A cell's maximum is the depth of
+// The search reads the 4x4 max-depth cells of the cascade's depth pyramid, eight texels each, around the receiver: the
+// cells up to 32 texels wide that also hold every tap of the widest directional filter. A cell's maximum is the depth of
 // its occluder closest to the light, so the search never misses an occluder, and it leans toward the taller parts of
 // one, which widens penumbrae slightly.
 //
@@ -261,16 +261,16 @@ directional_shadow_blocker_depth: fn (
 	shadow_layer: u32,
 	shadow_map_extent: vec2u
 ) -> f32 {
-	// Four cascades packed at quarter resolution make the pyramid W/4 cells wide and H cells tall.
-	let cell_extent: vec2u = shadow_map_extent / vec2u(4, 4);
+	// Four cascades packed at an eighth of their resolution make the pyramid W/8 cells wide and 4H/8 cells tall.
+	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let grid_position: vec2f = shadow_texel_position / 4.0;
+	let grid_position: vec2f = shadow_texel_position / 8.0;
 	let first_cell: vec2f = vec2f(floor(grid_position.x - 1.5), floor(grid_position.y - 1.5));
 
-	// Within one cell the receiver's own texel centers lie up to 1.5 texels from the cell center on each axis, so its
-	// plane rises by up to 1.5 texels of slope there. Occluders start counting only above two texels of slope, so the
+	// Within one cell the receiver's own texel centers lie up to 3.5 texels from the cell center on each axis, so its
+	// plane rises by up to 3.5 texels of slope there. Occluders start counting only above four texels of slope, so the
 	// receiver never counts as its own blocker.
-	let cell_plane_rise: f32 = 2.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
+	let cell_plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
 	let fade_depth: f32 = 0.05 * depth_per_meter;
 	let weighted_depth: f32 = 0.0;
 	let total_weight: f32 = 0.0;
@@ -285,7 +285,7 @@ directional_shadow_blocker_depth: fn (
 					directional_shadow_depth_pyramid,
 					vec2u(u32(cell_x), u32(cell_y + layer_offset))
 				).x;
-				let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 4.0;
+				let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 8.0;
 				let plane_depth: f32 = surface_depth + dot(depth_gradient_per_texel, cell_center - shadow_texel_position);
 				let blocker_share: f32 = clamp((cell_maximum - plane_depth - cell_plane_rise) / fade_depth, 0.0, 1.0);
 				let weight: f32 = (2.0 - abs(cell_x + 0.5 - grid_position.x)) * weight_y * blocker_share;
@@ -390,9 +390,10 @@ directional_shadow_receiver: fn (shadow_view_projection: mat4f, cascade_index: u
 	);
 	let ndc_position: vec3f = vec3f(clip_position.x, clip_position.y, clip_position.z) / clip_position.w;
 	// PCF taps compare the receiver's own plane at each fetched texel center, which is exact for flat receivers at
-	// any light angle and texel size. The constant margin only absorbs rounding between the shadow and material
-	// transforms; coarser cascades span more depth per texel, so it grows with the cascade.
-	let surface_depth: f32 = ndc_position.z + 0.00002 * f32(cascade_index + 1);
+	// any light angle and texel size. The constant margin absorbs the 16-bit rounding of stored depth, at most one step
+	// of 1/65535, and rounding between the shadow and material transforms. Coarser cascades span more depth per
+	// texel, so it grows with the cascade, from one and a half steps.
+	let surface_depth: f32 = ndc_position.z + 1.5 / 65535.0 * f32(cascade_index + 1);
 	let inside: f32 = 1.0;
 	if (surface_depth < 0.0 || surface_depth > 1.0) {
 		inside = 0.0;
@@ -853,11 +854,11 @@ sample_directional_shadow: fn (
 	);
 
 	// Percentage-closer soft shadows: a disk of angular radius a leaves a penumbra reaching d * tan(a) to each side of
-	// an occluder edge d meters above the receiver. The blocker search reliably covers six texels around the receiver,
-	// so it runs in the first cascade where occluders up to two meters above the receiver cast penumbrae that fit. A
-	// larger light therefore searches a coarser cascade.
+	// an occluder edge d meters above the receiver. The blocker search reliably covers twelve texels around the
+	// receiver, so it runs in the first cascade where occluders up to two meters above the receiver cast penumbrae that
+	// fit. A larger light therefore searches a coarser cascade.
 	let search_cascade: u32 = directional_shadow_fitting_cascade(
-		depth_cascade, 3, 2.0 * angular_radius_tangent, texels_per_meter, 6.0
+		depth_cascade, 3, 2.0 * angular_radius_tangent, texels_per_meter, 12.0
 	);
 	let search_view: u32 = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
 	let occluder_distance: f32 = directional_shadow_occluder_distance(

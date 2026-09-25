@@ -102,6 +102,12 @@ pub(crate) fn make_cascade_split_ranges(
 	})
 }
 
+/// How far toward the light, in meters, each cascade's view reaches past its bounding sphere to take in shadow casters.
+///
+/// It sets most of each cascade's depth range, and so the size of a stored depth step. It is independent of the camera's
+/// far plane, so a longer view distance does not coarsen depth precision.
+const CASTER_REACH: f32 = 100.0;
+
 /// Returns the world-space views for cascaded shadow mapping.
 pub fn make_csm_views(
 	camera_view: View,
@@ -110,18 +116,15 @@ pub fn make_csm_views(
 	shadow_map_resolution: u32,
 	splits: CascadeSplits,
 ) -> impl ExactSizeIterator<Item = View> {
-	let camera_far = camera_view.far();
-
 	make_cascade_split_ranges(camera_view, num_cascades, splits).map(move |(cascade_near, cascade_far)| {
 		let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
 		let camera_frustum_corners = camera_view.get_frustum_corners();
 		let center = frustum_center(&camera_frustum_corners);
 		let radius = stabilize_cascade_radius(center, &camera_frustum_corners, shadow_map_resolution);
 
-		// Extend behind the bounding sphere so casters between the light and camera remain in the shadow view.
-		let back_extension = camera_far;
-		let depth = 2.0 * radius + back_extension;
-		let light_position = center - light_direction * (radius + back_extension);
+		// Extend toward the light so casters outside the bounding sphere still shadow it.
+		let depth = 2.0 * radius + CASTER_REACH;
+		let light_position = center - light_direction * (radius + CASTER_REACH);
 		let light_view = View::new_orthographic(-radius, radius, -radius, radius, 0.0, depth, light_position, light_direction);
 
 		snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)

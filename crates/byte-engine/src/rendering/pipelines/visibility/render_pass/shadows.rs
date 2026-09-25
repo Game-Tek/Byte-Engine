@@ -12,8 +12,11 @@ use super::super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
 use crate::rendering::PipelineManagerClient;
 use crate::rendering::render_pass::RenderPassFunction;
 
-/// Mip count of the packed cascade depth pyramid; one retained 4x4 max level.
+/// Mip count of the packed cascade depth pyramid; one retained level of max-depth cells.
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
+/// Shadow-map texels on each side of one max-depth cell in the cascade depth pyramid. The directional shadow helpers
+/// and `directional-shadow-depth-pyramid.besl` assume this size.
+pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 8;
 const DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(1033),
 	ghi::ResourceKind::CombinedImageSampler,
@@ -249,7 +252,7 @@ impl ShadowPass {
 								.collect()
 						},
 					);
-					// Each SIMD-width workgroup reduces two adjacent source tiles into 4x4 cells.
+					// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
 					c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
 					let c = c.bind_compute_pipeline(pipelines.depth_pyramid);
 					c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);

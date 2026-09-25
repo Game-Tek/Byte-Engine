@@ -445,16 +445,16 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 			results.may_be_occluded = 0;
 			results.crosses_tile_boundary = 0;
 			results.adjacent_cell_may_occlude = 0;
-			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.8, 2, vec2u(8, 8))) {
+			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.8, 2, vec2u(16, 16))) {
 				results.fully_lit = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.6, 2, vec2u(8, 8))) {
+			if (directional_shadow_area_is_fully_lit(vec2f(0.5, 0.5), 0.6, 2, vec2u(16, 16))) {
 				results.may_be_occluded = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.1, 0.5), 1.0, 2, vec2u(8, 8))) {
+			if (directional_shadow_area_is_fully_lit(vec2f(0.1, 0.5), 1.0, 2, vec2u(16, 16))) {
 				results.crosses_tile_boundary = 1;
 			}
-			if (directional_shadow_area_is_fully_lit(vec2f(0.25, 0.25), 0.8, 0, vec2u(8, 8))) {
+			if (directional_shadow_area_is_fully_lit(vec2f(0.25, 0.25), 0.8, 0, vec2u(16, 16))) {
 				results.adjacent_cell_may_occlude = 1;
 			}
 		}
@@ -485,7 +485,7 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 	let mut base_depths = (0..8)
 		.flat_map(|y| std::iter::repeat_n([cascade_depths[y / 2], 0.0, 0.0, 1.0], 2))
 		.collect::<Vec<_>>();
-	// Cascade zero contains a blocker in the neighboring 4x4 cell. A maximum gather may conservatively include
+	// Cascade zero contains a blocker in the neighboring 8x8 cell. A maximum gather may conservatively include
 	// it even when the footprint stays in cell zero.
 	base_depths[0] = [0.2, 0.0, 0.0, 1.0];
 	base_depths[1] = [0.9, 0.0, 0.0, 1.0];
@@ -721,19 +721,19 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
-			let extent: vec2u = vec2u(32, 32);
+			let extent: vec2u = vec2u(64, 64);
 			// Stored depth spans 100 meters, so occluders fade in over their first 0.0005 above the receiver.
 			let depth_per_meter: f32 = 0.01;
-			// Cell (4, 4) of cascade zero, texels 16 through 19, holds an occluder at 0.9.
-			results.nearby = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.out_of_reach = directional_shadow_blocker_depth(vec2f(4.0, 4.0), 0.5, flat, depth_per_meter, u32(0), extent);
-			results.other_cascade = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, flat, depth_per_meter, u32(1), extent);
+			// Cell (4, 4) of cascade zero, texels 32 through 39, holds an occluder at 0.9.
+			results.nearby = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.out_of_reach = directional_shadow_blocker_depth(vec2f(8.0, 8.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.other_cascade = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, flat, depth_per_meter, u32(1), extent);
 			// The occluder lies 0.00025 above this receiver, halfway through its fade, and alone at full tent weight
 			// it still counts fully once its share of four units of weight exceeds one.
-			results.fading_in = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.89975, flat, depth_per_meter, u32(0), extent);
+			results.fading_in = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.89975, flat, depth_per_meter, u32(0), extent);
 			// At the edge of the search the same occluder carries a quarter unit of weight, so the estimate moves only a
 			// quarter of the way from the receiver toward it.
-			results.entering = directional_shadow_blocker_depth(vec2f(12.0, 12.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.entering = directional_shadow_blocker_depth(vec2f(24.0, 24.0), 0.5, flat, depth_per_meter, u32(0), extent);
 		}
 		"#,
 		&[],
@@ -759,7 +759,7 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 			),
 		],
 	);
-	// Four 32x32 cascades reduce to four stacked blocks of 8x8 max-depth cells.
+	// Four 64x64 cascades reduce to four stacked blocks of 8x8 max-depth cells.
 	let mut cells = vec![[0.2, 0.0, 0.0, 1.0]; 8 * 32];
 	cells[4 * 8 + 4] = [0.9, 0.0, 0.0, 1.0];
 	let mut pyramid = texture_2d(8, 32, &cells);
@@ -783,11 +783,11 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 	);
 
 	// A receiver sloped toward the light along x: each cell's maximum is the receiver's own depth at the cell's
-	// nearest-to-light texel center, 1.5 texels past the cell center.
+	// nearest-to-light texel center, 3.5 texels past the cell center.
 	let executable = compile_with_helpers(
 		r#"
 		main: fn () -> void {
-			results.sloped_self = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(32, 32));
+			results.sloped_self = directional_shadow_blocker_depth(vec2f(36.0, 36.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(64, 64));
 		}
 		"#,
 		&[],
@@ -809,8 +809,8 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 	);
 	let sloped_cells = (0..8 * 32)
 		.map(|index| {
-			let cell_center_x = (index % 8) as f32 * 4.0 + 2.0;
-			[0.5 + 0.01 * (cell_center_x + 1.5 - 18.0), 0.0, 0.0, 1.0]
+			let cell_center_x = (index % 8) as f32 * 8.0 + 4.0;
+			[0.5 + 0.01 * (cell_center_x + 3.5 - 36.0), 0.0, 0.0, 1.0]
 		})
 		.collect::<Vec<_>>();
 	let mut sloped_pyramid = texture_2d(8, 32, &sloped_cells);

@@ -30,7 +30,7 @@ use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::ShadowPass;
-pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowWork};
+pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowWork};
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
 use self::visibility::{VisibilityPass, VisibilityPhase};
@@ -130,8 +130,8 @@ impl VisibilityRenderPass {
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
 				.name("Directional Shadow Depth Pyramid")
 				.extent(Extent::rectangle(
-					SHADOW_MAP_RESOLUTION / 4,
-					SHADOW_MAP_RESOLUTION / 4 * SHADOW_CASCADE_COUNT as u32,
+					SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
+					SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
 				))
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),

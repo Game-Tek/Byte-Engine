@@ -36,7 +36,7 @@ pub(crate) const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
 /* Shadow views */
 
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
-pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
+pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 4096;
 /// The largest local-light shadow pools. Every pooled map has a reserved slot in the `views` buffer.
 pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = 16;
 pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = 16;
@@ -45,10 +45,11 @@ pub(crate) const DEFAULT_CONE_SHADOW_POOL_CAPACITY: usize = 4;
 pub(crate) const DEFAULT_POINT_SHADOW_POOL_CAPACITY: usize = 4;
 pub(crate) const CONE_SHADOW_MAP_RESOLUTION: u32 = 1024;
 pub(crate) const POINT_SHADOW_MAP_RESOLUTION: u32 = 1024;
-/// Local-light maps use 16-bit depth to halve their memory; cascades and the camera keep 32-bit depth.
+/// Shadow maps use 16-bit depth to halve their memory. Directional cascades project orthographically, so their depth
+/// steps are even: each cascade's depth range over 65,535, a few millimeters at most, and finer than its texels.
 pub(crate) const CONE_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 pub(crate) const POINT_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
-pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth32;
+pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Depth16;
 /// Layout of the `views` buffer: camera, then cascades, then cone layers, then point cube faces.
 pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
 pub(crate) const POINT_SHADOW_FACE_COUNT: usize = 6;

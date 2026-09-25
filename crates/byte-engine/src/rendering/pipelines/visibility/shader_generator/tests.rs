@@ -521,7 +521,8 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 }
 
 /// Verifies the tent shadow filter turns a hard shadow-map edge into a smooth ramp, keeps reverse-Z comparison, compares
-/// a sloped receiver on its own plane so it does not shadow itself, and treats texels outside the map as lit.
+/// a sloped receiver on its own plane so it does not shadow itself, treats texels outside the map as lit, and reaches
+/// further from an edge when its taps are spaced wider.
 #[test]
 fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -531,16 +532,20 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 		r#"
 		main: fn () -> void {
 			let flat: vec2f = vec2f(0.0, 0.0);
-			// Texels from column four on hold a blocker. The tent reaches two texels to each side of the receiver.
-			results.clear = sample_directional_shadow_tent(shadow_map, vec2f(2.0, 4.0), 0.8, flat, u32(0));
-			results.quarter_covered = sample_directional_shadow_tent(shadow_map, vec2f(3.5, 4.0), 0.8, flat, u32(0));
-			results.on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0), 0.8, flat, u32(0));
-			results.covered = sample_directional_shadow_tent(shadow_map, vec2f(6.0, 4.0), 0.8, flat, u32(0));
-			// The receiver lies 0.0001 in front of the stored slope.
-			results.sloped_receiver = sample_directional_shadow_tent(sloped_map, vec2f(3.2, 3.5), 0.5321, vec2f(0.01, 0.0), u32(0));
-			results.bounded_on_edge = sample_shadow_tent(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), vec2u(8, 8));
+			let extent: vec2u = vec2u(8, 8);
+			// Texels from column four on hold a blocker. The tent reaches two tap spacings to each side of the receiver.
+			results.clear = sample_directional_shadow_tent(shadow_map, vec2f(2.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
+			results.quarter_covered = sample_directional_shadow_tent(shadow_map, vec2f(3.5, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
+			results.on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
+			results.covered = sample_directional_shadow_tent(shadow_map, vec2f(6.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 1.0);
+			results.wide_on_edge = sample_directional_shadow_tent(shadow_map, vec2f(4.0, 4.0) / 8.0, 0.8, flat, u32(0), extent, 2.0);
+			// The receiver lies 0.0001 in front of the stored slope, which rises 0.01 per texel, 0.08 per unit of uv.
+			results.sloped_receiver = sample_directional_shadow_tent(sloped_map, vec2f(3.2, 3.5) / 8.0, 0.5321, vec2f(0.08, 0.0), u32(0), extent, 1.0);
+			results.bounded_on_edge = sample_shadow_tent(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 1.0);
 			// One quarter of this footprint's weight falls past the map's right edge.
-			results.bounded_past_border = sample_shadow_tent(shadow_map, vec2f(7.5 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8));
+			results.bounded_past_border = sample_shadow_tent(shadow_map, vec2f(7.5 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 1.0);
+			// Two texels from the edge, a one-texel spacing stays clear, but a two-texel spacing reaches the blocker.
+			results.bounded_wide_reach = sample_shadow_tent(shadow_map, vec2f(2.0 / 8.0, 0.5), 0.8, flat, u32(0), vec2u(8, 8), 2.0);
 		}
 		"#,
 		&[],
@@ -569,22 +574,17 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 					besl::ParserNode::member("quarter_covered", "f32"),
 					besl::ParserNode::member("on_edge", "f32"),
 					besl::ParserNode::member("covered", "f32"),
+					besl::ParserNode::member("wide_on_edge", "f32"),
 					besl::ParserNode::member("sloped_receiver", "f32"),
 					besl::ParserNode::member("bounded_on_edge", "f32"),
 					besl::ParserNode::member("bounded_past_border", "f32"),
+					besl::ParserNode::member("bounded_wide_reach", "f32"),
 				],
 				RESULT_SLOT,
 			),
 		],
 	);
-	// Reverse-Z: 0.9 is closer to the light than a 0.8 receiver, so it blocks it; 0.2 does not.
-	let mut shadow_map = Texture::new_3d(8, 8, 1).expect("tent shadow fixture");
-	for y in 0..8 {
-		for x in 0..8 {
-			let depth = if x >= 4 { 0.9 } else { 0.2 };
-			shadow_map.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0]).expect("tent shadow fixture");
-		}
-	}
+	let mut shadow_map = edge_shadow_map(8, 4);
 	// A surface sloped toward the light along x stores its depth at each texel center.
 	let mut sloped_map = Texture::new_3d(8, 8, 1).expect("sloped shadow fixture");
 	for y in 0..8 {
@@ -602,25 +602,313 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
-	for (name, expected) in [
-		("clear", 1.0),
-		("quarter_covered", 0.75),
-		("on_edge", 0.5),
-		("covered", 0.0),
-		("sloped_receiver", 1.0),
-		("bounded_on_edge", 0.5),
-		("bounded_past_border", 0.25),
-	] {
-		let actual = read_f32(&results, name);
+	assert_f32_results(
+		&results,
+		&[
+			("clear", 1.0),
+			("quarter_covered", 0.75),
+			("on_edge", 0.5),
+			("covered", 0.0),
+			("wide_on_edge", 0.5),
+			("sloped_receiver", 1.0),
+			("bounded_on_edge", 0.5),
+			("bounded_past_border", 0.25),
+			("bounded_wide_reach", 0.875),
+		],
+		"The most likely cause is incorrect tent weights or tap addressing.",
+	);
+}
+
+/// Returns a square one-layer shadow map whose texels from column `edge` on hold a blocker at depth 0.9, closer to the
+/// light than a receiver at 0.8 under reverse-Z, and whose other texels hold 0.2, farther than it.
+fn edge_shadow_map(size: u32, edge: u32) -> Texture {
+	let mut shadow_map = Texture::new_3d(size, size, 1).expect("edge shadow fixture");
+	for y in 0..size {
+		for x in 0..size {
+			let depth = if x >= edge { 0.9 } else { 0.2 };
+			shadow_map.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0]).expect("edge shadow fixture");
+		}
+	}
+	shadow_map
+}
+
+/// Asserts that each named `f32` result matches its expected value.
+fn assert_f32_results(results: &besl::vm::Buffer, expected: &[(&str, f32)], likely_cause: &str) {
+	for &(name, expected) in expected {
+		let actual = read_f32(results, name);
 		assert!(
 			(actual - expected).abs() <= 0.00001,
-			"Unexpected tent shadow result for {name}: {actual}, expected {expected}. The most likely cause is incorrect tent weights or texel addressing."
+			"Unexpected result for {name}: {actual}, expected {expected}. {likely_cause}"
 		);
 	}
 }
 
-/// Runs `source` with only buffer-free point-shadow helpers bound and returns the results buffer.
-fn run_point_shadow_helper(
+/// Verifies the directional penumbra widens with its radius and stays sharp at contact: a receiver four texels from a
+/// shadow edge is fully lit under the sharpest tent, partly shadowed under a wide one, and in between for a radius
+/// between tent spacings. A receiver on the edge stays half lit at any radius.
+#[test]
+fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
+	const SHADOW_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(1);
+	let executable = compile_with_helpers(
+		r#"
+		main: fn () -> void {
+			let flat: vec2f = vec2f(0.0, 0.0);
+			let near_edge: vec2f = vec2f(12.0 / 32.0, 0.5);
+			let extent: vec2u = vec2u(32, 32);
+			results.contact = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 0.0);
+			results.between = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 6.0);
+			results.wide = sample_directional_shadow_penumbra(shadow_map, near_edge, 0.8, flat, u32(0), extent, 8.0);
+			results.on_edge = sample_directional_shadow_penumbra(shadow_map, vec2f(0.5, 0.5), 0.8, flat, u32(0), extent, 8.0);
+		}
+		"#,
+		&[],
+		vec![
+			besl::ParserNode::binding(
+				"shadow_map",
+				besl::ParserNode::combined_array_image_sampler(),
+				SHADOW_SLOT.slot(),
+				true,
+				false,
+			),
+			parse_besl_function(SHADOW_TAP_SOURCE, "sample_shadow_tap"),
+			parse_besl_function(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
+			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
+			parse_besl_function(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
+			results_binding(
+				"DirectionalPenumbraResults",
+				vec![
+					besl::ParserNode::member("contact", "f32"),
+					besl::ParserNode::member("between", "f32"),
+					besl::ParserNode::member("wide", "f32"),
+					besl::ParserNode::member("on_edge", "f32"),
+				],
+				RESULT_SLOT,
+			),
+		],
+	);
+	let mut shadow_map = edge_shadow_map(32, 16);
+	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(SHADOW_SLOT, &mut shadow_map);
+	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+
+	// A radius of six lies between the two- and four-texel spacings, which give 1.0 and 0.875 here.
+	let between_blend = 3.0_f32.log2() - 1.0;
+	assert_f32_results(
+		&results,
+		&[
+			("contact", 1.0),
+			("between", 1.0 + (0.875 - 1.0) * between_blend),
+			("wide", 0.875),
+			("on_edge", 0.5),
+		],
+		"The most likely cause is an incorrect penumbra level or blend between tent spacings.",
+	);
+}
+
+/// Verifies the blocker search returns the depth of an occluder near the receiver, ignores occluders beyond its reach
+/// and in other cascades, lets an occluder entering the search move the estimate only gradually, and does not count a
+/// sloped receiver as its own blocker.
+#[test]
+fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
+	const PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(0);
+	const SLOPED_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1);
+	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(2);
+	let executable = compile_with_helpers(
+		r#"
+		main: fn () -> void {
+			let flat: vec2f = vec2f(0.0, 0.0);
+			let extent: vec2u = vec2u(32, 32);
+			// Stored depth spans 100 meters, so occluders fade in over their first 0.0005 above the receiver.
+			let depth_per_meter: f32 = 0.01;
+			// Cell (4, 4) of cascade zero, texels 16 through 19, holds an occluder at 0.9.
+			results.nearby = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.out_of_reach = directional_shadow_blocker_depth(vec2f(4.0, 4.0), 0.5, flat, depth_per_meter, u32(0), extent);
+			results.other_cascade = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, flat, depth_per_meter, u32(1), extent);
+			// The occluder lies 0.00025 above this receiver, halfway through its fade, and alone at full tent weight
+			// it still counts fully once its share of four units of weight exceeds one.
+			results.fading_in = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.89975, flat, depth_per_meter, u32(0), extent);
+			// At the edge of the search the same occluder carries a quarter unit of weight, so the estimate moves only a
+			// quarter of the way from the receiver toward it.
+			results.entering = directional_shadow_blocker_depth(vec2f(12.0, 12.0), 0.5, flat, depth_per_meter, u32(0), extent);
+		}
+		"#,
+		&[],
+		vec![
+			besl::ParserNode::binding(
+				"directional_shadow_depth_pyramid",
+				besl::ParserNode::combined_image_sampler(),
+				PYRAMID_SLOT.slot(),
+				true,
+				false,
+			),
+			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
+			results_binding(
+				"DirectionalBlockerResults",
+				vec![
+					besl::ParserNode::member("nearby", "f32"),
+					besl::ParserNode::member("out_of_reach", "f32"),
+					besl::ParserNode::member("other_cascade", "f32"),
+					besl::ParserNode::member("fading_in", "f32"),
+					besl::ParserNode::member("entering", "f32"),
+				],
+				RESULT_SLOT,
+			),
+		],
+	);
+	// Four 32x32 cascades reduce to four stacked blocks of 8x8 max-depth cells.
+	let mut cells = vec![[0.2, 0.0, 0.0, 1.0]; 8 * 32];
+	cells[4 * 8 + 4] = [0.9, 0.0, 0.0, 1.0];
+	let mut pyramid = texture_2d(8, 32, &cells);
+	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(PYRAMID_SLOT, &mut pyramid);
+	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+
+	assert_f32_results(
+		&results,
+		&[
+			("nearby", 0.9),
+			("out_of_reach", 0.0),
+			("other_cascade", 0.0),
+			("fading_in", 0.9),
+			("entering", 0.5 + (0.9 - 0.5) * 0.25),
+		],
+		"The most likely cause is incorrect cell addressing or blocker comparison.",
+	);
+
+	// A receiver sloped toward the light along x: each cell's maximum is the receiver's own depth at the cell's
+	// nearest-to-light texel center, 1.5 texels past the cell center.
+	let executable = compile_with_helpers(
+		r#"
+		main: fn () -> void {
+			results.sloped_self = directional_shadow_blocker_depth(vec2f(18.0, 18.0), 0.5, vec2f(0.01, 0.0), 0.01, u32(0), vec2u(32, 32));
+		}
+		"#,
+		&[],
+		vec![
+			besl::ParserNode::binding(
+				"directional_shadow_depth_pyramid",
+				besl::ParserNode::combined_image_sampler(),
+				SLOPED_PYRAMID_SLOT.slot(),
+				true,
+				false,
+			),
+			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
+			results_binding(
+				"DirectionalSelfBlockerResults",
+				vec![besl::ParserNode::member("sloped_self", "f32")],
+				RESULT_SLOT,
+			),
+		],
+	);
+	let sloped_cells = (0..8 * 32)
+		.map(|index| {
+			let cell_center_x = (index % 8) as f32 * 4.0 + 2.0;
+			[0.5 + 0.01 * (cell_center_x + 1.5 - 18.0), 0.0, 0.0, 1.0]
+		})
+		.collect::<Vec<_>>();
+	let mut sloped_pyramid = texture_2d(8, 32, &sloped_cells);
+	let mut results = buffer(&executable, RESULT_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(SLOPED_PYRAMID_SLOT, &mut sloped_pyramid);
+	descriptors.bind_buffer(RESULT_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+
+	assert_eq!(
+		read_f32(&results, "sloped_self"),
+		0.0,
+		"A sloped receiver counted as its own blocker. The most likely cause is comparing cells against the receiver's center depth instead of its plane."
+	);
+}
+
+/// Verifies directional cascade scales come from the cascade's orthographic projection: a projection whose normalized
+/// device x spans 20 meters and whose stored depth spans 100 meters gives 102.4 texels per meter on a 2048-texel map and
+/// 0.01 units of stored depth per meter.
+#[test]
+fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
+	let results = run_buffer_free_shadow_helper(
+		r#"
+		main: fn () -> void {
+			let projection: mat4f = mat4f(
+				vec4f(0.1, 0.0, 0.0, 0.0),
+				vec4f(0.0, 0.1, 0.0, 0.0),
+				vec4f(0.0, 0.0, 0.01, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			results.texels_per_meter = directional_shadow_texels_per_meter(projection, 2048.0);
+			results.depth_per_meter = directional_shadow_depth_per_meter(projection);
+		}
+		"#,
+		&[
+			(DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE, "directional_shadow_texels_per_meter"),
+			(DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE, "directional_shadow_depth_per_meter"),
+		],
+		vec![
+			besl::ParserNode::member("texels_per_meter", "f32"),
+			besl::ParserNode::member("depth_per_meter", "f32"),
+		],
+	);
+	let texels_per_meter = read_f32(&results, "texels_per_meter");
+	let depth_per_meter = read_f32(&results, "depth_per_meter");
+	assert!(
+		(texels_per_meter - 102.4).abs() <= 0.001 && (depth_per_meter - 0.01).abs() <= 0.000001,
+		"Unexpected cascade scales: {texels_per_meter} texels and {depth_per_meter} depth per meter. The most likely cause is reading a column instead of a row of the cascade projection."
+	);
+}
+
+/// Verifies directional shadows pick the first cascade, from the receiver's own, in which a distance fits a texel limit:
+/// they stay in the receiver's cascade when it fits, move to a coarser one when it does not, never go past the last
+/// allowed cascade, and never go back to a finer one than the receiver's.
+#[test]
+fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm() {
+	let results = run_buffer_free_shadow_helper(
+		r#"
+		main: fn () -> void {
+			// Cascades span 500, 200, 70, and 15 texels per meter.
+			let scales: vec4f = vec4f(500.0, 200.0, 70.0, 15.0);
+			results.fits_own = directional_shadow_fitting_cascade(u32(0), u32(3), 0.01, scales, 8.0);
+			results.moves_coarser = directional_shadow_fitting_cascade(u32(0), u32(3), 0.1, scales, 8.0);
+			results.stops_at_last = directional_shadow_fitting_cascade(u32(0), u32(1), 0.1, scales, 8.0);
+			results.keeps_receiver_cascade = directional_shadow_fitting_cascade(u32(2), u32(3), 0.001, scales, 8.0);
+		}
+		"#,
+		&[
+			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
+			(DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE, "directional_shadow_fitting_cascade"),
+		],
+		vec![
+			besl::ParserNode::member("fits_own", "u32"),
+			besl::ParserNode::member("moves_coarser", "u32"),
+			besl::ParserNode::member("stops_at_last", "u32"),
+			besl::ParserNode::member("keeps_receiver_cascade", "u32"),
+		],
+	);
+	for (name, expected) in [
+		("fits_own", 0),
+		// A tenth of a meter spans 50, 20, then 7 texels.
+		("moves_coarser", 2),
+		("stops_at_last", 1),
+		("keeps_receiver_cascade", 2),
+	] {
+		let Value::U32(actual) = results.read(name).expect("fitting cascade result") else {
+			panic!("Unexpected fitting cascade result type for {name}.");
+		};
+		assert_eq!(
+			actual, expected,
+			"Unexpected fitting cascade for {name}. The most likely cause is comparing against the wrong cascade's scale."
+		);
+	}
+}
+
+/// Runs `source` with only buffer-free shadow helpers bound and returns the results buffer.
+fn run_buffer_free_shadow_helper(
 	source: &str,
 	helpers: &[(&'static str, &str)],
 	members: Vec<besl::parser::Node<'static>>,
@@ -642,7 +930,7 @@ fn run_point_shadow_helper(
 /// Verifies point receivers use the perspective depth stored by the selected cube face.
 #[test]
 fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
-	let results = run_point_shadow_helper(
+	let results = run_buffer_free_shadow_helper(
 		r#"
 		main: fn () -> void {
 			results.center = point_shadow_receiver_depth(vec3f(0.0, 0.0 - 5.0, 0.0), 0.1, 100.0);
@@ -665,7 +953,7 @@ fn point_shadow_receiver_depth_uses_the_dominant_cube_axis_in_the_besl_vm() {
 /// Verifies offset point-shadow rays compare against the shaded receiver plane instead of a constant radius.
 #[test]
 fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
-	let results = run_point_shadow_helper(
+	let results = run_buffer_free_shadow_helper(
 		r#"
 		main: fn () -> void {
 			let sample_direction: vec3f = normalize(vec3f(1.0, 0.0 - 5.0, 0.0));
@@ -688,7 +976,7 @@ fn point_shadow_taps_intersect_the_receiver_plane_in_the_besl_vm() {
 /// Verifies receiver-plane orientation does not change as close-camera derivatives shrink.
 #[test]
 fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm() {
-	let results = run_point_shadow_helper(
+	let results = run_buffer_free_shadow_helper(
 		r#"
 		main: fn () -> void {
 			results.large = point_shadow_receiver_plane_normal(
@@ -721,7 +1009,7 @@ fn point_shadow_receiver_plane_normal_is_camera_scale_invariant_in_the_besl_vm()
 /// Verifies point PCF compares against the center of the cube texel selected by closest sampling.
 #[test]
 fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
-	let results = run_point_shadow_helper(
+	let results = run_buffer_free_shadow_helper(
 		r#"
 		main: fn () -> void {
 			let direction: vec3f = point_shadow_texel_direction(normalize(vec3f(1.0, 0.0 - 0.25, 0.1)));
@@ -746,7 +1034,7 @@ fn point_shadow_taps_snap_to_the_selected_cube_texel_center_in_the_besl_vm() {
 /// Verifies receivers beyond a point shadow's projection range remain unshadowed.
 #[test]
 fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_besl_vm() {
-	let results = run_point_shadow_helper(
+	let results = run_buffer_free_shadow_helper(
 		r#"
 		main: fn () -> void {
 			results.blocker_beyond_far = point_shadow_occlusion(0.4, 0.0 - 0.01, 110.0, 0.1, 100.0);

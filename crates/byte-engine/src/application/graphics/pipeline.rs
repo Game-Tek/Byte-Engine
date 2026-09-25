@@ -193,6 +193,24 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			.with_point_shadow_map_pool_capacity(capacity)
 			.unwrap_or_else(|reason| panic!("{reason}"));
 	}
+	// Directional shadow coverage: each parameter overrides one part of the default splits.
+	let parse_split_parameter = |name: &str| {
+		application.get_parameter(name).map(|parameter| {
+			parameter.value().parse::<f32>().unwrap_or_else(|_| {
+				panic!(
+					"Directional shadow setting was not set. The most likely cause is that `{}` for `{name}` is not a number.",
+					parameter.value()
+				)
+			})
+		})
+	};
+	let default_splits = visibility_pipeline_settings.cascade_splits();
+	let shadow_distance = parse_split_parameter(DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
+	let split_blend =
+		parse_split_parameter(DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
+	visibility_pipeline_settings = visibility_pipeline_settings.with_cascade_splits(
+		crate::rendering::csm::CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")),
+	);
 	let gtao_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);

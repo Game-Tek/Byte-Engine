@@ -1898,19 +1898,24 @@ fn contact_shadow_scene_depth(ray: [f32; 2], wall: bool) -> f32 {
 	if ray[1] < 0.0 { -CONTACT_SHADOW_CAMERA_HEIGHT / ray[1] } else { 0.0 }
 }
 
-/// Runs the contact-shadow trace at one pixel of the floor scene and returns the value it writes: one where the ray
-/// toward the light is clear, zero where it is blocked.
-fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
-	let program = asset!("contact-shadows.besl");
+/// Returns the reversed device depth of every pixel of the floor scene, with or without the low wall.
+fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
 	let extent = CONTACT_SHADOW_EXTENT;
 	let range = GTAO_FAR - GTAO_NEAR;
-	let device_depth: Vec<[f32; 4]> = (0..extent * extent)
+	(0..extent * extent)
 		.map(|index| {
 			let z = contact_shadow_scene_depth(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent), wall);
 			let depth = if z == 0.0 { 0.0 } else { (GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range };
 			[depth, 0.0, 0.0, 1.0]
 		})
-		.collect();
+		.collect()
+}
+
+/// Runs the contact-shadow trace at one pixel of the floor scene and returns the value it writes: one where the ray
+/// toward the light is clear, falling toward zero where it is blocked.
+fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
+	let program = asset!("contact-shadows.besl");
+	let extent = CONTACT_SHADOW_EXTENT;
 	let [x, y, z] = direction_to_light;
 	let length = (x * x + y * y + z * z).sqrt();
 	let mut view = gtao_view_data(&program, extent, extent);
@@ -1918,12 +1923,34 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	parameters
 		.write("direction_to_light", Value::Vec4F([x / length, y / length, z / length, 0.0]))
 		.expect("contact shadow parameters");
-	let mut depth = texture_2d(extent, extent, &device_depth);
+	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(wall));
 	let mut output = empty_image(extent, extent);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_buffer(ResourceSlot::new(1), &mut parameters);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+	run_at(&program, &mut descriptors, pixel);
+	drop(descriptors);
+	rgba(&output, pixel)[0]
+}
+
+/// Runs the contact-shadow filter at one pixel of the floor scene with the low wall, over a trace whose value at each
+/// pixel is `trace(column, row)`, and returns the filtered value.
+fn run_contact_shadow_filter(trace: impl Fn(u32, u32) -> f32, pixel: [u32; 2]) -> f32 {
+	let program = asset!("contact-shadows-filter.besl");
+	let extent = CONTACT_SHADOW_EXTENT;
+	let trace = (0..extent * extent)
+		.map(|index| [trace(index % extent, index / extent), 0.0, 0.0, 1.0])
+		.collect::<Vec<_>>();
+	let mut view = gtao_view_data(&program, extent, extent);
+	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(true));
+	let mut trace = texture_2d(extent, extent, &trace);
+	let mut output = empty_image(extent, extent);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
 	run_at(&program, &mut descriptors, pixel);
 	drop(descriptors);
@@ -1938,11 +1965,12 @@ fn contact_shadow_floor_z(row: u32) -> f32 {
 }
 
 /// Verifies the floor just in front of a low wall is shadowed when the sun shines over the wall toward the camera,
-/// and that floor further away than the ray reaches stays lit.
+/// that the shadow fades out, lightening with distance from the wall, where the wall lies near the end of the rays
+/// reach, and that floor further away than the ray reaches stays lit.
 #[test]
 fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 	// The sun is 45 degrees high behind the wall, so the wall's shadow reaches 0.25 units toward the camera. The rays
-	// reach 0.3 units, about 0.21 units along the floor.
+	// reach 0.3 units, about 0.21 units along the floor, and fade out over their second half, from about 0.106 units.
 	let direction_to_light = [0.0, 1.0, 1.0];
 	let column = CONTACT_SHADOW_EXTENT / 2;
 	let rows_at = |near: f32, far: f32| {
@@ -1950,17 +1978,85 @@ fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 			.filter(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
 			.collect::<Vec<_>>()
 	};
-	let shadowed_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.18, CONTACT_SHADOW_WALL_Z);
+	let shadowed_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.09, CONTACT_SHADOW_WALL_Z);
+	let fading_rows = rows_at(CONTACT_SHADOW_WALL_Z - 0.18, CONTACT_SHADOW_WALL_Z - 0.12);
 	let lit_rows = rows_at(3.0, CONTACT_SHADOW_WALL_Z - 0.3);
-	assert!(!shadowed_rows.is_empty() && !lit_rows.is_empty());
+	assert!(!shadowed_rows.is_empty() && !fading_rows.is_empty() && !lit_rows.is_empty());
 
 	for row in shadowed_rows {
 		let value = run_contact_shadows(true, direction_to_light, [column, row]);
 		assert_eq!(value, 0.0, "Expected floor row {row} at z={} to be shadowed.", contact_shadow_floor_z(row));
 	}
+	for row in fading_rows {
+		let value = run_contact_shadows(true, direction_to_light, [column, row]);
+		assert!(
+			value > 0.0 && value < 1.0,
+			"Expected floor row {row} at z={} to be partly shadowed, got {value}.",
+			contact_shadow_floor_z(row)
+		);
+	}
 	for row in lit_rows {
 		let value = run_contact_shadows(true, direction_to_light, [column, row]);
 		assert_eq!(value, 1.0, "Expected floor row {row} at z={} to be lit.", contact_shadow_floor_z(row));
+	}
+}
+
+/// Verifies the contact-shadow filter turns the trace's pixel dither into a smooth value on the floor, and keeps a
+/// shadowed floor from darkening the top edge of the wall in front of it.
+#[test]
+fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
+	let column = CONTACT_SHADOW_EXTENT / 2;
+	// The floor seven units away lies behind the wall, several rows above it on screen.
+	let open_floor_row = (0..CONTACT_SHADOW_EXTENT)
+		.find(|&row| (6.9..7.1).contains(&contact_shadow_floor_z(row)))
+		.expect("a floor row near seven units");
+	let checkerboard = |x: u32, y: u32| ((x + y) % 2) as f32;
+	let smoothed = [0, 1].map(|step| run_contact_shadow_filter(checkerboard, [column + step, open_floor_row]));
+	assert!(
+		smoothed.iter().all(|value| (0.3..0.7).contains(value)) && (smoothed[0] - smoothed[1]).abs() < 0.3,
+		"Expected the filter to smooth a checkerboard of zeros and ones, got {smoothed:?}."
+	);
+
+	// The wall's top row borders the floor far behind it. Only the floor is shadowed.
+	let wall_top_row = (0..CONTACT_SHADOW_EXTENT)
+		.find(|&row| contact_shadow_scene_depth(ssgi_ray_at(column as f32, row as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z)
+		.expect("a wall row");
+	let shadowed_floor = |x: u32, y: u32| {
+		let on_wall = contact_shadow_scene_depth(ssgi_ray_at(x as f32, y as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z;
+		if on_wall { 1.0 } else { 0.0 }
+	};
+	let wall_edge = run_contact_shadow_filter(shadowed_floor, [column, wall_top_row]);
+	assert_eq!(wall_edge, 1.0, "The floor behind the wall darkened the wall's top edge.");
+}
+
+/// Verifies the contact-shadow trace and filter compile with the platform shader compiler, past BESL linking.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn contact_shadows_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	for (name, source) in [
+		(
+			"contact_shadows",
+			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility/contact-shadows.besl")),
+		),
+		(
+			"contact_shadow_filter",
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/contact-shadows-filter.besl"
+			)),
+		),
+	] {
+		let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
+			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		let settings = ShaderGenerationSettings::compute(utils::Extent::rectangle(8, 8)).name(name.to_string());
+
+		PlatformShaderCompiler::new()
+			.generate(&settings, &root)
+			.await
+			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 	}
 }
 

@@ -425,6 +425,7 @@ material_evaluation_suffix: fn () -> void {
 						shadow_view1,
 						shadow_view2,
 						shadow_view3,
+						lighting_data.lights[light_index].angular_radius_tangent,
 						world_space_vertex_position,
 						view_space_surface_position,
 						position_derivative_x,

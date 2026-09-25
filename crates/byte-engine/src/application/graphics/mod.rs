@@ -1275,7 +1275,8 @@ use crate::{
 		pipelines::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
 			visibility::{
-				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
+				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER,
+				DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
 				VisibilityPipelineSettings,
 			},
 		},

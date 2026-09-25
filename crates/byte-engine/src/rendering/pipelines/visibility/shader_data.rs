@@ -113,7 +113,9 @@ pub struct LightData {
 	pub(crate) ies_profile_texture: u32,
 	pub(crate) ies_c0_tangent: RuntimeUnitVector,
 	pub(crate) reach: f32,
-	pub(crate) _padding: u32,
+	/// The tangent of a directional light's angular radius, which sizes its shadow penumbrae. Other lights leave it at
+	/// zero.
+	pub(crate) angular_radius_tangent: f32,
 }
 
 impl Default for LightData {
@@ -129,7 +131,7 @@ impl Default for LightData {
 			ies_profile_texture: NO_IES_PROFILE_TEXTURE,
 			ies_c0_tangent: NEUTRAL_UNIT_VECTOR,
 			reach: 0.0,
-			_padding: 0,
+			angular_radius_tangent: 0.0,
 		}
 	}
 }

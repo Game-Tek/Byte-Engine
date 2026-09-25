@@ -1,6 +1,7 @@
 // Marks full-resolution pixels whose short ray toward the sun is blocked by visible geometry. The directional shadow
-// map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. Material
-// evaluation multiplies the sun's shadow by this result: one where the ray is clear, zero where it is blocked.
+// map cannot resolve shadows smaller than its texels, such as the one where a foot meets the floor. The result is one
+// where the ray is clear and falls toward zero where it is blocked. The contact-shadow filter then smooths it, and
+// material evaluation multiplies the sun's shadow by the filtered result.
 ScreenView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -46,9 +47,13 @@ CONTACT_SHADOW_BIAS_SCALE: const f32 = 0.002;
 CONTACT_SHADOW_PLANE_TOLERANCE: const f32 = 0.005;
 // Bisection steps that locate where a ray crossed behind the depth buffer between two march steps.
 CONTACT_SHADOW_REFINEMENT_STEPS: const u32 = 4;
+// Occluders that the ray reaches past this fraction of its length cast a weaker shadow, down to none at its end, so a
+// contact shadow ends in a ramp instead of a line at the ray's reach.
+CONTACT_SHADOW_FADE_START: const f32 = 0.5;
 
-// Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly. It stays fixed over time:
-// without temporal accumulation, animated noise would flicker.
+// Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly, so the filter pass averages
+// the dithered march into a smooth result. It stays fixed over time: without temporal accumulation, animated noise
+// would flicker.
 interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }
@@ -213,8 +218,13 @@ main: fn (input: StageInput) -> void {
 			front = middle;
 		}
 		let crossing_z: f32 = 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind);
-		if (ray_penetration(ray, behind, extent) < CONTACT_SHADOW_THICKNESS_BASE + CONTACT_SHADOW_THICKNESS_SCALE * crossing_z) {
-			write(contact_shadow_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
+		let thickness: f32 = CONTACT_SHADOW_THICKNESS_BASE + CONTACT_SHADOW_THICKNESS_SCALE * crossing_z;
+		let penetration: f32 = ray_penetration(ray, behind, extent);
+		if (penetration < thickness) {
+			// A crossing near the thickness limit may be a ray passing behind a thin object, so it counts less.
+			let strength: f32 = (1.0 - smoothstep(CONTACT_SHADOW_FADE_START, 1.0, behind))
+				* (1.0 - smoothstep(0.5 * thickness, thickness, penetration));
+			write(contact_shadow_output, pixel, vec4f(1.0 - strength, 0.0, 0.0, 0.0));
 			return;
 		}
 	}

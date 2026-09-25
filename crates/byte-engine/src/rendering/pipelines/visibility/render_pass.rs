@@ -20,7 +20,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
 use self::contact_shadows::ContactShadowPass;
-pub(crate) use self::contact_shadows::create_contact_shadow_target;
+pub(crate) use self::contact_shadows::{ContactShadowTargets, create_contact_shadow_targets};
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::depth_pyramid::DepthPyramidPass;
 use self::gtao::GtaoPass;
@@ -58,7 +58,7 @@ pub(crate) struct SinkTargets {
 	/// The SSGI images, including the diffuse light that opaque material evaluation writes for next frame's rays.
 	pub(crate) ssgi: SsgiTargets,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
-	pub(crate) contact_shadows: ghi::BaseImageHandle,
+	pub(crate) contact_shadows: ContactShadowTargets,
 	/// The light opaque material evaluation writes for next frame's reflection rays.
 	pub(crate) radiance_history: ghi::DynamicImageHandle,
 }
@@ -233,7 +233,7 @@ impl VisibilityRenderPass {
 				linear_sampler,
 			),
 			// Point sampling keeps a shadow edge from bleeding one pixel onto the lit surface beside it.
-			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows, depth_sampler),
+			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows.filtered, depth_sampler),
 			sampled(SHADOW_MAP_BINDING, directional_shadow_map.into(), depth_sampler),
 			sampled(
 				DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
@@ -348,14 +348,14 @@ impl VisibilityRenderPass {
 		let shadows = self.shadows.prepare(frame, pipeline_manager, dispatches, shadow_work)?;
 		let light_cluster_pipeline = self.light_clusters.pipeline(pipeline_manager)?;
 		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
-		let contact_shadow_pipeline = self.contact_shadows.pipeline(pipeline_manager)?;
+		let contact_shadow_pipelines = self.contact_shadows.pipelines(pipeline_manager)?;
 		let gtao_pipelines = self.gtao.pipelines(pipeline_manager)?;
 		let ssgi_pipelines = self.ssgi.pipelines(pipeline_manager)?;
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
 		let contact_shadows = self
 			.contact_shadows
-			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipeline);
+			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipelines);
 		let gtao = self.gtao.prepare(frame, sink, gtao_pipelines);
 		let ssgi = self
 			.ssgi

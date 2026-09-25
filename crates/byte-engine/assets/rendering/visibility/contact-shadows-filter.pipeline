@@ -1,0 +1,1 @@
+{"name":"Contact Shadow Filter","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/contact-shadows-filter.besl"}}

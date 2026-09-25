@@ -32,8 +32,8 @@ pub(crate) use geometry::GeometryHandles;
 pub use loader::MaterialPipelineConfig;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
-	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
-	VisibilityPipelineSettings,
+	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
+	POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 };
 pub use render_pass::GTAO_CONFIGURATION_PREFIX;
 pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator, VisibilityShaderScope};

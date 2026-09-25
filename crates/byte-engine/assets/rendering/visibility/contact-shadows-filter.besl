@@ -1,0 +1,116 @@
+// Smooths the contact-shadow trace. The trace starts each pixel's ray at a different point along it, dithered by
+// interleaved gradient noise, and each pixel keeps only its own result, so its shadow edges are jagged at pixel scale.
+// This pass averages each pixel with its 5x5 neighbors on the same surface, which turns the dither into a smooth ramp.
+// A neighbor on another surface, such as a foot in front of the floor, does not count, so shadows keep to their
+// surface.
+ScreenView: struct {
+	pixel_to_ray_mul: vec2f,
+	pixel_to_ray_add: vec2f,
+	projection_pixels_y: f32,
+	view_z_sign: f32,
+	depth_unproject_numerator: f32,
+	depth_unproject_denominator_offset: f32,
+}
+
+screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+contact_shadow_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
+contact_shadow_trace: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
+
+CONTACT_SHADOW_FILTER_RADIUS: const u32 = 2;
+// Gaussian weights for offsets zero, one, and two. The product of two gives the 5x5 kernel.
+CONTACT_SHADOW_FILTER_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
+// A neighbor counts fully when its depth lies on the center's surface plane, and less the further it lies from it, down
+// to nothing at this distance relative to the center's depth.
+CONTACT_SHADOW_FILTER_PLANE_TOLERANCE: const f32 = 0.02;
+
+// Returns the positive linear view depth of a pixel, or zero where no surface was drawn or outside the image. It matches
+// the contact-shadow trace's own depth reconstruction.
+fetch_linear_depth: fn (column: f32, row: f32, extent: vec2u) -> f32 {
+	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
+		return 0.0;
+	}
+	let depth: f32 = fetch(visibility_depth, vec2u(u32(column), u32(row))).x;
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return screen_view.depth_unproject_numerator / (depth + screen_view.depth_unproject_denominator_offset);
+}
+
+// Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
+// 1/z is linear across the screen on a plane, so a side on the center's own surface predicts it exactly.
+side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
+	if (near_z == 0.0 || far_z == 0.0) {
+		return 1000000.0;
+	}
+	return abs(2.0 / near_z - 1.0 / far_z - 1.0 / center_z);
+}
+
+// Returns how much 1/z of the pixel's own surface changes per pixel along one screen axis, or zero without a
+// neighbor. It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal
+// Reconstruction from Depth Buffer", 2020), so a floor pixel next to a foot takes its slope from the floor.
+inverse_depth_gradient: fn (column: f32, row: f32, axis: vec2f, center_z: f32, extent: vec2u) -> f32 {
+	let positive_z: f32 = fetch_linear_depth(column + axis.x, row + axis.y, extent);
+	let negative_z: f32 = fetch_linear_depth(column - axis.x, row - axis.y, extent);
+	let positive_error: f32 = side_error(
+		center_z,
+		positive_z,
+		fetch_linear_depth(column + 2.0 * axis.x, row + 2.0 * axis.y, extent)
+	);
+	let negative_error: f32 = side_error(
+		center_z,
+		negative_z,
+		fetch_linear_depth(column - 2.0 * axis.x, row - 2.0 * axis.y, extent)
+	);
+	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
+		return 1.0 / positive_z - 1.0 / center_z;
+	}
+	if (negative_z != 0.0) {
+		return 1.0 / center_z - 1.0 / negative_z;
+	}
+	return 0.0;
+}
+
+// Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
+filter_weight: fn (offset: u32) -> f32 {
+	return CONTACT_SHADOW_FILTER_WEIGHTS[max(offset, CONTACT_SHADOW_FILTER_RADIUS) - min(offset, CONTACT_SHADOW_FILTER_RADIUS)];
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(contact_shadow_output, pixel);
+	let extent: vec2u = image_size(contact_shadow_output);
+	let column: f32 = f32(pixel.x);
+	let row: f32 = f32(pixel.y);
+	let center_z: f32 = fetch_linear_depth(column, row, extent);
+	if (center_z == 0.0) {
+		write(contact_shadow_output, pixel, vec4f(1.0, 0.0, 0.0, 0.0));
+		return;
+	}
+	// 1/z is linear across the screen on a plane, so the center's slope predicts each neighbor on its surface.
+	let center_inverse_z: f32 = 1.0 / center_z;
+	let surface_gradient: vec2f = vec2f(
+		inverse_depth_gradient(column, row, vec2f(1.0, 0.0), center_z, extent),
+		inverse_depth_gradient(column, row, vec2f(0.0, 1.0), center_z, extent)
+	);
+
+	let lit: f32 = 0.0;
+	let total_weight: f32 = 0.0;
+	for (let tap_row: u32 = 0; tap_row < 5; tap_row = tap_row + 1) {
+		for (let tap_column: u32 = 0; tap_column < 5; tap_column = tap_column + 1) {
+			let offset: vec2f = vec2f(f32(tap_column), f32(tap_row)) - vec2f(2.0, 2.0);
+			let neighbor_z: f32 = fetch_linear_depth(column + offset.x, row + offset.y, extent);
+			if (neighbor_z != 0.0) {
+				let predicted_inverse_z: f32 = center_inverse_z + dot(surface_gradient, offset);
+				let plane_error: f32 = abs(1.0 / neighbor_z - predicted_inverse_z) / center_inverse_z;
+				let weight: f32 = filter_weight(tap_column) * filter_weight(tap_row)
+					* clamp(1.0 - plane_error / CONTACT_SHADOW_FILTER_PLANE_TOLERANCE, 0.0, 1.0);
+				let neighbor: vec2u = vec2u(u32(column + offset.x), u32(row + offset.y));
+				lit = lit + weight * fetch(contact_shadow_trace, neighbor).x;
+				total_weight = total_weight + weight;
+			}
+		}
+	}
+	// The center always lies on its own plane, so the total weight is never zero.
+	write(contact_shadow_output, pixel, vec4f(lit / total_weight, 0.0, 0.0, 0.0));
+}

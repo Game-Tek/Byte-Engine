@@ -30,7 +30,7 @@ use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, Visi
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
-	create_contact_shadow_target, create_radiance_history_target, create_ssgi_targets,
+	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
 use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
@@ -49,17 +49,24 @@ use crate::rendering::lights::{IesProfile, Lights};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
-use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, View, csm};
+use crate::rendering::csm::{self, CascadeSplits};
+use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
 pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-map-pool.capacity";
+/// The startup parameters that set how far directional shadows reach, in meters, and the share of their cascade
+/// splits that is logarithmic. See [`CascadeSplits`].
+pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "render.directional-shadows.distance";
+pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "render.directional-shadows.split-blend";
 
-/// The `VisibilityPipelineSettings` struct configures memory limits for the visibility rendering pipeline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
+/// pipeline.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
+	cascade_splits: CascadeSplits,
 }
 
 impl Default for VisibilityPipelineSettings {
@@ -67,11 +74,22 @@ impl Default for VisibilityPipelineSettings {
 		Self {
 			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
 			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
+			cascade_splits: CascadeSplits::default(),
 		}
 	}
 }
 
 impl VisibilityPipelineSettings {
+	/// Sets how far directional shadows reach from the camera and how their cascades divide that range.
+	pub fn with_cascade_splits(mut self, cascade_splits: CascadeSplits) -> Self {
+		self.cascade_splits = cascade_splits;
+		self
+	}
+
+	pub fn cascade_splits(&self) -> CascadeSplits {
+		self.cascade_splits
+	}
+
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
 	pub fn with_cone_shadow_map_pool_capacity(mut self, capacity: usize) -> Result<Self, String> {
 		if capacity > MAX_CONE_SHADOW_POOL_CAPACITY {
@@ -410,6 +428,7 @@ pub struct VisibilityPipelineManager {
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
 	environment: EnvironmentState,
+	cascade_splits: CascadeSplits,
 	cone_shadow_pool_capacity: usize,
 	point_shadow_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
@@ -490,6 +509,7 @@ impl VisibilityPipelineManager {
 				bound: environment,
 				descriptors_dirty: false,
 			},
+			cascade_splits: settings.cascade_splits,
 			cone_shadow_pool_capacity: settings.cone_shadow_map_pool_capacity,
 			point_shadow_pool_capacity: settings.point_shadow_map_pool_capacity,
 			gtao_configuration,
@@ -911,8 +931,15 @@ impl VisibilityPipelineManager {
 		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
 		if let Some((_, light_direction)) = shadows.directional {
-			let cascade_views = csm::make_csm_views(main_view, light_direction, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION);
-			let cascade_far = csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT).map(|(_, far)| far);
+			let cascade_views = csm::make_csm_views(
+				main_view,
+				light_direction,
+				SHADOW_CASCADE_COUNT,
+				SHADOW_MAP_RESOLUTION,
+				self.cascade_splits,
+			);
+			let cascade_far =
+				csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT, self.cascade_splits).map(|(_, far)| far);
 			for (cascade, (view, far)) in cascade_views.zip(cascade_far).enumerate() {
 				let mut data = ShaderViewData::from(view);
 				data.far = far;
@@ -1056,7 +1083,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
 		let ssgi = create_ssgi_targets(render_pass_builder);
-		let contact_shadows = create_contact_shadow_target(render_pass_builder);
+		let contact_shadows = create_contact_shadow_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
 
 		let context = render_pass_builder.context();

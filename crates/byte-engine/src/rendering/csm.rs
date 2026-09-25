@@ -6,17 +6,86 @@ use smallvec::SmallVec;
 
 use super::view::View;
 
+/// The `CascadeSplits` struct sets how far a directional light's cascaded shadows reach from the camera and how the
+/// cascades divide that range.
+///
+/// Near cascades cover a short range at fine resolution and far ones a long range at coarse resolution. A logarithmic
+/// division keeps each cascade's resolution proportional to its distance but crowds the near cascades close to the
+/// camera; an even division spreads them out. Pass it to [`make_csm_views`] and [`make_cascade_split_ranges`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CascadeSplits {
+	distance: f32,
+	logarithmic_share: f32,
+}
+
+impl CascadeSplits {
+	/// Shadows reach 100 meters, or the camera's far plane when it is closer.
+	pub const DEFAULT_DISTANCE: f32 = 100.0;
+	/// The share of the logarithmic division, against an even one. It keeps a camera about five meters behind a
+	/// character in the second cascade, whose texels are about 1.4 centimeters with a 75-degree field of view.
+	pub const DEFAULT_LOGARITHMIC_SHARE: f32 = 0.8;
+
+	/// Returns splits that reach `distance` meters from the camera, divided `logarithmic_share` logarithmically and the
+	/// rest evenly.
+	///
+	/// # Errors
+	///
+	/// Returns an error when `distance` is not a positive finite number of meters or `logarithmic_share` lies outside
+	/// `0.0..=1.0`.
+	pub fn new(distance: f32, logarithmic_share: f32) -> Result<Self, String> {
+		if !(distance.is_finite() && distance > 0.0) {
+			return Err(format!(
+				"Directional shadow distance was not set. The most likely cause is that {distance} is not a positive number of meters."
+			));
+		}
+		if !(0.0..=1.0).contains(&logarithmic_share) {
+			return Err(format!(
+				"Cascade split blend was not set. The most likely cause is that {logarithmic_share} lies outside 0.0 to 1.0."
+			));
+		}
+		Ok(Self {
+			distance,
+			logarithmic_share,
+		})
+	}
+
+	/// Returns how far shadows reach from the camera, in meters, before the camera's far plane limits it.
+	pub fn distance(&self) -> f32 {
+		self.distance
+	}
+
+	/// Returns the share of the logarithmic division, against an even one.
+	pub fn logarithmic_share(&self) -> f32 {
+		self.logarithmic_share
+	}
+}
+
+impl Default for CascadeSplits {
+	fn default() -> Self {
+		Self {
+			distance: Self::DEFAULT_DISTANCE,
+			logarithmic_share: Self::DEFAULT_LOGARITHMIC_SHARE,
+		}
+	}
+}
+
 /// Returns the camera-space near and far distance for each shadow cascade.
-pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) -> impl ExactSizeIterator<Item = (f32, f32)> {
+///
+/// The cascades cover the camera's range up to `splits`' distance. Past the last one, surfaces receive no sun shadow.
+pub(crate) fn make_cascade_split_ranges(
+	camera_view: View,
+	num_cascades: usize,
+	splits: CascadeSplits,
+) -> impl ExactSizeIterator<Item = (f32, f32)> {
 	let near = camera_view.near();
-	let far = camera_view.far();
+	let far = camera_view.far().min(splits.distance);
 	debug_assert!(
 		num_cascades > 0,
 		"Cascade count is zero. The most likely cause is creating a shadow pipeline without any cascade layers."
 	);
 	debug_assert!(
 		near.is_finite() && far.is_finite() && near > 0.0 && far > near,
-		"Camera depth range is invalid. The most likely cause is a nonpositive near plane or a far plane that does not follow it."
+		"Camera depth range is invalid. The most likely cause is a nonpositive near plane, or a far plane or shadow distance that does not follow it."
 	);
 	let range = far - near;
 	let ratio = far / near;
@@ -26,7 +95,7 @@ pub(crate) fn make_cascade_split_ranges(camera_view: View, num_cascades: usize) 
 		let p = (index + 1) as f32 / num_cascades as f32;
 		let log = near * ratio.powf(p);
 		let uniform = near + range * p;
-		let cascade_far = 0.95 * (log - uniform) + uniform;
+		let cascade_far = splits.logarithmic_share * (log - uniform) + uniform;
 		let cascade_range = (cascade_near, cascade_far);
 		cascade_near = cascade_far;
 		cascade_range
@@ -39,10 +108,11 @@ pub fn make_csm_views(
 	light_direction: UnitVector,
 	num_cascades: usize,
 	shadow_map_resolution: u32,
+	splits: CascadeSplits,
 ) -> impl ExactSizeIterator<Item = View> {
 	let camera_far = camera_view.far();
 
-	make_cascade_split_ranges(camera_view, num_cascades).map(move |(cascade_near, cascade_far)| {
+	make_cascade_split_ranges(camera_view, num_cascades, splits).map(move |(cascade_near, cascade_far)| {
 		let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
 		let camera_frustum_corners = camera_view.get_frustum_corners();
 		let center = frustum_center(&camera_frustum_corners);
@@ -124,12 +194,39 @@ mod tests {
 			Point::origin(),
 			UnitVector::z_axis(),
 		);
-		let ranges = make_cascade_split_ranges(camera_view, 4).collect::<SmallVec<[(f32, f32); 4]>>();
+		let ranges = make_cascade_split_ranges(camera_view, 4, CascadeSplits::default()).collect::<SmallVec<[(f32, f32); 4]>>();
 
 		assert_eq!(ranges.len(), 4);
 		assert!((ranges[0].0 - camera_view.near()).abs() < 0.0001);
 		assert!((ranges[3].1 - camera_view.far()).abs() < 0.0001);
 		assert!(ranges.windows(2).all(|ranges| (ranges[0].1 - ranges[1].0).abs() < 0.0001));
+	}
+
+	#[test]
+	fn cascade_splits_end_at_the_shadow_distance_and_spread_with_a_smaller_logarithmic_share() {
+		let camera_view = View::new_perspective(
+			math::Degrees::new(75.0),
+			1.0,
+			0.1,
+			100.0,
+			Point::origin(),
+			UnitVector::z_axis(),
+		);
+		let far_of = |splits| make_cascade_split_ranges(camera_view, 4, splits).map(|(_, far)| far).collect::<SmallVec<[f32; 4]>>();
+
+		let short = far_of(CascadeSplits::new(50.0, 0.8).expect("valid splits"));
+		assert!((short[3] - 50.0).abs() < 0.0001, "{short:?}");
+		let beyond_far = far_of(CascadeSplits::new(500.0, 0.8).expect("valid splits"));
+		assert!((beyond_far[3] - camera_view.far()).abs() < 0.0001, "{beyond_far:?}");
+
+		let logarithmic = far_of(CascadeSplits::new(100.0, 1.0).expect("valid splits"));
+		let blended = far_of(CascadeSplits::new(100.0, 0.8).expect("valid splits"));
+		assert!(
+			blended[..3].iter().zip(&logarithmic[..3]).all(|(blended, logarithmic)| blended > logarithmic),
+			"{blended:?} {logarithmic:?}"
+		);
+		assert!(CascadeSplits::new(0.0, 0.8).is_err());
+		assert!(CascadeSplits::new(100.0, 1.5).is_err());
 	}
 
 	#[test]
@@ -142,7 +239,7 @@ mod tests {
 			Point::origin(),
 			UnitVector::z_axis(),
 		);
-		let shadow_view = make_csm_views(camera_view, UnitVector::z_axis(), 1, 2048)
+		let shadow_view = make_csm_views(camera_view, UnitVector::z_axis(), 1, 2048, CascadeSplits::default())
 			.next()
 			.expect("a shadow cascade view");
 		let center = frustum_center(&camera_view.get_frustum_corners());
@@ -185,6 +282,7 @@ mod tests {
 			Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction"),
 			1,
 			resolution,
+			CascadeSplits::default(),
 		)
 		.next()
 		.expect("a shadow cascade view");
@@ -220,7 +318,7 @@ mod tests {
 		];
 
 		for direction in directions {
-			for view in make_csm_views(camera_view, direction, 4, 2048) {
+			for view in make_csm_views(camera_view, direction, 4, 2048, CascadeSplits::default()) {
 				let matrix = view.view();
 				// `View` is a raw-matrix boundary, so inspect its basis as `maths_rs` vectors.
 				let x = Vec3f::new(matrix[0], matrix[1], matrix[2]);
@@ -250,7 +348,7 @@ mod tests {
 		let floor = Vec4f::new(1.25, 0.0, 5.0, 1.0);
 		let caster = Vec4f::new(1.25, 3.0, 5.0, 1.0);
 
-		for view in make_csm_views(camera_view, -UnitVector::y_axis(), 4, 2048) {
+		for view in make_csm_views(camera_view, -UnitVector::y_axis(), 4, 2048, CascadeSplits::default()) {
 			let floor_clip = view.view_projection() * floor;
 			let caster_clip = view.view_projection() * caster;
 

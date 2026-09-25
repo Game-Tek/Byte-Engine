@@ -242,6 +242,7 @@ pub(super) fn light_data(
 				color: light.color.into(),
 				light_type: 68,
 				shadow_views,
+				angular_radius_tangent: light.angular_radius.value().tan(),
 				..LightData::default()
 			};
 		}
@@ -279,7 +280,7 @@ pub(super) fn light_data(
 		ies_profile_texture,
 		ies_c0_tangent,
 		reach: light_reach(color),
-		_padding: 0,
+		angular_radius_tangent: 0.0,
 	}
 }
 

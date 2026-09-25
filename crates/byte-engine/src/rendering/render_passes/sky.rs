@@ -3,7 +3,7 @@ use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
-use math::{Point, ShaderMatrix, UnitVector, inverse};
+use math::{Point, Radians, ShaderMatrix, UnitVector, inverse};
 use maths_rs::{Vec3f, Vec4f};
 use utils::Extent;
 
@@ -58,11 +58,10 @@ fn sun_disk_radiance(illuminance: Vec3f, angular_radius: f32) -> Vec3f {
 
 /// The `AtmosphereSkyRenderPassSettings` struct configures the physical atmosphere and sun disk for the sky pass.
 ///
-/// The sun's brightness and color come from the scene's [`DirectionalLight`], not from these settings.
+/// The sun's brightness, color, and disk size come from the scene's [`DirectionalLight`], not from these settings.
 #[derive(Clone, Copy, Debug)]
 pub struct AtmosphereSkyRenderPassSettings {
 	pub sun_direction: UnitVector,
-	pub sun_angular_radius: f32,
 	pub ground_radius: f32,
 	pub atmosphere_radius: f32,
 	pub rayleigh_scale_height: f32,
@@ -82,7 +81,6 @@ impl Default for AtmosphereSkyRenderPassSettings {
 			sun_direction: math::Vector::new(0.35, 0.85, 0.4)
 				.normalized()
 				.expect("default sun direction is nonzero"),
-			sun_angular_radius: 0.004675,
 			ground_radius: 6_360_000.0,
 			atmosphere_radius: 6_460_000.0,
 			rayleigh_scale_height: 8_000.0,
@@ -123,6 +121,8 @@ pub struct AtmosphereSkyRenderPass {
 	directional_light: Option<Handle>,
 	/// The RGB illuminance in lux of the newest directional light. It stays black until a light is created.
 	sun_illuminance: Vec3f,
+	/// The angular radius of the newest directional light's disk.
+	sun_angular_radius: Radians,
 	transmittance_valid: bool,
 	sky_view_camera_height: Option<u32>,
 }
@@ -286,16 +286,18 @@ impl AtmosphereSkyRenderPass {
 			transform_listener,
 			directional_light: None,
 			sun_illuminance: Vec3f::new(0.0, 0.0, 0.0),
+			sun_angular_radius: DirectionalLight::SUN_ANGULAR_RADIUS,
 			transmittance_valid: false,
 			sky_view_camera_height: None,
 		}
 	}
 
-	/// Adopts the newest directional light as the sun and applies its latest illuminance and orientation to the sky.
+	/// Adopts the newest directional light as the sun and applies its latest illuminance, disk size, and orientation to the sky.
 	fn update_sun(&mut self) {
 		while let Some(message) = self.directional_lights.read() {
 			self.directional_light = Some(message.handle());
 			self.sun_illuminance = message.data().color;
+			self.sun_angular_radius = message.data().angular_radius;
 		}
 
 		while let Some(message) = self.transform_listener.read() {
@@ -309,24 +311,30 @@ impl AtmosphereSkyRenderPass {
 
 	/// Updates per-view sky constants from the active camera before dispatch and returns the camera height.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> f32 {
-		let data = sky_shader_data(&self.settings, self.sun_illuminance, sink);
+		let data = sky_shader_data(&self.settings, self.sun_illuminance, self.sun_angular_radius, sink);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
 		data.camera_position[1]
 	}
 }
 
-/// Builds one sink's sky constants from the atmosphere settings and the sun light's RGB illuminance in lux.
+/// Builds one sink's sky constants from the atmosphere settings, the sun light's RGB illuminance in lux, and its disk's
+/// angular radius.
 ///
 /// The sky is written pre-exposed like the scene: the shaders multiply by the uploaded illuminance and disk radiance,
 /// so both include the sink's camera exposure.
-fn sky_shader_data(settings: &AtmosphereSkyRenderPassSettings, sun_illuminance: Vec3f, sink: &Sink) -> SkyShaderData {
+fn sky_shader_data(
+	settings: &AtmosphereSkyRenderPassSettings,
+	sun_illuminance: Vec3f,
+	sun_angular_radius: Radians,
+	sink: &Sink,
+) -> SkyShaderData {
 	let view = sink.view();
 	let inverse_view = inverse(view.view());
 	let camera_position = inverse_view * Vec4f::new(0.0, 0.0, 0.0, 1.0);
 	let sun_direction = settings.sun_direction;
 	let planet_center = settings.planet_center.into_maths();
 	let exposed_illuminance = sun_illuminance * sink.exposure_scale();
-	let disk_radiance = sun_disk_radiance(exposed_illuminance, settings.sun_angular_radius);
+	let disk_radiance = sun_disk_radiance(exposed_illuminance, sun_angular_radius.value());
 
 	SkyShaderData {
 		inverse_view_projection: inverse(view.view_projection()).into(),
@@ -337,7 +345,7 @@ fn sky_shader_data(settings: &AtmosphereSkyRenderPassSettings, sun_illuminance: 
 			sun_direction.z(),
 			settings.mie_anisotropy,
 		],
-		planet_center: [planet_center.x, planet_center.y, planet_center.z, settings.sun_angular_radius],
+		planet_center: [planet_center.x, planet_center.y, planet_center.z, sun_angular_radius.value()],
 		atmosphere: [
 			settings.ground_radius,
 			settings.atmosphere_radius,
@@ -467,6 +475,7 @@ mod tests {
 		let data = super::sky_shader_data(
 			settings,
 			Vec3f::new(sun_illuminance[0], sun_illuminance[1], sun_illuminance[2]),
+			crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS,
 			&sink,
 		);
 		let mut parameters = buffer(program, parameter_slot);
@@ -753,7 +762,7 @@ mod tests {
 	/// Verifies that the sun disk carries the light's illuminance over its solid angle until the half-float cap.
 	#[test]
 	fn sun_disk_follows_the_light_until_the_half_float_cap() {
-		let radius = super::AtmosphereSkyRenderPassSettings::default().sun_angular_radius;
+		let radius = crate::rendering::DirectionalLight::SUN_ANGULAR_RADIUS.value();
 		let solid_angle = std::f32::consts::PI * radius * radius;
 		let dim = super::sun_disk_radiance(Vec3f::new(1.0, 0.5, 0.0), radius);
 

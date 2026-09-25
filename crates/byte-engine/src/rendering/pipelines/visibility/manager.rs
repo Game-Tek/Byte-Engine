@@ -29,7 +29,7 @@ use super::layout::{
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
+	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
 	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
@@ -49,7 +49,7 @@ use crate::rendering::lights::{IesProfile, Lights};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
-use crate::rendering::csm::{self, CascadeSplits};
+use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -59,6 +59,9 @@ pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-
 /// splits that is logarithmic. See [`CascadeSplits`].
 pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "render.directional-shadows.distance";
 pub const DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER: &str = "render.directional-shadows.split-blend";
+/// The startup parameter that sets what directional shadow cascades cover: `receivers` or `frustum`. See
+/// [`CascadeFitting`].
+pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "render.directional-shadows.fitting";
 
 /// The `VisibilityPipelineSettings` struct configures memory limits and shadow coverage for the visibility rendering
 /// pipeline.
@@ -67,6 +70,7 @@ pub struct VisibilityPipelineSettings {
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
 	cascade_splits: CascadeSplits,
+	cascade_fitting: CascadeFitting,
 }
 
 impl Default for VisibilityPipelineSettings {
@@ -75,6 +79,7 @@ impl Default for VisibilityPipelineSettings {
 			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
 			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 			cascade_splits: CascadeSplits::default(),
+			cascade_fitting: CascadeFitting::default(),
 		}
 	}
 }
@@ -88,6 +93,16 @@ impl VisibilityPipelineSettings {
 
 	pub fn cascade_splits(&self) -> CascadeSplits {
 		self.cascade_splits
+	}
+
+	/// Sets what each directional shadow cascade covers.
+	pub fn with_cascade_fitting(mut self, cascade_fitting: CascadeFitting) -> Self {
+		self.cascade_fitting = cascade_fitting;
+		self
+	}
+
+	pub fn cascade_fitting(&self) -> CascadeFitting {
+		self.cascade_fitting
 	}
 
 	/// Sets the maximum number of reusable cone-light shadow maps per visibility sink.
@@ -429,10 +444,13 @@ pub struct VisibilityPipelineManager {
 	availability: AvailabilityGraph<Availability>,
 	environment: EnvironmentState,
 	cascade_splits: CascadeSplits,
+	cascade_fitting: CascadeFitting,
 	cone_shadow_pool_capacity: usize,
 	point_shadow_pool_capacity: usize,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
+	contact_shadow_configuration: crate::configuration::ConfigurationPort,
+	contact_shadow_settings: ContactShadowSettings,
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
 	/// per-frame images hold usable history, and only while the extent is unchanged.
 	recorded_sinks: SmallVec<[Sink; 4]>,
@@ -450,6 +468,7 @@ impl VisibilityPipelineManager {
 		pipeline_manager: PipelineManagerClient,
 		transforms_listener: DefaultListener<TransformationUpdate>,
 		gtao_configuration: crate::configuration::ConfigurationPort,
+		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
 		let environment = create_fallback_environment(context);
@@ -510,10 +529,13 @@ impl VisibilityPipelineManager {
 				descriptors_dirty: false,
 			},
 			cascade_splits: settings.cascade_splits,
+			cascade_fitting: settings.cascade_fitting,
 			cone_shadow_pool_capacity: settings.cone_shadow_map_pool_capacity,
 			point_shadow_pool_capacity: settings.point_shadow_map_pool_capacity,
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
+			contact_shadow_configuration,
+			contact_shadow_settings: ContactShadowSettings::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
 			scene: VisibilityScene {
@@ -862,6 +884,29 @@ impl VisibilityPipelineManager {
 		}
 	}
 
+	/// Applies queued contact-shadow controls before any sink records this frame's commands.
+	fn apply_contact_shadow_configuration(&mut self) {
+		while let Some(update) = self.contact_shadow_configuration.read() {
+			let Some(parameter) = update.parameter().strip_prefix(CONTACT_SHADOWS_CONFIGURATION_PREFIX) else {
+				self.contact_shadow_configuration.not_set(
+					update.id(),
+					"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
+				);
+				continue;
+			};
+			match self.contact_shadow_settings.with_parameter(parameter, update.value()) {
+				Ok((settings, effective_value)) => {
+					self.contact_shadow_settings = settings;
+					for sink_state in &mut self.scene.sink_states {
+						sink_state.render_pass.set_contact_shadow_settings(settings);
+					}
+					self.contact_shadow_configuration.set(update.id(), effective_value);
+				}
+				Err(reason) => self.contact_shadow_configuration.not_set(update.id(), reason),
+			}
+		}
+	}
+
 	/// Rebuilds the frame's instance lists from whole renderables whose dependencies are ready, and uploads skin palettes.
 	fn rebuild_active_instances(&mut self, frame: &mut ghi::implementation::Frame) {
 		let render_info = &mut self.scene.render_info;
@@ -925,27 +970,35 @@ impl VisibilityPipelineManager {
 			.write_palettes(frame, &self.skinning_frame.matrices, &self.skinning_frame.dual_quaternions);
 	}
 
-	/// Writes the camera view and every shadow view selected this frame.
-	fn write_views(&self, frame: &mut ghi::implementation::Frame, main_view: View, shadows: &ShadowLightSelection<'_>) {
+	/// Writes the camera view and every shadow view selected this frame. Returns the sun's cascades, fitted to the
+	/// camera frustum, or `None` without a sun.
+	fn write_views(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		main_view: View,
+		shadows: &ShadowLightSelection<'_>,
+	) -> Option<[csm::CascadeFrame; SHADOW_CASCADE_COUNT]> {
 		let profiles = &self.loaded_ies_profiles;
 		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
-		if let Some((_, light_direction)) = shadows.directional {
-			let cascade_views = csm::make_csm_views(
+		let cascades = shadows.directional.map(|(_, light_direction)| {
+			let cascades = csm::make_cascade_frames(
 				main_view,
 				light_direction,
 				SHADOW_CASCADE_COUNT,
 				SHADOW_MAP_RESOLUTION,
 				self.cascade_splits,
-			);
-			let cascade_far =
-				csm::make_cascade_split_ranges(main_view, SHADOW_CASCADE_COUNT, self.cascade_splits).map(|(_, far)| far);
-			for (cascade, (view, far)) in cascade_views.zip(cascade_far).enumerate() {
-				let mut data = ShaderViewData::from(view);
-				data.far = far;
+			)
+			.collect::<SmallVec<[_; SHADOW_CASCADE_COUNT]>>()
+			.into_inner()
+			.expect("Cascade count does not match the shadow views. The most likely cause is that make_cascade_frames was called with another cascade count.");
+			for (cascade, frame) in cascades.iter().enumerate() {
+				let mut data = ShaderViewData::from(frame.view);
+				data.far = frame.slice_far;
 				views[1 + cascade] = data;
 			}
-		}
+			cascades
+		});
 		for (layer, (_, light, transform)) in shadows
 			.cones
 			.iter()
@@ -969,6 +1022,7 @@ impl VisibilityPipelineManager {
 			}
 		}
 		frame.sync_buffer(self.scene.views_buffer);
+		cascades
 	}
 }
 
@@ -986,6 +1040,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		_time: crate::time::MediaTime,
 	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
 		self.apply_gtao_configuration();
+		self.apply_contact_shadow_configuration();
 		self.adopt_resource_completions(frame);
 		frame
 			.get_mut_dynamic_buffer_slice(self.materials_buffer)
@@ -1013,9 +1068,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				);
 			}
 		}
-		if let Some(sink) = sinks.first() {
-			self.write_views(frame, sink.view(), &shadows);
-		}
+		let cascades = sinks.first().and_then(|sink| self.write_views(frame, sink.view(), &shadows));
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
@@ -1024,6 +1077,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			});
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
+			receiver_fit: cascades.filter(|_| self.cascade_fitting == CascadeFitting::Receivers),
 			cone_count: shadows.cone_count(),
 			point_count: shadows.point_count(),
 		};
@@ -1051,6 +1105,15 @@ impl PipelineManager for VisibilityPipelineManager {
 						view: previous.view(),
 						exposure: recorded_exposure,
 					});
+				// The cascades were made for the first sink's camera, so only its surfaces can fit them.
+				let shadow_work = if command_index == 0 {
+					shadow_work
+				} else {
+					ShadowWork {
+						receiver_fit: None,
+						..shadow_work
+					}
+				};
 				let command = render_pass.prepare(frame, sink, skinning, dispatches, render_info, shadow_work, history)?;
 				recorded_sinks.push(*sink);
 				Some(allocate_render_command(frame_allocator, command))
@@ -1104,6 +1167,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.cone_shadow_pool_capacity,
 			self.point_shadow_pool_capacity,
 			self.gtao_settings,
+			self.contact_shadow_settings,
 		);
 		context.write(
 			&self

@@ -405,6 +405,7 @@ impl VisibilityShaderScope {
 			(DIRECTIONAL_SHADOW_CASCADE_VIEW_SOURCE, "directional_shadow_cascade_view"),
 			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
 			(DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE, "directional_shadow_fitting_cascade"),
+			(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds"),
 			(DIRECTIONAL_SHADOW_RECEIVER_SOURCE, "directional_shadow_receiver"),
 			(DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE, "directional_shadow_receiver_gradient"),
 			(DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE, "directional_shadow_occluder_distance"),

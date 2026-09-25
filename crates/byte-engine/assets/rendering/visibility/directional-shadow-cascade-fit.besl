@@ -1,0 +1,159 @@
+// Shrinks each directional shadow cascade from the CPU's fit to its slice of the camera frustum down to the box its
+// receivers fill, as the receiver-bounds pass found it. One thread rewrites one cascade's view in place, and a cascade
+// without receivers keeps the CPU's fit.
+//
+// Like the CPU's fit, the new view is a square padded by the edge margin, sized on the same ladder of steps per
+// doubling, centered on the texel grid fixed in the world, and reaching the caster reach toward the light. It is never
+// larger than the CPU's fit. Both views share an orientation, so the new view is the old one scaled and moved along
+// the light's axes: its view-projection maps each old normalized device coordinate c to c * scale + offset.
+View: struct {
+	view: mat4x3f,
+	view_projection: mat4f,
+	inverse_view: mat4x3f,
+	fov: vec2f,
+	near: f32,
+	far: f32,
+}
+
+// The camera, then the four cascades.
+Views: struct {
+	views: View[5],
+}
+
+ReceiverFit: struct {
+	view_to_cascade_rows: vec4f[12],
+	cascade_frames: vec4f[4],
+	split_far: vec4f,
+	pixel_to_ray: vec4f,
+	depth_unproject: vec4f,
+	fit_constants: vec4f,
+}
+
+ReceiverBounds: struct {
+	bounds: atomicu32[24],
+}
+
+// Each cascade's size, as a step on the ladder offset by CASCADE_SIZE_STEP_OFFSET. It persists across frames.
+CascadeSizeSteps: struct {
+	steps: u32[4],
+}
+
+// BESL resolves a binding named like its own member to the previous statement's access after a store, so this binding
+// of the shared `views` buffer takes another name.
+cascade_views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
+receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_write, memory: device }>;
+receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
+cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
+
+// Must match directional-shadow-receiver-bounds.besl.
+RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
+RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
+RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
+CASCADE_COUNT: const u32 = 4;
+// Keeps stored steps positive for sizes down to about a millimeter.
+CASCADE_SIZE_STEP_OFFSET: const f32 = 1024.0;
+
+decode_lower_bound: fn (code: u32) -> f32 {
+	return (f32(RECEIVER_BOUNDS_CODE_RANGE - code) - RECEIVER_BOUNDS_OFFSET) / RECEIVER_BOUNDS_STEPS_PER_UNIT;
+}
+
+decode_upper_bound: fn (code: u32) -> f32 {
+	return (f32(code) - RECEIVER_BOUNDS_OFFSET) / RECEIVER_BOUNDS_STEPS_PER_UNIT;
+}
+
+// Applies c * scale + offset to the normalized device coordinates one view-projection column produces.
+refit_column: fn (column: vec4f, scale: vec3f, offset: vec3f) -> vec4f {
+	return vec4f(
+		column.x * scale.x + column.w * offset.x,
+		column.y * scale.y + column.w * offset.y,
+		column.z * scale.z + column.w * offset.z,
+		column.w
+	);
+}
+
+main: fn (input: StageInput) -> void {
+	let cascade: u32 = input.thread_idx;
+	if (cascade < CASCADE_COUNT) {
+		let first: u32 = cascade * 6;
+		let lower_x_code: u32 = atomic_load(receiver_bounds.bounds[first]);
+		if (lower_x_code != 0) {
+			let lower_x: f32 = decode_lower_bound(lower_x_code);
+			let lower_y: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 1]));
+			let lower_z: f32 = decode_lower_bound(atomic_load(receiver_bounds.bounds[first + 2]));
+			let upper_x: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 3]));
+			let upper_y: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 4]));
+			let upper_z: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 5]));
+			// The frustum fit's light-space center x and y, half extent, and depth range, in meters. Its normalized
+			// device x and y span one half extent per unit, and z falls from one at its light-facing side to zero one
+			// depth range along the light.
+			let frame: vec4f = receiver_fit.cascade_frames[cascade];
+			let resolution: f32 = receiver_fit.fit_constants.x;
+			let edge_texels: f32 = receiver_fit.fit_constants.y;
+			let caster_reach: f32 = receiver_fit.fit_constants.z;
+			let steps_per_octave: f32 = receiver_fit.fit_constants.w;
+
+			let fitted_half_extent: f32 = max(upper_x - lower_x, upper_y - lower_y) * 0.5 * frame.z;
+			// A margin of m texels out of r leaves the receivers (r - 2m) / r of the map.
+			let padded_half_extent: f32 = fitted_half_extent * resolution / (resolution - 2.0 * edge_texels);
+			let frustum_step: f32 = round(log2(frame.z) * steps_per_octave);
+			let needed_step: f32 = min(0.0 - floor(0.0 - log2(padded_half_extent) * steps_per_octave), frustum_step);
+			// The size grows at once but shrinks only once it can shrink by two steps, so receivers that hover at a
+			// step do not switch the size every frame. Clamping also turns a new buffer's contents into a valid size.
+			let previous_step: f32 = clamp(
+				f32(cascade_size_steps.steps[cascade]) - CASCADE_SIZE_STEP_OFFSET,
+				needed_step,
+				frustum_step
+			);
+			let size_step: f32 = previous_step;
+			if (previous_step - needed_step > 1.0) {
+				size_step = needed_step;
+			}
+			cascade_size_steps.steps[cascade] = u32(size_step + CASCADE_SIZE_STEP_OFFSET);
+			let half_extent: f32 = pow(2.0, size_step / steps_per_octave);
+			let texel_size: f32 = 2.0 * half_extent / resolution;
+			// Light-space coordinates measured from the world origin keep the texel grid still as the camera moves.
+			let center_x: f32 = round((frame.x + (lower_x + upper_x) * 0.5 * frame.z) / texel_size) * texel_size;
+			let center_y: f32 = round((frame.y + (lower_y + upper_y) * 0.5 * frame.z) / texel_size) * texel_size;
+			// How far the light-facing side moves along the light: to the caster reach before the receiver nearest the
+			// light. The view then ends at the receiver furthest from it.
+			let front_shift: f32 = (1.0 - upper_z) * frame.w - caster_reach;
+			let depth_range: f32 = (1.0 - lower_z) * frame.w - front_shift;
+
+			let shift: vec3f = vec3f(center_x - frame.x, center_y - frame.y, front_shift);
+			let scale: vec3f = vec3f(frame.z / half_extent, frame.z / half_extent, frame.w / depth_range);
+			let offset: vec3f = vec3f(
+				0.0 - shift.x / half_extent,
+				0.0 - shift.y / half_extent,
+				1.0 - (frame.w - front_shift) / depth_range
+			);
+			let view_index: u32 = cascade + 1;
+			// BESL confuses a local named like a struct field with that field, so these names differ from View's.
+			let frustum_view_projection: mat4f = cascade_views.views[view_index].view_projection;
+			let frustum_world_to_light: mat4x3f = cascade_views.views[view_index].view;
+			let frustum_light_to_world: mat4x3f = cascade_views.views[view_index].inverse_view;
+			cascade_views.views[view_index].view_projection = mat4f(
+				refit_column(frustum_view_projection[0], scale, offset),
+				refit_column(frustum_view_projection[1], scale, offset),
+				refit_column(frustum_view_projection[2], scale, offset),
+				refit_column(frustum_view_projection[3], scale, offset)
+			);
+			// The inverse view's first three columns are the light's axes in world space, so moving the view along them
+			// moves its world-space origin by those axes and its light-space origin by the shift itself.
+			cascade_views.views[view_index].view = mat4x3f(
+				frustum_world_to_light[0],
+				frustum_world_to_light[1],
+				frustum_world_to_light[2],
+				frustum_world_to_light[3] - shift
+			);
+			cascade_views.views[view_index].inverse_view = mat4x3f(
+				frustum_light_to_world[0],
+				frustum_light_to_world[1],
+				frustum_light_to_world[2],
+				frustum_light_to_world[3]
+					+ frustum_light_to_world[0] * shift.x
+					+ frustum_light_to_world[1] * shift.y
+					+ frustum_light_to_world[2] * shift.z
+			);
+		}
+	}
+}

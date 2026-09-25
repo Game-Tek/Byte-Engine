@@ -14,6 +14,8 @@ ScreenView: struct {
 ContactShadowParameters: struct {
 	// The view-space unit direction from a surface toward the sun. W is unused.
 	direction_to_light: vec4f,
+	// World-space reach of one ray. Occluders further away are left to the shadow map.
+	max_distance: f32,
 }
 
 // One ray's screen-space path. Screen position and 1/z are both linear along a projected line. The ray starts on the
@@ -32,8 +34,6 @@ visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 contact_shadow_output: descriptor<{ type: StorageImage<r8>, binding: 1034, access: write }>;
 
 CONTACT_SHADOW_STEP_COUNT: const u32 = 16;
-// World-space reach of one ray. Occluders further away are left to the shadow map.
-CONTACT_SHADOW_MAX_DISTANCE: const f32 = 0.3;
 // Screen-space reach in pixels. It bounds the march cost for pixels close to the camera.
 CONTACT_SHADOW_MAX_SCREEN_DISTANCE: const f32 = 64.0;
 // A ray is blocked only while it is less than this far behind the depth buffer. The depth buffer stores only front
@@ -159,7 +159,7 @@ main: fn (input: StageInput) -> void {
 	);
 	let pixel_f: vec2f = vec2f(column, row);
 	let origin: vec3f = view_position(pixel_f, center_z);
-	let ray_length: f32 = CONTACT_SHADOW_MAX_DISTANCE;
+	let ray_length: f32 = contact_shadow_parameters.max_distance;
 	// Stop rays in front of the camera plane so every step keeps a positive depth.
 	let minimum_z: f32 = center_z * 0.05;
 	if (origin.z + direction.z * ray_length < minimum_z) {

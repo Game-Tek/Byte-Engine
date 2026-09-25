@@ -1909,6 +1909,9 @@ fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
 		.collect()
 }
 
+/// The ray reach the contact-shadow tests trace with. The wall test's rows are laid out for it.
+const CONTACT_SHADOW_TEST_DISTANCE: f32 = 0.3;
+
 /// Runs the contact-shadow trace at one pixel of the floor scene and returns the value it writes: one where the ray
 /// toward the light is clear, falling toward zero where it is blocked.
 fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]) -> f32 {
@@ -1920,6 +1923,9 @@ fn run_contact_shadows(wall: bool, direction_to_light: [f32; 3], pixel: [u32; 2]
 	let mut parameters = buffer(&program, ResourceSlot::new(1));
 	parameters
 		.write("direction_to_light", Value::Vec4F([x / length, y / length, z / length, 0.0]))
+		.expect("contact shadow parameters");
+	parameters
+		.write("max_distance", Value::F32(CONTACT_SHADOW_TEST_DISTANCE))
 		.expect("contact shadow parameters");
 	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(wall));
 	let mut output = empty_image(extent, extent);
@@ -2238,3 +2244,372 @@ async fn light_clusters_lower_to_the_platform_shader_language() {
 		.await
 		.expect("light-clusters.besl should compile for the platform shader language");
 }
+
+/* Directional shadow cascade fit */
+
+const RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1034);
+const RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1035);
+const CASCADE_SIZE_STEPS_SLOT: ResourceSlot = ResourceSlot::new(1036);
+const RECEIVER_BOUNDS_WORKGROUP_WIDTH: u32 = 8;
+const RECEIVER_BOUNDS_WORKGROUP_SIZE: usize = 64;
+/// Pixels one receiver-bounds workgroup covers on each side: eight threads of four pixels.
+const RECEIVER_BOUNDS_TILE: u32 = 32;
+const RECEIVER_FIT_EXTENT: u32 = 64;
+const RECEIVER_FIT_WALL_Z: f32 = 20.0;
+const RECEIVER_FIT_WALL_HEIGHT: f32 = 4.0;
+
+/// A camera 1.7 m above a floor, looking a little down toward a 4 m wall 20 m ahead, with sky above the wall, under a
+/// diagonal sun.
+struct ReceiverFitScene {
+	cascades: [crate::rendering::csm::CascadeFrame; super::layout::SHADOW_CASCADE_COUNT],
+	shader_data: super::render_pass::ReceiverFitShaderData,
+	/// Each pixel's reversed device depth, zero for the sky.
+	device_depth: Vec<[f32; 4]>,
+	/// Each receiver's cascade and world-space position.
+	receivers: Vec<(usize, [f32; 3])>,
+}
+
+fn receiver_fit_scene() -> ReceiverFitScene {
+	use crate::rendering::{Sink, View, csm};
+
+	let camera = View::new_perspective(
+		math::Degrees::new(75.0),
+		1.0,
+		0.1,
+		1000.0,
+		math::Point::new(0.0, 1.7, 0.0),
+		math::Vector::new(0.0, -0.3, 1.0).normalized().expect("camera direction"),
+	);
+	let sun = math::Vector::new(0.5, -1.0, 0.3).normalized().expect("sun direction");
+	let cascades = csm::make_cascade_frames(
+		camera,
+		sun,
+		super::layout::SHADOW_CASCADE_COUNT,
+		super::layout::SHADOW_MAP_RESOLUTION,
+		csm::CascadeSplits::default(),
+	)
+	.collect::<smallvec::SmallVec<[_; 4]>>()
+	.into_inner()
+	.expect("four cascades");
+	let extent = utils::Extent::square(RECEIVER_FIT_EXTENT);
+	let screen = super::render_pass::screen_view_data(&Sink::new(camera, extent, 0), extent);
+	let shader_data = super::render_pass::receiver_fit_shader_data(screen, camera, &cascades);
+
+	let camera_to_world = math::inverse(camera.view());
+	let position = camera_to_world * maths_rs::Vec4f::new(0.0, 0.0, 0.0, 1.0);
+	let mut device_depth = Vec::new();
+	let mut receivers = Vec::new();
+	for y in 0..RECEIVER_FIT_EXTENT {
+		for x in 0..RECEIVER_FIT_EXTENT {
+			let ray_x = x as f32 * screen.pixel_to_ray_mul[0] + screen.pixel_to_ray_add[0];
+			let ray_y = y as f32 * screen.pixel_to_ray_mul[1] + screen.pixel_to_ray_add[1];
+			// One unit of view-space depth along the pixel's ray, in world space.
+			let step = camera_to_world * maths_rs::Vec4f::new(ray_x, ray_y, 1.0, 0.0);
+			let floor = (step.y < 0.0).then(|| -position.y / step.y);
+			let wall = (step.z > 0.0)
+				.then(|| (RECEIVER_FIT_WALL_Z - position.z) / step.z)
+				.filter(|distance| (0.0..=RECEIVER_FIT_WALL_HEIGHT).contains(&(position.y + distance * step.y)));
+			let distance = [floor, wall].into_iter().flatten().reduce(f32::min);
+			let depth = distance.map_or(0.0, |distance| {
+				screen.depth_unproject_numerator / distance - screen.depth_unproject_denominator_offset
+			});
+			device_depth.push([depth, 0.0, 0.0, 1.0]);
+			if let Some(distance) = distance
+				&& let Some(cascade) = cascades.iter().position(|frame| distance < frame.slice_far)
+			{
+				let point = position + step * distance;
+				receivers.push((cascade, [point.x, point.y, point.z]));
+			}
+		}
+	}
+	ReceiverFitScene {
+		cascades,
+		shader_data,
+		device_depth,
+		receivers,
+	}
+}
+
+fn receiver_fit_buffer(program: &ExecutableProgram, data: &super::render_pass::ReceiverFitShaderData) -> besl::vm::Buffer {
+	let mut fit = buffer(program, RECEIVER_FIT_SLOT);
+	for (index, row) in data.view_to_cascade_rows.iter().enumerate() {
+		fit.write_indexed("view_to_cascade_rows", index, Value::Vec4F(*row))
+			.expect("receiver fit rows");
+	}
+	for (index, frame) in data.cascade_frames.iter().enumerate() {
+		fit.write_indexed("cascade_frames", index, Value::Vec4F(*frame))
+			.expect("receiver fit frames");
+	}
+	for (member, value) in [
+		("split_far", data.split_far),
+		("pixel_to_ray", data.pixel_to_ray),
+		("depth_unproject", data.depth_unproject),
+		("fit_constants", data.fit_constants),
+	] {
+		fit.write(member, Value::Vec4F(value)).expect("receiver fit constants");
+	}
+	fit
+}
+
+/// Returns views holding the CPU's frustum-fitted cascades after the camera.
+fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl::vm::Buffer {
+	let mut views = buffer(program, VIEWS_SLOT);
+	for (cascade, frame) in scene.cascades.iter().enumerate() {
+		let view = frame.view.view();
+		for (field, value) in [
+			("view", Value::Mat4x3F(math::AffineShaderMatrix::from(view).0)),
+			("view_projection", Value::Mat4F(column_major(frame.view.view_projection()))),
+			("inverse_view", Value::Mat4x3F(math::AffineShaderMatrix::from(math::inverse(view)).0)),
+			("far", Value::F32(frame.slice_far)),
+		] {
+			views
+				.write_indexed_field("views", 1 + cascade, field, value)
+				.expect("cascade view");
+		}
+	}
+	views
+}
+
+/// Runs the receiver-bounds pass over the whole scene and returns the bounds it found.
+fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
+	let program = asset!("directional-shadow-receiver-bounds.besl");
+	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
+	let mut fit = receiver_fit_buffer(&program, &scene.shader_data);
+	let mut bounds = buffer(&program, RECEIVER_BOUNDS_SLOT);
+	let tiles = RECEIVER_FIT_EXTENT / RECEIVER_BOUNDS_TILE;
+	for tile in 0..tiles * tiles {
+		let base = [
+			tile % tiles * RECEIVER_BOUNDS_WORKGROUP_WIDTH,
+			tile / tiles * RECEIVER_BOUNDS_WORKGROUP_WIDTH,
+		];
+		let configs = tile_configs::<RECEIVER_BOUNDS_WORKGROUP_SIZE>(RECEIVER_BOUNDS_WORKGROUP_WIDTH, base);
+		let mut workgroup = WorkgroupState::new();
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, &mut bounds);
+		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
+		descriptors.bind_workgroup_state(&mut workgroup);
+		program
+			.run_workgroup(&mut descriptors, &configs)
+			.expect("receiver-bounds workgroup execution");
+	}
+	bounds
+}
+
+/// Runs the cascade fit on `bounds` over the scene's frustum-fitted views and returns the views it wrote.
+fn run_cascade_fit(
+	program: &ExecutableProgram,
+	scene: &ReceiverFitScene,
+	bounds: &mut besl::vm::Buffer,
+	size_steps: &mut besl::vm::Buffer,
+) -> besl::vm::Buffer {
+	let mut views = cascade_views(program, scene);
+	let mut fit = receiver_fit_buffer(program, &scene.shader_data);
+	let configs: [ExecutionConfig; 4] = std::array::from_fn(|lane| {
+		ExecutionConfig::new(INSTRUCTION_LIMIT)
+			.with_call_depth_limit(128)
+			.with_thread_idx(lane as u32)
+			.with_thread_id([lane as u32, 0])
+	});
+	let mut workgroup = WorkgroupState::new();
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+	descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
+	descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
+	descriptors.bind_buffer(CASCADE_SIZE_STEPS_SLOT, size_steps);
+	descriptors.bind_workgroup_state(&mut workgroup);
+	program
+		.run_workgroup(&mut descriptors, &configs)
+		.expect("cascade-fit workgroup execution");
+	drop(descriptors);
+	views
+}
+
+fn read_matrix(views: &besl::vm::Buffer, view_index: usize, field: &str) -> Vec<f32> {
+	match views.read_indexed_field("views", view_index, field).expect("fitted view") {
+		Value::Mat4F(matrix) => matrix.to_vec(),
+		Value::Mat4x3F(matrix) => matrix.to_vec(),
+		value => panic!("Unexpected view matrix value: {value:?}."),
+	}
+}
+
+/// Applies a column-major matrix with `rows` rows to a point.
+fn transform_point(matrix: &[f32], rows: usize, point: [f32; 3]) -> Vec<f32> {
+	(0..rows)
+		.map(|row| (0..3).map(|column| matrix[column * rows + row] * point[column]).sum::<f32>() + matrix[3 * rows + row])
+		.collect()
+}
+
+/// Returns the half width, in meters, of the square an orthographic view-projection covers.
+fn fitted_half_extent(view_projection: &[f32]) -> f32 {
+	1.0 / (view_projection[0].powi(2) + view_projection[4].powi(2) + view_projection[8].powi(2)).sqrt()
+}
+
+/// Verifies the GPU shrinks each cascade to the surfaces its camera sees, keeps them inside the edge margin, keeps the
+/// texel grid fixed in the world, keeps its view matrices consistent, and leaves a cascade without receivers as the CPU
+/// fitted it.
+#[test]
+fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
+	use crate::rendering::csm::{CASTER_REACH, EDGE_TEXELS};
+
+	let scene = receiver_fit_scene();
+	let mut bounds = run_receiver_bounds(&scene);
+	let program = asset!("directional-shadow-cascade-fit.besl");
+	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
+	let views = run_cascade_fit(&program, &scene, &mut bounds, &mut size_steps);
+	let resolution = super::layout::SHADOW_MAP_RESOLUTION as f32;
+
+	for (cascade, frame) in scene.cascades.iter().enumerate() {
+		let view_projection = read_matrix(&views, 1 + cascade, "view_projection");
+		let half_extent = fitted_half_extent(&view_projection);
+		let receivers = scene
+			.receivers
+			.iter()
+			.filter(|(receiver_cascade, _)| *receiver_cascade == cascade)
+			.map(|(_, point)| *point)
+			.collect::<Vec<_>>();
+		if receivers.is_empty() {
+			assert_eq!(
+				view_projection,
+				column_major(frame.view.view_projection()),
+				"Cascade {cascade} has no receivers but changed. The most likely cause is that the fit rewrote an empty cascade."
+			);
+			continue;
+		}
+		assert!(
+			half_extent <= frame.half_extent * 1.0001,
+			"Cascade {cascade} grew from {} to {half_extent} meters. The most likely cause is that the fit is not limited by the frustum fit.",
+			frame.half_extent
+		);
+
+		// Receivers stay inside the edge margin, less the texel the grid snap may take, and inside the depth range past
+		// the caster reach.
+		let depth_range = 1.0 / view_projection[10].abs();
+		let edge = 1.0 - 2.0 * (EDGE_TEXELS - 1.0) / resolution;
+		for point in &receivers {
+			let ndc = transform_point(&view_projection, 4, *point);
+			assert!(
+				ndc[0].abs() <= edge && ndc[1].abs() <= edge,
+				"Cascade {cascade} receiver {point:?} lies at {ndc:?}, inside the edge margin. The most likely cause is that the receiver bounds or the fit's padding are wrong."
+			);
+			assert!(
+				(-0.0001..=1.0001 - CASTER_REACH / depth_range).contains(&ndc[2]),
+				"Cascade {cascade} receiver {point:?} lies at depth {} of 0..{}. The most likely cause is that the fit's depth range misses its receivers or its caster reach.",
+				ndc[2],
+				1.0 - CASTER_REACH / depth_range
+			);
+		}
+
+		// The world origin lands on a texel corner.
+		let origin = transform_point(&view_projection, 4, [0.0, 0.0, 0.0]);
+		for coordinate in [origin[0], origin[1]] {
+			let texel = (coordinate * 0.5 + 0.5) * resolution;
+			assert!(
+				(texel - texel.round()).abs() < 0.02,
+				"Cascade {cascade} puts the world origin at texel {texel}. The most likely cause is that the fit does not snap to the world-fixed texel grid."
+			);
+		}
+
+		// The light's position is the center of the view's light-facing side, and the view inverts the inverse view.
+		let inverse_view = read_matrix(&views, 1 + cascade, "inverse_view");
+		let light_position = [inverse_view[9], inverse_view[10], inverse_view[11]];
+		let light_ndc = transform_point(&view_projection, 4, light_position);
+		assert!(
+			light_ndc[0].abs() < 0.0001 && light_ndc[1].abs() < 0.0001 && (light_ndc[2] - 1.0).abs() < 0.0001,
+			"Cascade {cascade} light position maps to {light_ndc:?}. The most likely cause is that the inverse view did not move with the view-projection."
+		);
+		let view = read_matrix(&views, 1 + cascade, "view");
+		let light_view_position = transform_point(&view, 3, light_position);
+		assert!(
+			light_view_position.iter().all(|coordinate| coordinate.abs() < 0.001),
+			"Cascade {cascade} view maps its own light position to {light_view_position:?}. The most likely cause is that the view did not move with the inverse view."
+		);
+	}
+
+	// The camera sees the floor from about a meter away, so the first cascade drops the empty space in front of it.
+	let first = fitted_half_extent(&read_matrix(&views, 1, "view_projection"));
+	assert!(
+		first < scene.cascades[0].half_extent * 0.8,
+		"The first cascade only shrank from {} to {first} meters. The most likely cause is that the receiver bounds span the whole frustum slice.",
+		scene.cascades[0].half_extent
+	);
+}
+
+/// Returns bounds holding one box, centered in the frustum fit, `half_size` normalized device units wide in x and y.
+fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
+	const STEPS_PER_UNIT: f32 = 4_194_304.0;
+	const OFFSET: f32 = 8_388_608.0;
+	let lower = |coordinate: f32| 16_777_216 - ((coordinate * STEPS_PER_UNIT).floor() + OFFSET) as u32;
+	let upper = |coordinate: f32| ((coordinate * STEPS_PER_UNIT).ceil() + OFFSET) as u32;
+	let mut bounds = buffer(program, RECEIVER_BOUNDS_SLOT);
+	for (index, code) in [
+		lower(-half_size),
+		lower(-half_size),
+		lower(0.4),
+		upper(half_size),
+		upper(half_size),
+		upper(0.5),
+	]
+	.into_iter()
+	.enumerate()
+	{
+		bounds
+			.write_indexed("bounds", index, Value::U32(code))
+			.expect("receiver bounds");
+	}
+	bounds
+}
+
+/// Verifies a cascade grows as soon as its receivers need it but shrinks only once they fit two size steps smaller, so
+/// receivers hovering at a step do not switch its size every frame.
+#[test]
+fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
+	let scene = receiver_fit_scene();
+	let program = asset!("directional-shadow-cascade-fit.besl");
+	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
+	let mut fit = |half_size: f32| {
+		let views = run_cascade_fit(&program, &scene, &mut box_bounds(&program, half_size), &mut size_steps);
+		fitted_half_extent(&read_matrix(&views, 1, "view_projection"))
+	};
+
+	let fitted = fit(0.5);
+	assert!(fitted < scene.cascades[0].half_extent, "The box should shrink the first cascade.");
+	assert_eq!(fit(0.5 * 0.95), fitted, "A box one step smaller should keep the size.");
+	let shrunk = fit(0.5 * 0.75);
+	assert!(shrunk < fitted * 0.85, "A box three steps smaller should shrink the cascade, found {shrunk} of {fitted}.");
+	assert_eq!(fit(0.5), fitted, "The original box should grow the cascade back at once.");
+}
+
+/// Verifies the cascade-fit passes compile with the platform shader compiler, past BESL linking.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	for (name, source, workgroup) in [
+		(
+			"directional_shadow_receiver_bounds",
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/directional-shadow-receiver-bounds.besl"
+			)),
+			utils::Extent::square(RECEIVER_BOUNDS_WORKGROUP_WIDTH),
+		),
+		(
+			"directional_shadow_cascade_fit",
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/directional-shadow-cascade-fit.besl"
+			)),
+			utils::Extent::line(4),
+		),
+	] {
+		let root = besl::lex(besl::parse(source).expect("cascade-fit shader should parse")).expect("cascade-fit shader should link");
+		PlatformShaderCompiler::new()
+			.generate(&ShaderGenerationSettings::compute(workgroup).name(name.to_string()), &root)
+			.await
+			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
+	}
+}
+

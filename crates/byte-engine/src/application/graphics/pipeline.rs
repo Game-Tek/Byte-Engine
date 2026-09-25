@@ -211,10 +211,23 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	visibility_pipeline_settings = visibility_pipeline_settings.with_cascade_splits(
 		crate::rendering::csm::CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")),
 	);
+	if let Some(parameter) = application.get_parameter(DIRECTIONAL_SHADOW_FITTING_PARAMETER) {
+		visibility_pipeline_settings = visibility_pipeline_settings.with_cascade_fitting(
+			parameter.value().parse().unwrap_or_else(|reason| panic!("{reason}")),
+		);
+	}
 	let gtao_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);
-	for parameter_name in ["render.gtao.radius", "render.gtao.samples-per-ray", "render.gtao.radial-rays"] {
+	let contact_shadow_configuration = application
+		.configuration()
+		.register(crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX);
+	for parameter_name in [
+		"render.gtao.radius",
+		"render.gtao.samples-per-ray",
+		"render.gtao.radial-rays",
+		"render.contact-shadows.distance",
+	] {
 		if let Some(parameter) = application.get_parameter(parameter_name) {
 			application.configuration().update(parameter.name(), parameter.value());
 		}
@@ -387,6 +400,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				pipeline_manager,
 				transforms_listener,
 				gtao_configuration,
+				contact_shadow_configuration,
 				visibility_pipeline_settings,
 			),
 			cone_light_receiver,

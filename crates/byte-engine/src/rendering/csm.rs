@@ -1,7 +1,7 @@
 //! Cascaded shadow-map calculation and rendering support.
 
-use math::{Matrix, Point, UnitVector, Vector};
-use maths_rs::{Vec4f, mat::MatTranslate as _};
+use math::{Matrix, Point, UnitVector, inverse};
+use maths_rs::{Vec3f, Vec4f};
 use smallvec::SmallVec;
 
 use super::view::View;
@@ -102,13 +102,70 @@ pub(crate) fn make_cascade_split_ranges(
 	})
 }
 
-/// How far toward the light, in meters, each cascade's view reaches past its bounding sphere to take in shadow casters.
+/// How far toward the light, in meters, each cascade's view reaches past its slice of the camera frustum to take in
+/// shadow casters.
 ///
 /// It sets most of each cascade's depth range, and so the size of a stored depth step. It is independent of the camera's
 /// far plane, so a longer view distance does not coarsen depth precision.
-const CASTER_REACH: f32 = 100.0;
+pub(crate) const CASTER_REACH: f32 = 100.0;
+
+/// Texels each cascade keeps between its slice of the camera frustum and the map's edge. A receiver's occluder search
+/// and penumbra filter read up to sixteen texels around it, and snapping to the texel grid moves the map by up to one.
+pub(crate) const EDGE_TEXELS: f32 = 17.0;
+
+/// Steps per doubling to which a cascade's size is rounded up. Turning the camera changes the size its slice needs, and
+/// every size change moves shadow edges across texels; rounding keeps the size, and the edges, still until the slice
+/// outgrows the step, at the cost of up to 9% of the texels.
+pub(crate) const SIZE_STEPS_PER_OCTAVE: f32 = 8.0;
+
+/// The `CascadeFitting` enum chooses what each directional shadow cascade covers.
+///
+/// Pass it to [`crate::rendering::pipelines::visibility::VisibilityPipelineSettings::with_cascade_fitting`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CascadeFitting {
+	/// Each cascade shrinks to the surfaces the camera sees in its slice, so its texels are as small as the view
+	/// allows: the sky, and space in front of the nearest surface or behind a wall, take no texels. Two small GPU passes
+	/// read the camera's depth to find those surfaces, so the shadow maps are drawn after the camera's depth.
+	#[default]
+	Receivers,
+	/// Each cascade covers its whole slice of the camera frustum. It needs no GPU work before the shadow maps.
+	Frustum,
+}
+
+impl std::str::FromStr for CascadeFitting {
+	type Err = String;
+
+	fn from_str(name: &str) -> Result<Self, Self::Err> {
+		match name {
+			"receivers" => Ok(Self::Receivers),
+			"frustum" => Ok(Self::Frustum),
+			_ => Err(format!(
+				"Cascade fitting was not set. The most likely cause is that `{name}` is neither `receivers` nor `frustum`."
+			)),
+		}
+	}
+}
+
+/// The `CascadeFrame` struct is one cascade view from [`make_cascade_frames`] together with where it lies in the light's
+/// view, in meters, so the GPU can shrink it without rebuilding its orientation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CascadeFrame {
+	pub(crate) view: View,
+	/// The light-space x and y of the map's center, measured from the world origin.
+	pub(crate) center: [f32; 2],
+	/// Half the width of the square the map covers.
+	pub(crate) half_extent: f32,
+	/// The distance along the light from the view's light-facing side to its far side.
+	pub(crate) depth: f32,
+	/// The camera-space distance at which the cascade's slice of the camera frustum ends.
+	pub(crate) slice_far: f32,
+}
 
 /// Returns the world-space views for cascaded shadow mapping.
+///
+/// Each view is the smallest square, in the light's view, that holds its cascade's slice of the camera frustum, so
+/// every texel covers as little of the scene as the slice allows. Its size changes only in steps as the camera turns,
+/// and it lies on a texel grid fixed in the world, so moving the camera does not move shadow edges across texels.
 pub fn make_csm_views(
 	camera_view: View,
 	light_direction: UnitVector,
@@ -116,71 +173,79 @@ pub fn make_csm_views(
 	shadow_map_resolution: u32,
 	splits: CascadeSplits,
 ) -> impl ExactSizeIterator<Item = View> {
+	make_cascade_frames(camera_view, light_direction, num_cascades, shadow_map_resolution, splits).map(|frame| frame.view)
+}
+
+/// Returns the cascade views of [`make_csm_views`] with where each lies in the light's view.
+pub(crate) fn make_cascade_frames(
+	camera_view: View,
+	light_direction: UnitVector,
+	num_cascades: usize,
+	shadow_map_resolution: u32,
+	splits: CascadeSplits,
+) -> impl ExactSizeIterator<Item = CascadeFrame> {
+	assert!(
+		shadow_map_resolution as f32 > 2.0 * EDGE_TEXELS,
+		"Shadow map resolution is too small. The most likely cause is a resolution of {shadow_map_resolution}, which leaves no texels inside the cascade's edge margin."
+	);
+	// The light's orientation at the world origin. Light-space coordinates relative to the origin are fixed in the
+	// world, so snapping them to texels keeps the texel grid still as the camera moves.
+	let light_rotation = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.0, 1.0, Point::origin(), light_direction).view();
+
 	make_cascade_split_ranges(camera_view, num_cascades, splits).map(move |(cascade_near, cascade_far)| {
-		let camera_view = camera_view.from_from_z_planes(cascade_near, cascade_far);
-		let camera_frustum_corners = camera_view.get_frustum_corners();
-		let center = frustum_center(&camera_frustum_corners);
-		let radius = stabilize_cascade_radius(center, &camera_frustum_corners, shadow_map_resolution);
-
-		// Extend toward the light so casters outside the bounding sphere still shadow it.
-		let depth = 2.0 * radius + CASTER_REACH;
-		let light_position = center - light_direction * (radius + CASTER_REACH);
-		let light_view = View::new_orthographic(-radius, radius, -radius, radius, 0.0, depth, light_position, light_direction);
-
-		snap_shadow_view_to_texels(light_view, center, radius, shadow_map_resolution)
+		let corners = camera_view.from_from_z_planes(cascade_near, cascade_far).get_frustum_corners();
+		fit_cascade_view(&corners, cascade_far, light_rotation, light_direction, shadow_map_resolution)
 	})
 }
 
-/// Returns the arithmetic center of a fixed-size group of world-space frustum corners.
-fn frustum_center(corners: &[Point; 8]) -> Point {
-	let sum = corners
-		.iter()
-		.fold(Vector::zero(), |sum, corner| sum + (*corner - Point::origin()));
-	Point::origin() + sum / corners.len() as f32
-}
-
-/// Expands the cascade sphere to a stable size that changes only in texel-sized steps.
-fn stabilize_cascade_radius(center: Point, camera_frustum_corners: &[Point; 8], shadow_map_resolution: u32) -> f32 {
-	let base_radius = camera_frustum_corners
-		.iter()
-		.map(|corner| *corner - center)
-		.max_by(|left, right| {
-			left.partial_cmp_magnitude(*right)
-				.expect("Frustum corner distance must be finite")
-		})
-		.expect("A cascade frustum must have corners")
-		.length();
-
-	if shadow_map_resolution == 0 {
-		return (base_radius * 16.0).ceil() / 16.0;
-	}
-
-	let minimum_radius = (base_radius * 16.0).ceil() / 16.0;
-	let texel_scale = shadow_map_resolution as f32 / 2.0;
-	(minimum_radius * texel_scale).ceil() / texel_scale
-}
-
-/// Aligns the orthographic shadow view to the shadow-map texel grid.
-fn snap_shadow_view_to_texels(light_view: View, center: Point, radius: f32, shadow_map_resolution: u32) -> View {
-	if shadow_map_resolution == 0 {
-		return light_view;
-	}
-
-	let texel_size = (2.0 * radius) / shadow_map_resolution as f32;
-	if texel_size <= 0.0 {
-		return light_view;
-	}
-
-	let center_maths = center.into_maths();
-	let light_space_center = light_view.view() * Vec4f::new(center_maths.x, center_maths.y, center_maths.z, 1.0);
-	let snap_offset: Vector = Vector::new(
-		(light_space_center.x / texel_size).round() * texel_size - light_space_center.x,
-		(light_space_center.y / texel_size).round() * texel_size - light_space_center.y,
-		0.0,
+/// Fits an orthographic light view around one cascade's slice of the camera frustum. The slice's bounds in the light's
+/// view give a square that is padded by the edge margin, rounded up to a size step, and centered on a texel corner.
+fn fit_cascade_view(
+	corners: &[Point; 8],
+	slice_far: f32,
+	light_rotation: Matrix,
+	light_direction: UnitVector,
+	shadow_map_resolution: u32,
+) -> CascadeFrame {
+	let (minimum, maximum) = corners.iter().fold(
+		(Vec3f::new(f32::MAX, f32::MAX, f32::MAX), Vec3f::new(f32::MIN, f32::MIN, f32::MIN)),
+		|(minimum, maximum), corner| {
+			let light_corner = light_rotation * Vec4f::from((corner.into_maths(), 1.0));
+			let light_corner = Vec3f::new(light_corner.x, light_corner.y, light_corner.z);
+			(maths_rs::min(minimum, light_corner), maths_rs::max(maximum, light_corner))
+		},
 	);
 
-	// Translation is a matrix boundary, so the world displacement is explicitly unbranded here.
-	light_view.from_view(Matrix::from_translation(snap_offset.into_maths()) * light_view.view())
+	let resolution = shadow_map_resolution as f32;
+	let fitted_half_extent = (maximum.x - minimum.x).max(maximum.y - minimum.y) / 2.0;
+	// A margin of m texels out of r leaves the slice (r - 2m) / r of the map.
+	let padded_half_extent = fitted_half_extent * resolution / (resolution - 2.0 * EDGE_TEXELS);
+	let half_extent = ((padded_half_extent.log2() * SIZE_STEPS_PER_OCTAVE).ceil() / SIZE_STEPS_PER_OCTAVE).exp2();
+	let texel_size = 2.0 * half_extent / resolution;
+	let snap = |coordinate: f32| (coordinate / texel_size).round() * texel_size;
+	let center_x = snap((minimum.x + maximum.x) / 2.0);
+	let center_y = snap((minimum.y + maximum.y) / 2.0);
+
+	// The view starts CASTER_REACH meters toward the light from the slice and ends at its far side.
+	let front = minimum.z - CASTER_REACH;
+	let depth = maximum.z - front;
+	let light_position = inverse(light_rotation) * Vec4f::new(center_x, center_y, front, 1.0);
+	CascadeFrame {
+		view: View::new_orthographic(
+			-half_extent,
+			half_extent,
+			-half_extent,
+			half_extent,
+			0.0,
+			depth,
+			Point::from_maths(Vec3f::new(light_position.x, light_position.y, light_position.z)),
+			light_direction,
+		),
+		center: [center_x, center_y],
+		half_extent,
+		depth,
+		slice_far,
+	}
 }
 
 #[cfg(test)]
@@ -232,72 +297,77 @@ mod tests {
 		assert!(CascadeSplits::new(100.0, 1.5).is_err());
 	}
 
-	#[test]
-	fn cascade_views_keep_the_frustum_center_inside_light_depth() {
-		let camera_view = View::new_perspective(
-			math::Degrees::new(90.0),
-			1.0,
-			0.1,
-			100.0,
-			Point::origin(),
-			UnitVector::z_axis(),
-		);
-		let shadow_view = make_csm_views(camera_view, UnitVector::z_axis(), 1, 2048, CascadeSplits::default())
-			.next()
-			.expect("a shadow cascade view");
-		let center = frustum_center(&camera_view.get_frustum_corners());
-		let center_maths = center.into_maths();
-		let light_space_center = shadow_view.view() * Vec4f::new(center_maths.x, center_maths.y, center_maths.z, 1.0);
-
-		assert!((0.0..=shadow_view.far()).contains(&light_space_center.z));
-	}
-
-	#[test]
-	fn cascade_radius_is_quantized_to_texel_steps() {
-		let view = View::new_perspective(
+	/// Returns a 16:9 camera away from the origin, turned `yaw_degrees` about the vertical axis.
+	fn turned_camera(position: Point, yaw_degrees: f32) -> View {
+		let yaw = yaw_degrees.to_radians();
+		View::new_perspective(
 			math::Degrees::new(75.0),
 			16.0 / 9.0,
 			0.1,
 			100.0,
-			Point::new(0.37, -1.12, 2.83),
-			UnitVector::z_axis(),
-		);
-		let corners = view.get_frustum_corners();
-		let resolution = 1024;
-		let radius = stabilize_cascade_radius(frustum_center(&corners), &corners, resolution);
-
-		assert!(((radius * resolution as f32) / 2.0).fract().abs() < 0.0001);
-	}
-
-	#[test]
-	fn texel_snapping_aligns_the_cascade_center() {
-		let view = View::new_perspective(
-			math::Degrees::new(75.0),
-			16.0 / 9.0,
-			0.1,
-			100.0,
-			Point::new(0.37, -1.12, 2.83),
-			UnitVector::z_axis(),
-		);
-		let resolution = 1024;
-		let shadow_view = make_csm_views(
-			view,
-			Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction"),
-			1,
-			resolution,
-			CascadeSplits::default(),
+			position,
+			math::Vector::new(yaw.sin(), -0.2, yaw.cos()).normalized().expect("nonzero camera direction"),
 		)
-		.next()
-		.expect("a shadow cascade view");
-		let corners = view.get_frustum_corners();
-		let center = frustum_center(&corners);
-		let radius = stabilize_cascade_radius(center, &corners, resolution);
-		let center_maths = center.into_maths();
-		let snapped = shadow_view.view() * Vec4f::new(center_maths.x, center_maths.y, center_maths.z, 1.0);
-		let texel_size = (2.0 * radius) / resolution as f32;
+	}
 
-		assert!((snapped.x / texel_size).fract().abs() < 0.0001);
-		assert!((snapped.y / texel_size).fract().abs() < 0.0001);
+	fn diagonal_light() -> UnitVector {
+		math::Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction")
+	}
+
+	/// Returns a world point's shadow-map texel coordinates and light-space depth in one cascade view.
+	fn shadow_texel(view: View, point: Point, resolution: u32) -> (f32, f32, f32) {
+		let point = Vec4f::from((point.into_maths(), 1.0));
+		let clip = view.view_projection() * point;
+		let half = resolution as f32 / 2.0;
+		((clip.x / clip.w + 1.0) * half, (clip.y / clip.w + 1.0) * half, (view.view() * point).z)
+	}
+
+	#[test]
+	fn cascade_views_hold_their_slice_inside_the_edge_margin() {
+		let camera_view = turned_camera(Point::new(0.37, 1.7, 2.83), 20.0);
+		let resolution = 1024;
+		let ranges = make_cascade_split_ranges(camera_view, 4, CascadeSplits::default());
+		let views = make_csm_views(camera_view, diagonal_light(), 4, resolution, CascadeSplits::default());
+
+		for ((near, far), view) in ranges.zip(views) {
+			for corner in camera_view.from_from_z_planes(near, far).get_frustum_corners() {
+				let (x, y, depth) = shadow_texel(view, corner, resolution);
+				let inner = (EDGE_TEXELS - 1.0)..=(resolution as f32 - EDGE_TEXELS + 1.0);
+				assert!(inner.contains(&x) && inner.contains(&y), "corner at texel ({x}, {y})");
+				assert!((CASTER_REACH - 0.001..=view.far() + 0.001).contains(&depth), "corner at depth {depth}, far {}", view.far());
+			}
+		}
+	}
+
+	#[test]
+	fn cascade_texel_grid_stays_fixed_in_the_world_as_the_camera_moves() {
+		let resolution = 1024;
+		for position in [Point::new(0.37, 1.7, 2.83), Point::new(0.52, 1.7, 3.61)] {
+			for view in make_csm_views(turned_camera(position, 20.0), diagonal_light(), 4, resolution, CascadeSplits::default()) {
+				let (x, y, _) = shadow_texel(view, Point::origin(), resolution);
+				assert!((x - x.round()).abs() < 0.01 && (y - y.round()).abs() < 0.01, "origin at texel ({x}, {y})");
+			}
+		}
+	}
+
+	#[test]
+	fn cascade_size_changes_in_eighth_octave_steps_as_the_camera_turns() {
+		let sizes = (0..90)
+			.map(|step| {
+				let camera_view = turned_camera(Point::new(0.37, 1.7, 2.83), step as f32 * 0.5);
+				let view = make_csm_views(camera_view, diagonal_light(), 1, 1024, CascadeSplits::default())
+					.next()
+					.expect("a shadow cascade view");
+				// The orthographic projection scales x by one over the half extent.
+				1.0 / view.projection()[0]
+			})
+			.collect::<Vec<_>>();
+
+		for size in &sizes {
+			let step = size.log2() * SIZE_STEPS_PER_OCTAVE;
+			assert!((step - step.round()).abs() < 0.001, "half extent {size}");
+		}
+		assert!(sizes.windows(2).filter(|pair| pair[0] != pair[1]).count() < 10, "{sizes:?}");
 	}
 
 	#[test]
@@ -317,7 +387,7 @@ mod tests {
 			-UnitVector::y_axis(),
 			UnitVector::x_axis(),
 			UnitVector::z_axis(),
-			Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction"),
+			diagonal_light(),
 		];
 
 		for direction in directions {
@@ -358,5 +428,38 @@ mod tests {
 			assert!((floor_clip.x / floor_clip.w - caster_clip.x / caster_clip.w).abs() < 1e-5);
 			assert!((floor_clip.y / floor_clip.w - caster_clip.y / caster_clip.w).abs() < 1e-5);
 		}
+	}
+
+	/// The GPU cascade fit moves each view within the light's view by its frame, so a frame must say exactly where its
+	/// view lies: its center, half extent, and depth range in the light's view, and where its slice ends.
+	#[test]
+	fn cascade_frames_describe_where_their_views_lie() {
+		let camera_view = turned_camera(Point::new(3.0, 2.0, -7.0), 30.0);
+		let light = diagonal_light();
+		let light_rotation = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.0, 1.0, Point::origin(), light).view();
+		let light_to_world = inverse(light_rotation);
+		let world = |x: f32, y: f32, z: f32| {
+			let point = light_to_world * Vec4f::new(x, y, z, 1.0);
+			Vec4f::new(point.x, point.y, point.z, 1.0)
+		};
+		let ranges = make_cascade_split_ranges(camera_view, 4, CascadeSplits::default());
+		for (frame, (_, slice_far)) in make_cascade_frames(camera_view, light, 4, 2048, CascadeSplits::default()).zip(ranges) {
+			let [center_x, center_y] = frame.center;
+			let view_projection = frame.view.view_projection();
+			let center = view_projection * world(center_x, center_y, 0.0);
+			let corner = view_projection * world(center_x + frame.half_extent, center_y - frame.half_extent, 0.0);
+			let further = view_projection * world(center_x, center_y, frame.depth);
+			assert!(center.x.abs() < 1e-4 && center.y.abs() < 1e-4, "The frame's center maps to {center:?}.");
+			assert!((corner.x - 1.0).abs() < 1e-4 && (corner.y + 1.0).abs() < 1e-4, "The frame's corner maps to {corner:?}.");
+			assert!((center.z - further.z - 1.0).abs() < 1e-4, "The frame's depth range spans {} of stored depth.", center.z - further.z);
+			assert_eq!(frame.slice_far, slice_far);
+		}
+	}
+
+	#[test]
+	fn cascade_fitting_parses_its_parameter_names() {
+		assert_eq!("receivers".parse(), Ok(CascadeFitting::Receivers));
+		assert_eq!("frustum".parse(), Ok(CascadeFitting::Frustum));
+		assert!("sphere".parse::<CascadeFitting>().is_err());
 	}
 }

@@ -1,0 +1,1 @@
+{"name":"Directional Shadow Cascade Fit","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/directional-shadow-cascade-fit.besl"}}

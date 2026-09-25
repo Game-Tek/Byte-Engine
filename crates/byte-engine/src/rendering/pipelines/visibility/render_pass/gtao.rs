@@ -116,7 +116,7 @@ impl GtaoSettings {
 	}
 }
 
-fn configuration_float(value: &ConfigurationValue) -> Option<f64> {
+pub(super) fn configuration_float(value: &ConfigurationValue) -> Option<f64> {
 	match value {
 		ConfigurationValue::Integer(value) => Some(*value as f64),
 		ConfigurationValue::Float(value) if value.is_finite() => Some(*value),

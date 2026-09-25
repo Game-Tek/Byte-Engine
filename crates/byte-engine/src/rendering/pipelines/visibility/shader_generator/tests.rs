@@ -907,6 +907,54 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 	}
 }
 
+/// Verifies a directional cascade holds a receiver only while the receiver is at least eight texels, the filter's reach,
+/// inside the cascade's square: a 20-meter square on a 2048-texel map holds receivers up to 9.92 meters from its center.
+#[test]
+fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_besl_vm() {
+	let results = run_buffer_free_shadow_helper(
+		r#"
+		main: fn () -> void {
+			let projection: mat4f = mat4f(
+				vec4f(0.1, 0.0, 0.0, 0.0),
+				vec4f(0.0, 0.1, 0.0, 0.0),
+				vec4f(0.0, 0.0, 0.01, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			let holds_inside: u32 = 0;
+			if (directional_shadow_cascade_holds(projection, vec3f(9.9, 0.0 - 9.9, 3.0), 2048.0)) {
+				holds_inside = 1;
+			}
+			let holds_past_x: u32 = 0;
+			if (directional_shadow_cascade_holds(projection, vec3f(9.95, 0.0, 3.0), 2048.0)) {
+				holds_past_x = 1;
+			}
+			let holds_past_y: u32 = 0;
+			if (directional_shadow_cascade_holds(projection, vec3f(0.0, 0.0 - 9.95, 3.0), 2048.0)) {
+				holds_past_y = 1;
+			}
+			results.inside = holds_inside;
+			results.past_x = holds_past_x;
+			results.past_y = holds_past_y;
+		}
+		"#,
+		&[(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds")],
+		vec![
+			besl::ParserNode::member("inside", "u32"),
+			besl::ParserNode::member("past_x", "u32"),
+			besl::ParserNode::member("past_y", "u32"),
+		],
+	);
+	for (name, expected) in [("inside", 1), ("past_x", 0), ("past_y", 0)] {
+		let Value::U32(actual) = results.read(name).expect("cascade holds result") else {
+			panic!("Unexpected cascade holds result type for {name}.");
+		};
+		assert_eq!(
+			actual, expected,
+			"Unexpected cascade holds result for {name}. The most likely cause is a margin other than eight texels."
+		);
+	}
+}
+
 /// Runs `source` with only buffer-free shadow helpers bound and returns the results buffer.
 fn run_buffer_free_shadow_helper(
 	source: &str,

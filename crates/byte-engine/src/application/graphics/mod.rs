@@ -39,6 +39,7 @@
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
 /// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `6`.
 /// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `8`.
+/// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.15`.
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 /// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 ///
@@ -1276,8 +1277,8 @@ use crate::{
 			simple::{SimplePipelineManager, SimpleRenderPass},
 			visibility::{
 				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER,
-				DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
-				VisibilityPipelineSettings,
+				DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
+				POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 			},
 		},
 		render_pass::RenderPass,

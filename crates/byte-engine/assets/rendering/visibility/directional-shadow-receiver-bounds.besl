@@ -1,0 +1,139 @@
+// Finds the box each directional shadow cascade's receivers fill: the opaque surfaces the camera sees in the cascade's
+// slice of the view. The cascade fit then shrinks each cascade to its box. Positions are measured in the normalized
+// device coordinates of the cascade as the CPU fitted it to the camera frustum, where every receiver lies inside
+// -1..1 in x and y and 0..1 in z.
+//
+// Each thread reads a 4x4 pixel square, so one 8x8 workgroup covers a 32x32 tile. A thread keeps the box of its
+// current cascade in registers, the workgroup merges threads with shared atomics, and each tile merges into the
+// frame's boxes with at most one global atomic per bound.
+ReceiverFit: struct {
+	view_to_cascade_rows: vec4f[12],
+	cascade_frames: vec4f[4],
+	split_far: vec4f,
+	pixel_to_ray: vec4f,
+	depth_unproject: vec4f,
+	fit_constants: vec4f,
+}
+
+// Per cascade, six bounds: the lower x, y, and z, then the upper x, y, and z. Zero means no receiver.
+ReceiverBounds: struct {
+	bounds: atomicu32[24],
+}
+
+visibility_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_write, memory: device }>;
+receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
+
+tile_bounds: workgroup<atomicu32, 24>;
+
+RECEIVER_BOUNDS_PIXELS_PER_THREAD: const u32 = 4;
+RECEIVER_BOUNDS_COUNT: const u32 = 24;
+NO_CASCADE: const u32 = 4;
+// Bounds are fixed point, 2^22 steps per unit, offset by 2^23 so every coordinate in -2..2 encodes to a positive whole
+// number below 2^24, which f32 holds exactly. Every bound merges with atomic max: an upper bound stores its code, and a
+// lower bound stores 2^24 minus its code, so a larger stored value is a lower bound. Zero then means no receiver.
+RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
+RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
+RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
+RECEIVER_BOUNDS_LIMIT: const f32 = 1.99;
+
+// Rounds down, so the box never shrinks past a receiver.
+encode_lower_bound: fn (coordinate: f32) -> u32 {
+	let clamped: f32 = clamp(coordinate, 0.0 - RECEIVER_BOUNDS_LIMIT, RECEIVER_BOUNDS_LIMIT);
+	return RECEIVER_BOUNDS_CODE_RANGE - u32(floor(clamped * RECEIVER_BOUNDS_STEPS_PER_UNIT) + RECEIVER_BOUNDS_OFFSET);
+}
+
+// Rounds up, so the box never shrinks past a receiver.
+encode_upper_bound: fn (coordinate: f32) -> u32 {
+	let clamped: f32 = clamp(coordinate, 0.0 - RECEIVER_BOUNDS_LIMIT, RECEIVER_BOUNDS_LIMIT);
+	return u32(RECEIVER_BOUNDS_OFFSET - floor(0.0 - clamped * RECEIVER_BOUNDS_STEPS_PER_UNIT));
+}
+
+merge_tile_bounds: fn (cascade: u32, lower: vec3f, upper: vec3f) -> void {
+	let first: u32 = cascade * 6;
+	atomic_max(tile_bounds[first], encode_lower_bound(lower.x));
+	atomic_max(tile_bounds[first + 1], encode_lower_bound(lower.y));
+	atomic_max(tile_bounds[first + 2], encode_lower_bound(lower.z));
+	atomic_max(tile_bounds[first + 3], encode_upper_bound(upper.x));
+	atomic_max(tile_bounds[first + 4], encode_upper_bound(upper.y));
+	atomic_max(tile_bounds[first + 5], encode_upper_bound(upper.z));
+}
+
+// Returns the cascade whose slice holds a camera-space distance, or NO_CASCADE past the last one.
+receiver_cascade: fn (distance: f32) -> u32 {
+	let splits: vec4f = receiver_fit.split_far;
+	if (distance < splits.x) {
+		return 0;
+	}
+	if (distance < splits.y) {
+		return 1;
+	}
+	if (distance < splits.z) {
+		return 2;
+	}
+	if (distance < splits.w) {
+		return 3;
+	}
+	return NO_CASCADE;
+}
+
+main: fn (input: StageInput) -> void {
+	if (input.thread_idx < RECEIVER_BOUNDS_COUNT) {
+		atomic_store(tile_bounds[input.thread_idx], 0);
+	}
+	workgroup_barrier();
+
+	let extent: vec2u = texture_size(visibility_depth);
+	let origin: vec2u = vec2u(
+		input.thread_id.x * RECEIVER_BOUNDS_PIXELS_PER_THREAD,
+		input.thread_id.y * RECEIVER_BOUNDS_PIXELS_PER_THREAD
+	);
+	let cascade: u32 = NO_CASCADE;
+	let lower: vec3f = vec3f(0.0, 0.0, 0.0);
+	let upper: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < RECEIVER_BOUNDS_PIXELS_PER_THREAD * RECEIVER_BOUNDS_PIXELS_PER_THREAD; index = index + 1) {
+		let pixel_x: u32 = origin.x + index % RECEIVER_BOUNDS_PIXELS_PER_THREAD;
+		let pixel_y: u32 = origin.y + index / RECEIVER_BOUNDS_PIXELS_PER_THREAD;
+		if (pixel_x < extent.x && pixel_y < extent.y) {
+			let depth: f32 = fetch(visibility_depth, vec2u(pixel_x, pixel_y)).x;
+			// Zero depth is the sky, which receives no shadow.
+			if (depth != 0.0) {
+				let distance: f32 = receiver_fit.depth_unproject.x / (depth + receiver_fit.depth_unproject.y);
+				let pixel_cascade: u32 = receiver_cascade(distance);
+				if (pixel_cascade != NO_CASCADE) {
+					let ray_x: f32 = f32(pixel_x) * receiver_fit.pixel_to_ray.x + receiver_fit.pixel_to_ray.z;
+					let ray_y: f32 = f32(pixel_y) * receiver_fit.pixel_to_ray.y + receiver_fit.pixel_to_ray.w;
+					let view_position: vec4f = vec4f(ray_x * distance, ray_y * distance, distance, 1.0);
+					let first_row: u32 = pixel_cascade * 3;
+					let position: vec3f = vec3f(
+						dot(receiver_fit.view_to_cascade_rows[first_row], view_position),
+						dot(receiver_fit.view_to_cascade_rows[first_row + 1], view_position),
+						dot(receiver_fit.view_to_cascade_rows[first_row + 2], view_position)
+					);
+					// A thread's pixels almost always share a cascade, so it merges only when the cascade changes.
+					if (pixel_cascade != cascade) {
+						if (cascade != NO_CASCADE) {
+							merge_tile_bounds(cascade, lower, upper);
+						}
+						cascade = pixel_cascade;
+						lower = position;
+						upper = position;
+					}
+					lower = vec3f(min(lower.x, position.x), min(lower.y, position.y), min(lower.z, position.z));
+					upper = vec3f(max(upper.x, position.x), max(upper.y, position.y), max(upper.z, position.z));
+				}
+			}
+		}
+	}
+	if (cascade != NO_CASCADE) {
+		merge_tile_bounds(cascade, lower, upper);
+	}
+	workgroup_barrier();
+
+	if (input.thread_idx < RECEIVER_BOUNDS_COUNT) {
+		let bound: u32 = atomic_load(tile_bounds[input.thread_idx]);
+		if (bound != 0) {
+			atomic_max(receiver_bounds.bounds[input.thread_idx], bound);
+		}
+	}
+}

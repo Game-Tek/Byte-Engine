@@ -1,5 +1,6 @@
-//! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the linear depth
-//! pyramid, contact shadows, GTAO, SSGI, and material evaluation, which also traces screen-space reflections.
+//! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
+//! linear depth pyramid, contact shadows, GTAO, SSGI, and material evaluation, which also traces screen-space
+//! reflections.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
@@ -20,7 +21,8 @@ use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
 use self::contact_shadows::ContactShadowPass;
-pub(crate) use self::contact_shadows::{ContactShadowTargets, create_contact_shadow_targets};
+pub use self::contact_shadows::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
+pub(crate) use self::contact_shadows::{ContactShadowSettings, ContactShadowTargets, create_contact_shadow_targets};
 pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::depth_pyramid::DepthPyramidPass;
 use self::gtao::GtaoPass;
@@ -31,6 +33,11 @@ use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::ShadowPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowWork};
+#[cfg(test)]
+pub(crate) use self::{
+	depth_pyramid::screen_view_data,
+	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
+};
 use self::ssgi::SsgiPass;
 pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
 use self::visibility::{VisibilityPass, VisibilityPhase};
@@ -104,6 +111,7 @@ impl VisibilityRenderPass {
 		cone_shadow_pool_capacity: usize,
 		point_shadow_pool_capacity: usize,
 		gtao_settings: GtaoSettings,
+		contact_shadow_settings: ContactShadowSettings,
 	) -> Self {
 		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
 		let material_evaluation_descriptor_set = context.create_descriptor_set(Some("Material Evaluation Descriptor Set"));
@@ -269,6 +277,7 @@ impl VisibilityRenderPass {
 				context,
 				&pipeline_manager,
 				base_descriptor_set,
+				targets.depth,
 				directional_shadow_map.into(),
 				directional_shadow_depth_pyramid.into(),
 				cone_shadow_map.into(),
@@ -297,7 +306,13 @@ impl VisibilityRenderPass {
 				ao_map.into(),
 				gtao_settings,
 			),
-			contact_shadows: ContactShadowPass::new(context, &pipeline_manager, targets.depth, targets.contact_shadows),
+			contact_shadows: ContactShadowPass::new(
+				context,
+				&pipeline_manager,
+				targets.depth,
+				targets.contact_shadows,
+				contact_shadow_settings,
+			),
 			depth_pyramid,
 			ssgi,
 			reflections,
@@ -316,6 +331,10 @@ impl VisibilityRenderPass {
 
 	pub(crate) fn set_gtao_settings(&mut self, settings: GtaoSettings) {
 		self.gtao.set_settings(settings);
+	}
+
+	pub(crate) fn set_contact_shadow_settings(&mut self, settings: ContactShadowSettings) {
+		self.contact_shadows.set_settings(settings);
 	}
 
 	/// Returns the descriptor set that carries material-evaluation-only resources, including the environment.
@@ -345,7 +364,8 @@ impl VisibilityRenderPass {
 		};
 		let visibility_pipelines = self.visibility.pipelines(pipeline_manager)?;
 		let prepass_pipelines = self.material_prepasses.pipelines(pipeline_manager)?;
-		let shadows = self.shadows.prepare(frame, pipeline_manager, dispatches, shadow_work)?;
+		let (cascade_fit, shadows) = self.shadows.prepare(frame, pipeline_manager, dispatches, shadow_work, sink)?;
+		let fits_receivers = shadow_work.receiver_fit.is_some();
 		let light_cluster_pipeline = self.light_clusters.pipeline(pipeline_manager)?;
 		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
 		let contact_shadow_pipelines = self.contact_shadows.pipelines(pipeline_manager)?;
@@ -383,7 +403,10 @@ impl VisibilityRenderPass {
 				if let Some((pass, pipeline)) = skinning {
 					pass.record(c, &render_info.skinning_dispatches, pipeline);
 				}
-				shadows(c, t);
+				// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists.
+				if !fits_receivers {
+					shadows(c, t);
+				}
 				// Both material evaluation layers read the clusters, and nothing before them does.
 				light_clusters(c, t);
 
@@ -397,6 +420,11 @@ impl VisibilityRenderPass {
 					visibility_pipelines,
 				);
 				material_prepasses.record(c, extent, prepass_pipelines);
+				cascade_fit(c, t);
+				if fits_receivers {
+					shadows(c, t);
+				}
+				// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
 				depth_pyramid(c, t);
 				contact_shadows(c, t);
 				gtao(c, t);

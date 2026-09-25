@@ -11,8 +11,53 @@ use maths_rs::Vec4f;
 use utils::Extent;
 
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::gtao::configuration_float;
+use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
+
+/// The configuration namespace for contact-shadow runtime controls.
+pub const CONTACT_SHADOWS_CONFIGURATION_PREFIX: &str = "render.contact-shadows.";
+
+/// The `ContactShadowSettings` struct defines the runtime controls for the contact-shadow trace.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ContactShadowSettings {
+	/// The world-space reach of each ray toward the sun. Occluders further away are left to the shadow map.
+	pub(crate) max_distance: f32,
+}
+
+impl Default for ContactShadowSettings {
+	fn default() -> Self {
+		Self { max_distance: 0.15 }
+	}
+}
+
+impl ContactShadowSettings {
+	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	pub(crate) fn with_parameter(
+		self,
+		parameter: &str,
+		value: &ConfigurationValue,
+	) -> Result<(Self, ConfigurationValue), String> {
+		match parameter {
+			"distance" => {
+				let max_distance = configuration_float(value)
+					.filter(|distance| *distance >= 0.0 && *distance <= f32::MAX as f64)
+					.ok_or(
+						"Contact shadow distance was not set. The most likely cause is that the value is not a finite nonnegative number.",
+					)?;
+				let settings = Self {
+					max_distance: max_distance as f32,
+				};
+				Ok((settings, ConfigurationValue::Float(f64::from(settings.max_distance))))
+			}
+			_ => Err(
+				"Contact shadow parameter was not set. The most likely cause is that the parameter name is unsupported."
+					.to_string(),
+			),
+		}
+	}
+}
 
 /// The render-graph name of the full-resolution filtered result: one where the ray toward the sun is clear, falling
 /// toward zero where visible geometry blocks it. Material evaluation reads it only for the sun.
@@ -78,12 +123,14 @@ pub(crate) fn create_contact_shadow_targets(
 	}
 }
 
-/// The `ContactShadowShaderParameters` struct carries the per-frame light direction the trace marches toward.
+/// The `ContactShadowShaderParameters` struct carries the per-frame light direction the trace marches toward and how
+/// far it marches.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct ContactShadowShaderParameters {
 	/// The view-space unit direction from a surface toward the sun. W is unused.
 	direction_to_light: [f32; 4],
+	max_distance: f32,
 }
 
 /// Returns the view-space unit direction from a surface toward a directional light whose light travels along
@@ -99,6 +146,7 @@ pub(crate) fn view_space_direction_to_light(view: View, light_direction: math::U
 /// It runs after the opaque visibility layer and before opaque material evaluation, which multiplies the sun's
 /// shadow by [`CONTACT_SHADOWS_TARGET`]. Create its targets with [`create_contact_shadow_targets`].
 pub(super) struct ContactShadowPass {
+	settings: ContactShadowSettings,
 	descriptor_set: ghi::DescriptorSetHandle,
 	filter_descriptor_set: ghi::DescriptorSetHandle,
 	pipeline: crate::rendering::PipelineRef,
@@ -121,6 +169,7 @@ impl ContactShadowPass {
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
 		targets: ContactShadowTargets,
+		settings: ContactShadowSettings,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Contact Shadow Descriptor Set"));
 		let filter_descriptor_set = context.create_descriptor_set(Some("Contact Shadow Filter Descriptor Set"));
@@ -174,6 +223,7 @@ impl ContactShadowPass {
 		]);
 
 		Self {
+			settings,
 			descriptor_set,
 			filter_descriptor_set,
 			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/contact-shadows.pipeline"),
@@ -184,6 +234,10 @@ impl ContactShadowPass {
 		}
 	}
 
+	pub(super) fn set_settings(&mut self, settings: ContactShadowSettings) {
+		self.settings = settings;
+	}
+
 	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<ContactShadowPipelines> {
 		Some(ContactShadowPipelines {
 			trace: pipeline_manager.pipeline(self.pipeline)?,
@@ -191,7 +245,7 @@ impl ContactShadowPass {
 		})
 	}
 
-	/// Uploads this frame's camera constants and sun direction, and returns the trace and filter recording.
+	/// Uploads this frame's camera constants, sun direction and ray reach, and returns the trace and filter recording.
 	///
 	/// `sun_direction` is the world-space direction the sun's light travels. Without a sun the recording does
 	/// nothing, because material evaluation reads the result only for the sun.
@@ -208,6 +262,7 @@ impl ContactShadowPass {
 			frame.sync_buffer(self.view_data);
 			*frame.get_mut_dynamic_buffer_slice(self.parameters) = ContactShadowShaderParameters {
 				direction_to_light: view_space_direction_to_light(sink.view(), sun_direction),
+				max_distance: self.settings.max_distance,
 			};
 			frame.sync_buffer(self.parameters);
 		}
@@ -261,5 +316,17 @@ mod tests {
 		for (actual, expected) in direction.into_iter().zip([0.0, 1.0, 0.0, 0.0]) {
 			assert!((actual - expected).abs() < 0.0001, "{direction:?}");
 		}
+	}
+
+	#[test]
+	fn distance_parameter_sets_the_ray_reach_and_rejects_negative_values() {
+		let (settings, effective) = ContactShadowSettings::default()
+			.with_parameter("distance", &ConfigurationValue::Text("0.4".to_string()))
+			.expect("distance should parse");
+
+		assert_eq!(settings.max_distance, 0.4);
+		assert_eq!(effective, ConfigurationValue::Float(f64::from(0.4f32)));
+		assert!(settings.with_parameter("distance", &ConfigurationValue::Float(-1.0)).is_err());
+		assert!(settings.with_parameter("reach", &ConfigurationValue::Float(1.0)).is_err());
 	}
 }

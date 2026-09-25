@@ -377,6 +377,23 @@ directional_shadow_fitting_cascade: fn (
 }
 "#;
 
+// Returns whether a world-space receiver lies inside a directional cascade's square, at least eight texels, the filter's
+// reach, from its edge. Cascades fitted to the camera's opaque surfaces hold every one of them, but not a surface drawn
+// later, such as a transparent one.
+pub(crate) const DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE: &str = r#"
+directional_shadow_cascade_holds: fn (shadow_view_projection: mat4f, world_space_position: vec3f, shadow_map_width: f32) -> bool {
+	let clip_position: vec4f = shadow_view_projection * vec4f(
+		world_space_position.x,
+		world_space_position.y,
+		world_space_position.z,
+		1.0
+	);
+	// A texel spans two over the width in normalized device units.
+	let limit: f32 = 1.0 - 16.0 / shadow_map_width;
+	return abs(clip_position.x) <= limit && abs(clip_position.y) <= limit;
+}
+"#;
+
 // Projects a world-space receiver into one directional cascade. Returns its shadow-map uv in x and y and its stored
 // depth, with a small margin, in z. W is one when the receiver lies inside the cascade's depth range, and zero when it
 // lies outside and so is lit.
@@ -846,6 +863,18 @@ sample_directional_shadow: fn (
 	}
 	let shadow_map_extent: vec2u = texture_size(shadow_map);
 	let shadow_map_width: f32 = f32(shadow_map_extent.x);
+	// A surface outside its cascade's square moves to the first coarser cascade that holds it, and is lit when none does.
+	let holding_cascade: u32 = 4;
+	for (let cascade: u32 = depth_cascade; cascade < 4 && holding_cascade == 4; cascade = cascade + 1) {
+		let cascade_view: u32 = directional_shadow_cascade_view(cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+		if (directional_shadow_cascade_holds(views.views[cascade_view].view_projection, world_space_position, shadow_map_width)) {
+			holding_cascade = cascade;
+		}
+	}
+	if (holding_cascade == 4) {
+		return 1.0;
+	}
+	depth_cascade = holding_cascade;
 	let texels_per_meter: vec4f = vec4f(
 		directional_shadow_texels_per_meter(views.views[shadow_view0].view_projection, shadow_map_width),
 		directional_shadow_texels_per_meter(views.views[shadow_view1].view_projection, shadow_map_width),
@@ -861,6 +890,12 @@ sample_directional_shadow: fn (
 		depth_cascade, 3, 2.0 * angular_radius_tangent, texels_per_meter, 12.0
 	);
 	let search_view: u32 = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+	// A coarser cascade fitted to its own surfaces may not hold this one; the search then stays in the surface's
+	// cascade, where the penumbra it finds is cut off at the search's reach.
+	if (directional_shadow_cascade_holds(views.views[search_view].view_projection, world_space_position, shadow_map_width) == false) {
+		search_cascade = depth_cascade;
+		search_view = directional_shadow_cascade_view(search_cascade, shadow_view0, shadow_view1, shadow_view2, shadow_view3);
+	}
 	let occluder_distance: f32 = directional_shadow_occluder_distance(
 		views.views[search_view].view_projection,
 		search_cascade,

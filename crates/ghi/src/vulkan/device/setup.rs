@@ -10,13 +10,10 @@ impl Device {
 		)],
 	) -> Result<Self, &'static str> {
 		let inner = InnerDevice::new(settings, instance, queues)?;
-		let device = inner.device.clone();
-
-		let descriptor_heap_properties = inner.descriptor_heap_properties;
 		Ok(Self {
+			device: inner.device.clone(),
+			descriptor_heap_properties: inner.descriptor_heap_properties,
 			inner: Some(inner),
-			device,
-			descriptor_heap_properties,
 			shaders: Vec::new(),
 		})
 	}
@@ -46,33 +43,13 @@ impl InnerDevice {
 		let vk_entry = &instance.entry;
 		let vk_instance = &instance.instance;
 
-		#[cfg(target_os = "linux")]
-		let wayland_surface = ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance);
-
-		#[cfg(target_os = "windows")]
-		let win32_surface = ash::khr::win32_surface::Instance::load(vk_entry, vk_instance);
-
-		#[cfg(target_os = "macos")]
-		let macos_surface = ash::ext::metal_surface::Instance::load(vk_entry, vk_instance);
-
-		let surface_capabilities = ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance);
-
-		let physical_devices = unsafe {
-			vk_instance
-				.enumerate_physical_devices()
-				.or(Err("Failed to enumerate physical devices"))?
-		};
-
-		let physical_devices = physical_devices
+		let physical_devices = unsafe { vk_instance.enumerate_physical_devices() }
+			.or(Err("Failed to enumerate physical devices"))?
 			.into_iter()
 			.filter(|&physical_device| {
 				settings.gpu.is_none_or(|gpu_name| {
 					let properties = unsafe { vk_instance.get_physical_device_properties(physical_device) };
-					properties
-						.device_name_as_c_str()
-						.ok()
-						.and_then(|name| name.to_str().ok())
-						.is_some_and(|name| name == gpu_name)
+					properties.device_name_as_c_str().ok().and_then(|name| name.to_str().ok()) == Some(gpu_name)
 				})
 			})
 			.collect::<Vec<_>>();
@@ -96,46 +73,34 @@ impl InnerDevice {
 
 		let queue_family_properties = unsafe { vk_instance.get_physical_device_queue_family_properties(physical_device) };
 
-		// Build all requested queue family indices
 		let queue_family_indices = queues
 			.iter()
-			.map(|(d, _)| {
-				if d.r#type.is_empty() {
+			.map(|(selection, _)| {
+				use crate::types::WorkloadTypes;
+
+				let workloads = selection.r#type;
+				if workloads.is_empty() {
 					return Err(
 						"Failed to find a compatible queue family. The requested queue selection did not include any workload type.",
 					);
 				}
-
-				if d.r#type.intersects(crate::types::WorkloadTypes::VIDEO) {
+				if workloads.intersects(WorkloadTypes::VIDEO) {
 					return Err(
 						"Failed to find a compatible queue family. Vulkan video queues are not exposed through this backend command-buffer path.",
 					);
 				}
-
-				if d.r#type.intersects(crate::types::WorkloadTypes::IO) {
+				if workloads.intersects(WorkloadTypes::IO) {
 					return Err(
 						"Failed to find a compatible queue family. Vulkan IO queues are not exposed through this backend command-buffer path.",
 					);
 				}
 
-				let required_queue_flags = if d.r#type.intersects(crate::types::WorkloadTypes::RASTER) {
-					vk::QueueFlags::GRAPHICS
-				} else {
-					vk::QueueFlags::empty()
-				} | if d
-					.r#type
-					.intersects(crate::types::WorkloadTypes::COMPUTE | crate::types::WorkloadTypes::RAY_TRACING)
-				{
-					vk::QueueFlags::COMPUTE
-				} else {
-					vk::QueueFlags::empty()
-				} | if d.r#type.intersects(crate::types::WorkloadTypes::TRANSFER) {
-					vk::QueueFlags::TRANSFER
-				} else {
-					vk::QueueFlags::empty()
-				};
+				let compute_workloads = WorkloadTypes::COMPUTE | WorkloadTypes::RAY_TRACING;
+				let required_queue_flags = flag_if(workloads.intersects(WorkloadTypes::RASTER), vk::QueueFlags::GRAPHICS)
+					| flag_if(workloads.intersects(compute_workloads), vk::QueueFlags::COMPUTE)
+					| flag_if(workloads.intersects(WorkloadTypes::TRANSFER), vk::QueueFlags::TRANSFER);
 
-				let queue_family_index = queue_family_properties
+				queue_family_properties
 					.iter()
 					.enumerate()
 					.filter(|(_, info)| info.queue_flags.contains(required_queue_flags))
@@ -143,34 +108,26 @@ impl InnerDevice {
 					.map(|(index, _)| index as u32)
 					.ok_or(
 						"Failed to find a compatible queue family. The requested workload requires queue flags that no queue family exposes.",
-					)?;
-
-				Ok(queue_family_index)
+					)
 			})
 			.collect::<Result<Vec<_>, _>>()?;
 
-		// Fold duplicate queue family indices into a single queue create info per family
-		let queue_create_infos =
-			queue_family_indices
-				.iter()
-				.copied()
-				.fold(Vec::new(), |mut queue_create_infos, queue_family_index| {
-					if !queue_create_infos
-						.iter()
-						.any(|create_info: &vk::DeviceQueueCreateInfo<'_>| create_info.queue_family_index == queue_family_index)
-					{
-						queue_create_infos.push(
-							vk::DeviceQueueCreateInfo::default()
-								// .flags(vk::DeviceQueueCreateFlags::from_raw(0x00000004)) // VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR
-								.queue_family_index(queue_family_index)
-								.queue_priorities(&[1.0]),
-						);
-					}
+		// Requests that resolve to the same family share one Vulkan queue, created in order of first use.
+		let mut queue_families = Vec::new();
+		for &queue_family_index in &queue_family_indices {
+			if !queue_families.contains(&queue_family_index) {
+				queue_families.push(queue_family_index);
+			}
+		}
 
-					queue_create_infos
-				});
-
-		let memory_properties = unsafe { vk_instance.get_physical_device_memory_properties(physical_device) };
+		let queue_create_infos = queue_families
+			.iter()
+			.map(|&queue_family_index| {
+				vk::DeviceQueueCreateInfo::default()
+					.queue_family_index(queue_family_index)
+					.queue_priorities(&[1.0])
+			})
+			.collect::<Vec<_>>();
 
 		let mut descriptor_heap_properties = vk::PhysicalDeviceDescriptorHeapPropertiesEXT::default();
 		let mut physical_device_properties = vk::PhysicalDeviceProperties2::default().push(&mut descriptor_heap_properties);
@@ -200,104 +157,56 @@ impl InnerDevice {
 			.queue_create_infos(&queue_create_infos)
 			.enabled_extension_names(&device_extension_names);
 
-		let device: ash::Device = unsafe {
-			vk_instance
-				.create_device(physical_device, &device_create_info, None)
-				.map_err(|e| match e {
-					vk::Result::ERROR_OUT_OF_HOST_MEMORY => "Out of host memory",
-					vk::Result::ERROR_OUT_OF_DEVICE_MEMORY => "Out of device memory",
-					vk::Result::ERROR_INITIALIZATION_FAILED => "Initialization failed",
-					vk::Result::ERROR_EXTENSION_NOT_PRESENT => "Extension not present",
-					vk::Result::ERROR_FEATURE_NOT_PRESENT => "Feature not present",
-					vk::Result::ERROR_TOO_MANY_OBJECTS => "Too many objects",
-					vk::Result::ERROR_DEVICE_LOST => "Device lost",
-					_ => "Failed to create a device",
-				})?
-		};
+		let device = unsafe { vk_instance.create_device(physical_device, &device_create_info, None) }
+			.map_err(|result| crate::vulkan::instance::creation_error(result, "Failed to create a device"))?;
 
 		// Multiple GHI queue requests can resolve to the same Vulkan queue, so they must share one lock.
 		// This mutex is a temporary external synchronization fix; prefer internally synchronized Vulkan queues when available.
-		let mut shared_queues = Vec::<(u32, std::sync::Arc<std::sync::Mutex<vk::Queue>>)>::new();
+		let shared_queues = queue_families
+			.iter()
+			.map(|&family| Arc::new(std::sync::Mutex::new(unsafe { device.get_device_queue(family, 0) })))
+			.collect::<Vec<_>>();
 		let queues = queues
 			.iter_mut()
-			.zip(queue_family_indices.iter().copied())
+			.zip(queue_family_indices)
 			.enumerate()
 			.map(|(index, ((_, queue_handle), queue_family_index))| {
-				let vk_queue = if let Some((_, vk_queue)) = shared_queues
-					.iter()
-					.find(|(stored_queue_family_index, _)| *stored_queue_family_index == queue_family_index)
-				{
-					vk_queue.clone()
-				} else {
-					let vk_queue = std::sync::Arc::new(std::sync::Mutex::new(unsafe {
-						device.get_device_queue(queue_family_index, 0)
-					}));
-					shared_queues.push((queue_family_index, vk_queue.clone()));
-					vk_queue
-				};
-
 				**queue_handle = Some(graphics_hardware_interface::QueueHandle(index as u64));
-
+				let shared_queue = queue_families
+					.iter()
+					.position(|&family| family == queue_family_index)
+					.unwrap();
 				StoredQueue {
-					vk_queue,
+					vk_queue: shared_queues[shared_queue].clone(),
 					queue_family_index,
-					_queue_index: 0,
 				}
 			})
-			.collect::<Vec<_>>();
+			.collect();
 
-		let acceleration_structure = ash::khr::acceleration_structure::Device::load(vk_instance, &device);
-		let ray_tracing_pipeline = ash::khr::ray_tracing_pipeline::Device::load(vk_instance, &device);
-
-		let swapchain = ash::khr::swapchain::Device::load(vk_instance, &device);
-		let surface = ash::khr::surface::Instance::load(vk_entry, vk_instance);
-
-		let mesh_shading = ash::ext::mesh_shader::Device::load(vk_instance, &device);
-		let descriptor_heap = ash::ext::descriptor_heap::Device::load(vk_instance, &device);
-
-		let debug_utils = if settings.validation {
-			Some(ash::ext::debug_utils::Device::load(vk_instance, &device))
-		} else {
-			None
-		};
-
-		let swapchain_native_supports_formatless_storage_write =
-			Self::format_supports_formatless_storage_write(&vk_instance, physical_device, vk::Format::B8G8R8A8_SRGB);
-		let swapchain_proxy_supports_formatless_storage_write =
-			Self::format_supports_formatless_storage_write(&vk_instance, physical_device, vk::Format::B8G8R8A8_UNORM);
+		let supports_formatless_storage_write =
+			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
 
 		Ok(InnerDevice {
-			debug_utils,
+			debug_utils: settings
+				.validation
+				.then(|| ash::ext::debug_utils::Device::load(vk_instance, &device)),
 			debug_data: instance.debug_data.clone(),
-
-			memory_properties,
+			physical_device,
+			swapchain: ash::khr::swapchain::Device::load(vk_instance, &device),
+			surface: ash::khr::surface::Instance::load(vk_entry, vk_instance),
+			acceleration_structure: ash::khr::acceleration_structure::Device::load(vk_instance, &device),
+			ray_tracing_pipeline: ash::khr::ray_tracing_pipeline::Device::load(vk_instance, &device),
+			mesh_shading: ash::ext::mesh_shader::Device::load(vk_instance, &device),
+			descriptor_heap: ash::ext::descriptor_heap::Device::load(vk_instance, &device),
+			descriptor_heap_properties,
+			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
+			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
+			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
 			queues,
 			settings,
-			swapchain_native_supports_formatless_storage_write,
-			swapchain_proxy_supports_formatless_storage_write,
-
-			#[cfg(target_os = "linux")]
-			wayland_surface,
-
-			#[cfg(target_os = "windows")]
-			win32_surface,
-
-			#[cfg(target_os = "macos")]
-			macos_surface,
-
-			surface_capabilities,
-
-			physical_device,
+			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
+			swapchain_proxy_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_UNORM),
 			device,
-			swapchain,
-			surface,
-			acceleration_structure,
-			ray_tracing_pipeline,
-			mesh_shading,
-			descriptor_heap,
-			descriptor_heap_properties,
-			// #[cfg(debug_assertions)]
-			// debugger: RenderDebugger::new(),
 		})
 	}
 }
@@ -352,8 +261,7 @@ impl InnerDevice {
 			|| !subgroup_properties
 				.supported_operations
 				.contains(required_subgroup_operations)
-			|| subgroup_properties.subgroup_size == 0
-			|| subgroup_properties.subgroup_size > 128
+			|| !(1..=128).contains(&subgroup_properties.subgroup_size)
 		{
 			return Err(
 				"Vulkan compute subgroups with ballot support are unavailable. The most likely cause is that the selected GPU or driver does not support the required Material Count subgroup operations.",
@@ -364,9 +272,7 @@ impl InnerDevice {
 	}
 
 	fn physical_device_score(vk_instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> u64 {
-		let properties = unsafe { vk_instance.get_physical_device_properties(physical_device) };
-
-		match properties.device_type {
+		match unsafe { vk_instance.get_physical_device_properties(physical_device) }.device_type {
 			vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
 			vk::PhysicalDeviceType::INTEGRATED_GPU => 500,
 			vk::PhysicalDeviceType::VIRTUAL_GPU => 250,
@@ -382,11 +288,7 @@ impl InnerDevice {
 	) -> bool {
 		let mut format_properties_3 = vk::FormatProperties3::default();
 		let mut format_properties_2 = vk::FormatProperties2::default().push(&mut format_properties_3);
-
-		unsafe {
-			vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2);
-		}
-
+		unsafe { vk_instance.get_physical_device_format_properties2(physical_device, format, &mut format_properties_2) };
 		format_properties_3
 			.optimal_tiling_features
 			.contains(vk::FormatFeatureFlags2::STORAGE_IMAGE | vk::FormatFeatureFlags2::STORAGE_WRITE_WITHOUT_FORMAT)
@@ -397,9 +299,9 @@ fn available_device_extensions(
 	vk_instance: &ash::Instance,
 	physical_device: vk::PhysicalDevice,
 ) -> Result<Vec<vk::ExtensionProperties>, &'static str> {
-	unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.map_err(|_| {
-		"Failed to enumerate Vulkan device extensions. The most likely cause is that the GPU driver ran out of host memory."
-	})
+	unsafe { vk_instance.enumerate_device_extension_properties(physical_device) }.map_err(
+		|_| "Failed to enumerate Vulkan device extensions. The most likely cause is that the GPU driver ran out of host memory.",
+	)
 }
 
 fn has_extension(available_extensions: &[vk::ExtensionProperties], name: &std::ffi::CStr) -> bool {

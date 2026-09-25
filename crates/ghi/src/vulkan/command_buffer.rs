@@ -5,7 +5,7 @@ use utils::{Extent, hash::HashMap};
 use super::{
 	AccelerationStructure, BottomLevelAccelerationStructureHandle, Buffer, BufferHandle, BufferRange, BufferTransitionState,
 	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
-	Swapchain, Synchronizer, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
+	Swapchain, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
 		extent_into_vk_extent, image_aspect_mask, texture_format_and_resource_use_to_image_layout, to_access_flags,
 		to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation,
@@ -60,373 +60,298 @@ impl Drop for CommandBufferRecording<'_> {
 	}
 }
 
-pub struct VulkanCommandBuffer<'a> {
-	pub(crate) device: &'a mut Context,
-	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-}
-
-impl crate::command_buffer::CommandBuffer for VulkanCommandBuffer<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		Context::create_command_buffer_recording(self.device, self.command_buffer_handle)
-	}
-}
-
 mod operations;
 mod recording;
 mod transitions;
 
-pub(crate) use transitions::{BufferCopy, ImageCopy};
-use transitions::{
-	PlannedBufferBarrier, PlannedImageBarrier, PlannedMemoryBarrier, PlannedTransitions, TransitionStateUpdates,
-	buffer_image_height, buffer_row_length,
-};
+pub(crate) use transitions::BufferCopy;
+use transitions::{PlannedTransitions, TransitionStateUpdates, buffer_image_height, buffer_row_length};
 
+#[cfg(test)]
 mod tests {
 	use super::*;
+
+	type BufferStates = HashMap<Handles, Vec<BufferTransitionState>>;
 
 	fn transition(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2, layout: vk::ImageLayout) -> TransitionState {
 		TransitionState::new(stage, access, layout)
 	}
 
-	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
-		assert!(actual.stage == expected.stage);
-		assert!(actual.access == expected.access);
-		assert!(actual.layout == expected.layout);
+	fn buffer_transition(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2) -> TransitionState {
+		transition(stage, access, vk::ImageLayout::UNDEFINED)
 	}
 
-	fn consumption(
-		handle: Handles,
-		stage: vk::PipelineStageFlags2,
-		access: vk::AccessFlags2,
-		layout: vk::ImageLayout,
-	) -> VulkanConsumption {
-		VulkanConsumption {
-			handle,
-			stages: stage,
-			access,
-			layout,
-			range: None,
-		}
-	}
-
-	fn ranged_consumption(
-		handle: Handles,
-		stage: vk::PipelineStageFlags2,
-		access: vk::AccessFlags2,
-		range: BufferRange,
-	) -> VulkanConsumption {
-		VulkanConsumption {
-			handle,
-			stages: stage,
-			access,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: Some(range),
-		}
-	}
-
-	#[test]
-	fn planner_barriers_equal_write_states() {
-		let handle = Handles::Buffer(BufferHandle(1));
-		let current = transition(
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let mut states = HashMap::default();
-		states.insert(handle, current);
-
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				vk::ImageLayout::UNDEFINED,
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(13)),
-		);
-
-		assert!(planned.image_barriers.is_empty());
-		assert_eq!(planned.buffer_barriers.len(), 1);
-		assert!(planned.memory_barriers.is_empty());
-		assert_eq!(planned.state_updates.len(), 1);
-
-		let barrier = planned.buffer_barriers[0];
-
-		assert!(barrier.src_stage == vk::PipelineStageFlags2::TRANSFER);
-		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
-		assert!(barrier.dst_stage == vk::PipelineStageFlags2::TRANSFER);
-		assert!(barrier.dst_access == vk::AccessFlags2::TRANSFER_WRITE);
-	}
-
-	#[test]
-	fn planner_merges_read_after_read_buffer_state_without_a_barrier() {
-		let handle = Handles::Buffer(BufferHandle(11));
-		let mut states = HashMap::default();
-		states.insert(
-			handle,
-			transition(
-				vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::UNDEFINED,
-			),
-		);
-
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::UNDEFINED,
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(12)),
-		);
-
-		assert!(planned.buffer_barriers.is_empty());
-		assert_eq!(planned.state_updates.len(), 1);
-		let state = planned.state_updates[0].1;
-
-		assert!(state.stage.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER));
-		assert!(state.stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
-	}
-
-	fn read_after_write(
-		stage: vk::PipelineStageFlags2,
-		access: vk::AccessFlags2,
-		layout: vk::ImageLayout,
-	) -> TransitionState {
+	/// Builds a state that is read after a transfer write it still has to order against.
+	fn read_after_write(stage: vk::PipelineStageFlags2, access: vk::AccessFlags2, layout: vk::ImageLayout) -> TransitionState {
 		let mut state = transition(stage, access, layout);
 		state.last_write_stage = vk::PipelineStageFlags2::TRANSFER;
 		state.last_write_access = vk::AccessFlags2::TRANSFER_WRITE;
 		state
 	}
 
+	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
+		assert_eq!(
+			(actual.stage, actual.access, actual.layout),
+			(expected.stage, expected.access, expected.layout)
+		);
+	}
+
+	fn consumption(handle: Handles, state: TransitionState) -> VulkanConsumption {
+		VulkanConsumption {
+			handle,
+			stages: state.stage,
+			access: state.access,
+			layout: state.layout,
+			range: None,
+		}
+	}
+
+	fn ranged_consumption(handle: Handles, state: TransitionState, range: BufferRange) -> VulkanConsumption {
+		VulkanConsumption {
+			range: Some(range),
+			..consumption(handle, state)
+		}
+	}
+
+	fn buffer_states(handle: Handles, ranges: &[(BufferRange, TransitionState)]) -> BufferStates {
+		let ranges = ranges.iter().map(|&(range, state)| BufferTransitionState { range, state });
+		HashMap::from_iter([(handle, ranges.collect())])
+	}
+
+	/// Plans `consumptions` against the given whole-resource and ranged buffer states.
+	/// Lookups without a provided result panic, which also checks that the planner does not resolve unrelated handles.
+	fn plan<const N: usize>(
+		states: &[(Handles, TransitionState)],
+		buffer_states: &BufferStates,
+		consumptions: [VulkanConsumption; N],
+		image: Option<(vk::Image, vk::Format)>,
+		buffer: Option<vk::Buffer>,
+	) -> PlannedTransitions {
+		CommandBufferRecording::plan_vulkan_resource_transitions(
+			&states.iter().copied().collect(),
+			buffer_states,
+			consumptions,
+			|_| Some(image.expect("Unexpected image lookup.")),
+			|_| Some(buffer.expect("Unexpected buffer lookup.")),
+		)
+	}
+
+	#[test]
+	fn planner_barriers_equal_write_states() {
+		let handle = Handles::Buffer(BufferHandle(1));
+		let write = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
+
+		let planned = plan(
+			&[(handle, write)],
+			&BufferStates::default(),
+			[consumption(handle, write)],
+			None,
+			Some(vk::Buffer::from_raw(13)),
+		);
+
+		assert!(planned.image_barriers.is_empty() && planned.memory_barriers.is_empty());
+		assert_eq!(planned.buffer_barriers.len(), 1);
+		assert_eq!(planned.updates.states.len(), 1);
+		let barrier = planned.buffer_barriers[0];
+		assert_eq!((barrier.src_stage_mask, barrier.src_access_mask), (write.stage, write.access));
+		assert_eq!((barrier.dst_stage_mask, barrier.dst_access_mask), (write.stage, write.access));
+	}
+
+	#[test]
+	fn planner_merges_read_after_read_buffer_state_without_a_barrier() {
+		let handle = Handles::Buffer(BufferHandle(11));
+		let fragment_read = buffer_transition(vk::PipelineStageFlags2::FRAGMENT_SHADER, vk::AccessFlags2::SHADER_READ);
+		let compute_read = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
+
+		let planned = plan(
+			&[(handle, fragment_read)],
+			&BufferStates::default(),
+			[consumption(handle, compute_read)],
+			None,
+			Some(vk::Buffer::from_raw(12)),
+		);
+
+		assert!(planned.buffer_barriers.is_empty());
+		assert_eq!(planned.updates.states.len(), 1);
+		assert!(
+			planned.updates.states[0]
+				.1
+				.stage
+				.contains(fragment_read.stage | compute_read.stage)
+		);
+	}
+
 	#[test]
 	fn planner_barriers_read_after_read_for_stages_the_last_write_barrier_missed() {
 		let handle = Handles::Buffer(BufferHandle(20));
-		let mut states = HashMap::default();
-		states.insert(
-			handle,
-			read_after_write(
-				vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::UNDEFINED,
-			),
+		let fragment_read = read_after_write(
+			vk::PipelineStageFlags2::FRAGMENT_SHADER,
+			vk::AccessFlags2::SHADER_READ,
+			vk::ImageLayout::UNDEFINED,
 		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
+		let planned = plan(
+			&[(handle, fragment_read)],
+			&BufferStates::default(),
 			[consumption(
 				handle,
-				vk::PipelineStageFlags2::VERTEX_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::UNDEFINED,
+				buffer_transition(vk::PipelineStageFlags2::VERTEX_SHADER, vk::AccessFlags2::SHADER_READ),
 			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(20)),
+			None,
+			Some(vk::Buffer::from_raw(20)),
 		);
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::TRANSFER));
-		assert!(barrier.src_access.contains(vk::AccessFlags2::TRANSFER_WRITE));
-		assert!(barrier.dst_stage == vk::PipelineStageFlags2::VERTEX_SHADER);
-		let state = planned.state_updates[0].1;
-		assert!(state.stage.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::VERTEX_SHADER));
+		assert!(barrier.src_stage_mask.contains(vk::PipelineStageFlags2::TRANSFER));
+		assert!(barrier.src_access_mask.contains(vk::AccessFlags2::TRANSFER_WRITE));
+		assert_eq!(barrier.dst_stage_mask, vk::PipelineStageFlags2::VERTEX_SHADER);
+		let state = planned.updates.states[0].1;
+		assert!(
+			state
+				.stage
+				.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::VERTEX_SHADER)
+		);
 	}
 
 	#[test]
 	fn planner_skips_read_after_read_already_visible_to_the_new_stage() {
 		let handle = Handles::Image(ImageHandle(21));
-		let mut states = HashMap::default();
-		states.insert(
-			handle,
-			read_after_write(
-				vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_SAMPLED_READ,
-				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			),
+		let sampled = read_after_write(
+			vk::PipelineStageFlags2::FRAGMENT_SHADER | vk::PipelineStageFlags2::COMPUTE_SHADER,
+			vk::AccessFlags2::SHADER_SAMPLED_READ,
+			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+		);
+		let compute_sample = transition(
+			vk::PipelineStageFlags2::COMPUTE_SHADER,
+			vk::AccessFlags2::SHADER_SAMPLED_READ,
+			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_SAMPLED_READ,
-				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			)],
-			|_| Some((vk::Image::from_raw(21), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[(handle, sampled)],
+			&BufferStates::default(),
+			[consumption(handle, compute_sample)],
+			Some((vk::Image::from_raw(21), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert!(planned.image_barriers.is_empty());
-		assert_eq!(planned.state_updates.len(), 1);
+		assert_eq!(planned.updates.states.len(), 1);
 	}
 
 	#[test]
 	fn planner_barriers_first_reader_after_a_consumed_transfer_write() {
 		let handle = Handles::Image(ImageHandle(22));
-		let mut states = HashMap::default();
 		// consume_last_resources leaves pending uploads as a TRANSFER/NONE state that only remembers the write.
-		states.insert(
-			handle,
-			read_after_write(
-				vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::NONE,
-				vk::ImageLayout::GENERAL,
-			),
+		let consumed_upload = read_after_write(
+			vk::PipelineStageFlags2::TRANSFER,
+			vk::AccessFlags2::NONE,
+			vk::ImageLayout::GENERAL,
+		);
+		let fragment_read = transition(
+			vk::PipelineStageFlags2::FRAGMENT_SHADER,
+			vk::AccessFlags2::SHADER_READ,
+			vk::ImageLayout::GENERAL,
 		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::GENERAL,
-			)],
-			|_| Some((vk::Image::from_raw(22), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[(handle, consumed_upload)],
+			&BufferStates::default(),
+			[consumption(handle, fragment_read)],
+			Some((vk::Image::from_raw(22), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
 		let barrier = planned.image_barriers[0];
-		assert!(barrier.old_layout == vk::ImageLayout::GENERAL);
-		assert!(barrier.new_layout == vk::ImageLayout::GENERAL);
-		assert!(barrier.src_access.contains(vk::AccessFlags2::TRANSFER_WRITE));
-		assert!(barrier.dst_stage == vk::PipelineStageFlags2::FRAGMENT_SHADER);
+		assert_eq!(
+			(barrier.old_layout, barrier.new_layout),
+			(vk::ImageLayout::GENERAL, vk::ImageLayout::GENERAL)
+		);
+		assert!(barrier.src_access_mask.contains(vk::AccessFlags2::TRANSFER_WRITE));
+		assert_eq!(barrier.dst_stage_mask, vk::PipelineStageFlags2::FRAGMENT_SHADER);
 	}
 
 	#[test]
 	fn planner_barriers_image_read_after_read_for_uncovered_stages_without_write_history() {
 		let handle = Handles::Image(ImageHandle(23));
-		let mut states = HashMap::default();
 		// The layout transition into this state is itself a write the new stage must be ordered after.
-		states.insert(
-			handle,
-			transition(
-				vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				vk::AccessFlags2::SHADER_SAMPLED_READ,
-				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			),
+		let fragment_sample = transition(
+			vk::PipelineStageFlags2::FRAGMENT_SHADER,
+			vk::AccessFlags2::SHADER_SAMPLED_READ,
+			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+		);
+		let vertex_sample = transition(
+			vk::PipelineStageFlags2::VERTEX_SHADER,
+			vk::AccessFlags2::SHADER_SAMPLED_READ,
+			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::VERTEX_SHADER,
-				vk::AccessFlags2::SHADER_SAMPLED_READ,
-				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			)],
-			|_| Some((vk::Image::from_raw(23), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[(handle, fragment_sample)],
+			&BufferStates::default(),
+			[consumption(handle, vertex_sample)],
+			Some((vk::Image::from_raw(23), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
-		assert!(planned.image_barriers[0].src_stage.contains(vk::PipelineStageFlags2::FRAGMENT_SHADER));
+		assert!(planned.image_barriers[0].src_stage_mask.contains(fragment_sample.stage));
 	}
 
 	#[test]
 	fn planner_keeps_pending_writes_for_untouched_parts_of_a_split_buffer_range() {
 		let handle = Handles::Buffer(BufferHandle(24));
-		let buffer = vk::Buffer::from_raw(24);
-		let mut buffer_states = HashMap::default();
-		buffer_states.insert(
-			handle,
-			vec![BufferTransitionState {
-				range: BufferRange::new(0, 128),
-				state: transition(
-					vk::PipelineStageFlags2::COPY,
-					vk::AccessFlags2::TRANSFER_WRITE,
-					vk::ImageLayout::UNDEFINED,
-				),
-			}],
-		);
+		let buffer = Some(vk::Buffer::from_raw(24));
+		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
+		let compute_read = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
+		let mut tracked = buffer_states(handle, &[(BufferRange::new(0, 128), copy_write)]);
 
-		let first = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[ranged_consumption(
-				handle,
-				vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				BufferRange::new(64, 64),
-			)],
-			|_| None,
-			|_| Some(buffer),
+		let first = plan(
+			&[],
+			&tracked,
+			[ranged_consumption(handle, compute_read, BufferRange::new(64, 64))],
+			None,
+			buffer,
 		);
 		assert_eq!(first.buffer_barriers.len(), 1);
-		assert!(first.buffer_barriers[0].offset == 64 && first.buffer_barriers[0].size == 64);
-		for (handle, states) in first.buffer_state_updates {
-			buffer_states.insert(handle, states);
-		}
+		assert_eq!((first.buffer_barriers[0].offset, first.buffer_barriers[0].size), (64, 64));
+		tracked.extend(first.updates.buffer_states);
 
-		let second = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[ranged_consumption(
-				handle,
-				vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				BufferRange::new(0, 64),
-			)],
-			|_| None,
-			|_| Some(buffer),
+		let second = plan(
+			&[],
+			&tracked,
+			[ranged_consumption(handle, compute_read, BufferRange::new(0, 64))],
+			None,
+			buffer,
 		);
 
 		assert_eq!(second.buffer_barriers.len(), 1);
 		let barrier = second.buffer_barriers[0];
-		assert!(barrier.offset == 0 && barrier.size == 64);
-		assert!(barrier.src_access.contains(vk::AccessFlags2::TRANSFER_WRITE));
+		assert_eq!((barrier.offset, barrier.size), (0, 64));
+		assert!(barrier.src_access_mask.contains(vk::AccessFlags2::TRANSFER_WRITE));
 	}
 
 	#[test]
 	fn planner_clips_buffer_barriers_to_each_tracked_range() {
 		let handle = Handles::Buffer(BufferHandle(25));
-		let write = transition(
-			vk::PipelineStageFlags2::COPY,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let mut buffer_states = HashMap::default();
-		buffer_states.insert(
+		let write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
+		let tracked = buffer_states(
 			handle,
-			vec![
-				BufferTransitionState {
-					range: BufferRange::new(0, 64),
-					state: write,
-				},
-				BufferTransitionState {
-					range: BufferRange::new(64, vk::WHOLE_SIZE),
-					state: write,
-				},
+			&[
+				(BufferRange::new(0, 64), write),
+				(BufferRange::new(64, vk::WHOLE_SIZE), write),
 			],
 		);
+		let vertex_read = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::VERTEX_INPUT,
-				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-				vk::ImageLayout::UNDEFINED,
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(25)),
+		let planned = plan(
+			&[],
+			&tracked,
+			[consumption(handle, vertex_read)],
+			None,
+			Some(vk::Buffer::from_raw(25)),
 		);
 
 		let ranges = planned
@@ -435,7 +360,7 @@ mod tests {
 			.map(|barrier| (barrier.offset, barrier.size))
 			.collect::<Vec<_>>();
 		assert_eq!(ranges, vec![(0, 64), (64, vk::WHOLE_SIZE)]);
-		let (_, states) = &planned.buffer_state_updates[0];
+		let (_, states) = &planned.updates.buffer_states[0];
 		assert_eq!(states.len(), 1, "identical adjacent read states should coalesce");
 		assert!(states[0].range == BufferRange::new(0, vk::WHOLE_SIZE));
 	}
@@ -444,170 +369,115 @@ mod tests {
 	fn acquired_swapchain_image_barrier_is_sourced_from_its_first_use_stage() {
 		let handle = Handles::Image(ImageHandle(26));
 		let acquired = vk::Image::from_raw(26);
-		let mut states = HashMap::default();
-		states.insert(
-			handle,
-			transition(
-				vk::PipelineStageFlags2::NONE,
-				vk::AccessFlags2::NONE,
-				vk::ImageLayout::UNDEFINED,
-			),
+		let acquired_state = transition(
+			vk::PipelineStageFlags2::NONE,
+			vk::AccessFlags2::NONE,
+			vk::ImageLayout::UNDEFINED,
+		);
+		let compute_write = transition(
+			vk::PipelineStageFlags2::COMPUTE_SHADER,
+			vk::AccessFlags2::SHADER_STORAGE_WRITE,
+			vk::ImageLayout::GENERAL,
 		);
 
-		let mut planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::COMPUTE_SHADER,
-				vk::AccessFlags2::SHADER_STORAGE_WRITE,
-				vk::ImageLayout::GENERAL,
-			)],
-			|_| Some((acquired, vk::Format::B8G8R8A8_UNORM)),
-			|_| None,
+		let mut planned = plan(
+			&[(handle, acquired_state)],
+			&BufferStates::default(),
+			[consumption(handle, compute_write)],
+			Some((acquired, vk::Format::B8G8R8A8_UNORM)),
+			None,
 		);
 
 		let first_use_stage = CommandBufferRecording::chain_barriers_to_acquire(&mut planned.image_barriers, acquired);
 
-		assert!(first_use_stage == vk::PipelineStageFlags2::COMPUTE_SHADER);
+		assert_eq!(first_use_stage, vk::PipelineStageFlags2::COMPUTE_SHADER);
 		let barrier = planned.image_barriers[0];
-		assert!(barrier.src_stage == vk::PipelineStageFlags2::COMPUTE_SHADER);
-		assert!(barrier.old_layout == vk::ImageLayout::UNDEFINED);
-		assert!(barrier.new_layout == vk::ImageLayout::GENERAL);
+		assert_eq!(barrier.src_stage_mask, vk::PipelineStageFlags2::COMPUTE_SHADER);
+		assert_eq!(
+			(barrier.old_layout, barrier.new_layout),
+			(vk::ImageLayout::UNDEFINED, vk::ImageLayout::GENERAL)
+		);
 	}
 
 	#[test]
 	fn barriers_on_other_images_are_not_chained_to_acquire() {
-		let mut barriers = [PlannedImageBarrier {
-			old_layout: vk::ImageLayout::UNDEFINED,
-			src_stage: vk::PipelineStageFlags2::NONE,
-			src_access: vk::AccessFlags2::NONE,
-			new_layout: vk::ImageLayout::GENERAL,
-			dst_stage: vk::PipelineStageFlags2::COMPUTE_SHADER,
-			dst_access: vk::AccessFlags2::SHADER_STORAGE_WRITE,
-			image: vk::Image::from_raw(27),
-			aspect_mask: vk::ImageAspectFlags::COLOR,
-		}];
+		let mut barriers = [vk::ImageMemoryBarrier2::default()
+			.old_layout(vk::ImageLayout::UNDEFINED)
+			.new_layout(vk::ImageLayout::GENERAL)
+			.dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+			.dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+			.image(vk::Image::from_raw(27))];
 
 		let first_use_stage = CommandBufferRecording::chain_barriers_to_acquire(&mut barriers, vk::Image::from_raw(28));
 
 		assert!(first_use_stage.is_empty());
-		assert!(barriers[0].src_stage.is_empty());
+		assert!(barriers[0].src_stage_mask.is_empty());
 	}
 
 	#[test]
 	fn planner_skips_non_overlapping_buffer_ranges() {
 		let handle = Handles::Buffer(BufferHandle(12));
-		let mut buffer_states = HashMap::default();
-		buffer_states.insert(
-			handle,
-			vec![BufferTransitionState {
-				range: BufferRange::new(0, 64),
-				state: transition(
-					vk::PipelineStageFlags2::COPY,
-					vk::AccessFlags2::TRANSFER_WRITE,
-					vk::ImageLayout::UNDEFINED,
-				),
-			}],
-		);
+		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[ranged_consumption(
-				handle,
-				vk::PipelineStageFlags2::COPY,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				BufferRange::new(128, 64),
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(14)),
+		let planned = plan(
+			&[],
+			&buffer_states(handle, &[(BufferRange::new(0, 64), copy_write)]),
+			[ranged_consumption(handle, copy_write, BufferRange::new(128, 64))],
+			None,
+			Some(vk::Buffer::from_raw(14)),
 		);
 
 		assert!(planned.buffer_barriers.is_empty());
-		assert_eq!(planned.buffer_state_updates.len(), 1);
+		assert_eq!(planned.updates.buffer_states.len(), 1);
 	}
 
 	#[test]
 	fn planner_barriers_overlapping_buffer_ranges() {
 		let handle = Handles::Buffer(BufferHandle(13));
-		let mut buffer_states = HashMap::default();
-		buffer_states.insert(
-			handle,
-			vec![BufferTransitionState {
-				range: BufferRange::new(0, 128),
-				state: transition(
-					vk::PipelineStageFlags2::COPY,
-					vk::AccessFlags2::TRANSFER_WRITE,
-					vk::ImageLayout::UNDEFINED,
-				),
-			}],
-		);
+		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[ranged_consumption(
-				handle,
-				vk::PipelineStageFlags2::COPY,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				BufferRange::new(64, 64),
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(15)),
+		let planned = plan(
+			&[],
+			&buffer_states(handle, &[(BufferRange::new(0, 128), copy_write)]),
+			[ranged_consumption(handle, copy_write, BufferRange::new(64, 64))],
+			None,
+			Some(vk::Buffer::from_raw(15)),
 		);
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-
-		assert!(barrier.src_stage == vk::PipelineStageFlags2::COPY);
-		assert!(barrier.src_access == vk::AccessFlags2::TRANSFER_WRITE);
-		assert!(barrier.offset == 64);
-		assert!(barrier.size == 64);
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(copy_write.stage, copy_write.access)
+		);
+		assert_eq!((barrier.offset, barrier.size), (64, 64));
 	}
 
 	#[test]
 	fn planner_includes_last_buffer_write_when_read_state_transitions_to_write() {
 		let handle = Handles::Buffer(BufferHandle(14));
-		let mut read_state = transition(
-			vk::PipelineStageFlags2::COMPUTE_SHADER,
-			vk::AccessFlags2::SHADER_READ,
-			vk::ImageLayout::UNDEFINED,
-		);
-		read_state.last_write_stage = vk::PipelineStageFlags2::COPY;
-		read_state.last_write_access = vk::AccessFlags2::TRANSFER_WRITE;
+		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
+		let mut read_state = buffer_transition(vk::PipelineStageFlags2::COMPUTE_SHADER, vk::AccessFlags2::SHADER_READ);
+		read_state.last_write_stage = copy_write.stage;
+		read_state.last_write_access = copy_write.access;
+		let range = BufferRange::new(64, 64);
 
-		let mut buffer_states = HashMap::default();
-		buffer_states.insert(
-			handle,
-			vec![BufferTransitionState {
-				range: BufferRange::new(64, 64),
-				state: read_state,
-			}],
-		);
-
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&buffer_states,
-			[ranged_consumption(
-				handle,
-				vk::PipelineStageFlags2::COPY,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				BufferRange::new(64, 64),
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(16)),
+		let planned = plan(
+			&[],
+			&buffer_states(handle, &[(range, read_state)]),
+			[ranged_consumption(handle, copy_write, range)],
+			None,
+			Some(vk::Buffer::from_raw(16)),
 		);
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-
-		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
-		assert!(barrier.src_stage.contains(vk::PipelineStageFlags2::COPY));
-		assert!(barrier.src_access.contains(vk::AccessFlags2::SHADER_READ));
-		assert!(barrier.src_access.contains(vk::AccessFlags2::TRANSFER_WRITE));
-		assert!(barrier.dst_stage == vk::PipelineStageFlags2::COPY);
-		assert!(barrier.dst_access == vk::AccessFlags2::TRANSFER_WRITE);
+		assert!(barrier.src_stage_mask.contains(read_state.stage | copy_write.stage));
+		assert!(barrier.src_access_mask.contains(read_state.access | copy_write.access));
+		assert_eq!(
+			(barrier.dst_stage_mask, barrier.dst_access_mask),
+			(copy_write.stage, copy_write.access)
+		);
 	}
 
 	#[test]
@@ -623,131 +493,112 @@ mod tests {
 			vk::AccessFlags2::SHADER_READ,
 			vk::ImageLayout::GENERAL,
 		);
-		let mut states = HashMap::default();
-		states.insert(handle, previous);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| Some((vk::Image::from_raw(77), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[(handle, previous)],
+			&BufferStates::default(),
+			[consumption(handle, destination)],
+			Some((vk::Image::from_raw(77), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
 		let barrier = planned.image_barriers[0];
-
-		assert!(barrier.old_layout == previous.layout);
-		assert!(barrier.src_stage == previous.stage);
-		assert!(barrier.src_access == previous.access);
-		assert!(barrier.new_layout == destination.layout);
-		assert!(barrier.dst_stage == destination.stage);
-		assert!(barrier.dst_access == destination.access);
-		assert!(barrier.image == vk::Image::from_raw(77));
-		assert!(barrier.aspect_mask == vk::ImageAspectFlags::COLOR);
-		assert_eq!(planned.state_updates.len(), 1);
-		let (updated_handle, updated_state) = planned.state_updates[0];
-
+		assert_eq!(
+			(barrier.old_layout, barrier.src_stage_mask, barrier.src_access_mask),
+			(previous.layout, previous.stage, previous.access)
+		);
+		assert_eq!(
+			(barrier.new_layout, barrier.dst_stage_mask, barrier.dst_access_mask),
+			(destination.layout, destination.stage, destination.access)
+		);
+		assert_eq!(barrier.image, vk::Image::from_raw(77));
+		assert_eq!(barrier.subresource_range.aspect_mask, vk::ImageAspectFlags::COLOR);
+		assert_eq!(planned.updates.states.len(), 1);
+		let (updated_handle, updated_state) = planned.updates.states[0];
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
 	}
 
 	#[test]
 	fn planner_uses_default_source_when_state_is_missing() {
-		let handle = Handles::Image(ImageHandle(3));
 		let destination = transition(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER,
 			vk::AccessFlags2::SHADER_READ,
 			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| Some((vk::Image::from_raw(88), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[],
+			&BufferStates::default(),
+			[consumption(Handles::Image(ImageHandle(3)), destination)],
+			Some((vk::Image::from_raw(88), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
 		let barrier = planned.image_barriers[0];
-
-		assert!(barrier.old_layout == vk::ImageLayout::UNDEFINED);
-		assert!(barrier.src_stage == vk::PipelineStageFlags2::empty());
-		assert!(barrier.src_access == vk::AccessFlags2::empty());
+		assert_eq!(barrier.old_layout, vk::ImageLayout::UNDEFINED);
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty())
+		);
 	}
 
 	#[test]
-	fn planner_selects_depth_aspect_for_d32_images() {
-		let handle = Handles::Image(ImageHandle(4));
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
-				vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			)],
-			|_| Some((vk::Image::from_raw(99), vk::Format::D32_SFLOAT)),
-			|_| None,
+	fn planner_selects_depth_aspect_for_depth_images() {
+		let depth_write = transition(
+			vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
+			vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+			vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 		);
 
-		assert_eq!(planned.image_barriers.len(), 1);
-		assert!(planned.image_barriers[0].aspect_mask == vk::ImageAspectFlags::DEPTH);
-	}
+		for format in [vk::Format::D32_SFLOAT, vk::Format::D16_UNORM] {
+			let planned = plan(
+				&[],
+				&BufferStates::default(),
+				[consumption(Handles::Image(ImageHandle(4)), depth_write)],
+				Some((vk::Image::from_raw(99), format)),
+				None,
+			);
 
-	#[test]
-	fn planner_selects_depth_aspect_for_d16_images() {
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(
-				Handles::Image(ImageHandle(30)),
-				vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
-				vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			)],
-			|_| Some((vk::Image::from_raw(30), vk::Format::D16_UNORM)),
-			|_| None,
-		);
-
-		assert!(planned.image_barriers[0].aspect_mask == vk::ImageAspectFlags::DEPTH);
+			assert_eq!(planned.image_barriers.len(), 1);
+			assert_eq!(
+				planned.image_barriers[0].subresource_range.aspect_mask,
+				vk::ImageAspectFlags::DEPTH
+			);
+		}
 	}
 
 	#[test]
 	fn planner_merges_repeated_image_consumptions_into_one_barrier() {
 		// Uploading several mips of one image consumes it once per mip in the same batch.
 		let handle = Handles::Image(ImageHandle(31));
-		let mut states = HashMap::default();
-		states.insert(
+		let sampled = transition(
+			vk::PipelineStageFlags2::FRAGMENT_SHADER,
+			vk::AccessFlags2::SHADER_READ,
+			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+		);
+		let upload = consumption(
 			handle,
 			transition(
-				vk::PipelineStageFlags2::FRAGMENT_SHADER,
-				vk::AccessFlags2::SHADER_READ,
-				vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-			),
-		);
-		let upload = || {
-			consumption(
-				handle,
 				vk::PipelineStageFlags2::TRANSFER,
 				vk::AccessFlags2::TRANSFER_WRITE,
 				vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-			)
-		};
+			),
+		);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[upload(), upload(), upload()],
-			|_| Some((vk::Image::from_raw(31), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let planned = plan(
+			&[(handle, sampled)],
+			&BufferStates::default(),
+			[upload.clone(), upload.clone(), upload],
+			Some((vk::Image::from_raw(31), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
-		assert!(planned.image_barriers[0].old_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-		assert_eq!(planned.state_updates.len(), 1);
+		assert_eq!(planned.image_barriers[0].old_layout, sampled.layout);
+		assert_eq!(planned.updates.states.len(), 1);
 	}
 
 	#[test]
@@ -766,107 +617,85 @@ mod tests {
 
 	#[test]
 	fn planner_skips_null_image_and_does_not_update_state() {
-		let handle = Handles::Image(ImageHandle(5));
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-			)],
-			|_| Some((vk::Image::null(), vk::Format::R8G8B8A8_UNORM)),
-			|_| None,
+		let image_write = transition(
+			vk::PipelineStageFlags2::TRANSFER,
+			vk::AccessFlags2::TRANSFER_WRITE,
+			vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+		);
+
+		let planned = plan(
+			&[],
+			&BufferStates::default(),
+			[consumption(Handles::Image(ImageHandle(5)), image_write)],
+			Some((vk::Image::null(), vk::Format::R8G8B8A8_UNORM)),
+			None,
 		);
 
 		assert!(planned.image_barriers.is_empty());
-		assert!(planned.state_updates.is_empty());
+		assert!(planned.updates.states.is_empty());
 	}
 
 	#[test]
 	fn planner_builds_buffer_barrier_from_previous_state() {
 		let handle = Handles::Buffer(BufferHandle(6));
-		let previous = transition(
-			vk::PipelineStageFlags2::COPY,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let destination = transition(
-			vk::PipelineStageFlags2::VERTEX_INPUT,
-			vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let mut states = HashMap::default();
-		states.insert(handle, previous);
+		let previous = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
+		let destination = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(111)),
+		let planned = plan(
+			&[(handle, previous)],
+			&BufferStates::default(),
+			[consumption(handle, destination)],
+			None,
+			Some(vk::Buffer::from_raw(111)),
 		);
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-
-		assert!(barrier.src_stage == previous.stage);
-		assert!(barrier.src_access == previous.access);
-		assert!(barrier.dst_stage == destination.stage);
-		assert!(barrier.dst_access == destination.access);
-		assert!(barrier.buffer == vk::Buffer::from_raw(111));
-		assert_eq!(planned.state_updates.len(), 1);
-		let (_, updated_state) = planned.state_updates[0];
-		assert_visible_state_eq(updated_state, destination);
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(previous.stage, previous.access)
+		);
+		assert_eq!(
+			(barrier.dst_stage_mask, barrier.dst_access_mask),
+			(destination.stage, destination.access)
+		);
+		assert_eq!(barrier.buffer, vk::Buffer::from_raw(111));
+		assert_eq!(planned.updates.states.len(), 1);
+		assert_visible_state_eq(planned.updates.states[0].1, destination);
 	}
 
 	#[test]
 	fn planner_skips_null_buffer_and_does_not_update_state() {
-		let handle = Handles::Buffer(BufferHandle(7));
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(
-				handle,
-				vk::PipelineStageFlags2::TRANSFER,
-				vk::AccessFlags2::TRANSFER_WRITE,
-				vk::ImageLayout::UNDEFINED,
-			)],
-			|_| None,
-			|_| Some(vk::Buffer::null()),
+		let buffer_write = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
+
+		let planned = plan(
+			&[],
+			&BufferStates::default(),
+			[consumption(Handles::Buffer(BufferHandle(7)), buffer_write)],
+			None,
+			Some(vk::Buffer::null()),
 		);
 
 		assert!(planned.buffer_barriers.is_empty());
-		assert!(planned.state_updates.is_empty());
+		assert!(planned.updates.states.is_empty());
 	}
 
 	#[test]
 	fn planner_handles_vk_buffer_without_buffer_lookup() {
 		let handle = Handles::VkBuffer(vk::Buffer::from_raw(222));
-		let destination = transition(
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_READ,
-			vk::ImageLayout::UNDEFINED,
-		);
+		let destination = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_READ);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| None,
-			|_| panic!("buffer lookup must not be called for Handle::VkBuffer"),
-		);
+		let planned = plan(&[], &BufferStates::default(), [consumption(handle, destination)], None, None);
 
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-
-		assert!(barrier.src_stage == vk::PipelineStageFlags2::empty());
-		assert!(barrier.src_access == vk::AccessFlags2::empty());
-		assert!(barrier.buffer == vk::Buffer::from_raw(222));
-		assert_eq!(planned.state_updates.len(), 1);
-		let (updated_handle, updated_state) = planned.state_updates[0];
-
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty())
+		);
+		assert_eq!(barrier.buffer, vk::Buffer::from_raw(222));
+		assert_eq!(planned.updates.states.len(), 1);
+		let (updated_handle, updated_state) = planned.updates.states[0];
 		assert!(updated_handle == handle);
 		assert_visible_state_eq(updated_state, destination);
 	}
@@ -874,112 +703,65 @@ mod tests {
 	#[test]
 	fn planner_builds_memory_barrier_for_acceleration_structures() {
 		let handle = Handles::TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle(8));
-		let previous = transition(
+		let previous = buffer_transition(
 			vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
 			vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-			vk::ImageLayout::UNDEFINED,
 		);
-		let destination = transition(
+		let destination = buffer_transition(
 			vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR,
 			vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-			vk::ImageLayout::UNDEFINED,
 		);
-		let mut states = HashMap::default();
-		states.insert(handle, previous);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| None,
-			|_| None,
+		let planned = plan(
+			&[(handle, previous)],
+			&BufferStates::default(),
+			[consumption(handle, destination)],
+			None,
+			None,
 		);
 
 		assert_eq!(planned.memory_barriers.len(), 1);
 		let barrier = planned.memory_barriers[0];
-
-		assert!(barrier.src_stage == previous.stage);
-		assert!(barrier.src_access == previous.access);
-		assert!(barrier.dst_stage == destination.stage);
-		assert!(barrier.dst_access == destination.access);
-		assert_eq!(planned.state_updates.len(), 1);
-		let (_, updated_state) = planned.state_updates[0];
-		assert_visible_state_eq(updated_state, destination);
-	}
-
-	#[test]
-	fn planner_updates_state_without_barrier_for_non_memory_handles() {
-		let handle = Handles::Synchronizer(crate::synchronizer::SynchronizerHandle(9));
-		let destination = transition(
-			vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
-			vk::AccessFlags2::empty(),
-			vk::ImageLayout::UNDEFINED,
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(previous.stage, previous.access)
 		);
-
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&HashMap::default(),
-			&HashMap::default(),
-			[consumption(handle, destination.stage, destination.access, destination.layout)],
-			|_| panic!("image lookup must not be called for synchronizers"),
-			|_| panic!("buffer lookup must not be called for synchronizers"),
+		assert_eq!(
+			(barrier.dst_stage_mask, barrier.dst_access_mask),
+			(destination.stage, destination.access)
 		);
-
-		assert!(planned.image_barriers.is_empty());
-		assert!(planned.buffer_barriers.is_empty());
-		assert!(planned.memory_barriers.is_empty());
-		assert_eq!(planned.state_updates.len(), 1);
-
-		let (updated_handle, updated_state) = planned.state_updates[0];
-
-		assert!(updated_handle == handle);
-		assert_visible_state_eq(updated_state, destination);
+		assert_eq!(planned.updates.states.len(), 1);
+		assert_visible_state_eq(planned.updates.states[0].1, destination);
 	}
 
 	#[test]
 	fn planner_merges_duplicate_consumptions_of_one_buffer() {
 		// A mesh buffer read as vertices and indices in one batch needs one barrier, and later writers must wait for both reads.
 		let handle = Handles::Buffer(BufferHandle(10));
-		let source = transition(
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::UNDEFINED,
-		);
-		let mut states = HashMap::default();
-		states.insert(handle, source);
+		let source = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
+		let vertex_read = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
+		let index_read = buffer_transition(vk::PipelineStageFlags2::INDEX_INPUT, vk::AccessFlags2::INDEX_READ);
 
-		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
-			&states,
-			&HashMap::default(),
-			[
-				consumption(
-					handle,
-					vk::PipelineStageFlags2::VERTEX_INPUT,
-					vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-					vk::ImageLayout::UNDEFINED,
-				),
-				consumption(
-					handle,
-					vk::PipelineStageFlags2::INDEX_INPUT,
-					vk::AccessFlags2::INDEX_READ,
-					vk::ImageLayout::UNDEFINED,
-				),
-			],
-			|_| None,
-			|_| Some(vk::Buffer::from_raw(333)),
+		let planned = plan(
+			&[(handle, source)],
+			&BufferStates::default(),
+			[consumption(handle, vertex_read), consumption(handle, index_read)],
+			None,
+			Some(vk::Buffer::from_raw(333)),
 		);
 
-		let merged = transition(
-			vk::PipelineStageFlags2::VERTEX_INPUT | vk::PipelineStageFlags2::INDEX_INPUT,
-			vk::AccessFlags2::VERTEX_ATTRIBUTE_READ | vk::AccessFlags2::INDEX_READ,
-			vk::ImageLayout::UNDEFINED,
-		);
+		let merged = buffer_transition(vertex_read.stage | index_read.stage, vertex_read.access | index_read.access);
 		assert_eq!(planned.buffer_barriers.len(), 1);
 		let barrier = planned.buffer_barriers[0];
-		assert!(barrier.src_stage == source.stage);
-		assert!(barrier.src_access == source.access);
-		assert!(barrier.dst_stage == merged.stage);
-		assert!(barrier.dst_access == merged.access);
-		assert_eq!(planned.state_updates.len(), 1);
-		assert_visible_state_eq(planned.state_updates[0].1, merged);
+		assert_eq!(
+			(barrier.src_stage_mask, barrier.src_access_mask),
+			(source.stage, source.access)
+		);
+		assert_eq!(
+			(barrier.dst_stage_mask, barrier.dst_access_mask),
+			(merged.stage, merged.access)
+		);
+		assert_eq!(planned.updates.states.len(), 1);
+		assert_visible_state_eq(planned.updates.states[0].1, merged);
 	}
 }

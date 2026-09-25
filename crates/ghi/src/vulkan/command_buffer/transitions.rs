@@ -27,33 +27,6 @@ impl BufferCopy {
 	}
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ImageCopy {
-	pub _src_texture: ImageHandle,
-	pub _src_offset: vk::DeviceSize,
-	pub dst_texture: ImageHandle,
-	pub _dst_offset: vk::DeviceSize,
-	pub _size: usize,
-}
-
-impl ImageCopy {
-	pub fn new(
-		src_texture: ImageHandle,
-		src_offset: vk::DeviceSize,
-		dst_texture: ImageHandle,
-		dst_offset: vk::DeviceSize,
-		size: usize,
-	) -> Self {
-		Self {
-			_src_texture: src_texture,
-			_src_offset: src_offset,
-			dst_texture,
-			_dst_offset: dst_offset,
-			_size: size,
-		}
-	}
-}
-
 /// Width of BC compression blocks in texels.
 const BC_BLOCK_EXTENT: usize = 4;
 
@@ -73,38 +46,8 @@ pub(super) fn buffer_image_height(format: crate::Formats, source_row_count: usiz
 	}
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PlannedImageBarrier {
-	pub(super) old_layout: vk::ImageLayout,
-	pub(super) src_stage: vk::PipelineStageFlags2,
-	pub(super) src_access: vk::AccessFlags2,
-	pub(super) new_layout: vk::ImageLayout,
-	pub(super) dst_stage: vk::PipelineStageFlags2,
-	pub(super) dst_access: vk::AccessFlags2,
-	pub(super) image: vk::Image,
-	pub(super) aspect_mask: vk::ImageAspectFlags,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PlannedBufferBarrier {
-	pub(super) src_stage: vk::PipelineStageFlags2,
-	pub(super) src_access: vk::AccessFlags2,
-	pub(super) dst_stage: vk::PipelineStageFlags2,
-	pub(super) dst_access: vk::AccessFlags2,
-	pub(super) buffer: vk::Buffer,
-	pub(super) offset: vk::DeviceSize,
-	pub(super) size: vk::DeviceSize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PlannedMemoryBarrier {
-	pub(super) src_stage: vk::PipelineStageFlags2,
-	pub(super) src_access: vk::AccessFlags2,
-	pub(super) dst_stage: vk::PipelineStageFlags2,
-	pub(super) dst_access: vk::AccessFlags2,
-}
-
 /// The `TransitionStateUpdates` struct carries planner state changes without allocating a boxed callback.
+#[derive(Default)]
 pub(super) struct TransitionStateUpdates {
 	pub(super) states: SmallVec<[(Handles, TransitionState); 64]>,
 	pub(super) buffer_states: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
@@ -114,12 +57,8 @@ pub(super) struct TransitionStateUpdates {
 
 impl TransitionStateUpdates {
 	pub(super) fn apply(self, recording: &mut CommandBufferRecording<'_>) {
-		for (handle, state) in self.states {
-			recording.states.insert(handle, state);
-		}
-		for (handle, states) in self.buffer_states {
-			recording.buffer_states.insert(handle, states);
-		}
+		recording.states.extend(self.states);
+		recording.buffer_states.extend(self.buffer_states);
 		let sequence_index = recording.sequence_index as usize;
 		for (swapchain_index, stage) in self.acquire_waits {
 			recording.device.swapchains[swapchain_index].acquire_wait_stages[sequence_index] |= stage;
@@ -127,13 +66,13 @@ impl TransitionStateUpdates {
 	}
 }
 
+/// The `PlannedTransitions` struct holds the barriers a batch of consumptions needs and the states it leaves behind.
 #[derive(Default)]
 pub(super) struct PlannedTransitions {
-	pub(super) image_barriers: Vec<PlannedImageBarrier>,
-	pub(super) buffer_barriers: Vec<PlannedBufferBarrier>,
-	pub(super) memory_barriers: Vec<PlannedMemoryBarrier>,
-	pub(super) state_updates: SmallVec<[(Handles, TransitionState); 64]>,
-	pub(super) buffer_state_updates: SmallVec<[(Handles, Vec<BufferTransitionState>); 16]>,
+	pub(super) image_barriers: Vec<vk::ImageMemoryBarrier2<'static>>,
+	pub(super) buffer_barriers: Vec<vk::BufferMemoryBarrier2<'static>>,
+	pub(super) memory_barriers: Vec<vk::MemoryBarrier2<'static>>,
+	pub(super) updates: TransitionStateUpdates,
 }
 
 impl PlannedTransitions {
@@ -144,12 +83,16 @@ impl PlannedTransitions {
 		state: TransitionState,
 		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
 	) {
-		let existing_states = self
-			.buffer_state_updates
-			.iter()
-			.find_map(|(updated_handle, states)| (*updated_handle == handle).then_some(states.as_slice()))
-			.or_else(|| buffer_states.get(&handle).map(Vec::as_slice))
-			.unwrap_or_default();
+		let updates = &mut self.updates.buffer_states;
+		let index = updates.iter().position(|(updated_handle, _)| *updated_handle == handle);
+		let existing_states = match index {
+			Some(index) => updates[index].1.as_slice(),
+			None => buffer_states.get(&handle).map_or(&[][..], Vec::as_slice),
+		};
+		let span = |start, end, state| BufferTransitionState {
+			range: BufferRange::from_bounds(start, end),
+			state,
+		};
 
 		// Tracked ranges are disjoint; split the ones the new range touches so untouched bytes keep their pending state.
 		let mut states = Vec::with_capacity(existing_states.len() + 2);
@@ -161,16 +104,10 @@ impl PlannedTransitions {
 			}
 
 			if existing.range.offset < range.offset {
-				states.push(BufferTransitionState {
-					range: BufferRange::from_bounds(existing.range.offset, range.offset),
-					state: existing.state,
-				});
+				states.push(span(existing.range.offset, range.offset, existing.state));
 			}
 			if existing.range.end() > range.end() {
-				states.push(BufferTransitionState {
-					range: BufferRange::from_bounds(range.end(), existing.range.end()),
-					state: existing.state,
-				});
+				states.push(span(range.end(), existing.range.end(), existing.state));
 			}
 
 			let overlap = existing.range.intersection(range);
@@ -190,18 +127,12 @@ impl PlannedTransitions {
 		let mut cursor = range.offset;
 		for touched_range in touched {
 			if touched_range.offset > cursor {
-				states.push(BufferTransitionState {
-					range: BufferRange::from_bounds(cursor, touched_range.offset),
-					state,
-				});
+				states.push(span(cursor, touched_range.offset, state));
 			}
 			cursor = cursor.max(touched_range.end());
 		}
 		if cursor < range.end() {
-			states.push(BufferTransitionState {
-				range: BufferRange::from_bounds(cursor, range.end()),
-				state,
-			});
+			states.push(span(cursor, range.end(), state));
 		}
 
 		states.sort_unstable_by_key(|state| state.range.offset);
@@ -213,14 +144,9 @@ impl PlannedTransitions {
 			adjacent
 		});
 
-		if let Some((_, updated_states)) = self
-			.buffer_state_updates
-			.iter_mut()
-			.find(|(updated_handle, _)| *updated_handle == handle)
-		{
-			*updated_states = states;
-		} else {
-			self.buffer_state_updates.push((handle, states));
+		match index {
+			Some(index) => updates[index].1 = states,
+			None => updates.push((handle, states)),
 		}
 	}
 }

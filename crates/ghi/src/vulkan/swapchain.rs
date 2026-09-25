@@ -1,8 +1,8 @@
 use ash::vk;
 
+use crate::Uses;
 use crate::synchronizer::SynchronizerHandle;
 use crate::vulkan::{ImageHandle, MAX_FRAMES_IN_FLIGHT, MAX_SWAPCHAIN_IMAGES};
-use crate::{Formats, Uses};
 
 #[derive(Clone)]
 pub(crate) struct Swapchain {
@@ -24,8 +24,6 @@ pub(crate) struct Swapchain {
 	pub native_image_usage: vk::ImageUsageFlags,
 	/// Set when presentation or acquisition reports that the swapchain no longer matches its surface.
 	pub needs_recreation: bool,
-	pub format: Formats,
-	pub supported_usage_flags: vk::ImageUsageFlags,
 	pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],
 	/// Stages of the first access to each sequence's acquired image, where the submission waits on the acquire semaphore.
 	pub acquire_wait_stages: [vk::PipelineStageFlags2; MAX_FRAMES_IN_FLIGHT],

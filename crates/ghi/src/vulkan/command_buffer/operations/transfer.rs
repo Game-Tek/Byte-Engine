@@ -1,5 +1,113 @@
 use super::*;
 
+fn transfer_consumption(handle: Handles, access: crate::AccessPolicies) -> Consumption {
+	Consumption {
+		handle,
+		stages: crate::Stages::TRANSFER,
+		access,
+		layout: crate::Layouts::Transfer,
+	}
+}
+
+fn subresource_layers(aspect_mask: vk::ImageAspectFlags, mip_level: u32, layer_count: u32) -> vk::ImageSubresourceLayers {
+	vk::ImageSubresourceLayers::default()
+		.aspect_mask(aspect_mask)
+		.mip_level(mip_level)
+		.layer_count(layer_count)
+}
+
+/// Geometry and instance data read by an acceleration-structure build, per the vkCmdBuildAccelerationStructuresKHR rules.
+fn acceleration_structure_input(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::SHADER_READ)
+}
+
+fn acceleration_structure_scratch(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(
+		handle,
+		vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+	)
+}
+
+fn acceleration_structure_destination(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+}
+
+/// A bottom-level structure that a top-level build reads through its instances.
+fn acceleration_structure_source(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+}
+
+fn acceleration_structure_build_access(handle: Handles, access: vk::AccessFlags2) -> VulkanConsumption {
+	vulkan_consumption(handle, vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR, access)
+}
+
+impl CommandBufferRecording<'_> {
+	fn buffer_descriptor_address(&self, descriptor: &crate::BufferDescriptor) -> vk::DeviceAddress {
+		let buffer = self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer)).buffer;
+		let address = unsafe {
+			self.device
+				.device
+				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+		};
+		address + descriptor.offset as u64
+	}
+
+	fn acceleration_structure_build_info(
+		&self,
+		ty: vk::AccelerationStructureTypeKHR,
+		destination: &AccelerationStructure,
+		scratch_buffer: &crate::BufferDescriptor,
+	) -> vk::AccelerationStructureBuildGeometryInfoKHR<'static> {
+		vk::AccelerationStructureBuildGeometryInfoKHR::default()
+			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+			.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+			.ty(ty)
+			.dst_acceleration_structure(destination.acceleration_structure)
+			.scratch_data(vk::DeviceOrHostAddressKHR {
+				device_address: self.buffer_descriptor_address(scratch_buffer),
+			})
+	}
+
+	fn record_acceleration_structure_builds(
+		&self,
+		builds: &[(
+			vk::AccelerationStructureBuildGeometryInfoKHR,
+			Vec<vk::AccelerationStructureGeometryKHR>,
+			Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
+		)],
+	) {
+		let infos = builds
+			.iter()
+			.map(|(info, geometries, _)| info.geometries(geometries))
+			.collect::<Vec<_>>();
+		let build_range_infos = builds
+			.iter()
+			.map(|(_, _, ranges)| Some(ranges.as_slice()))
+			.collect::<Vec<_>>();
+		unsafe {
+			self.device.acceleration_structure.cmd_build_acceleration_structures(
+				self.get_command_buffer().command_buffer,
+				&infos,
+				&build_range_infos,
+			)
+		}
+	}
+
+	fn record_buffer_to_image_copy(&self, buffer: vk::Buffer, image: vk::Image, region: vk::BufferImageCopy2) {
+		let regions = [region];
+		let copy = vk::CopyBufferToImageInfo2::default()
+			.src_buffer(buffer)
+			.dst_image(image)
+			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+			.regions(&regions);
+		unsafe {
+			self.device
+				.device
+				.cmd_copy_buffer_to_image2(self.get_command_buffer().command_buffer, &copy);
+		}
+	}
+}
+
 impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_> {
 	fn frame_key(&self) -> FrameKey {
 		self.frame_key.expect(
@@ -11,18 +119,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let (source_handle, format, extent, declared_uses) = match source {
+		let (source_handle, swapchain) = match source {
 			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => {
-				if self.device.images.get(handle.0 as usize).is_none() {
-					return Err(crate::TextureTransferError::InvalidSource);
-				}
-				let source_handle = self.get_internal_base_image_handle(handle);
-				let image = self
-					.device
+				self.device
 					.images
-					.get(source_handle.0 as usize)
+					.get(handle.0 as usize)
 					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				(source_handle, image.format_, image.extent, image.uses)
+				(self.get_internal_base_image_handle(handle), None)
 			}
 			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
 				let swapchain = self
@@ -35,22 +138,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					.images
 					.get(image_index)
 					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				let source_image = self
-					.device
-					.images
-					.get(source_handle.0 as usize)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				let declared_uses = if swapchain.uses_proxy_images {
-					swapchain.proxy_uses
-				} else {
-					source_image.uses
-				};
-				(
-					source_handle,
-					source_image.format_,
-					Extent::rectangle(swapchain.extent.width, swapchain.extent.height),
-					declared_uses,
-				)
+				(source_handle, Some(swapchain))
 			}
 		};
 		let image = self
@@ -58,6 +146,18 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.images
 			.get(source_handle.0 as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		let format = image.format_;
+		let (extent, declared_uses) = match swapchain {
+			Some(swapchain) => (
+				Extent::rectangle(swapchain.extent.width, swapchain.extent.height),
+				if swapchain.uses_proxy_images {
+					swapchain.proxy_uses
+				} else {
+					image.uses
+				},
+			),
+			None => (image.extent, image.uses),
+		};
 		let array_layers = image.layers.map_or(1, std::num::NonZeroU32::get);
 		let source_image = image.image;
 		let aspect_mask = image_aspect_mask(image.format);
@@ -84,34 +184,20 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		});
 		self.texture_readbacks.push(handle);
 
-		self.consume_resources([Consumption {
-			handle: Handles::Image(source_handle),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::READ,
-			layout: crate::Layouts::Transfer,
-		}])
+		self.consume_resources([transfer_consumption(
+			Handles::Image(source_handle),
+			crate::AccessPolicies::READ,
+		)])
 		.apply(self);
-		self.vulkan_consume_resources([VulkanConsumption {
-			handle: Handles::VkBuffer(staging),
-			stages: vk::PipelineStageFlags2::TRANSFER,
-			access: vk::AccessFlags2::TRANSFER_WRITE,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: None,
-		}])
+		self.vulkan_consume_resources([vulkan_consumption(
+			Handles::VkBuffer(staging),
+			vk::PipelineStageFlags2::TRANSFER,
+			vk::AccessFlags2::TRANSFER_WRITE,
+		)])
 		.apply(self);
 
 		let regions = [vk::BufferImageCopy2::default()
-			.buffer_offset(0)
-			.buffer_row_length(0)
-			.buffer_image_height(0)
-			.image_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(aspect_mask)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.image_offset(vk::Offset3D::default())
+			.image_subresource(subresource_layers(aspect_mask, 0, 1))
 			.image_extent(extent_into_vk_extent(extent))];
 		let copy = vk::CopyImageToBufferInfo2::default()
 			.src_image(source_image)
@@ -127,7 +213,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 			.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
 			.buffer(staging)
-			.offset(0)
 			.size(vk::WHOLE_SIZE)];
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
@@ -170,148 +255,82 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self
 	}
 
-	fn build_top_level_acceleration_structure(
-		&mut self,
-		acceleration_structure_build: &crate::rt::TopLevelAccelerationStructureBuild,
-	) {
-		let (acceleration_structure_handle, acceleration_structure) =
-			self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
-		let dst_acceleration_structure = acceleration_structure.acceleration_structure;
-
-		let instances_buffer = match acceleration_structure_build.description {
-			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, .. } => instances_buffer,
-		};
-		let top_level_handle = Handles::TopLevelAccelerationStructure(
-			self.get_internal_top_level_acceleration_structure_handle(acceleration_structure_handle),
-		);
+	fn build_top_level_acceleration_structure(&mut self, build: &crate::rt::TopLevelAccelerationStructureBuild) {
+		let crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
+			instances_buffer,
+			instance_count,
+		} = build.description;
+		let top_level_handle =
+			Handles::TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle(build.acceleration_structure.0));
 		// Instances reference bottom-level structures by address, so wait for every build still pending a write.
 		let pending_bottom_level_builds = self
 			.states
 			.iter()
 			.filter(|(handle, state)| {
-				matches!(handle, Handles::BottomLevelAccelerationStructure(_)) && TransitionState::access_includes_write(state.access)
+				matches!(handle, Handles::BottomLevelAccelerationStructure(_))
+					&& TransitionState::access_includes_write(state.access)
 			})
 			.map(|(handle, _)| *handle)
 			.collect::<SmallVec<[Handles; 16]>>();
 		let consumptions = [
-			acceleration_structure_input(Handles::Buffer(self.get_internal_buffer_handle(instances_buffer))),
-			acceleration_structure_scratch(Handles::Buffer(
-				self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer),
-			)),
+			acceleration_structure_input(self.buffer_resource(instances_buffer)),
+			acceleration_structure_scratch(self.buffer_resource(build.scratch_buffer.buffer)),
 			acceleration_structure_destination(top_level_handle),
 		]
 		.into_iter()
 		.chain(pending_bottom_level_builds.into_iter().map(acceleration_structure_source));
 		self.vulkan_consume_resources(consumptions).apply(self);
 
-		let (as_geometries, offsets) = match acceleration_structure_build.description {
-			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
-				instances_buffer,
-				instance_count,
-			} => (
-				vec![
-					vk::AccelerationStructureGeometryKHR::default()
-						.geometry_type(vk::GeometryTypeKHR::INSTANCES)
-						.geometry(vk::AccelerationStructureGeometryDataKHR {
-							instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-								.array_of_pointers(false)
-								.data(vk::DeviceOrHostAddressConstKHR {
-									device_address: self.device.get_buffer_address(instances_buffer),
-								}),
-						})
-						.flags(vk::GeometryFlagsKHR::OPAQUE),
-				],
-				vec![
-					vk::AccelerationStructureBuildRangeInfoKHR::default()
-						.primitive_count(instance_count)
-						.primitive_offset(0)
-						.first_vertex(0)
-						.transform_offset(0),
-				],
-			),
-		};
-
-		let scratch_buffer_address = unsafe {
-			let buffer = self.get_buffer(self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer));
-			self.device
-				.device
-				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
-				+ acceleration_structure_build.scratch_buffer.offset as u64
-		};
-
-		let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-			.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-			.dst_acceleration_structure(dst_acceleration_structure)
-			.scratch_data(vk::DeviceOrHostAddressKHR {
-				device_address: scratch_buffer_address,
-			});
-
-		let infos = vec![build_geometry_info];
-		let build_range_infos = vec![offsets];
-		let geometries = vec![as_geometries];
-
-		let vk_command_buffer = self.get_command_buffer().command_buffer;
-
-		let infos = infos
-			.iter()
-			.zip(geometries.iter())
-			.map(|(info, geos)| info.geometries(geos))
-			.collect::<Vec<_>>();
-
-		let build_range_infos = build_range_infos
-			.iter()
-			.map(|build_range_info| Some(build_range_info.as_slice()))
-			.collect::<Vec<_>>();
-
-		unsafe {
-			self.device
-				.acceleration_structure
-				.cmd_build_acceleration_structures(vk_command_buffer, &infos, &build_range_infos)
-		}
+		let geometry = vk::AccelerationStructureGeometryKHR::default()
+			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
+			.geometry(vk::AccelerationStructureGeometryDataKHR {
+				instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+					.array_of_pointers(false)
+					.data(vk::DeviceOrHostAddressConstKHR {
+						device_address: self.device.get_buffer_address(instances_buffer),
+					}),
+			})
+			.flags(vk::GeometryFlagsKHR::OPAQUE);
+		let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(instance_count);
+		let info = self.acceleration_structure_build_info(
+			vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+			&self.device.acceleration_structures[build.acceleration_structure.0 as usize],
+			&build.scratch_buffer,
+		);
+		self.record_acceleration_structure_builds(&[(info, vec![geometry], vec![range])]);
 	}
 
-	fn build_bottom_level_acceleration_structures(
-		&mut self,
-		acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
-	) {
-		if acceleration_structure_builds.is_empty() {
+	fn build_bottom_level_acceleration_structures(&mut self, builds: &[crate::rt::BottomLevelAccelerationStructureBuild]) {
+		if builds.is_empty() {
 			return;
 		}
 
 		let mut consumptions = SmallVec::<[VulkanConsumption; 16]>::new();
-		for build in acceleration_structure_builds {
-			let (acceleration_structure_handle, _) = self.get_bottom_level_acceleration_structure(build.acceleration_structure);
+		for build in builds {
 			consumptions.push(acceleration_structure_destination(Handles::BottomLevelAccelerationStructure(
-				self.get_internal_bottom_level_acceleration_structure_handle(acceleration_structure_handle),
+				BottomLevelAccelerationStructureHandle(build.acceleration_structure.0),
 			)));
-			consumptions.push(acceleration_structure_scratch(Handles::Buffer(
-				self.get_internal_buffer_handle(build.scratch_buffer.buffer),
-			)));
+			consumptions.push(acceleration_structure_scratch(
+				self.buffer_resource(build.scratch_buffer.buffer),
+			));
 			if let crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
-				vertex_buffer, index_buffer, ..
+				vertex_buffer,
+				index_buffer,
+				..
 			} = &build.description
 			{
 				for input in [vertex_buffer.buffer_offset.buffer, index_buffer.buffer_offset.buffer] {
-					consumptions.push(acceleration_structure_input(Handles::Buffer(self.get_internal_buffer_handle(input))));
+					consumptions.push(acceleration_structure_input(self.buffer_resource(input)));
 				}
 			}
 		}
 		self.vulkan_consume_resources(consumptions).apply(self);
 
-		fn visit(
-			this: &mut CommandBufferRecording,
-			acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
-			mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR>,
-			mut geometries: Vec<Vec<vk::AccelerationStructureGeometryKHR>>,
-			mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,
-		) {
-			if let Some(build) = acceleration_structure_builds.first() {
-				let (_, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
-
-				let (as_geometries, offsets) = match &build.description {
-					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => (vec![], vec![]),
+		let build_infos = builds
+			.iter()
+			.map(|build| {
+				let (geometries, ranges) = match &build.description {
+					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => (Vec::new(), Vec::new()),
 					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
 						vertex_buffer,
 						index_buffer,
@@ -320,28 +339,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 						triangle_count,
 						vertex_count,
 					} => {
-						let vertex_data_address = unsafe {
-							let buffer = this.get_buffer(this.get_internal_buffer_handle(vertex_buffer.buffer_offset.buffer));
-							this.device
-								.device
-								.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
-								+ vertex_buffer.buffer_offset.offset as u64
-						};
-
-						let index_data_address = unsafe {
-							let buffer = this.get_buffer(this.get_internal_buffer_handle(index_buffer.buffer_offset.buffer));
-							this.device
-								.device
-								.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
-								+ index_buffer.buffer_offset.offset as u64
-						};
-
 						let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
 							.vertex_data(vk::DeviceOrHostAddressConstKHR {
-								device_address: vertex_data_address,
+								device_address: self.buffer_descriptor_address(&vertex_buffer.buffer_offset),
 							})
 							.index_data(vk::DeviceOrHostAddressConstKHR {
-								device_address: index_data_address,
+								device_address: self.buffer_descriptor_address(&index_buffer.buffer_offset),
 							})
 							.max_vertex(vertex_count - 1)
 							.vertex_format(match vertex_position_encoding {
@@ -355,80 +358,23 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 								_ => panic!("Invalid index format"),
 							})
 							.vertex_stride(vertex_buffer.stride as vk::DeviceSize);
-
-						let build_range_info = vec![
-							vk::AccelerationStructureBuildRangeInfoKHR::default()
-								.primitive_count(*triangle_count)
-								.primitive_offset(0)
-								.first_vertex(0)
-								.transform_offset(0),
-						];
-
-						(
-							vec![
-								vk::AccelerationStructureGeometryKHR::default()
-									.flags(vk::GeometryFlagsKHR::OPAQUE)
-									.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
-									.geometry(vk::AccelerationStructureGeometryDataKHR { triangles }),
-							],
-							build_range_info,
-						)
+						let geometry = vk::AccelerationStructureGeometryKHR::default()
+							.flags(vk::GeometryFlagsKHR::OPAQUE)
+							.geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+							.geometry(vk::AccelerationStructureGeometryDataKHR { triangles });
+						let range = vk::AccelerationStructureBuildRangeInfoKHR::default().primitive_count(*triangle_count);
+						(vec![geometry], vec![range])
 					}
 				};
-
-				let scratch_buffer_address = unsafe {
-					let buffer = this.get_buffer(this.get_internal_buffer_handle(build.scratch_buffer.buffer));
-					this.device
-						.device
-						.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer.buffer))
-						+ build.scratch_buffer.offset as u64
-				};
-
-				let build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-					.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-					.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-					.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-					.dst_acceleration_structure(acceleration_structure.acceleration_structure)
-					.scratch_data(vk::DeviceOrHostAddressKHR {
-						device_address: scratch_buffer_address,
-					});
-
-				infos.push(build_geometry_info);
-				build_range_infos.push(offsets);
-				geometries.push(as_geometries);
-
-				visit(
-					this,
-					&acceleration_structure_builds[1..],
-					infos,
-					geometries,
-					build_range_infos,
+				let info = self.acceleration_structure_build_info(
+					vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+					&self.device.acceleration_structures[build.acceleration_structure.0 as usize],
+					&build.scratch_buffer,
 				);
-			} else {
-				let command_buffer = this.get_command_buffer();
-
-				let infos = infos
-					.iter()
-					.zip(geometries.iter())
-					.map(|(info, geos)| info.geometries(geos))
-					.collect::<Vec<_>>();
-
-				let build_range_infos = build_range_infos
-					.iter()
-					.map(|build_range_info| Some(build_range_info.as_slice()))
-					.collect::<Vec<_>>();
-
-				unsafe {
-					this.device.acceleration_structure.cmd_build_acceleration_structures(
-						command_buffer.command_buffer,
-						&infos,
-						&build_range_infos,
-					)
-				}
-			}
-		}
-
-		visit(self, acceleration_structure_builds, Vec::new(), Vec::new(), Vec::new());
+				(info, geometries, ranges)
+			})
+			.collect::<Vec<_>>();
+		self.record_acceleration_structure_builds(&build_infos);
 	}
 
 	fn blit_image(
@@ -438,74 +384,51 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		destination_image: graphics_hardware_interface::BaseImageHandle,
 		destination_layout: crate::Layouts,
 	) {
+		let source_handle = self.get_internal_base_image_handle(source_image);
+		let destination_handle = self.get_internal_base_image_handle(destination_image);
 		self.consume_resources([
 			Consumption {
-				handle: Handles::Image(self.get_internal_base_image_handle(source_image)),
-				stages: crate::Stages::TRANSFER,
-				access: crate::AccessPolicies::READ,
 				layout: source_layout,
+				..transfer_consumption(Handles::Image(source_handle), crate::AccessPolicies::READ)
 			},
 			Consumption {
-				handle: Handles::Image(self.get_internal_base_image_handle(destination_image)),
-				stages: crate::Stages::TRANSFER,
-				access: crate::AccessPolicies::WRITE,
 				layout: destination_layout,
+				..transfer_consumption(Handles::Image(destination_handle), crate::AccessPolicies::WRITE)
 			},
 		])
 		.apply(self);
 
-		let command_buffer = self.get_command_buffer();
-		let source_image = self.get_image(self.get_internal_base_image_handle(source_image));
-		let destination_image = self.get_image(self.get_internal_base_image_handle(destination_image));
+		let source_image = self.get_image(source_handle);
+		let destination_image = self.get_image(destination_handle);
+		let far_corner = |image: &Image| vk::Offset3D {
+			x: image.extent.width() as i32,
+			y: image.extent.height() as i32,
+			z: 1,
+		};
+		let blits = [vk::ImageBlit2::default()
+			.src_subresource(subresource_layers(image_aspect_mask(source_image.format), 0, 1))
+			.src_offsets([vk::Offset3D::default(), far_corner(source_image)])
+			.dst_subresource(subresource_layers(image_aspect_mask(destination_image.format), 0, 1))
+			.dst_offsets([vk::Offset3D::default(), far_corner(destination_image)])];
+		let blit_info = vk::BlitImageInfo2::default()
+			.src_image(source_image.image)
+			.src_image_layout(texture_format_and_resource_use_to_image_layout(
+				source_image.format_,
+				source_layout,
+				Some(crate::AccessPolicies::READ),
+			))
+			.dst_image(destination_image.image)
+			.dst_image_layout(texture_format_and_resource_use_to_image_layout(
+				destination_image.format_,
+				destination_layout,
+				Some(crate::AccessPolicies::WRITE),
+			))
+			.regions(&blits)
+			.filter(vk::Filter::LINEAR);
 		unsafe {
-			let blit = vk::ImageBlit2::default()
-				.src_subresource(vk::ImageSubresourceLayers {
-					aspect_mask: image_aspect_mask(source_image.format),
-					mip_level: 0,
-					base_array_layer: 0,
-					layer_count: 1,
-				})
-				.src_offsets([
-					vk::Offset3D { x: 0, y: 0, z: 0 },
-					vk::Offset3D {
-						x: source_image.extent.width() as i32,
-						y: source_image.extent.height() as i32,
-						z: 1,
-					},
-				])
-				.dst_subresource(vk::ImageSubresourceLayers {
-					aspect_mask: image_aspect_mask(destination_image.format),
-					mip_level: 0,
-					base_array_layer: 0,
-					layer_count: 1,
-				})
-				.dst_offsets([
-					vk::Offset3D { x: 0, y: 0, z: 0 },
-					vk::Offset3D {
-						x: destination_image.extent.width() as i32,
-						y: destination_image.extent.height() as i32,
-						z: 1,
-					},
-				]);
-
-			let blits = [blit];
-
-			let blit_info = vk::BlitImageInfo2::default()
-				.src_image(source_image.image)
-				.src_image_layout(texture_format_and_resource_use_to_image_layout(
-					source_image.format_,
-					source_layout,
-					Some(crate::AccessPolicies::READ),
-				))
-				.dst_image(destination_image.image)
-				.dst_image_layout(texture_format_and_resource_use_to_image_layout(
-					destination_image.format_,
-					destination_layout,
-					Some(crate::AccessPolicies::WRITE),
-				))
-				.regions(&blits)
-				.filter(vk::Filter::LINEAR);
-			self.device.device.cmd_blit_image2(command_buffer.command_buffer, &blit_info);
+			self.device
+				.device
+				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_info);
 		}
 	}
 
@@ -516,26 +439,51 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			graphics_hardware_interface::ClearValue,
 		)],
 	) {
-		self.consume_resources(textures.iter().map(|(image_handle, _)| Consumption {
-			handle: Handles::Image(self.get_internal_base_image_handle(*image_handle)),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::WRITE,
-			layout: crate::Layouts::Transfer,
-		}))
+		self.consume_resources(
+			textures.iter().map(|(image_handle, _)| {
+				transfer_consumption(self.image_resource(*image_handle), crate::AccessPolicies::WRITE)
+			}),
+		)
 		.apply(self);
 
 		for (image_handle, clear_value) in textures {
 			let image = self.get_image(self.get_internal_base_image_handle(*image_handle));
-
+			// Skip unset textures.
 			if image.image.is_null() {
 				continue;
-			} // Skip unset textures
+			}
 
-			if !image.format_.is_depth() {
+			let command_buffer = self.get_command_buffer().command_buffer;
+			let is_depth = image.format_.is_depth();
+			let range = vk::ImageSubresourceRange::default()
+				.aspect_mask(if is_depth {
+					vk::ImageAspectFlags::DEPTH
+				} else {
+					vk::ImageAspectFlags::COLOR
+				})
+				.level_count(vk::REMAINING_MIP_LEVELS)
+				.layer_count(vk::REMAINING_ARRAY_LAYERS);
+			let layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+			if is_depth {
+				let depth = match clear_value {
+					graphics_hardware_interface::ClearValue::None => 0.0,
+					graphics_hardware_interface::ClearValue::Depth(depth) => *depth,
+					graphics_hardware_interface::ClearValue::Color(_) => panic!("Color clear value for depth texture"),
+					graphics_hardware_interface::ClearValue::Integer(..) => panic!("Integer clear value for depth texture"),
+				};
+				let clear_value = vk::ClearDepthStencilValue { depth, stencil: 0 };
+				unsafe {
+					self.device.device.cmd_clear_depth_stencil_image(
+						command_buffer,
+						image.image,
+						layout,
+						&clear_value,
+						&[range],
+					);
+				}
+			} else {
 				let clear_value = match clear_value {
-					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue {
-						float32: [0.0, 0.0, 0.0, 0.0],
-					},
+					graphics_hardware_interface::ClearValue::None => vk::ClearColorValue::default(),
 					graphics_hardware_interface::ClearValue::Color(color) => vk::ClearColorValue {
 						float32: [color.r, color.g, color.b, color.a],
 					},
@@ -546,51 +494,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 						uint32: [*r, *g, *b, *a],
 					},
 				};
-
 				unsafe {
-					self.device.device.cmd_clear_color_image(
-						self.get_command_buffer().command_buffer,
-						image.image,
-						vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-						&clear_value,
-						&[vk::ImageSubresourceRange {
-							aspect_mask: vk::ImageAspectFlags::COLOR,
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						}],
-					);
-				}
-			} else {
-				let clear_value = match clear_value {
-					graphics_hardware_interface::ClearValue::None => vk::ClearDepthStencilValue { depth: 0.0, stencil: 0 },
-					graphics_hardware_interface::ClearValue::Color(_) => {
-						panic!("Color clear value for depth texture")
-					}
-					graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearDepthStencilValue {
-						depth: *depth,
-						stencil: 0,
-					},
-					graphics_hardware_interface::ClearValue::Integer(..) => {
-						panic!("Integer clear value for depth texture")
-					}
-				};
-
-				unsafe {
-					self.device.device.cmd_clear_depth_stencil_image(
-						self.get_command_buffer().command_buffer,
-						image.image,
-						vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-						&clear_value,
-						&[vk::ImageSubresourceRange {
-							aspect_mask: vk::ImageAspectFlags::DEPTH,
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						}],
-					);
+					self.device
+						.device
+						.cmd_clear_color_image(command_buffer, image.image, layout, &clear_value, &[range]);
 				}
 			}
 		}
@@ -614,71 +521,39 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn copy_buffer_to_images(&mut self, copies: &[crate::BufferImageCopyDescriptor]) {
-		let consumptions = copies
-			.iter()
-			.flat_map(|copy| {
-				[
-					Consumption {
-						handle: Handles::Buffer(self.get_internal_buffer_handle(copy.source_buffer)),
-						stages: crate::Stages::TRANSFER,
-						access: crate::AccessPolicies::READ,
-						layout: crate::Layouts::Transfer,
-					},
-					Consumption {
-						handle: Handles::Image(self.get_internal_base_image_handle(copy.destination_image)),
-						stages: crate::Stages::TRANSFER,
-						access: crate::AccessPolicies::WRITE,
-						layout: crate::Layouts::Transfer,
-					},
-				]
-			})
-			.collect::<Vec<_>>();
-		self.consume_resources(consumptions).apply(self);
-
-		let command_buffer = self.get_command_buffer().command_buffer;
+		self.consume_resources(copies.iter().flat_map(|copy| {
+			[
+				transfer_consumption(self.buffer_resource(copy.source_buffer), crate::AccessPolicies::READ),
+				transfer_consumption(self.image_resource(copy.destination_image), crate::AccessPolicies::WRITE),
+			]
+		}))
+		.apply(self);
 
 		for copy in copies {
-			let source_buffer_handle = self.get_internal_buffer_handle(copy.source_buffer);
-			let destination_image_handle = self.get_internal_base_image_handle(copy.destination_image);
-			let source_buffer = self.get_buffer(source_buffer_handle);
-			let destination_image = self.get_image(destination_image_handle);
-
+			let source_buffer = self.get_buffer(self.get_internal_buffer_handle(copy.source_buffer)).buffer;
+			let destination_image = self.get_image(self.get_internal_base_image_handle(copy.destination_image));
 			assert!(
 				copy.destination_mip_level < destination_image.mip_levels,
 				"Vulkan texture copy mip level is out of range. The most likely cause is that the upload metadata does not match the allocated image."
 			);
 			let destination_extent = crate::image::mip_extent(destination_image.extent, copy.destination_mip_level);
 			let source_row_count = copy.source_bytes_per_image / copy.source_bytes_per_row;
-
-			let regions = [vk::BufferImageCopy2::default()
+			let subresource = subresource_layers(
+				image_aspect_mask(destination_image.format),
+				copy.destination_mip_level,
+				destination_image.layers.map_or(1, std::num::NonZeroU32::get),
+			);
+			let region = vk::BufferImageCopy2::default()
 				.buffer_offset(copy.source_offset as _)
 				.buffer_row_length(buffer_row_length(destination_image.format_, copy.source_bytes_per_row))
 				.buffer_image_height(buffer_image_height(destination_image.format_, source_row_count))
-				.image_subresource(
-					vk::ImageSubresourceLayers::default()
-						.aspect_mask(image_aspect_mask(destination_image.format))
-						.mip_level(copy.destination_mip_level)
-						.base_array_layer(0)
-						.layer_count(destination_image.layers.map(|layers| layers.get()).unwrap_or(1)),
-				)
-				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
-				.image_extent(extent_into_vk_extent(destination_extent))];
-
-			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
-				.src_buffer(source_buffer.buffer)
-				.dst_image(destination_image.image)
-				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-				.regions(&regions);
-
-			unsafe {
-				self.device
-					.device
-					.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
-			}
+				.image_subresource(subresource)
+				.image_extent(extent_into_vk_extent(destination_extent));
+			self.record_buffer_to_image_copy(source_buffer, destination_image.image, region);
 		}
 
 		self.consume_resources(copies.iter().map(|copy| Consumption {
-			handle: Handles::Image(self.get_internal_base_image_handle(copy.destination_image)),
+			handle: self.image_resource(copy.destination_image),
 			stages: crate::Stages::COMPUTE | crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
@@ -691,34 +566,27 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
-		self.consume_resources(buffer_handles.iter().map(|buffer_handle| Consumption {
-			handle: Handles::Buffer(self.get_internal_buffer_handle(*buffer_handle)),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::WRITE,
-			layout: crate::Layouts::Transfer,
-		}))
+		self.consume_resources(
+			buffer_handles
+				.iter()
+				.map(|buffer_handle| transfer_consumption(self.buffer_resource(*buffer_handle), crate::AccessPolicies::WRITE)),
+		)
 		.apply(self);
 
 		for buffer_handle in buffer_handles {
-			let internal_buffer_handle = self.get_internal_buffer_handle(*buffer_handle);
-			let buffer = self.get_buffer(internal_buffer_handle);
-
-			if buffer.buffer.is_null() {
+			let handle = self.get_internal_buffer_handle(*buffer_handle);
+			let buffer = self.get_buffer(handle).buffer;
+			if buffer.is_null() {
 				continue;
 			}
 
 			unsafe {
-				self.device.device.cmd_fill_buffer(
-					self.get_command_buffer().command_buffer,
-					buffer.buffer,
-					0,
-					vk::WHOLE_SIZE,
-					0,
-				);
+				self.device
+					.device
+					.cmd_fill_buffer(self.get_command_buffer().command_buffer, buffer, 0, vk::WHOLE_SIZE, 0);
 			}
-
 			self.states.insert(
-				Handles::Buffer(internal_buffer_handle),
+				Handles::Buffer(handle),
 				TransitionState::new(
 					vk::PipelineStageFlags2::TRANSFER,
 					vk::AccessFlags2::TRANSFER_WRITE,
@@ -781,39 +649,15 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), pointer, required_bytes);
 		}
 
-		self.consume_resources([Consumption {
-			handle: Handles::Image(internal_image_handle),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::WRITE,
-			layout: crate::Layouts::Transfer,
-		}])
+		self.consume_resources([transfer_consumption(
+			Handles::Image(internal_image_handle),
+			crate::AccessPolicies::WRITE,
+		)])
 		.apply(self);
-
-		let regions = [vk::BufferImageCopy2KHR::default()
-			.buffer_offset(0)
-			.buffer_row_length(0)
-			.buffer_image_height(0)
-			.image_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(layer_count),
-			)
-			.image_offset(vk::Offset3D::default())
-			.image_extent(extent_into_vk_extent(extent))];
-		let copy = vk::CopyBufferToImageInfo2::default()
-			.src_buffer(buffer)
-			.dst_image(image)
-			.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-			.regions(&regions);
-
-		unsafe {
-			self.device
-				.device
-				.cmd_copy_buffer_to_image2(self.get_command_buffer().command_buffer, &copy);
-		}
-
+		let region = vk::BufferImageCopy2::default()
+			.image_subresource(subresource_layers(vk::ImageAspectFlags::COLOR, 0, layer_count))
+			.image_extent(extent_into_vk_extent(extent));
+		self.record_buffer_to_image_copy(buffer, image, region);
 		self.consume_resources([Consumption {
 			handle: Handles::Image(internal_image_handle),
 			stages: crate::Stages::FRAGMENT,
@@ -852,42 +696,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			self.device.texture_readbacks.mark_submitted(*handle);
 		}
 		self.readbacks_finalized = true;
-		for (handle, state) in std::mem::take(&mut self.states) {
-			self.device.states.insert(handle, state);
-		}
-		for (handle, states) in std::mem::take(&mut self.buffer_states) {
-			self.device.buffer_states.insert(handle, states);
-		}
-	}
-}
-
-/// Geometry and instance data read by an acceleration-structure build, per the vkCmdBuildAccelerationStructuresKHR rules.
-fn acceleration_structure_input(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::SHADER_READ)
-}
-
-fn acceleration_structure_scratch(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(
-		handle,
-		vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-	)
-}
-
-fn acceleration_structure_destination(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
-}
-
-/// A bottom-level structure that a top-level build reads through its instances.
-fn acceleration_structure_source(handle: Handles) -> VulkanConsumption {
-	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
-}
-
-fn acceleration_structure_build_access(handle: Handles, access: vk::AccessFlags2) -> VulkanConsumption {
-	VulkanConsumption {
-		handle,
-		stages: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-		access,
-		layout: vk::ImageLayout::UNDEFINED,
-		range: None,
+		self.device.states.extend(std::mem::take(&mut self.states));
+		self.device.buffer_states.extend(std::mem::take(&mut self.buffer_states));
 	}
 }

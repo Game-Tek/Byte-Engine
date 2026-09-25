@@ -2,95 +2,26 @@ use super::*;
 
 impl InnerDevice {
 	fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
-		let surface = {
-			#[cfg(target_os = "linux")]
-			{
-				let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
-					.display(window_os_handles.display)
-					.surface(window_os_handles.surface);
+		let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
+			.display(window_os_handles.display)
+			.surface(window_os_handles.surface);
+		let surface = unsafe {
+			self.wayland_surface
+				.create_wayland_surface(&wayland_surface_create_info, None)
+		}
+		.expect("No surface");
 
-				unsafe {
-					self.wayland_surface
-						.create_wayland_surface(&wayland_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-			#[cfg(target_os = "windows")]
-			{
-				let win32_surface_create_info = vk::Win32SurfaceCreateInfoKHR::default()
-					.hinstance(window_os_handles.hinstance.0 as isize)
-					.hwnd(window_os_handles.hwnd.0 as isize);
-
-				unsafe {
-					self.win32_surface
-						.create_win32_surface(&win32_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-			#[cfg(target_os = "macos")]
-			{
-				let metal_layer = objc2_quartz_core::CAMetalLayer::new();
-
-				let view = &window_os_handles.view;
-				let logical_size = view.frame().size;
-				let drawable_size = view.convertSizeToBacking(logical_size);
-				let scale_factor = if logical_size.width > 0.0 {
-					(drawable_size.width / logical_size.width).max(1.0)
-				} else if logical_size.height > 0.0 {
-					(drawable_size.height / logical_size.height).max(1.0)
-				} else {
-					1.0
-				};
-
-				view.setWantsLayer(true);
-				view.setLayer(Some(&metal_layer));
-				metal_layer.setContentsScale(scale_factor);
-				metal_layer.setDrawableSize(drawable_size);
-
-				let macos_surface_create_info =
-					vk::MetalSurfaceCreateInfoEXT::default().layer(objc2::rc::Retained::as_ptr(&metal_layer) as _);
-
-				unsafe {
-					self.macos_surface
-						.create_metal_surface(&macos_surface_create_info, None)
-						.expect("No surface")
-				}
-			}
-		};
-
-		let surface_capabilities = unsafe {
-			self.surface
-				.get_physical_device_surface_capabilities(self.physical_device, surface)
-				.expect("No surface capabilities")
-		};
-
-		let surface_format = unsafe {
+		let surface_formats = unsafe {
 			self.surface
 				.get_physical_device_surface_formats(self.physical_device, surface)
-				.expect("No surface formats")
-		};
-
-		let _: vk::SurfaceFormatKHR = surface_format
-			.iter()
-			.find(|format| {
+		}
+		.expect("No surface formats");
+		assert!(
+			surface_formats.iter().any(|format| {
 				format.format == vk::Format::B8G8R8A8_SRGB && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
-			})
-			.expect("No surface format")
-			.to_owned();
-
-		let surface_present_modes = unsafe {
-			self.surface
-				.get_physical_device_surface_present_modes(self.physical_device, surface)
-				.expect("No surface present modes")
-		};
-
-		let _: vk::PresentModeKHR = surface_present_modes
-			.iter()
-			.find(|present_mode| **present_mode == vk::PresentModeKHR::FIFO)
-			.expect("No surface present mode")
-			.to_owned();
-
-		let _surface_resolution = surface_capabilities.current_extent;
+			}),
+			"No surface format"
+		);
 
 		surface
 	}
@@ -107,8 +38,6 @@ impl InnerDevice {
 		u32,
 		vk::Extent2D,
 		crate::Formats,
-		crate::Formats,
-		vk::ImageUsageFlags,
 		bool,
 		vk::ImageUsageFlags,
 		vk::SwapchainKHR,
@@ -122,9 +51,6 @@ impl InnerDevice {
 		};
 
 		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
-
-		let min_image_count = vk_surface_capabilities.min_image_count;
-
 		let extent = Self::swapchain_extent(
 			&vk_surface_capabilities,
 			vk::Extent2D::default()
@@ -133,24 +59,22 @@ impl InnerDevice {
 		);
 
 		let format = crate::Formats::BGRAsRGB;
-		let proxy_format = crate::Formats::BGRAu8;
-
 		let requested_image_usage = into_vk_image_usage_flags(uses, format);
 		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_proxy_images = self.swapchain_needs_proxy(supported_image_usage, requested_image_usage, uses);
+		let uses_storage = uses.contains(crate::Uses::Storage);
+		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage)
+			|| uses_storage && !self.swapchain_native_supports_formatless_storage_write;
 
 		let native_image_usage = if uses_proxy_images {
-			self.validate_swapchain_proxy_format(uses);
-
-			let fallback_usage = vk::ImageUsageFlags::TRANSFER_DST;
-
-			if !supported_image_usage.contains(fallback_usage) {
-				panic!(
-					"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-				);
-			}
-
-			fallback_usage
+			assert!(
+				!uses_storage || self.swapchain_proxy_supports_formatless_storage_write,
+				"Failed to create swapchain storage proxy image. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain proxy format."
+			);
+			assert!(
+				supported_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST),
+				"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+			);
+			vk::ImageUsageFlags::TRANSFER_DST
 		} else {
 			requested_image_usage
 		};
@@ -166,11 +90,9 @@ impl InnerDevice {
 		(
 			vk_surface,
 			vk_present_mode,
-			min_image_count,
+			vk_surface_capabilities.min_image_count,
 			extent,
-			format,
-			proxy_format,
-			supported_image_usage,
+			crate::Formats::BGRAu8,
 			uses_proxy_images,
 			native_image_usage,
 			vk_swapchain,
@@ -182,24 +104,19 @@ impl InnerDevice {
 		surface: vk::SurfaceKHR,
 		present_mode: vk::PresentModeKHR,
 	) -> vk::SurfaceCapabilitiesKHR {
+		// Chaining the present mode makes the reported capabilities, such as the image counts, specific to that mode.
 		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(present_mode);
-
 		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
 			.push(&mut vk_surface_present_mode)
 			.surface(surface);
-
-		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
-
-		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
-
-		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
+		let mut vk_surface_capabilities = vk::SurfaceCapabilities2KHR::default();
 
 		unsafe {
 			self.surface_capabilities
 				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
-				.expect("Failed to query Vulkan surface capabilities. The most likely cause is that the window surface was lost.")
+				.expect(
+					"Failed to query Vulkan surface capabilities. The most likely cause is that the window surface was lost.",
+				)
 		};
 
 		vk_surface_capabilities.surface_capabilities
@@ -211,15 +128,10 @@ impl InnerDevice {
 			return capabilities.current_extent;
 		}
 
+		let (min, max) = (capabilities.min_image_extent, capabilities.max_image_extent);
 		vk::Extent2D::default()
-			.width(fallback.width.clamp(
-				capabilities.min_image_extent.width,
-				capabilities.max_image_extent.width.max(capabilities.min_image_extent.width),
-			))
-			.height(fallback.height.clamp(
-				capabilities.min_image_extent.height,
-				capabilities.max_image_extent.height.max(capabilities.min_image_extent.height),
-			))
+			.width(fallback.width.clamp(min.width, max.width.max(min.width)))
+			.height(fallback.height.clamp(min.height, max.height.max(min.height)))
 	}
 
 	/// Creates a swapchain, retiring `old_swapchain` so in-flight presentation can finish during recreation.
@@ -233,14 +145,12 @@ impl InnerDevice {
 		old_swapchain: vk::SwapchainKHR,
 	) -> vk::SwapchainKHR {
 		let presentation_modes = [present_mode];
-
 		let mut present_modes_create_info =
 			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
 
-		let requested_image_count = if capabilities.max_image_count != 0 {
-			capabilities.max_image_count.max(capabilities.min_image_count)
-		} else {
-			capabilities.min_image_count * 2
+		let requested_image_count = match capabilities.max_image_count {
+			0 => capabilities.min_image_count * 2,
+			max_image_count => max_image_count,
 		};
 		// Per-image state lives in fixed arrays, so never ask for more images than they hold.
 		let requested_image_count = requested_image_count
@@ -271,32 +181,8 @@ impl InnerDevice {
 		}
 	}
 
-	fn swapchain_needs_proxy(
-		&self,
-		supported_usage_flags: vk::ImageUsageFlags,
-		requested_usage_flags: vk::ImageUsageFlags,
-		uses: crate::Uses,
-	) -> bool {
-		!supported_usage_flags.contains(requested_usage_flags)
-			|| uses.contains(crate::Uses::Storage) && !self.swapchain_native_supports_formatless_storage_write
-	}
-
-	fn validate_swapchain_proxy_format(&self, uses: crate::Uses) {
-		if uses.contains(crate::Uses::Storage) && !self.swapchain_proxy_supports_formatless_storage_write {
-			panic!(
-				"Failed to create swapchain storage proxy image. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain proxy format."
-			);
-		}
-	}
-
-	#[cfg(any(debug_assertions, test))]
-	fn get_log_count(&self) -> u64 {
-		use std::sync::atomic::Ordering;
-		self.debug_data.error_count.load(Ordering::SeqCst)
-	}
-
 	#[cfg(any(debug_assertions, test))]
 	pub(crate) fn has_errors(&self) -> bool {
-		self.get_log_count() > 0
+		self.debug_data.error_count.load(std::sync::atomic::Ordering::SeqCst) > 0
 	}
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::{descriptors::WriteData, shader::ResourceKind};
 
 impl Context {
 	pub(crate) fn create_descriptor_heap_arena(
@@ -112,88 +113,34 @@ impl Context {
 			.find_map(|set| self.descriptor_sets[set.0 as usize].descriptors.get(&slot))
 	}
 
-	pub(crate) fn descriptor_matches_kind(
-		descriptor: crate::descriptors::WriteData,
-		kind: crate::shader::ResourceKind,
-	) -> bool {
+	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
 		match descriptor {
-			crate::descriptors::WriteData::Buffer { .. } => matches!(
+			WriteData::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
+			WriteData::Image { .. } | WriteData::Swapchain(_) => matches!(
 				kind,
-				crate::shader::ResourceKind::UniformBuffer | crate::shader::ResourceKind::StorageBuffer
+				ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment
 			),
-			crate::descriptors::WriteData::Image { .. } | crate::descriptors::WriteData::Swapchain(_) => matches!(
-				kind,
-				crate::shader::ResourceKind::SampledImage
-					| crate::shader::ResourceKind::StorageImage
-					| crate::shader::ResourceKind::InputAttachment
-			),
-			crate::descriptors::WriteData::CombinedImageSampler { .. } => {
-				kind == crate::shader::ResourceKind::CombinedImageSampler
-			}
-			crate::descriptors::WriteData::Sampler(_) => kind == crate::shader::ResourceKind::Sampler,
-			crate::descriptors::WriteData::AccelerationStructure { .. } => {
-				kind == crate::shader::ResourceKind::AccelerationStructure
-			}
-			crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray => false,
+			WriteData::CombinedImageSampler { .. } => kind == ResourceKind::CombinedImageSampler,
+			WriteData::Sampler(_) => kind == ResourceKind::Sampler,
+			WriteData::AccelerationStructure { .. } => kind == ResourceKind::AccelerationStructure,
+			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => false,
 		}
 	}
 
 	/// Compares the native resource and image layout consumed by two materialized descriptors.
 	pub(crate) fn descriptors_consume_same_resource(left: Descriptor, right: Descriptor) -> bool {
+		let image = |descriptor: Descriptor| match descriptor {
+			Descriptor::Image { image, layout, .. } | Descriptor::CombinedImageSampler { image, layout, .. } => {
+				Some((image, layout))
+			}
+			_ => None,
+		};
 		match (left, right) {
 			(Descriptor::Buffer { buffer: left, .. }, Descriptor::Buffer { buffer: right, .. }) => left == right,
-			(
-				Descriptor::Image {
-					image: left,
-					layout: left_layout,
-					..
-				},
-				Descriptor::Image {
-					image: right,
-					layout: right_layout,
-					..
-				},
-			)
-			| (
-				Descriptor::Image {
-					image: left,
-					layout: left_layout,
-					..
-				},
-				Descriptor::CombinedImageSampler {
-					image: right,
-					layout: right_layout,
-					..
-				},
-			)
-			| (
-				Descriptor::CombinedImageSampler {
-					image: left,
-					layout: left_layout,
-					..
-				},
-				Descriptor::Image {
-					image: right,
-					layout: right_layout,
-					..
-				},
-			)
-			| (
-				Descriptor::CombinedImageSampler {
-					image: left,
-					layout: left_layout,
-					..
-				},
-				Descriptor::CombinedImageSampler {
-					image: right,
-					layout: right_layout,
-					..
-				},
-			) => left == right && left_layout == right_layout,
 			(Descriptor::AccelerationStructure { handle: left }, Descriptor::AccelerationStructure { handle: right }) => {
 				left == right
 			}
-			_ => false,
+			_ => image(left).is_some_and(|left| image(right) == Some(left)),
 		}
 	}
 
@@ -300,29 +247,19 @@ impl Context {
 			for retained in elements.values() {
 				let target_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset) as u8;
 				let key = match retained.descriptor {
-					crate::descriptors::WriteData::Buffer { .. } => {
-						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
-						None
-					}
-					crate::descriptors::WriteData::Swapchain(handle) => {
-						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
-						Some((
-							handle,
-							self.swapchains[handle.0 as usize].acquired_image_indices[target_sequence as usize],
-						))
-					}
-					crate::descriptors::WriteData::Image { handle, .. }
-					| crate::descriptors::WriteData::CombinedImageSampler {
+					WriteData::Buffer { .. } => None,
+					WriteData::Swapchain(handle) => Some((
+						handle,
+						self.swapchains[handle.0 as usize].acquired_image_indices[target_sequence as usize],
+					)),
+					WriteData::Image { handle, .. }
+					| WriteData::CombinedImageSampler {
 						image_handle: handle, ..
-					} => {
-						resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
-						self.swapchain_key_for_image(handle, target_sequence)
-					}
-					_ => None,
+					} => self.swapchain_key_for_image(handle, target_sequence),
+					_ => continue,
 				};
-				if let Some(key) = key {
-					swapchain_images.push(key);
-				}
+				resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
+				swapchain_images.extend(key);
 			}
 		}
 		resource_epochs.sort_unstable_by_key(|(sequence, _)| *sequence);
@@ -345,56 +282,53 @@ impl Context {
 		sequence_index: u8,
 	) -> Descriptor {
 		let resource_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset);
+		let image = |handle| {
+			self.resolve_descriptor_image_handle(
+				graphics_hardware_interface::ImageHandle(handle),
+				sequence_index as usize,
+				retained.frame_offset,
+			)
+		};
 		match retained.descriptor {
-			crate::descriptors::WriteData::Buffer { handle, size } => Descriptor::Buffer {
+			WriteData::Buffer { handle, size } => Descriptor::Buffer {
 				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
 					"Missing deferred Vulkan buffer. The most likely cause is that frame resource tasks were not processed before descriptor materialization.",
 				),
 				size,
 			},
-			crate::descriptors::WriteData::Image {
+			WriteData::Image {
 				handle,
 				layout,
 				mip_level,
 			} => Descriptor::Image {
-				image: self.resolve_descriptor_image_handle(
-					graphics_hardware_interface::ImageHandle(handle),
-					sequence_index as usize,
-					retained.frame_offset,
-				),
+				image: image(handle),
 				layout,
 				mip_level,
 			},
-			crate::descriptors::WriteData::CombinedImageSampler {
+			WriteData::CombinedImageSampler {
 				image_handle,
 				sampler_handle,
 				layout,
 				layer,
 			} => Descriptor::CombinedImageSampler {
-				image: self.resolve_descriptor_image_handle(
-					graphics_hardware_interface::ImageHandle(image_handle),
-					sequence_index as usize,
-					retained.frame_offset,
-				),
+				image: image(image_handle),
 				sampler: sampler_handle,
 				layout,
 				layer,
 			},
-			crate::descriptors::WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
-			crate::descriptors::WriteData::AccelerationStructure { handle } => Descriptor::AccelerationStructure {
+			WriteData::Sampler(sampler) => Descriptor::Sampler { sampler },
+			WriteData::AccelerationStructure { handle } => Descriptor::AccelerationStructure {
 				handle: TopLevelAccelerationStructureHandle(handle.0),
 			},
-			crate::descriptors::WriteData::Swapchain(handle) => {
+			WriteData::Swapchain(handle) => {
 				let swapchain = &self.swapchains[handle.0 as usize];
-				let image_index = swapchain.acquired_image_indices[resource_sequence] as usize;
 				Descriptor::Image {
-					image: swapchain.images[image_index],
+					image: swapchain.images[swapchain.acquired_image_indices[resource_sequence] as usize],
 					layout: crate::Layouts::General,
 					mip_level: None,
 				}
 			}
-			crate::descriptors::WriteData::StaticSamplers
-			| crate::descriptors::WriteData::CombinedImageSamplerArray => unreachable!(
+			WriteData::StaticSamplers | WriteData::CombinedImageSamplerArray => unreachable!(
 				"Legacy Vulkan descriptor write reached materialization. The most likely cause is that write validation was bypassed."
 			),
 		}
@@ -428,7 +362,7 @@ impl Context {
 				(vk::ImageViewType::TYPE_2D, 0, 1)
 			}
 			crate::TextureViewTypes::Texture2DArray => {
-				let layers = image.layers.map(|layers| layers.get()).expect(
+				let layers = image.layers.map(NonZeroU32::get).expect(
 					"Vulkan array descriptor view mismatch. The most likely cause is that a non-array image was written to a Texture2DArray shader resource.",
 				);
 				let base = layer.unwrap_or(0);
@@ -469,7 +403,6 @@ impl Context {
 			.image(image.image)
 			.view_type(vk_view_type)
 			.format(image.format)
-			.components(vk::ComponentMapping::default())
 			.subresource_range(vk::ImageSubresourceRange {
 				aspect_mask: if image.format_.is_depth() {
 					vk::ImageAspectFlags::DEPTH
@@ -517,19 +450,18 @@ impl Context {
 		let resource_alignment = properties
 			.buffer_descriptor_alignment
 			.max(properties.image_descriptor_alignment);
-		let (resource_heap_offset, sampler_heap_offset) = {
-			let heaps = self.descriptor_heaps.as_mut().unwrap();
-			let resource_offset = (layout.resource_heap_size > 0)
-				.then(|| heaps.resource_mut().allocate(layout.resource_heap_size, resource_alignment))
-				.unwrap_or(0);
-			let sampler_offset = (layout.sampler_heap_size > 0)
-				.then(|| {
-					heaps
-						.sampler_mut()
-						.allocate(layout.sampler_heap_size, properties.sampler_descriptor_alignment)
-				})
-				.unwrap_or(0);
-			(resource_offset, sampler_offset)
+		let heaps = self.descriptor_heaps.as_mut().unwrap();
+		let resource_heap_offset = if layout.resource_heap_size > 0 {
+			heaps.resource_mut().allocate(layout.resource_heap_size, resource_alignment)
+		} else {
+			0
+		};
+		let sampler_heap_offset = if layout.sampler_heap_size > 0 {
+			heaps
+				.sampler_mut()
+				.allocate(layout.sampler_heap_size, properties.sampler_descriptor_alignment)
+		} else {
+			0
 		};
 
 		let mut address_writes = Vec::<(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64)>::new();
@@ -568,7 +500,6 @@ impl Context {
 					mip_level,
 				} => {
 					let image = &self.images[image.0 as usize];
-					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
 					let descriptor_type = crate::vulkan::descriptor_type(resource.descriptor.kind()).unwrap();
 					// Storage views address exactly one mip; a sampled image without a chosen mip exposes the whole chain.
 					let (base_mip_level, level_count) = match mip_level {
@@ -585,7 +516,7 @@ impl Context {
 							base_mip_level,
 							level_count,
 						),
-						vk_layout,
+						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						resource_offset.unwrap(),
 						resource.resource_stride as u64,
 					));
@@ -597,7 +528,6 @@ impl Context {
 					layer,
 				} => {
 					let image = &self.images[image.0 as usize];
-					let vk_layout = texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None);
 					image_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
 						self.descriptor_image_view_create_info(
@@ -607,7 +537,7 @@ impl Context {
 							0,
 							image.mip_levels,
 						),
-						vk_layout,
+						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
 						resource_offset.unwrap(),
 						resource.resource_stride as u64,
 					));
@@ -654,13 +584,11 @@ impl Context {
 			let ranges = address_writes.iter().map(|(_, range, ..)| *range).collect::<Box<[_]>>();
 			let infos = address_writes
 				.iter()
-				.enumerate()
-				.map(|(index, (ty, ..))| {
+				.zip(&ranges)
+				.map(|((ty, ..), range)| {
 					vk::ResourceDescriptorInfoEXT::default()
 						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT {
-							p_address_range: &ranges[index],
-						})
+						.data(vk::ResourceDescriptorDataEXT { p_address_range: range })
 				})
 				.collect::<Box<[_]>>();
 			let destinations = address_writes
@@ -678,16 +606,16 @@ impl Context {
 			let views = image_writes.iter().map(|(_, view, ..)| *view).collect::<Box<[_]>>();
 			let images = image_writes
 				.iter()
-				.enumerate()
-				.map(|(index, (_, _, layout, ..))| vk::ImageDescriptorInfoEXT::default().view(&views[index]).layout(*layout))
+				.zip(&views)
+				.map(|((_, _, layout, ..), view)| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
 				.collect::<Box<[_]>>();
 			let infos = image_writes
 				.iter()
-				.enumerate()
-				.map(|(index, (ty, ..))| {
+				.zip(&images)
+				.map(|((ty, ..), image)| {
 					vk::ResourceDescriptorInfoEXT::default()
 						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_image: &images[index] })
+						.data(vk::ResourceDescriptorDataEXT { p_image: image })
 				})
 				.collect::<Box<[_]>>();
 			let destinations = image_writes
@@ -711,13 +639,15 @@ impl Context {
 						.reduction_mode(self.samplers[handle.0 as usize].reduction_mode)
 				})
 				.collect::<Box<[_]>>();
-			let mut samplers = sampler_writes
+			let samplers = sampler_writes
 				.iter()
-				.map(|(handle, ..)| self.samplers[handle.0 as usize].create_info())
+				.zip(&reductions)
+				.map(|((handle, ..), reduction)| {
+					let mut sampler = self.samplers[handle.0 as usize].create_info();
+					sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
+					sampler
+				})
 				.collect::<Box<[_]>>();
-			for (sampler, reduction) in samplers.iter_mut().zip(reductions.iter()) {
-				sampler.p_next = (reduction as *const vk::SamplerReductionModeCreateInfo).cast();
-			}
 			let destinations = sampler_writes
 				.iter()
 				.map(|(_, offset, size)| heaps.sampler().host_range(*offset, *size))
@@ -742,7 +672,7 @@ impl Context {
 		let handle = self
 			.free_materialization_handles
 			.pop()
-			.unwrap_or_else(|| DescriptorMaterializationHandle(self.descriptor_materializations.len() as u64));
+			.unwrap_or(DescriptorMaterializationHandle(self.descriptor_materializations.len() as u64));
 		if handle.0 as usize == self.descriptor_materializations.len() {
 			self.descriptor_materializations.push(Some(materialization));
 		} else {
@@ -757,6 +687,7 @@ impl Context {
 			"Retired Vulkan descriptor materialization was reused. The most likely cause is that a command buffer outlived its frame sequence fence.",
 		)
 	}
+
 	#[inline]
 	pub(crate) fn set_object_debug_name(&mut self, name: Option<&str>, handle: graphics_hardware_interface::Handles) {
 		#[cfg(debug_assertions)]
@@ -768,11 +699,9 @@ impl Context {
 	#[inline]
 	pub(crate) fn get_object_debug_name(&self, handle: graphics_hardware_interface::Handles) -> Option<String> {
 		#[cfg(debug_assertions)]
-		let name = self.names.get(&handle).map(|e| e.clone());
-
+		let name = self.names.get(&handle).cloned();
 		#[cfg(not(debug_assertions))]
-		let name: Option<String> = None;
-
+		let name = None;
 		name
 	}
 }

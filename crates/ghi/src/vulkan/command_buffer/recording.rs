@@ -16,13 +16,8 @@ impl CommandBufferRecording<'_> {
 			return;
 		};
 
-		self.sync_buffers(std::iter::once(BufferCopy::new(
-			staging_handle,
-			0,
-			buffer_handle,
-			0,
-			buffer.size,
-		)));
+		let copy = BufferCopy::new(staging_handle, 0, buffer_handle, 0, buffer.size);
+		self.sync_buffers(std::iter::once(copy));
 	}
 
 	pub(crate) fn new(
@@ -34,7 +29,7 @@ impl CommandBufferRecording<'_> {
 			pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
 			command_buffer,
 			frame_key,
-			sequence_index: frame_key.map(|f| f.sequence_index).unwrap_or(0),
+			sequence_index: frame_key.map_or(0, |frame_key| frame_key.sequence_index),
 			states: device.states.clone(),
 			buffer_states: device.buffer_states.clone(),
 
@@ -54,7 +49,6 @@ impl CommandBufferRecording<'_> {
 		};
 
 		command_buffer.begin();
-
 		command_buffer
 	}
 
@@ -82,23 +76,18 @@ impl CommandBufferRecording<'_> {
 
 	fn begin(&self) {
 		let command_buffer = self.get_command_buffer();
+		let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
 		unsafe {
 			self.device
 				.device
 				.reset_command_pool(command_buffer.command_pool, vk::CommandPoolResetFlags::empty())
-				.expect("No command pool reset")
-		};
-
-		let command_buffer_begin_info =
-			vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-		unsafe {
+				.expect("No command pool reset");
 			self.device
 				.device
-				.begin_command_buffer(command_buffer.command_buffer, &command_buffer_begin_info)
-				.expect("No command buffer begin")
-		};
+				.begin_command_buffer(command_buffer.command_buffer, &begin_info)
+				.expect("No command buffer begin");
+		}
 	}
 
 	pub(super) fn get_buffer(&self, buffer_handle: BufferHandle) -> &Buffer {
@@ -109,56 +98,8 @@ impl CommandBufferRecording<'_> {
 		&self.device.images[image_handle.0 as usize]
 	}
 
-	pub(crate) fn get_synchronizer(
-		&self,
-		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> &Synchronizer {
-		&self.device.synchronizers
-			[self.device.get_syncronizer_handles(syncronizer_handle)[self.sequence_index as usize].0 as usize]
-	}
-
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
 		&self.device.swapchains[swapchain_handle.0 as usize]
-	}
-
-	pub(super) fn get_internal_top_level_acceleration_structure_handle(
-		&self,
-		acceleration_structure_handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
-	) -> TopLevelAccelerationStructureHandle {
-		TopLevelAccelerationStructureHandle(acceleration_structure_handle.0)
-	}
-
-	pub(super) fn get_top_level_acceleration_structure(
-		&self,
-		acceleration_structure_handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
-	) -> (
-		graphics_hardware_interface::TopLevelAccelerationStructureHandle,
-		&AccelerationStructure,
-	) {
-		(
-			acceleration_structure_handle,
-			&self.device.acceleration_structures[acceleration_structure_handle.0 as usize],
-		)
-	}
-
-	pub(super) fn get_internal_bottom_level_acceleration_structure_handle(
-		&self,
-		acceleration_structure_handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) -> BottomLevelAccelerationStructureHandle {
-		BottomLevelAccelerationStructureHandle(acceleration_structure_handle.0)
-	}
-
-	pub(super) fn get_bottom_level_acceleration_structure(
-		&self,
-		acceleration_structure_handle: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-	) -> (
-		graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
-		&AccelerationStructure,
-	) {
-		(
-			acceleration_structure_handle,
-			&self.device.acceleration_structures[acceleration_structure_handle.0 as usize],
-		)
 	}
 
 	pub(crate) fn get_command_buffer(&self) -> &CommandBufferInternal {
@@ -175,15 +116,13 @@ impl CommandBufferRecording<'_> {
 		let heaps = self.device.descriptor_heaps.as_ref().expect(
 			"Missing Vulkan descriptor heaps. The most likely cause is that command recording started on an incompletely initialized context.",
 		);
-		let resource_bind_info = heaps.resource().bind_info();
-		let sampler_bind_info = heaps.sampler().bind_info();
 		unsafe {
 			self.device
 				.descriptor_heap
-				.cmd_bind_resource_heap(command_buffer, &resource_bind_info);
+				.cmd_bind_resource_heap(command_buffer, &heaps.resource().bind_info());
 			self.device
 				.descriptor_heap
-				.cmd_bind_sampler_heap(command_buffer, &sampler_bind_info);
+				.cmd_bind_sampler_heap(command_buffer, &heaps.sampler().bind_info());
 		}
 		self.descriptor_heaps_bound = true;
 	}
@@ -210,18 +149,15 @@ impl CommandBufferRecording<'_> {
 				.materialize_descriptor_sets(layout_handle, &self.bound_descriptor_set_handles, self.sequence_index);
 		self.bind_descriptor_heaps_once();
 
-		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
 		let snapshot = self.device.descriptor_materialization(materialization);
 		let heap_offsets = [snapshot.resource_heap_offset, snapshot.sampler_heap_offset];
-		// SAFETY: heap_offsets is plain u32 data and remains alive for the duration of vkCmdPushDataEXT.
-		let bytes =
-			unsafe { std::slice::from_raw_parts(heap_offsets.as_ptr().cast::<u8>(), std::mem::size_of_val(&heap_offsets)) };
 		let push_info = vk::PushDataInfoEXT::default()
-			.offset(layout.heap_push_data_offset)
-			.data(vk::HostAddressRangeConstEXT::default().address(bytes));
-		let command_buffer = self.get_command_buffer().command_buffer;
+			.offset(self.device.pipeline_layouts[layout_handle.0 as usize].heap_push_data_offset)
+			.data(vk::HostAddressRangeConstEXT::default().address(::utils::as_byte_slice(&heap_offsets)));
 		unsafe {
-			self.device.descriptor_heap.cmd_push_data(command_buffer, &push_info);
+			self.device
+				.descriptor_heap
+				.cmd_push_data(self.get_command_buffer().command_buffer, &push_info);
 		}
 
 		self.current_descriptor_materialization = Some(materialization);
@@ -249,8 +185,9 @@ impl CommandBufferRecording<'_> {
 				}
 				let (handle, layout) = match resource.descriptor {
 					Descriptor::Buffer { buffer, .. } => (Handles::Buffer(buffer), crate::Layouts::General),
-					Descriptor::Image { image, layout, .. } => (Handles::Image(image), layout),
-					Descriptor::CombinedImageSampler { image, layout, .. } => (Handles::Image(image), layout),
+					Descriptor::Image { image, layout, .. } | Descriptor::CombinedImageSampler { image, layout, .. } => {
+						(Handles::Image(image), layout)
+					}
 					Descriptor::AccelerationStructure { handle } => {
 						(Handles::TopLevelAccelerationStructure(handle), crate::Layouts::General)
 					}
@@ -271,184 +208,75 @@ impl CommandBufferRecording<'_> {
 
 	#[must_use]
 	pub(super) fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
-		// Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
-
-		let consumptions = consumptions.into_iter().map(|consumption| {
+		self.vulkan_consume_resources(consumptions.into_iter().map(|consumption| {
 			let format = match consumption.handle {
-				Handles::Image(texture_handle) => {
-					let image = self.get_image(texture_handle);
-					Some(image.format_)
-				}
+				Handles::Image(image_handle) => Some(self.get_image(image_handle).format_),
 				_ => None,
-			};
-
-			let stages = to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format);
-			let access = to_access_flags(consumption.access, consumption.stages, consumption.layout, format);
-
-			let layout = match consumption.handle {
-				Handles::Image(image_handle) => {
-					let image = self.get_image(image_handle);
-					texture_format_and_resource_use_to_image_layout(image.format_, consumption.layout, Some(consumption.access))
-				}
-				_ => vk::ImageLayout::UNDEFINED,
 			};
 
 			VulkanConsumption {
 				handle: consumption.handle,
-				stages,
-				access,
-				layout,
+				stages: to_pipeline_stage_flags(consumption.stages, Some(consumption.layout), format),
+				access: to_access_flags(consumption.access, consumption.stages, consumption.layout, format),
+				layout: format.map_or(vk::ImageLayout::UNDEFINED, |format| {
+					texture_format_and_resource_use_to_image_layout(format, consumption.layout, Some(consumption.access))
+				}),
 				range: None,
 			}
-		});
-
-		self.vulkan_consume_resources(consumptions)
+		}))
 	}
 
-	/// Flags the passed resources as consumed.
+	/// Flags the passed resources as consumed and records the barriers they need.
 	/// Consumptions are specified directly in Vulkan terms.
 	#[must_use]
 	pub(super) fn vulkan_consume_resources(
 		&self,
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
 	) -> TransitionStateUpdates {
-		Self::vulkan_consume_resources_impl(self.device, self, &self.states, consumptions)
-	}
-
-	#[must_use]
-	fn vulkan_consume_resources_impl(
-		device: &Context,
-		command_buffer: &CommandBufferRecording,
-		states: &HashMap<Handles, TransitionState>,
-		consumptions: impl IntoIterator<Item = VulkanConsumption>,
-	) -> TransitionStateUpdates {
-		let planned = Self::plan_vulkan_resource_transitions(
-			states,
-			&command_buffer.buffer_states,
+		let mut planned = Self::plan_vulkan_resource_transitions(
+			&self.states,
+			&self.buffer_states,
 			consumptions,
 			|handle| {
-				let image = command_buffer.get_image(handle);
+				let image = self.get_image(handle);
 				Some((image.image, image.format))
 			},
-			|handle| {
-				let buffer = command_buffer.get_buffer(handle);
-				Some(buffer.buffer)
-			},
+			|handle| Some(self.get_buffer(handle).buffer),
 		);
 
-		let active_rendering = command_buffer.active_rendering;
+		// Global barriers cover all memory, so one barrier with the union of masks orders everything the individual ones did.
+		let folded_memory_barrier = planned.memory_barriers.iter().copied().reduce(|folded, barrier| {
+			folded
+				.src_stage_mask(folded.src_stage_mask | barrier.src_stage_mask)
+				.src_access_mask(folded.src_access_mask | barrier.src_access_mask)
+				.dst_stage_mask(folded.dst_stage_mask | barrier.dst_stage_mask)
+				.dst_access_mask(folded.dst_access_mask | barrier.dst_access_mask)
+		});
+		let has_barriers =
+			!planned.image_barriers.is_empty() || !planned.buffer_barriers.is_empty() || folded_memory_barrier.is_some();
 
-		if active_rendering {
-			assert!(
-				planned.image_barriers.is_empty() && planned.buffer_barriers.is_empty() && planned.memory_barriers.is_empty(),
-				"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
-			);
+		assert!(
+			!self.active_rendering || !has_barriers,
+			"Vulkan resource transition was requested inside active rendering. The most likely cause is that a resource changed after the first draw; end the render pass before recording work that needs a barrier.",
+		);
 
-			return TransitionStateUpdates {
-				states: planned.state_updates,
-				buffer_states: planned.buffer_state_updates,
-				acquire_waits: SmallVec::new(),
+		planned.updates.acquire_waits = self.chain_acquired_swapchain_images(&mut planned.image_barriers);
+
+		// Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
+		if has_barriers {
+			let dependency_info = vk::DependencyInfo::default()
+				.image_memory_barriers(&planned.image_barriers)
+				.buffer_memory_barriers(&planned.buffer_barriers)
+				.memory_barriers(folded_memory_barrier.as_slice())
+				.dependency_flags(vk::DependencyFlags::BY_REGION);
+			unsafe {
+				self.device
+					.device
+					.cmd_pipeline_barrier2(self.get_command_buffer().command_buffer, &dependency_info)
 			};
 		}
 
-		// Global barriers cover all memory, so one barrier with the union of masks orders everything the individual ones did.
-		let folded_memory_barriers = planned
-			.memory_barriers
-			.into_iter()
-			.reduce(|folded, barrier| PlannedMemoryBarrier {
-				src_stage: folded.src_stage | barrier.src_stage,
-				src_access: folded.src_access | barrier.src_access,
-				dst_stage: folded.dst_stage | barrier.dst_stage,
-				dst_access: folded.dst_access | barrier.dst_access,
-			});
-
-		let mut planned_image_barriers = planned.image_barriers;
-		let acquire_waits = command_buffer.chain_acquired_swapchain_images(&mut planned_image_barriers);
-
-		let image_memory_barriers = if active_rendering {
-			Vec::new()
-		} else {
-			planned_image_barriers
-				.iter()
-				.map(|barrier| {
-					vk::ImageMemoryBarrier2::default()
-						.old_layout(barrier.old_layout)
-						.src_stage_mask(barrier.src_stage)
-						.src_access_mask(barrier.src_access)
-						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.new_layout(barrier.new_layout)
-						.dst_stage_mask(barrier.dst_stage)
-						.dst_access_mask(barrier.dst_access)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.image(barrier.image)
-						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: barrier.aspect_mask,
-							base_mip_level: 0,
-							level_count: vk::REMAINING_MIP_LEVELS,
-							base_array_layer: 0,
-							layer_count: vk::REMAINING_ARRAY_LAYERS,
-						})
-				})
-				.collect::<Vec<_>>()
-		};
-
-		let buffer_memory_barriers = if active_rendering {
-			Vec::new()
-		} else {
-			planned
-				.buffer_barriers
-				.iter()
-				.map(|barrier| {
-					vk::BufferMemoryBarrier2::default()
-						.src_stage_mask(barrier.src_stage)
-						.src_access_mask(barrier.src_access)
-						.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.dst_stage_mask(barrier.dst_stage)
-						.dst_access_mask(barrier.dst_access)
-						.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-						.buffer(barrier.buffer)
-						.offset(barrier.offset)
-						.size(barrier.size)
-				})
-				.collect::<Vec<_>>()
-		};
-
-		let memory_barriers = folded_memory_barriers
-			.iter()
-			.map(|barrier| {
-				vk::MemoryBarrier2::default()
-					.src_stage_mask(barrier.src_stage)
-					.src_access_mask(barrier.src_access)
-					.dst_stage_mask(barrier.dst_stage)
-					.dst_access_mask(barrier.dst_access)
-			})
-			.collect::<Vec<_>>();
-
-		let updates = TransitionStateUpdates {
-			states: planned.state_updates,
-			buffer_states: planned.buffer_state_updates,
-			acquire_waits,
-		};
-
-		if image_memory_barriers.is_empty() && buffer_memory_barriers.is_empty() && memory_barriers.is_empty() {
-			return updates;
-		} // Skip submitting barriers if there are none (cheaper and leads to cleaner traces in GPU debugging).
-
-		let dependency_info = vk::DependencyInfo::default()
-			.image_memory_barriers(&image_memory_barriers)
-			.buffer_memory_barriers(&buffer_memory_barriers)
-			.memory_barriers(&memory_barriers)
-			.dependency_flags(vk::DependencyFlags::BY_REGION);
-
-		let command_buffer = command_buffer.get_command_buffer();
-
-		unsafe {
-			device
-				.device
-				.cmd_pipeline_barrier2(command_buffer.command_buffer, &dependency_info)
-		};
-
-		updates
+		planned.updates
 	}
 
 	/// Chains the first barrier on each freshly acquired swapchain image to the acquire semaphore wait.
@@ -457,40 +285,39 @@ impl CommandBufferRecording<'_> {
 	/// include the wait's stage for its layout transition to follow the presentation engine's release of the image.
 	fn chain_acquired_swapchain_images(
 		&self,
-		image_barriers: &mut [PlannedImageBarrier],
+		image_barriers: &mut [vk::ImageMemoryBarrier2],
 	) -> SmallVec<[(usize, vk::PipelineStageFlags2); 2]> {
-		let mut acquire_waits = SmallVec::new();
 		if self.frame_key.is_none() || image_barriers.is_empty() {
-			return acquire_waits;
+			return SmallVec::new();
 		}
 
 		let sequence_index = self.sequence_index as usize;
-		for (swapchain_index, swapchain) in self.device.swapchains.iter().enumerate() {
-			let native_image = swapchain.native_images[swapchain.acquired_image_indices[sequence_index] as usize];
-			let vk_image = self.device.images[native_image.0 as usize].image;
-			let first_use_stage = Self::chain_barriers_to_acquire(image_barriers, vk_image);
-			if !first_use_stage.is_empty() {
-				acquire_waits.push((swapchain_index, first_use_stage));
-			}
-		}
-
-		acquire_waits
+		self.device
+			.swapchains
+			.iter()
+			.enumerate()
+			.filter_map(|(swapchain_index, swapchain)| {
+				let native_image = swapchain.native_images[swapchain.acquired_image_indices[sequence_index] as usize];
+				let first_use_stage = Self::chain_barriers_to_acquire(image_barriers, self.get_image(native_image).image);
+				(!first_use_stage.is_empty()).then_some((swapchain_index, first_use_stage))
+			})
+			.collect()
 	}
 
 	/// Sources each barrier on a freshly acquired image from its own destination stage and returns those stages.
 	///
 	/// Acquisition resets the image to an empty source state, so only its first barrier in a frame matches.
 	pub(super) fn chain_barriers_to_acquire(
-		image_barriers: &mut [PlannedImageBarrier],
+		image_barriers: &mut [vk::ImageMemoryBarrier2],
 		acquired_image: vk::Image,
 	) -> vk::PipelineStageFlags2 {
 		let mut first_use_stage = vk::PipelineStageFlags2::NONE;
 		for barrier in image_barriers
 			.iter_mut()
-			.filter(|barrier| barrier.image == acquired_image && barrier.src_stage.is_empty())
+			.filter(|barrier| barrier.image == acquired_image && barrier.src_stage_mask.is_empty())
 		{
-			barrier.src_stage = barrier.dst_stage;
-			first_use_stage |= barrier.dst_stage;
+			barrier.src_stage_mask = barrier.dst_stage_mask;
+			first_use_stage |= barrier.dst_stage_mask;
 		}
 		first_use_stage
 	}
@@ -537,7 +364,8 @@ impl CommandBufferRecording<'_> {
 		let mut planned = PlannedTransitions::default();
 
 		for consumption in Self::merge_repeated_consumptions(consumptions) {
-			let source_state = states.get(&consumption.handle).copied();
+			let handle = consumption.handle;
+			let source_state = states.get(&handle).copied();
 			let mut transition_state = TransitionState::new(consumption.stages, consumption.access, consumption.layout);
 			let mut recorded_state = transition_state;
 			let mut read_after_read = false;
@@ -547,90 +375,93 @@ impl CommandBufferRecording<'_> {
 				recorded_state = transition_state;
 
 				// Buffers have no layout, and their read-after-read coverage is decided per tracked range below.
-				let is_buffer = matches!(consumption.handle, Handles::Buffer(_));
+				let is_buffer = matches!(handle, Handles::Buffer(_));
 				read_after_read =
 					source_state.reads_only(transition_state) && (is_buffer || source_state.layout == transition_state.layout);
 				if read_after_read {
 					recorded_state = source_state.merge_reads(transition_state);
 					// Image layout transitions act as writes without write history, so only coverage can skip the barrier.
 					if !is_buffer && source_state.covers(transition_state) {
-						planned.state_updates.push((consumption.handle, recorded_state));
+						planned.updates.states.push((handle, recorded_state));
 						continue;
 					}
 				}
 			}
 
-			let (src_stage, src_access, src_layout) = if let Some(source_state) = source_state {
-				if read_after_read {
-					// Earlier readers may not cover the new stages, so order against them and the last write.
-					(
-						source_state.stage | source_state.last_write_stage,
-						source_state.access | source_state.last_write_access,
-						source_state.layout,
-					)
-				} else {
-					(source_state.stage, source_state.access, source_state.layout)
-				}
-			} else {
-				(
+			let (src_stage, src_access, src_layout) = match source_state {
+				// Earlier readers may not cover the new stages, so order against them and the last write.
+				Some(source) if read_after_read => (
+					source.stage | source.last_write_stage,
+					source.access | source.last_write_access,
+					source.layout,
+				),
+				Some(source) => (source.stage, source.access, source.layout),
+				None => (
 					vk::PipelineStageFlags2::empty(),
 					vk::AccessFlags2::empty(),
 					vk::ImageLayout::UNDEFINED,
-				)
+				),
 			};
+			let (dst_stage, dst_access) = (transition_state.stage, transition_state.access);
+			let buffer_barrier = move |src_stage, src_access, buffer, range: BufferRange| {
+				vk::BufferMemoryBarrier2::default()
+					.src_stage_mask(src_stage)
+					.src_access_mask(src_access)
+					.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.dst_stage_mask(dst_stage)
+					.dst_access_mask(dst_access)
+					.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+					.buffer(buffer)
+					.offset(range.offset)
+					.size(range.size)
+			};
+			let range = consumption.range.unwrap_or(BufferRange::new(0, vk::WHOLE_SIZE));
 
-			match consumption.handle {
-				Handles::Image(handle) => {
-					let Some((image, format)) = resolve_image(handle) else {
+			match handle {
+				Handles::Image(image_handle) => {
+					let Some((image, format)) = resolve_image(image_handle).filter(|(image, _)| !image.is_null()) else {
 						continue;
 					};
 
-					if image.is_null() {
-						continue;
-					}
-
-					planned.image_barriers.push(PlannedImageBarrier {
-						old_layout: src_layout,
-						src_stage,
-						src_access,
-						new_layout: transition_state.layout,
-						dst_stage: transition_state.stage,
-						dst_access: transition_state.access,
-						image,
-						aspect_mask: image_aspect_mask(format),
-					});
+					planned.image_barriers.push(
+						vk::ImageMemoryBarrier2::default()
+							.old_layout(src_layout)
+							.src_stage_mask(src_stage)
+							.src_access_mask(src_access)
+							.src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+							.new_layout(transition_state.layout)
+							.dst_stage_mask(dst_stage)
+							.dst_access_mask(dst_access)
+							.dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+							.image(image)
+							.subresource_range(
+								vk::ImageSubresourceRange::default()
+									.aspect_mask(image_aspect_mask(format))
+									.level_count(vk::REMAINING_MIP_LEVELS)
+									.layer_count(vk::REMAINING_ARRAY_LAYERS),
+							),
+					);
 				}
-				Handles::Buffer(handle) => {
-					let Some(buffer) = resolve_buffer(handle) else {
+				Handles::Buffer(buffer_handle) => {
+					let Some(buffer) = resolve_buffer(buffer_handle).filter(|buffer| !buffer.is_null()) else {
 						continue;
 					};
-
-					if buffer.is_null() {
-						continue;
-					}
-
-					let range = consumption.range.unwrap_or(BufferRange::new(0, vk::WHOLE_SIZE));
 					let overlapping_states = buffer_states
-						.get(&consumption.handle)
+						.get(&handle)
 						.into_iter()
 						.flatten()
 						.filter(|state| state.range.overlaps(range))
 						.copied()
 						.collect::<SmallVec<[_; 8]>>();
 
-					if !TransitionState::access_includes_write(transition_state.access) {
+					// A read carries forward the pending writes of every range it overlaps. Without overlapping ranges it
+					// keeps the last write it inherited from the whole-resource state.
+					if !TransitionState::access_includes_write(transition_state.access) && !overlapping_states.is_empty() {
 						transition_state.last_write_stage = vk::PipelineStageFlags2::empty();
 						transition_state.last_write_access = vk::AccessFlags2::empty();
-
 						for overlapping_state in &overlapping_states {
 							transition_state.last_write_stage |= overlapping_state.state.last_write_stage;
 							transition_state.last_write_access |= overlapping_state.state.last_write_access;
-						}
-
-						if overlapping_states.is_empty() {
-							if let Some(source_state) = source_state {
-								transition_state = transition_state.inherit_last_write_from(source_state);
-							}
 						}
 					}
 
@@ -642,34 +473,24 @@ impl CommandBufferRecording<'_> {
 							continue;
 						}
 
-						let overlap = overlapping_state.range.intersection(range);
-						planned.buffer_barriers.push(PlannedBufferBarrier {
-							src_stage: existing.stage | existing.last_write_stage,
-							src_access: existing.access | existing.last_write_access,
-							dst_stage: transition_state.stage,
-							dst_access: transition_state.access,
+						planned.buffer_barriers.push(buffer_barrier(
+							existing.stage | existing.last_write_stage,
+							existing.access | existing.last_write_access,
 							buffer,
-							offset: overlap.offset,
-							size: overlap.size,
-						});
+							overlapping_state.range.intersection(range),
+						));
 					}
 
 					let handle_state_visible = source_state.is_some_and(|source_state| {
 						read_after_read && (source_state.covers(transition_state) || !source_state.has_write_history())
 					});
 					if overlapping_states.is_empty() && consumption.range.is_none() && !handle_state_visible {
-						planned.buffer_barriers.push(PlannedBufferBarrier {
-							src_stage,
-							src_access,
-							dst_stage: transition_state.stage,
-							dst_access: transition_state.access,
-							buffer,
-							offset: 0,
-							size: vk::WHOLE_SIZE,
-						});
+						planned
+							.buffer_barriers
+							.push(buffer_barrier(src_stage, src_access, buffer, range));
 					}
 
-					planned.update_buffer_state(consumption.handle, range, transition_state, buffer_states);
+					planned.update_buffer_state(handle, range, transition_state, buffer_states);
 					if read_after_read {
 						recorded_state.last_write_stage = transition_state.last_write_stage;
 						recorded_state.last_write_access = transition_state.last_write_access;
@@ -678,28 +499,22 @@ impl CommandBufferRecording<'_> {
 					}
 				}
 				Handles::VkBuffer(buffer) => {
-					planned.buffer_barriers.push(PlannedBufferBarrier {
-						src_stage,
-						src_access,
-						dst_stage: transition_state.stage,
-						dst_access: transition_state.access,
-						buffer,
-						offset: consumption.range.map(|range| range.offset).unwrap_or(0),
-						size: consumption.range.map(|range| range.size).unwrap_or(vk::WHOLE_SIZE),
-					});
+					planned
+						.buffer_barriers
+						.push(buffer_barrier(src_stage, src_access, buffer, range));
 				}
 				Handles::TopLevelAccelerationStructure(_) | Handles::BottomLevelAccelerationStructure(_) => {
-					planned.memory_barriers.push(PlannedMemoryBarrier {
-						src_stage,
-						src_access,
-						dst_stage: transition_state.stage,
-						dst_access: transition_state.access,
-					});
+					planned.memory_barriers.push(
+						vk::MemoryBarrier2::default()
+							.src_stage_mask(src_stage)
+							.src_access_mask(src_access)
+							.dst_stage_mask(dst_stage)
+							.dst_access_mask(dst_access),
+					);
 				}
-				_ => {}
 			}
 
-			planned.state_updates.push((consumption.handle, recorded_state));
+			planned.updates.states.push((handle, recorded_state));
 		}
 
 		planned
@@ -727,17 +542,6 @@ impl CommandBufferRecording<'_> {
 		self.get_internal_image_handle(graphics_hardware_interface::ImageHandle(handle))
 	}
 
-	/// Resolves an image-or-swapchain source to the image selected for this recording.
-	pub(super) fn get_image_or_swapchain_handle(&self, source: graphics_hardware_interface::ImageOrSwapchain) -> ImageHandle {
-		match source {
-			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => self.get_internal_base_image_handle(handle),
-			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
-				let swapchain = &self.device.swapchains[handle.0 as usize];
-				swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize]
-			}
-		}
-	}
-
 	pub(super) fn get_attachment_image_handle(
 		&self,
 		attachment: &graphics_hardware_interface::AttachmentInformation,
@@ -745,7 +549,7 @@ impl CommandBufferRecording<'_> {
 		match attachment.target {
 			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => self.get_internal_base_image_handle(handle),
 			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
-				let swapchain = &self.device.swapchains[handle.0 as usize];
+				let swapchain = self.get_swapchain(handle);
 				swapchain.images[swapchain.acquired_image_indices[self.sequence_index as usize] as usize]
 			}
 		}
@@ -800,50 +604,46 @@ impl CommandBufferRecording<'_> {
 			return;
 		};
 
-		let render_area = vk::Rect2D::default()
-			.offset(vk::Offset2D::default().x(0).y(0))
-			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
+		let attachment_info = |attachment: &graphics_hardware_interface::AttachmentInformation| {
+			vk::RenderingAttachmentInfo::default()
+				.image_view(self.get_attachment_image_view(attachment))
+				.image_layout(texture_format_and_resource_use_to_image_layout(
+					self.get_attachment_format(attachment),
+					attachment.layout,
+					None,
+				))
+				.load_op(to_load_operation(attachment.load))
+				.store_op(to_store_operation(attachment.store))
+				.clear_value(to_clear_value(attachment.clear))
+		};
+		let render_area = vk::Rect2D::default().extent(vk::Extent2D {
+			width: extent.width(),
+			height: extent.height(),
+		});
 		let color_attachments = attachments
 			.iter()
 			.filter(|attachment| !self.get_attachment_format(attachment).is_depth())
 			.map(|attachment| {
-				let image = self.get_image(self.get_attachment_image_handle(attachment));
-				let format = self.get_attachment_format(attachment);
-				let image_view = self.get_attachment_image_view(attachment);
-				if image_view.is_null() && image.extent.width() == 0 && image.extent.height() == 0 && image.extent.depth() == 0 {
+				let info = attachment_info(attachment);
+				let image_extent = self.get_image(self.get_attachment_image_handle(attachment)).extent;
+				if info.image_view.is_null() && image_extent.as_array() == [0; 3] {
 					eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
 				}
-				vk::RenderingAttachmentInfo::default()
-					.image_view(image_view)
-					.image_layout(texture_format_and_resource_use_to_image_layout(format, attachment.layout, None))
-					.load_op(to_load_operation(attachment.load))
-					.store_op(to_store_operation(attachment.store))
-					.clear_value(to_clear_value(attachment.clear))
+				info
 			})
 			.collect::<Vec<_>>();
 		let depth_attachment = attachments
 			.iter()
 			.find(|attachment| self.get_attachment_format(attachment).is_depth())
-			.map(|attachment| {
-				let format = self.get_attachment_format(attachment);
-				vk::RenderingAttachmentInfo::default()
-					.image_view(self.get_attachment_image_view(attachment))
-					.image_layout(texture_format_and_resource_use_to_image_layout(
-						format,
-						attachment.layout,
-						None,
-					))
-					.load_op(to_load_operation(attachment.load))
-					.store_op(to_store_operation(attachment.store))
-					.clear_value(to_clear_value(attachment.clear))
-			})
+			.map(attachment_info)
 			.unwrap_or_default();
-		let layer_count = graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(&attachments);
 		let rendering_info = vk::RenderingInfoKHR::default()
 			.color_attachments(&color_attachments)
 			.depth_attachment(&depth_attachment)
 			.render_area(render_area)
-			.layer_count(layer_count);
+			.layer_count(graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(
+				&attachments,
+			));
 		let viewports = [vk::Viewport {
 			x: 0.0,
 			y: extent.height() as f32,
@@ -861,49 +661,24 @@ impl CommandBufferRecording<'_> {
 		self.active_rendering = true;
 	}
 
-	fn get_internal_handle(&self, handle: graphics_hardware_interface::Handles) -> Handles {
-		match handle {
-			graphics_hardware_interface::Handles::Image(handle) => {
-				Handles::Image(self.get_internal_image_handle(handle.into()))
-			}
-			graphics_hardware_interface::Handles::Buffer(handle) => Handles::Buffer(self.get_internal_buffer_handle(handle)),
-			graphics_hardware_interface::Handles::TopLevelAccelerationStructure(handle) => {
-				Handles::TopLevelAccelerationStructure(self.get_internal_top_level_acceleration_structure_handle(handle))
-			}
-			graphics_hardware_interface::Handles::BottomLevelAccelerationStructure(handle) => {
-				Handles::BottomLevelAccelerationStructure(self.get_internal_bottom_level_acceleration_structure_handle(handle))
-			}
-			_ => unimplemented!(),
-		}
-	}
-
 	pub(crate) fn get_presentable_swapchain_image_handle(
 		&self,
 		present_key: graphics_hardware_interface::PresentKey,
 	) -> ImageHandle {
-		let swapchain = self.get_swapchain(present_key.swapchain);
-		swapchain.native_images[present_key.image_index as usize]
+		self.get_swapchain(present_key.swapchain).native_images[present_key.image_index as usize]
 	}
 
+	/// Performs a transfer-domain blit from the source image to the destination image, including the required layout
+	/// transitions tracked through `self.states`.
 	fn blit_image_to_image(&mut self, source_image_handle: ImageHandle, destination_image_handle: ImageHandle) {
-		// Performs a transfer-domain blit from source image to destination image,
-		// including the required layout transitions tracked through `self.states`.
-		let (source_extent, source_vk_image) = {
-			let image = self.get_image(source_image_handle);
-			(image.extent, image.image)
-		};
-		let (destination_extent_raw, destination_vk_image) = {
-			let image = self.get_image(destination_image_handle);
-			(image.extent, image.image)
-		};
-
-		let destination_extent = if destination_extent_raw.width() == 0
-			|| destination_extent_raw.height() == 0
-			|| destination_extent_raw.depth() == 0
-		{
+		let source = self.get_image(source_image_handle);
+		let (source_extent, source_vk_image) = (source.extent, source.image);
+		let destination = self.get_image(destination_image_handle);
+		let destination_vk_image = destination.image;
+		let destination_extent = if destination.extent.as_array().contains(&0) {
 			source_extent
 		} else {
-			destination_extent_raw
+			destination.extent
 		};
 
 		if source_extent.width() == 0 || destination_extent.width() == 0 {
@@ -912,54 +687,29 @@ impl CommandBufferRecording<'_> {
 
 		// Acquisition resets the native image to an undefined, empty state, so its barrier here is chained to the acquire wait.
 		self.consume_resources([
-			Consumption {
-				handle: Handles::Image(source_image_handle),
-				stages: crate::Stages::TRANSFER,
-				access: crate::AccessPolicies::READ,
-				layout: crate::Layouts::Transfer,
-			},
-			Consumption {
-				handle: Handles::Image(destination_image_handle),
-				stages: crate::Stages::TRANSFER,
-				access: crate::AccessPolicies::WRITE,
-				layout: crate::Layouts::Transfer,
-			},
+			transfer_image_consumption(source_image_handle, crate::AccessPolicies::READ, crate::Layouts::Transfer),
+			transfer_image_consumption(
+				destination_image_handle,
+				crate::AccessPolicies::WRITE,
+				crate::Layouts::Transfer,
+			),
 		])
 		.apply(self);
 
-		let vk_command_buffer = self.get_command_buffer().command_buffer;
-
+		let subresource = vk::ImageSubresourceLayers::default()
+			.aspect_mask(vk::ImageAspectFlags::COLOR)
+			.layer_count(1);
+		let far_corner = |extent: Extent| vk::Offset3D {
+			x: extent.width() as i32,
+			y: extent.height().max(1) as i32,
+			z: extent.depth().max(1) as i32,
+		};
 		let image_blits = [vk::ImageBlit2::default()
-			.src_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.src_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default()
-					.x(source_extent.width() as i32)
-					.y(source_extent.height().max(1) as i32)
-					.z(source_extent.depth().max(1) as i32),
-			])
-			.dst_subresource(
-				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
-					.mip_level(0)
-					.base_array_layer(0)
-					.layer_count(1),
-			)
-			.dst_offsets([
-				vk::Offset3D::default().x(0).y(0).z(0),
-				vk::Offset3D::default()
-					.x(destination_extent.width() as i32)
-					.y(destination_extent.height().max(1) as i32)
-					.z(destination_extent.depth().max(1) as i32),
-			])];
-
-		let copy_image_info = vk::BlitImageInfo2::default()
+			.src_subresource(subresource)
+			.src_offsets([vk::Offset3D::default(), far_corner(source_extent)])
+			.dst_subresource(subresource)
+			.dst_offsets([vk::Offset3D::default(), far_corner(destination_extent)])];
+		let blit_image_info = vk::BlitImageInfo2::default()
 			.src_image(source_vk_image)
 			.src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
 			.dst_image(destination_vk_image)
@@ -967,68 +717,57 @@ impl CommandBufferRecording<'_> {
 			.regions(&image_blits);
 
 		unsafe {
-			self.device.device.cmd_blit_image2(vk_command_buffer, &copy_image_info);
+			self.device
+				.device
+				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_image_info);
 		}
 
-		self.consume_resources([Consumption {
-			handle: Handles::Image(source_image_handle),
-			stages: crate::Stages::TRANSFER,
-			access: crate::AccessPolicies::NONE,
-			layout: crate::Layouts::General,
-		}])
+		self.consume_resources([transfer_image_consumption(
+			source_image_handle,
+			crate::AccessPolicies::NONE,
+			crate::Layouts::General,
+		)])
 		.apply(self);
 	}
 
 	pub fn handle_swapchain_proxies(&mut self, presentation_keys: &[graphics_hardware_interface::PresentKey]) {
-		let proxy_copies = presentation_keys
-			.iter()
-			.filter_map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-				let proxy_image = swapchain.images[present_key.image_index as usize];
-				let native_image = swapchain.native_images[present_key.image_index as usize];
-
-				if proxy_image == native_image {
-					return None;
-				}
-
-				Some((proxy_image, native_image))
-			})
-			.collect::<SmallVec<[(ImageHandle, ImageHandle); 8]>>();
-
 		// When the swapchain uses proxies, resolve each user-facing proxy image into
 		// the native presentable swapchain image before transitioning to present.
-		for (proxy_image_handle, native_image_handle) in proxy_copies {
-			self.blit_image_to_image(proxy_image_handle, native_image_handle);
+		for present_key in presentation_keys {
+			let swapchain = self.get_swapchain(present_key.swapchain);
+			let proxy_image = swapchain.images[present_key.image_index as usize];
+			let native_image = swapchain.native_images[present_key.image_index as usize];
+
+			if proxy_image != native_image {
+				self.blit_image_to_image(proxy_image, native_image);
+			}
 		}
 
-		let present_transitions = presentation_keys.iter().map(|present_key| {
-			let swapchain_image_handle = self.get_presentable_swapchain_image_handle(*present_key);
-
-			Consumption {
-				handle: Handles::Image(swapchain_image_handle),
-				stages: crate::Stages::PRESENTATION,
-				access: crate::AccessPolicies::READ,
-				layout: crate::Layouts::Present,
-			}
+		let present_transitions = presentation_keys.iter().map(|present_key| Consumption {
+			handle: Handles::Image(self.get_presentable_swapchain_image_handle(*present_key)),
+			stages: crate::Stages::PRESENTATION,
+			access: crate::AccessPolicies::READ,
+			layout: crate::Layouts::Present,
 		});
 
 		self.consume_resources(present_transitions).apply(self);
 	}
 
-	// Transition all resources which where written to but not consumed by any previous command
-	// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed, except for the following commands
+	/// Transitions all resources which were written to but not consumed by any later command.
+	/// If this is skipped validation layers (correctly) complain about missing sync even though no "read" operation was performed.
 	pub(crate) fn consume_last_resources(&mut self) {
 		self.make_host_readable_writes_visible();
 
-		let consumptions = self.states.iter().filter_map(|(handle, ts)| match ts.access {
-			vk::AccessFlags2::TRANSFER_WRITE => Some(Consumption {
+		let consumptions = self
+			.states
+			.iter()
+			.filter(|(_, state)| state.access == vk::AccessFlags2::TRANSFER_WRITE)
+			.map(|(handle, _)| Consumption {
+				handle: *handle,
+				stages: crate::Stages::TRANSFER,
 				access: crate::AccessPolicies::NONE,
 				layout: crate::Layouts::General,
-				stages: crate::Stages::TRANSFER,
-				handle: *handle,
-			}),
-			_ => None,
-		});
+			});
 
 		self.consume_resources(consumptions).apply(self);
 	}
@@ -1042,7 +781,7 @@ impl CommandBufferRecording<'_> {
 			.iter()
 			.filter(|(handle, state)| {
 				TransitionState::access_includes_write(state.access)
-					&& matches!(handle, Handles::Buffer(buffer) if self.device.buffers.resource(*buffer).access.contains(crate::DeviceAccesses::CpuRead))
+					&& matches!(handle, Handles::Buffer(buffer) if self.get_buffer(*buffer).access.contains(crate::DeviceAccesses::CpuRead))
 			})
 			.fold(
 				(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty()),
@@ -1066,67 +805,50 @@ impl CommandBufferRecording<'_> {
 	}
 
 	pub fn end_recording(&self) {
-		let command_buffer = self.get_command_buffer().command_buffer;
-
 		unsafe {
 			self.device
 				.device
-				.end_command_buffer(command_buffer)
+				.end_command_buffer(self.get_command_buffer().command_buffer)
 				.expect("Failed to end command buffer.");
 		}
 	}
 
 	pub(crate) fn sync_buffers(&mut self, copy_buffers: impl Iterator<Item = BufferCopy> + Clone) {
-		let source_consumptions = copy_buffers.clone().map(|e| VulkanConsumption {
-			handle: Handles::Buffer(e.src_buffer),
+		let consumption = |buffer, offset, size: usize, access| VulkanConsumption {
+			handle: Handles::Buffer(buffer),
 			stages: vk::PipelineStageFlags2::COPY,
-			access: vk::AccessFlags2::TRANSFER_READ,
+			access,
 			layout: vk::ImageLayout::UNDEFINED,
-			range: Some(BufferRange::new(e.src_offset, e.size as vk::DeviceSize)),
-		});
-		let destination_consumptions = copy_buffers.clone().map(|e| VulkanConsumption {
-			handle: Handles::Buffer(e.dst_buffer),
-			stages: vk::PipelineStageFlags2::COPY,
-			access: vk::AccessFlags2::TRANSFER_WRITE,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: Some(BufferRange::new(e.dst_offset, e.size as vk::DeviceSize)),
-		});
-		self.vulkan_consume_resources(source_consumptions.chain(destination_consumptions))
-			.apply(self);
+			range: Some(BufferRange::new(offset, size as vk::DeviceSize)),
+		};
+		let sources = copy_buffers
+			.clone()
+			.map(|copy| consumption(copy.src_buffer, copy.src_offset, copy.size, vk::AccessFlags2::TRANSFER_READ));
+		let destinations = copy_buffers
+			.clone()
+			.map(|copy| consumption(copy.dst_buffer, copy.dst_offset, copy.size, vk::AccessFlags2::TRANSFER_WRITE));
+		self.vulkan_consume_resources(sources.chain(destinations)).apply(self);
 
-		for e in copy_buffers {
-			// Copy all staging buffers to their respective buffers
-			let src_buffer = self.get_buffer(e.src_buffer);
-			let dst_buffer = self.get_buffer(e.dst_buffer);
-
-			let src_vk_buffer = src_buffer.buffer;
-			let dst_vk_buffer = dst_buffer.buffer;
-
-			let command_buffer = self.get_command_buffer();
-
-			let regions = [vk::BufferCopy2KHR::default()
-				.src_offset(e.src_offset)
-				.dst_offset(e.dst_offset)
-				.size(e.size as u64)];
-
-			let copy_buffer_info = vk::CopyBufferInfo2KHR::default()
-				.src_buffer(src_vk_buffer)
-				.dst_buffer(dst_vk_buffer)
+		let command_buffer = self.get_command_buffer().command_buffer;
+		for copy in copy_buffers {
+			let regions = [vk::BufferCopy2::default()
+				.src_offset(copy.src_offset)
+				.dst_offset(copy.dst_offset)
+				.size(copy.size as u64)];
+			let copy_buffer_info = vk::CopyBufferInfo2::default()
+				.src_buffer(self.get_buffer(copy.src_buffer).buffer)
+				.dst_buffer(self.get_buffer(copy.dst_buffer).buffer)
 				.regions(&regions);
 
-			unsafe {
-				self.device
-					.device
-					.cmd_copy_buffer2(command_buffer.command_buffer, &copy_buffer_info);
-			}
+			unsafe { self.device.device.cmd_copy_buffer2(command_buffer, &copy_buffer_info) };
 		}
 	}
 
-	pub(crate) fn sync_textures(&mut self, copy_textures: impl Iterator<Item = ImageCopy> + Clone) {
-		let copied_textures = copy_textures.clone();
-
-		self.vulkan_consume_resources(copy_textures.clone().map(|e| VulkanConsumption {
-			handle: Handles::Image(e.dst_texture),
+	/// Copies each image's staging buffer into the image and leaves it ready for fragment-shader reads.
+	/// Uploads the whole staging buffer of each image.
+	pub(crate) fn sync_textures(&mut self, images: impl Iterator<Item = ImageHandle> + Clone) {
+		self.vulkan_consume_resources(images.clone().map(|image| VulkanConsumption {
+			handle: Handles::Image(image),
 			stages: vk::PipelineStageFlags2::TRANSFER,
 			access: vk::AccessFlags2::TRANSFER_WRITE,
 			layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
@@ -1134,31 +856,20 @@ impl CommandBufferRecording<'_> {
 		}))
 		.apply(self);
 
-		let command_buffer = self.get_command_buffer();
-
-		for copy_texture in copied_textures {
-			let image = self.get_image(copy_texture.dst_texture);
+		let command_buffer = self.get_command_buffer().command_buffer;
+		for image in images.clone() {
+			let image = self.get_image(image);
 
 			// The staging buffer holds tightly packed mip-0 payloads for every array layer, one after another.
 			let regions = [vk::BufferImageCopy2::default()
-				.buffer_offset(0)
-				.buffer_row_length(0)
-				.buffer_image_height(0)
 				.image_subresource(
 					vk::ImageSubresourceLayers::default()
 						.aspect_mask(image_aspect_mask(image.format))
-						.mip_level(0)
-						.base_array_layer(0)
 						.layer_count(image.layers.map_or(1, std::num::NonZeroU32::get)),
 				)
-				.image_offset(vk::Offset3D::default().x(0).y(0).z(0))
 				.image_extent(extent_into_vk_extent(image.extent))];
-
-			let buffer = image.staging_buffer.unwrap();
-
-			// Copy to images from staging buffer
 			let buffer_image_copy = vk::CopyBufferToImageInfo2::default()
-				.src_buffer(buffer)
+				.src_buffer(image.staging_buffer.unwrap())
 				.dst_image(image.image)
 				.dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
 				.regions(&regions);
@@ -1166,16 +877,25 @@ impl CommandBufferRecording<'_> {
 			unsafe {
 				self.device
 					.device
-					.cmd_copy_buffer_to_image2(command_buffer.command_buffer, &buffer_image_copy);
+					.cmd_copy_buffer_to_image2(command_buffer, &buffer_image_copy);
 			}
 		}
 
-		self.consume_resources(copy_textures.map(|e| Consumption {
-			handle: Handles::Image(e.dst_texture),
+		self.consume_resources(images.map(|image| Consumption {
+			handle: Handles::Image(image),
 			stages: crate::Stages::FRAGMENT,
 			access: crate::AccessPolicies::READ,
 			layout: crate::Layouts::Read,
 		}))
 		.apply(self);
+	}
+}
+
+fn transfer_image_consumption(image: ImageHandle, access: crate::AccessPolicies, layout: crate::Layouts) -> Consumption {
+	Consumption {
+		handle: Handles::Image(image),
+		stages: crate::Stages::TRANSFER,
+		access,
+		layout,
 	}
 }

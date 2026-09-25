@@ -19,7 +19,6 @@ pub mod frame;
 pub mod image;
 pub mod instance;
 pub mod queue;
-pub mod sampler;
 pub mod swapchain;
 pub mod synchronizer;
 
@@ -76,7 +75,6 @@ pub(super) enum Handles {
 	VkBuffer(vk::Buffer),
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
-	Synchronizer(crate::synchronizer::SynchronizerHandle),
 }
 
 #[derive(Clone, PartialEq)]
@@ -104,7 +102,11 @@ impl BufferRange {
 
 	/// Builds a range from its bounds, keeping ranges that reach the end of the buffer as `WHOLE_SIZE`.
 	pub(super) fn from_bounds(start: vk::DeviceSize, end: vk::DeviceSize) -> Self {
-		let size = if end == vk::DeviceSize::MAX { vk::WHOLE_SIZE } else { end - start };
+		let size = if end == vk::DeviceSize::MAX {
+			vk::WHOLE_SIZE
+		} else {
+			end - start
+		};
 		Self::new(start, size)
 	}
 
@@ -193,32 +195,17 @@ impl DescriptorHeapArena {
 				continue;
 			}
 
-			let prefix_size = offset - range.offset;
-			let suffix_size = range_end - end;
-			match (prefix_size, suffix_size) {
-				(0, 0) => {
-					self.free_ranges.remove(index);
-				}
-				(0, suffix_size) => {
-					self.free_ranges[index] = DescriptorHeapRange {
-						offset: end,
-						size: suffix_size,
-					};
-				}
-				(prefix_size, 0) => {
-					self.free_ranges[index].size = prefix_size;
-				}
-				(prefix_size, suffix_size) => {
-					self.free_ranges[index].size = prefix_size;
-					self.free_ranges.insert(
-						index + 1,
-						DescriptorHeapRange {
-							offset: end,
-							size: suffix_size,
-						},
-					);
-				}
-			}
+			// Keep the unused bytes on either side of the allocation, including alignment padding, reusable.
+			let prefix = DescriptorHeapRange {
+				offset: range.offset,
+				size: offset - range.offset,
+			};
+			let suffix = DescriptorHeapRange {
+				offset: end,
+				size: range_end - end,
+			};
+			self.free_ranges
+				.splice(index..=index, [prefix, suffix].into_iter().filter(|range| range.size > 0));
 			return u32::try_from(offset).expect(
 				"Vulkan descriptor heap offset exceeded 32 bits. The most likely cause is a heap larger than push-index mappings support.",
 			);
@@ -351,12 +338,8 @@ impl Sampler {
 			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
 			.anisotropy_enable(self.anisotropy.is_some())
 			.max_anisotropy(self.anisotropy.unwrap_or(0.0))
-			.compare_enable(false)
-			.compare_op(vk::CompareOp::NEVER)
 			.min_lod(self.min_lod)
 			.max_lod(self.max_lod)
-			.mip_lod_bias(0.0)
-			.unnormalized_coordinates(false)
 	}
 }
 
@@ -475,18 +458,11 @@ struct AccelerationStructure {
 #[derive(Clone, Copy)]
 /// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
 pub struct MemoryBackedResourceCreationResult<T> {
-	/// The resource.
 	resource: T,
 	/// The final size of the resource.
 	size: usize,
 	/// The memory flags that need used to create the resource.
 	memory_flags: u32,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct BuildImage {
-	previous: ImageHandle,
-	master: graphics_hardware_interface::ImageHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -526,7 +502,6 @@ pub(crate) enum Tasks {
 		descriptor_write: crate::descriptors::DescriptorWrite,
 		expected_set_version: u64,
 	},
-	BuildImage(BuildImage),
 	BuildBuffer(BuildBuffer),
 }
 
@@ -551,9 +526,8 @@ impl Task {
 	/// Schedules a task for the first task pass after `frame_index` has completed on the GPU.
 	pub(crate) fn after_frame(task: Tasks, frame_index: u64) -> Self {
 		Self {
-			task,
-			frame: None,
 			after_frame: Some(frame_index),
+			..Self::new(task, None)
 		}
 	}
 
@@ -577,7 +551,6 @@ impl Task {
 pub(super) struct StoredQueue {
 	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
-	pub(crate) _queue_index: u32,
 }
 
 #[cfg(test)]

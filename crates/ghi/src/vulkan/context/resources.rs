@@ -1,43 +1,42 @@
 use super::*;
+use crate::DeviceAccesses;
+
+/// Returns the transfer usage of a buffer that is a copy source and/or a copy destination.
+fn transfer_usage(source: bool, destination: bool) -> vk::BufferUsageFlags {
+	let usage_if = |enabled, usage| if enabled { usage } else { vk::BufferUsageFlags::empty() };
+	usage_if(source, vk::BufferUsageFlags::TRANSFER_SRC) | usage_if(destination, vk::BufferUsageFlags::TRANSFER_DST)
+}
+
+/// Describes an owned image without native storage or views.
+fn unbacked_image(format: crate::Formats, uses: crate::Uses, extent: Extent, access: DeviceAccesses) -> Image {
+	Image {
+		next: None,
+		size: 0,
+		staging_buffer: None,
+		staging_allocation: None,
+		allocation: None,
+		pointer: None,
+		image: vk::Image::null(),
+		full_image_view: vk::ImageView::null(),
+		image_views: Vec::new(),
+		extent,
+		access,
+		format: to_format(format),
+		format_: format,
+		uses,
+		layers: None,
+		cube_compatible: false,
+		cube_array_compatible: false,
+		mip_levels: 1,
+		owns_image: true,
+	}
+}
 
 impl Context {
-	pub(crate) fn get_image_subresource_layout(
-		&self,
-		texture: &graphics_hardware_interface::ImageHandle,
-		mip_level: u32,
-	) -> graphics_hardware_interface::ImageSubresourceLayout {
-		let image_subresource = vk::ImageSubresource {
-			aspect_mask: vk::ImageAspectFlags::COLOR,
-			mip_level,
-			array_layer: 0,
-		};
-
-		let texture = self.images.get(texture.0.0 as usize).expect("No texture with that handle.");
-
-		if true
-		/* TILING_OPTIMAL */
-		{
-			graphics_hardware_interface::ImageSubresourceLayout {
-				offset: 0,
-				size: texture.size,
-				row_pitch: texture.extent.width() as usize * texture.format_.size(),
-				array_pitch: texture.extent.width() as usize * texture.extent.height().max(1) as usize * texture.format_.size(),
-				depth_pitch: texture.extent.width() as usize
-					* texture.extent.height().max(1) as usize
-					* texture.extent.depth().max(1) as usize
-					* texture.format_.size(),
-			}
-		} else {
-			let image_subresource_layout =
-				unsafe { self.device.get_image_subresource_layout(texture.image, image_subresource) };
-			graphics_hardware_interface::ImageSubresourceLayout {
-				offset: image_subresource_layout.offset as usize,
-				size: image_subresource_layout.size as usize,
-				row_pitch: image_subresource_layout.row_pitch as usize,
-				array_pitch: image_subresource_layout.array_pitch as usize,
-				depth_pitch: image_subresource_layout.depth_pitch as usize,
-			}
-		}
+	fn allocation(&self, allocation_handle: graphics_hardware_interface::AllocationHandle) -> &Allocation {
+		self.allocations
+			.get(allocation_handle.0 as usize)
+			.expect("No allocation with that handle.")
 	}
 
 	pub(crate) fn bind_vulkan_buffer_memory(
@@ -46,42 +45,28 @@ impl Context {
 		allocation_handle: graphics_hardware_interface::AllocationHandle,
 		offset: usize,
 	) -> (u64, *mut u8) {
-		let buffer = info.resource;
-		let allocation = self
-			.allocations
-			.get(allocation_handle.0 as usize)
-			.expect("No allocation with that handle.");
-		unsafe {
+		let pointer = self.bind_host_vulkan_buffer_memory(info, allocation_handle, offset);
+		let address = unsafe {
 			self.device
-				.bind_buffer_memory(buffer, allocation.memory, offset as u64)
-				.expect("No buffer memory binding")
+				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(info.resource))
 		};
-		unsafe {
-			(
-				self.device
-					.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer)),
-				allocation.pointer.0.add(offset),
-			)
-		}
+		(address, pointer)
 	}
 
+	/// Binds buffer memory without querying a device address, for buffers created without device-address usage.
 	pub(crate) fn bind_host_vulkan_buffer_memory(
 		&self,
 		info: &MemoryBackedResourceCreationResult<vk::Buffer>,
 		allocation_handle: graphics_hardware_interface::AllocationHandle,
 		offset: usize,
 	) -> *mut u8 {
-		let buffer = info.resource;
-		let allocation = self
-			.allocations
-			.get(allocation_handle.0 as usize)
-			.expect("No allocation with that handle.");
+		let allocation = self.allocation(allocation_handle);
 		unsafe {
 			self.device
-				.bind_buffer_memory(buffer, allocation.memory, offset as u64)
-				.expect("No buffer memory binding")
-		};
-		unsafe { allocation.pointer.0.add(offset) }
+				.bind_buffer_memory(info.resource, allocation.memory, offset as u64)
+				.expect("No buffer memory binding");
+			allocation.pointer.0.add(offset)
+		}
 	}
 
 	/// Creates and maps one dedicated transfer-destination buffer without leaking partial Vulkan resources.
@@ -89,68 +74,38 @@ impl Context {
 		&mut self,
 		size: usize,
 	) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), crate::TextureTransferError> {
+		use crate::TextureTransferError::{AllocationFailed, MappingFailed};
+
 		let size = u64::try_from(size).map_err(|_| crate::TextureTransferError::UnsupportedLayout)?;
 		let buffer_info = vk::BufferCreateInfo::default()
 			.size(size)
 			.sharing_mode(vk::SharingMode::EXCLUSIVE)
 			.usage(vk::BufferUsageFlags::TRANSFER_DST);
-		let buffer = unsafe {
-			self.device
-				.create_buffer(&buffer_info, None)
-				.map_err(|_| crate::TextureTransferError::AllocationFailed)?
-		};
-		let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-		let memory = self.allocate_memory_from_candidates(
-			requirements.size,
-			requirements.memory_type_bits,
-			crate::DeviceAccesses::CpuRead,
-			false,
-		);
-		let Some(memory) = memory else {
-			unsafe { self.device.destroy_buffer(buffer, None) };
-			return Err(crate::TextureTransferError::AllocationFailed);
-		};
-		if unsafe { self.device.bind_buffer_memory(buffer, memory, 0) }.is_err() {
+		let device = &self.device;
+		let buffer = unsafe { device.create_buffer(&buffer_info, None) }.map_err(|_| AllocationFailed)?;
+		let fail = |memory: Option<vk::DeviceMemory>, error| {
 			unsafe {
-				self.device.free_memory(memory, None);
-				self.device.destroy_buffer(buffer, None);
-			}
-			return Err(crate::TextureTransferError::AllocationFailed);
-		}
-		let pointer = match unsafe {
-			self.device
-				.map_memory(memory, 0, requirements.size, vk::MemoryMapFlags::empty())
-		} {
-			Ok(pointer) => pointer.cast::<u8>(),
-			Err(_) => {
-				unsafe {
-					self.device.free_memory(memory, None);
-					self.device.destroy_buffer(buffer, None);
+				if let Some(memory) = memory {
+					device.free_memory(memory, None);
 				}
-				return Err(crate::TextureTransferError::MappingFailed);
+				device.destroy_buffer(buffer, None);
 			}
+			error
 		};
+		let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+		let memory = self
+			.allocate_memory_from_candidates(
+				requirements.size,
+				requirements.memory_type_bits,
+				DeviceAccesses::CpuRead,
+				false,
+			)
+			.ok_or_else(|| fail(None, AllocationFailed))?;
+		unsafe { device.bind_buffer_memory(buffer, memory, 0) }.map_err(|_| fail(Some(memory), AllocationFailed))?;
+		let pointer = unsafe { device.map_memory(memory, 0, requirements.size, vk::MemoryMapFlags::empty()) }
+			.map_err(|_| fail(Some(memory), MappingFailed))?;
 
-		Ok((buffer, memory, pointer))
-	}
-
-	pub(crate) fn bind_vulkan_texture_memory(
-		&self,
-		info: &MemoryBackedResourceCreationResult<vk::Image>,
-		allocation_handle: graphics_hardware_interface::AllocationHandle,
-		offset: usize,
-	) -> (u64, *mut u8) {
-		let image = info.resource;
-		let allocation = self
-			.allocations
-			.get(allocation_handle.0 as usize)
-			.expect("No allocation with that handle.");
-		unsafe {
-			self.device
-				.bind_image_memory(image, allocation.memory, offset as u64)
-				.expect("No image memory binding")
-		};
-		(0, unsafe { allocation.pointer.0.add(offset) })
+		Ok((buffer, memory, pointer.cast::<u8>()))
 	}
 
 	/// Creates swapchain-backed image wrappers chained across frames and returns the root handle.
@@ -168,7 +123,6 @@ impl Context {
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(root_handle);
 		}
-
 		self.images.push(root_image);
 
 		root_handle
@@ -182,37 +136,14 @@ impl Context {
 		uses: crate::Uses,
 		image_usage_flags: vk::ImageUsageFlags,
 	) -> Image {
-		let image_views = vec![self.create_vulkan_image_view(
-			None,
-			&vk_image,
-			vk::ImageType::TYPE_2D,
-			format,
-			image_usage_flags,
-			1,
-			0,
-			None,
-		)];
+		let image_views =
+			vec![self.create_vulkan_image_view(None, &vk_image, vk::ImageType::TYPE_2D, format, image_usage_flags, 1, 0, None)];
 
 		Image {
-			next: None,
-			size: 0,
-			staging_buffer: None,
-			staging_allocation: None,
-			allocation: None,
-			pointer: None,
 			image: vk_image,
-			full_image_view: vk::ImageView::null(),
 			image_views,
-			extent: Extent::cube(0, 0, 0),
-			access: crate::DeviceAccesses::DeviceOnly,
-			format: to_format(format),
-			format_: format,
-			uses,
-			layers: None,
-			cube_compatible: false,
-			cube_array_compatible: false,
-			mip_levels: 1,
 			owns_image: false,
+			..unbacked_image(format, uses, Extent::cube(0, 0, 0), DeviceAccesses::DeviceOnly)
 		}
 	}
 
@@ -223,7 +154,7 @@ impl Context {
 		&self,
 		size: u64,
 		memory_type_bits: u32,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 		device_address: bool,
 	) -> Option<vk::DeviceMemory> {
 		crate::vulkan::utils::memory_type_candidates(&self.memory_properties, memory_type_bits, device_accesses)
@@ -247,7 +178,7 @@ impl Context {
 		&mut self,
 		size: usize,
 		memory_bits: Option<u32>,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 	) -> (graphics_hardware_interface::AllocationHandle, Option<*mut u8>) {
 		// Allocations not tied to a resource yet may use any memory type.
 		let memory_type_bits = memory_bits.unwrap_or(u32::MAX);
@@ -257,18 +188,14 @@ impl Context {
 				"Failed to allocate Vulkan memory. The most likely cause is that every memory heap compatible with the resource is exhausted or the device allocation count limit was reached.",
 			);
 
-		let mut mapped_memory = None;
-
-		if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
-			mapped_memory = Some(unsafe {
-				self.device
-					.map_memory(memory, 0, size as u64, vk::MemoryMapFlags::empty())
-					.expect("No mapped memory") as *mut u8
-			});
-		}
+		let mapped_memory = device_accesses.intersects(DeviceAccesses::HostOnly).then(|| unsafe {
+			self.device
+				.map_memory(memory, 0, size as u64, vk::MemoryMapFlags::empty())
+				.expect("No mapped memory")
+				.cast::<u8>()
+		});
 
 		let allocation_handle = graphics_hardware_interface::AllocationHandle(self.allocations.len() as u64);
-
 		self.allocations.push(Allocation {
 			memory,
 			pointer: crate::vulkan::MappedMemoryPointer(mapped_memory.unwrap_or(std::ptr::null_mut())),
@@ -277,28 +204,42 @@ impl Context {
 		(allocation_handle, mapped_memory)
 	}
 
-	pub(crate) fn uses_only_host_access(device_accesses: crate::DeviceAccesses) -> bool {
-		device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite)
-			&& !device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
+	pub(crate) fn uses_only_host_access(device_accesses: DeviceAccesses) -> bool {
+		device_accesses.intersects(DeviceAccesses::HostOnly) && !device_accesses.intersects(DeviceAccesses::DeviceOnly)
 	}
 
 	/// Creates a Vulkan buffer, allocates memory for it, binds the memory, and returns the tracked buffer object.
+	/// Creates a Vulkan buffer bound to its own new allocation and returns it with that allocation, its device address and
+	/// its mapping.
+	pub(crate) fn create_dedicated_buffer(
+		&mut self,
+		name: Option<&str>,
+		size: usize,
+		usage: vk::BufferUsageFlags,
+		device_accesses: crate::DeviceAccesses,
+	) -> (
+		MemoryBackedResourceCreationResult<vk::Buffer>,
+		graphics_hardware_interface::AllocationHandle,
+		u64,
+		*mut u8,
+	) {
+		let buffer = self.create_vulkan_buffer(name, size, usage);
+		let (allocation_handle, _) = self.create_allocation_internal(buffer.size, buffer.memory_flags.into(), device_accesses);
+		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer, allocation_handle, 0);
+		(buffer, allocation_handle, address, pointer)
+	}
+
 	pub(crate) fn create_bound_buffer(
 		&mut self,
 		name: Option<&str>,
 		size: usize,
 		vk_usage_flags: vk::BufferUsageFlags,
-		allocation_accesses: crate::DeviceAccesses,
-		buffer_accesses: crate::DeviceAccesses,
+		allocation_accesses: DeviceAccesses,
+		buffer_accesses: DeviceAccesses,
 		resource_uses: crate::Uses,
 	) -> Buffer {
-		let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_usage_flags);
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer_creation_result.size,
-			buffer_creation_result.memory_flags.into(),
-			allocation_accesses,
-		);
-		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
+		let (buffer_creation_result, allocation_handle, device_address, pointer) =
+			self.create_dedicated_buffer(name, size, vk_usage_flags, allocation_accesses);
 		if size != 0 && !pointer.is_null() {
 			// Typed buffer APIs expose mapped storage as zeroable POD values, so initialize the complete representation.
 			unsafe { std::ptr::write_bytes(pointer, 0, size) };
@@ -323,31 +264,18 @@ impl Context {
 		name: Option<&str>,
 		size: usize,
 		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 	) -> Buffer {
-		let vk_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-			vk::BufferUsageFlags::TRANSFER_DST
-		} else {
-			vk::BufferUsageFlags::empty()
-		} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-			vk::BufferUsageFlags::TRANSFER_SRC
-		} else {
-			vk::BufferUsageFlags::empty()
-		} | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-
-		let device_access = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-			crate::DeviceAccesses::GpuWrite | crate::DeviceAccesses::CpuRead
-		} else {
-			crate::DeviceAccesses::empty()
-		} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-			crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite
-		} else {
-			crate::DeviceAccesses::empty()
-		};
+		let cpu_read = device_accesses.contains(DeviceAccesses::CpuRead);
+		let cpu_write = device_accesses.contains(DeviceAccesses::CpuWrite);
+		let usage = transfer_usage(cpu_write, cpu_read) | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+		let mut buffer_accesses = DeviceAccesses::empty();
+		buffer_accesses.set(DeviceAccesses::DeviceToHost, cpu_read);
+		buffer_accesses.set(DeviceAccesses::HostToDevice, cpu_write);
 
 		// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
-		let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
-		self.create_bound_buffer(name, size, vk_usage_flags, allocation_accesses, device_access, resource_uses)
+		let allocation_accesses = device_accesses & DeviceAccesses::HostOnly;
+		self.create_bound_buffer(name, size, usage, allocation_accesses, buffer_accesses, resource_uses)
 	}
 
 	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
@@ -357,11 +285,10 @@ impl Context {
 	/// GPU-visible storage.
 	pub(crate) fn build_buffer_internal(
 		&mut self,
-		_next: Option<BufferHandle>,
 		name: Option<&str>,
 		resource_uses: crate::Uses,
 		size: usize,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 	) -> Buffer {
 		if size == 0 {
 			return Buffer {
@@ -377,53 +304,29 @@ impl Context {
 			};
 		}
 
-		let vk_usage_flags = uses_to_vk_usage_flags(resource_uses);
-
-		// Remove acceleration structure usage flags if ray tracing is disabled (causes validation errors)
-		let vk_usage_flags = if !self.settings.ray_tracing {
-			vk_usage_flags & !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-		} else {
-			vk_usage_flags
-		};
-
-		// Add shader device address usage flag as all buffers are guaranteed to be accessible by addressing
-		let vk_usage_flags = vk_usage_flags | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-
-		let vk_usage_flags = vk_usage_flags
-			| if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-				vk::BufferUsageFlags::TRANSFER_DST
-			} else {
-				vk::BufferUsageFlags::empty()
-			} | if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-			vk::BufferUsageFlags::TRANSFER_SRC
-		} else {
-			vk::BufferUsageFlags::empty()
-		};
-
-		if Self::uses_only_host_access(device_accesses) {
-			return self.create_bound_buffer(name, size, vk_usage_flags, device_accesses, device_accesses, resource_uses);
+		let cpu_read = device_accesses.contains(DeviceAccesses::CpuRead);
+		let cpu_write = device_accesses.contains(DeviceAccesses::CpuWrite);
+		// All buffers are guaranteed to be accessible by device address.
+		let mut usage = uses_to_vk_usage_flags(resource_uses)
+			| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+			| transfer_usage(cpu_read, cpu_write);
+		// Acceleration structure build input usage causes validation errors when ray tracing is disabled.
+		if !self.settings.ray_tracing {
+			usage &= !vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 		}
 
-		let mut buffer = self.create_bound_buffer(
-			name,
-			size,
-			vk_usage_flags,
-			device_accesses & !(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite),
-			device_accesses,
-			resource_uses,
-		);
+		if Self::uses_only_host_access(device_accesses) {
+			return self.create_bound_buffer(name, size, usage, device_accesses, device_accesses, resource_uses);
+		}
 
-		let staging = if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
+		let allocation_accesses = device_accesses - DeviceAccesses::HostOnly;
+		let mut buffer = self.create_bound_buffer(name, size, usage, allocation_accesses, device_accesses, resource_uses);
+
+		if device_accesses.intersects(DeviceAccesses::HostOnly) {
 			let staging_buffer = self.build_host_staging_buffer(name, size, resource_uses, device_accesses);
+			buffer.staging = Some(self.buffers.add(staging_buffer).1);
+		}
 
-			let (_, handle) = self.buffers.add(staging_buffer);
-
-			Some(handle)
-		} else {
-			None
-		};
-
-		buffer.staging = staging;
 		buffer
 	}
 
@@ -435,16 +338,14 @@ impl Context {
 		name: Option<&str>,
 		resource_uses: crate::Uses,
 		size: usize,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 	) -> BufferHandle {
-		let buffer = self.build_buffer_internal(next, name, resource_uses, size, device_accesses);
-
+		let buffer = self.build_buffer_internal(name, resource_uses, size, device_accesses);
 		let (_, handle) = self.buffers.add(buffer);
 
 		if let Some(previous) = previous {
 			self.buffers.set_next(previous, Some(handle));
 		}
-
 		self.buffers.set_next(handle, next);
 
 		handle
@@ -454,12 +355,9 @@ impl Context {
 	/// staging buffer in the persistent write mode. Returns its handle.
 	pub(crate) fn create_staging_buffer(&mut self, name: Option<&str>, size: usize) -> BufferHandle {
 		let vk_usage_flags = vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-		let device_access = crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite;
-
+		let device_access = DeviceAccesses::HostToDevice;
 		let buffer = self.create_bound_buffer(name, size, vk_usage_flags, device_access, device_access, crate::Uses::empty());
-		let (_, handle) = self.buffers.add(buffer);
-
-		handle
+		self.buffers.add(buffer).1
 	}
 
 	pub(crate) fn build_image_internal(
@@ -467,7 +365,7 @@ impl Context {
 		next: Option<ImageHandle>,
 		name: Option<&str>,
 		format: crate::Formats,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
 		cube_compatible: bool,
 		cube_array_compatible: bool,
@@ -475,6 +373,19 @@ impl Context {
 		resource_uses: crate::Uses,
 		mip_levels: u32,
 	) -> Image {
+		let unbacked = Image {
+			next,
+			layers: array_layers,
+			cube_compatible,
+			cube_array_compatible,
+			mip_levels,
+			..unbacked_image(format, resource_uses, extent, device_accesses)
+		};
+
+		if extent.width() == 0 {
+			return unbacked;
+		}
+
 		// Every array layer has a complete image payload in the shared staging buffer.
 		let layer_count = array_layers.map_or(1, NonZeroU32::get) as usize;
 		let size = extent.width() as usize
@@ -483,39 +394,11 @@ impl Context {
 			* format.size()
 			* layer_count;
 
-		if extent.width() == 0 {
-			return Image {
-				next,
-				size: 0,
-				staging_buffer: None,
-				staging_allocation: None,
-				allocation: None,
-				pointer: None,
-				image: vk::Image::null(),
-				full_image_view: vk::ImageView::null(),
-				image_views: Vec::new(),
-				extent,
-				access: device_accesses,
-				format: to_format(format),
-				format_: format,
-				uses: resource_uses,
-				layers: array_layers,
-				cube_compatible,
-				cube_array_compatible,
-				mip_levels,
-				owns_image: true,
-			};
-		}
-
-		let transfer_uses = (if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-			crate::Uses::TransferSource
-		} else {
-			crate::Uses::empty()
-		}) | (if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-			crate::Uses::TransferDestination
-		} else {
-			crate::Uses::empty()
-		});
+		let cpu_read = device_accesses.contains(DeviceAccesses::CpuRead);
+		let cpu_write = device_accesses.contains(DeviceAccesses::CpuWrite);
+		let mut transfer_uses = crate::Uses::empty();
+		transfer_uses.set(crate::Uses::TransferSource, cpu_read);
+		transfer_uses.set(crate::Uses::TransferDestination, cpu_write);
 
 		let texture_creation_result = self.create_vulkan_texture(
 			name,
@@ -527,42 +410,32 @@ impl Context {
 			cube_compatible,
 			cube_array_compatible,
 		);
+		let image = texture_creation_result.resource;
 
-		let uses_cpu_staging = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
-
-		let m_device_accesses = if uses_cpu_staging {
-			crate::DeviceAccesses::DeviceOnly
-		} else {
-			device_accesses
-		};
-
+		let uses_cpu_staging = device_accesses.intersects(DeviceAccesses::HostOnly);
 		let (image_allocation, _) = self.create_allocation_internal(
 			texture_creation_result.size,
 			texture_creation_result.memory_flags.into(),
-			m_device_accesses,
+			if uses_cpu_staging {
+				DeviceAccesses::DeviceOnly
+			} else {
+				device_accesses
+			},
 		);
-
-		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, image_allocation, 0);
+		unsafe {
+			self.device
+				.bind_image_memory(image, self.allocation(image_allocation).memory, 0)
+				.expect("No image memory binding")
+		};
 
 		let (staging_buffer, staging_allocation, pointer) = if uses_cpu_staging {
 			// A staging buffer may serve both readback and upload when the image allows both CPU access modes.
-			let vk_buffer_usage_flags = (if device_accesses.contains(crate::DeviceAccesses::CpuRead) {
-				vk::BufferUsageFlags::TRANSFER_DST
-			} else {
-				vk::BufferUsageFlags::empty()
-			}) | (if device_accesses.contains(crate::DeviceAccesses::CpuWrite) {
-				vk::BufferUsageFlags::TRANSFER_SRC
-			} else {
-				vk::BufferUsageFlags::empty()
-			});
+			let buffer_creation_result = self.create_vulkan_buffer(name, size, transfer_usage(cpu_write, cpu_read));
 			// Preserve both host access directions so allocation selects visible memory and coherent uploads.
-			let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
-
-			let buffer_creation_result = self.create_vulkan_buffer(name, size, vk_buffer_usage_flags);
 			let (allocation_handle, _) = self.create_allocation_internal(
 				buffer_creation_result.size,
 				buffer_creation_result.memory_flags.into(),
-				allocation_accesses,
+				device_accesses & DeviceAccesses::HostOnly,
 			);
 			let pointer = self.bind_host_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
 
@@ -576,82 +449,45 @@ impl Context {
 		};
 
 		let image_usage_flags = into_vk_image_usage_flags(resource_uses | transfer_uses, format);
+		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
 		// Vulkan only allows image views for images created with view-capable usage bits.
 		// Transfer-only staging/readback images intentionally keep null views.
-		let image_can_have_views = InnerDevice::image_usage_allows_views(image_usage_flags);
-		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
-
-		let full_image_view = image_can_have_views
-			.then(|| {
-				array_layers.map(|layers| {
-					self.create_vulkan_image_view(
-						name,
-						&texture_creation_result.resource,
-						image_type,
-						format,
-						image_usage_flags,
-						mip_levels,
-						0,
-						Some(layers),
-					)
-				})
-			})
-			.flatten();
-
-		let image_views = if image_can_have_views {
-			let mut image_views = Vec::with_capacity(array_layers.map_or(1, NonZeroU32::get) as usize);
-
-			if let Some(l) = array_layers.map(|e| e.get()) {
-				for i in 0..l {
-					image_views.push(self.create_vulkan_image_view(
-						name,
-						&texture_creation_result.resource,
-						image_type,
-						format,
-						image_usage_flags,
-						mip_levels,
-						i,
-						NonZeroU32::new(1),
-					));
-				}
-			} else {
-				image_views.push(self.create_vulkan_image_view(
+		let (full_image_view, image_views) = if InnerDevice::image_usage_allows_views(image_usage_flags) {
+			let create_view = |base_layer, layer_count| {
+				self.create_vulkan_image_view(
 					name,
-					&texture_creation_result.resource,
+					&image,
 					image_type,
 					format,
 					image_usage_flags,
 					mip_levels,
-					0,
-					None,
-				));
+					base_layer,
+					layer_count,
+				)
+			};
+			match array_layers {
+				Some(layers) => (
+					create_view(0, Some(layers)),
+					(0..layers.get())
+						.map(|layer| create_view(layer, NonZeroU32::new(1)))
+						.collect(),
+				),
+				None => (vk::ImageView::null(), vec![create_view(0, None)]),
 			}
-
-			image_views
 		} else {
-			Vec::new()
+			(vk::ImageView::null(), Vec::new())
 		};
 
 		Image {
-			next,
 			size,
 			staging_buffer,
 			staging_allocation,
 			allocation: Some(image_allocation),
 			pointer,
-			image: texture_creation_result.resource,
-			full_image_view: full_image_view.unwrap_or(vk::ImageView::null()),
+			image,
+			full_image_view,
 			image_views,
-			extent,
-			access: device_accesses,
-			format: to_format(format),
-			format_: format,
-			uses: resource_uses,
-			layers: array_layers,
-			cube_compatible,
-			cube_array_compatible,
-			mip_levels,
-			owns_image: true,
+			..unbacked
 		}
 	}
 
@@ -661,7 +497,7 @@ impl Context {
 		previous: Option<ImageHandle>,
 		name: Option<&str>,
 		format: crate::Formats,
-		device_accesses: crate::DeviceAccesses,
+		device_accesses: DeviceAccesses,
 		array_layers: Option<NonZeroU32>,
 		cube_compatible: bool,
 		cube_array_compatible: bool,
@@ -670,7 +506,6 @@ impl Context {
 		mip_levels: u32,
 	) -> ImageHandle {
 		let texture_handle = ImageHandle(self.images.len() as u64);
-
 		let image = self.build_image_internal(
 			next,
 			name,
@@ -687,7 +522,6 @@ impl Context {
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(texture_handle);
 		}
-
 		self.images.push(image);
 
 		texture_handle
@@ -695,15 +529,13 @@ impl Context {
 
 	pub(crate) fn create_synchronizer_internal(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		let synchronizer_handle = SynchronizerHandle(self.synchronizers.len() as u64);
-
 		self.synchronizers.push(Synchronizer {
 			next: None,
 			signaled,
 			armed: signaled,
 			fence: self.create_vulkan_fence(signaled),
-			semaphore: self.create_vulkan_semaphore(name, signaled),
+			semaphore: self.create_vulkan_semaphore(name),
 		});
-
 		synchronizer_handle
 	}
 
@@ -735,7 +567,7 @@ impl Context {
 		let mut persistent_source = None;
 		for handle in frame_copies {
 			let current = *self.buffers.resource(handle);
-			let mut replacement = self.build_buffer_internal(None, name, current.uses, size, current.access);
+			let mut replacement = self.build_buffer_internal(name, current.uses, size, current.access);
 			if let Some(source_handle) = current.source {
 				persistent_source = Some((source_handle, current.access));
 				replacement.source = Some(source_handle);
@@ -812,8 +644,7 @@ impl Context {
 	/// Frames that already started may have recorded or submitted work that references the object. Before the first
 	/// frame, work submitted outside frames is covered by waiting for frame 0, whose fence orders all earlier submissions.
 	pub(crate) fn defer_destruction(&mut self, task: Tasks) {
-		self.tasks
-			.push(Task::after_frame(task, self.last_started_frame.unwrap_or(0)));
+		self.tasks.push(Task::after_frame(task, self.last_started_frame.unwrap_or(0)));
 	}
 
 	/// Retires a buffer's Vulkan object and memory, leaving its entry empty so it is never destroyed twice.
@@ -835,7 +666,7 @@ impl Context {
 
 	/// Retires every Vulkan object and allocation of a replaced image, views first so none outlives its image.
 	pub(crate) fn retire_image_storage(&mut self, image: &Image) {
-		for &image_view in image.image_views.iter().chain(std::iter::once(&image.full_image_view)) {
+		for &image_view in image.image_views.iter().chain([&image.full_image_view]) {
 			if !image_view.is_null() {
 				self.defer_destruction(Tasks::DeleteVulkanImageView { handle: image_view });
 			}
@@ -881,11 +712,9 @@ impl Context {
 
 	/// Add the task to all other frames but the current frame.
 	pub(crate) fn add_task_to_all_other_frames(&mut self, tasks: Tasks, current_frame: u8) {
-		for i in 1..self.frames {
-			// Skip current frame
-			let i = current_frame + i; // Offset by current frame
-			let i = i.rem_euclid(self.frames); // Wrap around frames
-			self.tasks.push(Task::new(tasks, Some(i)));
+		for offset in 1..self.frames {
+			self.tasks
+				.push(Task::new(tasks, Some((current_frame + offset) % self.frames)));
 		}
 	}
 }

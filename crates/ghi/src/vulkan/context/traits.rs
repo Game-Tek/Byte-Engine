@@ -1,4 +1,5 @@
 use super::*;
+use crate::Next as _;
 
 impl std::ops::Deref for Context {
 	type Target = InnerDevice;
@@ -11,6 +12,65 @@ impl std::ops::Deref for Context {
 impl std::ops::DerefMut for Context {
 	fn deref_mut(&mut self) -> &mut Self::Target {
 		&mut self.device
+	}
+}
+
+/// Returns the last handle of the chain that follows every resource with a successor.
+fn chain_tails<H: HandleLike>(collection: &[H::Item]) -> Vec<H> {
+	collection
+		.iter()
+		.filter_map(|item| {
+			let mut handle = item.next()?;
+			while let Some(next) = handle.access(collection).next() {
+				handle = next;
+			}
+			Some(handle)
+		})
+		.collect()
+}
+
+impl Context {
+	/// Creates an acceleration structure sized for `build_info` and returns its index.
+	fn create_acceleration_structure(
+		&mut self,
+		name: Option<&str>,
+		build_info: &vk::AccelerationStructureBuildGeometryInfoKHR,
+		primitive_count: u32,
+	) -> u64 {
+		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+		unsafe {
+			self.acceleration_structure.get_acceleration_structure_build_sizes(
+				vk::AccelerationStructureBuildTypeKHR::DEVICE,
+				build_info,
+				Some(&[primitive_count]),
+				&mut size_info,
+			);
+		}
+
+		let (buffer, ..) = self.create_dedicated_buffer(
+			None,
+			size_info.acceleration_structure_size as usize,
+			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			crate::DeviceAccesses::GpuWrite,
+		);
+
+		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
+			.buffer(buffer.resource)
+			.size(size_info.acceleration_structure_size)
+			.offset(0)
+			.ty(build_info.ty);
+		let acceleration_structure = unsafe {
+			self.acceleration_structure
+				.create_acceleration_structure(&create_info, None)
+				.expect("No acceleration structure")
+		};
+		self.set_name(acceleration_structure, name);
+
+		self.acceleration_structures.push(AccelerationStructure {
+			acceleration_structure,
+			buffer: buffer.resource,
+		});
+		(self.acceleration_structures.len() - 1) as u64
 	}
 }
 
@@ -55,146 +115,48 @@ impl crate::context::Context for Context {
 			return;
 		}
 
-		if frames > MAX_FRAMES_IN_FLIGHT as u8 {
-			panic!("Cannot set frames in flight to more than {}", MAX_FRAMES_IN_FLIGHT);
+		assert!(
+			frames <= MAX_FRAMES_IN_FLIGHT as u8,
+			"Cannot set frames in flight to more than {MAX_FRAMES_IN_FLIGHT}"
+		);
+		assert!(
+			frames > self.frames,
+			"Failed to reduce the frames in flight. The most likely cause is that shrinking per-frame resources is not implemented."
+		);
+
+		for image_handle in chain_tails::<ImageHandle>(&self.images) {
+			let image = &self.images[image_handle.0 as usize];
+			let new_image = self.create_image_internal(
+				image.next,
+				None,
+				None,
+				image.format_,
+				image.access,
+				image.layers,
+				image.cube_compatible,
+				image.cube_array_compatible,
+				image.extent,
+				image.uses,
+				image.mip_levels,
+			);
+			self.images[image_handle.0 as usize].next = Some(new_image);
 		}
 
-		let current_frames = self.frames;
-		let target_frames = frames;
-		let delta_frames = target_frames as i8 - current_frames as i8;
-
-		if delta_frames > 0 {
-			let to_extend = self
-				.images
-				.iter()
-				.filter_map(|image| {
-					let next = image.next?;
-
-					let mut handle = next;
-
-					while let Some(h) = self.images[handle.0 as usize].next {
-						handle = h;
-					}
-
-					handle.into()
-				})
-				.collect::<Vec<_>>();
-
-			for image_handle in to_extend {
-				let current_image = &self.images[image_handle.0 as usize];
-
-				#[cfg(debug_assertions)]
-				let name: Option<&str> = None;
-
-				#[cfg(not(debug_assertions))]
-				let name = None;
-
-				let next = current_image.next;
-				let format = current_image.format_;
-				let access = current_image.access;
-				let array_layers = current_image.layers;
-				let cube_compatible = current_image.cube_compatible;
-				let cube_array_compatible = current_image.cube_array_compatible;
-				let extent = current_image.extent;
-				let resource_uses = current_image.uses;
-				let mip_levels = current_image.mip_levels;
-
-				let new_image = self.create_image_internal(
-					next,
-					None,
-					name,
-					format,
-					access,
-					array_layers,
-					cube_compatible,
-					cube_array_compatible,
-					extent,
-					resource_uses,
-					mip_levels,
-				);
-
-				let current_image = &mut self.images[image_handle.0 as usize];
-				current_image.next = Some(new_image);
-			}
-
-			let to_extend = self
-				.synchronizers
-				.iter()
-				.filter_map(|synchronizer| {
-					let next = synchronizer.next?;
-
-					let mut handle = next;
-
-					while let Some(h) = self.synchronizers[handle.0 as usize].next {
-						handle = h;
-					}
-
-					handle.into()
-				})
-				.collect::<Vec<_>>();
-
-			for synchronizer_handle in to_extend {
-				let current_synchronizer = &self.synchronizers[synchronizer_handle.0 as usize];
-
-				#[cfg(debug_assertions)]
-				let name_owned = self
-					.names
-					.get(
-						&graphics_hardware_interface::SynchronizerHandle(synchronizer_handle.root(&self.synchronizers).0)
-							.into(),
-					)
-					.cloned();
-
-				#[cfg(not(debug_assertions))]
-				let name_owned: Option<String> = None;
-
-				let name = name_owned.as_deref();
-				let signaled = current_synchronizer.signaled;
-
-				let new_synchronizer = self.create_synchronizer_internal(name, signaled);
-
-				let current_synchronizer = &mut self.synchronizers[synchronizer_handle.0 as usize];
-				current_synchronizer.next = Some(new_synchronizer);
-			}
-
-			for command_buffer in &mut self.command_buffers {
-				let queue = &self.queues[command_buffer.queue_handle.0 as usize];
-				let vk_queue = queue.vk_queue.clone();
-				let command_pool_create_info =
-					vk::CommandPoolCreateInfo::default().queue_family_index(queue.queue_family_index);
-
-				let command_pool = unsafe {
-					self.device
-						.create_command_pool(&command_pool_create_info, None)
-						.expect("No command pool")
-				};
-
-				let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-					.command_pool(command_pool)
-					.level(vk::CommandBufferLevel::PRIMARY)
-					.command_buffer_count(1);
-
-				let command_buffers = unsafe {
-					self.device
-						.allocate_command_buffers(&command_buffer_allocate_info)
-						.expect("No command buffer")
-				};
-
-				let vk_command_buffer = command_buffers[0];
-
-				// self.set_name(vk_command_buffer, name);
-
-				command_buffer.frames.push(CommandBufferInternal {
-					vk_queue: vk_queue.clone(),
-					command_pool,
-					command_buffer: vk_command_buffer,
-				});
-			}
-		} else {
-			unimplemented!()
+		for synchronizer_handle in chain_tails::<SynchronizerHandle>(&self.synchronizers) {
+			let root = synchronizer_handle.root(&self.synchronizers);
+			let name = self.get_object_debug_name(graphics_hardware_interface::SynchronizerHandle(root.0).into());
+			let signaled = self.synchronizers[synchronizer_handle.0 as usize].signaled;
+			let new_synchronizer = self.create_synchronizer_internal(name.as_deref(), signaled);
+			self.synchronizers[synchronizer_handle.0 as usize].next = Some(new_synchronizer);
 		}
 
-		self.frames = target_frames;
+		for i in 0..self.command_buffers.len() {
+			let queue_handle = self.command_buffers[i].queue_handle;
+			let frame = self.create_command_buffer_frame(queue_handle, vk::CommandPoolCreateFlags::empty(), None);
+			self.command_buffers[i].frames.push(frame);
+		}
+
+		self.frames = frames;
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
@@ -202,7 +164,8 @@ impl crate::context::Context for Context {
 	}
 
 	fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
-		self.get_buffer_slice(buffer_handle)
+		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
+		unsafe { &*self.typed_buffer_pointer(buffer_handle) }
 	}
 
 	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
@@ -213,7 +176,14 @@ impl crate::context::Context for Context {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		unsafe { Context::transfer_buffer_mapping(self, buffer_handle) }
+		let buffer = self.host_visible_buffer(buffer_handle.into());
+		let pointer = if std::mem::size_of::<T>() == 0 {
+			std::ptr::NonNull::<T>::dangling().as_ptr().cast::<u8>()
+		} else {
+			buffer.pointer.0
+		};
+		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer, std::mem::size_of::<T>()) }
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
@@ -289,7 +259,8 @@ impl crate::context::Context for Context {
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 		size: usize,
 	) {
-		self.resize_buffer(buffer_handle, size);
+		let buffer_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
+		self.resize_buffer_internal(BufferHandle(buffer_handle.0), size);
 	}
 
 	fn start_frame_capture(&mut self) {
@@ -328,44 +299,28 @@ impl crate::context::ContextCreate for Context {
 		indices: &[u8],
 		vertex_layout: &[crate::pipelines::VertexElement],
 	) -> graphics_hardware_interface::MeshHandle {
-		let vertex_buffer_size = vertices.len();
-		let index_buffer_size = indices.len();
-
-		let buffer_size = vertex_buffer_size.next_multiple_of(16) + index_buffer_size;
-
-		let buffer_creation_result = self.create_vulkan_buffer(
+		let index_offset = vertices.len().next_multiple_of(16);
+		let (buffer, _, _, pointer) = self.create_dedicated_buffer(
 			None,
-			buffer_size,
+			index_offset + indices.len(),
 			vk::BufferUsageFlags::VERTEX_BUFFER
 				| vk::BufferUsageFlags::INDEX_BUFFER
 				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-		);
-
-		let (allocation_handle, pointer) = self.create_allocation_internal(
-			buffer_creation_result.size,
-			buffer_creation_result.memory_flags.into(),
 			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
 		);
 
-		self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
 		unsafe {
-			let vertex_buffer_pointer = pointer.expect("No pointer");
-			std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_buffer_pointer, vertex_buffer_size);
-			let index_buffer_pointer = vertex_buffer_pointer.add(vertex_buffer_size.next_multiple_of(16));
-			std::ptr::copy_nonoverlapping(indices.as_ptr(), index_buffer_pointer, index_buffer_size);
+			std::ptr::copy_nonoverlapping(vertices.as_ptr(), pointer, vertices.len());
+			std::ptr::copy_nonoverlapping(indices.as_ptr(), pointer.add(index_offset), indices.len());
 		}
 
-		let mesh_handle = graphics_hardware_interface::MeshHandle(self.meshes.len() as u64);
-
 		self.meshes.push(Mesh {
-			buffer: buffer_creation_result.resource,
+			buffer: buffer.resource,
 			vertex_count,
 			index_count,
 			vertex_size: vertex_layout.size(),
 		});
-
-		mesh_handle
+		graphics_hardware_interface::MeshHandle(self.meshes.len() as u64 - 1)
 	}
 
 	/// Creates a shader.
@@ -376,33 +331,27 @@ impl crate::context::ContextCreate for Context {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = match shader_source_type {
-			crate::shader::Sources::SPIRV(spirv) => {
-				if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
-					return Err(());
-				}
+		let crate::shader::Sources::SPIRV(spirv) = shader_source_type else {
+			return Err(());
+		};
+		if !spirv.as_ptr().is_aligned_to(align_of::<u32>()) {
+			return Err(());
+		}
+		// SAFETY: shader was checked to be aligned to 4 bytes.
+		let code = unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) };
 
-				// SAFETY: shader was checked to be aligned to 4 bytes.
-				Cow::Borrowed(unsafe { std::slice::from_raw_parts(spirv.as_ptr() as *const u32, spirv.len() / 4) })
-			}
-			crate::shader::Sources::DXIL(_)
-			| crate::shader::Sources::HLSL { .. }
-			| crate::shader::Sources::MTL { .. }
-			| crate::shader::Sources::MTLB { .. } => return Err(()),
+		let shader_module = unsafe {
+			self.device
+				.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(code), None)
+				.unwrap()
 		};
 
-		let shader_module_create_info = vk::ShaderModuleCreateInfo::default().code(&shader);
-
-		let shader_module = unsafe { self.device.create_shader_module(&shader_module_create_info, None).unwrap() };
-
 		let handle = graphics_hardware_interface::ShaderHandle(self.shaders.len() as u64);
-
 		self.shaders.push(Shader {
 			shader: shader_module,
 			stage: stage.into(),
 			shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 		});
-
 		self.set_name(shader_module, name);
 
 		Ok(handle)
@@ -449,7 +398,7 @@ impl crate::context::ContextCreate for Context {
 			.push(&mut mapping_info)
 			.stage(vk::ShaderStageFlags::COMPUTE)
 			.module(shader.shader)
-			.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+			.name(c"main")
 			.specialization_info(&specialization_info);
 		let mut descriptor_heap_flags =
 			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
@@ -458,21 +407,18 @@ impl crate::context::ContextCreate for Context {
 			.stage(stage)
 			.layout(vk::PipelineLayout::null())];
 
-		let pipeline_handle = unsafe {
+		let pipeline = unsafe {
 			self.device
 				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
 				.expect("No compute pipeline")[0]
 		};
 
-		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
-
 		self.pipelines.push(Pipeline {
-			pipeline: pipeline_handle,
+			pipeline,
 			layout: pipeline_layout_handle,
 			shader_handles: HashMap::default(),
 		});
-
-		handle
+		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
 	}
 
 	fn create_ray_tracing_pipeline(
@@ -482,7 +428,6 @@ impl crate::context::ContextCreate for Context {
 		let pipeline_layout_handle =
 			self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let shaders = builder.shaders;
-		let mut groups = Vec::with_capacity(1024);
 
 		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
 		let stage_mappings = shaders
@@ -500,63 +445,56 @@ impl crate::context::ContextCreate for Context {
 			.iter()
 			.zip(mapping_infos.iter_mut())
 			.map(|(stage, mapping_info)| {
-				let shader = &self.shaders[stage.handle.0 as usize];
-
 				vk::PipelineShaderStageCreateInfo::default()
 					.push(mapping_info)
 					.stage(to_shader_stage_flags(stage.stage))
-					.module(shader.shader)
-					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+					.module(self.shaders[stage.handle.0 as usize].shader)
+					.name(c"main")
 			})
 			.collect::<Vec<_>>();
 
-		for (i, shader) in shaders.iter().enumerate() {
-			match shader.stage {
-				crate::ShaderTypes::RayGen | crate::ShaderTypes::Miss | crate::ShaderTypes::Callable => {
-					groups.push(
-						vk::RayTracingShaderGroupCreateInfoKHR::default()
-							.ty(vk::RayTracingShaderGroupTypeKHR::GENERAL)
-							.general_shader(i as u32)
-							.closest_hit_shader(vk::SHADER_UNUSED_KHR)
-							.any_hit_shader(vk::SHADER_UNUSED_KHR)
-							.intersection_shader(vk::SHADER_UNUSED_KHR),
-					);
-				}
-				crate::ShaderTypes::ClosestHit => {
-					groups.push(
-						vk::RayTracingShaderGroupCreateInfoKHR::default()
-							.ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-							.general_shader(vk::SHADER_UNUSED_KHR)
-							.closest_hit_shader(i as u32)
-							.any_hit_shader(vk::SHADER_UNUSED_KHR)
-							.intersection_shader(vk::SHADER_UNUSED_KHR),
-					);
-				}
-				crate::ShaderTypes::AnyHit => {
-					groups.push(
-						vk::RayTracingShaderGroupCreateInfoKHR::default()
-							.ty(vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP)
-							.general_shader(vk::SHADER_UNUSED_KHR)
-							.closest_hit_shader(vk::SHADER_UNUSED_KHR)
-							.any_hit_shader(i as u32)
-							.intersection_shader(vk::SHADER_UNUSED_KHR),
-					);
-				}
-				crate::ShaderTypes::Intersection => {
-					groups.push(
-						vk::RayTracingShaderGroupCreateInfoKHR::default()
-							.ty(vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP)
-							.general_shader(vk::SHADER_UNUSED_KHR)
-							.closest_hit_shader(vk::SHADER_UNUSED_KHR)
-							.any_hit_shader(vk::SHADER_UNUSED_KHR)
-							.intersection_shader(i as u32),
-					);
-				}
-				_ => {
-					// warn!("Fed shader of type '{:?}' to ray tracing pipeline", shader.stage)
-				}
-			}
-		}
+		let groups = shaders
+			.iter()
+			.enumerate()
+			.filter_map(|(i, shader)| {
+				let (i, unused) = (i as u32, vk::SHADER_UNUSED_KHR);
+				let (ty, general, closest_hit, any_hit, intersection) = match shader.stage {
+					crate::ShaderTypes::RayGen | crate::ShaderTypes::Miss | crate::ShaderTypes::Callable => {
+						(vk::RayTracingShaderGroupTypeKHR::GENERAL, i, unused, unused, unused)
+					}
+					crate::ShaderTypes::ClosestHit => (
+						vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+						unused,
+						i,
+						unused,
+						unused,
+					),
+					crate::ShaderTypes::AnyHit => (
+						vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+						unused,
+						unused,
+						i,
+						unused,
+					),
+					crate::ShaderTypes::Intersection => (
+						vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP,
+						unused,
+						unused,
+						unused,
+						i,
+					),
+					_ => return None,
+				};
+				Some(
+					vk::RayTracingShaderGroupCreateInfoKHR::default()
+						.ty(ty)
+						.general_shader(general)
+						.closest_hit_shader(closest_hit)
+						.any_hit_shader(any_hit)
+						.intersection_shader(intersection),
+				)
+			})
+			.collect::<Vec<_>>();
 
 		let mut descriptor_heap_flags =
 			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
@@ -567,10 +505,7 @@ impl crate::context::ContextCreate for Context {
 			.groups(&groups)
 			.max_pipeline_ray_recursion_depth(1);
 
-		let mut handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]> =
-			HashMap::with_capacity_and_hasher(shaders.len(), Default::default());
-
-		let pipeline_handle = unsafe {
+		let (pipeline, handle_buffer) = unsafe {
 			let pipeline = self
 				.ray_tracing_pipeline
 				.create_ray_tracing_pipelines(
@@ -584,56 +519,28 @@ impl crate::context::ContextCreate for Context {
 				.ray_tracing_pipeline
 				.get_ray_tracing_shader_group_handles(pipeline, 0, groups.len() as u32, 32 * groups.len())
 				.expect("Could not get ray tracing shader group handles");
-
-			for (i, shader) in shaders.iter().enumerate() {
-				let mut h = [0u8; 32];
-				h.copy_from_slice(&handle_buffer[i * 32..(i + 1) * 32]);
-
-				handles.insert(*shader.handle, h);
-			}
-
-			pipeline
+			(pipeline, handle_buffer)
 		};
 
-		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
+		let shader_handles = shaders
+			.iter()
+			.enumerate()
+			.map(|(i, shader)| (*shader.handle, handle_buffer[i * 32..(i + 1) * 32].try_into().unwrap()))
+			.collect();
 
 		self.pipelines.push(Pipeline {
-			pipeline: pipeline_handle,
+			pipeline,
 			layout: pipeline_layout_handle,
-			shader_handles: handles,
+			shader_handles,
 		});
-
-		handle
+		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
-		let root_image_handle = self.create_image_internal(
-			None,
-			None,
-			builder.name,
-			builder.format,
-			builder.device_accesses,
-			builder.array_layers,
-			builder.cube_compatible,
-			builder.cube_array_compatible,
-			builder.extent,
-			builder.resource_uses,
-			builder.mip_levels,
-		);
-
-		let handle =
-			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
-
-		let instances = match builder.use_case {
-			crate::UseCases::DYNAMIC => self.frames,
-			crate::UseCases::STATIC => 1,
-		};
-
-		let mut previous = root_image_handle;
-		for _ in 1..instances {
-			previous = self.create_image_internal(
+		let create_image = |context: &mut Self, previous| {
+			context.create_image_internal(
 				None,
-				Some(previous),
+				previous,
 				builder.name,
 				builder.format,
 				builder.device_accesses,
@@ -643,11 +550,22 @@ impl crate::context::ContextCreate for Context {
 				builder.extent,
 				builder.resource_uses,
 				builder.mip_levels,
-			);
+			)
+		};
+
+		let root_image_handle = create_image(self, None);
+		let instances = match builder.use_case {
+			crate::UseCases::DYNAMIC => self.frames,
+			crate::UseCases::STATIC => 1,
+		};
+		let mut previous = root_image_handle;
+		for _ in 1..instances {
+			previous = create_image(self, Some(previous));
 		}
 
+		let handle =
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
 		self.set_object_debug_name(builder.name, handle.into());
-
 		handle
 	}
 
@@ -694,36 +612,28 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> graphics_hardware_interface::BaseBufferHandle {
-		let size = max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>();
-
-		let buffer_creation_result = self.create_vulkan_buffer(
+		let access = crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead;
+		let (buffer, allocation, device_address, pointer) = self.create_dedicated_buffer(
 			name,
-			size,
+			max_instance_count as usize * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
 			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
 				| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			access,
 		);
 
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer_creation_result.size,
-			buffer_creation_result.memory_flags.into(),
-			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
-		);
-
-		let (address, pointer) = self.bind_vulkan_buffer_memory(&buffer_creation_result, allocation_handle, 0);
-
-		let (buffer_handle, _) = self.buffers.add(Buffer {
-			staging: None,
-			source: None,
-			buffer: buffer_creation_result.resource,
-			size: buffer_creation_result.size,
-			device_address: address,
-			pointer: crate::vulkan::MappedMemoryPointer(pointer),
-			allocation: Some(allocation_handle),
-			uses: crate::Uses::empty(),
-			access: crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
-		});
-
-		buffer_handle
+		self.buffers
+			.add(Buffer {
+				staging: None,
+				source: None,
+				buffer: buffer.resource,
+				size: buffer.size,
+				device_address,
+				pointer: crate::vulkan::MappedMemoryPointer(pointer),
+				allocation: Some(allocation),
+				uses: crate::Uses::empty(),
+				access,
+			})
+			.0
 	}
 
 	fn create_top_level_acceleration_structure(
@@ -731,68 +641,20 @@ impl crate::context::ContextCreate for Context {
 		name: Option<&str>,
 		max_instance_count: u32,
 	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
-		let geometry = vk::AccelerationStructureGeometryKHR::default()
+		let geometries = [vk::AccelerationStructureGeometryKHR::default()
 			.geometry_type(vk::GeometryTypeKHR::INSTANCES)
 			.geometry(vk::AccelerationStructureGeometryDataKHR {
 				instances: vk::AccelerationStructureGeometryInstancesDataKHR::default(),
-			});
-
-		let geometries = [geometry];
-
+			})];
 		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
 			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
 			.geometries(&geometries);
 
-		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-
-		unsafe {
-			self.acceleration_structure.get_acceleration_structure_build_sizes(
-				vk::AccelerationStructureBuildTypeKHR::DEVICE,
-				&build_info,
-				Some(&[max_instance_count]),
-				&mut size_info,
-			);
-		}
-
-		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
-		let _ = size_info.build_scratch_size as usize;
-
-		let buffer = self.create_vulkan_buffer(
-			None,
-			acceleration_structure_size,
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-		);
-
-		let (allocation_handle, _) =
-			self.create_allocation_internal(buffer.size, buffer.memory_flags.into(), crate::DeviceAccesses::GpuWrite);
-
-		let (..) = self.bind_vulkan_buffer_memory(&buffer, allocation_handle, 0);
-
-		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
-			.buffer(buffer.resource)
-			.size(acceleration_structure_size as u64)
-			.offset(0)
-			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
-
-		let handle =
-			graphics_hardware_interface::TopLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
-
-		{
-			let handle = unsafe {
-				self.acceleration_structure
-					.create_acceleration_structure(&create_info, None)
-					.expect("No acceleration structure")
-			};
-
-			self.acceleration_structures.push(AccelerationStructure {
-				acceleration_structure: handle,
-				buffer: buffer.resource,
-			});
-
-			self.set_name(handle, name);
-		}
-
-		handle
+		graphics_hardware_interface::TopLevelAccelerationStructureHandle(self.create_acceleration_structure(
+			name,
+			&build_info,
+			max_instance_count,
+		))
 	}
 
 	fn create_bottom_level_acceleration_structure(
@@ -837,167 +699,97 @@ impl crate::context::ContextCreate for Context {
 		};
 
 		let geometries = [geometry];
-
 		let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
 			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
 			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
 			.geometries(&geometries);
 
-		let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
-
-		unsafe {
-			self.acceleration_structure.get_acceleration_structure_build_sizes(
-				vk::AccelerationStructureBuildTypeKHR::DEVICE,
-				&build_info,
-				Some(&[primitive_count]),
-				&mut size_info,
-			);
-		}
-
-		let acceleration_structure_size = size_info.acceleration_structure_size as usize;
-		let _ = size_info.build_scratch_size as usize;
-
-		let buffer_descriptor = self.create_vulkan_buffer(
+		graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.create_acceleration_structure(
 			None,
-			acceleration_structure_size,
-			vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-		);
-
-		let (allocation_handle, _) = self.create_allocation_internal(
-			buffer_descriptor.size,
-			buffer_descriptor.memory_flags.into(),
-			crate::DeviceAccesses::GpuWrite,
-		);
-
-		let (..) = self.bind_vulkan_buffer_memory(&buffer_descriptor, allocation_handle, 0);
-
-		let create_info = vk::AccelerationStructureCreateInfoKHR::default()
-			.buffer(buffer_descriptor.resource)
-			.size(acceleration_structure_size as u64)
-			.offset(0)
-			.ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
-
-		let handle =
-			graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.acceleration_structures.len() as u64);
-
-		{
-			let handle = unsafe {
-				self.acceleration_structure
-					.create_acceleration_structure(&create_info, None)
-					.expect("No acceleration structure")
-			};
-
-			self.acceleration_structures.push(AccelerationStructure {
-				acceleration_structure: handle,
-				buffer: buffer_descriptor.resource,
-			});
-		}
-
-		handle
+			&build_info,
+			primitive_count,
+		))
 	}
 
 	fn build_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
-		let size = std::mem::size_of::<T>();
-
-		let buffer_handle =
-			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
-		let handle = graphics_hardware_interface::BufferHandle::<T>(
-			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
-			std::marker::PhantomData::<T> {},
+		let buffer_handle = self.create_buffer_internal(
+			None,
+			None,
+			builder.name,
+			builder.resource_uses,
+			std::mem::size_of::<T>(),
+			builder.device_accesses,
 		);
-
-		return handle;
+		graphics_hardware_interface::BufferHandle(
+			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
+			std::marker::PhantomData,
+		)
 	}
 
 	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = std::mem::size_of::<T>();
-
 		let buffer_handle =
 			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
 			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
-			std::marker::PhantomData::<T> {},
+			std::marker::PhantomData,
 		);
 
-		if crate::vulkan::buffer::PERSISTENT_WRITE
+		let source = if crate::vulkan::buffer::PERSISTENT_WRITE
 			&& builder.device_accesses.intersects(crate::DeviceAccesses::CpuWrite)
 			&& !Self::uses_only_host_access(builder.device_accesses)
 		{
-			// The master buffer's existing staging buffer becomes the shared, persistent
-			// CPU-writable source buffer. We create a new per-frame staging buffer for
-			// frame 0 and store the source handle on the master buffer.
-
+			// The master buffer's existing staging buffer becomes the shared, persistent CPU-writable source buffer,
+			// and a new per-frame staging buffer takes its place for frame 0.
 			let source_handle = self
 				.buffers
 				.resource(buffer_handle)
 				.staging
 				.expect("CpuWrite dynamic buffer must have a staging buffer");
-
-			// Create a new per-frame staging buffer for frame 0
 			let frame0_staging = self.create_staging_buffer(builder.name, size);
-
-			// Reassign: the master's staging now points to the new per-frame staging,
-			// and source points to the original (persistent) CPU-writable buffer.
 			let buffer = self.buffers.resource_mut(buffer_handle);
 			buffer.staging = Some(frame0_staging);
 			buffer.source = Some(source_handle);
 
-			// Track this dynamic buffer for automatic per-frame memcpy
+			// Track this dynamic buffer for automatic per-frame memcpy.
 			self.persistent_write_dynamic_buffers.push(handle.into());
-
-			for i in 1..self.frames {
-				assert!(i < 2, "This does not support more than one deferred buffer!");
-				self.tasks.push(Task::new(
-					Tasks::BuildBuffer(BuildBuffer {
-						previous: buffer_handle,
-						master: handle.into(),
-						source: Some(source_handle),
-					}),
-					Some(i),
-				));
-			}
+			Some(source_handle)
 		} else {
-			for i in 1..self.frames {
-				assert!(i < 2, "This does not support more than one deferred buffer!");
-				self.tasks.push(Task::new(
-					Tasks::BuildBuffer(BuildBuffer {
-						previous: buffer_handle,
-						master: handle.into(),
-						source: None,
-					}),
-					Some(i),
-				));
-			}
+			None
+		};
+
+		for i in 1..self.frames {
+			assert!(i < 2, "This does not support more than one deferred buffer!");
+			self.tasks.push(Task::new(
+				Tasks::BuildBuffer(BuildBuffer {
+					previous: buffer_handle,
+					master: handle.into(),
+					source,
+				}),
+				Some(i),
+			));
 		}
 
 		handle
 	}
 
 	fn build_dynamic_image(&mut self, builder: crate::image::Builder) -> crate::DynamicImageHandle {
-		let handle = self.build_image(builder.use_case(crate::UseCases::DYNAMIC));
-
-		crate::DynamicImageHandle(handle.0)
+		crate::DynamicImageHandle(self.build_image(builder.use_case(crate::UseCases::DYNAMIC)).0)
 	}
 
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		let synchronizer_handle = graphics_hardware_interface::SynchronizerHandle(self.synchronizers.len() as u64);
 
-		{
-			let mut previous: Option<SynchronizerHandle> = None;
-
-			for _ in 0..self.frames {
-				let synchronizer_handle = self.create_synchronizer_internal(name, signaled);
-
-				if let Some(pr) = previous {
-					self.synchronizers[pr.0 as usize].next = Some(synchronizer_handle);
-				}
-
-				previous = Some(synchronizer_handle);
+		let mut previous: Option<SynchronizerHandle> = None;
+		for _ in 0..self.frames {
+			let handle = self.create_synchronizer_internal(name, signaled);
+			if let Some(previous) = previous {
+				self.synchronizers[previous.0 as usize].next = Some(handle);
 			}
+			previous = Some(handle);
 		}
 
 		self.set_object_debug_name(name, synchronizer_handle.into());
-
 		synchronizer_handle
 	}
 }

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU32, u64};
+use std::num::NonZeroU32;
 
 use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
@@ -21,8 +21,7 @@ use crate::{
 	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
-		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
-		Tasks,
+		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task, Tasks,
 	},
 	window,
 };
@@ -82,9 +81,6 @@ pub struct Context {
 	/// These buffers have their source buffer memcpy'd into the per-frame staging
 	/// buffer every frame before GPU copies are issued.
 	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
-
-	swapchain_native_supports_formatless_storage_write: bool,
-	swapchain_proxy_supports_formatless_storage_write: bool,
 
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 

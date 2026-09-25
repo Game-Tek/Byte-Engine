@@ -6,7 +6,7 @@ use crate::{
 	FrameKey, HandleLike as _, MasterHandle as _,
 	context::ContextCreate as _,
 	graphics_hardware_interface,
-	vulkan::{BufferCopy, ImageCopy, ImageHandle, Swapchain, Synchronizer, Tasks},
+	vulkan::{ImageHandle, Swapchain, Synchronizer, Tasks},
 };
 
 pub struct Frame<'a> {
@@ -44,21 +44,11 @@ impl<'a> Frame<'a> {
 		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames
 			[self.frame_key.sequence_index as usize]
 			.clone();
+		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer.command_buffer)];
 
-		let command_buffers = [command_buffer.command_buffer];
-
-		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffers[0])];
-
-		let wait_for_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
-
-		let wait_semaphores = wait_for_synchronizer_handles
+		let wait_semaphores = present_keys
 			.iter()
-			.map(|&synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE | vk::PipelineStageFlags2::TRANSFER)
-			})
-			.chain(present_keys.iter().map(|present_key| {
+			.map(|present_key| {
 				let swapchain = self.get_swapchain(present_key.swapchain);
 				let semaphore = swapchain.acquire_synchronizers[present_key.sequence_index as usize]
 					.access(&self.device.synchronizers)
@@ -71,49 +61,34 @@ impl<'a> Frame<'a> {
 				} else {
 					first_use_stage
 				};
-
 				vk::SemaphoreSubmitInfo::default().semaphore(semaphore).stage_mask(stage_mask)
-			}))
-			.collect::<Vec<_>>();
-
-		let signal_synchronizer_handles: [graphics_hardware_interface::SynchronizerHandle; 0] = [];
-
-		let signal_semaphores = signal_synchronizer_handles
-			.iter()
-			.map(|&synchronizer| {
-				vk::SemaphoreSubmitInfo::default()
-					.semaphore(self.get_synchronizer(synchronizer).semaphore)
-					.stage_mask(vk::PipelineStageFlags2::empty())
 			})
-			.chain(present_keys.iter().map(|present_key| {
-				let swapchain = self.get_swapchain(present_key.swapchain);
-
-				// ALL_COMMANDS orders the signal after the pre-present layout transition whatever stage wrote last,
-				// as the Khronos swapchain synchronization example allows.
+			.collect::<Vec<_>>();
+		// ALL_COMMANDS orders the signal after the pre-present layout transition whatever stage wrote last,
+		// as the Khronos swapchain synchronization example allows.
+		let signal_semaphores = present_keys
+			.iter()
+			.map(|present_key| {
+				let semaphore = self.get_swapchain(present_key.swapchain).submit_synchronizers
+					[present_key.image_index as usize]
+					.access(&self.device.synchronizers)
+					.semaphore;
 				vk::SemaphoreSubmitInfo::default()
-					.semaphore(
-						swapchain.submit_synchronizers[present_key.image_index as usize]
-							.access(&self.device.synchronizers)
-							.semaphore,
-					)
+					.semaphore(semaphore)
 					.stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-			}))
+			})
 			.collect::<Vec<_>>();
 
 		let submit_info = vk::SubmitInfo2::default()
 			.command_buffer_infos(&command_buffer_infos)
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores);
-
-		let execution_completion_fence = synchronizer
-			.map(|synchronizer| self.get_synchronizer(synchronizer).fence)
-			.unwrap_or(vk::Fence::null());
-
+		let execution_completion_fence =
+			synchronizer.map_or(vk::Fence::null(), |synchronizer| self.get_synchronizer(synchronizer).fence);
 		let vk_queue = command_buffer
 			.vk_queue
 			.lock()
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
-
 		unsafe {
 			self.device
 				.device
@@ -127,16 +102,11 @@ impl<'a> Frame<'a> {
 			self.device.texture_readbacks.mark_submitted(handle);
 		}
 
-		for presentation in present_keys {
-			let swapchain = self.get_swapchain(presentation.swapchain);
-
-			// Binary semaphores are consumed by one wait, so each present waits only on its own image's render semaphore.
-			let wait_semaphores = [swapchain.submit_synchronizers[presentation.image_index as usize]
-				.access(&self.device.synchronizers)
-				.semaphore];
-			let swapchains = [swapchain.swapchain];
+		// Binary semaphores are consumed by one wait, so each present waits only on its own image's render semaphore.
+		for (presentation, signal) in present_keys.iter().zip(&signal_semaphores) {
+			let wait_semaphores = [signal.semaphore];
+			let swapchains = [self.get_swapchain(presentation.swapchain).swapchain];
 			let image_indices = [presentation.image_index as u32];
-
 			let present_info = vk::PresentInfoKHR::default()
 				.swapchains(&swapchains)
 				.wait_semaphores(&wait_semaphores)
@@ -153,28 +123,27 @@ impl<'a> Frame<'a> {
 			}
 		}
 
-		for (k, v) in states {
-			self.device.states.insert(k, v);
-		}
-		for (k, v) in buffer_states {
-			self.device.buffer_states.insert(k, v);
-		}
+		self.device.states.extend(states);
+		self.device.buffer_states.extend(buffer_states);
 	}
 
-	pub(crate) fn complete_without_submissions(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
-		let synchronizer = self.get_synchronizer(synchronizer_handle);
+	pub(crate) fn complete_without_submissions(
+		&mut self,
+		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) {
+		let fence = self.get_synchronizer(synchronizer_handle).fence;
 		{
 			let queue = self.device.queues[0]
 				.vk_queue
 				.lock()
 				.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
-			let submit_info = vk::SubmitInfo2::default();
-
 			unsafe {
 				self.device
 					.device
-					.queue_submit2(*queue, &[submit_info], synchronizer.fence)
-					.expect("Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.");
+					.queue_submit2(*queue, &[vk::SubmitInfo2::default()], fence)
+					.expect(
+						"Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.",
+					);
 			}
 		}
 		self.get_synchronizer_mut(synchronizer_handle).armed = true;
@@ -184,298 +153,75 @@ impl<'a> Frame<'a> {
 		let handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
 		handles[(self.frame_key.sequence_index as usize).rem_euclid(handles.len())]
 	}
-}
 
-impl<'a> crate::frame::Frame<'a> for Frame<'a> {
-	type CBR<'record>
-		= CommandBufferRecording<'record>
-	where
-		Self: 'record;
-
-	fn key(&self) -> crate::FrameKey {
-		self.frame_key
+	/// Returns the public handle of the image selected for this frame.
+	fn get_current_image(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> crate::ImageHandle {
+		crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
+			self.get_current_image_handle(image_handle).0,
+		))
 	}
 
-	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
-	}
-
-	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		self.device.sync_buffer(buffer_handle);
-	}
-
-	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
-		self.device
-			.get_texture_slice_mut(crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-				self.get_current_image_handle(texture_handle).0,
-			)))
-	}
-
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
-		self.device
-			.sync_texture(crate::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-				self.get_current_image_handle(image_handle).0,
-			)));
-	}
-
-	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		self.device.write(descriptor_set_writes);
-	}
-
-	/// Acquires an image, recreating the swapchain when it no longer matches its surface.
-	///
-	/// Returns a zero extent when no image could be acquired, such as while the window is minimized; callers
-	/// must skip rendering and presentation for that swapchain this frame.
-	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
-		let sequence_index = self.frame_key.sequence_index;
-		let unavailable = (
-			graphics_hardware_interface::PresentKey {
-				image_index: 0,
-				sequence_index,
-				swapchain: swapchain_handle,
-			},
-			Extent::rectangle(0, 0),
-		);
-
-		let capabilities = self.query_swapchain_capabilities(swapchain_handle);
-		let swapchain = self.get_swapchain(swapchain_handle);
-		let extent_changed =
-			capabilities.current_extent.width != u32::MAX && capabilities.current_extent != swapchain.extent;
-		if (swapchain.needs_recreation || extent_changed) && !self.device.recreate_swapchain(swapchain_handle, &capabilities) {
-			return unavailable;
-		}
-
-		let mut recreated = false;
-		let index = loop {
-			match self.acquire_next_swapchain_image(swapchain_handle) {
-				Ok((index, suboptimal)) => {
-					// The acquired image is still presentable, so rebuild on the next acquire instead of discarding it.
-					if suboptimal {
-						self.device.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
-					}
-					break index;
-				}
-				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) if !recreated => {
-					recreated = true;
-					let capabilities = self.query_swapchain_capabilities(swapchain_handle);
-					if !self.device.recreate_swapchain(swapchain_handle, &capabilities) {
-						return unavailable;
-					}
-				}
-				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-					self.device.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
-					return unavailable;
-				}
-				Err(error) => panic!(
-					"Failed to acquire a Vulkan swapchain image ({error:?}). The most likely cause is that the surface or the device was lost."
-				),
-			}
-		};
-
-		let present_key = graphics_hardware_interface::PresentKey {
-			image_index: index as u8,
-			sequence_index,
-			swapchain: swapchain_handle,
-		};
-
-		if !self.acquired_swapchains.contains(&present_key) {
-			self.acquired_swapchains.push(present_key);
-		}
-
-		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
-		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
-		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
-		let native_image = swapchain.native_images[index as usize];
-		let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
-
-		// The presentation engine hands the image back with undefined contents and no prior GPU work to order against;
-		// recording chains its first barrier to the acquire semaphore instead.
-		self.device.states.insert(
-			super::Handles::Image(native_image),
-			super::TransitionState::new(
-				vk::PipelineStageFlags2::NONE,
-				vk::AccessFlags2::NONE,
-				vk::ImageLayout::UNDEFINED,
-			),
-		);
-
-		(present_key, extent)
-	}
-
-	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
-		let current_frame = self.frame_key.sequence_index;
-		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
-		// Every earlier resize queued its extent for the other copies after resizing this one, so matching copies
-		// mean no resize toward a different extent is still pending.
-		if image_handles
-			.iter()
-			.all(|handle| self.device.images[handle.0 as usize].extent == extent)
-		{
-			return;
-		}
-		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
-
-		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
-		self.device.resize_image_internal(handle, extent, current_frame);
-
-		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
-		if image_handles.len() > 1 {
-			self.device
-				.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
-		}
-	}
-
-	fn create_command_buffer_recording<'record>(
-		&'record mut self,
-		command_buffer_handle: crate::CommandBufferHandle,
-	) -> Self::CBR<'record> {
-		self.create_command_buffer_recording_internal(command_buffer_handle, true)
-	}
-
-	fn create_command_buffer_recording_without_implicit_sync<'record>(
-		&'record mut self,
-		command_buffer_handle: crate::CommandBufferHandle,
-	) -> Self::CBR<'record> {
-		self.create_command_buffer_recording_internal(command_buffer_handle, false)
-	}
-
-	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
-		let buffers = &self.device.buffers;
-		let frame_key = self.frame_key;
-
-		let handle = buffers
-			.nth_handle(buffer_handle.into(), frame_key.sequence_index as _)
-			.unwrap();
-		let buffer = buffers.resource(handle);
-
-		let (pointer, byte_count) = if super::buffer::PERSISTENT_WRITE
-			&& let Some(source_handle) = buffer.source
-		{
-			// The persistent source receives user writes. Frame recording copies it to the current staging buffer.
-			let source_buffer = buffers.resource(source_handle);
-			(source_buffer.pointer.0, source_buffer.size)
-		} else if let Some(staging_handle) = buffer.staging {
-			self.device.pending_buffer_syncs.insert(handle);
-			let staging_buffer = buffers.resource(staging_handle);
-			(staging_buffer.pointer.0, staging_buffer.size)
-		} else {
-			(buffer.pointer.0, buffer.size)
-		};
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
-			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
-		);
-		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
-		unsafe { &mut *pointer }
-	}
-}
-
-impl Frame<'_> {
 	fn create_command_buffer_recording_internal(
 		&mut self,
 		command_buffer_handle: crate::CommandBufferHandle,
 		include_implicit_sync: bool,
 	) -> CommandBufferRecording<'_> {
-		let frame_key = self.frame_key;
+		let sequence_index = self.frame_key.sequence_index;
+		// Update descriptors before creating command buffer.
+		self.device.process_tasks(sequence_index);
 
-		// Update descriptors before creating command buffer
-		self.device.process_tasks(frame_key.sequence_index);
-
-		// When PERSISTENT_WRITE is enabled, memcpy from each dynamic buffer's
-		// persistent source buffer into the current frame's staging buffer, then
-		// enqueue the staging→GPU copy. This ensures every frame gets the latest
-		// data even if the CPU didn't write this frame.
-		if include_implicit_sync && super::buffer::PERSISTENT_WRITE {
-			for master_handle in &self.device.persistent_write_dynamic_buffers {
-				let frame_buffer_handle = self
-					.device()
-					.buffers
-					.nth_handle(*master_handle, frame_key.sequence_index as _)
-					.unwrap();
-				let frame_buffer = self.device().buffers.resource(frame_buffer_handle);
-
-				let source_handle = frame_buffer
-					.source
-					.expect("Persistent write dynamic buffer must have a source");
-				let staging_handle = frame_buffer
-					.staging
-					.expect("Persistent write dynamic buffer must have per-frame staging");
-
-				let source_buffer = self.device().buffers.resource(source_handle);
-				let staging_buffer = self.device().buffers.resource(staging_handle);
-				let size = frame_buffer.size;
-
-				if size != 0 {
-					assert!(
-						size <= source_buffer.size
-							&& size <= staging_buffer.size
-							&& !source_buffer.pointer.0.is_null()
-							&& !staging_buffer.pointer.0.is_null(),
-						"Failed to copy a persistent Vulkan buffer. The most likely cause is that its source or frame-local staging allocation is missing mapped storage.",
+		// Explicit transfer command buffers must not consume frame-global pending uploads. Those uploads belong to the
+		// normal render recording path, and stealing them here makes helper transfer submissions write render-frame
+		// resources such as dynamic view buffers.
+		let (buffer_copies, images) = if include_implicit_sync {
+			let device = &mut *self.device;
+			// Copy each persistent source into this frame's staging buffer and enqueue the staging to GPU copy, so every
+			// frame gets the latest data even if the CPU didn't write this frame.
+			if super::buffer::PERSISTENT_WRITE {
+				for master_handle in &device.persistent_write_dynamic_buffers {
+					let frame_buffer_handle = device.buffers.nth_handle(*master_handle, sequence_index as _).unwrap();
+					let frame_buffer = device.buffers.resource(frame_buffer_handle);
+					let source_buffer = device.buffers.resource(
+						frame_buffer
+							.source
+							.expect("Persistent write dynamic buffer must have a source"),
 					);
-					// SAFETY: The source and staging buffers are distinct live allocations, and `size` is bounded by both.
-					unsafe {
-						std::ptr::copy_nonoverlapping(source_buffer.pointer.0, staging_buffer.pointer.0, size);
+					let staging_buffer = device.buffers.resource(
+						frame_buffer
+							.staging
+							.expect("Persistent write dynamic buffer must have per-frame staging"),
+					);
+					let size = frame_buffer.size;
+
+					if size != 0 {
+						assert!(
+							size <= source_buffer.size
+								&& size <= staging_buffer.size
+								&& !source_buffer.pointer.0.is_null()
+								&& !staging_buffer.pointer.0.is_null(),
+							"Failed to copy a persistent Vulkan buffer. The most likely cause is that its source or frame-local staging allocation is missing mapped storage.",
+						);
+						// SAFETY: The source and staging buffers are distinct live allocations, and `size` is bounded by both.
+						unsafe {
+							std::ptr::copy_nonoverlapping(source_buffer.pointer.0, staging_buffer.pointer.0, size);
+						}
 					}
+
+					device.pending_buffer_syncs.insert(frame_buffer_handle);
 				}
-
-				// Enqueue staging → GPU copy
-				self.device.pending_buffer_syncs.insert(frame_buffer_handle);
 			}
-		}
 
-		let (buffer_copies, image_copies): (Vec<_>, Vec<_>) = if include_implicit_sync {
-			let pending_buffers = &mut self.device.pending_buffer_syncs;
-			let buffers = &self.device.buffers;
-
-			let buffer_copies = pending_buffers
-				.drain()
-				.filter_map(|e| {
-					let dst_buffer_handle = e;
-
-					let dst_buffer = buffers.resource(dst_buffer_handle);
-					let src_buffer_handle = dst_buffer.staging?;
-
-					Some(BufferCopy::new(src_buffer_handle, 0, dst_buffer_handle, 0, dst_buffer.size))
-				})
-				.collect();
-
-			let pending_images = &mut self.device.pending_image_syncs;
-			let images = &self.device.images;
-
-			let image_copies = pending_images
-				.drain()
-				.map(|e| {
-					let dst_image_handle = e;
-
-					let dst_image = &images[dst_image_handle.0 as usize];
-
-					ImageCopy::new(dst_image_handle, 0, dst_image_handle, 0, dst_image.size)
-				})
-				.collect();
-
-			(buffer_copies, image_copies)
+			device.take_pending_syncs()
 		} else {
-			// Explicit transfer command buffers must not consume frame-global pending
-			// uploads. Those uploads belong to the normal render recording path, and
-			// stealing them here makes helper transfer submissions write render-frame
-			// resources such as dynamic view buffers.
 			(Vec::new(), Vec::new())
 		};
 
-		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, frame_key.into());
-
-		recording.sync_buffers(buffer_copies.iter().copied());
-		recording.sync_textures(image_copies.iter().copied());
-
+		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into());
+		recording.sync_buffers(buffer_copies.into_iter());
+		recording.sync_textures(images.into_iter());
 		recording
 	}
-}
 
-impl<'a> crate::context::ContextCreate for Frame<'a> {
-	crate::context::delegate_context_create_to_device!();
-}
-
-impl<'a> Frame<'a> {
 	/// Interns a factory-built raster pipeline into this frame's device.
 	pub fn intern_raster_pipeline(
 		&mut self,
@@ -574,7 +320,10 @@ impl<'a> Frame<'a> {
 			[self.device.get_syncronizer_handles(syncronizer_handle)[self.frame_key.sequence_index as usize].0 as usize]
 	}
 
-	fn query_swapchain_capabilities(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> vk::SurfaceCapabilitiesKHR {
+	fn query_swapchain_capabilities(
+		&self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+	) -> vk::SurfaceCapabilitiesKHR {
 		let swapchain = self.get_swapchain(swapchain_handle);
 		self.device
 			.device
@@ -601,9 +350,12 @@ impl<'a> Frame<'a> {
 
 		unsafe {
 			if synchronizer.armed {
-				self.device.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
-					"Failed to wait for the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
-				);
+				self.device
+					.device
+					.wait_for_fences(&[synchronizer.fence], true, u64::MAX)
+					.expect(
+						"Failed to wait for the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
+					);
 			}
 			self.device.device.reset_fences(&[synchronizer.fence]).expect(
 				"Failed to reset the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
@@ -611,8 +363,7 @@ impl<'a> Frame<'a> {
 		}
 
 		let result = loop {
-			let result = unsafe { self.device.swapchain.acquire_next_image2(&acquire_info) };
-			match result {
+			match unsafe { self.device.swapchain.acquire_next_image2(&acquire_info) } {
 				Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) if !use_vulkan_timeout => {
 					std::thread::sleep(std::time::Duration::from_millis(1))
 				}
@@ -637,7 +388,10 @@ impl<'a> Frame<'a> {
 			.collect()
 	}
 
-	fn get_synchronizer_mut(&mut self, syncronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> &mut Synchronizer {
+	fn get_synchronizer_mut(
+		&mut self,
+		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	) -> &mut Synchronizer {
 		let index = self.device.get_syncronizer_handles(syncronizer_handle)[self.frame_key.sequence_index as usize].0 as usize;
 		&mut self.device.synchronizers[index]
 	}
@@ -645,14 +399,177 @@ impl<'a> Frame<'a> {
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {
 		&self.device.swapchains[swapchain_handle.0 as usize]
 	}
+}
 
-	pub(crate) fn get_presentable_swapchain_image_handle(
-		&self,
-		present_key: graphics_hardware_interface::PresentKey,
-	) -> ImageHandle {
-		let swapchain = self.get_swapchain(present_key.swapchain);
-		swapchain.native_images[present_key.image_index as usize]
+impl<'a> crate::frame::Frame<'a> for Frame<'a> {
+	type CBR<'record>
+		= CommandBufferRecording<'record>
+	where
+		Self: 'record;
+
+	fn key(&self) -> crate::FrameKey {
+		self.frame_key
 	}
+
+	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+		self.device.get_mut_buffer_slice(buffer_handle)
+	}
+
+	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
+		self.device.sync_buffer(buffer_handle);
+	}
+
+	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
+		self.device.get_texture_slice_mut(self.get_current_image(texture_handle))
+	}
+
+	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle) {
+		self.device.sync_texture(self.get_current_image(image_handle));
+	}
+
+	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		self.device.write(descriptor_set_writes);
+	}
+
+	/// Acquires an image, recreating the swapchain when it no longer matches its surface.
+	///
+	/// Returns a zero extent when no image could be acquired, such as while the window is minimized; callers
+	/// must skip rendering and presentation for that swapchain this frame.
+	fn acquire_swapchain_image(&mut self, swapchain_handle: crate::SwapchainHandle) -> (crate::PresentKey, utils::Extent) {
+		let sequence_index = self.frame_key.sequence_index;
+		let present_key = |image_index| graphics_hardware_interface::PresentKey {
+			image_index,
+			sequence_index,
+			swapchain: swapchain_handle,
+		};
+		let unavailable = (present_key(0), Extent::rectangle(0, 0));
+
+		let capabilities = self.query_swapchain_capabilities(swapchain_handle);
+		let swapchain = self.get_swapchain(swapchain_handle);
+		let extent_changed = capabilities.current_extent.width != u32::MAX && capabilities.current_extent != swapchain.extent;
+		if (swapchain.needs_recreation || extent_changed) && !self.device.recreate_swapchain(swapchain_handle, &capabilities) {
+			return unavailable;
+		}
+
+		let mut recreated = false;
+		let index = loop {
+			match self.acquire_next_swapchain_image(swapchain_handle) {
+				Ok((index, suboptimal)) => {
+					// The acquired image is still presentable, so rebuild on the next acquire instead of discarding it.
+					if suboptimal {
+						self.device.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+					}
+					break index;
+				}
+				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) if !recreated => {
+					recreated = true;
+					let capabilities = self.query_swapchain_capabilities(swapchain_handle);
+					if !self.device.recreate_swapchain(swapchain_handle, &capabilities) {
+						return unavailable;
+					}
+				}
+				Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+					self.device.swapchains[swapchain_handle.0 as usize].needs_recreation = true;
+					return unavailable;
+				}
+				Err(error) => panic!(
+					"Failed to acquire a Vulkan swapchain image ({error:?}). The most likely cause is that the surface or the device was lost."
+				),
+			}
+		};
+
+		let present_key = present_key(index as u8);
+		if !self.acquired_swapchains.contains(&present_key) {
+			self.acquired_swapchains.push(present_key);
+		}
+
+		let swapchain = &mut self.device.swapchains[swapchain_handle.0 as usize];
+		swapchain.acquired_image_indices[sequence_index as usize] = index as u8;
+		swapchain.acquire_wait_stages[sequence_index as usize] = vk::PipelineStageFlags2::NONE;
+		let native_image = swapchain.native_images[index as usize];
+		let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
+
+		// The presentation engine hands the image back with undefined contents and no prior GPU work to order against;
+		// recording chains its first barrier to the acquire semaphore instead.
+		self.device.states.insert(
+			super::Handles::Image(native_image),
+			super::TransitionState::new(
+				vk::PipelineStageFlags2::NONE,
+				vk::AccessFlags2::NONE,
+				vk::ImageLayout::UNDEFINED,
+			),
+		);
+
+		(present_key, extent)
+	}
+
+	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
+		let current_frame = self.frame_key.sequence_index;
+		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
+		// Every earlier resize queued its extent for the other copies after resizing this one, so matching copies
+		// mean no resize toward a different extent is still pending.
+		if image_handles
+			.iter()
+			.all(|handle| self.device.images[handle.0 as usize].extent == extent)
+		{
+			return;
+		}
+		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
+
+		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
+		self.device.resize_image_internal(handle, extent, current_frame);
+
+		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
+		if image_handles.len() > 1 {
+			self.device
+				.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
+		}
+	}
+
+	fn create_command_buffer_recording<'record>(
+		&'record mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, true)
+	}
+
+	fn create_command_buffer_recording_without_implicit_sync<'record>(
+		&'record mut self,
+		command_buffer_handle: crate::CommandBufferHandle,
+	) -> Self::CBR<'record> {
+		self.create_command_buffer_recording_internal(command_buffer_handle, false)
+	}
+
+	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::DynamicBufferHandle<T>) -> &mut T {
+		let buffers = &self.device.buffers;
+		let handle = buffers
+			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
+			.unwrap();
+		let buffer = buffers.resource(handle);
+
+		let (pointer, byte_count) = if super::buffer::PERSISTENT_WRITE
+			&& let Some(source_handle) = buffer.source
+		{
+			// The persistent source receives user writes. Frame recording copies it to the current staging buffer.
+			let source_buffer = buffers.resource(source_handle);
+			(source_buffer.pointer.0, source_buffer.size)
+		} else if let Some(staging_handle) = buffer.staging {
+			self.device.pending_buffer_syncs.insert(handle);
+			let staging_buffer = buffers.resource(staging_handle);
+			(staging_buffer.pointer.0, staging_buffer.size)
+		} else {
+			(buffer.pointer.0, buffer.size)
+		};
+		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
+			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
+		);
+		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
+		unsafe { &mut *pointer }
+	}
+}
+
+impl<'a> crate::context::ContextCreate for Frame<'a> {
+	crate::context::delegate_context_create_to_device!();
 }
 
 impl Context {

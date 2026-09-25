@@ -2866,6 +2866,36 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 }
 
 #[test]
+fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			values: u32[4],
+			logarithm: f32,
+		}
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+		main: fn () -> void {
+			let empty: u32 = 0;
+			let top: u32 = 1;
+			top = top << 31;
+			result.values[0] = find_lsb(empty);
+			result.values[1] = find_lsb(top);
+			result.values[2] = find_lsb(40);
+			result.values[3] = find_lsb(1);
+			result.logarithm = log2(8.0);
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(43));
+	run_with_buffer(&executable, ResourceSlot::new(43), &mut result);
+
+	assert_eq!(read_u32s(&result, 4), [u32::MAX, 31, 3, 0]);
+	assert_eq!(result.read_f32("logarithm").expect("scalar log2 result"), 3.0);
+}
+
+#[test]
 fn compute_subgroup_collectives_partition_two_subgroups_and_preserve_masks() {
 	let executable = compile_test_program(
 		r#"

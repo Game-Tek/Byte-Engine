@@ -218,6 +218,39 @@ mod tests {
 		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
 	}
 
+	/// Verifies bit-scan and scalar logarithm intrinsics compile with the real platform shader compiler.
+	#[compio::test]
+	async fn find_lsb_and_scalar_log2_compile_for_the_platform() {
+		let root = besl::compile_to_besl(
+			r#"
+			Result: struct {
+				values: u32[4],
+				logarithm: f32,
+			}
+			result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+			main: fn () -> void {
+				let empty: u32 = 0;
+				let top: u32 = 1;
+				top = top << 31;
+				result.values[0] = find_lsb(empty);
+				result.values[1] = find_lsb(top);
+				result.values[2] = find_lsb(40);
+				result.values[3] = find_lsb(1);
+				result.logarithm = log2(8.0);
+			}
+			"#,
+			None,
+		)
+		.expect("Expected the find_lsb fixture to link");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("find_lsb".to_string());
+
+		Generator::new()
+			.generate(&settings, &root)
+			.await
+			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
+	}
+
 	#[cfg(target_os = "linux")]
 	#[compio::test]
 	async fn generate_uses_current_platform_compiler() {

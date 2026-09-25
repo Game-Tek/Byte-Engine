@@ -543,6 +543,17 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
+			"find_lsb" => {
+				require_argument_count(arguments, 1)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::UnaryScalar {
+					register,
+					operator: ScalarUnaryOperator::FindLsb,
+					value,
+				});
+				Ok(register)
+			}
 			"sincos" => {
 				require_argument_count(arguments, 1)?;
 				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;

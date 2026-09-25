@@ -109,6 +109,7 @@ impl RasterStageContext {
 pub(crate) struct IntrinsicRequirements {
 	pub(crate) uses_atomic_compare_exchange: bool,
 	pub(crate) uses_sincos: bool,
+	pub(crate) uses_find_lsb: bool,
 	pub(crate) uses_subgroup_intrinsics: bool,
 	pub(crate) uses_simd_lane_id: bool,
 	pub(crate) uses_downsample_min: bool,
@@ -239,6 +240,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			match name {
 				"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
 				"sincos" => requirements.uses_sincos = true,
+				"find_lsb" => requirements.uses_find_lsb = true,
 				"subgroup_lane_index" => {
 					requirements.uses_subgroup_intrinsics = true;
 					requirements.uses_simd_lane_id = true;

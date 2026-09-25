@@ -5,7 +5,7 @@
 
 use math::{AffineShaderMatrix, ShaderMatrix};
 
-use super::layout::{MAX_LIGHTS, MAX_MATERIAL_TEXTURES, RuntimeUnitVector};
+use super::layout::{LIGHT_CLUSTER_SLICES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, RuntimeUnitVector};
 use crate::rendering::View;
 
 /// The `ShaderMesh` struct is one entry of the per-frame instance table read by culling, rasterization, and material evaluation.
@@ -97,6 +97,9 @@ pub(crate) struct IesProfileTexture {
 /// `color` stores RGB illuminance in lux for directional lights and RGB luminous intensity in candela for local
 /// lights. IES-backed local lights resolve their calibrated candela scale into `color` on the CPU, so the shader
 /// only samples a normalized profile when `ies_profile_texture` is not [`NO_IES_PROFILE_TEXTURE`].
+///
+/// `reach` is how far a local light visibly lights at an exposure of one. The light-cluster pass scales it by the
+/// square root of the frame's exposure and buckets the light into every cluster within that distance.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightData {
@@ -109,7 +112,8 @@ pub struct LightData {
 	pub shadow_layer: u32,
 	pub(crate) ies_profile_texture: u32,
 	pub(crate) ies_c0_tangent: RuntimeUnitVector,
-	pub(crate) _ies_padding: [u32; 2],
+	pub(crate) reach: f32,
+	pub(crate) _padding: u32,
 }
 
 impl Default for LightData {
@@ -124,14 +128,17 @@ impl Default for LightData {
 			shadow_layer: 0,
 			ies_profile_texture: NO_IES_PROFILE_TEXTURE,
 			ies_c0_tangent: NEUTRAL_UNIT_VECTOR,
-			_ies_padding: [0; 2],
+			reach: 0.0,
+			_padding: 0,
 		}
 	}
 }
 
 /// The `LightingData` struct is the complete light table and per-frame lighting scales uploaded once per frame.
+///
+/// Only the first `count` lights are current; shaders never read past them.
 #[repr(C)]
-#[derive(Copy, Clone, Default, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LightingData {
 	pub count: u32,
 	/// The camera exposure as a linear factor. Material evaluation multiplies the light it writes by it, so scenes lit
@@ -141,6 +148,35 @@ pub struct LightingData {
 	pub environment_intensity: f32,
 	pub(crate) _padding: u32,
 	pub lights: [LightData; MAX_LIGHTS],
+}
+
+/// The `LightClusterParameters` struct describes how one sink's view frustum splits into light clusters.
+///
+/// [`super::render_pass::LightClusterPass`] uploads it once per frame. The light-cluster pass reads it to bound each
+/// cluster, and material evaluation reads it to find the cluster of the pixel it shades.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct LightClusterParameters {
+	/// Maps world space to the view space the clusters are laid out in, where depth grows along +Z.
+	pub(crate) view: AffineShaderMatrix,
+	/// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
+	pub(crate) edge_slopes: [f32; 2],
+	pub(crate) near: f32,
+	/// Depth slices per doubling of view depth. A pixel at depth `z` lies in slice `floor(log2(z / near) * scale)`.
+	pub(crate) depth_slice_scale: f32,
+}
+
+impl From<View> for LightClusterParameters {
+	fn from(view: View) -> Self {
+		let projection = view.projection();
+		Self {
+			view: view.view().into(),
+			edge_slopes: [1.0 / projection[0], 1.0 / projection[5]],
+			near: view.near(),
+			// Slices split the whole clip range, so the last slice ends at the far plane.
+			depth_slice_scale: LIGHT_CLUSTER_SLICES as f32 / (view.far() / view.near()).log2(),
+		}
+	}
 }
 
 /// The `MaterialData` struct is one entry of the material table: bindless texture slots plus coverage controls.
@@ -233,15 +269,20 @@ const _: () = assert!(std::mem::offset_of!(LightData, shadow_views) == 60);
 const _: () = assert!(std::mem::offset_of!(LightData, shadow_layer) == 92);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_profile_texture) == 96);
 const _: () = assert!(std::mem::offset_of!(LightData, ies_c0_tangent) == 100);
-const _: () = assert!(std::mem::offset_of!(LightData, _ies_padding) == 104);
+const _: () = assert!(std::mem::offset_of!(LightData, reach) == 104);
 
-const _: () = assert!(std::mem::size_of::<LightingData>() == 1808);
+const _: () = assert!(std::mem::size_of::<LightingData>() == 16 + 112 * MAX_LIGHTS);
 const _: () = assert!(std::mem::align_of::<LightingData>() == 16);
 const _: () = assert!(std::mem::offset_of!(LightingData, count) == 0);
 const _: () = assert!(std::mem::offset_of!(LightingData, exposure) == 4);
 const _: () = assert!(std::mem::offset_of!(LightingData, environment_intensity) == 8);
 const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 12);
 const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 16);
+
+const _: () = assert!(std::mem::size_of::<LightClusterParameters>() == 64);
+const _: () = assert!(std::mem::offset_of!(LightClusterParameters, edge_slopes) == 48);
+const _: () = assert!(std::mem::offset_of!(LightClusterParameters, near) == 56);
+const _: () = assert!(std::mem::offset_of!(LightClusterParameters, depth_slice_scale) == 60);
 
 const _: () = assert!(std::mem::size_of::<ReflectionShaderParameters>() == 80);
 const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, previous_exposure) == 64);

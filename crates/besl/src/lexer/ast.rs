@@ -475,6 +475,9 @@ impl Node {
 				vec3f32.clone(),
 			),
 			builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("log2", vec![("value", f32_t.clone())], f32_t.clone()),
+			// Returns the index of the lowest set bit, or 0xFFFFFFFF when no bit is set.
+			builtin_intrinsic("find_lsb", vec![("value", u32_t.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"pow",
 				vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],

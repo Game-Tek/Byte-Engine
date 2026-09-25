@@ -21,7 +21,7 @@ you use it.
 | `min` | `min(f16, f16) -> f16`; `min(f32, f32) -> f32` | Returns the smaller argument. |
 | `max` | `max(f16, f16) -> f16`; `max(f32, f32) -> f32`; `max(vec2f, vec2f) -> vec2f`; `max(vec3f, vec3f) -> vec3f` | Returns the component-wise larger argument. |
 | `clamp` | `clamp(f16, f16, f16) -> f16`; `clamp(f32, f32, f32) -> f32`; `clamp(vec3f, vec3f, vec3f) -> vec3f` | Limits the first argument to the inclusive minimum and maximum. |
-| `log2` | `log2(vec3f) -> vec3f` | Returns the component-wise base-2 logarithm. |
+| `log2` | `log2(f32) -> f32`; `log2(vec3f) -> vec3f` | Returns the component-wise base-2 logarithm. |
 | `pow` | `pow(f16, f16) -> f16`; `pow(f32, f32) -> f32`; `pow(vec3f, vec3f) -> vec3f` | Raises each value to its matching exponent. |
 | `abs` | `abs(f16) -> f16`; `abs(f32) -> f32`; `abs(vec2f16) -> vec2f16`; `abs(vec2f) -> vec2f` | Returns the absolute value. |
 | `sqrt` | `sqrt(f16) -> f16`; `sqrt(f32) -> f32` | Returns the square root. |
@@ -51,6 +51,7 @@ you use it.
 | `length` | `length(vec3f) -> f32`; `length(vec4f) -> f32`; `length(vec2f16) -> f16`; `length(vec3f16) -> f16`; `length(vec4f16) -> f16` | Returns the vector magnitude. |
 | `normalize` | `normalize(vec3f) -> vec3f`; `normalize(vec4f) -> vec4f`; `normalize(vec2f16) -> vec2f16`; `normalize(vec3f16) -> vec3f16`; `normalize(vec4f16) -> vec4f16` | Returns a unit-length vector in the same direction. |
 | `reflect` | `reflect(vec4f incident, vec4f normal) -> vec4f` | Reflects the incident vector around the normal. |
+| `find_lsb` | `find_lsb(u32) -> u32` | Returns the index of the lowest set bit, or `0xFFFFFFFF` when no bit is set. Use it to visit the set bits of a mask: read the lowest index, then clear that bit with `value & (value - 1)`. |
 
 ### Constructors and casts
 

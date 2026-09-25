@@ -1,0 +1,140 @@
+// Buckets the light table into the clusters of one sink's view frustum, so material evaluation only visits the
+// lights that can reach a pixel. The frustum splits into 16 columns, 8 rows, and 24 depth slices that grow
+// exponentially with depth. Each cluster stores one bit per light. One workgroup fills one cluster, and each of its
+// 32 threads tests 32 lights and writes one mask word, so no two threads write the same word.
+Light: struct {
+	position: vec4f,
+	color: vec4f,
+	direction: vec4f,
+	cone_cosines: vec2f,
+	type: u32,
+	// This pass never reads shadow assignments. Eight scalars hold the bytes of the `u32[8]` that material evaluation
+	// declares, at the same offsets on every backend.
+	_shadow_view_0: u32,
+	_shadow_view_1: u32,
+	_shadow_view_2: u32,
+	_shadow_view_3: u32,
+	_shadow_view_4: u32,
+	_shadow_view_5: u32,
+	_shadow_view_6: u32,
+	_shadow_view_7: u32,
+	shadow_layer: u32,
+	ies_profile_texture: u32,
+	ies_c0_tangent: vec2u16,
+	reach: f32,
+	_padding: u32,
+}
+
+LightingBuffer: struct {
+	light_count: u32,
+	exposure: f32,
+	environment_intensity: f32,
+	_light_count_padding: u32,
+	lights: Light[1024],
+}
+
+LightClusterParameters: struct {
+	// Maps world space to the view space the clusters are laid out in, where depth grows along +Z.
+	view: mat4x3f,
+	// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
+	edge_slopes: vec2f,
+	near: f32,
+	// Depth slices per doubling of view depth.
+	depth_slice_scale: f32,
+}
+
+LightClusterMasks: struct {
+	words: u32[98304],
+}
+
+lighting_data: descriptor<{ type: LightingBuffer, binding: 0, access: read, memory: device }>;
+light_cluster_parameters: descriptor<{ type: LightClusterParameters, binding: 1, access: read }>;
+light_cluster_masks: descriptor<{ type: LightClusterMasks, binding: 1033, access: write, memory: device }>;
+
+LIGHT_CLUSTER_COLUMNS: const u32 = 16;
+LIGHT_CLUSTER_ROWS: const u32 = 8;
+LIGHT_CLUSTER_MASK_WORDS: const u32 = 32;
+DIRECTIONAL_LIGHT: const u32 = 68;
+CONE_LIGHT: const u32 = 1;
+
+// Returns the squared distance from a point to an axis-aligned box, which is zero inside the box.
+squared_distance_to_box: fn (point: vec3f, box_min: vec3f, box_max: vec3f) -> f32 {
+	let x: f32 = max(box_min.x - point.x, 0.0) + max(point.x - box_max.x, 0.0);
+	let y: f32 = max(box_min.y - point.y, 0.0) + max(point.y - box_max.y, 0.0);
+	let z: f32 = max(box_min.z - point.z, 0.0) + max(point.z - box_max.z, 0.0);
+	return x * x + y * y + z * z;
+}
+
+main: fn (input: StageInput) -> void {
+	let cluster: u32 = threadgroup_position();
+	let word: u32 = input.thread_idx;
+	let column: u32 = cluster % LIGHT_CLUSTER_COLUMNS;
+	let row: u32 = (cluster / LIGHT_CLUSTER_COLUMNS) % LIGHT_CLUSTER_ROWS;
+	let slice: u32 = cluster / (LIGHT_CLUSTER_COLUMNS * LIGHT_CLUSTER_ROWS);
+
+	// The cluster's view-space bounds. Depth slice s spans near * 2^(s / scale) to near * 2^((s + 1) / scale).
+	let near: f32 = light_cluster_parameters.near;
+	let slice_scale: f32 = light_cluster_parameters.depth_slice_scale;
+	let near_depth: f32 = near * pow(2.0, f32(slice) / slice_scale);
+	let far_depth: f32 = near * pow(2.0, f32(slice + 1) / slice_scale);
+	// Column 0 starts at the left edge of the image, and row 0 starts at the top edge.
+	let left_slope: f32 = (f32(column) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_cluster_parameters.edge_slopes.x;
+	let right_slope: f32 = (f32(column + 1) * 2.0 / f32(LIGHT_CLUSTER_COLUMNS) - 1.0) * light_cluster_parameters.edge_slopes.x;
+	let top_slope: f32 = (1.0 - f32(row) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_cluster_parameters.edge_slopes.y;
+	let bottom_slope: f32 = (1.0 - f32(row + 1) * 2.0 / f32(LIGHT_CLUSTER_ROWS)) * light_cluster_parameters.edge_slopes.y;
+	// Each edge's position is its slope times depth, so the extreme is at the near or the far end of the slice.
+	let box_min: vec3f = vec3f(
+		min(left_slope * near_depth, left_slope * far_depth),
+		min(bottom_slope * near_depth, bottom_slope * far_depth),
+		near_depth
+	);
+	let box_max: vec3f = vec3f(
+		max(right_slope * near_depth, right_slope * far_depth),
+		max(top_slope * near_depth, top_slope * far_depth),
+		far_depth
+	);
+
+	// A reach is measured at an exposure of one. Exposed illuminance falls with the square of distance, so the
+	// reach at this frame's exposure scales with its square root.
+	let reach_scale: f32 = sqrt(max(lighting_data.exposure, 0.0));
+	let light_count: u32 = lighting_data.light_count;
+	let first_light: u32 = word * 32;
+	let one: u32 = 1;
+	let mask: u32 = 0;
+	for (let bit: u32 = 0; bit < 32 && first_light + bit < light_count; bit = bit + 1) {
+		let light_index: u32 = first_light + bit;
+		let light_type: u32 = lighting_data.lights[light_index].type;
+		// Directional lights reach every cluster.
+		if (light_type == DIRECTIONAL_LIGHT) {
+			mask = mask | (one << bit);
+			continue;
+		}
+		let radius: f32 = lighting_data.lights[light_index].reach * reach_scale;
+		if (radius > 0.0) {
+			let center: vec3f = vec3f(
+				lighting_data.lights[light_index].position.x,
+				lighting_data.lights[light_index].position.y,
+				lighting_data.lights[light_index].position.z
+			);
+			// A narrow cone fits in the sphere through its apex and the rim of its cap. Past a 45 degree half angle
+			// that sphere grows larger than the ball around the apex, so wide cones keep the ball.
+			if (light_type == CONE_LIGHT) {
+				let outer_cosine: f32 = lighting_data.lights[light_index].cone_cosines.y;
+				let squared_cosine: f32 = outer_cosine * outer_cosine;
+				if (outer_cosine > 0.0 && squared_cosine > 0.5) {
+					radius = radius / (2.0 * squared_cosine);
+					center = center + vec3f(
+						lighting_data.lights[light_index].direction.x,
+						lighting_data.lights[light_index].direction.y,
+						lighting_data.lights[light_index].direction.z
+					) * radius;
+				}
+			}
+			let view_center: vec3f = light_cluster_parameters.view * vec4f(center.x, center.y, center.z, 1.0);
+			if (squared_distance_to_box(view_center, box_min, box_max) <= radius * radius) {
+				mask = mask | (one << bit);
+			}
+		}
+	}
+	light_cluster_masks.words[cluster * LIGHT_CLUSTER_MASK_WORDS + word] = mask;
+}

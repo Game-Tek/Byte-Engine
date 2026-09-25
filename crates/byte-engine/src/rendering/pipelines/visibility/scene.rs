@@ -195,12 +195,12 @@ impl VisibilityScene {
 			);
 		}
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
-		// Rewrite the complete record so recycled frame sequences cannot retain stale counts, lights, or padding.
-		*lighting_data = LightingData {
-			exposure,
-			environment_intensity,
-			..LightingData::default()
-		};
+		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
+		// light. Entries past the count are never read, so they are left as they are.
+		lighting_data.count = 0;
+		lighting_data.exposure = exposure;
+		lighting_data.environment_intensity = environment_intensity;
+		lighting_data._padding = 0;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
 			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), resolve_ies_profile(light));
 			lighting_data.count = index as u32 + 1;
@@ -209,8 +209,20 @@ impl VisibilityScene {
 	}
 }
 
+/// The exposed illuminance below which a local light stops lighting a cluster.
+///
+/// A white diffuse surface lit by this much reflects about `1 / (1024 π)` of display white, which stays near the
+/// smallest step an 8-bit display shows. Lights keep their inverse-square falloff, so leaving a light out past its
+/// reach does not visibly change the image.
+pub(crate) const LIGHT_REACH_THRESHOLD_LUX: f32 = 1.0 / 1024.0;
+
 /// Builds one GPU light record from a scene light, its retained transform, and its shadow assignment.
-fn light_data(light: &Lights, transform: &Transform, shadow: LightShadow, ies_texture: Option<IesProfileTexture>) -> LightData {
+pub(super) fn light_data(
+	light: &Lights,
+	transform: &Transform,
+	shadow: LightShadow,
+	ies_texture: Option<IesProfileTexture>,
+) -> LightData {
 	let (shadow_views, shadow_layer) = match shadow {
 		LightShadow::None => ([0; 8], 0),
 		LightShadow::Directional => (
@@ -266,8 +278,18 @@ fn light_data(light: &Lights, transform: &Transform, shadow: LightShadow, ies_te
 		shadow_layer,
 		ies_profile_texture,
 		ies_c0_tangent,
-		_ies_padding: [0; 2],
+		reach: light_reach(color),
+		_padding: 0,
 	}
+}
+
+/// Returns how far a local light with peak RGB intensity `color`, in candela, lights at an exposure of one.
+///
+/// The brightest channel sets the reach, so a saturated light keeps its full reach. A light with unusable
+/// intensity gets no reach and lights nothing.
+fn light_reach(color: ShaderVec3) -> f32 {
+	let reach = (color.x.max(color.y).max(color.z) / LIGHT_REACH_THRESHOLD_LUX).sqrt();
+	if reach.is_finite() { reach } else { 0.0 }
 }
 
 /// Returns the authored IES profile of a local light.
@@ -404,6 +426,15 @@ mod tests {
 		assert_eq!(resident.color, ShaderVec3::from((45.0, 45.0, 45.0)));
 		assert_eq!(resident.ies_profile_texture, 37);
 		assert_eq!(resident.ies_c0_tangent, encoded_tangent);
+	}
+
+	#[test]
+	fn a_light_reaches_where_its_brightest_channel_falls_to_the_threshold() {
+		let reach = light_reach(ShaderVec3::from((100.0, 400.0, 25.0)));
+
+		assert!((400.0 / (reach * reach) - LIGHT_REACH_THRESHOLD_LUX).abs() < 1.0e-9);
+		assert_eq!(light_reach(ShaderVec3::default()), 0.0);
+		assert_eq!(light_reach(ShaderVec3::from((f32::NAN, f32::NAN, f32::NAN))), 0.0);
 	}
 
 	#[test]

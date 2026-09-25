@@ -1046,6 +1046,23 @@ mod tests {
 	}
 
 	#[test]
+	fn find_lsb_lowers_to_a_helper_that_reports_no_bit_for_zero() {
+		let shader = lower_fixture(
+			r#"
+			result: descriptor<{ type: u32, binding: 0, access: read_write }>;
+
+			main: fn () -> void {
+				let bits: u32 = 40;
+				result = find_lsb(bits);
+			}
+			"#,
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
+		assert_string_contains!(shader, "value == 0u ? 0xffffffffu : ctz(value)");
+		assert_string_contains!(shader, "_besl_find_lsb(bits)");
+	}
+
+	#[test]
 	fn subgroup_lane_id_is_forwarded_only_to_helpers_that_use_it() {
 		let root = besl::compile_to_besl(
 			r#"

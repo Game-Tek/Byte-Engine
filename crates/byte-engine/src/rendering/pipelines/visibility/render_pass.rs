@@ -1,5 +1,5 @@
-//! Per-sink GPU work: shadows, visibility rasterization, material prepasses, the linear depth pyramid, contact
-//! shadows, GTAO, SSGI, and material evaluation, which also traces screen-space reflections.
+//! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the linear depth
+//! pyramid, contact shadows, GTAO, SSGI, and material evaluation, which also traces screen-space reflections.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
@@ -7,6 +7,7 @@
 mod contact_shadows;
 mod depth_pyramid;
 mod gtao;
+mod light_clusters;
 mod materials;
 mod reflections;
 mod shadows;
@@ -24,6 +25,7 @@ pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::depth_pyramid::DepthPyramidPass;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
+use self::light_clusters::LightClusterPass;
 use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses};
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
@@ -77,6 +79,7 @@ pub(crate) struct SinkHistory {
 pub(crate) struct VisibilityRenderPass {
 	pipeline_manager: PipelineManagerClient,
 	shadows: ShadowPass,
+	light_clusters: LightClusterPass,
 	visibility: VisibilityPass,
 	material_prepasses: MaterialPrepasses,
 	depth_pyramid: DepthPyramidPass,
@@ -190,6 +193,12 @@ impl VisibilityRenderPass {
 			depth_pyramid.view_data(),
 			targets.ssgi,
 		);
+		let light_clusters = LightClusterPass::new(
+			context,
+			&pipeline_manager,
+			lighting_buffer,
+			material_evaluation_descriptor_set,
+		);
 		let reflections = ScreenSpaceReflections::new(
 			context,
 			material_evaluation_descriptor_set,
@@ -265,6 +274,7 @@ impl VisibilityRenderPass {
 				cone_shadow_map.into(),
 				point_shadow_map.into(),
 			),
+			light_clusters,
 			visibility: VisibilityPass::new(
 				&pipeline_manager,
 				base_descriptor_set,
@@ -336,10 +346,12 @@ impl VisibilityRenderPass {
 		let visibility_pipelines = self.visibility.pipelines(pipeline_manager)?;
 		let prepass_pipelines = self.material_prepasses.pipelines(pipeline_manager)?;
 		let shadows = self.shadows.prepare(frame, pipeline_manager, dispatches, shadow_work)?;
+		let light_cluster_pipeline = self.light_clusters.pipeline(pipeline_manager)?;
 		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
 		let contact_shadow_pipeline = self.contact_shadows.pipeline(pipeline_manager)?;
 		let gtao_pipelines = self.gtao.pipelines(pipeline_manager)?;
 		let ssgi_pipelines = self.ssgi.pipelines(pipeline_manager)?;
+		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
 		let contact_shadows = self
 			.contact_shadows
@@ -372,6 +384,8 @@ impl VisibilityRenderPass {
 					pass.record(c, &render_info.skinning_dispatches, pipeline);
 				}
 				shadows(c, t);
+				// Both material evaluation layers read the clusters, and nothing before them does.
+				light_clusters(c, t);
 
 				// The opaque layer establishes the depth and color retained by every later transparent primitive.
 				visibility.record(

@@ -423,6 +423,12 @@ impl Generator {
 				});
 				string.push(')');
 			}
+			// firstbitlow already returns 0xFFFFFFFF for zero.
+			"find_lsb" => {
+				string.push_str("firstbitlow(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"fract" => {
 				string.push_str("frac(");
 				emit_comma_separated_nodes(string, ShaderFormatting::new(self.minified), arguments, |string, argument| {

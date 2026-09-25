@@ -395,6 +395,12 @@ impl Generator {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			// findLSB returns -1 for zero, which converts to BESL's 0xFFFFFFFF.
+			"find_lsb" => {
+				string.push_str("uint(findLSB(");
+				self.emit_call_arguments(string, arguments);
+				string.push_str("))");
+			}
 			"is_nan" => {
 				string.push_str("isnan(");
 				self.emit_call_arguments(string, arguments);

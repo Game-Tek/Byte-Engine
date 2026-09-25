@@ -604,6 +604,10 @@ impl<A: Allocator + Clone> Generator<A> {
 				 }\n",
 			);
 		}
+		if requirements.uses_find_lsb {
+			// Metal's ctz returns 32 for zero; BESL returns 0xFFFFFFFF like GLSL findLSB and HLSL firstbitlow.
+			msl_block.push_str("inline uint _besl_find_lsb(uint value) { return value == 0u ? 0xffffffffu : ctz(value); }\n");
+		}
 		if requirements.uses_subgroup_intrinsics {
 			// Metal exposes ballot bits through simd_vote; unused high words preserve BESL's fixed 128-bit mask shape.
 			msl_block.push_str(

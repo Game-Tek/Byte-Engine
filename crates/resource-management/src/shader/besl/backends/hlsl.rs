@@ -422,6 +422,27 @@ mod tests {
 	}
 
 	#[test]
+	fn find_lsb_lowers_to_firstbitlow() {
+		let root = besl::compile_to_besl(
+			r#"
+			main: fn () -> void {
+				let bits: u32 = 40;
+				let lowest: u32 = find_lsb(bits);
+				lowest;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected find_lsb fixture source to link");
+		let main = root.get_main().expect("Expected find_lsb fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected find_lsb fixture to lower to HLSL");
+		assert_string_contains!(shader, "firstbitlow(bits)");
+	}
+
+	#[test]
 	fn vec4u16_uses_the_native_eight_byte_hlsl_vector_type() {
 		let main = generator::tests::vec4u16_binding();
 		let shader = Generator::new()

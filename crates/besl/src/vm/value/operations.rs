@@ -717,6 +717,15 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 			};
 			return Ok(Value::U16(*value as u16));
 		}
+		ScalarUnaryOperator::FindLsb => {
+			let Value::U32(value) = value else {
+				return Err(VmError::TypeMismatch {
+					expected: ValueType::U32.name().to_string(),
+					found: value.value_type().name().to_string(),
+				});
+			};
+			return Ok(Value::U32(if *value == 0 { u32::MAX } else { value.trailing_zeros() }));
+		}
 		ScalarUnaryOperator::FromI32ToU32 => {
 			let Value::I32(value) = value else {
 				return Err(VmError::TypeMismatch {
@@ -757,7 +766,8 @@ pub(crate) fn apply_scalar_unary(operator: ScalarUnaryOperator, value: &Value) -
 		| ScalarUnaryOperator::FromU8ToU32
 		| ScalarUnaryOperator::FromU16ToU32
 		| ScalarUnaryOperator::FromU32ToU16
-		| ScalarUnaryOperator::FromI32ToU32 => unreachable!("conversion operators return early"),
+		| ScalarUnaryOperator::FromI32ToU32
+		| ScalarUnaryOperator::FindLsb => unreachable!("integer operators return early"),
 	})
 }
 

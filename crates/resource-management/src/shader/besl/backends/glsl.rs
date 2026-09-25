@@ -237,6 +237,27 @@ mod tests {
 	}
 
 	#[test]
+	fn find_lsb_lowers_to_find_lsb_converted_to_unsigned() {
+		let root = besl::compile_to_besl(
+			r#"
+			main: fn () -> void {
+				let bits: u32 = 40;
+				let lowest: u32 = find_lsb(bits);
+				lowest;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected find_lsb fixture source to link");
+		let main = root.get_main().expect("Expected find_lsb fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected find_lsb fixture to lower to GLSL");
+		assert_string_contains!(shader, "uint(findLSB(bits))");
+	}
+
+	#[test]
 	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
 		let root = besl::compile_to_besl(
 			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",

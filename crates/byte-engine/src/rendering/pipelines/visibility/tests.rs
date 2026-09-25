@@ -1975,3 +1975,172 @@ fn contact_shadows_leave_an_open_floor_lit() {
 		}
 	}
 }
+
+/// Builds the light record the pipeline uploads for `light` at `position`, facing `direction`.
+fn uploaded_light(
+	light: crate::rendering::lights::Lights,
+	position: math::Point,
+	direction: math::UnitVector,
+) -> super::shader_data::LightData {
+	let transform = crate::gameplay::Transform::from_position(position).rotation(math::orientation_from_direction(direction));
+	super::scene::light_data(&light, &transform, super::shadow_selection::LightShadow::None, None)
+}
+
+/// Returns a white local light of 100 cd, which reaches 10 m at an exposure of 1/1024.
+fn light_cluster_fixture_light(cone: bool) -> crate::rendering::lights::Lights {
+	use crate::rendering::lights::{ConeLight, LightColor, Lights, PhotometricIntensity, PointLight};
+
+	let color = LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0));
+	let intensity = PhotometricIntensity::LuminousIntensity {
+		candela: 100.0,
+		reference_distance_m: 1.0,
+	};
+	if cone {
+		Lights::Cone(
+			ConeLight::new(
+				color,
+				intensity,
+				math::Degrees::new(15.0).to_radians(),
+				math::Degrees::new(30.0).to_radians(),
+			)
+			.expect("physical cone light"),
+		)
+	} else {
+		Lights::Point(PointLight::new(color, intensity).expect("physical point light"))
+	}
+}
+
+/// Runs the light-cluster pass for one cluster and returns its first two mask words.
+///
+/// The camera sits at the origin and looks down +Z with a 90 degree field of view and a 0.1 m to 100 m clip range.
+fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, cluster: u32) -> [u32; 2] {
+	let program = asset!("light-clusters.besl");
+	let view = crate::rendering::View::new_perspective(
+		math::Degrees::new(90.0),
+		1.0,
+		0.1,
+		100.0,
+		math::Point::origin(),
+		math::UnitVector::z_axis(),
+	);
+	let parameters = super::shader_data::LightClusterParameters::from(view);
+	let mut cluster_parameters = buffer(&program, ResourceSlot::new(1));
+	for (field, value) in [
+		("view", Value::Mat4x3F(parameters.view.0)),
+		("edge_slopes", Value::Vec2F(parameters.edge_slopes)),
+		("near", Value::F32(parameters.near)),
+		("depth_slice_scale", Value::F32(parameters.depth_slice_scale)),
+	] {
+		cluster_parameters.write(field, value).expect("light cluster parameter");
+	}
+	let mut lighting = buffer(&program, ResourceSlot::new(0));
+	lighting
+		.write("light_count", Value::U32(lights.len() as u32))
+		.expect("light count");
+	lighting.write("exposure", Value::F32(exposure)).expect("exposure");
+	let vec4 = |vector: super::shader_data::ShaderVec3| Value::Vec4F([vector.x, vector.y, vector.z, 0.0]);
+	for (index, light) in lights.iter().enumerate() {
+		for (field, value) in [
+			("position", vec4(light.position)),
+			("color", vec4(light.color)),
+			("direction", vec4(light.direction)),
+			("cone_cosines", Value::Vec2F(light.cone_cosines)),
+			("type", Value::U32(light.light_type)),
+			("reach", Value::F32(light.reach)),
+		] {
+			lighting.write_indexed_field("lights", index, field, value).expect("light field");
+		}
+	}
+	let mut masks = buffer(&program, ResourceSlot::new(1033));
+	let configs: [ExecutionConfig; 32] = std::array::from_fn(|lane| {
+		ExecutionConfig::new(INSTRUCTION_LIMIT)
+			.with_call_depth_limit(128)
+			.with_thread_idx(lane as u32)
+			.with_threadgroup_position(cluster)
+	});
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(ResourceSlot::new(0), &mut lighting);
+	descriptors.bind_buffer(ResourceSlot::new(1), &mut cluster_parameters);
+	descriptors.bind_buffer(ResourceSlot::new(1033), &mut masks);
+	program
+		.run_workgroup(&mut descriptors, &configs)
+		.expect("Failed to run the light-cluster pass in the BESL VM.");
+	drop(descriptors);
+	let base = cluster as usize * super::layout::LIGHT_CLUSTER_MASK_WORDS;
+	[read_u32(&masks, "words", base), read_u32(&masks, "words", base + 1)]
+}
+
+/// Returns the index of the cluster at a column, row, and depth slice.
+fn light_cluster_index(column: u32, row: u32, slice: u32) -> u32 {
+	use super::layout::{LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_ROWS};
+
+	(slice * LIGHT_CLUSTER_ROWS + row) * LIGHT_CLUSTER_COLUMNS + column
+}
+
+/// Verifies each cluster holds exactly the lights whose reach touches it, with one bit per light-table entry.
+#[test]
+fn light_clusters_hold_the_lights_whose_reach_touches_them() {
+	use crate::rendering::lights::{DirectionalLight, LightColor, Lights, PhotometricIntensity};
+	use math::{Point, UnitVector};
+
+	let forward = UnitVector::z_axis();
+	let sun = Lights::Direction(
+		DirectionalLight::new(
+			LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
+			PhotometricIntensity::Illuminance {
+				lux: 100_000.0,
+				measurement_distance_m: 1.0,
+			},
+		)
+		.expect("physical directional light"),
+	);
+	let mut lights = vec![
+		// In front of the camera, 20 m away.
+		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward),
+		// Behind the camera, 20 m away.
+		uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, -20.0), forward),
+		uploaded_light(sun, Point::origin(), -UnitVector::y_axis()),
+		// Cones 5 m behind the camera, facing away from and toward the view.
+		uploaded_light(light_cluster_fixture_light(true), Point::new(0.0, 0.0, -5.0), -forward),
+		uploaded_light(light_cluster_fixture_light(true), Point::new(0.0, 0.0, -5.0), forward),
+	];
+	// Lights without reach fill the rest of the first mask word, so the last light lands in the second word.
+	lights.resize(40, super::shader_data::LightData::default());
+	lights.push(uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward));
+
+	// Slice 18 spans about 17 m to 21 m of view depth, and slice 8 spans 1 m to 1.33 m. Column 8 and row 4 sit just
+	// right of and below the center of the image.
+	let far_cluster = light_cluster_index(8, 4, 18);
+	let near_cluster = light_cluster_index(8, 4, 8);
+	// At this exposure each light reaches 10 m.
+	let dim = 1.0 / 1024.0;
+
+	assert_eq!(run_light_clusters(&lights, dim, far_cluster), [0b101, 1 << 8]);
+	assert_eq!(run_light_clusters(&lights, dim, near_cluster), [0b10100, 0]);
+	// At an exposure of one each light reaches 320 m, so only the cone facing away stays out of the view.
+	assert_eq!(run_light_clusters(&lights, 1.0, far_cluster), [0b10111, 1 << 8]);
+}
+
+/// Verifies the light-cluster pass compiles with the platform shader compiler, past BESL linking.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn light_clusters_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	let root = besl::lex(
+		besl::parse(include_str!(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/assets/rendering/visibility/light-clusters.besl"
+		)))
+		.expect("light-clusters.besl should parse"),
+	)
+	.expect("light-clusters.besl should link");
+	let settings = ShaderGenerationSettings::compute(utils::Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32))
+		.name("light_clusters".to_string());
+
+	PlatformShaderCompiler::new()
+		.generate(&settings, &root)
+		.await
+		.expect("light-clusters.besl should compile for the platform shader language");
+}

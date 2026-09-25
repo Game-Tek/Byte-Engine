@@ -7,7 +7,7 @@
 
 use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
 
-use super::shader_data::{LightingData, MaterialData, ReflectionShaderParameters};
+use super::shader_data::{LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters};
 
 /* Limits */
 
@@ -20,7 +20,8 @@ pub(crate) type ActiveMaterialMask = [u64; MAX_MATERIALS / u64::BITS as usize];
 /// larger scene-wide bindless texture pool.
 pub(crate) const MAX_MATERIAL_TEXTURES: usize = 16;
 pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
-pub(crate) const MAX_LIGHTS: usize = 16;
+/// The size of the scene light table. Light bucketing keeps per-pixel cost proportional to the lights near each pixel.
+pub(crate) const MAX_LIGHTS: usize = 1024;
 pub(crate) const MAX_TRIANGLES: usize = 65536 * 4;
 pub(crate) const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
 pub(crate) const MAX_VERTICES: usize = 65536 * 4;
@@ -36,9 +37,9 @@ pub(crate) const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
 
 pub(crate) const SHADOW_CASCADE_COUNT: usize = 4;
 pub(crate) const SHADOW_MAP_RESOLUTION: u32 = 2048;
-/// The largest local-light shadow pools that fit the visibility light table.
-pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = MAX_LIGHTS;
-pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = MAX_LIGHTS;
+/// The largest local-light shadow pools. Every pooled map has a reserved slot in the `views` buffer.
+pub(crate) const MAX_CONE_SHADOW_POOL_CAPACITY: usize = 16;
+pub(crate) const MAX_POINT_SHADOW_POOL_CAPACITY: usize = 16;
 /// Pool capacities used when an application does not configure them.
 pub(crate) const DEFAULT_CONE_SHADOW_POOL_CAPACITY: usize = 4;
 pub(crate) const DEFAULT_POINT_SHADOW_POOL_CAPACITY: usize = 4;
@@ -53,6 +54,17 @@ pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
 pub(crate) const POINT_SHADOW_FACE_COUNT: usize = 6;
 pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
 pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT;
+
+/* Light clusters */
+
+/// Screen columns, screen rows, and exponential depth slices that split each sink's view frustum into light clusters.
+pub(crate) const LIGHT_CLUSTER_COLUMNS: u32 = 16;
+pub(crate) const LIGHT_CLUSTER_ROWS: u32 = 8;
+pub(crate) const LIGHT_CLUSTER_SLICES: u32 = 24;
+pub(crate) const LIGHT_CLUSTER_COUNT: usize = (LIGHT_CLUSTER_COLUMNS * LIGHT_CLUSTER_ROWS * LIGHT_CLUSTER_SLICES) as usize;
+/// Each cluster stores one bit per light-table entry.
+pub(crate) const LIGHT_CLUSTER_MASK_WORDS: usize = MAX_LIGHTS / u32::BITS as usize;
+pub(crate) const LIGHT_CLUSTER_MASK_WORD_COUNT: usize = LIGHT_CLUSTER_COUNT * LIGHT_CLUSTER_MASK_WORDS;
 
 /* Runtime vertex formats */
 
@@ -164,6 +176,13 @@ pub(crate) const CONE_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1064).texture_view_type(TextureViewTypes::Texture2DArray);
 pub(crate) const POINT_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1065).texture_view_type(TextureViewTypes::TextureCubeArray);
+/// The light clusters material evaluation reads. See [`super::render_pass::LightClusterPass`].
+pub(crate) const LIGHT_CLUSTER_MASKS_BINDING: ShaderResourceDescriptor = buffer(1066, AccessPolicies::READ, 4);
+pub(crate) const LIGHT_CLUSTER_PARAMETERS_BINDING: ShaderResourceDescriptor = buffer(
+	1067,
+	AccessPolicies::READ,
+	std::mem::size_of::<LightClusterParameters>() as u32,
+);
 /// Screen-space reflection inputs. See [`super::render_pass::ScreenSpaceReflections`].
 pub(crate) const REFLECTION_PARAMETERS_BINDING: ShaderResourceDescriptor = buffer(
 	1059,

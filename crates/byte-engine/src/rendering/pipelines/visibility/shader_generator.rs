@@ -19,13 +19,14 @@ use utils::json::{JsonContainerTrait, JsonValueTrait};
 use self::ast::*;
 use self::sources::*;
 use super::layout::{
-	MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
+	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
 	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
 };
 use crate::rendering::common_shader_generator::CommonShaderScope;
 
 // BESL array types are spelled out so the scope stays a plain literal; these guards catch limit changes.
-const LIGHT_ARRAY: &str = "Light[16]";
+const LIGHT_ARRAY: &str = "Light[1024]";
+const LIGHT_CLUSTER_MASK_ARRAY: &str = "u32[98304]";
 const MATERIAL_ARRAY: &str = "Material[1024]";
 const MATERIAL_TEXTURE_ARRAY: &str = "u32[16]";
 const VERTEX_VEC3_ARRAY: &str = "vec3f[262144]";
@@ -37,7 +38,8 @@ const PRIMITIVE_INDEX_ARRAY: &str = "u8[786432]";
 const MESHLET_ARRAY: &str = "Meshlet[4096]";
 const PIXEL_MAPPING_ARRAY: &str = "vec2u16[8294400]";
 const _: () = assert!(
-	MAX_LIGHTS == 16
+	MAX_LIGHTS == 1024
+		&& LIGHT_CLUSTER_MASK_WORD_COUNT == 98304
 		&& MAX_MATERIALS == 1024
 		&& MAX_MATERIAL_TEXTURES == 16
 		&& MAX_VERTICES == 262144
@@ -46,6 +48,11 @@ const _: () = assert!(
 		&& MAX_MESHLETS == 4096
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the visibility shader scope array types when visibility limits change."
+);
+// The material evaluation suffix in `sources` and `light-clusters.besl` spell out the cluster grid.
+const _: () = assert!(
+	LIGHT_CLUSTER_COLUMNS == 16 && LIGHT_CLUSTER_ROWS == 8 && LIGHT_CLUSTER_SLICES == 24,
+	"Update the light cluster grid in the material evaluation suffix and light-clusters.besl when it changes."
 );
 
 /// The `ScopeAccess` struct declares how a generated shader touches the per-sink material dispatch buffers.
@@ -212,7 +219,8 @@ impl VisibilityShaderScope {
 					Node::member("shadow_layer", "u32"),
 					Node::member("ies_profile_texture", "u32"),
 					Node::member("ies_c0_tangent", "vec2u16"),
-					Node::member("_ies_padding", "u32[2]"),
+					Node::member("reach", "f32"),
+					Node::member("_padding", "u32"),
 				],
 			),
 			Node::r#struct(
@@ -307,7 +315,8 @@ impl VisibilityShaderScope {
 		let material_evaluation_bindings = vec![
 			Node::binding("lit_map", Node::image("rgba16f"), 1041, true, true),
 			Node::binding("diffuse_radiance_map", Node::image("rgba16f"), 1057, false, true),
-			Node::constant_buffer_binding(
+			// The light table outgrows constant-buffer limits, so it is a read-only storage buffer.
+			Node::device_buffer_binding(
 				"lighting_data",
 				Node::buffer(
 					"LightingBuffer",
@@ -321,6 +330,28 @@ impl VisibilityShaderScope {
 					],
 				),
 				1045,
+				true,
+				false,
+			),
+			read_buffer(
+				"light_cluster_masks",
+				"LightClusterMasks",
+				"words",
+				LIGHT_CLUSTER_MASK_ARRAY,
+				1066,
+			),
+			Node::constant_buffer_binding(
+				"light_cluster_parameters",
+				Node::buffer(
+					"LightClusterParameters",
+					vec![
+						Node::member("view", "mat4x3f"),
+						Node::member("edge_slopes", "vec2f"),
+						Node::member("near", "f32"),
+						Node::member("depth_slice_scale", "f32"),
+					],
+				),
+				1067,
 				true,
 				false,
 			),

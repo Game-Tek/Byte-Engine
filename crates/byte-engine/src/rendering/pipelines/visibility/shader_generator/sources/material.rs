@@ -362,174 +362,194 @@ material_evaluation_suffix: fn () -> void {
 	let local_shadow_rotation: vec2f16 = vec2f16(0.0, 0.0);
 	let has_local_shadow_rotation: bool = false;
 
-	for (let light_index: u32 = 0; light_index < light_count; light_index = light_index + 1) {
-		let light_type: u32 = lighting_data.lights[light_index].type;
-		let L: vec3f = vec3f(0.0, 0.0, 0.0);
-		let attenuation: f32 = 1.0;
-		let light_position: vec3f = vec3f(
-			lighting_data.lights[light_index].position.x,
-			lighting_data.lights[light_index].position.y,
-			lighting_data.lights[light_index].position.z
-		);
-		if (light_type == 68) {
-			L = vec3f(0.0, 0.0, 0.0) - light_position;
-		}
+	// Visit only the lights the light-cluster pass bucketed into this pixel's cluster: 16 columns, 8 rows, and 24
+	// depth slices that grow exponentially with view depth. Each cluster stores one bit per light.
+	let cluster_column: u32 = u32(min((f32(pixel_coordinates.x) + 0.5) * 16.0 / f32(image_extent.x), 15.0));
+	let cluster_row: u32 = u32(min((f32(pixel_coordinates.y) + 0.5) * 8.0 / f32(image_extent.y), 7.0));
+	let cluster_slice: u32 = u32(clamp(
+		floor(log2(perspective_w / light_cluster_parameters.near) * light_cluster_parameters.depth_slice_scale),
+		0.0,
+		23.0
+	));
+	let cluster_mask_base: u32 = ((cluster_slice * 8 + cluster_row) * 16 + cluster_column) * 32;
+	let cluster_mask_word_count: u32 = (light_count + 31) >> 5;
+
+	for (let mask_word: u32 = 0; mask_word < cluster_mask_word_count; mask_word = mask_word + 1) {
+		// Each pass takes the lowest remaining light and clears its bit, so `continue` moves on to the next light.
+		for (
+			let light_bits: u32 = light_cluster_masks.words[cluster_mask_base + mask_word];
+			light_bits != 0;
+			light_bits = light_bits & (light_bits - 1)
+		) {
+			let light_index: u32 = mask_word * 32 + find_lsb(light_bits);
+			let light_type: u32 = lighting_data.lights[light_index].type;
+			let L: vec3f = vec3f(0.0, 0.0, 0.0);
+			let attenuation: f32 = 1.0;
+			let light_position: vec3f = vec3f(
+				lighting_data.lights[light_index].position.x,
+				lighting_data.lights[light_index].position.y,
+				lighting_data.lights[light_index].position.z
+			);
+			if (light_type == 68) {
+				L = vec3f(0.0, 0.0, 0.0) - light_position;
+			}
+			if (light_type != 68) {
+				let surface_to_light: vec3f = light_position - world_space_vertex_position;
+				let distance_squared: f32 = dot(surface_to_light, surface_to_light);
+				if (distance_squared <= 0.0) {
+					continue;
+				}
+				L = surface_to_light * inversesqrt(distance_squared);
+				attenuation = 1.0 / distance_squared;
+			}
+
+			let L_material: vec3f16 = vec3f16(L);
+			let NdotL: f16 = max(dot(normal, L_material), f16(0.0));
+			if (NdotL <= 0.0) {
+				continue;
+			}
+
+			let occlusion_factor: f16 = 1.0;
+			if (light_type == 68) {
+				let view_space_surface_position: vec3f = views.views[0].view * vec4f(
+					world_space_vertex_position.x,
+					world_space_vertex_position.y,
+					world_space_vertex_position.z,
+					1.0
+				);
+				let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
+				if (shadow_view0 != 0) {
+					let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
+					let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
+					let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
+					occlusion_factor = f16(sample_directional_shadow(
+						depth_shadow_map,
+						shadow_view0,
+						shadow_view1,
+						shadow_view2,
+						shadow_view3,
+						world_space_vertex_position,
+						view_space_surface_position,
+						position_derivative_x,
+						position_derivative_y
+					));
+					// Contact shadows fill gaps smaller than a shadow-map texel. They trace the opaque depth buffer, so a
+					// transparent surface in front of it has none.
+					if (push_constant.blend == 0) {
+						occlusion_factor = occlusion_factor * f16(fetch(contact_shadows, pixel_coordinates).x);
+					}
+					if (occlusion_factor == 0.0) {
+						continue;
+					}
+				}
+				attenuation = 1.0;
+			}
 		if (light_type != 68) {
-			let surface_to_light: vec3f = light_position - world_space_vertex_position;
-			let distance_squared: f32 = dot(surface_to_light, surface_to_light);
-			if (distance_squared <= 0.0) {
-				continue;
-			}
-			L = surface_to_light * inversesqrt(distance_squared);
-			attenuation = 1.0 / distance_squared;
-		}
-
-		let L_material: vec3f16 = vec3f16(L);
-		let NdotL: f16 = max(dot(normal, L_material), f16(0.0));
-		if (NdotL <= 0.0) {
-			continue;
-		}
-
-		let occlusion_factor: f16 = 1.0;
-		if (light_type == 68) {
-			let view_space_surface_position: vec3f = views.views[0].view * vec4f(
-				world_space_vertex_position.x,
-				world_space_vertex_position.y,
-				world_space_vertex_position.z,
-				1.0
-			);
-			let shadow_view0: u32 = lighting_data.lights[light_index].shadow_views[0];
-			if (shadow_view0 != 0) {
-				let shadow_view1: u32 = lighting_data.lights[light_index].shadow_views[1];
-				let shadow_view2: u32 = lighting_data.lights[light_index].shadow_views[2];
-				let shadow_view3: u32 = lighting_data.lights[light_index].shadow_views[3];
-				occlusion_factor = f16(sample_directional_shadow(
-					depth_shadow_map,
-					shadow_view0,
-					shadow_view1,
-					shadow_view2,
-					shadow_view3,
-					world_space_vertex_position,
-					view_space_surface_position,
-					position_derivative_x,
-					position_derivative_y
-				));
-				// Contact shadows fill gaps smaller than a shadow-map texel. They trace the opaque depth buffer, so a
-				// transparent surface in front of it has none.
-				if (push_constant.blend == 0) {
-					occlusion_factor = occlusion_factor * f16(fetch(contact_shadows, pixel_coordinates).x);
+			if (light_type == 0) {
+				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+				if (shadow_view_index != 0) {
+					let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
+					if (has_local_shadow_rotation == false) {
+						local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
+						has_local_shadow_rotation = true;
+					}
+					occlusion_factor = f16(sample_point_shadow(
+						shadow_view_index,
+						shadow_cube_index,
+						local_shadow_rotation,
+						world_space_vertex_position,
+						light_position,
+						position_derivative_x,
+						position_derivative_y
+					));
+					if (occlusion_factor == 0.0) {
+						continue;
+					}
 				}
-				if (occlusion_factor == 0.0) {
+			}
+				if (light_type == 1) {
+				let cone_direction: vec3f16 = vec3f16(
+					lighting_data.lights[light_index].direction.x,
+					lighting_data.lights[light_index].direction.y,
+					lighting_data.lights[light_index].direction.z
+				);
+				let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
+				let cone_factor: f16 = f16(cone_attenuation(
+					f32(cone_cosine),
+					lighting_data.lights[light_index].cone_cosines.x,
+					lighting_data.lights[light_index].cone_cosines.y
+				));
+				if (cone_factor <= 0.0) {
 					continue;
 				}
-			}
-			attenuation = 1.0;
-		}
-	if (light_type != 68) {
-		if (light_type == 0) {
-			let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-			if (shadow_view_index != 0) {
-				let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
-				if (has_local_shadow_rotation == false) {
-					local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-					has_local_shadow_rotation = true;
+				attenuation = attenuation * f32(cone_factor);
+				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+				if (shadow_view_index != 0) {
+					let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+					if (has_local_shadow_rotation == false) {
+						local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
+						has_local_shadow_rotation = true;
+					}
+					occlusion_factor = f16(sample_cone_shadow(
+						cone_shadow_map,
+						shadow_view_index,
+						shadow_layer,
+						local_shadow_rotation,
+						world_space_vertex_position,
+						position_derivative_x,
+						position_derivative_y
+					));
+					if (occlusion_factor == 0.0) {
+						continue;
+					}
 				}
-				occlusion_factor = f16(sample_point_shadow(
-					shadow_view_index,
-					shadow_cube_index,
-					local_shadow_rotation,
-					world_space_vertex_position,
-					light_position,
-					position_derivative_x,
-					position_derivative_y
-				));
-				if (occlusion_factor == 0.0) {
+				}
+			}
+			if (light_type != 68 && lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
+				let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
+				let profile_axis: vec3f = vec3f(
+					lighting_data.lights[light_index].direction.x,
+					lighting_data.lights[light_index].direction.y,
+					lighting_data.lights[light_index].direction.z
+				);
+				let intensity_factor: f32 = sample_ies_profile(
+					lighting_data.lights[light_index].ies_profile_texture,
+					emission_direction,
+					profile_axis,
+					lighting_data.lights[light_index].ies_c0_tangent
+				);
+				if (intensity_factor <= 0.0) {
 					continue;
 				}
+				attenuation = attenuation * intensity_factor;
 			}
-		}
-			if (light_type == 1) {
-			let cone_direction: vec3f16 = vec3f16(
-				lighting_data.lights[light_index].direction.x,
-				lighting_data.lights[light_index].direction.y,
-				lighting_data.lights[light_index].direction.z
-			);
-			let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
-			let cone_factor: f16 = f16(cone_attenuation(
-				f32(cone_cosine),
-				lighting_data.lights[light_index].cone_cosines.x,
-				lighting_data.lights[light_index].cone_cosines.y
-			));
-			if (cone_factor <= 0.0) {
-				continue;
-			}
-			attenuation = attenuation * f32(cone_factor);
-			let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-			if (shadow_view_index != 0) {
-				let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-				if (has_local_shadow_rotation == false) {
-					local_shadow_rotation = compute_shadow_rotation(world_space_vertex_position);
-					has_local_shadow_rotation = true;
-				}
-				occlusion_factor = f16(sample_cone_shadow(
-					cone_shadow_map,
-					shadow_view_index,
-					shadow_layer,
-					local_shadow_rotation,
-					world_space_vertex_position,
-					position_derivative_x,
-					position_derivative_y
-				));
-				if (occlusion_factor == 0.0) {
-					continue;
-				}
-			}
-			}
-		}
-		if (light_type != 68 && lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
-			let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
-			let profile_axis: vec3f = vec3f(
-				lighting_data.lights[light_index].direction.x,
-				lighting_data.lights[light_index].direction.y,
-				lighting_data.lights[light_index].direction.z
-			);
-			let intensity_factor: f32 = sample_ies_profile(
-				lighting_data.lights[light_index].ies_profile_texture,
-				emission_direction,
-				profile_axis,
-				lighting_data.lights[light_index].ies_c0_tangent
-			);
-			if (intensity_factor <= 0.0) {
-				continue;
-			}
-			attenuation = attenuation * intensity_factor;
-		}
 
-		let H: vec3f16 = normalize(V_material + L_material);
-		let half_view_fresnel_base: f16 = clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0));
-		let half_view_fresnel_squared: f16 = half_view_fresnel_base * half_view_fresnel_base;
-		let half_view_fresnel_factor: f16 = half_view_fresnel_squared * half_view_fresnel_squared * half_view_fresnel_base;
-		let F: vec3f16 = F0 + one_minus_f0 * half_view_fresnel_factor;
-		let NdotH: f16 = max(dot(normal, H), f16(0.0));
-		let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
-		let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
-		let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
-		let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
-		let light_fresnel_base: f16 = clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0));
-		let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
-		let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
-		let kD: vec3f16 = one_minus_f0 * (f16(1.0) - light_fresnel_factor)
-			* one_minus_fresnel_n_dot_v
-			* one_minus_metalness;
-		let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
-		let light_color: vec3f = vec3f(
-			lighting_data.lights[light_index].color.x,
-			lighting_data.lights[light_index].color.y,
-			lighting_data.lights[light_index].color.z
-		);
-		let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
-		diffuse = diffuse + vec3f(local_diffuse) * irradiance;
-		specular = specular + vec3f(local_specular) * irradiance;
+			let H: vec3f16 = normalize(V_material + L_material);
+			let half_view_fresnel_base: f16 = clamp(f16(1.0) - max(dot(H, V_material), f16(0.0)), f16(0.0), f16(1.0));
+			let half_view_fresnel_squared: f16 = half_view_fresnel_base * half_view_fresnel_base;
+			let half_view_fresnel_factor: f16 = half_view_fresnel_squared * half_view_fresnel_squared * half_view_fresnel_base;
+			let F: vec3f16 = F0 + one_minus_f0 * half_view_fresnel_factor;
+			let NdotH: f16 = max(dot(normal, H), f16(0.0));
+			let denominator_base: f16 = NdotH * NdotH * (roughness_alpha_squared - 1.0) + 1.0;
+			let NDF: f16 = roughness_alpha_squared / (3.14159265359 * denominator_base * denominator_base);
+			let geometry_light: f16 = NdotL / (NdotL * (1.0 - geometry_k) + geometry_k);
+			let local_specular: vec3f16 = (NDF * geometry_view * geometry_light * F) / (4.0 * NdotV * NdotL + 0.000001);
+			let light_fresnel_base: f16 = clamp(f16(1.0) - NdotL, f16(0.0), f16(1.0));
+			let light_fresnel_squared: f16 = light_fresnel_base * light_fresnel_base;
+			let light_fresnel_factor: f16 = light_fresnel_squared * light_fresnel_squared * light_fresnel_base;
+			let kD: vec3f16 = one_minus_f0 * (f16(1.0) - light_fresnel_factor)
+				* one_minus_fresnel_n_dot_v
+				* one_minus_metalness;
+			let local_diffuse: vec3f16 = kD * albedo_rgb / 3.14159265359;
+			let light_color: vec3f = vec3f(
+				lighting_data.lights[light_index].color.x,
+				lighting_data.lights[light_index].color.y,
+				lighting_data.lights[light_index].color.z
+			);
+			let irradiance: vec3f = light_color * (attenuation * f32(NdotL * occlusion_factor));
+			diffuse = diffuse + vec3f(local_diffuse) * irradiance;
+			specular = specular + vec3f(local_specular) * irradiance;
+		}
 	}
 
 	let incident: vec3f = vec3f(0.0, 0.0, 0.0) - V;

@@ -275,7 +275,6 @@ struct Candidate<'a, T> {
 	index: usize,
 	light: &'a T,
 	transform: &'a Transform,
-	intensity_scale_candela: f32,
 }
 
 // Derived `Copy` would require `T: Copy`, which the light types are not.
@@ -283,6 +282,49 @@ impl<T> Copy for Candidate<'_, T> {}
 impl<T> Clone for Candidate<'_, T> {
 	fn clone(&self) -> Self {
 		*self
+	}
+}
+
+/// The most ranks one sink can reach before its pool fills.
+///
+/// A sink moves past a rank only when that rank's light is already selected, so after `capacity + 1` ranks the pool
+/// holds more lights than it can. Each sink therefore only needs its best `capacity + 1` candidates.
+const MAX_RANKED_CANDIDATES: usize = if MAX_CONE_SHADOW_POOL_CAPACITY > MAX_POINT_SHADOW_POOL_CAPACITY {
+	MAX_CONE_SHADOW_POOL_CAPACITY
+} else {
+	MAX_POINT_SHADOW_POOL_CAPACITY
+} + 1;
+
+/// The `SinkRanking` struct keeps one sink's best shadow candidates of one light kind, so selection ranks every
+/// light once instead of once per pool slot.
+struct SinkRanking<'a, T> {
+	/// Candidates and their projected coverage, best first.
+	candidates: SmallVec<[(f32, Candidate<'a, T>); MAX_RANKED_CANDIDATES]>,
+	capacity: usize,
+}
+
+impl<'a, T> SinkRanking<'a, T> {
+	fn new(pool_capacity: usize) -> Self {
+		Self {
+			candidates: SmallVec::new(),
+			capacity: pool_capacity.min(MAX_RANKED_CANDIDATES - 1) + 1,
+		}
+	}
+
+	/// Inserts a candidate by projected coverage. An earlier scene light stays ahead of a later one with equal coverage.
+	fn insert(&mut self, importance: f32, candidate: Candidate<'a, T>) {
+		let position = self
+			.candidates
+			.iter()
+			.position(|(ranked, _)| importance.total_cmp(ranked).is_gt())
+			.unwrap_or(self.candidates.len());
+		if position >= self.capacity {
+			return;
+		}
+		if self.candidates.len() == self.capacity {
+			self.candidates.pop();
+		}
+		self.candidates.insert(position, (importance, candidate));
 	}
 }
 
@@ -300,9 +342,15 @@ pub(crate) fn select_shadow_lights<'a>(
 	if sinks.is_empty() {
 		return selection;
 	}
-	// The light table bounds each list, so these inline candidates never spill to the heap.
-	let mut cone_candidates = SmallVec::<[Candidate<'a, ConeLight>; MAX_LIGHTS]>::new();
-	let mut point_candidates = SmallVec::<[Candidate<'a, PointLight>; MAX_LIGHTS]>::new();
+	// Four sinks stay inline, matching the recorded-sink list of the pipeline manager.
+	let mut cone_rankings = sinks
+		.iter()
+		.map(|_| SinkRanking::new(cone_pool_capacity))
+		.collect::<SmallVec<[SinkRanking<'a, ConeLight>; 4]>>();
+	let mut point_rankings = sinks
+		.iter()
+		.map(|_| SinkRanking::new(point_pool_capacity))
+		.collect::<SmallVec<[SinkRanking<'a, PointLight>; 4]>>();
 
 	for (index, (light, transform)) in lights.take(MAX_LIGHTS).enumerate() {
 		let scale = intensity_scale_candela(light);
@@ -310,46 +358,46 @@ pub(crate) fn select_shadow_lights<'a>(
 			Lights::Direction(_) if selection.directional.is_none() => {
 				selection.directional = Some((index, math::direction_from_orientation(transform.orientation())));
 			}
-			Lights::Cone(light)
-				if has_brightness(light, scale)
-					&& light.supports_shadow_mapping()
-					&& sinks
-						.iter()
-						.any(|sink| cone_shadow_importance(light, transform, scale, sink).is_some()) =>
-			{
-				cone_candidates.push(Candidate {
-					index,
-					light,
-					transform,
-					intensity_scale_candela: scale,
-				});
+			Lights::Cone(light) if has_brightness(light, scale) && light.supports_shadow_mapping() => {
+				let candidate = Candidate { index, light, transform };
+				if rank(&mut cone_rankings, sinks, candidate, |sink| {
+					cone_shadow_importance(light, transform, scale, sink)
+				}) {
+					selection.eligible_cone_count += 1;
+				}
 			}
-			Lights::Point(light)
-				if has_brightness(light, scale)
-					&& sinks
-						.iter()
-						.any(|sink| point_shadow_importance(light, transform, scale, sink).is_some()) =>
-			{
-				point_candidates.push(Candidate {
-					index,
-					light,
-					transform,
-					intensity_scale_candela: scale,
-				});
+			Lights::Point(light) if has_brightness(light, scale) => {
+				let candidate = Candidate { index, light, transform };
+				if rank(&mut point_rankings, sinks, candidate, |sink| {
+					point_shadow_importance(light, transform, scale, sink)
+				}) {
+					selection.eligible_point_count += 1;
+				}
 			}
 			_ => {}
 		}
 	}
 
-	selection.eligible_cone_count = cone_candidates.len();
-	selection.cones = select_fair(&cone_candidates, sinks, cone_pool_capacity, |candidate, sink| {
-		cone_shadow_importance(candidate.light, candidate.transform, candidate.intensity_scale_candela, sink)
-	});
-	selection.eligible_point_count = point_candidates.len();
-	selection.points = select_fair(&point_candidates, sinks, point_pool_capacity, |candidate, sink| {
-		point_shadow_importance(candidate.light, candidate.transform, candidate.intensity_scale_candela, sink)
-	});
+	selection.cones = select_fair(&cone_rankings, cone_pool_capacity);
+	selection.points = select_fair(&point_rankings, point_pool_capacity);
 	selection
+}
+
+/// Ranks one candidate for every sink that sees it, and returns whether any sink does.
+fn rank<'a, T>(
+	rankings: &mut [SinkRanking<'a, T>],
+	sinks: &[Sink],
+	candidate: Candidate<'a, T>,
+	importance: impl Fn(&Sink) -> Option<f32>,
+) -> bool {
+	let mut visible = false;
+	for (ranking, sink) in rankings.iter_mut().zip(sinks) {
+		if let Some(importance) = importance(sink) {
+			ranking.insert(importance, candidate);
+			visible = true;
+		}
+	}
+	visible
 }
 
 /// Assigns pool slots in sink-priority rounds so no sink can starve another.
@@ -357,20 +405,18 @@ pub(crate) fn select_shadow_lights<'a>(
 /// Advancing all sinks together prevents a sink's changing coverage from displacing another sink's turn. A
 /// partial final round favors earlier sinks.
 fn select_fair<'a, T, const N: usize>(
-	candidates: &[Candidate<'a, T>],
-	sinks: &[Sink],
+	rankings: &[SinkRanking<'a, T>],
 	pool_capacity: usize,
-	importance: impl Fn(&Candidate<T>, &Sink) -> Option<f32>,
 ) -> [Option<(usize, &'a T, &'a Transform)>; N] {
 	let capacity = pool_capacity.min(N);
 	let mut selection = [None; N];
 	let mut selected = 0;
-	for priority in 0..candidates.len() {
-		for sink in sinks {
+	for priority in 0..MAX_RANKED_CANDIDATES {
+		for ranking in rankings {
 			if selected == capacity {
 				return selection;
 			}
-			let Some(candidate) = candidate_at_priority(candidates, sink, priority, &importance) else {
+			let Some((_, candidate)) = ranking.candidates.get(priority) else {
 				continue;
 			};
 			if selection[..selected]
@@ -385,31 +431,6 @@ fn select_fair<'a, T, const N: usize>(
 		}
 	}
 	selection
-}
-
-/// Returns the candidate ranked `priority`-th for one sink by projected coverage, with scene order breaking ties.
-fn candidate_at_priority<'a, T>(
-	candidates: &[Candidate<'a, T>],
-	sink: &Sink,
-	priority: usize,
-	importance: &impl Fn(&Candidate<T>, &Sink) -> Option<f32>,
-) -> Option<Candidate<'a, T>> {
-	let mut taken = [None; MAX_LIGHTS];
-	for rank in 0..=priority {
-		let best = candidates
-			.iter()
-			.filter(|candidate| !taken[..rank].contains(&Some(candidate.index)))
-			.filter_map(|candidate| importance(candidate, sink).map(|importance| (*candidate, importance)))
-			.max_by(|(left, left_importance), (right, right_importance)| {
-				left_importance.total_cmp(right_importance).then(right.index.cmp(&left.index))
-			})?
-			.0;
-		if rank == priority {
-			return Some(best);
-		}
-		taken[rank] = Some(best.index);
-	}
-	None
 }
 
 #[cfg(test)]
@@ -631,6 +652,22 @@ mod tests {
 		let selection = select(&lights, &transforms, &sinks, 4, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
 
 		assert_eq!(cone_indices(&selection), [0, 4, 5, 1]);
+	}
+
+	#[test]
+	fn point_shadow_pool_ranks_every_light_in_a_large_light_table() {
+		// Every light is in view, and coverage falls with distance, so the last light covers the most and the first
+		// light the next most.
+		let lights: Vec<_> = (0..200).map(|_| Lights::Point(point().with_shadow_far(1.0))).collect();
+		let mut transforms: Vec<_> = (0..200)
+			.map(|index| Transform::from_position(Point::new(0.0, 0.0, 3.0 + index as f32 * 0.4)))
+			.collect();
+		transforms[199] = Transform::from_position(Point::new(0.0, 0.0, 2.0));
+
+		let selection = select(&lights, &transforms, &[sink(Point::origin())], 0, 2);
+
+		assert_eq!(point_indices(&selection), [199, 0]);
+		assert_eq!(selection.eligible_point_count, 200);
 	}
 
 	#[test]

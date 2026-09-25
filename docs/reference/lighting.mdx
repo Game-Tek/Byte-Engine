@@ -255,6 +255,19 @@ capacity allows, then continues through each sink's next-ranked light in sink or
 sinks reached before a partial final round fills the pool receive the remaining slots. Other visible
 local lights stay lit but do not cast shadows.
 
+## Understand light reach and limits
+
+The PBR visibility pipeline shades each pixel only with the lights that can reach it, so a scene with many small
+lights costs about as much as the few lights near each surface. Every frame, the renderer splits each camera's view
+into a grid of clusters on the GPU and records which lights reach each cluster.
+
+A point or cone light reaches as far as its exposed illuminance stays above 1/1024 lux. On a white surface, that
+much light shows as about one step of an 8-bit display, so lights keep their inverse-square falloff without a
+visible edge. A brighter light, or a brighter camera exposure, reaches farther. Directional lights reach everything.
+
+A scene can hold up to 1,024 lights. If it holds more, the renderer logs a warning and leaves out the lights past
+that limit.
+
 ## Understand the rendering result
 
 Byte Engine resolves authoring units on the CPU. The GPU receives RGB lux for directional lights

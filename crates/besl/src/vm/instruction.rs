@@ -410,6 +410,8 @@ pub(super) enum ScalarUnaryOperator {
 	InverseSqrt,
 	Log2,
 	Fwidth,
+	/// The index of the lowest set bit of a `u32`, or `u32::MAX` when no bit is set.
+	FindLsb,
 	FromF16ToF32,
 	FromU32ToF32,
 	FromI32ToF32,

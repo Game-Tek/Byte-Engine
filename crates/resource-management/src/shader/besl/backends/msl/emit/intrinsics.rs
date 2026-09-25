@@ -340,6 +340,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_call_arguments(string, arguments);
 				string.push(')');
 			}
+			"find_lsb" => {
+				string.push_str("_besl_find_lsb(");
+				self.emit_call_arguments(string, arguments);
+				string.push(')');
+			}
 			"subgroup_ballot_find_lsb" => {
 				string.push_str("_besl_subgroup_ballot_find_lsb(");
 				self.emit_call_arguments(string, arguments);

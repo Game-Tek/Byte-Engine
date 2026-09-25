@@ -177,30 +177,7 @@ impl Context {
 		previous: Option<ImageHandle>,
 	) -> ImageHandle {
 		let root_handle = ImageHandle(self.images.len() as u64);
-		let root_image = {
-			let image_views = vec![self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None)];
-
-			Image {
-				next: None,
-				size: 0,
-				staging_buffer: None,
-				staging_allocation: None,
-				pointer: None,
-				image: vk_image,
-				full_image_view: vk::ImageView::null(),
-				image_views,
-				extent: Extent::cube(0, 0, 0),
-				access: crate::DeviceAccesses::DeviceOnly,
-				format: to_format(format),
-				format_: format,
-				uses,
-				layers: None,
-				cube_compatible: false,
-				cube_array_compatible: false,
-				mip_levels: 1,
-				owns_image: false,
-			}
-		};
+		let root_image = self.swapchain_image(vk_image, format, uses, image_usage_flags);
 
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(root_handle);
@@ -209,6 +186,38 @@ impl Context {
 		self.images.push(root_image);
 
 		root_handle
+	}
+
+	/// Wraps a presentable image that the swapchain owns, so it is never destroyed through the image list.
+	pub(crate) fn swapchain_image(
+		&self,
+		vk_image: vk::Image,
+		format: crate::Formats,
+		uses: crate::Uses,
+		image_usage_flags: vk::ImageUsageFlags,
+	) -> Image {
+		let image_views = vec![self.create_vulkan_image_view(None, &vk_image, format, image_usage_flags, 1, 0, None)];
+
+		Image {
+			next: None,
+			size: 0,
+			staging_buffer: None,
+			staging_allocation: None,
+			pointer: None,
+			image: vk_image,
+			full_image_view: vk::ImageView::null(),
+			image_views,
+			extent: Extent::cube(0, 0, 0),
+			access: crate::DeviceAccesses::DeviceOnly,
+			format: to_format(format),
+			format_: format,
+			uses,
+			layers: None,
+			cube_compatible: false,
+			cube_array_compatible: false,
+			mip_levels: 1,
+			owns_image: false,
+		}
 	}
 
 	/// Allocates memory from the device.
@@ -697,6 +706,7 @@ impl Context {
 		self.synchronizers.push(Synchronizer {
 			next: None,
 			signaled,
+			armed: signaled,
 			fence: self.create_vulkan_fence(signaled),
 			semaphore: self.create_vulkan_semaphore(name, signaled),
 		});

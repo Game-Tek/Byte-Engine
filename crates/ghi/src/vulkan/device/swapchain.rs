@@ -121,51 +121,16 @@ impl InnerDevice {
 			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
 		};
 
-		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(vk_present_mode);
-
-		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
-			.push(&mut vk_surface_present_mode)
-			.surface(vk_surface);
-
-		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
-
-		let mut vk_surface_present_mode_compatibility =
-			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
-
-		let mut vk_surface_capabilities =
-			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
-
-		unsafe {
-			self.surface_capabilities
-				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
-				.expect("No surface capabilities")
-		};
-
-		let vk_surface_capabilities = vk_surface_capabilities.surface_capabilities;
+		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
 
 		let min_image_count = vk_surface_capabilities.min_image_count;
-		let max_image_count = vk_surface_capabilities.max_image_count;
 
-		let extent = if vk_surface_capabilities.current_extent.width != u32::MAX
-			&& vk_surface_capabilities.current_extent.height != u32::MAX
-		{
-			vk_surface_capabilities.current_extent
-		} else {
+		let extent = Self::swapchain_extent(
+			&vk_surface_capabilities,
 			vk::Extent2D::default()
 				.width(fallback_extent.width())
-				.height(fallback_extent.height())
-		};
-
-		let presentation_modes = [vk_present_mode];
-
-		let mut present_modes_create_info =
-			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
-
-		let requested_image_count = if max_image_count != 0 {
-			max_image_count.max(min_image_count)
-		} else {
-			(min_image_count * 2).min(MAX_SWAPCHAIN_IMAGES as u32)
-		};
+				.height(fallback_extent.height()),
+		);
 
 		let format = crate::Formats::BGRAsRGB;
 		let proxy_format = crate::Formats::BGRAu8;
@@ -190,27 +155,14 @@ impl InnerDevice {
 			requested_image_usage
 		};
 
-		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-			.push(&mut present_modes_create_info)
-			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
-			.surface(vk_surface)
-			.min_image_count(requested_image_count)
-			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
-			.image_format(vk::Format::B8G8R8A8_SRGB)
-			.image_extent(extent)
-			.image_usage(native_image_usage)
-			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-			.pre_transform(vk_surface_capabilities.current_transform)
-			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-			.present_mode(vk_present_mode)
-			.image_array_layers(1)
-			.clipped(true);
-
-		let vk_swapchain = unsafe {
-			self.swapchain
-				.create_swapchain(&swapchain_create_info, None)
-				.expect("No swapchain")
-		};
+		let vk_swapchain = self.create_vulkan_swapchain(
+			vk_surface,
+			vk_present_mode,
+			&vk_surface_capabilities,
+			extent,
+			native_image_usage,
+			vk::SwapchainKHR::null(),
+		);
 		(
 			vk_surface,
 			vk_present_mode,
@@ -223,6 +175,100 @@ impl InnerDevice {
 			native_image_usage,
 			vk_swapchain,
 		)
+	}
+
+	pub(crate) fn query_swapchain_surface_capabilities(
+		&self,
+		surface: vk::SurfaceKHR,
+		present_mode: vk::PresentModeKHR,
+	) -> vk::SurfaceCapabilitiesKHR {
+		let mut vk_surface_present_mode = vk::SurfacePresentModeEXT::default().present_mode(present_mode);
+
+		let vk_surface_info = vk::PhysicalDeviceSurfaceInfo2KHR::default()
+			.push(&mut vk_surface_present_mode)
+			.surface(surface);
+
+		let mut vk_presentation_modes = [vk::PresentModeKHR::default(); 8];
+
+		let mut vk_surface_present_mode_compatibility =
+			vk::SurfacePresentModeCompatibilityEXT::default().present_modes(&mut vk_presentation_modes);
+
+		let mut vk_surface_capabilities =
+			vk::SurfaceCapabilities2KHR::default().push(&mut vk_surface_present_mode_compatibility);
+
+		unsafe {
+			self.surface_capabilities
+				.get_physical_device_surface_capabilities2(self.physical_device, &vk_surface_info, &mut vk_surface_capabilities)
+				.expect("Failed to query Vulkan surface capabilities. The most likely cause is that the window surface was lost.")
+		};
+
+		vk_surface_capabilities.surface_capabilities
+	}
+
+	/// Uses the surface's current extent, or the clamped fallback when the platform lets the swapchain choose.
+	pub(crate) fn swapchain_extent(capabilities: &vk::SurfaceCapabilitiesKHR, fallback: vk::Extent2D) -> vk::Extent2D {
+		if capabilities.current_extent.width != u32::MAX && capabilities.current_extent.height != u32::MAX {
+			return capabilities.current_extent;
+		}
+
+		vk::Extent2D::default()
+			.width(fallback.width.clamp(
+				capabilities.min_image_extent.width,
+				capabilities.max_image_extent.width.max(capabilities.min_image_extent.width),
+			))
+			.height(fallback.height.clamp(
+				capabilities.min_image_extent.height,
+				capabilities.max_image_extent.height.max(capabilities.min_image_extent.height),
+			))
+	}
+
+	/// Creates a swapchain, retiring `old_swapchain` so in-flight presentation can finish during recreation.
+	pub(crate) fn create_vulkan_swapchain(
+		&self,
+		surface: vk::SurfaceKHR,
+		present_mode: vk::PresentModeKHR,
+		capabilities: &vk::SurfaceCapabilitiesKHR,
+		extent: vk::Extent2D,
+		image_usage: vk::ImageUsageFlags,
+		old_swapchain: vk::SwapchainKHR,
+	) -> vk::SwapchainKHR {
+		let presentation_modes = [present_mode];
+
+		let mut present_modes_create_info =
+			vk::SwapchainPresentModesCreateInfoEXT::default().present_modes(&presentation_modes);
+
+		let requested_image_count = if capabilities.max_image_count != 0 {
+			capabilities.max_image_count.max(capabilities.min_image_count)
+		} else {
+			capabilities.min_image_count * 2
+		};
+		// Per-image state lives in fixed arrays, so never ask for more images than they hold.
+		let requested_image_count = requested_image_count
+			.min(MAX_SWAPCHAIN_IMAGES as u32)
+			.max(capabilities.min_image_count);
+
+		let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+			.push(&mut present_modes_create_info)
+			.flags(vk::SwapchainCreateFlagsKHR::DEFERRED_MEMORY_ALLOCATION_EXT)
+			.surface(surface)
+			.min_image_count(requested_image_count)
+			.image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+			.image_format(vk::Format::B8G8R8A8_SRGB)
+			.image_extent(extent)
+			.image_usage(image_usage)
+			.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+			.pre_transform(capabilities.current_transform)
+			.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+			.present_mode(present_mode)
+			.image_array_layers(1)
+			.clipped(true)
+			.old_swapchain(old_swapchain);
+
+		unsafe {
+			self.swapchain.create_swapchain(&swapchain_create_info, None).expect(
+				"Failed to create a Vulkan swapchain. The most likely cause is that the surface was lost or its extent is zero.",
+			)
+		}
 	}
 
 	fn swapchain_needs_proxy(

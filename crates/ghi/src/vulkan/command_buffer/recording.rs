@@ -450,27 +450,38 @@ impl CommandBufferRecording<'_> {
 		for consumption in consumptions {
 			let source_state = states.get(&consumption.handle).copied();
 			let mut transition_state = TransitionState::new(consumption.stages, consumption.access, consumption.layout);
+			let mut recorded_state = transition_state;
+			let mut read_after_read = false;
 
 			if let Some(source_state) = source_state {
 				transition_state = transition_state.inherit_last_write_from(source_state);
+				recorded_state = transition_state;
 
-				let read_after_read = !TransitionState::access_includes_write(source_state.access)
-					&& !TransitionState::access_includes_write(transition_state.access)
-					&& source_state.layout == transition_state.layout;
+				// Buffers have no layout, and their read-after-read coverage is decided per tracked range below.
+				let is_buffer = matches!(consumption.handle, Handles::Buffer(_));
+				read_after_read =
+					source_state.reads_only(transition_state) && (is_buffer || source_state.layout == transition_state.layout);
 				if read_after_read {
-					transition_state.stage |= source_state.stage;
-					transition_state.access |= source_state.access;
-					if let Handles::Buffer(_) = consumption.handle {
-						let range = consumption.range.unwrap_or(BufferRange::new(0, vk::WHOLE_SIZE));
-						planned.update_buffer_state(consumption.handle, range, transition_state, buffer_states);
+					recorded_state = source_state.merge_reads(transition_state);
+					// Image layout transitions act as writes without write history, so only coverage can skip the barrier.
+					if !is_buffer && source_state.covers(transition_state) {
+						planned.state_updates.push((consumption.handle, recorded_state));
+						continue;
 					}
-					planned.state_updates.push((consumption.handle, transition_state));
-					continue;
 				}
 			}
 
 			let (src_stage, src_access, src_layout) = if let Some(source_state) = source_state {
-				(source_state.stage, source_state.access, source_state.layout)
+				if read_after_read {
+					// Earlier readers may not cover the new stages, so order against them and the last write.
+					(
+						source_state.stage | source_state.last_write_stage,
+						source_state.access | source_state.last_write_access,
+						source_state.layout,
+					)
+				} else {
+					(source_state.stage, source_state.access, source_state.layout)
+				}
 			} else {
 				(
 					vk::PipelineStageFlags2::empty(),
@@ -520,7 +531,7 @@ impl CommandBufferRecording<'_> {
 						.flatten()
 						.filter(|state| state.range.overlaps(range))
 						.copied()
-						.collect::<Vec<_>>();
+						.collect::<SmallVec<[_; 8]>>();
 
 					if !TransitionState::access_includes_write(transition_state.access) {
 						transition_state.last_write_stage = vk::PipelineStageFlags2::empty();
@@ -539,26 +550,29 @@ impl CommandBufferRecording<'_> {
 					}
 
 					for overlapping_state in &overlapping_states {
-						let mut range_src_stage = overlapping_state.state.stage;
-						let mut range_src_access = overlapping_state.state.access;
-
-						if TransitionState::access_includes_write(transition_state.access) {
-							range_src_stage |= overlapping_state.state.last_write_stage;
-							range_src_access |= overlapping_state.state.last_write_access;
+						let existing = overlapping_state.state;
+						if existing.reads_only(transition_state)
+							&& (existing.covers(transition_state) || !existing.has_write_history())
+						{
+							continue;
 						}
 
+						let overlap = overlapping_state.range.intersection(range);
 						planned.buffer_barriers.push(PlannedBufferBarrier {
-							src_stage: range_src_stage,
-							src_access: range_src_access,
+							src_stage: existing.stage | existing.last_write_stage,
+							src_access: existing.access | existing.last_write_access,
 							dst_stage: transition_state.stage,
 							dst_access: transition_state.access,
 							buffer,
-							offset: range.offset,
-							size: range.size,
+							offset: overlap.offset,
+							size: overlap.size,
 						});
 					}
 
-					if overlapping_states.is_empty() && consumption.range.is_none() {
+					let handle_state_visible = source_state.is_some_and(|source_state| {
+						read_after_read && (source_state.covers(transition_state) || !source_state.has_write_history())
+					});
+					if overlapping_states.is_empty() && consumption.range.is_none() && !handle_state_visible {
 						planned.buffer_barriers.push(PlannedBufferBarrier {
 							src_stage,
 							src_access,
@@ -571,6 +585,12 @@ impl CommandBufferRecording<'_> {
 					}
 
 					planned.update_buffer_state(consumption.handle, range, transition_state, buffer_states);
+					if read_after_read {
+						recorded_state.last_write_stage = transition_state.last_write_stage;
+						recorded_state.last_write_access = transition_state.last_write_access;
+					} else {
+						recorded_state = transition_state;
+					}
 				}
 				Handles::VkBuffer(buffer) => {
 					planned.buffer_barriers.push(PlannedBufferBarrier {
@@ -594,7 +614,7 @@ impl CommandBufferRecording<'_> {
 				_ => {}
 			}
 
-			planned.state_updates.push((consumption.handle, transition_state));
+			planned.state_updates.push((consumption.handle, recorded_state));
 		}
 
 		planned

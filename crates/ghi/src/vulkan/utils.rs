@@ -455,14 +455,6 @@ pub(super) fn into_vk_image_usage_flags(uses: crate::Uses, format: crate::Format
 		vk::ImageUsageFlags::TRANSFER_DST
 	} else {
 		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::BlitDestination) {
-		vk::ImageUsageFlags::COLOR_ATTACHMENT
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::BlitSource) {
-		vk::ImageUsageFlags::SAMPLED
-	} else {
-		vk::ImageUsageFlags::empty()
 	}
 }
 
@@ -575,6 +567,17 @@ mod tests {
 	use utils::RGBA;
 
 	use super::*;
+
+	#[test]
+	fn transfer_image_uses_request_only_transfer_usage() {
+		// Blit uses alias transfer uses, and vkCmdBlitImage2 only needs transfer usage; extra bits are invalid for BC formats.
+		let value = into_vk_image_usage_flags(
+			crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
+			crate::Formats::BC7,
+		);
+
+		assert!(value == vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST);
+	}
 
 	#[test]
 	fn test_uses_to_vk_usage_flags() {

@@ -133,15 +133,74 @@ impl PlannedTransitions {
 		state: TransitionState,
 		buffer_states: &HashMap<Handles, Vec<BufferTransitionState>>,
 	) {
-		let mut states = self
+		let existing_states = self
 			.buffer_state_updates
 			.iter()
-			.find_map(|(updated_handle, states)| (*updated_handle == handle).then(|| states.clone()))
-			.or_else(|| buffer_states.get(&handle).cloned())
+			.find_map(|(updated_handle, states)| (*updated_handle == handle).then_some(states.as_slice()))
+			.or_else(|| buffer_states.get(&handle).map(Vec::as_slice))
 			.unwrap_or_default();
 
-		states.retain(|existing| !existing.range.overlaps(range));
-		states.push(BufferTransitionState { range, state });
+		// Tracked ranges are disjoint; split the ones the new range touches so untouched bytes keep their pending state.
+		let mut states = Vec::with_capacity(existing_states.len() + 2);
+		let mut touched = SmallVec::<[BufferRange; 8]>::new();
+		for existing in existing_states {
+			if !existing.range.overlaps(range) {
+				states.push(*existing);
+				continue;
+			}
+
+			if existing.range.offset < range.offset {
+				states.push(BufferTransitionState {
+					range: BufferRange::from_bounds(existing.range.offset, range.offset),
+					state: existing.state,
+				});
+			}
+			if existing.range.end() > range.end() {
+				states.push(BufferTransitionState {
+					range: BufferRange::from_bounds(range.end(), existing.range.end()),
+					state: existing.state,
+				});
+			}
+
+			let overlap = existing.range.intersection(range);
+			let overlap_state = if existing.state.reads_only(state) {
+				existing.state.merge_reads(state)
+			} else {
+				state.inherit_last_write_from(existing.state)
+			};
+			states.push(BufferTransitionState {
+				range: overlap,
+				state: overlap_state,
+			});
+			touched.push(overlap);
+		}
+
+		touched.sort_unstable_by_key(|range| range.offset);
+		let mut cursor = range.offset;
+		for touched_range in touched {
+			if touched_range.offset > cursor {
+				states.push(BufferTransitionState {
+					range: BufferRange::from_bounds(cursor, touched_range.offset),
+					state,
+				});
+			}
+			cursor = cursor.max(touched_range.end());
+		}
+		if cursor < range.end() {
+			states.push(BufferTransitionState {
+				range: BufferRange::from_bounds(cursor, range.end()),
+				state,
+			});
+		}
+
+		states.sort_unstable_by_key(|state| state.range.offset);
+		states.dedup_by(|next, previous| {
+			let adjacent = previous.range.end() == next.range.offset && previous.state == next.state;
+			if adjacent {
+				previous.range = BufferRange::from_bounds(previous.range.offset, next.range.end());
+			}
+			adjacent
+		});
 
 		if let Some((_, updated_states)) = self
 			.buffer_state_updates

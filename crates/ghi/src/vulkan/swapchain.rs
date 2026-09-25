@@ -19,6 +19,11 @@ pub(crate) struct Swapchain {
 	/// Indicates whether `images` are proxy images.
 	pub uses_proxy_images: bool,
 	pub proxy_uses: Uses,
+	/// Uses requested when binding the window, preserved so recreation builds equivalent images.
+	pub uses: Uses,
+	pub native_image_usage: vk::ImageUsageFlags,
+	/// Set when presentation or acquisition reports that the swapchain no longer matches its surface.
+	pub needs_recreation: bool,
 	pub format: Formats,
 	pub supported_usage_flags: vk::ImageUsageFlags,
 	pub acquired_image_indices: [u8; MAX_FRAMES_IN_FLIGHT],

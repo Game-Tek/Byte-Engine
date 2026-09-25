@@ -806,6 +806,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
+		self.device.synchronizers[synchronizer_handle.0 as usize].armed = true;
 
 		for handle in &self.texture_readbacks {
 			self.device.texture_readbacks.mark_submitted(*handle);

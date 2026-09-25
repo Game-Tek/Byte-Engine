@@ -102,8 +102,18 @@ impl BufferRange {
 		self.offset.saturating_add(self.size)
 	}
 
+	/// Builds a range from its bounds, keeping ranges that reach the end of the buffer as `WHOLE_SIZE`.
+	pub(super) fn from_bounds(start: vk::DeviceSize, end: vk::DeviceSize) -> Self {
+		let size = if end == vk::DeviceSize::MAX { vk::WHOLE_SIZE } else { end - start };
+		Self::new(start, size)
+	}
+
 	pub(super) fn overlaps(self, other: Self) -> bool {
 		self.offset < other.end() && other.offset < self.end()
+	}
+
+	pub(super) fn intersection(self, other: Self) -> Self {
+		Self::from_bounds(self.offset.max(other.offset), self.end().min(other.end()))
 	}
 }
 
@@ -407,6 +417,28 @@ impl TransitionState {
 		}
 
 		self
+	}
+
+	pub(super) fn reads_only(self, next: Self) -> bool {
+		!Self::access_includes_write(self.access) && !Self::access_includes_write(next.access)
+	}
+
+	/// Whether the barrier that produced this read state already made the resource visible to `next`.
+	pub(super) fn covers(self, next: Self) -> bool {
+		self.stage.contains(next.stage) && self.access.contains(next.access)
+	}
+
+	pub(super) fn has_write_history(self) -> bool {
+		!self.last_write_stage.is_empty() || !self.last_write_access.is_empty()
+	}
+
+	/// Accumulates another reader so later writers wait for every reader since the last write.
+	pub(super) fn merge_reads(self, next: Self) -> Self {
+		Self {
+			stage: self.stage | next.stage,
+			access: self.access | next.access,
+			..self
+		}
 	}
 
 	pub(super) fn access_includes_write(access: vk::AccessFlags2) -> bool {

@@ -80,8 +80,9 @@ impl crate::device::Device for Device {
 			shaders: builder
 				.shaders
 				.iter()
-				.map(|shader| FactoryShaderParameter {
-					handle_index: shader.handle.0 as usize,
+				.enumerate()
+				.map(|(handle_index, shader)| FactoryShaderParameter {
+					handle_index,
 					stage: shader.stage,
 					specialization_map: shader.specialization_map.to_vec(),
 				})
@@ -91,7 +92,15 @@ impl crate::device::Device for Device {
 			cull_mode: builder.cull_mode,
 			fill_mode: builder.fill_mode,
 			depth_write: builder.depth_write,
-			factory_shaders: self.shaders.clone(),
+			factory_shaders: builder
+				.shaders
+				.iter()
+				.map(|shader| {
+					self.shaders.get(shader.handle.0 as usize).cloned().expect(
+						"Missing Vulkan factory shader. The most likely cause is that the raster pipeline references a shader from another factory.",
+					)
+				})
+				.collect(),
 		}
 	}
 

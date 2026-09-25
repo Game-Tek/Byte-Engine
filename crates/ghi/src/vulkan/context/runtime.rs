@@ -433,6 +433,10 @@ impl Context {
 				.get_swapchain_images(vk_swapchain)
 				.expect("No swapchain images found.")
 		};
+		assert!(
+			vk_images.len() <= MAX_SWAPCHAIN_IMAGES,
+			"Vulkan swapchain returned more images than the backend tracks. The most likely cause is a surface whose minimum image count exceeds MAX_SWAPCHAIN_IMAGES."
+		);
 		let image_count = vk_images.len() as u32;
 
 		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
@@ -489,6 +493,9 @@ impl Context {
 			native_images,
 			uses_proxy_images,
 			proxy_uses: if uses_proxy_images { uses } else { crate::Uses::empty() },
+			uses,
+			native_image_usage,
+			needs_recreation: false,
 			format,
 			supported_usage_flags: supported_image_usage,
 			acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
@@ -498,6 +505,138 @@ impl Context {
 		});
 
 		swapchain_handle
+	}
+
+	/// Rebuilds a swapchain for the surface's current extent while keeping user-facing image handles stable.
+	///
+	/// Returns `false` without touching the swapchain when the surface has no area, for example while minimized.
+	pub(crate) fn recreate_swapchain(
+		&mut self,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
+		capabilities: &vk::SurfaceCapabilitiesKHR,
+	) -> bool {
+		let swapchain = &self.swapchains[swapchain_handle.0 as usize];
+		let extent = InnerDevice::swapchain_extent(capabilities, swapchain.extent);
+		if extent.width == 0 || extent.height == 0 {
+			return false;
+		}
+
+		let old_swapchain = swapchain.swapchain;
+		let surface = swapchain.surface;
+		let present_mode = swapchain.vk_present_mode;
+		let native_image_usage = swapchain.native_image_usage;
+		let uses_proxy_images = swapchain.uses_proxy_images;
+		let native_uses = if uses_proxy_images {
+			crate::Uses::TransferDestination
+		} else {
+			swapchain.uses
+		};
+		let proxy_uses = swapchain.uses | crate::Uses::TransferSource | crate::Uses::TransferDestination;
+		let old_image_count = swapchain.max_image_count as usize;
+		let mut native_images = swapchain.native_images;
+		let mut images = swapchain.images;
+		let mut submit_synchronizers = swapchain.submit_synchronizers;
+
+		// Old swapchain images, their views, and proxies may still be referenced by in-flight frames.
+		unsafe {
+			self.device.device_wait_idle().expect(
+				"Failed to wait for the Vulkan device before recreating a swapchain. The most likely cause is that the device was lost.",
+			);
+		}
+
+		let new_swapchain =
+			self.device
+				.create_vulkan_swapchain(surface, present_mode, capabilities, extent, native_image_usage, old_swapchain);
+		let vk_images = unsafe {
+			self.device.swapchain.destroy_swapchain(old_swapchain, None);
+			self.device.swapchain.get_swapchain_images(new_swapchain).expect(
+				"Failed to get recreated Vulkan swapchain images. The most likely cause is that the surface was lost.",
+			)
+		};
+		assert!(
+			vk_images.len() <= MAX_SWAPCHAIN_IMAGES,
+			"Vulkan swapchain returned more images than the backend tracks. The most likely cause is a surface whose minimum image count exceeds MAX_SWAPCHAIN_IMAGES."
+		);
+
+		let proxy_format = self.images[images[0].0 as usize].format_;
+		let proxy_extent = Extent::rectangle(extent.width, extent.height);
+
+		for (index, &vk_image) in vk_images.iter().enumerate() {
+			if index < old_image_count {
+				let native = &mut self.images[native_images[index].0 as usize];
+				let retired_views = std::mem::take(&mut native.image_views);
+				let next = native.next;
+				for view in retired_views {
+					unsafe { self.device.destroy_image_view(view, None) };
+				}
+				let mut image = self.swapchain_image(vk_image, crate::Formats::BGRAsRGB, native_uses, native_image_usage);
+				image.next = next;
+				self.images[native_images[index].0 as usize] = image;
+
+				if uses_proxy_images {
+					self.resize_image_internal(images[index], proxy_extent, 0);
+				}
+			} else {
+				let previous = native_images[index - 1];
+				native_images[index] = self.create_swapchain_image(
+					vk_image,
+					crate::Formats::BGRAsRGB,
+					native_uses,
+					native_image_usage,
+					Some(previous),
+				);
+				submit_synchronizers[index] = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
+				images[index] = if uses_proxy_images {
+					self.create_image_internal(
+						None,
+						Some(images[index - 1]),
+						Some("Swapchain Proxy Image"),
+						proxy_format,
+						crate::DeviceAccesses::DeviceOnly,
+						None,
+						false,
+						false,
+						proxy_extent,
+						proxy_uses,
+						1,
+					)
+				} else {
+					native_images[index]
+				};
+			}
+
+			// Fresh swapchain images start undefined; stale tracked layouts would produce invalid barriers.
+			self.states.remove(&crate::vulkan::Handles::Image(native_images[index]));
+		}
+
+		// Surplus images from a larger previous swapchain are never indexed again, but their views must not leak.
+		for index in vk_images.len()..old_image_count {
+			let native = &mut self.images[native_images[index].0 as usize];
+			let retired_views = std::mem::take(&mut native.image_views);
+			native.image = vk::Image::null();
+			for view in retired_views {
+				unsafe { self.device.destroy_image_view(view, None) };
+			}
+			self.states.remove(&crate::vulkan::Handles::Image(native_images[index]));
+		}
+
+		// Snapshots may hold views of the replaced images in any sequence.
+		for sequence_index in 0..self.frames {
+			self.bump_descriptor_sequence_epoch(sequence_index);
+		}
+
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		swapchain.swapchain = new_swapchain;
+		swapchain.extent = extent;
+		swapchain.native_images = native_images;
+		swapchain.images = images;
+		swapchain.submit_synchronizers = submit_synchronizers;
+		swapchain.min_image_count = capabilities.min_image_count;
+		swapchain.max_image_count = vk_images.len() as u32;
+		swapchain.acquired_image_indices = [0; MAX_FRAMES_IN_FLIGHT];
+		swapchain.needs_recreation = false;
+
+		true
 	}
 
 	#[cfg(any())]
@@ -644,19 +783,21 @@ impl Context {
 		let sequence_index = (index % u64::from(self.frames)) as u8;
 
 		let synchronizer_handles = self.get_syncronizer_handles(synchronizer_handle);
-		let synchronizer = &self.synchronizers[synchronizer_handles[sequence_index as usize].0 as usize];
+		let synchronizer_index = synchronizer_handles[sequence_index as usize].0 as usize;
+		let synchronizer = &self.synchronizers[synchronizer_index];
 
 		let per_cycle_wait_ms = 1;
 		let wait_warning_time_threshold = 8;
 		let mut timeout_count = 0;
 
-		loop {
+		let mut waiting = synchronizer.armed;
+		while waiting {
 			match unsafe {
 				self.device
 					.device
 					.wait_for_fences(&[synchronizer.fence], true, per_cycle_wait_ms * 1000000)
 			} {
-				Ok(_) => break,
+				Ok(_) => waiting = false,
 				Err(vk::Result::TIMEOUT) => {
 					let name = self.get_object_debug_name(synchronizer_handle.into());
 
@@ -682,6 +823,7 @@ impl Context {
 				.reset_fences(&[synchronizer.fence])
 				.expect("No fence reset");
 		}
+		self.synchronizers[synchronizer_index].armed = false;
 
 		let frame_key = FrameKey {
 			frame_index,
@@ -960,6 +1102,10 @@ impl Context {
 		let handles = self.get_syncronizer_handles(synchronizer_handle);
 		for handle in handles {
 			let synchronizer = &self.synchronizers[handle.0 as usize];
+			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
+			if !synchronizer.armed {
+				continue;
+			}
 			unsafe {
 				self.device
 					.wait_for_fences(&[synchronizer.fence], true, u64::MAX)

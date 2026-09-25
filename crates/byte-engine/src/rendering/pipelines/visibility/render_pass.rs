@@ -1,5 +1,5 @@
 //! Per-sink GPU work: shadows, visibility rasterization, material prepasses, the linear depth pyramid, contact
-//! shadows, GTAO, SSGI, and material evaluation.
+//! shadows, GTAO, SSGI, and material evaluation, which also traces screen-space reflections.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
@@ -8,6 +8,7 @@ mod contact_shadows;
 mod depth_pyramid;
 mod gtao;
 mod materials;
+mod reflections;
 mod shadows;
 mod ssgi;
 mod visibility;
@@ -24,6 +25,8 @@ use self::depth_pyramid::DepthPyramidPass;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses};
+use self::reflections::ScreenSpaceReflections;
+pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::ShadowPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowWork};
 use self::ssgi::SsgiPass;
@@ -54,6 +57,20 @@ pub(crate) struct SinkTargets {
 	pub(crate) ssgi: SsgiTargets,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
 	pub(crate) contact_shadows: ghi::BaseImageHandle,
+	/// The light opaque material evaluation writes for next frame's reflection rays.
+	pub(crate) radiance_history: ghi::DynamicImageHandle,
+}
+
+/// The `SinkHistory` struct describes what the previous frame's history images hold for one sink.
+///
+/// Temporal passes use it to reproject into those images. The visibility pipeline manager builds it from the sink
+/// it recorded last frame.
+#[derive(Clone, Copy)]
+pub(crate) struct SinkHistory {
+	/// The view the sink was recorded with.
+	pub(crate) view: View,
+	/// The exposure the recorded light was multiplied by.
+	pub(crate) exposure: f32,
 }
 
 /// The `VisibilityRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
@@ -66,6 +83,7 @@ pub(crate) struct VisibilityRenderPass {
 	contact_shadows: ContactShadowPass,
 	gtao: GtaoPass,
 	ssgi: SsgiPass,
+	reflections: ScreenSpaceReflections,
 	material_evaluation: MaterialEvaluationPass,
 }
 
@@ -172,6 +190,12 @@ impl VisibilityRenderPass {
 			depth_pyramid.view_data(),
 			targets.ssgi,
 		);
+		let reflections = ScreenSpaceReflections::new(
+			context,
+			material_evaluation_descriptor_set,
+			depth_pyramid.depth_pyramid(),
+			targets.radiance_history,
+		);
 		let visibility_buffer = |binding: ghi::ShaderResourceDescriptor, buffer: ghi::BaseBufferHandle| {
 			ghi::DescriptorWrite::buffer(visibility_descriptor_set, binding.slot(), buffer)
 		};
@@ -266,9 +290,11 @@ impl VisibilityRenderPass {
 			contact_shadows: ContactShadowPass::new(context, &pipeline_manager, targets.depth, targets.contact_shadows),
 			depth_pyramid,
 			ssgi,
+			reflections,
 			material_evaluation: MaterialEvaluationPass::new(
 				targets.lit,
 				targets.ssgi.diffuse_radiance_history,
+				targets.radiance_history,
 				base_descriptor_set,
 				visibility_descriptor_set,
 				material_evaluation_descriptor_set,
@@ -290,8 +316,8 @@ impl VisibilityRenderPass {
 	/// Prepares one opaque visibility layer and one nearest-surface transparent layer.
 	///
 	/// Returns `None` while any fixed pipeline is still compiling. `skinning` is passed only by the first sink
-	/// so deformation runs once per frame. `previous_view` is the view this pass recorded the sink with in the
-	/// previous frame at the same extent, or `None` when the previous frame's images do not hold this sink's data.
+	/// so deformation runs once per frame. `history` describes how this pass recorded the sink in the previous
+	/// frame at the same extent, or is `None` when the previous frame's images do not hold this sink's data.
 	pub(crate) fn prepare<'a>(
 		&'a self,
 		frame: &mut ghi::implementation::Frame,
@@ -300,7 +326,7 @@ impl VisibilityRenderPass {
 		dispatches: PhaseDispatches,
 		render_info: &'a RenderInfo,
 		shadow_work: ShadowWork,
-		previous_view: Option<View>,
+		history: Option<SinkHistory>,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
 		let skinning = match skinning {
@@ -319,7 +345,10 @@ impl VisibilityRenderPass {
 			.contact_shadows
 			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipeline);
 		let gtao = self.gtao.prepare(frame, sink, gtao_pipelines);
-		let ssgi = self.ssgi.prepare(frame, sink, previous_view, ssgi_pipelines);
+		let ssgi = self
+			.ssgi
+			.prepare(frame, sink, history.map(|history| history.view), ssgi_pipelines);
+		self.reflections.prepare(frame, history);
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_materials,
 			&render_info.opaque_material_mask,

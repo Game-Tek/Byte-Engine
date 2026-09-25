@@ -338,8 +338,8 @@ material_evaluation_suffix: fn () -> void {
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
 	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
-	// GTAO darkens only specular image-based light. SSGI rays already stop at nearby geometry, so indirect diffuse
-	// light carries its own occlusion.
+	// GTAO darkens only environment specular light. SSGI and reflection rays already stop at nearby geometry, so the
+	// light they find carries its own occlusion.
 	let specular_ao_factor: f16 = 1.0;
 	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
 	let indirect_diffuse_radiance: vec3f = sample_environment_irradiance(vec3f(normal)) * lighting_data.environment_intensity;
@@ -536,6 +536,22 @@ material_evaluation_suffix: fn () -> void {
 	let reflection_direction: vec3f = incident - 2.0 * dot(incident, vec3f(normal)) * vec3f(normal);
 	let reflection_radiance: vec3f = sample_environment_specular(reflection_direction, f32(roughness))
 		* lighting_data.environment_intensity;
+	// Screen-space reflections replace the environment where the mirror ray finds visible geometry. One mirror ray
+	// cannot stand for a wide glossy lobe, so reflections fade back to the prefiltered environment from roughness 0.2
+	// to 0.4. A reflection that points into the geometric surface would only find the surface itself.
+	let screen_space_reflection: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	if (f32(roughness) < 0.4 && dot(reflection_direction, N) > 0.0) {
+		screen_space_reflection = trace_screen_space_reflection(
+			world_space_vertex_position,
+			N,
+			reflection_direction,
+			views.views[0].view_projection,
+			image_extent
+		);
+	}
+	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
+	let specular_radiance: vec3f = reflection_radiance * (f32(specular_ao_factor) * (1.0 - reflection_weight))
+		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
 	let one_minus_roughness: f16 = f16(1.0) - roughness;
 	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
 	let kD_ibl: vec3f16 = (one_minus_f0 - (grazing - F0) * view_fresnel_factor) * one_minus_metalness;
@@ -546,9 +562,9 @@ material_evaluation_suffix: fn () -> void {
 	let r: vec4f16 = roughness * c0 + c1;
 	let a004: f16 = min(r.x * r.x, pow(f16(2.0), (f16(0.0) - f16(9.28)) * NdotV)) * r.x + r.y;
 	let env_brdf: vec2f16 = vec2f16(0.0 - 1.04, 1.04) * a004 + vec2f16(r.z, r.w);
-	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * reflection_radiance;
+	let ibl_specular: vec3f = vec3f(F0 * env_brdf.x + env_brdf.y) * specular_radiance;
 	// Material occlusion, like baked AO, applies to indirect light only. Direct light has its own shadows.
-	let ambient: vec3f = (ibl_diffuse + ibl_specular * f32(specular_ao_factor)) * f32(occlusion);
+	let ambient: vec3f = (ibl_diffuse + ibl_specular) * f32(occlusion);
 	// Pre-expose: store light already multiplied by the camera exposure, so real-world intensities such as a
 	// 100,000 lux sun on a glossy surface stay within the half-float range of the lit map.
 	let lit: vec3f = (diffuse + specular + ambient + vec3f(emission)) * lighting_data.exposure;
@@ -566,6 +582,8 @@ material_evaluation_suffix: fn () -> void {
 	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
 	// It stays unexposed because SSGI feeds it back in as incident light, which the exposure above then applies to once.
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
+	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
+	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
 	if (push_constant.blend == 0) {
 		let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);
 		write(
@@ -573,6 +591,7 @@ material_evaluation_suffix: fn () -> void {
 			pixel_coordinates,
 			vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
 		);
+		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
 	}
 }
 "#;

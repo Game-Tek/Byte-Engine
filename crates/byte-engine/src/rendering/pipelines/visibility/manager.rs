@@ -29,8 +29,8 @@ use super::layout::{
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkTargets, VisibilityRenderPass, create_contact_shadow_target,
-	create_ssgi_targets,
+	GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
+	create_contact_shadow_target, create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
 use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
@@ -417,6 +417,8 @@ pub struct VisibilityPipelineManager {
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
 	/// per-frame images hold usable history, and only while the extent is unchanged.
 	recorded_sinks: SmallVec<[Sink; 4]>,
+	/// The exposure the previous frame's light was multiplied by. Every recorded sink shares it.
+	recorded_exposure: f32,
 	pub(crate) scene: VisibilityScene,
 }
 
@@ -493,6 +495,7 @@ impl VisibilityPipelineManager {
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
 			recorded_sinks: SmallVec::new(),
+			recorded_exposure: 1.0,
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
@@ -996,6 +999,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let skinning_pass = &self.skinning_pass;
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
+		let recorded_exposure = self.recorded_exposure;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let commands = sinks
 			.iter()
@@ -1008,24 +1012,20 @@ impl PipelineManager for VisibilityPipelineManager {
 				// Skinning runs once per frame, with the first sink.
 				let skinning = (command_index == 0).then_some(skinning_pass);
 				// A sink that did not record last frame, or was resized since, has no usable history.
-				let previous_view = previously_recorded_sinks
+				let history = previously_recorded_sinks
 					.iter()
 					.find(|previous| previous.index() == sink.index() && previous.extent() == sink.extent())
-					.map(Sink::view);
-				let command = render_pass.prepare(
-					frame,
-					sink,
-					skinning,
-					dispatches,
-					render_info,
-					shadow_work,
-					previous_view,
-				)?;
+					.map(|previous| SinkHistory {
+						view: previous.view(),
+						exposure: recorded_exposure,
+					});
+				let command = render_pass.prepare(frame, sink, skinning, dispatches, render_info, shadow_work, history)?;
 				recorded_sinks.push(*sink);
 				Some(allocate_render_command(frame_allocator, command))
 			})
 			.collect();
 		self.recorded_sinks = recorded_sinks;
+		self.recorded_exposure = exposure;
 		Some(commands)
 	}
 
@@ -1052,6 +1052,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		render_pass_builder.alias("Lit", "main");
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let contact_shadows = create_contact_shadow_target(render_pass_builder);
+		let radiance_history = create_radiance_history_target(render_pass_builder);
 
 		let context = render_pass_builder.context();
 		let render_pass = VisibilityRenderPass::new(
@@ -1066,6 +1067,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				instance_id: instance_id.into(),
 				ssgi,
 				contact_shadows,
+				radiance_history,
 			},
 			self.cone_shadow_pool_capacity,
 			self.point_shadow_pool_capacity,

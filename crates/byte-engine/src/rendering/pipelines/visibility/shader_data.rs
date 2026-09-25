@@ -180,6 +180,21 @@ impl MaterialData {
 	}
 }
 
+/// The `ReflectionShaderParameters` struct gives one sink's reflection rays what they need to read last frame's light.
+///
+/// [`super::render_pass::ScreenSpaceReflections`] uploads it once per frame for material evaluation.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct ReflectionShaderParameters {
+	/// Maps a world-space position to the previous frame's clip space, to find where the previous camera saw a hit.
+	pub(crate) world_to_previous_clip: ShaderMatrix,
+	/// The exposure the previous frame's radiance history was multiplied by.
+	pub(crate) previous_exposure: f32,
+	/// Nonzero when the previous frame's radiance history holds this sink's light.
+	pub(crate) history_valid: u32,
+	pub(crate) _padding: [u32; 2],
+}
+
 /// The shader-facing structs must keep the exact layouts their GPU buffers are read with.
 ///
 /// The visibility shaders index each buffer by a fixed stride and read fields at fixed offsets, and the
@@ -227,6 +242,10 @@ const _: () = assert!(std::mem::offset_of!(LightingData, exposure) == 4);
 const _: () = assert!(std::mem::offset_of!(LightingData, environment_intensity) == 8);
 const _: () = assert!(std::mem::offset_of!(LightingData, _padding) == 12);
 const _: () = assert!(std::mem::offset_of!(LightingData, lights) == 16);
+
+const _: () = assert!(std::mem::size_of::<ReflectionShaderParameters>() == 80);
+const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, previous_exposure) == 64);
+const _: () = assert!(std::mem::offset_of!(ReflectionShaderParameters, history_valid) == 68);
 
 #[cfg(test)]
 mod tests {

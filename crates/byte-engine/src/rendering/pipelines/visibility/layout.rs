@@ -7,7 +7,7 @@
 
 use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
 
-use super::shader_data::{LightingData, MaterialData};
+use super::shader_data::{LightingData, MaterialData, ReflectionShaderParameters};
 
 /* Limits */
 
@@ -164,6 +164,15 @@ pub(crate) const CONE_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1064).texture_view_type(TextureViewTypes::Texture2DArray);
 pub(crate) const POINT_SHADOW_MAP_BINDING: ShaderResourceDescriptor =
 	sampled_image(1065).texture_view_type(TextureViewTypes::TextureCubeArray);
+/// Screen-space reflection inputs. See [`super::render_pass::ScreenSpaceReflections`].
+pub(crate) const REFLECTION_PARAMETERS_BINDING: ShaderResourceDescriptor = buffer(
+	1059,
+	AccessPolicies::READ,
+	std::mem::size_of::<ReflectionShaderParameters>() as u32,
+);
+pub(crate) const REFLECTION_DEPTH_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1060);
+pub(crate) const PREVIOUS_RADIANCE_BINDING: ShaderResourceDescriptor = sampled_image(1061);
+pub(crate) const RADIANCE_HISTORY_BINDING: ShaderResourceDescriptor = storage_image(1062, AccessPolicies::WRITE);
 
 /// `ShaderMeshletData` must keep the packed layout the meshlet buffer is read with.
 ///

@@ -765,3 +765,267 @@ fn point_shadow_occlusion_ignores_captured_depth_beyond_the_far_plane_in_the_bes
 		);
 	}
 }
+
+/* Screen-space reflections */
+
+const REFLECTION_EXTENT: u32 = 64;
+const REFLECTION_NEAR: f32 = 0.1;
+const REFLECTION_FAR: f32 = 100.0;
+const REFLECTION_INPUTS_SLOT: ResourceSlot = ResourceSlot::new(0);
+const REFLECTION_RESULTS_SLOT: ResourceSlot = ResourceSlot::new(1);
+const REFLECTION_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1059);
+const FLOOR_COLOR: [f32; 3] = [0.2, 0.2, 0.2];
+const WALL_COLOR: [f32; 3] = [2.0, 1.0, 0.5];
+const BAR_COLOR: [f32; 3] = [0.0, 5.0, 0.0];
+
+/// The `ReflectionScene` struct describes a fixture seen by a camera at the origin looking down positive z: a floor
+/// one unit below the camera, an optional wall facing the camera, and an optional horizontal bar floating in front.
+#[derive(Clone, Copy)]
+struct ReflectionScene {
+	wall_z: Option<f32>,
+	/// The bar sits at this depth and covers view rays whose `y / z` lies in `[-0.3, -0.2]`.
+	bar_z: Option<f32>,
+}
+
+impl ReflectionScene {
+	/// Returns the depth and color a view ray `(x / z, y / z)` sees, or zero depth for the sky.
+	fn surface(self, ray: [f32; 2]) -> (f32, [f32; 3]) {
+		let mut nearest = (f32::INFINITY, [0.0; 3]);
+		if ray[1] < 0.0 {
+			nearest = (-1.0 / ray[1], FLOOR_COLOR);
+		}
+		if let Some(wall_z) = self.wall_z
+			&& wall_z < nearest.0
+		{
+			nearest = (wall_z, WALL_COLOR);
+		}
+		if let Some(bar_z) = self.bar_z
+			&& (-0.3..=-0.2).contains(&ray[1])
+			&& bar_z < nearest.0
+		{
+			nearest = (bar_z, BAR_COLOR);
+		}
+		if nearest.0 <= REFLECTION_FAR {
+			nearest
+		} else {
+			(0.0, [0.0; 3])
+		}
+	}
+}
+
+fn reflection_projection() -> maths_rs::Mat4f {
+	math::projection_matrix(math::Degrees::new(60.0), 1.0, REFLECTION_NEAR, REFLECTION_FAR)
+}
+
+/// Converts a row-major matrix to the column-major element order the BESL VM multiplies with.
+fn column_major(matrix: maths_rs::Mat4f) -> [f32; 16] {
+	std::array::from_fn(|index| matrix[(index % 4) * 4 + index / 4])
+}
+
+/// Returns the view ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square image `extent` pixels wide.
+fn reflection_ray_at(x: u32, y: u32, extent: u32) -> [f32; 2] {
+	let projection = reflection_projection();
+	[
+		(2.0 * (x as f32 + 0.5) / extent as f32 - 1.0) / projection[0],
+		(1.0 - 2.0 * (y as f32 + 0.5) / extent as f32) / projection[5],
+	]
+}
+
+/// Renders `scene` into the half-resolution linear depth pyramid the rays march.
+fn reflection_depth_pyramid(scene: ReflectionScene) -> Texture {
+	let half = REFLECTION_EXTENT / 2;
+	let depth: Vec<[f32; 4]> = (0..half * half)
+		.map(|index| {
+			[
+				scene.surface(reflection_ray_at(index % half, index / half, half)).0,
+				0.0,
+				0.0,
+				1.0,
+			]
+		})
+		.collect();
+	// Physical mip zero is unused; mip one holds half-resolution depth.
+	let mut pyramid = texture_2d(
+		REFLECTION_EXTENT,
+		REFLECTION_EXTENT,
+		&vec![[0.0; 4]; (REFLECTION_EXTENT * REFLECTION_EXTENT) as usize],
+	);
+	pyramid.add_mip(texture_2d(half, half, &depth));
+	pyramid
+}
+
+/// Renders `scene` into a full-resolution radiance history: light multiplied by `exposure` in RGB, depth in alpha.
+fn reflection_radiance_history(scene: ReflectionScene, exposure: f32) -> Texture {
+	let extent = REFLECTION_EXTENT;
+	let texels: Vec<[f32; 4]> = (0..extent * extent)
+		.map(|index| {
+			let (z, [r, g, b]) = scene.surface(reflection_ray_at(index % extent, index / extent, extent));
+			[r * exposure, g * exposure, b * exposure, z]
+		})
+		.collect();
+	texture_2d(extent, extent, &texels)
+}
+
+/// Returns the full-resolution floor pixel row in the center column whose floor point lies closest to `z`.
+fn floor_row_at(z: f32) -> u32 {
+	(REFLECTION_EXTENT / 2..REFLECTION_EXTENT)
+		.min_by(|&a, &b| {
+			let depth = |row| -1.0 / reflection_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT)[1];
+			(depth(a) - z).abs().total_cmp(&(depth(b) - z).abs())
+		})
+		.expect("floor rows")
+}
+
+/// Traces the mirror reflection of the camera ray off the floor at full-resolution pixel `(column, row)`.
+///
+/// This frame draws `scene`, and the previous frame, from the same static camera, drew `previous_scene`. Returns
+/// the helper's unexposed radiance in RGB and its confidence in alpha.
+fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<ReflectionScene>, column: u32, row: u32) -> [f32; 4] {
+	const PREVIOUS_EXPOSURE: f32 = 2.0;
+	let executable = compile_with_helpers(
+		r#"
+		main: fn () -> void {
+			results.reflection = trace_screen_space_reflection(
+				vec3f(inputs.position.x, inputs.position.y, inputs.position.z),
+				vec3f(0.0, 1.0, 0.0),
+				vec3f(inputs.direction.x, inputs.direction.y, inputs.direction.z),
+				inputs.view_projection,
+				inputs.extent
+			);
+		}
+		"#,
+		&[],
+		{
+			let mut bindings = screen_space_reflection_scope();
+			bindings.push(besl::ParserNode::binding(
+				"inputs",
+				besl::ParserNode::buffer(
+					"ReflectionInputs",
+					vec![
+						besl::ParserNode::member("view_projection", "mat4f"),
+						besl::ParserNode::member("position", "vec4f"),
+						besl::ParserNode::member("direction", "vec4f"),
+						besl::ParserNode::member("extent", "vec2u"),
+					],
+				),
+				REFLECTION_INPUTS_SLOT.slot(),
+				true,
+				false,
+			));
+			bindings.push(results_binding(
+				"ReflectionResults",
+				vec![besl::ParserNode::member("reflection", "vec4f")],
+				REFLECTION_RESULTS_SLOT,
+			));
+			bindings
+		},
+	);
+
+	// The camera sits at the origin, so world space is view space and the view-projection is the projection.
+	let ray = reflection_ray_at(column, row, REFLECTION_EXTENT);
+	let z = -1.0 / ray[1];
+	let position = [ray[0] * z, -1.0, z];
+	let length = (position[0] * position[0] + 1.0 + z * z).sqrt();
+	// The floor's normal points up, so the mirror direction flips the view ray's vertical component.
+	let direction = [position[0] / length, 1.0 / length, z / length, 0.0];
+	let mut inputs = buffer(&executable, REFLECTION_INPUTS_SLOT);
+	for (member, value) in [
+		("view_projection", Value::Mat4F(column_major(reflection_projection()))),
+		("position", Value::Vec4F([position[0], position[1], position[2], 1.0])),
+		("direction", Value::Vec4F(direction)),
+		("extent", Value::Vec2U([REFLECTION_EXTENT, REFLECTION_EXTENT])),
+	] {
+		inputs.write(member, value).expect("reflection inputs");
+	}
+	let mut parameters = buffer(&executable, REFLECTION_PARAMETERS_SLOT);
+	for (member, value) in [
+		("world_to_previous_clip", Value::Mat4F(column_major(reflection_projection()))),
+		("previous_exposure", Value::F32(PREVIOUS_EXPOSURE)),
+		("history_valid", Value::U32(previous_scene.is_some() as u32)),
+	] {
+		parameters.write(member, value).expect("reflection parameters");
+	}
+	let mut depth_pyramid = reflection_depth_pyramid(scene);
+	let mut previous_radiance = reflection_radiance_history(previous_scene.unwrap_or(scene), PREVIOUS_EXPOSURE);
+	let mut results = buffer(&executable, REFLECTION_RESULTS_SLOT);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(REFLECTION_INPUTS_SLOT, &mut inputs);
+	descriptors.bind_buffer(REFLECTION_PARAMETERS_SLOT, &mut parameters);
+	descriptors.bind_texture(ResourceSlot::new(1060), &mut depth_pyramid);
+	descriptors.bind_texture(ResourceSlot::new(1061), &mut previous_radiance);
+	descriptors.bind_buffer(REFLECTION_RESULTS_SLOT, &mut results);
+	run_at(&executable, &mut descriptors, [0, 0]);
+	drop(descriptors);
+	match results.read("reflection").expect("reflection result") {
+		Value::Vec4F(value) => value,
+		value => panic!("Unexpected reflection result type: {value:?}."),
+	}
+}
+
+fn assert_reflects(reflection: [f32; 4], color: [f32; 3]) {
+	for channel in 0..3 {
+		assert!(
+			(reflection[channel] - color[channel]).abs() < 0.0001,
+			"Expected the reflection of {color:?}, found {reflection:?}."
+		);
+	}
+	assert!(reflection[3] > 0.99, "Expected a confident reflection, found {reflection:?}.");
+}
+
+const WALL: ReflectionScene = ReflectionScene {
+	wall_z: Some(4.0),
+	bar_z: None,
+};
+
+/// Verifies a floor in front of a wall reflects the wall's light from last frame, at the unexposed level.
+#[test]
+fn reflection_rays_return_the_light_of_the_surface_they_hit() {
+	for z in [1.5, 2.0, 3.0] {
+		let reflection = trace_floor_reflection(WALL, Some(WALL), REFLECTION_EXTENT / 2, floor_row_at(z));
+		assert_reflects(reflection, WALL_COLOR);
+	}
+}
+
+/// Verifies a ray that passes behind a thin object keeps marching and reflects the surface it reaches, rather than
+/// the object whose front face it passed.
+#[test]
+fn reflection_rays_pass_behind_thin_objects() {
+	let scene = ReflectionScene {
+		wall_z: Some(4.0),
+		bar_z: Some(1.5),
+	};
+	let row = floor_row_at(2.0);
+	assert_eq!(
+		scene
+			.surface(reflection_ray_at(REFLECTION_EXTENT / 2, row, REFLECTION_EXTENT))
+			.1,
+		FLOOR_COLOR,
+		"The bar must not hide the ray's origin."
+	);
+
+	assert_reflects(
+		trace_floor_reflection(scene, Some(scene), REFLECTION_EXTENT / 2, row),
+		WALL_COLOR,
+	);
+}
+
+/// Verifies rays miss where no visible geometry lies along them, or where last frame's light is unusable, so
+/// material evaluation keeps the environment.
+#[test]
+fn reflection_rays_miss_without_a_visible_surface_with_known_light() {
+	let open_floor = ReflectionScene {
+		wall_z: None,
+		bar_z: None,
+	};
+	let row = floor_row_at(2.0);
+	let column = REFLECTION_EXTENT / 2;
+	for (name, scene, previous_scene) in [
+		("open floor", open_floor, Some(open_floor)),
+		("no history", WALL, None),
+		// The wall appeared this frame, so the previous frame holds no light for it.
+		("disoccluded wall", WALL, Some(open_floor)),
+	] {
+		let reflection = trace_floor_reflection(scene, previous_scene, column, row);
+		assert_eq!(reflection[3], 0.0, "Expected the {name} ray to miss, found {reflection:?}.");
+	}
+}

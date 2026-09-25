@@ -387,8 +387,58 @@ impl VisibilityShaderScope {
 		let mut children = structs;
 		children.extend(base_bindings);
 		children.extend(material_evaluation_bindings);
+		children.extend(screen_space_reflection_scope());
 		children.push(sample_texture);
 		children.extend(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)));
 		Node::scope("Visibility", children)
 	}
+}
+
+/// Declares the screen-space reflection helpers from [`sources`], with the ray struct and bindings they read.
+///
+/// Material evaluation traces its reflection rays with them, and writes this frame's radiance history for the next
+/// frame's rays. The slots mirror [`super::layout::REFLECTION_PARAMETERS_BINDING`] and the bindings after it.
+fn screen_space_reflection_scope() -> Vec<Node<'static>> {
+	let mut nodes = vec![
+		// One ray's screen-space path. Screen position and 1/z are both linear along a projected line.
+		Node::r#struct(
+			"ReflectionRay",
+			vec![
+				Node::member("start_pixel", "vec2f"),
+				Node::member("end_pixel", "vec2f"),
+				Node::member("inverse_start_z", "f32"),
+				Node::member("inverse_end_z", "f32"),
+			],
+		),
+		Node::constant_buffer_binding(
+			"reflection_parameters",
+			Node::buffer(
+				"ReflectionParameters",
+				vec![
+					Node::member("world_to_previous_clip", "mat4f"),
+					Node::member("previous_exposure", "f32"),
+					Node::member("history_valid", "u32"),
+					Node::member("_padding", "u32[2]"),
+				],
+			),
+			1059,
+			true,
+			false,
+		),
+		Node::binding("reflection_depth_pyramid", Node::combined_image_sampler(), 1060, true, false),
+		Node::binding("previous_radiance", Node::combined_image_sampler(), 1061, true, false),
+		Node::binding("radiance_history_map", Node::image("rgba16f"), 1062, false, true),
+	];
+	// Helpers follow the bindings they read, in dependency order.
+	nodes.extend(
+		[
+			(REFLECTION_SCENE_DEPTH_SOURCE, "reflection_scene_depth"),
+			(REFLECTION_RAY_PENETRATION_SOURCE, "reflection_ray_penetration"),
+			(REFLECTION_WORLD_FRACTION_SOURCE, "reflection_world_fraction"),
+			(REFLECTION_HISTORY_RADIANCE_SOURCE, "reflection_history_radiance"),
+			(TRACE_SCREEN_SPACE_REFLECTION_SOURCE, "trace_screen_space_reflection"),
+		]
+		.map(|(source, name)| parse_besl_function(source, name)),
+	);
+	nodes
 }

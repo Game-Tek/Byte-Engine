@@ -33,6 +33,7 @@ use crate::rendering::loading::{
 };
 use crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest;
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
+use crate::rendering::{Query, Resource};
 use crate::rendering::resource_loading::texture::{
 	TextureUploadLayout, load_image_streams, resource_format_to_ghi, texture_mip_extent,
 };
@@ -49,6 +50,8 @@ const VISIBILITY_RESULT_CAPACITY: usize = 64;
 /// The `VisibilityLoadKey` enum names every logical resource in the visibility pipeline's shared registry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum VisibilityLoadKey {
+	Resource(&'static str),
+	Query(Query),
 	Mesh(MeshKey),
 	Material(String),
 	Texture(String),
@@ -58,6 +61,8 @@ enum VisibilityLoadKey {
 impl std::fmt::Display for VisibilityLoadKey {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			Self::Resource(id) => write!(formatter, "resource {id}"),
+			Self::Query(query) => write!(formatter, "query {query:?}"),
 			Self::Mesh(key) => write!(formatter, "mesh {key}"),
 			Self::Material(id) => write!(formatter, "material {id}"),
 			Self::Texture(id) => write!(formatter, "texture {id}"),
@@ -68,6 +73,10 @@ impl std::fmt::Display for VisibilityLoadKey {
 
 /// The `VisibilityLoadRequest` enum carries owned work for every visibility resource family.
 enum VisibilityLoadRequest {
+	/// A resource of unknown class, routed to its family once its class is read.
+	Resource(&'static str),
+	/// Every resource that matches a query, each routed by the query's class.
+	Query(Query),
 	Mesh(MeshSource),
 	Material(String),
 	Texture(String),
@@ -116,6 +125,8 @@ pub(crate) struct ResidentEnvironment {
 
 /// The `VisibilityResident` enum keeps generic loader results private to the loader boundary.
 enum VisibilityResident {
+	/// A routed resource; its family request travels as the only dependency.
+	Routed,
 	Mesh(MeshData),
 	Material(PreparedMaterial),
 	Texture(ResidentTexture),
@@ -207,6 +218,14 @@ fn photometric_profile_metadata_is_valid(image: &ResourceImage, photometry: &Ima
 }
 
 impl VisibilityLoaderClient {
+	/// Requests one resource, or every query match, and loads each as whichever family its stored class names.
+	pub(crate) fn request_resource(&mut self, resource: Resource) {
+		self.client.request(match resource {
+			Resource::Id(id) => VisibilityLoadRequest::Resource(id),
+			Resource::Query(query) => VisibilityLoadRequest::Query(query),
+		});
+	}
+
 	/// Requests one mesh and reports whether that mesh was already resident.
 	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<MeshData>) {
 		let key = source.key();
@@ -233,6 +252,10 @@ impl VisibilityLoaderClient {
 	pub(crate) fn update(&mut self, events: &mut Vec<VisibilityLoaderEvent>) {
 		while let Some(event) = self.client.poll() {
 			events.push(match event {
+				LoaderEvent::Ready {
+					key: VisibilityLoadKey::Resource(_) | VisibilityLoadKey::Query(_),
+					resident: VisibilityResident::Routed,
+				} => continue,
 				LoaderEvent::Ready {
 					key: VisibilityLoadKey::Mesh(key),
 					resident: VisibilityResident::Mesh(mesh),
@@ -363,6 +386,72 @@ impl VisibilityLoader {
 			.iter()
 			.map(|primitive| assign_slot(&mut slots, &primitive.material_id, MAX_MATERIALS, "material"))
 			.collect()
+	}
+
+	/// Reads the stored class of `id` and forwards it as the matching family request.
+	async fn load_resource(&self, id: &'static str) -> Result<Loaded<Self>, LoadError> {
+		let class = self.resource_manager.class(id).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility resource request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded. Request error: {error}"
+			))
+		})?;
+		let request = if class == "Mesh" {
+			VisibilityLoadRequest::Mesh(MeshSource::Resource(id))
+		} else {
+			self.route(id.to_owned(), &class).await?
+		};
+		Ok(Loaded {
+			resident: VisibilityResident::Routed,
+			dependencies: vec![request],
+		})
+	}
+
+	/// Runs `query` and forwards every match as the request for the query's class.
+	async fn load_query(&self, query: Query) -> Result<Loaded<Self>, LoadError> {
+		if query.class == "Mesh" {
+			return Err(LoadError(
+				"Visibility cannot load mesh query results. The most likely cause is that mesh sources only accept static resource ids."
+					.to_string(),
+			));
+		}
+		let class = query.class.clone();
+		let ids = self.resource_manager.query_ids(query).await.map_err(|error| {
+			LoadError(format!(
+				"Visibility query for {class} resources failed. The most likely cause is that the asset database is not loaded. Query error: {error:?}"
+			))
+		})?;
+		let mut dependencies = Vec::with_capacity(ids.items.len());
+		for id in ids.items {
+			// One unroutable match must not discard the rest of the query.
+			match self.route(id, &class).await {
+				Ok(request) => dependencies.push(request),
+				Err(error) => log::warn!("{error}"),
+			}
+		}
+		Ok(Loaded {
+			resident: VisibilityResident::Routed,
+			dependencies,
+		})
+	}
+
+	/// Maps an owned resource ID of a known non-mesh class to its family request.
+	async fn route(&self, id: String, class: &str) -> Result<VisibilityLoadRequest, LoadError> {
+		match class {
+			"Variant" => Ok(VisibilityLoadRequest::Material(id)),
+			"Image" => {
+				let image: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
+					LoadError(format!("Visibility image request failed for {id}. Request error: {error}"))
+				})?;
+				if image.resource().ibl.is_some() {
+					Ok(VisibilityLoadRequest::Environment(id))
+				} else {
+					Ok(VisibilityLoadRequest::Texture(id))
+				}
+			}
+			_ => Err(LoadError(format!(
+				"Visibility cannot load {id} of class {class}. The most likely cause is that the resource is not a mesh, material variant, or image."
+			))),
+		}
 	}
 
 	/// Resolves, converts, places, and transfers one mesh before publishing its material dependencies.
@@ -724,6 +813,8 @@ impl LoadPipeline for VisibilityLoader {
 
 	fn key(request: &Self::Request) -> Self::Key {
 		match request {
+			VisibilityLoadRequest::Resource(id) => VisibilityLoadKey::Resource(id),
+			VisibilityLoadRequest::Query(query) => VisibilityLoadKey::Query(query.clone()),
 			VisibilityLoadRequest::Mesh(source) => VisibilityLoadKey::Mesh(source.key()),
 			VisibilityLoadRequest::Material(id) => VisibilityLoadKey::Material(id.clone()),
 			VisibilityLoadRequest::Texture(id) => VisibilityLoadKey::Texture(id.clone()),
@@ -734,6 +825,8 @@ impl LoadPipeline for VisibilityLoader {
 	/// Routes every visibility resource family through one request stream and one dependency registry.
 	async fn load(&self, request: VisibilityLoadRequest, lane: &mut LoaderLane<Self>) -> Result<Loaded<Self>, LoadError> {
 		match request {
+			VisibilityLoadRequest::Resource(id) => self.load_resource(id).await,
+			VisibilityLoadRequest::Query(query) => self.load_query(query).await,
 			VisibilityLoadRequest::Mesh(source) => self.load_mesh(source, lane).await,
 			VisibilityLoadRequest::Material(id) => self.load_material(id).await,
 			VisibilityLoadRequest::Texture(id) => Ok(Loaded::new(self.load_texture(id, lane).await?)),

@@ -250,6 +250,37 @@ impl ResourceManager {
 	where
 		T::Model: StoredModel<Resource = T>,
 	{
+		// The record read here is solved directly, so the requested resource is read from storage once.
+		let (stored, reader) = self.read_stored(id).await?;
+
+		T::Model::solve_stored(stored, reader, self.get_storage_backend())
+			.await
+			.map_err(|error| Into::<&'static str>::into(error).to_string())
+	}
+
+	/// Returns the stored class of `id`, such as `Mesh`, `Variant`, or `Image`.
+	///
+	/// Use this to route a resource whose type the caller does not know, then
+	/// call [`Self::request`] with the matching resource type.
+	pub async fn class(&self, id: &str) -> Result<String, String> {
+		let (stored, _) = self.read_stored(id).await?;
+		Ok(stored.class().to_owned())
+	}
+
+	/// Returns one page of resource IDs that match indexed metadata, without resolving any resource.
+	///
+	/// Every returned ID has the class named by `query`. Development builds only
+	/// see resources that were already baked.
+	pub async fn query_ids(&self, query: impl Into<Query>) -> Result<QueryPage<String>, QueryError> {
+		let page = self.get_storage_backend().query(query.into()).await?;
+		Ok(QueryPage {
+			items: page.items.into_iter().map(|(stored, _)| stored.id().to_owned()).collect(),
+			cursor: page.cursor,
+		})
+	}
+
+	/// Bakes `id` when stale in development builds, then reads its stored record.
+	async fn read_stored(&self, id: &str) -> Result<(SerializableResource, MultiResourceReader), String> {
 		let storage_backend = self.get_storage_backend();
 
 		#[cfg(debug_assertions)]
@@ -263,7 +294,6 @@ impl ResourceManager {
 				.map_err(|error| asset_request_error(id, &error, asset_manager))?;
 		}
 
-		// The record read here is solved directly, so the requested resource is read from storage once.
 		let Some((stored, reader)) = storage_backend.read(ResourceId::new(id)).await else {
 			#[cfg(debug_assertions)]
 			if let Some(asset_manager) = asset_manager {
@@ -278,9 +308,7 @@ impl ResourceManager {
 			asset_manager.track_resource(&stored);
 		}
 
-		T::Model::solve_stored(stored, reader, storage_backend)
-			.await
-			.map_err(|error| Into::<&'static str>::into(error).to_string())
+		Ok((stored, reader))
 	}
 
 	/// Loads independent resources concurrently while preserving the requested order.
@@ -316,7 +344,7 @@ impl ResourceManager {
 	/// [`Reference::resource`](crate::Reference::resource) for metadata and await
 	/// [`Reference::load`](crate::Reference::load) only when the binary payload is
 	/// needed.
-	pub async fn query<T: Resource>(&self, query: Query) -> Result<QueryPage<Reference<T>>, QueryError>
+	pub async fn query<T: Resource>(&self, query: impl Into<Query>) -> Result<QueryPage<Reference<T>>, QueryError>
 	where
 		T::Model: StoredModel<Resource = T>,
 	{
@@ -324,7 +352,7 @@ impl ResourceManager {
 			.get_storage_backend()
 			.query(Query {
 				class: T::Model::get_class().to_string(),
-				..query
+				..query.into()
 			})
 			.await?;
 
@@ -733,6 +761,7 @@ use std::sync::Arc;
 
 use super::{
 	DynStorageBackend, StorageBackend,
+	resource_handler::MultiResourceReader,
 	storage_backend::{Query, QueryError, QueryPage},
 };
 #[cfg(debug_assertions)]
@@ -741,4 +770,4 @@ use crate::asset::{
 	handler::LoadErrors,
 	manager::{AssetManager, LoadMessages},
 };
-use crate::{Model, Reference, Resource, StoredModel, asset::ResourceId, online_docs_url};
+use crate::{Model, Reference, Resource, SerializableResource, StoredModel, asset::ResourceId, online_docs_url};

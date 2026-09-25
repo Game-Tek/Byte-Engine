@@ -42,6 +42,7 @@ mod pipeline_compilation;
 #[doc(hidden)]
 pub mod pipeline_manager;
 mod pose;
+mod resource;
 
 #[doc(hidden)]
 pub mod renderer;
@@ -88,6 +89,7 @@ pub use render_pass::{
 };
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer, Settings};
+pub use resource::{Query, Resource};
 pub use shared_context::SharedContext;
 pub use sink::Sink;
 pub use view::View;

@@ -49,7 +49,7 @@ use crate::rendering::lights::{IesProfile, Lights};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
-use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Sink, View, csm};
+use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, View, csm};
 
 /// The startup parameters that set the local-light shadow pool capacities.
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
@@ -565,6 +565,11 @@ impl VisibilityPipelineManager {
 		if let Some(resident) = self.loader.request_environment(id) {
 			self.environment.bind(resident);
 		}
+	}
+
+	/// Starts loading a resource before any scene entity uses it.
+	pub(crate) fn request_resource(&mut self, resource: Resource) {
+		self.loader.request_resource(resource);
 	}
 
 	/// Requests the renderable's mesh and keeps the scene instance pending until the mesh is resident.

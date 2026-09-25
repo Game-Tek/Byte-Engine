@@ -170,7 +170,39 @@ pub struct VariantModel {
 	pub variables: Vec<VariantVariableModel>,
 	pub alpha_mode: AlphaMode,
 }
-super::impl_resource_model!(Variant, VariantModel, "Variant");
+
+impl crate::Resource for Variant {
+	type Model = VariantModel;
+
+	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
+		variant_queryable_properties(id, Some(&self.material.resource().model))
+	}
+}
+
+impl crate::Model for VariantModel {
+	fn get_class() -> &'static str {
+		"Variant"
+	}
+
+	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
+		let material = crate::from_slice::<MaterialModel>(&self.material.resource).ok();
+		variant_queryable_properties(id, material.as_ref().map(|material| &material.model))
+	}
+}
+
+/// Indexes a variant by name and by the render model and pass of its material, so renderers can query their materials.
+fn variant_queryable_properties(id: &str, model: Option<&RenderModel>) -> Vec<crate::QueryableProperty> {
+	let property = |name: &str, value: &str| crate::QueryableProperty {
+		name: name.to_string(),
+		value: crate::QueryableValue::String(value.to_string()),
+	};
+	let mut properties = vec![property("name", id)];
+	if let Some(model) = model {
+		properties.push(property("render-model", &model.name));
+		properties.push(property("render-pass", &model.pass));
+	}
+	properties
+}
 
 impl crate::StoredModel for VariantModel {
 	type Resource = Variant;

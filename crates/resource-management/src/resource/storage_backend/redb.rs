@@ -17,6 +17,8 @@ pub struct ReDBStorageBackend {
 	storage_mode: ResourceStorageMode,
 	image_compression: ResourceGpuCompressionPolicy,
 	packed_allocator: Option<PackedResourceAllocator>,
+	/// Whether the resources table was empty when this backend opened the store.
+	opened_empty: bool,
 	/// Suffix for the next staging file name. Name clashes with other processes or
 	/// backends sharing the directory are resolved by retrying with the next value.
 	next_staging_file: AtomicU64,
@@ -64,6 +66,7 @@ impl ReDBStorageBackend {
 			storage_mode: ResourceStorageMode::Files,
 			image_compression: ResourceGpuCompressionPolicy::Disabled,
 			packed_allocator: None,
+			opened_empty: false,
 			next_staging_file: AtomicU64::new(0),
 		};
 		let settings = backend.persisted_settings()?;
@@ -127,7 +130,9 @@ impl ReDBStorageBackend {
 			unreachable!();
 		};
 		let write = writable_db.begin_write().unwrap();
-		let _ = write.open_table(RESOURCES_TABLE);
+		let opened_empty = write
+			.open_table(RESOURCES_TABLE)
+			.is_ok_and(|resources| resources.is_empty().unwrap_or(false));
 		let _ = write.open_table(RESOURCE_CLASS_INDEX_TABLE);
 		let _ = write.open_table(RESOURCE_PROPERTY_INDEX_TABLE);
 		let _ = write.open_table(PACKED_RESOURCE_OFFSETS_TABLE);
@@ -188,8 +193,14 @@ impl ReDBStorageBackend {
 			storage_mode: settings.storage_mode,
 			image_compression: settings.image_compression,
 			packed_allocator,
+			opened_empty,
 			next_staging_file: AtomicU64::new(0),
 		})
+	}
+
+	/// Returns whether the resources table was empty when this backend opened the store.
+	pub(crate) fn opened_empty(&self) -> bool {
+		self.opened_empty
 	}
 
 	fn begin_read(&self) -> Result<redb::ReadTransaction, redb::TransactionError> {
@@ -672,6 +683,16 @@ impl ReadStorageBackend for ReDBStorageBackend {
 			}
 
 			let page = self.query_index(&query)?;
+			if page.items.is_empty() && query.cursor.is_none() {
+				if self.opened_empty {
+					log::warn!(
+						"Query for {} resources matched nothing because the resource store was empty when opened. The most likely cause is a development run on a fresh store, which bakes resources only on first request; later runs will find them.",
+						query.class
+					);
+				} else {
+					log::info!("Query for {} resources matched nothing.", query.class);
+				}
+			}
 			let mut items = Vec::with_capacity(page.items.len());
 			for resource_key in page.items {
 				items.push(
@@ -2314,6 +2335,236 @@ mod tests {
 		assert!(cursor.is_none());
 	}
 
+	fn material(group: &str, tag: &str) -> MockMaterialModel {
+		MockMaterialModel {
+			group: group.into(),
+			tag: tag.into(),
+		}
+	}
+
+	/// Drains every page of `query` with `limit` results per page, asserting no page exceeds it.
+	async fn query_all_pages(backend: &ReDBStorageBackend, query: Query, limit: usize) -> Vec<String> {
+		let mut ids = Vec::new();
+		let mut cursor = None;
+		loop {
+			let mut page_query = query.clone().limit(limit);
+			if let Some(cursor) = cursor.take() {
+				page_query = page_query.cursor(cursor);
+			}
+			let (page, next) = query_ids(backend, page_query).await;
+			assert!(page.len() <= limit);
+			ids.extend(page);
+			match next {
+				Some(next) => cursor = Some(next),
+				None => return ids,
+			}
+		}
+	}
+
+	#[crate::r#async::test]
+	async fn query_pages_property_index_results() {
+		let backend = backend();
+		for id in ["materials/a", "materials/b", "materials/c"] {
+			store_mock(&backend, id, material("opaque", "hero")).await;
+		}
+		store_mock(&backend, "materials/d", material("transparent", "hero")).await;
+
+		let mut ids = query_all_pages(&backend, Query::new("MockMaterial").eq("group", "opaque"), 1).await;
+		ids.sort();
+
+		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
+	}
+
+	#[crate::r#async::test]
+	async fn query_pages_stay_complete_when_later_predicates_filter_index_entries() {
+		let backend = backend();
+		for index in 0..8 {
+			let tag = if index % 2 == 0 { "hero" } else { "prop" };
+			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
+		}
+
+		let mut ids = query_all_pages(&backend, Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"), 2).await;
+		ids.sort();
+
+		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
+	}
+
+	#[crate::r#async::test]
+	async fn query_with_exactly_limit_matches_returns_no_cursor() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/b", material("opaque", "hero")).await;
+
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
+
+		assert_eq!(ids.len(), 2);
+		assert!(cursor.is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn query_with_zero_limit_returns_an_empty_final_page() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(0)).await;
+
+		assert!(ids.is_empty());
+		assert!(cursor.is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn query_without_limit_returns_every_match() {
+		let backend = backend();
+		for index in 0..5 {
+			store_mock(&backend, &format!("materials/{index}"), material("opaque", "hero")).await;
+		}
+
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial")).await;
+
+		assert_eq!(ids.len(), 5);
+		assert!(cursor.is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn query_does_not_match_values_that_share_a_prefix() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/b", material("opaque", "heroic")).await;
+
+		let (hero, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
+		let (her, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "her")).await;
+
+		assert_eq!(hero, vec!["materials/a"]);
+		assert!(her.is_empty());
+	}
+
+	#[crate::r#async::test]
+	async fn query_does_not_match_classes_that_share_a_prefix() {
+		#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+		struct MockMaterialExtraModel {
+			group: String,
+		}
+
+		impl Model for MockMaterialExtraModel {
+			fn get_class() -> &'static str {
+				"MockMaterialExtra"
+			}
+
+			fn queryable_properties(&self, _: &str) -> Vec<crate::QueryableProperty> {
+				vec![crate::QueryableProperty {
+					name: "group".to_string(),
+					value: crate::QueryableValue::String(self.group.clone()),
+				}]
+			}
+		}
+
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(
+			&backend,
+			"extras/a",
+			MockMaterialExtraModel {
+				group: "opaque".into(),
+			},
+		)
+		.await;
+
+		let (by_class, _) = query_ids(&backend, Query::new("MockMaterial")).await;
+		let (by_property, _) = query_ids(&backend, Query::new("MockMaterial").eq("group", "opaque")).await;
+
+		assert_eq!(by_class, vec!["materials/a"]);
+		assert_eq!(by_property, vec!["materials/a"]);
+	}
+
+	#[crate::r#async::test]
+	async fn query_returns_empty_for_unknown_property() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("missing", "hero")).await;
+
+		assert!(ids.is_empty());
+		assert!(cursor.is_none());
+	}
+
+	#[crate::r#async::test]
+	async fn query_after_overwrite_matches_only_the_latest_properties() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/a", material("opaque", "prop")).await;
+
+		let (old, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
+		let (new, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "prop")).await;
+		let (all, _) = query_ids(&backend, Query::new("MockMaterial")).await;
+
+		assert!(old.is_empty());
+		assert_eq!(new, vec!["materials/a"]);
+		assert_eq!(all, vec!["materials/a"]);
+	}
+
+	#[crate::r#async::test]
+	async fn packed_stores_answer_class_and_property_queries() {
+		let backend = backend_with_mode(ResourceStorageMode::Packed);
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/b", material("transparent", "hero")).await;
+
+		let mut all = query_all_pages(&backend, Query::new("MockMaterial"), 1).await;
+		all.sort();
+		let (opaque, _) = query_ids(&backend, Query::new("MockMaterial").eq("group", "opaque")).await;
+
+		assert_eq!(all, vec!["materials/a", "materials/b"]);
+		assert_eq!(opaque, vec!["materials/a"]);
+	}
+
+	#[crate::r#async::test]
+	async fn new_store_reports_it_opened_empty() {
+		let backend = backend();
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+
+		// The flag describes the store at open time, so later writes do not clear it.
+		assert!(backend.opened_empty());
+	}
+
+	fn variant_for(render_model: &str) -> crate::resources::material::VariantModel {
+		use crate::resources::material::{MaterialModel, RenderModel, VariantModel};
+
+		let material = MaterialModel {
+			double_sided: false,
+			alpha_mode: crate::types::AlphaMode::Opaque,
+			coverage: Default::default(),
+			shaders: Vec::new(),
+			model: RenderModel {
+				name: render_model.to_string(),
+				pass: "MaterialEvaluation".to_string(),
+			},
+			parameters: Vec::new(),
+		};
+		VariantModel {
+			material: crate::ReferenceModel::new("materials/shared.material", 0, 0, &material, None),
+			variables: Vec::new(),
+			alpha_mode: crate::types::AlphaMode::Opaque,
+		}
+	}
+
+	#[crate::r#async::test]
+	async fn variant_query_ids_match_the_material_render_model() {
+		let backend = backend();
+		store_mock(&backend, "materials/visibility.variant", variant_for("Visibility")).await;
+		store_mock(&backend, "materials/other.variant", variant_for("Forward")).await;
+		let resource_manager = crate::ResourceManager::new(backend);
+
+		let page = resource_manager
+			.query_ids(
+				Query::new("Variant")
+					.eq("render-model", "Visibility")
+					.eq("render-pass", "MaterialEvaluation"),
+			)
+			.await
+			.unwrap();
+
+		assert_eq!(page.items, vec!["materials/visibility.variant"]);
+	}
+
 	#[cfg(debug_assertions)]
 	#[crate::r#async::test]
 	async fn trace_round_trips_without_creating_a_resource_and_delete_clears_it() {
@@ -2388,7 +2639,7 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 
-use redb::{ReadableDatabase as _, ReadableTable};
+use redb::{ReadableDatabase as _, ReadableTable, ReadableTableMetadata as _};
 use utils::sync::remove_file;
 
 use self::packed_allocator::{PackedRange, PackedResourceAllocator};

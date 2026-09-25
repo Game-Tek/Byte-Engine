@@ -194,7 +194,7 @@ pub trait DynWriteStorageBackend: Send + Sync {
 
 /// The `QueryCursor` struct provides an opaque continuation point for paginated resource queries.
 #[derive(
-	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+	Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct QueryCursor {
 	pub(crate) token: Vec<u8>,
@@ -207,13 +207,13 @@ impl QueryCursor {
 }
 
 /// The `QueryPredicate` enum defines one indexed property constraint for a resource query.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum QueryPredicate {
 	Eq { property: String, value: QueryableValue },
 }
 
 /// The `Query` struct provides a class-filtered, paginated request to a storage backend.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Query {
 	pub class: String,
 	pub predicates: Vec<QueryPredicate>,
@@ -222,19 +222,19 @@ pub struct Query {
 }
 
 impl Query {
-	pub fn new(class: &str) -> Self {
+	pub fn new(class: impl Into<String>) -> Self {
 		Self {
-			class: class.to_string(),
+			class: class.into(),
 			predicates: Vec::new(),
 			limit: usize::MAX,
 			cursor: None,
 		}
 	}
 
-	pub fn eq(mut self, property: &str, value: &str) -> Self {
+	pub fn eq(mut self, property: impl Into<String>, value: impl Into<QueryableValue>) -> Self {
 		self.predicates.push(QueryPredicate::Eq {
-			property: property.to_string(),
-			value: QueryableValue::String(value.to_string()),
+			property: property.into(),
+			value: value.into(),
 		});
 		self
 	}

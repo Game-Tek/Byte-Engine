@@ -245,6 +245,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		point_light_receiver: DefaultListener<CreateMessage<PointLight>>,
 		delete_receiver: DefaultListener<DeleteMessage>,
 		mesh_receiver: DefaultListener<CreateMessage<RenderableMesh>>,
+		resource_receiver: DefaultListener<CreateMessage<rendering::Resource>>,
 		pose_receiver: DefaultListener<UpdatePose>,
 		environment_receiver: DefaultListener<CreateMessage<Environment>>,
 		visibility_pipeline_manager: VisibilityPipelineManager,
@@ -271,6 +272,13 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 				let handle = message.handle();
 				self.visibility_pipeline_manager
 					.create_light(handle, message.into_data().into());
+			}
+		}
+
+		/// Drains resource creation messages so their loads start before any entity needs them.
+		fn request_pending_resources(&mut self) {
+			while let Some(message) = self.resource_receiver.read() {
+				self.visibility_pipeline_manager.request_resource(message.into_data());
 			}
 		}
 
@@ -309,6 +317,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 
 	impl PipelineManager for CustomPipelineManager {
 		fn update(&mut self) {
+			self.request_pending_resources();
 			self.request_pending_lights();
 			self.request_pending_meshes();
 			self.request_pending_environments();
@@ -346,6 +355,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let point_light_receiver = application.world().factory::<PointLight>().listener();
 		let delete_receiver = application.world().deletions_listener();
 		let mesh_receiver = application.world().factory::<RenderableMesh>().listener();
+		let resource_receiver = application.world().factory::<rendering::Resource>().listener();
 		let transforms_listener = application.world().transforms_channel().listener();
 		let pose_receiver = application.world().poses_channel().listener();
 		let environment_receiver = application.world().factory::<Environment>().listener();
@@ -366,6 +376,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			point_light_receiver,
 			delete_receiver,
 			mesh_receiver,
+			resource_receiver,
 			pose_receiver,
 			environment_receiver,
 		};

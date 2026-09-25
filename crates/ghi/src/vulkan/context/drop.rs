@@ -6,6 +6,8 @@ impl Drop for Context {
 			self.device.device_wait_idle().expect(
 				"Failed to wait for the Vulkan device during context destruction. The most likely cause is that the device was lost.",
 			);
+			// Retired storage is no longer referenced by any live resource, so the loops below would leak it.
+			self.destroy_retired_resources();
 			self.command_buffers.iter().for_each(|command_buffer| {
 				command_buffer.frames.iter().for_each(|command_buffer| {
 					self.device.destroy_command_pool(command_buffer.command_pool, None);

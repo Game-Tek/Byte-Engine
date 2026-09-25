@@ -776,6 +776,7 @@ impl crate::context::ContextCreate for Context {
 			size: buffer_creation_result.size,
 			device_address: address,
 			pointer: crate::vulkan::MappedMemoryPointer(pointer),
+			allocation: Some(allocation_handle),
 			uses: crate::Uses::empty(),
 			access: crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
 		});

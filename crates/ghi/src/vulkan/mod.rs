@@ -500,17 +500,21 @@ pub(crate) struct BuildBuffer {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
-	/// Deletes a Vulkan image at the frame selected by [`Task`].
+	/// Deletes a Vulkan image once the frame recorded in [`Task`] has completed.
 	DeleteVulkanImage {
 		handle: vk::Image,
 	},
-	/// Deletes a Vulkan image view at the frame selected by [`Task`].
+	/// Deletes a Vulkan image view once the frame recorded in [`Task`] has completed.
 	DeleteVulkanImageView {
 		handle: vk::ImageView,
 	},
-	/// Deletes a Vulkan buffer at the frame selected by [`Task`].
+	/// Deletes a Vulkan buffer once the frame recorded in [`Task`] has completed.
 	DeleteVulkanBuffer {
 		handle: vk::Buffer,
+	},
+	/// Frees device memory once the frame recorded in [`Task`] has completed.
+	FreeAllocation {
+		handle: crate::AllocationHandle,
 	},
 	/// Resize an image.
 	ResizeImage {
@@ -531,36 +535,36 @@ pub(crate) enum Tasks {
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,
+	/// Frame index whose GPU work must complete before the task runs, for objects that in-flight frames may still use.
+	pub(crate) after_frame: Option<u64>,
 }
 
 impl Task {
 	pub(crate) fn new(task: Tasks, frame: Option<u8>) -> Self {
-		Self { task, frame }
-	}
-
-	pub(crate) fn delete_vulkan_image(handle: vk::Image, frame: u8) -> Self {
 		Self {
-			task: Tasks::DeleteVulkanImage { handle },
-			frame: Some(frame),
-		}
-	}
-
-	pub(crate) fn delete_vulkan_image_view(handle: vk::ImageView, frame: u8) -> Self {
-		Self {
-			task: Tasks::DeleteVulkanImageView { handle },
-			frame: Some(frame),
-		}
-	}
-
-	pub(crate) fn delete_vulkan_buffer(handle: vk::Buffer, frame: Option<u8>) -> Self {
-		Self {
-			task: Tasks::DeleteVulkanBuffer { handle },
+			task,
 			frame,
+			after_frame: None,
+		}
+	}
+
+	/// Schedules a task for the first task pass after `frame_index` has completed on the GPU.
+	pub(crate) fn after_frame(task: Tasks, frame_index: u64) -> Self {
+		Self {
+			task,
+			frame: None,
+			after_frame: Some(frame_index),
 		}
 	}
 
 	pub(crate) fn frame(&self) -> Option<u8> {
 		self.frame
+	}
+
+	/// Whether the GPU may still use what this task touches, given the latest frame known to have completed.
+	pub(crate) fn is_pending(&self, completed_frame: Option<u64>) -> bool {
+		self.after_frame
+			.is_some_and(|after_frame| completed_frame.is_none_or(|completed_frame| completed_frame < after_frame))
 	}
 
 	pub(crate) fn task(&self) -> &Tasks {
@@ -574,6 +578,38 @@ pub(super) struct StoredQueue {
 	pub(crate) vk_queue: Arc<Mutex<vk::Queue>>,
 	pub(crate) queue_family_index: u32,
 	pub(crate) _queue_index: u32,
+}
+
+#[cfg(test)]
+mod task_tests {
+	use super::*;
+
+	#[test]
+	fn deferred_destruction_waits_for_its_frame_to_complete() {
+		let task = Task::after_frame(
+			Tasks::DeleteVulkanBuffer {
+				handle: vk::Buffer::null(),
+			},
+			5,
+		);
+
+		assert!(task.is_pending(None));
+		assert!(task.is_pending(Some(4)));
+		assert!(!task.is_pending(Some(5)));
+		assert!(!task.is_pending(Some(6)));
+	}
+
+	#[test]
+	fn frame_tasks_never_wait_for_completion() {
+		let task = Task::new(
+			Tasks::DeleteVulkanBuffer {
+				handle: vk::Buffer::null(),
+			},
+			Some(1),
+		);
+
+		assert!(!task.is_pending(None));
+	}
 }
 
 #[cfg(test)]

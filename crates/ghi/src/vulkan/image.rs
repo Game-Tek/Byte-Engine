@@ -14,6 +14,8 @@ pub(crate) struct Image {
 	pub(crate) next: Option<ImageHandle>,
 	pub(crate) staging_buffer: Option<vk::Buffer>,
 	pub(crate) staging_allocation: Option<crate::AllocationHandle>,
+	/// Dedicated memory backing `image`, released together with it when the image is replaced.
+	pub(crate) allocation: Option<crate::AllocationHandle>,
 	pub(crate) pointer: Option<crate::vulkan::MappedMemoryPointer>,
 	pub(crate) image: vk::Image,
 	pub(crate) full_image_view: vk::ImageView,

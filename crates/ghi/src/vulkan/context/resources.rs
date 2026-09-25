@@ -203,6 +203,7 @@ impl Context {
 			size: 0,
 			staging_buffer: None,
 			staging_allocation: None,
+			allocation: None,
 			pointer: None,
 			image: vk_image,
 			full_image_view: vk::ImageView::null(),
@@ -336,9 +337,43 @@ impl Context {
 			size,
 			device_address,
 			pointer: crate::vulkan::MappedMemoryPointer(pointer),
+			allocation: Some(allocation_handle),
 			uses: resource_uses,
 			access: buffer_accesses,
 		}
+	}
+
+	/// Builds the host-visible buffer that carries CPU reads and writes for a GPU buffer with `device_accesses`.
+	fn build_host_staging_buffer(
+		&mut self,
+		name: Option<&str>,
+		size: usize,
+		resource_uses: crate::Uses,
+		device_accesses: crate::DeviceAccesses,
+	) -> Buffer {
+		let vk_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
+			vk::BufferUsageFlags::TRANSFER_DST
+		} else {
+			vk::BufferUsageFlags::empty()
+		} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
+			vk::BufferUsageFlags::TRANSFER_SRC
+		} else {
+			vk::BufferUsageFlags::empty()
+		} | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
+
+		let device_access = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
+			crate::DeviceAccesses::GpuWrite | crate::DeviceAccesses::CpuRead
+		} else {
+			crate::DeviceAccesses::empty()
+		} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
+			crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite
+		} else {
+			crate::DeviceAccesses::empty()
+		};
+
+		// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
+		let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
+		self.create_bound_buffer(name, size, vk_usage_flags, allocation_accesses, device_access, resource_uses)
 	}
 
 	/// Builds a buffer object with the given name, resource uses, size, Vulkan buffer usage flags, and device accesses.
@@ -362,6 +397,7 @@ impl Context {
 				size: 0,
 				device_address: 0,
 				pointer: crate::vulkan::MappedMemoryPointer(std::ptr::null_mut()),
+				allocation: None,
 				uses: resource_uses,
 				access: device_accesses,
 			};
@@ -404,30 +440,7 @@ impl Context {
 		);
 
 		let staging = if device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite) {
-			let vk_usage_flags = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-				vk::BufferUsageFlags::TRANSFER_DST
-			} else {
-				vk::BufferUsageFlags::empty()
-			} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-				vk::BufferUsageFlags::TRANSFER_SRC
-			} else {
-				vk::BufferUsageFlags::empty()
-			} | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
-
-			let device_access = if device_accesses.intersects(crate::DeviceAccesses::CpuRead) {
-				crate::DeviceAccesses::GpuWrite | crate::DeviceAccesses::CpuRead
-			} else {
-				crate::DeviceAccesses::empty()
-			} | if device_accesses.intersects(crate::DeviceAccesses::CpuWrite) {
-				crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::CpuWrite
-			} else {
-				crate::DeviceAccesses::empty()
-			};
-
-			// The staging allocation itself needs host properties only; GPU access describes how commands use the buffer.
-			let allocation_accesses = device_accesses & (crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
-			let staging_buffer =
-				self.create_bound_buffer(name, size, vk_usage_flags, allocation_accesses, device_access, resource_uses);
+			let staging_buffer = self.build_host_staging_buffer(name, size, resource_uses, device_accesses);
 
 			let (_, handle) = self.buffers.add(staging_buffer);
 
@@ -502,6 +515,7 @@ impl Context {
 				size: 0,
 				staging_buffer: None,
 				staging_allocation: None,
+				allocation: None,
 				pointer: None,
 				image: vk::Image::null(),
 				full_image_view: vk::ImageView::null(),
@@ -548,13 +562,13 @@ impl Context {
 			device_accesses
 		};
 
-		let (allocation_handle, _) = self.create_allocation_internal(
+		let (image_allocation, _) = self.create_allocation_internal(
 			texture_creation_result.size,
 			texture_creation_result.memory_flags.into(),
 			m_device_accesses,
 		);
 
-		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, allocation_handle, 0);
+		let _ = self.bind_vulkan_texture_memory(&texture_creation_result, image_allocation, 0);
 
 		let (staging_buffer, staging_allocation, pointer) = if uses_cpu_staging {
 			// A staging buffer may serve both readback and upload when the image allows both CPU access modes.
@@ -645,6 +659,7 @@ impl Context {
 			size,
 			staging_buffer,
 			staging_allocation,
+			allocation: Some(image_allocation),
 			pointer,
 			image: texture_creation_result.resource,
 			full_image_view: full_image_view.unwrap_or(vk::ImageView::null()),
@@ -714,79 +729,79 @@ impl Context {
 		synchronizer_handle
 	}
 
+	/// Grows every frame copy of a dynamic buffer, its staging, and its persistent source to `size`.
+	///
+	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
+	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
 	pub(crate) fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
-		let current_buffer = self.buffers.resource(buffer_handle);
-
-		if current_buffer.size >= size {
+		if self.buffers.resource(buffer_handle).size >= size {
 			return;
 		}
 
-		assert!(current_buffer.staging.is_none(), "Cannot resize buffers with staging buffers");
+		let master_handle = graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0);
+		let name = self.get_object_debug_name(master_handle.into());
+		let name = name.as_deref();
 
-		if current_buffer.size != 0 {
-			let current_vk_buffer = current_buffer.buffer;
-
-			self.tasks.push(Task::delete_vulkan_buffer(current_vk_buffer, None));
-
-			// todo!("copy data from old buffer to new buffer");
+		// Copies for later sequences may not exist yet; their pending build tasks copy the master's new size.
+		let mut frame_copies = SmallVec::<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>::new();
+		for sequence_index in 0..self.frames as usize {
+			let handle = self
+				.buffers
+				.nth_handle(master_handle, sequence_index)
+				.expect("Missing Vulkan dynamic buffer. The most likely cause is that the handle came from another context.");
+			if !frame_copies.contains(&handle) {
+				frame_copies.push(handle);
+			}
 		}
 
-		let new_buffer = self.build_buffer_internal(
-			None,
-			None,
-			current_buffer.uses,
-			size,
-			crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead,
-		);
+		let mut persistent_source = None;
+		for handle in frame_copies {
+			let current = *self.buffers.resource(handle);
+			let mut replacement = self.build_buffer_internal(None, name, current.uses, size, current.access);
+			if let Some(source_handle) = current.source {
+				persistent_source = Some((source_handle, current.access));
+				replacement.source = Some(source_handle);
+			}
 
-		*self.buffers.resource_mut(buffer_handle) = new_buffer;
+			if let Some(staging_handle) = current.staging {
+				self.retire_buffer_storage(staging_handle);
+			}
+			self.retire_buffer_storage(handle);
+			*self.buffers.resource_mut(handle) = replacement;
+
+			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
+			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
+			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
+		}
+
+		// Pending build tasks captured the shared source handle, so it is replaced in place rather than reallocated.
+		if let Some((source_handle, device_accesses)) = persistent_source {
+			let uses = self.buffers.resource(source_handle).uses;
+			let replacement = self.build_host_staging_buffer(name, size, uses, device_accesses);
+			self.retire_buffer_storage(source_handle);
+			*self.buffers.resource_mut(source_handle) = replacement;
+		}
+
 		for sequence_index in 0..self.frames {
 			self.bump_descriptor_sequence_epoch(sequence_index);
 		}
 	}
 
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
+		let image = image_handle.access(&self.images);
+		if !image.owns_image || image.extent == extent {
+			return;
+		}
+
+		let root_handle = image_handle.root(&self.images);
 		let name = self.get_object_debug_name(
-			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(
-				image_handle.root(&self.images).0,
-			))
-			.into(),
+			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_handle.0)).into(),
 		);
 
-		let image = image_handle.access(&self.images);
-
-		if !image.owns_image {
-			return;
-		}
-
-		if image.extent == extent {
-			// Requested extent matches current extent, no resize needed
-			return;
-		}
-
-		if let Some(staging_buffer_handle) = image.staging_buffer {
-			self.tasks
-				.push(Task::delete_vulkan_buffer(staging_buffer_handle, Some(sequence_index)));
-		}
-
-		for &image_view in &image.image_views {
-			if !image_view.is_null() {
-				self.tasks.push(Task::delete_vulkan_image_view(image_view, sequence_index));
-			}
-		}
-
-		if !image.full_image_view.is_null() {
-			self.tasks
-				.push(Task::delete_vulkan_image_view(image.full_image_view, sequence_index));
-		}
-
-		self.tasks.push(Task::delete_vulkan_image(image.image, sequence_index));
-
-		// TODO: release memory/allocation
-
+		let image = self.images[image_handle.0 as usize].clone();
 		let new_image = self.build_image_internal(
 			image.next,
-			name.as_ref().map(|e| e.as_str()),
+			name.as_deref(),
 			image.format_,
 			image.access,
 			image.layers,
@@ -798,12 +813,85 @@ impl Context {
 		);
 
 		self.images[image_handle.0 as usize] = new_image;
+		self.retire_image_storage(&image);
 
 		if let Some(state) = self.states.get_mut(&crate::vulkan::Handles::Image(image_handle)) {
 			state.layout = vk::ImageLayout::UNDEFINED;
 		}
 
-		self.bump_descriptor_sequence_epoch(sequence_index);
+		// A static image is one instance shared by every sequence, so every sequence's snapshots may hold its old views.
+		if root_handle.get_all(&self.images).len() == 1 {
+			for sequence_index in 0..self.frames {
+				self.bump_descriptor_sequence_epoch(sequence_index);
+			}
+		} else {
+			self.bump_descriptor_sequence_epoch(sequence_index);
+		}
+	}
+
+	/// Queues a destruction for the first task pass after every frame started so far has completed on the GPU.
+	///
+	/// Frames that already started may have recorded or submitted work that references the object. Before the first
+	/// frame, work submitted outside frames is covered by waiting for frame 0, whose fence orders all earlier submissions.
+	pub(crate) fn defer_destruction(&mut self, task: Tasks) {
+		self.tasks
+			.push(Task::after_frame(task, self.last_started_frame.unwrap_or(0)));
+	}
+
+	/// Retires a buffer's Vulkan object and memory, leaving its entry empty so it is never destroyed twice.
+	pub(crate) fn retire_buffer_storage(&mut self, handle: BufferHandle) {
+		let buffer = self.buffers.resource_mut(handle);
+		let vk_buffer = std::mem::replace(&mut buffer.buffer, vk::Buffer::null());
+		let allocation = buffer.allocation.take();
+		buffer.pointer = crate::vulkan::MappedMemoryPointer(std::ptr::null_mut());
+		buffer.size = 0;
+		buffer.device_address = 0;
+
+		if !vk_buffer.is_null() {
+			self.defer_destruction(Tasks::DeleteVulkanBuffer { handle: vk_buffer });
+		}
+		if let Some(allocation) = allocation {
+			self.defer_destruction(Tasks::FreeAllocation { handle: allocation });
+		}
+	}
+
+	/// Retires every Vulkan object and allocation of a replaced image, views first so none outlives its image.
+	pub(crate) fn retire_image_storage(&mut self, image: &Image) {
+		for &image_view in image.image_views.iter().chain(std::iter::once(&image.full_image_view)) {
+			if !image_view.is_null() {
+				self.defer_destruction(Tasks::DeleteVulkanImageView { handle: image_view });
+			}
+		}
+		if image.owns_image && !image.image.is_null() {
+			self.defer_destruction(Tasks::DeleteVulkanImage { handle: image.image });
+		}
+		if let Some(staging_buffer) = image.staging_buffer {
+			self.defer_destruction(Tasks::DeleteVulkanBuffer { handle: staging_buffer });
+		}
+		for allocation in [image.allocation, image.staging_allocation].into_iter().flatten() {
+			self.defer_destruction(Tasks::FreeAllocation { handle: allocation });
+		}
+	}
+
+	/// Destroys one retired object. Returns `false` for tasks that are not destructions.
+	pub(crate) fn run_destruction_task(&mut self, task: &Tasks) -> bool {
+		unsafe {
+			match *task {
+				Tasks::DeleteVulkanImage { handle } => self.device.destroy_image(handle, None),
+				Tasks::DeleteVulkanImageView { handle } => self.device.destroy_image_view(handle, None),
+				Tasks::DeleteVulkanBuffer { handle } => self.device.destroy_buffer(handle, None),
+				Tasks::FreeAllocation { handle } => {
+					let allocation = &mut self.allocations[handle.0 as usize];
+					let memory = std::mem::replace(&mut allocation.memory, vk::DeviceMemory::null());
+					allocation.pointer = crate::vulkan::MappedMemoryPointer(std::ptr::null_mut());
+					if !memory.is_null() {
+						self.device.free_memory(memory, None);
+					}
+				}
+				_ => return false,
+			}
+		}
+		true
 	}
 
 	/// Add the task to all frames

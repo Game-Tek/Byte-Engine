@@ -95,6 +95,10 @@ pub struct Context {
 
 	/// A queue of deferred tasks. Usually object deletions and resource updates.
 	pub(crate) tasks: Vec<Task>,
+	/// Index of the most recently started frame, which retired objects may still be referenced by.
+	pub(super) last_started_frame: Option<u64>,
+	/// Highest frame index whose fence has been observed signaled, gating deferred destructions.
+	pub(super) completed_frame: Option<u64>,
 }
 
 /// Accepts deferred descriptor work only while both its payload and post-write version remain current.

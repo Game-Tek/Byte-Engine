@@ -305,12 +305,24 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
 		let current_frame = self.frame_key.sequence_index;
 		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
+		// Every earlier resize queued its extent for the other copies after resizing this one, so matching copies
+		// mean no resize toward a different extent is still pending.
+		if image_handles
+			.iter()
+			.all(|handle| self.device.images[handle.0 as usize].extent == extent)
+		{
+			return;
+		}
 		let handle = image_handles[(current_frame as usize).rem_euclid(image_handles.len())];
 
+		// Replaced storage is destroyed only once in-flight frames finish, so even a shared static image resizes now.
 		self.device.resize_image_internal(handle, extent, current_frame);
 
-		self.device
-			.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
+		// Other sequences' copies may still be in flight, so they are rebuilt when their own frame starts.
+		if image_handles.len() > 1 {
+			self.device
+				.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
+		}
 	}
 
 	fn create_command_buffer_recording<'record>(

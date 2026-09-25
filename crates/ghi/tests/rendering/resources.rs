@@ -215,8 +215,9 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 	}
 }
 
-pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, use_case: UseCases) {
 	//! Tests that the render system can perform rendering while resize the render targets.
+	//! Static targets are one image shared by every frame, so the resize happens while an earlier frame may use it.
 
 	const FRAMES_IN_FLIGHT: usize = 3;
 
@@ -242,11 +243,11 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 
 	let mut extent = Extent::rectangle(1280, 720);
 
-	let render_target = device.build_dynamic_image(
+	let render_target = device.build_image(
 		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
 			.extent(extent)
 			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::DYNAMIC),
+			.use_case(use_case),
 	);
 
 	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
@@ -344,6 +345,115 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 
 		check_triangle(&pixels, extent);
 	}
+}
+
+pub(super) fn resize_render_target_in_flight(device: &mut impl ghi::context::Context, queue_handle: QueueHandle, use_case: UseCases) {
+	//! Tests that resizing a render target while earlier frames still render to it keeps the old image alive for them.
+	//! Unlike [`resize`], no frame waits for the GPU, so frames overlap across each resize.
+
+	const FRAME_COUNT: u64 = 12;
+
+	let floats: [f32; 21] = [
+		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+	];
+	let vertex_layout = [
+		VertexElement::new("POSITION", DataTypes::Float3, 0),
+		VertexElement::new("COLOR", DataTypes::Float4, 0),
+	];
+	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
+
+	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
+	let vertex_shader = device
+		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
+		.expect("Failed to create vertex shader");
+	let fragment_shader = device
+		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
+		.expect("Failed to create fragment shader");
+
+	let mut extent = Extent::rectangle(640, 360);
+	let render_target = device.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget)
+			.extent(extent)
+			.use_case(use_case),
+	);
+
+	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
+	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
+		&[],
+		&vertex_layout,
+		&[
+			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
+			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
+		],
+		&attachments,
+	));
+
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+	for i in 0..FRAME_COUNT {
+		device
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(i, render_finished_synchronizer)), &[], render_finished_synchronizer, |execution| {
+				let frame = execution.frame().unwrap();
+				if i == 4 || i == 7 {
+					extent = Extent::rectangle(extent.width() + 320, extent.height() + 180);
+					frame.resize_image(render_target.into(), extent);
+				}
+
+				execution.record(command_buffer_handle, |command_buffer_recording| {
+					let attachments = [AttachmentInformation::new(
+						render_target,
+						Layouts::RenderTarget,
+						ClearValue::Color(RGBA::black()),
+						false,
+						true,
+					)];
+					let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
+					let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
+					raster_pipeline_command.draw_mesh(&mesh);
+					raster_pipeline_command.end_render_pass();
+				});
+				[]
+			});
+	}
+
+	device.wait();
+
+	assert!(!device.has_errors());
+}
+
+pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	//! Tests that growing a dynamic buffer between frames keeps its old storage alive for the frames still in flight.
+	//! Every frame copies the persistent CPU source into the GPU buffer, so earlier frames use the old storage.
+
+	const FRAME_COUNT: u64 = 12;
+	const RESIZE_FRAME: u64 = 4;
+
+	let buffer = device.build_dynamic_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+	);
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let render_finished_synchronizer = device.create_synchronizer(None, true);
+
+	for i in 0..FRAME_COUNT {
+		if i == RESIZE_FRAME {
+			device.resize_buffer(buffer, 4096);
+		}
+
+		device
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(i, render_finished_synchronizer)), &[], render_finished_synchronizer, |execution| {
+				let frame = execution.frame().unwrap();
+				*frame.get_mut_dynamic_buffer_slice(buffer) = [i as u8; 64];
+				execution.record(command_buffer_handle, |_| {});
+				[]
+			});
+	}
+
+	device.wait();
+
+	assert!(!device.has_errors());
 }
 
 // The rendering scenario shares one resource setup across all dynamic-data frame transitions.

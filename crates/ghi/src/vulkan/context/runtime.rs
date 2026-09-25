@@ -52,6 +52,8 @@ impl Context {
 			swapchain_proxy_supports_formatless_storage_write,
 
 			tasks: Vec::with_capacity(1024),
+			last_started_frame: None,
+			completed_frame: None,
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),
@@ -832,6 +834,14 @@ impl Context {
 			sequence_index,
 		};
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
+		self.last_started_frame = Some(index);
+		// The fence orders every earlier submission on the queue, so all frames up to this one have completed.
+		if let Some(completed_frame) = completed_frame {
+			self.completed_frame = Some(
+				self.completed_frame
+					.map_or(completed_frame.frame_index, |known| known.max(completed_frame.frame_index)),
+			);
+		}
 
 		// The sequence fence has completed, so immutable snapshots retired by earlier updates can now be reused.
 		self.release_retired_descriptor_materializations(frame_key.sequence_index);
@@ -977,9 +987,9 @@ impl Context {
 
 	/// Executes deferred resource work and invalidates only the frame-local immutable descriptor snapshots that may reference it.
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
-		let mut tasks = self.tasks.split_off(0);
-
-		// TODO: optimize consecutive tasks such as two resize tasks
+		// Tasks may queue more tasks, such as resizes retiring old storage, so collect those separately and keep them.
+		let mut tasks = std::mem::take(&mut self.tasks);
+		let completed_frame = self.completed_frame;
 
 		tasks.retain(|e| {
 			if let Some(e) = e.frame() {
@@ -987,34 +997,22 @@ impl Context {
 					return true;
 				}
 			}
+			if e.is_pending(completed_frame) {
+				return true;
+			}
 
 			// Helps debug issues related to use after delete cases.
 			let disable_deletions = false;
 
 			match e.task() {
-				Tasks::DeleteVulkanImage { handle } => {
+				Tasks::DeleteVulkanImage { .. }
+				| Tasks::DeleteVulkanImageView { .. }
+				| Tasks::DeleteVulkanBuffer { .. }
+				| Tasks::FreeAllocation { .. } => {
 					if disable_deletions {
 						return true;
 					}
-					unsafe {
-						self.device.destroy_image(*handle, None);
-					}
-				}
-				Tasks::DeleteVulkanImageView { handle } => {
-					if disable_deletions {
-						return true;
-					}
-					unsafe {
-						self.device.destroy_image_view(*handle, None);
-					}
-				}
-				Tasks::DeleteVulkanBuffer { handle } => {
-					if disable_deletions {
-						return true;
-					}
-					unsafe {
-						self.device.destroy_buffer(*handle, None);
-					}
+					self.run_destruction_task(e.task());
 				}
 				Tasks::UpdateDescriptor {
 					descriptor_write,
@@ -1090,7 +1088,15 @@ impl Context {
 			false
 		});
 
+		tasks.append(&mut self.tasks);
 		self.tasks = tasks;
+	}
+
+	/// Destroys every retired object regardless of frame progress; callers must know the device is idle.
+	pub(crate) fn destroy_retired_resources(&mut self) {
+		for task in std::mem::take(&mut self.tasks) {
+			self.run_destruction_task(task.task());
+		}
 	}
 
 	pub(crate) fn get_syncronizer_handles(

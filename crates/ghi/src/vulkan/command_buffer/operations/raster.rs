@@ -5,37 +5,18 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		&mut self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 	) -> &mut impl crate::command_buffer::BoundRasterizationPipelineMode {
-		let command_buffer = self.get_command_buffer();
-		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
-		unsafe {
-			self.device.device.cmd_bind_pipeline(
-				command_buffer.command_buffer,
-				vk::PipelineBindPoint::GRAPHICS,
-				pipeline.pipeline,
-			);
-		}
-
-		self.pipeline_bind_point = vk::PipelineBindPoint::GRAPHICS;
-		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(pipeline.layout);
-		self.descriptor_materialization_dirty = true;
-		self.descriptor_resources_initialized = false;
-
-		self
+		self.record_pipeline_bind(vk::PipelineBindPoint::GRAPHICS, pipeline_handle)
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
-		let consumptions = buffer_descriptors.iter().map(|buffer_descriptor| VulkanConsumption {
-			handle: Handles::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-			stages: vk::PipelineStageFlags2::VERTEX_INPUT,
-			access: vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: None,
-		});
-
-		self.vulkan_consume_resources(consumptions).apply(self);
-
-		let command_buffer = self.get_command_buffer();
+		self.vulkan_consume_resources(buffer_descriptors.iter().map(|buffer_descriptor| {
+			vulkan_consumption(
+				self.buffer_resource(buffer_descriptor.buffer),
+				vk::PipelineStageFlags2::VERTEX_INPUT,
+				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
+			)
+		}))
+		.apply(self);
 
 		let buffers = buffer_descriptors
 			.iter()
@@ -46,33 +27,26 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			.collect::<Vec<_>>();
 		let offsets = buffer_descriptors
 			.iter()
-			.map(|buffer_descriptor| buffer_descriptor.offset)
+			.map(|buffer_descriptor| buffer_descriptor.offset as vk::DeviceSize)
 			.collect::<Vec<_>>();
 
-		// TODO: implent slot splitting
+		// TODO: implement slot splitting
 		unsafe {
-			self.device.device.cmd_bind_vertex_buffers(
-				command_buffer.command_buffer,
-				0,
-				&buffers,
-				&offsets.iter().map(|&e| e as _).collect::<Vec<_>>(),
-			);
+			self.device
+				.device
+				.cmd_bind_vertex_buffers(self.get_command_buffer().command_buffer, 0, &buffers, &offsets);
 		}
 	}
 
 	fn bind_index_buffer(&mut self, buffer_descriptor: &crate::BufferDescriptor) {
-		self.vulkan_consume_resources([VulkanConsumption {
-			handle: Handles::Buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer.into())),
-			stages: vk::PipelineStageFlags2::INDEX_INPUT,
-			access: vk::AccessFlags2::INDEX_READ,
-			layout: vk::ImageLayout::UNDEFINED,
-			range: None,
-		}])
+		let buffer_handle = self.get_internal_buffer_handle(buffer_descriptor.buffer);
+		self.vulkan_consume_resources([vulkan_consumption(
+			Handles::Buffer(buffer_handle),
+			vk::PipelineStageFlags2::INDEX_INPUT,
+			vk::AccessFlags2::INDEX_READ,
+		)])
 		.apply(self);
 
-		let command_buffer = self.get_command_buffer();
-
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer));
 		let index_type = match buffer_descriptor.index_type {
 			Some(crate::DataTypes::U16) => vk::IndexType::UINT16,
 			Some(crate::DataTypes::U32) => vk::IndexType::UINT32,
@@ -86,8 +60,8 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 
 		unsafe {
 			self.device.device.cmd_bind_index_buffer(
-				command_buffer.command_buffer,
-				buffer.buffer,
+				self.get_command_buffer().command_buffer,
+				self.get_buffer(buffer_handle).buffer,
 				buffer_descriptor.offset as _,
 				index_type,
 			);
@@ -107,7 +81,6 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		}
 	}
 
-	/// Ends a render pass on the GPU.
 	fn end_render_pass(&mut self) {
 		// A pass with no draws must still begin so attachment clear/load/store operations execute.
 		self.begin_rendering_if_needed();
@@ -116,9 +89,8 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			self.active_rendering,
 			"No Vulkan render pass is active. The most likely cause is that end_render_pass was called without start_render_pass.",
 		);
-		let command_buffer = self.get_command_buffer();
 		unsafe {
-			self.device.device.cmd_end_rendering(command_buffer.command_buffer);
+			self.device.device.cmd_end_rendering(self.get_command_buffer().command_buffer);
 		}
 		self.active_rendering = false;
 	}
@@ -136,16 +108,16 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		let layout = &self.device.pipeline_layouts[layout_handle.0 as usize];
 
 		assert!(
-			offset % 4 == 0 && size % 4 == 0 && end <= layout.push_constant_size as usize,
+			offset.is_multiple_of(4) && size.is_multiple_of(4) && end <= layout.push_constant_size as usize,
 			"Invalid Vulkan push-data write. The most likely cause is that the offset or data size is not four-byte aligned or exceeds the pipeline's declared push-constant ranges.",
 		);
-		let bytes = bytemuck::bytes_of(&data);
 		let push_info = vk::PushDataInfoEXT::default()
 			.offset(offset)
-			.data(vk::HostAddressRangeConstEXT::default().address(bytes));
-		let command_buffer = self.get_command_buffer().command_buffer;
+			.data(vk::HostAddressRangeConstEXT::default().address(bytemuck::bytes_of(&data)));
 		unsafe {
-			self.device.descriptor_heap.cmd_push_data(command_buffer, &push_info);
+			self.device
+				.descriptor_heap
+				.cmd_push_data(self.get_command_buffer().command_buffer, &push_info);
 		}
 	}
 
@@ -164,75 +136,36 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 }
 
 impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
-	/// Draws a render system mesh.
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		// Raster pipelines can read descriptor-backed resources in vertex, mesh, and fragment stages.
-		// Transition them before issuing the draw so transfer uploads are visible to shader reads.
-		self.consume_resources_current([]).apply(self);
-		self.begin_rendering_if_needed();
-
-		let command_buffer = self.get_command_buffer();
-
+		let command_buffer = self.prepare_draw();
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
-
-		let buffers = [mesh.buffer];
-		let offsets = [0];
-
 		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
-		let command_buffer_handle = command_buffer.command_buffer;
-
 		unsafe {
 			self.device
 				.device
-				.cmd_bind_vertex_buffers(command_buffer_handle, 0, &buffers, &offsets);
-		}
-		unsafe {
-			self.device.device.cmd_bind_index_buffer(
-				command_buffer_handle,
-				mesh.buffer,
-				index_data_offset,
-				vk::IndexType::UINT16,
-			);
-		}
-
-		unsafe {
+				.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);
 			self.device
 				.device
-				.cmd_draw_indexed(command_buffer_handle, mesh.index_count, 1, 0, 0, 0);
+				.cmd_bind_index_buffer(command_buffer, mesh.buffer, index_data_offset, vk::IndexType::UINT16);
+			self.device
+				.device
+				.cmd_draw_indexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
 		}
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		// Mesh shaders in the visibility pipeline read descriptor-backed storage buffers populated by
-		// transfer uploads. Without this transition, Vulkan can execute the mesh read before those
-		// transfer writes are available even though the descriptor set itself is correctly bound.
-		self.consume_resources_current([]).apply(self);
-		self.begin_rendering_if_needed();
-
-		let command_buffer = self.get_command_buffer();
-		let command_buffer_handle = command_buffer.command_buffer;
-
+		let command_buffer = self.prepare_draw();
 		unsafe {
-			self.device.mesh_shading.cmd_draw_mesh_tasks(command_buffer_handle, x, y, z);
+			self.device.mesh_shading.cmd_draw_mesh_tasks(command_buffer, x, y, z);
 		}
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
-		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
-		self.consume_resources_current([]).apply(self);
-		self.begin_rendering_if_needed();
-
-		let command_buffer = self.get_command_buffer();
-		let command_buffer_handle = command_buffer.command_buffer;
-
+		let command_buffer = self.prepare_draw();
 		unsafe {
-			self.device.device.cmd_draw(
-				command_buffer_handle,
-				vertex_count,
-				instance_count,
-				first_vertex,
-				first_instance,
-			);
+			self.device
+				.device
+				.cmd_draw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
 		}
 	}
 
@@ -244,16 +177,10 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		// Draw calls use the currently bound pipeline descriptors just like compute dispatches do.
-		self.consume_resources_current([]).apply(self);
-		self.begin_rendering_if_needed();
-
-		let command_buffer = self.get_command_buffer();
-		let command_buffer_handle = command_buffer.command_buffer;
-
+		let command_buffer = self.prepare_draw();
 		unsafe {
 			self.device.device.cmd_draw_indexed(
-				command_buffer_handle,
+				command_buffer,
 				index_count,
 				instance_count,
 				first_index,

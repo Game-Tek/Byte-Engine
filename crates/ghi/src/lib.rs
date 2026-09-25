@@ -25,7 +25,7 @@
 	clippy::unnecessary_literal_unwrap
 )]
 #![feature(allocator_api)]
-#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to, str_as_str))]
+#![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to))]
 
 pub mod window;
 

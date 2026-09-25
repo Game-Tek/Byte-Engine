@@ -20,6 +20,8 @@ pub(crate) struct Buffer {
 	pub(crate) size: usize,
 	pub(crate) device_address: vk::DeviceAddress,
 	pub(crate) pointer: crate::vulkan::MappedMemoryPointer,
+	/// Dedicated memory backing `buffer`, released together with it when the buffer is replaced.
+	pub(crate) allocation: Option<crate::AllocationHandle>,
 	pub(crate) uses: Uses,
 	pub(crate) access: crate::DeviceAccesses,
 }

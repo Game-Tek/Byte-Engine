@@ -19,7 +19,6 @@ pub mod frame;
 pub mod image;
 pub mod instance;
 pub mod queue;
-pub mod sampler;
 pub mod swapchain;
 pub mod synchronizer;
 
@@ -76,7 +75,6 @@ pub(super) enum Handles {
 	VkBuffer(vk::Buffer),
 	TopLevelAccelerationStructure(TopLevelAccelerationStructureHandle),
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
-	Synchronizer(crate::synchronizer::SynchronizerHandle),
 }
 
 #[derive(Clone, PartialEq)]
@@ -102,8 +100,22 @@ impl BufferRange {
 		self.offset.saturating_add(self.size)
 	}
 
+	/// Builds a range from its bounds, keeping ranges that reach the end of the buffer as `WHOLE_SIZE`.
+	pub(super) fn from_bounds(start: vk::DeviceSize, end: vk::DeviceSize) -> Self {
+		let size = if end == vk::DeviceSize::MAX {
+			vk::WHOLE_SIZE
+		} else {
+			end - start
+		};
+		Self::new(start, size)
+	}
+
 	pub(super) fn overlaps(self, other: Self) -> bool {
 		self.offset < other.end() && other.offset < self.end()
+	}
+
+	pub(super) fn intersection(self, other: Self) -> Self {
+		Self::from_bounds(self.offset.max(other.offset), self.end().min(other.end()))
 	}
 }
 
@@ -183,32 +195,17 @@ impl DescriptorHeapArena {
 				continue;
 			}
 
-			let prefix_size = offset - range.offset;
-			let suffix_size = range_end - end;
-			match (prefix_size, suffix_size) {
-				(0, 0) => {
-					self.free_ranges.remove(index);
-				}
-				(0, suffix_size) => {
-					self.free_ranges[index] = DescriptorHeapRange {
-						offset: end,
-						size: suffix_size,
-					};
-				}
-				(prefix_size, 0) => {
-					self.free_ranges[index].size = prefix_size;
-				}
-				(prefix_size, suffix_size) => {
-					self.free_ranges[index].size = prefix_size;
-					self.free_ranges.insert(
-						index + 1,
-						DescriptorHeapRange {
-							offset: end,
-							size: suffix_size,
-						},
-					);
-				}
-			}
+			// Keep the unused bytes on either side of the allocation, including alignment padding, reusable.
+			let prefix = DescriptorHeapRange {
+				offset: range.offset,
+				size: offset - range.offset,
+			};
+			let suffix = DescriptorHeapRange {
+				offset: end,
+				size: range_end - end,
+			};
+			self.free_ranges
+				.splice(index..=index, [prefix, suffix].into_iter().filter(|range| range.size > 0));
 			return u32::try_from(offset).expect(
 				"Vulkan descriptor heap offset exceeded 32 bits. The most likely cause is a heap larger than push-index mappings support.",
 			);
@@ -341,12 +338,8 @@ impl Sampler {
 			.border_color(vk::BorderColor::FLOAT_OPAQUE_BLACK)
 			.anisotropy_enable(self.anisotropy.is_some())
 			.max_anisotropy(self.anisotropy.unwrap_or(0.0))
-			.compare_enable(false)
-			.compare_op(vk::CompareOp::NEVER)
 			.min_lod(self.min_lod)
 			.max_lod(self.max_lod)
-			.mip_lod_bias(0.0)
-			.unnormalized_coordinates(false)
 	}
 }
 
@@ -410,6 +403,28 @@ impl TransitionState {
 		self
 	}
 
+	pub(super) fn reads_only(self, next: Self) -> bool {
+		!Self::access_includes_write(self.access) && !Self::access_includes_write(next.access)
+	}
+
+	/// Whether the barrier that produced this read state already made the resource visible to `next`.
+	pub(super) fn covers(self, next: Self) -> bool {
+		self.stage.contains(next.stage) && self.access.contains(next.access)
+	}
+
+	pub(super) fn has_write_history(self) -> bool {
+		!self.last_write_stage.is_empty() || !self.last_write_access.is_empty()
+	}
+
+	/// Accumulates another reader so later writers wait for every reader since the last write.
+	pub(super) fn merge_reads(self, next: Self) -> Self {
+		Self {
+			stage: self.stage | next.stage,
+			access: self.access | next.access,
+			..self
+		}
+	}
+
 	pub(super) fn access_includes_write(access: vk::AccessFlags2) -> bool {
 		access.intersects(
 			vk::AccessFlags2::MEMORY_WRITE
@@ -444,18 +459,11 @@ struct AccelerationStructure {
 #[derive(Clone, Copy)]
 /// The `MemoryBackedResourceCreationResult` struct provides a resource and its memory requirements for allocation.
 pub struct MemoryBackedResourceCreationResult<T> {
-	/// The resource.
 	resource: T,
 	/// The final size of the resource.
 	size: usize,
 	/// The memory flags that need used to create the resource.
 	memory_flags: u32,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct BuildImage {
-	previous: ImageHandle,
-	master: graphics_hardware_interface::ImageHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -469,17 +477,21 @@ pub(crate) struct BuildBuffer {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) enum Tasks {
-	/// Deletes a Vulkan image at the frame selected by [`Task`].
+	/// Deletes a Vulkan image once the frame recorded in [`Task`] has completed.
 	DeleteVulkanImage {
 		handle: vk::Image,
 	},
-	/// Deletes a Vulkan image view at the frame selected by [`Task`].
+	/// Deletes a Vulkan image view once the frame recorded in [`Task`] has completed.
 	DeleteVulkanImageView {
 		handle: vk::ImageView,
 	},
-	/// Deletes a Vulkan buffer at the frame selected by [`Task`].
+	/// Deletes a Vulkan buffer once the frame recorded in [`Task`] has completed.
 	DeleteVulkanBuffer {
 		handle: vk::Buffer,
+	},
+	/// Frees device memory once the frame recorded in [`Task`] has completed.
+	FreeAllocation {
+		handle: crate::AllocationHandle,
 	},
 	/// Resize an image.
 	ResizeImage {
@@ -491,7 +503,6 @@ pub(crate) enum Tasks {
 		descriptor_write: crate::descriptors::DescriptorWrite,
 		expected_set_version: u64,
 	},
-	BuildImage(BuildImage),
 	BuildBuffer(BuildBuffer),
 }
 
@@ -500,36 +511,35 @@ pub(crate) enum Tasks {
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: Option<u8>,
+	/// Frame index whose GPU work must complete before the task runs, for objects that in-flight frames may still use.
+	pub(crate) after_frame: Option<u64>,
 }
 
 impl Task {
 	pub(crate) fn new(task: Tasks, frame: Option<u8>) -> Self {
-		Self { task, frame }
-	}
-
-	pub(crate) fn delete_vulkan_image(handle: vk::Image, frame: u8) -> Self {
 		Self {
-			task: Tasks::DeleteVulkanImage { handle },
-			frame: Some(frame),
-		}
-	}
-
-	pub(crate) fn delete_vulkan_image_view(handle: vk::ImageView, frame: u8) -> Self {
-		Self {
-			task: Tasks::DeleteVulkanImageView { handle },
-			frame: Some(frame),
-		}
-	}
-
-	pub(crate) fn delete_vulkan_buffer(handle: vk::Buffer, frame: Option<u8>) -> Self {
-		Self {
-			task: Tasks::DeleteVulkanBuffer { handle },
+			task,
 			frame,
+			after_frame: None,
+		}
+	}
+
+	/// Schedules a task for the first task pass after `frame_index` has completed on the GPU.
+	pub(crate) fn after_frame(task: Tasks, frame_index: u64) -> Self {
+		Self {
+			after_frame: Some(frame_index),
+			..Self::new(task, None)
 		}
 	}
 
 	pub(crate) fn frame(&self) -> Option<u8> {
 		self.frame
+	}
+
+	/// Whether the GPU may still use what this task touches, given the latest frame known to have completed.
+	pub(crate) fn is_pending(&self, completed_frame: Option<u64>) -> bool {
+		self.after_frame
+			.is_some_and(|after_frame| completed_frame.is_none_or(|completed_frame| completed_frame < after_frame))
 	}
 
 	pub(crate) fn task(&self) -> &Tasks {
@@ -543,7 +553,38 @@ pub(super) struct StoredQueue {
 	/// Index into [`InnerDevice::vk_queues`] and [`Context::vk_queues`]. Several GHI queues can share one Vulkan queue.
 	pub(crate) vk_queue_index: usize,
 	pub(crate) queue_family_index: u32,
-	pub(crate) _queue_index: u32,
+}
+
+#[cfg(test)]
+mod task_tests {
+	use super::*;
+
+	#[test]
+	fn deferred_destruction_waits_for_its_frame_to_complete() {
+		let task = Task::after_frame(
+			Tasks::DeleteVulkanBuffer {
+				handle: vk::Buffer::null(),
+			},
+			5,
+		);
+
+		assert!(task.is_pending(None));
+		assert!(task.is_pending(Some(4)));
+		assert!(!task.is_pending(Some(5)));
+		assert!(!task.is_pending(Some(6)));
+	}
+
+	#[test]
+	fn frame_tasks_never_wait_for_completion() {
+		let task = Task::new(
+			Tasks::DeleteVulkanBuffer {
+				handle: vk::Buffer::null(),
+			},
+			Some(1),
+		);
+
+		assert!(!task.is_pending(None));
+	}
 }
 
 #[cfg(test)]

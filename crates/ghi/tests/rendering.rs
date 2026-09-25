@@ -112,7 +112,31 @@ fn change_frames_in_flight() {
 #[test]
 fn resize_render_target() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize(&mut device, queue_handle);
+	resources::resize(&mut device, queue_handle, UseCases::DYNAMIC);
+}
+
+#[test]
+fn resize_static_render_target() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::resize(&mut device, queue_handle, UseCases::STATIC);
+}
+
+#[test]
+fn resize_static_render_target_in_flight() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::resize_render_target_in_flight(&mut device, queue_handle, UseCases::STATIC);
+}
+
+#[test]
+fn resize_dynamic_render_target_in_flight() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::resize_render_target_in_flight(&mut device, queue_handle, UseCases::DYNAMIC);
+}
+
+#[test]
+fn resize_dynamic_buffer() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::resize_dynamic_buffer(&mut device, queue_handle);
 }
 
 #[test]

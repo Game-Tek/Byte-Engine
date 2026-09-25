@@ -16,6 +16,13 @@ rust-version.workspace = true
 [lib]
 name = "ghi"
 
+[[bench]]
+name = "retained_work"
+harness = false
+
+[dev-dependencies]
+divan = "0.1.21"
+
 [package.metadata.docs.rs]
 rustc-args = ["-C", "target-feature=+aes,+sse2"]
 rustdoc-args = ["-C", "target-feature=+aes,+sse2"]

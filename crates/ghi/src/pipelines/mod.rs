@@ -80,12 +80,24 @@ impl SpecializationMapEntry {
 		self.r#type.clone()
 	}
 
+	/// Returns the byte size of the constant's value.
 	pub fn get_size(&self) -> usize {
-		std::mem::size_of_val(&self.value)
+		self.value.len()
 	}
 
 	pub fn get_data(&self) -> &[u8] {
 		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
 		self.value.as_ref()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn specialization_entry_size_is_value_size() {
+		assert_eq!(SpecializationMapEntry::new(0, "u32".to_string(), 7u32).get_size(), 4);
+		assert_eq!(SpecializationMapEntry::new(1, "vec4f".to_string(), [0f32; 4]).get_size(), 16);
 	}
 }

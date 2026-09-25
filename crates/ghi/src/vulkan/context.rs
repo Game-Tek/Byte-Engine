@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU32, u64};
+use std::num::NonZeroU32;
 
 use ash::vk::{self, Handle as _, TaggedStructure as _};
 use smallvec::SmallVec;
@@ -86,9 +86,6 @@ pub struct Context {
 	/// buffer every frame before GPU copies are issued.
 	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
 
-	swapchain_native_supports_formatless_storage_write: bool,
-	swapchain_proxy_supports_formatless_storage_write: bool,
-
 	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
 	/// Stores the debug names for resources.
@@ -98,6 +95,10 @@ pub struct Context {
 
 	/// A queue of deferred tasks. Usually object deletions and resource updates.
 	pub(crate) tasks: Vec<Task>,
+	/// Index of the most recently started frame, which retired objects may still be referenced by.
+	pub(super) last_started_frame: Option<u64>,
+	/// Highest frame index whose fence has been observed signaled, gating deferred destructions.
+	pub(super) completed_frame: Option<u64>,
 }
 
 /// Accepts deferred descriptor work only while both its payload and post-write version remain current.

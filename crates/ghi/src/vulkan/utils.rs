@@ -1,65 +1,37 @@
 use ash::vk;
 
-use crate::{Size, graphics_hardware_interface};
+use crate::{Layouts, Size, Stages, Uses, graphics_hardware_interface};
 
-pub(super) fn uses_to_vk_usage_flags(usage: crate::Uses) -> vk::BufferUsageFlags {
-	let mut flags = vk::BufferUsageFlags::empty();
-	flags |= if usage.contains(crate::Uses::Vertex) {
-		vk::BufferUsageFlags::VERTEX_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::Index) {
-		vk::BufferUsageFlags::INDEX_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::Uniform) {
-		vk::BufferUsageFlags::UNIFORM_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::Storage) {
-		vk::BufferUsageFlags::STORAGE_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::TransferSource) {
-		vk::BufferUsageFlags::TRANSFER_SRC
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::TransferDestination) {
-		vk::BufferUsageFlags::TRANSFER_DST
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::AccelerationStructure) {
-		vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::Indirect) {
-		vk::BufferUsageFlags::INDIRECT_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::ShaderBindingTable) {
-		vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::AccelerationStructureBuildScratch) {
-		vk::BufferUsageFlags::STORAGE_BUFFER
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags |= if usage.contains(crate::Uses::AccelerationStructureBuild) {
-		vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-	} else {
-		vk::BufferUsageFlags::empty()
-	};
-	flags
+/// Folds the Vulkan flags of every `(ghi, vulkan)` table entry whose GHI flags satisfy `matches`.
+fn fold_flags<G: Copy, V: Copy + Default + std::ops::BitOr<Output = V>>(table: &[(G, V)], matches: impl Fn(G) -> bool) -> V {
+	table
+		.iter()
+		.filter(|(ghi, _)| matches(*ghi))
+		.fold(V::default(), |flags, &(_, vulkan)| flags | vulkan)
+}
+
+pub(super) fn uses_to_vk_usage_flags(usage: Uses) -> vk::BufferUsageFlags {
+	use vk::BufferUsageFlags as Flags;
+
+	fold_flags(
+		&[
+			(Uses::Vertex, Flags::VERTEX_BUFFER),
+			(Uses::Index, Flags::INDEX_BUFFER),
+			(Uses::Uniform, Flags::UNIFORM_BUFFER),
+			(Uses::Storage, Flags::STORAGE_BUFFER),
+			(Uses::TransferSource, Flags::TRANSFER_SRC),
+			(Uses::TransferDestination, Flags::TRANSFER_DST),
+			(Uses::AccelerationStructure, Flags::ACCELERATION_STRUCTURE_STORAGE_KHR),
+			(Uses::Indirect, Flags::INDIRECT_BUFFER),
+			(Uses::ShaderBindingTable, Flags::SHADER_BINDING_TABLE_KHR),
+			(Uses::AccelerationStructureBuildScratch, Flags::STORAGE_BUFFER),
+			(
+				Uses::AccelerationStructureBuild,
+				Flags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+			),
+		],
+		|uses| usage.contains(uses),
+	)
 }
 
 pub(super) fn to_clear_value(clear: graphics_hardware_interface::ClearValue) -> vk::ClearValue {
@@ -70,11 +42,8 @@ pub(super) fn to_clear_value(clear: graphics_hardware_interface::ClearValue) -> 
 				float32: [clear.r, clear.g, clear.b, clear.a],
 			},
 		},
-		graphics_hardware_interface::ClearValue::Depth(clear) => vk::ClearValue {
-			depth_stencil: vk::ClearDepthStencilValue {
-				depth: clear,
-				stencil: 0,
-			},
+		graphics_hardware_interface::ClearValue::Depth(depth) => vk::ClearValue {
+			depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
 		},
 		graphics_hardware_interface::ClearValue::Integer(r, g, b, a) => vk::ClearValue {
 			color: vk::ClearColorValue { uint32: [r, g, b, a] },
@@ -84,41 +53,22 @@ pub(super) fn to_clear_value(clear: graphics_hardware_interface::ClearValue) -> 
 
 pub(super) fn texture_format_and_resource_use_to_image_layout(
 	texture_format: crate::Formats,
-	layout: crate::Layouts,
+	layout: Layouts,
 	access: Option<crate::AccessPolicies>,
 ) -> vk::ImageLayout {
 	match layout {
-		crate::Layouts::Undefined => vk::ImageLayout::UNDEFINED,
-		crate::Layouts::RenderTarget => {
-			if !texture_format.is_depth() {
-				vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-			} else {
-				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-			}
-		}
-		crate::Layouts::Transfer => match access {
-			Some(a) => {
-				if a.intersects(crate::AccessPolicies::READ) {
-					vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-				} else if a.intersects(crate::AccessPolicies::WRITE) {
-					vk::ImageLayout::TRANSFER_DST_OPTIMAL
-				} else {
-					vk::ImageLayout::UNDEFINED
-				}
-			}
-			None => vk::ImageLayout::UNDEFINED,
+		Layouts::Undefined | Layouts::ShaderBindingTable | Layouts::Indirect => vk::ImageLayout::UNDEFINED,
+		Layouts::RenderTarget if texture_format.is_depth() => vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		Layouts::RenderTarget => vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+		Layouts::Transfer => match access {
+			Some(access) if access.intersects(crate::AccessPolicies::READ) => vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+			Some(access) if access.intersects(crate::AccessPolicies::WRITE) => vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+			_ => vk::ImageLayout::UNDEFINED,
 		},
-		crate::Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
-		crate::Layouts::Read => {
-			if !texture_format.is_depth() {
-				vk::ImageLayout::READ_ONLY_OPTIMAL
-			} else {
-				vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL
-			}
-		}
-		crate::Layouts::General => vk::ImageLayout::GENERAL,
-		crate::Layouts::ShaderBindingTable => vk::ImageLayout::UNDEFINED,
-		crate::Layouts::Indirect => vk::ImageLayout::UNDEFINED,
+		Layouts::Present => vk::ImageLayout::PRESENT_SRC_KHR,
+		Layouts::Read if texture_format.is_depth() => vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
+		Layouts::Read => vk::ImageLayout::READ_ONLY_OPTIMAL,
+		Layouts::General => vk::ImageLayout::GENERAL,
 	}
 }
 
@@ -138,50 +88,104 @@ pub(super) fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 	}
 }
 
+/// Selects the aspects a barrier or copy must name for every subresource of an image with `format`.
+pub(super) fn image_aspect_mask(format: vk::Format) -> vk::ImageAspectFlags {
+	match format {
+		vk::Format::D16_UNORM | vk::Format::X8_D24_UNORM_PACK32 | vk::Format::D32_SFLOAT => vk::ImageAspectFlags::DEPTH,
+		vk::Format::D16_UNORM_S8_UINT | vk::Format::D24_UNORM_S8_UINT | vk::Format::D32_SFLOAT_S8_UINT => {
+			vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+		}
+		vk::Format::S8_UINT => vk::ImageAspectFlags::STENCIL,
+		_ => vk::ImageAspectFlags::COLOR,
+	}
+}
+
+/// Packs specialization constants into one data blob with a 4-byte map entry per scalar component.
+pub(super) fn build_specialization_entries(
+	specialization_map: &[crate::pipelines::SpecializationMapEntry],
+) -> (Vec<u8>, Vec<vk::SpecializationMapEntry>) {
+	let mut data = Vec::<u8>::with_capacity(256);
+	let mut entries = Vec::with_capacity(48);
+
+	for specialization_map_entry in specialization_map {
+		let value = specialization_map_entry.get_data();
+		let offset = data.len() as u32;
+		let constant_type = specialization_map_entry.get_type();
+		let scalar_count = match constant_type.as_str() {
+			"bool" | "u32" | "f32" => 1,
+			"vec2f" => 2,
+			"vec3f" => 3,
+			"vec4f" => 4,
+			_ => panic!(
+				"Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."
+			),
+		};
+		if constant_type == "bool" {
+			// SPIR-V boolean constants are read as a 4-byte VkBool32, but Rust bools are one byte.
+			data.extend_from_slice(&vk::Bool32::from(value.iter().any(|byte| *byte != 0)).to_ne_bytes());
+		} else {
+			assert!(
+				value.len() >= scalar_count as usize * 4,
+				"Vulkan specialization constant data is smaller than its type. The most likely cause is that the value's Rust type differs from the declared constant type."
+			);
+			data.extend_from_slice(value);
+		}
+		for i in 0..scalar_count {
+			entries.push(
+				vk::SpecializationMapEntry::default()
+					.constant_id(specialization_map_entry.get_constant_id() + i)
+					.offset(offset + i * 4)
+					.size(4),
+			);
+		}
+	}
+
+	(data, entries)
+}
+
 pub(super) fn to_format(format: crate::Formats) -> vk::Format {
 	match format {
-		crate::Formats::R8F => vk::Format::UNDEFINED,
+		crate::Formats::R8F
+		| crate::Formats::R16sRGB
+		| crate::Formats::R32sRGB
+		| crate::Formats::RG8F
+		| crate::Formats::RG16sRGB
+		| crate::Formats::RGB8F
+		| crate::Formats::RGB16sRGB
+		| crate::Formats::RGBA8F
+		| crate::Formats::RGBA16sRGB => vk::Format::UNDEFINED,
 		crate::Formats::R8UNORM => vk::Format::R8_UNORM,
 		crate::Formats::R8SNORM => vk::Format::R8_SNORM,
 		crate::Formats::R8sRGB => vk::Format::R8_SRGB,
 		crate::Formats::R16F => vk::Format::R16_SFLOAT,
 		crate::Formats::R16UNORM => vk::Format::R16_UNORM,
 		crate::Formats::R16SNORM => vk::Format::R16_SNORM,
-		crate::Formats::R16sRGB => vk::Format::UNDEFINED,
 		crate::Formats::R32F => vk::Format::R32_SFLOAT,
-		crate::Formats::R32UNORM => vk::Format::R32_UINT,
+		crate::Formats::R32UNORM | crate::Formats::U32 => vk::Format::R32_UINT,
 		crate::Formats::R32SNORM => vk::Format::R32_SINT,
-		crate::Formats::R32sRGB => vk::Format::UNDEFINED,
-		crate::Formats::RG8F => vk::Format::UNDEFINED,
 		crate::Formats::RG8UNORM => vk::Format::R8G8_UNORM,
 		crate::Formats::RG8SNORM => vk::Format::R8G8_SNORM,
 		crate::Formats::RG8sRGB => vk::Format::R8G8_SRGB,
 		crate::Formats::RG16F => vk::Format::R16G16_SFLOAT,
 		crate::Formats::RG16UNORM => vk::Format::R16G16_UNORM,
 		crate::Formats::RG16SNORM => vk::Format::R16G16_SNORM,
-		crate::Formats::RG16sRGB => vk::Format::UNDEFINED,
-		crate::Formats::RGB8F => vk::Format::UNDEFINED,
 		crate::Formats::RGB8UNORM => vk::Format::R8G8B8_UNORM,
 		crate::Formats::RGB8SNORM => vk::Format::R8G8B8_SNORM,
 		crate::Formats::RGB8sRGB => vk::Format::R8G8B8_SRGB,
 		crate::Formats::RGB16F => vk::Format::R16G16B16_SFLOAT,
 		crate::Formats::RGB16UNORM => vk::Format::R16G16B16_UNORM,
 		crate::Formats::RGB16SNORM => vk::Format::R16G16B16_SNORM,
-		crate::Formats::RGB16sRGB => vk::Format::UNDEFINED,
-		crate::Formats::RGBA8F => vk::Format::UNDEFINED,
 		crate::Formats::RGBA8UNORM => vk::Format::R8G8B8A8_UNORM,
 		crate::Formats::RGBA8SNORM => vk::Format::R8G8B8A8_SNORM,
 		crate::Formats::RGBA8sRGB => vk::Format::R8G8B8A8_SRGB,
 		crate::Formats::RGBA16F => vk::Format::R16G16B16A16_SFLOAT,
 		crate::Formats::RGBA16UNORM => vk::Format::R16G16B16A16_UNORM,
 		crate::Formats::RGBA16SNORM => vk::Format::R16G16B16A16_SNORM,
-		crate::Formats::RGBA16sRGB => vk::Format::UNDEFINED,
 		crate::Formats::RGBu11u11u10 => vk::Format::B10G11R11_UFLOAT_PACK32,
 		crate::Formats::BGRAu8 => vk::Format::B8G8R8A8_UNORM,
 		crate::Formats::BGRAsRGB => vk::Format::B8G8R8A8_SRGB,
 		crate::Formats::Depth16 => vk::Format::D16_UNORM,
 		crate::Formats::Depth32 => vk::Format::D32_SFLOAT,
-		crate::Formats::U32 => vk::Format::R32_UINT,
 		crate::Formats::BC5 => vk::Format::BC5_UNORM_BLOCK,
 		crate::Formats::BC5SNORM => vk::Format::BC5_SNORM_BLOCK,
 		crate::Formats::BC7 => vk::Format::BC7_UNORM_BLOCK,
@@ -206,210 +210,136 @@ pub(super) fn to_shader_stage_flags(shader_type: crate::ShaderTypes) -> vk::Shad
 }
 
 pub(super) fn to_pipeline_stage_flags(
-	stages: crate::Stages,
-	layout: Option<crate::Layouts>,
+	stages: Stages,
+	layout: Option<Layouts>,
 	format: Option<crate::Formats>,
 ) -> vk::PipelineStageFlags2 {
-	let mut pipeline_stage_flags = vk::PipelineStageFlags2::NONE;
+	use vk::PipelineStageFlags2 as Flags;
 
-	if stages.contains(crate::Stages::VERTEX) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT;
-		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_SHADER;
-	}
+	let fragment = match layout {
+		Some(Layouts::Read) => Flags::FRAGMENT_SHADER,
+		Some(Layouts::RenderTarget) => Flags::COLOR_ATTACHMENT_OUTPUT,
+		_ => Flags::NONE,
+	} | match format {
+		Some(format) if format.is_depth() => Flags::EARLY_FRAGMENT_TESTS | Flags::LATE_FRAGMENT_TESTS,
+		Some(_) => Flags::FRAGMENT_SHADER,
+		None if layout.is_none() => Flags::FRAGMENT_SHADER,
+		None => Flags::NONE,
+	};
+	let compute = if layout == Some(Layouts::Indirect) {
+		Flags::DRAW_INDIRECT
+	} else {
+		Flags::COMPUTE_SHADER
+	};
 
-	if stages.contains(crate::Stages::INDEX) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT;
-		pipeline_stage_flags |= vk::PipelineStageFlags2::INDEX_INPUT;
-	}
-
-	if stages.contains(crate::Stages::MESH) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::MESH_SHADER_EXT;
-	}
-
-	if stages.contains(crate::Stages::FRAGMENT) {
-		if let Some(layout) = layout {
-			if layout == crate::Layouts::Read {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-			}
-
-			if layout == crate::Layouts::RenderTarget {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
-			}
-
-			if let Some(format) = format {
-				if !format.is_depth() {
-					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-				} else {
-					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
-					pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
-				}
-			}
-		} else {
-			if let Some(format) = format {
-				if !format.is_depth() {
-					pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-				} else {
-					pipeline_stage_flags |= vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS;
-					pipeline_stage_flags |= vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
-				}
-			} else {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::FRAGMENT_SHADER
-			}
-		}
-	}
-
-	if stages.contains(crate::Stages::COMPUTE) {
-		if let Some(layout) = layout {
-			if layout == crate::Layouts::Indirect {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::DRAW_INDIRECT
-			} else {
-				pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
-			}
-		} else {
-			pipeline_stage_flags |= vk::PipelineStageFlags2::COMPUTE_SHADER
-		}
-	}
-
-	if stages.contains(crate::Stages::TRANSFER) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::TRANSFER
-	}
-	if stages.contains(crate::Stages::PRESENTATION) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::TOP_OF_PIPE
-	}
-	if stages.contains(crate::Stages::RAYGEN) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::CLOSEST_HIT) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::ANY_HIT) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::INTERSECTION) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::MISS) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::CALLABLE) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
-	}
-	if stages.contains(crate::Stages::ACCELERATION_STRUCTURE_BUILD) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR;
-	}
-	if stages.contains(crate::Stages::LAST) {
-		pipeline_stage_flags |= vk::PipelineStageFlags2::BOTTOM_OF_PIPE;
-	}
-
-	pipeline_stage_flags
+	fold_flags(
+		&[
+			(Stages::VERTEX, Flags::VERTEX_ATTRIBUTE_INPUT | Flags::VERTEX_SHADER),
+			(Stages::INDEX, Flags::VERTEX_ATTRIBUTE_INPUT | Flags::INDEX_INPUT),
+			(Stages::MESH, Flags::MESH_SHADER_EXT),
+			(Stages::FRAGMENT, fragment),
+			(Stages::COMPUTE, compute),
+			(Stages::TRANSFER, Flags::TRANSFER),
+			// Presentation is external to the pipeline; TOP_OF_PIPE would be NONE in a first scope, leaving the pre-present
+			// barrier and semaphore signal unordered with the frame's last write, whichever stage made it.
+			(Stages::PRESENTATION, Flags::ALL_COMMANDS),
+			(Stages::RAYGEN, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::CLOSEST_HIT, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::ANY_HIT, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::INTERSECTION, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::MISS, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::CALLABLE, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_BUILD_KHR),
+			(Stages::LAST, Flags::BOTTOM_OF_PIPE),
+		],
+		|stage| stages.contains(stage),
+	)
 }
 
 pub(super) fn to_access_flags(
 	accesses: crate::AccessPolicies,
-	stages: crate::Stages,
-	layout: crate::Layouts,
+	stages: Stages,
+	layout: Layouts,
 	format: Option<crate::Formats>,
 ) -> vk::AccessFlags2 {
-	let mut access_flags = vk::AccessFlags2::NONE;
+	use vk::AccessFlags2 as Flags;
+
+	let depth = format.map(|format| format.is_depth());
+	let render_target = layout == Layouts::RenderTarget;
+	let mut access_flags = Flags::NONE;
 
 	if accesses.contains(crate::AccessPolicies::READ) {
-		if stages.intersects(crate::Stages::VERTEX) {
-			access_flags |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
-		}
-		if stages.intersects(crate::Stages::INDEX) {
-			access_flags |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
-			access_flags |= vk::AccessFlags2::INDEX_READ;
-		}
-		if stages.intersects(crate::Stages::TRANSFER) {
-			access_flags |= vk::AccessFlags2::TRANSFER_READ
-		}
-		if stages.intersects(crate::Stages::PRESENTATION) {
-			access_flags |= vk::AccessFlags2::NONE
-		}
-		if stages.intersects(crate::Stages::FRAGMENT) {
-			if let Some(format) = format {
-				if !format.is_depth() {
-					if layout == crate::Layouts::RenderTarget {
-						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_READ
-					} else {
-						access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
-					}
-				} else {
-					if layout == crate::Layouts::RenderTarget {
-						access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ
-					} else {
-						access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
-					}
-				}
-			} else {
-				access_flags |= vk::AccessFlags2::SHADER_SAMPLED_READ
-			}
-		}
-		if stages.intersects(crate::Stages::COMPUTE) {
-			if layout == crate::Layouts::Indirect {
-				access_flags |= vk::AccessFlags2::INDIRECT_COMMAND_READ
-			} else {
-				access_flags |= vk::AccessFlags2::SHADER_READ
-			}
-		}
-		if stages.intersects(crate::Stages::RAYGEN) {
-			if layout == crate::Layouts::ShaderBindingTable {
-				access_flags |= vk::AccessFlags2::SHADER_BINDING_TABLE_READ_KHR
-			} else {
-				access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
-			}
-		}
-		if stages.intersects(crate::Stages::ACCELERATION_STRUCTURE_BUILD) {
-			access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR
-		}
+		let fragment = match (depth, render_target) {
+			(Some(false), true) => Flags::COLOR_ATTACHMENT_READ,
+			(Some(true), true) => Flags::DEPTH_STENCIL_ATTACHMENT_READ,
+			_ => Flags::SHADER_SAMPLED_READ,
+		};
+		let compute = if layout == Layouts::Indirect {
+			Flags::INDIRECT_COMMAND_READ
+		} else {
+			Flags::SHADER_READ
+		};
+		let raygen = if layout == Layouts::ShaderBindingTable {
+			Flags::SHADER_BINDING_TABLE_READ_KHR
+		} else {
+			Flags::ACCELERATION_STRUCTURE_READ_KHR
+		};
+		access_flags |= fold_flags(
+			&[
+				(Stages::VERTEX, Flags::VERTEX_ATTRIBUTE_READ),
+				(Stages::INDEX, Flags::VERTEX_ATTRIBUTE_READ | Flags::INDEX_READ),
+				(Stages::TRANSFER, Flags::TRANSFER_READ),
+				(Stages::FRAGMENT, fragment),
+				(Stages::COMPUTE, compute),
+				(Stages::RAYGEN, raygen),
+				(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_READ_KHR),
+			],
+			|stage| stages.intersects(stage),
+		);
 	}
 
 	if accesses.contains(crate::AccessPolicies::WRITE) {
-		if stages.intersects(crate::Stages::TRANSFER) {
-			access_flags |= vk::AccessFlags2::TRANSFER_WRITE
-		}
-		if stages.intersects(crate::Stages::COMPUTE) {
-			access_flags |= vk::AccessFlags2::SHADER_WRITE
-		}
-		if stages.intersects(crate::Stages::FRAGMENT) {
-			if let Some(format) = format {
-				if !format.is_depth() {
-					if layout == crate::Layouts::RenderTarget {
-						access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-					} else {
-						access_flags |= vk::AccessFlags2::SHADER_WRITE
-					}
-				} else {
-					if layout == crate::Layouts::RenderTarget {
-						access_flags |= vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
-					} else {
-						access_flags |= vk::AccessFlags2::SHADER_WRITE
-					}
-				}
-			} else {
-				access_flags |= vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-			}
-		}
-		if stages.intersects(crate::Stages::RAYGEN) {
-			access_flags |= vk::AccessFlags2::SHADER_WRITE
-		}
-		if stages.intersects(crate::Stages::ACCELERATION_STRUCTURE_BUILD) {
-			access_flags |= vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR
-		}
+		let fragment = match (depth, render_target) {
+			(None, _) | (Some(false), true) => Flags::COLOR_ATTACHMENT_WRITE,
+			(Some(true), true) => Flags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+			(Some(_), false) => Flags::SHADER_WRITE,
+		};
+		access_flags |= fold_flags(
+			&[
+				(Stages::TRANSFER, Flags::TRANSFER_WRITE),
+				(Stages::COMPUTE, Flags::SHADER_WRITE),
+				(Stages::FRAGMENT, fragment),
+				(Stages::RAYGEN, Flags::SHADER_WRITE),
+				(Stages::ACCELERATION_STRUCTURE_BUILD, Flags::ACCELERATION_STRUCTURE_WRITE_KHR),
+			],
+			|stage| stages.intersects(stage),
+		);
 	}
 
 	access_flags
 }
 
+/// A depth of 0 or 1 is one slice, so such extents make 2D images; descriptor views make the same distinction.
 pub(super) fn image_type_from_extent(extent: utils::Extent) -> Option<vk::ImageType> {
 	if extent.width() == 0 {
 		None
 	} else if extent.height() == 0 {
 		Some(vk::ImageType::TYPE_1D)
-	} else if extent.depth() == 0 {
+	} else if extent.depth() <= 1 {
 		Some(vk::ImageType::TYPE_2D)
 	} else {
 		Some(vk::ImageType::TYPE_3D)
+	}
+}
+
+/// Selects the view type that matches an image's dimensionality. 3D images cannot be arrayed, so `arrayed` is ignored for them.
+pub(super) fn image_view_type(image_type: vk::ImageType, arrayed: bool) -> vk::ImageViewType {
+	match (image_type, arrayed) {
+		(vk::ImageType::TYPE_1D, false) => vk::ImageViewType::TYPE_1D,
+		(vk::ImageType::TYPE_1D, true) => vk::ImageViewType::TYPE_1D_ARRAY,
+		(vk::ImageType::TYPE_3D, _) => vk::ImageViewType::TYPE_3D,
+		(_, false) => vk::ImageViewType::TYPE_2D,
+		(_, true) => vk::ImageViewType::TYPE_2D_ARRAY,
 	}
 }
 
@@ -421,153 +351,125 @@ pub(super) fn extent_into_vk_extent(extent: utils::Extent) -> vk::Extent3D {
 	}
 }
 
-pub(super) fn into_vk_image_usage_flags(uses: crate::Uses, format: crate::Formats) -> vk::ImageUsageFlags {
-	vk::ImageUsageFlags::empty()
-		| if uses.intersects(crate::Uses::Image) {
-			vk::ImageUsageFlags::SAMPLED
-		} else {
-			vk::ImageUsageFlags::empty()
-		} | if uses.intersects(crate::Uses::InputAttachment) {
-		vk::ImageUsageFlags::INPUT_ATTACHMENT
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::Clear) {
-		vk::ImageUsageFlags::TRANSFER_DST
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::Storage) {
-		vk::ImageUsageFlags::STORAGE
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::RenderTarget) && !format.is_depth() {
-		vk::ImageUsageFlags::COLOR_ATTACHMENT
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::DepthStencil) || format.is_depth() {
-		vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::TransferSource) {
-		vk::ImageUsageFlags::TRANSFER_SRC
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::TransferDestination) {
-		vk::ImageUsageFlags::TRANSFER_DST
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::BlitDestination) {
-		vk::ImageUsageFlags::COLOR_ATTACHMENT
-	} else {
-		vk::ImageUsageFlags::empty()
-	} | if uses.intersects(crate::Uses::BlitSource) {
-		vk::ImageUsageFlags::SAMPLED
-	} else {
-		vk::ImageUsageFlags::empty()
+pub(super) fn into_vk_image_usage_flags(uses: Uses, format: crate::Formats) -> vk::ImageUsageFlags {
+	use vk::ImageUsageFlags as Flags;
+
+	let mut flags = fold_flags(
+		&[
+			(Uses::Image, Flags::SAMPLED),
+			(Uses::InputAttachment, Flags::INPUT_ATTACHMENT),
+			(Uses::Clear, Flags::TRANSFER_DST),
+			(Uses::Storage, Flags::STORAGE),
+			(Uses::TransferSource, Flags::TRANSFER_SRC),
+			(Uses::TransferDestination, Flags::TRANSFER_DST),
+		],
+		|flag| uses.intersects(flag),
+	);
+	if uses.intersects(Uses::RenderTarget) && !format.is_depth() {
+		flags |= Flags::COLOR_ATTACHMENT;
+	}
+	if uses.intersects(Uses::DepthStencil) || format.is_depth() {
+		flags |= Flags::DEPTH_STENCIL_ATTACHMENT;
+	}
+	flags
+}
+
+impl From<Stages> for vk::ShaderStageFlags {
+	fn from(stages: Stages) -> Self {
+		fold_flags(
+			&[
+				(Stages::VERTEX, Self::VERTEX),
+				(Stages::FRAGMENT, Self::FRAGMENT),
+				(Stages::COMPUTE, Self::COMPUTE),
+				(Stages::MESH, Self::MESH_EXT),
+				(Stages::TASK, Self::TASK_EXT),
+				(Stages::RAYGEN, Self::RAYGEN_KHR),
+				(Stages::CLOSEST_HIT, Self::CLOSEST_HIT_KHR),
+				(Stages::ANY_HIT, Self::ANY_HIT_KHR),
+				(Stages::INTERSECTION, Self::INTERSECTION_KHR),
+				(Stages::MISS, Self::MISS_KHR),
+				(Stages::CALLABLE, Self::CALLABLE_KHR),
+			],
+			|stage| stages.intersects(stage),
+		)
 	}
 }
 
-impl Into<vk::ShaderStageFlags> for crate::Stages {
-	fn into(self) -> vk::ShaderStageFlags {
-		let mut shader_stage_flags = vk::ShaderStageFlags::default();
-
-		shader_stage_flags |= if self.intersects(crate::Stages::VERTEX) {
-			vk::ShaderStageFlags::VERTEX
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::FRAGMENT) {
-			vk::ShaderStageFlags::FRAGMENT
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::COMPUTE) {
-			vk::ShaderStageFlags::COMPUTE
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::MESH) {
-			vk::ShaderStageFlags::MESH_EXT
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::TASK) {
-			vk::ShaderStageFlags::TASK_EXT
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::RAYGEN) {
-			vk::ShaderStageFlags::RAYGEN_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::CLOSEST_HIT) {
-			vk::ShaderStageFlags::CLOSEST_HIT_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::ANY_HIT) {
-			vk::ShaderStageFlags::ANY_HIT_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::INTERSECTION) {
-			vk::ShaderStageFlags::INTERSECTION_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::MISS) {
-			vk::ShaderStageFlags::MISS_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-		shader_stage_flags |= if self.intersects(crate::Stages::CALLABLE) {
-			vk::ShaderStageFlags::CALLABLE_KHR
-		} else {
-			vk::ShaderStageFlags::default()
-		};
-
-		shader_stage_flags
-	}
-}
-
-impl Into<vk::Format> for crate::DataTypes {
-	fn into(self) -> vk::Format {
-		match self {
-			crate::DataTypes::Float => vk::Format::R32_SFLOAT,
-			crate::DataTypes::Float2 => vk::Format::R32G32_SFLOAT,
-			crate::DataTypes::Float3 => vk::Format::R32G32B32_SFLOAT,
-			crate::DataTypes::Float4 => vk::Format::R32G32B32A32_SFLOAT,
-			crate::DataTypes::U8 => vk::Format::R8_UINT,
-			crate::DataTypes::U16 => vk::Format::R16_UINT,
-			crate::DataTypes::Int => vk::Format::R32_SINT,
-			crate::DataTypes::U32 => vk::Format::R32_UINT,
-			crate::DataTypes::Int2 => vk::Format::R32G32_SINT,
-			crate::DataTypes::Int3 => vk::Format::R32G32B32_SINT,
-			crate::DataTypes::Int4 => vk::Format::R32G32B32A32_SINT,
-			crate::DataTypes::UInt => vk::Format::R32_UINT,
-			crate::DataTypes::UInt2 => vk::Format::R32G32_UINT,
-			crate::DataTypes::UInt3 => vk::Format::R32G32B32_UINT,
-			crate::DataTypes::UInt4 => vk::Format::R32G32B32A32_UINT,
+impl From<crate::DataTypes> for vk::Format {
+	fn from(data_type: crate::DataTypes) -> Self {
+		match data_type {
+			crate::DataTypes::Float => Self::R32_SFLOAT,
+			crate::DataTypes::Float2 => Self::R32G32_SFLOAT,
+			crate::DataTypes::Float3 => Self::R32G32B32_SFLOAT,
+			crate::DataTypes::Float4 => Self::R32G32B32A32_SFLOAT,
+			crate::DataTypes::U8 => Self::R8_UINT,
+			crate::DataTypes::U16 => Self::R16_UINT,
+			crate::DataTypes::Int => Self::R32_SINT,
+			crate::DataTypes::U32 | crate::DataTypes::UInt => Self::R32_UINT,
+			crate::DataTypes::Int2 => Self::R32G32_SINT,
+			crate::DataTypes::Int3 => Self::R32G32B32_SINT,
+			crate::DataTypes::Int4 => Self::R32G32B32A32_SINT,
+			crate::DataTypes::UInt2 => Self::R32G32_UINT,
+			crate::DataTypes::UInt3 => Self::R32G32B32_UINT,
+			crate::DataTypes::UInt4 => Self::R32G32B32A32_UINT,
 		}
 	}
 }
 
 impl Size for &[crate::pipelines::VertexElement<'_>] {
 	fn size(&self) -> usize {
-		let mut size = 0;
-
-		for element in *self {
-			size += element.format.size();
-		}
-
-		size
+		self.iter().map(|element| element.format.size()).sum()
 	}
 }
 
 impl From<crate::ShaderTypes> for vk::ShaderStageFlags {
 	fn from(value: crate::ShaderTypes) -> Self {
-		to_shader_stage_flags(value.into())
+		to_shader_stage_flags(value)
 	}
+}
+
+/// Orders the memory types that can back an allocation with `device_accesses`, best first.
+///
+/// Host access requires mapped coherent memory, so host writes need no flush and host reads no invalidate. GPU access
+/// prefers device-local memory and host reads prefer cached memory. A preference is dropped when no type offers it or
+/// its heap is exhausted, such as CPU-writable GPU buffers on devices without resizable BAR.
+pub(super) fn memory_type_candidates(
+	memory_properties: &vk::PhysicalDeviceMemoryProperties,
+	memory_type_bits: u32,
+	device_accesses: crate::DeviceAccesses,
+) -> Vec<u32> {
+	let host_access = device_accesses.intersects(crate::DeviceAccesses::CpuRead | crate::DeviceAccesses::CpuWrite);
+	let required = if host_access {
+		vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+	} else {
+		vk::MemoryPropertyFlags::empty()
+	};
+	// Protected and AMD device-coherent memory need device features this backend does not enable.
+	let unsupported = vk::MemoryPropertyFlags::PROTECTED
+		| vk::MemoryPropertyFlags::DEVICE_COHERENT_AMD
+		| vk::MemoryPropertyFlags::DEVICE_UNCACHED_AMD;
+	// Uncached host reads are far slower than a GPU reading host memory, so caching outranks device locality.
+	let score = |flags: vk::MemoryPropertyFlags| {
+		let cached =
+			device_accesses.contains(crate::DeviceAccesses::CpuRead) && flags.contains(vk::MemoryPropertyFlags::HOST_CACHED);
+		let device_local = device_accesses.intersects(crate::DeviceAccesses::GpuRead | crate::DeviceAccesses::GpuWrite)
+			&& flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL);
+		u8::from(cached) * 2 + u8::from(device_local)
+	};
+
+	let mut candidates = memory_properties.memory_types[..memory_properties.memory_type_count as usize]
+		.iter()
+		.enumerate()
+		.filter(|(index, memory_type)| {
+			memory_type_bits & (1 << index) != 0
+				&& memory_type.property_flags.contains(required)
+				&& !memory_type.property_flags.intersects(unsupported)
+		})
+		.map(|(index, memory_type)| (index as u32, score(memory_type.property_flags)))
+		.collect::<Vec<_>>();
+	// The stable sort keeps the implementation's order among equal scores, which lists types with fewer extra properties first.
+	candidates.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
+	candidates.into_iter().map(|(index, _)| index).collect()
 }
 
 #[cfg(test)]
@@ -575,763 +477,459 @@ mod tests {
 	use utils::RGBA;
 
 	use super::*;
+	use crate::{AccessPolicies, Formats};
+
+	#[test]
+	fn depth_formats_select_depth_aspects() {
+		assert!(image_aspect_mask(to_format(crate::Formats::Depth16)) == vk::ImageAspectFlags::DEPTH);
+		assert!(image_aspect_mask(to_format(crate::Formats::Depth32)) == vk::ImageAspectFlags::DEPTH);
+		assert!(
+			image_aspect_mask(vk::Format::D24_UNORM_S8_UINT) == vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+		);
+		assert!(image_aspect_mask(to_format(crate::Formats::RGBA8UNORM)) == vk::ImageAspectFlags::COLOR);
+	}
+
+	fn memory_properties(types: &[vk::MemoryPropertyFlags]) -> vk::PhysicalDeviceMemoryProperties {
+		let mut properties = vk::PhysicalDeviceMemoryProperties {
+			memory_type_count: types.len() as u32,
+			..Default::default()
+		};
+		for (memory_type, &property_flags) in properties.memory_types.iter_mut().zip(types) {
+			memory_type.property_flags = property_flags;
+		}
+		properties
+	}
+
+	#[test]
+	fn memory_types_fall_back_when_preferences_are_unavailable() {
+		// A discrete GPU without resizable BAR.
+		type F = vk::MemoryPropertyFlags;
+		let properties = memory_properties(&[
+			F::DEVICE_LOCAL,
+			F::HOST_VISIBLE | F::HOST_COHERENT,
+			F::HOST_VISIBLE | F::HOST_COHERENT | F::HOST_CACHED,
+			F::DEVICE_LOCAL | F::PROTECTED,
+		]);
+
+		// Device memory comes first; host memory remains a fallback for when device memory runs out.
+		assert_eq!(
+			memory_type_candidates(&properties, !0, crate::DeviceAccesses::GpuRead),
+			vec![0, 1, 2]
+		);
+		// No device-local host-visible type exists, so CPU-writable GPU buffers use host memory.
+		assert_eq!(
+			memory_type_candidates(
+				&properties,
+				!0,
+				crate::DeviceAccesses::CpuWrite | crate::DeviceAccesses::GpuRead
+			),
+			vec![1, 2]
+		);
+		assert_eq!(
+			memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead),
+			vec![2, 1]
+		);
+		assert_eq!(
+			memory_type_candidates(&properties, 0b0010, crate::DeviceAccesses::CpuRead),
+			vec![1]
+		);
+	}
+
+	#[test]
+	fn memory_types_never_offer_non_coherent_memory_for_host_access() {
+		type F = vk::MemoryPropertyFlags;
+		let properties = memory_properties(&[
+			F::HOST_VISIBLE | F::HOST_CACHED,
+			F::DEVICE_LOCAL | F::HOST_VISIBLE | F::HOST_COHERENT,
+		]);
+
+		assert_eq!(
+			memory_type_candidates(&properties, !0, crate::DeviceAccesses::CpuRead),
+			vec![1]
+		);
+	}
+
+	#[test]
+	fn image_views_match_image_dimensionality() {
+		let view_type = |extent| image_view_type(image_type_from_extent(extent).unwrap(), false);
+
+		assert!(view_type(utils::Extent::line(64)) == vk::ImageViewType::TYPE_1D);
+		assert!(view_type(utils::Extent::rectangle(64, 64)) == vk::ImageViewType::TYPE_2D);
+		assert!(view_type(utils::Extent::cube(64, 64, 1)) == vk::ImageViewType::TYPE_2D);
+		assert!(view_type(utils::Extent::cube(64, 64, 64)) == vk::ImageViewType::TYPE_3D);
+		assert!(image_view_type(vk::ImageType::TYPE_2D, true) == vk::ImageViewType::TYPE_2D_ARRAY);
+		assert!(image_view_type(vk::ImageType::TYPE_1D, true) == vk::ImageViewType::TYPE_1D_ARRAY);
+	}
+
+	#[test]
+	fn specialization_constants_use_four_byte_scalars() {
+		let entries = [
+			crate::pipelines::SpecializationMapEntry::new(0, "bool".to_string(), true),
+			crate::pipelines::SpecializationMapEntry::new(1, "vec2f".to_string(), [1.0f32, 2.0f32]),
+			crate::pipelines::SpecializationMapEntry::new(3, "u32".to_string(), 7u32),
+		];
+
+		let (data, map_entries) = build_specialization_entries(&entries);
+
+		assert_eq!(data.len(), 16);
+		assert_eq!(&data[0..4], &1u32.to_ne_bytes());
+		assert_eq!(&data[12..16], &7u32.to_ne_bytes());
+		let layout = map_entries
+			.iter()
+			.map(|entry| (entry.constant_id, entry.offset, entry.size))
+			.collect::<Vec<_>>();
+		assert_eq!(layout, vec![(0, 0, 4), (1, 4, 4), (2, 8, 4), (3, 12, 4)]);
+	}
+
+	#[test]
+	fn transfer_image_uses_request_only_transfer_usage() {
+		// Blit uses alias transfer uses, and vkCmdBlitImage2 only needs transfer usage; extra bits are invalid for BC formats.
+		let value = into_vk_image_usage_flags(
+			crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
+			crate::Formats::BC7,
+		);
+
+		assert!(value == vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST);
+	}
 
 	#[test]
 	fn test_uses_to_vk_usage_flags() {
-		let value = uses_to_vk_usage_flags(crate::Uses::Vertex);
-
-		assert!(value.intersects(vk::BufferUsageFlags::VERTEX_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::Index);
-
-		assert!(value.intersects(vk::BufferUsageFlags::INDEX_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::Uniform);
-
-		assert!(value.intersects(vk::BufferUsageFlags::UNIFORM_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::Storage);
-
-		assert!(value.intersects(vk::BufferUsageFlags::STORAGE_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::TransferSource);
-
-		assert!(value.intersects(vk::BufferUsageFlags::TRANSFER_SRC));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::TransferDestination);
-
-		assert!(value.intersects(vk::BufferUsageFlags::TRANSFER_DST));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::AccelerationStructure);
-
-		assert!(value.intersects(vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::Indirect);
-
-		assert!(value.intersects(vk::BufferUsageFlags::INDIRECT_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::ShaderBindingTable);
-
-		assert!(value.intersects(vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::AccelerationStructureBuildScratch);
-
-		assert!(value.intersects(vk::BufferUsageFlags::STORAGE_BUFFER));
-
-		let value = uses_to_vk_usage_flags(crate::Uses::AccelerationStructureBuild);
-
-		assert!(value.intersects(vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR));
+		let cases = [
+			(Uses::Vertex, vk::BufferUsageFlags::VERTEX_BUFFER),
+			(Uses::Index, vk::BufferUsageFlags::INDEX_BUFFER),
+			(Uses::Uniform, vk::BufferUsageFlags::UNIFORM_BUFFER),
+			(Uses::Storage, vk::BufferUsageFlags::STORAGE_BUFFER),
+			(Uses::TransferSource, vk::BufferUsageFlags::TRANSFER_SRC),
+			(Uses::TransferDestination, vk::BufferUsageFlags::TRANSFER_DST),
+			(
+				Uses::AccelerationStructure,
+				vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
+			),
+			(Uses::Indirect, vk::BufferUsageFlags::INDIRECT_BUFFER),
+			(Uses::ShaderBindingTable, vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR),
+			(Uses::AccelerationStructureBuildScratch, vk::BufferUsageFlags::STORAGE_BUFFER),
+			(
+				Uses::AccelerationStructureBuild,
+				vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+			),
+		];
+		for (uses, expected) in cases {
+			assert!(uses_to_vk_usage_flags(uses).intersects(expected), "{uses:?}");
+		}
 	}
 
 	#[test]
 	fn test_to_clear_value() {
 		let value = to_clear_value(graphics_hardware_interface::ClearValue::Color(RGBA::new(0.0, 1.0, 2.0, 3.0)));
-
 		assert_eq!(unsafe { value.color.float32 }, [0.0, 1.0, 2.0, 3.0]);
 
-		let value = to_clear_value(graphics_hardware_interface::ClearValue::Depth(0.0));
-
-		assert_eq!(unsafe { value.depth_stencil.depth }, 0.0);
-		assert_eq!(unsafe { value.depth_stencil.stencil }, 0);
-
-		let value = to_clear_value(graphics_hardware_interface::ClearValue::Depth(1.0));
-
-		assert_eq!(unsafe { value.depth_stencil.depth }, 1.0);
-		assert_eq!(unsafe { value.depth_stencil.stencil }, 0);
+		for depth in [0.0, 1.0] {
+			let value = to_clear_value(graphics_hardware_interface::ClearValue::Depth(depth));
+			assert_eq!(unsafe { value.depth_stencil.depth }, depth);
+			assert_eq!(unsafe { value.depth_stencil.stencil }, 0);
+		}
 
 		let value = to_clear_value(graphics_hardware_interface::ClearValue::Integer(1, 2, 3, 4));
-
 		assert_eq!(unsafe { value.color.int32 }, [1, 2, 3, 4]);
 
 		let value = to_clear_value(graphics_hardware_interface::ClearValue::None);
-
 		assert_eq!(unsafe { value.color.float32 }, [0.0, 0.0, 0.0, 0.0]);
 		assert_eq!(unsafe { value.depth_stencil.depth }, 0.0);
 		assert_eq!(unsafe { value.depth_stencil.stencil }, 0);
 	}
 
 	#[test]
-	fn test_to_load_operation() {
-		let value = to_load_operation(true);
-
-		assert_eq!(value, vk::AttachmentLoadOp::LOAD);
-
-		let value = to_load_operation(false);
-
-		assert_eq!(value, vk::AttachmentLoadOp::CLEAR);
-	}
-
-	#[test]
-	fn test_to_store_operation() {
-		let value = to_store_operation(true);
-
-		assert_eq!(value, vk::AttachmentStoreOp::STORE);
-
-		let value = to_store_operation(false);
-
-		assert_eq!(value, vk::AttachmentStoreOp::DONT_CARE);
+	fn test_to_load_and_store_operations() {
+		assert_eq!(to_load_operation(true), vk::AttachmentLoadOp::LOAD);
+		assert_eq!(to_load_operation(false), vk::AttachmentLoadOp::CLEAR);
+		assert_eq!(to_store_operation(true), vk::AttachmentStoreOp::STORE);
+		assert_eq!(to_store_operation(false), vk::AttachmentStoreOp::DONT_CARE);
 	}
 
 	#[test]
 	fn test_texture_format_and_resource_use_to_image_layout() {
-		let value =
-			texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Undefined, None);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(
-			crate::Formats::RGBA8UNORM,
-			crate::Layouts::Undefined,
-			Some(crate::AccessPolicies::READ),
-		);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(
-			crate::Formats::RGBA8UNORM,
-			crate::Layouts::Undefined,
-			Some(crate::AccessPolicies::WRITE),
-		);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-
-		let value =
-			texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::RenderTarget, None);
-
-		assert_eq!(value, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-		let value =
-			texture_format_and_resource_use_to_image_layout(crate::Formats::Depth32, crate::Layouts::RenderTarget, None);
-
-		assert_eq!(value, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-		let value =
-			texture_format_and_resource_use_to_image_layout(crate::Formats::Depth16, crate::Layouts::RenderTarget, None);
-
-		assert_eq!(value, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Transfer, None);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-		let value = texture_format_and_resource_use_to_image_layout(
-			crate::Formats::RGBA8UNORM,
-			crate::Layouts::Transfer,
-			Some(crate::AccessPolicies::READ),
-		);
-
-		assert_eq!(value, vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
-		let value = texture_format_and_resource_use_to_image_layout(
-			crate::Formats::RGBA8UNORM,
-			crate::Layouts::Transfer,
-			Some(crate::AccessPolicies::WRITE),
-		);
-
-		assert_eq!(value, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
-
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Present, None);
-
-		assert_eq!(value, vk::ImageLayout::PRESENT_SRC_KHR);
-
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Read, None);
-
-		assert_eq!(value, vk::ImageLayout::READ_ONLY_OPTIMAL);
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::Depth32, crate::Layouts::Read, None);
-
-		assert_eq!(value, vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL);
-
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::General, None);
-
-		assert_eq!(value, vk::ImageLayout::GENERAL);
-
-		let value = texture_format_and_resource_use_to_image_layout(
-			crate::Formats::RGBA8UNORM,
-			crate::Layouts::ShaderBindingTable,
-			None,
-		);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
-
-		let value = texture_format_and_resource_use_to_image_layout(crate::Formats::RGBA8UNORM, crate::Layouts::Indirect, None);
-
-		assert_eq!(value, vk::ImageLayout::UNDEFINED);
+		let (color, read, write) = (Formats::RGBA8UNORM, Some(AccessPolicies::READ), Some(AccessPolicies::WRITE));
+		let cases = [
+			(color, Layouts::Undefined, None, vk::ImageLayout::UNDEFINED),
+			(color, Layouts::Undefined, read, vk::ImageLayout::UNDEFINED),
+			(color, Layouts::Undefined, write, vk::ImageLayout::UNDEFINED),
+			(color, Layouts::RenderTarget, None, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+			(
+				Formats::Depth32,
+				Layouts::RenderTarget,
+				None,
+				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			),
+			(
+				Formats::Depth16,
+				Layouts::RenderTarget,
+				None,
+				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			),
+			(color, Layouts::Transfer, None, vk::ImageLayout::UNDEFINED),
+			(color, Layouts::Transfer, read, vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
+			(color, Layouts::Transfer, write, vk::ImageLayout::TRANSFER_DST_OPTIMAL),
+			(color, Layouts::Present, None, vk::ImageLayout::PRESENT_SRC_KHR),
+			(color, Layouts::Read, None, vk::ImageLayout::READ_ONLY_OPTIMAL),
+			(
+				Formats::Depth32,
+				Layouts::Read,
+				None,
+				vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
+			),
+			(color, Layouts::General, None, vk::ImageLayout::GENERAL),
+			(color, Layouts::ShaderBindingTable, None, vk::ImageLayout::UNDEFINED),
+			(color, Layouts::Indirect, None, vk::ImageLayout::UNDEFINED),
+		];
+		for (format, layout, access, expected) in cases {
+			assert_eq!(
+				texture_format_and_resource_use_to_image_layout(format, layout, access),
+				expected,
+				"{format:?} {layout:?} {access:?}"
+			);
+		}
 	}
 
 	#[test]
 	fn test_to_format() {
-		let value = to_format(crate::Formats::R8UNORM);
-
-		assert_eq!(value, vk::Format::R8_UNORM);
-		let value = to_format(crate::Formats::R8SNORM);
-
-		assert_eq!(value, vk::Format::R8_SNORM);
-		let value = to_format(crate::Formats::R8F);
-
-		assert_eq!(value, vk::Format::UNDEFINED);
-
-		let value = to_format(crate::Formats::R16UNORM);
-
-		assert_eq!(value, vk::Format::R16_UNORM);
-		let value = to_format(crate::Formats::R16SNORM);
-
-		assert_eq!(value, vk::Format::R16_SNORM);
-		let value = to_format(crate::Formats::R16F);
-
-		assert_eq!(value, vk::Format::R16_SFLOAT);
-
-		let value = to_format(crate::Formats::R32UNORM);
-
-		assert_eq!(value, vk::Format::R32_UINT);
-		let value = to_format(crate::Formats::R32SNORM);
-
-		assert_eq!(value, vk::Format::R32_SINT);
-		let value = to_format(crate::Formats::R32F);
-
-		assert_eq!(value, vk::Format::R32_SFLOAT);
-
-		let value = to_format(crate::Formats::RG8UNORM);
-
-		assert_eq!(value, vk::Format::R8G8_UNORM);
-		let value = to_format(crate::Formats::BC5);
-
-		assert_eq!(value, vk::Format::BC5_UNORM_BLOCK);
-		let value = to_format(crate::Formats::RG8SNORM);
-
-		assert_eq!(value, vk::Format::R8G8_SNORM);
-		let value = to_format(crate::Formats::RG8F);
-
-		assert_eq!(value, vk::Format::UNDEFINED);
-
-		let value = to_format(crate::Formats::RG16UNORM);
-
-		assert_eq!(value, vk::Format::R16G16_UNORM);
-		let value = to_format(crate::Formats::RG16SNORM);
-
-		assert_eq!(value, vk::Format::R16G16_SNORM);
-		let value = to_format(crate::Formats::RG16F);
-
-		assert_eq!(value, vk::Format::R16G16_SFLOAT);
-
-		let value = to_format(crate::Formats::RGB16UNORM);
-
-		assert_eq!(value, vk::Format::R16G16B16_UNORM);
-		let value = to_format(crate::Formats::RGB16SNORM);
-
-		assert_eq!(value, vk::Format::R16G16B16_SNORM);
-		let value = to_format(crate::Formats::RGB16F);
-
-		assert_eq!(value, vk::Format::R16G16B16_SFLOAT);
-
-		let value = to_format(crate::Formats::RGBA8UNORM);
-
-		assert_eq!(value, vk::Format::R8G8B8A8_UNORM);
-		let value = to_format(crate::Formats::BC7);
-
-		assert_eq!(value, vk::Format::BC7_UNORM_BLOCK);
-		let value = to_format(crate::Formats::BC7SRGB);
-
-		assert_eq!(value, vk::Format::BC7_SRGB_BLOCK);
-		let value = to_format(crate::Formats::RGBA8SNORM);
-
-		assert_eq!(value, vk::Format::R8G8B8A8_SNORM);
-		let value = to_format(crate::Formats::RGBA8F);
-
-		assert_eq!(value, vk::Format::UNDEFINED);
-
-		let value = to_format(crate::Formats::RGBA16UNORM);
-
-		assert_eq!(value, vk::Format::R16G16B16A16_UNORM);
-		let value = to_format(crate::Formats::RGBA16SNORM);
-
-		assert_eq!(value, vk::Format::R16G16B16A16_SNORM);
-		let value = to_format(crate::Formats::RGBA16F);
-
-		assert_eq!(value, vk::Format::R16G16B16A16_SFLOAT);
-
-		let value = to_format(crate::Formats::BGRAu8);
-
-		assert_eq!(value, vk::Format::B8G8R8A8_UNORM);
-
-		let value = to_format(crate::Formats::RGBu11u11u10);
-
-		assert_eq!(value, vk::Format::B10G11R11_UFLOAT_PACK32);
-
-		let value = to_format(crate::Formats::Depth32);
-
-		assert_eq!(value, vk::Format::D32_SFLOAT);
-		let value = to_format(crate::Formats::Depth16);
-
-		assert_eq!(value, vk::Format::D16_UNORM);
+		let cases = [
+			(Formats::R8UNORM, vk::Format::R8_UNORM),
+			(Formats::R8SNORM, vk::Format::R8_SNORM),
+			(Formats::R8F, vk::Format::UNDEFINED),
+			(Formats::R16UNORM, vk::Format::R16_UNORM),
+			(Formats::R16SNORM, vk::Format::R16_SNORM),
+			(Formats::R16F, vk::Format::R16_SFLOAT),
+			(Formats::R32UNORM, vk::Format::R32_UINT),
+			(Formats::R32SNORM, vk::Format::R32_SINT),
+			(Formats::R32F, vk::Format::R32_SFLOAT),
+			(Formats::RG8UNORM, vk::Format::R8G8_UNORM),
+			(Formats::BC5, vk::Format::BC5_UNORM_BLOCK),
+			(Formats::RG8SNORM, vk::Format::R8G8_SNORM),
+			(Formats::RG8F, vk::Format::UNDEFINED),
+			(Formats::RG16UNORM, vk::Format::R16G16_UNORM),
+			(Formats::RG16SNORM, vk::Format::R16G16_SNORM),
+			(Formats::RG16F, vk::Format::R16G16_SFLOAT),
+			(Formats::RGB16UNORM, vk::Format::R16G16B16_UNORM),
+			(Formats::RGB16SNORM, vk::Format::R16G16B16_SNORM),
+			(Formats::RGB16F, vk::Format::R16G16B16_SFLOAT),
+			(Formats::RGBA8UNORM, vk::Format::R8G8B8A8_UNORM),
+			(Formats::BC7, vk::Format::BC7_UNORM_BLOCK),
+			(Formats::BC7SRGB, vk::Format::BC7_SRGB_BLOCK),
+			(Formats::RGBA8SNORM, vk::Format::R8G8B8A8_SNORM),
+			(Formats::RGBA8F, vk::Format::UNDEFINED),
+			(Formats::RGBA16UNORM, vk::Format::R16G16B16A16_UNORM),
+			(Formats::RGBA16SNORM, vk::Format::R16G16B16A16_SNORM),
+			(Formats::RGBA16F, vk::Format::R16G16B16A16_SFLOAT),
+			(Formats::BGRAu8, vk::Format::B8G8R8A8_UNORM),
+			(Formats::RGBu11u11u10, vk::Format::B10G11R11_UFLOAT_PACK32),
+			(Formats::Depth32, vk::Format::D32_SFLOAT),
+			(Formats::Depth16, vk::Format::D16_UNORM),
+		];
+		for (format, expected) in cases {
+			assert_eq!(to_format(format), expected, "{format:?}");
+		}
 	}
 
 	#[test]
-	fn test_to_shader_stage_flags() {
-		let value = to_shader_stage_flags(crate::ShaderTypes::Vertex);
+	fn test_shader_stage_flags() {
+		let cases = [
+			(crate::ShaderTypes::Vertex, vk::ShaderStageFlags::VERTEX),
+			(crate::ShaderTypes::Fragment, vk::ShaderStageFlags::FRAGMENT),
+			(crate::ShaderTypes::Compute, vk::ShaderStageFlags::COMPUTE),
+			(crate::ShaderTypes::Task, vk::ShaderStageFlags::TASK_EXT),
+			(crate::ShaderTypes::Mesh, vk::ShaderStageFlags::MESH_EXT),
+			(crate::ShaderTypes::RayGen, vk::ShaderStageFlags::RAYGEN_KHR),
+			(crate::ShaderTypes::ClosestHit, vk::ShaderStageFlags::CLOSEST_HIT_KHR),
+			(crate::ShaderTypes::AnyHit, vk::ShaderStageFlags::ANY_HIT_KHR),
+			(crate::ShaderTypes::Intersection, vk::ShaderStageFlags::INTERSECTION_KHR),
+			(crate::ShaderTypes::Miss, vk::ShaderStageFlags::MISS_KHR),
+			(crate::ShaderTypes::Callable, vk::ShaderStageFlags::CALLABLE_KHR),
+		];
+		for (shader_type, expected) in cases {
+			assert_eq!(to_shader_stage_flags(shader_type), expected, "{shader_type:?}");
+			assert_eq!(vk::ShaderStageFlags::from(shader_type), expected, "{shader_type:?}");
+			assert_eq!(
+				vk::ShaderStageFlags::from(Stages::from(shader_type)),
+				expected,
+				"{shader_type:?}"
+			);
+		}
 
-		assert_eq!(value, vk::ShaderStageFlags::VERTEX);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Fragment);
-
-		assert_eq!(value, vk::ShaderStageFlags::FRAGMENT);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Compute);
-
-		assert_eq!(value, vk::ShaderStageFlags::COMPUTE);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Task);
-
-		assert_eq!(value, vk::ShaderStageFlags::TASK_EXT);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Mesh);
-
-		assert_eq!(value, vk::ShaderStageFlags::MESH_EXT);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::RayGen);
-
-		assert_eq!(value, vk::ShaderStageFlags::RAYGEN_KHR);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::ClosestHit);
-
-		assert_eq!(value, vk::ShaderStageFlags::CLOSEST_HIT_KHR);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::AnyHit);
-
-		assert_eq!(value, vk::ShaderStageFlags::ANY_HIT_KHR);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Intersection);
-
-		assert_eq!(value, vk::ShaderStageFlags::INTERSECTION_KHR);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Miss);
-
-		assert_eq!(value, vk::ShaderStageFlags::MISS_KHR);
-
-		let value = to_shader_stage_flags(crate::ShaderTypes::Callable);
-
-		assert_eq!(value, vk::ShaderStageFlags::CALLABLE_KHR);
+		for stages in [
+			Stages::ACCELERATION_STRUCTURE_BUILD,
+			Stages::TRANSFER,
+			Stages::PRESENTATION,
+			Stages::NONE,
+		] {
+			assert_eq!(
+				vk::ShaderStageFlags::from(stages),
+				vk::ShaderStageFlags::empty(),
+				"{stages:?}"
+			);
+		}
 	}
 
 	#[test]
 	fn test_to_pipeline_stage_flags() {
-		let value = to_pipeline_stage_flags(crate::Stages::NONE, None, None);
+		use vk::PipelineStageFlags2 as Flags;
 
-		assert_eq!(value, vk::PipelineStageFlags2::NONE);
-
-		let value = to_pipeline_stage_flags(crate::Stages::VERTEX, None, None);
-
-		assert_eq!(
-			value,
-			vk::PipelineStageFlags2::VERTEX_SHADER | vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT
-		);
-
-		let value = to_pipeline_stage_flags(crate::Stages::MESH, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::MESH_SHADER_EXT);
-
-		let value = to_pipeline_stage_flags(crate::Stages::FRAGMENT, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::FRAGMENT_SHADER);
-
-		let value = to_pipeline_stage_flags(crate::Stages::FRAGMENT, Some(crate::Layouts::RenderTarget), None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT);
-
-		let value = to_pipeline_stage_flags(crate::Stages::FRAGMENT, None, Some(crate::Formats::Depth32));
-
-		assert_eq!(
-			value,
-			vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS
-		);
-
-		let value = to_pipeline_stage_flags(crate::Stages::COMPUTE, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::COMPUTE_SHADER);
-
-		let value = to_pipeline_stage_flags(crate::Stages::COMPUTE, Some(crate::Layouts::Indirect), None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::DRAW_INDIRECT);
-
-		let value = to_pipeline_stage_flags(crate::Stages::TRANSFER, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::TRANSFER);
-
-		let value = to_pipeline_stage_flags(crate::Stages::PRESENTATION, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::TOP_OF_PIPE);
-
-		let value = to_pipeline_stage_flags(crate::Stages::RAYGEN, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::CLOSEST_HIT, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::ANY_HIT, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::INTERSECTION, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::MISS, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::CALLABLE, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR);
-
-		let value = to_pipeline_stage_flags(crate::Stages::ACCELERATION_STRUCTURE_BUILD, None, None);
-
-		assert_eq!(value, vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR);
+		let cases = [
+			(Stages::NONE, None, None, Flags::NONE),
+			(
+				Stages::VERTEX,
+				None,
+				None,
+				Flags::VERTEX_SHADER | Flags::VERTEX_ATTRIBUTE_INPUT,
+			),
+			(Stages::MESH, None, None, Flags::MESH_SHADER_EXT),
+			(Stages::FRAGMENT, None, None, Flags::FRAGMENT_SHADER),
+			(
+				Stages::FRAGMENT,
+				Some(Layouts::RenderTarget),
+				None,
+				Flags::COLOR_ATTACHMENT_OUTPUT,
+			),
+			(
+				Stages::FRAGMENT,
+				None,
+				Some(Formats::Depth32),
+				Flags::EARLY_FRAGMENT_TESTS | Flags::LATE_FRAGMENT_TESTS,
+			),
+			(Stages::COMPUTE, None, None, Flags::COMPUTE_SHADER),
+			(Stages::COMPUTE, Some(Layouts::Indirect), None, Flags::DRAW_INDIRECT),
+			(Stages::TRANSFER, None, None, Flags::TRANSFER),
+			(Stages::PRESENTATION, None, None, Flags::ALL_COMMANDS),
+			(Stages::RAYGEN, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::CLOSEST_HIT, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::ANY_HIT, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::INTERSECTION, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::MISS, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(Stages::CALLABLE, None, None, Flags::RAY_TRACING_SHADER_KHR),
+			(
+				Stages::ACCELERATION_STRUCTURE_BUILD,
+				None,
+				None,
+				Flags::ACCELERATION_STRUCTURE_BUILD_KHR,
+			),
+		];
+		for (stages, layout, format, expected) in cases {
+			assert_eq!(
+				to_pipeline_stage_flags(stages, layout, format),
+				expected,
+				"{stages:?} {layout:?} {format:?}"
+			);
+		}
 	}
 
 	#[test]
 	fn test_to_access_flags() {
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::VERTEX,
-			crate::Layouts::Undefined,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::TRANSFER,
-			crate::Layouts::Undefined,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::TRANSFER_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::PRESENTATION,
-			crate::Layouts::Undefined,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::NONE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::RenderTarget,
-			Some(crate::Formats::RGBA8UNORM),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::RenderTarget,
-			Some(crate::Formats::Depth32),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::Read,
-			Some(crate::Formats::RGBA8UNORM),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_SAMPLED_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::Read,
-			Some(crate::Formats::Depth32),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_SAMPLED_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::COMPUTE,
-			crate::Layouts::Indirect,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::INDIRECT_COMMAND_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::COMPUTE,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_READ);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::RAYGEN,
-			crate::Layouts::ShaderBindingTable,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_BINDING_TABLE_READ_KHR);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::RAYGEN,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ,
-			crate::Stages::ACCELERATION_STRUCTURE_BUILD,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::TRANSFER,
-			crate::Layouts::Undefined,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::TRANSFER_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::COMPUTE,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::RenderTarget,
-			Some(crate::Formats::RGBA8UNORM),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::COLOR_ATTACHMENT_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::READ_WRITE,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::RenderTarget,
-			Some(crate::Formats::RGBA8UNORM),
-		);
-
-		assert_eq!(
-			value,
-			vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
-		);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::RenderTarget,
-			Some(crate::Formats::Depth32),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::General,
-			Some(crate::Formats::RGBA8UNORM),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::FRAGMENT,
-			crate::Layouts::General,
-			Some(crate::Formats::Depth32),
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::RAYGEN,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::SHADER_WRITE);
-
-		let value = to_access_flags(
-			crate::AccessPolicies::WRITE,
-			crate::Stages::ACCELERATION_STRUCTURE_BUILD,
-			crate::Layouts::General,
-			None,
-		);
-
-		assert_eq!(value, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR);
-	}
-
-	#[test]
-	fn stages_to_vk_shader_stage_flags() {
-		let value: vk::ShaderStageFlags = crate::Stages::VERTEX.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::VERTEX);
-
-		let value: vk::ShaderStageFlags = crate::Stages::FRAGMENT.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::FRAGMENT);
-
-		let value: vk::ShaderStageFlags = crate::Stages::COMPUTE.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::COMPUTE);
-
-		let value: vk::ShaderStageFlags = crate::Stages::MESH.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::MESH_EXT);
-
-		let value: vk::ShaderStageFlags = crate::Stages::TASK.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::TASK_EXT);
-
-		let value: vk::ShaderStageFlags = crate::Stages::RAYGEN.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::RAYGEN_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::CLOSEST_HIT.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::CLOSEST_HIT_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::ANY_HIT.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::ANY_HIT_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::INTERSECTION.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::INTERSECTION_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::MISS.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::MISS_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::CALLABLE.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::CALLABLE_KHR);
-
-		let value: vk::ShaderStageFlags = crate::Stages::ACCELERATION_STRUCTURE_BUILD.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::default());
-
-		let value: vk::ShaderStageFlags = crate::Stages::TRANSFER.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::default());
-
-		let value: vk::ShaderStageFlags = crate::Stages::PRESENTATION.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::default());
-
-		let value: vk::ShaderStageFlags = crate::Stages::NONE.into();
-
-		assert_eq!(value, vk::ShaderStageFlags::default());
+		use vk::AccessFlags2 as Flags;
+
+		let (read, write) = (AccessPolicies::READ, AccessPolicies::WRITE);
+		let (color, depth) = (Some(Formats::RGBA8UNORM), Some(Formats::Depth32));
+		let cases = [
+			(read, Stages::VERTEX, Layouts::Undefined, None, Flags::VERTEX_ATTRIBUTE_READ),
+			(read, Stages::TRANSFER, Layouts::Undefined, None, Flags::TRANSFER_READ),
+			(read, Stages::PRESENTATION, Layouts::Undefined, None, Flags::NONE),
+			(
+				read,
+				Stages::FRAGMENT,
+				Layouts::RenderTarget,
+				color,
+				Flags::COLOR_ATTACHMENT_READ,
+			),
+			(
+				read,
+				Stages::FRAGMENT,
+				Layouts::RenderTarget,
+				depth,
+				Flags::DEPTH_STENCIL_ATTACHMENT_READ,
+			),
+			(read, Stages::FRAGMENT, Layouts::Read, color, Flags::SHADER_SAMPLED_READ),
+			(read, Stages::FRAGMENT, Layouts::Read, depth, Flags::SHADER_SAMPLED_READ),
+			(read, Stages::COMPUTE, Layouts::Indirect, None, Flags::INDIRECT_COMMAND_READ),
+			(read, Stages::COMPUTE, Layouts::General, None, Flags::SHADER_READ),
+			(
+				read,
+				Stages::RAYGEN,
+				Layouts::ShaderBindingTable,
+				None,
+				Flags::SHADER_BINDING_TABLE_READ_KHR,
+			),
+			(
+				read,
+				Stages::RAYGEN,
+				Layouts::General,
+				None,
+				Flags::ACCELERATION_STRUCTURE_READ_KHR,
+			),
+			(
+				read,
+				Stages::ACCELERATION_STRUCTURE_BUILD,
+				Layouts::General,
+				None,
+				Flags::ACCELERATION_STRUCTURE_READ_KHR,
+			),
+			(write, Stages::TRANSFER, Layouts::Undefined, None, Flags::TRANSFER_WRITE),
+			(write, Stages::COMPUTE, Layouts::General, None, Flags::SHADER_WRITE),
+			(
+				write,
+				Stages::FRAGMENT,
+				Layouts::RenderTarget,
+				color,
+				Flags::COLOR_ATTACHMENT_WRITE,
+			),
+			(
+				AccessPolicies::READ_WRITE,
+				Stages::FRAGMENT,
+				Layouts::RenderTarget,
+				color,
+				Flags::COLOR_ATTACHMENT_READ | Flags::COLOR_ATTACHMENT_WRITE,
+			),
+			(
+				write,
+				Stages::FRAGMENT,
+				Layouts::RenderTarget,
+				depth,
+				Flags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+			),
+			(write, Stages::FRAGMENT, Layouts::General, color, Flags::SHADER_WRITE),
+			(write, Stages::FRAGMENT, Layouts::General, depth, Flags::SHADER_WRITE),
+			(write, Stages::RAYGEN, Layouts::General, None, Flags::SHADER_WRITE),
+			(
+				write,
+				Stages::ACCELERATION_STRUCTURE_BUILD,
+				Layouts::General,
+				None,
+				Flags::ACCELERATION_STRUCTURE_WRITE_KHR,
+			),
+		];
+		for (accesses, stages, layout, format, expected) in cases {
+			assert_eq!(
+				to_access_flags(accesses, stages, layout, format),
+				expected,
+				"{accesses:?} {stages:?} {layout:?} {format:?}"
+			);
+		}
 	}
 
 	#[test]
 	fn datatype_to_vk_format() {
-		let value: vk::Format = crate::DataTypes::U8.into();
-
-		assert_eq!(value, vk::Format::R8_UINT);
-
-		let value: vk::Format = crate::DataTypes::U16.into();
-
-		assert_eq!(value, vk::Format::R16_UINT);
-
-		let value: vk::Format = crate::DataTypes::U32.into();
-
-		assert_eq!(value, vk::Format::R32_UINT);
-
-		let value: vk::Format = crate::DataTypes::Int.into();
-
-		assert_eq!(value, vk::Format::R32_SINT);
-
-		let value: vk::Format = crate::DataTypes::Int2.into();
-
-		assert_eq!(value, vk::Format::R32G32_SINT);
-
-		let value: vk::Format = crate::DataTypes::Int3.into();
-
-		assert_eq!(value, vk::Format::R32G32B32_SINT);
-
-		let value: vk::Format = crate::DataTypes::Int4.into();
-
-		assert_eq!(value, vk::Format::R32G32B32A32_SINT);
-
-		let value: vk::Format = crate::DataTypes::Float.into();
-
-		assert_eq!(value, vk::Format::R32_SFLOAT);
-
-		let value: vk::Format = crate::DataTypes::Float2.into();
-
-		assert_eq!(value, vk::Format::R32G32_SFLOAT);
-
-		let value: vk::Format = crate::DataTypes::Float3.into();
-
-		assert_eq!(value, vk::Format::R32G32B32_SFLOAT);
-
-		let value: vk::Format = crate::DataTypes::Float4.into();
-
-		assert_eq!(value, vk::Format::R32G32B32A32_SFLOAT);
-	}
-
-	#[test]
-	fn shader_types_to_stages() {
-		let value: crate::Stages = crate::ShaderTypes::Vertex.into();
-
-		assert_eq!(value, crate::Stages::VERTEX);
-
-		let value: crate::Stages = crate::ShaderTypes::Fragment.into();
-
-		assert_eq!(value, crate::Stages::FRAGMENT);
-
-		let value: crate::Stages = crate::ShaderTypes::Compute.into();
-
-		assert_eq!(value, crate::Stages::COMPUTE);
-
-		let value: crate::Stages = crate::ShaderTypes::Task.into();
-
-		assert_eq!(value, crate::Stages::TASK);
-
-		let value: crate::Stages = crate::ShaderTypes::Mesh.into();
-
-		assert_eq!(value, crate::Stages::MESH);
-
-		let value: crate::Stages = crate::ShaderTypes::RayGen.into();
-
-		assert_eq!(value, crate::Stages::RAYGEN);
-
-		let value: crate::Stages = crate::ShaderTypes::ClosestHit.into();
-
-		assert_eq!(value, crate::Stages::CLOSEST_HIT);
-
-		let value: crate::Stages = crate::ShaderTypes::AnyHit.into();
-
-		assert_eq!(value, crate::Stages::ANY_HIT);
-
-		let value: crate::Stages = crate::ShaderTypes::Intersection.into();
-
-		assert_eq!(value, crate::Stages::INTERSECTION);
-
-		let value: crate::Stages = crate::ShaderTypes::Miss.into();
-
-		assert_eq!(value, crate::Stages::MISS);
-
-		let value: crate::Stages = crate::ShaderTypes::Callable.into();
-
-		assert_eq!(value, crate::Stages::CALLABLE);
+		let cases = [
+			(crate::DataTypes::U8, vk::Format::R8_UINT),
+			(crate::DataTypes::U16, vk::Format::R16_UINT),
+			(crate::DataTypes::U32, vk::Format::R32_UINT),
+			(crate::DataTypes::Int, vk::Format::R32_SINT),
+			(crate::DataTypes::Int2, vk::Format::R32G32_SINT),
+			(crate::DataTypes::Int3, vk::Format::R32G32B32_SINT),
+			(crate::DataTypes::Int4, vk::Format::R32G32B32A32_SINT),
+			(crate::DataTypes::Float, vk::Format::R32_SFLOAT),
+			(crate::DataTypes::Float2, vk::Format::R32G32_SFLOAT),
+			(crate::DataTypes::Float3, vk::Format::R32G32B32_SFLOAT),
+			(crate::DataTypes::Float4, vk::Format::R32G32B32A32_SFLOAT),
+		];
+		for (data_type, expected) in cases {
+			assert_eq!(vk::Format::from(data_type), expected);
+		}
 	}
 }

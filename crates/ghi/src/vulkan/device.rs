@@ -67,16 +67,7 @@ pub struct InnerDevice {
 	pub(super) descriptor_heap: ash::ext::descriptor_heap::Device,
 	pub(super) descriptor_heap_properties: vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'static>,
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
-
-	#[cfg(target_os = "linux")]
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
-
-	#[cfg(target_os = "windows")]
-	pub(super) win32_surface: ash::khr::win32_surface::Instance,
-
-	#[cfg(target_os = "macos")]
-	pub(super) macos_surface: ash::ext::metal_surface::Instance,
-
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
 	pub(super) queues: Vec<StoredQueue>,
 	pub(super) settings: crate::device::Features,
@@ -166,6 +157,11 @@ pub struct FactorySampler {
 	pub(crate) anisotropy: Option<f32>,
 	pub(crate) min_lod: f32,
 	pub(crate) max_lod: f32,
+}
+
+/// Returns `flag` when `condition` holds and no flags otherwise.
+fn flag_if<F: Default>(condition: bool, flag: F) -> F {
+	if condition { flag } else { F::default() }
 }
 
 mod detached_resources;

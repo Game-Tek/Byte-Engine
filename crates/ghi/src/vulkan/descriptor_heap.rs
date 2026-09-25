@@ -1,9 +1,11 @@
 use ash::vk;
 
+use crate::shader::{ResourceKind, ShaderResourceDescriptor};
+
 /// The `PipelineResourceDescriptor` struct retains one merged flat resource and its descriptor-heap locations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PipelineResourceDescriptor {
-	pub(crate) descriptor: crate::shader::ShaderResourceDescriptor,
+	pub(crate) descriptor: ShaderResourceDescriptor,
 	pub(crate) stages: crate::Stages,
 	pub(crate) resource_heap_offset: Option<u32>,
 	pub(crate) sampler_heap_offset: Option<u32>,
@@ -47,80 +49,62 @@ pub(crate) fn align_up(value: u64, alignment: u64) -> u64 {
 	(value + alignment - 1) & !(alignment - 1)
 }
 
-pub(crate) fn resource_range_end(descriptor: crate::shader::ShaderResourceDescriptor) -> u32 {
+pub(crate) fn resource_range_end(descriptor: ShaderResourceDescriptor) -> u32 {
 	descriptor.slot().index().checked_add(descriptor.count()).expect(
 		"Vulkan shader resource range overflowed. The most likely cause is an invalid flat resource slot or descriptor count.",
 	)
 }
 
-pub(crate) fn resource_ranges_overlap(
-	left: crate::shader::ShaderResourceDescriptor,
-	right: crate::shader::ShaderResourceDescriptor,
-) -> bool {
-	let left_start = left.slot().index();
-	let right_start = right.slot().index();
-	left_start < resource_range_end(right) && right_start < resource_range_end(left)
+pub(crate) fn resource_ranges_overlap(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
+	left.slot().index() < resource_range_end(right) && right.slot().index() < resource_range_end(left)
 }
 
 pub(crate) fn resource_accepts_retained_slot_key(
-	descriptor: crate::shader::ShaderResourceDescriptor,
+	descriptor: ShaderResourceDescriptor,
 	stored_slot: crate::shader::ResourceSlot,
 ) -> bool {
-	let base = descriptor.slot().index();
 	let stored = stored_slot.index();
-	stored <= base || stored >= resource_range_end(descriptor)
+	stored <= descriptor.slot().index() || stored >= resource_range_end(descriptor)
 }
 
-fn resource_representations_match(
-	left: crate::shader::ShaderResourceDescriptor,
-	right: crate::shader::ShaderResourceDescriptor,
-) -> bool {
-	left.slot() == right.slot()
-		&& left.kind() == right.kind()
-		&& left.count() == right.count()
-		&& left.texture_view() == right.texture_view()
-		&& left.buffer_element_stride() == right.buffer_element_stride()
+/// Returns whether two declarations of one flat resource differ at most in their access policies.
+fn resource_representations_match(left: ShaderResourceDescriptor, right: ShaderResourceDescriptor) -> bool {
+	left == ShaderResourceDescriptor {
+		access: left.access,
+		..right
+	}
 }
 
 /// Canonicalizes one shader stage so declaration order cannot change pipeline mappings.
-fn canonicalize_stage_resources(
-	resources: &[crate::shader::ShaderResourceDescriptor],
-) -> Vec<crate::shader::ShaderResourceDescriptor> {
+fn canonicalize_stage_resources(resources: &[ShaderResourceDescriptor]) -> Vec<ShaderResourceDescriptor> {
 	let mut sorted = resources.to_vec();
 	sorted.sort_by_key(|descriptor| descriptor.slot());
 
-	let mut canonical = Vec::<crate::shader::ShaderResourceDescriptor>::with_capacity(sorted.len());
+	let mut canonical = Vec::<ShaderResourceDescriptor>::with_capacity(sorted.len());
 	for descriptor in sorted {
-		if let Some(previous) = canonical.last_mut() {
-			if previous.slot() == descriptor.slot() {
+		match canonical.last_mut() {
+			Some(previous) if previous.slot() == descriptor.slot() => {
 				assert!(
 					resource_representations_match(*previous, descriptor),
 					"Conflicting Vulkan shader resources. The most likely cause is that one stage declared the same flat slot with incompatible representations.",
 				);
-				*previous = crate::shader::ShaderResourceDescriptor::new(
-					previous.slot(),
-					previous.kind(),
-					previous.count(),
-					previous.access() | descriptor.access(),
-				)
-				.texture_view_type(previous.texture_view())
-				.buffer_stride(previous.buffer_element_stride());
-				continue;
+				previous.access |= descriptor.access;
 			}
-
-			assert!(
-				!resource_ranges_overlap(*previous, descriptor),
-				"Overlapping Vulkan shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
-			);
+			previous => {
+				assert!(
+					previous.is_none_or(|previous| !resource_ranges_overlap(*previous, descriptor)),
+					"Overlapping Vulkan shader resources. The most likely cause is that one stage declared intersecting flat resource ranges.",
+				);
+				canonical.push(descriptor);
+			}
 		}
-		canonical.push(descriptor);
 	}
 
 	canonical
 }
 
 fn descriptor_heap_representation(
-	descriptor: crate::shader::ShaderResourceDescriptor,
+	descriptor: ShaderResourceDescriptor,
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> (Option<(u64, u64)>, Option<(u64, u64)>) {
 	let image = (properties.image_descriptor_size, properties.image_descriptor_alignment);
@@ -128,18 +112,17 @@ fn descriptor_heap_representation(
 	let sampler = (properties.sampler_descriptor_size, properties.sampler_descriptor_alignment);
 
 	match descriptor.kind() {
-		crate::shader::ResourceKind::UniformBuffer
-		| crate::shader::ResourceKind::StorageBuffer
-		| crate::shader::ResourceKind::AccelerationStructure => (Some(buffer), None),
-		crate::shader::ResourceKind::SampledImage
-		| crate::shader::ResourceKind::StorageImage
-		| crate::shader::ResourceKind::InputAttachment => (Some(image), None),
-		crate::shader::ResourceKind::CombinedImageSampler => (Some(image), Some(sampler)),
-		crate::shader::ResourceKind::Sampler => (None, Some(sampler)),
+		ResourceKind::UniformBuffer | ResourceKind::StorageBuffer | ResourceKind::AccelerationStructure => (Some(buffer), None),
+		ResourceKind::SampledImage | ResourceKind::StorageImage | ResourceKind::InputAttachment => (Some(image), None),
+		ResourceKind::CombinedImageSampler => (Some(image), Some(sampler)),
+		ResourceKind::Sampler => (None, Some(sampler)),
 	}
 }
 
-fn reserve_descriptor_range(cursor: &mut u64, count: u32, size: u64, alignment: u64) -> (u32, u32) {
+fn reserve_descriptor_range(cursor: &mut u64, count: u32, representation: Option<(u64, u64)>) -> (Option<u32>, u32) {
+	let Some((size, alignment)) = representation else {
+		return (None, 0);
+	};
 	assert!(
 		size > 0,
 		"Invalid Vulkan descriptor size. The most likely cause is incomplete descriptor-heap properties."
@@ -156,16 +139,16 @@ fn reserve_descriptor_range(cursor: &mut u64, count: u32, size: u64, alignment: 
 				.expect("Vulkan descriptor array size overflowed. The most likely cause is an invalid shader resource count."),
 		)
 		.expect("Vulkan descriptor heap size overflowed. The most likely cause is an invalid pipeline resource interface.");
-	(offset, stride)
+	(Some(offset), stride)
 }
 
 /// Builds a descriptor-heap layout by merging every shader stage's flat resource interface.
 pub(crate) fn build_pipeline_layout(
-	stage_resources: &[(crate::Stages, Vec<crate::shader::ShaderResourceDescriptor>)],
+	stage_resources: &[(crate::Stages, Vec<ShaderResourceDescriptor>)],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> PipelineLayout {
-	let mut merged = Vec::<(crate::shader::ShaderResourceDescriptor, crate::Stages)>::new();
+	let mut merged = Vec::<(ShaderResourceDescriptor, crate::Stages)>::new();
 
 	for (stage, resources) in stage_resources {
 		for descriptor in canonicalize_stage_resources(resources) {
@@ -177,14 +160,7 @@ pub(crate) fn build_pipeline_layout(
 					"Conflicting Vulkan pipeline resources. The most likely cause is that shader stages declared incompatible resources at the same flat slot.",
 				);
 				*existing_stages |= *stage;
-				*existing = crate::shader::ShaderResourceDescriptor::new(
-					descriptor.slot(),
-					descriptor.kind(),
-					descriptor.count(),
-					existing.access() | descriptor.access(),
-				)
-				.texture_view_type(descriptor.texture_view())
-				.buffer_stride(descriptor.buffer_element_stride());
+				existing.access |= descriptor.access;
 				continue;
 			}
 
@@ -199,18 +175,15 @@ pub(crate) fn build_pipeline_layout(
 	}
 	merged.sort_by_key(|(descriptor, _)| descriptor.slot());
 
-	let mut resource_cursor = 0u64;
-	let mut sampler_cursor = 0u64;
+	let (mut resource_cursor, mut sampler_cursor) = (0u64, 0u64);
 	let resources = merged
 		.into_iter()
 		.map(|(descriptor, stages)| {
 			let (resource, sampler) = descriptor_heap_representation(descriptor, properties);
-			let (resource_heap_offset, resource_stride) = resource
-				.map(|(size, alignment)| reserve_descriptor_range(&mut resource_cursor, descriptor.count(), size, alignment))
-				.map_or((None, 0), |(offset, stride)| (Some(offset), stride));
-			let (sampler_heap_offset, sampler_stride) = sampler
-				.map(|(size, alignment)| reserve_descriptor_range(&mut sampler_cursor, descriptor.count(), size, alignment))
-				.map_or((None, 0), |(offset, stride)| (Some(offset), stride));
+			let (resource_heap_offset, resource_stride) =
+				reserve_descriptor_range(&mut resource_cursor, descriptor.count(), resource);
+			let (sampler_heap_offset, sampler_stride) =
+				reserve_descriptor_range(&mut sampler_cursor, descriptor.count(), sampler);
 
 			PipelineResourceDescriptor {
 				descriptor,
@@ -252,44 +225,40 @@ pub(crate) fn build_pipeline_layout(
 	}
 }
 
-pub(crate) fn descriptor_type(kind: crate::shader::ResourceKind) -> Option<vk::DescriptorType> {
+pub(crate) fn descriptor_type(kind: ResourceKind) -> Option<vk::DescriptorType> {
 	match kind {
-		crate::shader::ResourceKind::UniformBuffer => Some(vk::DescriptorType::UNIFORM_BUFFER),
-		crate::shader::ResourceKind::StorageBuffer => Some(vk::DescriptorType::STORAGE_BUFFER),
-		crate::shader::ResourceKind::SampledImage | crate::shader::ResourceKind::CombinedImageSampler => {
-			Some(vk::DescriptorType::SAMPLED_IMAGE)
-		}
-		crate::shader::ResourceKind::StorageImage => Some(vk::DescriptorType::STORAGE_IMAGE),
-		crate::shader::ResourceKind::InputAttachment => Some(vk::DescriptorType::INPUT_ATTACHMENT),
-		crate::shader::ResourceKind::Sampler => None,
-		crate::shader::ResourceKind::AccelerationStructure => Some(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
+		ResourceKind::UniformBuffer => Some(vk::DescriptorType::UNIFORM_BUFFER),
+		ResourceKind::StorageBuffer => Some(vk::DescriptorType::STORAGE_BUFFER),
+		ResourceKind::SampledImage | ResourceKind::CombinedImageSampler => Some(vk::DescriptorType::SAMPLED_IMAGE),
+		ResourceKind::StorageImage => Some(vk::DescriptorType::STORAGE_IMAGE),
+		ResourceKind::InputAttachment => Some(vk::DescriptorType::INPUT_ATTACHMENT),
+		ResourceKind::Sampler => None,
+		ResourceKind::AccelerationStructure => Some(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR),
 	}
 }
 
-fn spirv_resource_mask(descriptor: crate::shader::ShaderResourceDescriptor) -> vk::SpirvResourceTypeFlagsEXT {
+fn spirv_resource_mask(descriptor: ShaderResourceDescriptor) -> vk::SpirvResourceTypeFlagsEXT {
 	match descriptor.kind() {
-		crate::shader::ResourceKind::UniformBuffer => vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
-		crate::shader::ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
+		ResourceKind::UniformBuffer => vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
+		ResourceKind::StorageBuffer if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
 			vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER
 		}
-		crate::shader::ResourceKind::StorageBuffer => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
-		crate::shader::ResourceKind::SampledImage => vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
-		crate::shader::ResourceKind::CombinedImageSampler => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
-		crate::shader::ResourceKind::StorageImage if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
+		ResourceKind::StorageBuffer => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
+		ResourceKind::SampledImage => vk::SpirvResourceTypeFlagsEXT::SAMPLED_IMAGE,
+		ResourceKind::CombinedImageSampler => vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
+		ResourceKind::StorageImage if descriptor.access().intersects(crate::AccessPolicies::WRITE) => {
 			vk::SpirvResourceTypeFlagsEXT::READ_WRITE_IMAGE
 		}
-		crate::shader::ResourceKind::StorageImage | crate::shader::ResourceKind::InputAttachment => {
-			vk::SpirvResourceTypeFlagsEXT::READ_ONLY_IMAGE
-		}
-		crate::shader::ResourceKind::Sampler => vk::SpirvResourceTypeFlagsEXT::SAMPLER,
-		crate::shader::ResourceKind::AccelerationStructure => vk::SpirvResourceTypeFlagsEXT::ACCELERATION_STRUCTURE,
+		ResourceKind::StorageImage | ResourceKind::InputAttachment => vk::SpirvResourceTypeFlagsEXT::READ_ONLY_IMAGE,
+		ResourceKind::Sampler => vk::SpirvResourceTypeFlagsEXT::SAMPLER,
+		ResourceKind::AccelerationStructure => vk::SpirvResourceTypeFlagsEXT::ACCELERATION_STRUCTURE,
 	}
 }
 
 /// Builds the set-zero binding mappings consumed by one pipeline shader stage.
 pub(crate) fn build_shader_mappings(
 	layout: &PipelineLayout,
-	shader_resources: &[crate::shader::ShaderResourceDescriptor],
+	shader_resources: &[ShaderResourceDescriptor],
 ) -> Vec<vk::DescriptorSetAndBindingMappingEXT<'static>> {
 	canonicalize_stage_resources(shader_resources)
 		.into_iter()
@@ -299,22 +268,19 @@ pub(crate) fn build_shader_mappings(
 				.iter()
 				.find(|resource| resource.descriptor.slot() == descriptor.slot())
 				.expect("Missing Vulkan pipeline resource mapping. The most likely cause is inconsistent shader metadata.");
-			let is_sampler = descriptor.kind() == crate::shader::ResourceKind::Sampler;
+			let is_sampler = descriptor.kind() == ResourceKind::Sampler;
+			let (heap_offset, heap_stride) = if is_sampler {
+				(resource.sampler_heap_offset, resource.sampler_stride)
+			} else {
+				(resource.resource_heap_offset, resource.resource_stride)
+			};
 			let mut push_index = vk::DescriptorMappingSourcePushIndexEXT::default()
-				.heap_offset(if is_sampler {
-					resource.sampler_heap_offset.unwrap_or(0)
-				} else {
-					resource.resource_heap_offset.unwrap_or(0)
-				})
+				.heap_offset(heap_offset.unwrap_or(0))
 				.push_offset(layout.heap_push_data_offset + u32::from(is_sampler) * 4)
 				.heap_index_stride(1)
-				.heap_array_stride(if is_sampler {
-					resource.sampler_stride
-				} else {
-					resource.resource_stride
-				});
+				.heap_array_stride(heap_stride);
 
-			if descriptor.kind() == crate::shader::ResourceKind::CombinedImageSampler {
+			if descriptor.kind() == ResourceKind::CombinedImageSampler {
 				push_index = push_index
 					.sampler_heap_offset(resource.sampler_heap_offset.unwrap())
 					.sampler_push_offset(layout.heap_push_data_offset + 4)
@@ -348,8 +314,8 @@ mod tests {
 			.max_push_data_size(256)
 	}
 
-	fn resource(slot: u32, kind: crate::shader::ResourceKind, count: u32) -> crate::shader::ShaderResourceDescriptor {
-		crate::shader::ShaderResourceDescriptor::new(
+	fn resource(slot: u32, kind: ResourceKind, count: u32) -> ShaderResourceDescriptor {
+		ShaderResourceDescriptor::new(
 			crate::shader::ResourceSlot::new(slot),
 			kind,
 			count,
@@ -360,8 +326,8 @@ mod tests {
 	#[test]
 	fn flat_arrays_reserve_ranges_but_one_native_mapping() {
 		let resources = vec![
-			resource(9, crate::shader::ResourceKind::CombinedImageSampler, 1024),
-			resource(1033, crate::shader::ResourceKind::StorageBuffer, 1),
+			resource(9, ResourceKind::CombinedImageSampler, 1024),
+			resource(1033, ResourceKind::StorageBuffer, 1),
 		];
 		let layout = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.clone())], &[], &properties());
 		let mappings = build_shader_mappings(&layout, &resources);
@@ -379,17 +345,16 @@ mod tests {
 	#[should_panic(expected = "Overlapping Vulkan shader resources")]
 	fn flat_arrays_reject_interior_resource_slots() {
 		let resources = vec![
-			resource(9, crate::shader::ResourceKind::CombinedImageSampler, 1024),
-			resource(10, crate::shader::ResourceKind::StorageBuffer, 1),
+			resource(9, ResourceKind::CombinedImageSampler, 1024),
+			resource(10, ResourceKind::StorageBuffer, 1),
 		];
 		let _ = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources)], &[], &properties());
 	}
 
 	#[test]
 	fn compatible_stage_resources_merge_visibility_and_access() {
-		let read = resource(4, crate::shader::ResourceKind::StorageBuffer, 1);
-		let write =
-			crate::shader::ShaderResourceDescriptor::new(read.slot(), read.kind(), read.count(), crate::AccessPolicies::WRITE);
+		let read = resource(4, ResourceKind::StorageBuffer, 1);
+		let write = ShaderResourceDescriptor::new(read.slot(), read.kind(), read.count(), crate::AccessPolicies::WRITE);
 		let layout = build_pipeline_layout(
 			&[(crate::Stages::VERTEX, vec![read]), (crate::Stages::FRAGMENT, vec![write])],
 			&[],

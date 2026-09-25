@@ -102,36 +102,34 @@ impl crate::queue::Queue for Queue<'_> {
 			self.device.wait_for_synchronizer(wait_synchronizer);
 		}
 
-		let frame = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
-		let completed_frame = frame.as_ref().and_then(|frame| frame.completed_frame);
-		let frame = frame.map(|frame| frame.frame);
+		let started = frame.map(|frame| self.device.start_frame(frame.index, frame.synchronizer));
 		let mut execution = Execution {
-			frame,
-			completed_frame,
+			completed_frame: started.as_ref().and_then(|started| started.completed_frame),
+			frame: started.map(|started| started.frame),
 			command_buffers: Vec::new(),
 		};
 		let present_keys = execute(&mut execution);
-		let present_keys = present_keys.as_ref();
 
 		let Some(mut frame) = execution.frame.take() else {
 			return;
 		};
+		let present_keys = present_keys.as_ref();
 		let command_buffers = std::mem::take(&mut execution.command_buffers);
-		let last_index = command_buffers.len().saturating_sub(1);
 		if command_buffers.is_empty() {
 			frame.complete_without_submissions(synchronizer);
 			return;
 		}
+		let last_index = command_buffers.len() - 1;
 		for (index, (command_buffer, states, buffer_states, texture_readbacks)) in command_buffers.into_iter().enumerate() {
-			let present_keys = if index == last_index { present_keys } else { &[] };
-			let completion_synchronizer = (index == last_index).then_some(synchronizer);
+			let last = index == last_index;
+			let present_keys = if last { present_keys } else { &[] };
 			frame.execute_submission(
 				command_buffer,
 				states,
 				buffer_states,
 				texture_readbacks,
 				present_keys,
-				completion_synchronizer,
+				last.then_some(synchronizer),
 			);
 		}
 	}

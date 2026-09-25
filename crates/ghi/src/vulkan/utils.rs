@@ -138,6 +138,61 @@ pub(super) fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
 	}
 }
 
+/// Selects the aspects a barrier or copy must name for every subresource of an image with `format`.
+pub(super) fn image_aspect_mask(format: vk::Format) -> vk::ImageAspectFlags {
+	match format {
+		vk::Format::D16_UNORM | vk::Format::X8_D24_UNORM_PACK32 | vk::Format::D32_SFLOAT => vk::ImageAspectFlags::DEPTH,
+		vk::Format::D16_UNORM_S8_UINT | vk::Format::D24_UNORM_S8_UINT | vk::Format::D32_SFLOAT_S8_UINT => {
+			vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+		}
+		vk::Format::S8_UINT => vk::ImageAspectFlags::STENCIL,
+		_ => vk::ImageAspectFlags::COLOR,
+	}
+}
+
+/// Packs specialization constants into one data blob with a 4-byte map entry per scalar component.
+pub(super) fn build_specialization_entries(
+	specialization_map: &[crate::pipelines::SpecializationMapEntry],
+) -> (Vec<u8>, Vec<vk::SpecializationMapEntry>) {
+	let mut data = Vec::<u8>::with_capacity(256);
+	let mut entries = Vec::with_capacity(48);
+
+	for specialization_map_entry in specialization_map {
+		let value = specialization_map_entry.get_data();
+		let offset = data.len() as u32;
+		let constant_type = specialization_map_entry.get_type();
+		let scalar_count = match constant_type.as_str() {
+			"bool" | "u32" | "f32" => 1,
+			"vec2f" => 2,
+			"vec3f" => 3,
+			"vec4f" => 4,
+			_ => panic!(
+				"Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."
+			),
+		};
+		if constant_type == "bool" {
+			// SPIR-V boolean constants are read as a 4-byte VkBool32, but Rust bools are one byte.
+			data.extend_from_slice(&vk::Bool32::from(value.iter().any(|byte| *byte != 0)).to_ne_bytes());
+		} else {
+			assert!(
+				value.len() >= scalar_count as usize * 4,
+				"Vulkan specialization constant data is smaller than its type. The most likely cause is that the value's Rust type differs from the declared constant type."
+			);
+			data.extend_from_slice(value);
+		}
+		for i in 0..scalar_count {
+			entries.push(
+				vk::SpecializationMapEntry::default()
+					.constant_id(specialization_map_entry.get_constant_id() + i)
+					.offset(offset + i * 4)
+					.size(4),
+			);
+		}
+	}
+
+	(data, entries)
+}
+
 pub(super) fn to_format(format: crate::Formats) -> vk::Format {
 	match format {
 		crate::Formats::R8F => vk::Format::UNDEFINED,
@@ -569,6 +624,36 @@ mod tests {
 	use utils::RGBA;
 
 	use super::*;
+
+	#[test]
+	fn depth_formats_select_depth_aspects() {
+		assert!(image_aspect_mask(to_format(crate::Formats::Depth16)) == vk::ImageAspectFlags::DEPTH);
+		assert!(image_aspect_mask(to_format(crate::Formats::Depth32)) == vk::ImageAspectFlags::DEPTH);
+		assert!(
+			image_aspect_mask(vk::Format::D24_UNORM_S8_UINT) == vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+		);
+		assert!(image_aspect_mask(to_format(crate::Formats::RGBA8UNORM)) == vk::ImageAspectFlags::COLOR);
+	}
+
+	#[test]
+	fn specialization_constants_use_four_byte_scalars() {
+		let entries = [
+			crate::pipelines::SpecializationMapEntry::new(0, "bool".to_string(), true),
+			crate::pipelines::SpecializationMapEntry::new(1, "vec2f".to_string(), [1.0f32, 2.0f32]),
+			crate::pipelines::SpecializationMapEntry::new(3, "u32".to_string(), 7u32),
+		];
+
+		let (data, map_entries) = build_specialization_entries(&entries);
+
+		assert_eq!(data.len(), 16);
+		assert_eq!(&data[0..4], &1u32.to_ne_bytes());
+		assert_eq!(&data[12..16], &7u32.to_ne_bytes());
+		let layout = map_entries
+			.iter()
+			.map(|entry| (entry.constant_id, entry.offset, entry.size))
+			.collect::<Vec<_>>();
+		assert_eq!(layout, vec![(0, 0, 4), (1, 4, 4), (2, 8, 4), (3, 12, 4)]);
+	}
 
 	#[test]
 	fn transfer_image_uses_request_only_transfer_usage() {

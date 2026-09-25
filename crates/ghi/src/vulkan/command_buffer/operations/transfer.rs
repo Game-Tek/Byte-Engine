@@ -60,6 +60,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
 		let array_layers = image.layers.map_or(1, std::num::NonZeroU32::get);
 		let source_image = image.image;
+		let aspect_mask = image_aspect_mask(image.format);
 		if image.format == vk::Format::UNDEFINED {
 			return Err(crate::TextureTransferError::UnsupportedFormat(format));
 		}
@@ -105,7 +106,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.buffer_image_height(0)
 			.image_subresource(
 				vk::ImageSubresourceLayers::default()
-					.aspect_mask(vk::ImageAspectFlags::COLOR)
+					.aspect_mask(aspect_mask)
 					.mip_level(0)
 					.base_array_layer(0)
 					.layer_count(1),
@@ -160,6 +161,33 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 	) {
 		let (acceleration_structure_handle, acceleration_structure) =
 			self.get_top_level_acceleration_structure(acceleration_structure_build.acceleration_structure);
+		let dst_acceleration_structure = acceleration_structure.acceleration_structure;
+
+		let instances_buffer = match acceleration_structure_build.description {
+			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance { instances_buffer, .. } => instances_buffer,
+		};
+		let top_level_handle = Handles::TopLevelAccelerationStructure(
+			self.get_internal_top_level_acceleration_structure_handle(acceleration_structure_handle),
+		);
+		// Instances reference bottom-level structures by address, so wait for every build still pending a write.
+		let pending_bottom_level_builds = self
+			.states
+			.iter()
+			.filter(|(handle, state)| {
+				matches!(handle, Handles::BottomLevelAccelerationStructure(_)) && TransitionState::access_includes_write(state.access)
+			})
+			.map(|(handle, _)| *handle)
+			.collect::<SmallVec<[Handles; 16]>>();
+		let consumptions = [
+			acceleration_structure_input(Handles::Buffer(self.get_internal_buffer_handle(instances_buffer))),
+			acceleration_structure_scratch(Handles::Buffer(
+				self.get_internal_buffer_handle(acceleration_structure_build.scratch_buffer.buffer),
+			)),
+			acceleration_structure_destination(top_level_handle),
+		]
+		.into_iter()
+		.chain(pending_bottom_level_builds.into_iter().map(acceleration_structure_source));
+		self.vulkan_consume_resources(consumptions).apply(self);
 
 		let (as_geometries, offsets) = match acceleration_structure_build.description {
 			crate::rt::TopLevelAccelerationStructureBuildDescriptions::Instance {
@@ -200,21 +228,10 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
 			.mode(vk::BuildAccelerationStructureModeKHR::BUILD)
 			.ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-			.dst_acceleration_structure(acceleration_structure.acceleration_structure)
+			.dst_acceleration_structure(dst_acceleration_structure)
 			.scratch_data(vk::DeviceOrHostAddressKHR {
 				device_address: scratch_buffer_address,
 			});
-
-		self.states.insert(
-			Handles::TopLevelAccelerationStructure(
-				self.get_internal_top_level_acceleration_structure_handle(acceleration_structure_handle),
-			),
-			TransitionState::new(
-				vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-				vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-				vk::ImageLayout::UNDEFINED,
-			),
-		);
 
 		let infos = vec![build_geometry_info];
 		let build_range_infos = vec![offsets];
@@ -248,6 +265,26 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			return;
 		}
 
+		let mut consumptions = SmallVec::<[VulkanConsumption; 16]>::new();
+		for build in acceleration_structure_builds {
+			let (acceleration_structure_handle, _) = self.get_bottom_level_acceleration_structure(build.acceleration_structure);
+			consumptions.push(acceleration_structure_destination(Handles::BottomLevelAccelerationStructure(
+				self.get_internal_bottom_level_acceleration_structure_handle(acceleration_structure_handle),
+			)));
+			consumptions.push(acceleration_structure_scratch(Handles::Buffer(
+				self.get_internal_buffer_handle(build.scratch_buffer.buffer),
+			)));
+			if let crate::rt::BottomLevelAccelerationStructureBuildDescriptions::Mesh {
+				vertex_buffer, index_buffer, ..
+			} = &build.description
+			{
+				for input in [vertex_buffer.buffer_offset.buffer, index_buffer.buffer_offset.buffer] {
+					consumptions.push(acceleration_structure_input(Handles::Buffer(self.get_internal_buffer_handle(input))));
+				}
+			}
+		}
+		self.vulkan_consume_resources(consumptions).apply(self);
+
 		fn visit(
 			this: &mut CommandBufferRecording,
 			acceleration_structure_builds: &[crate::rt::BottomLevelAccelerationStructureBuild],
@@ -256,8 +293,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			mut build_range_infos: Vec<Vec<vk::AccelerationStructureBuildRangeInfoKHR>>,
 		) {
 			if let Some(build) = acceleration_structure_builds.first() {
-				let (acceleration_structure_handle, acceleration_structure) =
-					this.get_bottom_level_acceleration_structure(build.acceleration_structure);
+				let (_, acceleration_structure) = this.get_bottom_level_acceleration_structure(build.acceleration_structure);
 
 				let (as_geometries, offsets) = match &build.description {
 					crate::rt::BottomLevelAccelerationStructureBuildDescriptions::AABB { .. } => (vec![], vec![]),
@@ -342,17 +378,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 						device_address: scratch_buffer_address,
 					});
 
-				this.states.insert(
-					Handles::BottomLevelAccelerationStructure(
-						this.get_internal_bottom_level_acceleration_structure_handle(acceleration_structure_handle),
-					),
-					TransitionState::new(
-						vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
-						vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-						vk::ImageLayout::UNDEFINED,
-					),
-				);
-
 				infos.push(build_geometry_info);
 				build_range_infos.push(offsets);
 				geometries.push(as_geometries);
@@ -420,7 +445,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		unsafe {
 			let blit = vk::ImageBlit2::default()
 				.src_subresource(vk::ImageSubresourceLayers {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
+					aspect_mask: image_aspect_mask(source_image.format),
 					mip_level: 0,
 					base_array_layer: 0,
 					layer_count: 1,
@@ -434,7 +459,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					},
 				])
 				.dst_subresource(vk::ImageSubresourceLayers {
-					aspect_mask: vk::ImageAspectFlags::COLOR,
+					aspect_mask: image_aspect_mask(destination_image.format),
 					mip_level: 0,
 					base_array_layer: 0,
 					layer_count: 1,
@@ -616,7 +641,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				.buffer_image_height(buffer_image_height(destination_image.format_, source_row_count))
 				.image_subresource(
 					vk::ImageSubresourceLayers::default()
-						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.aspect_mask(image_aspect_mask(destination_image.format))
 						.mip_level(copy.destination_mip_level)
 						.base_array_layer(0)
 						.layer_count(destination_image.layers.map(|layers| layers.get()).unwrap_or(1)),
@@ -818,5 +843,36 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		for (handle, states) in std::mem::take(&mut self.buffer_states) {
 			self.device.buffer_states.insert(handle, states);
 		}
+	}
+}
+
+/// Geometry and instance data read by an acceleration-structure build, per the vkCmdBuildAccelerationStructuresKHR rules.
+fn acceleration_structure_input(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::SHADER_READ)
+}
+
+fn acceleration_structure_scratch(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(
+		handle,
+		vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR | vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+	)
+}
+
+fn acceleration_structure_destination(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR)
+}
+
+/// A bottom-level structure that a top-level build reads through its instances.
+fn acceleration_structure_source(handle: Handles) -> VulkanConsumption {
+	acceleration_structure_build_access(handle, vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR)
+}
+
+fn acceleration_structure_build_access(handle: Handles, access: vk::AccessFlags2) -> VulkanConsumption {
+	VulkanConsumption {
+		handle,
+		stages: vk::PipelineStageFlags2::ACCELERATION_STRUCTURE_BUILD_KHR,
+		access,
+		layout: vk::ImageLayout::UNDEFINED,
+		range: None,
 	}
 }

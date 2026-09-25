@@ -351,7 +351,16 @@ impl CommandBufferRecording<'_> {
 			};
 		}
 
-		let folded_memory_barriers = planned.memory_barriers;
+		// Global barriers cover all memory, so one barrier with the union of masks orders everything the individual ones did.
+		let folded_memory_barriers = planned
+			.memory_barriers
+			.into_iter()
+			.reduce(|folded, barrier| PlannedMemoryBarrier {
+				src_stage: folded.src_stage | barrier.src_stage,
+				src_access: folded.src_access | barrier.src_access,
+				dst_stage: folded.dst_stage | barrier.dst_stage,
+				dst_access: folded.dst_access | barrier.dst_access,
+			});
 
 		let mut planned_image_barriers = planned.image_barriers;
 		let acquire_waits = command_buffer.chain_acquired_swapchain_images(&mut planned_image_barriers);
@@ -556,11 +565,7 @@ impl CommandBufferRecording<'_> {
 						dst_stage: transition_state.stage,
 						dst_access: transition_state.access,
 						image,
-						aspect_mask: if format != vk::Format::D32_SFLOAT {
-							vk::ImageAspectFlags::COLOR
-						} else {
-							vk::ImageAspectFlags::DEPTH
-						},
+						aspect_mask: image_aspect_mask(format),
 					});
 				}
 				Handles::Buffer(handle) => {
@@ -1074,7 +1079,7 @@ impl CommandBufferRecording<'_> {
 				.buffer_image_height(0)
 				.image_subresource(
 					vk::ImageSubresourceLayers::default()
-						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.aspect_mask(image_aspect_mask(image.format))
 						.mip_level(0)
 						.base_array_layer(0)
 						.layer_count(1),

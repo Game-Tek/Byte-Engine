@@ -369,7 +369,7 @@ impl Device {
 		let mappings = crate::vulkan::build_shader_mappings(&layout, &shader.shader_resource_descriptors);
 		let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
 		let (specialization_entries_buffer, specialization_map_entries) =
-			build_specialization_entries(shader_parameter.specialization_map);
+			crate::vulkan::utils::build_specialization_entries(shader_parameter.specialization_map);
 		let specialization_info = vk::SpecializationInfo::default()
 			.data(&specialization_entries_buffer)
 			.map_entries(&specialization_map_entries);
@@ -398,35 +398,4 @@ impl Device {
 			shader_handles,
 		}
 	}
-}
-
-fn build_specialization_entries(
-	specialization_map: &[crate::pipelines::SpecializationMapEntry],
-) -> (Vec<u8>, Vec<vk::SpecializationMapEntry>) {
-	let mut data = Vec::<u8>::with_capacity(256);
-	let mut entries = Vec::with_capacity(48);
-
-	for specialization_map_entry in specialization_map {
-		let scalar_count = match specialization_map_entry.get_type().as_str() {
-			"bool" | "u32" | "f32" => 1,
-			"vec2f" => 2,
-			"vec3f" => 3,
-			"vec4f" => 4,
-			_ => panic!(
-				"Unsupported Vulkan specialization constant type. The most likely cause is that the Vulkan backend was not updated for a new specialization entry type."
-			),
-		};
-		let offset = data.len() as u32;
-		for i in 0..scalar_count {
-			entries.push(
-				vk::SpecializationMapEntry::default()
-					.constant_id(specialization_map_entry.get_constant_id() + i)
-					.offset(offset + i * 4)
-					.size(4),
-			);
-		}
-		data.extend_from_slice(specialization_map_entry.get_data());
-	}
-
-	(data, entries)
 }

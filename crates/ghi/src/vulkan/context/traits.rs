@@ -434,66 +434,8 @@ impl crate::context::ContextCreate for Context {
 		let shader_parameter = builder.shader;
 		let pipeline_layout_handle =
 			self.get_or_create_pipeline_layout(std::slice::from_ref(&shader_parameter), builder.push_constant_ranges);
-		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
-
-		let mut specialization_map_entries = Vec::with_capacity(48);
-
-		for specialization_map_entry in shader_parameter.specialization_map {
-			// TODO: accumulate offset
-			match specialization_map_entry.get_type().as_str() {
-				"bool" | "u32" | "f32" => {
-					specialization_map_entries.push(
-						vk::SpecializationMapEntry::default()
-							.constant_id(specialization_map_entry.get_constant_id())
-							.offset(specialization_entries_buffer.len() as u32)
-							.size(4),
-					);
-
-					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
-				}
-				"vec2f" => {
-					for i in 0..2 {
-						specialization_map_entries.push(
-							vk::SpecializationMapEntry::default()
-								.constant_id(specialization_map_entry.get_constant_id() + i)
-								.offset(specialization_entries_buffer.len() as u32 + i * 4)
-								.size(4),
-						);
-					}
-
-					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
-				}
-				"vec3f" => {
-					for i in 0..3 {
-						specialization_map_entries.push(
-							vk::SpecializationMapEntry::default()
-								.constant_id(specialization_map_entry.get_constant_id() + i)
-								.offset(specialization_entries_buffer.len() as u32 + i * 4)
-								.size(4),
-						);
-					}
-
-					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
-				}
-				"vec4f" => {
-					for i in 0..4 {
-						specialization_map_entries.push(
-							vk::SpecializationMapEntry::default()
-								.constant_id(specialization_map_entry.get_constant_id() + i)
-								.offset(specialization_entries_buffer.len() as u32 + i * 4)
-								.size(4),
-						);
-					}
-
-					assert_eq!(specialization_map_entry.get_size(), 16);
-
-					specialization_entries_buffer.extend_from_slice(specialization_map_entry.get_data());
-				}
-				_ => {
-					panic!("Unknown specialization map entry type");
-				}
-			}
-		}
+		let (specialization_entries_buffer, specialization_map_entries) =
+			crate::vulkan::utils::build_specialization_entries(shader_parameter.specialization_map);
 
 		let specialization_info = vk::SpecializationInfo::default()
 			.data(&specialization_entries_buffer)

@@ -7,8 +7,8 @@ use super::{
 	CommandBufferInternal, Consumption, Context, Descriptor, DescriptorMaterializationHandle, Handles, Image, ImageHandle,
 	Swapchain, Synchronizer, TextureReadbackStorage, TopLevelAccelerationStructureHandle, TransitionState, VulkanConsumption,
 	utils::{
-		extent_into_vk_extent, texture_format_and_resource_use_to_image_layout, to_access_flags, to_clear_value,
-		to_load_operation, to_pipeline_stage_flags, to_store_operation,
+		extent_into_vk_extent, image_aspect_mask, texture_format_and_resource_use_to_image_layout, to_access_flags,
+		to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
 };
 use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
@@ -694,6 +694,24 @@ mod tests {
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
+		assert!(planned.image_barriers[0].aspect_mask == vk::ImageAspectFlags::DEPTH);
+	}
+
+	#[test]
+	fn planner_selects_depth_aspect_for_d16_images() {
+		let planned = CommandBufferRecording::plan_vulkan_resource_transitions(
+			&HashMap::default(),
+			&HashMap::default(),
+			[consumption(
+				Handles::Image(ImageHandle(30)),
+				vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
+				vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
+				vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+			)],
+			|_| Some((vk::Image::from_raw(30), vk::Format::D16_UNORM)),
+			|_| None,
+		);
+
 		assert!(planned.image_barriers[0].aspect_mask == vk::ImageAspectFlags::DEPTH);
 	}
 

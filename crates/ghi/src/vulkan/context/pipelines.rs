@@ -62,10 +62,15 @@ impl Context {
 
 		let pipeline_create_info = pipeline_create_info.vertex_input_state(&vertex_input_state);
 
-		let mut specialization_entries_buffer = Vec::<u8>::with_capacity(256);
-		let mut entries = [vk::SpecializationMapEntry::default(); 32];
-		let mut entry_count = 0;
-		let specilization_info_count = 0;
+		let stage_specializations = builder
+			.shaders
+			.iter()
+			.map(|stage| crate::vulkan::utils::build_specialization_entries(stage.specialization_map))
+			.collect::<Vec<_>>();
+		let specialization_infos = stage_specializations
+			.iter()
+			.map(|(data, entries)| vk::SpecializationInfo::default().data(data).map_entries(entries))
+			.collect::<Vec<_>>();
 
 		let stage_mappings = builder
 			.shaders
@@ -83,27 +88,16 @@ impl Context {
 			.shaders
 			.iter()
 			.zip(mapping_infos.iter_mut())
-			.map(|(stage, mapping_info)| {
-				for entry in stage.specialization_map.iter() {
-					specialization_entries_buffer.extend_from_slice(entry.get_data());
-
-					entries[entry_count] = vk::SpecializationMapEntry::default()
-						.constant_id(entry.get_constant_id())
-						.size(entry.get_size())
-						.offset(specialization_entries_buffer.len() as u32);
-
-					entry_count += 1;
-				}
-
+			.zip(specialization_infos.iter())
+			.map(|((stage, mapping_info), specialization_info)| {
 				let shader = &self.shaders[stage.handle.0 as usize];
-
-				assert!(specilization_info_count == 0);
 
 				vk::PipelineShaderStageCreateInfo::default()
 					.push(mapping_info)
 					.stage(to_shader_stage_flags(stage.stage))
 					.module(shader.shader)
 					.name(std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap())
+					.specialization_info(specialization_info)
 			})
 			.collect::<Vec<_>>();
 

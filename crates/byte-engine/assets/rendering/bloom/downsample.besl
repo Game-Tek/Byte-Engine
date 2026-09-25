@@ -1,11 +1,14 @@
-BloomParameters: struct {
-	prefilter: vec4f[1],
-	blur_data: vec4f[1],
-}
-
+// Builds one lower level of the bloom pyramid from the level above it with Jimenez's 13-tap filter (five
+// overlapping 2x2 blocks, the inner one weighted one half and the outer four one eighth each). The wide footprint
+// keeps the pyramid stable as bright features move between texels; a plain 2x2 box would pulse.
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
-bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
+
+// Reads the source level `offset_x`, `offset_y` source texels away from `uv`.
+sample_source: fn (uv: vec2f, texel: vec2f, offset_x: f32, offset_y: f32) -> vec3f {
+	let sampled: vec4f = texture_lod(source_texture, uv + vec2f(offset_x, offset_y) * texel);
+	return vec3f(sampled.x, sampled.y, sampled.z);
+}
 
 main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
@@ -13,6 +16,33 @@ main: fn(input: StageInput) -> void {
 	let result_size: vec2u = image_size(result_texture);
 	let source_size: vec2u = texture_size(source_texture);
 	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
-	let center: vec4f = texture_lod(source_texture, uv);
-	write(result_texture, coord, vec4f(center.x, center.y, center.z, 1.0));
+	let texel: vec2f = vec2f(1.0 / f32(source_size.x), 1.0 / f32(source_size.y));
+
+	// Tap layout in source texels, with `e` at the destination texel's center:
+	//   a . b . c
+	//   . j . k .
+	//   d . e . f
+	//   . l . m .
+	//   g . h . i
+	let a: vec3f = sample_source(uv, texel, 0.0 - 2.0, 0.0 - 2.0);
+	let b: vec3f = sample_source(uv, texel, 0.0, 0.0 - 2.0);
+	let c: vec3f = sample_source(uv, texel, 2.0, 0.0 - 2.0);
+	let d: vec3f = sample_source(uv, texel, 0.0 - 2.0, 0.0);
+	let e: vec3f = sample_source(uv, texel, 0.0, 0.0);
+	let f: vec3f = sample_source(uv, texel, 2.0, 0.0);
+	let g: vec3f = sample_source(uv, texel, 0.0 - 2.0, 2.0);
+	let h: vec3f = sample_source(uv, texel, 0.0, 2.0);
+	let i: vec3f = sample_source(uv, texel, 2.0, 2.0);
+	let j: vec3f = sample_source(uv, texel, 0.0 - 1.0, 0.0 - 1.0);
+	let k: vec3f = sample_source(uv, texel, 1.0, 0.0 - 1.0);
+	let l: vec3f = sample_source(uv, texel, 0.0 - 1.0, 1.0);
+	let m: vec3f = sample_source(uv, texel, 1.0, 1.0);
+
+	// Summing the block weights: the inner block's corners get 1/8 each, `e` gets 4/32, the edge midpoints 2/32,
+	// and the corners 1/32, which totals one.
+	let averaged: vec3f = (j + k + l + m) * 0.125
+		+ e * 0.125
+		+ (b + d + f + h) * 0.0625
+		+ (a + c + g + i) * 0.03125;
+	write(result_texture, coord, vec4f(averaged.x, averaged.y, averaged.z, 1.0));
 }

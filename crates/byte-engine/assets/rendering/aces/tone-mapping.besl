@@ -1,7 +1,12 @@
 source: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 
-aces_narkowicz: fn(color: vec3f) -> vec3f {
+// The curve is a ratio of two polynomials, so an infinite input, which a half-float scene holds where a highlight
+// overflowed, would give NaN and show as black. Holding the input to the half-float range maps it to white.
+HALF_FLOAT_MAX: const f32 = 65504.0;
+
+aces_narkowicz: fn(input_color: vec3f) -> vec3f {
+	let color: vec3f = clamp(input_color, vec3f(0.0, 0.0, 0.0), vec3f(HALF_FLOAT_MAX, HALF_FLOAT_MAX, HALF_FLOAT_MAX));
 	let a: f32 = 2.51;
 	let b: f32 = 0.03;
 	let c: f32 = 2.43;

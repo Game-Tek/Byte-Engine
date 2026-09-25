@@ -1,19 +1,105 @@
+// Prefilters the HDR scene into the first, half-resolution level of the bloom pyramid. One dispatch both
+// downsamples and thresholds, following Jimenez's "Next Generation Post Processing in Call of Duty: Advanced
+// Warfare" (2014): a 13-tap filter of five overlapping 2x2 blocks averages each block with luma weights (a Karis
+// average), so one very bright texel, a firefly, cannot flicker the whole glow. A soft-knee threshold then keeps
+// only light above `prefilter.x`, fading in over `prefilter.y` of that threshold. No texel contributes more than
+// `prefilter.w`, which bounds how far a highlight far above display white can glow.
+//
+// Every tap of the 13-tap filter lands on a texel corner, so it is the average of a 2x2 block. This pass reads
+// those texels unfiltered instead of through the sampler: a half-float scene overflows to infinity on strong
+// highlights, and a sampler blending an infinite texel with its neighbors yields NaN before the shader can
+// clamp it. NaN at any level smears into a black block the size of the pyramid's coarsest texel.
 BloomParameters: struct {
 	prefilter: vec4f[1],
-	blur_data: vec4f[1],
+	filter: vec4f[1],
 }
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 
+BLOOM_LUMA_WEIGHTS: const vec3f = vec3f(0.2126, 0.7152, 0.0722);
+// The filter reaches two texels before the block under the destination texel.
+BLOOM_TAP_REACH: const u32 = 2;
+
+// Reads one scene texel, holding each channel between zero and `max_brightness`.
+fetch_clamped: fn (texel_x: u32, texel_y: u32, max_brightness: f32) -> vec3f {
+	let sampled: vec4f = fetch(source_texture, vec2u(texel_x, texel_y));
+	return vec3f(
+		min(max(sampled.x, 0.0), max_brightness),
+		min(max(sampled.y, 0.0), max_brightness),
+		min(max(sampled.z, 0.0), max_brightness)
+	);
+}
+
+// Returns the texel `offset - BLOOM_TAP_REACH` texels from `base` along one axis, clamped to the image like a
+// clamp-addressed sampler. Offsets are unsigned, so the lower clamp happens before subtracting the reach.
+tap_coordinate: fn (base: u32, offset: u32, extent: u32) -> u32 {
+	return min(max(base + offset, BLOOM_TAP_REACH) - BLOOM_TAP_REACH, extent - 1);
+}
+
+// Averages the 2x2 block whose top-left texel is `offset_x`, `offset_y` tap steps from the filter's top-left
+// corner, which is what one bilinear tap on that block's center corner would read.
+block: fn (base: vec2u, extent: vec2u, offset_x: u32, offset_y: u32, max_brightness: f32) -> vec3f {
+	let left: u32 = tap_coordinate(base.x, offset_x, extent.x);
+	let right: u32 = tap_coordinate(base.x, offset_x + 1, extent.x);
+	let top: u32 = tap_coordinate(base.y, offset_y, extent.y);
+	let bottom: u32 = tap_coordinate(base.y, offset_y + 1, extent.y);
+	let summed: vec3f = fetch_clamped(left, top, max_brightness)
+		+ fetch_clamped(right, top, max_brightness)
+		+ fetch_clamped(left, bottom, max_brightness)
+		+ fetch_clamped(right, bottom, max_brightness);
+	return summed * 0.25;
+}
+
+// Weights a group of four blocks by the inverse of their brightness, so a single bright block is held back
+// instead of dominating the group.
+karis_average: fn (a: vec3f, b: vec3f, c: vec3f, d: vec3f) -> vec3f {
+	let weight_a: f32 = 1.0 / (1.0 + dot(a, BLOOM_LUMA_WEIGHTS));
+	let weight_b: f32 = 1.0 / (1.0 + dot(b, BLOOM_LUMA_WEIGHTS));
+	let weight_c: f32 = 1.0 / (1.0 + dot(c, BLOOM_LUMA_WEIGHTS));
+	let weight_d: f32 = 1.0 / (1.0 + dot(d, BLOOM_LUMA_WEIGHTS));
+	let weighted: vec3f = a * weight_a + b * weight_b + c * weight_c + d * weight_d;
+	return weighted * (1.0 / (weight_a + weight_b + weight_c + weight_d));
+}
+
 main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
 	guard_image_bounds(result_texture, coord);
 	let source_size: vec2u = texture_size(source_texture);
-	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(source_size.x), f32(source_size.y));
-	let sampled: vec4f = texture_lod(source_texture, uv);
-	let brightness: f32 = max(max(sampled.x, sampled.y), sampled.z);
+	// The top-left texel of the source block under this destination texel.
+	let base: vec2u = vec2u(coord.x * 2, coord.y * 2);
+	let ceiling: f32 = bloom_parameters.prefilter[0].w;
+
+	// Tap layout in source texels, with `e` the block under the destination texel. Even offsets are the outer
+	// taps two texels apart; odd offsets are the inner taps one texel apart.
+	//   a . b . c
+	//   . j . k .
+	//   d . e . f
+	//   . l . m .
+	//   g . h . i
+	let a: vec3f = block(base, source_size, 0, 0, ceiling);
+	let b: vec3f = block(base, source_size, 2, 0, ceiling);
+	let c: vec3f = block(base, source_size, 4, 0, ceiling);
+	let d: vec3f = block(base, source_size, 0, 2, ceiling);
+	let e: vec3f = block(base, source_size, 2, 2, ceiling);
+	let f: vec3f = block(base, source_size, 4, 2, ceiling);
+	let g: vec3f = block(base, source_size, 0, 4, ceiling);
+	let h: vec3f = block(base, source_size, 2, 4, ceiling);
+	let i: vec3f = block(base, source_size, 4, 4, ceiling);
+	let j: vec3f = block(base, source_size, 1, 1, ceiling);
+	let k: vec3f = block(base, source_size, 3, 1, ceiling);
+	let l: vec3f = block(base, source_size, 1, 3, ceiling);
+	let m: vec3f = block(base, source_size, 3, 3, ceiling);
+
+	// The inner group carries half the weight and each of the four outer groups an eighth.
+	let averaged: vec3f = karis_average(j, k, l, m) * 0.5
+		+ karis_average(a, b, d, e) * 0.125
+		+ karis_average(b, c, e, f) * 0.125
+		+ karis_average(d, e, g, h) * 0.125
+		+ karis_average(e, f, h, i) * 0.125;
+
+	let brightness: f32 = max(max(averaged.x, averaged.y), averaged.z);
 	let threshold: f32 = bloom_parameters.prefilter[0].x;
 	let soft_knee: f32 = bloom_parameters.prefilter[0].y;
 	let knee: f32 = max(threshold * soft_knee, 0.00001);
@@ -21,6 +107,6 @@ main: fn(input: StageInput) -> void {
 	soft = (soft * soft) / (4.0 * knee + 0.00001);
 	let contribution: f32 = max(soft, brightness - threshold);
 	contribution = contribution / max(brightness, 0.00001);
-	let bloom_color: vec3f = vec3f(sampled.x * contribution, sampled.y * contribution, sampled.z * contribution);
+	let bloom_color: vec3f = averaged * contribution;
 	write(result_texture, coord, vec4f(bloom_color.x, bloom_color.y, bloom_color.z, 1.0));
 }

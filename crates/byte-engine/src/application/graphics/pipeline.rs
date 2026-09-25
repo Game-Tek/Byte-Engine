@@ -619,7 +619,12 @@ pub fn setup_aces_tonemap_render_pass(application: &mut GraphicsApplication) {
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(AcesToneMapPass::new(render_pass_builder)));
 }
 
-/// Registers a reusable bloom pass that should run before tonemapping.
+/// Installs an HDR bloom pass for every current and future render sink.
+///
+/// The pass glows scene-linear light above `settings.threshold` and adds it back onto
+/// `main`, so call it after the passes that write scene light, such as the visibility
+/// pipeline and the atmosphere sky, and before tone mapping. Later passes consume its
+/// remapped `main` output. Use `render.pass.bloom` to enable or bypass it at runtime.
 pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: BloomPassSettings) {
 	let renderer = &mut application.renderer;
 

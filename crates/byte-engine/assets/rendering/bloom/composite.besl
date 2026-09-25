@@ -1,12 +1,17 @@
+// Adds the finished, half-resolution bloom pyramid onto the HDR scene, scaled by `prefilter.z`. The scene passes
+// through untouched at zero intensity, and the result stays scene-linear for the tone mapper that follows. The sum
+// is held to the half-float range: a scene texel already near it would otherwise overflow to infinity on store.
 BloomParameters: struct {
 	prefilter: vec4f[1],
-	blur_data: vec4f[1],
+	filter: vec4f[1],
 }
 
 scene_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 bloom_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
+
+HALF_FLOAT_MAX: const f32 = 65504.0;
 
 main: fn(input: StageInput) -> void {
 	let coord: vec2u = input.thread_id;
@@ -21,5 +26,10 @@ main: fn(input: StageInput) -> void {
 	}
 	let bloom: vec4f = texture_lod(bloom_texture, uv);
 	let final_color: vec3f = vec3f(scene.x, scene.y, scene.z) + vec3f(bloom.x, bloom.y, bloom.z) * intensity;
-	write(result_texture, coord, vec4f(final_color.x, final_color.y, final_color.z, 1.0));
+	write(result_texture, coord, vec4f(
+		min(final_color.x, HALF_FLOAT_MAX),
+		min(final_color.y, HALF_FLOAT_MAX),
+		min(final_color.z, HALF_FLOAT_MAX),
+		1.0
+	));
 }

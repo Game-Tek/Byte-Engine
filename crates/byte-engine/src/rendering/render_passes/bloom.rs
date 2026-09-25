@@ -16,12 +16,24 @@ use crate::{
 const MAX_BLOOM_LEVELS: u32 = 6;
 
 /// The `BloomPassSettings` struct defines the intent and shaping controls for a reusable HDR bloom stage.
+///
+/// Pass it to [`crate::application::graphics::setup_bloom_render_pass`] or [`BloomPass::with_settings`].
 #[derive(Clone, Copy, Debug)]
 pub struct BloomPassSettings {
+	/// Scene-linear brightness, after exposure, above which light starts to glow. `1.0` glows only what the
+	/// display cannot show.
 	pub threshold: f32,
+	/// Fraction of the threshold over which the glow fades in, from `0.0` for a hard cut to `1.0`.
 	pub soft_knee: f32,
+	/// Scale of the glow added onto the scene. `0.0` passes the scene through.
 	pub intensity: f32,
+	/// Scene-linear brightness, after exposure, that a texel is held to before it glows. Without it, a mirror
+	/// reflection of the sun, at the half-float limit, blooms across the whole frame. `64.0` is six stops above
+	/// display white.
+	pub max_brightness: f32,
+	/// Width of each upsample blur in texels of the level being blurred. Larger values spread the glow further.
 	pub radius: f32,
+	/// Pyramid depth, from `1` to `6`. Each level halves the resolution and doubles the glow's reach.
 	pub levels: u32,
 }
 
@@ -31,6 +43,7 @@ impl Default for BloomPassSettings {
 			threshold: 1.0,
 			soft_knee: 0.5,
 			intensity: 0.08,
+			max_brightness: 64.0,
 			radius: 1.0,
 			levels: 5,
 		}
@@ -51,6 +64,11 @@ struct BloomShaderData {
 }
 
 /// The `BloomPass` struct creates a reusable pre-tonemap glow stage that can feed later post-processing.
+///
+/// The pass prefilters the HDR `main` target into a half-resolution pyramid with Jimenez's 13-tap filter, using a
+/// luma-weighted average on the first level so single bright texels do not flicker, then climbs back up with a
+/// tent blur per level and adds the result onto the scene. Install it after the passes that write scene light and
+/// before tone mapping. Toggle it at runtime with the `render.pass.bloom` parameter.
 pub struct BloomPass {
 	settings: BloomPassSettings,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
@@ -129,28 +147,28 @@ impl BloomPass {
 
 		let extract_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor("Bloom Extract", "byte-engine/rendering/bloom/extract.pipeline"),
+			simple_compute::Descriptor::new("Bloom Extract", "byte-engine/rendering/bloom/extract.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor("Bloom Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
+			simple_compute::Descriptor::new("Bloom Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
 		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
+			simple_compute::Descriptor::new("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
 		);
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			bloom_pipeline_descriptor("Bloom Composite", "byte-engine/rendering/bloom/composite.pipeline"),
+			simple_compute::Descriptor::new("Bloom Composite", "byte-engine/rendering/bloom/composite.pipeline"),
 		)
 		.expect(
 			"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
@@ -182,7 +200,6 @@ impl BloomPass {
 								ghi::Layouts::Read,
 							),
 							simple_compute::Resource::image("result_texture", downsample_images[index]),
-							simple_compute::Resource::planned_buffer("bloom_parameters", parameters),
 						],
 					)
 					.expect(
@@ -217,8 +234,7 @@ impl BloomPass {
 								ghi::Layouts::Read,
 							),
 							simple_compute::Resource::image("result_texture", upsample_images[level]),
-							// Keep the radius buffer ready; named extras become active as soon as BESL references the binding.
-							simple_compute::Resource::planned_buffer("bloom_parameters", parameters),
+							simple_compute::Resource::buffer("bloom_parameters", parameters),
 						],
 					)
 					.expect(
@@ -237,12 +253,7 @@ impl BloomPass {
 				render_pass_builder,
 				"Bloom Composite Descriptor Set",
 				&[
-					simple_compute::Resource::combined_image_sampler(
-						"scene_texture",
-						bloom_source,
-						sampler,
-						ghi::Layouts::Read,
-					),
+					simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler(
 						"bloom_texture",
 						bloom_source,
@@ -270,16 +281,16 @@ impl BloomPass {
 	}
 
 	/// Writes the static bloom controls into the per-frame parameter buffer before dispatch.
-	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, intensity_multiplier: f32) {
+	fn write_parameters(&self, frame: &mut ghi::implementation::Frame) {
 		let parameters = frame.get_mut_dynamic_buffer_slice(self.parameters);
 
 		parameters.prefilter = [
 			self.settings.threshold.max(0.0),
 			self.settings.soft_knee.clamp(0.0, 1.0),
-			self.settings.intensity.max(0.0) * intensity_multiplier,
-			0.0,
+			self.settings.intensity.max(0.0),
+			self.settings.max_brightness.max(0.0),
 		];
-		parameters.filter = [self.settings.radius.max(0.5), 0.0, 0.0, 0.0];
+		parameters.filter = [self.settings.radius.max(0.0), 0.0, 0.0, 0.0];
 	}
 
 	/// Resizes every bloom pyramid image to match the current sink-dependent chain resolution.
@@ -320,7 +331,7 @@ impl RenderPass for BloomPass {
 		let extent = sink.extent();
 
 		self.resize_images(frame, extent);
-		self.write_parameters(frame, 1.0);
+		self.write_parameters(frame);
 
 		let downsample_passes = frame_allocator.alloc_slice_copy(&downsample_passes);
 		let upsample_passes = frame_allocator.alloc_slice_copy(&upsample_passes);
@@ -362,10 +373,6 @@ fn bloom_extent(extent: Extent, level: usize) -> Extent {
 	)
 }
 
-fn bloom_pipeline_descriptor<'a>(label: &'static str, id: &'a str) -> simple_compute::Descriptor<'a> {
-	simple_compute::Descriptor::new(label, id)
-}
-
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Value};
@@ -378,99 +385,224 @@ mod tests {
 	const BLOOM_UPSAMPLE_BESL: &str = include_str!("../../../assets/rendering/bloom/upsample.besl");
 	const BLOOM_COMPOSITE_BESL: &str = include_str!("../../../assets/rendering/bloom/composite.besl");
 
-	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
-	#[test]
-	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
+	/// A prefilter ceiling above any test input, so it does not take part.
+	const NO_CEILING: f32 = 65504.0;
+
+	/// Runs the prefilter over a 2x2 source into one texel.
+	fn extract(source_texels: &[[f32; 4]; 4], threshold: f32, soft_knee: f32, max_brightness: f32) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_EXTRACT_BESL));
 		let parameter_slot = ResourceSlot::new(2);
 		let mut parameters = buffer(&program, parameter_slot);
 		parameters
-			.write_indexed("prefilter", 0, Value::Vec4F([1.0, 0.5, 0.0, 0.0]))
+			.write_indexed("prefilter", 0, Value::Vec4F([threshold, soft_knee, 0.0, max_brightness]))
 			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
+		let mut source = texture_2d(2, 2, source_texels);
+		let mut result = empty_image(1, 1);
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+		descriptors.bind_image(ResourceSlot::new(1), &mut result);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+		rgba(&result, [0, 0])
+	}
 
+	/// Verifies threshold rejection and soft-knee extraction through the production bloom program.
+	#[test]
+	fn bloom_extract_besl_vm_applies_threshold_and_soft_knee() {
 		for (source_color, expected) in [
 			([0.25, 0.2, 0.1, 0.25], [0.0, 0.0, 0.0, 1.0]),
 			([2.0, 1.0, 0.5, 0.25], [1.0, 0.5, 0.25, 1.0]),
 		] {
-			let mut source = texture_2d(1, 1, &[source_color]);
-			let mut result = empty_image(1, 1);
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut source);
-			descriptors.bind_image(ResourceSlot::new(1), &mut result);
-			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			run_at(&program, &mut descriptors, [0, 0]);
-			drop(descriptors);
-
-			assert_rgba_close(rgba(&result, [0, 0]), expected, 1e-5);
+			assert_rgba_close(extract(&[source_color; 4], 1.0, 0.5, NO_CEILING), expected, 1e-5);
 		}
 	}
 
-	/// Verifies that downsampling reads the bilinear center of the source texture.
+	/// Verifies that no texel glows above the configured ceiling.
 	#[test]
-	fn bloom_downsample_besl_vm_samples_the_source_center() {
+	fn bloom_extract_besl_vm_holds_texels_to_max_brightness() {
+		let result = extract(&[[100.0, 100.0, 100.0, 1.0]; 4], 0.0, 0.0, 64.0);
+
+		assert_rgba_close(result, [64.0, 64.0, 64.0, 1.0], 1e-3);
+	}
+
+	/// Verifies that a non-finite scene texel cannot poison the glow around it.
+	#[test]
+	fn bloom_extract_besl_vm_survives_non_finite_input() {
+		for bad in [f32::INFINITY, f32::NAN] {
+			let source = [
+				[bad, bad, bad, 1.0],
+				[1.0, 1.0, 1.0, 1.0],
+				[1.0, 1.0, 1.0, 1.0],
+				[1.0, 1.0, 1.0, 1.0],
+			];
+			let result = extract(&source, 0.0, 0.0, NO_CEILING);
+			assert!(result.iter().all(|channel| channel.is_finite()), "{bad}: {result:?}");
+		}
+	}
+
+	/// Verifies that the prefilter holds back a single bright texel below the block's plain average.
+	#[test]
+	fn bloom_extract_besl_vm_suppresses_fireflies() {
+		let firefly = [
+			[4.0, 4.0, 4.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		let uniform = [[1.0, 1.0, 1.0, 1.0]; 4];
+
+		let firefly_result = extract(&firefly, 0.0, 0.0, NO_CEILING);
+		let uniform_result = extract(&uniform, 0.0, 0.0, NO_CEILING);
+
+		assert_rgba_close(uniform_result, [1.0, 1.0, 1.0, 1.0], 1e-5);
+		// Both blocks average to one, so the luma weighting is what pulls the firefly down.
+		assert!(firefly_result[0] > 0.0 && firefly_result[0] < 0.75, "{firefly_result:?}");
+	}
+
+	/// Runs the pyramid downsample over a 2x2 source into one texel.
+	fn downsample(source_texels: &[[f32; 4]; 4]) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_DOWNSAMPLE_BESL));
-		let mut source = texture_2d(
-			2,
-			2,
-			&[
-				[0.0, 0.0, 0.0, 0.0],
-				[1.0, 0.0, 0.0, 0.0],
-				[0.0, 1.0, 0.0, 0.0],
-				[0.0, 0.0, 1.0, 0.0],
-			],
-		);
+		let mut source = texture_2d(2, 2, source_texels);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
 		descriptors.bind_image(ResourceSlot::new(1), &mut result);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
-
-		assert_rgba_close(rgba(&result, [0, 0]), [0.25, 0.25, 0.25, 1.0], 1e-6);
+		rgba(&result, [0, 0])
 	}
 
-	/// Verifies that upsampling combines both production pyramid inputs.
+	/// Verifies that the downsample filter's weights sum to one and keep a block's energy without luma weighting.
+	#[test]
+	fn bloom_downsample_besl_vm_preserves_block_energy() {
+		let uniform = [[0.25, 0.5, 0.75, 1.0]; 4];
+		let firefly = [
+			[4.0, 4.0, 4.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+
+		assert_rgba_close(downsample(&uniform), [0.25, 0.5, 0.75, 1.0], 1e-5);
+		assert_rgba_close(downsample(&firefly), [1.0, 1.0, 1.0, 1.0], 1e-5);
+	}
+
+	/// Runs one upsample step with the given radius, returning every result texel in row-major order.
+	fn upsample(size: u32, low_texels: &[[f32; 4]], high_texels: &[[f32; 4]], radius: f32) -> Vec<[f32; 4]> {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_UPSAMPLE_BESL));
+		let parameter_slot = ResourceSlot::new(3);
+		let mut parameters = buffer(&program, parameter_slot);
+		parameters
+			.write_indexed("filter", 0, Value::Vec4F([radius, 0.0, 0.0, 0.0]))
+			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
+		let mut low = texture_2d(size, size, low_texels);
+		let mut high = texture_2d(size, size, high_texels);
+		let mut result = empty_image(size, size);
+		for y in 0..size {
+			for x in 0..size {
+				let mut descriptors = DescriptorBindings::new();
+				descriptors.bind_texture(ResourceSlot::new(0), &mut low);
+				descriptors.bind_texture(ResourceSlot::new(1), &mut high);
+				descriptors.bind_image(ResourceSlot::new(2), &mut result);
+				descriptors.bind_buffer(parameter_slot, &mut parameters);
+				run_at(&program, &mut descriptors, [x, y]);
+			}
+		}
+		(0..size * size).map(|index| rgba(&result, [index % size, index / size])).collect()
+	}
+
+	/// Verifies that upsampling adds the blurred lower level onto the same-resolution level.
 	#[test]
 	fn bloom_upsample_besl_vm_combines_both_levels() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_UPSAMPLE_BESL));
-		let mut low = texture_2d(1, 1, &[[0.1, 0.2, 0.3, 0.0]]);
-		let mut high = texture_2d(1, 1, &[[0.4, 0.5, 0.6, 0.0]]);
+		let result = upsample(1, &[[0.1, 0.2, 0.3, 0.0]], &[[0.4, 0.5, 0.6, 0.0]], 1.0);
+
+		assert_rgba_close(result[0], [0.5, 0.7, 0.9, 1.0], 1e-6);
+	}
+
+	/// Verifies that the tent blur spreads a lower-level texel to its neighbors, and that a zero radius does not.
+	#[test]
+	fn bloom_upsample_besl_vm_tent_reach_follows_radius() {
+		let low = [
+			[1.0, 1.0, 1.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+			[0.0, 0.0, 0.0, 1.0],
+		];
+		let high = [[0.0, 0.0, 0.0, 1.0]; 4];
+
+		let spread = upsample(2, &low, &high, 1.0);
+		let sharp = upsample(2, &low, &high, 0.0);
+
+		assert!(spread[3][0] > 0.0, "{spread:?}");
+		assert!(spread[3][0] < spread[0][0], "{spread:?}");
+		assert_rgba_close(sharp[3], [0.0, 0.0, 0.0, 1.0], 1e-6);
+	}
+
+	/// Runs the composite over 1x1 inputs with the given intensity.
+	fn composite(scene_color: [f32; 4], bloom_color: [f32; 4], intensity: f32) -> [f32; 4] {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_COMPOSITE_BESL));
+		let parameter_slot = ResourceSlot::new(3);
+		let mut scene = texture_2d(1, 1, &[scene_color]);
+		let mut bloom = texture_2d(1, 1, &[bloom_color]);
 		let mut result = empty_image(1, 1);
+		let mut parameters = buffer(&program, parameter_slot);
+		parameters
+			.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
+			.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(ResourceSlot::new(0), &mut low);
-		descriptors.bind_texture(ResourceSlot::new(1), &mut high);
+		descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
+		descriptors.bind_texture(ResourceSlot::new(1), &mut bloom);
 		descriptors.bind_image(ResourceSlot::new(2), &mut result);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
-
-		assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.7, 0.9, 1.0], 1e-6);
+		rgba(&result, [0, 0])
 	}
 
 	/// Verifies additive bloom and the zero-intensity passthrough branch.
 	#[test]
 	fn bloom_composite_besl_vm_preserves_zero_intensity_and_adds_positive_bloom() {
-		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(BLOOM_COMPOSITE_BESL));
-		let parameter_slot = ResourceSlot::new(3);
 		let scene_color = [0.2, 0.3, 0.4, 0.6];
 		let bloom_color = [0.5, 0.25, 0.125, 0.0];
 
 		for (intensity, expected) in [(0.0, scene_color), (2.0, [1.2, 0.8, 0.65, 1.0])] {
-			let mut scene = texture_2d(1, 1, &[scene_color]);
-			let mut bloom = texture_2d(1, 1, &[bloom_color]);
-			let mut result = empty_image(1, 1);
-			let mut parameters = buffer(&program, parameter_slot);
-			parameters
-				.write_indexed("prefilter", 0, Value::Vec4F([0.0, 0.0, intensity, 0.0]))
-				.expect("Failed to initialize bloom parameters. The most likely cause is a changed production buffer layout.");
-			let mut descriptors = DescriptorBindings::new();
-			descriptors.bind_texture(ResourceSlot::new(0), &mut scene);
-			descriptors.bind_texture(ResourceSlot::new(1), &mut bloom);
-			descriptors.bind_image(ResourceSlot::new(2), &mut result);
-			descriptors.bind_buffer(parameter_slot, &mut parameters);
-			run_at(&program, &mut descriptors, [0, 0]);
-			drop(descriptors);
+			assert_rgba_close(composite(scene_color, bloom_color, intensity), expected, 1e-6);
+		}
+	}
 
-			assert_rgba_close(rgba(&result, [0, 0]), expected, 1e-6);
+	/// Verifies that a scene texel at the half-float limit stays finite when the glow is added.
+	#[test]
+	fn bloom_composite_besl_vm_holds_the_sum_to_the_half_float_range() {
+		let result = composite([65504.0, 1.0, 1.0, 1.0], [100.0, 100.0, 100.0, 0.0], 1.0);
+
+		assert_rgba_close(result, [65504.0, 101.0, 101.0, 1.0], 1e-2);
+	}
+
+	/// Lowers every bloom program through the platform shader compiler. The VM tests above prove the programs
+	/// link and behave as BESL; defects the backend mishandles, such as helper functions over vector arguments,
+	/// only surface when the real platform compiler runs.
+	#[cfg(target_os = "macos")]
+	#[compio::test]
+	async fn bloom_besl_programs_lower_to_the_platform_shader_language() {
+		use resource_management::shader::ShaderGenerationSettings;
+		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+		for (name, source) in [
+			("bloom_extract", BLOOM_EXTRACT_BESL),
+			("bloom_downsample", BLOOM_DOWNSAMPLE_BESL),
+			("bloom_upsample", BLOOM_UPSAMPLE_BESL),
+			("bloom_composite", BLOOM_COMPOSITE_BESL),
+		] {
+			let mut root = besl::parse(source).expect("bloom shader should parse");
+			root.add(vec![crate::rendering::common_shader_generator::CommonShaderScope::new()]);
+			let root = besl::lex(root).expect("bloom shader should link");
+			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
+
+			PlatformShaderCompiler::new()
+				.generate(&settings, &root)
+				.await
+				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 		}
 	}
 

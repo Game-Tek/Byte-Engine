@@ -237,7 +237,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			.map(|(sink, sink_state)| {
 				crate::rendering::render_pass::allocate_render_command(
 					frame_allocator,
-					sink_state.prepare(frame, sink, self, pipeline, instance_batches),
+					sink_state.prepare(frame, sink, self, pipeline, instance_batches, frame_allocator),
 				)
 			})
 			.collect::<SmallVec<[_; 16]>>();
@@ -260,11 +260,16 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 				.optimized_clear_value(ghi::ClearValue::Depth(0.0)),
 		);
 
+		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
+			color: main.into(),
+			depth: depth.into(),
+		});
 		self.sinks.push(RenderPass::new(
 			render_pass_builder.context(),
 			self.camera_data_buffer.into(),
 			self.instance_data_buffer.into(),
 			sink_id,
+			background,
 		))
 	}
 }

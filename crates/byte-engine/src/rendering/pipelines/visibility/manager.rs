@@ -1091,10 +1091,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			.iter()
 			.filter_map(|sink| {
 				let state = self.scene.sink_states.iter().find(|state| state.id == sink.index())?;
-				Some((sink, &state.render_pass))
+				Some((sink, &state.render_pass, state.background.as_ref()))
 			})
 			.enumerate()
-			.filter_map(|(command_index, (sink, render_pass))| {
+			.filter_map(|(command_index, (sink, render_pass, background))| {
 				// Skinning runs once per frame, with the first sink.
 				let skinning = (command_index == 0).then_some(skinning_pass);
 				// A sink that did not record last frame, or was resized since, has no usable history.
@@ -1114,7 +1114,17 @@ impl PipelineManager for VisibilityPipelineManager {
 						..shadow_work
 					}
 				};
-				let command = render_pass.prepare(frame, sink, skinning, dispatches, render_info, shadow_work, history)?;
+				let command = render_pass.prepare(
+					frame,
+					sink,
+					skinning,
+					dispatches,
+					render_info,
+					shadow_work,
+					history,
+					background,
+					frame_allocator,
+				)?;
 				recorded_sinks.push(*sink);
 				Some(allocate_render_command(frame_allocator, command))
 			})
@@ -1145,6 +1155,10 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
+		let background = render_pass_builder.create_scene_background(crate::rendering::render_pass::SceneBackgroundTargets {
+			color: lit.into(),
+			depth: depth.into(),
+		});
 		let ssgi = create_ssgi_targets(render_pass_builder);
 		let contact_shadows = create_contact_shadow_targets(render_pass_builder);
 		let radiance_history = create_radiance_history_target(render_pass_builder);
@@ -1178,6 +1192,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		self.scene.sink_states.push(SinkState {
 			id: sink_id,
 			render_pass,
+			background,
 		});
 	}
 }

@@ -31,9 +31,8 @@ pub(super) fn create_passes(
 	configuration: &Configuration,
 ) -> ToneMapPasses {
 	let source: ghi::BaseImageHandle = render_pass_builder.read_from("main").into();
-	let format = render_pass_builder.format_of("main");
 	let destination = render_pass_builder.create_main_render_target(
-		ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(configuration.output_name),
+		ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(configuration.output_name),
 	);
 	let active = pipeline
 		.bind(

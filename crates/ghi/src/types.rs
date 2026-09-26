@@ -232,7 +232,7 @@ pub enum Formats {
 	/// 16 bit sRGB RGBA.
 	RGBA16sRGB,
 
-	/// 11 bit unsigned for R, G and 10 bit unsigned for B normalized RGB.
+	/// Packed unsigned floating point RGB with 11 bit R and G and 10 bit B (R11G11B10F).
 	RGBu11u11u10,
 	/// 8 bit unsigned per component normalized BGRA.
 	BGRAu8,
@@ -326,6 +326,7 @@ impl Formats {
 			| Formats::RGB16F
 			| Formats::RGBA8F
 			| Formats::RGBA16F
+			| Formats::RGBu11u11u10
 			| Formats::Depth32 => Some(Encodings::FloatingPoint),
 
 			Formats::R8UNORM
@@ -337,7 +338,6 @@ impl Formats {
 			| Formats::RGB16UNORM
 			| Formats::RGBA8UNORM
 			| Formats::RGBA16UNORM
-			| Formats::RGBu11u11u10
 			| Formats::BGRAu8 => Some(Encodings::UnsignedNormalized),
 
 			Formats::Depth16 => Some(Encodings::UnsignedNormalized),

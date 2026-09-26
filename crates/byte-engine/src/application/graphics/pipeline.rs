@@ -768,7 +768,10 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SmaaPass::new(render_pass_builder)));
 }
 
-/// Installs the atmosphere sky pass used as a post-scene background.
+/// Installs the atmosphere sky as every sink's scene background.
+///
+/// Scene pipelines draw it after opaque surfaces and before transparent ones, so transparent surfaces blend over
+/// the sky. Use `render.pass.atmosphere sky` to enable or bypass it at runtime; bypassed, the background is black.
 ///
 /// The newest [`DirectionalLight`] is the sky's sun: its illuminance sets the sky's brightness and color, and its
 /// transform sets the sun's direction. Without one, the sky stays black.
@@ -781,9 +784,10 @@ pub fn setup_atmosphere_sky_render_pass(application: &mut GraphicsApplication) {
 	let transform_channel = application.world().transforms_channel().clone();
 	let renderer = &mut application.renderer;
 
-	renderer.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+	renderer.set_scene_background_for_all_sinks(move |render_pass_builder, targets| {
 		Box::new(AtmosphereSkyRenderPass::new(
 			render_pass_builder,
+			targets,
 			light_factory.listener(),
 			transform_channel.listener(),
 		))

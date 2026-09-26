@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use super::*;
 
-pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = crate::rendering::SCENE_COLOR_FORMAT;
+/// The UI layer keeps premultiplied coverage in alpha for compositing over the scene.
+pub(super) const MAIN_ATTACHMENT_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 /// Bindings of the UI ubershader. They match `ui-vertex.besl` and `ui-fragment.besl`.
 pub(super) const UI_PRIMITIVES_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 pub(super) const UI_MASKS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);

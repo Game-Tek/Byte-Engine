@@ -235,6 +235,7 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 			| ghi::Formats::BGRAsRGB
 			| ghi::Formats::RGBA16UNORM
 			| ghi::Formats::RGBA16F
+			| ghi::Formats::RGBu11u11u10
 	) {
 		return Err(ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string());
 	}
@@ -271,6 +272,16 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 					rgba.push((value * 255.0).round() as u8);
 				}
 			}
+			// Packed HDR intermediates follow the same clamped linear convention, with opaque alpha.
+			ghi::Formats::RGBu11u11u10 => {
+				for pixel in row.as_chunks::<4>().0 {
+					for value in unpack_r11g11b10f(u32::from_ne_bytes(*pixel)) {
+						let value = if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) };
+						rgba.push((value * 255.0).round() as u8);
+					}
+					rgba.push(255);
+				}
+			}
 			_ => unreachable!("screenshot format was validated before encoding"),
 		}
 	}
@@ -299,9 +310,12 @@ fn encode_png(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 /// EXR stores planar channels, so this splits each visible row into one sample list per channel. A single-channel
 /// format becomes the luminance channel `Y` so viewers show it as gray, like the PNG encoder does.
 fn encode_exr(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
-	use exr::prelude::{AnyChannel, AnyChannels, FlatSamples, Image, WritableImage as _};
+	use exr::prelude::FlatSamples;
 
 	let unsupported = || ghi::TextureTransferError::UnsupportedFormat(readback.format).to_string();
+	if readback.format == ghi::Formats::RGBu11u11u10 {
+		return write_exr(readback, &["R", "G", "B"], packed_r11g11b10f_planes(readback)?);
+	}
 	let names: &[&str] = match readback.format.channel_layout() {
 		ghi::ChannelLayout::R => &["Y"],
 		ghi::ChannelLayout::RG => &["R", "G"],
@@ -340,6 +354,16 @@ fn encode_exr(readback: &ghi::TextureReadback) -> Result<Vec<u8>, String> {
 		}
 		_ => return Err(unsupported()),
 	}?;
+	write_exr(readback, names, channels)
+}
+
+/// Writes one EXR image whose channel `names` pair with the planar `channels`.
+fn write_exr(
+	readback: &ghi::TextureReadback,
+	names: &[&str],
+	channels: Vec<exr::prelude::FlatSamples>,
+) -> Result<Vec<u8>, String> {
+	use exr::prelude::{AnyChannel, AnyChannels, Image, WritableImage as _};
 
 	let channels = AnyChannels::sort(
 		names
@@ -387,6 +411,36 @@ fn planar_samples<T>(
 		}
 	}
 	Ok(planes.into_iter().map(wrap).collect())
+}
+
+/// Splits a packed R11G11B10F readback into red, green, and blue `f32` planes.
+fn packed_r11g11b10f_planes(readback: &ghi::TextureReadback) -> Result<Vec<exr::prelude::FlatSamples>, String> {
+	let pixel_count = (readback.extent.width() * readback.extent.height()) as usize;
+	let mut planes = [(); 3].map(|_| Vec::with_capacity(pixel_count));
+	for row in visible_rows(readback)? {
+		for pixel in row.as_chunks::<4>().0 {
+			for (plane, value) in planes.iter_mut().zip(unpack_r11g11b10f(u32::from_ne_bytes(*pixel))) {
+				plane.push(value);
+			}
+		}
+	}
+	Ok(planes.into_iter().map(exr::prelude::FlatSamples::F32).collect())
+}
+
+/// Decodes one packed R11G11B10F texel. Red and green use 6 mantissa bits, blue 5, and all share a 5 bit exponent
+/// with no sign bit.
+fn unpack_r11g11b10f(bits: u32) -> [f32; 3] {
+	let unpack = |value: u32, mantissa_bits: u32| {
+		let exponent = (value >> mantissa_bits) & 0x1f;
+		let mantissa = (value & ((1 << mantissa_bits) - 1)) as f32 / (1 << mantissa_bits) as f32;
+		match exponent {
+			0 => mantissa * 2f32.powi(-14),
+			31 if mantissa == 0.0 => f32::INFINITY,
+			31 => f32::NAN,
+			_ => (1.0 + mantissa) * 2f32.powi(exponent as i32 - 15),
+		}
+	};
+	[unpack(bits & 0x7ff, 6), unpack((bits >> 11) & 0x7ff, 6), unpack(bits >> 22, 5)]
 }
 
 /// Decodes one sRGB-encoded value in `[0, 1]` to linear light.
@@ -542,9 +596,29 @@ mod tests {
 	#[test]
 	fn exr_rejects_formats_without_a_per_channel_layout() {
 		let error = ScreenshotFormat::Exr
-			.encode(readback(vec![0; 4], ghi::Formats::RGBu11u11u10, 4))
-			.expect_err("reject packed format");
+			.encode(readback(vec![0; 4], ghi::Formats::Depth32, 4))
+			.expect_err("reject depth format");
 		assert!(error.starts_with("Texture transfer format is unsupported."));
+	}
+
+	#[test]
+	fn decodes_packed_r11g11b10f() {
+		// 1.0 is exponent 15 with a zero mantissa in every channel; blue's exponent starts at bit 27.
+		let one = (15 << 6) | (15 << 17) | (15 << 27);
+		assert_eq!(unpack_r11g11b10f(one), [1.0, 1.0, 1.0]);
+		// Red 0.5 (exponent 14), green 2.0 (exponent 16), blue 1.5 (exponent 15, top mantissa bit).
+		let mixed = (14 << 6) | (16 << 17) | (15 << 27) | (1 << 26);
+		assert_eq!(unpack_r11g11b10f(mixed), [0.5, 2.0, 1.5]);
+
+		let exr = ScreenshotFormat::Exr
+			.encode(readback(u32::to_ne_bytes(mixed).to_vec(), ghi::Formats::RGBu11u11u10, 4))
+			.unwrap();
+		assert_eq!(
+			decode_exr(&exr),
+			[("B".to_string(), vec![1.5]), ("G".to_string(), vec![2.0]), ("R".to_string(), vec![0.5])]
+		);
+		let png = encode_png(&readback(u32::to_ne_bytes(mixed).to_vec(), ghi::Formats::RGBu11u11u10, 4)).unwrap();
+		assert!(!png.is_empty());
 	}
 
 	#[test]

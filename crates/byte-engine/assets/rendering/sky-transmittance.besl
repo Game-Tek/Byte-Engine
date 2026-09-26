@@ -9,7 +9,7 @@ SkyParameters: struct {
 	sun_disk_radiance: vec4f,
 }
 
-transmittance_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: write }>;
+transmittance_lut: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 0, access: write }>;
 parameters: descriptor<{ type: SkyParameters, binding: 1, access: read, memory: constant }>;
 
 sample_distribution: fn (value: f32) -> f32 {

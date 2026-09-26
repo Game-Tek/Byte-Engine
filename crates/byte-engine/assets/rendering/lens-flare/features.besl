@@ -22,7 +22,7 @@ LensFlareParameters: struct {
 }
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 lens_flare_parameters: descriptor<{ type: LensFlareParameters, binding: 2, access: read, memory: constant }>;
 
 LENS_FLARE_MAX_GHOSTS: const u32 = 8;

@@ -590,6 +590,7 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 		Format::Rgba8Unorm => ghi::Formats::RGBA8UNORM,
 		Format::Rgba16Unorm => ghi::Formats::RGBA16UNORM,
 		Format::Rgba16Float => ghi::Formats::RGBA16F,
+		Format::Rg11b10Float => ghi::Formats::RGBu11u11u10,
 		Format::Depth16 => ghi::Formats::Depth16,
 		Format::Depth32 => ghi::Formats::Depth32,
 		Format::U32 => ghi::Formats::U32,

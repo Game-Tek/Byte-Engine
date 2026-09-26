@@ -16,7 +16,9 @@ use crate::{
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		DirectionalLight, Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, allocate_render_command, simple_compute},
+		render_pass::{
+			RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackgroundTargets, allocate_render_command, simple_compute,
+		},
 	},
 };
 
@@ -107,13 +109,15 @@ struct SkyShaderData {
 	sun_disk_radiance: [f32; 4],
 }
 
-/// The `AtmosphereSkyRenderPass` struct places an atmosphere behind scene color wherever opaque depth remains at infinity.
+/// The `AtmosphereSkyRenderPass` struct fills scene color with an atmosphere wherever opaque depth remains at infinity.
+///
+/// It is a scene background: scene pipelines record it after opaque surfaces and before transparent ones, so
+/// transparent surfaces composite over the sky and scene color needs no coverage channel.
 pub struct AtmosphereSkyRenderPass {
 	transmittance_pass: simple_compute::Pass,
 	multiple_scattering_pass: simple_compute::Pass,
 	sky_view_pass: simple_compute::Pass,
 	composite_pass: simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
 	directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
@@ -134,20 +138,16 @@ impl AtmosphereSkyRenderPass {
 	///
 	/// The newest directional light is the sky's sun: its illuminance sets the sky's brightness and color, and its
 	/// transform sets the sun's direction. Publish that light's transform next so the sky can use its orientation.
-	/// Without a directional light, the sky stays black.
+	/// Without a directional light, the sky stays black. The sky writes `targets.color` in place wherever
+	/// `targets.depth` holds no surface and leaves every other pixel untouched.
 	pub fn new(
 		render_pass_builder: &mut RenderPassBuilder,
+		targets: SceneBackgroundTargets,
 		directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
 		transform_listener: DefaultListener<TransformationUpdate>,
 	) -> Self {
 		let settings = AtmosphereSkyRenderPassSettings::default();
-		let depth = render_pass_builder.read_from("depth");
-		let source = render_pass_builder.read_from("main");
-		let main_format = render_pass_builder.format_of("main");
-		// Separate source and result so the renderer can substitute the swapchain without losing foreground scene color.
-		let result = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Atmosphere Sky Output"),
-		);
+		let SceneBackgroundTargets { color, depth } = targets;
 		let transmittance_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Sky Transmittance LUT", "byte-engine/rendering/sky-transmittance.pipeline"),
@@ -180,19 +180,19 @@ impl AtmosphereSkyRenderPass {
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
 		let transmittance_lut = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
 				.name("Sky Transmittance LUT")
 				.extent(transmittance_lut_extent())
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let multiple_scattering_lut = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
 				.name("Sky Multiple Scattering LUT")
 				.extent(multiple_scattering_lut_extent())
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		let sky_view_lut = context.build_image(
-			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::Storage)
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Image | ghi::Uses::Storage)
 				.name("Sky View LUT")
 				.extent(sky_view_lut_extent())
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
@@ -259,8 +259,7 @@ impl AtmosphereSkyRenderPass {
 				"Sky Render Pass Descriptor Set",
 				&[
 					simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("source", source),
-					simple_compute::Resource::image("result", result),
+					simple_compute::Resource::image("result", color),
 					simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
 					simple_compute::Resource::combined_image_sampler(
 						"transmittance_lut",
@@ -272,14 +271,12 @@ impl AtmosphereSkyRenderPass {
 				],
 			)
 			.expect("Failed to bind the sky resources. The most likely cause is a changed BESL binding contract.");
-		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, result);
 
 		Self {
 			transmittance_pass,
 			multiple_scattering_pass,
 			sky_view_pass,
 			composite_pass,
-			bypass_pass,
 			parameters,
 			settings,
 			directional_lights,
@@ -416,8 +413,10 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
+		// Bypassed, the background stays the black the scene cleared it to.
+		let _ = (frame, sink, frame_allocator);
 		self.update_sun();
-		self.bypass_pass.prepare(frame, sink, frame_allocator)
+		None
 	}
 }
 
@@ -630,74 +629,39 @@ mod tests {
 		);
 	}
 
-	/// Verifies foreground preservation and scene-linear HDR sky composition through the VM.
+	/// Verifies that surfaces keep their color and that the background receives scene-linear HDR sky.
 	#[test]
-	fn sky_besl_vm_preserves_foreground_and_hdr_background() {
+	fn sky_besl_vm_preserves_surfaces_and_writes_hdr_background() {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_SHADER_BESL));
 		let sentinel = [0.2, 0.3, 0.4, 0.5];
-		let mut foreground_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
-		let mut foreground_source = texture_2d(1, 1, &[sentinel]);
-		let mut foreground_result = empty_image(1, 1);
-		let mut foreground_descriptors = DescriptorBindings::new();
-		foreground_descriptors.bind_texture(ResourceSlot::new(0), &mut foreground_depth);
-		foreground_descriptors.bind_image(ResourceSlot::new(1), &mut foreground_source);
-		foreground_descriptors.bind_image(ResourceSlot::new(2), &mut foreground_result);
-		run_at(&program, &mut foreground_descriptors, [0, 0]);
-		drop(foreground_descriptors);
-		assert_rgba_close(rgba(&foreground_result, [0, 0]), sentinel, 0.0);
+		let mut surface_depth = texture_2d(1, 1, &[[0.5, 0.0, 0.0, 1.0]]);
+		let mut surface_color = texture_2d(1, 1, &[sentinel]);
+		let mut surface_descriptors = DescriptorBindings::new();
+		surface_descriptors.bind_texture(ResourceSlot::new(0), &mut surface_depth);
+		surface_descriptors.bind_image(ResourceSlot::new(2), &mut surface_color);
+		run_at(&program, &mut surface_descriptors, [0, 0]);
+		drop(surface_descriptors);
+		assert_rgba_close(rgba(&surface_color, [0, 0]), sentinel, 0.0);
 
 		let parameter_slot = ResourceSlot::new(5);
 		let mut parameters = sky_parameters(&program, parameter_slot, TEST_SUN_ILLUMINANCE, 1.0);
-		let sky_scattering = [2.0, 3.0, 4.0, 1.0];
-		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
+		let mut sky_view = texture_2d(1, 1, &[[2.0, 3.0, 4.0, 1.0]]);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
-
 		let mut background_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
-		let mut background_source = empty_image(1, 1);
-		let mut background_result = empty_image(1, 1);
+		let mut background_color = empty_image(1, 1);
 		let mut background_descriptors = DescriptorBindings::new();
 		background_descriptors.bind_texture(ResourceSlot::new(0), &mut background_depth);
-		background_descriptors.bind_image(ResourceSlot::new(1), &mut background_source);
-		background_descriptors.bind_image(ResourceSlot::new(2), &mut background_result);
+		background_descriptors.bind_image(ResourceSlot::new(2), &mut background_color);
 		background_descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
 		background_descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);
 		background_descriptors.bind_buffer(parameter_slot, &mut parameters);
 		run_at(&program, &mut background_descriptors, [0, 0]);
 		drop(background_descriptors);
 
-		let background = rgba(&background_result, [0, 0]);
-
+		let background = rgba(&background_color, [0, 0]);
 		assert!(
 			background[..3].iter().all(|channel| channel.is_finite() && *channel > 1.0),
 			"Clamped sky VM output. The most likely cause is tone mapping before the final scene tonemap: {background:?}"
-		);
-		assert_rgba_close([0.0, 0.0, 0.0, background[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
-
-		// Visibility stores transparent-only pixels premultiplied, so the post-scene sky must fill the remaining coverage.
-		let transparent_foreground = [0.1, 0.05, 0.02, 0.25];
-		let mut transparent_depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
-		let mut transparent_source = texture_2d(1, 1, &[transparent_foreground]);
-		let mut transparent_result = empty_image(1, 1);
-		let mut transparent_descriptors = DescriptorBindings::new();
-		transparent_descriptors.bind_texture(ResourceSlot::new(0), &mut transparent_depth);
-		transparent_descriptors.bind_image(ResourceSlot::new(1), &mut transparent_source);
-		transparent_descriptors.bind_image(ResourceSlot::new(2), &mut transparent_result);
-		transparent_descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
-		transparent_descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);
-		transparent_descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut transparent_descriptors, [0, 0]);
-		drop(transparent_descriptors);
-
-		let remaining_alpha = 1.0 - transparent_foreground[3];
-		assert_rgba_close(
-			rgba(&transparent_result, [0, 0]),
-			[
-				transparent_foreground[0] + background[0] * remaining_alpha,
-				transparent_foreground[1] + background[1] * remaining_alpha,
-				transparent_foreground[2] + background[2] * remaining_alpha,
-				1.0,
-			],
-			1e-5,
 		);
 	}
 
@@ -709,11 +673,9 @@ mod tests {
 		let mut sky_view = texture_2d(1, 1, &[sky_scattering]);
 		let mut transmittance = texture_2d(1, 1, &[[1.0, 1.0, 1.0, 1.0]]);
 		let mut depth = texture_2d(1, 1, &[[0.0, 0.0, 0.0, 1.0]]);
-		let mut source = empty_image(1, 1);
 		let mut result = empty_image(1, 1);
 		let mut descriptors = DescriptorBindings::new();
 		descriptors.bind_texture(ResourceSlot::new(0), &mut depth);
-		descriptors.bind_image(ResourceSlot::new(1), &mut source);
 		descriptors.bind_image(ResourceSlot::new(2), &mut result);
 		descriptors.bind_texture(ResourceSlot::new(3), &mut sky_view);
 		descriptors.bind_texture(ResourceSlot::new(4), &mut transmittance);

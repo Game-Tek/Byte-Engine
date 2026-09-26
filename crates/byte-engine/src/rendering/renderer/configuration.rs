@@ -42,7 +42,7 @@ pub(super) fn apply_render_pass_configuration(
 	configuration: &ConfigurationPort,
 	pending: &mut VecDeque<PendingRenderPassConfiguration>,
 	render_pass_states: &mut HashMap<String, RenderPassState>,
-	render_passes: &mut [RenderPassHarness],
+	mut set_state_by_name: impl FnMut(&str, RenderPassState) -> usize,
 ) {
 	while let Some(update) = configuration.read() {
 		match PendingRenderPassConfiguration::from_update(update) {
@@ -55,7 +55,7 @@ pub(super) fn apply_render_pass_configuration(
 	let pending_count = pending.len();
 	for _ in 0..pending_count {
 		let update = pending.pop_front().expect("pending configuration count changed");
-		let updated = set_render_pass_state_by_name(render_passes, &update.render_pass_name, update.state);
+		let updated = set_state_by_name(&update.render_pass_name, update.state);
 		if updated == 0 {
 			pending.push_back(update);
 			continue;

@@ -15,7 +15,7 @@ BloomParameters: struct {
 }
 
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 2, access: read, memory: constant }>;
 
 BLOOM_LUMA_WEIGHTS: const vec3f = vec3f(0.2126, 0.7152, 0.0722);

@@ -98,7 +98,14 @@ pub use window::{Features, Window};
 use crate::space::{Orientable, Positionable};
 
 /// Scene rendering stays linear and HDR until the final tone-mapping pass.
-pub(crate) const SCENE_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+///
+/// Scene color carries no coverage: the scene background is drawn before transparent surfaces blend over it. HDR
+/// effect intermediates share the format. Its 6 bit mantissa is too coarse for display-referred [0, 1] values, so
+/// tone mappers write [`DISPLAY_COLOR_FORMAT`] instead.
+pub(crate) const SCENE_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBu11u11u10;
+
+/// Display-referred color written by tone mapping and grading.
+pub(crate) const DISPLAY_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 
 /// Maps a shader resource binding to a GHI shader binding descriptor.
 pub fn map_shader_binding_to_shader_binding_descriptor(

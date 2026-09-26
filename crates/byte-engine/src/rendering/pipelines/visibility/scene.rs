@@ -103,6 +103,8 @@ impl RenderInfo {
 pub struct SinkState {
 	pub(crate) id: usize,
 	pub(crate) render_pass: VisibilityRenderPass,
+	/// Fills sky pixels of the lit target before transparent surfaces composite over them.
+	pub(crate) background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
 /// The `VisibilityScene` struct owns everything the renderer retains between frames for one visibility world.

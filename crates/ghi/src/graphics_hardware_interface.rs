@@ -142,7 +142,7 @@ pub(super) mod tests {
 		assert_eq!(Formats::RGBA8UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::RGBA16UNORM.encoding(), Some(Encodings::UnsignedNormalized));
 		assert_eq!(Formats::Depth16.encoding(), Some(Encodings::UnsignedNormalized));
-		assert_eq!(Formats::RGBu11u11u10.encoding(), Some(Encodings::UnsignedNormalized));
+		assert_eq!(Formats::RGBu11u11u10.encoding(), Some(Encodings::FloatingPoint));
 		assert_eq!(Formats::BGRAu8.encoding(), Some(Encodings::UnsignedNormalized));
 
 		// Test signed normalized formats

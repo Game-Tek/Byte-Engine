@@ -419,6 +419,7 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(core.shader_sampled_image_array_dynamic_indexing),
 		feature!(core.shader_storage_buffer_array_dynamic_indexing),
 		feature!(core.shader_storage_image_array_dynamic_indexing),
+		feature!(core.shader_storage_image_read_without_format),
 		feature!(core.shader_storage_image_write_without_format),
 		feature!(core.texture_compression_bc),
 		feature!(core.fill_mode_non_solid),

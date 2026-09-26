@@ -2,7 +2,7 @@
 // overlapping 2x2 blocks, the inner one weighted one half and the outer four one eighth each). The wide footprint
 // keeps the pyramid stable as bright features move between texels; a plain 2x2 box would pulse.
 source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+result_texture: descriptor<{ type: StorageImage, binding: 1, access: write }>;
 
 // Reads the source level `offset_x`, `offset_y` source texels away from `uv`.
 sample_source: fn (uv: vec2f, texel: vec2f, offset_x: f32, offset_y: f32) -> vec3f {

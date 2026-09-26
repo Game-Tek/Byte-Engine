@@ -344,7 +344,7 @@ impl VisibilityRenderPass {
 		self.material_evaluation.descriptor_set
 	}
 
-	/// Prepares one opaque visibility layer and one nearest-surface transparent layer.
+	/// Prepares one opaque visibility layer, the scene `background`, and one nearest-surface transparent layer.
 	///
 	/// Returns `None` while any fixed pipeline is still compiling. `skinning` is passed only by the first sink
 	/// so deformation runs once per frame. `history` describes how this pass recorded the sink in the previous
@@ -358,6 +358,8 @@ impl VisibilityRenderPass {
 		render_info: &'a RenderInfo,
 		shadow_work: ShadowWork,
 		history: Option<SinkHistory>,
+		background: Option<&crate::rendering::render_pass::SceneBackground>,
+		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
 		let pipeline_manager = &self.pipeline_manager;
 		let skinning = match skinning {
@@ -393,6 +395,10 @@ impl VisibilityRenderPass {
 			&render_info.transparent_material_mask,
 			VisibilityPhase::Transparent,
 		);
+		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
+		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
+		// frame instead of holding the scene back.
+		let background = background.and_then(|background| background.prepare(frame, sink, frame_allocator));
 		let extent = sink.extent();
 		let visibility = &self.visibility;
 		let material_prepasses = &self.material_prepasses;
@@ -432,6 +438,10 @@ impl VisibilityRenderPass {
 				gtao(c, t);
 				ssgi(c, t);
 				opaque_materials(c, t);
+				// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
+				if let Some(background) = background {
+					background(c, t);
+				}
 
 				// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 				// normal depth testing select the nearest surface before source-over evaluation.

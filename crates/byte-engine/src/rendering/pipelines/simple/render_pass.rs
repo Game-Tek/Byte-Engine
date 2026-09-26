@@ -22,6 +22,7 @@ use crate::{
 pub struct RenderPass {
 	pub(super) index: usize,
 	descriptor_set: ghi::DescriptorSetHandle,
+	background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
 impl RenderPass {
@@ -30,6 +31,7 @@ impl RenderPass {
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
 		index: usize,
+		background: Option<crate::rendering::render_pass::SceneBackground>,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(None);
 
@@ -38,7 +40,11 @@ impl RenderPass {
 			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
 		]);
 
-		Self { index, descriptor_set }
+		Self {
+			index,
+			descriptor_set,
+			background,
+		}
 	}
 }
 
@@ -52,7 +58,14 @@ impl RenderPass {
 		sm: &PipelineManager,
 		pipeline: ghi::PipelineHandle,
 		instance_batches: &'a [InstanceBatch],
+		frame_allocator: &'a bumpalo::Bump,
 	) -> impl RenderPassFunction + 'a {
+		// The simple model has no transparent surfaces, so its background is drawn after every surface.
+		let background = self
+			.background
+			.as_ref()
+			.and_then(|background| background.prepare(frame, sink, frame_allocator));
+
 		let camera_data_buffer = sm.camera_data_buffer;
 
 		let camera_data_buffer = frame.get_mut_dynamic_buffer_slice(camera_data_buffer);
@@ -74,16 +87,16 @@ impl RenderPass {
 
 			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer).index_type(ghi::DataTypes::U16));
 
-			let c = c.start_render_pass(extent, t);
+			let render_pass = c.start_render_pass(extent, t);
 
-			let c = c.bind_raster_pipeline(pipeline);
+			let render_pass = render_pass.bind_raster_pipeline(pipeline);
 
-			c.bind_descriptor_sets(&[descriptor_set]);
+			render_pass.bind_descriptor_sets(&[descriptor_set]);
 
 			for batch in instance_batches.iter() {
-				c.write_push_constant(0, batch.base_instance() as u32);
+				render_pass.write_push_constant(0, batch.base_instance() as u32);
 
-				c.draw_indexed(
+				render_pass.draw_indexed(
 					batch.index_count() as u32,
 					batch.instance_count() as u32,
 					batch.base_index() as _,
@@ -92,7 +105,11 @@ impl RenderPass {
 				);
 			}
 
-			c.end_render_pass();
+			render_pass.end_render_pass();
+
+			if let Some(background) = background {
+				background(c, t);
+			}
 		}
 	}
 }

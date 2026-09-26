@@ -283,7 +283,8 @@ If you install the atmosphere sky with `setup_atmosphere_sky_render_pass`, the n
 light is also the sky's sun. Its lux and color set how bright and what color the sky is, so a
 brighter sun brightens the sky too. Without a directional light, the sky is black. The sky includes
 light that scatters more than once in the air, and sunlight the ground reflects back up, so a
-100,000 lux sun gives a clear sky of about 2,000 to 8,000 nits, brightest near the horizon.
+100,000 lux sun gives a clear sky of about 2,000 to 8,000 nits, brightest near the horizon. The sky is drawn after opaque surfaces
+and before transparent ones, so glass and other blended surfaces show the sky behind them.
 
 <Callout type="info" title="Physical calibration limits">
 	Emissive materials don't have a unified physical calibration with analytic
@@ -308,7 +309,8 @@ Typical EV100 values are 15 for a sunny day, 12 to 13 for an overcast one, and 5
 room at night. An exposure of `0.0` shows scene values unchanged.
 
 The PBR visibility pipeline and the atmosphere sky apply the exposure as they write scene light,
-so a 100,000 lux sun on a glossy surface stays within the range of the half-float scene image.
+so a 100,000 lux sun on a glossy surface stays within the range of the scene image, whose
+floating-point channels reach about 65,000.
 Later passes, such as bloom and tone mapping, receive exposed light. Scenes drawn with other
 pipelines ignore exposure. The camera's `aperture` field doesn't change it.
 

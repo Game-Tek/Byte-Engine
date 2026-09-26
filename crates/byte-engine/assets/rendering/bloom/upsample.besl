@@ -8,7 +8,7 @@ BloomParameters: struct {
 
 low_resolution_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 high_resolution_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 2, access: write }>;
+result_texture: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 bloom_parameters: descriptor<{ type: BloomParameters, binding: 3, access: read, memory: constant }>;
 
 // Reads the lower level `offset_x`, `offset_y` filter steps away from `uv`.

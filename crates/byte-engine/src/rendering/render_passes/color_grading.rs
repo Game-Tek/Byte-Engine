@@ -80,9 +80,8 @@ impl ColorGradingPass {
 		);
 
 		let source = render_pass_builder.read_from("main");
-		let main_format = render_pass_builder.format_of("main");
 		let destination = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name(workflow.output_name()),
+			ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(workflow.output_name()),
 		);
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,

@@ -119,7 +119,9 @@ mod tests {
 			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
 		];
 
-		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
+			set_render_pass_state_by_name(&mut passes, name, state)
+		});
 
 		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
 		assert_eq!(passes[1].state(), RenderPassState::Bypassed);
@@ -143,7 +145,9 @@ mod tests {
 		let mut states = HashMap::default();
 		let mut passes = [];
 
-		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
+			set_render_pass_state_by_name(&mut passes, name, state)
+		});
 
 		assert_eq!(pending.len(), 1);
 		assert_eq!(
@@ -152,7 +156,9 @@ mod tests {
 		);
 
 		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
-		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
+			set_render_pass_state_by_name(&mut passes, name, state)
+		});
 
 		assert_eq!(pending.len(), 0);
 		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
@@ -167,7 +173,9 @@ mod tests {
 		let mut states = HashMap::default();
 		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
 
-		apply_render_pass_configuration(&port, &mut pending, &mut states, &mut passes);
+		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
+			set_render_pass_state_by_name(&mut passes, name, state)
+		});
 
 		assert!(matches!(
 			configuration.event(event).unwrap().state(),

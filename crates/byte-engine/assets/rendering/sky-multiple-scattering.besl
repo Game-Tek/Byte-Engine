@@ -10,7 +10,7 @@ SkyParameters: struct {
 }
 
 transmittance_lut: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-multiple_scattering_lut: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+multiple_scattering_lut: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 1, access: write }>;
 parameters: descriptor<{ type: SkyParameters, binding: 2, access: read, memory: constant }>;
 
 // Light that has scattered more than once arrives from nearly every direction evenly, so its contribution depends only

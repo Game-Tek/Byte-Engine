@@ -105,4 +105,37 @@ mod tests {
 			assert_rgba_close(rgba(&result, [(index % 2) as u32, (index / 2) as u32]), expected, 0.0);
 		}
 	}
+
+	/// Lowers every program that reads or writes an R11G11B10F scene target through the platform shader compiler.
+	/// `main` is RGBA16F before the sky pass and R11G11B10F after it, so these programs declare their `main` storage
+	/// reads without a format, and the sky LUT writes name the packed format.
+	#[cfg(target_os = "macos")]
+	#[compio::test]
+	async fn packed_hdr_programs_lower_to_the_platform_shader_language() {
+		use resource_management::shader::ShaderGenerationSettings;
+		use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+		use utils::Extent;
+
+		for (name, source) in [
+			("blit_image", IMAGE_BYPASS_SHADER),
+			("srgb_display", include_str!("../../../assets/rendering/srgb-display/encode.besl")),
+			("agx_tone_mapping", include_str!("../../../assets/rendering/agx/tone-mapping.besl")),
+			("aces_tone_mapping", include_str!("../../../assets/rendering/aces/tone-mapping.besl")),
+			("ui_composite", include_str!("../../../assets/rendering/ui/composite.besl")),
+			("sky", include_str!("../../../assets/rendering/sky.besl")),
+			("sky_transmittance", include_str!("../../../assets/rendering/sky-transmittance.besl")),
+			("sky_multiple_scattering", include_str!("../../../assets/rendering/sky-multiple-scattering.besl")),
+			("sky_view", include_str!("../../../assets/rendering/sky-view.besl")),
+		] {
+			let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
+			root.add(vec![crate::rendering::common_shader_generator::CommonShaderScope::new()]);
+			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
+
+			PlatformShaderCompiler::new()
+				.generate(&settings, &root)
+				.await
+				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
+		}
+	}
 }

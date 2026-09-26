@@ -1,4 +1,4 @@
-scene: descriptor<{ type: StorageImage<rgba16f>, binding: 0, access: read }>;
+scene: descriptor<{ type: StorageImage, binding: 0, access: read }>;
 layer: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: read }>;
 result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
 

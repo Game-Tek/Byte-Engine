@@ -49,6 +49,8 @@ pub struct Renderer {
 	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
 	render_pass_writable_targets: SmallVec<[Vec<(String, ghi::ImageOrSwapchain)>; 64]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
+	scene_background_factory: Option<Box<crate::rendering::render_pass::SceneBackgroundFactory>>,
+	scene_backgrounds: SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
 	scene_presentation_copies: SmallVec<[(SinkId, crate::rendering::render_passes::blit::ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
@@ -227,6 +229,8 @@ impl Renderer {
 			render_passes_by_sink: SmallVec::with_capacity(32),
 			render_pass_writable_targets: SmallVec::with_capacity(64),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
+			scene_background_factory: None,
+			scene_backgrounds: SmallVec::new(),
 			scene_presentation_copies: SmallVec::with_capacity(16),
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
@@ -298,8 +302,10 @@ impl Renderer {
 					sink_id,
 					swapchain,
 					self.pipeline_compilation_client.clone(),
-				);
+				)
+				.with_scene_background(self.scene_background_factory.as_deref());
 				pipeline_manager.create_sink(sink_id, &mut rpb);
+				adopt_scene_backgrounds(&mut self.scene_backgrounds, rpb.take_scene_backgrounds(), &self.render_pass_states);
 				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
 				rpb.images
 					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
@@ -329,6 +335,9 @@ impl Renderer {
 				pipeline_managers,
 				pipeline_manager_attachments_by_sink,
 				pipeline_compilation_client,
+				scene_background_factory,
+				scene_backgrounds,
+				render_pass_states,
 				..
 			} = self;
 
@@ -341,8 +350,10 @@ impl Renderer {
 					sink_id,
 					swapchain,
 					pipeline_compilation_client.clone(),
-				);
+				)
+				.with_scene_background(scene_background_factory.as_deref());
 				sm.create_sink(sink_id, &mut rpb);
+				adopt_scene_backgrounds(scene_backgrounds, rpb.take_scene_backgrounds(), render_pass_states);
 				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
 				rpb.images
 					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
@@ -389,16 +400,48 @@ impl Renderer {
 		self.render_pass_states.insert(name.to_string(), state);
 		self.redraw_requested = true;
 		set_render_pass_state_by_name(&mut self.render_passes, name, state)
+			+ set_scene_background_state_by_name(&self.scene_backgrounds, name, state)
 	}
 
 	/// Applies queued render-pass configuration after passes exist and before they prepare frame work.
 	fn apply_configuration(&mut self) {
+		let Self {
+			render_passes,
+			scene_backgrounds,
+			configuration,
+			pending_configuration,
+			render_pass_states,
+			..
+		} = self;
 		apply_render_pass_configuration(
-			&self.configuration,
-			&mut self.pending_configuration,
-			&mut self.render_pass_states,
-			&mut self.render_passes,
+			configuration,
+			pending_configuration,
+			render_pass_states,
+			|name, state| {
+				set_render_pass_state_by_name(render_passes, name, state)
+					+ set_scene_background_state_by_name(scene_backgrounds, name, state)
+			},
 		);
+	}
+
+	/// Registers the scene background that every future sink's scene pipeline records between opaque and
+	/// transparent surfaces, such as an atmosphere sky.
+	///
+	/// Register it before creating a window. Its [`RenderPass::name`] controls it like a post-scene pass. A later
+	/// registration replaces an earlier one.
+	pub fn set_scene_background_for_all_sinks<F>(&mut self, factory: F)
+	where
+		F: for<'builder, 'resources> Fn(
+				&'builder mut RenderPassBuilder<'resources>,
+				crate::rendering::render_pass::SceneBackgroundTargets,
+			) -> Box<dyn RenderPass>
+			+ 'static,
+	{
+		assert!(
+			self.windows.is_empty(),
+			"Render graph is already closed. The most likely cause is that a scene background was registered after creating a window. Register it before creating the first window."
+		);
+		self.scene_background_factory = Some(Box::new(factory));
 	}
 
 	/// Registers a render pass factory that will be instantiated for every future sink.
@@ -602,6 +645,9 @@ impl Renderer {
 		// Ask every pass so each adopts its inputs this tick, even when an earlier one already answered.
 		for render_pass in &mut self.render_passes {
 			needs_frame |= render_pass.needs_frame();
+		}
+		for background in &self.scene_backgrounds {
+			needs_frame |= background.harness().needs_frame();
 		}
 		needs_frame
 	}
@@ -1150,6 +1196,40 @@ impl Renderer {
 ///
 /// A node that records commands writes its targets itself, so they are only discarded. A node that records nothing,
 /// for example while its pipeline compiles, leaves them cleared, so later nodes never read another target's memory.
+/// Keeps the scene backgrounds a scene pipeline created, starting each in the state last selected for its name.
+fn adopt_scene_backgrounds(
+	scene_backgrounds: &mut SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
+	created: Vec<crate::rendering::render_pass::SceneBackground>,
+	render_pass_states: &HashMap<String, RenderPassState>,
+) {
+	for background in created {
+		{
+			let mut harness = background.harness();
+			if let Some(state) = render_pass_states.get(harness.name()) {
+				harness.set_state(*state);
+			}
+		}
+		scene_backgrounds.push(background);
+	}
+}
+
+/// Updates every sink's scene background with the requested stable name.
+fn set_scene_background_state_by_name(
+	scene_backgrounds: &[crate::rendering::render_pass::SceneBackground],
+	name: &str,
+	state: RenderPassState,
+) -> usize {
+	let mut updated = 0;
+	for background in scene_backgrounds {
+		let mut harness = background.harness();
+		if harness.name() == name {
+			harness.set_state(state);
+			updated += 1;
+		}
+	}
+	updated
+}
+
 fn initialize_first_uses(
 	recording: &mut ghi::implementation::CommandBufferRecording,
 	first_uses: &[(SinkId, FirstUse)],

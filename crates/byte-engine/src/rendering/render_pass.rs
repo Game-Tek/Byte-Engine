@@ -175,6 +175,52 @@ impl RenderPassHarness {
 	}
 }
 
+/// Builds the pass that fills a scene's background for one sink; see [`RenderPassBuilder::create_scene_background`].
+pub type SceneBackgroundFactory = dyn for<'builder, 'resources> Fn(
+	&'builder mut RenderPassBuilder<'resources>,
+	SceneBackgroundTargets,
+) -> Box<dyn RenderPass>;
+
+/// The `SceneBackgroundTargets` struct hands a scene background the scene pipeline's own targets.
+///
+/// They belong to the scene pipeline's render node, so the background uses them directly instead of declaring them
+/// through [`RenderPassBuilder::read_from`] or [`RenderPassBuilder::render_to`].
+#[derive(Clone, Copy)]
+pub struct SceneBackgroundTargets {
+	/// The scene color, written in place wherever `depth` is at infinity.
+	pub color: ghi::BaseImageHandle,
+	/// The scene's reverse-Z depth, where `0` means no surface.
+	pub depth: ghi::BaseImageHandle,
+}
+
+/// The `SceneBackground` struct shares one sink's background pass between the scene pipeline that records it and
+/// the renderer that controls its [`RenderPassState`] by name.
+///
+/// A scene pipeline records it after opaque surfaces and before transparent ones, so transparent surfaces composite
+/// over the background inside the scene color and the scene color needs no coverage channel.
+#[derive(Clone)]
+pub struct SceneBackground(std::rc::Rc<std::cell::RefCell<RenderPassHarness>>);
+
+impl SceneBackground {
+	fn new(render_pass: Box<dyn RenderPass>) -> Self {
+		Self(std::rc::Rc::new(std::cell::RefCell::new(RenderPassHarness::new(render_pass))))
+	}
+
+	/// Prepares the active or bypass path selected by the background's state.
+	pub fn prepare<'a>(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		self.0.borrow_mut().prepare(frame, sink, frame_allocator)
+	}
+
+	pub(crate) fn harness(&self) -> std::cell::RefMut<'_, RenderPassHarness> {
+		self.0.borrow_mut()
+	}
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RenderPassExecutionPath {
 	Prepare,
@@ -210,6 +256,8 @@ pub struct RenderPassBuilder<'a> {
 	external_writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	pub(crate) images: &'a mut RenderTargets,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
+	scene_background_factory: Option<&'a SceneBackgroundFactory>,
+	created_scene_backgrounds: Vec<SceneBackground>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -232,7 +280,31 @@ impl<'a> RenderPassBuilder<'a> {
 			external_writable_targets: Vec::new(),
 			images,
 			pipeline_manager,
+			scene_background_factory: None,
+			created_scene_backgrounds: Vec::new(),
 		}
+	}
+
+	/// Lets a scene pipeline built with this builder create the registered scene background.
+	pub(crate) fn with_scene_background(mut self, factory: Option<&'a SceneBackgroundFactory>) -> Self {
+		self.scene_background_factory = factory;
+		self
+	}
+
+	/// Creates this sink's scene background, or returns `None` when the application registered none.
+	///
+	/// Scene pipelines call this with their color and depth `targets`. Record the result after opaque surfaces and
+	/// before transparent ones.
+	pub fn create_scene_background(&mut self, targets: SceneBackgroundTargets) -> Option<SceneBackground> {
+		let factory = self.scene_background_factory?;
+		let background = SceneBackground::new(factory(self, targets));
+		self.created_scene_backgrounds.push(background.clone());
+		Some(background)
+	}
+
+	/// Hands the renderer every background created through this builder so it can control their states.
+	pub(crate) fn take_scene_backgrounds(&mut self) -> Vec<SceneBackground> {
+		std::mem::take(&mut self.created_scene_backgrounds)
 	}
 
 	/// Creates the builder used for the terminal pass in one sink-local graph.

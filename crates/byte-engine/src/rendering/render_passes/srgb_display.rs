@@ -38,12 +38,12 @@ impl SrgbDisplayPass {
 		let source = render_pass_builder.read_from("main");
 		let format = render_pass_builder.format_of("main");
 		assert_eq!(
-			format,
-			crate::rendering::SCENE_COLOR_FORMAT,
-			"sRGB display encoding requires scene-linear RGBA16F input. The most likely cause is a preceding pass that replaced `main` with another format."
+			format.encoding(),
+			Some(ghi::Encodings::FloatingPoint),
+			"sRGB display encoding requires scene-linear floating-point input. The most likely cause is a preceding pass that replaced `main` with another format."
 		);
 		let destination = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name("sRGB Display Output"),
+			ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("sRGB Display Output"),
 		);
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,

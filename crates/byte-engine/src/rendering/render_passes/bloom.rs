@@ -111,7 +111,7 @@ impl BloomPass {
 		let mut pyramid_target = |name, level: usize| -> ghi::BaseImageHandle {
 			render_pass_builder
 				.create_scaled_render_target(
-					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name(name),
+					ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
 					level_divisor(level),
 				)
 				.into()

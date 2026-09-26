@@ -313,7 +313,7 @@ impl VisibilityShaderScope {
 			Node::binding("instance_index_render_target", Node::image("r32ui"), 1040, true, false),
 		];
 		let material_evaluation_bindings = vec![
-			Node::binding("lit_map", Node::image("rgba16f"), 1041, true, true),
+			Node::binding("lit_map", Node::image("r11f_g11f_b10f"), 1041, true, true),
 			Node::binding("diffuse_radiance_map", Node::image("rgba16f"), 1057, false, true),
 			// The light table outgrows constant-buffer limits, so it is a read-only storage buffer.
 			Node::device_buffer_binding(

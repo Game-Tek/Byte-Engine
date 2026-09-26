@@ -126,7 +126,7 @@ impl LensFlarePass {
 
 		// Render targets, so the renderer sizes them with the sink and each stage can be captured by name.
 		let flare_target = |name| {
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image)
+			ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
 				.name(name)
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 		};

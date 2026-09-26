@@ -68,6 +68,7 @@ pub enum Format {
 	Rgba8Unorm,
 	Rgba16Unorm,
 	Rgba16Float,
+	Rg11b10Float,
 	Depth16,
 	Depth32,
 }

@@ -37,7 +37,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
 	pub(crate) in_buffer_binding_struct: bool,
 	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
-	pub(crate) break_target: crate::shader::generator::BreakTarget,
+	pub(crate) match_break_depth: Option<usize>,
 }
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -152,7 +152,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
-			break_target: crate::shader::generator::BreakTarget::Loop,
+			match_break_depth: None,
 		}
 	}
 

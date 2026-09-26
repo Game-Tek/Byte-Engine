@@ -371,11 +371,11 @@ fn update_blocks(node: &NodeReference, update: &mut dyn FnMut(&mut Vec<NodeRefer
 					None => false,
 				}
 		}
-		Nodes::Match { arms, default, .. } => {
-			arms.iter_mut()
-				.fold(false, |changed, arm| update(&mut arm.statements) | changed)
-				| update(default)
-		}
+		Nodes::Match { arms, default, .. } => arms
+			.iter_mut()
+			.map(|arm| &mut arm.statements)
+			.chain([default])
+			.fold(false, |changed, statements| update(statements) | changed),
 		_ => false,
 	}
 }

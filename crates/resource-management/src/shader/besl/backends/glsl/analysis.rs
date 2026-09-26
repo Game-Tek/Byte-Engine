@@ -8,7 +8,7 @@ pub struct Generator {
 	pub(super) current_stage_interpolates_inputs: bool,
 	pub(super) current_stage_interpolates_outputs: bool,
 	pub(super) current_stage_supports_workgroup_storage: bool,
-	pub(super) break_target: crate::shader::generator::BreakTarget,
+	pub(super) match_break_depth: Option<usize>,
 }
 
 impl ShaderGenerator for Generator {}
@@ -21,7 +21,7 @@ impl Generator {
 			current_stage_interpolates_inputs: false,
 			current_stage_interpolates_outputs: false,
 			current_stage_supports_workgroup_storage: false,
-			break_target: crate::shader::generator::BreakTarget::Loop,
+			match_break_depth: None,
 		}
 	}
 

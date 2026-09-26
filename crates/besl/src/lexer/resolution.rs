@@ -934,6 +934,14 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 	}
 }
 
+/// Instantiates every statement of a control-flow block. See [`instantiate_intrinsic_node`].
+fn instantiate_intrinsic_block(statements: &[NodeReference], instantiation: &IntrinsicInstantiation) -> Vec<NodeReference> {
+	statements
+		.iter()
+		.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+		.collect()
+}
+
 /// Clones one structured intrinsic-body node while preserving links to caller and outer-scope nodes.
 fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicInstantiation) -> NodeReference {
 	let argument = {
@@ -965,17 +973,11 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			statements,
 			else_branch,
 		} => {
-			let instantiate_block = |statements: &[NodeReference]| {
-				statements
-					.iter()
-					.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-					.collect()
-			};
 			Node::conditional(
 				instantiate_intrinsic_node(condition, instantiation),
-				instantiate_block(statements),
+				instantiate_intrinsic_block(statements, instantiation),
 				else_branch.as_ref().map(|else_branch| match else_branch {
-					ElseBranch::Block(statements) => ElseBranch::Block(instantiate_block(statements)),
+					ElseBranch::Block(statements) => ElseBranch::Block(instantiate_intrinsic_block(statements, instantiation)),
 					ElseBranch::If(conditional) => ElseBranch::If(instantiate_intrinsic_node(conditional, instantiation)),
 				}),
 			)
@@ -986,26 +988,18 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			r#type,
 			arms,
 			default,
-		} => {
-			let instantiate_block = |statements: &[NodeReference]| {
-				statements
-					.iter()
-					.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-					.collect()
-			};
-			Node::r#match(
-				instantiate_intrinsic_node(scrutinee, instantiation),
-				r#type.clone(),
-				arms.iter()
-					.map(|arm| MatchArm {
-						values: arm.values.clone(),
-						statements: instantiate_block(&arm.statements),
-					})
-					.collect(),
-				instantiate_block(default),
-			)
-			.into()
-		}
+		} => Node::r#match(
+			instantiate_intrinsic_node(scrutinee, instantiation),
+			r#type.clone(),
+			arms.iter()
+				.map(|arm| MatchArm {
+					values: arm.values.clone(),
+					statements: instantiate_intrinsic_block(&arm.statements, instantiation),
+				})
+				.collect(),
+			instantiate_intrinsic_block(default, instantiation),
+		)
+		.into(),
 		Nodes::ForLoop {
 			initializer,
 			condition,
@@ -1015,10 +1009,7 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			instantiate_intrinsic_node(initializer, instantiation),
 			instantiate_intrinsic_node(condition, instantiation),
 			instantiate_intrinsic_node(update, instantiation),
-			statements
-				.iter()
-				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-				.collect(),
+			instantiate_intrinsic_block(statements, instantiation),
 		)
 		.into(),
 		Nodes::Raw {

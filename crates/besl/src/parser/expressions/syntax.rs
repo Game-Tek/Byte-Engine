@@ -546,15 +546,8 @@ pub(crate) fn parse_match<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 		let (patterns, next_iterator) = parse_match_patterns(iterator)?;
 		iterator = next_iterator;
 
-		if iterator.as_slice().first() == Some(&"if") {
-			return Err(ParsingFailReasons::BadSyntax {
-				message: "Match guards are not supported. The most likely cause is an `if` condition after a match pattern."
-					.to_string(),
-			});
-		}
-
 		iterator.next_str("=>").map_err(|_| ParsingFailReasons::BadSyntax {
-			message: "Expected `=>` after a match pattern. The most likely cause is a pattern BESL can't match, such as a range or a binding."
+			message: "Expected `=>` after a match pattern. The most likely cause is a match guard or a pattern BESL can't match, such as a range or a binding."
 				.to_string(),
 		})?;
 

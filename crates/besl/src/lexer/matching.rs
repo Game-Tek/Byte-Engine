@@ -23,21 +23,23 @@ pub(super) struct MatchDomain {
 
 impl MatchDomain {
 	/// Returns the domain of a scrutinee type, or an error when BESL can't match that type yet.
-	pub(super) fn of(type_name: Option<&str>) -> Result<Self, LexError> {
-		let (type_name, minimum, maximum) = match type_name {
+	pub(super) fn of(r#type: Option<&NodeReference>) -> Result<Self, LexError> {
+		let Some(r#type) = r#type else {
+			return Err(error(format!(
+				"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {MATCH_DOCUMENTATION}."
+			)));
+		};
+
+		let (type_name, minimum, maximum) = match r#type.borrow().get_name() {
 			Some("bool") => ("bool", 0, 1),
 			Some("u8") => ("u8", 0, u8::MAX.into()),
 			Some("u16") => ("u16", 0, u16::MAX.into()),
 			Some("u32") => ("u32", 0, u32::MAX.into()),
 			Some("i32") => ("i32", i32::MIN.into(), i32::MAX.into()),
-			Some(other) => {
+			other => {
 				return Err(error(format!(
-					"Can't match on a value of type `{other}`. The most likely cause is a scrutinee that isn't a `bool`, `u8`, `u16`, `u32`, or `i32` value. See {MATCH_DOCUMENTATION}."
-				)));
-			}
-			None => {
-				return Err(error(format!(
-					"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {MATCH_DOCUMENTATION}."
+					"Can't match on a value of type `{}`. The most likely cause is a scrutinee that isn't a `bool`, `u8`, `u16`, `u32`, or `i32` value. See {MATCH_DOCUMENTATION}.",
+					other.unwrap_or("unnamed")
 				)));
 			}
 		};
@@ -56,15 +58,13 @@ impl MatchDomain {
 			return Ok(None);
 		};
 
-		let magnitude = match (self.type_name, value) {
-			("bool", "false") if !negative => Some(0),
-			("bool", "true") if !negative => Some(1),
-			("bool", _) => None,
+		let magnitude = match value {
+			// Only signed types accept a leading `-`.
+			_ if negative && self.minimum == 0 => None,
+			"false" | "true" if self.type_name == "bool" => Some(i64::from(value == "true")),
+			_ if self.type_name == "bool" => None,
 			// Integer literals are plain decimal digits. A value too large for `i64` is out of every range.
-			(_, value) if !negative || self.minimum < 0 => value
-				.bytes()
-				.all(|byte| byte.is_ascii_digit())
-				.then(|| value.parse::<i64>().unwrap_or(i64::MAX)),
+			_ if value.bytes().all(|byte| byte.is_ascii_digit()) => Some(value.parse().unwrap_or(i64::MAX)),
 			_ => None,
 		};
 		let Some(magnitude) = magnitude else {
@@ -84,11 +84,6 @@ impl MatchDomain {
 		}
 
 		Ok(Some(value))
-	}
-
-	/// Returns how many distinct values the type holds.
-	fn cardinality(&self) -> u64 {
-		self.maximum.abs_diff(self.minimum) + 1
 	}
 }
 
@@ -117,14 +112,9 @@ pub(super) fn normalize_arms(
 		}
 	}
 
-	if seen.len() as u64 != domain.cardinality() {
-		let missing = match domain.type_name {
-			"bool" if seen.contains(&0) => "`true`".to_string(),
-			"bool" if seen.contains(&1) => "`false`".to_string(),
-			_ => "some values".to_string(),
-		};
+	if seen.len() as u64 != domain.maximum.abs_diff(domain.minimum) + 1 {
 		return Err(error(format!(
-			"Non-exhaustive match on `{}`: {missing} not covered. The most likely cause is a missing `_` arm. See {MATCH_DOCUMENTATION}.",
+			"Non-exhaustive match on `{}`. The most likely cause is a missing `_` arm for the values no other arm lists. See {MATCH_DOCUMENTATION}.",
 			domain.type_name
 		)));
 	}

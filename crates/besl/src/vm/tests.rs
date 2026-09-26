@@ -2270,18 +2270,15 @@ fn executable_program_executes_else_chains() {
 	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(221));
 }
 
-/// Builds a root with a read-write buffer at slot 25 whose members are the given `u32` fields.
-fn root_with_u32_buffer(members: &[&str]) -> Node {
+/// Runs `script` with a read-write `buff` buffer at slot 25 that holds one `u32` member, `sum`, and returns it.
+fn run_sum_program(script: &str) -> Value {
 	let mut root = Node::root();
 	let u32_type = root.get_child("u32").expect("Expected u32");
 	root.add_child(
 		Node::binding(
 			"buff",
 			BindingTypes::Buffer {
-				members: members
-					.iter()
-					.map(|name| Node::member(name, u32_type.clone()).into())
-					.collect(),
+				members: vec![Node::member("sum", u32_type).into()],
 			},
 			25,
 			true,
@@ -2289,12 +2286,8 @@ fn root_with_u32_buffer(members: &[&str]) -> Node {
 		)
 		.into(),
 	);
-	root
-}
 
-/// Runs `script` against [`root_with_u32_buffer`] and returns the buffer's `sum` member.
-fn run_sum_program(script: &str) -> Value {
-	let executable = compile_test_program(script, Some(root_with_u32_buffer(&["sum"])));
+	let executable = compile_test_program(script, Some(root));
 	let slot = ResourceSlot::new(25);
 	let mut buffer = buffer_for_slot(&executable, slot);
 	run_with_buffer(&executable, slot, &mut buffer);

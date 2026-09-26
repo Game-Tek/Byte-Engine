@@ -285,13 +285,9 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		}
 		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => find_descendant(r#type, child_name, mode),
 		Nodes::Function { params, statements, .. } => find_in_function(params, statements, child_name, mode),
-		Nodes::Conditional {
-			condition,
-			statements,
-			else_statements,
-		} if mode == DescendantSearch::NonIntrinsic => find_descendant(condition, child_name, mode)
-			.or_else(|| find_in_descendants(statements, child_name, mode))
-			.or_else(|| find_in_descendants(else_statements, child_name, mode)),
+		conditional @ Nodes::Conditional { .. } if mode == DescendantSearch::NonIntrinsic => conditional
+			.conditional_children()
+			.find_map(|child| find_descendant(child, child_name, mode)),
 		Nodes::ForLoop {
 			initializer,
 			condition,
@@ -873,14 +869,9 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		Nodes::Conditional {
-			condition,
-			statements,
-			else_statements,
-		} => {
-			collect_intrinsic_local_declarations(condition, declarations);
-			for statement in statements.iter().chain(else_statements) {
-				collect_intrinsic_local_declarations(statement, declarations);
+		conditional @ Nodes::Conditional { .. } => {
+			for child in conditional.conditional_children() {
+				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
 		Nodes::ForLoop {
@@ -946,17 +937,19 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			condition,
 			statements,
 			else_statements,
-		} => Node::conditional(
-			instantiate_intrinsic_node(condition, instantiation),
-			statements
-				.iter()
-				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-				.collect(),
-			else_statements
-				.iter()
-				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-				.collect(),
-		)
+		} => {
+			let instantiate_block = |statements: &[NodeReference]| {
+				statements
+					.iter()
+					.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+					.collect()
+			};
+			Node::conditional(
+				instantiate_intrinsic_node(condition, instantiation),
+				instantiate_block(statements),
+				instantiate_block(else_statements),
+			)
+		}
 		.into(),
 		Nodes::ForLoop {
 			initializer,

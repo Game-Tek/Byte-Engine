@@ -509,14 +509,9 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 				build_bindings(bindings, statement, state);
 			}
 		}
-		besl::Nodes::Conditional {
-			condition,
-			statements,
-			else_statements,
-		} => {
-			build_bindings(bindings, condition, state);
-			for statement in statements.iter().chain(else_statements) {
-				build_bindings(bindings, statement, state);
+		conditional @ besl::Nodes::Conditional { .. } => {
+			for child in conditional.conditional_children() {
+				build_bindings(bindings, child, state);
 			}
 		}
 		besl::Nodes::ForLoop {

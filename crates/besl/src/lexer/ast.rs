@@ -1098,17 +1098,7 @@ impl Node {
 			| Nodes::Struct { fields: children, .. }
 			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
 			Nodes::Function { statements, .. } => Some(statements.clone()),
-			Nodes::Conditional {
-				condition,
-				statements,
-				else_statements,
-			} => {
-				let mut children = Vec::with_capacity(statements.len() + else_statements.len() + 1);
-				children.push(condition.clone());
-				children.extend(statements.iter().cloned());
-				children.extend(else_statements.iter().cloned());
-				Some(children)
-			}
+			Nodes::Conditional { .. } => Some(self.node.conditional_children().cloned().collect()),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -1279,6 +1269,21 @@ pub enum Nodes {
 }
 
 impl Nodes {
+	/// Iterates the condition, then the `if` statements, then the `else` statements of a [`Nodes::Conditional`].
+	/// Use it in AST walkers that treat every part of an `if` statement alike, so they don't list its fields by hand.
+	/// Returns an empty iterator for other nodes.
+	pub fn conditional_children(&self) -> impl Iterator<Item = &NodeReference> {
+		let (condition, statements, else_statements): (_, &[_], &[_]) = match self {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => (Some(condition), statements, else_statements),
+			_ => (None, &[], &[]),
+		};
+		condition.into_iter().chain(statements).chain(else_statements)
+	}
+
 	pub fn is_leaf(&self) -> bool {
 		match self {
 			Nodes::Function { .. } => false,

@@ -422,15 +422,7 @@ impl Generator {
 			let node = node.borrow();
 			match node.node() {
 				besl::Nodes::Function { statements, .. } => statements.clone(),
-				besl::Nodes::Conditional {
-					condition,
-					statements,
-					else_statements,
-				} => {
-					let mut children = vec![condition.clone()];
-					children.extend(statements.iter().chain(else_statements).cloned());
-					children
-				}
+				conditional @ besl::Nodes::Conditional { .. } => conditional.conditional_children().cloned().collect(),
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,
@@ -468,17 +460,9 @@ impl Generator {
 		let node = node.borrow();
 		match node.node() {
 			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-			besl::Nodes::Conditional {
-				condition,
-				statements,
-				else_statements,
-			} => {
-				Self::has_unsupported_hlsl_atomic_context(condition)
-					|| statements
-						.iter()
-						.chain(else_statements)
-						.any(Self::has_unsupported_hlsl_atomic_context)
-			}
+			conditional @ besl::Nodes::Conditional { .. } => conditional
+				.conditional_children()
+				.any(Self::has_unsupported_hlsl_atomic_context),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

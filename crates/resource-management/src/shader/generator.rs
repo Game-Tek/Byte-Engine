@@ -774,7 +774,9 @@ pub(crate) trait NodeEmitter {
 			return;
 		}
 
-		string.push_str(if self.minified() { "}else" } else { "} else" });
+		string.push('}');
+		string.push_str(formatting.space_str());
+		string.push_str("else");
 
 		// A lone nested conditional is an `else if` chain, so it is emitted without an extra block.
 		if let [nested] = else_statements
@@ -789,7 +791,9 @@ pub(crate) trait NodeEmitter {
 			return;
 		}
 
-		string.push_str(if self.minified() { "{" } else { " {\n" });
+		string.push_str(formatting.space_str());
+		string.push('{');
+		string.push_str(formatting.break_str());
 		self.emit_function_statement_block(string, else_statements, 1);
 		self.emit_block_end(string);
 	}

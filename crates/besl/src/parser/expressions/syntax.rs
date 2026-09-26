@@ -359,10 +359,10 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 	let (statements, mut iterator) = parse_block(iterator)?;
 
 	// An `else if` chain nests the following conditional as the only statement of the else branch.
-	let else_statements = if iterator.clone().next().is_some_and(|token| *token == "else") {
+	let else_statements = if iterator.as_slice().first() == Some(&"else") {
 		iterator.next();
 
-		if iterator.clone().next().is_some_and(|token| *token == "if") {
+		if iterator.as_slice().first() == Some(&"if") {
 			let (conditional, new_iterator) = parse_conditional(iterator)?;
 			iterator = new_iterator;
 			vec![conditional]

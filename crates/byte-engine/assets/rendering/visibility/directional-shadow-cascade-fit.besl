@@ -38,9 +38,7 @@ CascadeSizeSteps: struct {
 	steps: u32[4],
 }
 
-// BESL resolves a binding named like its own member to the previous statement's access after a store, so this binding
-// of the shared `views` buffer takes another name.
-cascade_views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
+views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
 receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_write, memory: device }>;
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
 cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
@@ -127,32 +125,31 @@ main: fn (input: StageInput) -> void {
 				1.0 - (frame.w - front_shift) / depth_range
 			);
 			let view_index: u32 = cascade + 1;
-			// BESL confuses a local named like a struct field with that field, so these names differ from View's.
-			let frustum_view_projection: mat4f = cascade_views.views[view_index].view_projection;
-			let frustum_world_to_light: mat4x3f = cascade_views.views[view_index].view;
-			let frustum_light_to_world: mat4x3f = cascade_views.views[view_index].inverse_view;
-			cascade_views.views[view_index].view_projection = mat4f(
-				refit_column(frustum_view_projection[0], scale, offset),
-				refit_column(frustum_view_projection[1], scale, offset),
-				refit_column(frustum_view_projection[2], scale, offset),
-				refit_column(frustum_view_projection[3], scale, offset)
+			let view_projection: mat4f = views.views[view_index].view_projection;
+			let view: mat4x3f = views.views[view_index].view;
+			let inverse_view: mat4x3f = views.views[view_index].inverse_view;
+			views.views[view_index].view_projection = mat4f(
+				refit_column(view_projection[0], scale, offset),
+				refit_column(view_projection[1], scale, offset),
+				refit_column(view_projection[2], scale, offset),
+				refit_column(view_projection[3], scale, offset)
 			);
 			// The inverse view's first three columns are the light's axes in world space, so moving the view along them
 			// moves its world-space origin by those axes and its light-space origin by the shift itself.
-			cascade_views.views[view_index].view = mat4x3f(
-				frustum_world_to_light[0],
-				frustum_world_to_light[1],
-				frustum_world_to_light[2],
-				frustum_world_to_light[3] - shift
+			views.views[view_index].view = mat4x3f(
+				view[0],
+				view[1],
+				view[2],
+				view[3] - shift
 			);
-			cascade_views.views[view_index].inverse_view = mat4x3f(
-				frustum_light_to_world[0],
-				frustum_light_to_world[1],
-				frustum_light_to_world[2],
-				frustum_light_to_world[3]
-					+ frustum_light_to_world[0] * shift.x
-					+ frustum_light_to_world[1] * shift.y
-					+ frustum_light_to_world[2] * shift.z
+			views.views[view_index].inverse_view = mat4x3f(
+				inverse_view[0],
+				inverse_view[1],
+				inverse_view[2],
+				inverse_view[3]
+					+ inverse_view[0] * shift.x
+					+ inverse_view[1] * shift.y
+					+ inverse_view[2] * shift.z
 			);
 		}
 	}

@@ -540,3 +540,160 @@ fn compile_error(source: &str, root: Node) -> VmError {
 		Err(error) => error,
 	}
 }
+
+#[test]
+fn bindings_named_like_their_member_stay_rooted_after_a_store() {
+	let program = compile_to_besl(
+		r#"
+		View: struct { near: f32, far: f32, }
+		Views: struct { views: View[2], }
+		views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
+		main: fn () -> void {
+			let i: u32 = 1;
+			views.views[i].near = views.views[0].near;
+			views.views[i].far = views.views[0].far;
+		}
+		"#,
+		None,
+	)
+	.expect("Expected a binding named like its member to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected stores through a member-named binding to compile");
+	let views_slot = ResourceSlot::new(0);
+	let mut views = Buffer::new(executable.buffer_layout(views_slot).expect("Expected views layout").clone());
+	views
+		.write_indexed_field("views", 0, "near", Value::F32(0.5))
+		.expect("Expected near plane write");
+	views
+		.write_indexed_field("views", 0, "far", Value::F32(100.0))
+		.expect("Expected far plane write");
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(views_slot, &mut views);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected stores through a member-named binding to execute");
+
+	assert_eq!(
+		views.read_indexed_field("views", 1, "near").expect("Expected near plane"),
+		Value::F32(0.5)
+	);
+	assert_eq!(
+		views.read_indexed_field("views", 1, "far").expect("Expected far plane"),
+		Value::F32(100.0)
+	);
+}
+
+/// Runs a program whose `main` returns one `value` output and returns that value.
+fn run_value_output(source: &str) -> Value {
+	let program = compile_to_besl(source, None).expect("Expected value-output source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected value-output source to compile");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected value-output source to execute");
+
+	output.read("_besl_output_value").expect("Expected output value")
+}
+
+#[test]
+fn locals_named_like_vector_components_keep_their_own_values() {
+	let value = run_value_output(
+		r#"
+		main: fn () -> output { value: f32 } {
+			let x: f32 = 10.0;
+			let y: f32 = 20.0;
+			let point: vec2f = vec2f(1.0, 2.0);
+			let value: f32 = point.x + point.y + x + y;
+			return { value };
+		}
+		"#,
+	);
+
+	assert_eq!(value, Value::F32(33.0));
+}
+
+#[test]
+fn stores_to_local_members_change_only_that_member() {
+	let vector = run_value_output(
+		r#"
+		main: fn () -> output { value: vec2f } {
+			let value: vec2f = vec2f(1.0, 2.0);
+			value.x = 5.0;
+			return { value };
+		}
+		"#,
+	);
+	let nested = run_value_output(
+		r#"
+		Probe: struct { weight: f32, position: vec3f, }
+		main: fn () -> output { value: vec3f } {
+			let probe: Probe = Probe(1.0, vec3f(2.0, 3.0, 4.0));
+			probe.position.z = probe.weight + 8.0;
+			probe.weight = 0.0;
+			let value: vec3f = probe.position;
+			return { value };
+		}
+		"#,
+	);
+	let parameter = run_value_output(
+		r#"
+		raise: fn (point: vec2f) -> vec2f {
+			point.y = point.y + 1.0;
+			return point;
+		}
+		main: fn () -> output { value: vec2f } {
+			let value: vec2f = raise(vec2f(1.0, 2.0));
+			return { value };
+		}
+		"#,
+	);
+
+	let matrix = run_value_output(
+		r#"
+		main: fn () -> output { value: vec4f } {
+			let basis: mat4f = mat4f(
+				vec4f(1.0, 0.0, 0.0, 0.0),
+				vec4f(0.0, 1.0, 0.0, 0.0),
+				vec4f(0.0, 0.0, 1.0, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			basis.y.x = 6.0;
+			let value: vec4f = basis.y;
+			return { value };
+		}
+		"#,
+	);
+
+	assert_eq!(vector, Value::Vec2F([5.0, 2.0]));
+	assert_eq!(matrix, Value::Vec4F([6.0, 1.0, 0.0, 0.0]));
+	assert_eq!(nested, Value::Vec3F([2.0, 3.0, 9.0]));
+	assert_eq!(parameter, Value::Vec2F([1.0, 3.0]));
+}
+
+#[test]
+fn call_results_expose_their_members() {
+	let intrinsic = run_value_output(
+		r#"
+		main: fn () -> output { value: f32 } {
+			let value: f32 = normalize(vec2f(3.0, 4.0)).x;
+			return { value };
+		}
+		"#,
+	);
+	let function = run_value_output(
+		r#"
+		Probe: struct { weight: f32, position: vec2f, }
+		make: fn () -> Probe { return Probe(1.0, vec2f(2.0, 3.0)); }
+		main: fn () -> output { value: f32 } {
+			let value: f32 = make().position.y;
+			return { value };
+		}
+		"#,
+	);
+
+	assert_eq!(intrinsic, Value::F32(0.6));
+	assert_eq!(function, Value::F32(3.0));
+}

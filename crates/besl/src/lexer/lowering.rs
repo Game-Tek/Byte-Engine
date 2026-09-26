@@ -504,13 +504,18 @@ pub(super) fn lex_parsed_node(
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?;
 
-					let right = {
-						let left = left.clone();
-
-						let mut chain = chain.clone();
-						chain.push(left); // Add left to chain to be able to access its members
-
-						lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?
+					// A name after `.` lives in the member namespace of the left side's type, so a local,
+					// binding, or field with the same name elsewhere in scope never shadows it.
+					// An index after `[` is an ordinary expression in the enclosing scope.
+					let right = match &right.node {
+						parser::Nodes::Expression(parser::Expressions::Member { name }) => {
+							Node::expression(Expressions::Member {
+								source: resolve_accessed_member(&left, name)?,
+								name: name.to_string(),
+							})
+							.into()
+						}
+						_ => lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?,
 					};
 					if super::resolution::is_array_texture_reference(&left)
 						&& !super::resolution::infer_expression_type(&right)

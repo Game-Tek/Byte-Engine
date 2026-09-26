@@ -532,6 +532,7 @@ impl ExecutableProgram {
 			| Instruction::LoadResourceIndexed { .. }
 			| Instruction::Construct { .. }
 			| Instruction::Extract { .. }
+			| Instruction::Insert { .. }
 			| Instruction::ExtractDynamic { .. } => {
 				Self::execute_value_instruction(instruction, &mut frame.registers, &mut frame.constructor_values)?;
 				Ok(InstructionProgress::Advance)
@@ -677,6 +678,16 @@ impl ExecutableProgram {
 			} => {
 				let source = read_register(registers, *source)?;
 				registers[*register] = Some(extract_value(&source, *index, value_type)?);
+			}
+			Instruction::Insert {
+				register,
+				source,
+				index,
+				value,
+			} => {
+				let mut aggregate = read_register(registers, *source)?;
+				insert_value(&mut aggregate, *index, read_register(registers, *value)?)?;
+				registers[*register] = Some(aggregate);
 			}
 			Instruction::ExtractDynamic {
 				register,

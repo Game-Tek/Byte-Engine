@@ -26,6 +26,13 @@ pub(super) enum Instruction {
 		index: usize,
 		value_type: ValueType,
 	},
+	/// Copies `source` with the member at `index` replaced by `value`, the inverse of `Extract`.
+	Insert {
+		register: usize,
+		source: usize,
+		index: usize,
+		value: usize,
+	},
 	ExtractDynamic {
 		register: usize,
 		source: usize,

@@ -486,12 +486,9 @@ impl Generator {
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional {
 				statements,
-				else_statements,
+				else_branch: None,
 				..
-			} if self.current_stage == HlslStage::Mesh
-				&& else_statements.is_empty()
-				&& Self::mesh_output_count_arguments(statements).is_some() =>
-			{
+			} if self.current_stage == HlslStage::Mesh && Self::mesh_output_count_arguments(statements).is_some() => {
 				let (vertices, primitives) = Self::mesh_output_count_arguments(statements).unwrap();
 				// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
 				string.push_str("SetMeshOutputCounts(");
@@ -503,8 +500,8 @@ impl Generator {
 			besl::Nodes::Conditional {
 				condition,
 				statements,
-				else_statements,
-			} => self.emit_conditional_node(string, condition, statements, else_statements),
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

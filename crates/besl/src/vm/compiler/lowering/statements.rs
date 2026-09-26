@@ -12,13 +12,13 @@ impl<'a> Compiler<'a> {
 			Nodes::Conditional {
 				condition,
 				statements,
-				else_statements,
+				else_branch,
 			} => {
 				let condition = condition.clone();
 				let statements = statements.clone();
-				let else_statements = else_statements.clone();
+				let else_branch = else_branch.clone();
 				drop(borrowed);
-				self.compile_conditional(&condition, &statements, &else_statements, descriptor_layouts)
+				self.compile_conditional(&condition, &statements, else_branch.as_ref(), descriptor_layouts)
 			}
 			Nodes::ForLoop {
 				initializer,
@@ -114,7 +114,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		condition: &NodeReference,
 		statements: &[NodeReference],
-		else_statements: &[NodeReference],
+		else_branch: Option<&crate::ElseBranch>,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
@@ -129,14 +129,13 @@ impl<'a> Compiler<'a> {
 		}
 
 		// With an else branch, the then branch jumps over it. Without one, no extra jump is emitted.
-		let else_start = if else_statements.is_empty() {
-			self.instructions.len()
-		} else {
+		let else_start = if let Some(else_branch) = else_branch {
 			let jump_index = self.instructions.len();
 			self.instructions.push(Instruction::Jump { target: usize::MAX });
 			let else_start = self.instructions.len();
 
-			for statement in else_statements {
+			// An `else if` link compiles as one nested conditional statement.
+			for statement in else_branch.statements() {
 				self.compile_statement(statement, descriptor_layouts)?;
 			}
 
@@ -147,6 +146,8 @@ impl<'a> Compiler<'a> {
 			}
 
 			else_start
+		} else {
+			self.instructions.len()
 		};
 
 		match &mut self.instructions[jump_if_zero_index] {

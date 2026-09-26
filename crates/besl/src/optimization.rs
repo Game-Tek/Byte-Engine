@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{Expressions, NodeReference, Nodes, Operators};
+use crate::{ElseBranch, Expressions, NodeReference, Nodes, Operators};
 
 /// The `OptimizationReport` struct describes the portable BESL code removed by [`optimize`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -159,7 +159,7 @@ fn collect_called_functions_in_expression(
 
 /// Removes statements that cannot execute after a terminator in the same block.
 fn cull_unreachable_statements(function: &NodeReference, report: &mut OptimizationReport) -> bool {
-	update_blocks(function, |statements| {
+	update_blocks(function, &mut |statements| {
 		cull_unreachable_statements_in_block(statements, report)
 	})
 }
@@ -174,7 +174,7 @@ fn cull_unreachable_statements_in_block(statements: &mut Vec<NodeReference>, rep
 	}
 
 	for statement in statements.iter() {
-		changed |= update_blocks(statement, |statements| {
+		changed |= update_blocks(statement, &mut |statements| {
 			cull_unreachable_statements_in_block(statements, report)
 		});
 	}
@@ -222,12 +222,12 @@ fn collect_local_declaration_candidates(statements: &[NodeReference], candidates
 
 		match cloned_node(statement) {
 			Nodes::Conditional {
-				statements,
-				else_statements,
-				..
+				statements, else_branch, ..
 			} => {
 				collect_local_declaration_candidates(&statements, candidates);
-				collect_local_declaration_candidates(&else_statements, candidates);
+				if let Some(else_branch) = else_branch {
+					collect_local_declaration_candidates(else_branch.statements(), candidates);
+				}
 			}
 			Nodes::ForLoop { statements, .. } => {
 				collect_local_declaration_candidates(&statements, candidates);
@@ -326,7 +326,7 @@ fn uses_declaration_in_expression(expression: &Expressions, declaration: &NodeRe
 
 fn remove_statements(function: &NodeReference, removals: &HashSet<usize>) -> usize {
 	let mut removed = 0;
-	update_blocks(function, |statements| {
+	update_blocks(function, &mut |statements| {
 		remove_statements_in_block(statements, removals, &mut removed)
 	});
 	removed
@@ -340,7 +340,7 @@ fn remove_statements_in_block(statements: &mut Vec<NodeReference>, removals: &Ha
 	let mut changed = length != statements.len();
 
 	for statement in statements.iter() {
-		changed |= update_blocks(statement, |statements| {
+		changed |= update_blocks(statement, &mut |statements| {
 			remove_statements_in_block(statements, removals, removed)
 		});
 	}
@@ -348,17 +348,22 @@ fn remove_statements_in_block(statements: &mut Vec<NodeReference>, removals: &Ha
 	changed
 }
 
-/// Applies `update` in place to each statement block that `node` owns. Returns whether any block changed.
-/// Nodes without statement blocks are left untouched.
-fn update_blocks(node: &NodeReference, mut update: impl FnMut(&mut Vec<NodeReference>) -> bool) -> bool {
+/// Applies `update` in place to each statement block that `node` owns, including the blocks of `else if` links.
+/// Returns whether any block changed. Nodes without statement blocks are left untouched.
+fn update_blocks(node: &NodeReference, update: &mut dyn FnMut(&mut Vec<NodeReference>) -> bool) -> bool {
 	// `update` only borrows the block's statements, which are separate nodes, so holding this borrow is safe.
 	match node.borrow_mut().node_mut() {
 		Nodes::Function { statements, .. } | Nodes::ForLoop { statements, .. } => update(statements),
 		Nodes::Conditional {
-			statements,
-			else_statements,
-			..
-		} => update(statements) | update(else_statements),
+			statements, else_branch, ..
+		} => {
+			update(statements)
+				| match else_branch {
+					Some(ElseBranch::Block(statements)) => update(statements),
+					Some(ElseBranch::If(conditional)) => update_blocks(conditional, update),
+					None => false,
+				}
+		}
 		_ => false,
 	}
 }

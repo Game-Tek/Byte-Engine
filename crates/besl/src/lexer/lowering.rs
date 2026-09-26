@@ -323,14 +323,24 @@ pub(super) fn lex_parsed_node(
 		parser::Nodes::Conditional {
 			condition,
 			statements,
-			else_statements,
+			else_branch,
 		} => {
 			let condition = lex_parsed_node(chain.clone(), condition, next_intrinsic_expansion_id)?;
 			// Each branch gets its own scope, so declarations in one branch are not visible in the other.
 			let statements = lex_block(chain.clone(), statements, next_intrinsic_expansion_id)?;
-			let else_statements = lex_block(chain, else_statements, next_intrinsic_expansion_id)?;
+			let else_branch = match else_branch {
+				Some(parser::ElseBranch::Block(statements)) => {
+					Some(ElseBranch::Block(lex_block(chain, statements, next_intrinsic_expansion_id)?))
+				}
+				Some(parser::ElseBranch::If(conditional)) => Some(ElseBranch::If(lex_parsed_node(
+					chain,
+					conditional,
+					next_intrinsic_expansion_id,
+				)?)),
+				None => None,
+			};
 
-			Node::conditional(condition, statements, else_statements).into()
+			Node::conditional(condition, statements, else_branch).into()
 		}
 		parser::Nodes::ForLoop {
 			initializer,

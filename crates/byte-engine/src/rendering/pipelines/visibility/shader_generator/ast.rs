@@ -1,6 +1,6 @@
 //! Parser-tree transforms applied to an authored material `main` before linking.
 
-use besl::parser::{Expressions, Node, Nodes, TypeName};
+use besl::parser::{ElseBranch, Expressions, Node, Nodes, TypeName};
 
 use super::sources::*;
 
@@ -36,12 +36,12 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 		Nodes::Conditional {
 			condition,
 			statements,
-			else_statements,
+			else_branch,
 		} => {
 			walk_expressions(condition, visit);
 			statements
 				.iter_mut()
-				.chain(else_statements)
+				.chain(else_branch.as_mut().map_or(&mut [][..], ElseBranch::statements_mut))
 				.for_each(|statement| walk_expressions(statement, visit));
 		}
 		Nodes::ForLoop {

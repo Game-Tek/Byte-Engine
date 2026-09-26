@@ -342,8 +342,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Conditional {
 				condition,
 				statements,
-				else_statements,
-			} => self.emit_conditional_node(string, condition, statements, else_statements),
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

@@ -936,7 +936,7 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 		Nodes::Conditional {
 			condition,
 			statements,
-			else_statements,
+			else_branch,
 		} => {
 			let instantiate_block = |statements: &[NodeReference]| {
 				statements
@@ -947,7 +947,10 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			Node::conditional(
 				instantiate_intrinsic_node(condition, instantiation),
 				instantiate_block(statements),
-				instantiate_block(else_statements),
+				else_branch.as_ref().map(|else_branch| match else_branch {
+					ElseBranch::Block(statements) => ElseBranch::Block(instantiate_block(statements)),
+					ElseBranch::If(conditional) => ElseBranch::If(instantiate_intrinsic_node(conditional, instantiation)),
+				}),
 			)
 		}
 		.into(),

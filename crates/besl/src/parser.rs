@@ -8,7 +8,9 @@ mod expressions;
 mod iterator;
 
 pub(crate) use declarations::parse;
-pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName};
+pub use declarations::{
+	ElseBranch, Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName,
+};
 #[cfg(test)]
 use expressions::*;
 pub use iterator::ProgramState;
@@ -1008,25 +1010,21 @@ main: fn () -> void {
 		};
 		let Nodes::Conditional {
 			statements,
-			else_statements,
+			else_branch: Some(ElseBranch::If(nested)),
 			..
 		} = &statements[0].node
 		else {
-			panic!("Expected conditional");
+			panic!("Expected conditional with an else-if link");
 		};
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
 
-		// `else if` nests the next conditional as the only statement of the else branch.
-		let [nested] = else_statements.as_slice() else {
-			panic!("Expected one nested conditional in the else branch");
-		};
 		let Nodes::Conditional {
 			statements,
-			else_statements,
+			else_branch: Some(ElseBranch::Block(else_statements)),
 			..
 		} = &nested.node
 		else {
-			panic!("Expected nested conditional");
+			panic!("Expected nested conditional with an else block");
 		};
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
 		assert!(matches!(else_statements[0].node, Nodes::Expression(Expressions::Continue)));

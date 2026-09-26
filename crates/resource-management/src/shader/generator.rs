@@ -761,7 +761,7 @@ pub(crate) trait NodeEmitter {
 		string: &mut String,
 		condition: &besl::NodeReference,
 		statements: &[besl::NodeReference],
-		else_statements: &[besl::NodeReference],
+		else_branch: Option<&besl::ElseBranch>,
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("if(");
@@ -769,33 +769,38 @@ pub(crate) trait NodeEmitter {
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
 
-		if else_statements.is_empty() {
+		let Some(else_branch) = else_branch else {
 			self.emit_block_end(string);
 			return;
-		}
+		};
 
 		string.push('}');
 		string.push_str(formatting.space_str());
 		string.push_str("else");
 
-		// A lone nested conditional is an `else if` chain, so it is emitted without an extra block.
-		if let [nested] = else_statements
-			&& let besl::Nodes::Conditional {
-				condition,
-				statements,
-				else_statements,
-			} = nested.borrow().node()
-		{
-			string.push(' ');
-			self.emit_conditional_node(string, condition, statements, else_statements);
-			return;
+		match else_branch {
+			besl::ElseBranch::Block(else_statements) => {
+				string.push_str(formatting.space_str());
+				string.push('{');
+				string.push_str(formatting.break_str());
+				self.emit_function_statement_block(string, else_statements, 1);
+				self.emit_block_end(string);
+			}
+			besl::ElseBranch::If(conditional) => {
+				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
+				let conditional = conditional.borrow();
+				let besl::Nodes::Conditional {
+					condition,
+					statements,
+					else_branch,
+				} = conditional.node()
+				else {
+					unreachable!("An `else if` link always holds a conditional node");
+				};
+				string.push(' ');
+				self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
+			}
 		}
-
-		string.push_str(formatting.space_str());
-		string.push('{');
-		string.push_str(formatting.break_str());
-		self.emit_function_statement_block(string, else_statements, 1);
-		self.emit_block_end(string);
 	}
 
 	fn emit_for_loop_node(

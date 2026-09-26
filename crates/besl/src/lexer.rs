@@ -9,7 +9,8 @@ mod resolution;
 use std::{cell::RefCell, num::NonZeroUsize};
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, Expressions, LexError, Node, NodeReference, Nodes, Operators, ParentNodeReference,
+	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, LexError, Node, NodeReference, Nodes, Operators,
+	ParentNodeReference,
 };
 pub(crate) use ast::{lex, lex_with_root};
 #[cfg(test)]

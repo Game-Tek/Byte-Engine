@@ -358,24 +358,23 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 
 	let (statements, mut iterator) = parse_block(iterator)?;
 
-	// An `else if` chain nests the following conditional as the only statement of the else branch.
-	let else_statements = if iterator.as_slice().first() == Some(&"else") {
+	let else_branch = if iterator.as_slice().first() == Some(&"else") {
 		iterator.next();
 
 		if iterator.as_slice().first() == Some(&"if") {
 			let (conditional, new_iterator) = parse_conditional(iterator)?;
 			iterator = new_iterator;
-			vec![conditional]
+			Some(ElseBranch::If(Box::new(conditional)))
 		} else {
 			let (statements, new_iterator) = parse_block(iterator)?;
 			iterator = new_iterator;
-			statements
+			Some(ElseBranch::Block(statements))
 		}
 	} else {
-		Vec::new()
+		None
 	};
 
-	Ok((Node::conditional(condition, statements, else_statements), iterator))
+	Ok((Node::conditional(condition, statements, else_branch), iterator))
 }
 
 /// Parses a braced statement block, such as the body of an `if` or `else` branch.

@@ -1976,6 +1976,23 @@ main: fn () -> void {
 		}
 	}
 
+	/// `break` and `continue` need an enclosing loop, even in a match arm that can never run.
+	#[test]
+	fn loop_control_outside_a_loop_is_rejected() {
+		for statement in [
+			"break;",
+			"if (true) { continue; }",
+			"match true { _ => {} false => break }",
+			"match 1 { 0 => {} _ => { match 2 { _ => continue } } }",
+		] {
+			let source = format!("main: fn () -> void {{ {statement} }}");
+			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
+		}
+
+		let source = "main: fn () -> void { for (let i: u32 = 0; i < 1; i = i + 1) { match i { _ => {} 1 => break } } }";
+		assert!(crate::compile_to_besl(source, None).is_ok());
+	}
+
 	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.
 	#[test]
 	fn match_resolves_unreachable_patterns() {

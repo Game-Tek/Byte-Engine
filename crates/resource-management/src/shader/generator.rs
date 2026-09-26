@@ -200,6 +200,43 @@ impl ShaderFormatting {
 	}
 }
 
+/// The prefix a backend adds to a BESL name that would collide with its target shader language.
+///
+/// BESL already rejects its own keywords, but names such as `float`, `sampler`, or `half` are valid BESL
+/// identifiers and reserved words in GLSL, HLSL, or MSL. See [`Identifier`] for how backends apply it.
+pub(crate) const RESERVED_IDENTIFIER_PREFIX: &str = "besl_";
+
+/// The `Identifier` struct exists so every backend writes a BESL name the same way at its declaration and at
+/// each use, keeping names that collide with the target language's reserved words valid after lowering.
+///
+/// Backends build it through [`NodeEmitter::identifier`] and write it with [`Identifier::push_to`] or
+/// `format!`. Names that already start with [`RESERVED_IDENTIFIER_PREFIX`] are prefixed too, so a BESL name
+/// such as `besl_float` cannot collide with the escaped form of `float`.
+#[derive(Clone, Copy)]
+pub(crate) struct Identifier<'a> {
+	name: &'a str,
+	prefixed: bool,
+}
+
+impl Identifier<'_> {
+	/// Appends the backend-safe name to `string` without allocating.
+	pub(crate) fn push_to(self, string: &mut String) {
+		if self.prefixed {
+			string.push_str(RESERVED_IDENTIFIER_PREFIX);
+		}
+		string.push_str(self.name);
+	}
+}
+
+impl std::fmt::Display for Identifier<'_> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		if self.prefixed {
+			f.write_str(RESERVED_IDENTIFIER_PREFIX)?;
+		}
+		f.write_str(self.name)
+	}
+}
+
 /// Returns the reachable non-leaf shader nodes in emission order.
 pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, backend_name: &str) -> Vec<besl::NodeReference> {
 	ordered_shader_nodes_in(main_function_node, backend_name, Global)
@@ -493,6 +530,37 @@ pub(crate) trait NodeEmitter {
 	/// Whether the backend uses minified output.
 	fn minified(&self) -> bool;
 
+	/// Reports whether a BESL name collides with a reserved word of the target shader language.
+	///
+	/// Include keywords, reserved words, built-in type names, and names the backend itself emits into user
+	/// scopes. BESL keywords never reach this check because the BESL compiler rejects them. Backends call
+	/// [`Self::identifier`] instead of this method when they write a name.
+	fn is_reserved_identifier(name: &str) -> bool;
+
+	/// Wraps a BESL name so it is written without colliding with the target language.
+	///
+	/// Use it at every declaration and every reference of a user name so both sides stay in sync.
+	fn identifier(name: &str) -> Identifier<'_> {
+		let prefixed = name.starts_with(RESERVED_IDENTIFIER_PREFIX) || Self::is_reserved_identifier(name);
+		Identifier { name, prefixed }
+	}
+
+	/// Maps a non-array BESL type name to its backend spelling.
+	///
+	/// Built-in BESL types translate through [`Self::type_from_besl`]. User structs, and user functions reached
+	/// through call syntax, go through [`Self::identifier`] so they match their escaped declarations.
+	fn type_identifier(source: &str) -> Identifier<'_> {
+		let translated = Self::type_from_besl(source);
+		if translated != source || is_builtin_struct_type(source, true) {
+			Identifier {
+				name: translated,
+				prefixed: false,
+			}
+		} else {
+			Self::identifier(source)
+		}
+	}
+
 	/// Appends the string representation of a BESL node to the output buffer.
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference);
 
@@ -513,9 +581,11 @@ pub(crate) trait NodeEmitter {
 		string.push_str(ShaderFormatting::new(self.minified()).comma_str());
 	}
 
-	fn emit_named_struct_start(&self, string: &mut String, name: &str) {
+	/// Opens a struct declaration. Pass an [`Identifier`] for user structs so the name is backend-safe.
+	fn emit_named_struct_start(&self, string: &mut String, name: impl std::fmt::Display) {
+		use std::fmt::Write as _;
 		string.push_str("struct ");
-		string.push_str(name);
+		let _ = write!(string, "{name}");
 		if self.minified() {
 			string.push('{');
 		} else {
@@ -614,7 +684,7 @@ pub(crate) trait NodeEmitter {
 		self.emit_function_attributes(string, this_node, name);
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push('(');
 		emit_comma_separated_nodes(string, formatting, params, |string, param| self.emit_node(string, param));
 		self.emit_function_extra_parameters(string, this_node, name, !params.is_empty());
@@ -635,7 +705,7 @@ pub(crate) trait NodeEmitter {
 		}
 
 		let formatting = ShaderFormatting::new(self.minified());
-		self.emit_named_struct_start(string, name);
+		self.emit_named_struct_start(string, Self::identifier(name));
 		for field in fields {
 			formatting.push_indentation(string, 1);
 			self.emit_node(string, field);
@@ -647,7 +717,7 @@ pub(crate) trait NodeEmitter {
 	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
 		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 	}
 
 	/// Emits a local variable's type and name.
@@ -657,7 +727,7 @@ pub(crate) trait NodeEmitter {
 	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
 		Self::emit_type_name(string, type_name);
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 	}
 
 	/// Gives a backend the opportunity to replace expression syntax before portable lowering.
@@ -735,7 +805,7 @@ pub(crate) trait NodeEmitter {
 				}
 				match source.borrow().node() {
 					besl::Nodes::Literal { value, .. } => self.emit_node(string, value),
-					_ => string.push_str(name),
+					_ => Self::identifier(name).push_to(string),
 				}
 			}
 			besl::Expressions::VariableDeclaration { name, r#type } => {
@@ -761,13 +831,54 @@ pub(crate) trait NodeEmitter {
 		string: &mut String,
 		condition: &besl::NodeReference,
 		statements: &[besl::NodeReference],
+		else_branch: Option<&besl::ElseBranch>,
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("if(");
 		self.emit_node(string, condition);
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
-		self.emit_block_end(string);
+
+		let Some(else_branch) = else_branch else {
+			self.emit_block_end(string);
+			return;
+		};
+
+		string.push('}');
+		string.push_str(formatting.space_str());
+		string.push_str("else");
+
+		match else_branch {
+			besl::ElseBranch::If(conditional) if !self.else_if_needs_block(conditional) => {
+				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
+				let conditional = conditional.borrow();
+				let besl::Nodes::Conditional {
+					condition,
+					statements,
+					else_branch,
+				} = conditional.node()
+				else {
+					unreachable!("An `else if` link always holds a conditional node");
+				};
+				string.push(' ');
+				self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
+			}
+			// A block, or an `else if` link the backend emits as `else { if ... }`.
+			else_branch => {
+				string.push_str(formatting.space_str());
+				string.push('{');
+				string.push_str(formatting.break_str());
+				self.emit_function_statement_block(string, else_branch.statements(), 1);
+				self.emit_block_end(string);
+			}
+		}
+	}
+
+	/// Reports whether an `else if` link must be emitted as `else { if ... }`, so that the
+	/// nested conditional goes through [`NodeEmitter::emit_function_statement_block`].
+	/// Override it when the backend emits extra statements before some conditionals.
+	fn else_if_needs_block(&self, _conditional: &besl::NodeReference) -> bool {
+		false
 	}
 
 	fn emit_for_loop_node(
@@ -809,12 +920,12 @@ pub(crate) trait NodeEmitter {
 		if let Some(vector_type) = scalar_array_vector_type(source) {
 			string.push_str(Self::type_from_besl(vector_type));
 		} else if let Some((element_type, count)) = source.split_once('[') {
-			string.push_str(Self::type_from_besl(element_type));
+			Self::type_identifier(element_type).push_to(string);
 			string.push('[');
 			string.push_str(count.trim_end_matches(']'));
 			string.push(']');
 		} else {
-			string.push_str(Self::type_from_besl(source));
+			Self::type_identifier(source).push_to(string);
 		}
 	}
 

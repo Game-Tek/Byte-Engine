@@ -174,12 +174,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Function { statements, .. } => statements
 				.iter()
 				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			besl::Nodes::Conditional { condition, statements } => {
-				Self::uses_intrinsic(condition, intrinsic_name)
-					|| statements
-						.iter()
-						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
-			}
+			conditional @ besl::Nodes::Conditional { .. } => conditional
+				.conditional_children()
+				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -266,10 +263,9 @@ impl<A: Allocator + Clone> Generator<A> {
 						visit(statement, requirements);
 					}
 				}
-				besl::Nodes::Conditional { condition, statements } => {
-					visit(condition, requirements);
-					for statement in statements {
-						visit(statement, requirements);
+				conditional @ besl::Nodes::Conditional { .. } => {
+					for child in conditional.conditional_children() {
+						visit(child, requirements);
 					}
 				}
 				besl::Nodes::ForLoop {
@@ -373,12 +369,9 @@ impl<A: Allocator + Clone> Generator<A> {
 							.iter()
 							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
 				}
-				besl::Nodes::Conditional { condition, statements } => {
-					node_requires_resource_context(condition, visited, include_push_constant)
-						|| statements
-							.iter()
-							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
-				}
+				conditional @ besl::Nodes::Conditional { .. } => conditional
+					.conditional_children()
+					.any(|child| node_requires_resource_context(child, visited, include_push_constant)),
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,

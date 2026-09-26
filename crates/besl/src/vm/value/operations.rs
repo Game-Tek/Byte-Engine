@@ -1003,6 +1003,49 @@ pub(crate) fn extract_value(value: &Value, index: usize, expected_type: &ValueTy
 	Ok(extracted)
 }
 
+/// Replaces the member at `index` of `aggregate`, the inverse of [`extract_value`].
+pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -> Result<(), VmError> {
+	/// Writes one element and reports whether `index` was in bounds.
+	fn set<T>(slots: &mut [T], index: usize, value: T) -> bool {
+		slots.get_mut(index).map(|slot| *slot = value).is_some()
+	}
+
+	let member_type = member.value_type();
+	let inserted = match (&mut *aggregate, member) {
+		(Value::Vec2U16(slots), Value::U16(value)) => set(slots, index, value),
+		(Value::Vec4U16(slots), Value::U16(value)) => set(slots, index, value),
+		(Value::Vec2I(slots), Value::I32(value)) => set(slots, index, value),
+		(Value::Vec2U(slots), Value::U32(value)) => set(slots, index, value),
+		(Value::Vec3U(slots), Value::U32(value)) => set(slots, index, value),
+		(Value::Vec4U(slots), Value::U32(value)) => set(slots, index, value),
+		(Value::Vec2F16(slots), Value::F16(value)) => set(slots, index, value),
+		(Value::Vec3F16(slots), Value::F16(value)) => set(slots, index, value),
+		(Value::Vec4F16(slots), Value::F16(value)) => set(slots, index, value),
+		(Value::Vec2F(slots), Value::F32(value)) => set(slots, index, value),
+		(Value::Vec3F(slots), Value::F32(value)) => set(slots, index, value),
+		(Value::Vec4F(slots) | Value::PackedVec4F(slots), Value::F32(value)) => set(slots, index, value),
+		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
+		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
+		(Value::Struct { fields, .. }, value) => match fields.get_mut(index) {
+			Some(field) if value.matches_type(&field.value_type()) => {
+				*field = value;
+				true
+			}
+			_ => false,
+		},
+		_ => false,
+	};
+
+	if inserted {
+		Ok(())
+	} else {
+		Err(VmError::TypeMismatch {
+			expected: format!("member {} of `{}`", index, aggregate.value_type().name()),
+			found: member_type.name().to_string(),
+		})
+	}
+}
+
 pub(crate) fn vector_scalar_type(value_type: &ValueType) -> Option<ValueType> {
 	match value_type {
 		ValueType::Vec2U16 => Some(ValueType::U16),

@@ -6,11 +6,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn minified(&self) -> bool {
 		self.minified
 	}
+	fn is_reserved_identifier(name: &str) -> bool {
+		super::reserved::is_reserved(name)
+	}
 	fn supports_atomic_u32(&self) -> bool {
 		true
 	}
 	fn emit_function_attributes(&mut self, string: &mut String, _node: &besl::NodeReference, name: &str) {
-		if name != "besl_main" {
+		if name != "main" {
 			return;
 		}
 
@@ -35,6 +38,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push('\n');
 		}
 	}
+	// A value atomic in the condition is lifted into a statement, which needs a block that runs only when the branch is reached.
+	fn else_if_needs_block(&self, conditional: &besl::NodeReference) -> bool {
+		matches!(
+			conditional.borrow().node(),
+			besl::Nodes::Conditional { condition, .. } if Self::contains_hlsl_value_atomic(condition)
+		)
+	}
+
 	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified);
 		for statement in statements {
@@ -53,7 +64,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		name: &str,
 		has_previous_parameter: bool,
 	) {
-		if name != "besl_main" {
+		if name != "main" {
 			if self.current_stage == HlslStage::Vertex {
 				self.emit_vertex_builtin_helper_parameters(string, has_previous_parameter);
 			}
@@ -107,7 +118,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 		let function = function.borrow();
-		if matches!(function.node(), besl::Nodes::Function { name, .. } if name != "besl_main") {
+		if matches!(function.node(), besl::Nodes::Function { name, .. } if name != "main") {
 			self.emit_vertex_builtin_helper_arguments(string, has_previous_argument);
 		}
 	}
@@ -141,6 +152,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		// Route portable BESL construction through the field-by-field factory emitted with the struct.
+		// The factory name is derived from the raw BESL name, so it cannot collide with a reserved word.
 		string.push_str("besl_construct_");
 		string.push_str(name);
 		string.push('(');
@@ -152,11 +164,11 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		match source.borrow().node() {
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				return true;
 			}
 			besl::Nodes::Workgroup { .. } => {
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				return true;
 			}
 			_ => {}
@@ -166,14 +178,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return false;
 		};
 		if name == binding.name {
-			string.push_str(&binding.name);
+			Self::identifier(&binding.name).push_to(string);
 			return true;
 		}
 
 		// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-		string.push_str(&binding.name);
+		Self::identifier(&binding.name).push_to(string);
 		string.push_str("[0].");
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		true
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
@@ -345,9 +357,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
-			string.push_str(&binding_name);
+			Self::identifier(&binding_name).push_to(string);
 			string.push_str("[0].");
-			string.push_str(&field_name);
+			Self::identifier(&field_name).push_to(string);
 			string.push('.');
 			self.emit_node_string(string, right);
 			return;
@@ -358,15 +370,15 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push_str("besl_primitives[");
 			self.emit_node_string(string, right);
 			string.push_str("].");
-			string.push_str(&field_name);
+			Self::identifier(&field_name).push_to(string);
 			return;
 		}
 
 		if let (Some(binding), Some(field_name)) = (Self::hlsl_buffer_binding_source(left), Self::hlsl_member_name(right)) {
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-			string.push_str(&binding.name);
+			Self::identifier(&binding.name).push_to(string);
 			string.push_str("[0].");
-			string.push_str(&field_name);
+			Self::identifier(&field_name).push_to(string);
 			return;
 		}
 
@@ -397,7 +409,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 
 				// DX12 exposes packed narrow-index buffers as 32-bit structured words, so recover the logical element here.
 				string.push_str("((");
-				string.push_str(&binding_name);
+				Self::identifier(&binding_name).push_to(string);
 				string.push_str("[(");
 				self.emit_node_string(string, right);
 				string.push_str(word_index);
@@ -409,12 +421,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			}
 
 			if field_name == binding_name {
-				string.push_str(&binding_name);
+				Self::identifier(&binding_name).push_to(string);
 			} else {
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-				string.push_str(&binding_name);
+				Self::identifier(&binding_name).push_to(string);
 				string.push_str("[0].");
-				string.push_str(&field_name);
+				Self::identifier(&field_name).push_to(string);
 			}
 			string.push('[');
 			self.emit_node_string(string, right);

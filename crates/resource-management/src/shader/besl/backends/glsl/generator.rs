@@ -689,7 +689,7 @@ impl Generator {
 				let r#type = r#type.borrow();
 
 				let t = r#type.get_name().unwrap();
-				let type_name = Self::translate_type(t);
+				let type_name = Self::type_identifier(t);
 
 				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 					for (i, field) in fields.iter().enumerate() {
@@ -716,19 +716,18 @@ impl Generator {
 				string.push_str(&format!(
 					"const {} {}={};{}",
 					type_name,
-					name,
+					Self::identifier(name),
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
 				));
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name);
-
-					string.push_str(type_name);
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
-				string.push_str(name.as_str());
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(count.to_string().as_str());
@@ -756,7 +755,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name
+					Self::identifier(name)
 				));
 			}
 			besl::Nodes::Output {
@@ -773,7 +772,10 @@ impl Generator {
 				if let Some(count) = count {
 					string.push_str(&format!(
 						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
-						location, type_name, name, count
+						location,
+						type_name,
+						Self::identifier(name),
+						count
 					));
 				} else {
 					let qualifier = if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
@@ -783,15 +785,17 @@ impl Generator {
 					};
 					string.push_str(&format!(
 						"layout(location={}){space_char}{qualifier}out {} {};{break_char}",
-						location, type_name, name
+						location,
+						type_name,
+						Self::identifier(name)
 					));
 				}
 			}
 			besl::Nodes::Workgroup { name, format, count } if self.current_stage_supports_workgroup_storage => {
 				string.push_str("shared ");
-				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(&count.to_string());
@@ -808,7 +812,11 @@ impl Generator {
 				)
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
+			besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -884,13 +892,13 @@ impl Generator {
 							self.emit_statement_end(string);
 						}
 						string.push('}');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 					}
 					besl::BindingTypes::BufferArray { element, fixed } => {
 						string.push_str(&format!("_{}{{", name));
 						Self::emit_type_name(string, element.borrow().get_name().unwrap());
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 						// Runtime arrays leave the count to the bound buffer.
 						match fixed {
 							Some(fixed) => string.push_str(&format!("[{}];", fixed.count)),
@@ -899,7 +907,7 @@ impl Generator {
 						string.push('}');
 					}
 					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 					}
 				}
 
@@ -925,7 +933,7 @@ impl Generator {
 				string.push_str("const ");
 				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				string.push_str(" = ");
 				self.emit_node_string(string, value);
 				string.push_str(&format!(";{break_char}"));
@@ -940,6 +948,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn minified(&self) -> bool {
 		self.minified
+	}
+	fn is_reserved_identifier(name: &str) -> bool {
+		super::reserved::is_reserved(name)
 	}
 	fn emit_intrinsic_call(
 		&mut self,

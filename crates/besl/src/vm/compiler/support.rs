@@ -262,12 +262,7 @@ pub(super) fn collect_function_references(node: &NodeReference, seen: &mut HashS
 	let (called_function, children) = {
 		let borrowed = node.borrow();
 		match borrowed.node() {
-			Nodes::Conditional { condition, statements } => {
-				let mut children = Vec::with_capacity(statements.len() + 1);
-				children.push(condition.clone());
-				children.extend(statements.iter().cloned());
-				(None, children)
-			}
+			Nodes::Conditional { .. } => (None, borrowed.get_children().unwrap_or_default()),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -316,12 +311,7 @@ pub(super) fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError>
 				Vec::new()
 			}
 			Nodes::Function { statements, .. } => statements.clone(),
-			Nodes::Conditional { condition, statements } => {
-				let mut children = Vec::with_capacity(statements.len() + 1);
-				children.push(condition.clone());
-				children.extend(statements.iter().cloned());
-				children
-			}
+			Nodes::Conditional { .. } => borrowed.get_children().unwrap_or_default(),
 			Nodes::ForLoop {
 				initializer,
 				condition,

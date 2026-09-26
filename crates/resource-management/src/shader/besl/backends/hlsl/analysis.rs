@@ -390,7 +390,7 @@ impl Generator {
 	}
 
 	/// Reports whether an expression tree contains an atomic call that returns a value.
-	fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
+	pub(crate) fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
 		if Self::hlsl_atomic_call(node).is_some() {
 			return true;
 		}
@@ -398,11 +398,7 @@ impl Generator {
 			let node = node.borrow();
 			match node.node() {
 				besl::Nodes::Function { statements, .. } => statements.clone(),
-				besl::Nodes::Conditional { condition, statements } => {
-					let mut children = vec![condition.clone()];
-					children.extend(statements.iter().cloned());
-					children
-				}
+				conditional @ besl::Nodes::Conditional { .. } => conditional.conditional_children().cloned().collect(),
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,
@@ -440,10 +436,9 @@ impl Generator {
 		let node = node.borrow();
 		match node.node() {
 			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-			besl::Nodes::Conditional { condition, statements } => {
-				Self::has_unsupported_hlsl_atomic_context(condition)
-					|| statements.iter().any(Self::has_unsupported_hlsl_atomic_context)
-			}
+			conditional @ besl::Nodes::Conditional { .. } => conditional
+				.conditional_children()
+				.any(Self::has_unsupported_hlsl_atomic_context),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -623,26 +618,18 @@ impl Generator {
 		};
 
 		// HLSL exposes texture dimensions through an out-parameter method instead of an expression value.
-		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
-		string.push(' ');
-		string.push_str(name);
-		string.push(';');
+		let name = Self::identifier(name);
 		let array_texture = Self::node_type_name(&arguments[0]).as_deref() == Some("ArrayTexture2D");
+		Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
+		let _ = write!(string, " {name};");
 		if array_texture {
-			string.push_str("uint ");
-			string.push_str(name);
-			string.push_str("_layers;");
+			// The layer count is derived from the escaped name, so it stays unique beside it.
+			let _ = write!(string, "uint {name}_layers;");
 		}
 		self.emit_node_string(string, &arguments[0]);
-		string.push_str(".GetDimensions(");
-		string.push_str(name);
-		string.push_str(".x, ");
-		string.push_str(name);
-		string.push_str(".y");
+		let _ = write!(string, ".GetDimensions({name}.x, {name}.y");
 		if array_texture {
-			string.push_str(", ");
-			string.push_str(name);
-			string.push_str("_layers");
+			let _ = write!(string, ", {name}_layers");
 		}
 		string.push(')');
 		true
@@ -679,13 +666,13 @@ impl Generator {
 		if let Some(vector_type) = crate::shader::generator::scalar_array_vector_type(type_name) {
 			string.push_str(Self::translate_type(vector_type));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(" = ");
 			self.emit_node_string(string, value);
 		} else if let Some((element_type, count)) = Self::hlsl_array_type(type_name) {
-			string.push_str(Self::translate_type(element_type));
+			Self::type_identifier(element_type).push_to(string);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push('[');
 			string.push_str(count);
 			string.push_str("] = ");
@@ -695,7 +682,7 @@ impl Generator {
 		} else {
 			Self::emit_type_name(string, type_name);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(" = ");
 			self.emit_node_string(string, value);
 		}

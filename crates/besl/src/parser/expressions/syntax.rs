@@ -355,6 +355,30 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 	let condition = expression_atoms_to_node(&condition_atoms);
 
 	iterator.next_str(")")?;
+
+	let (statements, mut iterator) = parse_block(iterator)?;
+
+	let (else_branch, iterator) = match iterator.as_slice() {
+		["else", "if", ..] => {
+			iterator.next();
+			let (conditional, iterator) = parse_conditional(iterator)?;
+			(Some(ElseBranch::If(Box::new(conditional))), iterator)
+		}
+		["else", ..] => {
+			iterator.next();
+			let (statements, iterator) = parse_block(iterator)?;
+			(Some(ElseBranch::Block(statements)), iterator)
+		}
+		_ => (None, iterator),
+	};
+
+	Ok((Node::conditional(condition, statements, else_branch), iterator))
+}
+
+/// Parses a braced statement block, such as the body of an `if` or `else` branch.
+fn parse_block<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
 	iterator.next_str("{")?;
 
 	let mut statements = vec![];
@@ -375,7 +399,7 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 		iterator = new_iterator;
 	}
 
-	Ok((Node::conditional(condition, statements), iterator))
+	Ok((statements, iterator))
 }
 
 pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -405,25 +429,8 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	let update = expression_atoms_to_node(&update_atoms);
 
 	iterator.next_str(")")?;
-	iterator.next_str("{")?;
 
-	let mut statements = vec![];
-	loop {
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
-			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
-			== "}"
-		{
-			iterator.next();
-			break;
-		}
-
-		let (statement, new_iterator) = parse_statement(iterator)?;
-		statements.push(statement);
-		iterator = new_iterator;
-	}
+	let (statements, iterator) = parse_block(iterator)?;
 
 	Ok((Node::for_loop(initializer, condition, update, statements), iterator))
 }

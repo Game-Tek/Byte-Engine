@@ -131,7 +131,18 @@ fn emit_conditional(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals
 	let right = cursor.next();
 	let operator = ["<", "<=", ">", ">=", "==", "!="][cursor.choose(6)];
 	let _ = writeln!(source, "\tif (u{left} {operator} {right}) {{");
+	emit_conditional_branch(source, cursor, u32_locals, f32_locals);
 
+	if cursor.chance(1, 2) {
+		source.push_str("\t} else {\n");
+		emit_conditional_branch(source, cursor, u32_locals, f32_locals);
+	}
+
+	source.push_str("\t}\n");
+}
+
+/// Emits one statement for an `if` or `else` branch.
+fn emit_conditional_branch(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize, f32_locals: usize) {
 	if cursor.chance(1, 2) {
 		let target = cursor.choose(u32_locals);
 		let value = cursor.next();
@@ -141,8 +152,6 @@ fn emit_conditional(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals
 		let value = cursor.next();
 		let _ = writeln!(source, "\t\tf{target} = max(f{target}, {}.0);", value % 16);
 	}
-
-	source.push_str("\t}\n");
 }
 
 /// Emits a finite-shaped loop for compiler coverage; structured targets compile but do not execute it.

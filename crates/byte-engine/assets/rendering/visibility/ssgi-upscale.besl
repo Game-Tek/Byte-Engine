@@ -56,18 +56,18 @@ view_position: fn (half_resolution_coordinate: vec2f, z: f32) -> vec3f {
 }
 
 // Maps a full-resolution pixel center to continuous half-resolution coordinates.
-half_resolution_coordinate: fn (column: f32, row: f32) -> vec2f {
-	return vec2f((column + 0.5) * 0.5 - 0.5, (row + 0.5) * 0.5 - 0.5);
+half_resolution_coordinate: fn (x: f32, y: f32) -> vec2f {
+	return vec2f((x + 0.5) * 0.5 - 0.5, (y + 0.5) * 0.5 - 0.5);
 }
 
 // Reads the full-resolution linear depth `offset` pixels away, or zero outside the image.
 neighbor_depth: fn (coordinate: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -> f32 {
-	let column: f32 = f32(coordinate.x) + offset_x;
-	let row: f32 = f32(coordinate.y) + offset_y;
-	if (column < 0.0 || row < 0.0 || column >= f32(extent.x) || row >= f32(extent.y)) {
+	let x: f32 = f32(coordinate.x) + offset_x;
+	let y: f32 = f32(coordinate.y) + offset_y;
+	if (x < 0.0 || y < 0.0 || x >= f32(extent.x) || y >= f32(extent.y)) {
 		return 0.0;
 	}
-	return linearize_depth(fetch(visibility_depth, vec2u(u32(column), u32(row))).x);
+	return linearize_depth(fetch(visibility_depth, vec2u(u32(x), u32(y))).x);
 }
 
 // Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
@@ -91,13 +91,13 @@ axis_tangent: fn (coordinate: vec2u, axis: vec2f, center_position: vec3f, extent
 		negative_z,
 		neighbor_depth(coordinate, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
 	);
-	let column: f32 = f32(coordinate.x);
-	let row: f32 = f32(coordinate.y);
+	let x: f32 = f32(coordinate.x);
+	let y: f32 = f32(coordinate.y);
 	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
-		return view_position(half_resolution_coordinate(column + axis.x, row + axis.y), positive_z) - center_position;
+		return view_position(half_resolution_coordinate(x + axis.x, y + axis.y), positive_z) - center_position;
 	}
 	if (negative_z != 0.0) {
-		return center_position - view_position(half_resolution_coordinate(column - axis.x, row - axis.y), negative_z);
+		return center_position - view_position(half_resolution_coordinate(x - axis.x, y - axis.y), negative_z);
 	}
 	return vec3f(0.0, 0.0, 0.0);
 }

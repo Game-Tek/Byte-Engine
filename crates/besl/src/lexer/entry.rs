@@ -269,9 +269,20 @@ fn rewrite_node<'a>(node: &mut parser::Node<'a>, context: &EntryContext<'_, 'a>)
 	}
 
 	match node.node_mut() {
-		parser::Nodes::Conditional { condition, statements } => {
+		parser::Nodes::Conditional {
+			condition,
+			statements,
+			else_branch,
+		} => {
 			rewrite_node(condition, context)?;
 			*statements = rewrite_statements(std::mem::take(statements), context, false)?;
+			match else_branch {
+				Some(parser::ElseBranch::Block(statements)) => {
+					*statements = rewrite_statements(std::mem::take(statements), context, false)?;
+				}
+				Some(parser::ElseBranch::If(conditional)) => rewrite_node(conditional, context)?,
+				None => {}
+			}
 			Ok(())
 		}
 		parser::Nodes::ForLoop {

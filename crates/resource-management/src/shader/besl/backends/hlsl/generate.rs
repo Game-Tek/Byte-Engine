@@ -138,13 +138,16 @@ impl Generator {
 				string.push('\n');
 			}
 		}
-		self.emit_function_attributes(string, node, "besl_main");
+		self.emit_function_attributes(string, node, "main");
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
-		string.push_str(" besl_main(");
+		string.push(' ');
+		// `main` is reserved, so the entry point is written as `besl_main` like any other escaped name.
+		Self::identifier("main").push_to(string);
+		string.push('(');
 		emit_comma_separated_nodes(string, formatting, params, |string, parameter| {
 			self.emit_node_string(string, parameter)
 		});
-		self.emit_function_extra_parameters(string, node, "besl_main", !params.is_empty());
+		self.emit_function_extra_parameters(string, node, "main", !params.is_empty());
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
 		if !self.task_payloads.is_empty() {
@@ -162,7 +165,7 @@ impl Generator {
 	/// Emits a field-by-field factory because DXC does not support user-defined struct constructor expressions.
 	pub(crate) fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push_str(" besl_construct_");
 		string.push_str(name);
 		string.push('(');
@@ -191,7 +194,7 @@ impl Generator {
 		formatting.push_block_start(string);
 
 		formatting.push_indentation(string, 1);
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push_str(" besl_value");
 		formatting.push_statement_end(string);
 		for field in fields {
@@ -209,7 +212,7 @@ impl Generator {
 				string.push_str(&count.to_string());
 				string.push_str(";++besl_index){");
 				string.push_str("besl_value.");
-				string.push_str(field_name);
+				Self::identifier(field_name).push_to(string);
 				string.push_str("[besl_index]=besl_argument_");
 				string.push_str(field_name);
 				string.push_str("[besl_index];}");
@@ -219,7 +222,7 @@ impl Generator {
 			} else {
 				formatting.push_indentation(string, 1);
 				string.push_str("besl_value.");
-				string.push_str(field_name);
+				Self::identifier(field_name).push_to(string);
 				string.push_str("=besl_argument_");
 				string.push_str(field_name);
 				formatting.push_statement_end(string);
@@ -290,7 +293,7 @@ impl Generator {
 	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
 		let mut members = Vec::new();
 		let r#type = r#type.borrow();
-		let type_name = Self::translate_type(r#type.get_name().unwrap());
+		let type_name = Self::type_identifier(r#type.get_name().unwrap());
 
 		if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 			for field in fields {
@@ -317,9 +320,9 @@ impl Generator {
 		}
 
 		string.push_str("static const ");
-		string.push_str(type_name);
+		type_name.push_to(string);
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push('=');
 		string.push_str(&format!("{}({})", type_name, members.join(",")));
 		string.push(';');
@@ -355,11 +358,11 @@ impl Generator {
 				params,
 				..
 			} => {
-				let hlsl_name = if name == "main" { "besl_main" } else { name };
-				if hlsl_name == "besl_main" && self.current_stage == HlslStage::Task {
+				// The shared emitter escapes the reserved `main` to the `besl_main` entry point.
+				if name == "main" && self.current_stage == HlslStage::Task {
 					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
 				} else {
-					self.emit_function_node(string, this_node, hlsl_name, statements, return_type, params);
+					self.emit_function_node(string, this_node, name, statements, return_type, params);
 				}
 			}
 			besl::Nodes::Struct {
@@ -393,12 +396,11 @@ impl Generator {
 			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name);
-
-					string.push_str(type_name);
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
-				string.push_str(name.as_str());
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(count.to_string().as_str());
@@ -431,7 +433,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name,
+					Self::identifier(name),
 					location
 				));
 			}
@@ -459,7 +461,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name,
+					Self::identifier(name),
 					location
 				));
 			}
@@ -470,9 +472,9 @@ impl Generator {
 			}
 			besl::Nodes::Workgroup { name, format, count } => {
 				string.push_str("groupshared ");
-				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(&count.to_string());
@@ -484,9 +486,11 @@ impl Generator {
 				}
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional { statements, .. }
-				if self.current_stage == HlslStage::Mesh && Self::mesh_output_count_arguments(statements).is_some() =>
-			{
+			besl::Nodes::Conditional {
+				statements,
+				else_branch: None,
+				..
+			} if self.current_stage == HlslStage::Mesh && Self::mesh_output_count_arguments(statements).is_some() => {
 				let (vertices, primitives) = Self::mesh_output_count_arguments(statements).unwrap();
 				// DXIL requires SetMeshOutputCounts to dominate every mesh output, so remove BESL's portable lane-zero guard.
 				string.push_str("SetMeshOutputCounts(");
@@ -495,7 +499,11 @@ impl Generator {
 				self.emit_node_string(string, &primitives);
 				string.push(')');
 			}
-			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
+			besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -534,7 +542,7 @@ impl Generator {
 						}
 
 						string.push_str(&format!("{buffer_type}<_{name}> "));
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -553,13 +561,13 @@ impl Generator {
 						string.push_str(buffer_type);
 						string.push('<');
 						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
-						string.push_str(if super::hlsl_narrow_element(element_type).is_some() {
-							"uint"
+						if super::hlsl_narrow_element(element_type).is_some() {
+							string.push_str("uint");
 						} else {
-							Self::translate_type(element_type)
-						});
+							Self::type_identifier(element_type).push_to(string);
+						}
 						string.push_str("> ");
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
@@ -574,7 +582,7 @@ impl Generator {
 
 						string.push_str(texture_type);
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -603,7 +611,7 @@ impl Generator {
 							_ => "<float4>",
 						});
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -618,7 +626,8 @@ impl Generator {
 
 						// Also declare a sampler with the same name + _sampler suffix
 						string.push_str("SamplerState ");
-						string.push_str(name);
+						// References build this name from the escaped texture name, so the sampler must match it.
+						Self::identifier(name).push_to(string);
 						string.push_str("_sampler");
 						if let Some(count) = count {
 							string.push('[');
@@ -722,7 +731,7 @@ float16_t4 _besl_fma_f16(float16_t4 first, float16_t4 second, float16_t4 third) 
 		index_name: &str,
 		elements_per_word: u32,
 	) {
-		string.push_str(binding_name);
+		Self::identifier(binding_name).push_to(string);
 		string.push('[');
 		string.push_str(index_name);
 		let _ = write!(string, "/{elements_per_word}u]");

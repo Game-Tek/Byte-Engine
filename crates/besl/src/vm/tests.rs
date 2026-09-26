@@ -2226,6 +2226,50 @@ fn executable_program_executes_continue_and_comparisons() {
 	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(1));
 }
 
+/// Verifies each value reaches exactly one branch of an `if`/`else if`/`else` chain.
+#[test]
+fn executable_program_executes_else_chains() {
+	let script = r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		for (let i: u32 = 0; i <= 4; i = i + 1) {
+			if (i < 1) {
+				sum = sum + 1;
+			} else if (i < 3) {
+				sum = sum + 10;
+			} else {
+				sum = sum + 100;
+			}
+		}
+		buff.sum = sum;
+	}
+	"#;
+
+	let mut root = Node::root();
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("sum", u32_type).into()],
+			},
+			25,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+
+	let slot = ResourceSlot::new(25);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+
+	// i = 0 takes the if branch, i = 1..2 the else-if branch, and i = 3..4 the else branch.
+	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(221));
+}
+
 /// Verifies `break` leaves only the innermost loop and execution resumes after it.
 #[test]
 fn executable_program_breaks_out_of_the_innermost_loop() {

@@ -30,12 +30,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 
 			self.emit_indentation(string, 1);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
-			string.push(' ');
-			string.push_str(name);
-			string.push('[');
-			string.push_str(count.get().to_string().as_str());
-			string.push(']');
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
+			let _ = write!(string, " {}[{count}]", Self::identifier(name));
 			self.emit_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
@@ -99,16 +95,16 @@ impl<A: Allocator + Clone> Generator<A> {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(&format!("_{}* {}", name, name));
+				let _ = write!(string, "_{name}* {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::BufferArray { element, .. } => {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(Self::translate_buffer_member_type(element.borrow().get_name().unwrap()));
+				Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
 				string.push_str("* ");
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::Image { format } => {
@@ -123,7 +119,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				} else {
 					"access::read"
 				};
-				string.push_str(&format!("texture2d<{}, {}> {}", element_type, access, name));
+				let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 				emit_suffix(string, primary_id);
 			}
 			besl::BindingTypes::CombinedImageSampler { format } => {
@@ -137,12 +133,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				};
 				string.push_str(texture_type);
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
 
 				self.emit_indentation(string, 1);
-				string.push_str("sampler ");
-				string.push_str(&format!("{}_sampler", name));
+				let _ = write!(string, "sampler {}_sampler", Self::identifier(name));
 				emit_suffix(string, secondary_id);
 			}
 		}
@@ -159,7 +154,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			return;
 		};
 
-		self.emit_named_struct_start(string, &format!("_{name}"));
+		self.emit_named_struct_start(string, format_args!("_{name}"));
 
 		let previous_in_buffer_binding_struct = self.in_buffer_binding_struct;
 		self.in_buffer_binding_struct = true;
@@ -175,11 +170,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_struct_declaration_end(string);
 	}
 
-	pub(crate) fn translate_buffer_member_type(source: &str) -> &str {
+	/// Emits the storage-buffer spelling of a member or array-buffer element type. User struct names keep their
+	/// backend-safe name.
+	pub(crate) fn emit_buffer_member_type(string: &mut String, source: &str) {
 		// Metal storage buffers need packed vectors when the CPU data is tightly packed. Array buffers use this for
 		// their elements, such as 12-byte `vec3f` and 48-byte `mat4x3f`.
 		// Float vectors retain the existing array-only policy, while 16-bit vectors stay packed inside mixed structs.
-		match source {
+		let packed = match source {
 			"vec2f16" => "packed_half2",
 			"vec3f16" => "packed_half3",
 			"vec4f16" => "packed_half4",
@@ -189,8 +186,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			"mat4x3f" => "_besl_packed_float4x3",
 			"vec2u16" => "packed_ushort2",
 			"vec4u16" => "packed_ushort4",
-			_ => Self::translate_type(source),
-		}
+			_ => return Self::type_identifier(source).push_to(string),
+		};
+		string.push_str(packed);
 	}
 
 	pub(crate) fn emit_compute_entry_point(
@@ -218,7 +216,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		if *name == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
 		string.push_str("uint2 gid [[thread_position_in_grid]]");
@@ -271,9 +269,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 			self.emit_indentation(string, 1);
 			string.push_str("threadgroup ");
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			if let Some(count) = count {
 				string.push('[');
 				string.push_str(&count.to_string());
@@ -310,7 +308,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		if *name == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
 
@@ -358,9 +356,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 			self.emit_indentation(string, 1);
 			string.push_str("threadgroup ");
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			if let Some(count) = count {
 				string.push('[');
 				string.push_str(&count.to_string());
@@ -398,7 +396,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		if *name == "main" {
 			string.push_str(MSL_ENTRY_POINT);
 		} else {
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 		}
 		string.push('(');
 
@@ -487,17 +485,16 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(&format!("_{}* {} [[buffer({})]]", name, name, index));
+				let _ = write!(string, "_{name}* {} [[buffer({index})]]", Self::identifier(name));
 			}
 			besl::BindingTypes::BufferArray { element, .. } => {
 				let address_space = buffer_address_space(*memory_class, *write);
 				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(Self::translate_buffer_member_type(element.borrow().get_name().unwrap()));
+				Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
 				string.push_str("* ");
-				string.push_str(name);
-				string.push_str(&format!(" [[buffer({index})]]"));
+				let _ = write!(string, "{} [[buffer({index})]]", Self::identifier(name));
 			}
 			besl::BindingTypes::Image { format } => {
 				let element_type = match format.as_str() {
@@ -513,10 +510,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				};
 
 				self.emit_separator(string);
-				string.push_str(&format!(
-					"texture2d<{}, {}> {} [[texture({})]]",
-					element_type, access, name, index
-				));
+				let _ = write!(
+					string,
+					"texture2d<{element_type}, {access}> {} [[texture({index})]]",
+					Self::identifier(name)
+				);
 			}
 			besl::BindingTypes::CombinedImageSampler { format } => {
 				let texture_type = match format.as_str() {
@@ -528,9 +526,10 @@ impl<A: Allocator + Clone> Generator<A> {
 				};
 
 				self.emit_separator(string);
-				string.push_str(&format!("{} {} [[texture({})]]", texture_type, name, index));
+				let name = Self::identifier(name);
+				let _ = write!(string, "{texture_type} {name} [[texture({index})]]");
 				self.emit_separator(string);
-				string.push_str(&format!("sampler {}_sampler [[sampler({})]]", name, index));
+				let _ = write!(string, "sampler {name}_sampler [[sampler({index})]]");
 			}
 		}
 	}
@@ -538,23 +537,23 @@ impl<A: Allocator + Clone> Generator<A> {
 	pub(crate) fn emit_compute_binding_reference(&self, string: &mut String, name: &str) {
 		if self.mesh_stage_context.is_some() {
 			string.push_str("resources.");
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			return;
 		}
 
 		match self.compute_binding_mode {
 			ComputeBindingMode::ArgumentBuffers => {
 				string.push_str("resources.");
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 			}
-			ComputeBindingMode::BareResources => string.push_str(name),
+			ComputeBindingMode::BareResources => Self::identifier(name).push_to(string),
 		}
 	}
 
 	/// Qualifies a raster resource through the argument buffer supplied to its entry point or helper.
 	pub(crate) fn emit_raster_binding_reference(&self, string: &mut String, name: &str) {
 		string.push_str("resources.");
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 	}
 
 	pub(crate) fn emit_task_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
@@ -602,7 +601,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			} else {
 				string.push_str("& ");
 			}
-			string.push_str(&workgroup.name);
+			Self::identifier(&workgroup.name).push_to(string);
 			has_previous_parameter = true;
 		}
 		if has_previous_parameter {
@@ -649,7 +648,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str(&workgroup.name);
+			Self::identifier(&workgroup.name).push_to(string);
 			has_previous_parameter = true;
 		}
 		if has_previous_parameter {
@@ -786,7 +785,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			} else {
 				string.push_str("& ");
 			}
-			string.push_str(&workgroup.name);
+			Self::identifier(&workgroup.name).push_to(string);
 		}
 	}
 
@@ -871,7 +870,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		for workgroup in &compute_stage_context.workgroups {
 			self.emit_separator(string);
-			string.push_str(&workgroup.name);
+			Self::identifier(&workgroup.name).push_to(string);
 		}
 	}
 

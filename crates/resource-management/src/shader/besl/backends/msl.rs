@@ -23,6 +23,7 @@ mod facade;
 mod generate;
 mod node_emitter;
 mod raster;
+mod reserved;
 
 pub(crate) use bindings::*;
 pub(crate) use emit::*;
@@ -206,8 +207,8 @@ mod tests {
 			palette: descriptor<{ type: Palette, binding: 0, access: read_write }>;
 			main: fn (input: StageInput) -> void {
 				let item: u32 = input.thread_id.x;
-				let matrix: mat4x3f = palette.matrices[item];
-				palette.matrices[item + 1] = matrix;
+				let affine: mat4x3f = palette.matrices[item];
+				palette.matrices[item + 1] = affine;
 			}
 			"#,
 			None,
@@ -224,7 +225,7 @@ mod tests {
 		// Packed 48-byte matrices match the CPU stride; a native float4x3 would read with a 64-byte stride.
 		assert_string_contains!(shader, "device _besl_packed_float4x3* palette");
 		assert_string_contains!(shader, "_besl_load_mat4x3(resources.palette[item])");
-		assert_string_contains!(shader, "_besl_store_mat4x3(resources.palette[item+1],matrix)");
+		assert_string_contains!(shader, "_besl_store_mat4x3(resources.palette[item+1],affine)");
 
 		#[cfg(target_os = "macos")]
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-affine-matrix-array")
@@ -308,6 +309,45 @@ mod tests {
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-structural-position")
 			.await
 			.expect("Expected structural position MSL to compile natively");
+	}
+
+	#[test]
+	fn names_reserved_by_msl_are_prefixed_at_declaration_and_use() {
+		let source = r#"
+			half: struct { float3: f32, }
+			thread: descriptor<{ type: half, binding: 0, access: write }>;
+			constant: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+			scale: fn (sampler: f32) -> half {
+				let device: half = half(sampler);
+				return device;
+			}
+			main: fn () -> void {
+				let kernel: vec4f = sample(constant, vec2f(0.0, 0.0));
+				thread.float3 = scale(kernel.x).float3;
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected reserved-name source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected reserved-name MSL generation");
+
+		assert_string_contains!(shader, "struct besl_half{float besl_float3;};");
+		assert_string_contains!(shader, "struct _thread{");
+		assert_string_contains!(shader, "device _thread* besl_thread [[id(0)]];");
+		assert_string_contains!(shader, "texture2d<float> besl_constant [[id(2)]];");
+		assert_string_contains!(shader, "sampler besl_constant_sampler [[id(3)]];");
+		assert_string_contains!(shader, "besl_half scale(float besl_sampler");
+		assert_string_contains!(shader, "besl_half besl_device=besl_half{besl_sampler};");
+		assert_string_contains!(shader, "return besl_device;");
+		assert_string_contains!(
+			shader,
+			"float4 besl_kernel=resources.besl_constant.sample(resources.besl_constant_sampler, float2(0.0,0.0))"
+		);
+		assert_string_contains!(shader, "resources.besl_thread->besl_float3=scale(besl_kernel.x");
 	}
 
 	#[test]
@@ -1933,8 +1973,9 @@ struct PrimitiveOutput {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "constant float PI = 3.14;");
-		assert_string_contains!(shader, "void main(){PI;}");
+		// The backend declares its own `PI`, so a BESL constant with that name must be prefixed.
+		assert_string_contains!(shader, "constant float besl_PI = 3.14;");
+		assert_string_contains!(shader, "void main(){besl_PI;}");
 	}
 
 	#[test]
@@ -2161,6 +2202,36 @@ struct PrimitiveOutput {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "if(n<1){n=2;}");
+	}
+
+	#[compio::test]
+	async fn else_chains_lower_to_msl() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			} else if (n < 4) {
+				n = 3;
+			} else {
+				n = 4;
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected else-chain shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-else-chain")
+			.await
+			.expect("Expected else-chain MSL to compile natively");
 	}
 
 	#[test]

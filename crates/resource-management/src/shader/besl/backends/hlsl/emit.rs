@@ -14,9 +14,9 @@ impl Generator {
 			};
 
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push('[');
 			string.push_str(&count.get().to_string());
 			string.push(']');
@@ -60,7 +60,7 @@ impl Generator {
 			}
 			string.push_str(type_name);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(" : TEXCOORD");
 			string.push_str(&location.to_string());
 			formatting.push_statement_end(string);
@@ -74,12 +74,9 @@ impl Generator {
 			besl::Nodes::Function { statements, .. } => statements
 				.iter()
 				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			besl::Nodes::Conditional { condition, statements } => {
-				Self::uses_intrinsic(condition, intrinsic_name)
-					|| statements
-						.iter()
-						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
-			}
+			conditional @ besl::Nodes::Conditional { .. } => conditional
+				.conditional_children()
+				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -204,7 +201,7 @@ impl Generator {
 			if self.current_stage == HlslStage::Vertex && crate::shader::generator::is_vertex_builtin_input(name) {
 				string.push_str(type_name);
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				string.push_str(match name.as_str() {
 					besl::VERTEX_INDEX_BUILTIN => " : SV_VertexID",
 					besl::INSTANCE_INDEX_BUILTIN => " : SV_InstanceID",
@@ -218,7 +215,7 @@ impl Generator {
 			}
 			string.push_str(type_name);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(" : TEXCOORD");
 			string.push_str(&location.to_string());
 			has_previous_parameter = true;
@@ -246,7 +243,7 @@ impl Generator {
 			string.push_str("out ");
 			string.push_str(type_name);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(if self.current_stage == HlslStage::Vertex && besl::is_position_output(name) {
 				" : SV_Position"
 			} else if self.current_stage == HlslStage::Fragment {
@@ -277,7 +274,7 @@ impl Generator {
 			}
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			has_previous_parameter = true;
 		}
 	}
@@ -296,7 +293,7 @@ impl Generator {
 			if has_previous_argument {
 				self.emit_separator(string);
 			}
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			has_previous_argument = true;
 		}
 	}

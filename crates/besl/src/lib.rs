@@ -28,7 +28,7 @@ pub use lexer::Nodes;
 pub use lexer::Operators;
 
 pub use crate::lexer::NodeReference;
-pub use crate::lexer::{BindingTypes, BufferMemoryClass, FixedArray};
+pub use crate::lexer::{BindingTypes, BufferMemoryClass, ElseBranch, FixedArray};
 
 /// Names the current vertex invocation's vertex index.
 ///

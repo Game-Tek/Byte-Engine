@@ -9,11 +9,16 @@ impl<'a> Compiler<'a> {
 		let borrowed = statement.borrow();
 
 		match borrowed.node() {
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => {
 				let condition = condition.clone();
 				let statements = statements.clone();
+				let else_branch = else_branch.clone();
 				drop(borrowed);
-				self.compile_conditional(&condition, &statements, descriptor_layouts)
+				self.compile_conditional(&condition, &statements, else_branch.as_ref(), descriptor_layouts)
 			}
 			Nodes::ForLoop {
 				initializer,
@@ -105,10 +110,21 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
+	/// Points the placeholder `Jump` or `JumpIfZero` at `index` to `target`, once the target is known.
+	fn patch_jump(&mut self, index: usize, target: usize) {
+		match &mut self.instructions[index] {
+			Instruction::Jump { target: placeholder } | Instruction::JumpIfZero { target: placeholder, .. } => {
+				*placeholder = target;
+			}
+			_ => unreachable!("Expected a jump placeholder"),
+		}
+	}
+
 	pub(super) fn compile_conditional(
 		&mut self,
 		condition: &NodeReference,
 		statements: &[NodeReference],
+		else_branch: Option<&crate::ElseBranch>,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
@@ -122,11 +138,21 @@ impl<'a> Compiler<'a> {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
 
-		let conditional_end = self.instructions.len();
-		match &mut self.instructions[jump_if_zero_index] {
-			Instruction::JumpIfZero { target, .. } => *target = conditional_end,
-			_ => unreachable!("Expected JumpIfZero placeholder"),
+		let Some(else_branch) = else_branch else {
+			self.patch_jump(jump_if_zero_index, self.instructions.len());
+			return Ok(());
+		};
+
+		// The then branch ends by jumping over the else branch.
+		let skip_else_index = self.instructions.len();
+		self.instructions.push(Instruction::Jump { target: usize::MAX });
+		self.patch_jump(jump_if_zero_index, self.instructions.len());
+
+		// An `else if` link compiles as one nested conditional statement.
+		for statement in else_branch.statements() {
+			self.compile_statement(statement, descriptor_layouts)?;
 		}
+		self.patch_jump(skip_else_index, self.instructions.len());
 
 		Ok(())
 	}
@@ -162,23 +188,14 @@ impl<'a> Compiler<'a> {
 		let update_start = self.instructions.len();
 		self.compile_statement(update, descriptor_layouts)?;
 		for jump_index in self.loop_continue_patches.pop().expect("Expected continue patch list") {
-			match &mut self.instructions[jump_index] {
-				Instruction::Jump { target } => *target = update_start,
-				_ => unreachable!("Expected continue jump placeholder"),
-			}
+			self.patch_jump(jump_index, update_start);
 		}
 		self.instructions.push(Instruction::Jump { target: condition_start });
 
 		let loop_end = self.instructions.len();
-		match &mut self.instructions[loop_end_placeholder_index] {
-			Instruction::JumpIfZero { target, .. } => *target = loop_end,
-			_ => unreachable!("Expected JumpIfZero placeholder"),
-		}
+		self.patch_jump(loop_end_placeholder_index, loop_end);
 		for jump_index in self.loop_break_patches.pop().expect("Expected break patch list") {
-			match &mut self.instructions[jump_index] {
-				Instruction::Jump { target } => *target = loop_end,
-				_ => unreachable!("Expected break jump placeholder"),
-			}
+			self.patch_jump(jump_index, loop_end);
 		}
 
 		Ok(())
@@ -230,6 +247,10 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
+				if let Some(value_type) = self.local_path_type(&left) {
+					let value = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
+					return self.compile_local_store(&left, value, descriptor_layouts);
+				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
 						.index_expression
@@ -272,6 +293,68 @@ impl<'a> Compiler<'a> {
 			node => Err(VmError::UnsupportedAssignmentTarget {
 				message: format!("Unsupported assignment target: {}", describe_node(node)),
 			}),
+		}
+	}
+
+	/// Returns the type of `expression` when it is a local or a chain of named members inside one, such as
+	/// `probe.position.z`, and `None` for anything else.
+	fn local_path_type(&self, expression: &NodeReference) -> Option<ValueType> {
+		match expression.borrow().node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				self.local_path_type(&elements[0])
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let local = self.locals_by_reference.get(source)?;
+				self.local_types.get(*local).cloned()
+			}
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let member_name = extract_member_name(right).ok()?;
+				aggregate_member(&self.local_path_type(left)?, &member_name)
+					.ok()
+					.map(|(_, member_type)| member_type)
+			}
+			_ => None,
+		}
+	}
+
+	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
+	///
+	/// Registers hold whole values, so a member store inserts `value` into the enclosing value and stores that in turn,
+	/// until it reaches the local.
+	fn compile_local_store(
+		&mut self,
+		target: &NodeReference,
+		value: usize,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let borrowed = target.borrow();
+		match borrowed.node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				let inner = elements[0].clone();
+				drop(borrowed);
+				self.compile_local_store(&inner, value, descriptor_layouts)
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let local = self.locals_by_reference[source];
+				self.instructions.push(Instruction::StoreLocal { local, register: value });
+				Ok(())
+			}
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let (left, member_name) = (left.clone(), extract_member_name(right)?);
+				drop(borrowed);
+				let parent_type = self.local_path_type(&left).expect("Local store targets are local paths");
+				let (index, _) = aggregate_member(&parent_type, &member_name)?;
+				let source = self.compile_value_expression(&left, &parent_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Insert {
+					register,
+					source,
+					index,
+					value,
+				});
+				self.compile_local_store(&left, register, descriptor_layouts)
+			}
+			_ => unreachable!("Local store targets are local paths"),
 		}
 	}
 

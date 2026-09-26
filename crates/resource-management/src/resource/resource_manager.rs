@@ -543,7 +543,7 @@ mod tests {
 	}
 
 	#[r#async::test]
-	async fn request_reports_a_missing_dependency_by_id() {
+	async fn request_reports_an_unreadable_dependency_by_id() {
 		let storage = TestStorageBackend::new();
 		let image = Image {
 			format: Formats::RGBA8,
@@ -572,7 +572,7 @@ mod tests {
 			error,
 			RequestError::Solve {
 				id,
-				source: SolveError::MissingDependency { id: dependency },
+				source: SolveError::UnreadableDependency { id: dependency },
 			} if id == "run.flipbook" && dependency == "frames.image"
 		));
 	}

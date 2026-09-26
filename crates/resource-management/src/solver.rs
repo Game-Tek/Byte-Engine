@@ -44,7 +44,7 @@ impl<'de, M: StoredModel> Solver<'de, Reference<M::Resource>> for ReferenceModel
 			let (stored, reader) = storage_backend
 				.read(id)
 				.await
-				.ok_or_else(|| SolveError::MissingDependency { id: id.to_string() })?;
+				.ok_or_else(|| SolveError::UnreadableDependency { id: id.to_string() })?;
 
 			M::solve_stored(stored, reader, storage_backend).await
 		})
@@ -59,8 +59,11 @@ impl<'de, M: StoredModel> Solver<'de, Reference<M::Resource>> for ReferenceModel
 pub enum SolveError {
 	/// The stored record or one of its dependencies could not be deserialized.
 	DeserializationFailed(String),
-	/// A dependency named by the stored record is not in storage.
-	MissingDependency { id: String },
+	/// A dependency named by the stored record could not be read from storage.
+	///
+	/// Storage backends report absence and read failures the same way, so this covers a dependency that was never
+	/// baked as well as one whose record or payload is damaged.
+	UnreadableDependency { id: String },
 }
 
 impl std::fmt::Display for SolveError {
@@ -70,9 +73,9 @@ impl std::fmt::Display for SolveError {
 				f,
 				"Could not deserialize the stored resource: {error}. The most likely cause is that the resource was baked by an incompatible resource-management version."
 			),
-			SolveError::MissingDependency { id } => write!(
+			SolveError::UnreadableDependency { id } => write!(
 				f,
-				"Dependency '{id}' is missing from storage. The most likely cause is that the dependency was not baked with the resource that references it."
+				"Dependency '{id}' could not be read from storage. The most likely cause is that the dependency was not baked, or its stored payload is missing or damaged."
 			),
 		}
 	}

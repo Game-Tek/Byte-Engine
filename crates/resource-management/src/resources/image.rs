@@ -161,7 +161,7 @@ mod tests {
 
 		assert!(matches!(
 			missing.solve(&TestStorageBackend::new()).await,
-			Err(SolveError::MissingDependency { id }) if id == "missing.image"
+			Err(SolveError::UnreadableDependency { id }) if id == "missing.image"
 		));
 
 		let storage = TestStorageBackend::new();

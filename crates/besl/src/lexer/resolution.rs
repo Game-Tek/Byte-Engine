@@ -715,9 +715,7 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::Workgroup { format, count, .. } | Nodes::Output { format, count, .. } if count.is_some() => {
 			return Some(format.clone());
 		}
-		Nodes::Member {
-			r#type, count: Some(_), ..
-		} => return Some(r#type.clone()),
+		Nodes::Member { r#type, count: Some(_), .. } => return Some(r#type.clone()),
 		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
 		_ => infer_member_type(&source)?,
 	};

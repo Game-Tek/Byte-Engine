@@ -110,6 +110,16 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
+	/// Points the placeholder `Jump` or `JumpIfZero` at `index` to `target`, once the target is known.
+	fn patch_jump(&mut self, index: usize, target: usize) {
+		match &mut self.instructions[index] {
+			Instruction::Jump { target: placeholder } | Instruction::JumpIfZero { target: placeholder, .. } => {
+				*placeholder = target;
+			}
+			_ => unreachable!("Expected a jump placeholder"),
+		}
+	}
+
 	pub(super) fn compile_conditional(
 		&mut self,
 		condition: &NodeReference,
@@ -128,32 +138,21 @@ impl<'a> Compiler<'a> {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
 
-		// With an else branch, the then branch jumps over it. Without one, no extra jump is emitted.
-		let else_start = if let Some(else_branch) = else_branch {
-			let jump_index = self.instructions.len();
-			self.instructions.push(Instruction::Jump { target: usize::MAX });
-			let else_start = self.instructions.len();
-
-			// An `else if` link compiles as one nested conditional statement.
-			for statement in else_branch.statements() {
-				self.compile_statement(statement, descriptor_layouts)?;
-			}
-
-			let conditional_end = self.instructions.len();
-			match &mut self.instructions[jump_index] {
-				Instruction::Jump { target } => *target = conditional_end,
-				_ => unreachable!("Expected Jump placeholder"),
-			}
-
-			else_start
-		} else {
-			self.instructions.len()
+		let Some(else_branch) = else_branch else {
+			self.patch_jump(jump_if_zero_index, self.instructions.len());
+			return Ok(());
 		};
 
-		match &mut self.instructions[jump_if_zero_index] {
-			Instruction::JumpIfZero { target, .. } => *target = else_start,
-			_ => unreachable!("Expected JumpIfZero placeholder"),
+		// The then branch ends by jumping over the else branch.
+		let skip_else_index = self.instructions.len();
+		self.instructions.push(Instruction::Jump { target: usize::MAX });
+		self.patch_jump(jump_if_zero_index, self.instructions.len());
+
+		// An `else if` link compiles as one nested conditional statement.
+		for statement in else_branch.statements() {
+			self.compile_statement(statement, descriptor_layouts)?;
 		}
+		self.patch_jump(skip_else_index, self.instructions.len());
 
 		Ok(())
 	}
@@ -189,23 +188,14 @@ impl<'a> Compiler<'a> {
 		let update_start = self.instructions.len();
 		self.compile_statement(update, descriptor_layouts)?;
 		for jump_index in self.loop_continue_patches.pop().expect("Expected continue patch list") {
-			match &mut self.instructions[jump_index] {
-				Instruction::Jump { target } => *target = update_start,
-				_ => unreachable!("Expected continue jump placeholder"),
-			}
+			self.patch_jump(jump_index, update_start);
 		}
 		self.instructions.push(Instruction::Jump { target: condition_start });
 
 		let loop_end = self.instructions.len();
-		match &mut self.instructions[loop_end_placeholder_index] {
-			Instruction::JumpIfZero { target, .. } => *target = loop_end,
-			_ => unreachable!("Expected JumpIfZero placeholder"),
-		}
+		self.patch_jump(loop_end_placeholder_index, loop_end);
 		for jump_index in self.loop_break_patches.pop().expect("Expected break patch list") {
-			match &mut self.instructions[jump_index] {
-				Instruction::Jump { target } => *target = loop_end,
-				_ => unreachable!("Expected break jump placeholder"),
-			}
+			self.patch_jump(jump_index, loop_end);
 		}
 
 		Ok(())

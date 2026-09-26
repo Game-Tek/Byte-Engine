@@ -91,8 +91,6 @@ fn validate_atomic_target(name: &str, target: &NodeReference, requirement: Atomi
 	Err(LexError::Undefined { message: Some(message) })
 }
 
-// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 /// Lexes the statements of a control-flow block in order. Each statement can see `scope` and the statements before it.
 fn lex_block(
 	mut scope: Vec<NodeReference>,
@@ -110,6 +108,8 @@ fn lex_block(
 	Ok(lexed_statements)
 }
 
+// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) fn lex_parsed_node(
 	chain: Vec<NodeReference>,
 	parser_node: &parser::Node,

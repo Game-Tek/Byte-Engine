@@ -358,20 +358,18 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 
 	let (statements, mut iterator) = parse_block(iterator)?;
 
-	let else_branch = if iterator.as_slice().first() == Some(&"else") {
-		iterator.next();
-
-		if iterator.as_slice().first() == Some(&"if") {
-			let (conditional, new_iterator) = parse_conditional(iterator)?;
-			iterator = new_iterator;
-			Some(ElseBranch::If(Box::new(conditional)))
-		} else {
-			let (statements, new_iterator) = parse_block(iterator)?;
-			iterator = new_iterator;
-			Some(ElseBranch::Block(statements))
+	let (else_branch, iterator) = match iterator.as_slice() {
+		["else", "if", ..] => {
+			iterator.next();
+			let (conditional, iterator) = parse_conditional(iterator)?;
+			(Some(ElseBranch::If(Box::new(conditional))), iterator)
 		}
-	} else {
-		None
+		["else", ..] => {
+			iterator.next();
+			let (statements, iterator) = parse_block(iterator)?;
+			(Some(ElseBranch::Block(statements)), iterator)
+		}
+		_ => (None, iterator),
 	};
 
 	Ok((Node::conditional(condition, statements, else_branch), iterator))

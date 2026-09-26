@@ -33,14 +33,6 @@ pub enum ElseBranch<'a> {
 }
 
 impl<'a> ElseBranch<'a> {
-	/// Returns the branch as a statement list. An `else if` link is one conditional statement.
-	pub fn statements(&self) -> &[Node<'a>] {
-		match self {
-			Self::Block(statements) => statements,
-			Self::If(conditional) => std::slice::from_ref(conditional),
-		}
-	}
-
 	/// Returns the branch as a mutable statement list. An `else if` link is one conditional statement.
 	pub fn statements_mut(&mut self) -> &mut [Node<'a>] {
 		match self {

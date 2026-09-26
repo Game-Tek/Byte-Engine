@@ -40,6 +40,15 @@ pub(super) enum Instruction {
 		count: usize,
 		value_type: ValueType,
 	},
+	/// Copies `source` with the element selected by the `index` register replaced by `value`, the inverse of
+	/// `ExtractDynamic`.
+	InsertDynamic {
+		register: usize,
+		source: usize,
+		index: usize,
+		count: usize,
+		value: usize,
+	},
 	Arithmetic {
 		register: usize,
 		operator: ArithmeticOperator,

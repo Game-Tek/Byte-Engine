@@ -1076,6 +1076,43 @@ main: fn () -> void {
 		};
 	}
 
+	#[test]
+	fn lex_local_named_like_its_field_resolves_access_to_the_field() {
+		let script = r#"
+		Transform: struct { model: mat4f, }
+		transforms: descriptor<{ type: Transform[], binding: 0, access: read }>;
+		main: fn () -> void {
+			let model: Transform = transforms[0];
+			model.model[0];
+		}
+		"#;
+
+		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
+		let main = node.get_descendant("main").expect("Expected main");
+		let main = main.borrow();
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+
+		let statement = statements[1].borrow();
+		let Nodes::Expression(Expressions::Accessor { left: field_access, .. }) = statement.node() else {
+			panic!("Expected indexed field access");
+		};
+		let field_access = field_access.borrow();
+		let Nodes::Expression(Expressions::Accessor { right: field, .. }) = field_access.node() else {
+			panic!("Expected field access");
+		};
+		let field = field.borrow();
+		let Nodes::Expression(Expressions::Member { source, .. }) = field.node() else {
+			panic!("Expected field member expression");
+		};
+
+		assert!(
+			matches!(source.borrow().node(), Nodes::Member { name, .. } if name == "model"),
+			"Expected `model.model` to resolve to the `Transform.model` field instead of the local"
+		);
+	}
+
 	// #[test]
 	// fn push_constant() {
 	// }

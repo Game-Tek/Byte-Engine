@@ -540,3 +540,75 @@ fn compile_error(source: &str, root: Node) -> VmError {
 		Err(error) => error,
 	}
 }
+
+#[test]
+fn locals_named_like_vector_components_keep_their_own_values() {
+	let program = compile_to_besl(
+		r#"
+		main: fn () -> output { value: f32 } {
+			let x: f32 = 10.0;
+			let y: f32 = 20.0;
+			let point: vec2f = vec2f(1.0, 2.0);
+			let value: f32 = point.x + point.y + x + y;
+			return { value };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected locals named like vector components to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected component-named locals to compile");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected component-named locals to execute");
+
+	assert_eq!(
+		output.read("_besl_output_value").expect("Expected output value"),
+		Value::F32(33.0)
+	);
+}
+
+#[test]
+fn bindings_named_like_their_member_stay_rooted_after_a_store() {
+	let program = compile_to_besl(
+		r#"
+		View: struct { near: f32, far: f32, }
+		Views: struct { views: View[2], }
+		views: descriptor<{ type: Views, binding: 0, access: read_write, memory: device }>;
+		main: fn () -> void {
+			let i: u32 = 1;
+			views.views[i].near = views.views[0].near;
+			views.views[i].far = views.views[0].far;
+		}
+		"#,
+		None,
+	)
+	.expect("Expected a binding named like its member to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected stores through a member-named binding to compile");
+	let views_slot = ResourceSlot::new(0);
+	let mut views = Buffer::new(executable.buffer_layout(views_slot).expect("Expected views layout").clone());
+	views
+		.write_indexed_field("views", 0, "near", Value::F32(0.5))
+		.expect("Expected near plane write");
+	views
+		.write_indexed_field("views", 0, "far", Value::F32(100.0))
+		.expect("Expected far plane write");
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(views_slot, &mut views);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected stores through a member-named binding to execute");
+
+	assert_eq!(
+		views.read_indexed_field("views", 1, "near").expect("Expected near plane"),
+		Value::F32(0.5)
+	);
+	assert_eq!(
+		views.read_indexed_field("views", 1, "far").expect("Expected far plane"),
+		Value::F32(100.0)
+	);
+}

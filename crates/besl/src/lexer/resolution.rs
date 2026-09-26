@@ -181,25 +181,48 @@ pub(super) fn resolve_type_name(chain: &[NodeReference], type_name: &parser::Typ
 		}),
 	}
 }
+
+/// Resolves a bare name through the lexical scope chain.
 pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<NodeReference, LexError> {
-	// After the left side of an accessor has resolved a buffer binding, the next identifier
-	// belongs to that buffer's member namespace even when the binding and member share a name.
-	if let Some(left) = chain.last() {
-		let source = match left.borrow().node() {
-			Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
-			_ => None,
-		};
-		if let Some(source) = source
-			&& let Nodes::Binding {
+	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
+}
+
+/// Resolves the name after `.` in `left.name` to a member of `left`'s type.
+///
+/// Member names form their own namespace, so a local, binding, or field named `name` elsewhere in scope never
+/// shadows the member. When the type of `left` is unknown, the lookup falls back to searching `left` itself.
+pub(super) fn resolve_accessed_member(
+	chain: &[NodeReference],
+	left: &NodeReference,
+	name: &str,
+) -> Result<NodeReference, LexError> {
+	if let Some(member) = find_accessed_member(left, name) {
+		return Ok(member);
+	}
+
+	resolve_member(&extend_chain(chain, left), name)
+}
+
+/// Returns the member named `name` that `left` exposes, or `None` when `left` has no known member namespace.
+fn find_accessed_member(left: &NodeReference, name: &str) -> Option<NodeReference> {
+	// Buffer bindings and push constants declare their members on themselves rather than on a value type.
+	if let Some(source) = expression_source(left) {
+		match source.borrow().node() {
+			Nodes::Binding {
 				r#type: BindingTypes::Buffer { members },
 				..
-			} = source.borrow().node()
-			&& let Some(member) = find_named_child(members, name)
-		{
-			return Ok(member);
+			}
+			| Nodes::PushConstant { members } => return find_named_child(members, name),
+			_ => {}
 		}
 	}
-	get_reference(chain, name).ok_or(LexError::AccessingUndeclaredMember { name: name.to_string() })
+
+	let r#type = infer_expression_type(left)?;
+	let r#type = r#type.borrow();
+	match r#type.node() {
+		Nodes::Struct { fields, .. } => find_named_child(fields, name),
+		_ => None,
+	}
 }
 
 /// Clones the lexical scope chain and appends the current parent node.
@@ -396,7 +419,14 @@ pub(super) fn find_in_function_expression(
 		},
 		DescendantSearch::NonIntrinsic => match expression {
 			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(statement.clone()),
-			Expressions::Operator { left, .. } => find_descendant(left, child_name, mode),
+			Expressions::Operator { left, .. }
+				if matches!(
+					left.borrow().node(),
+					Nodes::Expression(Expressions::VariableDeclaration { .. })
+				) =>
+			{
+				find_descendant(left, child_name, mode)
+			}
 			_ => None,
 		},
 	}
@@ -404,14 +434,27 @@ pub(super) fn find_in_function_expression(
 
 pub(super) fn find_in_expression(expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
 	match expression {
-		// Only assignment declarations on the left enter the surrounding lexical scope.
-		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => find_descendant(left, child_name, mode),
+		// Only assignment declarations on the left enter the surrounding lexical scope. A store such as
+		// `views.views[i] = …` declares nothing, so its accesses must not shadow later names.
+		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => {
+			if matches!(
+				left.borrow().node(),
+				Nodes::Expression(Expressions::VariableDeclaration { .. })
+			) {
+				find_descendant(left, child_name, mode)
+			} else {
+				None
+			}
+		}
 		Expressions::Operator { left, right, .. } => {
 			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 		}
 		Expressions::Member { source, .. } => find_descendant(source, child_name, mode),
 		Expressions::Expression { elements } => find_in_descendants(elements, child_name, mode),
-		Expressions::VariableDeclaration { r#type, .. } => find_descendant(r#type, child_name, mode),
+		// A local exposes only its own name to the scope. Its type's fields belong to `local.field` accesses.
+		Expressions::VariableDeclaration { r#type, .. } if mode == DescendantSearch::Any => {
+			find_descendant(r#type, child_name, mode)
+		}
 		Expressions::Accessor { left, right } => {
 			find_descendant(right, child_name, mode).or_else(|| find_descendant(left, child_name, mode))
 		}
@@ -715,7 +758,9 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::Workgroup { format, count, .. } | Nodes::Output { format, count, .. } if count.is_some() => {
 			return Some(format.clone());
 		}
-		Nodes::Member { r#type, count: Some(_), .. } => return Some(r#type.clone()),
+		Nodes::Member {
+			r#type, count: Some(_), ..
+		} => return Some(r#type.clone()),
 		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
 		_ => infer_member_type(&source)?,
 	};

@@ -40,6 +40,15 @@ pub(super) enum Instruction {
 		count: usize,
 		value_type: ValueType,
 	},
+	/// Copies `source` with the element selected by the `index` register replaced by `value`, the inverse of
+	/// `ExtractDynamic`.
+	InsertDynamic {
+		register: usize,
+		source: usize,
+		index: usize,
+		count: usize,
+		value: usize,
+	},
 	Arithmetic {
 		register: usize,
 		operator: ArithmeticOperator,
@@ -58,6 +67,13 @@ pub(super) enum Instruction {
 	},
 	Jump {
 		target: usize,
+	},
+	/// Jumps to the target of the case whose label equals the scalar in `register`, or to `default`.
+	/// Labels are the value's 32-bit pattern, sorted for binary search. Lowers a BESL `match`.
+	Switch {
+		register: usize,
+		cases: Box<[(u32, usize)]>,
+		default: usize,
 	},
 	Discard,
 	DotProduct {

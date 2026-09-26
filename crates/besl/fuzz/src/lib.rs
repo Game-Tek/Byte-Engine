@@ -120,6 +120,7 @@ fn emit_statement(
 			emit_vec3_expression(source, cursor, *vec3_locals, *f32_locals, MAX_EXPRESSION_DEPTH);
 			source.push_str(";\n");
 		}
+		6 if cursor.chance(1, 3) => emit_match(source, cursor, *u32_locals, *f32_locals),
 		6 => emit_conditional(source, cursor, *u32_locals, *f32_locals),
 		_ => emit_loop(source, cursor, statement_index, *u32_locals),
 	}
@@ -141,7 +142,23 @@ fn emit_conditional(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals
 	source.push_str("\t}\n");
 }
 
-/// Emits one statement for an `if` or `else` branch.
+/// Emits a `match` over a `u32` local whose arms reuse the conditional branch statements.
+fn emit_match(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize, f32_locals: usize) {
+	let scrutinee = cursor.choose(u32_locals);
+	let _ = writeln!(source, "\tmatch u{scrutinee} {{");
+	for _ in 0..=cursor.choose(3) {
+		let first = cursor.next();
+		let second = cursor.next();
+		let _ = writeln!(source, "\t{first} | {second} => {{");
+		emit_conditional_branch(source, cursor, u32_locals, f32_locals);
+		source.push_str("\t}\n");
+	}
+	source.push_str("\t_ => {\n");
+	emit_conditional_branch(source, cursor, u32_locals, f32_locals);
+	source.push_str("\t}\n\t}\n");
+}
+
+/// Emits one statement for an `if`, `else`, or `match` branch.
 fn emit_conditional_branch(source: &mut String, cursor: &mut ByteCursor<'_>, u32_locals: usize, f32_locals: usize) {
 	if cursor.chance(1, 2) {
 		let target = cursor.choose(u32_locals);

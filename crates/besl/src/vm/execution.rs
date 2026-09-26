@@ -533,7 +533,8 @@ impl ExecutableProgram {
 			| Instruction::Construct { .. }
 			| Instruction::Extract { .. }
 			| Instruction::Insert { .. }
-			| Instruction::ExtractDynamic { .. } => {
+			| Instruction::ExtractDynamic { .. }
+			| Instruction::InsertDynamic { .. } => {
 				Self::execute_value_instruction(instruction, &mut frame.registers, &mut frame.constructor_values)?;
 				Ok(InstructionProgress::Advance)
 			}
@@ -621,6 +622,7 @@ impl ExecutableProgram {
 			| Instruction::WriteImage { .. } => Self::execute_image_instruction(instruction, &mut frame.registers, descriptors),
 			Instruction::JumpIfZero { .. }
 			| Instruction::Jump { .. }
+			| Instruction::Switch { .. }
 			| Instruction::Discard
 			| Instruction::Call { .. }
 			| Instruction::Return { .. } => {
@@ -702,6 +704,21 @@ impl ExecutableProgram {
 					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
 				}
 				registers[*register] = Some(extract_value(&source, index, value_type)?);
+			}
+			Instruction::InsertDynamic {
+				register,
+				source,
+				index,
+				count,
+				value,
+			} => {
+				let index = expect_u32(read_register(registers, *index)?)? as usize;
+				if index >= *count {
+					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
+				}
+				let mut aggregate = read_register(registers, *source)?;
+				insert_value(&mut aggregate, index, read_register(registers, *value)?)?;
+				registers[*register] = Some(aggregate);
 			}
 			_ => unreachable!("Value instruction dispatch must select only value instructions"),
 		}
@@ -1499,6 +1516,17 @@ impl ExecutableProgram {
 				}
 			}
 			Instruction::Jump { target } => Ok(InstructionProgress::JumpTo(*target)),
+			Instruction::Switch {
+				register,
+				cases,
+				default,
+			} => {
+				let label = switch_label(&read_register(registers, *register)?)?;
+				let target = cases
+					.binary_search_by_key(&label, |&(case, _)| case)
+					.map_or(*default, |case| cases[case].1);
+				Ok(InstructionProgress::JumpTo(target))
+			}
 			Instruction::Discard => {
 				state.discarded = true;
 				Ok(InstructionProgress::Complete(None))

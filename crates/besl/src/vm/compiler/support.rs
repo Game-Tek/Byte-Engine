@@ -262,7 +262,7 @@ pub(super) fn collect_function_references(node: &NodeReference, seen: &mut HashS
 	let (called_function, children) = {
 		let borrowed = node.borrow();
 		match borrowed.node() {
-			Nodes::Conditional { .. } => (None, borrowed.get_children().unwrap_or_default()),
+			Nodes::Conditional { .. } | Nodes::Match { .. } => (None, borrowed.get_children().unwrap_or_default()),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -311,7 +311,7 @@ pub(super) fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError>
 				Vec::new()
 			}
 			Nodes::Function { statements, .. } => statements.clone(),
-			Nodes::Conditional { .. } => borrowed.get_children().unwrap_or_default(),
+			Nodes::Conditional { .. } | Nodes::Match { .. } => borrowed.get_children().unwrap_or_default(),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -860,6 +860,7 @@ pub(super) fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::Member { .. } => "member",
 		Nodes::Function { .. } => "function",
 		Nodes::Conditional { .. } => "conditional",
+		Nodes::Match { .. } => "match",
 		Nodes::ForLoop { .. } => "for loop",
 		Nodes::Specialization { .. } => "specialization",
 		Nodes::Expression(_) => "expression",

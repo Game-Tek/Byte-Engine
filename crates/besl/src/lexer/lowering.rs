@@ -106,6 +106,44 @@ fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
 	)
 }
 
+/// Rejects `break` and `continue` outside a loop, as Rust does. It checks the parsed tree, because lexing drops
+/// match arms that can never run, and those arms must still be valid code.
+fn validate_loop_control(statements: &[parser::Node], in_loop: bool) -> Result<(), LexError> {
+	for statement in statements {
+		match statement.node() {
+			parser::Nodes::Expression(parser::Expressions::Break | parser::Expressions::Continue) if !in_loop => {
+				return Err(LexError::Undefined {
+					message: Some(
+						"`break` or `continue` outside a loop. The most likely cause is a `break` or `continue` in a function body, branch, or match arm without an enclosing `for` loop."
+							.to_string(),
+					),
+				});
+			}
+			parser::Nodes::Conditional {
+				statements, else_branch, ..
+			} => {
+				validate_loop_control(statements, in_loop)?;
+				match else_branch {
+					Some(parser::ElseBranch::Block(statements)) => validate_loop_control(statements, in_loop)?,
+					Some(parser::ElseBranch::If(conditional)) => {
+						validate_loop_control(std::slice::from_ref(conditional), in_loop)?
+					}
+					None => {}
+				}
+			}
+			parser::Nodes::Match { arms, .. } => {
+				for arm in arms {
+					validate_loop_control(&arm.statements, in_loop)?;
+				}
+			}
+			parser::Nodes::ForLoop { statements, .. } => validate_loop_control(statements, true)?,
+			_ => {}
+		}
+	}
+
+	Ok(())
+}
+
 /// Lexes the statements of a control-flow block in order. Each statement can see `scope` and the statements before it.
 fn lex_block(
 	mut scope: Vec<NodeReference>,
@@ -304,6 +342,7 @@ pub(super) fn lex_parsed_node(
 			params,
 			..
 		} => {
+			validate_loop_control(statements, false)?;
 			let t = resolve_type_name(&chain, return_type)?;
 
 			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
@@ -356,6 +395,26 @@ pub(super) fn lex_parsed_node(
 			};
 
 			Node::conditional(condition, statements, else_branch).into()
+		}
+		parser::Nodes::Match { scrutinee, arms } => {
+			let scrutinee = lex_parsed_node(chain.clone(), scrutinee, next_intrinsic_expansion_id)?;
+			let r#type = infer_expression_type(&scrutinee);
+			let domain = matching::MatchDomain::of(r#type.as_ref())?;
+
+			// Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
+			// Each arm gets its own scope, so declarations in one arm are not visible in the others.
+			let arms = arms
+				.iter()
+				.map(|arm| {
+					let values = arm.patterns.iter().map(|pattern| domain.pattern_value(pattern));
+					let statements = lex_block(chain.clone(), &arm.statements, next_intrinsic_expansion_id)?;
+					Ok((values.collect::<Result<_, _>>()?, statements))
+				})
+				.collect::<Result<_, LexError>>()?;
+
+			let (arms, default) = matching::normalize_arms(domain, arms)?;
+			let r#type = r#type.expect("A match domain always comes from a known type");
+			Node::r#match(scrutinee, r#type, arms, default).into()
 		}
 		parser::Nodes::ForLoop {
 			initializer,

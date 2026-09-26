@@ -258,11 +258,10 @@ impl PreparedLut {
 	/// function on the render thread. GPU image creation remains owned by the
 	/// selected render pass.
 	pub async fn load(resource_manager: &resource_management::ResourceManager, id: &str) -> Result<Self, String> {
-		let mut reference: Reference<Lut> = resource_manager.request(id).await.map_err(|_| {
-			format!(
-				"LUT resource '{id}' could not be loaded. The most likely cause is that the asset is missing or was not baked."
-			)
-		})?;
+		let mut reference: Reference<Lut> = resource_manager
+			.request(id)
+			.await
+			.map_err(|error| format!("Could not load LUT '{id}'. {error}"))?;
 		let metadata = reference.resource().clone();
 		let bytes = load_lut_bytes(&mut reference).await?;
 		Ok(Self { metadata, bytes })

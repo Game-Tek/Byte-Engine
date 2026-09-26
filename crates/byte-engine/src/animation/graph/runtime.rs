@@ -85,8 +85,14 @@ enum AnimationLoadCommand {
 }
 
 enum AnimationLoadCompletion {
-	Ready { resource_id: String, animation: Animation },
-	Failed { resource_id: String, error: String },
+	Ready {
+		resource_id: String,
+		animation: Animation,
+	},
+	Failed {
+		resource_id: String,
+		error: resource_management::RequestError,
+	},
 }
 
 /// The `AnimationPoolRequest` enum reports whether a lease can be sampled immediately.
@@ -110,7 +116,7 @@ pub enum AnimationPoolEvent {
 		/// The identifier of the resource that failed to load.
 		resource_id: String,
 		/// The load error reported by the resource system.
-		error: String,
+		error: resource_management::RequestError,
 	},
 	/// Increase the pool budget or use a smaller animation resource.
 	Oversized {

@@ -1,7 +1,7 @@
 use crate::{
 	Reference, ReferenceModel, Solver, resource,
 	resources::skeleton::{Skeleton, SkeletonModel},
-	solver::SolveErrors,
+	solver::SolveError,
 };
 
 /// The `Vector3Curve` enum provides translation or scale keyframes for CPU pose evaluation.
@@ -25,7 +25,7 @@ pub enum Vector3Curve {
 
 impl Vector3Curve {
 	/// Validates key timing, cardinality, and finite tangent data before CPU graph evaluation.
-	fn validate(&self, duration: f32, track: usize, path: &'static str) -> Result<(), SolveErrors> {
+	fn validate(&self, duration: f32, track: usize, path: &'static str) -> Result<(), SolveError> {
 		match self {
 			Self::Step { times, values } | Self::Linear { times, values } => {
 				validate_times_and_values(times, values, duration, track, path)
@@ -75,7 +75,7 @@ pub enum QuaternionCurve {
 
 impl QuaternionCurve {
 	/// Validates rotation keys as unit quaternions while preserving finite cubic derivative magnitudes.
-	fn validate(&self, duration: f32, track: usize) -> Result<(), SolveErrors> {
+	fn validate(&self, duration: f32, track: usize) -> Result<(), SolveError> {
 		match self {
 			Self::Step { times, values } | Self::Linear { times, values } => {
 				validate_times_and_values(times, values, duration, track, "rotation")?;
@@ -107,7 +107,7 @@ impl QuaternionCurve {
 }
 
 /// Validates rotation values while leaving cubic derivative tangents free to use arbitrary finite magnitudes.
-fn validate_quaternion_values(values: &[[f32; 4]], track: usize) -> Result<(), SolveErrors> {
+fn validate_quaternion_values(values: &[[f32; 4]], track: usize) -> Result<(), SolveError> {
 	if values.iter().any(|value| {
 		let length_squared = value.iter().map(|component| component * component).sum::<f32>();
 		(length_squared - 1.0).abs() > 1.0e-3
@@ -251,7 +251,7 @@ impl<'de> Solver<'de, Animation> for AnimationModel {
 	fn solve(
 		self,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Animation, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Animation, SolveError>> {
 		crate::r#async::future(async move {
 			let skeleton = self.skeleton.solve(storage_backend).await?;
 			validate_animation(self.duration, &self.tracks, skeleton.resource().nodes.len())?;
@@ -273,10 +273,10 @@ impl crate::StoredModel for AnimationModel {
 		stored: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Animation>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Animation>, SolveError>> {
 		crate::r#async::future(async move {
 			let model: AnimationModel = crate::from_slice(stored.resource()).map_err(|error| {
-				SolveErrors::DeserializationFailed(format!(
+				SolveError::DeserializationFailed(format!(
 					"Animation resource could not be deserialized. The most likely cause is incompatible or corrupted clip data: {error}."
 				))
 			})?;
@@ -287,7 +287,7 @@ impl crate::StoredModel for AnimationModel {
 }
 
 /// Validates clip-wide ordering, target, timing, cardinality, and numeric invariants.
-fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize) -> Result<(), SolveErrors> {
+fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize) -> Result<(), SolveError> {
 	if !duration.is_finite() || duration < 0.0 {
 		return invalid_animation("the duration is not a finite non-negative number");
 	}
@@ -329,7 +329,7 @@ fn validate_times_and_values<const N: usize>(
 	duration: f32,
 	track: usize,
 	path: &'static str,
-) -> Result<(), SolveErrors> {
+) -> Result<(), SolveError> {
 	if times.is_empty() || times.len() != values.len() {
 		return invalid_animation(format!(
 			"track {track} {path} key times and values do not have the same non-zero length"
@@ -347,8 +347,8 @@ fn validate_times_and_values<const N: usize>(
 	Ok(())
 }
 
-fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveErrors> {
-	Err(SolveErrors::DeserializationFailed(format!(
+fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
+	Err(SolveError::DeserializationFailed(format!(
 		"Animation clip is invalid. The most likely cause is malformed imported animation data: {reason}."
 	)))
 }

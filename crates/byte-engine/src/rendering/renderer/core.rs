@@ -94,7 +94,7 @@ impl Renderer {
 	/// render passes that load resources.
 	// Keep device, queue, compilation, and frame-resource initialization in their required ownership order.
 	#[allow(clippy::too_many_lines)]
-	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Self {
+	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Result<Self, RendererCreateError> {
 		let settings = Settings::new();
 
 		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
@@ -174,9 +174,9 @@ impl Renderer {
 					.gpu_validation(false)
 					.api_dump(false)
 					.debug_labels(false);
-				ghi::implementation::Instance::new(features).unwrap()
+				ghi::implementation::Instance::new(features).map_err(|source| RendererCreateError::Instance { source })?
 			}
-			Err(error) => panic!("Failed to create GHI instance: {error}"),
+			Err(source) => return Err(RendererCreateError::Instance { source }),
 		};
 
 		let mut graphics_queue_handle = None;
@@ -189,8 +189,13 @@ impl Renderer {
 					&mut graphics_queue_handle,
 				)],
 			)
-			.unwrap();
-		let mut context = device.create_context().unwrap();
+			.map_err(|source| RendererCreateError::Device {
+				source,
+				mesh_shading: settings.mesh_shading,
+			})?;
+		let mut context = device
+			.create_context()
+			.map_err(|source| RendererCreateError::Context { source })?;
 		let frame_queue_depth = 2;
 		context.set_frames_in_flight(frame_queue_depth);
 		let pipeline_compilation_server_count = parameters
@@ -200,12 +205,12 @@ impl Renderer {
 		let (pipeline_compilation_client, pipeline_compilation_manager, pipeline_compilation_servers) =
 			crate::rendering::pipeline_compilation::PipelineManager::new(&mut context, pipeline_compilation_server_count);
 
-		let graphics_queue_handle = graphics_queue_handle.unwrap();
+		let graphics_queue_handle = graphics_queue_handle.ok_or(RendererCreateError::GraphicsQueue)?;
 
 		let render_command_buffer = context.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
-		Renderer {
+		Ok(Renderer {
 			context: crate::rendering::SharedContext::new(context),
 			instance,
 
@@ -249,7 +254,7 @@ impl Renderer {
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
 			redraw_requested: true,
-		}
+		})
 	}
 
 	/// Supplies the externally owned resource manager used by render passes to resolve baked shaders.
@@ -1295,6 +1300,59 @@ pub(crate) enum RendererScreenshotError {
 	TargetHasNoHistory,
 	Transfer(ghi::TextureTransferError),
 }
+
+/// The `RendererCreateError` enum reports which graphics setup step stopped [`Renderer::new`].
+///
+/// Applications usually cannot continue without a renderer, so show the message to the
+/// user and exit. See [environment setup](/docs/use/setup/environment) for the fixes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererCreateError {
+	/// The graphics API instance could not be created, even with validation turned off.
+	Instance { source: &'static str },
+	/// No graphics device could be created with the requested features.
+	Device { source: &'static str, mesh_shading: bool },
+	/// The device could not create its rendering context.
+	Context { source: &'static str },
+	/// The device has no queue that supports raster work.
+	GraphicsQueue,
+}
+
+impl std::fmt::Display for RendererCreateError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let guide = crate::online_docs_url("use/setup/environment");
+
+		match self {
+			RendererCreateError::Instance { source } => write!(
+				f,
+				"Could not create the graphics instance: {source}. The most likely cause is a missing or outdated graphics driver. See {guide}."
+			),
+			RendererCreateError::Device {
+				source,
+				mesh_shading: true,
+			} => write!(
+				f,
+				"Could not create the graphics device: {source}. The most likely cause is that the GPU does not support mesh shading. Set `render.ghi.features.mesh-shading` to false. See {guide}."
+			),
+			RendererCreateError::Device {
+				source,
+				mesh_shading: false,
+			} => write!(
+				f,
+				"Could not create the graphics device: {source}. The most likely cause is that the GPU does not support a required feature. See {guide}."
+			),
+			RendererCreateError::Context { source } => write!(
+				f,
+				"Could not create the graphics context: {source}. The most likely cause is that the device ran out of memory during setup. See {guide}."
+			),
+			RendererCreateError::GraphicsQueue => write!(
+				f,
+				"Could not find a graphics queue. The most likely cause is that the selected GPU does not support rendering. See {guide}."
+			),
+		}
+	}
+}
+
+impl std::error::Error for RendererCreateError {}
 
 /// The `Settings` struct configures a [`Renderer`] during creation.
 pub struct Settings {

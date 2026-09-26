@@ -348,7 +348,7 @@ impl AudioSampleLoader {
 			.resource_manager
 			.request(resource_id)
 			.await
-			.map_err(|error| format!("Resource request failed. The resource manager reported: {error}"))?;
+			.map_err(|error| format!("Could not load audio sample '{resource_id}'. {error}"))?;
 		let metadata = *reference.resource();
 		let cache_key = AudioSampleCacheKey::new(resource_id, reference.hash(), metadata);
 		self.resident_keys.insert(resource_id.to_string(), cache_key.clone());

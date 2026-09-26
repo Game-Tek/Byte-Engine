@@ -9,7 +9,7 @@
 //! Request the baked [`Flipbook`] by that file's ID, load its [`Flipbook::images`], and sample them with the
 //! frame rate, for example through `byte_engine::animation::flipbook::Flipbook`.
 
-use crate::{Reference, ReferenceModel, Solver, resource, resources::image::Image, solver::SolveErrors};
+use crate::{Reference, ReferenceModel, Solver, resource, resources::image::Image, solver::SolveError};
 
 /// The `Flipbook` struct lets a renderer request a whole image sequence and its playback rate by one resource ID.
 ///
@@ -45,12 +45,12 @@ impl crate::StoredModel for FlipbookModel {
 		stored: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Flipbook>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Flipbook>, SolveError>> {
 		crate::r#async::future(async move {
 			let FlipbookModel {
 				frames_per_second,
 				images: models,
-			} = crate::from_slice(&stored.resource).map_err(|error| SolveErrors::DeserializationFailed(error.to_string()))?;
+			} = crate::from_slice(&stored.resource).map_err(|error| SolveError::DeserializationFailed(error.to_string()))?;
 
 			let images = super::solve_all(models, storage_backend).await?;
 

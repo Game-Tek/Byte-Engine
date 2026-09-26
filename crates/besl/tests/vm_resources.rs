@@ -774,6 +774,46 @@ fn stores_to_indexed_local_elements_change_only_that_element() {
 }
 
 #[test]
+fn indexed_local_stores_evaluate_each_index_once() {
+	let program = compile_to_besl(
+		r#"
+		Counter: struct { count: atomicu32, }
+		counter: descriptor<{ type: Counter, binding: 0, access: read_write }>;
+		main: fn () -> output { value: vec2f } {
+			let points: vec2f[2] = vec2f[2](vec2f(1.0, 2.0), vec2f(3.0, 4.0));
+			points[atomic_add(counter.count, 1)].y = 9.0;
+			let value: vec2f = points[1];
+			return { value };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected side-effecting index source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected side-effecting index source to compile");
+	let counter_slot = ResourceSlot::new(0);
+	let mut counter = Buffer::new(
+		executable
+			.buffer_layout(counter_slot)
+			.expect("Expected counter layout")
+			.clone(),
+	);
+	counter.write("count", Value::U32(1)).expect("Expected counter write");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(counter_slot, &mut counter);
+	descriptors.bind_buffer(output_slot(0), &mut output);
+	executable
+		.run_main(&mut descriptors)
+		.expect("Expected side-effecting index source to execute");
+
+	assert_eq!(
+		output.read("_besl_output_value").expect("Expected output value"),
+		Value::Vec2F([3.0, 9.0])
+	);
+	assert_eq!(counter.read("count").expect("Expected counter"), Value::U32(2));
+}
+
+#[test]
 fn indexed_local_stores_reject_out_of_bounds_indices() {
 	let program = compile_to_besl(
 		r#"

@@ -102,11 +102,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(&format!("_{}* {}", name, name));
 				emit_suffix(string, primary_id);
 			}
-			besl::BindingTypes::BufferArray { element } => {
+			besl::BindingTypes::BufferArray { element, .. } => {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+				string.push_str(Self::translate_buffer_member_type(element.borrow().get_name().unwrap()));
 				string.push_str("* ");
 				string.push_str(name);
 				emit_suffix(string, primary_id);
@@ -176,7 +176,8 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	pub(crate) fn translate_buffer_member_type(source: &str) -> &str {
-		// Metal storage buffers need packed vectors when the CPU data is tightly packed.
+		// Metal storage buffers need packed vectors when the CPU data is tightly packed. Array buffers use this for
+		// their elements, such as 12-byte `vec3f` and 48-byte `mat4x3f`.
 		// Float vectors retain the existing array-only policy, while 16-bit vectors stay packed inside mixed structs.
 		match source {
 			"vec2f16" => "packed_half2",
@@ -488,12 +489,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push(' ');
 				string.push_str(&format!("_{}* {} [[buffer({})]]", name, name, index));
 			}
-			besl::BindingTypes::BufferArray { element } => {
+			besl::BindingTypes::BufferArray { element, .. } => {
 				let address_space = buffer_address_space(*memory_class, *write);
 				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
-				string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+				string.push_str(Self::translate_buffer_member_type(element.borrow().get_name().unwrap()));
 				string.push_str("* ");
 				string.push_str(name);
 				string.push_str(&format!(" [[buffer({index})]]"));

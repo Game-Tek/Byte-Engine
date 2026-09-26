@@ -1119,7 +1119,7 @@ impl crate::context::ContextCreate for Device {
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle {
 		Device::create_ray_tracing_pipeline(self, builder)
 	}
-	fn build_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		Device::build_buffer(self, builder)
 	}
 	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
@@ -1198,15 +1198,15 @@ impl crate::context::Context for Device {
 		Device::get_buffer_address(self, buffer_handle)
 	}
 
-	fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
+	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		Device::get_buffer_slice(self, buffer_handle)
 	}
 
-	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		Device::get_mut_buffer_slice(self, buffer_handle)
 	}
 
-	unsafe fn transfer_buffer_mapping<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
 		unsafe { Device::transfer_buffer_mapping(self, buffer_handle) }
 	}
 

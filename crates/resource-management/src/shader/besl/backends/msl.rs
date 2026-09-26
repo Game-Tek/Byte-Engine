@@ -199,6 +199,64 @@ mod tests {
 	}
 
 	#[compio::test]
+	async fn affine_matrix_arrays_use_packed_msl_storage() {
+		let root = besl::compile_to_besl(
+			r#"
+			Palette: struct { matrices: mat4x3f[4] }
+			palette: descriptor<{ type: Palette, binding: 0, access: read_write }>;
+			main: fn (input: StageInput) -> void {
+				let item: u32 = input.thread_id.x;
+				let matrix: mat4x3f = palette.matrices[item];
+				palette.matrices[item + 1] = matrix;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected affine matrix array source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected affine matrix array MSL generation");
+
+		// Packed 48-byte matrices match the CPU stride; a native float4x3 would read with a 64-byte stride.
+		assert_string_contains!(shader, "device _besl_packed_float4x3* palette");
+		assert_string_contains!(shader, "_besl_load_mat4x3(resources.palette[item])");
+		assert_string_contains!(shader, "_besl_store_mat4x3(resources.palette[item+1],matrix)");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-affine-matrix-array")
+			.await
+			.expect("Expected affine matrix array MSL to compile natively");
+	}
+
+	#[compio::test]
+	async fn scalar_runtime_arrays_use_packed_msl_element_pointers() {
+		let root = besl::compile_to_besl(super::super::SCALAR_RUNTIME_ARRAY_COMPUTE, None)
+			.expect("Expected scalar runtime-array compute source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected scalar runtime-array MSL generation");
+
+		// `packed_float3` keeps the 12-byte CPU stride; a plain `float3` would read with a 16-byte stride.
+		assert_string_contains!(shader, "const device packed_float3* positions");
+		assert_string_contains!(shader, "const device ushort* indices");
+		assert_string_contains!(shader, "const device uchar* corners");
+		assert_string_contains!(shader, "device uint* results");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-scalar-runtime-array")
+			.await
+			.expect("Expected scalar runtime-array MSL to compile natively");
+	}
+
+	#[compio::test]
 	async fn descriptor_array_elements_reach_every_texture_intrinsic_in_msl() {
 		let root = besl::compile_to_besl(super::super::DESCRIPTOR_ARRAY_FRAGMENT, None)
 			.expect("Expected descriptor-array fragment source to link");
@@ -447,7 +505,7 @@ mod tests {
 				&generator::tests::mixed_vec4u16_binding(),
 			)
 			.expect("Expected mixed vec4u16 MSL generation");
-		assert_string_contains!(vec2_array, "struct _buff{packed_ushort2 values[2];};");
+		assert_string_contains!(vec2_array, "device packed_ushort2* buff");
 		assert_string_contains!(mixed_vec4, "struct _buff{packed_ushort4 value;ushort tail;};");
 	}
 
@@ -460,7 +518,7 @@ mod tests {
 				&generator::tests::vec2f16_array_binding(),
 			)
 			.expect("Expected vec2f16 MSL generation");
-		assert_string_contains!(shader, "struct _buff{packed_half2 values[2];};");
+		assert_string_contains!(shader, "device packed_half2* buff");
 	}
 
 	#[compio::test]
@@ -666,8 +724,8 @@ mod tests {
 			argument_buffer_shader,
 			"constant _dispatch_values* dispatch_values [[id(0)]];"
 		);
-		assert_string_contains!(argument_buffer_shader, "const device _vertices* vertices [[id(2)]];");
-		assert_string_contains!(argument_buffer_shader, "device _counters* counters [[id(4)]];");
+		assert_string_contains!(argument_buffer_shader, "const device uint* vertices [[id(2)]];");
+		assert_string_contains!(argument_buffer_shader, "device uint* counters [[id(4)]];");
 
 		let bare_resource_shader = Generator::new()
 			.minified(true)
@@ -678,8 +736,8 @@ mod tests {
 			bare_resource_shader,
 			"constant _dispatch_values* dispatch_values [[buffer(0)]]"
 		);
-		assert_string_contains!(bare_resource_shader, "const device _vertices* vertices [[buffer(1)]]");
-		assert_string_contains!(bare_resource_shader, "device _counters* counters [[buffer(2)]]");
+		assert_string_contains!(bare_resource_shader, "const device uint* vertices [[buffer(1)]]");
+		assert_string_contains!(bare_resource_shader, "device uint* counters [[buffer(2)]]");
 
 		#[cfg(target_os = "macos")]
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(
@@ -715,8 +773,8 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "resources.pixel_mapping->pixel_mapping[0]");
-		assert_string_contains!(shader, "resources.meshes->meshes[1]");
+		assert_string_contains!(shader, "resources.pixel_mapping[0]");
+		assert_string_contains!(shader, "resources.meshes[1]");
 	}
 
 	#[test]
@@ -756,8 +814,8 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "struct _positions{packed_float3 values[8];};");
-		assert_string_contains!(shader, "struct _uvs{packed_float2 values[8];};");
+		assert_string_contains!(shader, "const device packed_float3* positions [[id(0)]];");
+		assert_string_contains!(shader, "const device packed_float2* uvs [[id(2)]];");
 	}
 
 	#[test]
@@ -1566,7 +1624,7 @@ struct PrimitiveOutput {
 			Some("".into()),
 			None,
 			Some(
-				"position = resources.cameras->cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
+				"position = resources.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
 					.into(),
 			),
 			&["cameras", "in_position", "out_instance_index"],
@@ -1588,8 +1646,7 @@ struct PrimitiveOutput {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "struct _cameras{Camera cameras[8];};");
-		assert_string_contains!(shader, "struct _resources{constant _cameras* cameras [[id(0)]];};");
+		assert_string_contains!(shader, "struct _resources{constant Camera* cameras [[id(0)]];};");
 		assert_string_contains!(shader, "struct VertexInput{float3 in_position [[attribute(0)]];};");
 		assert_string_contains!(
 			shader,
@@ -1599,7 +1656,7 @@ struct PrimitiveOutput {
 			shader,
 			"vertex VertexOutput besl_main(VertexInput in [[stage_in]],constant _resources& resources [[buffer(16)]])"
 		);
-		assert_string_contains!(shader, "position = resources.cameras->cameras[0].view_projection");
+		assert_string_contains!(shader, "position = resources.cameras[0].view_projection");
 		assert_string_contains!(shader, "return out;");
 	}
 
@@ -1648,7 +1705,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "float4x4 camera_matrix(constant _resources& resources);");
 		assert_string_contains!(
 			shader,
-			"float4x4 camera_matrix(constant _resources& resources){return resources.cameras->cameras[0].view_projection;}"
+			"float4x4 camera_matrix(constant _resources& resources){return resources.cameras[0].view_projection;}"
 		);
 		assert_string_contains!(
 			shader,
@@ -2285,14 +2342,14 @@ struct PrimitiveOutput {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected standalone atomic source to lower to MSL");
-		assert_string_contains!(shader, "atomic_uint values[8]");
+		assert_string_contains!(shader, "device atomic_uint* counters");
 		assert_string_contains!(shader, "texture2d<uint, access::read> index_image");
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
 		assert_string_contains!(shader, ".read(coord).x");
 		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
 		assert_string_contains!(
 			shader,
-			"_besl_atomic_compare_exchange(resources.counters->values[index],old,7)"
+			"_besl_atomic_compare_exchange(resources.counters[index],old,7)"
 		);
 		assert_string_contains!(shader, "_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)");
 		assert_string_contains!(

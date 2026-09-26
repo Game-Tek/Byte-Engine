@@ -1188,7 +1188,7 @@ mod tests {
 
 		for (index, expected) in expected.into_iter().enumerate() {
 			let value = results
-				.read_indexed("colors", index)
+				.read_array_element(index)
 				.expect("Missing debug color result. The most likely cause is an incorrect test array layout.");
 
 			let Value::Vec4F(actual) = value else {
@@ -1201,7 +1201,7 @@ mod tests {
 		}
 
 		let wrapped = results
-			.read_indexed("colors", 16)
+			.read_array_element(16)
 			.expect("Missing wrapped debug color. The most likely cause is an incorrect test array layout.");
 
 		assert_eq!(wrapped, Value::Vec4F(expected[0]));

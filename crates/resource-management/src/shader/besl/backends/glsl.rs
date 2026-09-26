@@ -152,6 +152,27 @@ mod tests {
 	}
 
 	#[test]
+	fn scalar_runtime_arrays_use_scalar_layout_glsl_blocks() {
+		let root = besl::compile_to_besl(super::super::SCALAR_RUNTIME_ARRAY_COMPUTE, None)
+			.expect("Expected scalar runtime-array compute source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected scalar runtime-array GLSL generation");
+
+		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) readonly buffer _positions{vec3 positions[];};");
+		assert_string_contains!(shader, "layout(set=0,binding=1,scalar) readonly buffer _indices{uint16_t indices[];};");
+		assert_string_contains!(shader, "layout(set=0,binding=2,scalar) readonly buffer _corners{uint8_t corners[];};");
+		assert_string_contains!(shader, "layout(set=0,binding=3,scalar) writeonly buffer _results{uint32_t results[];};");
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-scalar-runtime-array")
+			.expect("Expected scalar runtime-array GLSL to compile to SPIR-V");
+	}
+
+	#[test]
 	fn sampled_descriptor_array_keeps_descriptor_indexing_in_glsl() {
 		let root = besl::compile_to_besl(
 			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
@@ -329,7 +350,7 @@ mod tests {
 				&generator::tests::vec2f16_array_binding(),
 			)
 			.expect("Expected vec2f16 GLSL generation");
-		assert_string_contains!(shader, "f16vec2 values[2];");
+		assert_string_contains!(shader, "f16vec2 buff[2];");
 		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 	}
 
@@ -341,7 +362,7 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "pixel_mapping.pixel_mapping[0]=meshes.meshes[1];");
+		assert_string_contains!(shader, "pixel_mapping[0]=meshes[1];");
 	}
 
 	#[test]

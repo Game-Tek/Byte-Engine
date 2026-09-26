@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use utils::hash::HashMap;
 use utils::{AvailabilityGraph, Extent, StableVec};
 
-use super::geometry::{GeometryHandles, MeshData};
+use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY, ENVIRONMENT_BINDING,
 	MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_MATERIAL_TEXTURES,
@@ -55,6 +55,9 @@ use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resou
 /// The startup parameters that set the local-light shadow pool capacities.
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
 pub const POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.point-shadow-map-pool.capacity";
+/// The prefix of the startup parameters that set each scene-wide geometry buffer's element count, such as
+/// `render.geometry.triangle-capacity`. See [`GeometryCapacity`].
+pub const GEOMETRY_CAPACITY_PARAMETER_PREFIX: &str = "render.geometry.";
 /// The startup parameters that set how far directional shadows reach, in meters, and the share of their cascade
 /// splits that is logarithmic. See [`CascadeSplits`].
 pub const DIRECTIONAL_SHADOW_DISTANCE_PARAMETER: &str = "render.directional-shadows.distance";
@@ -67,6 +70,7 @@ pub const DIRECTIONAL_SHADOW_FITTING_PARAMETER: &str = "render.directional-shado
 /// pipeline.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VisibilityPipelineSettings {
+	geometry_capacity: GeometryCapacity,
 	cone_shadow_map_pool_capacity: usize,
 	point_shadow_map_pool_capacity: usize,
 	cascade_splits: CascadeSplits,
@@ -76,6 +80,7 @@ pub struct VisibilityPipelineSettings {
 impl Default for VisibilityPipelineSettings {
 	fn default() -> Self {
 		Self {
+			geometry_capacity: GeometryCapacity::default(),
 			cone_shadow_map_pool_capacity: DEFAULT_CONE_SHADOW_POOL_CAPACITY,
 			point_shadow_map_pool_capacity: DEFAULT_POINT_SHADOW_POOL_CAPACITY,
 			cascade_splits: CascadeSplits::default(),
@@ -85,6 +90,19 @@ impl Default for VisibilityPipelineSettings {
 }
 
 impl VisibilityPipelineSettings {
+	/// Sets how many vertices, triangles, and meshlets the scene-wide geometry buffers hold.
+	///
+	/// Meshes that would overflow a buffer are rejected at upload, so size this for the largest resident scene.
+	pub fn with_geometry_capacity(mut self, capacity: GeometryCapacity) -> Result<Self, String> {
+		capacity.validate()?;
+		self.geometry_capacity = capacity;
+		Ok(self)
+	}
+
+	pub fn geometry_capacity(&self) -> GeometryCapacity {
+		self.geometry_capacity
+	}
+
 	/// Sets how far directional shadows reach from the camera and how their cascades divide that range.
 	pub fn with_cascade_splits(mut self, cascade_splits: CascadeSplits) -> Self {
 		self.cascade_splits = cascade_splits;

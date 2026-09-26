@@ -856,7 +856,7 @@ mod tests {
 	}
 }
 
-impl<T: bytemuck::Pod> From<BufferHandle<T>> for BufferDescriptor {
+impl<T: ?Sized> From<BufferHandle<T>> for BufferDescriptor {
 	fn from(val: BufferHandle<T>) -> Self {
 		BufferDescriptor {
 			buffer: val.into(),

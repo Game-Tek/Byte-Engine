@@ -490,25 +490,41 @@ pub(super) fn compile_buffer_layout(members: &[NodeReference]) -> Result<BufferL
 	Ok(BufferLayout {
 		members: compiled_members,
 		size: offset,
+		element: None,
+		element_count: None,
 	})
 }
 
-/// Compiles the host-visible layout of one runtime-sized storage-buffer element.
-pub(super) fn compile_buffer_array_layout(element: &NodeReference) -> Result<(BufferLayout, ValueType), VmError> {
+/// Compiles the host-visible layout of one array-buffer element and the array's fixed count, if any.
+///
+/// Struct elements keep one layout member per field. Scalar and vector elements have no members; hosts address them
+/// with [`crate::vm::Buffer::write_array_element`].
+pub(super) fn compile_buffer_array_layout(
+	element: &NodeReference,
+	count: Option<std::num::NonZeroUsize>,
+) -> Result<(BufferLayout, ValueType), VmError> {
 	let unsupported = || VmError::UnsupportedBufferLayout {
-		message: "Unsupported runtime buffer element. The most likely cause is that its type isn't a non-empty struct."
+		message: "Unsupported buffer array element. The most likely cause is that its type is empty, boolean, or a resource handle."
 			.to_string(),
 	};
-	let element_ref = element.borrow();
-	let Nodes::Struct { fields, .. } = element_ref.node() else {
-		return Err(unsupported());
+	let value_type = resolve_value_type(element)?;
+	let mut layout = match element.borrow().node() {
+		Nodes::Struct { fields, .. } if matches!(value_type, ValueType::Struct { .. }) => compile_buffer_layout(fields)?,
+		_ if is_resource_type(&value_type) || matches!(value_type, ValueType::Bool) => return Err(unsupported()),
+		_ => BufferLayout::scalar_element(value_type.clone()),
 	};
-	let layout = compile_buffer_layout(fields)?;
 	if layout.size() == 0 {
 		return Err(unsupported());
 	}
-	drop(element_ref);
-	Ok((layout, resolve_value_type(element)?))
+	if let Some(count) = count {
+		// Validating the total here lets `Buffer::new` allocate fixed arrays without a fallible size.
+		layout.size().checked_mul(count.get()).ok_or_else(|| VmError::UnsupportedBufferLayout {
+			message: "Buffer array exceeds addressable CPU memory. The most likely cause is that its fixed element count is too large."
+				.to_string(),
+		})?;
+		layout.element_count = Some(count.get());
+	}
+	Ok((layout, value_type))
 }
 
 pub(super) fn compile_member_layouts(

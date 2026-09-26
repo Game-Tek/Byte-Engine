@@ -1156,7 +1156,9 @@ mod tests {
 	};
 	use crate::rendering::{
 		render_pass::simple_compute,
-		shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d},
+		shader_vm_test::{
+			array_buffer, assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d,
+		},
 	};
 	use crate::ui::{
 		Container, Text,
@@ -1239,15 +1241,9 @@ mod tests {
 		mask_buffer
 	}
 
+	/// Allocates at least one element so an empty upload still binds a valid VM buffer, as the render pass does.
 	fn vm_array(executable: &ExecutableProgram, slot: u32, count: usize) -> Buffer {
-		Buffer::new_array(
-			executable
-				.buffer_layout(besl::vm::ResourceSlot::new(slot))
-				.expect("Missing UI shader buffer layout. The most likely cause is a changed shader binding.")
-				.clone(),
-			count.max(1),
-		)
-		.expect("Failed to create a UI shader VM buffer. The most likely cause is an invalid element count.")
+		array_buffer(executable, besl::vm::ResourceSlot::new(slot), count.max(1))
 	}
 
 	// Mirrors primitive records into a VM buffer the way the render pass uploads them.

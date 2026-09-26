@@ -193,6 +193,28 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 			.with_point_shadow_map_pool_capacity(capacity)
 			.unwrap_or_else(|reason| panic!("{reason}"));
 	}
+	// Geometry capacity: each parameter overrides one scene-wide geometry buffer's element count.
+	let mut geometry_capacity = visibility_pipeline_settings.geometry_capacity();
+	for (stream, capacity) in [
+		("vertex", &mut geometry_capacity.vertices),
+		("vertex-index", &mut geometry_capacity.vertex_indices),
+		("triangle", &mut geometry_capacity.triangles),
+		("meshlet", &mut geometry_capacity.meshlets),
+		("skinning-vertex", &mut geometry_capacity.skinning_vertices),
+	] {
+		let name = format!("{GEOMETRY_CAPACITY_PARAMETER_PREFIX}{stream}-capacity");
+		if let Some(parameter) = application.get_parameter(&name) {
+			*capacity = parameter.value().parse::<u32>().unwrap_or_else(|_| {
+				panic!(
+					"Geometry capacity was not set. The most likely cause is that `{}` for `{name}` is not a whole number below 2^32.",
+					parameter.value()
+				)
+			});
+		}
+	}
+	visibility_pipeline_settings = visibility_pipeline_settings
+		.with_geometry_capacity(geometry_capacity)
+		.unwrap_or_else(|reason| panic!("{reason}"));
 	// Directional shadow coverage: each parameter overrides one part of the default splits.
 	let parse_split_parameter = |name: &str| {
 		application.get_parameter(name).map(|parameter| {
@@ -246,7 +268,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		{ rendering::pipelines::visibility::ASYNC_UPLOAD_BUFFER_BYTE_COUNT },
 	>(&mut context, "Renderer Async Upload Buffer");
 
-	let geometry = rendering::pipelines::visibility::GeometryHandles::new(&mut context);
+	let geometry =
+		rendering::pipelines::visibility::GeometryHandles::new(&mut context, visibility_pipeline_settings.geometry_capacity());
 
 	drop(context);
 

@@ -902,6 +902,8 @@ impl Node {
 		memory_class: BufferMemoryClass,
 		count: Option<NonZeroU32>,
 	) -> Node {
+		// A descriptor array of buffers keeps its wrapper struct per resource; only single buffers are lowered.
+		let r#type = if count.is_none() { r#type.lowered_single_array() } else { r#type };
 		Node {
 			node: Nodes::Binding {
 				name: name.to_string(),
@@ -1138,14 +1140,55 @@ impl Node {
 	}
 }
 
+/// The `FixedArray` struct keeps what a fixed-size array buffer was declared with, so shaders can keep indexing it
+/// through its wrapper member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedArray {
+	pub count: NonZeroUsize,
+	/// The wrapper member's name. `binding.alias[i]` reads `binding[i]`.
+	pub alias: String,
+}
+
+impl BindingTypes {
+	/// Lowers a buffer whose only member is a fixed array into [`BindingTypes::BufferArray`].
+	fn lowered_single_array(self) -> Self {
+		let lowered = match &self {
+			Self::Buffer { members } => match members.as_slice() {
+				[member] => match member.borrow().node() {
+					Nodes::Member {
+						name,
+						r#type,
+						count: Some(count),
+					} => Some(Self::BufferArray {
+						element: r#type.clone(),
+						fixed: Some(FixedArray {
+							count: *count,
+							alias: name.clone(),
+						}),
+					}),
+					_ => None,
+				},
+				_ => None,
+			},
+			_ => None,
+		};
+		lowered.unwrap_or(self)
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTypes {
 	Buffer {
 		members: Vec<NodeReference>,
 	},
-	/// A storage buffer whose element count is supplied by the bound resource.
+	/// A storage buffer holding a flat array of `element` values.
+	///
+	/// Runtime arrays (`type: T[]`) have no `fixed` size; the bound resource supplies their length. A buffer declared
+	/// as a struct whose only member is a fixed array, such as `Meshes: struct { meshes: Mesh[1024] }`, is lowered to
+	/// this form, so every backend handles one array shape.
 	BufferArray {
 		element: NodeReference,
+		fixed: Option<FixedArray>,
 	},
 	CombinedImageSampler {
 		format: String,
@@ -1665,6 +1708,9 @@ fn atomic_intrinsics(atomic: NodeReference, scalar: NodeReference, void: NodeRef
 		binary("atomic_xor", "mask"),
 	]
 }
+
+/// Built-in scalar types with a byte representation in storage buffers. `bool`, `void`, and resource handles have none.
+pub(crate) const STORABLE_SCALAR_TYPES: [&str; 6] = ["u8", "u16", "u32", "i32", "f16", "f32"];
 
 fn primitive_type(name: &str) -> NodeReference {
 	Node::r#struct(name, Vec::new()).into()

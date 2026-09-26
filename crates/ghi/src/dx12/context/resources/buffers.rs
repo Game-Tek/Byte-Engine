@@ -1,9 +1,9 @@
 use super::super::*;
 
 impl Device {
-	pub fn build_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
+	pub fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
-			Layout::new::<T>(),
+			T::layout(builder.length),
 			builder.resource_uses,
 			builder.device_accesses,
 			BufferStorage::Static,
@@ -13,7 +13,7 @@ impl Device {
 
 	pub fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: buffer::Builder) -> DynamicBufferHandle<T> {
 		let handle = self.create_buffer_with_layout(
-			Layout::new::<T>(),
+			<T as crate::buffer::BufferContents>::layout(builder.length),
 			builder.resource_uses,
 			builder.device_accesses,
 			BufferStorage::Dynamic,
@@ -42,21 +42,30 @@ impl Device {
 			.unwrap_or(0)
 	}
 
-	pub fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
+	pub fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T {
 		let buffer = self
 			.buffer(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
+		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: Typed handles preserve the allocation's layout; zero-sized buffers carry an aligned sentinel pointer.
-		unsafe { &*(buffer.data as *const T) }
+		unsafe { &*pointer }
 	}
 
-	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
 		Self::mark_buffer_host_write(buffer);
+		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: Typed handles preserve the allocation's layout and `&mut self` guarantees exclusive CPU access.
-		unsafe { &mut *(buffer.data as *mut T) }
+		unsafe { &mut *pointer }
+	}
+
+	/// Returns the typed CPU view of a buffer's host storage, sized by the allocation's recorded byte count.
+	fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(buffer: &Buffer) -> *mut T {
+		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.data, buffer.size).expect(
+			"Failed to map a typed DX12 buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU storage.",
+		)
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
@@ -64,13 +73,14 @@ impl Device {
 	/// # Safety
 	///
 	/// The caller must keep the buffer alive and prevent concurrent access for the lifetime of the returned mapping.
-	pub unsafe fn transfer_buffer_mapping<T: crate::Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	pub unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
 		Self::mark_buffer_host_write(buffer);
+		let pointer = Self::typed_buffer_pointer::<T>(buffer);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
-		unsafe { crate::buffer::Mapping::from_raw_parts(buffer.data, std::mem::size_of::<T>()) }
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
 	}
 
 	pub(crate) fn buffer_resource_state(

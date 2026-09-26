@@ -338,7 +338,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -444,7 +444,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		} else {
 			(buffer.pointer.0, buffer.size)
 		};
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(pointer, byte_count).expect(
+		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(pointer, byte_count).expect(
 			"Failed to map a typed Vulkan frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
 		);
 		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.

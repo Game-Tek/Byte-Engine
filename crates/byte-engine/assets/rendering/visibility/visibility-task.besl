@@ -37,17 +37,13 @@ Meshes: struct {
 	meshes: Mesh[1024],
 }
 
-Meshlets: struct {
-	meshlets: Meshlet[4096],
-}
-
 MeshDispatchWork: struct {
 	items: u32[131072],
 }
 
 views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
 meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
-meshlets: descriptor<{ type: Meshlets, binding: 8, access: read, memory: device }>;
+meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
 
 meshlet_instances: task_payload<u32, 32>;
@@ -182,12 +178,14 @@ main: fn() -> void {
 	workgroup_barrier();
 
 	if (lane < chunk_meshlet_count) {
-		let meshlet_index: u32 = mesh.base_meshlet_index + first_meshlet + lane;
-		let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+		let relative_meshlet_index: u32 = first_meshlet + lane;
+		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
 		if (mesh.skinned_base_vertex_index != 4294967295 || meshlet_is_visible(mesh, meshlet, view)) {
 			let payload_index: u32 = atomic_add(visible_count, 1);
-			// One payload word keeps the meshlet and its owning instance indivisible across emitted mesh grids.
-			meshlet_instances[payload_index] = meshlet_index | (instance_index << 12);
+			// One payload word keeps the meshlet and its owning instance indivisible across emitted mesh grids. The
+			// meshlet index is relative to the instance's first meshlet, so scene-wide meshlet capacity is not limited
+			// by its 12 bits.
+			meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12);
 		}
 	}
 

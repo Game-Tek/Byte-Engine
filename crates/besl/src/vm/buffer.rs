@@ -10,11 +10,11 @@ pub struct Buffer {
 }
 
 impl Buffer {
+	/// Allocates one buffer value, or every element of a fixed-size array buffer.
 	pub fn new(layout: BufferLayout) -> Self {
-		Self {
-			data: vec![0; layout.size()],
-			layout,
-		}
+		let element_count = layout.element_count.unwrap_or(1);
+		Self::new_array(layout, element_count)
+			.expect("Invalid VM buffer size. The most likely cause is a layout that skipped compile-time size validation.")
 	}
 
 	/// Allocates contiguous storage for `element_count` instances of one runtime buffer element layout.
@@ -42,21 +42,41 @@ impl Buffer {
 		&self.data
 	}
 
-	/// Writes one named member in a runtime-sized buffer element.
+	/// Writes one named member in an array-buffer element.
 	pub fn write_array_member(&mut self, index: usize, member_name: &str, value: Value) -> Result<(), VmError> {
-		let (offset, value_type) = {
-			let member = self.member_layout(member_name)?;
-			if member.count() != 1 {
-				return Err(VmError::UnsupportedBufferLayout {
-					message: format!("Array member `{member_name}` requires a nested element index"),
-				});
-			}
-			(
-				self.array_element_offset(index)? + member.offset(),
-				member.value_type().clone(),
-			)
-		};
+		let (offset, value_type) = self.array_member_slot(index, member_name)?;
+		let value_type = value_type.clone();
 		self.write_value(offset, &value_type, &value)
+	}
+
+	/// Reads one named member of an array-buffer element.
+	pub fn read_array_member(&self, index: usize, member_name: &str) -> Result<Value, VmError> {
+		let (offset, value_type) = self.array_member_slot(index, member_name)?;
+		self.read_value(offset, value_type)
+	}
+
+	/// Returns the byte offset and type of one scalar member inside array element `index`.
+	fn array_member_slot(&self, index: usize, member_name: &str) -> Result<(usize, &ValueType), VmError> {
+		let member = self.member_layout(member_name)?;
+		if member.count() != 1 {
+			return Err(VmError::UnsupportedBufferLayout {
+				message: format!("Array member `{member_name}` requires a nested element index"),
+			});
+		}
+		Ok((self.array_element_offset(index)? + member.offset(), member.value_type()))
+	}
+
+	/// Writes one whole element of a runtime-sized buffer whose element is a scalar or vector, such as `u16[]`.
+	pub fn write_array_element(&mut self, index: usize, value: Value) -> Result<(), VmError> {
+		let value_type = self.scalar_element_type()?.clone();
+		let offset = self.array_element_offset(index)?;
+		self.write_value(offset, &value_type, &value)
+	}
+
+	/// Reads one whole element of a runtime-sized buffer whose element is a scalar or vector.
+	pub fn read_array_element(&self, index: usize) -> Result<Value, VmError> {
+		let offset = self.array_element_offset(index)?;
+		self.read_value(offset, self.scalar_element_type()?)
 	}
 
 	/// Reads a VM value from the buffer layout by member name.
@@ -308,6 +328,13 @@ impl Buffer {
 	fn member_layout(&self, member_name: &str) -> Result<&BufferMemberLayout, VmError> {
 		self.layout.member(member_name).ok_or_else(|| VmError::UnknownBufferMember {
 			member: member_name.to_string(),
+		})
+	}
+
+	/// Returns the element type of a scalar or vector runtime array.
+	fn scalar_element_type(&self) -> Result<&ValueType, VmError> {
+		self.layout.element.as_ref().ok_or_else(|| VmError::UnsupportedBufferLayout {
+			message: "Whole-element access needs a scalar or vector runtime array. The most likely cause is a struct element, which is written by member with write_array_member.".to_string(),
 		})
 	}
 

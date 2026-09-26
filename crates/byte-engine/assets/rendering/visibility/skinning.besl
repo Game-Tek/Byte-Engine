@@ -3,22 +3,6 @@ SkinnedVertex: struct {
 	normal: vec4f,
 }
 
-SourcePositions: struct {
-	values: vec3f[262144],
-}
-
-SourceNormals: struct {
-	values: vec3f[262144],
-}
-
-SourceJoints: struct {
-	values: vec4u16[262144],
-}
-
-SourceWeights: struct {
-	values: vec4f[262144],
-}
-
 MatrixPalette: struct {
 	values: mat4x3f[65536],
 }
@@ -36,10 +20,11 @@ SkinnedVertices: struct {
 	values: SkinnedVertex[262144],
 }
 
-source_positions: descriptor<{ type: SourcePositions, binding: 0, access: read, memory: device }>;
-source_normals: descriptor<{ type: SourceNormals, binding: 1, access: read, memory: device }>;
-source_joints: descriptor<{ type: SourceJoints, binding: 2, access: read, memory: device }>;
-source_weights: descriptor<{ type: SourceWeights, binding: 3, access: read, memory: device }>;
+// Bind-pose sources are sized by the geometry capacity at runtime.
+source_positions: descriptor<{ type: vec3f[], binding: 0, access: read, memory: device }>;
+source_normals: descriptor<{ type: vec3f[], binding: 1, access: read, memory: device }>;
+source_joints: descriptor<{ type: vec4u16[], binding: 2, access: read, memory: device }>;
+source_weights: descriptor<{ type: vec4f[], binding: 3, access: read, memory: device }>;
 matrix_palette: descriptor<{ type: MatrixPalette, binding: 4, access: read, memory: device }>;
 skinned_vertices: descriptor<{ type: SkinnedVertices, binding: 5, access: write, memory: device }>;
 dual_quaternion_palette: descriptor<{ type: DualQuaternionPalette, binding: 6, access: read, memory: device }>;
@@ -100,10 +85,10 @@ main: fn (input: StageInput) -> void {
 	}
 
 	let source_vertex_index: u32 = push_constant.source_vertex_base + local_vertex_index;
-	let source_position: vec3f = source_positions.values[source_vertex_index];
-	let source_normal: vec3f = source_normals.values[source_vertex_index];
-	let joints: vec4u16 = source_joints.values[source_vertex_index];
-	let weights: vec4f = source_weights.values[source_vertex_index];
+	let source_position: vec3f = source_positions[source_vertex_index];
+	let source_normal: vec3f = source_normals[source_vertex_index];
+	let joints: vec4u16 = source_joints[source_vertex_index];
+	let weights: vec4f = source_weights[source_vertex_index];
 	let destination_vertex_index: u32 = push_constant.destination_vertex_base + local_vertex_index;
 	if (
 		push_constant.palette_count == 0

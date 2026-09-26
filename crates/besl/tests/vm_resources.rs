@@ -237,6 +237,57 @@ fn runtime_buffer_index_selects_an_array_texture_layer_with_the_bound_sampler() 
 }
 
 #[test]
+fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
+	let program = compile_to_besl(
+		r#"
+		indices: descriptor<{ type: u16[], binding: 0, access: read }>;
+		positions: descriptor<{ type: vec3f[], binding: 1, access: read }>;
+		results: descriptor<{ type: u32[], binding: 2, access: write }>;
+		main: fn () -> void {
+			let position: vec3f = positions[u32(indices[1])];
+			results[1] = u32(position.y);
+		}
+		"#,
+		None,
+	)
+	.expect("Expected scalar runtime buffer source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected scalar runtime buffer compilation");
+	let array = |slot: u32, count: usize| {
+		Buffer::new_array(
+			executable
+				.buffer_layout(ResourceSlot::new(slot))
+				.expect("Expected runtime buffer layout")
+				.clone(),
+			count,
+		)
+		.expect("Expected runtime buffer storage")
+	};
+	let mut indices = array(0, 2);
+	let mut positions = array(1, 3);
+	let mut results = array(2, 2);
+	indices.write_array_element(1, Value::U16(2)).expect("Expected index write");
+	positions
+		.write_array_element(2, Value::Vec3F([1.0, 9.0, 3.0]))
+		.expect("Expected position write");
+	// Packed vector elements keep the 12-byte CPU stride instead of a 16-byte aligned one.
+	assert_eq!(positions.bytes().len(), 3 * 12);
+
+	{
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(ResourceSlot::new(0), &mut indices);
+		descriptors.bind_buffer(ResourceSlot::new(1), &mut positions);
+		descriptors.bind_buffer(ResourceSlot::new(2), &mut results);
+		executable.run_main(&mut descriptors).expect("Expected scalar runtime buffer execution");
+	}
+
+	assert_eq!(results.read_array_element(1), Ok(Value::U32(9)));
+	assert_eq!(
+		results.read_array_element(2),
+		Err(VmError::BufferArrayIndexOutOfBounds { index: 2, count: 2 })
+	);
+}
+
+#[test]
 fn runtime_buffer_bounds_follow_the_bound_byte_length() {
 	let program = compile_to_besl(
 		r#"
@@ -281,8 +332,9 @@ fn non_indexed_field_access_rejects_array_members() {
 	root.add_children(vec![
 		Node::binding(
 			"items",
+			// A second member keeps this a struct buffer; a lone array member is lowered to an array buffer.
 			BindingTypes::Buffer {
-				members: vec![Node::array("items", item_type, 2)],
+				members: vec![Node::array("items", item_type, 2), Node::member("count", u32_type.clone()).into()],
 			},
 			0,
 			true,
@@ -484,7 +536,8 @@ fn buffer_layout_rejects_overflowing_arrays() {
 	assert_eq!(
 		error,
 		VmError::UnsupportedBufferLayout {
-			message: "Buffer member `values` exceeds addressable CPU memory".to_string(),
+			message: "Buffer array exceeds addressable CPU memory. The most likely cause is that its fixed element count is too large."
+				.to_string(),
 		}
 	);
 }

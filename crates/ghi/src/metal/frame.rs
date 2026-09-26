@@ -270,7 +270,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.frame_key
 	}
 
-	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: crate::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: crate::BufferHandle<T>,
+	) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
@@ -322,7 +325,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
 			);
 		let buffer = self.device.buffers.resource(handle);
-		let pointer = crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
 			"Failed to map a typed Metal frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
 		);
 		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.

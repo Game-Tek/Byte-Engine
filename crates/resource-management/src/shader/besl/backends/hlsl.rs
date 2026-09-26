@@ -17,6 +17,17 @@ pub(crate) use emit::*;
 pub use facade::Generator;
 pub(crate) use facade::{HlslBufferBindingSource, HlslStage};
 pub(crate) use generate::*;
+
+/// Returns the narrow array element DX12 packs into shared 32-bit words, so declarations, accesses, and reflected
+/// strides agree. Other element types are stored natively.
+pub(crate) fn hlsl_narrow_element(element_type: &str) -> Option<&'static str> {
+	match element_type {
+		"u8" => Some("u8"),
+		"u16" => Some("u16"),
+		_ => None,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::cell::RefCell;
@@ -291,6 +302,27 @@ mod tests {
 		assert_string_contains!(shader, "Instance instance=instances[");
 		assert_string_contains!(shader, "sprites.Sample(sprites_sampler, float3(");
 		assert_string_contains!(shader, "float(instance.sprite_id)");
+	}
+
+	#[test]
+	fn scalar_runtime_arrays_pack_narrow_hlsl_elements_into_words() {
+		let root = besl::compile_to_besl(super::super::SCALAR_RUNTIME_ARRAY_COMPUTE, None)
+			.expect("Expected scalar runtime-array compute source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected scalar runtime-array HLSL generation");
+
+		assert_string_contains!(shader, "StructuredBuffer<float3> positions : register(t0, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<uint> indices : register(t1, space0);");
+		assert_string_contains!(shader, "StructuredBuffer<uint> corners : register(t2, space0);");
+		assert_string_contains!(shader, "RWStructuredBuffer<uint32_t> results : register(u3, space0);");
+		// Narrow elements are recovered from the 32-bit word that holds them.
+		assert_string_contains!(shader, "((indices[(item) / 2u] >> (((item) % 2u) * 16u)) & 0xffffu)");
+		assert_string_contains!(shader, "((corners[(item) / 4u] >> (((item) % 4u) * 8u)) & 0xffu)");
 	}
 
 	#[test]

@@ -165,7 +165,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		let Some(binding) = Self::hlsl_buffer_binding_source(source) else {
 			return false;
 		};
-		if name == binding.name || binding.flattened_member.as_deref() == Some(name) {
+		if name == binding.name {
 			string.push_str(&binding.name);
 			return true;
 		}
@@ -191,11 +191,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					Some((member.clone(), index.clone()))
 				};
 				if let Some((member, index)) = indexed_target
-					&& let Some((binding_name, _, write, element_type, flattened)) = Self::hlsl_buffer_member_target(&member)
-					&& write && flattened
-					&& matches!(element_type.as_deref(), Some("u8" | "u16"))
+					&& let Some((binding_name, _, true, Some(element_type))) = Self::hlsl_buffer_member_target(&member)
 				{
-					let (elements_per_word, bits_per_element, element_mask) = if element_type.as_deref() == Some("u8") {
+					let (elements_per_word, bits_per_element, element_mask) = if element_type == "u8" {
 						(4u32, 8u32, "0xffu")
 					} else {
 						(2u32, 16u32, "0xffffu")
@@ -343,15 +341,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		);
 		if right_is_member
-			&& let Some((binding_name, field_name, _, _, flattened)) = Self::hlsl_buffer_member_target(left)
+			&& let Some((binding_name, field_name, _, _)) = Self::hlsl_buffer_member_target(left)
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
 			string.push_str(&binding_name);
-			if !flattened {
-				string.push_str("[0].");
-				string.push_str(&field_name);
-			}
+			string.push_str("[0].");
+			string.push_str(&field_name);
 			string.push('.');
 			self.emit_node_string(string, right);
 			return;
@@ -367,14 +363,10 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		}
 
 		if let (Some(binding), Some(field_name)) = (Self::hlsl_buffer_binding_source(left), Self::hlsl_member_name(right)) {
-			if binding.flattened_member.as_deref() == Some(&field_name) {
-				string.push_str(&binding.name);
-			} else {
-				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-				string.push_str(&binding.name);
-				string.push_str("[0].");
-				string.push_str(&field_name);
-			}
+			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
+			string.push_str(&binding.name);
+			string.push_str("[0].");
+			string.push_str(&field_name);
 			return;
 		}
 
@@ -395,9 +387,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((binding_name, field_name, _, element_type, flattened)) = Self::hlsl_buffer_member_target(left) {
-			if flattened && matches!(element_type.as_deref(), Some("u8" | "u16")) {
-				let (word_index, bit_offset, element_mask) = if element_type.as_deref() == Some("u8") {
+		if let Some((binding_name, field_name, _, narrow_element)) = Self::hlsl_buffer_member_target(left) {
+			if let Some(element_type) = narrow_element {
+				let (word_index, bit_offset, element_mask) = if element_type == "u8" {
 					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")
 				} else {
 					(") / 2u] >> (((", ") % 2u) * 16u)) & ", "0xffffu")
@@ -416,7 +408,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				return;
 			}
 
-			if field_name == binding_name || flattened {
+			if field_name == binding_name {
 				string.push_str(&binding_name);
 			} else {
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.

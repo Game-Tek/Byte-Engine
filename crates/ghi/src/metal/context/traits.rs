@@ -37,12 +37,18 @@ impl crate::context::Context for Context {
 		self.buffers.get_single(buffer_handle).unwrap().gpu_address
 	}
 
-	fn get_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &T {
+	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &T {
 		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
 		unsafe { &*self.typed_buffer_pointer(buffer_handle) }
 	}
 
-	fn get_mut_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: graphics_hardware_interface::BufferHandle<T>) -> &mut T {
+	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+	) -> &mut T {
 		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
 		unsafe { &mut *self.typed_buffer_pointer(buffer_handle) }
 	}
@@ -52,18 +58,13 @@ impl crate::context::Context for Context {
 	/// # Safety
 	///
 	/// The caller must keep the context and buffer alive and must not create another CPU mapping until the returned mapping is discarded.
-	unsafe fn transfer_buffer_mapping<T: crate::Pod>(
+	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
-		let pointer = if std::mem::size_of::<T>() == 0 {
-			std::ptr::NonNull::<T>::dangling().as_ptr().cast::<u8>()
-		} else {
-			buffer.pointer
-		};
+		let pointer = self.typed_buffer_pointer(buffer_handle);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
-		unsafe { crate::buffer::Mapping::from_raw_parts(pointer, std::mem::size_of::<T>()) }
+		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
@@ -594,11 +595,11 @@ impl crate::context::ContextCreate for Context {
 		self.intern_raster_pipeline(pipeline)
 	}
 
-	fn build_buffer<T: crate::Pod>(
+	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::BufferHandle<T> {
-		let size = std::mem::size_of::<T>();
+		let size = T::layout(builder.length).size();
 		let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 
 		graphics_hardware_interface::BufferHandle::<T>(
@@ -611,7 +612,7 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
-		let size = std::mem::size_of::<T>();
+		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
 
 		let root = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
 		let master = graphics_hardware_interface::BaseBufferHandle::new(root.0);

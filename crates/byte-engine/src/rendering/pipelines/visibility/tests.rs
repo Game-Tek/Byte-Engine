@@ -7,7 +7,9 @@ use besl::vm::{
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
 use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
-use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d};
+use crate::rendering::shader_vm_test::{
+	array_buffer, assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d,
+};
 
 const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
 const GTAO_PARAMETERS_SLOT: ResourceSlot = ResourceSlot::new(1);
@@ -78,24 +80,32 @@ fn tile_configs<const N: usize>(width: u32, base: [u32; 2]) -> [ExecutionConfig;
 	})
 }
 
-fn read_u32(buffer: &besl::vm::Buffer, member: &str, index: usize) -> u32 {
-	match buffer.read_indexed(member, index).expect("VM u32 array element") {
+fn read_u32(buffer: &besl::vm::Buffer, index: usize) -> u32 {
+	match buffer.read_array_element(index).expect("VM u32 array element") {
 		Value::U32(value) => value,
 		value => panic!("Unexpected visibility buffer value: {value:?}."),
 	}
 }
 
-fn read_vec3u(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u32; 3] {
-	match buffer.read_indexed(member, index).expect("VM vec3u array element") {
+fn read_vec3u(buffer: &besl::vm::Buffer, index: usize) -> [u32; 3] {
+	match buffer.read_array_element(index).expect("VM vec3u array element") {
 		Value::Vec3U(value) => value,
 		value => panic!("Unexpected visibility dispatch value: {value:?}."),
 	}
 }
 
-fn read_vec2u16(buffer: &besl::vm::Buffer, member: &str, index: usize) -> [u16; 2] {
-	match buffer.read_indexed(member, index).expect("VM vec2u16 array element") {
+fn read_vec2u16(buffer: &besl::vm::Buffer, index: usize) -> [u16; 2] {
+	match buffer.read_array_element(index).expect("VM vec2u16 array element") {
 		Value::Vec2U16(value) => value,
 		value => panic!("Unexpected visibility pixel mapping value: {value:?}."),
+	}
+}
+
+/// Reads the first element of a mesh-shader output array.
+fn read_output_u32(buffer: &besl::vm::Buffer, member: &str) -> u32 {
+	match buffer.read_indexed(member, 0).expect("VM mesh output element") {
+		Value::U32(value) => value,
+		value => panic!("Unexpected mesh output value: {value:?}."),
 	}
 }
 
@@ -171,12 +181,15 @@ fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 }
 
 /// Packs the production task payload without allowing its meshlet and instance indices to diverge.
-fn meshlet_instance(meshlet_index: u32, instance_index: u32) -> u32 {
-	meshlet_index | (instance_index << MESHLET_INSTANCE_BITS)
+///
+/// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
+fn meshlet_instance(relative_meshlet_index: u32, instance_index: u32) -> u32 {
+	relative_meshlet_index | (instance_index << MESHLET_INSTANCE_BITS)
 }
 
+/// The payload of the fixture instance's first meshlet, which lives at [`FIXTURE_MESHLET_INDEX`] scene-wide.
 fn fixture_meshlet_instance() -> Value {
-	Value::U32(meshlet_instance(FIXTURE_MESHLET_INDEX as u32, FIXTURE_INSTANCE_INDEX as u32))
+	Value::U32(meshlet_instance(0, FIXTURE_INSTANCE_INDEX as u32))
 }
 
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
@@ -207,17 +220,15 @@ fn run_meshlet_task_workgroup(
 	let mut views = buffer(program, VIEWS_SLOT);
 	for (view_index, view_projection) in view_projections.iter().copied() {
 		views
-			.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
+			.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
 			.expect("task view");
 		views
-			.write_indexed_field("views", view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
+			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
 			.expect("task inverse view");
 	}
 	let mut meshes = buffer(program, MESH_DATA_SLOT);
 	meshes
-		.write_indexed_field(
-			"meshes",
-			FIXTURE_INSTANCE_INDEX,
+		.write_array_member(FIXTURE_INSTANCE_INDEX,
 			"model",
 			Value::Mat4x3F(identity_affine_matrix()),
 		)
@@ -229,14 +240,14 @@ fn run_meshlet_task_workgroup(
 		("flags", mesh.flags),
 	] {
 		meshes
-			.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
+			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
 			.expect("task mesh field");
 	}
-	let mut meshlets = buffer(program, MESHLETS_SLOT);
+	let mut meshlets = array_buffer(program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
 		meshlets
-			.write_indexed_field("meshlets", meshlet_index, "center_radius", Value::PackedVec4F(center_radius))
+			.write_array_member(meshlet_index, "center_radius", Value::PackedVec4F(center_radius))
 			.expect("task meshlet bound");
 		// A cutoff above one disables cone rejection. The back-facing cone sits at the meshlet center and points
 		// along +Z, the octahedral center, which is the direction from the camera at the origin to the meshlet.
@@ -249,15 +260,10 @@ fn run_meshlet_task_workgroup(
 			([0.0, 0.0, 0.0, 2.0], [0; 2])
 		};
 		meshlets
-			.write_indexed_field(
-				"meshlets",
-				meshlet_index,
-				"cone_apex_cutoff",
-				Value::PackedVec4F(cone_apex_cutoff),
-			)
+			.write_array_member(meshlet_index, "cone_apex_cutoff", Value::PackedVec4F(cone_apex_cutoff))
 			.expect("task cone cutoff");
 		meshlets
-			.write_indexed_field("meshlets", meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
+			.write_array_member(meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
 			.expect("task cone axis");
 	}
 	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("task push constants").clone());
@@ -268,7 +274,7 @@ fn run_meshlet_task_workgroup(
 	let mut mesh_dispatch_work = buffer(program, MESH_DISPATCH_WORK_SLOT);
 	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
 	mesh_dispatch_work
-		.write_indexed("items", workgroup_index as usize, Value::U32(packed_work))
+		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");
 
 	let mut task_outputs = TaskOutputs::new();
@@ -347,10 +353,7 @@ fn visibility_task_workgroup_compacts_mixed_meshlets_in_lane_order() {
 	);
 	assert_eq!(
 		output.payload_value("meshlet_instances", 1),
-		Some(&Value::U32(meshlet_instance(
-			FIXTURE_MESHLET_INDEX as u32 + 2,
-			FIXTURE_INSTANCE_INDEX as u32
-		)))
+		Some(&Value::U32(meshlet_instance(2, FIXTURE_INSTANCE_INDEX as u32)))
 	);
 	assert_eq!(output.payload_value("meshlet_instances", 2), None);
 }
@@ -443,13 +446,11 @@ fn assert_triangle_mesh_program(
 ) {
 	let mut views = buffer(&program, VIEWS_SLOT);
 	views
-		.write_indexed_field("views", 0, "view_projection", Value::Mat4F(identity_matrix()))
+		.write_array_member(0, "view_projection", Value::Mat4F(identity_matrix()))
 		.expect("mesh view");
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_indexed_field(
-			"meshes",
-			FIXTURE_INSTANCE_INDEX,
+		.write_array_member(FIXTURE_INSTANCE_INDEX,
 			"model",
 			Value::Mat4x3F(identity_affine_matrix()),
 		)
@@ -463,31 +464,31 @@ fn assert_triangle_mesh_program(
 		("skinned_base_vertex_index", u32::MAX),
 	] {
 		meshes
-			.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
+			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
 			.expect("mesh offset");
 	}
-	let mut positions = buffer(&program, VERTEX_POSITIONS_SLOT);
+	let mut positions = array_buffer(&program, VERTEX_POSITIONS_SLOT, 3);
 	for (index, position) in [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]].into_iter().enumerate() {
 		positions
-			.write_indexed("positions", index, Value::Vec3F(position))
+			.write_array_element(index, Value::Vec3F(position))
 			.expect("mesh vertex");
 	}
 	let mut skinned_vertices = buffer(&program, SKINNED_VERTICES_SLOT);
-	let mut vertex_uvs = buffer(&program, VERTEX_UVS_SLOT);
-	let mut vertex_indices = buffer(&program, VERTEX_INDICES_SLOT);
-	let mut primitive_indices = buffer(&program, PRIMITIVE_INDICES_SLOT);
+	let mut vertex_uvs = array_buffer(&program, VERTEX_UVS_SLOT, 3);
+	let mut vertex_indices = array_buffer(&program, VERTEX_INDICES_SLOT, 3);
+	let mut primitive_indices = array_buffer(&program, PRIMITIVE_INDICES_SLOT, 3);
 	for index in 0..3 {
 		vertex_uvs
-			.write_indexed("uvs", index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
+			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
 			.expect("mesh UV");
 		vertex_indices
-			.write_indexed("vertex_indices", index, Value::U16(index as u16))
+			.write_array_element(index, Value::U16(index as u16))
 			.expect("vertex index");
 		primitive_indices
-			.write_indexed("primitive_indices", index, Value::U8(index as u8))
+			.write_array_element(index, Value::U8(index as u8))
 			.expect("triangle index");
 	}
-	let mut meshlets = buffer(&program, MESHLETS_SLOT);
+	let mut meshlets = array_buffer(&program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + 1);
 	for (field, value) in [
 		("primitive_offset", 0),
 		("triangle_offset", 0),
@@ -495,22 +496,20 @@ fn assert_triangle_mesh_program(
 		("triangle_count", 1),
 	] {
 		meshlets
-			.write_indexed_field("meshlets", FIXTURE_MESHLET_INDEX, field, Value::U32(value))
+			.write_array_member(FIXTURE_MESHLET_INDEX, field, Value::U32(value))
 			.expect("meshlet field");
 	}
 	if let Some(skinned_positions) = skinned_positions {
 		const SKINNED_BASE_VERTEX: usize = 7;
 		meshes
-			.write_indexed_field(
-				"meshes",
-				FIXTURE_INSTANCE_INDEX,
+			.write_array_member(FIXTURE_INSTANCE_INDEX,
 				"skinned_base_vertex_index",
 				Value::U32(SKINNED_BASE_VERTEX as u32),
 			)
 			.expect("skinned mesh vertices");
 		for (index, position) in skinned_positions.into_iter().enumerate() {
 			skinned_vertices
-				.write_indexed_field("vertices", SKINNED_BASE_VERTEX + index, "position", Value::Vec4F(position))
+				.write_array_member(SKINNED_BASE_VERTEX + index, "position", Value::Vec4F(position))
 				.expect("skinned mesh vertex");
 		}
 	}
@@ -518,7 +517,7 @@ fn assert_triangle_mesh_program(
 	let (view_index, render_target_array_index) = match selected_view {
 		Some((view_index, view_projection, render_target_array_index)) => {
 			views
-				.write_indexed_field("views", view_index, "view_projection", Value::Mat4F(view_projection))
+				.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
 				.expect("selected mesh view");
 			(view_index as u32, render_target_array_index)
 		}
@@ -578,11 +577,11 @@ fn assert_triangle_mesh_program(
 		assert_eq!(mesh_outputs.render_target_array_index(0), Some(expected));
 	}
 	assert_eq!(
-		read_u32(&out_instance_indices, "out_instance_index", 0),
+		read_output_u32(&out_instance_indices, "out_instance_index"),
 		FIXTURE_INSTANCE_INDEX as u32
 	);
 	assert_eq!(
-		read_u32(&out_primitive_indices, "out_primitive_index", 0),
+		read_output_u32(&out_primitive_indices, "out_primitive_index"),
 		(FIXTURE_MESHLET_INDEX as u32) << 8
 	);
 }
@@ -692,7 +691,7 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	let mut mesh_data = buffer(&material_count_program, MESH_DATA_SLOT);
 	for (mesh_index, material_index) in [(0, 2), (1, 5), (2, 2)] {
 		mesh_data
-			.write_indexed_field("meshes", mesh_index, "material_index", Value::U32(material_index))
+			.write_array_member(mesh_index, "material_index", Value::U32(material_index))
 			.expect("VM mesh");
 	}
 	let mut instance_indices = Texture::new(2, 2).expect("visibility index fixture");
@@ -703,9 +702,9 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	}
 
 	let mut material_counts = run_material_count(&material_count_program, &mut mesh_data, &mut instance_indices);
-	assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
-	assert_eq!(read_u32(&material_counts, "material_count", 5), 1);
-	assert_eq!(read_u32(&material_counts, "material_count", 0), 0);
+	assert_eq!(read_u32(&material_counts, 2), 2);
+	assert_eq!(read_u32(&material_counts, 5), 1);
+	assert_eq!(read_u32(&material_counts, 0), 0);
 
 	// The offset pass converts sparse counts into exclusive offsets and one indirect dispatch tuple per material.
 	let mut material_offsets = buffer(&material_offset_program, MATERIAL_OFFSET_SLOT);
@@ -719,22 +718,22 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 		descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut material_dispatches);
 		run_at(&material_offset_program, &mut descriptors, [0, 0]);
 	}
-	assert_eq!(read_u32(&material_offsets, "material_offset", 2), 0);
-	assert_eq!(read_u32(&material_offsets, "material_offset", 5), 2);
-	assert_eq!(read_u32(&material_offsets, "material_offset", 6), 3);
+	assert_eq!(read_u32(&material_offsets, 2), 0);
+	assert_eq!(read_u32(&material_offsets, 5), 2);
+	assert_eq!(read_u32(&material_offsets, 6), 3);
 	// The offset pass does not clear material_count; evaluation reads it directly for bounds.
-	assert_eq!(read_u32(&material_counts, "material_count", 2), 2);
-	assert_eq!(read_u32(&material_counts, "material_count", 5), 1);
+	assert_eq!(read_u32(&material_counts, 2), 2);
+	assert_eq!(read_u32(&material_counts, 5), 1);
 	assert_eq!(
-		read_vec3u(&material_dispatches, "material_evaluation_dispatches", 0),
+		read_vec3u(&material_dispatches, 0),
 		[0, 1, 1]
 	);
 	assert_eq!(
-		read_vec3u(&material_dispatches, "material_evaluation_dispatches", 2),
+		read_vec3u(&material_dispatches, 2),
 		[1, 1, 1]
 	);
 	assert_eq!(
-		read_vec3u(&material_dispatches, "material_evaluation_dispatches", 5),
+		read_vec3u(&material_dispatches, 5),
 		[1, 1, 1]
 	);
 
@@ -745,11 +744,11 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 		&mut material_offset_scratch,
 		&mut instance_indices,
 	);
-	assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 0), [1, 1]);
-	assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 1), [2, 2]);
-	assert_eq!(read_vec2u16(&pixel_mapping, "pixel_mapping", 2), [2, 1]);
-	assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 2), 2);
-	assert_eq!(read_u32(&material_offset_scratch, "material_offset_scratch", 5), 3);
+	assert_eq!(read_vec2u16(&pixel_mapping, 0), [1, 1]);
+	assert_eq!(read_vec2u16(&pixel_mapping, 1), [2, 2]);
+	assert_eq!(read_vec2u16(&pixel_mapping, 2), [2, 1]);
+	assert_eq!(read_u32(&material_offset_scratch, 2), 2);
+	assert_eq!(read_u32(&material_offset_scratch, 5), 3);
 }
 
 /// Verifies a coherent tile reuses its established local key while preserving every pixel mapping.
@@ -758,7 +757,7 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let program = asset!("pixel-mapping.besl");
 	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
 	mesh_data
-		.write_indexed_field("meshes", 0, "material_index", Value::U32(7))
+		.write_array_member(0, "material_index", Value::U32(7))
 		.expect("coherent mesh");
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |_| 0);
@@ -768,7 +767,7 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 	let width = PIXEL_MAPPING_WORKGROUP_WIDTH as usize;
 	let mut seen = vec![false; width * width];
 	for mapping_index in 0..PIXEL_MAPPING_WORKGROUP_SIZE {
-		let [x, y] = read_vec2u16(&pixel_mapping, "pixel_mapping", mapping_index).map(usize::from);
+		let [x, y] = read_vec2u16(&pixel_mapping, mapping_index).map(usize::from);
 		assert!(
 			(1..=width).contains(&x) && (1..=width).contains(&y),
 			"Pixel Mapping returned an invalid coherent-tile coordinate. The most likely cause is that the fast path reused a local rank."
@@ -782,7 +781,7 @@ fn pixel_mapping_load_fast_path_preserves_coherent_tile_mappings() {
 		"Pixel Mapping omitted a coherent-tile coordinate."
 	);
 	assert_eq!(
-		read_u32(&material_offset_scratch, "material_offset_scratch", 7),
+		read_u32(&material_offset_scratch, 7),
 		PIXEL_MAPPING_WORKGROUP_SIZE as u32,
 		"Pixel Mapping advanced the coherent material cursor incorrectly."
 	);
@@ -796,10 +795,10 @@ fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	for material_index in 0..33 {
 		mesh_data
-			.write_indexed_field("meshes", material_index, "material_index", Value::U32(material_index as u32))
+			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
 			.expect("VM mesh");
 		material_offset_scratch
-			.write_indexed("material_offset_scratch", material_index, Value::U32(material_index as u32))
+			.write_array_element(material_index, Value::U32(material_index as u32))
 			.expect("material mapping offset");
 	}
 	let mut instance_indices = instance_texture(
@@ -815,12 +814,12 @@ fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 			(material_index / PIXEL_MAPPING_WORKGROUP_WIDTH as usize) as u16 + 1,
 		];
 		assert_eq!(
-			read_vec2u16(&pixel_mapping, "pixel_mapping", material_index),
+			read_vec2u16(&pixel_mapping, material_index),
 			expected_coordinate,
 			"Unexpected coordinate for material {material_index}. The most likely cause is a dropped tile reservation."
 		);
 		assert_eq!(
-			read_u32(&material_offset_scratch, "material_offset_scratch", material_index),
+			read_u32(&material_offset_scratch, material_index),
 			material_index as u32 + 1,
 			"Unexpected cursor for material {material_index}. The most likely cause is a duplicated tile reservation."
 		);
@@ -834,7 +833,7 @@ fn material_count_tile_histogram_preserves_overflowed_materials() {
 	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
 	for material_index in 0..33 {
 		mesh_data
-			.write_indexed_field("meshes", material_index, "material_index", Value::U32(material_index as u32))
+			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
 			.expect("VM mesh");
 	}
 	let mut instance_indices = instance_texture(MATERIAL_COUNT_WORKGROUP_WIDTH, |lane| (lane % 33) as u32);
@@ -844,7 +843,7 @@ fn material_count_tile_histogram_preserves_overflowed_materials() {
 	for material_index in 0..33 {
 		let expected = if material_index < 31 { 2 } else { 1 };
 		assert_eq!(
-			read_u32(&material_counts, "material_count", material_index),
+			read_u32(&material_counts, material_index),
 			expected,
 			"Unexpected count for material {material_index}. The most likely cause is a dropped or duplicated tile-histogram entry."
 		);
@@ -857,14 +856,14 @@ fn material_count_subgroup_aggregation_counts_a_coherent_tile_once_per_partition
 	let program = asset!("material-count.besl");
 	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
 	mesh_data
-		.write_indexed_field("meshes", 0, "material_index", Value::U32(7))
+		.write_array_member(0, "material_index", Value::U32(7))
 		.expect("coherent mesh");
 	let mut instance_indices = instance_texture(MATERIAL_COUNT_WORKGROUP_WIDTH, |_| 0);
 
 	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
 
 	assert_eq!(
-		read_u32(&material_counts, "material_count", 7),
+		read_u32(&material_counts, 7),
 		MATERIAL_COUNT_WORKGROUP_SIZE as u32
 	);
 }
@@ -2222,7 +2221,7 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 		.expect("Failed to run the light-cluster pass in the BESL VM.");
 	drop(descriptors);
 	let base = cluster as usize * super::layout::LIGHT_CLUSTER_MASK_WORDS;
-	[read_u32(&masks, "words", base), read_u32(&masks, "words", base + 1)]
+	[read_u32(&masks, base), read_u32(&masks, base + 1)]
 }
 
 /// Returns the index of the cluster at a column, row, and depth slice.
@@ -2418,7 +2417,7 @@ fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl:
 			("far", Value::F32(frame.slice_far)),
 		] {
 			views
-				.write_indexed_field("views", 1 + cascade, field, value)
+				.write_array_member(1 + cascade, field, value)
 				.expect("cascade view");
 		}
 	}
@@ -2481,7 +2480,7 @@ fn run_cascade_fit(
 }
 
 fn read_matrix(views: &besl::vm::Buffer, view_index: usize, field: &str) -> Vec<f32> {
-	match views.read_indexed_field("views", view_index, field).expect("fitted view") {
+	match views.read_array_member(view_index, field).expect("fitted view") {
 		Value::Mat4F(matrix) => matrix.to_vec(),
 		Value::Mat4x3F(matrix) => matrix.to_vec(),
 		value => panic!("Unexpected view matrix value: {value:?}."),
@@ -2609,7 +2608,7 @@ fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
 	.enumerate()
 	{
 		bounds
-			.write_indexed("bounds", index, Value::U32(code))
+			.write_array_element(index, Value::U32(code))
 			.expect("receiver bounds");
 	}
 	bounds

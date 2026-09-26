@@ -156,8 +156,7 @@ impl SkinningPass {
 		c.bind_descriptor_sets(&[self.descriptor_set]);
 		for dispatch in dispatches.iter().filter(|dispatch| dispatch.vertex_count != 0) {
 			debug_assert!(
-				(dispatch.source_vertex_base + dispatch.vertex_count) as usize <= MAX_SKINNED_VERTICES
-					&& (dispatch.destination_vertex_base + dispatch.vertex_count) as usize <= MAX_SKINNED_VERTICES
+				(dispatch.destination_vertex_base + dispatch.vertex_count) as usize <= MAX_SKINNED_VERTICES
 					&& (dispatch.palette_base + dispatch.palette_count) as usize <= MAX_SKINNING_MATRICES,
 				"Skinning dispatch range exceeds its buffer. The most likely cause is corrupted primitive or skin metadata."
 			);
@@ -263,7 +262,7 @@ mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ResourceSlot, Value};
 
 	use super::*;
-	use crate::rendering::shader_vm_test::{buffer, compile, push_constant_buffer, run_at};
+	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, push_constant_buffer, run_at};
 
 	/// Parses and links the exact checked-in shader consumed by the runtime resource path.
 	fn production_skinning_main() -> besl::NodeReference {
@@ -308,7 +307,7 @@ mod tests {
 
 	fn read_vec4(buffer: &Buffer, index: usize, field: &str) -> [f32; 4] {
 		match buffer
-			.read_indexed_field("values", index, field)
+			.read_array_member(index, field)
 			.expect("Missing skinned output.")
 		{
 			Value::Vec4F(value) => value,
@@ -368,24 +367,37 @@ mod tests {
 		}
 	}
 
+	/// Creates every skinning binding: runtime-length bind-pose sources in slots 0 to 3 and fixed palettes and output.
+	fn skinning_buffers(program: &besl::vm::ExecutableProgram) -> [Buffer; 7] {
+		const SOURCE_VERTEX_COUNT: usize = 4;
+		std::array::from_fn(|slot| {
+			let resource_slot = ResourceSlot::new(slot as u32);
+			if slot < 4 {
+				array_buffer(program, resource_slot, SOURCE_VERTEX_COUNT)
+			} else {
+				buffer(program, resource_slot)
+			}
+		})
+	}
+
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
 		let program = compile(production_skinning_main());
-		let mut buffers: [Buffer; 7] = std::array::from_fn(|slot| buffer(&program, ResourceSlot::new(slot as u32)));
+		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, palette, ..] = &mut buffers;
 		positions
-			.write_indexed("values", 1, Value::Vec3F([1.0, 1.0, 1.0]))
+			.write_array_element(1, Value::Vec3F([1.0, 1.0, 1.0]))
 			.expect("source position");
 		normals
-			.write_indexed("values", 1, Value::Vec3F([0.0, 0.0, 1.0]))
+			.write_array_element(1, Value::Vec3F([0.0, 0.0, 1.0]))
 			.expect("source normal");
 		joints
-			.write_indexed("values", 1, Value::Vec4U16([0, 1, 0, 0]))
+			.write_array_element(1, Value::Vec4U16([0, 1, 0, 0]))
 			.expect("source joints");
 		weights
-			.write_indexed("values", 1, Value::Vec4F([0.5, 0.5, 0.0, 0.0]))
+			.write_array_element(1, Value::Vec4F([0.5, 0.5, 0.0, 0.0]))
 			.expect("source weights");
 		write_translation_matrix(palette, 1, [2.0, 0.0, 0.0]);
 		write_translation_matrix(palette, 2, [0.0, 4.0, 0.0]);
@@ -408,7 +420,7 @@ mod tests {
 
 		// A malformed legacy joint must produce legal bind-pose output without indexing beyond the palette.
 		buffers[2]
-			.write_indexed("values", 1, Value::Vec4U16([2, 0, 0, 0]))
+			.write_array_element(1, Value::Vec4U16([2, 0, 0, 0]))
 			.expect("out-of-range source joint");
 		push_constant
 			.write("destination_vertex_base", Value::U32(3))
@@ -422,20 +434,20 @@ mod tests {
 	#[test]
 	fn skinning_besl_vm_dual_quaternions_preserve_twist_volume_and_handle_antipodality() {
 		let program = compile(production_skinning_main());
-		let mut buffers: [Buffer; 7] = std::array::from_fn(|slot| buffer(&program, ResourceSlot::new(slot as u32)));
+		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, _, _, dual_quaternion_palette] = &mut buffers;
 		positions
-			.write_indexed("values", 0, Value::Vec3F([0.0, 1.0, 0.0]))
+			.write_array_element(0, Value::Vec3F([0.0, 1.0, 0.0]))
 			.expect("twist source position");
 		normals
-			.write_indexed("values", 0, Value::Vec3F([0.0, 1.0, 0.0]))
+			.write_array_element(0, Value::Vec3F([0.0, 1.0, 0.0]))
 			.expect("twist source normal");
 		joints
-			.write_indexed("values", 0, Value::Vec4U16([0, 1, u16::MAX, u16::MAX]))
+			.write_array_element(0, Value::Vec4U16([0, 1, u16::MAX, u16::MAX]))
 			.expect("twist joints");
 		weights
-			.write_indexed("values", 0, Value::Vec4F([2.0, 2.0, 0.0, 0.0]))
+			.write_array_element(0, Value::Vec4F([2.0, 2.0, 0.0, 0.0]))
 			.expect("twist weights");
 		let sine = 3.0_f32.sqrt() * 0.5;
 		let cosine = 0.5;
@@ -485,9 +497,7 @@ mod tests {
 	fn write_translation_matrix(palette: &mut Buffer, index: usize, translation: [f32; 3]) {
 		let [x, y, z] = translation;
 		palette
-			.write_indexed(
-				"values",
-				index,
+			.write_array_element(index,
 				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, x, y, z]),
 			)
 			.expect("Failed to write skinning matrix.");
@@ -495,10 +505,10 @@ mod tests {
 
 	fn write_dual_quaternion(palette: &mut Buffer, index: usize, real: [f32; 4], dual: [f32; 4]) {
 		palette
-			.write_indexed_field("values", index, "real", Value::Vec4F(real))
+			.write_array_member(index, "real", Value::Vec4F(real))
 			.expect("Failed to write skinning dual-quaternion real part.");
 		palette
-			.write_indexed_field("values", index, "dual", Value::Vec4F(dual))
+			.write_array_member(index, "dual", Value::Vec4F(dual))
 			.expect("Failed to write skinning dual-quaternion dual part.");
 	}
 }

@@ -72,14 +72,21 @@ pub(super) fn resolve_descriptor_type(
 			});
 		}
 		let element = resolve_type(chain, resource_type)?;
-		if !matches!(element.borrow().node(), Nodes::Struct { fields, .. } if !fields.is_empty()) {
+		// Records (user structs and built-in vectors) have fields; numeric scalars are field-less built-ins that still
+		// have a byte representation. Empty structs, `bool`, `void`, and resource handles have none.
+		let storable = match element.borrow().node() {
+			Nodes::Struct { fields, .. } if !fields.is_empty() => true,
+			Nodes::Struct { name, .. } => super::ast::STORABLE_SCALAR_TYPES.contains(&name.as_str()),
+			_ => false,
+		};
+		if !storable {
 			return Err(LexError::Undefined {
 				message: Some(format!(
-					"Runtime buffer element `{resource_type}` has no storable buffer representation. The most likely cause is that [] was attached to a scalar, empty, or resource-handle type."
+					"Runtime buffer element `{resource_type}` has no storable buffer representation. The most likely cause is that [] was attached to a boolean, empty, or resource-handle type."
 				)),
 			});
 		}
-		return Ok(BindingTypes::BufferArray { element });
+		return Ok(BindingTypes::BufferArray { element, fixed: None });
 	}
 
 	if format.is_some() && resource_type != "StorageImage" {
@@ -304,7 +311,7 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 			..
 		} => find_in_descendants(members, child_name, mode),
 		Nodes::Binding {
-			r#type: BindingTypes::BufferArray { element },
+			r#type: BindingTypes::BufferArray { element, .. },
 			..
 		} => find_descendant(element, child_name, mode),
 		Nodes::Input { format, .. }
@@ -572,7 +579,7 @@ fn runtime_buffer_array_element(expression: &NodeReference) -> Option<NodeRefere
 	let borrowed = source.borrow();
 	match borrowed.node() {
 		Nodes::Binding {
-			r#type: BindingTypes::BufferArray { element },
+			r#type: BindingTypes::BufferArray { element, .. },
 			..
 		} => Some(element.clone()),
 		_ => None,

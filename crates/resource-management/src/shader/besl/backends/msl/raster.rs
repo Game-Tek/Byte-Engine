@@ -18,7 +18,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				matches!(
 					binding.borrow().node(),
 					besl::Nodes::Binding {
-						r#type: besl::BindingTypes::BufferArray { element },
+						r#type: besl::BindingTypes::BufferArray { element, .. },
 						..
 					} if element == *node
 				)

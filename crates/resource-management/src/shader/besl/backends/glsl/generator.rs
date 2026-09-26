@@ -886,12 +886,16 @@ impl Generator {
 						string.push('}');
 						string.push_str(name);
 					}
-					besl::BindingTypes::BufferArray { element } => {
+					besl::BindingTypes::BufferArray { element, fixed } => {
 						string.push_str(&format!("_{}{{", name));
 						Self::emit_type_name(string, element.borrow().get_name().unwrap());
 						string.push(' ');
 						string.push_str(name);
-						string.push_str("[];");
+						// Runtime arrays leave the count to the bound buffer.
+						match fixed {
+							Some(fixed) => string.push_str(&format!("[{}];", fixed.count)),
+							None => string.push_str("[];"),
+						}
 						string.push('}');
 					}
 					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {

@@ -208,6 +208,26 @@ impl<'a> Node<'a> {
 		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
 	}
 
+	/// Builds a device-memory storage buffer of `element` values whose length is set when the application creates the
+	/// buffer, the same as a `descriptor<{ type: element[] }>` declaration.
+	///
+	/// Use it for buffers whose capacity is a runtime setting, so the capacity does not have to be compiled into the shader.
+	pub fn runtime_array_binding(name: &'a str, element: &'a str, slot: u32, read: bool, write: bool) -> Node<'a> {
+		Node {
+			node: Nodes::Descriptor {
+				name,
+				resource_type: element,
+				runtime_array: true,
+				format: None,
+				slot,
+				read,
+				write,
+				memory_class: Some("device"),
+				count: None,
+			},
+		}
+	}
+
 	/// Builds a buffer binding that stores dispatch-shared values in constant memory.
 	pub fn constant_buffer_binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
 		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Constant)

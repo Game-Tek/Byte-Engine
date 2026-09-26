@@ -9,7 +9,8 @@ mod resolution;
 use std::{cell::RefCell, num::NonZeroUsize};
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, Expressions, LexError, Node, NodeReference, Nodes, Operators, ParentNodeReference,
+	BindingTypes, BufferMemoryClass, Expressions, FixedArray, LexError, Node, NodeReference, Nodes, Operators,
+	ParentNodeReference,
 };
 pub(crate) use ast::{lex, lex_with_root};
 #[cfg(test)]
@@ -199,7 +200,7 @@ mod tests {
 				.borrow()
 				.node(),
 			Nodes::Binding {
-				r#type: BindingTypes::BufferArray { element },
+				r#type: BindingTypes::BufferArray { element, .. },
 				..
 			} if element.borrow().get_name() == Some("Instance")
 		));
@@ -253,9 +254,29 @@ mod tests {
 	}
 
 	#[test]
+	fn runtime_buffer_arrays_accept_numeric_scalar_and_vector_elements() {
+		for element_type in ["u8", "u16", "u32", "i32", "f16", "f32", "vec2u16", "vec3f"] {
+			let source = format!(
+				"values: descriptor<{{ type: {element_type}[], binding: 0, access: read }}>; main: fn () -> void {{ let value: {element_type} = values[7]; value; }}"
+			);
+			let root = crate::compile_to_besl(&source, None)
+				.unwrap_or_else(|error| panic!("{element_type} runtime buffer should link: {error:?}"));
+			let values = root.borrow().get_child("values").expect("runtime buffer descriptor should exist");
+			assert!(matches!(
+				values.borrow().node(),
+				Nodes::Binding {
+					r#type: BindingTypes::BufferArray { element, .. },
+					..
+				} if element.borrow().get_name() == Some(element_type)
+			));
+		}
+	}
+
+	#[test]
 	fn runtime_buffer_arrays_reject_resource_handle_elements() {
 		for resource_type in [
 			"void",
+			"bool",
 			"Texture2D",
 			"Texture2DArray",
 			"Texture3D",
@@ -954,16 +975,30 @@ main: fn () -> void {
 				if elements.len() == 1
 					&& matches!(elements[0].borrow().node(), Nodes::Expression(Expressions::Literal { value }) if value == "1")
 		));
+		// The lone `values` member lowers the buffer to a fixed array, so `buff.values[1]` indexes `buff` itself.
+		assert_lowered_array_reference(&left, "buff", "values", 3);
+	}
+
+	/// Asserts that `node` references a buffer binding lowered from a lone fixed-array member.
+	fn assert_lowered_array_reference(node: &NodeReference, binding: &str, alias: &str, count: usize) {
+		let node = node.borrow();
+		let Nodes::Expression(Expressions::Member { name, source }) = node.node() else {
+			panic!("Expected a binding reference");
+		};
+		assert_eq!(name, binding);
 		assert!(matches!(
-			left.borrow().node(),
-			Nodes::Expression(Expressions::Accessor { .. })
+			source.borrow().node(),
+			Nodes::Binding {
+				r#type: BindingTypes::BufferArray { fixed: Some(fixed), .. },
+				..
+			} if fixed.count.get() == count && fixed.alias == alias
 		));
 	}
 
 	#[test]
 	// This AST identity test keeps both same-named buffer scopes in one contiguous assertion tree.
 	#[allow(clippy::cognitive_complexity)]
-	fn lex_same_named_buffer_members_resolve_to_member_declarations() {
+	fn lex_same_named_buffer_members_resolve_to_lowered_arrays() {
 		let script = r#"
 		main: fn () -> void {
 			let material_index: u32 = meshes.meshes[0].material_index;
@@ -1025,55 +1060,21 @@ main: fn () -> void {
 			_ => panic!("Expected material_index member expression"),
 		}
 
-		let meshes_member = match indexed_meshes.borrow().node() {
-			Nodes::Expression(Expressions::Accessor { left, .. }) => match left.borrow().node() {
-				Nodes::Expression(Expressions::Accessor { left, right }) => {
-					assert_eq!(left.borrow().get_name(), Some("meshes"));
-					assert!(
-						right.borrow().node().is_indexable(),
-						"Expected meshes.meshes to stay indexable"
-					);
-					right.clone()
-				}
-				_ => panic!("Expected meshes accessor"),
-			},
+		match indexed_meshes.borrow().node() {
+			Nodes::Expression(Expressions::Accessor { left, .. }) => assert_lowered_array_reference(left, "meshes", "meshes", 4),
 			_ => panic!("Expected indexed meshes accessor"),
-		};
-		match meshes_member.borrow().node() {
-			Nodes::Expression(Expressions::Member { name, source }) => {
-				assert_eq!(name, "meshes");
-				assert!(matches!(
-					source.borrow().node(),
-					Nodes::Member { name, count, .. } if name == "meshes" && count == &Some(NonZeroUsize::new(4).expect("Expected valid count"))
-				));
-			}
-			_ => panic!("Expected meshes member expression"),
 		}
 
 		let pixel_mapping_access = match statements[1].borrow().node() {
 			Nodes::Expression(Expressions::Operator { right, .. }) => right.clone(),
 			_ => panic!("Expected assignment"),
 		};
-		let pixel_mapping_member = match pixel_mapping_access.borrow().node() {
+		match pixel_mapping_access.borrow().node() {
 			Nodes::Expression(Expressions::Accessor { left, .. }) => {
-				assert!(left.borrow().node().is_indexable());
-				match left.borrow().node() {
-					Nodes::Expression(Expressions::Accessor { right, .. }) => right.clone(),
-					_ => panic!("Expected pixel_mapping accessor"),
-				}
+				assert_lowered_array_reference(left, "pixel_mapping", "pixel_mapping", 4);
 			}
 			_ => panic!("Expected indexed pixel_mapping accessor"),
-		};
-		match pixel_mapping_member.borrow().node() {
-			Nodes::Expression(Expressions::Member { name, source }) => {
-				assert_eq!(name, "pixel_mapping");
-				assert!(matches!(
-					source.borrow().node(),
-					Nodes::Member { name, count, .. } if name == "pixel_mapping" && count == &Some(NonZeroUsize::new(4).expect("Expected valid count"))
-				));
-			}
-			_ => panic!("Expected pixel_mapping member expression"),
-		};
+		}
 	}
 
 	// #[test]

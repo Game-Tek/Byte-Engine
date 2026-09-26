@@ -1,49 +1,27 @@
 use super::*;
 impl Generator {
-	pub(crate) fn hlsl_flattened_array_member(members: &[besl::NodeReference]) -> Option<(String, String)> {
-		let [member] = members else {
-			return None;
-		};
-		let member = member.borrow();
-		let besl::Nodes::Member {
-			name,
-			r#type,
-			count: Some(_),
-		} = member.node()
-		else {
-			return None;
-		};
-		let element_type = r#type.borrow().get_name()?.to_string();
-		Some((name.to_string(), element_type))
-	}
-
 	pub(crate) fn hlsl_buffer_binding_source(source: &besl::NodeReference) -> Option<HlslBufferBindingSource> {
 		match source.borrow().node() {
 			besl::Nodes::Binding {
 				name,
-				r#type: besl::BindingTypes::Buffer { members },
-				write,
-				..
-			} => {
-				let (flattened_member, flattened_element_type) = Self::hlsl_flattened_array_member(members)
-					.map_or((None, None), |(name, element_type)| (Some(name), Some(element_type)));
-				Some(HlslBufferBindingSource {
-					name: name.to_string(),
-					write: *write,
-					flattened_member,
-					flattened_element_type,
-				})
-			}
-			besl::Nodes::Binding {
-				name,
-				r#type: besl::BindingTypes::BufferArray { .. },
+				r#type: besl::BindingTypes::Buffer { .. },
 				write,
 				..
 			} => Some(HlslBufferBindingSource {
 				name: name.to_string(),
 				write: *write,
-				flattened_member: None,
-				flattened_element_type: None,
+				narrow_element: None,
+			}),
+			besl::Nodes::Binding {
+				name,
+				r#type: besl::BindingTypes::BufferArray { element, .. },
+				write,
+				..
+			} => Some(HlslBufferBindingSource {
+				name: name.to_string(),
+				write: *write,
+				// DX12 stores narrow elements in shared 32-bit words; every other element indexes directly.
+				narrow_element: element.borrow().get_name().and_then(super::hlsl_narrow_element),
 			}),
 			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => Self::hlsl_buffer_binding_source(source),
 			_ => None,
@@ -62,16 +40,16 @@ impl Generator {
 		}
 	}
 
-	/// Recovers the underlying HLSL buffer and flattened-field metadata for an indexed BESL member expression.
+	/// Recovers the underlying HLSL buffer, the accessed field, and narrow-element metadata for an indexed BESL
+	/// member expression. An array buffer's field is its own binding name.
 	pub(crate) fn hlsl_buffer_member_target(
 		member: &besl::NodeReference,
-	) -> Option<(String, String, bool, Option<String>, bool)> {
+	) -> Option<(String, String, bool, Option<&'static str>)> {
 		// Lexed buffer-member access can retain its dot operation as an accessor,
 		// so recover both sides before indexing it.
 		let (name, source) = Self::hlsl_buffer_member_reference(member)?;
 		let binding = Self::hlsl_buffer_binding_source(&source)?;
-		let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
-		Some((binding.name, name, binding.write, binding.flattened_element_type, flattened))
+		Some((binding.name, name, binding.write, binding.narrow_element))
 	}
 
 	/// Reports whether an accessor selects one element from a declared buffer-member array.
@@ -84,6 +62,9 @@ impl Generator {
 
 	/// Finds whether the named member is an array in the underlying buffer declaration.
 	pub(crate) fn hlsl_buffer_source_member_is_array(source: &besl::NodeReference, member_name: &str) -> bool {
+		if runtime_buffer_element(source).is_some() {
+			return true;
+		}
 		match source.borrow().node() {
 			besl::Nodes::Binding {
 				r#type: besl::BindingTypes::Buffer { members },
@@ -225,14 +206,9 @@ impl Generator {
 			return element.borrow().get_name().map(str::to_string);
 		}
 		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left)
-			&& let Some(binding) = Self::hlsl_buffer_binding_source(&source)
+			&& Self::hlsl_buffer_binding_source(&source).is_some()
 		{
-			let flattened = binding.flattened_member.as_deref() == Some(name.as_str());
-			let member_type = if flattened {
-				binding.flattened_element_type
-			} else {
-				Self::hlsl_buffer_member_type(&source, &name)
-			}?;
+			let member_type = Self::hlsl_buffer_member_type(&source, &name)?;
 			// The first index on an array member selects its declared element.
 			// Only a later index into that element selects a matrix column or vector component.
 			return if Self::hlsl_buffer_member_is_array(left) {

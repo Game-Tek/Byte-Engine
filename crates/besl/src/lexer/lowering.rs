@@ -91,6 +91,21 @@ fn validate_atomic_target(name: &str, target: &NodeReference, requirement: Atomi
 	Err(LexError::Undefined { message: Some(message) })
 }
 
+/// Reports whether `name` is the wrapper member of the lowered fixed-array binding that `left` references.
+fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
+	let left = left.borrow();
+	let Nodes::Expression(Expressions::Member { source, .. }) = left.node() else {
+		return false;
+	};
+	matches!(
+		source.borrow().node(),
+		Nodes::Binding {
+			r#type: BindingTypes::BufferArray { fixed: Some(fixed), .. },
+			..
+		} if fixed.alias == name
+	)
+}
+
 // This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) fn lex_parsed_node(
@@ -503,6 +518,12 @@ pub(super) fn lex_parsed_node(
 				parser::Expressions::Discard => Node::expression(Expressions::Discard),
 				parser::Expressions::Accessor { left, right } => {
 					let left = lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?;
+					// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
+					if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
+						&& is_fixed_array_alias(&left, name)
+					{
+						return Ok(left);
+					}
 
 					let right = {
 						let left = left.clone();

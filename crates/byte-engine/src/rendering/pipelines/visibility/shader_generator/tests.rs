@@ -112,7 +112,7 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 	let mut results = buffer(&executable, RESULT_SLOT);
 	for (index, (encoded, _)) in cases.iter().enumerate() {
 		inputs
-			.write_indexed("values", index, Value::Vec2U16(*encoded))
+			.write_array_element(index, Value::Vec2U16(*encoded))
 			.expect("octahedral input");
 	}
 	let mut descriptors = DescriptorBindings::new();
@@ -122,7 +122,7 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 	drop(descriptors);
 
 	for (index, (encoded, expected)) in cases.iter().enumerate() {
-		let Value::Vec3F(actual) = results.read_indexed("values", index).expect("decoded normal") else {
+		let Value::Vec3F(actual) = results.read_array_element(index).expect("decoded normal") else {
 			panic!("Unexpected decoded-normal type.");
 		};
 		assert!(
@@ -203,7 +203,7 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 	drop(descriptors);
 
 	for (index, (_, _, _, expected)) in cases.iter().enumerate() {
-		let Value::Vec2F(actual) = results.read_indexed("values", index).expect("IES UV") else {
+		let Value::Vec2F(actual) = results.read_array_element(index).expect("IES UV") else {
 			panic!("Unexpected IES UV type.");
 		};
 		// C0 lies on the duplicated horizontal seam, so packed-vector rounding may wrap a value just below zero to one.

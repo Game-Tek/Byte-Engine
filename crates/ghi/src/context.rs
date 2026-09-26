@@ -4,8 +4,8 @@ use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
 	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, Size as _,
-	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer, descriptors,
-	image,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	buffer::BufferContents, descriptors, image,
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},
@@ -360,13 +360,14 @@ pub trait Context: ContextCreate {
 
 	/// Returns a shared view into a typed buffer's contents.
 	///
-	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding.
-	fn get_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
+	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding. Array
+	/// buffers return a slice with the length the buffer was built with.
+	fn get_buffer_slice<T: ?Sized + BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &T;
 
 	/// Returns a mutable view into CPU-visible buffer contents.
 	///
 	/// [`Pod`] keeps every possible GPU-written bit pattern valid for `T` and excludes uninitialized padding.
-	fn get_mut_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+	fn get_mut_buffer_slice<T: ?Sized + BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
 
 	/// Transfers exclusive CPU access to a persistently mapped buffer.
 	///
@@ -377,7 +378,10 @@ pub trait Context: ContextCreate {
 	///
 	/// The context must outlive the returned mapping and every region derived from
 	/// it. The caller must not map the buffer again while the transferred mapping exists.
-	unsafe fn transfer_buffer_mapping<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping;
+	unsafe fn transfer_buffer_mapping<T: ?Sized + BufferContents>(
+		&mut self,
+		buffer_handle: BufferHandle<T>,
+	) -> crate::buffer::Mapping;
 
 	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
@@ -522,11 +526,16 @@ pub trait ContextCreate {
 	/// Creates a ray-tracing pipeline.
 	fn create_ray_tracing_pipeline(&mut self, builder: crate::pipelines::ray_tracing::Builder) -> PipelineHandle;
 
-	/// Creates a zero-initialized static fixed-size buffer from a builder.
+	/// Creates a zero-initialized static buffer from a builder.
 	///
-	/// `T` must implement [`Pod`] so zero initialization and later GPU-written bytes always form a valid value.
+	/// `T` is one [`Pod`] value, or a slice `[E]` of [`Pod`] elements whose count comes from
+	/// [`buffer::Builder::length`]. [`Pod`] keeps zero initialization and later GPU-written bytes valid.
 	/// Static buffers are not resizable; use [`ContextCreate::build_dynamic_buffer`] when the allocation must grow.
-	fn build_buffer<T: Pod>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
+	///
+	/// # Panics
+	///
+	/// Panics when a slice buffer has no builder length or a single-value buffer has one. See [`BufferContents`].
+	fn build_buffer<T: ?Sized + BufferContents>(&mut self, builder: buffer::Builder) -> BufferHandle<T>;
 
 	/// Creates a zero-initialized dynamic buffer from a builder.
 	///
@@ -642,7 +651,10 @@ macro_rules! delegate_context_create_to_device {
 			self.device.create_ray_tracing_pipeline(builder)
 		}
 
-		fn build_buffer<T: $crate::Pod>(&mut self, builder: $crate::buffer::Builder) -> $crate::BufferHandle<T> {
+		fn build_buffer<T: ?Sized + $crate::buffer::BufferContents>(
+			&mut self,
+			builder: $crate::buffer::Builder,
+		) -> $crate::BufferHandle<T> {
 			self.device.build_buffer(builder)
 		}
 

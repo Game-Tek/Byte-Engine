@@ -22,8 +22,9 @@ impl<'a> Compiler<'a> {
 				require_descriptor_access(slot, *read, *write, access)?;
 				let (layout, runtime_element_type) = match r#type {
 					BindingTypes::Buffer { members } => (compile_buffer_layout(members)?, None),
-					BindingTypes::BufferArray { element } => {
-						let (layout, element_type) = compile_buffer_array_layout(element)?;
+					BindingTypes::BufferArray { element, fixed } => {
+						let count = fixed.as_ref().map(|fixed| fixed.count);
+						let (layout, element_type) = compile_buffer_array_layout(element, count)?;
 						(layout, Some(element_type))
 					}
 					_ => {
@@ -287,6 +288,8 @@ impl<'a> Compiler<'a> {
 							count,
 						}],
 						size: value_type.size() * count,
+						element: None,
+						element_count: None,
 					},
 				)
 			}
@@ -382,6 +385,8 @@ impl<'a> Compiler<'a> {
 							count: 1,
 						}],
 						size: value_type.size(),
+						element: None,
+						element_count: None,
 					},
 				)
 			}

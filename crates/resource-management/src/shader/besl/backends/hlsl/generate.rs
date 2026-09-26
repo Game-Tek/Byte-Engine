@@ -519,30 +519,6 @@ impl Generator {
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
-						if let Some((member_name, element_type)) = Self::hlsl_flattened_array_member(members) {
-							string.push_str(buffer_type);
-							string.push('<');
-							// Narrow arrays share 32-bit words so their lane writes can use InterlockedCompareExchange.
-							string.push_str(if matches!(element_type.as_str(), "u8" | "u16") {
-								"uint"
-							} else {
-								Self::translate_type(&element_type)
-							});
-							string.push_str("> ");
-							string.push_str(name);
-							if let Some(count) = count {
-								string.push('[');
-								string.push_str(count.to_string().as_str());
-								string.push(']');
-							}
-							string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
-							if !self.minified {
-								string.push('\n');
-							}
-							let _ = member_name;
-							return;
-						}
-
 						self.emit_named_struct_start(string, &format!("_{name}"));
 
 						for member in members.iter() {
@@ -571,10 +547,17 @@ impl Generator {
 							string.push('\n');
 						}
 					}
-					besl::BindingTypes::BufferArray { element } => {
+					besl::BindingTypes::BufferArray { element, .. } => {
+						let element = element.borrow();
+						let element_type = element.get_name().unwrap();
 						string.push_str(buffer_type);
 						string.push('<');
-						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						// Narrow elements share 32-bit words so their lane writes can use InterlockedCompareExchange.
+						string.push_str(if super::hlsl_narrow_element(element_type).is_some() {
+							"uint"
+						} else {
+							Self::translate_type(element_type)
+						});
 						string.push_str("> ");
 						string.push_str(name);
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));

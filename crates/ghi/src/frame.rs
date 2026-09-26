@@ -23,7 +23,7 @@ where
 	fn key(&self) -> crate::FrameKey;
 
 	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
-	fn get_mut_buffer_slice<T: Pod>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
+	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
 
 	/// Flushes or uploads pending writes for the provided buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);

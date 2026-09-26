@@ -197,17 +197,17 @@ impl Context {
 		buffer.staging.map_or(buffer, |staging| self.buffers.resource(staging))
 	}
 
-	pub(super) fn typed_buffer_pointer<T: crate::Pod>(
+	pub(super) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
 		&self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> *mut T {
 		let buffer = self.host_visible_buffer(buffer_handle.into());
-		crate::buffer::typed_buffer_pointer::<T>(buffer.pointer.0, buffer.size).expect(
+		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer.0, buffer.size).expect(
 			"Failed to map a typed Vulkan buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		)
 	}
 
-	pub(crate) fn get_mut_buffer_slice<T: crate::Pod>(
+	pub(crate) fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &mut T {

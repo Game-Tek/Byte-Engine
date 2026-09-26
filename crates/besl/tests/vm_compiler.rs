@@ -76,10 +76,10 @@ fn dynamic_buffer_index_is_evaluated_once_during_expression_lowering() {
 	);
 	let mut result = Buffer::new(executable.buffer_layout(result_slot).expect("Expected result layout").clone());
 	values
-		.write_indexed("values", 0, Value::U32(10))
+		.write_array_element(0, Value::U32(10))
 		.expect("Expected first value write");
 	values
-		.write_indexed("values", 1, Value::U32(20))
+		.write_array_element(1, Value::U32(20))
 		.expect("Expected second value write");
 	counter.write("count", Value::U32(0)).expect("Expected counter write");
 

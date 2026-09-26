@@ -67,13 +67,23 @@ pub(crate) fn empty_image(width: u32, height: u32) -> Texture {
 
 /// Creates a host buffer using the layout discovered while compiling the shader.
 pub(crate) fn buffer(program: &ExecutableProgram, slot: ResourceSlot) -> Buffer {
-	let layout = program
+	Buffer::new(buffer_layout(program, slot))
+}
+
+fn buffer_layout(program: &ExecutableProgram, slot: ResourceSlot) -> besl::vm::BufferLayout {
+	program
 		.buffer_layout(slot)
 		.expect(
 			"Missing VM buffer layout. The most likely cause is that the production shader did not retain the expected binding.",
 		)
-		.clone();
-	Buffer::new(layout)
+		.clone()
+}
+
+/// Creates `element_count` elements of a production runtime-array buffer, such as `vertex_positions: vec3f[]`.
+pub(crate) fn array_buffer(program: &ExecutableProgram, slot: ResourceSlot, element_count: usize) -> Buffer {
+	Buffer::new_array(buffer_layout(program, slot), element_count).expect(
+		"Failed to allocate a VM runtime-array buffer. The most likely cause is an element count that overflows memory.",
+	)
 }
 
 /// Executes one bounded shader invocation at the requested two-dimensional thread coordinate.

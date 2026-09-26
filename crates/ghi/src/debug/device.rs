@@ -85,7 +85,7 @@ impl Device {
 		super::CommandBufferRecording::new(self, command_buffer_handle, Vec::new(), Vec::new(), None)
 	}
 
-	pub fn build_buffer<T: crate::Pod>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
+	pub fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, _builder: buffer::Builder) -> BufferHandle<T> {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test used the schema-only GHI backend for resource memory."
 		)
@@ -105,13 +105,13 @@ impl Device {
 		0
 	}
 
-	pub fn get_buffer_slice<T: crate::Pod>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
+	pub fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, _buffer_handle: BufferHandle<T>) -> &T {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
 		)
 	}
 
-	pub fn get_mut_buffer_slice<T: crate::Pod>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, _buffer_handle: BufferHandle<T>) -> &mut T {
 		panic!(
 			"Debug buffer storage is unavailable. The most likely cause is that a test tried to map a schema-only GHI resource."
 		)

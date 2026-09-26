@@ -1,15 +1,98 @@
+use std::alloc::Layout;
+
 use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses, graphics_hardware_interface};
 
-/// Returns a typed pointer only when the mapped byte range satisfies Rust's reference requirements.
-pub(crate) fn typed_buffer_pointer<T: crate::Pod>(pointer: *mut u8, byte_count: usize) -> Option<*mut T> {
-	if std::mem::size_of::<T>() == 0 {
-		return Some(std::ptr::NonNull::<T>::dangling().as_ptr());
+/// The `BufferContents` trait lets one typed buffer API cover both fixed-size values and runtime-length arrays.
+///
+/// A [`crate::BufferHandle<T>`] with a [`crate::Pod`] `T` holds exactly one `T`. A `BufferHandle<[T]>` holds as many
+/// `T` elements as [`Builder::length`] requested when [`crate::context::ContextCreate::build_buffer`] created it.
+/// CPU views of an array buffer are ordinary slices, so indexing past the allocated length panics instead of
+/// reading unrelated memory.
+///
+/// The trait is sealed. Only `T` and `[T]` for a [`crate::Pod`] `T` implement it.
+pub trait BufferContents: sealed::Sealed {
+	/// Returns the allocation layout for these contents and the builder's optional element count.
+	///
+	/// # Panics
+	///
+	/// Panics when a single value receives a length, when an array receives none, or when the array size overflows.
+	fn layout(length: Option<usize>) -> Layout;
+
+	/// Returns a typed pointer over `byte_count` mapped bytes, or `None` when the range cannot hold these contents.
+	///
+	/// An array view covers every whole element that fits in `byte_count`.
+	fn from_raw_parts(pointer: *mut u8, byte_count: usize) -> Option<*mut Self>;
+
+	/// Returns the number of bytes a pointer from [`Self::from_raw_parts`] covers.
+	fn byte_count(pointer: *const Self) -> usize;
+}
+
+mod sealed {
+	pub trait Sealed {}
+	impl<T: crate::Pod> Sealed for T {}
+	impl<T: crate::Pod> Sealed for [T] {}
+}
+
+impl<T: crate::Pod> BufferContents for T {
+	fn layout(length: Option<usize>) -> Layout {
+		assert!(
+			length.is_none(),
+			"Invalid buffer length. The most likely cause is that buffer::Builder::length was set for a single-value buffer type; use a slice type such as `[T]` for runtime-length buffers."
+		);
+		Layout::new::<T>()
 	}
 
-	(byte_count >= std::mem::size_of::<T>()
-		&& !pointer.is_null()
-		&& (pointer as usize).is_multiple_of(std::mem::align_of::<T>()))
-	.then_some(pointer.cast::<T>())
+	fn from_raw_parts(pointer: *mut u8, byte_count: usize) -> Option<*mut T> {
+		if std::mem::size_of::<T>() == 0 {
+			return Some(std::ptr::NonNull::<T>::dangling().as_ptr());
+		}
+
+		(byte_count >= std::mem::size_of::<T>()
+			&& !pointer.is_null()
+			&& (pointer as usize).is_multiple_of(std::mem::align_of::<T>()))
+		.then_some(pointer.cast::<T>())
+	}
+
+	fn byte_count(_: *const T) -> usize {
+		std::mem::size_of::<T>()
+	}
+}
+
+impl<T: crate::Pod> BufferContents for [T] {
+	fn layout(length: Option<usize>) -> Layout {
+		let length = length.expect(
+			"Missing buffer length. The most likely cause is that an array buffer was built without calling buffer::Builder::length.",
+		);
+		assert!(
+			std::mem::size_of::<T>() != 0,
+			"Invalid array buffer element. The most likely cause is that the element type is zero-sized and cannot give the array a byte size."
+		);
+		Layout::array::<T>(length).expect(
+			"Invalid buffer length. The most likely cause is that the element count times the element size overflows addressable memory.",
+		)
+	}
+
+	fn from_raw_parts(pointer: *mut u8, byte_count: usize) -> Option<*mut [T]> {
+		let element_size = std::mem::size_of::<T>();
+		if element_size == 0 {
+			return None;
+		}
+
+		let length = byte_count / element_size;
+		// An empty slice still needs a non-null, aligned pointer, but never reads through it.
+		let elements = if length == 0 {
+			std::ptr::NonNull::<T>::dangling().as_ptr()
+		} else if !pointer.is_null() && (pointer as usize).is_multiple_of(std::mem::align_of::<T>()) {
+			pointer.cast::<T>()
+		} else {
+			return None;
+		};
+		Some(std::ptr::slice_from_raw_parts_mut(elements, length))
+	}
+
+	fn byte_count(pointer: *const [T]) -> usize {
+		pointer.len() * std::mem::size_of::<T>()
+	}
 }
 
 /// The `Mapping` struct transfers exclusive CPU access to one persistently mapped buffer.
@@ -56,6 +139,7 @@ pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
 	pub(crate) resource_uses: Uses,
 	pub(crate) device_accesses: DeviceAccesses,
+	pub(crate) length: Option<usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -67,6 +151,7 @@ impl<'a> Builder<'a> {
 			name: None,
 			resource_uses,
 			device_accesses: DeviceAccesses::DeviceOnly,
+			length: None,
 		}
 	}
 
@@ -77,6 +162,15 @@ impl<'a> Builder<'a> {
 
 	pub fn device_accesses(mut self, device_accesses: DeviceAccesses) -> Self {
 		self.device_accesses = device_accesses;
+		self
+	}
+
+	/// Sets the element count of an array buffer.
+	///
+	/// Set a length exactly when the buffer type is a slice, such as `BufferHandle<[u32]>`. Building a slice buffer
+	/// without a length, or a single-value buffer with one, panics. See [`BufferContents`].
+	pub fn length(mut self, length: usize) -> Self {
+		self.length = Some(length);
 		self
 	}
 }
@@ -108,28 +202,28 @@ impl PrivateHandle for BufferHandle {
 
 #[cfg(test)]
 mod tests {
-	use super::{Mapping, typed_buffer_pointer};
+	use super::{BufferContents, Mapping};
 
 	#[repr(C, align(64))]
 	#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 	struct AlignedZeroSized;
 
 	#[test]
-	fn typed_buffer_pointer_preserves_zst_alignment_and_rejects_invalid_storage() {
-		let zero_sized = typed_buffer_pointer::<AlignedZeroSized>(std::ptr::null_mut(), 0)
+	fn raw_parts_preserve_zst_alignment_and_reject_invalid_storage() {
+		let zero_sized = <AlignedZeroSized as BufferContents>::from_raw_parts(std::ptr::null_mut(), 0)
 			.expect("A zero-sized POD value should not require mapped storage");
 		assert!(!zero_sized.is_null());
 		assert!((zero_sized as usize).is_multiple_of(std::mem::align_of::<AlignedZeroSized>()));
 
-		assert!(typed_buffer_pointer::<u32>(std::ptr::null_mut(), std::mem::size_of::<u32>()).is_none());
+		assert!(<u32 as BufferContents>::from_raw_parts(std::ptr::null_mut(), std::mem::size_of::<u32>()).is_none());
 		let mut storage = [0u32; 2];
-		assert!(typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast(), std::mem::size_of::<u16>()).is_none());
+		assert!(<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast(), std::mem::size_of::<u16>()).is_none());
 		assert!(
-			typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast::<u8>().wrapping_add(1), std::mem::size_of::<u32>(),)
+			<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast::<u8>().wrapping_add(1), std::mem::size_of::<u32>(),)
 				.is_none()
 		);
 		assert_eq!(
-			typed_buffer_pointer::<u32>(storage.as_mut_ptr().cast(), std::mem::size_of::<u32>()),
+			<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast(), std::mem::size_of::<u32>()),
 			Some(storage.as_mut_ptr())
 		);
 	}

@@ -28,13 +28,13 @@ mod slots;
 #[cfg(test)]
 mod tests;
 
+pub use geometry::GeometryCapacity;
 pub(crate) use geometry::GeometryHandles;
 pub use loader::MaterialPipelineConfig;
 pub(crate) use loader::spawn as spawn_loader;
 pub use manager::{
 	CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER, DIRECTIONAL_SHADOW_FITTING_PARAMETER,
-	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager,
-	VisibilityPipelineSettings,
+	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER, VisibilityPipelineManager, VisibilityPipelineSettings,
 };
 pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX};
 pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator, VisibilityShaderScope};

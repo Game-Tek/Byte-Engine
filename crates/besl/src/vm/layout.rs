@@ -226,9 +226,24 @@ impl BufferMemberLayout {
 pub struct BufferLayout {
 	pub(super) members: Vec<BufferMemberLayout>,
 	pub(super) size: usize,
+	/// The element type of a scalar or vector array, such as `u16[]`, which has no named members.
+	pub(super) element: Option<ValueType>,
+	/// Elements a fixed-size array buffer holds. [`super::Buffer::new`] allocates this many; runtime arrays use
+	/// [`super::Buffer::new_array`].
+	pub(super) element_count: Option<usize>,
 }
 
 impl BufferLayout {
+	/// Describes one element of a scalar or vector runtime array.
+	pub(super) fn scalar_element(value_type: ValueType) -> Self {
+		Self {
+			members: Vec::new(),
+			size: value_type.size(),
+			element: Some(value_type),
+			element_count: None,
+		}
+	}
+
 	pub fn members(&self) -> &[BufferMemberLayout] {
 		&self.members
 	}

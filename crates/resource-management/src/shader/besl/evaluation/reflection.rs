@@ -116,38 +116,54 @@ fn reflected_storage_buffer_stride(members: &[besl::NodeReference]) -> Result<u3
 	reflected_storage_buffer_stride_for_target(members, StorageLayoutTarget::current())
 }
 
-/// Reflects the stride of one element in a runtime-sized storage buffer.
-fn reflected_runtime_storage_buffer_stride(element: &besl::NodeReference) -> Result<u32, String> {
-	reflected_runtime_storage_buffer_stride_for_target(element, StorageLayoutTarget::current())
+/// Reflects the stride of one element in an array buffer.
+fn reflected_array_buffer_stride(element: &besl::NodeReference) -> Result<u32, String> {
+	reflected_array_buffer_stride_for_target(element, StorageLayoutTarget::current())
 }
 
-/// Reflects a runtime-sized buffer element using the selected backend's native struct layout.
-pub(super) fn reflected_runtime_storage_buffer_stride_for_target(
+/// Reflects an array-buffer element, fixed-size or runtime-length, using the selected backend's emitted layout.
+pub(super) fn reflected_array_buffer_stride_for_target(
 	element: &besl::NodeReference,
 	target: StorageLayoutTarget,
 ) -> Result<u32, String> {
-	let fields = {
+	// User structs are emitted as packed element structs. Built-in records such as `vec3f` and `mat4x3f` have fields
+	// too, but are emitted as packed scalar or vector types.
+	let user_struct_fields = {
 		let element = element.borrow();
 		match element.node() {
-			besl::Nodes::Struct { fields, .. } if !fields.is_empty() => Some(fields.clone()),
+			besl::Nodes::Struct { name, fields, .. }
+				if !fields.is_empty() && primitive_storage_layout(name, target, false).is_none() =>
+			{
+				Some(fields.clone())
+			}
 			_ => None,
 		}
 	};
-	let layout = if let Some(fields) = fields {
-		reflected_storage_members_layout(&fields, target, true, &mut HashSet::new())?
+	let mut visiting = HashSet::new();
+	let layout = if let Some(fields) = user_struct_fields {
+		reflected_storage_members_layout(&fields, target, true, &mut visiting)?
+	} else if target == StorageLayoutTarget::Hlsl
+		&& element
+			.borrow()
+			.get_name()
+			.and_then(crate::shader::besl::backends::hlsl::hlsl_narrow_element)
+			.is_some()
+	{
+		// DX12 exposes narrow arrays as atomically addressable 32-bit words,
+		// even though native u16 values remain two bytes in every other HLSL layout.
+		StorageLayout { size: 4, alignment: 4 }
 	} else {
-		reflected_storage_type_layout(element, target, false, &mut HashSet::new())?
+		reflected_storage_member_type_layout(element, target, true, true, &mut visiting)?
 	};
 	let size = checked_align_up(layout.size, layout.alignment)?;
 	if size == 0 {
 		return Err(
-			"Zero storage-buffer stride. The most likely cause is that the runtime array element has no storage representation."
+			"Zero storage-buffer stride. The most likely cause is that the array element has no storage representation."
 				.to_string(),
 		);
 	}
 	u32::try_from(size).map_err(|_| {
-		"Storage-buffer stride exceeds u32. The most likely cause is that a runtime array element is excessively large."
-			.to_string()
+		"Storage-buffer stride exceeds u32. The most likely cause is that an array element is excessively large.".to_string()
 	})
 }
 
@@ -163,31 +179,8 @@ pub(super) fn reflected_storage_buffer_stride_for_target(
 		);
 	}
 
-	let mut visiting = HashSet::new();
-	// A single array member is lowered as a linear element buffer. Other
-	// layouts retain their wrapper struct and therefore use the wrapper size.
-	let size = if let [member] = members {
-		let member = member.borrow();
-		match member.node() {
-			besl::Nodes::Member {
-				r#type, count: Some(_), ..
-			} => {
-				// DX12 exposes flat narrow arrays as atomically addressable 32-bit words,
-				// even though native u16 values remain two bytes in every other HLSL layout.
-				let packed_hlsl_narrow =
-					target == StorageLayoutTarget::Hlsl && matches!(r#type.borrow().get_name(), Some("u8" | "u16"));
-				let element = if packed_hlsl_narrow {
-					StorageLayout { size: 4, alignment: 4 }
-				} else {
-					reflected_storage_member_type_layout(r#type, target, true, true, &mut visiting)?
-				};
-				checked_align_up(element.size, element.alignment)?
-			}
-			_ => reflected_storage_members_layout(members, target, true, &mut visiting)?.size,
-		}
-	} else {
-		reflected_storage_members_layout(members, target, true, &mut visiting)?.size
-	};
+	// The lexer lowers a lone fixed-array member to an array buffer, so these buffers are always wrapper structs.
+	let size = reflected_storage_members_layout(members, target, true, &mut HashSet::new())?.size;
 
 	if size == 0 {
 		return Err(
@@ -593,8 +586,8 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 					};
 					(BindingKind::StorageBuffer, Some(stride))
 				}
-				besl::BindingTypes::BufferArray { element } => {
-					let stride = match reflected_runtime_storage_buffer_stride(element) {
+				besl::BindingTypes::BufferArray { element, .. } => {
+					let stride = match reflected_array_buffer_stride(element) {
 						Ok(stride) => stride,
 						Err(error) => {
 							state.error = Some(format!("Failed to reflect storage-buffer binding '{name}'. {error}"));

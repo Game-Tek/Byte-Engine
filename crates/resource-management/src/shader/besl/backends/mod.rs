@@ -16,6 +16,21 @@ const RUNTIME_ARRAY_FRAGMENT: &str = r#"
 	}
 "#;
 
+/// Reads packed vector and narrow scalar runtime arrays, then writes a scalar runtime array.
+#[cfg(test)]
+const SCALAR_RUNTIME_ARRAY_COMPUTE: &str = r#"
+	positions: descriptor<{ type: vec3f[], binding: 0, access: read }>;
+	indices: descriptor<{ type: u16[], binding: 1, access: read }>;
+	corners: descriptor<{ type: u8[], binding: 2, access: read }>;
+	results: descriptor<{ type: u32[], binding: 3, access: write }>;
+	main: fn (input: StageInput) -> void {
+		let item: u32 = input.thread_id.x;
+		let index: u32 = u32(indices[item]) + u32(corners[item]);
+		let position: vec3f = positions[index];
+		results[item] = u32(position.x);
+	}
+"#;
+
 #[cfg(test)]
 const STRUCTURAL_POSITION_VERTEX: &str = r#"
 	main: fn (input: StageInput) -> interface { position: vec4f, uv: vec2f } {
@@ -84,7 +99,7 @@ fn resource_reference_kind(node: &besl::NodeReference) -> Option<ResourceAccesso
 fn runtime_buffer_element(node: &besl::NodeReference) -> Option<besl::NodeReference> {
 	match node.borrow().node() {
 		besl::Nodes::Binding {
-			r#type: besl::BindingTypes::BufferArray { element },
+			r#type: besl::BindingTypes::BufferArray { element, .. },
 			..
 		} => Some(element.clone()),
 		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => runtime_buffer_element(source),

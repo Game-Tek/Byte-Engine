@@ -10,7 +10,7 @@ pub(crate) use reflection::{BindingRecord, collect_bindings};
 #[cfg(test)]
 use reflection::{
 	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout,
-	reflected_runtime_storage_buffer_stride_for_target, reflected_storage_buffer_stride_for_target,
+	reflected_array_buffer_stride_for_target, reflected_storage_buffer_stride_for_target,
 	reflected_storage_type_layout,
 };
 
@@ -165,22 +165,25 @@ mod tests {
 		);
 
 		assert_eq!(
-			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::Hlsl),
+			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::Hlsl),
 			Ok(16)
 		);
 		assert_eq!(
-			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::Msl),
+			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::Msl),
 			Ok(32)
 		);
 		assert_eq!(
-			reflected_runtime_storage_buffer_stride_for_target(&instance, StorageLayoutTarget::GlslScalar),
+			reflected_array_buffer_stride_for_target(&instance, StorageLayoutTarget::GlslScalar),
 			Ok(16)
 		);
 
 		root.add_child(
 			besl::Node::binding(
 				"instances",
-				besl::BindingTypes::BufferArray { element: instance },
+				besl::BindingTypes::BufferArray {
+					element: instance,
+					fixed: None,
+				},
 				1,
 				true,
 				false,
@@ -290,35 +293,33 @@ mod tests {
 			assert_eq!(reflected_storage_buffer_stride_for_target(&members, target), Ok(20));
 		}
 
-		let uv_array = vec![besl::Node::array(
-			"uvs",
-			root.get_child("vec2f16").expect("Expected vec2f16"),
-			2,
-		)];
+		let uv = root.get_child("vec2f16").expect("Expected vec2f16");
 		for target in [
 			StorageLayoutTarget::Hlsl,
 			StorageLayoutTarget::Msl,
 			StorageLayoutTarget::GlslScalar,
 		] {
-			assert_eq!(reflected_storage_buffer_stride_for_target(&uv_array, target), Ok(4));
+			assert_eq!(reflected_array_buffer_stride_for_target(&uv, target), Ok(4));
 		}
 	}
 
 	#[test]
-	fn flattened_narrow_scalar_arrays_use_the_emitted_element_width() {
+	fn scalar_and_vector_array_buffers_use_the_emitted_element_width() {
 		let root = besl::Node::root();
-		let u8_type = root.get_child("u8").expect("Expected u8");
-		let u16_type = root.get_child("u16").expect("Expected u16");
-		let bytes = vec![besl::Node::array("bytes", u8_type, 8)];
-		let words = vec![besl::Node::array("words", u16_type, 8)];
+		let element = |name| root.get_child(name).unwrap_or_else(|| panic!("Expected {name}"));
 
-		for (target, byte_stride, word_stride) in [
-			(StorageLayoutTarget::Hlsl, 4, 4),
-			(StorageLayoutTarget::Msl, 1, 2),
-			(StorageLayoutTarget::GlslScalar, 1, 2),
+		for (target, byte, word, position) in [
+			(StorageLayoutTarget::Hlsl, 4, 4, 12),
+			(StorageLayoutTarget::Msl, 1, 2, 12),
+			(StorageLayoutTarget::GlslScalar, 1, 2, 12),
 		] {
-			assert_eq!(reflected_storage_buffer_stride_for_target(&bytes, target), Ok(byte_stride));
-			assert_eq!(reflected_storage_buffer_stride_for_target(&words, target), Ok(word_stride));
+			for (name, stride) in [("u8", byte), ("u16", word), ("vec3f", position)] {
+				assert_eq!(
+					reflected_array_buffer_stride_for_target(&element(name), target),
+					Ok(stride),
+					"{name} array stride for {target:?}"
+				);
+			}
 		}
 	}
 
@@ -336,10 +337,8 @@ mod tests {
 			)
 			.into(),
 		);
-		let pairs = vec![besl::Node::array("pairs", pair, 3)];
-
 		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&pairs, StorageLayoutTarget::Hlsl),
+			reflected_array_buffer_stride_for_target(&pair, StorageLayoutTarget::Hlsl),
 			Ok(4)
 		);
 	}
@@ -412,7 +411,6 @@ mod tests {
 			besl::Node::member("tail", u32_type).into(),
 		];
 		let scalar_position = vec![besl::Node::member("position", vec3f.clone()).into()];
-		let flattened_positions = vec![besl::Node::array("positions", vec3f, 8)];
 
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&wrapper, StorageLayoutTarget::Hlsl),
@@ -427,9 +425,8 @@ mod tests {
 			Ok(36)
 		);
 
-		// Metal emits packed_float3 only for the direct array member. Direct
-		// scalar members and fields nested inside Mixed retain native float3.
-
+		// Metal emits packed_float3 only for arrays. Direct scalar members and fields nested inside Mixed retain
+		// native float3.
 		assert_eq!(
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::Hlsl),
 			Ok(12)
@@ -442,16 +439,6 @@ mod tests {
 			reflected_storage_buffer_stride_for_target(&scalar_position, StorageLayoutTarget::GlslScalar),
 			Ok(12)
 		);
-		for target in [
-			StorageLayoutTarget::Hlsl,
-			StorageLayoutTarget::Msl,
-			StorageLayoutTarget::GlslScalar,
-		] {
-			assert_eq!(
-				reflected_storage_buffer_stride_for_target(&flattened_positions, target),
-				Ok(12)
-			);
-		}
 	}
 
 	#[test]
@@ -528,9 +515,6 @@ mod tests {
 			.into(),
 		);
 
-		let mesh_buffer = vec![besl::Node::array("meshes", mesh, 1024)];
-		let view_buffer = vec![besl::Node::array("views", view, 8)];
-		let meshlet_buffer = vec![besl::Node::array("meshlets", meshlet, 1024)];
 		let lighting_buffer = vec![
 			besl::Node::member("light_count", u32_type.clone()).into(),
 			besl::Node::array("_light_count_padding", u32_type, 3),
@@ -542,15 +526,9 @@ mod tests {
 			(StorageLayoutTarget::Msl, 80, 176),
 			(StorageLayoutTarget::GlslScalar, 80, 176),
 		] {
-			assert_eq!(
-				reflected_storage_buffer_stride_for_target(&mesh_buffer, target),
-				Ok(mesh_stride)
-			);
-			assert_eq!(
-				reflected_storage_buffer_stride_for_target(&view_buffer, target),
-				Ok(view_stride)
-			);
-			assert_eq!(reflected_storage_buffer_stride_for_target(&meshlet_buffer, target), Ok(52));
+			assert_eq!(reflected_array_buffer_stride_for_target(&mesh, target), Ok(mesh_stride));
+			assert_eq!(reflected_array_buffer_stride_for_target(&view, target), Ok(view_stride));
+			assert_eq!(reflected_array_buffer_stride_for_target(&meshlet, target), Ok(52));
 			assert_eq!(reflected_storage_buffer_stride_for_target(&lighting_buffer, target), Ok(1552));
 		}
 	}

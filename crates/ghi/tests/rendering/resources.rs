@@ -464,6 +464,53 @@ pub(super) fn resize_dynamic_buffer(device: &mut impl ghi::context::Context, que
 	assert!(!device.has_errors());
 }
 
+pub(super) fn array_buffer_round_trip(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
+	//! Tests that an array buffer holds exactly its builder length and that the GPU can copy every element.
+
+	const LENGTH: usize = 5;
+
+	let array_builder = |name| {
+		ghi::buffer::Builder::new(Uses::Storage | Uses::TransferSource | Uses::TransferDestination)
+			.name(name)
+			.length(LENGTH)
+			.device_accesses(DeviceAccesses::HostToDevice | DeviceAccesses::DeviceToHost)
+	};
+	let source = device.build_buffer::<[u32]>(array_builder("Array Source"));
+	let destination = device.build_buffer::<[u32]>(array_builder("Array Destination"));
+
+	let values = device.get_mut_buffer_slice(source);
+	assert_eq!(values.len(), LENGTH);
+	values.copy_from_slice(&[3, 1, 4, 1, 5]);
+	device.sync_buffer(source);
+
+	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
+	let synchronizer = device.create_synchronizer(None, true);
+	device
+		.queue(queue_handle)
+		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
+			execution.record(command_buffer_handle, |recording| {
+				recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(
+					source.into(),
+					0,
+					destination.into(),
+					0,
+					LENGTH * std::mem::size_of::<u32>(),
+				)]);
+			});
+			[]
+		});
+	device.wait();
+
+	assert!(!device.has_errors());
+	assert_eq!(device.get_buffer_slice(destination), &[3, 1, 4, 1, 5]);
+}
+
+pub(super) fn array_buffer_requires_length(device: &mut impl ghi::context::Context) {
+	//! Tests that building an array buffer without a length fails instead of allocating an empty buffer.
+
+	device.build_buffer::<[u32]>(ghi::buffer::Builder::new(Uses::Storage));
+}
+
 // The rendering scenario shares one resource setup across all dynamic-data frame transitions.
 #[allow(clippy::too_many_lines)]
 pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {

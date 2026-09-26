@@ -19,8 +19,7 @@ use utils::json::{JsonContainerTrait, JsonValueTrait};
 use self::ast::*;
 use self::sources::*;
 use super::layout::{
-	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_MESHLETS, MAX_PIXEL_MAPPING_ENTRIES,
-	MAX_PRIMITIVE_TRIANGLES, MAX_TRIANGLES, MAX_VERTICES,
+	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
 };
 use crate::rendering::common_shader_generator::CommonShaderScope;
 
@@ -29,23 +28,14 @@ const LIGHT_ARRAY: &str = "Light[1024]";
 const LIGHT_CLUSTER_MASK_ARRAY: &str = "u32[98304]";
 const MATERIAL_ARRAY: &str = "Material[1024]";
 const MATERIAL_TEXTURE_ARRAY: &str = "u32[16]";
-const VERTEX_VEC3_ARRAY: &str = "vec3f[262144]";
-const VERTEX_NORMAL_ARRAY: &str = "vec2u16[262144]";
-const VERTEX_UV_ARRAY: &str = "vec2f16[262144]";
 const SKINNED_VERTEX_ARRAY: &str = "SkinnedVertex[262144]";
-const VERTEX_INDEX_ARRAY: &str = "u16[262144]";
-const PRIMITIVE_INDEX_ARRAY: &str = "u8[786432]";
-const MESHLET_ARRAY: &str = "Meshlet[4096]";
 const PIXEL_MAPPING_ARRAY: &str = "vec2u16[8294400]";
 const _: () = assert!(
 	MAX_LIGHTS == 1024
 		&& LIGHT_CLUSTER_MASK_WORD_COUNT == 98304
 		&& MAX_MATERIALS == 1024
 		&& MAX_MATERIAL_TEXTURES == 16
-		&& MAX_VERTICES == 262144
-		&& MAX_PRIMITIVE_TRIANGLES == 262144
-		&& MAX_TRIANGLES * 3 == 786432
-		&& MAX_MESHLETS == 4096
+		&& super::skinning::MAX_SKINNED_VERTICES == 262144
 		&& MAX_PIXEL_MAPPING_ENTRIES == 8294400,
 	"Update the visibility shader scope array types when visibility limits change."
 );
@@ -253,22 +243,19 @@ impl VisibilityShaderScope {
 				access.contains(AccessPolicies::WRITE),
 			)
 		};
+		// Geometry streams are runtime-length arrays sized by `GeometryCapacity`, so their capacity is not compiled in.
+		let geometry_stream = |name, element, slot| Node::runtime_array_binding(name, element, slot, true, false);
 		let sampled = |name, image, slot| Node::binding(name, image, slot, true, false);
 		let base_bindings = vec![
 			read_buffer("meshes", "MeshBuffer", "meshes", "Mesh[1024]", 1),
-			read_buffer("vertex_positions", "Positions", "positions", VERTEX_VEC3_ARRAY, 2),
-			read_buffer("vertex_normals", "Normals", "normals", VERTEX_NORMAL_ARRAY, 3),
+			geometry_stream("vertex_positions", "vec3f", 2),
+			geometry_stream("vertex_normals", "vec2u16", 3),
 			read_buffer("skinned_vertices", "SkinnedVertices", "vertices", SKINNED_VERTEX_ARRAY, 4),
-			read_buffer("vertex_uvs", "UVs", "uvs", VERTEX_UV_ARRAY, 5),
-			read_buffer("vertex_indices", "VertexIndices", "vertex_indices", VERTEX_INDEX_ARRAY, 6),
-			read_buffer(
-				"primitive_indices",
-				"PrimitiveIndices",
-				"primitive_indices",
-				PRIMITIVE_INDEX_ARRAY,
-				7,
-			),
-			read_buffer("meshlets", "MeshletsBuffer", "meshlets", MESHLET_ARRAY, 8),
+			geometry_stream("vertex_uvs", "vec2f16", 5),
+			geometry_stream("vertex_indices", "u16", 6),
+			// Three meshlet-local vertex indices per triangle, read as `primitive_indices[triangle * 3 + corner]`.
+			geometry_stream("primitive_indices", "u8", 7),
+			geometry_stream("meshlets", "Meshlet", 8),
 			Node::binding_array(
 				"textures",
 				Node::combined_image_sampler(),

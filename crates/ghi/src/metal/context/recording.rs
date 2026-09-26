@@ -166,12 +166,12 @@ impl Context {
 	}
 
 	/// Returns the typed CPU mapping of a buffer. A device-only buffer maps its staging copy.
-	pub(super) fn typed_buffer_pointer<T: crate::Pod>(
+	pub(super) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
 		&self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> *mut T {
 		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
-		crate::buffer::typed_buffer_pointer::<T>(buffer.pointer, buffer.size).expect(
+		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
 			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		)
 	}

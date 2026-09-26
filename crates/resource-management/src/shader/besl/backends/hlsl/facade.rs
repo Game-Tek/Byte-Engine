@@ -43,8 +43,8 @@ pub(crate) enum HlslStage {
 pub(crate) struct HlslBufferBindingSource {
 	pub(crate) name: String,
 	pub(crate) write: bool,
-	pub(crate) flattened_member: Option<String>,
-	pub(crate) flattened_element_type: Option<String>,
+	/// The `u8` or `u16` element of an array buffer, which DX12 packs into 32-bit words.
+	pub(crate) narrow_element: Option<&'static str>,
 }
 
 impl ShaderGenerator for Generator {}

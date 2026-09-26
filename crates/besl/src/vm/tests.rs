@@ -1207,18 +1207,9 @@ fn executable_program_reads_and_writes_same_named_buffer_members() {
 
 	let input_slot = ResourceSlot::new(24);
 	let output_slot = ResourceSlot::new(25);
-	let input_layout = executable
-		.buffer_layout(input_slot)
-		.expect("Expected input buffer layout")
-		.clone();
-	let mut input = Buffer::new(input_layout.clone());
-	let meshes_member = input_layout.member("meshes").expect("Expected meshes member");
+	let mut input = buffer_for_slot(&executable, input_slot);
 	input
-		.write_value(
-			meshes_member.offset() + meshes_member.value_type().size(),
-			meshes_member.value_type(),
-			&Value::U32(42),
-		)
+		.write_array_element(1, Value::U32(42))
 		.expect("Expected array element write to succeed");
 
 	let mut output = buffer_for_slot(&executable, output_slot);
@@ -3068,11 +3059,11 @@ fn compute_workgroup_array_shares_values_across_a_barrier() {
 	}
 
 	assert_eq!(
-		result.read_indexed("values", 0).expect("Expected lane zero result"),
+		result.read_array_element(0).expect("Expected lane zero result"),
 		Value::U32(11)
 	);
 	assert_eq!(
-		result.read_indexed("values", 1).expect("Expected lane one result"),
+		result.read_array_element(1).expect("Expected lane one result"),
 		Value::U32(10)
 	);
 }

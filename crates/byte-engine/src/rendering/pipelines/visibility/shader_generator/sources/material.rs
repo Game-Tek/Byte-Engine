@@ -48,7 +48,7 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let instance_index: u32 = image_load_u32(instance_index_render_target, pixel_coordinates);
 	let meshlet_triangle_index: u32 = triangle_meshlet_indices & 255;
 	let meshlet_index: u32 = triangle_meshlet_indices >> 8;
-	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
+	let meshlet: Meshlet = meshlets[meshlet_index];
 	let mesh: Mesh = meshes.meshes[instance_index];
 	let material: Material = materials.materials[push_constant.material_id];
 
@@ -94,12 +94,12 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
 	}
 	if (setup_lane && mesh.skinned_base_vertex_index == 4294967295) {
-		let position0: vec3f = vertex_positions.positions[triangle_vertex_indices[0]];
-		let position1: vec3f = vertex_positions.positions[triangle_vertex_indices[1]];
-		let position2: vec3f = vertex_positions.positions[triangle_vertex_indices[2]];
-		let normal0: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[0]]);
-		let normal1: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[1]]);
-		let normal2: vec3f = decode_octahedral_normal(vertex_normals.normals[triangle_vertex_indices[2]]);
+		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
+		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
+		let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
+		let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
+		let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
+		let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
 		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
 		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
 		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
@@ -241,9 +241,9 @@ material_evaluation_uv: fn () -> void {
 	let uv_numerator_dy: vec2f = vec2f(0.0, 0.0);
 	if (setup_lane) {
 		let vertex_uv_values: vec2f[3] = vec2f[3](
-			decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[0]]),
-			decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[1]]),
-			decode_f16_vec2(vertex_uvs.uvs[triangle_vertex_indices[2]])
+			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[0]]),
+			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[1]]),
+			decode_f16_vec2(vertex_uvs[triangle_vertex_indices[2]])
 		);
 		uv_numerator_origin = vertex_uv_values[0] * triangle_inverse_w.x;
 		uv_numerator_dx = interpolate_vec2f_with_deriv(triangle_raw_ddx, vertex_uv_values[0], vertex_uv_values[1], vertex_uv_values[2]);
@@ -635,13 +635,13 @@ pub(crate) const COMPUTE_VERTEX_INDICES_SOURCE: &str = r#"
 compute_vertex_indices: fn (mesh: Mesh, meshlet: Meshlet, primitive_index_base: u32) -> u32[3] {
 	let vertex_index_base: u32 = mesh.base_vertex_index;
 	let relative_index_base: u32 = mesh.base_primitive_index + meshlet.primitive_offset;
-	let primitive_index0: u32 = u32(primitive_indices.primitive_indices[primitive_index_base]);
-	let primitive_index1: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 1]);
-	let primitive_index2: u32 = u32(primitive_indices.primitive_indices[primitive_index_base + 2]);
+	let primitive_index0: u32 = u32(primitive_indices[primitive_index_base]);
+	let primitive_index1: u32 = u32(primitive_indices[primitive_index_base + 1]);
+	let primitive_index2: u32 = u32(primitive_indices[primitive_index_base + 2]);
 	return u32[3](
-		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index0]),
-		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index1]),
-		vertex_index_base + u16_to_u32(vertex_indices.vertex_indices[relative_index_base + primitive_index2])
+		vertex_index_base + u16_to_u32(vertex_indices[relative_index_base + primitive_index0]),
+		vertex_index_base + u16_to_u32(vertex_indices[relative_index_base + primitive_index1]),
+		vertex_index_base + u16_to_u32(vertex_indices[relative_index_base + primitive_index2])
 	);
 }
 "#;

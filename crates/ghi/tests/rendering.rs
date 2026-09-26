@@ -150,6 +150,19 @@ fn resize_dynamic_render_target_in_flight() {
 }
 
 #[test]
+fn array_buffer_round_trip() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	resources::array_buffer_round_trip(&mut device, queue_handle);
+}
+
+#[test]
+#[should_panic(expected = "Missing buffer length")]
+fn array_buffer_requires_length() {
+	let (_instance, _device, mut device, _queue_handle) = create_default_device_setup();
+	resources::array_buffer_requires_length(&mut device);
+}
+
+#[test]
 fn resize_dynamic_buffer() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::resize_dynamic_buffer(&mut device, queue_handle);

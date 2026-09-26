@@ -394,13 +394,11 @@ mod tests {
 		let mut output_local = output_buffer(&program, 1);
 
 		cameras
-			.write_indexed_field("cameras", 0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
+			.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
 			.expect("Failed to seed camera matrix. The most likely cause is a struct buffer layout mismatch.");
 
 		instances
-			.write_indexed(
-				"transforms",
-				3,
+			.write_array_element(3,
 				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]),
 			)
 			.expect("Failed to seed instance transform. The most likely cause is a compact transform buffer layout mismatch.");

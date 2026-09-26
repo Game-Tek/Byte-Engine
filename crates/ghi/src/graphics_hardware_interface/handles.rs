@@ -19,9 +19,41 @@ impl MasterHandle for BaseBufferHandle {
 	}
 }
 
-/// The `BufferHandle` struct identifies a static buffer with its element type.
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
-pub struct BufferHandle<T>(pub(crate) BaseBufferHandle, pub(crate) std::marker::PhantomData<T>);
+/// The `BufferHandle` struct identifies a static buffer together with the type of its contents.
+///
+/// `T` is either one [`bytemuck::Pod`] value or a slice `[E]` whose length is chosen at creation with
+/// [`crate::buffer::Builder::length`]. See [`crate::buffer::BufferContents`].
+pub struct BufferHandle<T: ?Sized>(pub(crate) BaseBufferHandle, pub(crate) std::marker::PhantomData<T>);
+
+// Manual impls keep handles copyable and comparable for slice contents, which derives would reject because `[E]`
+// is neither `Clone` nor `Sized`.
+impl<T: ?Sized> Clone for BufferHandle<T> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<T: ?Sized> Copy for BufferHandle<T> {}
+
+impl<T: ?Sized> PartialEq for BufferHandle<T> {
+	fn eq(&self, other: &Self) -> bool {
+		self.0 == other.0
+	}
+}
+
+impl<T: ?Sized> Eq for BufferHandle<T> {}
+
+impl<T: ?Sized> std::hash::Hash for BufferHandle<T> {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.0.hash(state);
+	}
+}
+
+impl<T: ?Sized> std::fmt::Debug for BufferHandle<T> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.debug_tuple("BufferHandle").field(&self.0).finish()
+	}
+}
 
 /// The `DynamicBufferHandle` struct identifies a resizable buffer with its element type.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
@@ -132,7 +164,7 @@ pub struct AllocationHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
-impl<T: bytemuck::Pod> From<BufferHandle<T>> for BaseBufferHandle {
+impl<T: ?Sized> From<BufferHandle<T>> for BaseBufferHandle {
 	fn from(val: BufferHandle<T>) -> Self {
 		val.0
 	}
@@ -193,7 +225,7 @@ pub(crate) trait MasterHandle: Sized + Copy {
 	fn index(&self) -> u64;
 }
 
-impl<T: bytemuck::Pod> MasterHandle for BufferHandle<T> {
+impl<T: ?Sized> MasterHandle for BufferHandle<T> {
 	fn new(i: u64) -> Self {
 		Self(BaseBufferHandle(i), std::marker::PhantomData)
 	}

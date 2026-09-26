@@ -11,7 +11,12 @@ use super::shader_data::{LightClusterParameters, LightingData, MaterialData, Ref
 
 /* Limits */
 
-pub(crate) const MAX_MESHLETS: usize = 1024 * 4;
+/// Meshlets one primitive instance can hold. Task shaders address an instance's meshlets with 12 bits, relative to its
+/// first meshlet, so this bounds each primitive rather than the scene. See [`super::geometry::GeometryCapacity`] for the
+/// scene-wide geometry limits.
+pub(crate) const MAX_INSTANCE_MESHLETS: usize = 1024 * 4;
+/// Scene-wide meshlets the visibility buffer can address: it stores a meshlet index above an 8-bit triangle index.
+pub(crate) const MAX_ADDRESSABLE_MESHLETS: usize = 1 << 24;
 pub(crate) const MAX_INSTANCES: usize = 1024;
 pub(crate) const MAX_MATERIALS: usize = 1024;
 /// One bit per material slot; a set bit means the material has at least one active instance this frame.
@@ -22,9 +27,6 @@ pub(crate) const MAX_MATERIAL_TEXTURES: usize = 16;
 pub(crate) const MAX_BINDLESS_TEXTURES: usize = 1024;
 /// The size of the scene light table. Light bucketing keeps per-pixel cost proportional to the lights near each pixel.
 pub(crate) const MAX_LIGHTS: usize = 1024;
-pub(crate) const MAX_TRIANGLES: usize = 65536 * 4;
-pub(crate) const MAX_PRIMITIVE_TRIANGLES: usize = 65536 * 4;
-pub(crate) const MAX_VERTICES: usize = 65536 * 4;
 pub(crate) const MAX_PIXEL_MAPPING_ENTRIES: usize = 3840 * 2160;
 
 /// Vertices and triangles one meshlet can hold.

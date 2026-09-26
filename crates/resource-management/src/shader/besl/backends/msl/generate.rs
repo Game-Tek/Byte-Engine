@@ -89,7 +89,7 @@ impl<A: Allocator + Clone> Generator<A> {
 							Self::append_storage_type_declarations(member, order);
 						}
 					}
-					besl::BindingTypes::BufferArray { element } => {
+					besl::BindingTypes::BufferArray { element, .. } => {
 						Self::append_storage_type_declarations(element, order);
 					}
 					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {}
@@ -196,11 +196,13 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Finds every logical affine matrix that needs a packed Metal storage representation.
+	///
+	/// Members are recorded by their declaration node. A `mat4x3f` array buffer is recorded by its binding node.
 	pub(crate) fn collect_packed_mat4x3_members(&mut self, order: &[besl::NodeReference]) {
 		self.packed_mat4x3_members.clear();
 		let mut visited_structs = Vec::new();
-		for node in order {
-			let node = node.borrow();
+		for node_reference in order {
+			let node = node_reference.borrow();
 			let besl::Nodes::Binding { r#type, .. } = node.node() else {
 				continue;
 			};
@@ -210,9 +212,11 @@ impl<A: Allocator + Clone> Generator<A> {
 						self.collect_packed_mat4x3_member(member, &mut visited_structs);
 					}
 				}
-				besl::BindingTypes::BufferArray { element } => {
+				besl::BindingTypes::BufferArray { element, .. } => {
 					let element = element.borrow();
-					if let besl::Nodes::Struct { fields, .. } = element.node() {
+					if element.get_name() == Some("mat4x3f") {
+						self.packed_mat4x3_members.push(node_reference.clone());
+					} else if let besl::Nodes::Struct { fields, .. } = element.node() {
 						for field in fields {
 							self.collect_packed_mat4x3_member(field, &mut visited_structs);
 						}
@@ -266,11 +270,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.packed_mat4x3_members.iter().any(|candidate| candidate == member)
 	}
 
-	pub(crate) fn packed_mat4x3_member_count(
+	/// Returns whether `expression` names packed `mat4x3f` storage and, if so, whether that storage is an array.
+	pub(crate) fn packed_mat4x3_storage_is_array(
 		&self,
 		expression: &besl::NodeReference,
 		parent: Option<&besl::NodeReference>,
-	) -> Option<Option<usize>> {
+	) -> Option<bool> {
 		let expression = expression.borrow();
 		let besl::Nodes::Expression(besl::Expressions::Member { name, source }) = expression.node() else {
 			return None;
@@ -292,10 +297,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				.clone()
 		};
 		let member = member.borrow();
-		let besl::Nodes::Member { count, .. } = member.node() else {
-			return None;
-		};
-		Some(count.map(|count| count.get()))
+		match member.node() {
+			besl::Nodes::Member { count, .. } => Some(count.is_some()),
+			besl::Nodes::Binding { .. } => Some(true),
+			_ => None,
+		}
 	}
 
 	/// Resolves enough expression types to identify fields of packed storage structs.
@@ -305,12 +311,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Member { r#type, .. } | besl::Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
 			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
 			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
+				if let Some(element) = runtime_buffer_element(source) {
+					return Some(element);
+				}
 				match source.borrow().node() {
-					besl::Nodes::Binding {
-						name: binding_name,
-						r#type: besl::BindingTypes::BufferArray { element },
-						..
-					} if binding_name == name => return Some(element.clone()),
 					besl::Nodes::Member { r#type, .. } => return Some(r#type.clone()),
 					besl::Nodes::Parameter { .. } | besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
 						return Self::logical_node_type(source);
@@ -352,7 +356,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	/// Reports whether one accessor evaluates to a native matrix loaded from packed storage.
 	pub(crate) fn accessor_returns_packed_mat4x3(&self, left: &besl::NodeReference, right: &besl::NodeReference) -> bool {
-		if self.packed_mat4x3_member_count(right, Some(left)) == Some(None) {
+		if self.packed_mat4x3_storage_is_array(right, Some(left)) == Some(false) {
 			return true;
 		}
 
@@ -363,10 +367,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			return false;
 		}
 
-		if self
-			.packed_mat4x3_member_count(left, None)
-			.is_some_and(|count| count.is_some())
-		{
+		if self.packed_mat4x3_storage_is_array(left, None) == Some(true) {
 			return true;
 		}
 
@@ -374,8 +375,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let besl::Nodes::Expression(besl::Expressions::Accessor { right, .. }) = left.node() else {
 			return false;
 		};
-		self.packed_mat4x3_member_count(right, None)
-			.is_some_and(|count| count.is_some())
+		self.packed_mat4x3_storage_is_array(right, None) == Some(true)
 	}
 
 	pub(crate) fn expression_is_packed_mat4x3_accessor(&self, node: &besl::NodeReference) -> bool {
@@ -394,7 +394,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		right: &besl::NodeReference,
 	) {
 		self.emit_node_string(string, left);
-		if left.borrow().node().is_buffer_binding() {
+		// Array buffers are element pointers; struct buffers point at their wrapper.
+		if runtime_buffer_element(left).is_some() {
+			string.push('[');
+			self.emit_node_string(string, right);
+			string.push(']');
+		} else if left.borrow().node().is_buffer_binding() {
 			string.push_str("->");
 			self.emit_node_string(string, right);
 		} else if !matches!(

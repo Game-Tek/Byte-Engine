@@ -2106,6 +2106,36 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "if(n<1){n=2;}");
 	}
 
+	#[compio::test]
+	async fn else_chains_lower_to_msl() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			} else if (n < 4) {
+				n = 3;
+			} else {
+				n = 4;
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected else-chain shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-else-chain")
+			.await
+			.expect("Expected else-chain MSL to compile natively");
+	}
+
 	#[test]
 	fn bitwise_operators_lower_to_msl() {
 		let script = r#"

@@ -285,9 +285,13 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		}
 		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => find_descendant(r#type, child_name, mode),
 		Nodes::Function { params, statements, .. } => find_in_function(params, statements, child_name, mode),
-		Nodes::Conditional { condition, statements } if mode == DescendantSearch::NonIntrinsic => {
-			find_descendant(condition, child_name, mode).or_else(|| find_in_descendants(statements, child_name, mode))
-		}
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} if mode == DescendantSearch::NonIntrinsic => find_descendant(condition, child_name, mode)
+			.or_else(|| find_in_descendants(statements, child_name, mode))
+			.or_else(|| find_in_descendants(else_statements, child_name, mode)),
 		Nodes::ForLoop {
 			initializer,
 			condition,
@@ -715,7 +719,9 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::Workgroup { format, count, .. } | Nodes::Output { format, count, .. } if count.is_some() => {
 			return Some(format.clone());
 		}
-		Nodes::Member { r#type, count: Some(_), .. } => return Some(r#type.clone()),
+		Nodes::Member {
+			r#type, count: Some(_), ..
+		} => return Some(r#type.clone()),
 		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
 		_ => infer_member_type(&source)?,
 	};
@@ -867,9 +873,13 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		Nodes::Conditional { condition, statements } => {
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => {
 			collect_intrinsic_local_declarations(condition, declarations);
-			for statement in statements {
+			for statement in statements.iter().chain(else_statements) {
 				collect_intrinsic_local_declarations(statement, declarations);
 			}
 		}
@@ -932,9 +942,17 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			scope.into()
 		}
 		Nodes::Expression(expression) => Node::expression(instantiate_intrinsic_expression(expression, instantiation)).into(),
-		Nodes::Conditional { condition, statements } => Node::conditional(
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => Node::conditional(
 			instantiate_intrinsic_node(condition, instantiation),
 			statements
+				.iter()
+				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+				.collect(),
+			else_statements
 				.iter()
 				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
 				.collect(),

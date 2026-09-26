@@ -33,9 +33,16 @@ fn parse_besl_statements(source: &'static str, function_name: &str) -> Vec<Node<
 fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Expressions<'a>)) {
 	match node.node_mut() {
 		Nodes::Function { statements, .. } => statements.iter_mut().for_each(|statement| walk_expressions(statement, visit)),
-		Nodes::Conditional { condition, statements } => {
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => {
 			walk_expressions(condition, visit);
-			statements.iter_mut().for_each(|statement| walk_expressions(statement, visit));
+			statements
+				.iter_mut()
+				.chain(else_statements)
+				.for_each(|statement| walk_expressions(statement, visit));
 		}
 		Nodes::ForLoop {
 			initializer,

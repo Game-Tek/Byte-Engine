@@ -355,6 +355,33 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 	let condition = expression_atoms_to_node(&condition_atoms);
 
 	iterator.next_str(")")?;
+
+	let (statements, mut iterator) = parse_block(iterator)?;
+
+	// An `else if` chain nests the following conditional as the only statement of the else branch.
+	let else_statements = if iterator.clone().next().is_some_and(|token| *token == "else") {
+		iterator.next();
+
+		if iterator.clone().next().is_some_and(|token| *token == "if") {
+			let (conditional, new_iterator) = parse_conditional(iterator)?;
+			iterator = new_iterator;
+			vec![conditional]
+		} else {
+			let (statements, new_iterator) = parse_block(iterator)?;
+			iterator = new_iterator;
+			statements
+		}
+	} else {
+		Vec::new()
+	};
+
+	Ok((Node::conditional(condition, statements, else_statements), iterator))
+}
+
+/// Parses a braced statement block, such as the body of an `if` or `else` branch.
+fn parse_block<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
 	iterator.next_str("{")?;
 
 	let mut statements = vec![];
@@ -375,7 +402,7 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 		iterator = new_iterator;
 	}
 
-	Ok((Node::conditional(condition, statements), iterator))
+	Ok((statements, iterator))
 }
 
 pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
@@ -405,25 +432,8 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	let update = expression_atoms_to_node(&update_atoms);
 
 	iterator.next_str(")")?;
-	iterator.next_str("{")?;
 
-	let mut statements = vec![];
-	loop {
-		if **iterator
-			.clone()
-			.peekable()
-			.peek()
-			.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
-			== "}"
-		{
-			iterator.next();
-			break;
-		}
-
-		let (statement, new_iterator) = parse_statement(iterator)?;
-		statements.push(statement);
-		iterator = new_iterator;
-	}
+	let (statements, iterator) = parse_block(iterator)?;
 
 	Ok((Node::for_loop(initializer, condition, update, statements), iterator))
 }

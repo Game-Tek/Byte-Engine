@@ -303,18 +303,31 @@ pub(super) fn lex_parsed_node(
 
 			this
 		}
-		parser::Nodes::Conditional { condition, statements } => {
+		parser::Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => {
 			let condition = lex_parsed_node(chain.clone(), condition, next_intrinsic_expansion_id)?;
-			let mut lexed_statements = Vec::with_capacity(statements.len());
-			let mut scoped_chain = chain.clone();
 
-			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
-				scoped_chain.push(statement.clone());
-				lexed_statements.push(statement);
-			}
+			// Each branch gets its own scope, so declarations in one branch are not visible in the other.
+			let mut lex_branch = |statements: &[parser::Node]| -> Result<Vec<NodeReference>, LexError> {
+				let mut lexed_statements = Vec::with_capacity(statements.len());
+				let mut scoped_chain = chain.clone();
 
-			Node::conditional(condition, lexed_statements).into()
+				for statement in statements {
+					let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
+					scoped_chain.push(statement.clone());
+					lexed_statements.push(statement);
+				}
+
+				Ok(lexed_statements)
+			};
+
+			let lexed_statements = lex_branch(statements)?;
+			let lexed_else_statements = lex_branch(else_statements)?;
+
+			Node::conditional(condition, lexed_statements, lexed_else_statements).into()
 		}
 		parser::Nodes::ForLoop {
 			initializer,

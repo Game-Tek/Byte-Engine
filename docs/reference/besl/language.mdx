@@ -239,7 +239,7 @@ instead of widening to `f32`.
 
 ## Control flow
 
-Use `if`, C-style `for`, `return`, `continue`, and `break` to control program
+Use `if`/`else`, C-style `for`, `return`, `continue`, and `break` to control program
 flow. Use `discard` to stop a fragment invocation without producing its normal
 outputs.
 
@@ -267,7 +267,22 @@ for (let i: u32 = 0; i < count; i = i + 1) {
 }
 ```
 
-BESL doesn't currently have `else`, `while`, or unary operators.
+Add an `else` branch to run code when the condition is false. Chain more
+conditions with `else if`:
+
+```rust
+if (roughness < 0.25) {
+	lobe = 0;
+} else if (roughness < 0.75) {
+	lobe = 1;
+} else {
+	lobe = 2;
+}
+```
+
+Variables you declare inside a branch are only visible in that branch.
+
+BESL doesn't currently have `while` or unary operators.
 
 | Operation | Operators |
 | --- | --- |

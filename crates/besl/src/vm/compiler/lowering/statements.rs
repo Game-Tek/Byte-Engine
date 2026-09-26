@@ -9,11 +9,16 @@ impl<'a> Compiler<'a> {
 		let borrowed = statement.borrow();
 
 		match borrowed.node() {
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => {
 				let condition = condition.clone();
 				let statements = statements.clone();
+				let else_statements = else_statements.clone();
 				drop(borrowed);
-				self.compile_conditional(&condition, &statements, descriptor_layouts)
+				self.compile_conditional(&condition, &statements, &else_statements, descriptor_layouts)
 			}
 			Nodes::ForLoop {
 				initializer,
@@ -109,6 +114,7 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		condition: &NodeReference,
 		statements: &[NodeReference],
+		else_statements: &[NodeReference],
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
@@ -122,9 +128,29 @@ impl<'a> Compiler<'a> {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
 
-		let conditional_end = self.instructions.len();
+		// With an else branch, the then branch jumps over it. Without one, no extra jump is emitted.
+		let else_start = if else_statements.is_empty() {
+			self.instructions.len()
+		} else {
+			let jump_index = self.instructions.len();
+			self.instructions.push(Instruction::Jump { target: usize::MAX });
+			let else_start = self.instructions.len();
+
+			for statement in else_statements {
+				self.compile_statement(statement, descriptor_layouts)?;
+			}
+
+			let conditional_end = self.instructions.len();
+			match &mut self.instructions[jump_index] {
+				Instruction::Jump { target } => *target = conditional_end,
+				_ => unreachable!("Expected Jump placeholder"),
+			}
+
+			else_start
+		};
+
 		match &mut self.instructions[jump_if_zero_index] {
-			Instruction::JumpIfZero { target, .. } => *target = conditional_end,
+			Instruction::JumpIfZero { target, .. } => *target = else_start,
 			_ => unreachable!("Expected JumpIfZero placeholder"),
 		}
 

@@ -966,7 +966,10 @@ main: fn () -> void {
 			Nodes::Expression(Expressions::Operator { name, .. }) if *name == "<="
 		));
 
-		let Nodes::Conditional { condition, statements } = &statements[0].node else {
+		let Nodes::Conditional {
+			condition, statements, ..
+		} = &statements[0].node
+		else {
 			panic!("Expected conditional");
 		};
 
@@ -993,6 +996,40 @@ main: fn () -> void {
 		};
 
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
+	}
+
+	#[test]
+	fn parse_else_if_chain() {
+		let tokens = tokenize("main: fn () -> void { if (a) { discard; } else if (b) { break; } else { continue; } }")
+			.expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected function");
+		};
+		let Nodes::Conditional {
+			statements,
+			else_statements,
+			..
+		} = &statements[0].node
+		else {
+			panic!("Expected conditional");
+		};
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
+
+		// `else if` nests the next conditional as the only statement of the else branch.
+		let [nested] = else_statements.as_slice() else {
+			panic!("Expected one nested conditional in the else branch");
+		};
+		let Nodes::Conditional {
+			statements,
+			else_statements,
+			..
+		} = &nested.node
+		else {
+			panic!("Expected nested conditional");
+		};
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
+		assert!(matches!(else_statements[0].node, Nodes::Expression(Expressions::Continue)));
 	}
 
 	#[test]
@@ -1141,7 +1178,10 @@ main: fn () -> void {
 			assert_eq!(statements.len(), 2);
 
 			let conditional = &statements[1];
-			if let Nodes::Conditional { condition, statements } = &conditional.node {
+			if let Nodes::Conditional {
+				condition, statements, ..
+			} = &conditional.node
+			{
 				assert_eq!(statements.len(), 1);
 				assert!(matches!(
 					condition.node,

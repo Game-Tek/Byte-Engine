@@ -761,12 +761,36 @@ pub(crate) trait NodeEmitter {
 		string: &mut String,
 		condition: &besl::NodeReference,
 		statements: &[besl::NodeReference],
+		else_statements: &[besl::NodeReference],
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("if(");
 		self.emit_node(string, condition);
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
+
+		if else_statements.is_empty() {
+			self.emit_block_end(string);
+			return;
+		}
+
+		string.push_str(if self.minified() { "}else" } else { "} else" });
+
+		// A lone nested conditional is an `else if` chain, so it is emitted without an extra block.
+		if let [nested] = else_statements
+			&& let besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} = nested.borrow().node()
+		{
+			string.push(' ');
+			self.emit_conditional_node(string, condition, statements, else_statements);
+			return;
+		}
+
+		string.push_str(if self.minified() { "{" } else { " {\n" });
+		self.emit_function_statement_block(string, else_statements, 1);
 		self.emit_block_end(string);
 	}
 

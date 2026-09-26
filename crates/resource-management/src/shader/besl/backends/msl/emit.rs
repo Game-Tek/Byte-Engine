@@ -339,7 +339,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(&format!("{} {} [[color({})]];{break_char}", type_name, name, location));
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
+			besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => self.emit_conditional_node(string, condition, statements, else_statements),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

@@ -769,6 +769,35 @@ mod tests {
 	}
 
 	#[test]
+	fn else_chains_lower_to_glsl() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			} else if (n < 4) {
+				n = 3;
+			} else {
+				n = 4;
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected else-chain shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
+
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-else-chain")
+			.expect("Expected else-chain GLSL to compile to SPIR-V");
+	}
+
+	#[test]
 	fn bitwise_operators_lower_to_glsl() {
 		let script = r#"
 		main: fn () -> void {

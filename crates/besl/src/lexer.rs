@@ -1768,7 +1768,9 @@ main: fn () -> void {
 
 		let conditional = statements[1].borrow();
 		match conditional.node() {
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition, statements, ..
+			} => {
 				assert_eq!(statements.len(), 1);
 
 				match condition.borrow().node() {
@@ -1897,7 +1899,10 @@ main: fn () -> void {
 		));
 
 		let conditional = statements[0].borrow();
-		let Nodes::Conditional { condition, statements } = conditional.node() else {
+		let Nodes::Conditional {
+			condition, statements, ..
+		} = conditional.node()
+		else {
 			panic!("Expected conditional");
 		};
 

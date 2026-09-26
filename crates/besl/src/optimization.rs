@@ -82,10 +82,14 @@ fn collect_reachable_function(function: &NodeReference, functions: &mut Vec<Node
 
 fn collect_called_functions(node: &NodeReference, functions: &mut Vec<NodeReference>, visited: &mut HashSet<usize>) {
 	match cloned_node(node) {
-		Nodes::Conditional { condition, statements } => {
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => {
 			collect_called_functions(&condition, functions, visited);
-			for statement in statements {
-				collect_called_functions(&statement, functions, visited);
+			for statement in statements.iter().chain(&else_statements) {
+				collect_called_functions(statement, functions, visited);
 			}
 		}
 		Nodes::ForLoop {
@@ -160,47 +164,27 @@ fn collect_called_functions_in_expression(
 
 /// Removes statements that cannot execute after a terminator in the same block.
 fn cull_unreachable_statements(function: &NodeReference, report: &mut OptimizationReport) -> bool {
-	let Nodes::Function { statements, .. } = cloned_node(function) else {
-		return false;
-	};
-	cull_unreachable_statements_in_block(function, statements, report)
+	update_blocks(function, |statements| {
+		cull_unreachable_statements_in_block(statements, report)
+	})
 }
 
-fn cull_unreachable_statements_in_block(
-	block: &NodeReference,
-	statements: Vec<NodeReference>,
-	report: &mut OptimizationReport,
-) -> bool {
-	let mut kept = Vec::with_capacity(statements.len());
-	let mut terminated = false;
+fn cull_unreachable_statements_in_block(statements: &mut Vec<NodeReference>, report: &mut OptimizationReport) -> bool {
 	let mut changed = false;
 
-	for statement in statements {
-		if terminated {
-			report.culled_unreachable_statements += 1;
-			changed = true;
-			continue;
-		}
-
-		changed |= cull_unreachable_statements_in_nested_block(&statement, report);
-		terminated = is_block_terminator(&statement);
-		kept.push(statement);
+	if let Some(terminator) = statements.iter().position(is_block_terminator) {
+		report.culled_unreachable_statements += statements.len() - terminator - 1;
+		changed |= terminator + 1 < statements.len();
+		statements.truncate(terminator + 1);
 	}
 
-	if changed {
-		replace_block_statements(block, kept);
+	for statement in statements.iter() {
+		changed |= update_blocks(statement, |statements| {
+			cull_unreachable_statements_in_block(statements, report)
+		});
 	}
 
 	changed
-}
-
-fn cull_unreachable_statements_in_nested_block(statement: &NodeReference, report: &mut OptimizationReport) -> bool {
-	match cloned_node(statement) {
-		Nodes::Conditional { statements, .. } | Nodes::ForLoop { statements, .. } => {
-			cull_unreachable_statements_in_block(statement, statements, report)
-		}
-		_ => false,
-	}
 }
 
 fn is_block_terminator(statement: &NodeReference) -> bool {
@@ -242,7 +226,15 @@ fn collect_local_declaration_candidates(statements: &[NodeReference], candidates
 		}
 
 		match cloned_node(statement) {
-			Nodes::Conditional { statements, .. } | Nodes::ForLoop { statements, .. } => {
+			Nodes::Conditional {
+				statements,
+				else_statements,
+				..
+			} => {
+				collect_local_declaration_candidates(&statements, candidates);
+				collect_local_declaration_candidates(&else_statements, candidates);
+			}
+			Nodes::ForLoop { statements, .. } => {
 				collect_local_declaration_candidates(&statements, candidates);
 			}
 			_ => {}
@@ -283,10 +275,15 @@ fn node_uses_declaration(node: &NodeReference, declaration: &NodeReference, visi
 	}
 
 	match cloned_node(node) {
-		Nodes::Conditional { condition, statements } => {
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_statements,
+		} => {
 			node_uses_declaration(&condition, declaration, visited)
 				|| statements
 					.iter()
+					.chain(&else_statements)
 					.any(|statement| node_uses_declaration(statement, declaration, visited))
 		}
 		Nodes::ForLoop {
@@ -341,54 +338,48 @@ fn uses_declaration_in_expression(expression: &Expressions, declaration: &NodeRe
 }
 
 fn remove_statements(function: &NodeReference, removals: &HashSet<usize>) -> usize {
-	let Nodes::Function { statements, .. } = cloned_node(function) else {
-		return 0;
-	};
-	remove_statements_in_block(function, statements, removals)
-}
-
-fn remove_statements_in_block(block: &NodeReference, statements: Vec<NodeReference>, removals: &HashSet<usize>) -> usize {
 	let mut removed = 0;
-	let mut kept = Vec::with_capacity(statements.len());
-	for statement in statements {
-		if removals.contains(&statement.identity()) {
-			removed += 1;
-			continue;
-		}
-
-		removed += remove_statements_in_nested_block(&statement, removals);
-		kept.push(statement);
-	}
-
-	if removed > 0 {
-		replace_block_statements(block, kept);
-	}
-
+	update_blocks(function, |statements| {
+		remove_statements_in_block(statements, removals, &mut removed)
+	});
 	removed
 }
 
-fn remove_statements_in_nested_block(statement: &NodeReference, removals: &HashSet<usize>) -> usize {
-	match cloned_node(statement) {
-		Nodes::Conditional { statements, .. } | Nodes::ForLoop { statements, .. } => {
-			remove_statements_in_block(statement, statements, removals)
-		}
-		_ => 0,
+/// Removes the statements in `removals` from one block and its nested blocks. Returns whether anything was removed.
+fn remove_statements_in_block(statements: &mut Vec<NodeReference>, removals: &HashSet<usize>, removed: &mut usize) -> bool {
+	let length = statements.len();
+	statements.retain(|statement| !removals.contains(&statement.identity()));
+	*removed += length - statements.len();
+	let mut changed = length != statements.len();
+
+	for statement in statements.iter() {
+		changed |= update_blocks(statement, |statements| {
+			remove_statements_in_block(statements, removals, removed)
+		});
 	}
+
+	changed
 }
 
-fn replace_block_statements(block: &NodeReference, statements: Vec<NodeReference>) {
-	match block.borrow_mut().node_mut() {
-		Nodes::Function {
-			statements: existing, ..
-		}
-		| Nodes::Conditional {
-			statements: existing, ..
-		}
-		| Nodes::ForLoop {
-			statements: existing, ..
-		} => *existing = statements,
-		_ => unreachable!("Only function and control-flow nodes own statement blocks"),
+/// Applies `update` to each statement block that `node` owns and writes changed blocks back to the node.
+/// Nodes without statement blocks are left untouched.
+fn update_blocks(node: &NodeReference, mut update: impl FnMut(&mut Vec<NodeReference>) -> bool) -> bool {
+	let mut updated = cloned_node(node);
+	let changed = match &mut updated {
+		Nodes::Function { statements, .. } | Nodes::ForLoop { statements, .. } => update(statements),
+		Nodes::Conditional {
+			statements,
+			else_statements,
+			..
+		} => update(statements) | update(else_statements),
+		_ => false,
+	};
+
+	if changed {
+		*node.borrow_mut().node_mut() = updated;
 	}
+
+	changed
 }
 
 /// Tracks whether expressions can be removed without changing externally visible shader behavior.
@@ -417,8 +408,16 @@ impl EffectAnalysis {
 			Nodes::Raw { .. } => false,
 			Nodes::Struct { .. } => true,
 			Nodes::Function { .. } => self.is_pure_function(node),
-			Nodes::Conditional { condition, statements } => {
-				self.is_pure(&condition) && statements.iter().all(|statement| self.is_pure(statement))
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => {
+				self.is_pure(&condition)
+					&& statements
+						.iter()
+						.chain(&else_statements)
+						.all(|statement| self.is_pure(statement))
 			}
 			// A loop can change shader termination even when its body only contains arithmetic.
 			Nodes::ForLoop { .. } => false,

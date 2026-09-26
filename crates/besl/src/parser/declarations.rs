@@ -163,11 +163,13 @@ impl<'a> Node<'a> {
 		make_function(name, params, return_type, statements)
 	}
 
-	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>) -> Node<'a> {
+	/// Builds an `if` statement. Pass an empty `else_statements` for an `if` without an `else` branch.
+	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>, else_statements: Vec<Node<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Conditional {
 				condition: Box::new(condition),
 				statements,
+				else_statements,
 			},
 		}
 	}
@@ -620,9 +622,12 @@ pub enum Nodes<'a> {
 		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
 	},
+	/// An `if` statement. An empty `else_statements` means the statement has no `else` branch.
+	/// An `else if` chain is stored as a single nested conditional in `else_statements`.
 	Conditional {
 		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
+		else_statements: Vec<Node<'a>>,
 	},
 	ForLoop {
 		initializer: Box<Node<'a>>,

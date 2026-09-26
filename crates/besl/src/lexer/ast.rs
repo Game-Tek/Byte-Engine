@@ -808,9 +808,14 @@ impl Node {
 		}
 	}
 
-	pub fn conditional(condition: NodeReference, statements: Vec<NodeReference>) -> Node {
+	/// Builds an `if` statement. Pass an empty `else_statements` for an `if` without an `else` branch.
+	pub fn conditional(condition: NodeReference, statements: Vec<NodeReference>, else_statements: Vec<NodeReference>) -> Node {
 		Node {
-			node: Nodes::Conditional { condition, statements },
+			node: Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			},
 		}
 	}
 
@@ -1093,10 +1098,15 @@ impl Node {
 			| Nodes::Struct { fields: children, .. }
 			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
 			Nodes::Function { statements, .. } => Some(statements.clone()),
-			Nodes::Conditional { condition, statements } => {
-				let mut children = Vec::with_capacity(statements.len() + 1);
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => {
+				let mut children = Vec::with_capacity(statements.len() + else_statements.len() + 1);
 				children.push(condition.clone());
 				children.extend(statements.iter().cloned());
+				children.extend(else_statements.iter().cloned());
 				Some(children)
 			}
 			Nodes::ForLoop {
@@ -1189,9 +1199,12 @@ pub enum Nodes {
 		return_type: NodeReference,
 		statements: Vec<NodeReference>,
 	},
+	/// An `if` statement. An empty `else_statements` means the statement has no `else` branch.
+	/// An `else if` chain is stored as a single nested conditional in `else_statements`.
 	Conditional {
 		condition: NodeReference,
 		statements: Vec<NodeReference>,
+		else_statements: Vec<NodeReference>,
 	},
 	ForLoop {
 		initializer: NodeReference,
@@ -1383,11 +1396,15 @@ impl std::fmt::Debug for Node {
 					statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
 				)
 			}
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_statements,
+			} => {
 				write!(
 					f,
-					"Conditional {{ condition: {:?}, statements: {:?} }}",
-					condition, statements
+					"Conditional {{ condition: {:?}, statements: {:?}, else_statements: {:?} }}",
+					condition, statements, else_statements
 				)
 			}
 			Nodes::ForLoop {

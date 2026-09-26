@@ -9,7 +9,8 @@ mod resolution;
 use std::{cell::RefCell, num::NonZeroUsize};
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, Expressions, LexError, Node, NodeReference, Nodes, Operators, ParentNodeReference,
+	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, LexError, Node, NodeReference, Nodes, Operators,
+	ParentNodeReference,
 };
 pub(crate) use ast::{lex, lex_with_root};
 #[cfg(test)]
@@ -1805,7 +1806,9 @@ main: fn () -> void {
 
 		let conditional = statements[1].borrow();
 		match conditional.node() {
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition, statements, ..
+			} => {
 				assert_eq!(statements.len(), 1);
 
 				match condition.borrow().node() {
@@ -1934,7 +1937,10 @@ main: fn () -> void {
 		));
 
 		let conditional = statements[0].borrow();
-		let Nodes::Conditional { condition, statements } = conditional.node() else {
+		let Nodes::Conditional {
+			condition, statements, ..
+		} = conditional.node()
+		else {
 			panic!("Expected conditional");
 		};
 
@@ -1946,6 +1952,25 @@ main: fn () -> void {
 			statements[0].borrow().node(),
 			Nodes::Expression(Expressions::Continue)
 		));
+	}
+
+	/// Declarations inside a block stay in that block, so statements after it can't reference them.
+	#[test]
+	fn block_declarations_are_not_visible_after_the_block() {
+		for block in [
+			"",
+			"if (true) { let leaked: u32 = 1; }",
+			"if (true) {} else { let leaked: u32 = 1; }",
+			"if (true) {} else if (true) { let leaked: u32 = 1; }",
+			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
+			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
+		] {
+			let source = format!("main: fn () -> void {{ {block} leaked = 2; }}");
+			assert!(
+				crate::compile_to_besl(&source, None).is_err(),
+				"`leaked` should not resolve after `{block}`"
+			);
+		}
 	}
 
 	#[test]

@@ -143,6 +143,38 @@ mod tests {
 		.expect("Expected modern half and atomic HLSL to compile to DXIL");
 	}
 
+	/// An `else if` condition's atomic runs only when that branch is reached, so it is lifted into the else block.
+	#[test]
+	fn atomic_value_calls_in_else_if_conditions_lift_into_the_else_block() {
+		let source = r#"
+			counter: workgroup<atomicu32>;
+			main: fn () -> void {
+				let n: u32 = 0;
+				if (n == 1) { n = 2; } else if (atomic_load(counter) == 0) { n = 3; }
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected else-if atomic source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected else-if atomic HLSL generation");
+
+		assert_string_contains!(shader, "}else{uint32_t besl_atomic_previous_0;");
+		assert_string_contains!(shader, "if(besl_atomic_previous_0==0){n=3;}");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"besl-else-if-atomic",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected else-if atomic HLSL to compile to DXIL");
+	}
+
 	#[test]
 	fn atomic_value_calls_in_order_sensitive_hlsl_contexts_are_rejected() {
 		for source in [
@@ -1963,6 +1995,40 @@ mod tests {
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "if(n<1){n=2;}");
+	}
+
+	#[test]
+	fn else_chains_lower_to_hlsl() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			if (n < 1) {
+				n = 2;
+			} else if (n < 4) {
+				n = 3;
+			} else {
+				n = 4;
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected else-chain shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
+
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
+			&shader,
+			"besl-else-chain",
+			"besl_main",
+			crate::types::ShaderTypes::Compute,
+		)
+		.expect("Expected else-chain HLSL to compile to DXIL");
 	}
 
 	#[test]

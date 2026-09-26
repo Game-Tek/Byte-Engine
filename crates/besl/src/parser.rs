@@ -8,7 +8,9 @@ mod expressions;
 mod iterator;
 
 pub(crate) use declarations::parse;
-pub use declarations::{Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName};
+pub use declarations::{
+	ElseBranch, Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName,
+};
 #[cfg(test)]
 use expressions::*;
 pub use iterator::ProgramState;
@@ -966,7 +968,10 @@ main: fn () -> void {
 			Nodes::Expression(Expressions::Operator { name, .. }) if *name == "<="
 		));
 
-		let Nodes::Conditional { condition, statements } = &statements[0].node else {
+		let Nodes::Conditional {
+			condition, statements, ..
+		} = &statements[0].node
+		else {
 			panic!("Expected conditional");
 		};
 
@@ -993,6 +998,36 @@ main: fn () -> void {
 		};
 
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
+	}
+
+	#[test]
+	fn parse_else_if_chain() {
+		let tokens = tokenize("main: fn () -> void { if (a) { discard; } else if (b) { break; } else { continue; } }")
+			.expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected function");
+		};
+		let Nodes::Conditional {
+			statements,
+			else_branch: Some(ElseBranch::If(nested)),
+			..
+		} = &statements[0].node
+		else {
+			panic!("Expected conditional with an else-if link");
+		};
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
+
+		let Nodes::Conditional {
+			statements,
+			else_branch: Some(ElseBranch::Block(else_statements)),
+			..
+		} = &nested.node
+		else {
+			panic!("Expected nested conditional with an else block");
+		};
+		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
+		assert!(matches!(else_statements[0].node, Nodes::Expression(Expressions::Continue)));
 	}
 
 	#[test]
@@ -1141,7 +1176,10 @@ main: fn () -> void {
 			assert_eq!(statements.len(), 2);
 
 			let conditional = &statements[1];
-			if let Nodes::Conditional { condition, statements } = &conditional.node {
+			if let Nodes::Conditional {
+				condition, statements, ..
+			} = &conditional.node
+			{
 				assert_eq!(statements.len(), 1);
 				assert!(matches!(
 					condition.node,

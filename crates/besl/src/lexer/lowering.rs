@@ -91,6 +91,23 @@ fn validate_atomic_target(name: &str, target: &NodeReference, requirement: Atomi
 	Err(LexError::Undefined { message: Some(message) })
 }
 
+/// Lexes the statements of a control-flow block in order. Each statement can see `scope` and the statements before it.
+fn lex_block(
+	mut scope: Vec<NodeReference>,
+	statements: &[parser::Node],
+	next_intrinsic_expansion_id: &mut usize,
+) -> Result<Vec<NodeReference>, LexError> {
+	let mut lexed_statements = Vec::with_capacity(statements.len());
+
+	for statement in statements {
+		let statement = lex_parsed_node(scope.clone(), statement, next_intrinsic_expansion_id)?;
+		scope.push(statement.clone());
+		lexed_statements.push(statement);
+	}
+
+	Ok(lexed_statements)
+}
+
 // This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub(super) fn lex_parsed_node(
@@ -303,18 +320,27 @@ pub(super) fn lex_parsed_node(
 
 			this
 		}
-		parser::Nodes::Conditional { condition, statements } => {
+		parser::Nodes::Conditional {
+			condition,
+			statements,
+			else_branch,
+		} => {
 			let condition = lex_parsed_node(chain.clone(), condition, next_intrinsic_expansion_id)?;
-			let mut lexed_statements = Vec::with_capacity(statements.len());
-			let mut scoped_chain = chain.clone();
+			// Each branch gets its own scope, so declarations in one branch are not visible in the other.
+			let statements = lex_block(chain.clone(), statements, next_intrinsic_expansion_id)?;
+			let else_branch = match else_branch {
+				Some(parser::ElseBranch::Block(statements)) => {
+					Some(ElseBranch::Block(lex_block(chain, statements, next_intrinsic_expansion_id)?))
+				}
+				Some(parser::ElseBranch::If(conditional)) => Some(ElseBranch::If(lex_parsed_node(
+					chain,
+					conditional,
+					next_intrinsic_expansion_id,
+				)?)),
+				None => None,
+			};
 
-			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
-				scoped_chain.push(statement.clone());
-				lexed_statements.push(statement);
-			}
-
-			Node::conditional(condition, lexed_statements).into()
+			Node::conditional(condition, statements, else_branch).into()
 		}
 		parser::Nodes::ForLoop {
 			initializer,
@@ -327,15 +353,9 @@ pub(super) fn lex_parsed_node(
 			scoped_chain.push(initializer.clone());
 			let condition = lex_parsed_node(scoped_chain.clone(), condition, next_intrinsic_expansion_id)?;
 			let update = lex_parsed_node(scoped_chain.clone(), update, next_intrinsic_expansion_id)?;
-			let mut lexed_statements = Vec::with_capacity(statements.len());
+			let statements = lex_block(scoped_chain, statements, next_intrinsic_expansion_id)?;
 
-			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
-				scoped_chain.push(statement.clone());
-				lexed_statements.push(statement);
-			}
-
-			Node::for_loop(initializer, condition, update, lexed_statements).into()
+			Node::for_loop(initializer, condition, update, statements).into()
 		}
 		parser::Nodes::PushConstant { members } => {
 			let this: NodeReference = Node::push_constant(vec![]).into();

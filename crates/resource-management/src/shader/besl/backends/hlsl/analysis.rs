@@ -414,7 +414,7 @@ impl Generator {
 	}
 
 	/// Reports whether an expression tree contains an atomic call that returns a value.
-	fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
+	pub(crate) fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
 		if Self::hlsl_atomic_call(node).is_some() {
 			return true;
 		}
@@ -422,11 +422,7 @@ impl Generator {
 			let node = node.borrow();
 			match node.node() {
 				besl::Nodes::Function { statements, .. } => statements.clone(),
-				besl::Nodes::Conditional { condition, statements } => {
-					let mut children = vec![condition.clone()];
-					children.extend(statements.iter().cloned());
-					children
-				}
+				conditional @ besl::Nodes::Conditional { .. } => conditional.conditional_children().cloned().collect(),
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,
@@ -464,10 +460,9 @@ impl Generator {
 		let node = node.borrow();
 		match node.node() {
 			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-			besl::Nodes::Conditional { condition, statements } => {
-				Self::has_unsupported_hlsl_atomic_context(condition)
-					|| statements.iter().any(Self::has_unsupported_hlsl_atomic_context)
-			}
+			conditional @ besl::Nodes::Conditional { .. } => conditional
+				.conditional_children()
+				.any(Self::has_unsupported_hlsl_atomic_context),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

@@ -22,6 +22,26 @@ use super::expressions::{
 };
 use crate::{lexer::BufferMemoryClass, tokenizer};
 
+/// The `ElseBranch` enum keeps `else if` chains distinct from plain `else` blocks,
+/// so later stages can lower each form by structure. See [`Nodes::Conditional`].
+#[derive(Clone, Debug)]
+pub enum ElseBranch<'a> {
+	/// An `else { ... }` block.
+	Block(Vec<Node<'a>>),
+	/// An `else if` link. The node is always a [`Nodes::Conditional`].
+	If(Box<Node<'a>>),
+}
+
+impl<'a> ElseBranch<'a> {
+	/// Returns the branch as a mutable statement list. An `else if` link is one conditional statement.
+	pub fn statements_mut(&mut self) -> &mut [Node<'a>] {
+		match self {
+			Self::Block(statements) => statements,
+			Self::If(conditional) => std::slice::from_mut(conditional),
+		}
+	}
+}
+
 /// The `TypeName` enum preserves type structure while the parser still borrows source text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeName<'a> {
@@ -163,11 +183,13 @@ impl<'a> Node<'a> {
 		make_function(name, params, return_type, statements)
 	}
 
-	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>) -> Node<'a> {
+	/// Builds an `if` statement. Pass `None` as `else_branch` for an `if` without an `else` branch.
+	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>, else_branch: Option<ElseBranch<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Conditional {
 				condition: Box::new(condition),
 				statements,
+				else_branch,
 			},
 		}
 	}
@@ -620,9 +642,11 @@ pub enum Nodes<'a> {
 		return_type: TypeName<'a>,
 		statements: Vec<Node<'a>>,
 	},
+	/// An `if` statement, with an optional `else` or `else if` branch.
 	Conditional {
 		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
+		else_branch: Option<ElseBranch<'a>>,
 	},
 	ForLoop {
 		initializer: Box<Node<'a>>,

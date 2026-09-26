@@ -831,13 +831,54 @@ pub(crate) trait NodeEmitter {
 		string: &mut String,
 		condition: &besl::NodeReference,
 		statements: &[besl::NodeReference],
+		else_branch: Option<&besl::ElseBranch>,
 	) {
 		let formatting = ShaderFormatting::new(self.minified());
 		string.push_str("if(");
 		self.emit_node(string, condition);
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
-		self.emit_block_end(string);
+
+		let Some(else_branch) = else_branch else {
+			self.emit_block_end(string);
+			return;
+		};
+
+		string.push('}');
+		string.push_str(formatting.space_str());
+		string.push_str("else");
+
+		match else_branch {
+			besl::ElseBranch::If(conditional) if !self.else_if_needs_block(conditional) => {
+				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
+				let conditional = conditional.borrow();
+				let besl::Nodes::Conditional {
+					condition,
+					statements,
+					else_branch,
+				} = conditional.node()
+				else {
+					unreachable!("An `else if` link always holds a conditional node");
+				};
+				string.push(' ');
+				self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
+			}
+			// A block, or an `else if` link the backend emits as `else { if ... }`.
+			else_branch => {
+				string.push_str(formatting.space_str());
+				string.push('{');
+				string.push_str(formatting.break_str());
+				self.emit_function_statement_block(string, else_branch.statements(), 1);
+				self.emit_block_end(string);
+			}
+		}
+	}
+
+	/// Reports whether an `else if` link must be emitted as `else { if ... }`, so that the
+	/// nested conditional goes through [`NodeEmitter::emit_function_statement_block`].
+	/// Override it when the backend emits extra statements before some conditionals.
+	fn else_if_needs_block(&self, _conditional: &besl::NodeReference) -> bool {
+		false
 	}
 
 	fn emit_for_loop_node(

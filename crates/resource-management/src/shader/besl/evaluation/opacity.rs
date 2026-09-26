@@ -69,10 +69,9 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				collect_local_output_symbols(statement, local_output_symbols);
 			}
 		}
-		besl::Nodes::Conditional { condition, statements } => {
-			collect_local_output_symbols(condition, local_output_symbols);
-			for statement in statements {
-				collect_local_output_symbols(statement, local_output_symbols);
+		conditional @ besl::Nodes::Conditional { .. } => {
+			for child in conditional.conditional_children() {
+				collect_local_output_symbols(child, local_output_symbols);
 			}
 		}
 		besl::Nodes::ForLoop {
@@ -181,12 +180,9 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| references_non_local_output(statement, local_output_symbols)),
-		besl::Nodes::Conditional { condition, statements } => {
-			references_non_local_output(condition, local_output_symbols)
-				|| statements
-					.iter()
-					.any(|statement| references_non_local_output(statement, local_output_symbols))
-		}
+		conditional @ besl::Nodes::Conditional { .. } => conditional
+			.conditional_children()
+			.any(|child| references_non_local_output(child, local_output_symbols)),
 		besl::Nodes::ForLoop {
 			initializer,
 			condition,
@@ -280,12 +276,9 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols)),
-		besl::Nodes::Conditional { condition, statements } => {
-			writes_non_opaque_vec4f_to_non_local_output(condition, local_output_symbols)
-				|| statements
-					.iter()
-					.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols))
-		}
+		conditional @ besl::Nodes::Conditional { .. } => conditional
+			.conditional_children()
+			.any(|child| writes_non_opaque_vec4f_to_non_local_output(child, local_output_symbols)),
 		besl::Nodes::ForLoop {
 			initializer,
 			condition,

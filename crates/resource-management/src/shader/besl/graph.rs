@@ -190,11 +190,9 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 
 				build_graph_impl(node.clone(), return_type.clone(), graph, expanded, active, allocator);
 			}
-			besl::Nodes::Conditional { condition, statements } => {
-				build_graph_impl(node.clone(), condition.clone(), graph, expanded, active, allocator.clone());
-
-				for statement in statements {
-					build_graph_impl(node.clone(), statement.clone(), graph, expanded, active, allocator.clone());
+			conditional @ besl::Nodes::Conditional { .. } => {
+				for child in conditional.conditional_children() {
+					build_graph_impl(node.clone(), child.clone(), graph, expanded, active, allocator.clone());
 				}
 			}
 			besl::Nodes::ForLoop {

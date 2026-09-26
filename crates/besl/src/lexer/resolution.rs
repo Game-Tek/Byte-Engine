@@ -297,18 +297,8 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		}
 		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => find_descendant(r#type, child_name, mode),
 		Nodes::Function { params, statements, .. } => find_in_function(params, statements, child_name, mode),
-		Nodes::Conditional { condition, statements } if mode == DescendantSearch::NonIntrinsic => {
-			find_descendant(condition, child_name, mode).or_else(|| find_in_descendants(statements, child_name, mode))
-		}
-		Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} if mode == DescendantSearch::NonIntrinsic => find_descendant(initializer, child_name, mode)
-			.or_else(|| find_descendant(condition, child_name, mode))
-			.or_else(|| find_descendant(update, child_name, mode))
-			.or_else(|| find_in_descendants(statements, child_name, mode)),
+		// Control-flow statements own their block scopes, so later statements never see declarations inside them.
+		Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
 		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
 		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
 		Nodes::Binding {
@@ -899,10 +889,9 @@ fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		Nodes::Conditional { condition, statements } => {
-			collect_intrinsic_local_declarations(condition, declarations);
-			for statement in statements {
-				collect_intrinsic_local_declarations(statement, declarations);
+		conditional @ Nodes::Conditional { .. } => {
+			for child in conditional.conditional_children() {
+				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
 		Nodes::ForLoop {
@@ -964,13 +953,26 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 			scope.into()
 		}
 		Nodes::Expression(expression) => Node::expression(instantiate_intrinsic_expression(expression, instantiation)).into(),
-		Nodes::Conditional { condition, statements } => Node::conditional(
-			instantiate_intrinsic_node(condition, instantiation),
-			statements
-				.iter()
-				.map(|statement| instantiate_intrinsic_node(statement, instantiation))
-				.collect(),
-		)
+		Nodes::Conditional {
+			condition,
+			statements,
+			else_branch,
+		} => {
+			let instantiate_block = |statements: &[NodeReference]| {
+				statements
+					.iter()
+					.map(|statement| instantiate_intrinsic_node(statement, instantiation))
+					.collect()
+			};
+			Node::conditional(
+				instantiate_intrinsic_node(condition, instantiation),
+				instantiate_block(statements),
+				else_branch.as_ref().map(|else_branch| match else_branch {
+					ElseBranch::Block(statements) => ElseBranch::Block(instantiate_block(statements)),
+					ElseBranch::If(conditional) => ElseBranch::If(instantiate_intrinsic_node(conditional, instantiation)),
+				}),
+			)
+		}
 		.into(),
 		Nodes::ForLoop {
 			initializer,

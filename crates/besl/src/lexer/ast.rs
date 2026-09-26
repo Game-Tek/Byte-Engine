@@ -809,9 +809,14 @@ impl Node {
 		}
 	}
 
-	pub fn conditional(condition: NodeReference, statements: Vec<NodeReference>) -> Node {
+	/// Builds an `if` statement. Pass `None` as `else_branch` for an `if` without an `else` branch.
+	pub fn conditional(condition: NodeReference, statements: Vec<NodeReference>, else_branch: Option<ElseBranch>) -> Node {
 		Node {
-			node: Nodes::Conditional { condition, statements },
+			node: Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			},
 		}
 	}
 
@@ -1094,12 +1099,7 @@ impl Node {
 			| Nodes::Struct { fields: children, .. }
 			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
 			Nodes::Function { statements, .. } => Some(statements.clone()),
-			Nodes::Conditional { condition, statements } => {
-				let mut children = Vec::with_capacity(statements.len() + 1);
-				children.push(condition.clone());
-				children.extend(statements.iter().cloned());
-				Some(children)
-			}
+			Nodes::Conditional { .. } => Some(self.node.conditional_children().cloned().collect()),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -1166,6 +1166,27 @@ pub enum BufferMemoryClass {
 	Device,
 }
 
+/// The `ElseBranch` enum keeps `else if` chains distinct from plain `else` blocks,
+/// so backends can lower each form by structure. See [`Nodes::Conditional`].
+#[derive(Clone, Debug)]
+pub enum ElseBranch {
+	/// An `else { ... }` block.
+	Block(Vec<NodeReference>),
+	/// An `else if` link. The node is always a [`Nodes::Conditional`].
+	If(NodeReference),
+}
+
+impl ElseBranch {
+	/// Returns the branch as a statement list. An `else if` link is one conditional statement.
+	/// Use it in walkers that treat both forms alike.
+	pub fn statements(&self) -> &[NodeReference] {
+		match self {
+			Self::Block(statements) => statements,
+			Self::If(conditional) => std::slice::from_ref(conditional),
+		}
+	}
+}
+
 #[derive(Clone)]
 pub enum Nodes {
 	Null,
@@ -1190,9 +1211,11 @@ pub enum Nodes {
 		return_type: NodeReference,
 		statements: Vec<NodeReference>,
 	},
+	/// An `if` statement, with an optional `else` or `else if` branch.
 	Conditional {
 		condition: NodeReference,
 		statements: Vec<NodeReference>,
+		else_branch: Option<ElseBranch>,
 	},
 	ForLoop {
 		initializer: NodeReference,
@@ -1267,6 +1290,25 @@ pub enum Nodes {
 }
 
 impl Nodes {
+	/// Iterates the condition, then the `if` statements, then the `else` statements of a [`Nodes::Conditional`].
+	/// Use it in AST walkers that treat every part of an `if` statement alike, so they don't list its fields by hand.
+	/// Returns an empty iterator for other nodes.
+	pub fn conditional_children(&self) -> impl Iterator<Item = &NodeReference> {
+		let (condition, statements, else_statements): (_, &[_], &[_]) = match self {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => (
+				Some(condition),
+				statements,
+				else_branch.as_ref().map_or(&[], ElseBranch::statements),
+			),
+			_ => (None, &[], &[]),
+		};
+		condition.into_iter().chain(statements).chain(else_statements)
+	}
+
 	pub fn is_leaf(&self) -> bool {
 		match self {
 			Nodes::Function { .. } => false,
@@ -1384,11 +1426,15 @@ impl std::fmt::Debug for Node {
 					statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
 				)
 			}
-			Nodes::Conditional { condition, statements } => {
+			Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => {
 				write!(
 					f,
-					"Conditional {{ condition: {:?}, statements: {:?} }}",
-					condition, statements
+					"Conditional {{ condition: {:?}, statements: {:?}, else_branch: {:?} }}",
+					condition, statements, else_branch
 				)
 			}
 			Nodes::ForLoop {

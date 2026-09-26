@@ -817,6 +817,12 @@ impl Generator {
 				statements,
 				else_branch,
 			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
+			besl::Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -948,6 +954,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn minified(&self) -> bool {
 		self.minified
+	}
+	fn match_break_depth(&mut self) -> &mut Option<usize> {
+		&mut self.match_break_depth
 	}
 	fn is_reserved_identifier(name: &str) -> bool {
 		super::reserved::is_reserved(name)

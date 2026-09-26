@@ -406,15 +406,7 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	iterator.next_str("for")?;
 	iterator.next_str("(")?;
 
-	let statement_parsers = vec![
-		parse_keywords,
-		parse_continue,
-		parse_break,
-		parse_discard,
-		parse_var_decl,
-		parse_function_call,
-		parse_variable,
-	];
+	let statement_parsers = statement_expression_parsers();
 	let (initializer_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
 	let initializer = expression_atoms_to_node(&initializer_atoms);
 
@@ -497,7 +489,25 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 		.unwrap_or(Ok((expressions, iterator)))
 }
 
+/// Lists the parsers for expressions that can stand alone as a statement, such as assignments and calls.
+fn statement_expression_parsers<'i, 'a: 'i>() -> [ExpressionParser<'i, 'a>; 7] {
+	[
+		parse_keywords,
+		parse_continue,
+		parse_break,
+		parse_discard,
+		parse_var_decl,
+		parse_function_call,
+		parse_variable,
+	]
+}
+
 pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	// `match` is a keyword, so syntax errors inside a match are reported instead of retried as an expression.
+	if iterator.as_slice().first() == Some(&"match") {
+		return parse_match(iterator);
+	}
+
 	if let Some(result) = try_execute_parsers(&[parse_conditional], iterator.clone()) {
 		return result;
 	}
@@ -506,21 +516,120 @@ pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str
 		return result;
 	}
 
-	let parsers = vec![
-		parse_keywords,
-		parse_continue,
-		parse_break,
-		parse_discard,
-		parse_var_decl,
-		parse_function_call,
-		parse_variable,
-	];
-
-	let (expressions, mut iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
+	let (expressions, mut iterator) = execute_expression_parsers(&statement_expression_parsers(), iterator, Vec::new())?;
 
 	iterator.next_str(";")?; // Skip semicolon
 
 	Ok((expression_atoms_to_node(&expressions), iterator))
+}
+
+/// Parses a Rust-style `match` statement, such as `match n { 0 => a = 1, 1 | 2 => { a = 2; } _ => {} }`.
+/// See [`crate::lexer`] for the type and exhaustiveness checks that follow parsing.
+pub(crate) fn parse_match<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
+	iterator.next_str("match")?;
+
+	let (scrutinee_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	let scrutinee = expression_atoms_to_node(&scrutinee_atoms);
+
+	iterator.next_str("{").map_err(|_| ParsingFailReasons::BadSyntax {
+		message: "Expected `{` after the match scrutinee. The most likely cause is a missing brace before the match arms."
+			.to_string(),
+	})?;
+
+	let mut arms = Vec::new();
+	loop {
+		if iterator.as_slice().first() == Some(&"}") {
+			iterator.next();
+			break;
+		}
+
+		let (patterns, next_iterator) = parse_match_patterns(iterator)?;
+		iterator = next_iterator;
+
+		iterator.next_str("=>").map_err(|_| ParsingFailReasons::BadSyntax {
+			message: "Expected `=>` after a match pattern. The most likely cause is a match guard or a pattern BESL can't match, such as a range or a binding."
+				.to_string(),
+		})?;
+
+		let (statements, next_iterator) = parse_match_arm_body(iterator)?;
+		iterator = next_iterator;
+		arms.push(MatchArm { patterns, statements });
+	}
+
+	Ok((Node::r#match(scrutinee, arms), iterator))
+}
+
+/// Parses the or-pattern of one match arm, such as `1 | 2`. A leading `|` is allowed, as in Rust.
+fn parse_match_patterns<'i, 'a: 'i>(
+	mut iterator: std::slice::Iter<'i, &'a str>,
+) -> Result<(Vec<MatchPattern<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	if iterator.as_slice().first() == Some(&"|") {
+		iterator.next();
+	}
+
+	let mut patterns = Vec::new();
+	loop {
+		let pattern = match iterator.as_slice() {
+			["_", ..] => MatchPattern::Wildcard,
+			["-", value, ..] if is_literal(value) => {
+				iterator.next();
+				MatchPattern::Literal { value, negative: true }
+			}
+			[value, ..] if is_literal(value) => MatchPattern::Literal { value, negative: false },
+			[token, ..] => {
+				return Err(ParsingFailReasons::BadSyntax {
+					message: format!(
+						"Unsupported match pattern `{token}`. The most likely cause is a pattern other than a literal, `_`, or an or-pattern of those."
+					),
+				});
+			}
+			[] => return Err(ParsingFailReasons::StreamEndedPrematurely),
+		};
+		iterator.next();
+		patterns.push(pattern);
+
+		if iterator.as_slice().first() != Some(&"|") {
+			return Ok((patterns, iterator));
+		}
+		iterator.next();
+	}
+}
+
+/// Parses the body of one match arm and the comma after it. A block or nested `match` body doesn't need a comma,
+/// and neither does the last arm, as in Rust.
+fn parse_match_arm_body<'i, 'a: 'i>(
+	iterator: std::slice::Iter<'i, &'a str>,
+) -> Result<(Vec<Node<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons> {
+	let (statements, block_like, mut iterator) = match iterator.as_slice().first() {
+		Some(&"{") => {
+			let (statements, iterator) = parse_block(iterator)?;
+			(statements, true, iterator)
+		}
+		Some(&"match") => {
+			let (statement, iterator) = parse_match(iterator)?;
+			(vec![statement], true, iterator)
+		}
+		_ => {
+			let (expressions, iterator) = execute_expression_parsers(&statement_expression_parsers(), iterator, Vec::new())?;
+			(vec![expression_atoms_to_node(&expressions)], false, iterator)
+		}
+	};
+
+	match iterator.as_slice().first() {
+		Some(&",") => {
+			iterator.next();
+		}
+		Some(&"}") => {}
+		_ if block_like => {}
+		_ => {
+			return Err(ParsingFailReasons::BadSyntax {
+				message: "Expected `,` after a match arm. The most likely cause is a missing comma between two arms."
+					.to_string(),
+			});
+		}
+	}
+
+	Ok((statements, iterator))
 }
 
 pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {

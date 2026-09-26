@@ -20,6 +20,19 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_conditional(&condition, &statements, else_branch.as_ref(), descriptor_layouts)
 			}
+			Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => {
+				let scrutinee = scrutinee.clone();
+				let r#type = r#type.clone();
+				let arms = arms.clone();
+				let default = default.clone();
+				drop(borrowed);
+				self.compile_match(&scrutinee, &r#type, &arms, &default, descriptor_layouts)
+			}
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -157,6 +170,57 @@ impl<'a> Compiler<'a> {
 		Ok(())
 	}
 
+	/// Lowers a `match` to one `Switch` instruction followed by the arm bodies.
+	/// Each body ends by jumping past the others, since `match` arms never fall through.
+	pub(super) fn compile_match(
+		&mut self,
+		scrutinee: &NodeReference,
+		r#type: &NodeReference,
+		arms: &[crate::MatchArm],
+		default: &[NodeReference],
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let value_type = resolve_value_type(r#type)?;
+		let register = self.compile_value_expression(scrutinee, &value_type, descriptor_layouts)?;
+		let switch_index = self.instructions.len();
+		self.instructions.push(Instruction::Switch {
+			register,
+			cases: Box::default(),
+			default: usize::MAX,
+		});
+
+		let mut cases = Vec::with_capacity(arms.iter().map(|arm| arm.values.len()).sum());
+		let mut end_jumps = Vec::with_capacity(arms.len());
+		for arm in arms {
+			let start = self.instructions.len();
+			// The lexer checks that every label fits the scrutinee type, so truncating keeps its 32-bit pattern.
+			cases.extend(arm.values.iter().map(|&value| (value as u32, start)));
+			for statement in &arm.statements {
+				self.compile_statement(statement, descriptor_layouts)?;
+			}
+			end_jumps.push(self.instructions.len());
+			self.instructions.push(Instruction::Jump { target: usize::MAX });
+		}
+
+		let default_start = self.instructions.len();
+		for statement in default {
+			self.compile_statement(statement, descriptor_layouts)?;
+		}
+
+		let end = self.instructions.len();
+		for jump in end_jumps {
+			self.patch_jump(jump, end);
+		}
+		cases.sort_unstable_by_key(|&(label, _)| label);
+		self.instructions[switch_index] = Instruction::Switch {
+			register,
+			cases: cases.into_boxed_slice(),
+			default: default_start,
+		};
+
+		Ok(())
+	}
+
 	pub(super) fn compile_for_loop(
 		&mut self,
 		initializer: &NodeReference,
@@ -247,9 +311,8 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
-				if let Some(value_type) = self.local_path_type(&left) {
-					let value = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
-					return self.compile_local_store(&left, value, descriptor_layouts);
+				if self.local_path_type(&left).is_some() {
+					return self.compile_local_store(&left, &right, descriptor_layouts);
 				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
@@ -296,8 +359,8 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Returns the type of `expression` when it is a local or a chain of named members inside one, such as
-	/// `probe.position.z`, and `None` for anything else.
+	/// Returns the type of `expression` when it is a local or a chain of named members and indexed elements inside
+	/// one, such as `probe.position.z` or `weights[i]`, and `None` for anything else.
 	fn local_path_type(&self, expression: &NodeReference) -> Option<ValueType> {
 		match expression.borrow().node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
@@ -308,54 +371,110 @@ impl<'a> Compiler<'a> {
 				self.local_types.get(*local).cloned()
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let member_name = extract_member_name(right).ok()?;
-				aggregate_member(&self.local_path_type(left)?, &member_name)
-					.ok()
-					.map(|(_, member_type)| member_type)
+				let parent_type = self.local_path_type(left)?;
+				Some(match extract_member_name(right) {
+					Ok(member_name) => aggregate_member(&parent_type, &member_name).ok()?.1,
+					Err(_) => array_element_type(&parent_type).ok()?.0,
+				})
 			}
 			_ => None,
 		}
 	}
 
-	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
+	/// Stores the `value` expression into `target`, a path that [`Self::local_path_type`] accepts.
 	///
-	/// Registers hold whole values, so a member store inserts `value` into the enclosing value and stores that in turn,
-	/// until it reaches the local.
+	/// Registers hold whole values, so the store loads each enclosing value down the path, then inserts `value` into the
+	/// innermost one and each result into its parent until it reaches the local. Every index is evaluated exactly once
+	/// and before `value`, like other indexed stores, so indices with side effects such as
+	/// `points[atomic_add(counter.count, 1)].y` select one element.
 	fn compile_local_store(
 		&mut self,
 		target: &NodeReference,
-		value: usize,
+		value: &NodeReference,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
-		let borrowed = target.borrow();
-		match borrowed.node() {
-			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-				let inner = elements[0].clone();
-				drop(borrowed);
-				self.compile_local_store(&inner, value, descriptor_layouts)
-			}
-			Nodes::Expression(Expressions::Member { source, .. }) => {
-				let local = self.locals_by_reference[source];
-				self.instructions.push(Instruction::StoreLocal { local, register: value });
-				Ok(())
-			}
-			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let (left, member_name) = (left.clone(), extract_member_name(right)?);
-				drop(borrowed);
-				let parent_type = self.local_path_type(&left).expect("Local store targets are local paths");
-				let (index, _) = aggregate_member(&parent_type, &member_name)?;
-				let source = self.compile_value_expression(&left, &parent_type, descriptor_layouts)?;
+		// Walk from the target up to its local, collecting each accessor from the innermost outward.
+		let mut accessors = Vec::new();
+		let mut node = target.clone();
+		let local = loop {
+			let next = match node.borrow().node() {
+				Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => elements[0].clone(),
+				Nodes::Expression(Expressions::Member { source, .. }) => break self.locals_by_reference[source],
+				Nodes::Expression(Expressions::Accessor { left, right }) => {
+					accessors.push(right.clone());
+					left.clone()
+				}
+				_ => unreachable!("Local store targets are local paths"),
+			};
+			node = next;
+		};
+
+		// Load the enclosing values from the local inward, resolving each member index or evaluating each element index.
+		let mut value_type = self.local_types[local].clone();
+		let mut enclosing = self.allocate_register();
+		self.instructions.push(Instruction::LoadLocal {
+			register: enclosing,
+			local,
+		});
+		let mut inserts = Vec::with_capacity(accessors.len());
+		for (depth, accessor) in accessors.iter().rev().enumerate() {
+			let (index, member_type, count) = match extract_member_name(accessor) {
+				Ok(member_name) => {
+					let (index, member_type) = aggregate_member(&value_type, &member_name)?;
+					(index, member_type, None)
+				}
+				Err(_) => {
+					let (element_type, count) = array_element_type(&value_type)?;
+					let index = self.compile_value_expression(accessor, &ValueType::U32, descriptor_layouts)?;
+					(index, element_type, Some(count))
+				}
+			};
+			inserts.push((enclosing, index, count));
+			if depth + 1 < accessors.len() {
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Insert {
+				self.instructions.push(match count {
+					None => Instruction::Extract {
+						register,
+						source: enclosing,
+						index,
+						value_type: member_type.clone(),
+					},
+					Some(count) => Instruction::ExtractDynamic {
+						register,
+						source: enclosing,
+						index,
+						count,
+						value_type: member_type.clone(),
+					},
+				});
+				enclosing = register;
+			}
+			value_type = member_type;
+		}
+
+		// Insert the stored value into the innermost enclosing value, then each result into its parent.
+		let mut value = self.compile_value_expression(value, &value_type, descriptor_layouts)?;
+		for (source, index, count) in inserts.into_iter().rev() {
+			let register = self.allocate_register();
+			self.instructions.push(match count {
+				None => Instruction::Insert {
 					register,
 					source,
 					index,
 					value,
-				});
-				self.compile_local_store(&left, register, descriptor_layouts)
-			}
-			_ => unreachable!("Local store targets are local paths"),
+				},
+				Some(count) => Instruction::InsertDynamic {
+					register,
+					source,
+					index,
+					count,
+					value,
+				},
+			});
+			value = register;
 		}
+		self.instructions.push(Instruction::StoreLocal { local, register: value });
+		Ok(())
 	}
 
 	pub(super) fn compile_call_statement(

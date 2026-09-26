@@ -28,6 +28,7 @@ pub struct Generator {
 	pub(crate) packed_write_counter: u32,
 	pub(crate) atomic_temporary_counter: u32,
 	pub(crate) atomic_temporaries: HashMap<besl::NodeReference, String>,
+	pub(crate) match_break_depth: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,7 @@ impl Generator {
 			packed_write_counter: 0,
 			atomic_temporary_counter: 0,
 			atomic_temporaries: HashMap::new(),
+			match_break_depth: None,
 		}
 	}
 

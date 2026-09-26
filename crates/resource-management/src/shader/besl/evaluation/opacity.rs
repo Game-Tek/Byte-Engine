@@ -69,8 +69,8 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				collect_local_output_symbols(statement, local_output_symbols);
 			}
 		}
-		conditional @ besl::Nodes::Conditional { .. } => {
-			for child in conditional.conditional_children() {
+		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+			for child in branch.branch_children() {
 				collect_local_output_symbols(child, local_output_symbols);
 			}
 		}
@@ -180,8 +180,8 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| references_non_local_output(statement, local_output_symbols)),
-		conditional @ besl::Nodes::Conditional { .. } => conditional
-			.conditional_children()
+		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+			.branch_children()
 			.any(|child| references_non_local_output(child, local_output_symbols)),
 		besl::Nodes::ForLoop {
 			initializer,
@@ -276,8 +276,8 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		besl::Nodes::Function { statements, .. } => statements
 			.iter()
 			.any(|statement| writes_non_opaque_vec4f_to_non_local_output(statement, local_output_symbols)),
-		conditional @ besl::Nodes::Conditional { .. } => conditional
-			.conditional_children()
+		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+			.branch_children()
 			.any(|child| writes_non_opaque_vec4f_to_non_local_output(child, local_output_symbols)),
 		besl::Nodes::ForLoop {
 			initializer,

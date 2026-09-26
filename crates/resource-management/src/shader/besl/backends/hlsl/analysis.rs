@@ -398,7 +398,9 @@ impl Generator {
 			let node = node.borrow();
 			match node.node() {
 				besl::Nodes::Function { statements, .. } => statements.clone(),
-				conditional @ besl::Nodes::Conditional { .. } => conditional.conditional_children().cloned().collect(),
+				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+					branch.branch_children().cloned().collect()
+				}
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,
@@ -436,9 +438,9 @@ impl Generator {
 		let node = node.borrow();
 		match node.node() {
 			besl::Nodes::Function { statements, .. } => statements.iter().any(Self::has_unsupported_hlsl_atomic_context),
-			conditional @ besl::Nodes::Conditional { .. } => conditional
-				.conditional_children()
-				.any(Self::has_unsupported_hlsl_atomic_context),
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+				branch.branch_children().any(Self::has_unsupported_hlsl_atomic_context)
+			}
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
@@ -491,7 +493,12 @@ impl Generator {
 	fn hlsl_expression_children(node: &besl::NodeReference) -> Vec<besl::NodeReference> {
 		let node = node.borrow();
 		match node.node() {
-			besl::Nodes::Conditional { condition, .. } => vec![condition.clone()],
+			besl::Nodes::Conditional { condition, .. }
+			| besl::Nodes::Match {
+				scrutinee: condition, ..
+			} => {
+				vec![condition.clone()]
+			}
 			// A for-loop initializer runs once, so it can be lifted before the loop.
 			// Atomics in the repeated condition or update are rejected by validation.
 			besl::Nodes::ForLoop { initializer, .. } => vec![initializer.clone()],

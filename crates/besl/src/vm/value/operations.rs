@@ -336,6 +336,22 @@ pub(crate) fn is_zero_value(value: &Value) -> Result<bool, VmError> {
 	}
 }
 
+/// Returns the 32-bit pattern that a `switch` compares against its case labels.
+/// `bool` values are `0` and `1`, and `i32` values keep their two's complement bits.
+pub(crate) fn switch_label(value: &Value) -> Result<u32, VmError> {
+	match *value {
+		Value::Bool(value) => Ok(value.into()),
+		Value::U8(value) => Ok(value.into()),
+		Value::U16(value) => Ok(value.into()),
+		Value::U32(value) => Ok(value),
+		Value::I32(value) => Ok(value.cast_unsigned()),
+		ref value => Err(VmError::TypeMismatch {
+			expected: "bool, u8, u16, u32, or i32".to_string(),
+			found: value.value_type().name().to_string(),
+		}),
+	}
+}
+
 /// The `VmInteger` trait keeps integer instruction semantics consistent across BESL scalar widths.
 trait VmInteger: Copy + PartialEq + Default {
 	fn wrapping_add(self, right: Self) -> Self;

@@ -295,7 +295,10 @@ pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 		let include = {
 			let borrowed = node.borrow();
 			!borrowed.node().is_leaf()
-				&& !matches!(borrowed.node(), besl::Nodes::Conditional { .. } | besl::Nodes::ForLoop { .. })
+				&& !matches!(
+					borrowed.node(),
+					besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. } | besl::Nodes::ForLoop { .. }
+				)
 		};
 		if include {
 			ordered.push(node);
@@ -319,6 +322,38 @@ pub(crate) fn emit_comma_separated_nodes<F>(
 
 		emit_node(string, node);
 	}
+}
+
+/// Writes the name of the flag that records a loop `break` inside the arms of the flagged match at `depth`.
+fn push_match_break_flag(string: &mut String, depth: usize) {
+	use std::fmt::Write as _;
+	let _ = write!(string, "{RESERVED_IDENTIFIER_PREFIX}match_break_{depth}");
+}
+
+/// Reports whether `statement` holds a `break` that leaves a loop around it, outside any nested loop.
+fn breaks_enclosing_loop(statement: &besl::NodeReference) -> bool {
+	match statement.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Break) => true,
+		// A condition or scrutinee can't hold a `break`, so walking every branch child only finds branch statements.
+		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+			branch.branch_children().any(breaks_enclosing_loop)
+		}
+		_ => false,
+	}
+}
+
+/// Writes one `switch` case label for a match value. `i32` scrutinees use signed labels and every other type
+/// uses unsigned labels, matching the 32-bit value the `switch` tests.
+fn push_switch_label(string: &mut String, value: i64, signed: bool) {
+	use std::fmt::Write as _;
+	string.push_str("case ");
+	let _ = match (signed, value) {
+		// `2147483648` doesn't fit a signed literal, so the minimum is spelled as an expression.
+		(true, value) if value == i64::from(i32::MIN) => write!(string, "({}-1)", i32::MIN + 1),
+		(true, value) => write!(string, "{value}"),
+		(false, value) => write!(string, "{value}u"),
+	};
+	string.push(':');
 }
 
 pub(crate) fn emit_statement_block<F>(
@@ -560,6 +595,13 @@ pub(crate) trait NodeEmitter {
 			Self::identifier(source)
 		}
 	}
+
+	/// Returns the depth of the flagged match whose arm is being emitted, or `None` inside a loop body.
+	///
+	/// A `switch` case can't `break` its enclosing loop, so a `break` in a flagged match arm sets that match's
+	/// flag instead. Backends store an `Option<usize>` field, starting at `None`, and return it here.
+	/// [`Self::emit_match_node`] and [`Self::emit_for_loop_node`] update it.
+	fn match_break_depth(&mut self) -> &mut Option<usize>;
 
 	/// Appends the string representation of a BESL node to the output buffer.
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference);
@@ -820,7 +862,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::Continue => string.push_str("continue"),
-			besl::Expressions::Break => string.push_str("break"),
+			besl::Expressions::Break => self.emit_break(string),
 			besl::Expressions::Discard => self.emit_discard(string),
 			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
 		}
@@ -881,6 +923,92 @@ pub(crate) trait NodeEmitter {
 		false
 	}
 
+	/// Emits a BESL `break`, which always leaves the innermost loop. See [`Self::match_break_depth`].
+	fn emit_break(&mut self, string: &mut String) {
+		if let Some(depth) = *self.match_break_depth() {
+			push_match_break_flag(string, depth);
+			string.push_str("=true");
+			self.emit_statement_end(string);
+		}
+		string.push_str("break");
+	}
+
+	/// Emits a `match` as a `switch` whose cases never fall through.
+	///
+	/// When an arm holds a `break` for an enclosing loop, the `switch` is wrapped in a block with a flag.
+	/// The arm sets the flag and leaves the `switch`, and the code after it breaks the loop, as Rust does.
+	fn emit_match_node(
+		&mut self,
+		string: &mut String,
+		scrutinee: &besl::NodeReference,
+		r#type: &besl::NodeReference,
+		arms: &[besl::MatchArm],
+		default: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified());
+		let outer_depth = *self.match_break_depth();
+		let cases = arms
+			.iter()
+			.map(|arm| (&arm.values[..], &arm.statements[..]))
+			.chain([(&[][..], default)]);
+		let flag_depth = cases
+			.clone()
+			.flat_map(|(_, statements)| statements)
+			.any(breaks_enclosing_loop)
+			.then(|| outer_depth.map_or(0, |depth| depth + 1));
+
+		if let Some(depth) = flag_depth {
+			string.push('{');
+			string.push_str("bool ");
+			push_match_break_flag(string, depth);
+			string.push_str("=false");
+			self.emit_statement_end(string);
+		}
+
+		// Every target switches on a 32-bit integer, so narrower scalars and `bool` widen to `uint`.
+		let (signed, widen) = match r#type.borrow().get_name() {
+			Some("i32") => (true, false),
+			Some("u32") => (false, false),
+			_ => (false, true),
+		};
+		string.push_str(if widen { "switch(uint(" } else { "switch(" });
+		self.emit_node(string, scrutinee);
+		if widen {
+			string.push(')');
+		}
+		formatting.push_block_start(string);
+
+		*self.match_break_depth() = flag_depth.or(outer_depth);
+		for (values, statements) in cases {
+			for &value in values {
+				push_switch_label(string, value, signed);
+			}
+			// Only the default case has no labels.
+			if values.is_empty() {
+				string.push_str("default:");
+			}
+			// Braces scope each arm's declarations, which C++-based targets require inside a case.
+			string.push('{');
+			string.push_str(formatting.break_str());
+			self.emit_function_statement_block(string, statements, 1);
+			string.push_str("break");
+			self.emit_statement_end(string);
+			self.emit_block_end(string);
+		}
+		*self.match_break_depth() = outer_depth;
+		string.push('}');
+
+		if let Some(depth) = flag_depth {
+			string.push_str("if(");
+			push_match_break_flag(string, depth);
+			formatting.push_block_start(string);
+			// Emitted at the outer depth, so a match nested in another flagged arm forwards the break to its flag.
+			self.emit_break(string);
+			self.emit_statement_end(string);
+			string.push_str("}}");
+		}
+	}
+
 	fn emit_for_loop_node(
 		&mut self,
 		string: &mut String,
@@ -897,7 +1025,10 @@ pub(crate) trait NodeEmitter {
 		string.push(';');
 		self.emit_node(string, update);
 		formatting.push_block_start(string);
+		// A `break` in the body leaves this loop, even when the loop sits inside a match arm.
+		let outer_depth = self.match_break_depth().take();
 		self.emit_function_statement_block(string, statements, 1);
+		*self.match_break_depth() = outer_depth;
 		self.emit_block_end(string);
 	}
 

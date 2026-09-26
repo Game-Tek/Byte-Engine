@@ -3,14 +3,15 @@
 mod ast;
 mod entry;
 mod lowering;
+mod matching;
 mod resolution;
 
 #[cfg(test)]
 use std::{cell::RefCell, num::NonZeroUsize};
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, Node, NodeReference, Nodes, Operators,
-	ParentNodeReference,
+	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference, Nodes,
+	Operators, ParentNodeReference,
 };
 pub(crate) use ast::{lex, lex_with_root};
 #[cfg(test)]
@@ -1962,6 +1963,8 @@ main: fn () -> void {
 			"if (true) { let leaked: u32 = 1; }",
 			"if (true) {} else { let leaked: u32 = 1; }",
 			"if (true) {} else if (true) { let leaked: u32 = 1; }",
+			"match 1 { 0 => { let leaked: u32 = 1; } _ => {} }",
+			"match 1 { 0 => {} _ => { let leaked: u32 = 1; } }",
 			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
 			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
 		] {
@@ -1970,6 +1973,79 @@ main: fn () -> void {
 				crate::compile_to_besl(&source, None).is_err(),
 				"`leaked` should not resolve after `{block}`"
 			);
+		}
+	}
+
+	/// `break` and `continue` need an enclosing loop, even in a match arm that can never run.
+	#[test]
+	fn loop_control_outside_a_loop_is_rejected() {
+		for statement in [
+			"break;",
+			"if (true) { continue; }",
+			"match true { _ => {} false => break }",
+			"match 1 { 0 => {} _ => { match 2 { _ => continue } } }",
+		] {
+			let source = format!("main: fn () -> void {{ {statement} }}");
+			assert!(crate::compile_to_besl(&source, None).is_err(), "`{statement}` should not lex");
+		}
+
+		let source = "main: fn () -> void { for (let i: u32 = 0; i < 1; i = i + 1) { match i { _ => {} 1 => break } } }";
+		assert!(crate::compile_to_besl(source, None).is_ok());
+	}
+
+	/// A match lexes to distinct labels and one default, following Rust's first-match-wins rule.
+	#[test]
+	fn match_resolves_unreachable_patterns() {
+		let root = crate::compile_to_besl(
+			"main: fn () -> void { let n: u32 = 0; match n { 0 | 1 => n = 1, 1 | 2 => n = 2, 0 => n = 3, 3 | _ => n = 4, 4 => n = 5 } }",
+			None,
+		)
+		.expect("Expected the match to lex");
+		let main = root.borrow().get_child("main").expect("Expected main");
+		let main = main.borrow();
+		let Nodes::Function { statements, .. } = main.node() else {
+			panic!("Expected function");
+		};
+		let statement = statements[1].borrow();
+		let Nodes::Match {
+			r#type, arms, default, ..
+		} = statement.node()
+		else {
+			panic!("Expected match");
+		};
+
+		assert_eq!(r#type.borrow().get_name(), Some("u32"));
+		// `1` already belongs to the first arm, and the `0` arm can never run.
+		let labels: Vec<&[i64]> = arms.iter().map(|arm| arm.values.as_slice()).collect();
+		assert_eq!(labels, [&[0, 1][..], &[2]]);
+		// The `3 | _` arm catches every other value, so the `4` arm after it is unreachable.
+		assert_eq!(default.len(), 1);
+	}
+
+	/// A match must cover every scrutinee value with patterns of the scrutinee's type, as in Rust.
+	#[test]
+	fn match_rejects_invalid_patterns() {
+		for (scrutinee, arms) in [
+			("0", "0 => {} 1 => {}"),
+			("0", ""),
+			("true", "true => {}"),
+			("0", "true => {} _ => {}"),
+			("0", "-1 => {} _ => {}"),
+			("0", "1.0 => {} _ => {}"),
+			("u16(0)", "65536 => {} _ => {}"),
+			("1.0", "_ => {}"),
+		] {
+			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
+			assert!(crate::compile_to_besl(&source, None).is_err(), "`{source}` should not lex");
+		}
+
+		for (scrutinee, arms) in [
+			("true", "true => {} false => {}"),
+			("u16(0)", "65535 => {} _ => {}"),
+			("0 < 1", "false => {} _ => {}"),
+		] {
+			let source = format!("main: fn () -> void {{ match {scrutinee} {{ {arms} }} }}");
+			assert!(crate::compile_to_besl(&source, None).is_ok(), "`{source}` should lex");
 		}
 	}
 

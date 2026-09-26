@@ -818,6 +818,20 @@ impl Node {
 		}
 	}
 
+	/// Builds a `match` statement over a scalar `scrutinee` of type `type`.
+	/// The labels of `arms` must be distinct, and `default` runs for every value no arm lists.
+	/// Use [`crate::compile_to_besl`] to build it from source, which checks and normalizes Rust `match` semantics.
+	pub fn r#match(scrutinee: NodeReference, r#type: NodeReference, arms: Vec<MatchArm>, default: Vec<NodeReference>) -> Node {
+		Node {
+			node: Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			},
+		}
+	}
+
 	pub fn for_loop(
 		initializer: NodeReference,
 		condition: NodeReference,
@@ -1099,7 +1113,7 @@ impl Node {
 			| Nodes::Struct { fields: children, .. }
 			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
 			Nodes::Function { statements, .. } => Some(statements.clone()),
-			Nodes::Conditional { .. } => Some(self.node.conditional_children().cloned().collect()),
+			Nodes::Conditional { .. } | Nodes::Match { .. } => Some(self.node.branch_children().cloned().collect()),
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -1228,6 +1242,15 @@ impl ElseBranch {
 	}
 }
 
+/// The `MatchArm` struct holds one case of a [`Nodes::Match`], so backends can lower it to a `switch` case.
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+	/// The scalar values that select this arm. `bool` values are `0` and `1`.
+	/// Labels are distinct across the arms of one match.
+	pub values: Vec<i64>,
+	pub statements: Vec<NodeReference>,
+}
+
 #[derive(Clone)]
 pub enum Nodes {
 	Null,
@@ -1257,6 +1280,17 @@ pub enum Nodes {
 		condition: NodeReference,
 		statements: Vec<NodeReference>,
 		else_branch: Option<ElseBranch>,
+	},
+	/// A `match` statement over a `bool` or integer value.
+	///
+	/// The lexer resolves Rust's first-match-wins rule, so the arms' values are distinct and `default` holds the
+	/// statements for every other value. Lower it to a `switch` whose `default` case runs `default`.
+	Match {
+		scrutinee: NodeReference,
+		/// The scrutinee's type. It is `bool`, `u8`, `u16`, `u32`, or `i32`.
+		r#type: NodeReference,
+		arms: Vec<MatchArm>,
+		default: Vec<NodeReference>,
 	},
 	ForLoop {
 		initializer: NodeReference,
@@ -1331,11 +1365,12 @@ pub enum Nodes {
 }
 
 impl Nodes {
-	/// Iterates the condition, then the `if` statements, then the `else` statements of a [`Nodes::Conditional`].
-	/// Use it in AST walkers that treat every part of an `if` statement alike, so they don't list its fields by hand.
+	/// Iterates every part of a branching statement: the condition, then the `if` and `else` statements of a
+	/// [`Nodes::Conditional`], or the scrutinee, then the arm and default statements of a [`Nodes::Match`].
+	/// Use it in AST walkers that treat every part of a branch alike, so they don't list its fields by hand.
 	/// Returns an empty iterator for other nodes.
-	pub fn conditional_children(&self) -> impl Iterator<Item = &NodeReference> {
-		let (condition, statements, else_statements): (_, &[_], &[_]) = match self {
+	pub fn branch_children(&self) -> impl Iterator<Item = &NodeReference> {
+		let (head, statements, arms, tail): (_, &[_], &[MatchArm], &[_]) = match self {
 			Nodes::Conditional {
 				condition,
 				statements,
@@ -1343,17 +1378,27 @@ impl Nodes {
 			} => (
 				Some(condition),
 				statements,
+				&[],
 				else_branch.as_ref().map_or(&[], ElseBranch::statements),
 			),
-			_ => (None, &[], &[]),
+			Nodes::Match {
+				scrutinee,
+				arms,
+				default,
+				..
+			} => (Some(scrutinee), &[], arms, default),
+			_ => (None, &[], &[], &[]),
 		};
-		condition.into_iter().chain(statements).chain(else_statements)
+		head.into_iter()
+			.chain(statements)
+			.chain(arms.iter().flat_map(|arm| &arm.statements))
+			.chain(tail)
 	}
 
 	pub fn is_leaf(&self) -> bool {
 		match self {
 			Nodes::Function { .. } => false,
-			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => false,
+			Nodes::Conditional { .. } | Nodes::Match { .. } | Nodes::ForLoop { .. } => false,
 			Nodes::Struct { .. } => false,
 			Nodes::Binding { .. } => false,
 			Nodes::PushConstant { .. } => false,
@@ -1476,6 +1521,21 @@ impl std::fmt::Debug for Node {
 					f,
 					"Conditional {{ condition: {:?}, statements: {:?}, else_branch: {:?} }}",
 					condition, statements, else_branch
+				)
+			}
+			Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => {
+				write!(
+					f,
+					"Match {{ scrutinee: {:?}, type: {:?}, arms: {:?}, default: {:?} }}",
+					scrutinee,
+					r#type.borrow().get_name(),
+					arms,
+					default
 				)
 			}
 			Nodes::ForLoop {

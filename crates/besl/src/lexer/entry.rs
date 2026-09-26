@@ -285,6 +285,13 @@ fn rewrite_node<'a>(node: &mut parser::Node<'a>, context: &EntryContext<'_, 'a>)
 			}
 			Ok(())
 		}
+		parser::Nodes::Match { scrutinee, arms } => {
+			rewrite_node(scrutinee, context)?;
+			for arm in arms {
+				arm.statements = rewrite_statements(std::mem::take(&mut arm.statements), context, false)?;
+			}
+			Ok(())
+		}
 		parser::Nodes::ForLoop {
 			initializer,
 			condition,

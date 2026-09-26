@@ -202,7 +202,6 @@ impl<'a> Node<'a> {
 		make_function(name, params, return_type, statements)
 	}
 
-	/// Builds an `if` statement. Pass `None` as `else_branch` for an `if` without an `else` branch.
 	/// Builds a `match` statement. The lexer rejects matches that don't cover every scrutinee value.
 	pub fn r#match(scrutinee: Node<'a>, arms: Vec<MatchArm<'a>>) -> Node<'a> {
 		Node {
@@ -213,6 +212,7 @@ impl<'a> Node<'a> {
 		}
 	}
 
+	/// Builds an `if` statement. Pass `None` as `else_branch` for an `if` without an `else` branch.
 	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>, else_branch: Option<ElseBranch<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Conditional {

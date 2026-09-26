@@ -303,9 +303,15 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 	}
 
 	let result = match node.borrow().node() {
-		// Lexical lookup sees only declared names. Struct fields and a value's type members are reached through
-		// `value.member` (see `resolve_accessed_member`), and a function's parameters and locals are private to it.
-		Nodes::Struct { .. } | Nodes::Member { .. } | Nodes::Parameter { .. } | Nodes::Function { .. }
+		// Lexical lookup sees only declared names. Struct fields, a value's type members, and resource members are
+		// reached through `value.member` (see `resolve_accessed_member`), and a function's parameters and locals are
+		// private to it.
+		Nodes::Struct { .. }
+		| Nodes::Member { .. }
+		| Nodes::Parameter { .. }
+		| Nodes::Function { .. }
+		| Nodes::PushConstant { .. }
+		| Nodes::Binding { .. }
 			if mode == DescendantSearch::NonIntrinsic =>
 		{
 			None

@@ -2203,6 +2203,24 @@ main: fn () -> void {
 		}
 	}
 
+	/// Verifies buffer and push constant members are reached only through their resource.
+	#[test]
+	fn bare_names_do_not_resolve_to_resource_members() {
+		for source in [
+			"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }",
+			"push_constant: push_constant { count: u32 } main: fn () -> void { count; }",
+		] {
+			let error = crate::compile_to_besl(source, None).expect_err("a bare resource member should fail to link");
+			assert!(
+				matches!(
+					error,
+					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
+				),
+				"{source} linked as {error:?}"
+			);
+		}
+	}
+
 	/// Verifies a function's locals and parameters stay private to it.
 	#[test]
 	fn bare_names_do_not_resolve_to_other_function_locals() {

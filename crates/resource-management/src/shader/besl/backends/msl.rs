@@ -2234,6 +2234,45 @@ struct PrimitiveOutput {
 			.expect("Expected else-chain MSL to compile natively");
 	}
 
+	#[compio::test]
+	async fn match_lowers_to_msl_switch() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			let small: u16 = u16(n);
+			for (let i: u32 = 0; i < 4; i = i + 1) {
+				match i {
+					0 => n = 1,
+					1 | 2 => break,
+					_ => {}
+				}
+			}
+			match small {
+				65535 => n = 2,
+				_ => n = 3,
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected match shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		assert_string_contains!(
+			shader,
+			"{bool besl_match_break_0=false;switch(i){case 0u:{n=1;break;}case 1u:case 2u:{besl_match_break_0=true;break;break;}default:{break;}}if(besl_match_break_0){break;}}"
+		);
+		assert_string_contains!(shader, "switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-match")
+			.await
+			.expect("Expected match MSL to compile natively");
+	}
+
 	#[test]
 	fn bitwise_operators_lower_to_msl() {
 		let script = r#"

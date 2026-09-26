@@ -44,6 +44,12 @@ fn walk_expressions<'a>(node: &mut Node<'a>, visit: &mut impl FnMut(&mut Express
 				.chain(else_branch.as_mut().map_or(&mut [][..], ElseBranch::statements_mut))
 				.for_each(|statement| walk_expressions(statement, visit));
 		}
+		Nodes::Match { scrutinee, arms } => {
+			walk_expressions(scrutinee, visit);
+			arms.iter_mut()
+				.flat_map(|arm| &mut arm.statements)
+				.for_each(|statement| walk_expressions(statement, visit));
+		}
 		Nodes::ForLoop {
 			initializer,
 			condition,

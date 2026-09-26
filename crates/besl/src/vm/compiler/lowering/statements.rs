@@ -20,6 +20,19 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				self.compile_conditional(&condition, &statements, else_branch.as_ref(), descriptor_layouts)
 			}
+			Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => {
+				let scrutinee = scrutinee.clone();
+				let r#type = r#type.clone();
+				let arms = arms.clone();
+				let default = default.clone();
+				drop(borrowed);
+				self.compile_match(&scrutinee, &r#type, &arms, &default, descriptor_layouts)
+			}
 			Nodes::ForLoop {
 				initializer,
 				condition,
@@ -153,6 +166,57 @@ impl<'a> Compiler<'a> {
 			self.compile_statement(statement, descriptor_layouts)?;
 		}
 		self.patch_jump(skip_else_index, self.instructions.len());
+
+		Ok(())
+	}
+
+	/// Lowers a `match` to one `Switch` instruction followed by the arm bodies.
+	/// Each body ends by jumping past the others, since `match` arms never fall through.
+	pub(super) fn compile_match(
+		&mut self,
+		scrutinee: &NodeReference,
+		r#type: &NodeReference,
+		arms: &[crate::MatchArm],
+		default: &[NodeReference],
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let value_type = resolve_value_type(r#type)?;
+		let register = self.compile_value_expression(scrutinee, &value_type, descriptor_layouts)?;
+		let switch_index = self.instructions.len();
+		self.instructions.push(Instruction::Switch {
+			register,
+			cases: Box::default(),
+			default: usize::MAX,
+		});
+
+		let mut cases = Vec::with_capacity(arms.iter().map(|arm| arm.values.len()).sum());
+		let mut end_jumps = Vec::with_capacity(arms.len());
+		for arm in arms {
+			let start = self.instructions.len();
+			// The lexer checks that every label fits the scrutinee type, so truncating keeps its 32-bit pattern.
+			cases.extend(arm.values.iter().map(|&value| (value as u32, start)));
+			for statement in &arm.statements {
+				self.compile_statement(statement, descriptor_layouts)?;
+			}
+			end_jumps.push(self.instructions.len());
+			self.instructions.push(Instruction::Jump { target: usize::MAX });
+		}
+
+		let default_start = self.instructions.len();
+		for statement in default {
+			self.compile_statement(statement, descriptor_layouts)?;
+		}
+
+		let end = self.instructions.len();
+		for jump in end_jumps {
+			self.patch_jump(jump, end);
+		}
+		cases.sort_unstable_by_key(|&(label, _)| label);
+		self.instructions[switch_index] = Instruction::Switch {
+			register,
+			cases: cases.into_boxed_slice(),
+			default: default_start,
+		};
 
 		Ok(())
 	}

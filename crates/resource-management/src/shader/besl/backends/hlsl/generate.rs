@@ -504,6 +504,12 @@ impl Generator {
 				statements,
 				else_branch,
 			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
+			besl::Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,

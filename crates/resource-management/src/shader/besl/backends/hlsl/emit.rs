@@ -74,8 +74,8 @@ impl Generator {
 			besl::Nodes::Function { statements, .. } => statements
 				.iter()
 				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			conditional @ besl::Nodes::Conditional { .. } => conditional
-				.conditional_children()
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+				.branch_children()
 				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
 			besl::Nodes::ForLoop {
 				initializer,

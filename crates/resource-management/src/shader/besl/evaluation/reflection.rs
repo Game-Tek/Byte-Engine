@@ -502,8 +502,8 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 				build_bindings(bindings, statement, state);
 			}
 		}
-		conditional @ besl::Nodes::Conditional { .. } => {
-			for child in conditional.conditional_children() {
+		branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+			for child in branch.branch_children() {
 				build_bindings(bindings, child, state);
 			}
 		}

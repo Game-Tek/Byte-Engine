@@ -2270,6 +2270,109 @@ fn executable_program_executes_else_chains() {
 	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(221));
 }
 
+/// Runs `script` with a read-write `buff` buffer at slot 25 that holds one `u32` member, `sum`, and returns it.
+fn run_sum_program(script: &str) -> Value {
+	let mut root = Node::root();
+	let u32_type = root.get_child("u32").expect("Expected u32");
+	root.add_child(
+		Node::binding(
+			"buff",
+			BindingTypes::Buffer {
+				members: vec![Node::member("sum", u32_type).into()],
+			},
+			25,
+			true,
+			true,
+		)
+		.into(),
+	);
+
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(25);
+	let mut buffer = buffer_for_slot(&executable, slot);
+	run_with_buffer(&executable, slot, &mut buffer);
+	buffer.read("sum").expect("Expected sum value")
+}
+
+/// Verifies each value runs the first arm that matches it, and `_` catches the rest.
+#[test]
+fn executable_program_executes_match_arms() {
+	let sum = run_sum_program(
+		r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		for (let i: u32 = 0; i < 6; i = i + 1) {
+			match i {
+				0 => sum = sum + 1,
+				1 | 2 => {
+					sum = sum + 10;
+				}
+				2 => sum = sum + 1000,
+				_ => sum = sum + 100,
+			}
+		}
+		buff.sum = sum;
+	}
+	"#,
+	);
+
+	// i = 0 takes the first arm, i = 1..2 the second, and i = 3..5 the wildcard. The `2` arm is unreachable.
+	assert_eq!(sum, Value::U32(321));
+}
+
+/// Verifies `break` and `continue` inside a match arm act on the enclosing loop, as in Rust.
+#[test]
+fn executable_program_match_arms_break_and_continue_the_enclosing_loop() {
+	let sum = run_sum_program(
+		r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		for (let i: u32 = 0; i < 10; i = i + 1) {
+			match i {
+				1 => continue,
+				3 => {
+					break;
+				}
+				_ => {}
+			}
+			sum = sum + 1;
+		}
+		buff.sum = sum;
+	}
+	"#,
+	);
+
+	// Only i = 0 and i = 2 reach the end of the loop body.
+	assert_eq!(sum, Value::U32(2));
+}
+
+/// Verifies `bool` and signed matches, including an exhaustive `bool` match without `_`.
+#[test]
+fn executable_program_matches_bool_and_signed_values() {
+	let sum = run_sum_program(
+		r#"
+	main: fn () -> void {
+		let sum: u32 = 0;
+		let signed: i32 = 7;
+		for (let i: u32 = 0; i < 3; i = i + 1) {
+			match i < 1 {
+				true => sum = sum + 1,
+				false => sum = sum + 10,
+			}
+		}
+		match signed {
+			-1 => sum = sum + 1000,
+			7 => sum = sum + 100,
+			_ => {}
+		}
+		buff.sum = sum;
+	}
+	"#,
+	);
+
+	assert_eq!(sum, Value::U32(121));
+}
+
 /// Verifies `break` leaves only the innermost loop and execution resumes after it.
 #[test]
 fn executable_program_breaks_out_of_the_innermost_loop() {

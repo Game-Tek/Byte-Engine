@@ -99,7 +99,7 @@ pub(crate) fn is_identifier_char(character: char) -> bool {
 }
 
 pub(crate) fn is_identifier(value: &str) -> bool {
-	if value == "struct" || value == "fn" || value == "let" || value == "return" || value == "const" {
+	if value == "struct" || value == "fn" || value == "let" || value == "return" || value == "const" || value == "match" {
 		return false;
 	}
 	value.chars().all(is_identifier_char)

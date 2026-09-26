@@ -76,8 +76,7 @@ main: fn (input: StageInput) -> void {
 				if (key == leader_material_index) {
 					atomic_add(tile_histogram_counts[slot], matching_count);
 					claimed_slot = slot;
-				}
-				if (key == INVALID_MATERIAL_INDEX) {
+				} else if (key == INVALID_MATERIAL_INDEX) {
 					let previous_key: u32 = atomic_compare_exchange(
 						tile_histogram_keys[slot],
 						INVALID_MATERIAL_INDEX,

@@ -386,7 +386,8 @@ blend_weights_at: fn(coordinate: vec2u, extent: vec2u, edge: vec2f16) -> vec4f16
 			sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, top_y), extent).y,
 			sample_edges_linear_pixel(vec2f(pixel_position.x - 0.25, bottom_y + 1.0), extent).y);
 		let cornered: vec2f16 = vertical_corners(area, vec2f(pixel_position.x, top_y), vec2f(pixel_position.x, bottom_y), distance, extent);
-		output = vec4f16(output.x, output.y, cornered.x, cornered.y);
+		output.z = cornered.x;
+		output.w = cornered.y;
 	}
 
 	return output;
@@ -463,15 +464,20 @@ main: fn(input: StageInput) -> void {
 	let pixel_size: vec2f = vec2f(1.0 / extent_f.x, 1.0 / extent_f.y);
 	let texcoord: vec2f = (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) / extent_f;
 	let horizontal: bool = max(right, left) > max(top, bottom);
-	let first_offset: vec2f = vec2f(0.0, f32(top));
-	let second_offset: vec2f = vec2f(0.0, 0.0 - f32(bottom));
-	let first_weight: f16 = top;
-	let second_weight: f16 = bottom;
+	let first_offset: vec2f = vec2f(0.0, 0.0);
+	let second_offset: vec2f = vec2f(0.0, 0.0);
+	let first_weight: f16 = 0.0;
+	let second_weight: f16 = 0.0;
 	if (horizontal) {
 		first_offset = vec2f(f32(right), 0.0);
 		second_offset = vec2f(0.0 - f32(left), 0.0);
 		first_weight = right;
 		second_weight = left;
+	} else {
+		first_offset = vec2f(0.0, f32(top));
+		second_offset = vec2f(0.0, 0.0 - f32(bottom));
+		first_weight = top;
+		second_weight = bottom;
 	}
 	let normalization: f16 = first_weight + second_weight;
 	let color_a: vec4f = texture_lod(source, texcoord + first_offset * pixel_size);

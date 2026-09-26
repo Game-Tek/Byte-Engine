@@ -134,19 +134,15 @@ main: fn (input: StageInput) -> void {
 			let dual2: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint2];
 			let dual3: DualQuaternion = dual_quaternion_palette.values[push_constant.palette_base + joint3];
 			let reference_rotation: vec4f = dual0.real;
-			if (weights.x <= 0.00000001 && weights.y > 0.00000001) {
-				reference_rotation = dual1.real;
-			}
-			if (weights.x <= 0.00000001 && weights.y <= 0.00000001 && weights.z > 0.00000001) {
-				reference_rotation = dual2.real;
-			}
-			if (
-				weights.x <= 0.00000001
-				&& weights.y <= 0.00000001
-				&& weights.z <= 0.00000001
-				&& weights.w > 0.00000001
-			) {
-				reference_rotation = dual3.real;
+			// The first joint with a meaningful weight sets the hemisphere the other rotations align to.
+			if (weights.x <= 0.00000001) {
+				if (weights.y > 0.00000001) {
+					reference_rotation = dual1.real;
+				} else if (weights.z > 0.00000001) {
+					reference_rotation = dual2.real;
+				} else if (weights.w > 0.00000001) {
+					reference_rotation = dual3.real;
+				}
 			}
 
 			let signed_weight0: f32 = weights.x * antipodal_sign(reference_rotation, dual0.real);
@@ -171,8 +167,7 @@ main: fn (input: StageInput) -> void {
 				position = vec4f(skinned_position.x, skinned_position.y, skinned_position.z, 1.0);
 				normal = safe_normalize(rotate_by_quaternion(real, source_normal), fallback_normal);
 			}
-		}
-		if (push_constant.palette_kind != 1) {
+		} else {
 			let matrix0: mat4x3f = matrix_palette.values[push_constant.palette_base + joint0];
 			let matrix1: mat4x3f = matrix_palette.values[push_constant.palette_base + joint1];
 			let matrix2: mat4x3f = matrix_palette.values[push_constant.palette_base + joint2];

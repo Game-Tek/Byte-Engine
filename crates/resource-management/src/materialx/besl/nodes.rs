@@ -421,7 +421,8 @@ fn normalize<'a>(
 	value: Expression<'a>,
 	result: DataType<'a>,
 ) -> Result<Expression<'a>, LowerError> {
-	if value.width() >= 3 {
+	// BESL registers `normalize` for vectors only, so a scalar divides by its own magnitude instead.
+	if value.width() >= 2 {
 		return lowering.bind(hint, result, Node::call("normalize", vec![value.syntax]));
 	}
 

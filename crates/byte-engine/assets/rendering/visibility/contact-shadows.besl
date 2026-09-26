@@ -213,9 +213,9 @@ main: fn (input: StageInput) -> void {
 			let middle: f32 = 0.5 * (front + behind);
 			if (ray_penetration(ray, middle, extent) > bias) {
 				behind = middle;
-				continue;
+			} else {
+				front = middle;
 			}
-			front = middle;
 		}
 		let crossing_z: f32 = 1.0 / mix(ray.inverse_start_z, ray.inverse_end_z, behind);
 		let thickness: f32 = CONTACT_SHADOW_THICKNESS_BASE + CONTACT_SHADOW_THICKNESS_SCALE * crossing_z;

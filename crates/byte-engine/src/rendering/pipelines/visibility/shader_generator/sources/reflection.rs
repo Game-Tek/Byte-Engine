@@ -153,14 +153,12 @@ trace_screen_space_reflection: fn (
 	let exit_fraction: f32 = 1.0;
 	if (path.x > 0.0) {
 		exit_fraction = min(exit_fraction, (pixel_scale.x - 0.5 - origin_pixel.x) / path.x);
-	}
-	if (path.x < 0.0) {
+	} else if (path.x < 0.0) {
 		exit_fraction = min(exit_fraction, (0.0 - 0.5 - origin_pixel.x) / path.x);
 	}
 	if (path.y > 0.0) {
 		exit_fraction = min(exit_fraction, (pixel_scale.y - 0.5 - origin_pixel.y) / path.y);
-	}
-	if (path.y < 0.0) {
+	} else if (path.y < 0.0) {
 		exit_fraction = min(exit_fraction, (0.0 - 0.5 - origin_pixel.y) / path.y);
 	}
 	if (exit_fraction <= 0.0) {
@@ -169,16 +167,14 @@ trace_screen_space_reflection: fn (
 	// Screen position and 1/z are both linear along the projected ray, so cutting both at the same fraction keeps the
 	// ray on its line.
 	ray_length = ray_length * reflection_world_fraction(exit_fraction, start_clip.w, end_clip.w);
-	// BESL resolves a local that shares a struct member's name to the member, so locals here never reuse the ray's
-	// member names.
-	let clipped_inverse_end_z: f32 = mix(1.0 / start_clip.w, 1.0 / end_clip.w, exit_fraction);
+	let inverse_end_z: f32 = mix(1.0 / start_clip.w, 1.0 / end_clip.w, exit_fraction);
 	let ray: ReflectionRay = ReflectionRay(
 		origin_pixel,
 		mix(origin_pixel, far_pixel, exit_fraction),
 		1.0 / start_clip.w,
-		clipped_inverse_end_z
+		inverse_end_z
 	);
-	let end_z: f32 = 1.0 / clipped_inverse_end_z;
+	let end_z: f32 = 1.0 / inverse_end_z;
 
 	// The half-resolution pyramid keeps the nearest depth of each 2x2 block, which can put the ray's own surface in
 	// front of its first steps. A crossing only counts once the ray was seen in front of the depth buffer.

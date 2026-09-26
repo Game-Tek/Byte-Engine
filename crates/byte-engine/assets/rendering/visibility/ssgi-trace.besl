@@ -381,9 +381,9 @@ main: fn (input: StageInput) -> void {
 			let middle: f32 = 0.5 * (front + behind);
 			if (ray_penetration(ray, middle, extent) > 0.0) {
 				behind = middle;
-				continue;
+			} else {
+				front = middle;
 			}
-			front = middle;
 		}
 		let surface: vec3f = hit_surface(ray_pixel(ray, behind), ray_depth(ray, behind), extent);
 		let surface_position: vec3f = view_position(vec2f(surface.x, surface.y), surface.z);

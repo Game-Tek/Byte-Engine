@@ -329,11 +329,9 @@ pub(crate) const DIRECTIONAL_SHADOW_CASCADE_VIEW_SOURCE: &str = r#"
 directional_shadow_cascade_view: fn (cascade: u32, view0: u32, view1: u32, view2: u32, view3: u32) -> u32 {
 	if (cascade == 1) {
 		return view1;
-	}
-	if (cascade == 2) {
+	} else if (cascade == 2) {
 		return view2;
-	}
-	if (cascade == 3) {
+	} else if (cascade == 3) {
 		return view3;
 	}
 	return view0;
@@ -345,11 +343,9 @@ pub(crate) const DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE: &str = r#"
 directional_shadow_cascade_scale: fn (cascade: u32, texels_per_meter: vec4f) -> f32 {
 	if (cascade == 1) {
 		return texels_per_meter.y;
-	}
-	if (cascade == 2) {
+	} else if (cascade == 2) {
 		return texels_per_meter.z;
-	}
-	if (cascade == 3) {
+	} else if (cascade == 3) {
 		return texels_per_meter.w;
 	}
 	return texels_per_meter.x;
@@ -544,11 +540,10 @@ sample_directional_shadow_penumbra: fn (
 	// A tent with spacing s reaches 2s texels, so the spacing that matches the radius is radius / 2.
 	let level: f32 = clamp(log2(max(penumbra_radius, 2.0) * 0.5), 0.0, 2.0);
 	let fine_spacing: f32 = 1.0;
-	if (level >= 1.0) {
-		fine_spacing = 2.0;
-	}
 	if (level >= 2.0) {
 		fine_spacing = 4.0;
+	} else if (level >= 1.0) {
+		fine_spacing = 2.0;
 	}
 	let coarse_blend: f32 = level - floor(level);
 	let lit: f32 = sample_directional_shadow_tent(
@@ -706,28 +701,23 @@ point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
 		if (sample_direction.x >= 0.0) {
 			face = 0;
 			face_coordinate = vec2f(0.0 - sample_direction.z, 0.0 - sample_direction.y) / absolute_direction.x;
-		}
-		if (sample_direction.x < 0.0) {
+		} else if (sample_direction.x < 0.0) {
 			face = 1;
 			face_coordinate = vec2f(sample_direction.z, 0.0 - sample_direction.y) / absolute_direction.x;
 		}
-	}
-	if (absolute_direction.y > absolute_direction.x && absolute_direction.y >= absolute_direction.z) {
+	} else if (absolute_direction.y >= absolute_direction.z) {
 		if (sample_direction.y >= 0.0) {
 			face = 2;
 			face_coordinate = vec2f(sample_direction.x, sample_direction.z) / absolute_direction.y;
-		}
-		if (sample_direction.y < 0.0) {
+		} else if (sample_direction.y < 0.0) {
 			face = 3;
 			face_coordinate = vec2f(sample_direction.x, 0.0 - sample_direction.z) / absolute_direction.y;
 		}
-	}
-	if (absolute_direction.z > absolute_direction.x && absolute_direction.z > absolute_direction.y) {
+	} else {
 		if (sample_direction.z >= 0.0) {
 			face = 4;
 			face_coordinate = vec2f(sample_direction.x, 0.0 - sample_direction.y) / absolute_direction.z;
-		}
-		if (sample_direction.z < 0.0) {
+		} else if (sample_direction.z < 0.0) {
 			face = 5;
 			face_coordinate = vec2f(0.0 - sample_direction.x, 0.0 - sample_direction.y) / absolute_direction.z;
 		}
@@ -743,17 +733,13 @@ point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
 	let snapped_direction: vec3f = vec3f(1.0, 0.0 - texel_center.y, 0.0 - texel_center.x);
 	if (face == 1) {
 		snapped_direction = vec3f(0.0 - 1.0, 0.0 - texel_center.y, texel_center.x);
-	}
-	if (face == 2) {
+	} else if (face == 2) {
 		snapped_direction = vec3f(texel_center.x, 1.0, texel_center.y);
-	}
-	if (face == 3) {
+	} else if (face == 3) {
 		snapped_direction = vec3f(texel_center.x, 0.0 - 1.0, 0.0 - texel_center.y);
-	}
-	if (face == 4) {
+	} else if (face == 4) {
 		snapped_direction = vec3f(texel_center.x, 0.0 - texel_center.y, 1.0);
-	}
-	if (face == 5) {
+	} else if (face == 5) {
 		snapped_direction = vec3f(0.0 - texel_center.x, 0.0 - texel_center.y, 0.0 - 1.0);
 	}
 	return normalize(snapped_direction);

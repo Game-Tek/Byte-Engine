@@ -384,13 +384,16 @@ crossings: fn (a1: f32, a2: f32, a3: f32, b1: f32, b2: f32, b3: f32) -> vec2f {
 
 	// A negative discriminant is clamped, which treats imaginary roots as a double root.
 	let d: f32 = sqrt(max(b_across * b_across - a_across * b1, 0.0));
-	let t1: f32 = (b_across - d) / a_across;
-	let t2: f32 = (b_across + d) / a_across;
+	let t1: f32 = 0.0;
+	let t2: f32 = 0.0;
 
 	// A nearly linear polynomial has the single root of -2b t + c. The threshold is 1 / 65536.
 	if (abs(a_across) < 0.0000152587890625) {
 		t1 = b1 * 0.5 / b_across;
 		t2 = t1;
+	} else {
+		t1 = (b_across - d) / a_across;
+		t2 = (b_across + d) / a_across;
 	}
 
 	return vec2f((a_along * t1 - b_along * 2.0) * t1 + a1, (a_along * t2 - b_along * 2.0) * t2 + a1);
@@ -739,10 +742,12 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 		return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
-	let resolution_mix: f32 = primitives[index].b.w;
+	let resolution_mix: f32 = 0.0;
 	// A path blur's other slots describe the outline, so its resolution mix rides in the color's alpha.
 	if (kind == 9) {
 		resolution_mix = primitives[index].color.w;
+	} else {
+		resolution_mix = primitives[index].b.w;
 	}
 	let blurred: vec4f = sample_backdrop(screen, clamp(resolution_mix, 0.0, 1.0));
 	if (kind == 9) {

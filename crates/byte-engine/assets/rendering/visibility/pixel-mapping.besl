@@ -71,8 +71,7 @@ main: fn (input: StageInput) -> void {
 			if (key == material_index) {
 				let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
 				packed_tile_mapping = (tile_rank << 5) | slot;
-			}
-			if (key == INVALID_INDEX) {
+			} else if (key == INVALID_INDEX) {
 				let previous_key: u32 = atomic_compare_exchange(
 					tile_histogram_keys[slot],
 					INVALID_INDEX,
@@ -109,8 +108,7 @@ main: fn (input: StageInput) -> void {
 			let tile_slot: u32 = packed_tile_mapping & 31;
 			let tile_rank: u32 = packed_tile_mapping >> 5;
 			pixel_mapping_index = tile_mapping_bases[tile_slot] + tile_rank;
-		}
-		if (packed_tile_mapping == INVALID_INDEX) {
+		} else {
 			// A tile with more distinct materials than local slots retains the per-pixel fallback.
 			pixel_mapping_index = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
 		}

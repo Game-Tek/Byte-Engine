@@ -75,37 +75,38 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 		vec4f(0.0, 0.0, 1.0, 0.0)
 	);
 
-	if (setup_lane && mesh.skinned_base_vertex_index != 4294967295) {
-		let skinned_vertex_indices: u32[3] = u32[3](
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index),
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index),
-			mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index)
-		);
-		let skinned_vertices_for_triangle: SkinnedVertex[3] = SkinnedVertex[3](
-			skinned_vertices.vertices[skinned_vertex_indices[0]],
-			skinned_vertices.vertices[skinned_vertex_indices[1]],
-			skinned_vertices.vertices[skinned_vertex_indices[2]]
-		);
-		model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
-		model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
-		model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
-		model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
-		model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
-		model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
-	}
-	if (setup_lane && mesh.skinned_base_vertex_index == 4294967295) {
-		let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
-		let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
-		let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
-		let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
-		let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
-		let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
-		model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
-		model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
-		model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
-		model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
-		model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
-		model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+	if (setup_lane) {
+		if (mesh.skinned_base_vertex_index != 4294967295) {
+			let skinned_vertex_indices: u32[3] = u32[3](
+				mesh.skinned_base_vertex_index + (triangle_vertex_indices[0] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (triangle_vertex_indices[1] - mesh.base_vertex_index),
+				mesh.skinned_base_vertex_index + (triangle_vertex_indices[2] - mesh.base_vertex_index)
+			);
+			let skinned_vertices_for_triangle: SkinnedVertex[3] = SkinnedVertex[3](
+				skinned_vertices.vertices[skinned_vertex_indices[0]],
+				skinned_vertices.vertices[skinned_vertex_indices[1]],
+				skinned_vertices.vertices[skinned_vertex_indices[2]]
+			);
+			model_space_vertex_positions[0] = skinned_vertices_for_triangle[0].position;
+			model_space_vertex_positions[1] = skinned_vertices_for_triangle[1].position;
+			model_space_vertex_positions[2] = skinned_vertices_for_triangle[2].position;
+			model_space_vertex_normals[0] = skinned_vertices_for_triangle[0].normal;
+			model_space_vertex_normals[1] = skinned_vertices_for_triangle[1].normal;
+			model_space_vertex_normals[2] = skinned_vertices_for_triangle[2].normal;
+		} else {
+			let position0: vec3f = vertex_positions[triangle_vertex_indices[0]];
+			let position1: vec3f = vertex_positions[triangle_vertex_indices[1]];
+			let position2: vec3f = vertex_positions[triangle_vertex_indices[2]];
+			let normal0: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[0]]);
+			let normal1: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[1]]);
+			let normal2: vec3f = decode_octahedral_normal(vertex_normals[triangle_vertex_indices[2]]);
+			model_space_vertex_positions[0] = vec4f(position0.x, position0.y, position0.z, 1.0);
+			model_space_vertex_positions[1] = vec4f(position1.x, position1.y, position1.z, 1.0);
+			model_space_vertex_positions[2] = vec4f(position2.x, position2.y, position2.z, 1.0);
+			model_space_vertex_normals[0] = vec4f(normal0.x, normal0.y, normal0.z, 0.0);
+			model_space_vertex_normals[1] = vec4f(normal1.x, normal1.y, normal1.z, 0.0);
+			model_space_vertex_normals[2] = vec4f(normal2.x, normal2.y, normal2.z, 0.0);
+		}
 	}
 	let nc: vec2f = make_raster_ndc_from_pixel_coordinates(pixel_coordinates, image_extent);
 	let model: mat4x3f = mesh.model;
@@ -408,8 +409,7 @@ material_evaluation_suffix: fn () -> void {
 			);
 			if (light_type == 68) {
 				L = vec3f(0.0, 0.0, 0.0) - light_position;
-			}
-			if (light_type != 68) {
+			} else {
 				let surface_to_light: vec3f = light_position - world_space_vertex_position;
 				let distance_squared: f32 = dot(surface_to_light, surface_to_light);
 				if (distance_squared <= 0.0) {
@@ -460,75 +460,73 @@ material_evaluation_suffix: fn () -> void {
 					}
 				}
 				attenuation = 1.0;
-			}
-		if (light_type != 68) {
-			if (light_type == 0) {
-				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-				if (shadow_view_index != 0) {
-					let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
-					occlusion_factor = f16(sample_point_shadow(
-						shadow_view_index,
-						shadow_cube_index,
-						world_space_vertex_position,
-						light_position,
-						position_derivative_x,
-						position_derivative_y
+			} else {
+				if (light_type == 0) {
+					let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+					if (shadow_view_index != 0) {
+						let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
+						occlusion_factor = f16(sample_point_shadow(
+							shadow_view_index,
+							shadow_cube_index,
+							world_space_vertex_position,
+							light_position,
+							position_derivative_x,
+							position_derivative_y
+						));
+						if (occlusion_factor == 0.0) {
+							continue;
+						}
+					}
+				} else if (light_type == 1) {
+					let cone_direction: vec3f16 = vec3f16(
+						lighting_data.lights[light_index].direction.x,
+						lighting_data.lights[light_index].direction.y,
+						lighting_data.lights[light_index].direction.z
+					);
+					let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
+					let cone_factor: f16 = f16(cone_attenuation(
+						f32(cone_cosine),
+						lighting_data.lights[light_index].cone_cosines.x,
+						lighting_data.lights[light_index].cone_cosines.y
 					));
-					if (occlusion_factor == 0.0) {
+					if (cone_factor <= 0.0) {
 						continue;
 					}
-				}
-			}
-				if (light_type == 1) {
-				let cone_direction: vec3f16 = vec3f16(
-					lighting_data.lights[light_index].direction.x,
-					lighting_data.lights[light_index].direction.y,
-					lighting_data.lights[light_index].direction.z
-				);
-				let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
-				let cone_factor: f16 = f16(cone_attenuation(
-					f32(cone_cosine),
-					lighting_data.lights[light_index].cone_cosines.x,
-					lighting_data.lights[light_index].cone_cosines.y
-				));
-				if (cone_factor <= 0.0) {
-					continue;
-				}
-				attenuation = attenuation * f32(cone_factor);
-				let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-				if (shadow_view_index != 0) {
-					let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-					occlusion_factor = f16(sample_cone_shadow(
-						cone_shadow_map,
-						shadow_view_index,
-						shadow_layer,
-						world_space_vertex_position,
-						position_derivative_x,
-						position_derivative_y
-					));
-					if (occlusion_factor == 0.0) {
-						continue;
+					attenuation = attenuation * f32(cone_factor);
+					let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+					if (shadow_view_index != 0) {
+						let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+						occlusion_factor = f16(sample_cone_shadow(
+							cone_shadow_map,
+							shadow_view_index,
+							shadow_layer,
+							world_space_vertex_position,
+							position_derivative_x,
+							position_derivative_y
+						));
+						if (occlusion_factor == 0.0) {
+							continue;
+						}
 					}
 				}
+				if (lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
+					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
+					let profile_axis: vec3f = vec3f(
+						lighting_data.lights[light_index].direction.x,
+						lighting_data.lights[light_index].direction.y,
+						lighting_data.lights[light_index].direction.z
+					);
+					let intensity_factor: f32 = sample_ies_profile(
+						lighting_data.lights[light_index].ies_profile_texture,
+						emission_direction,
+						profile_axis,
+						lighting_data.lights[light_index].ies_c0_tangent
+					);
+					if (intensity_factor <= 0.0) {
+						continue;
+					}
+					attenuation = attenuation * intensity_factor;
 				}
-			}
-			if (light_type != 68 && lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
-				let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;
-				let profile_axis: vec3f = vec3f(
-					lighting_data.lights[light_index].direction.x,
-					lighting_data.lights[light_index].direction.y,
-					lighting_data.lights[light_index].direction.z
-				);
-				let intensity_factor: f32 = sample_ies_profile(
-					lighting_data.lights[light_index].ies_profile_texture,
-					emission_direction,
-					profile_axis,
-					lighting_data.lights[light_index].ies_c0_tangent
-				);
-				if (intensity_factor <= 0.0) {
-					continue;
-				}
-				attenuation = attenuation * intensity_factor;
 			}
 
 			let H: vec3f16 = normalize(V_material + L_material);

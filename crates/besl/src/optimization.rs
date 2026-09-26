@@ -82,8 +82,8 @@ fn collect_reachable_function(function: &NodeReference, functions: &mut Vec<Node
 
 fn collect_called_functions(node: &NodeReference, functions: &mut Vec<NodeReference>, visited: &mut HashSet<usize>) {
 	match cloned_node(node) {
-		conditional @ Nodes::Conditional { .. } => {
-			for child in conditional.conditional_children() {
+		branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => {
+			for child in branch.branch_children() {
 				collect_called_functions(child, functions, visited);
 			}
 		}
@@ -229,6 +229,12 @@ fn collect_local_declaration_candidates(statements: &[NodeReference], candidates
 					collect_local_declaration_candidates(else_branch.statements(), candidates);
 				}
 			}
+			Nodes::Match { arms, default, .. } => {
+				for arm in &arms {
+					collect_local_declaration_candidates(&arm.statements, candidates);
+				}
+				collect_local_declaration_candidates(&default, candidates);
+			}
 			Nodes::ForLoop { statements, .. } => {
 				collect_local_declaration_candidates(&statements, candidates);
 			}
@@ -270,8 +276,8 @@ fn node_uses_declaration(node: &NodeReference, declaration: &NodeReference, visi
 	}
 
 	match cloned_node(node) {
-		conditional @ Nodes::Conditional { .. } => conditional
-			.conditional_children()
+		branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => branch
+			.branch_children()
 			.any(|child| node_uses_declaration(child, declaration, visited)),
 		Nodes::ForLoop {
 			initializer,
@@ -348,7 +354,8 @@ fn remove_statements_in_block(statements: &mut Vec<NodeReference>, removals: &Ha
 	changed
 }
 
-/// Applies `update` in place to each statement block that `node` owns, including the blocks of `else if` links.
+/// Applies `update` in place to each statement block that `node` owns, including the blocks of `else if` links
+/// and `match` arms.
 /// Returns whether any block changed. Nodes without statement blocks are left untouched.
 fn update_blocks(node: &NodeReference, update: &mut dyn FnMut(&mut Vec<NodeReference>) -> bool) -> bool {
 	// `update` only borrows the block's statements, which are separate nodes, so holding this borrow is safe.
@@ -363,6 +370,11 @@ fn update_blocks(node: &NodeReference, update: &mut dyn FnMut(&mut Vec<NodeRefer
 					Some(ElseBranch::If(conditional)) => update_blocks(conditional, update),
 					None => false,
 				}
+		}
+		Nodes::Match { arms, default, .. } => {
+			arms.iter_mut()
+				.fold(false, |changed, arm| update(&mut arm.statements) | changed)
+				| update(default)
 		}
 		_ => false,
 	}
@@ -394,7 +406,9 @@ impl EffectAnalysis {
 			Nodes::Raw { .. } => false,
 			Nodes::Struct { .. } => true,
 			Nodes::Function { .. } => self.is_pure_function(node),
-			conditional @ Nodes::Conditional { .. } => conditional.conditional_children().all(|child| self.is_pure(child)),
+			branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => {
+				branch.branch_children().all(|child| self.is_pure(child))
+			}
 			// A loop can change shader termination even when its body only contains arithmetic.
 			Nodes::ForLoop { .. } => false,
 			Nodes::Intrinsic { .. } => false,

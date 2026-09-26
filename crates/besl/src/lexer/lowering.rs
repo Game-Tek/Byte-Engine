@@ -357,6 +357,33 @@ pub(super) fn lex_parsed_node(
 
 			Node::conditional(condition, statements, else_branch).into()
 		}
+		parser::Nodes::Match { scrutinee, arms } => {
+			let scrutinee = lex_parsed_node(chain.clone(), scrutinee, next_intrinsic_expansion_id)?;
+			let r#type = infer_expression_type(&scrutinee);
+			let domain = matching::MatchDomain::of(
+				r#type
+					.as_ref()
+					.and_then(|r#type| r#type.borrow().get_name().map(str::to_owned))
+					.as_deref(),
+			)?;
+			let r#type = r#type.expect("A match domain always comes from a known type");
+
+			// Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
+			let mut lexed_arms = Vec::with_capacity(arms.len());
+			for arm in arms {
+				let values = arm
+					.patterns
+					.iter()
+					.map(|pattern| domain.pattern_value(pattern))
+					.collect::<Result<Vec<_>, _>>()?;
+				// Each arm gets its own scope, so declarations in one arm are not visible in the others.
+				let statements = lex_block(chain.clone(), &arm.statements, next_intrinsic_expansion_id)?;
+				lexed_arms.push((values, statements));
+			}
+
+			let (arms, default) = matching::normalize_arms(domain, lexed_arms)?;
+			Node::r#match(scrutinee, r#type, arms, default).into()
+		}
 		parser::Nodes::ForLoop {
 			initializer,
 			condition,

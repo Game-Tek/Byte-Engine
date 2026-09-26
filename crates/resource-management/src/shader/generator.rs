@@ -295,7 +295,10 @@ pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 		let include = {
 			let borrowed = node.borrow();
 			!borrowed.node().is_leaf()
-				&& !matches!(borrowed.node(), besl::Nodes::Conditional { .. } | besl::Nodes::ForLoop { .. })
+				&& !matches!(
+					borrowed.node(),
+					besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. } | besl::Nodes::ForLoop { .. }
+				)
 		};
 		if include {
 			ordered.push(node);
@@ -319,6 +322,69 @@ pub(crate) fn emit_comma_separated_nodes<F>(
 
 		emit_node(string, node);
 	}
+}
+
+/// The `BreakTarget` enum tracks what a BESL `break` leaves while a backend emits statements.
+///
+/// BESL `match` arms lower to `switch` cases, where a plain `break` would leave the `switch` instead of the
+/// enclosing loop. Backends store one in their generator and return it from [`NodeEmitter::break_target`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum BreakTarget {
+	/// A `break` leaves the innermost loop directly.
+	#[default]
+	Loop,
+	/// A `break` sets the flag of the match at `depth`, leaves the `switch`, and the code after the `switch`
+	/// breaks the loop. `depth` counts the flagged matches between the `break` and its loop, from zero.
+	MatchArm { depth: usize },
+}
+
+impl BreakTarget {
+	/// Returns the target for arms of a match nested at this target that contain a loop `break`.
+	fn enter_match(self) -> Self {
+		match self {
+			Self::Loop => Self::MatchArm { depth: 0 },
+			Self::MatchArm { depth } => Self::MatchArm { depth: depth + 1 },
+		}
+	}
+}
+
+/// Writes the name of the flag that records a loop `break` inside the arms of the match at `depth`.
+fn push_match_break_flag(string: &mut String, depth: usize) {
+	use std::fmt::Write as _;
+	let _ = write!(string, "{RESERVED_IDENTIFIER_PREFIX}match_break_{depth}");
+}
+
+/// Reports whether `statements` hold a `break` that leaves a loop around them, outside any nested loop.
+fn breaks_enclosing_loop(statements: &[besl::NodeReference]) -> bool {
+	statements.iter().any(|statement| match statement.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::Break) => true,
+		besl::Nodes::Conditional {
+			else_branch, statements, ..
+		} => {
+			breaks_enclosing_loop(statements)
+				|| else_branch
+					.as_ref()
+					.is_some_and(|branch| breaks_enclosing_loop(branch.statements()))
+		}
+		besl::Nodes::Match { arms, default, .. } => {
+			arms.iter().any(|arm| breaks_enclosing_loop(&arm.statements)) || breaks_enclosing_loop(default)
+		}
+		_ => false,
+	})
+}
+
+/// Writes one `switch` case label for a match value. `i32` scrutinees use signed labels and every other type
+/// uses unsigned labels, matching the 32-bit value the `switch` tests.
+fn push_switch_label(string: &mut String, value: i64, signed: bool) {
+	use std::fmt::Write as _;
+	string.push_str("case ");
+	let _ = match (signed, value) {
+		// `2147483648` doesn't fit a signed literal, so the minimum is spelled as an expression.
+		(true, value) if value == i64::from(i32::MIN) => write!(string, "({}-1)", i32::MIN + 1),
+		(true, value) => write!(string, "{value}"),
+		(false, value) => write!(string, "{value}u"),
+	};
+	string.push(':');
 }
 
 pub(crate) fn emit_statement_block<F>(
@@ -560,6 +626,11 @@ pub(crate) trait NodeEmitter {
 			Self::identifier(source)
 		}
 	}
+
+	/// Returns what a `break` leaves at the current emission point. Backends store a [`BreakTarget`] field,
+	/// starting at [`BreakTarget::Loop`], and return it here. [`Self::emit_match_node`] and
+	/// [`Self::emit_for_loop_node`] update it.
+	fn break_target(&mut self) -> &mut BreakTarget;
 
 	/// Appends the string representation of a BESL node to the output buffer.
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeReference);
@@ -820,7 +891,7 @@ pub(crate) trait NodeEmitter {
 				}
 			}
 			besl::Expressions::Continue => string.push_str("continue"),
-			besl::Expressions::Break => string.push_str("break"),
+			besl::Expressions::Break => self.emit_break(string),
 			besl::Expressions::Discard => self.emit_discard(string),
 			besl::Expressions::Accessor { left, right } => self.emit_accessor_expression(string, left, right),
 		}
@@ -881,6 +952,92 @@ pub(crate) trait NodeEmitter {
 		false
 	}
 
+	/// Emits a BESL `break`, which always leaves the innermost loop. See [`BreakTarget`].
+	fn emit_break(&mut self, string: &mut String) {
+		if let BreakTarget::MatchArm { depth } = *self.break_target() {
+			push_match_break_flag(string, depth);
+			string.push('=');
+			string.push_str("true");
+			self.emit_statement_end(string);
+		}
+		string.push_str("break");
+	}
+
+	/// Emits a `match` as a `switch` whose cases never fall through.
+	///
+	/// When an arm holds a `break` for an enclosing loop, the `switch` is wrapped in a block with a flag.
+	/// The arm sets the flag and leaves the `switch`, and the code after it breaks the loop, as Rust does.
+	fn emit_match_node(
+		&mut self,
+		string: &mut String,
+		scrutinee: &besl::NodeReference,
+		r#type: &besl::NodeReference,
+		arms: &[besl::MatchArm],
+		default: &[besl::NodeReference],
+	) {
+		let formatting = ShaderFormatting::new(self.minified());
+		let outer_target = *self.break_target();
+		let flagged = arms.iter().any(|arm| breaks_enclosing_loop(&arm.statements)) || breaks_enclosing_loop(default);
+		let arm_target = if flagged { outer_target.enter_match() } else { outer_target };
+
+		if let BreakTarget::MatchArm { depth } = arm_target
+			&& flagged
+		{
+			string.push('{');
+			string.push_str(formatting.break_str());
+			string.push_str("bool ");
+			push_match_break_flag(string, depth);
+			string.push('=');
+			string.push_str("false");
+			self.emit_statement_end(string);
+		}
+
+		// Every target switches on a 32-bit integer, so narrower scalars and `bool` widen to `uint`.
+		let type_name = r#type.borrow().get_name().map(str::to_owned);
+		let signed = type_name.as_deref() == Some("i32");
+		let widen = !matches!(type_name.as_deref(), Some("i32" | "u32"));
+		string.push_str(if widen { "switch(uint(" } else { "switch(" });
+		self.emit_node(string, scrutinee);
+		if widen {
+			string.push(')');
+		}
+		formatting.push_block_start(string);
+
+		*self.break_target() = arm_target;
+		let cases = arms.iter().map(|arm| (Some(&arm.values[..]), &arm.statements[..]));
+		for (values, statements) in cases.chain([(None, default)]) {
+			match values {
+				Some(values) => values.iter().for_each(|&value| push_switch_label(string, value, signed)),
+				None => string.push_str("default:"),
+			}
+			// Braces scope each arm's declarations, which C++-based targets require inside a case.
+			string.push_str(formatting.space_str());
+			string.push('{');
+			string.push_str(formatting.break_str());
+			self.emit_function_statement_block(string, statements, 1);
+			string.push_str("break");
+			self.emit_statement_end(string);
+			self.emit_block_end(string);
+		}
+		*self.break_target() = outer_target;
+		string.push('}');
+
+		if let BreakTarget::MatchArm { depth } = arm_target
+			&& flagged
+		{
+			string.push_str(formatting.break_str());
+			string.push_str("if(");
+			push_match_break_flag(string, depth);
+			formatting.push_block_start(string);
+			// Emitted with the outer target, so a match nested in another arm forwards the break to its flag.
+			self.emit_break(string);
+			self.emit_statement_end(string);
+			string.push('}');
+			string.push_str(formatting.break_str());
+			string.push('}');
+		}
+	}
+
 	fn emit_for_loop_node(
 		&mut self,
 		string: &mut String,
@@ -897,7 +1054,10 @@ pub(crate) trait NodeEmitter {
 		string.push(';');
 		self.emit_node(string, update);
 		formatting.push_block_start(string);
+		// A `break` in the body leaves this loop, even when the loop sits inside a match arm.
+		let outer_target = std::mem::take(self.break_target());
 		self.emit_function_statement_block(string, statements, 1);
+		*self.break_target() = outer_target;
 		self.emit_block_end(string);
 	}
 

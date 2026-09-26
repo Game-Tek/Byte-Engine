@@ -42,6 +42,25 @@ impl<'a> ElseBranch<'a> {
 	}
 }
 
+/// The `MatchArm` struct holds one `pattern => body` arm of a `match` statement, as written in source.
+/// The lexer checks and normalizes it into a [`crate::MatchArm`]. See [`Nodes::Match`].
+#[derive(Clone, Debug)]
+pub struct MatchArm<'a> {
+	/// The alternatives of an or-pattern such as `1 | 2`. A single pattern is a one-element list.
+	pub patterns: Vec<MatchPattern<'a>>,
+	/// The arm body. An expression arm such as `0 => n = 1,` is one statement.
+	pub statements: Vec<Node<'a>>,
+}
+
+/// The `MatchPattern` enum lists the pattern forms a `match` arm can test a scalar against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchPattern<'a> {
+	/// A literal such as `3`, `true`, or `-1`. `negative` records a leading `-`.
+	Literal { value: &'a str, negative: bool },
+	/// The `_` pattern, which matches every value.
+	Wildcard,
+}
+
 /// The `TypeName` enum preserves type structure while the parser still borrows source text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeName<'a> {
@@ -184,6 +203,16 @@ impl<'a> Node<'a> {
 	}
 
 	/// Builds an `if` statement. Pass `None` as `else_branch` for an `if` without an `else` branch.
+	/// Builds a `match` statement. The lexer rejects matches that don't cover every scrutinee value.
+	pub fn r#match(scrutinee: Node<'a>, arms: Vec<MatchArm<'a>>) -> Node<'a> {
+		Node {
+			node: Nodes::Match {
+				scrutinee: Box::new(scrutinee),
+				arms,
+			},
+		}
+	}
+
 	pub fn conditional(condition: Node<'a>, statements: Vec<Node<'a>>, else_branch: Option<ElseBranch<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Conditional {
@@ -565,7 +594,7 @@ impl<'a> Node<'a> {
 			Nodes::Struct { name, .. } => Some(name),
 			Nodes::Member { name, .. } => Some(name),
 			Nodes::Function { name, .. } => Some(name),
-			Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
+			Nodes::Conditional { .. } | Nodes::Match { .. } | Nodes::ForLoop { .. } => None,
 			Nodes::Binding { name, .. } => Some(name),
 			Nodes::Descriptor { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
@@ -667,6 +696,11 @@ pub enum Nodes<'a> {
 		condition: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 		else_branch: Option<ElseBranch<'a>>,
+	},
+	/// A `match` statement over a scalar value. It runs the first arm whose pattern matches.
+	Match {
+		scrutinee: Box<Node<'a>>,
+		arms: Vec<MatchArm<'a>>,
 	},
 	ForLoop {
 		initializer: Box<Node<'a>>,

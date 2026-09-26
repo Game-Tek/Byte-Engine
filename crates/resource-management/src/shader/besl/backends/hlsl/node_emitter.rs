@@ -6,6 +6,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn minified(&self) -> bool {
 		self.minified
 	}
+	fn break_target(&mut self) -> &mut crate::shader::generator::BreakTarget {
+		&mut self.break_target
+	}
 	fn is_reserved_identifier(name: &str) -> bool {
 		super::reserved::is_reserved(name)
 	}

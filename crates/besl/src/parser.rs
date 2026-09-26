@@ -9,7 +9,8 @@ mod iterator;
 
 pub(crate) use declarations::parse;
 pub use declarations::{
-	ElseBranch, Expressions, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField, TypeName,
+	ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField,
+	TypeName,
 };
 #[cfg(test)]
 use expressions::*;
@@ -1028,6 +1029,58 @@ main: fn () -> void {
 		};
 		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
 		assert!(matches!(else_statements[0].node, Nodes::Expression(Expressions::Continue)));
+	}
+
+	#[test]
+	fn parse_match() {
+		let tokens = tokenize("main: fn () -> void { match n { 0 => break, | -1 | 2 => { discard; } _ => continue } }")
+			.expect("Failed to tokenize");
+		let node = parse(&tokens).expect("Failed to parse");
+		let Nodes::Function { statements, .. } = &node["main"].node else {
+			panic!("Expected function");
+		};
+		let Nodes::Match { scrutinee, arms } = &statements[0].node else {
+			panic!("Expected match");
+		};
+		assert!(matches!(&scrutinee.node, Nodes::Expression(Expressions::Member { name }) if *name == "n"));
+
+		let patterns: Vec<&[MatchPattern]> = arms.iter().map(|arm| arm.patterns.as_slice()).collect();
+		assert_eq!(
+			patterns,
+			[
+				&[MatchPattern::Literal {
+					value: "0",
+					negative: false
+				}][..],
+				&[
+					MatchPattern::Literal {
+						value: "1",
+						negative: true
+					},
+					MatchPattern::Literal {
+						value: "2",
+						negative: false
+					}
+				],
+				&[MatchPattern::Wildcard],
+			]
+		);
+		assert!(matches!(arms[0].statements[0].node, Nodes::Expression(Expressions::Break)));
+		assert!(matches!(arms[1].statements[0].node, Nodes::Expression(Expressions::Discard)));
+		assert!(matches!(arms[2].statements[0].node, Nodes::Expression(Expressions::Continue)));
+	}
+
+	#[test]
+	fn parse_match_rejects_malformed_arms() {
+		for source in [
+			"main: fn () -> void { match n { 0 => break 1 => break } }",
+			"main: fn () -> void { match n { x => break, } }",
+			"main: fn () -> void { match n { 0 if n => break, } }",
+			"main: fn () -> void { match n { 0 break, } }",
+		] {
+			let tokens = tokenize(source).expect("Failed to tokenize");
+			assert!(parse(&tokens).is_err(), "`{source}` should not parse");
+		}
 	}
 
 	#[test]

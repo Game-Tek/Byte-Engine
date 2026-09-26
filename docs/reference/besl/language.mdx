@@ -239,7 +239,7 @@ instead of widening to `f32`.
 
 ## Control flow
 
-Use `if`/`else`, C-style `for`, `return`, `continue`, and `break` to control program
+Use `if`/`else`, `match`, C-style `for`, `return`, `continue`, and `break` to control program
 flow. Use `discard` to stop a fragment invocation without producing its normal
 outputs.
 
@@ -283,6 +283,36 @@ if (roughness < 0.25) {
 Variables you declare inside a branch are only visible in that branch.
 
 BESL doesn't currently have `while` or unary operators.
+
+### Match
+
+Use `match` to pick a branch by the value of a `bool`, `u8`, `u16`, `u32`, or
+`i32`. It works like Rust's `match`: BESL runs the first arm whose pattern
+matches, so later arms never see a value an earlier arm took.
+
+```rust
+match material_kind {
+	0 => lobe = 0,
+	1 | 2 => {
+		lobe = 1;
+	}
+	_ => lobe = 2,
+}
+```
+
+Write each pattern as a literal such as `3`, `-1`, or `true`, join patterns with
+`|` to share an arm, or use `_` to match every other value. Put a comma after an
+arm unless its body is a block.
+
+A match must cover every value. Add a `_` arm, or for a `bool`, list both
+`true` and `false`. If an arm can't run because earlier arms cover its values,
+BESL ignores it.
+
+Inside a loop, `break` and `continue` in an arm act on the loop, as in Rust.
+Variables you declare inside an arm are only visible in that arm.
+
+BESL doesn't support match guards (`if` after a pattern), ranges, bindings, or
+matching on floating-point, vector, or struct values yet.
 
 | Operation | Operators |
 | --- | --- |

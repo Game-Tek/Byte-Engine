@@ -860,6 +860,53 @@ mod tests {
 	}
 
 	#[test]
+	fn match_lowers_to_glsl_switch() {
+		let script = r#"
+		main: fn () -> void {
+			let n: u32 = 0;
+			let flag: bool = n < 1;
+			let signed: i32 = 0;
+			for (let i: u32 = 0; i < 4; i = i + 1) {
+				match i {
+					0 => n = 1,
+					1 | 2 => {
+						match flag {
+							true => break,
+							false => continue,
+						}
+					}
+					_ => {}
+				}
+			}
+			match signed {
+				-2147483648 => n = 2,
+				_ => n = 3,
+			}
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected match shader source to lex");
+		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Failed to generate shader");
+		// The inner `break` sets both flags, so it leaves both switches and then the loop.
+		assert_string_contains!(
+			shader,
+			"{bool besl_match_break_0=false;switch(i){case 0u:{n=1;break;}case 1u:case 2u:{{bool besl_match_break_1=false;switch(uint(flag)){case 1u:{besl_match_break_1=true;break;break;}default:{continue;break;}}if(besl_match_break_1){besl_match_break_0=true;break;}};break;}default:{break;}}if(besl_match_break_0){break;}}"
+		);
+		assert_string_contains!(
+			shader,
+			"switch(signed){case (-2147483647-1):{n=2;break;}default:{n=3;break;}}"
+		);
+
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-match").expect("Expected match GLSL to compile to SPIR-V");
+	}
+
+	#[test]
 	fn bitwise_operators_lower_to_glsl() {
 		let script = r#"
 		main: fn () -> void {

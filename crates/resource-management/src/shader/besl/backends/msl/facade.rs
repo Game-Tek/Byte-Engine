@@ -37,6 +37,7 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	pub(crate) mesh_stage_context: Option<MeshStageContext>,
 	pub(crate) in_buffer_binding_struct: bool,
 	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
+	pub(crate) break_target: crate::shader::generator::BreakTarget,
 }
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -151,6 +152,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			mesh_stage_context: None,
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
+			break_target: crate::shader::generator::BreakTarget::Loop,
 		}
 	}
 
@@ -174,8 +176,8 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Function { statements, .. } => statements
 				.iter()
 				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			conditional @ besl::Nodes::Conditional { .. } => conditional
-				.conditional_children()
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+				.branch_children()
 				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
 			besl::Nodes::ForLoop {
 				initializer,
@@ -263,8 +265,8 @@ impl<A: Allocator + Clone> Generator<A> {
 						visit(statement, requirements);
 					}
 				}
-				conditional @ besl::Nodes::Conditional { .. } => {
-					for child in conditional.conditional_children() {
+				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
+					for child in branch.branch_children() {
 						visit(child, requirements);
 					}
 				}
@@ -369,8 +371,8 @@ impl<A: Allocator + Clone> Generator<A> {
 							.iter()
 							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
 				}
-				conditional @ besl::Nodes::Conditional { .. } => conditional
-					.conditional_children()
+				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+					.branch_children()
 					.any(|child| node_requires_resource_context(child, visited, include_push_constant)),
 				besl::Nodes::ForLoop {
 					initializer,

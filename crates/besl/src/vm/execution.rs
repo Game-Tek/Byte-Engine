@@ -621,6 +621,7 @@ impl ExecutableProgram {
 			| Instruction::WriteImage { .. } => Self::execute_image_instruction(instruction, &mut frame.registers, descriptors),
 			Instruction::JumpIfZero { .. }
 			| Instruction::Jump { .. }
+			| Instruction::Switch { .. }
 			| Instruction::Discard
 			| Instruction::Call { .. }
 			| Instruction::Return { .. } => {
@@ -1499,6 +1500,17 @@ impl ExecutableProgram {
 				}
 			}
 			Instruction::Jump { target } => Ok(InstructionProgress::JumpTo(*target)),
+			Instruction::Switch {
+				register,
+				cases,
+				default,
+			} => {
+				let label = switch_label(&read_register(registers, *register)?)?;
+				let target = cases
+					.binary_search_by_key(&label, |&(case, _)| case)
+					.map_or(*default, |case| cases[case].1);
+				Ok(InstructionProgress::JumpTo(target))
+			}
 			Instruction::Discard => {
 				state.discarded = true;
 				Ok(InstructionProgress::Complete(None))

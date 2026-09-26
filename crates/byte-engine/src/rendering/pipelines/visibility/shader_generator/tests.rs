@@ -955,6 +955,41 @@ fn directional_shadow_cascade_holds_receivers_inside_the_filter_margin_in_the_be
 	}
 }
 
+/// Verifies double-sided shading keeps front-facing normals and reverses back-facing ones for either winding.
+#[test]
+fn facing_normal_reverses_only_back_facing_normals_in_the_besl_vm() {
+	let results = run_buffer_free_shadow_helper(
+		r#"
+		main: fn () -> void {
+			let to_camera: vec3f = vec3f(0.0, 0.0, 1.0);
+			let right: vec3f = vec3f(1.0, 0.0, 0.0);
+			let up: vec3f = vec3f(0.0, 1.0, 0.0);
+			results.front = facing_normal(vec3f(0.0, 0.0, 1.0), to_camera, right, up).z;
+			results.back = facing_normal(vec3f(0.0, 0.0, 0.0 - 1.0), to_camera, right, up).z;
+			results.back_mirrored = facing_normal(vec3f(0.0, 0.0, 0.0 - 1.0), to_camera, up, right).z;
+			results.grazing_front = facing_normal(normalize(vec3f(1.0, 0.0, 0.2)), to_camera, right, up).z;
+		}
+		"#,
+		&[(FACING_NORMAL_SOURCE, "facing_normal")],
+		vec![
+			besl::ParserNode::member("front", "f32"),
+			besl::ParserNode::member("back", "f32"),
+			besl::ParserNode::member("back_mirrored", "f32"),
+			besl::ParserNode::member("grazing_front", "f32"),
+		],
+	);
+	assert_f32_results(
+		&results,
+		&[
+			("front", 1.0),
+			("back", 1.0),
+			("back_mirrored", 1.0),
+			("grazing_front", 0.2 / (1.04f32).sqrt()),
+		],
+		"facing_normal does not orient normals by the camera side of the surface plane",
+	);
+}
+
 /// Runs `source` with only buffer-free shadow helpers bound and returns the results buffer.
 fn run_buffer_free_shadow_helper(
 	source: &str,

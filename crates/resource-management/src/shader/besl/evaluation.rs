@@ -478,7 +478,7 @@ mod tests {
 					besl::Node::member("base_meshlet_index", u32_type.clone()).into(),
 					besl::Node::member("meshlet_count", u32_type.clone()).into(),
 					besl::Node::member("skinned_base_vertex_index", u32_type.clone()).into(),
-					besl::Node::member("padding0", u32_type.clone()).into(),
+					besl::Node::member("flags", u32_type.clone()).into(),
 				],
 			)
 			.into(),

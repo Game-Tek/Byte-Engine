@@ -425,6 +425,7 @@ impl VisibilityRenderPass {
 					VisibilityPhase::Opaque,
 					dispatches.opaque,
 					dispatches.masked,
+					dispatches.double_sided,
 					visibility_pipelines,
 				);
 				material_prepasses.record(c, extent, prepass_pipelines);
@@ -451,6 +452,7 @@ impl VisibilityRenderPass {
 						extent,
 						VisibilityPhase::Transparent,
 						dispatches.transparent,
+						Default::default(),
 						Default::default(),
 						visibility_pipelines,
 					);

@@ -172,6 +172,8 @@ pub(super) struct ShadowPass {
 	local_pipeline: crate::rendering::PipelineRef,
 	masked_directional_pipeline: crate::rendering::PipelineRef,
 	masked_local_pipeline: crate::rendering::PipelineRef,
+	double_sided_directional_pipeline: crate::rendering::PipelineRef,
+	double_sided_local_pipeline: crate::rendering::PipelineRef,
 	pub(super) directional_shadow_map: ghi::BaseImageHandle,
 	pub(super) depth_pyramid: ghi::BaseImageHandle,
 	pub(super) cone_shadow_map: ghi::BaseImageHandle,
@@ -188,6 +190,8 @@ struct ShadowPipelines {
 	/// Cone and point maps share one perspective depth pipeline.
 	local: ghi::PipelineHandle,
 	masked_local: ghi::PipelineHandle,
+	double_sided_directional: ghi::PipelineHandle,
+	double_sided_local: ghi::PipelineHandle,
 }
 
 impl ShadowPass {
@@ -285,6 +289,10 @@ impl ShadowPass {
 			local_pipeline: request("byte-engine/rendering/visibility/cone-shadow.pipeline"),
 			masked_directional_pipeline: request("byte-engine/rendering/visibility/masked-directional-shadow.pipeline"),
 			masked_local_pipeline: request("byte-engine/rendering/visibility/masked-cone-shadow.pipeline"),
+			double_sided_directional_pipeline: request(
+				"byte-engine/rendering/visibility/double-sided-directional-shadow.pipeline",
+			),
+			double_sided_local_pipeline: request("byte-engine/rendering/visibility/double-sided-cone-shadow.pipeline"),
 			directional_shadow_map,
 			depth_pyramid,
 			cone_shadow_map,
@@ -301,6 +309,8 @@ impl ShadowPass {
 			cascade_fit: pipeline_manager.pipeline(self.cascade_fit_pipeline)?,
 			local: pipeline_manager.pipeline(self.local_pipeline)?,
 			masked_local: pipeline_manager.pipeline(self.masked_local_pipeline)?,
+			double_sided_directional: pipeline_manager.pipeline(self.double_sided_directional_pipeline)?,
+			double_sided_local: pipeline_manager.pipeline(self.double_sided_local_pipeline)?,
 		})
 	}
 
@@ -389,7 +399,7 @@ impl ShadowPass {
 					CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 				};
 
-				// Draws every solid and masked work range into the layers named by `views`.
+				// Draws every solid, masked, and double-sided work range into the layers named by `views`.
 				let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
 				                   name: &str,
 				                   target: ghi::BaseImageHandle,
@@ -397,6 +407,7 @@ impl ShadowPass {
 				                   layers: usize,
 				                   solid_pipeline: ghi::PipelineHandle,
 				                   masked_pipeline: ghi::PipelineHandle,
+				                   double_sided_pipeline: ghi::PipelineHandle,
 				                   views: &dyn Fn(MeshDispatch) -> Vec<(u32, u32)>| {
 					c.start_region(|label| label.write_str(name));
 					let attachments = [ghi::AttachmentInformation::new(
@@ -407,7 +418,11 @@ impl ShadowPass {
 					)
 					.layers(layers as u32)];
 					let c = c.start_render_pass(extent, &attachments);
-					for (dispatch, pipeline) in [(dispatches.opaque, solid_pipeline), (dispatches.masked, masked_pipeline)] {
+					for (dispatch, pipeline) in [
+						(dispatches.opaque, solid_pipeline),
+						(dispatches.masked, masked_pipeline),
+						(dispatches.double_sided, double_sided_pipeline),
+					] {
 						if dispatch.is_empty() {
 							continue;
 						}
@@ -433,6 +448,7 @@ impl ShadowPass {
 						SHADOW_CASCADE_COUNT,
 						pipelines.directional,
 						pipelines.masked_directional,
+						pipelines.double_sided_directional,
 						&|dispatch| {
 							directional_shadow_view_indices(dispatch)
 								.map(|view| (view, view - 1))
@@ -455,6 +471,7 @@ impl ShadowPass {
 						work.cone_count,
 						pipelines.local,
 						pipelines.masked_local,
+						pipelines.double_sided_local,
 						&|dispatch| cone_shadow_view_indices(dispatch, work.cone_count).collect(),
 					);
 				}
@@ -467,6 +484,7 @@ impl ShadowPass {
 						work.point_count * POINT_SHADOW_FACE_COUNT,
 						pipelines.local,
 						pipelines.masked_local,
+						pipelines.double_sided_local,
 						&|dispatch| point_shadow_view_indices(dispatch, work.point_count).collect(),
 					);
 				}

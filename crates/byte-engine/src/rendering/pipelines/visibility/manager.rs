@@ -33,7 +33,7 @@ use super::render_pass::{
 	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
-use super::shader_data::{IesProfileTexture, MaterialData, ShaderMesh, ShaderViewData};
+use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowLightSelection, make_cone_shadow_view, make_point_shadow_view, select_shadow_lights,
 };
@@ -150,12 +150,13 @@ struct PendingRenderable {
 	mesh_key: MeshKey,
 }
 
-/// One material's render-thread pipeline and authored alpha contract.
+/// One material's render-thread pipeline and authored alpha and sidedness contract.
 struct LoadedMaterial {
 	index: u32,
 	pipeline: ghi::PipelineHandle,
 	name: String,
 	alpha_mode: AlphaMode,
+	double_sided: bool,
 	texture_indices: Vec<u32>,
 }
 
@@ -738,6 +739,7 @@ impl VisibilityPipelineManager {
 			index,
 			pipeline,
 			alpha_mode,
+			double_sided,
 			coverage,
 			texture_slots: textures,
 		} = material;
@@ -776,6 +778,7 @@ impl VisibilityPipelineManager {
 				pipeline,
 				name: id,
 				alpha_mode,
+				double_sided,
 				texture_indices,
 			},
 		);
@@ -845,7 +848,7 @@ impl VisibilityPipelineManager {
 					base_meshlet_index: mesh.meshlet_offset + primitive.meshlet_offset,
 					meshlet_count: primitive.meshlet_count,
 					skinned_base_vertex_index: u32::MAX,
-					_padding: 0,
+					flags: 0,
 				},
 				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
 					binding: binding.clone(),
@@ -931,6 +934,8 @@ impl VisibilityPipelineManager {
 
 			let mut shader_mesh = entity.shader_mesh;
 			shader_mesh.skinned_base_vertex_index = u32::MAX;
+			// Sidedness comes from the currently loaded material, so a reloaded material takes effect next frame.
+			shader_mesh.flags = if material.double_sided { MESH_FLAG_DOUBLE_SIDED } else { 0 };
 			if let Some(skin) = &entity.skinning
 				&& let Some(pose) = self.scene.skinning_poses.get(&entity.handle)
 			{
@@ -963,6 +968,7 @@ impl VisibilityPipelineManager {
 				},
 				shader_mesh.material_index,
 				&material.alpha_mode,
+				material.double_sided,
 			);
 		}
 		frame.sync_buffer(self.scene.meshes_buffer);

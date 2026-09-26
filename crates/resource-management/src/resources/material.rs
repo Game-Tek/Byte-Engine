@@ -51,6 +51,11 @@ impl Material {
 	pub fn alpha_mode(&self) -> &AlphaMode {
 		&self.alpha_mode
 	}
+
+	/// Returns whether both faces of the surface are visible, as glTF `doubleSided` requires.
+	pub fn double_sided(&self) -> bool {
+		self.double_sided
+	}
 }
 
 super::impl_resource_model!(Material, MaterialModel, "Material");

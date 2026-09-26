@@ -89,6 +89,7 @@ struct PreparedMaterial {
 	index: u32,
 	pipeline: PipelineRef,
 	alpha_mode: AlphaMode,
+	double_sided: bool,
 	coverage: MaterialCoverage,
 	texture_slots: Vec<Option<u32>>,
 }
@@ -99,6 +100,7 @@ pub(crate) struct ResidentMaterial {
 	pub(crate) index: u32,
 	pub(crate) pipeline: ghi::PipelineHandle,
 	pub(crate) alpha_mode: AlphaMode,
+	pub(crate) double_sided: bool,
 	pub(crate) coverage: MaterialCoverage,
 	pub(crate) texture_slots: Vec<Option<u32>>,
 }
@@ -322,6 +324,7 @@ impl VisibilityLoaderClient {
 						index: material.index,
 						pipeline,
 						alpha_mode: material.alpha_mode.clone(),
+						double_sided: material.double_sided,
 						coverage: material.coverage,
 						texture_slots: material.texture_slots.clone(),
 					}));
@@ -559,6 +562,7 @@ impl VisibilityLoader {
 			)));
 		}
 		let coverage = material.coverage;
+		let double_sided = material.double_sided();
 		let (index, texture_slots) = self.assign_material_slots(&id, &texture_ids).ok_or_else(|| {
 			LoadError(format!(
 				"Visibility material slots could not be assigned for {id}. The most likely cause is that the material or texture table is full."
@@ -583,6 +587,7 @@ impl VisibilityLoader {
 				index,
 				pipeline,
 				alpha_mode,
+				double_sided,
 				coverage,
 				texture_slots,
 			}),

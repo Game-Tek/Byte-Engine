@@ -79,6 +79,7 @@ impl MeshDispatch {
 pub(crate) struct PhaseDispatches {
 	pub(crate) opaque: MeshDispatch,
 	pub(crate) masked: MeshDispatch,
+	pub(crate) double_sided: MeshDispatch,
 	pub(crate) transparent: MeshDispatch,
 }
 
@@ -103,7 +104,7 @@ impl MeshDispatchWorkBuffer {
 		Self { handle }
 	}
 
-	/// Packs the frame's opaque, masked, and transparent instance lists into adjacent work ranges.
+	/// Packs the frame's opaque, masked, double-sided, and transparent instance lists into adjacent work ranges.
 	pub(crate) fn write_phases(&self, frame: &mut ghi::implementation::Frame, render_info: &RenderInfo) -> PhaseDispatches {
 		let work_items = frame.get_mut_dynamic_buffer_slice(self.handle);
 		let mut base = 0usize;
@@ -119,6 +120,7 @@ impl MeshDispatchWorkBuffer {
 		let dispatches = PhaseDispatches {
 			opaque: phase(&render_info.opaque_instances),
 			masked: phase(&render_info.masked_instances),
+			double_sided: phase(&render_info.double_sided_instances),
 			transparent: phase(&render_info.transparent_instances),
 		};
 		frame.sync_buffer(self.handle);

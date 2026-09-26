@@ -178,7 +178,7 @@ impl VisibilityShaderScope {
 					Node::member("base_meshlet_index", "u32"),
 					Node::member("meshlet_count", "u32"),
 					Node::member("skinned_base_vertex_index", "u32"),
-					Node::member("padding0", "u32"),
+					Node::member("flags", "u32"),
 				],
 			),
 			Node::r#struct(
@@ -390,6 +390,7 @@ impl VisibilityShaderScope {
 			(COMPUTE_VERTEX_INDICES_SOURCE, "compute_vertex_indices"),
 			(COMPUTE_TRIANGLE_INTERPOLATION_SOURCE, "compute_triangle_interpolation"),
 			(SAMPLE_VISIBILITY_NORMAL_SOURCE, "sample_visibility_normal"),
+			(FACING_NORMAL_SOURCE, "facing_normal"),
 			(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
 			(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),
 			(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),

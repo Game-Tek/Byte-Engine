@@ -24,8 +24,13 @@ pub struct ShaderMesh {
 	pub(crate) meshlet_count: u32,
 	/// Base vertex in the frame-local deformation buffer, or `u32::MAX` for immutable geometry.
 	pub(crate) skinned_base_vertex_index: u32,
-	pub(crate) _padding: u32,
+	/// Material bits such as [`MESH_FLAG_DOUBLE_SIDED`].
+	pub(crate) flags: u32,
 }
+
+/// [`ShaderMesh::flags`] bit for a material with both faces visible. Task shaders keep its back-facing meshlets and
+/// material evaluation reverses the normal of its back-facing pixels. The shaders spell this bit as the literal `1`.
+pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1;
 
 /// The `ShaderViewData` struct is one entry of the `views` buffer: the camera view followed by every shadow view.
 #[repr(C)]
@@ -248,6 +253,7 @@ const _: () = assert!(
 const _: () = assert!(std::mem::align_of::<ShaderMesh>() == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 76);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);
 const _: () = assert!(

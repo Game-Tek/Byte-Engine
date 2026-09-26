@@ -16,7 +16,7 @@ Mesh: struct {
 	base_meshlet_index: u32,
 	meshlet_count: u32,
 	skinned_base_vertex_index: u32,
-	padding0: u32,
+	flags: u32,
 }
 
 Meshlet: struct {
@@ -124,8 +124,10 @@ transform_world_to_object: fn(model: mat4x3f, world_position: vec3f, determinant
 
 cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 	let determinant: f32 = dot(cross(mesh.model[0], mesh.model[1]), mesh.model[2]);
-	if (determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
-		return determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0;
+	// Flag bit 0 marks a double-sided material. Both of its faces are visible, so no view direction culls it.
+	let double_sided: bool = (mesh.flags & 1) != 0;
+	if (double_sided || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0) {
+		return double_sided || determinant <= 0.000001 || meshlet.cone_apex_cutoff.w > 1.0;
 	}
 
 	let camera_position_world: vec3f = vec3f(

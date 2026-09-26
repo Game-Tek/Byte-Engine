@@ -211,6 +211,25 @@ material_evaluation_prefix: fn (input: StageInput) -> void {
 	let position_derivative_y: vec3f =
 		(position_numerator + position_numerator_dy * ndc_step_y) /
 		(inverse_w_at_pixel + inverse_w_dy * ndc_step_y) - world_space_vertex_position;
+	// Flag bit 0 marks a double-sided material. Only those rasterize back faces, so only they need the check.
+	if ((mesh.flags & 1) != 0) {
+		N = facing_normal(N, V, position_derivative_x, position_derivative_y);
+	}
+}
+"#;
+
+/// Reverses `normal` when the camera sees the back of the surface, as glTF requires for double-sided materials.
+///
+/// A compute pass has no front-facing signal. The pixel sees the back face when the camera and the interpolated
+/// normal lie on opposite sides of the surface plane, which the screen-space position derivatives give for any
+/// triangle winding.
+pub(crate) const FACING_NORMAL_SOURCE: &str = r#"
+facing_normal: fn (normal: vec3f, to_camera: vec3f, position_derivative_x: vec3f, position_derivative_y: vec3f) -> vec3f {
+	let surface_normal: vec3f = cross(position_derivative_x, position_derivative_y);
+	if (dot(surface_normal, to_camera) * dot(surface_normal, normal) < 0.0) {
+		return normal * (0.0 - 1.0);
+	}
+	return normal;
 }
 "#;
 

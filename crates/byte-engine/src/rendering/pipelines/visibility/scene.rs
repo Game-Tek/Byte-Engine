@@ -58,6 +58,8 @@ pub(crate) type MaterialEntry = (String, u32, ghi::PipelineHandle);
 pub struct RenderInfo {
 	pub(crate) opaque_instances: Vec<Instance>,
 	pub(crate) masked_instances: Vec<Instance>,
+	/// Opaque and masked instances whose material shows both faces, drawn without back-face culling.
+	pub(crate) double_sided_instances: Vec<Instance>,
 	pub(crate) transparent_instances: Vec<Instance>,
 	pub(crate) skinning_dispatches: Vec<SkinningDispatch>,
 	pub(crate) opaque_materials: Vec<MaterialEntry>,
@@ -71,14 +73,23 @@ impl RenderInfo {
 	pub(crate) fn clear_active_instances(&mut self) {
 		self.opaque_instances.clear();
 		self.masked_instances.clear();
+		self.double_sided_instances.clear();
 		self.transparent_instances.clear();
 		self.skinning_dispatches.clear();
 		self.opaque_material_mask.fill(0);
 		self.transparent_material_mask.fill(0);
 	}
 
-	/// Adds one active primitive to the phase selected by its authored alpha mode.
-	pub(crate) fn push_active_instance(&mut self, instance: Instance, material_index: u32, alpha_mode: &AlphaMode) {
+	/// Adds one active primitive to the phase selected by its authored alpha mode and sidedness.
+	///
+	/// Double-sided blend primitives stay in the transparent phase, which still culls back faces.
+	pub(crate) fn push_active_instance(
+		&mut self,
+		instance: Instance,
+		material_index: u32,
+		alpha_mode: &AlphaMode,
+		double_sided: bool,
+	) {
 		let material_index = material_index as usize;
 		assert!(
 			material_index < MAX_MATERIALS,
@@ -88,6 +99,9 @@ impl RenderInfo {
 		let material_word = material_index / u64::BITS as usize;
 		let (instances, mask) = match alpha_mode {
 			AlphaMode::Blend => (&mut self.transparent_instances, &mut self.transparent_material_mask),
+			AlphaMode::Opaque | AlphaMode::Mask(_) if double_sided => {
+				(&mut self.double_sided_instances, &mut self.opaque_material_mask)
+			}
 			AlphaMode::Mask(_) => (&mut self.masked_instances, &mut self.opaque_material_mask),
 			AlphaMode::Opaque => (&mut self.opaque_instances, &mut self.opaque_material_mask),
 		};
@@ -96,7 +110,10 @@ impl RenderInfo {
 	}
 
 	pub(crate) fn active_instance_count(&self) -> usize {
-		self.opaque_instances.len() + self.masked_instances.len() + self.transparent_instances.len()
+		self.opaque_instances.len()
+			+ self.masked_instances.len()
+			+ self.double_sided_instances.len()
+			+ self.transparent_instances.len()
 	}
 }
 

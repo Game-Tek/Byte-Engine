@@ -33,6 +33,8 @@ pub(super) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
 	pub(super) pipeline: crate::rendering::PipelineRef,
 	pub(super) masked_pipeline: crate::rendering::PipelineRef,
+	/// Runs the masked shaders without back-face culling, so opaque double-sided surfaces also pay for alpha testing.
+	pub(super) double_sided_pipeline: crate::rendering::PipelineRef,
 	primitive_index: ghi::BaseImageHandle,
 	instance_id: ghi::BaseImageHandle,
 	depth: ghi::BaseImageHandle,
@@ -42,6 +44,7 @@ pub(super) struct VisibilityPass {
 pub(super) struct VisibilityPipelines {
 	pub(super) opaque: ghi::PipelineHandle,
 	pub(super) masked: ghi::PipelineHandle,
+	pub(super) double_sided: ghi::PipelineHandle,
 }
 
 impl VisibilityPass {
@@ -56,6 +59,8 @@ impl VisibilityPass {
 			descriptor_set,
 			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline"),
 			masked_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-visibility.pipeline"),
+			double_sided_pipeline: pipeline_manager
+				.request_pipeline("byte-engine/rendering/visibility/double-sided-visibility.pipeline"),
 			primitive_index,
 			instance_id,
 			depth,
@@ -66,10 +71,11 @@ impl VisibilityPass {
 		Some(VisibilityPipelines {
 			opaque: pipeline_manager.pipeline(self.pipeline)?,
 			masked: pipeline_manager.pipeline(self.masked_pipeline)?,
+			double_sided: pipeline_manager.pipeline(self.double_sided_pipeline)?,
 		})
 	}
 
-	/// Records the solid and masked dispatches of one phase into the visibility buffers.
+	/// Records the solid, masked, and double-sided dispatches of one phase into the visibility buffers.
 	///
 	/// The transparent phase loads opaque depth, then writes the nearest transparent surface into it. This
 	/// preserves opaque occlusion while resolving overlapping triangles within the single transparent layer.
@@ -80,6 +86,7 @@ impl VisibilityPass {
 		phase: VisibilityPhase,
 		solid: MeshDispatch,
 		masked: MeshDispatch,
+		double_sided: MeshDispatch,
 		pipelines: VisibilityPipelines,
 	) {
 		use ghi::command_buffer::{
@@ -115,7 +122,11 @@ impl VisibilityPass {
 			label.write_str(" Visibility Buffer")
 		});
 		let c = c.start_render_pass(extent, &attachments);
-		for (dispatch, pipeline) in [(solid, pipelines.opaque), (masked, pipelines.masked)] {
+		for (dispatch, pipeline) in [
+			(solid, pipelines.opaque),
+			(masked, pipelines.masked),
+			(double_sided, pipelines.double_sided),
+		] {
 			if dispatch.is_empty() {
 				continue;
 			}

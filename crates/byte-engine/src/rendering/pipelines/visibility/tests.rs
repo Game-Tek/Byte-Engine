@@ -6,6 +6,7 @@ use besl::vm::{
 };
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
+use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
 use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d};
 
 const VIEWS_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -178,13 +179,24 @@ fn fixture_meshlet_instance() -> Value {
 	Value::U32(meshlet_instance(FIXTURE_MESHLET_INDEX as u32, FIXTURE_INSTANCE_INDEX as u32))
 }
 
+/// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
+#[derive(Clone, Copy, Default)]
+struct TaskMeshFixture {
+	skinned: bool,
+	/// The instance's `ShaderMesh::flags` word.
+	flags: u32,
+	/// Gives every meshlet a narrow normal cone facing straight away from the camera at the origin. Otherwise the
+	/// cone test is disabled, so the fixture isolates frustum and skinning behavior.
+	back_facing: bool,
+}
+
 /// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets.
 fn run_meshlet_task_workgroup(
 	program: &ExecutableProgram,
 	view_projections: &[(usize, [f32; 16])],
 	selected_view_index: Option<u32>,
 	center_radii: &[[f32; 4]],
-	skinned: bool,
+	mesh: TaskMeshFixture,
 	workgroup_index: u32,
 ) -> TaskOutputs {
 	let meshlet_count = center_radii.len() as u32;
@@ -213,7 +225,8 @@ fn run_meshlet_task_workgroup(
 	for (field, value) in [
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 		("meshlet_count", meshlet_count),
-		("skinned_base_vertex_index", if skinned { 0 } else { u32::MAX }),
+		("skinned_base_vertex_index", if mesh.skinned { 0 } else { u32::MAX }),
+		("flags", mesh.flags),
 	] {
 		meshes
 			.write_indexed_field("meshes", FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
@@ -225,15 +238,27 @@ fn run_meshlet_task_workgroup(
 		meshlets
 			.write_indexed_field("meshlets", meshlet_index, "center_radius", Value::PackedVec4F(center_radius))
 			.expect("task meshlet bound");
-		// A cutoff above one disables cone rejection so each fixture isolates frustum and skinning behavior.
+		// A cutoff above one disables cone rejection. The back-facing cone sits at the meshlet center and points
+		// along +Z, the octahedral center, which is the direction from the camera at the origin to the meshlet.
+		let (cone_apex_cutoff, cone_axis) = if mesh.back_facing {
+			(
+				[center_radius[0], center_radius[1], center_radius[2], 0.5],
+				[u16::MAX / 2 + 1; 2],
+			)
+		} else {
+			([0.0, 0.0, 0.0, 2.0], [0; 2])
+		};
 		meshlets
 			.write_indexed_field(
 				"meshlets",
 				meshlet_index,
 				"cone_apex_cutoff",
-				Value::PackedVec4F([0.0, 0.0, 0.0, 2.0]),
+				Value::PackedVec4F(cone_apex_cutoff),
 			)
 			.expect("task cone cutoff");
+		meshlets
+			.write_indexed_field("meshlets", meshlet_index, "cone_axis", Value::Vec2U16(cone_axis))
+			.expect("task cone axis");
 	}
 	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("task push constants").clone());
 	push_constant.write("work_item_base", Value::U32(0)).expect("task work base");
@@ -280,7 +305,11 @@ fn run_single_meshlet_task(
 	center_radius: [f32; 4],
 	skinned: bool,
 ) -> (Option<u32>, Option<Value>) {
-	let outputs = run_meshlet_task_workgroup(program, view_projections, selected_view_index, &[center_radius], skinned, 0);
+	let mesh = TaskMeshFixture {
+		skinned,
+		..Default::default()
+	};
+	let outputs = run_meshlet_task_workgroup(program, view_projections, selected_view_index, &[center_radius], mesh, 0);
 	(
 		outputs.mesh_output_count(),
 		outputs.payload_value("meshlet_instances", 0).cloned(),
@@ -307,7 +336,7 @@ fn visibility_task_workgroup_compacts_mixed_meshlets_in_lane_order() {
 		&[(0, identity_matrix())],
 		None,
 		&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
-		false,
+		TaskMeshFixture::default(),
 		0,
 	);
 
@@ -330,7 +359,14 @@ fn visibility_task_workgroup_compacts_mixed_meshlets_in_lane_order() {
 #[test]
 fn visibility_task_main_selects_later_batched_workgroup() {
 	let program = asset!("visibility-task.besl");
-	let output = run_meshlet_task_workgroup(&program, &[(0, identity_matrix())], None, &[[0.0, 0.0, 0.5, 0.1]], false, 1);
+	let output = run_meshlet_task_workgroup(
+		&program,
+		&[(0, identity_matrix())],
+		None,
+		&[[0.0, 0.0, 0.5, 0.1]],
+		TaskMeshFixture::default(),
+		1,
+	);
 
 	assert_eq!(output.mesh_output_count(), Some(1));
 	assert_eq!(
@@ -345,6 +381,25 @@ fn visibility_task_main_bypasses_static_culling_for_skinned_meshes() {
 	let program = asset!("visibility-task.besl");
 	let output = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], true);
 	assert_eq!(output, (Some(1), Some(fixture_meshlet_instance())));
+}
+
+/// Verifies both task shaders reject a meshlet facing away from the view unless its material is double-sided.
+#[test]
+fn task_mains_keep_back_facing_meshlets_only_for_double_sided_meshes() {
+	for program in [asset!("visibility-task.besl"), asset!("shadow-task.besl")] {
+		let visible_meshlets = |flags| {
+			let mesh = TaskMeshFixture {
+				flags,
+				back_facing: true,
+				..Default::default()
+			};
+			run_meshlet_task_workgroup(&program, &[(0, identity_matrix())], None, &[[0.0, 0.0, 0.5, 0.1]], mesh, 0)
+				.mesh_output_count()
+		};
+
+		assert_eq!(visible_meshlets(0), Some(0));
+		assert_eq!(visible_meshlets(MESH_FLAG_DOUBLE_SIDED), Some(1));
+	}
 }
 
 /// Verifies shadow culling selects the cascade view named by the second push constant.
@@ -367,7 +422,7 @@ fn shadow_task_main_selects_later_batched_workgroup() {
 		&[(3, identity_matrix())],
 		Some(3),
 		&[[0.0, 0.0, 0.5, 0.1]],
-		false,
+		TaskMeshFixture::default(),
 		1,
 	);
 

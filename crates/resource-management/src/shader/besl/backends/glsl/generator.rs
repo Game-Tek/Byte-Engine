@@ -716,7 +716,7 @@ impl Generator {
 				string.push_str(&format!(
 					"const {} {}={};{}",
 					type_name,
-					name,
+					Self::identifier(name),
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
 				));
@@ -728,7 +728,7 @@ impl Generator {
 					string.push_str(type_name);
 					string.push(' ');
 				}
-				string.push_str(name.as_str());
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(count.to_string().as_str());
@@ -756,7 +756,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name
+					Self::identifier(name)
 				));
 			}
 			besl::Nodes::Output {
@@ -773,7 +773,10 @@ impl Generator {
 				if let Some(count) = count {
 					string.push_str(&format!(
 						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
-						location, type_name, name, count
+						location,
+						type_name,
+						Self::identifier(name),
+						count
 					));
 				} else {
 					let qualifier = if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
@@ -783,7 +786,9 @@ impl Generator {
 					};
 					string.push_str(&format!(
 						"layout(location={}){space_char}{qualifier}out {} {};{break_char}",
-						location, type_name, name
+						location,
+						type_name,
+						Self::identifier(name)
 					));
 				}
 			}
@@ -791,7 +796,7 @@ impl Generator {
 				string.push_str("shared ");
 				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(&count.to_string());
@@ -884,18 +889,18 @@ impl Generator {
 							self.emit_statement_end(string);
 						}
 						string.push('}');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 					}
 					besl::BindingTypes::BufferArray { element } => {
 						string.push_str(&format!("_{}{{", name));
 						Self::emit_type_name(string, element.borrow().get_name().unwrap());
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 						string.push_str("[];");
 						string.push('}');
 					}
 					besl::BindingTypes::Image { .. } | besl::BindingTypes::CombinedImageSampler { .. } => {
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 					}
 				}
 
@@ -921,7 +926,7 @@ impl Generator {
 				string.push_str("const ");
 				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				string.push_str(" = ");
 				self.emit_node_string(string, value);
 				string.push_str(&format!(";{break_char}"));
@@ -936,6 +941,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	fn minified(&self) -> bool {
 		self.minified
+	}
+	fn is_reserved_identifier(name: &str) -> bool {
+		super::reserved::is_reserved(name)
 	}
 	fn emit_intrinsic_call(
 		&mut self,
@@ -961,6 +969,8 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			} if self.current_stage_interpolates_outputs && name == output_name && besl::is_position_output(name) => {
 				string.push_str("gl_Position");
 			}
+			// The backend declares the push-constant block instance itself, so references keep its unescaped name.
+			besl::Nodes::PushConstant { .. } => string.push_str("push_constant"),
 			_ => return false,
 		}
 		true

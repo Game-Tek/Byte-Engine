@@ -138,13 +138,16 @@ impl Generator {
 				string.push('\n');
 			}
 		}
-		self.emit_function_attributes(string, node, "besl_main");
+		self.emit_function_attributes(string, node, "main");
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
-		string.push_str(" besl_main(");
+		string.push(' ');
+		// `main` is reserved, so the entry point is written as `besl_main` like any other escaped name.
+		Self::identifier("main").push_to(string);
+		string.push('(');
 		emit_comma_separated_nodes(string, formatting, params, |string, parameter| {
 			self.emit_node_string(string, parameter)
 		});
-		self.emit_function_extra_parameters(string, node, "besl_main", !params.is_empty());
+		self.emit_function_extra_parameters(string, node, "main", !params.is_empty());
 		formatting.push_block_start(string);
 		self.emit_function_statement_block(string, statements, 1);
 		if !self.task_payloads.is_empty() {
@@ -162,7 +165,7 @@ impl Generator {
 	/// Emits a field-by-field factory because DXC does not support user-defined struct constructor expressions.
 	pub(crate) fn emit_hlsl_struct_factory(&mut self, string: &mut String, name: &str, fields: &[besl::NodeReference]) {
 		let formatting = ShaderFormatting::new(self.minified);
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push_str(" besl_construct_");
 		string.push_str(name);
 		string.push('(');
@@ -191,7 +194,7 @@ impl Generator {
 		formatting.push_block_start(string);
 
 		formatting.push_indentation(string, 1);
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push_str(" besl_value");
 		formatting.push_statement_end(string);
 		for field in fields {
@@ -209,7 +212,7 @@ impl Generator {
 				string.push_str(&count.to_string());
 				string.push_str(";++besl_index){");
 				string.push_str("besl_value.");
-				string.push_str(field_name);
+				Self::identifier(field_name).push_to(string);
 				string.push_str("[besl_index]=besl_argument_");
 				string.push_str(field_name);
 				string.push_str("[besl_index];}");
@@ -219,7 +222,7 @@ impl Generator {
 			} else {
 				formatting.push_indentation(string, 1);
 				string.push_str("besl_value.");
-				string.push_str(field_name);
+				Self::identifier(field_name).push_to(string);
 				string.push_str("=besl_argument_");
 				string.push_str(field_name);
 				formatting.push_statement_end(string);
@@ -319,7 +322,7 @@ impl Generator {
 		string.push_str("static const ");
 		string.push_str(type_name);
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push('=');
 		string.push_str(&format!("{}({})", type_name, members.join(",")));
 		string.push(';');
@@ -355,11 +358,11 @@ impl Generator {
 				params,
 				..
 			} => {
-				let hlsl_name = if name == "main" { "besl_main" } else { name };
-				if hlsl_name == "besl_main" && self.current_stage == HlslStage::Task {
+				// The shared emitter escapes the reserved `main` to the `besl_main` entry point.
+				if name == "main" && self.current_stage == HlslStage::Task {
 					self.emit_hlsl_task_entry(string, this_node, statements, return_type, params);
 				} else {
-					self.emit_function_node(string, this_node, hlsl_name, statements, return_type, params);
+					self.emit_function_node(string, this_node, name, statements, return_type, params);
 				}
 			}
 			besl::Nodes::Struct {
@@ -398,7 +401,7 @@ impl Generator {
 					string.push_str(type_name);
 					string.push(' ');
 				}
-				string.push_str(name.as_str());
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(count.to_string().as_str());
@@ -431,7 +434,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name,
+					Self::identifier(name),
 					location
 				));
 			}
@@ -459,7 +462,7 @@ impl Generator {
 						""
 					},
 					type_name,
-					name,
+					Self::identifier(name),
 					location
 				));
 			}
@@ -472,7 +475,7 @@ impl Generator {
 				string.push_str("groupshared ");
 				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 				string.push(' ');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(&count.to_string());
@@ -529,7 +532,7 @@ impl Generator {
 								Self::translate_type(&element_type)
 							});
 							string.push_str("> ");
-							string.push_str(name);
+							Self::identifier(name).push_to(string);
 							if let Some(count) = count {
 								string.push('[');
 								string.push_str(count.to_string().as_str());
@@ -558,7 +561,7 @@ impl Generator {
 						}
 
 						string.push_str(&format!("{buffer_type}<_{name}> "));
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -576,7 +579,7 @@ impl Generator {
 						string.push('<');
 						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
 						string.push_str("> ");
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
 						if !self.minified {
 							string.push('\n');
@@ -591,7 +594,7 @@ impl Generator {
 
 						string.push_str(texture_type);
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -620,7 +623,7 @@ impl Generator {
 							_ => "<float4>",
 						});
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -635,7 +638,8 @@ impl Generator {
 
 						// Also declare a sampler with the same name + _sampler suffix
 						string.push_str("SamplerState ");
-						string.push_str(name);
+						// References build this name from the escaped texture name, so the sampler must match it.
+						Self::identifier(name).push_to(string);
 						string.push_str("_sampler");
 						if let Some(count) = count {
 							string.push('[');
@@ -739,7 +743,7 @@ float16_t4 _besl_fma_f16(float16_t4 first, float16_t4 second, float16_t4 third) 
 		index_name: &str,
 		elements_per_word: u32,
 	) {
-		string.push_str(binding_name);
+		Self::identifier(binding_name).push_to(string);
 		string.push('[');
 		string.push_str(index_name);
 		let _ = write!(string, "/{elements_per_word}u]");

@@ -6,6 +6,9 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	fn minified(&self) -> bool {
 		self.minified
 	}
+	fn is_reserved_identifier(name: &str) -> bool {
+		super::reserved::is_reserved(name)
+	}
 	fn emit_discard(&mut self, string: &mut String) {
 		string.push_str("discard_fragment()");
 	}
@@ -79,9 +82,9 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		if crate::shader::generator::scalar_array_vector_type(type_name).is_none()
 			&& let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name)
 		{
-			string.push_str(Self::translate_type(element_type));
+			Self::emit_scalar_type_name(string, element_type);
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push('[');
 			string.push_str(count);
 			string.push(']');
@@ -90,7 +93,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 
 		Self::emit_type_name(string, type_name);
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 	}
 	fn emit_function_call(
 		&mut self,
@@ -126,7 +129,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		}
 
 		// Metal user structs are aggregates, so their portable BESL constructors lower to brace initialization.
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push('{');
 		for (index, parameter) in parameters.iter().enumerate() {
 			if index > 0 {
@@ -176,11 +179,11 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 			}
 			besl::Nodes::TaskPayload { .. } => {
 				string.push_str("payload.");
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				return true;
 			}
 			besl::Nodes::Workgroup { .. } => {
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 				return true;
 			}
 			_ => {}

@@ -107,7 +107,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, 1);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push_str(" [[attribute(");
 			string.push_str(location.to_string().as_str());
 			string.push_str(")]]");
@@ -134,7 +134,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let type_name = format.get_name().unwrap();
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			if Self::is_integer_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
@@ -168,7 +168,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, 1);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			match name.as_str() {
 				"depth" => string.push_str(" [[depth(any)]]"),
 				"stencil" => string.push_str(" [[stencil]]"),
@@ -212,7 +212,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let type_name = format.get_name().unwrap();
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			if Self::is_integer_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
@@ -297,14 +297,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, indent);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			string.push('=');
 			if let Some(value) = builtin_value {
 				string.push_str(value);
 			} else {
 				string.push_str(input_name);
 				string.push('.');
-				string.push_str(name);
+				Self::identifier(name).push_to(string);
 			}
 			formatting.push_statement_end(string);
 		}
@@ -323,7 +323,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, indent);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			formatting.push_statement_end(string);
 		}
 	}
@@ -347,9 +347,13 @@ impl<A: Allocator + Clone> Generator<A> {
 			formatting.push_indentation(string, indent);
 			string.push_str(output_name);
 			string.push('.');
-			string.push_str(if besl::is_position_output(name) { "position" } else { name });
+			if besl::is_position_output(name) {
+				string.push_str("position");
+			} else {
+				Self::identifier(name).push_to(string);
+			}
 			string.push('=');
-			string.push_str(name);
+			Self::identifier(name).push_to(string);
 			formatting.push_statement_end(string);
 		}
 	}
@@ -443,16 +447,15 @@ impl<A: Allocator + Clone> Generator<A> {
 		let return_type_name = return_type.borrow().get_name().unwrap_or("void").to_string();
 		let returns_explicit_output = return_type_name != "void";
 		let has_outputs = !outputs.is_empty();
-		let entry_return_type = if returns_explicit_output {
-			Self::translate_type(&return_type_name).to_string()
-		} else if has_outputs {
-			"FragmentOutput".to_string()
-		} else {
-			"void".to_string()
-		};
 
 		string.push_str("fragment ");
-		string.push_str(&entry_return_type);
+		if returns_explicit_output {
+			Self::emit_type_name(string, &return_type_name);
+		} else if has_outputs {
+			string.push_str("FragmentOutput");
+		} else {
+			string.push_str("void");
+		}
 		string.push(' ');
 		string.push_str(MSL_ENTRY_POINT);
 		string.push_str("(FragmentInput in [[stage_in]]");
@@ -539,7 +542,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let msl_type = Self::translate_type(format.borrow().get_name().unwrap()).to_string();
+				let mut msl_type = String::new();
+				Self::emit_scalar_type_name(&mut msl_type, format.borrow().get_name().unwrap());
 				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,
@@ -603,7 +607,8 @@ impl<A: Allocator + Clone> Generator<A> {
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let msl_type = Self::translate_type(format.borrow().get_name().unwrap()).to_string();
+				let mut msl_type = String::new();
+				Self::emit_scalar_type_name(&mut msl_type, format.borrow().get_name().unwrap());
 				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,
@@ -772,7 +777,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let type_name = format.get_name().unwrap();
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
-			string.push_str(Self::mesh_output_field_name(&name));
+			Self::identifier(Self::mesh_output_field_name(&name)).push_to(string);
 			if Self::is_integer_type(type_name) {
 				string.push_str(" [[flat]]");
 			}

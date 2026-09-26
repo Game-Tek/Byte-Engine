@@ -11,10 +11,21 @@ pub(super) enum DescendantSearch {
 }
 
 /// Resolves a node reference by searching the current lexical scope chain.
+///
+/// A function in the chain is one the lookup runs inside, so its parameters and earlier locals are visible. Functions
+/// reached while searching an enclosing scope keep theirs private. See [`find_descendant`].
 pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
 			Nodes::Intrinsic { .. } => find_descendant(node, name, DescendantSearch::Any),
+			Nodes::Function {
+				name: function_name,
+				params,
+				statements,
+				..
+			} => (function_name == name)
+				.then(|| node.clone())
+				.or_else(|| find_in_function(params, statements, name, DescendantSearch::NonIntrinsic)),
 			_ => find_descendant(node, name, DescendantSearch::NonIntrinsic),
 		};
 
@@ -292,6 +303,13 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 	}
 
 	let result = match node.borrow().node() {
+		// Lexical lookup sees only declared names. Struct fields and a value's type members are reached through
+		// `value.member` (see `resolve_accessed_member`), and a function's parameters and locals are private to it.
+		Nodes::Struct { .. } | Nodes::Member { .. } | Nodes::Parameter { .. } | Nodes::Function { .. }
+			if mode == DescendantSearch::NonIntrinsic =>
+		{
+			None
+		}
 		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
 			find_in_children(children, child_name, mode == DescendantSearch::NonIntrinsic, mode)
 		}

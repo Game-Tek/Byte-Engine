@@ -59,19 +59,17 @@ impl NodeReference {
 		Rc::as_ptr(&self.0) as usize
 	}
 
-	/// Returns the main function of the program.
+	/// Returns the program's `main` entry-point function.
+	///
+	/// Only functions count, and the search walks nested scopes, never struct fields or function bodies, so a member
+	/// or local named `main` is never returned.
 	pub fn get_main(&self) -> Option<NodeReference> {
-		if let Some(m) = self.get_descendant("main") {
-			return Some(m);
-		} else {
-			for child in self.get_children()? {
-				if let Some(m) = child.get_main() {
-					return Some(m);
-				}
-			}
+		let node = self.borrow();
+		match node.node() {
+			Nodes::Function { name, .. } if name == "main" => Some(self.clone()),
+			Nodes::Scope { children, .. } => children.iter().find_map(NodeReference::get_main),
+			_ => None,
 		}
-
-		None
 	}
 }
 

@@ -2261,4 +2261,87 @@ main: fn () -> void {
 			"Failed to resolve matrix-vector arithmetic. The most likely cause is incorrect BESL operator result typing.",
 		);
 	}
+	/// Verifies a bare name resolves only to declarations in scope, never to fields of a struct type.
+	#[test]
+	fn bare_names_do_not_resolve_to_struct_fields() {
+		for source in [
+			"main: fn () -> void { x = 1; }",
+			"Light: struct { intensity: f32, } main: fn () -> void { intensity = 1.0; }",
+		] {
+			let error = crate::compile_to_besl(source, None).expect_err("an undeclared bare name should fail to link");
+			assert!(
+				matches!(
+					error,
+					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
+				),
+				"{source} linked as {error:?}"
+			);
+		}
+	}
+
+	/// Verifies buffer and push constant members are reached only through their resource.
+	#[test]
+	fn bare_names_do_not_resolve_to_resource_members() {
+		for source in [
+			"Data: struct { count: u32, } data: descriptor<{ type: Data, binding: 0, access: read }>; main: fn () -> void { count; }",
+			"push_constant: push_constant { count: u32 } main: fn () -> void { count; }",
+		] {
+			let error = crate::compile_to_besl(source, None).expect_err("a bare resource member should fail to link");
+			assert!(
+				matches!(
+					error,
+					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
+				),
+				"{source} linked as {error:?}"
+			);
+		}
+	}
+
+	/// Verifies a function's locals and parameters stay private to it.
+	#[test]
+	fn bare_names_do_not_resolve_to_other_function_locals() {
+		for source in [
+			"helper: fn () -> void { let hidden: f32 = 1.0; } main: fn () -> void { hidden; }",
+			"helper: fn (hidden: f32) -> void { } main: fn () -> void { hidden; }",
+		] {
+			let error = crate::compile_to_besl(source, None).expect_err("another function's local should not be visible");
+			assert!(
+				matches!(
+					error,
+					crate::CompilationError::Lex(LexError::AccessingUndeclaredMember { .. })
+				),
+				"{source} linked as {error:?}"
+			);
+		}
+	}
+
+	/// Verifies struct fields stay reachable through member access.
+	#[test]
+	fn struct_fields_resolve_through_member_access() {
+		let source = r#"
+			Light: struct { intensity: f32, }
+			main: fn () -> void {
+				let light: Light = Light(1.0);
+				light.intensity = 2.0;
+			}
+		"#;
+
+		crate::compile_to_besl(source, None).expect("member access to a struct field should link");
+	}
+
+	/// Verifies `get_main` returns the entry-point function even when a struct declares a `main` member first.
+	#[test]
+	fn get_main_returns_the_entry_point_function() {
+		let source = r#"
+			Config: struct { main: u32, }
+			main: fn () -> void { }
+		"#;
+
+		let root = crate::compile_to_besl(source, None).expect("source should link");
+		let main = root.get_main().expect("main function should be found");
+		assert!(matches!(main.borrow().node(), Nodes::Function { name, .. } if name == "main"));
+
+		let root = crate::compile_to_besl("Config: struct { main: u32, }", None).expect("source should link");
+		assert!(root.get_main().is_none(), "a struct member is not an entry point");
+	}
 }

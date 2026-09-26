@@ -99,6 +99,10 @@ pub struct Context {
 	pub(super) last_started_frame: Option<u64>,
 	/// Highest frame index whose fence has been observed signaled, gating deferred destructions.
 	pub(super) completed_frame: Option<u64>,
+
+	pub(crate) image_groups: crate::image_group::ImageGroups,
+	/// The memory allocations backing each image group's members, indexed by group.
+	pub(super) image_group_heaps: Vec<smallvec::SmallVec<[graphics_hardware_interface::AllocationHandle; 2]>>,
 }
 
 /// Accepts deferred descriptor work only while both its payload and post-write version remain current.

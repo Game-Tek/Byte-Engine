@@ -422,6 +422,14 @@ impl Device {
 		}
 	}
 
+	/// Returns the value an attachment is cleared to when its pass starts, or `None` when it loads or discards.
+	fn attachment_clear(attachment: &AttachmentInformation) -> Option<ClearValue> {
+		match attachment.load {
+			crate::LoadOp::Clear(clear) => Some(clear),
+			crate::LoadOp::Load | crate::LoadOp::Discard => None,
+		}
+	}
+
 	/// Binds native DX12 render target views for color attachments in a render pass.
 	pub(crate) fn bind_render_targets_native(
 		&mut self,
@@ -437,6 +445,14 @@ impl Device {
 		else {
 			return;
 		};
+		// A pass that clears or discards an attachment gives an image-group member new contents.
+		for attachment in attachments {
+			if let (crate::ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
+				if self.image_groups.member(image).is_some() {
+					self.initialize_image_contents(image, sequence_index);
+				}
+			}
+		}
 
 		let mut target_resources = SmallVec::<[RenderTargetAttachment; 8]>::new();
 		let mut depth_resource = None;
@@ -459,8 +475,7 @@ impl Device {
 					image.array_layers,
 					attachment.layer,
 					layer_count,
-					attachment.load,
-					attachment.clear,
+					Self::attachment_clear(attachment),
 				));
 				continue;
 			}
@@ -482,8 +497,7 @@ impl Device {
 				array_layers,
 				layer: attachment.layer,
 				layer_count,
-				load: attachment.load,
-				clear: attachment.clear,
+				clear: Self::attachment_clear(attachment),
 				swapchain_backbuffer,
 			});
 		}
@@ -496,7 +510,7 @@ impl Device {
 		// one native Barrier call. Integer render targets transition through UAV in their clear.
 		let mut attachment_barriers = EnhancedBarrierBatch::default();
 		for target in &target_resources {
-			let state = if !target.load && matches!(target.clear, ClearValue::Integer(..)) && target.format == Formats::U32 {
+			let state = if matches!(target.clear, Some(ClearValue::Integer(..))) && target.format == Formats::U32 {
 				TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW)
 			} else {
 				TextureBarrierState::RENDER_TARGET
@@ -532,7 +546,6 @@ impl Device {
 					array_layers,
 					layer,
 					layer_count,
-					load,
 					clear,
 					swapchain_backbuffer,
 				} = target;
@@ -547,7 +560,7 @@ impl Device {
 				if swapchain_backbuffer {
 					self.swapchain_backbuffer_bind_count += 1;
 				}
-				if !load {
+				if let Some(clear) = clear {
 					if matches!(clear, ClearValue::Integer(..)) && format == Formats::U32 {
 						if let Some(image_handle) = image_handle {
 							self.record_image_clear_with_final_state(
@@ -592,10 +605,10 @@ impl Device {
 		Self::submit_resource_barriers(&command_list, &post_clear_barriers);
 
 		let mut depth_handle = None;
-		if let Some((_, resource, format, array_layers, layer, layer_count, load, clear)) = depth_resource {
+		if let Some((_, resource, format, array_layers, layer, layer_count, clear)) = depth_resource {
 			let handle =
 				self.retained_depth_stencil_view(command_buffer_handle, &resource, format, array_layers, layer, layer_count);
-			if !load {
+			if let Some(clear) = clear {
 				let depth = Self::clear_depth_value(clear);
 				unsafe {
 					command_list.ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, None);

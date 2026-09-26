@@ -210,19 +210,18 @@ pub(crate) mod utils {
 		}
 	}
 
-	pub(crate) fn load_action(load: bool) -> mtl::MTLLoadAction {
-		if load {
-			mtl::MTLLoadAction::Load
-		} else {
-			mtl::MTLLoadAction::Clear
+	pub(crate) fn load_action(load: crate::LoadOp) -> mtl::MTLLoadAction {
+		match load {
+			crate::LoadOp::Load => mtl::MTLLoadAction::Load,
+			crate::LoadOp::Clear(_) => mtl::MTLLoadAction::Clear,
+			crate::LoadOp::Discard => mtl::MTLLoadAction::DontCare,
 		}
 	}
 
-	pub(crate) fn store_action(store: bool) -> mtl::MTLStoreAction {
-		if store {
-			mtl::MTLStoreAction::Store
-		} else {
-			mtl::MTLStoreAction::DontCare
+	pub(crate) fn store_action(store: crate::StoreOp) -> mtl::MTLStoreAction {
+		match store {
+			crate::StoreOp::Store => mtl::MTLStoreAction::Store,
+			crate::StoreOp::Discard => mtl::MTLStoreAction::DontCare,
 		}
 	}
 

@@ -128,6 +128,9 @@ impl Device {
 		sequence_index: u8,
 	) {
 		for &(image_handle, _) in images {
+			if self.image_groups.member(image_handle).is_some() {
+				self.initialize_image_contents(image_handle, sequence_index);
+			}
 			let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
 				continue;
 			};

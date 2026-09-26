@@ -53,6 +53,12 @@ pub struct Device {
 	free_clear_uav_descriptor_slots: Vec<(usize, u32)>,
 	buffer_states: HashMap<usize, BufferBarrierState>,
 	image_states: HashMap<usize, TextureBarrierState>,
+	pub(crate) image_groups: crate::image_group::ImageGroups,
+	/// Accesses that earlier images made to memory an image now reuses, by native resource key. The image's next
+	/// transition flushes them with a global barrier before its new contents are written.
+	image_alias_flushes: HashMap<usize, (D3D12_BARRIER_SYNC, D3D12_BARRIER_ACCESS)>,
+	/// The heaps backing each image group's members, indexed by group.
+	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
 	render_target_view_allocation_count: usize,
 	depth_stencil_view_allocation_count: usize,
 	texture_copy_count: usize,
@@ -584,8 +590,8 @@ struct RenderTargetAttachment {
 	array_layers: u32,
 	layer: Option<u32>,
 	layer_count: u32,
-	load: bool,
-	clear: ClearValue,
+	/// The value the pass clears the target to, or `None` when it loads or discards the contents.
+	clear: Option<ClearValue>,
 	swapchain_backbuffer: bool,
 }
 
@@ -1124,6 +1130,10 @@ impl crate::context::ContextCreate for Device {
 	}
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
 		Device::build_image(self, builder)
+	}
+	fn create_image_group(&mut self, name: Option<&str>) -> crate::ImageGroupHandle {
+		self.image_group_heaps.push(SmallVec::new());
+		self.image_groups.create(name)
 	}
 	fn build_sampler(&mut self, builder: sampler::Builder) -> SamplerHandle {
 		Device::build_sampler(self, builder)

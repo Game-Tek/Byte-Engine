@@ -136,6 +136,7 @@ impl Frame<'_> {
 	}
 
 	pub fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
+		self.device.image_groups.assert_resizable(image_handle);
 		self.device
 			.resize_image_internal(ImageHandle(image_handle), extent, self.frame_key.sequence_index);
 	}
@@ -215,6 +216,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
 		Frame::resize_image(self, image_handle, extent);
+	}
+
+	fn place_image_group(&mut self, group: crate::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
+		self.device.place_image_group(group, members);
 	}
 
 	fn create_command_buffer_recording<'record>(

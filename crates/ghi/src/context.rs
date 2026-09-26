@@ -538,7 +538,16 @@ pub trait ContextCreate {
 	fn build_dynamic_image(&mut self, builder: image::Builder) -> DynamicImageHandle;
 
 	/// Creates an image from a builder.
+	///
+	/// When the builder names a group with [`image::Builder::group`], the image joins that group and has no usable
+	/// memory until [`crate::frame::Frame::place_image_group`] places it.
 	fn build_image(&mut self, builder: image::Builder) -> ImageHandle;
+
+	/// Creates an empty group of images that may share device memory.
+	///
+	/// Group images whose uses do not overlap in time, such as the intermediate targets of one frame. Next, add
+	/// members with [`image::Builder::group`] and [`Self::build_image`].
+	fn create_image_group(&mut self, name: Option<&str>) -> crate::ImageGroupHandle;
 
 	/// Creates an image sampler from a builder.
 	///
@@ -643,6 +652,10 @@ macro_rules! delegate_context_create_to_device {
 
 		fn build_dynamic_image(&mut self, builder: $crate::image::Builder) -> $crate::DynamicImageHandle {
 			self.device.build_dynamic_image(builder)
+		}
+
+		fn create_image_group(&mut self, name: Option<&str>) -> $crate::ImageGroupHandle {
+			self.device.create_image_group(name)
 		}
 
 		fn build_image(&mut self, builder: $crate::image::Builder) -> $crate::ImageHandle {

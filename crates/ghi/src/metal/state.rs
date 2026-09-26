@@ -59,6 +59,22 @@ pub mod image {
 		pub(crate) description: ImageDescription,
 		/// Present only for images the CPU may access.
 		pub(crate) staging: Option<Vec<u8>>,
+		/// Present only for image-group members after their group is placed.
+		pub(crate) slot: Option<GroupSlot>,
+	}
+
+	/// The `GroupSlot` struct locates an image-group member inside a group heap.
+	///
+	/// Recording uses it to make the heap resident and to track the member by the bytes it occupies, so hazards
+	/// between members that share memory are ordered like hazards on one buffer.
+	#[derive(Clone)]
+	pub(crate) struct GroupSlot {
+		pub(crate) heap: Retained<ProtocolObject<dyn mtl::MTLHeap>>,
+		/// Identifies the heap for hazard tracking. It is never reused, so a replaced heap's history cannot leak into
+		/// its replacement.
+		pub(crate) heap_serial: u64,
+		pub(crate) offset: usize,
+		pub(crate) size: usize,
 	}
 
 	// SAFETY: The image owns a retained Metal texture, which Metal documents as usable from any thread, and plain

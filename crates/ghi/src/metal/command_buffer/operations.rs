@@ -474,13 +474,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			self.command_buffer.retain_allocation(target.clone());
 			let descriptor: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if format.is_depth() {
 				let depth = rpd.depthAttachment();
-				depth.setClearDepth(utils::clear_depth(attachment.clear));
+				depth.setClearDepth(utils::clear_depth(attachment.clear_value()));
 				Retained::into_super(depth)
 			} else {
 				// SAFETY: `color_index` counts only color attachments and stays within Metal's attachment array.
 				let color = unsafe { rpd.colorAttachments().objectAtIndexedSubscript(color_index) };
 				color_index += 1;
-				color.setClearColor(utils::clear_color(attachment.clear));
+				color.setClearColor(utils::clear_color(attachment.clear_value()));
 				Retained::into_super(color)
 			};
 			descriptor.setTexture(Some(target));
@@ -510,13 +510,19 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 				None => synchronization::MetalResourceUse::drawable(texture.as_ref(), mtl::MTLStages::Fragment, access),
 			};
 			let initial_access = crate::AccessPolicies::WRITE
-				| if attachment.load {
+				| if attachment.loads() {
 					crate::AccessPolicies::READ
 				} else {
 					crate::AccessPolicies::NONE
 				};
 			initial_attachment_uses.push(resource_use(initial_access));
-			final_attachment_uses.push(resource_use(crate::AccessPolicies::WRITE));
+			final_attachment_uses.push(resource_use(crate::AccessPolicies::WRITE).in_group_memory(self.device.images));
+		}
+		// A pass that clears or discards an attachment gives an image-group member new contents.
+		for (attachment, ..) in &attachments {
+			if let (ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
+				self.commit.image_groups.initialize(image);
+			}
 		}
 		self.consume_resources(initial_attachment_uses);
 		self.active_render_attachment_uses = final_attachment_uses;
@@ -549,6 +555,14 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self
 	}
 
+	fn discard_images(&mut self, images: &[graphics_hardware_interface::BaseImageHandle]) {
+		// Metal has no image layouts, and hazard tracking already orders a member's next access after every access to
+		// the heap bytes it shares, so discarding only records that the member holds new contents.
+		for &image in images {
+			self.commit.image_groups.initialize(image);
+		}
+	}
+
 	fn clear_images(
 		&mut self,
 		textures: &[(
@@ -573,6 +587,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let image_handle = self.get_internal_image_handle(*handle);
 			let image = self.device.images.resource(image_handle);
 			self.command_buffer.retain_allocation(image.texture.clone());
+			self.commit.image_groups.initialize(*handle);
 			let is_depth = image.description.format.is_depth();
 			let compatible = batch.is_empty()
 				|| (batch_extent == Some(image.description.extent)

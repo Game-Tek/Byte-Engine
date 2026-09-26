@@ -51,6 +51,8 @@ impl Context {
 			tasks: Vec::with_capacity(1024),
 			last_started_frame: None,
 			completed_frame: None,
+			image_groups: crate::image_group::ImageGroups::default(),
+			image_group_heaps: Vec::new(),
 
 			#[cfg(debug_assertions)]
 			names: HashMap::with_capacity_and_hasher(4096, Default::default()),

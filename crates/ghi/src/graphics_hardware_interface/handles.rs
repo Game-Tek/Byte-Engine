@@ -55,6 +55,14 @@ impl From<ImageHandle> for BaseImageHandle {
 	}
 }
 
+/// The `ImageGroupHandle` struct identifies images that may share device memory when their lifetimes do not overlap.
+///
+/// Create a group with [`crate::context::ContextCreate::create_image_group`], add images to it with
+/// [`crate::image::Builder::group`], then give the members memory with
+/// [`crate::frame::Frame::place_image_group`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ImageGroupHandle(pub(crate) u64);
+
 /// The `DynamicImageHandle` struct addresses a frame-local image that can be written independently for each frame in flight.
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct DynamicImageHandle(pub(crate) BaseImageHandle);

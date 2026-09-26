@@ -130,11 +130,12 @@ pub(crate) fn build_image(
 		texture,
 		description,
 		staging,
+		slot: None,
 	}
 }
 
 /// Builds a Metal texture descriptor from GHI image creation parameters.
-fn build_texture_descriptor(
+pub(crate) fn build_texture_descriptor(
 	image::ImageDescription {
 		extent,
 		format,

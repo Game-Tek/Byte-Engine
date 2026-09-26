@@ -127,6 +127,10 @@ impl Device {
 		ImageHandle(crate::BaseImageHandle(0))
 	}
 
+	pub fn create_image_group(&mut self, _name: Option<&str>) -> crate::ImageGroupHandle {
+		crate::ImageGroupHandle(0)
+	}
+
 	pub fn build_sampler(&mut self, _builder: sampler::Builder) -> SamplerHandle {
 		SamplerHandle(0)
 	}

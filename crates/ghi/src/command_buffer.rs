@@ -106,6 +106,14 @@ where
 
 	/// Clears the provided images to their requested values.
 	fn clear_images(&mut self, textures: &[(BaseImageHandle, ClearValue)]);
+
+	/// Marks the images' contents as undefined so the next command can overwrite them.
+	///
+	/// Call this before the first write to an image-group member when that write is not a clear or a render pass
+	/// with [`crate::LoadOp::Clear`] or [`crate::LoadOp::Discard`], for example a compute shader writing a storage
+	/// image. It orders the member's next access after every earlier access to the memory it shares. Images outside
+	/// groups only lose their contents.
+	fn discard_images(&mut self, images: &[BaseImageHandle]);
 	/// Clears the provided buffers before later GPU work consumes them.
 	fn clear_buffers(&mut self, buffer_handles: &[BaseBufferHandle]);
 

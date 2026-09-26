@@ -72,6 +72,9 @@ pub struct Context {
 	/// One retained upload arena per in-flight frame, followed by the transient arena for detached recordings.
 	pub(crate) upload_arenas: Vec<command_buffer::UploadArena>,
 	pub(crate) argument_tables: command_buffer::CommandArgumentTables,
+	pub(crate) image_groups: crate::image_group::ImageGroups,
+	/// The serial the next group heap receives; see [`image::GroupSlot::heap_serial`].
+	pub(crate) next_group_heap_serial: u64,
 }
 
 // SAFETY: Retained Metal objects are only `!Send` because objc2 cannot know an object's thread rules; Metal

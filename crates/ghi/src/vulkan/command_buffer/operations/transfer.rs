@@ -200,11 +200,17 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
 		for attachment in attachments {
 			self.get_attachment_image_view(attachment);
+			// A pass that clears or discards an attachment gives an image-group member new contents.
+			if let (graphics_hardware_interface::ImageOrSwapchain::Image(image), false) =
+				(attachment.target, attachment.loads())
+			{
+				self.initialize_group_member(image);
+			}
 		}
 		self.consume_resources(attachments.iter().map(|attachment| Consumption {
 			handle: Handles::Image(self.get_attachment_image_handle(attachment)),
 			stages: crate::Stages::FRAGMENT,
-			access: if attachment.load {
+			access: if attachment.loads() {
 				crate::AccessPolicies::READ_WRITE
 			} else {
 				crate::AccessPolicies::WRITE
@@ -394,6 +400,18 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		}
 	}
 
+	fn discard_images(&mut self, images: &[graphics_hardware_interface::BaseImageHandle]) {
+		for &image in images {
+			if !self.initialize_group_member(image) {
+				// An image outside a group only loses its contents: its next barrier starts from an undefined layout.
+				let handle = Handles::Image(self.get_internal_base_image_handle(image));
+				if let Some(state) = self.states.get_mut(&handle) {
+					state.layout = vk::ImageLayout::UNDEFINED;
+				}
+			}
+		}
+	}
+
 	fn clear_images(
 		&mut self,
 		textures: &[(
@@ -401,6 +419,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			graphics_hardware_interface::ClearValue,
 		)],
 	) {
+		for (image_handle, _) in textures {
+			self.initialize_group_member(*image_handle);
+		}
 		self.consume_resources(
 			textures.iter().map(|(image_handle, _)| {
 				transfer_consumption(self.image_resource(*image_handle), crate::AccessPolicies::WRITE)

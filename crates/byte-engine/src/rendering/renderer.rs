@@ -40,7 +40,7 @@ mod tests {
 	use crate::configuration::ConfigurationUpdateState;
 
 	/// Creates an opaque nonzero image handle for render-target bookkeeping tests.
-	fn image_handle(value: u64) -> ghi::BaseImageHandle {
+	pub(super) fn image_handle(value: u64) -> ghi::BaseImageHandle {
 		assert_ne!(value, 0);
 		// SAFETY: Test values are nonzero and `BaseImageHandle` is the transparent opaque handle representation used by GHI.
 		unsafe { std::mem::transmute(value) }
@@ -183,9 +183,9 @@ mod tests {
 		let second_image = image_handle(2);
 		let other_sink_image = image_handle(3);
 
-		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM, 1);
-		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM, 1);
-		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32, 1);
+		rt.insert("first".to_string(), 0, first_image, ghi::Formats::RGBA16UNORM, 1, false);
+		rt.insert("second".to_string(), 0, second_image, ghi::Formats::RGBA16UNORM, 1, false);
+		rt.insert("main".to_string(), 1, other_sink_image, ghi::Formats::Depth32, 1, false);
 		rt.alias(0, "first", "main");
 		rt.alias(0, "second", "main");
 

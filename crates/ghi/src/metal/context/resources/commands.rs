@@ -72,6 +72,7 @@ impl Context {
 			descriptor_sets: &mut self.descriptor_sets,
 			upload_arena: &mut self.upload_arenas[arena_index],
 			argument_tables: &mut self.argument_tables,
+			image_groups: &mut self.image_groups,
 		};
 
 		super::super::CommandBufferRecording::new(

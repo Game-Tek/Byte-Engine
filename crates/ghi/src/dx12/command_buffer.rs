@@ -176,6 +176,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self
 	}
 
+	fn discard_images(&mut self, images: &[BaseImageHandle]) {
+		let sequence_index = self.sequence_index();
+		for &image in images {
+			self.device.initialize_image_contents(image, sequence_index);
+		}
+	}
+
 	fn clear_images(&mut self, _textures: &[(BaseImageHandle, ClearValue)]) {
 		self.device
 			.clear_images(self.command_buffer, _textures, self.sequence_index());

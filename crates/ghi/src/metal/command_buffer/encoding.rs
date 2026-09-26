@@ -340,7 +340,7 @@ impl CommandBufferRecording<'_> {
 					}
 					Descriptor::Sampler { .. } => continue,
 				};
-				uses.push(resource_use);
+				uses.push(resource_use.in_group_memory(self.device.images));
 			}
 		}
 		synchronization::DescriptorUses::new(uses)

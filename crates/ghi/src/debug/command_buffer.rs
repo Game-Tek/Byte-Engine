@@ -52,6 +52,8 @@ impl<'a> CommandBufferRecording<'a> {
 
 	pub fn clear_images(&mut self, _textures: &[(graphics_hardware_interface::BaseImageHandle, ClearValue)]) {}
 
+	pub fn discard_images(&mut self, _images: &[graphics_hardware_interface::BaseImageHandle]) {}
+
 	pub fn clear_buffers(&mut self, _buffer_handles: &[BaseBufferHandle]) {}
 
 	pub fn copy_buffers(&mut self, _copies: &[BufferCopyDescriptor]) {}

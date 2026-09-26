@@ -383,6 +383,95 @@ impl Device {
 		mip_levels: u32,
 		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
 	) -> Option<ID3D12Resource> {
+		let resource_desc = Self::image_resource_desc(extent, is_3d, format, uses, array_layers, mip_levels)?;
+		let heap_properties = D3D12_HEAP_PROPERTIES {
+			Type: D3D12_HEAP_TYPE_DEFAULT,
+			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+			MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+			CreationNodeMask: 1,
+			VisibleNodeMask: 1,
+		};
+		let mut resource = None;
+		let result = unsafe {
+			self.device.CreateCommittedResource3(
+				&heap_properties,
+				D3D12_HEAP_FLAG_NONE,
+				&resource_desc,
+				D3D12_BARRIER_LAYOUT_COMMON,
+				optimized_clear_value.as_ref().map(|clear_value| clear_value as *const _),
+				None::<&ID3D12ProtectedResourceSession>,
+				None,
+				&mut resource,
+			)
+		};
+		Some(self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers))
+	}
+
+	/// Creates an image-group member at `offset` inside `heap`.
+	///
+	/// The member starts in the undefined layout, so its first barrier must discard its contents.
+	pub(crate) fn create_placed_image_resource(
+		&self,
+		heap: &ID3D12Heap,
+		offset: u64,
+		resource_desc: &D3D12_RESOURCE_DESC1,
+		(format, extent, is_3d, uses, array_layers): (Formats, Extent, bool, Uses, u32),
+		optimized_clear_value: Option<D3D12_CLEAR_VALUE>,
+	) -> ID3D12Resource {
+		let mut resource = None;
+		let result = unsafe {
+			self.device.CreatePlacedResource2(
+				heap,
+				offset,
+				resource_desc,
+				D3D12_BARRIER_LAYOUT_UNDEFINED,
+				optimized_clear_value.as_ref().map(|clear_value| clear_value as *const _),
+				None,
+				&mut resource,
+			)
+		};
+		self.expect_image_resource(result, resource, format, extent, is_3d, uses, array_layers)
+	}
+
+	/// Unwraps a native image creation result, logging the device state before a failure panics.
+	fn expect_image_resource(
+		&self,
+		result: windows::core::Result<()>,
+		resource: Option<ID3D12Resource>,
+		format: Formats,
+		extent: Extent,
+		is_3d: bool,
+		uses: Uses,
+		array_layers: u32,
+	) -> ID3D12Resource {
+		if let Err(error) = result {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			self.log_dx12_error(format!(
+				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Dimension: {}D. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
+				format,
+				extent,
+				if is_3d { 3 } else { 2 },
+				uses,
+				array_layers
+			));
+			panic!(
+				"Failed to create a DX12 image resource. The most likely cause is that the requested format/use combination is invalid, memory is exhausted, or the device was removed. Native error: {error:?}. Device removed reason: {removed_reason:?}."
+			);
+		}
+		resource.expect(
+			"Failed to create a DX12 image resource. The most likely cause is that the driver reported success without returning the requested native resource.",
+		)
+	}
+
+	/// Describes a native texture for an image, or returns `None` when the image has no extent or native format.
+	pub(crate) fn image_resource_desc(
+		extent: Extent,
+		is_3d: bool,
+		format: Formats,
+		uses: Uses,
+		array_layers: u32,
+		mip_levels: u32,
+	) -> Option<D3D12_RESOURCE_DESC1> {
 		Self::validate_image_dimension(extent, is_3d, array_layers, false);
 		let dxgi_format = Self::dxgi_resource_format(format, uses)?;
 		if extent.width() == 0 || extent.height() == 0 || (is_3d && extent.depth() == 0) {
@@ -398,13 +487,6 @@ impl Device {
 			u16::try_from(array_layers.max(1)).expect(
 				"Invalid DX12 image array size. The most likely cause is that the layer count exceeds the native 16-bit limit.",
 			)
-		};
-		let heap_properties = D3D12_HEAP_PROPERTIES {
-			Type: D3D12_HEAP_TYPE_DEFAULT,
-			CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-			MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-			CreationNodeMask: 1,
-			VisibleNodeMask: 1,
 		};
 		let resource_desc = D3D12_RESOURCE_DESC1 {
 			Dimension: if is_3d {
@@ -425,37 +507,7 @@ impl Device {
 			Flags: flags,
 			SamplerFeedbackMipRegion: Default::default(),
 		};
-		let mut resource = None;
-		let result = unsafe {
-			self.device.CreateCommittedResource3(
-				&heap_properties,
-				D3D12_HEAP_FLAG_NONE,
-				&resource_desc,
-				D3D12_BARRIER_LAYOUT_COMMON,
-				optimized_clear_value.as_ref().map(|clear_value| clear_value as *const _),
-				None::<&ID3D12ProtectedResourceSession>,
-				None,
-				&mut resource,
-			)
-		};
-		if let Err(error) = result {
-			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-			self.log_dx12_error(format!(
-				"Failed to create DX12 image resource. Format: {:?}. Extent: {:?}. Dimension: {}D. Uses: {:?}. Array layers: {}. Error: {error:?}. Device removed reason: {removed_reason:?}",
-				format,
-				extent,
-				if is_3d { 3 } else { 2 },
-				uses,
-				array_layers
-			));
-			panic!(
-				"Failed to create a DX12 image resource. The most likely cause is that the requested format/use combination is invalid, memory is exhausted, or the device was removed. Native error: {error:?}. Device removed reason: {removed_reason:?}."
-			);
-		} else {
-			Some(resource.expect(
-				"Failed to create a DX12 image resource. The most likely cause is that the driver reported success without returning the requested native resource.",
-			))
-		}
+		Some(resource_desc)
 	}
 
 	/// Verifies every native view capability promised by an image before its logical handle is published.

@@ -87,6 +87,8 @@ impl Context {
 				.map(|_| command_buffer::UploadArena::new(settings.debug_labels))
 				.collect(),
 			argument_tables: command_buffer::CommandArgumentTables::default(),
+			image_groups: crate::image_group::ImageGroups::default(),
+			next_group_heap_serial: 0,
 		};
 		context.internal_upload_synchronizer = Some(context.create_synchronizer(Some("Metal Internal Upload Sync"), true));
 
@@ -452,6 +454,106 @@ impl Context {
 		*self.images.resource_mut(handle) = replacement;
 		self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
 		true
+	}
+
+	/// Recreates every member of an image group in heaps that members with disjoint lifetimes share.
+	///
+	/// Does nothing when the group is already placed from the same requests. Descriptors that reference a member
+	/// keep working, since each member keeps its handle.
+	pub(crate) fn place_image_group(
+		&mut self,
+		group: graphics_hardware_interface::ImageGroupHandle,
+		requests: &[crate::ImageGroupMember],
+	) {
+		use objc2_metal::MTLHeap as _;
+
+		let Some(requests) = self.image_groups.requests_in_member_order(group, requests) else {
+			return;
+		};
+
+		// Describe each member at its requested extent and ask Metal how much heap memory it needs.
+		let members = requests
+			.iter()
+			.map(|request| {
+				let handle = ImageHandle(request.image.0);
+				let description = image::ImageDescription {
+					extent: request.extent,
+					..self.images.resource(handle).description
+				};
+				(handle, description, build_texture_descriptor(description))
+			})
+			.collect::<Vec<_>>();
+		let requirements = members
+			.iter()
+			.zip(&requests)
+			.map(|((_, _, descriptor), request)| {
+				let size_and_align = self.device.heapTextureSizeAndAlignWithDescriptor(descriptor);
+				(
+					crate::image_group::MemoryRequirements {
+						size: size_and_align.size as u64,
+						alignment: size_and_align.align as u64,
+						// Every member lives in private storage, so any member can share a heap with any other.
+						category: 0,
+					},
+					request.lifetime.clone(),
+				)
+			})
+			.collect::<Vec<_>>();
+		let placement = crate::image_group::pack(&requirements);
+
+		let group_name = self.image_groups.group(group).name.clone();
+		let heaps = placement
+			.heaps
+			.iter()
+			.map(|layout| {
+				let descriptor = mtl::MTLHeapDescriptor::new();
+				descriptor.setType(mtl::MTLHeapType::Placement);
+				descriptor.setStorageMode(mtl::MTLStorageMode::Private);
+				// Recording tracks hazards by the heap bytes each member occupies, so Metal's own tracking is not needed.
+				descriptor.setHazardTrackingMode(mtl::MTLHazardTrackingMode::Untracked);
+				descriptor.setSize(layout.size as usize);
+				let heap = self.device.newHeapWithDescriptor(&descriptor).expect(
+					"Metal heap creation failed. The most likely cause is that the device is out of memory for the image group.",
+				);
+				#[cfg(debug_assertions)]
+				if let Some(name) = group_name.as_deref().filter(|_| self.settings.debug_labels) {
+					heap.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
+				}
+				let serial = self.next_group_heap_serial;
+				self.next_group_heap_serial += 1;
+				(heap, serial)
+			})
+			.collect::<SmallVec<[_; 2]>>();
+
+		for ((handle, description, descriptor), slot) in members.into_iter().zip(&placement.slots) {
+			let (heap, heap_serial) = &heaps[slot.heap];
+			// SAFETY: `pack` placed the member inside the heap, at an offset aligned to the alignment Metal reported
+			// for this descriptor.
+			let texture = unsafe { heap.newTextureWithDescriptor_offset(&descriptor, slot.offset as usize) }.expect(
+				"Metal image-group texture creation failed. The most likely cause is a heap that is not a placement heap.",
+			);
+			let image = self.images.resource_mut(handle);
+			#[cfg(debug_assertions)]
+			if let Some(name) = image.name.as_deref().filter(|_| self.settings.debug_labels) {
+				texture.setLabel(Some(&objc2_foundation::NSString::from_str(name)));
+			}
+			// In-flight commands retained the previous texture and heap, so replacing them here is safe.
+			*image = image::Image {
+				name: image.name.take(),
+				texture,
+				description,
+				staging: None,
+				slot: Some(image::GroupSlot {
+					heap: heap.clone(),
+					heap_serial: *heap_serial,
+					offset: slot.offset as usize,
+					size: slot.size as usize,
+				}),
+			};
+			self.rewrite_descriptors_for_handle(PrivateHandles::Image(handle));
+		}
+
+		self.image_groups.commit(group, requests, placement);
 	}
 
 	/// Defers resize work until each other frame-local image can be replaced safely.

@@ -57,9 +57,8 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 		let attachments = [AttachmentInformation::new(
 			render_target,
 			Layouts::RenderTarget,
-			ClearValue::Color(RGBA::black()),
-			false,
-			true,
+			ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+			ghi::StoreOp::Store,
 		)];
 
 		let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -175,11 +174,15 @@ pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Contex
 			AttachmentInformation::new(
 				render_target,
 				Layouts::RenderTarget,
-				ClearValue::Color(RGBA::black()),
-				false,
-				true,
+				ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+				ghi::StoreOp::Store,
 			),
-			AttachmentInformation::new(depth_target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true),
+			AttachmentInformation::new(
+				depth_target,
+				Layouts::RenderTarget,
+				ghi::LoadOp::Clear(ClearValue::Depth(0.0)),
+				ghi::StoreOp::Store,
+			),
 		];
 		let render_pass = recording.start_render_pass(extent, &attachments);
 

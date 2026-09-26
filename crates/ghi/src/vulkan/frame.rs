@@ -383,6 +383,7 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
+		self.device.image_groups.assert_resizable(image_handle);
 		let current_frame = self.frame_key.sequence_index;
 		let image_handles = ImageHandle(image_handle.index()).get_all(&self.device.images);
 		// Every earlier resize queued its extent for the other copies after resizing this one, so matching copies
@@ -403,6 +404,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 			self.device
 				.add_task_to_all_other_frames(Tasks::ResizeImage { handle, extent }, current_frame);
 		}
+	}
+
+	fn place_image_group(&mut self, group: graphics_hardware_interface::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
+		self.device.place_image_group(group, members);
 	}
 
 	fn create_command_buffer_recording<'record>(

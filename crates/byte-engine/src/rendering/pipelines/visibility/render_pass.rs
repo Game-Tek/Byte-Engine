@@ -130,7 +130,9 @@ impl VisibilityRenderPass {
 			.name("Occlusion Map")
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let directional_shadow_map = context.build_dynamic_image(
+		// Every frame in flight shares one copy of each shadow map: each frame renders its maps before it reads them, and the
+		// graphics queue orders one frame's reads before the next frame's writes, so no frame reads another's maps.
+		let directional_shadow_map = context.build_image(
 			depth_map(DIRECTIONAL_SHADOW_MAP_FORMAT, "Directional Shadow Map")
 				.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
 		);
@@ -144,13 +146,13 @@ impl VisibilityRenderPass {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
 		);
-		// Dynamic images start at zero extent, so these pools have no backing maps until a visible light uses them.
+		// Images start at zero extent, so these pools have no backing maps until a visible light uses them.
 		// Metal requires two layers to create the array texture that material evaluation always binds.
-		let cone_shadow_map = context.build_dynamic_image(
+		let cone_shadow_map = context.build_image(
 			depth_map(CONE_SHADOW_MAP_FORMAT, "Cone Shadow Map")
 				.array_layers(NonZeroU32::new(cone_shadow_pool_capacity.max(2) as u32)),
 		);
-		let point_shadow_map = context.build_dynamic_image(
+		let point_shadow_map = context.build_image(
 			depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(
 				NonZeroU32::new(point_shadow_pool_capacity.max(1) as u32)
 					.expect("Point shadow map pool has a nonzero fallback cube."),

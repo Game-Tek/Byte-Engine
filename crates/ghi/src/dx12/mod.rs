@@ -294,9 +294,8 @@ mod tests {
 		let discarded_attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::Color(::utils::RGBA::new(1.0, 0.0, 0.0, 1.0)),
-			false,
-			true,
+			crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::new(1.0, 0.0, 0.0, 1.0))),
+			crate::StoreOp::Store,
 		);
 		crate::command_buffer::CommandBufferRecording::start_render_pass(&mut recording, extent, &[discarded_attachment])
 			.end_render_pass();
@@ -306,9 +305,8 @@ mod tests {
 		let submitted_attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::Color(::utils::RGBA::new(0.0, 1.0, 0.0, 1.0)),
-			false,
-			true,
+			crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::new(0.0, 1.0, 0.0, 1.0))),
+			crate::StoreOp::Store,
 		);
 		crate::command_buffer::CommandBufferRecording::start_render_pass(&mut recording, extent, &[submitted_attachment])
 			.end_render_pass();
@@ -1907,9 +1905,8 @@ void main() {
 			let attachments = [crate::AttachmentInformation::new(
 				swapchain,
 				crate::Layouts::RenderTarget,
-				crate::ClearValue::Color(::utils::RGBA::black()),
-				false,
-				true,
+				crate::LoadOp::Clear(crate::ClearValue::Color(::utils::RGBA::black())),
+				crate::StoreOp::Store,
 			)];
 			let render_pass =
 				crate::command_buffer::CommandBufferRecording::start_render_pass(&mut recording, extent, &attachments);
@@ -2652,16 +2649,14 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 			crate::AttachmentInformation::new(
 				image.0,
 				crate::Layouts::RenderTarget,
-				crate::ClearValue::Integer(9, 10, 11, 12),
-				false,
-				true,
+				crate::LoadOp::Clear(crate::ClearValue::Integer(9, 10, 11, 12)),
+				crate::StoreOp::Store,
 			),
 			crate::AttachmentInformation::new(
 				depth.0,
 				crate::Layouts::RenderTarget,
-				crate::ClearValue::Depth(1.0),
-				false,
-				true,
+				crate::LoadOp::Clear(crate::ClearValue::Depth(1.0)),
+				crate::StoreOp::Store,
 			),
 		];
 
@@ -2711,13 +2706,17 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		for frame_index in 0..1024 {
 			let cascade = frame_index % 4;
 			let attachments = [
-				crate::AttachmentInformation::new(color.0, crate::Layouts::RenderTarget, crate::ClearValue::None, true, true),
+				crate::AttachmentInformation::new(
+					color.0,
+					crate::Layouts::RenderTarget,
+					crate::LoadOp::Load,
+					crate::StoreOp::Store,
+				),
 				crate::AttachmentInformation::new(
 					depth.0,
 					crate::Layouts::RenderTarget,
-					crate::ClearValue::Depth(1.0),
-					true,
-					true,
+					crate::LoadOp::Load,
+					crate::StoreOp::Store,
 				)
 				.layer(cascade),
 			];
@@ -2728,9 +2727,8 @@ void main(out vertices MeshVertex vertices[3], out indices uint3 triangles[1]) {
 		let layered_attachment = [crate::AttachmentInformation::new(
 			depth.0,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::Depth(1.0),
-			true,
-			true,
+			crate::LoadOp::Load,
+			crate::StoreOp::Store,
 		)
 		.layers(4)];
 		device.begin_command_buffer(command_buffer, 0);
@@ -3085,9 +3083,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
-			false,
-			true,
+			crate::LoadOp::Clear(crate::ClearValue::Integer(u32::MAX, 0, 0, 0)),
+			crate::StoreOp::Store,
 		);
 		crate::command_buffer::CommandBufferRecording::start_render_pass(
 			&mut recording,
@@ -3170,9 +3167,8 @@ void main(uint3 id : SV_DispatchThreadID) {
 		let attachment = crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::Integer(u32::MAX, 0, 0, 0),
-			false,
-			true,
+			crate::LoadOp::Clear(crate::ClearValue::Integer(u32::MAX, 0, 0, 0)),
+			crate::StoreOp::Store,
 		);
 		crate::command_buffer::CommandBufferRecording::start_render_pass(
 			&mut recording,
@@ -5395,9 +5391,8 @@ void closesthit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 		let attachments = [crate::AttachmentInformation::new(
 			image,
 			crate::Layouts::RenderTarget,
-			crate::ClearValue::None,
-			true,
-			true,
+			crate::LoadOp::Load,
+			crate::StoreOp::Store,
 		)];
 
 		let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -151,6 +151,7 @@ impl InnerDevice {
 			resource: buffer,
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
+			alignment: memory_requirements.alignment,
 		}
 	}
 
@@ -197,6 +198,7 @@ impl InnerDevice {
 			resource: image,
 			size: memory_requirements.size as usize,
 			memory_flags: memory_requirements.memory_type_bits,
+			alignment: memory_requirements.alignment,
 		}
 	}
 

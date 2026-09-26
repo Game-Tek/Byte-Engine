@@ -204,6 +204,8 @@ pub struct RenderPassBuilder<'a> {
 	final_output: bool,
 	final_output_written: bool,
 	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
+	/// Every render-target image this pass reads or writes, by index, so the renderer knows when each one is used.
+	pub(crate) accessed_image_indices: Vec<usize>,
 	written_image_indices: Vec<usize>,
 	external_writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	pub(crate) images: &'a mut RenderTargets,
@@ -225,6 +227,7 @@ impl<'a> RenderPassBuilder<'a> {
 			final_output: false,
 			final_output_written: false,
 			consumed_resources: Vec::new(),
+			accessed_image_indices: Vec::new(),
 			written_image_indices: Vec::new(),
 			external_writable_targets: Vec::new(),
 			images,
@@ -260,6 +263,7 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let image_index = self.images.get_image_index(name, self.sink_id).expect("Image not found");
 		self.written_image_indices.push(image_index);
+		self.accessed_image_indices.push(image_index);
 		let (image, format) = self.images.image(image_index).expect("Image not found");
 
 		RenderToResult { image, format }
@@ -274,7 +278,36 @@ impl<'a> RenderPassBuilder<'a> {
 	///
 	/// The renderer sizes the image to the sink extent divided by `resolution_divisor`, so `2` gives a
 	/// half-resolution target. Like every render target, it can be captured by name for debugging.
+	///
+	/// The target holds valid contents only between the first and the last pass of a frame that uses it, since
+	/// targets whose uses do not overlap share memory. Its contents are undefined when its first pass starts, so that
+	/// pass must write every pixel it later reads. Use [`Self::create_persistent_render_target`] for contents that
+	/// must survive into the next frame.
 	pub fn create_scaled_render_target(&mut self, builder: ghi::image::Builder<'a>, resolution_divisor: u32) -> RenderToResult {
+		let group = self.images.group(self.sink_id, self.context);
+		// The renderer clears a target whose first pass records nothing, so it never reads another target's memory.
+		self.insert_render_target(
+			builder.group(group).additional_uses(ghi::Uses::Clear),
+			resolution_divisor,
+			true,
+		)
+	}
+
+	/// Creates a full-resolution render target whose contents stay valid across frames.
+	///
+	/// Use it for images a pass updates incrementally, such as a layer that only redraws damaged regions. Unlike
+	/// [`Self::create_render_target`], the target never shares memory with other targets.
+	pub fn create_persistent_render_target(&mut self, builder: ghi::image::Builder<'a>) -> RenderToResult {
+		self.insert_render_target(builder, 1, false)
+	}
+
+	/// Builds a transferable render target and registers it as written by this pass.
+	fn insert_render_target(
+		&mut self,
+		builder: ghi::image::Builder<'a>,
+		resolution_divisor: u32,
+		member: bool,
+	) -> RenderToResult {
 		let name = builder.get_name().expect(
 			"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
 		);
@@ -283,10 +316,16 @@ impl<'a> RenderPassBuilder<'a> {
 
 		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 
-		let image_index = self
-			.images
-			.insert(name.to_string(), self.sink_id, image.into(), format, resolution_divisor);
+		let image_index = self.images.insert(
+			name.to_string(),
+			self.sink_id,
+			image.into(),
+			format,
+			resolution_divisor,
+			member,
+		);
 		self.written_image_indices.push(image_index);
+		self.accessed_image_indices.push(image_index);
 
 		RenderToResult {
 			image: image.into(),
@@ -355,6 +394,9 @@ impl<'a> RenderPassBuilder<'a> {
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
 		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
 		self.images.read_from(name, self.sink_id);
+		if let Some(index) = self.images.get_image_index(name, self.sink_id) {
+			self.accessed_image_indices.push(index);
+		}
 
 		let (image, _) = *self.images.get(name, self.sink_id).expect("Image not found");
 

@@ -72,6 +72,9 @@ impl Device {
 	}
 
 	pub fn build_image(&mut self, builder: image::Builder) -> ImageHandle {
+		if builder.group.is_some() {
+			crate::image_group::ImageGroups::validate_member(&builder);
+		}
 		// Reject unsupported view contracts before a logical handle can escape to callers.
 		let array_layers = builder.array_layers.map(|layers| layers.get()).unwrap_or(1);
 		let is_3d = builder.extent.depth() > 1;
@@ -138,6 +141,10 @@ impl Device {
 		});
 
 		let handle = crate::BaseImageHandle((self.images.len() - 1) as u64);
+		// A member built without an extent has no resource until its group is placed.
+		if let Some(group) = builder.group {
+			self.image_groups.add_member(group, handle);
+		}
 		if initializes_frame_resources {
 			// Committed textures have undefined contents. Upload each frame's zeroed staging image on first use.
 			for sequence_index in 0..self.frames {

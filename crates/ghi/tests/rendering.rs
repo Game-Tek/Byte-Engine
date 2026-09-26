@@ -33,6 +33,8 @@ use utils::{Extent, RGBA};
 
 #[path = "rendering/common.rs"]
 mod common;
+#[path = "rendering/image_groups.rs"]
+mod image_groups;
 #[path = "rendering/presentation.rs"]
 mod presentation;
 #[path = "rendering/raster.rs"]
@@ -68,6 +70,20 @@ fn create_default_device_setup_with_features(
 	let context = ghi::device::Device::create_context(&device)
 		.expect("Failed to create the GHI test context. The most likely cause is unavailable backend command support.");
 	(instance, device, context, queue_handle.unwrap())
+}
+
+#[test]
+fn image_group_members_keep_their_contents_until_reused() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	image_groups::members_keep_their_contents_until_another_member_reuses_them(&mut device, queue_handle);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "was used without valid contents")]
+fn image_group_member_read_after_reuse_fails_validation() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	image_groups::reading_a_member_after_another_reused_its_memory_fails(&mut device, queue_handle);
 }
 
 #[test]

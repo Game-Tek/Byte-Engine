@@ -57,6 +57,16 @@ where
 	/// A smaller extent does not always require reallocation.
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent);
 
+	/// Sizes every member of `group` and gives each one memory, sharing memory between members whose lifetimes do
+	/// not overlap.
+	///
+	/// List every member exactly once. The call does nothing when no extent or lifetime changed since the last one.
+	/// Otherwise every member is recreated and starts without valid contents, so initialize each member before its
+	/// first read: clear it, render to it with [`crate::LoadOp::Clear`] or [`crate::LoadOp::Discard`], or call
+	/// [`crate::command_buffer::CommandBufferRecording::discard_images`]. Do that every frame, since another member
+	/// may reuse the memory in between.
+	fn place_image_group(&mut self, group: crate::ImageGroupHandle, members: &[crate::ImageGroupMember]);
+
 	/// Creates a new command buffer recording.
 	fn create_command_buffer_recording<'record>(
 		&'record mut self,

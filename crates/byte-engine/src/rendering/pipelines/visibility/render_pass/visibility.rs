@@ -91,9 +91,8 @@ impl VisibilityPass {
 			ghi::AttachmentInformation::new(
 				image,
 				ghi::Layouts::RenderTarget,
-				ghi::ClearValue::Integer(u32::MAX, 0, 0, 0),
-				false,
-				true,
+				ghi::LoadOp::Clear(ghi::ClearValue::Integer(u32::MAX, 0, 0, 0)),
+				ghi::StoreOp::Store,
 			)
 		};
 		let attachments = [
@@ -102,9 +101,12 @@ impl VisibilityPass {
 			ghi::AttachmentInformation::new(
 				self.depth,
 				ghi::Layouts::RenderTarget,
-				ghi::ClearValue::Depth(0.0),
-				phase == VisibilityPhase::Transparent,
-				true,
+				if phase == VisibilityPhase::Transparent {
+					ghi::LoadOp::Load
+				} else {
+					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0))
+				},
+				ghi::StoreOp::Store,
 			),
 		];
 

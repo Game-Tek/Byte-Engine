@@ -11,6 +11,8 @@ pub(crate) enum MetalResourceKey {
 	SwapchainDrawable(usize),
 	/// One acceleration structure, identified by its index in the context's acceleration-structure storage.
 	AccelerationStructure(usize),
+	/// One image-group heap, identified by [`image::GroupSlot::heap_serial`]. Members are regions of it.
+	GroupHeap(u64),
 }
 
 impl MetalResourceKey {
@@ -131,6 +133,8 @@ pub(crate) struct MetalResourceUse {
 	pub(crate) region: MetalResourceRegion,
 	pub(crate) stages: mtl::MTLStages,
 	pub(crate) access: crate::AccessPolicies,
+	/// The image-group member this use reaches through its heap, set by [`Self::in_group_memory`].
+	pub(crate) member: Option<ImageHandle>,
 }
 
 impl MetalResourceUse {
@@ -202,6 +206,32 @@ impl MetalResourceUse {
 			region,
 			stages,
 			access,
+			member: None,
+		}
+	}
+
+	/// Tracks an image-group member by the heap bytes it occupies instead of by its image.
+	///
+	/// Members that share memory then conflict like overlapping ranges of one buffer, so a member that reuses another
+	/// member's memory waits for that member's earlier accesses. Other uses are returned unchanged.
+	pub(crate) fn in_group_memory(
+		self,
+		images: &crate::ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
+	) -> Self {
+		let MetalResourceKey::Image(handle) = self.key else {
+			return self;
+		};
+		let Some(slot) = &images.resource(handle).slot else {
+			return self;
+		};
+		Self {
+			key: MetalResourceKey::GroupHeap(slot.heap_serial),
+			region: MetalResourceRegion::Buffer {
+				start: slot.offset,
+				end: slot.offset + slot.size,
+			},
+			member: Some(handle),
+			..self
 		}
 	}
 
@@ -332,6 +362,11 @@ pub(crate) struct DescriptorUses {
 }
 
 impl DescriptorUses {
+	/// Returns the image-group members the table reaches.
+	pub(crate) fn members(&self) -> impl Iterator<Item = ImageHandle> + '_ {
+		self.uses.iter().filter_map(|resource_use| resource_use.member)
+	}
+
 	/// Consolidates `uses` and orders the writable ones first.
 	pub(crate) fn new(mut uses: SmallVec<[MetalResourceUse; 16]>) -> Self {
 		MetalResourceTracker::consolidate_in_place(&mut uses);

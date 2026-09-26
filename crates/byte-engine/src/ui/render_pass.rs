@@ -256,7 +256,7 @@ impl UiRenderPass {
 	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>, font: Option<&std::path::Path>) -> Self {
 		let source = render_pass_builder.read_from("main");
 		// The layer outlives frames: damaged regions are redrawn into it and the scene is composited under it every frame.
-		let main_attachment = render_pass_builder.create_render_target(
+		let main_attachment = render_pass_builder.create_persistent_render_target(
 			ghi::image::Builder::new(
 				MAIN_ATTACHMENT_FORMAT,
 				ghi::Uses::RenderTarget | ghi::Uses::Image | ghi::Uses::Storage,
@@ -1005,9 +1005,8 @@ impl RenderPass for UiRenderPass {
 													let attachments = [ghi::AttachmentInformation::new(
 														blur_backdrop,
 														ghi::Layouts::RenderTarget,
-														ghi::ClearValue::None,
-														true,
-														true,
+														ghi::LoadOp::Load,
+														ghi::StoreOp::Store,
 													)];
 													let render_pass = command_buffer.start_render_pass(extent, &attachments);
 													let clear = render_pass.bind_raster_pipeline(clear_pipeline);
@@ -1093,12 +1092,11 @@ impl RenderPass for UiRenderPass {
 								layer,
 								ghi::Layouts::RenderTarget,
 								if clears && redraws_everything {
-									ghi::ClearValue::Color(RGBA::transparent())
+									ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::transparent()))
 								} else {
-									ghi::ClearValue::None
+									ghi::LoadOp::Load
 								},
-								!(clears && redraws_everything),
-								true,
+								ghi::StoreOp::Store,
 							)];
 							let render_pass = command_buffer.start_render_pass(extent, &attachments);
 							if clears && !redraws_everything {

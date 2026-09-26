@@ -70,7 +70,6 @@ pub struct SmaaPass {
 	edge_pass: simple_compute::Pass,
 	resolve_pass: simple_compute::Pass,
 	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
-	edges: ghi::DynamicImageHandle,
 }
 
 impl SmaaPass {
@@ -82,12 +81,11 @@ impl SmaaPass {
 			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("SMAA Output"),
 		);
 
-		let context = render_pass_builder.context();
-		let edges = context.build_dynamic_image(
-			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)
-				.name("SMAA Edges")
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		let edges = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image).name("SMAA Edges"),
 		);
+
+		let context = render_pass_builder.context();
 		let area_pixels = decode_lookup_texture(AREA_TEXTURE, AREA_TEXTURE_BYTE_COUNT, "area texture");
 		let area_texture = create_lookup_texture(
 			context,
@@ -159,13 +157,7 @@ impl SmaaPass {
 			edge_pass,
 			resolve_pass,
 			bypass_pass,
-			edges,
 		}
-	}
-
-	/// Resizes retained intermediate images to the current sink extent.
-	fn resize_images(&self, frame: &mut ghi::implementation::Frame, extent: utils::Extent) {
-		frame.resize_image(self.edges.into(), extent);
 	}
 }
 
@@ -183,7 +175,6 @@ impl RenderPass for SmaaPass {
 		let edge_pass = self.edge_pass.ready(frame)?;
 		let resolve_pass = self.resolve_pass.ready(frame)?;
 		let extent = sink.extent();
-		self.resize_images(frame, extent);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,

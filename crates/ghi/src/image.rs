@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use utils::Extent;
 
-use crate::{ClearValue, DeviceAccesses, Formats, PrivateHandle, PrivateHandles, UseCases, Uses};
+use crate::{ClearValue, DeviceAccesses, Formats, ImageGroupHandle, PrivateHandle, PrivateHandles, UseCases, Uses};
 
 /// The `Region` struct selects a rectangle in the base level of a 2D image.
 /// Write its rows through [`crate::frame::Frame::get_texture_slice_mut`], then
@@ -64,6 +64,7 @@ pub struct Builder<'a> {
 	pub(crate) cube_compatible: bool,
 	pub(crate) cube_array_compatible: bool,
 	pub(crate) optimized_clear_value: Option<ClearValue>,
+	pub(crate) group: Option<ImageGroupHandle>,
 }
 
 impl<'a> Builder<'a> {
@@ -84,6 +85,7 @@ impl<'a> Builder<'a> {
 			cube_compatible: false,
 			cube_array_compatible: false,
 			optimized_clear_value: None,
+			group: None,
 		}
 	}
 
@@ -147,6 +149,16 @@ impl<'a> Builder<'a> {
 	/// DX12 uses this value when allocating render-target and depth-stencil resources.
 	pub fn optimized_clear_value(mut self, clear_value: ClearValue) -> Self {
 		self.optimized_clear_value = Some(clear_value);
+		self
+	}
+
+	/// Makes the image a member of `group`, so it may share device memory with other members.
+	///
+	/// A member has no usable memory until [`crate::frame::Frame::place_image_group`] places the group. Only
+	/// static, device-only images can join a group. Next, build the image with
+	/// [`crate::context::ContextCreate::build_image`].
+	pub fn group(mut self, group: ImageGroupHandle) -> Self {
+		self.group = Some(group);
 		self
 	}
 

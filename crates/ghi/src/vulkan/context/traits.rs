@@ -553,6 +553,9 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
+		if builder.group.is_some() {
+			crate::image_group::ImageGroups::validate_member(&builder);
+		}
 		let create_image = |context: &mut Self, previous| {
 			context.create_image_internal(
 				None,
@@ -582,7 +585,16 @@ impl crate::context::ContextCreate for Context {
 		let handle =
 			graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(root_image_handle.0));
 		self.set_object_debug_name(builder.name, handle.into());
+		// A member built without an extent has no memory until its group is placed.
+		if let Some(group) = builder.group {
+			self.image_groups.add_member(group, handle.into());
+		}
 		handle
+	}
+
+	fn create_image_group(&mut self, name: Option<&str>) -> crate::ImageGroupHandle {
+		self.image_group_heaps.push(smallvec::SmallVec::new());
+		self.image_groups.create(name)
 	}
 
 	fn build_sampler(&mut self, builder: sampler::Builder) -> crate::SamplerHandle {

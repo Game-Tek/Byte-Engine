@@ -20,6 +20,8 @@ impl<'a> Frame<'a> {
 
 	pub fn resize_image(&mut self, _image_handle: ImageHandle, _extent: Extent) {}
 
+	pub fn place_image_group(&mut self, _group: crate::ImageGroupHandle, _members: &[crate::ImageGroupMember]) {}
+
 	pub fn create_command_buffer_recording(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,

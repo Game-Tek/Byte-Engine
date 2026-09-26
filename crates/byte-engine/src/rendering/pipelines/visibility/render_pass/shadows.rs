@@ -4,14 +4,13 @@
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
-
 use super::super::layout::{
 	CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY,
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION,
 };
 use super::super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
+use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -403,9 +402,8 @@ impl ShadowPass {
 					let attachments = [ghi::AttachmentInformation::new(
 						target,
 						ghi::Layouts::RenderTarget,
-						ghi::ClearValue::Depth(0.0),
-						false,
-						true,
+						ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
+						ghi::StoreOp::Store,
 					)
 					.layers(layers as u32)];
 					let c = c.start_render_pass(extent, &attachments);

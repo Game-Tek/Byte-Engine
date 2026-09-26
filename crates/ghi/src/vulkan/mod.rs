@@ -464,6 +464,8 @@ pub struct MemoryBackedResourceCreationResult<T> {
 	size: usize,
 	/// The memory flags that need used to create the resource.
 	memory_flags: u32,
+	/// The alignment the resource's memory offset must satisfy.
+	alignment: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

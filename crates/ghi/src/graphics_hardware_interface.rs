@@ -30,15 +30,24 @@ pub(super) mod tests {
 
 	#[test]
 	fn attachment_layer_builders_keep_single_and_layered_rendering_distinct() {
-		let single_layer =
-			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layer(3);
+		let single_layer = AttachmentInformation::new(
+			BaseImageHandle(1),
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layer(3);
 
 		assert_eq!(single_layer.layer, Some(3));
 		assert_eq!(single_layer.layer_count, None);
 
-		let layered =
-			AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
-				.layers(4);
+		let layered = AttachmentInformation::new(
+			BaseImageHandle(1),
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layers(4);
 
 		assert_eq!(layered.layer, None);
 		assert_eq!(layered.layer_count.map(std::num::NonZeroU32::get), Some(4));
@@ -48,31 +57,58 @@ pub(super) mod tests {
 	#[test]
 	#[should_panic(expected = "Cannot select one attachment layer after enabling layered rendering")]
 	fn attachment_rejects_layer_after_one_layer_layered_rendering() {
-		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
-			.layers(1)
-			.layer(0);
+		AttachmentInformation::new(
+			BaseImageHandle(1),
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layers(1)
+		.layer(0);
 	}
 
 	#[test]
 	#[should_panic(expected = "Layered rendering requires at least one attachment layer")]
 	fn attachment_rejects_empty_layered_rendering() {
-		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layers(0);
+		AttachmentInformation::new(
+			BaseImageHandle(1),
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layers(0);
 	}
 
 	#[test]
 	#[should_panic(expected = "Cannot enable layered rendering after selecting one attachment layer")]
 	fn attachment_rejects_layered_rendering_after_layer() {
-		AttachmentInformation::new(BaseImageHandle(1), Layouts::RenderTarget, ClearValue::Depth(0.0), false, true)
-			.layer(0)
-			.layers(1);
+		AttachmentInformation::new(
+			BaseImageHandle(1),
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layer(0)
+		.layers(1);
 	}
 
 	#[test]
 	#[should_panic(expected = "Render-pass attachments use different layer counts")]
 	fn render_pass_rejects_mixed_attachment_layer_counts() {
 		let target = BaseImageHandle(1);
-		let single = AttachmentInformation::new(target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true);
-		let layered = AttachmentInformation::new(target, Layouts::RenderTarget, ClearValue::Depth(0.0), false, true).layers(4);
+		let single = AttachmentInformation::new(
+			target,
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		);
+		let layered = AttachmentInformation::new(
+			target,
+			Layouts::RenderTarget,
+			crate::LoadOp::Clear(ClearValue::Depth(0.0)),
+			crate::StoreOp::Store,
+		)
+		.layers(4);
 
 		AttachmentInformation::render_pass_layer_count(&[single, layered]);
 	}

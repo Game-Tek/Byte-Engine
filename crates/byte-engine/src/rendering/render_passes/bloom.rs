@@ -84,8 +84,8 @@ pub struct BloomPass {
 	downsample_passes: Vec<simple_compute::Pass>,
 	upsample_passes: Vec<simple_compute::Pass>,
 	composite_pass: simple_compute::Pass,
-	downsample_images: Vec<ghi::DynamicImageHandle>,
-	upsample_images: Vec<ghi::DynamicImageHandle>,
+	/// The number of pyramid levels, each a render target the renderer sizes with the sink.
+	level_count: usize,
 }
 
 impl Entity for BloomPass {}
@@ -106,40 +106,41 @@ impl BloomPass {
 			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("Bloom Output"),
 		);
 
-		let context = render_pass_builder.context();
 		let level_count = settings.resolved_level_count();
-		let downsample_images = (0..level_count)
-			.map(|index| {
-				context.build_dynamic_image(
-					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image)
-						.name(match index {
-							0 => "Bloom Downsample 0",
-							1 => "Bloom Downsample 1",
-							2 => "Bloom Downsample 2",
-							3 => "Bloom Downsample 3",
-							4 => "Bloom Downsample 4",
-							_ => "Bloom Downsample 5",
-						})
-						.device_accesses(ghi::DeviceAccesses::DeviceOnly),
+		// Each pyramid level halves the previous one, starting at half the sink resolution.
+		let mut pyramid_target = |name, level: usize| -> ghi::BaseImageHandle {
+			render_pass_builder
+				.create_scaled_render_target(
+					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name(name),
+					level_divisor(level),
 				)
-			})
+				.into()
+		};
+		let downsample_images = [
+			"Bloom Downsample 0",
+			"Bloom Downsample 1",
+			"Bloom Downsample 2",
+			"Bloom Downsample 3",
+			"Bloom Downsample 4",
+			"Bloom Downsample 5",
+		][..level_count]
+			.iter()
+			.enumerate()
+			.map(|(level, name)| pyramid_target(name, level))
 			.collect::<Vec<_>>();
-		let upsample_images = (0..level_count.saturating_sub(1))
-			.map(|index| {
-				context.build_dynamic_image(
-					ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image)
-						.name(match index {
-							0 => "Bloom Upsample 0",
-							1 => "Bloom Upsample 1",
-							2 => "Bloom Upsample 2",
-							3 => "Bloom Upsample 3",
-							_ => "Bloom Upsample 4",
-						})
-						.device_accesses(ghi::DeviceAccesses::DeviceOnly),
-				)
-			})
+		let upsample_images = [
+			"Bloom Upsample 0",
+			"Bloom Upsample 1",
+			"Bloom Upsample 2",
+			"Bloom Upsample 3",
+			"Bloom Upsample 4",
+		][..level_count - 1]
+			.iter()
+			.enumerate()
+			.map(|(level, name)| pyramid_target(name, level))
 			.collect::<Vec<_>>();
 
+		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Bloom Parameters")
@@ -218,10 +219,10 @@ impl BloomPass {
 		let upsample_passes = (0..level_count.saturating_sub(1))
 			.rev()
 			.map(|level| {
-				let low_resolution_source: ghi::BaseImageHandle = if level == level_count - 2 {
-					downsample_images[level + 1].into()
+				let low_resolution_source = if level == level_count - 2 {
+					downsample_images[level + 1]
 				} else {
-					upsample_images[level + 1].into()
+					upsample_images[level + 1]
 				};
 				upsample_pipeline
 					.bind(
@@ -250,10 +251,10 @@ impl BloomPass {
 			})
 			.collect::<Vec<_>>();
 
-		let bloom_source: ghi::BaseImageHandle = if level_count == 1 {
-			downsample_images[0].into()
+		let bloom_source = if level_count == 1 {
+			downsample_images[0]
 		} else {
-			upsample_images[0].into()
+			upsample_images[0]
 		};
 		let composite_pass = composite_pipeline
 			.bind(
@@ -282,8 +283,7 @@ impl BloomPass {
 			downsample_passes,
 			upsample_passes,
 			composite_pass,
-			downsample_images,
-			upsample_images,
+			level_count,
 		}
 	}
 
@@ -298,17 +298,6 @@ impl BloomPass {
 			self.settings.max_brightness.max(0.0),
 		];
 		parameters.filter = [self.settings.radius.max(0.0), 0.0, 0.0, 0.0];
-	}
-
-	/// Resizes every bloom pyramid image to match the current sink-dependent chain resolution.
-	fn resize_images(&self, frame: &mut ghi::implementation::Frame, extent: Extent) {
-		for (level, image) in self.downsample_images.iter().enumerate() {
-			frame.resize_image((*image).into(), bloom_extent(extent, level));
-		}
-
-		for (level, image) in self.upsample_images.iter().enumerate() {
-			frame.resize_image((*image).into(), bloom_extent(extent, level));
-		}
 	}
 }
 
@@ -337,12 +326,11 @@ impl RenderPass for BloomPass {
 		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
 
-		self.resize_images(frame, extent);
 		self.write_parameters(frame);
 
 		let downsample_passes = frame_allocator.alloc_slice_copy(&downsample_passes);
 		let upsample_passes = frame_allocator.alloc_slice_copy(&upsample_passes);
-		let level_count = self.downsample_images.len();
+		let level_count = self.level_count;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
@@ -372,12 +360,14 @@ impl RenderPass for BloomPass {
 	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
+/// Returns the resolution divisor of a pyramid level: level 0 is half the sink resolution.
+fn level_divisor(level: usize) -> u32 {
+	2 << level
+}
+
+/// Returns the extent of a pyramid level, matching the size the renderer gives its render target.
 fn bloom_extent(extent: Extent, level: usize) -> Extent {
-	let divisor = 1u32 << (level as u32 + 1);
-	Extent::rectangle(
-		extent.width().div_ceil(divisor).max(1),
-		extent.height().div_ceil(divisor).max(1),
-	)
+	crate::rendering::renderer::scaled_extent(extent, level_divisor(level))
 }
 
 #[cfg(test)]
@@ -516,7 +506,9 @@ mod tests {
 				run_at(&program, &mut descriptors, [x, y]);
 			}
 		}
-		(0..size * size).map(|index| rgba(&result, [index % size, index / size])).collect()
+		(0..size * size)
+			.map(|index| rgba(&result, [index % size, index / size]))
+			.collect()
 	}
 
 	/// Verifies that upsampling adds the blurred lower level onto the same-resolution level.

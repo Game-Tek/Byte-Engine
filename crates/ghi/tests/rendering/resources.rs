@@ -71,9 +71,8 @@ pub(super) fn multiframe_rendering(device: &mut impl ghi::context::Context, queu
 						let attachments = [AttachmentInformation::new(
 							render_target,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA::black()),
-							false,
-							true,
+							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+							ghi::StoreOp::Store,
 						)];
 
 						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -178,9 +177,8 @@ pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handl
 						let attachments = [AttachmentInformation::new(
 							render_target,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA::black()),
-							false,
-							true,
+							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+							ghi::StoreOp::Store,
 						)];
 
 						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -289,9 +287,8 @@ pub(super) fn resize(device: &mut impl ghi::context::Context, queue_handle: Queu
 						let attachments = [AttachmentInformation::new(
 							render_target,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA::black()),
-							false,
-							true,
+							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+							ghi::StoreOp::Store,
 						)];
 
 						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -413,9 +410,8 @@ pub(super) fn resize_render_target_in_flight(
 					let attachments = [AttachmentInformation::new(
 						render_target,
 						Layouts::RenderTarget,
-						ClearValue::Color(RGBA::black()),
-						false,
-						true,
+						ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+						ghi::StoreOp::Store,
 					)];
 					let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
 					let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
@@ -540,9 +536,8 @@ pub(super) fn dynamic_data(device: &mut impl ghi::context::Context, queue_handle
 						let attachments = [AttachmentInformation::new(
 							render_target,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA::black()),
-							false,
-							true,
+							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+							ghi::StoreOp::Store,
 						)];
 
 						let c = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -1504,14 +1499,13 @@ pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_han
 				let attachments = [AttachmentInformation::new(
 					render_target,
 					Layouts::RenderTarget,
-					ClearValue::Color(RGBA {
+					ghi::LoadOp::Clear(ClearValue::Color(RGBA {
 						r: 0.0,
 						g: 0.0,
 						b: 0.0,
 						a: 1.0,
-					}),
-					false,
-					true,
+					})),
+					ghi::StoreOp::Store,
 				)];
 
 				let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);

@@ -173,8 +173,53 @@ impl Device {
 				IndexOrFirstMipLevel: u32::MAX,
 				..Default::default()
 			},
-			Flags: D3D12_TEXTURE_BARRIER_FLAG_NONE,
+			// Leaving the undefined layout discards the contents, which also initializes a texture placed in a heap.
+			Flags: if before.layout == D3D12_BARRIER_LAYOUT_UNDEFINED {
+				D3D12_TEXTURE_BARRIER_FLAG_DISCARD
+			} else {
+				D3D12_TEXTURE_BARRIER_FLAG_NONE
+			},
 		}
+	}
+
+	/// Gives an image new contents. Returns `false` when `image` belongs to no image group.
+	///
+	/// The image's next barrier leaves the undefined layout, discarding its contents. For an image-group member it
+	/// also waits for, and flushes, every earlier access to the members whose memory it reuses.
+	pub(crate) fn initialize_image_contents(&mut self, image: crate::BaseImageHandle, sequence_index: u8) -> bool {
+		let overwritten = self.image_groups.initialize(image);
+		let member = overwritten.is_some();
+		let Some(resource) = self.ensure_image_resource_for_sequence(image, sequence_index) else {
+			return member;
+		};
+		let key = Self::native_resource_key(&resource);
+		let earlier_states = std::iter::once(key)
+			.chain(overwritten.into_iter().flatten().filter_map(|other| {
+				self.images
+					.get(other.0 as usize)?
+					.resource
+					.as_ref()
+					.map(Self::native_resource_key)
+			}))
+			.filter_map(|key| self.image_states.get(&key).copied())
+			.filter(|state| state.access != D3D12_BARRIER_ACCESS_NO_ACCESS)
+			.collect::<SmallVec<[_; 8]>>();
+		let sync = earlier_states
+			.iter()
+			.fold(D3D12_BARRIER_SYNC_NONE, |sync, state| sync | state.sync);
+		let access = earlier_states
+			.iter()
+			.fold(D3D12_BARRIER_ACCESS_COMMON, |access, state| access | state.access);
+
+		self.remember_image_state(key);
+		self.image_states.insert(
+			key,
+			TextureBarrierState::new(sync, D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_LAYOUT_UNDEFINED),
+		);
+		if member && sync != D3D12_BARRIER_SYNC_NONE {
+			self.image_alias_flushes.insert(key, (sync, access));
+		}
+		member
 	}
 
 	/// Appends a swapchain texture transition while preserving its PRESENT boundary between submissions.
@@ -323,15 +368,25 @@ impl Device {
 	/// Appends a tracked texture transition to a caller-owned synchronization batch.
 	pub(crate) fn transition_tracked_image_into(
 		&mut self,
-		_image: crate::BaseImageHandle,
+		image: crate::BaseImageHandle,
 		resource: &ID3D12Resource,
 		after: TextureBarrierState,
 		barriers: &mut EnhancedBarrierBatch,
 	) {
+		self.image_groups.assert_initialized(image, || None);
 		if let Some(command_buffer) = self.active_command_buffer {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
 		let key = Self::native_resource_key(resource);
+		if let Some((sync, access)) = self.image_alias_flushes.remove(&key) {
+			// Another member used this memory last, so its work must finish and its writes leave the caches first.
+			barriers.push_global(D3D12_GLOBAL_BARRIER {
+				SyncBefore: sync,
+				SyncAfter: after.sync,
+				AccessBefore: access,
+				AccessAfter: after.access,
+			});
+		}
 		let before = self.image_states.get(&key).copied().unwrap_or(TextureBarrierState::COMMON);
 		if before == after {
 			if after.access == D3D12_BARRIER_ACCESS_UNORDERED_ACCESS {

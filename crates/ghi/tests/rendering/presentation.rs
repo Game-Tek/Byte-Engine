@@ -73,9 +73,8 @@ pub(super) fn present(renderer: &mut impl ghi::context::Context, queue_handle: Q
 					let attachments = [AttachmentInformation::new(
 						swapchain,
 						Layouts::RenderTarget,
-						ClearValue::Color(RGBA::black()),
-						false,
-						true,
+						ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
+						ghi::StoreOp::Store,
 					)];
 
 					let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
@@ -172,14 +171,13 @@ pub(super) fn multiframe_present(renderer: &mut impl ghi::context::Context, queu
 						let attachments = [AttachmentInformation::new(
 							swapchain,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA {
+							ghi::LoadOp::Clear(ClearValue::Color(RGBA {
 								r: 0.0,
 								g: 0.0,
 								b: 0.0,
 								a: 1.0,
-							}),
-							false,
-							true,
+							})),
+							ghi::StoreOp::Store,
 						)];
 
 						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);

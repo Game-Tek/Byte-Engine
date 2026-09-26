@@ -300,6 +300,9 @@ impl Renderer {
 					self.pipeline_compilation_client.clone(),
 				);
 				pipeline_manager.create_sink(sink_id, &mut rpb);
+				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
+				rpb.images
+					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
 				// Resolve attachment identity now: later post-processing may rebind `main`.
 				let consumed_resources = rpb
 					.images
@@ -340,6 +343,9 @@ impl Renderer {
 					pipeline_compilation_client.clone(),
 				);
 				sm.create_sink(sink_id, &mut rpb);
+				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
+				rpb.images
+					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
 				// Resolve attachment identity now: later post-processing may rebind `main`.
 				let consumed_resources = rpb
 					.images
@@ -420,6 +426,8 @@ impl Renderer {
 		let swapchain = self.windows[sink_id].1;
 
 		let final_factory_index = self.post_scene_render_pass_factories.len().checked_sub(1);
+		// `add_render_pass` numbers passes in the order this loop creates them.
+		let first_render_pass_id = self.render_passes.len();
 		let mut final_output_written = false;
 		for (factory_index, render_pass_factory) in self.post_scene_render_pass_factories.iter().enumerate() {
 			let render_pass = {
@@ -442,6 +450,12 @@ impl Renderer {
 				};
 				let render_pass = render_pass_factory(&mut render_pass_builder);
 				final_output_written = render_pass_builder.writes_final_output();
+				let accesses = std::mem::take(&mut render_pass_builder.accessed_image_indices);
+				render_pass_builder.images.record_node(
+					sink_id,
+					RenderNode::Pass(first_render_pass_id + factory_index),
+					accesses,
+				);
 				(render_pass, render_pass_builder.writable_targets())
 			};
 
@@ -466,6 +480,8 @@ impl Renderer {
 				);
 				let source = builder.read_from("main");
 				let copy = crate::rendering::render_passes::blit::ImageBypassPass::new(&mut builder, source, swapchain);
+				let accesses = std::mem::take(&mut builder.accessed_image_indices);
+				builder.images.record_node(sink_id, RenderNode::Presentation, accesses);
 				self.scene_presentation_copies.push((sink_id, copy));
 			}
 		}
@@ -700,6 +716,7 @@ impl Renderer {
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
+		let pipeline_manager_count = pipeline_managers.len();
 		let pipeline_compilation_client = &self.pipeline_compilation_client;
 		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
 		#[cfg(debug_assertions)]
@@ -726,7 +743,14 @@ impl Renderer {
 					"Frame is required to publish compiled pipelines. The most likely cause is that Renderer::prepare called Queue::execute without a frame request.",
 				));
 
-				let (sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys) = {
+				let (
+					sinks,
+					pipeline_manager_commands,
+					render_pass_commands,
+					scene_presentation_commands,
+					present_keys,
+					first_uses,
+				) = {
 					let span = debug_span!("Renderer::prepare_frame_work");
 					let _enter = span.enter();
 					let frame = execution.frame().expect(
@@ -754,6 +778,8 @@ impl Renderer {
 						}
 					}
 
+					// The render targets each node uses first, per sink, so recording can give them new contents.
+					let mut first_uses = SmallVec::<[(SinkId, FirstUse); 64]>::new();
 					{
 						let span = debug_span!("Renderer::resize_render_targets", sinks = sinks.len());
 						let _enter = span.enter();
@@ -761,6 +787,11 @@ impl Renderer {
 							// Resize the sink's images to its extent, divided for reduced-resolution targets.
 							for (image, extent) in render_targets.get_images_for_sink(sink.index(), sink.extent()) {
 								frame.resize_image(image, extent);
+							}
+							// Targets whose uses do not overlap share memory, placed again only when an extent or use changes.
+							if let Some(plan) = render_targets.plan(sink.index(), sink.extent()) {
+								frame.place_image_group(plan.group, &plan.members);
+								first_uses.extend(plan.first_uses.into_iter().map(|first_use| (sink.index(), first_use)));
 							}
 						}
 					}
@@ -805,7 +836,14 @@ impl Renderer {
 						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
-					(sinks, pipeline_manager_commands, render_pass_commands, scene_presentation_commands, present_keys)
+					(
+						sinks,
+						pipeline_manager_commands,
+						render_pass_commands,
+						scene_presentation_commands,
+						present_keys,
+						first_uses,
+					)
 				};
 
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
@@ -814,8 +852,23 @@ impl Renderer {
 					{
 						let span = debug_span!("Renderer::record_pipeline_manager_commands");
 						let _enter = span.enter();
-						for (pipeline_manager_id, commands) in pipeline_manager_commands {
-							for (command, sink) in commands.into_iter().zip(sinks.iter()) {
+						for pipeline_manager_id in 0..pipeline_manager_count {
+							let mut commands = pipeline_manager_commands
+								.iter()
+								.find(|(id, _)| *id == pipeline_manager_id)
+								.map(|(_, commands)| commands.iter());
+							for sink in &sinks {
+								let command = commands.as_mut().and_then(Iterator::next);
+								initialize_first_uses(
+									&mut *command_buffer_recording,
+									&first_uses,
+									sink.index(),
+									RenderNode::Scene(pipeline_manager_id),
+									command.is_some(),
+								);
+								let Some(command) = command else {
+									continue;
+								};
 								let attachment_infos = pipeline_manager_attachments_by_sink
 									.iter()
 									.find_map(|(id, sink_id, attachments)| {
@@ -846,6 +899,13 @@ impl Renderer {
 						let span = debug_span!("Renderer::record_render_pass_commands");
 						let _enter = span.enter();
 						for (command, render_pass_id, sink) in render_pass_commands {
+							initialize_first_uses(
+								&mut *command_buffer_recording,
+								&first_uses,
+								sink,
+								RenderNode::Pass(render_pass_id),
+								command.is_some(),
+							);
 							if let Some(command) = command {
 								let attachment_infos = render_targets.get_attachment_infos(sink);
 								command(&mut *command_buffer_recording, &attachment_infos);
@@ -864,7 +924,14 @@ impl Renderer {
 						}
 					}
 
-					for (command, _sink_id) in scene_presentation_commands {
+					for (command, sink_id) in scene_presentation_commands {
+						initialize_first_uses(
+							&mut *command_buffer_recording,
+							&first_uses,
+							sink_id,
+							RenderNode::Presentation,
+							command.is_some(),
+						);
 						if let Some(command) = command {
 							command(&mut *command_buffer_recording, &[]);
 						}
@@ -924,9 +991,11 @@ impl Renderer {
 		let (pass, target) = match capture {
 			ScreenshotCapture::FinalSwapchain => return Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }),
 			ScreenshotCapture::SceneTarget { target } => {
+				// A target the scene does not use gets its contents later, after its memory served other targets.
 				let image = self
 					.render_targets
 					.get(target, sink)
+					.filter(|_| self.render_targets.holds_scene_output(target, sink))
 					.map(|(image, _)| *image)
 					.or_else(|| self.render_targets.history(target, sink).map(Into::into))
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
@@ -1077,6 +1146,36 @@ impl Renderer {
 	}
 }
 /// Returns request slots transferred immediately after one prepared pass entry.
+/// Gives the render targets a node uses first new contents before the node records.
+///
+/// A node that records commands writes its targets itself, so they are only discarded. A node that records nothing,
+/// for example while its pipeline compiles, leaves them cleared, so later nodes never read another target's memory.
+fn initialize_first_uses(
+	recording: &mut ghi::implementation::CommandBufferRecording,
+	first_uses: &[(SinkId, FirstUse)],
+	sink: SinkId,
+	node: RenderNode,
+	records: bool,
+) {
+	let first_uses = first_uses
+		.iter()
+		.filter(|(first_use_sink, first_use)| *first_use_sink == sink && first_use.node == node)
+		.map(|(_, first_use)| first_use);
+	if records {
+		let images = first_uses.map(|first_use| first_use.image).collect::<SmallVec<[_; 8]>>();
+		if !images.is_empty() {
+			recording.discard_images(&images);
+		}
+	} else {
+		let clears = first_uses
+			.map(|first_use| (first_use.image, first_use.clear))
+			.collect::<SmallVec<[_; 8]>>();
+		if !clears.is_empty() {
+			recording.clear_images(&clears);
+		}
+	}
+}
+
 pub(super) fn captures_after_pass(
 	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
 	pass: RenderPassId,
@@ -1205,7 +1304,7 @@ use super::{
 		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration,
 		render_pass_harness_with_state, set_render_pass_state_by_name,
 	},
-	targets::RenderTargets,
+	targets::{FirstUse, RenderNode, RenderTargets},
 };
 use crate::{
 	application::parameters::Parameters,

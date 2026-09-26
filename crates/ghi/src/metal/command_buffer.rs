@@ -223,6 +223,7 @@ pub(super) struct RecordingCommit<'a> {
 	/// Upload pages owned by this recording's frame, or the transient arena for detached recordings.
 	pub(super) upload_arena: &'a mut UploadArena,
 	pub(super) argument_tables: &'a mut CommandArgumentTables,
+	pub(super) image_groups: &'a mut crate::image_group::ImageGroups,
 }
 
 /// The `NativeCommandSlot` struct permits a recording guard to move its uniquely owned command into the next lifecycle stage.

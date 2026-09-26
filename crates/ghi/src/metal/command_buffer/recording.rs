@@ -178,6 +178,7 @@ impl<'a> CommandBufferRecording<'a> {
 				synchronization::MetalResourceKey::Image(handle) => self.device.images.resource(handle).name.as_deref(),
 				synchronization::MetalResourceKey::SwapchainDrawable(_) => Some("Drawable"),
 				synchronization::MetalResourceKey::AccelerationStructure(_) => Some("Acceleration Structure"),
+				synchronization::MetalResourceKey::GroupHeap(_) => Some("Image Group Heap"),
 			};
 			let _ = label.write_str(name.unwrap_or("Unnamed Resource"));
 			if let synchronization::MetalResourceRegion::Texture { mip_level, layer } = hazard.region {
@@ -315,6 +316,24 @@ impl<'a> CommandBufferRecording<'a> {
 		let scope = self.active_encoder_scope.expect(
 			"Metal resource tracking failed. The most likely cause is that a command consumed resources without an active encoder.",
 		);
+		let images = self.device.images;
+		let additional_uses = additional_uses
+			.into_iter()
+			.map(|resource_use| resource_use.in_group_memory(images))
+			.collect::<SmallVec<[_; 8]>>();
+		for member in descriptor_uses
+			.members()
+			.chain(additional_uses.iter().filter_map(|resource_use| resource_use.member))
+		{
+			let image = images.resource(member);
+			self.commit
+				.image_groups
+				.assert_initialized(graphics_hardware_interface::BaseImageHandle(member.0), || image.name.clone());
+			// Commands retain member textures, but the heap holds their memory, so it must stay alive and resident too.
+			if let Some(slot) = &image.slot {
+				self.command_buffer.retain_allocation(slot.heap.clone());
+			}
+		}
 		let barrier = self
 			.resource_tracker
 			.consume_descriptors(scope, descriptor_uses, additional_uses);

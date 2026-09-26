@@ -121,9 +121,12 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 						let attachments = [AttachmentInformation::new(
 							target,
 							Layouts::RenderTarget,
-							ClearValue::Color(RGBA::black()),
-							part != 0,
-							true,
+							if part == 0 {
+								ghi::LoadOp::Clear(ClearValue::Color(RGBA::black()))
+							} else {
+								ghi::LoadOp::Load
+							},
+							ghi::StoreOp::Store,
 						)];
 						let pass = recording.start_render_pass(extent, &attachments);
 						let bound = pass.bind_raster_pipeline(pipeline).bind_descriptor_sets(&[set]);

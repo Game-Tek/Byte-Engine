@@ -159,6 +159,30 @@ impl From<SwapchainHandle> for ImageOrSwapchain {
 	}
 }
 
+/// The `LoadOp` enum selects what a render pass does with an attachment's contents when it starts.
+///
+/// Pass it to [`AttachmentInformation::new`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoadOp {
+	/// Keeps the contents the attachment had before the pass.
+	Load,
+	/// Replaces the contents with one value.
+	Clear(ClearValue),
+	/// Leaves the contents undefined, for passes that write every pixel they later read.
+	///
+	/// Like a clear, this initializes an image-group member (see [`crate::ImageGroupHandle`]).
+	Discard,
+}
+
+/// The `StoreOp` enum selects whether a render pass keeps what it wrote to an attachment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreOp {
+	/// Keeps the pass's writes for later commands.
+	Store,
+	/// Lets the device drop the pass's writes, for attachments nothing reads afterwards.
+	Discard,
+}
+
 #[derive(Clone, Copy)]
 /// The `AttachmentInformation` struct configures one render-pass attachment.
 pub struct AttachmentInformation {
@@ -168,12 +192,10 @@ pub struct AttachmentInformation {
 	pub(crate) format: Option<Formats>,
 	/// The layout of the attachment.
 	pub(crate) layout: Layouts,
-	/// The clear color of the attachment.
-	pub(crate) clear: ClearValue,
-	/// Whether the render pass loads the attachment's existing contents.
-	pub(crate) load: bool,
-	/// Whether the render pass stores the attachment's final contents.
-	pub(crate) store: bool,
+	/// What the render pass does with the attachment's existing contents.
+	pub(crate) load: LoadOp,
+	/// Whether the render pass keeps the attachment's final contents.
+	pub(crate) store: StoreOp,
 	/// The image layer index for the attachment.
 	pub(crate) layer: Option<u32>,
 	/// The number of array layers available to shader-selected render-target indices.
@@ -185,17 +207,34 @@ impl AttachmentInformation {
 	///
 	/// Call [`Self::layer`] to select one array layer or [`Self::layers`] to let
 	/// the raster shader select among several layers.
-	pub fn new(target: impl Into<ImageOrSwapchain>, layout: Layouts, clear: ClearValue, load: bool, store: bool) -> Self {
+	pub fn new(target: impl Into<ImageOrSwapchain>, layout: Layouts, load: LoadOp, store: StoreOp) -> Self {
 		Self {
 			target: target.into(),
 			format: None,
 			layout,
-			clear,
 			load,
 			store,
 			layer: None,
 			layer_count: None,
 		}
+	}
+
+	/// Reports whether the render pass reads the attachment's existing contents.
+	pub(crate) fn loads(&self) -> bool {
+		self.load == LoadOp::Load
+	}
+
+	/// Returns the value the render pass clears the attachment to, or [`ClearValue::None`] when it does not clear.
+	pub(crate) fn clear_value(&self) -> ClearValue {
+		match self.load {
+			LoadOp::Clear(value) => value,
+			LoadOp::Load | LoadOp::Discard => ClearValue::None,
+		}
+	}
+
+	/// Reports whether the render pass keeps what it writes.
+	pub(crate) fn stores(&self) -> bool {
+		self.store == StoreOp::Store
 	}
 
 	/// Selects the typed attachment view used for this render pass.

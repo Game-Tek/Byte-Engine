@@ -331,12 +331,17 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 
 	/// Resizes the current image and schedules the other frame-local images for safe replacement.
 	fn resize_image(&mut self, image_handle: graphics_hardware_interface::BaseImageHandle, extent: Extent) {
+		self.device.image_groups.assert_resizable(image_handle);
 		let handle = self.get_current_image_handle(image_handle);
 		if self.device.resize_image_internal(handle, extent) {
 			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
 			self.device
 				.resize_image_on_other_frames(image_handle, extent, self.frame_key.sequence_index);
 		}
+	}
+
+	fn place_image_group(&mut self, group: graphics_hardware_interface::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
+		self.device.place_image_group(group, members);
 	}
 
 	fn create_command_buffer_recording<'record>(

@@ -72,19 +72,18 @@ pub(super) fn texture_format_and_resource_use_to_image_layout(
 	}
 }
 
-pub(super) fn to_load_operation(value: bool) -> vk::AttachmentLoadOp {
-	if value {
-		vk::AttachmentLoadOp::LOAD
-	} else {
-		vk::AttachmentLoadOp::CLEAR
+pub(super) fn to_load_operation(value: crate::LoadOp) -> vk::AttachmentLoadOp {
+	match value {
+		crate::LoadOp::Load => vk::AttachmentLoadOp::LOAD,
+		crate::LoadOp::Clear(_) => vk::AttachmentLoadOp::CLEAR,
+		crate::LoadOp::Discard => vk::AttachmentLoadOp::DONT_CARE,
 	}
 }
 
-pub(super) fn to_store_operation(value: bool) -> vk::AttachmentStoreOp {
-	if value {
-		vk::AttachmentStoreOp::STORE
-	} else {
-		vk::AttachmentStoreOp::DONT_CARE
+pub(super) fn to_store_operation(value: crate::StoreOp) -> vk::AttachmentStoreOp {
+	match value {
+		crate::StoreOp::Store => vk::AttachmentStoreOp::STORE,
+		crate::StoreOp::Discard => vk::AttachmentStoreOp::DONT_CARE,
 	}
 }
 
@@ -640,10 +639,14 @@ mod tests {
 
 	#[test]
 	fn test_to_load_and_store_operations() {
-		assert_eq!(to_load_operation(true), vk::AttachmentLoadOp::LOAD);
-		assert_eq!(to_load_operation(false), vk::AttachmentLoadOp::CLEAR);
-		assert_eq!(to_store_operation(true), vk::AttachmentStoreOp::STORE);
-		assert_eq!(to_store_operation(false), vk::AttachmentStoreOp::DONT_CARE);
+		assert_eq!(to_load_operation(crate::LoadOp::Load), vk::AttachmentLoadOp::LOAD);
+		assert_eq!(
+			to_load_operation(crate::LoadOp::Clear(crate::ClearValue::None)),
+			vk::AttachmentLoadOp::CLEAR
+		);
+		assert_eq!(to_load_operation(crate::LoadOp::Discard), vk::AttachmentLoadOp::DONT_CARE);
+		assert_eq!(to_store_operation(crate::StoreOp::Store), vk::AttachmentStoreOp::STORE);
+		assert_eq!(to_store_operation(crate::StoreOp::Discard), vk::AttachmentStoreOp::DONT_CARE);
 	}
 
 	#[test]

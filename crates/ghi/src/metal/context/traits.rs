@@ -628,6 +628,7 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
+		crate::image_group::ImageGroups::reject_dynamic_member(&builder);
 		let root = self.create_image_internal(None, builder.get_name(), image::ImageDescription::new(&builder));
 		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
 
@@ -643,9 +644,22 @@ impl crate::context::ContextCreate for Context {
 	}
 
 	fn build_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::ImageHandle {
+		if builder.group.is_some() {
+			crate::image_group::ImageGroups::validate_member(&builder);
+		}
+		// A member starts with its own texture at the builder's extent, so descriptors can reference it before the
+		// group is placed. Placement replaces the texture with one in the group heap.
 		let image_handle = self.create_image_internal(None, builder.get_name(), image::ImageDescription::new(&builder));
+		let handle = graphics_hardware_interface::BaseImageHandle::new(image_handle.0);
+		if let Some(group) = builder.group {
+			self.image_groups.add_member(group, handle);
+		}
 
-		graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle::new(image_handle.0))
+		graphics_hardware_interface::ImageHandle(handle)
+	}
+
+	fn create_image_group(&mut self, name: Option<&str>) -> graphics_hardware_interface::ImageGroupHandle {
+		self.image_groups.create(name)
 	}
 
 	fn build_sampler(&mut self, builder: sampler_builder::Builder) -> graphics_hardware_interface::SamplerHandle {

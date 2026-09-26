@@ -207,11 +207,52 @@ impl CommandBufferRecording<'_> {
 		self.consume_resources(consumptions)
 	}
 
+	/// Gives an image-group member new contents. Returns `false` when `image` belongs to no group.
+	///
+	/// The member's next barrier starts from an undefined layout and waits for every earlier access to the members
+	/// whose memory it reuses, since those accesses touched the same bytes.
+	pub(super) fn initialize_group_member(&mut self, image: graphics_hardware_interface::BaseImageHandle) -> bool {
+		let Some(overwritten) = self.device.image_groups.initialize(image) else {
+			return false;
+		};
+		let handle = Handles::Image(self.get_internal_base_image_handle(image));
+		let mut state = self.states.get(&handle).copied().unwrap_or(TransitionState::new(
+			vk::PipelineStageFlags2::empty(),
+			vk::AccessFlags2::empty(),
+			vk::ImageLayout::UNDEFINED,
+		));
+		for other in overwritten {
+			let other = Handles::Image(self.get_internal_base_image_handle(other));
+			if let Some(other) = self.states.get(&other) {
+				state.stage |= other.stage | other.last_write_stage;
+				state.access |= other.access | other.last_write_access;
+				state.last_write_stage |= other.last_write_stage;
+				state.last_write_access |= other.last_write_access;
+			}
+		}
+		state.layout = vk::ImageLayout::UNDEFINED;
+		self.states.insert(handle, state);
+		true
+	}
+
 	#[must_use]
 	pub(super) fn consume_resources(&self, consumptions: impl IntoIterator<Item = Consumption>) -> TransitionStateUpdates {
 		self.vulkan_consume_resources(consumptions.into_iter().map(|consumption| {
 			let format = match consumption.handle {
-				Handles::Image(image_handle) => Some(self.get_image(image_handle).format_),
+				Handles::Image(image_handle) => {
+					self.device.image_groups.assert_initialized(
+						graphics_hardware_interface::BaseImageHandle(image_handle.0),
+						|| {
+							self.device.get_object_debug_name(
+								graphics_hardware_interface::ImageHandle(graphics_hardware_interface::BaseImageHandle(
+									image_handle.0,
+								))
+								.into(),
+							)
+						},
+					);
+					Some(self.get_image(image_handle).format_)
+				}
 				_ => None,
 			};
 
@@ -615,7 +656,7 @@ impl CommandBufferRecording<'_> {
 				))
 				.load_op(to_load_operation(attachment.load))
 				.store_op(to_store_operation(attachment.store))
-				.clear_value(to_clear_value(attachment.clear))
+				.clear_value(to_clear_value(attachment.clear_value()))
 		};
 		let render_area = vk::Rect2D::default().extent(vk::Extent2D {
 			width: extent.width(),

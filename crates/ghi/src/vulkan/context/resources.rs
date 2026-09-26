@@ -448,35 +448,15 @@ impl Context {
 			(None, None, None)
 		};
 
-		let image_usage_flags = into_vk_image_usage_flags(resource_uses | transfer_uses, format);
-		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
-		// Vulkan only allows image views for images created with view-capable usage bits.
-		// Transfer-only staging/readback images intentionally keep null views.
-		let (full_image_view, image_views) = if InnerDevice::image_usage_allows_views(image_usage_flags) {
-			let create_view = |base_layer, layer_count| {
-				self.create_vulkan_image_view(
-					name,
-					&image,
-					image_type,
-					format,
-					image_usage_flags,
-					mip_levels,
-					base_layer,
-					layer_count,
-				)
-			};
-			match array_layers {
-				Some(layers) => (
-					create_view(0, Some(layers)),
-					(0..layers.get())
-						.map(|layer| create_view(layer, NonZeroU32::new(1)))
-						.collect(),
-				),
-				None => (vk::ImageView::null(), vec![create_view(0, None)]),
-			}
-		} else {
-			(vk::ImageView::null(), Vec::new())
-		};
+		let (full_image_view, image_views) = self.create_image_views(
+			name,
+			image,
+			format,
+			resource_uses | transfer_uses,
+			extent,
+			mip_levels,
+			array_layers,
+		);
 
 		Image {
 			size,
@@ -489,6 +469,165 @@ impl Context {
 			image_views,
 			..unbacked
 		}
+	}
+
+	/// Creates the views a GHI image exposes: one per array layer, plus a whole-array view for layered images.
+	///
+	/// Returns a null whole-array view for single-layer images, and no views at all for transfer-only images, since
+	/// Vulkan only allows views of images created with view-capable usage bits.
+	fn create_image_views(
+		&self,
+		name: Option<&str>,
+		image: vk::Image,
+		format: crate::Formats,
+		uses: crate::Uses,
+		extent: Extent,
+		mip_levels: u32,
+		array_layers: Option<NonZeroU32>,
+	) -> (vk::ImageView, Vec<vk::ImageView>) {
+		let image_usage_flags = into_vk_image_usage_flags(uses, format);
+		if !InnerDevice::image_usage_allows_views(image_usage_flags) {
+			return (vk::ImageView::null(), Vec::new());
+		}
+		let image_type = crate::vulkan::utils::image_type_from_extent(extent).expect("Failed to get VkImageType from extent");
+		let create_view = |base_layer, layer_count| {
+			self.create_vulkan_image_view(
+				name,
+				&image,
+				image_type,
+				format,
+				image_usage_flags,
+				mip_levels,
+				base_layer,
+				layer_count,
+			)
+		};
+		match array_layers {
+			Some(layers) => (
+				create_view(0, Some(layers)),
+				(0..layers.get())
+					.map(|layer| create_view(layer, NonZeroU32::new(1)))
+					.collect(),
+			),
+			None => (vk::ImageView::null(), vec![create_view(0, None)]),
+		}
+	}
+
+	/// Recreates every member of an image group in memory that members with disjoint lifetimes share.
+	///
+	/// Does nothing when the group is already placed from the same requests. Members keep their handles, their
+	/// previous images and memory are destroyed once in-flight frames finish, and every sequence's descriptors are
+	/// refreshed.
+	pub(crate) fn place_image_group(
+		&mut self,
+		group: graphics_hardware_interface::ImageGroupHandle,
+		requests: &[crate::ImageGroupMember],
+	) {
+		let Some(requests) = self.image_groups.requests_in_member_order(group, requests) else {
+			return;
+		};
+
+		// Vulkan reports memory requirements per image, so each member's image is created before the heaps are sized.
+		let textures = requests
+			.iter()
+			.map(|request| {
+				let handle = ImageHandle(request.image.0);
+				let name = self.get_object_debug_name(graphics_hardware_interface::ImageHandle(request.image).into());
+				let image = &self.images[handle.0 as usize];
+				let texture = self.create_vulkan_texture(
+					name.as_deref(),
+					request.extent,
+					image.format_,
+					image.uses,
+					image.mip_levels,
+					image.layers,
+					image.cube_compatible,
+					image.cube_array_compatible,
+				);
+				(handle, name, texture)
+			})
+			.collect::<Vec<_>>();
+		let requirements = textures
+			.iter()
+			.zip(&requests)
+			.map(|((_, name, texture), request)| {
+				// Members share memory only when one memory type suits both, so each member's preferred type is its category.
+				let memory_type = crate::vulkan::utils::memory_type_candidates(
+					&self.memory_properties,
+					texture.memory_flags,
+					DeviceAccesses::DeviceOnly,
+				)
+				.first()
+				.copied()
+				.unwrap_or_else(|| {
+					panic!(
+						"Image '{}' has no device-local memory type. The most likely cause is an image usage the device cannot back with device memory.",
+						name.as_deref().unwrap_or("unnamed"),
+					)
+				});
+				(
+					crate::image_group::MemoryRequirements {
+						size: texture.size as u64,
+						alignment: texture.alignment,
+						category: memory_type,
+					},
+					request.lifetime.clone(),
+				)
+			})
+			.collect::<Vec<_>>();
+		let placement = crate::image_group::pack(&requirements);
+
+		let heaps = placement
+			.heaps
+			.iter()
+			.map(|layout| {
+				self.create_allocation_internal(layout.size as usize, Some(1 << layout.category), DeviceAccesses::DeviceOnly)
+					.0
+			})
+			.collect::<SmallVec<[_; 2]>>();
+
+		for (((handle, name, texture), slot), request) in textures.into_iter().zip(&placement.slots).zip(&requests) {
+			unsafe {
+				self.device
+					.bind_image_memory(texture.resource, self.allocation(heaps[slot.heap]).memory, slot.offset)
+					.expect("Failed to bind an image-group member to its heap. The most likely cause is an offset that breaks the member's alignment.")
+			};
+			let previous = self.images[handle.0 as usize].clone();
+			let (full_image_view, image_views) = self.create_image_views(
+				name.as_deref(),
+				texture.resource,
+				previous.format_,
+				previous.uses,
+				request.extent,
+				previous.mip_levels,
+				previous.layers,
+			);
+			self.images[handle.0 as usize] = Image {
+				image: texture.resource,
+				full_image_view,
+				image_views,
+				extent: request.extent,
+				// The group owns the heap, so replacing the member must not free it.
+				allocation: None,
+				owns_image: true,
+				..previous.clone()
+			};
+			self.retire_image_storage(&previous);
+
+			if let Some(state) = self.states.get_mut(&crate::vulkan::Handles::Image(handle)) {
+				state.layout = vk::ImageLayout::UNDEFINED;
+			}
+		}
+
+		// In-flight frames may still use members bound to the previous heaps, so free those heaps once the frames finish.
+		let previous_heaps = std::mem::replace(&mut self.image_group_heaps[group.0 as usize], heaps);
+		for heap in previous_heaps {
+			self.defer_destruction(Tasks::FreeAllocation { handle: heap });
+		}
+		for sequence_index in 0..self.frames {
+			self.bump_descriptor_sequence_epoch(sequence_index);
+		}
+		self.image_groups.commit(group, requests, placement);
 	}
 
 	pub(crate) fn create_image_internal(

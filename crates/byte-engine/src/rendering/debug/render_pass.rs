@@ -155,18 +155,16 @@ impl RenderPass for DebugMeshRenderPass {
 							ghi::AttachmentInformation::new(
 								working_color,
 								ghi::Layouts::RenderTarget,
-								ghi::ClearValue::None,
-								true,
-								true,
+								ghi::LoadOp::Load,
+								ghi::StoreOp::Store,
 							),
 							// Load scene depth for testing but never store it: depth-aware debug
 							// geometry reads the scene pipeline's `depth` image without modifying it.
 							ghi::AttachmentInformation::new(
 								depth,
 								ghi::Layouts::RenderTarget,
-								ghi::ClearValue::None,
-								true,
-								false,
+								ghi::LoadOp::Load,
+								ghi::StoreOp::Discard,
 							),
 						];
 						let command_buffer = command_buffer.start_render_pass(extent, &attachments);
@@ -183,9 +181,8 @@ impl RenderPass for DebugMeshRenderPass {
 						let attachments = [ghi::AttachmentInformation::new(
 							working_color,
 							ghi::Layouts::RenderTarget,
-							ghi::ClearValue::None,
-							true,
-							true,
+							ghi::LoadOp::Load,
+							ghi::StoreOp::Store,
 						)];
 						let command_buffer = command_buffer.start_render_pass(extent, &attachments);
 						let command_buffer = command_buffer.bind_raster_pipeline(pipeline);

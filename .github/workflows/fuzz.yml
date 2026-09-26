@@ -1,0 +1,67 @@
+name: Fuzz BESL
+
+on:
+  schedule:
+    # Every Sunday at 03:00 UTC.
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        required: false
+        default: "1200"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  generator-tests:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    defaults:
+      run:
+        working-directory: crates/besl/fuzz
+    steps:
+    - uses: actions/checkout@v7
+    - name: Run grammar generator tests
+      # Runs a fixed set of generated programs through VM compilation.
+      run: cargo test --lib
+
+  fuzz:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    strategy:
+      # Let every target finish so one crash doesn't hide another.
+      fail-fast: false
+      matrix:
+        include:
+          - target: parse
+            args: -dict=fuzz/dictionaries/besl.dict -max_len=4096
+          - target: compile
+            args: -dict=fuzz/dictionaries/besl.dict -max_len=4096
+          - target: grammar_compile
+            args: -max_len=512
+    defaults:
+      run:
+        working-directory: crates/besl
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install cargo-fuzz
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-fuzz
+    - name: Restore corpus
+      # Each run saves its grown corpus under a new key; the newest one seeds the next run.
+      uses: actions/cache@v6
+      with:
+        path: crates/besl/fuzz/corpus/${{ matrix.target }}
+        key: besl-fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+        restore-keys: |
+          besl-fuzz-corpus-${{ matrix.target }}-
+    - name: Fuzz ${{ matrix.target }}
+      run: cargo fuzz run ${{ matrix.target }} -- ${{ matrix.args }} -timeout=5 -max_total_time=${{ inputs.seconds || '1200' }}
+    - name: Upload crash artifacts
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: besl-fuzz-${{ matrix.target }}-artifacts
+        path: crates/besl/fuzz/artifacts/${{ matrix.target }}
+        if-no-files-found: ignore

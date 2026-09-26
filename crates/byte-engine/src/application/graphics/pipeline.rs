@@ -676,6 +676,27 @@ pub fn setup_bloom_render_pass(application: &mut GraphicsApplication, settings: 
 	});
 }
 
+/// Installs a screen-space lens flare pass for every current and future render sink.
+///
+/// The pass casts tinted ghosts and a halo from scene-linear light above `settings.threshold`
+/// and adds them onto `main`. Call it after the passes that write scene light and before
+/// [`setup_bloom_render_pass`] and tone mapping, so the ghosts glow with the rest of the scene.
+/// Later passes consume its remapped `main` output. Use `render.pass.lens-flare` to enable or
+/// bypass it at runtime.
+pub fn setup_lens_flare_render_pass(
+	application: &mut GraphicsApplication,
+	settings: rendering::render_passes::lens_flare::LensFlarePassSettings,
+) {
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::render_passes::lens_flare::LensFlarePass::with_settings(
+				render_pass_builder,
+				settings,
+			))
+		});
+}
+
 /// Installs a fused ACEScg/ACEScct grading and SDR output pass from a prepared LUT.
 ///
 /// The LUT must accept and return ACEScct values. The pass uses an AP1-aware

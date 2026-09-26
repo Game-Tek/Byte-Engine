@@ -1,0 +1,104 @@
+// Builds the lens flare features from the thresholded, quarter-resolution scene, following John Chapman's
+// "Pseudo Lens Flare" (2013). A real lens reflects bright light between its elements and images it again,
+// mirrored through the optical center, so each texel gathers:
+//
+// - Ghosts: `ghosts.x` samples along the line from the mirrored texel toward the screen center, `ghosts.y`
+//   of that distance apart.
+// - A halo: one sample `ghosts.z` toward the center, which rings a bright source near the middle of the frame.
+//   The step is corrected for aspect ratio so the ring stays round on a wide target.
+//
+// `anamorphic.x` is the lens squeeze ratio. An anamorphic lens squeezes the scene horizontally onto the sensor and
+// the image is stretched back out, so the flare's shapes come out wide: the halo becomes an ellipse `squeeze` times
+// wider than it is tall, and each ghost is spread horizontally up to `2 * (squeeze - 1)` texels on each side. A
+// squeeze of `1.0` is a spherical lens.
+//
+// Each sample is split into red, green, and blue taps `tint.w` apart along its direction, the chromatic
+// dispersion of the lens glass, and the sum is multiplied by `tint.xyz`, the color of the lens coatings.
+// Samples weaken toward the frame edge, so a source that leaves the frame fades out instead of popping.
+LensFlareParameters: struct {
+	ghosts: vec4f[1],
+	tint: vec4f[1],
+	anamorphic: vec4f[1],
+}
+
+source_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+result_texture: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+lens_flare_parameters: descriptor<{ type: LensFlareParameters, binding: 2, access: read, memory: constant }>;
+
+LENS_FLARE_MAX_GHOSTS: const u32 = 8;
+// How steeply ghosts and the halo fade toward the frame edge. Chapman uses 10 for ghosts, which leaves a source
+// a third of the way to the corner almost no ghosts; 4 keeps them visible there and still fades them out at the edge.
+LENS_FLARE_GHOST_FALLOFF: const f32 = 4.0;
+LENS_FLARE_HALO_FALLOFF: const f32 = 5.0;
+
+// Returns how much a sample at `sample_uv` contributes: one at the frame center, falling steeply to zero at
+// the corners. Distance is measured with the frame's `aspect` ratio applied, so the falloff, and the halo it
+// shapes, is round on screen. The steep falloff also silences samples that land outside the frame, where the
+// clamping sampler would otherwise repeat the edge texels.
+edge_weight: fn (sample_uv: vec2f, aspect: f32, falloff: f32) -> f32 {
+	let offset: vec2f = vec2f(0.5, 0.5) - sample_uv;
+	let corner_distance: f32 = length(vec2f(0.5 * aspect, 0.5));
+	let from_center: f32 = length(vec2f(offset.x * aspect, offset.y)) / corner_distance;
+	return pow(max(1.0 - from_center, 0.0), falloff);
+}
+
+// Samples the source with red and blue pulled `distortion` apart along `direction`, so bright edges fringe.
+sample_dispersed: fn (sample_uv: vec2f, direction: vec2f, distortion: f32) -> vec3f {
+	let red: vec4f = texture_lod(source_texture, sample_uv + direction * distortion);
+	let green: vec4f = texture_lod(source_texture, sample_uv);
+	let blue: vec4f = texture_lod(source_texture, sample_uv - direction * distortion);
+	return vec3f(red.x, green.y, blue.z);
+}
+
+// Samples one ghost spread horizontally with a 5-tap tent `stretch` UV apart, the wide ghost of an anamorphic lens.
+// The weights sum to one, so a zero `stretch` returns the plain dispersed sample.
+sample_stretched: fn (sample_uv: vec2f, direction: vec2f, distortion: f32, stretch: f32) -> vec3f {
+	let far: vec3f = sample_dispersed(sample_uv - vec2f(stretch * 2.0, 0.0), direction, distortion)
+		+ sample_dispersed(sample_uv + vec2f(stretch * 2.0, 0.0), direction, distortion);
+	let near: vec3f = sample_dispersed(sample_uv - vec2f(stretch, 0.0), direction, distortion)
+		+ sample_dispersed(sample_uv + vec2f(stretch, 0.0), direction, distortion);
+	let center: vec3f = sample_dispersed(sample_uv, direction, distortion);
+	return (far + near * 2.0 + center * 3.0) * (1.0 / 9.0);
+}
+
+main: fn(input: StageInput) -> void {
+	let coord: vec2u = input.thread_id;
+	guard_image_bounds(result_texture, coord);
+	let result_size: vec2u = image_size(result_texture);
+	let uv: vec2f = (vec2f(f32(coord.x), f32(coord.y)) + vec2f(0.5, 0.5)) / vec2f(f32(result_size.x), f32(result_size.y));
+	let aspect: f32 = f32(result_size.x) / f32(result_size.y);
+
+	let ghost_count: u32 = min(u32(lens_flare_parameters.ghosts[0].x), LENS_FLARE_MAX_GHOSTS);
+	let ghost_spacing: f32 = lens_flare_parameters.ghosts[0].y;
+	let halo_width: f32 = lens_flare_parameters.ghosts[0].z;
+	let halo_intensity: f32 = lens_flare_parameters.ghosts[0].w;
+	let distortion: f32 = lens_flare_parameters.tint[0].w;
+	let squeeze: f32 = max(lens_flare_parameters.anamorphic[0].x, 1.0);
+	let ghost_stretch: f32 = (squeeze - 1.0) / f32(result_size.x);
+
+	// The lens images the scene mirrored through its center.
+	let mirrored: vec2f = vec2f(1.0, 1.0) - uv;
+	let to_center: vec2f = vec2f(0.5, 0.5) - mirrored;
+	// Measure the direction to the center in aspect-corrected space so the halo is a circle, not an ellipse.
+	let to_center_square: vec2f = vec2f(to_center.x * aspect, to_center.y);
+	let center_direction_square: vec2f = to_center_square / max(length(to_center_square), 0.00001);
+	let center_direction: vec2f = vec2f(center_direction_square.x / aspect, center_direction_square.y);
+	// The halo steps the same way in the lens's squeezed space, which stretches its ring horizontally on screen.
+	let to_center_lens: vec2f = vec2f(to_center_square.x / squeeze, to_center_square.y);
+	let halo_direction_lens: vec2f = to_center_lens / max(length(to_center_lens), 0.00001);
+	let halo_direction: vec2f = vec2f(halo_direction_lens.x * squeeze / aspect, halo_direction_lens.y);
+
+	let ghost_step: vec2f = to_center * ghost_spacing;
+	let flare: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let i: u32 = 0; i < ghost_count; i = i + 1) {
+		let ghost_uv: vec2f = mirrored + ghost_step * f32(i);
+		flare = flare + sample_stretched(ghost_uv, center_direction, distortion, ghost_stretch) * edge_weight(ghost_uv, aspect, LENS_FLARE_GHOST_FALLOFF);
+	}
+
+	let halo_uv: vec2f = mirrored + halo_direction * halo_width;
+	flare = flare + sample_dispersed(halo_uv, center_direction, distortion) * (edge_weight(halo_uv, aspect, LENS_FLARE_HALO_FALLOFF) * halo_intensity);
+
+	let tint: vec3f = vec3f(lens_flare_parameters.tint[0].x, lens_flare_parameters.tint[0].y, lens_flare_parameters.tint[0].z);
+	let tinted: vec3f = flare * tint;
+	write(result_texture, coord, vec4f(tinted.x, tinted.y, tinted.z, 1.0));
+}

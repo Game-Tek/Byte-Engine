@@ -103,6 +103,7 @@
 - Implement sampled UI colors, the remaining UI layout branch, primitive style access, and non-box bounding boxes.
 - Spawn and despawn a server-side client entity when BETP reports `ClientConnected` and `ClientDisconnected`. `crates/byte-engine/src/network/server/server.rs` logs those events and leaves the entity empty.
 - Make the HTTP inspector opt-in, and keep a busy port 6680 from aborting startup. `HttpInspectorServer::new` starts with every headed application, panics if the port is taken, and accepts unauthenticated loopback requests. `POST /messages` can move or delete entities and trigger actions, and `DELETE /` closes the process.
+- Add a starburst and a lens dirt texture to the screen-space lens flare in `crates/byte-engine/src/rendering/render_passes/lens_flare.rs`. The starburst should rotate with the camera's orientation from `Sink::view`, and the dirt texture should modulate the flare, and optionally the bloom, at composite time. Both need texture assets loaded by the pass.
 - Build the CPU animation graph, evaluate imported glTF and FBX clips into `VisibilitySceneManager::write_skinned_pose`, apply retained rigid primitive nodes, and provide animation-safe bounds so posed meshlet culling can be re-enabled.
 
 ## Shader behavior

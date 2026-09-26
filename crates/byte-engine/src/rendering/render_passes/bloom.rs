@@ -56,11 +56,18 @@ impl BloomPassSettings {
 	}
 }
 
+/// The `BloomShaderData` struct mirrors the `BloomParameters` layout shared by the bloom extract, upsample, and
+/// composite shaders.
+///
+/// [`crate::rendering::render_passes::lens_flare::LensFlarePass`] reuses the extract and composite shaders, so it
+/// fills this layout too.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct BloomShaderData {
-	prefilter: [f32; 4],
-	filter: [f32; 4],
+pub(crate) struct BloomShaderData {
+	/// Threshold, soft knee, composite intensity, and brightness ceiling.
+	pub(crate) prefilter: [f32; 4],
+	/// Upsample radius in `x`; the other lanes are unused.
+	pub(crate) filter: [f32; 4],
 }
 
 /// The `BloomPass` struct creates a reusable pre-tonemap glow stage that can feed later post-processing.

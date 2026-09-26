@@ -283,7 +283,7 @@ impl RenderTargets {
 }
 
 /// Divides a sink extent for a reduced-resolution target, keeping every dimension at least one.
-fn scaled_extent(extent: Extent, resolution_divisor: u32) -> Extent {
+pub(crate) fn scaled_extent(extent: Extent, resolution_divisor: u32) -> Extent {
 	Extent::rectangle(
 		(extent.width() / resolution_divisor).max(1),
 		(extent.height() / resolution_divisor).max(1),

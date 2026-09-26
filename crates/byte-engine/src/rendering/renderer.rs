@@ -13,6 +13,7 @@ use configuration::{
 	set_render_pass_state_by_name,
 };
 pub use targets::RenderTargets;
+pub(crate) use targets::scaled_extent;
 #[cfg(test)]
 use utils::hash::HashMap;
 

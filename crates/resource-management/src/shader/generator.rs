@@ -218,13 +218,7 @@ pub(crate) struct Identifier<'a> {
 	prefixed: bool,
 }
 
-impl<'a> Identifier<'a> {
-	/// Wraps a BESL name, prefixing it when `is_reserved` reports a collision with the target language.
-	pub(crate) fn new(name: &'a str, is_reserved: impl FnOnce(&str) -> bool) -> Self {
-		let prefixed = name.starts_with(RESERVED_IDENTIFIER_PREFIX) || is_reserved(name);
-		Self { name, prefixed }
-	}
-
+impl Identifier<'_> {
 	/// Appends the backend-safe name to `string` without allocating.
 	pub(crate) fn push_to(self, string: &mut String) {
 		if self.prefixed {
@@ -547,7 +541,24 @@ pub(crate) trait NodeEmitter {
 	///
 	/// Use it at every declaration and every reference of a user name so both sides stay in sync.
 	fn identifier(name: &str) -> Identifier<'_> {
-		Identifier::new(name, Self::is_reserved_identifier)
+		let prefixed = name.starts_with(RESERVED_IDENTIFIER_PREFIX) || Self::is_reserved_identifier(name);
+		Identifier { name, prefixed }
+	}
+
+	/// Maps a non-array BESL type name to its backend spelling.
+	///
+	/// Built-in BESL types translate through [`Self::type_from_besl`]. User structs, and user functions reached
+	/// through call syntax, go through [`Self::identifier`] so they match their escaped declarations.
+	fn type_identifier(source: &str) -> Identifier<'_> {
+		let translated = Self::type_from_besl(source);
+		if translated != source || is_builtin_struct_type(source, true) {
+			Identifier {
+				name: translated,
+				prefixed: false,
+			}
+		} else {
+			Self::identifier(source)
+		}
 	}
 
 	/// Appends the string representation of a BESL node to the output buffer.
@@ -868,25 +879,12 @@ pub(crate) trait NodeEmitter {
 		if let Some(vector_type) = scalar_array_vector_type(source) {
 			string.push_str(Self::type_from_besl(vector_type));
 		} else if let Some((element_type, count)) = source.split_once('[') {
-			Self::emit_scalar_type_name(string, element_type);
+			Self::type_identifier(element_type).push_to(string);
 			string.push('[');
 			string.push_str(count.trim_end_matches(']'));
 			string.push(']');
 		} else {
-			Self::emit_scalar_type_name(string, source);
-		}
-	}
-
-	/// Emits a non-array type name: built-in BESL types map to backend types and user types keep a safe name.
-	///
-	/// User struct and function names also reach this path through call syntax, so they must match the
-	/// escaped declaration written by [`Self::emit_struct_node`] and [`Self::emit_function_node`].
-	fn emit_scalar_type_name(string: &mut String, source: &str) {
-		let translated = Self::type_from_besl(source);
-		if translated != source || is_builtin_struct_type(source, true) {
-			string.push_str(translated);
-		} else {
-			Self::identifier(source).push_to(string);
+			Self::type_identifier(source).push_to(string);
 		}
 	}
 

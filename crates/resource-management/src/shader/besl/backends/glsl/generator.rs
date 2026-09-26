@@ -689,7 +689,7 @@ impl Generator {
 				let r#type = r#type.borrow();
 
 				let t = r#type.get_name().unwrap();
-				let type_name = Self::translate_type(t);
+				let type_name = Self::type_identifier(t);
 
 				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 					for (i, field) in fields.iter().enumerate() {
@@ -969,8 +969,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			} if self.current_stage_interpolates_outputs && name == output_name && besl::is_position_output(name) => {
 				string.push_str("gl_Position");
 			}
-			// The backend declares the push-constant block instance itself, so references keep its unescaped name.
-			besl::Nodes::PushConstant { .. } => string.push_str("push_constant"),
 			_ => return false,
 		}
 		true

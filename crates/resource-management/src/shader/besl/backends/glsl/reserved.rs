@@ -84,10 +84,8 @@ fn is_builtin_function(name: &str) -> bool {
 
 /// Global names the GLSL backend declares next to user code.
 ///
-/// `main` is absent on purpose: the BESL entry point must keep that name because it is the GLSL entry point.
+/// `main` and `push_constant` are absent on purpose: BESL names the entry point and the push-constant block
+/// that way itself, and the backend emits them unchanged.
 fn is_backend_name(name: &str) -> bool {
-	matches!(
-		name,
-		"PI" | "PushConstant" | "push_constant" | "_besl_is_finite" | "_besl_is_normal"
-	)
+	matches!(name, "PI" | "PushConstant" | "_besl_is_finite" | "_besl_is_normal")
 }

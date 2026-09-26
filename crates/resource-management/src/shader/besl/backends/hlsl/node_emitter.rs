@@ -163,11 +163,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				Self::identifier(name).push_to(string);
 				return true;
 			}
-			// `push_constant` names the backend's own constant buffer, which is declared unescaped.
-			besl::Nodes::PushConstant { .. } => {
-				string.push_str("push_constant");
-				return true;
-			}
 			_ => {}
 		}
 

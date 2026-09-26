@@ -542,8 +542,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let mut msl_type = String::new();
-				Self::emit_scalar_type_name(&mut msl_type, format.borrow().get_name().unwrap());
+				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
 				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,
@@ -607,8 +606,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let besl::Nodes::Workgroup { name, format, count } = workgroup.node() else {
 					return None;
 				};
-				let mut msl_type = String::new();
-				Self::emit_scalar_type_name(&mut msl_type, format.borrow().get_name().unwrap());
+				let msl_type = Self::type_identifier(format.borrow().get_name().unwrap()).to_string();
 				Some(StageWorkgroup {
 					name: name.clone(),
 					msl_type,

@@ -254,12 +254,13 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
 			besl::Nodes::Specialization { name, r#type } => {
-				let r#type = r#type.borrow();
-				let type_name = r#type.get_name().unwrap();
+				let mut members = Vec::new();
 
-				// Each struct field becomes one function constant named `{name}_{field}`, and the specialization
-				// itself is rebuilt from those constants. Derived names keep the raw BESL name because a suffixed
-				// name cannot be a reserved word.
+				let r#type = r#type.borrow();
+
+				let t = r#type.get_name().unwrap();
+				let type_name = Self::type_identifier(t);
+
 				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 					for (i, field) in fields.iter().enumerate() {
 						if let besl::Nodes::Member {
@@ -268,33 +269,26 @@ impl<A: Allocator + Clone> Generator<A> {
 							..
 						} = field.borrow().node()
 						{
-							string.push_str("constant ");
-							Self::emit_scalar_type_name(string, r#type.borrow().get_name().unwrap());
-							let _ = write!(string, " {name}_{member_name} [[function_constant({i})]];{break_char}");
+							let member_name = format!("{}_{}", name, { member_name });
+							string.push_str(&format!(
+								"constant {} {} [[function_constant({})]];{}",
+								Self::translate_type(r#type.borrow().get_name().unwrap()),
+								member_name,
+								i,
+								if !self.minified { "\n" } else { "" }
+							));
+							members.push(member_name);
 						}
 					}
 				}
 
-				string.push_str("constant ");
-				Self::emit_scalar_type_name(string, type_name);
-				string.push(' ');
-				Self::identifier(name).push_to(string);
-				string.push('=');
-				Self::emit_scalar_type_name(string, type_name);
-				string.push('(');
-				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
-					let mut has_previous_member = false;
-					for field in fields {
-						if let besl::Nodes::Member { name: member_name, .. } = field.borrow().node() {
-							if has_previous_member {
-								string.push(',');
-							}
-							let _ = write!(string, "{name}_{member_name}");
-							has_previous_member = true;
-						}
-					}
-				}
-				let _ = write!(string, ");{break_char}");
+				string.push_str(&format!(
+					"constant {} {}={};{}",
+					type_name,
+					Self::identifier(name),
+					format!("{}({})", &type_name, members.join(",")),
+					if !self.minified { "\n" } else { "" }
+				));
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
@@ -408,7 +402,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						let address_space = buffer_address_space(*memory_class, *write);
 						string.push_str(address_space);
 						string.push(' ');
-						Self::emit_scalar_type_name(string, element.borrow().get_name().unwrap());
+						Self::type_identifier(element.borrow().get_name().unwrap()).push_to(string);
 						string.push_str("* ");
 						Self::identifier(name).push_to(string);
 						let _ = write!(string, " [[buffer({index})]];");
@@ -491,7 +485,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					string.push(' ');
 					Self::identifier(name).push_to(string);
 				} else if let Some((element_type, count)) = type_name.split_once('[') {
-					Self::emit_scalar_type_name(string, element_type);
+					Self::type_identifier(element_type).push_to(string);
 					string.push(' ');
 					Self::identifier(name).push_to(string);
 					string.push('[');

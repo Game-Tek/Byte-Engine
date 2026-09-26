@@ -293,7 +293,7 @@ impl Generator {
 	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
 		let mut members = Vec::new();
 		let r#type = r#type.borrow();
-		let type_name = Self::translate_type(r#type.get_name().unwrap());
+		let type_name = Self::type_identifier(r#type.get_name().unwrap());
 
 		if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 			for field in fields {
@@ -320,7 +320,7 @@ impl Generator {
 		}
 
 		string.push_str("static const ");
-		string.push_str(type_name);
+		type_name.push_to(string);
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('=');

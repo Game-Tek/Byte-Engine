@@ -30,7 +30,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 
 			self.emit_indentation(string, 1);
-			Self::emit_scalar_type_name(string, format.borrow().get_name().unwrap());
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			let _ = write!(string, " {}[{count}]", Self::identifier(name));
 			self.emit_statement_end(string);
 		}
@@ -102,7 +102,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let address_space = buffer_address_space(*memory_class, *write);
 				string.push_str(address_space);
 				string.push(' ');
-				Self::emit_scalar_type_name(string, element.borrow().get_name().unwrap());
+				Self::type_identifier(element.borrow().get_name().unwrap()).push_to(string);
 				string.push_str("* ");
 				Self::identifier(name).push_to(string);
 				emit_suffix(string, primary_id);
@@ -184,7 +184,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			"mat4x3f" => "_besl_packed_float4x3",
 			"vec2u16" => "packed_ushort2",
 			"vec4u16" => "packed_ushort4",
-			_ => return Self::emit_scalar_type_name(string, source),
+			_ => return Self::type_identifier(source).push_to(string),
 		};
 		string.push_str(packed);
 	}
@@ -267,7 +267,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 			self.emit_indentation(string, 1);
 			string.push_str("threadgroup ");
-			Self::emit_scalar_type_name(string, format.borrow().get_name().unwrap());
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
 			if let Some(count) = count {
@@ -354,7 +354,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			};
 			self.emit_indentation(string, 1);
 			string.push_str("threadgroup ");
-			Self::emit_scalar_type_name(string, format.borrow().get_name().unwrap());
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
 			if let Some(count) = count {
@@ -490,7 +490,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_separator(string);
 				string.push_str(address_space);
 				string.push(' ');
-				Self::emit_scalar_type_name(string, element.borrow().get_name().unwrap());
+				Self::type_identifier(element.borrow().get_name().unwrap()).push_to(string);
 				string.push_str("* ");
 				let _ = write!(string, "{} [[buffer({index})]]", Self::identifier(name));
 			}

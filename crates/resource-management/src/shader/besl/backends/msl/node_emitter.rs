@@ -82,7 +82,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		if crate::shader::generator::scalar_array_vector_type(type_name).is_none()
 			&& let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name)
 		{
-			Self::emit_scalar_type_name(string, element_type);
+			Self::type_identifier(element_type).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
 			string.push('[');

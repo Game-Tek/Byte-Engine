@@ -137,7 +137,6 @@ fn is_backend_name(name: &str) -> bool {
 		name,
 		"main"
 			| "PI" | "PushConstant"
-			| "push_constant"
 			| "ObjectPayload"
 			| "VertexOutput"
 			| "PrimitiveOutput"

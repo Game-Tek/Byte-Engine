@@ -727,6 +727,79 @@ fn stores_to_local_members_change_only_that_member() {
 }
 
 #[test]
+fn stores_to_indexed_local_elements_change_only_that_element() {
+	let array = run_value_output(
+		r#"
+		main: fn () -> output { value: u32 } {
+			let values: u32[3] = u32[3](1, 2, 3);
+			let i: u32 = 1;
+			values[i] = 20;
+			values[i + 1] = values[0] + values[i];
+			let value: u32 = values[0] + values[1] * 10 + values[2] * 1000;
+			return { value };
+		}
+		"#,
+	);
+	let nested = run_value_output(
+		r#"
+		main: fn () -> output { value: vec2f } {
+			let points: vec2f[2] = vec2f[2](vec2f(1.0, 2.0), vec2f(3.0, 4.0));
+			let i: u32 = 1;
+			points[i].y = 9.0;
+			let value: vec2f = points[i];
+			return { value };
+		}
+		"#,
+	);
+	let matrix = run_value_output(
+		r#"
+		main: fn () -> output { value: vec4f } {
+			let basis: mat4f = mat4f(
+				vec4f(1.0, 0.0, 0.0, 0.0),
+				vec4f(0.0, 1.0, 0.0, 0.0),
+				vec4f(0.0, 0.0, 1.0, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			let column: u32 = 2;
+			basis[column] = vec4f(5.0, 6.0, 7.0, 8.0);
+			let value: vec4f = basis[column];
+			return { value };
+		}
+		"#,
+	);
+
+	assert_eq!(array, Value::U32(1 + 20 * 10 + 21 * 1000));
+	assert_eq!(nested, Value::Vec2F([3.0, 9.0]));
+	assert_eq!(matrix, Value::Vec4F([5.0, 6.0, 7.0, 8.0]));
+}
+
+#[test]
+fn indexed_local_stores_reject_out_of_bounds_indices() {
+	let program = compile_to_besl(
+		r#"
+		main: fn () -> output { value: u32 } {
+			let values: u32[2] = u32[2](1, 2);
+			let i: u32 = 2;
+			values[i] = 5;
+			let value: u32 = values[0];
+			return { value };
+		}
+		"#,
+		None,
+	)
+	.expect("Expected indexed local store source to link");
+	let executable = ExecutableProgram::compile(program).expect("Expected indexed local store source to compile");
+	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(output_slot(0), &mut output);
+
+	assert_eq!(
+		executable.run_main(&mut descriptors),
+		Err(VmError::BufferArrayIndexOutOfBounds { index: 2, count: 2 })
+	);
+}
+
+#[test]
 fn call_results_expose_their_members() {
 	let intrinsic = run_value_output(
 		r#"

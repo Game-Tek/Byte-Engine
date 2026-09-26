@@ -296,8 +296,8 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Returns the type of `expression` when it is a local or a chain of named members inside one, such as
-	/// `probe.position.z`, and `None` for anything else.
+	/// Returns the type of `expression` when it is a local or a chain of named members and indexed elements inside
+	/// one, such as `probe.position.z` or `weights[i]`, and `None` for anything else.
 	fn local_path_type(&self, expression: &NodeReference) -> Option<ValueType> {
 		match expression.borrow().node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
@@ -308,10 +308,13 @@ impl<'a> Compiler<'a> {
 				self.local_types.get(*local).cloned()
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let member_name = extract_member_name(right).ok()?;
-				aggregate_member(&self.local_path_type(left)?, &member_name)
-					.ok()
-					.map(|(_, member_type)| member_type)
+				let parent_type = self.local_path_type(left)?;
+				match extract_member_name(right) {
+					Ok(member_name) => aggregate_member(&parent_type, &member_name)
+						.ok()
+						.map(|(_, member_type)| member_type),
+					Err(_) => array_element_type(&parent_type).ok().map(|(element_type, _)| element_type),
+				}
 			}
 			_ => None,
 		}
@@ -319,8 +322,9 @@ impl<'a> Compiler<'a> {
 
 	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
 	///
-	/// Registers hold whole values, so a member store inserts `value` into the enclosing value and stores that in turn,
-	/// until it reaches the local.
+	/// Registers hold whole values, so a member or element store inserts `value` into the enclosing value and stores that
+	/// in turn, until it reaches the local. Element stores such as `weights[i] = value` evaluate `i` at run time and use
+	/// [`Instruction::InsertDynamic`].
 	fn compile_local_store(
 		&mut self,
 		target: &NodeReference,
@@ -340,18 +344,27 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let (left, member_name) = (left.clone(), extract_member_name(right)?);
+				let (left, right) = (left.clone(), right.clone());
 				drop(borrowed);
 				let parent_type = self.local_path_type(&left).expect("Local store targets are local paths");
-				let (index, _) = aggregate_member(&parent_type, &member_name)?;
 				let source = self.compile_value_expression(&left, &parent_type, descriptor_layouts)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Insert {
-					register,
-					source,
-					index,
-					value,
-				});
+				let instruction = match extract_member_name(&right) {
+					Ok(member_name) => Instruction::Insert {
+						register,
+						source,
+						index: aggregate_member(&parent_type, &member_name)?.0,
+						value,
+					},
+					Err(_) => Instruction::InsertDynamic {
+						register,
+						source,
+						index: self.compile_value_expression(&right, &ValueType::U32, descriptor_layouts)?,
+						count: array_element_type(&parent_type)?.1,
+						value,
+					},
+				};
+				self.instructions.push(instruction);
 				self.compile_local_store(&left, register, descriptor_layouts)
 			}
 			_ => unreachable!("Local store targets are local paths"),

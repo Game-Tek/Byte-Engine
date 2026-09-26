@@ -230,6 +230,10 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
+				let mut member_path = Vec::new();
+				if let Some(local) = self.local_member_path(&left, &mut member_path) {
+					return self.compile_local_member_store(local, &member_path, &right, descriptor_layouts);
+				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
 						.index_expression
@@ -273,6 +277,99 @@ impl<'a> Compiler<'a> {
 				message: format!("Unsupported assignment target: {}", describe_node(node)),
 			}),
 		}
+	}
+
+	/// Returns the local slot that roots a chain of named member accesses such as `local.a.b`, and pushes the member
+	/// names onto `path` from the outermost access inward. Returns `None` when an index or a non-local breaks the chain.
+	fn local_member_path(&self, expression: &NodeReference, path: &mut Vec<String>) -> Option<usize> {
+		let borrowed = expression.borrow();
+		match borrowed.node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				self.local_member_path(&elements[0], path)
+			}
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let name = extract_member_name(right).ok()?;
+				let local = self.local_member_path(left, path)?;
+				path.push(name);
+				Some(local)
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => self.locals_by_reference.get(source).copied(),
+			_ => None,
+		}
+	}
+
+	/// Stores `right` into one member of a local value, such as `position.x = 1.0`.
+	///
+	/// Registers hold whole values, so this loads the local, rebuilds each level of `path` around the new member, and
+	/// stores the rebuilt value back.
+	fn compile_local_member_store(
+		&mut self,
+		local: usize,
+		path: &[String],
+		right: &NodeReference,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<(), VmError> {
+		let local_type = self
+			.local_types
+			.get(local)
+			.cloned()
+			.ok_or(VmError::UninitializedLocal { local })?;
+		let source = self.allocate_register();
+		self.instructions.push(Instruction::LoadLocal { register: source, local });
+		let register = self.compile_rebuilt_member(source, &local_type, path, right, descriptor_layouts)?;
+		self.instructions.push(Instruction::StoreLocal { local, register });
+		Ok(())
+	}
+
+	/// Returns a register holding `source` of `value_type` with the member at `path` replaced by `right`.
+	fn compile_rebuilt_member(
+		&mut self,
+		source: usize,
+		value_type: &ValueType,
+		path: &[String],
+		right: &NodeReference,
+		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+	) -> Result<usize, VmError> {
+		let Some((member_name, inner_path)) = path.split_first() else {
+			return self.compile_value_expression(right, value_type, descriptor_layouts);
+		};
+		let (changed_index, member_type) = aggregate_member(value_type, member_name)?;
+		let changed = if inner_path.is_empty() {
+			self.compile_value_expression(right, &member_type, descriptor_layouts)?
+		} else {
+			let member = self.allocate_register();
+			self.instructions.push(Instruction::Extract {
+				register: member,
+				source,
+				index: changed_index,
+				value_type: member_type.clone(),
+			});
+			self.compile_rebuilt_member(member, &member_type, inner_path, right, descriptor_layouts)?
+		};
+
+		let mut components = Vec::new();
+		for (index, component_type) in (0..).map_while(|index| Some((index, aggregate_member_type_at(value_type, index)?))) {
+			if index == changed_index {
+				components.push(changed);
+				continue;
+			}
+			let register = self.allocate_register();
+			self.instructions.push(Instruction::Extract {
+				register,
+				source,
+				index,
+				value_type: component_type,
+			});
+			components.push(register);
+		}
+
+		let register = self.allocate_register();
+		self.instructions.push(Instruction::Construct {
+			register,
+			value_type: value_type.clone(),
+			components,
+		});
+		Ok(register)
 	}
 
 	pub(super) fn compile_call_statement(

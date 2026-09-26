@@ -408,6 +408,7 @@ impl Node {
 			builtin_intrinsic("length", vec![("value", vec4f16.clone())], f16_t.clone()),
 			builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone()),
 			builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone()),
+			builtin_intrinsic("normalize", vec![("value", vec2f32.clone())], vec2f32.clone()),
 			builtin_intrinsic("normalize", vec![("value", vec2f16.clone())], vec2f16.clone()),
 			builtin_intrinsic("normalize", vec![("value", vec3f16.clone())], vec3f16.clone()),
 			builtin_intrinsic("normalize", vec![("value", vec4f16.clone())], vec4f16.clone()),

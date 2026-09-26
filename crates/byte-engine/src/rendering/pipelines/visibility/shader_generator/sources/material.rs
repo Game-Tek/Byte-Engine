@@ -461,53 +461,57 @@ material_evaluation_suffix: fn () -> void {
 				}
 				attenuation = 1.0;
 			} else {
-				if (light_type == 0) {
-					let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-					if (shadow_view_index != 0) {
-						let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
-						occlusion_factor = f16(sample_point_shadow(
-							shadow_view_index,
-							shadow_cube_index,
-							world_space_vertex_position,
-							light_position,
-							position_derivative_x,
-							position_derivative_y
-						));
-						if (occlusion_factor == 0.0) {
-							continue;
+				match light_type {
+					0 => {
+						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+						if (shadow_view_index != 0) {
+							let shadow_cube_index: u32 = lighting_data.lights[light_index].shadow_layer;
+							occlusion_factor = f16(sample_point_shadow(
+								shadow_view_index,
+								shadow_cube_index,
+								world_space_vertex_position,
+								light_position,
+								position_derivative_x,
+								position_derivative_y
+							));
+							if (occlusion_factor == 0.0) {
+								continue;
+							}
 						}
 					}
-				} else if (light_type == 1) {
-					let cone_direction: vec3f16 = vec3f16(
-						lighting_data.lights[light_index].direction.x,
-						lighting_data.lights[light_index].direction.y,
-						lighting_data.lights[light_index].direction.z
-					);
-					let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
-					let cone_factor: f16 = f16(cone_attenuation(
-						f32(cone_cosine),
-						lighting_data.lights[light_index].cone_cosines.x,
-						lighting_data.lights[light_index].cone_cosines.y
-					));
-					if (cone_factor <= 0.0) {
-						continue;
-					}
-					attenuation = attenuation * f32(cone_factor);
-					let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
-					if (shadow_view_index != 0) {
-						let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
-						occlusion_factor = f16(sample_cone_shadow(
-							cone_shadow_map,
-							shadow_view_index,
-							shadow_layer,
-							world_space_vertex_position,
-							position_derivative_x,
-							position_derivative_y
+					1 => {
+						let cone_direction: vec3f16 = vec3f16(
+							lighting_data.lights[light_index].direction.x,
+							lighting_data.lights[light_index].direction.y,
+							lighting_data.lights[light_index].direction.z
+						);
+						let cone_cosine: f16 = dot(cone_direction, vec3f16(0.0, 0.0, 0.0) - L_material);
+						let cone_factor: f16 = f16(cone_attenuation(
+							f32(cone_cosine),
+							lighting_data.lights[light_index].cone_cosines.x,
+							lighting_data.lights[light_index].cone_cosines.y
 						));
-						if (occlusion_factor == 0.0) {
+						if (cone_factor <= 0.0) {
 							continue;
 						}
+						attenuation = attenuation * f32(cone_factor);
+						let shadow_view_index: u32 = lighting_data.lights[light_index].shadow_views[0];
+						if (shadow_view_index != 0) {
+							let shadow_layer: u32 = lighting_data.lights[light_index].shadow_layer;
+							occlusion_factor = f16(sample_cone_shadow(
+								cone_shadow_map,
+								shadow_view_index,
+								shadow_layer,
+								world_space_vertex_position,
+								position_derivative_x,
+								position_derivative_y
+							));
+							if (occlusion_factor == 0.0) {
+								continue;
+							}
+						}
 					}
+					_ => {}
 				}
 				if (lighting_data.lights[light_index].ies_profile_texture != 4294967295) {
 					let emission_direction: vec3f = vec3f(0.0, 0.0, 0.0) - L;

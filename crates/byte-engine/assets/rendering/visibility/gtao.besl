@@ -184,29 +184,33 @@ cached_hierarchical_depth: fn (
 	level: u32,
 	group_base: vec2u
 ) -> f32 {
-	if (level == 2) {
-		let mip_coord: vec2u = base_resolution_coord / vec2u(4, 4);
-		let mip_group_base: vec2u = group_base / vec2u(4, 4);
-		return cached_depth[
-			L2_BASE +
-			cache_coordinate(mip_coord.y, mip_group_base.y, L2_HALO) * L2_STRIDE +
-			cache_coordinate(mip_coord.x, mip_group_base.x, L2_HALO)
-		];
+	match level {
+		2 => {
+			let mip_coord: vec2u = base_resolution_coord / vec2u(4, 4);
+			let mip_group_base: vec2u = group_base / vec2u(4, 4);
+			return cached_depth[
+				L2_BASE +
+				cache_coordinate(mip_coord.y, mip_group_base.y, L2_HALO) * L2_STRIDE +
+				cache_coordinate(mip_coord.x, mip_group_base.x, L2_HALO)
+			];
+		}
+		1 => {
+			let mip_coord: vec2u = base_resolution_coord / vec2u(2, 2);
+			let mip_group_base: vec2u = group_base / vec2u(2, 2);
+			return cached_depth[
+				L1_BASE +
+				cache_coordinate(mip_coord.y, mip_group_base.y, L1_HALO) * L1_STRIDE +
+				cache_coordinate(mip_coord.x, mip_group_base.x, L1_HALO)
+			];
+		}
+		_ => {
+			return cached_depth[
+				L0_BASE +
+				cache_coordinate(base_resolution_coord.y, group_base.y, L0_HALO) * L0_STRIDE +
+				cache_coordinate(base_resolution_coord.x, group_base.x, L0_HALO)
+			];
+		}
 	}
-	if (level == 1) {
-		let mip_coord: vec2u = base_resolution_coord / vec2u(2, 2);
-		let mip_group_base: vec2u = group_base / vec2u(2, 2);
-		return cached_depth[
-			L1_BASE +
-			cache_coordinate(mip_coord.y, mip_group_base.y, L1_HALO) * L1_STRIDE +
-			cache_coordinate(mip_coord.x, mip_group_base.x, L1_HALO)
-		];
-	}
-	return cached_depth[
-		L0_BASE +
-		cache_coordinate(base_resolution_coord.y, group_base.y, L0_HALO) * L0_STRIDE +
-		cache_coordinate(base_resolution_coord.x, group_base.x, L0_HALO)
-	];
 }
 
 view_ray_xy: fn (pixel: vec2u) -> vec2f {

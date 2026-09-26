@@ -1,21 +1,14 @@
 palette_color: fn(index: u32) -> vec3f {
-	let color: vec3f = vec3f(0.90, 0.20, 0.20);
-	if (index == 1) {
-		color = vec3f(0.20, 0.70, 0.95);
-	} else if (index == 2) {
-		color = vec3f(0.35, 0.85, 0.35);
-	} else if (index == 3) {
-		color = vec3f(0.95, 0.75, 0.20);
-	} else if (index == 4) {
-		color = vec3f(0.75, 0.35, 0.95);
-	} else if (index == 5) {
-		color = vec3f(0.95, 0.45, 0.20);
-	} else if (index == 6) {
-		color = vec3f(0.25, 0.90, 0.75);
-	} else if (index == 7) {
-		color = vec3f(0.85, 0.85, 0.90);
+	match index {
+		1 => return vec3f(0.20, 0.70, 0.95),
+		2 => return vec3f(0.35, 0.85, 0.35),
+		3 => return vec3f(0.95, 0.75, 0.20),
+		4 => return vec3f(0.75, 0.35, 0.95),
+		5 => return vec3f(0.95, 0.45, 0.20),
+		6 => return vec3f(0.25, 0.90, 0.75),
+		7 => return vec3f(0.85, 0.85, 0.90),
+		_ => return vec3f(0.90, 0.20, 0.20),
 	}
-	return color;
 }
 
 main: fn (pipeline_input: interface { instance_index: u32, local_position: vec3f }) -> output { albedo: vec4f } {

@@ -327,28 +327,24 @@ directional_shadow_depth_per_meter: fn (shadow_view_projection: mat4f) -> f32 {
 // Returns the view index of one directional cascade from the light's four cascade views.
 pub(crate) const DIRECTIONAL_SHADOW_CASCADE_VIEW_SOURCE: &str = r#"
 directional_shadow_cascade_view: fn (cascade: u32, view0: u32, view1: u32, view2: u32, view3: u32) -> u32 {
-	if (cascade == 1) {
-		return view1;
-	} else if (cascade == 2) {
-		return view2;
-	} else if (cascade == 3) {
-		return view3;
+	match cascade {
+		1 => return view1,
+		2 => return view2,
+		3 => return view3,
+		_ => return view0,
 	}
-	return view0;
 }
 "#;
 
 // Returns one cascade's texels per meter from the four cascades' scales, cascade zero in x through cascade three in w.
 pub(crate) const DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE: &str = r#"
 directional_shadow_cascade_scale: fn (cascade: u32, texels_per_meter: vec4f) -> f32 {
-	if (cascade == 1) {
-		return texels_per_meter.y;
-	} else if (cascade == 2) {
-		return texels_per_meter.z;
-	} else if (cascade == 3) {
-		return texels_per_meter.w;
+	match cascade {
+		1 => return texels_per_meter.y,
+		2 => return texels_per_meter.z,
+		3 => return texels_per_meter.w,
+		_ => return texels_per_meter.x,
 	}
-	return texels_per_meter.x;
 }
 "#;
 
@@ -730,17 +726,15 @@ point_shadow_texel_direction: fn (sample_direction: vec3f) -> vec3f {
 	);
 	let texel_center: vec2f = ((vec2f(f32(texel.x), f32(texel.y)) + vec2f(0.5, 0.5)) / 1024.0) * 2.0
 		- vec2f(1.0, 1.0);
+	// Face zero keeps the initial direction.
 	let snapped_direction: vec3f = vec3f(1.0, 0.0 - texel_center.y, 0.0 - texel_center.x);
-	if (face == 1) {
-		snapped_direction = vec3f(0.0 - 1.0, 0.0 - texel_center.y, texel_center.x);
-	} else if (face == 2) {
-		snapped_direction = vec3f(texel_center.x, 1.0, texel_center.y);
-	} else if (face == 3) {
-		snapped_direction = vec3f(texel_center.x, 0.0 - 1.0, 0.0 - texel_center.y);
-	} else if (face == 4) {
-		snapped_direction = vec3f(texel_center.x, 0.0 - texel_center.y, 1.0);
-	} else if (face == 5) {
-		snapped_direction = vec3f(0.0 - texel_center.x, 0.0 - texel_center.y, 0.0 - 1.0);
+	match face {
+		1 => snapped_direction = vec3f(0.0 - 1.0, 0.0 - texel_center.y, texel_center.x),
+		2 => snapped_direction = vec3f(texel_center.x, 1.0, texel_center.y),
+		3 => snapped_direction = vec3f(texel_center.x, 0.0 - 1.0, 0.0 - texel_center.y),
+		4 => snapped_direction = vec3f(texel_center.x, 0.0 - texel_center.y, 1.0),
+		5 => snapped_direction = vec3f(0.0 - texel_center.x, 0.0 - texel_center.y, 0.0 - 1.0),
+		_ => {}
 	}
 	return normalize(snapped_direction);
 }

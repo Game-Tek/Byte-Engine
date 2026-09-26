@@ -503,38 +503,24 @@ const COMMON_SHADER_SOURCE: &str = r#"
 
 	get_debug_color: fn (i: u32) -> vec4f {
 		let palette_index: u32 = i % 16;
-		if (palette_index == 0) {
-			return vec4f(0.16863, 0.40392, 0.77647, 1.0);
-		} else if (palette_index == 1) {
-			return vec4f(0.32941, 0.76863, 0.21961, 1.0);
-		} else if (palette_index == 2) {
-			return vec4f(0.81961, 0.16078, 0.67451, 1.0);
-		} else if (palette_index == 3) {
-			return vec4f(0.96863, 0.98824, 0.45490, 1.0);
-		} else if (palette_index == 4) {
-			return vec4f(0.75294, 0.09020, 0.75686, 1.0);
-		} else if (palette_index == 5) {
-			return vec4f(0.30588, 0.95686, 0.54510, 1.0);
-		} else if (palette_index == 6) {
-			return vec4f(0.66667, 0.06667, 0.75686, 1.0);
-		} else if (palette_index == 7) {
-			return vec4f(0.78824, 0.91765, 0.27451, 1.0);
-		} else if (palette_index == 8) {
-			return vec4f(0.40980, 0.12745, 0.48627, 1.0);
-		} else if (palette_index == 9) {
-			return vec4f(0.89804, 0.28235, 0.20784, 1.0);
-		} else if (palette_index == 10) {
-			return vec4f(0.93725, 0.67843, 0.33725, 1.0);
-		} else if (palette_index == 11) {
-			return vec4f(0.95294, 0.96863, 0.00392, 1.0);
-		} else if (palette_index == 12) {
-			return vec4f(1.00000, 0.27843, 0.67843, 1.0);
-		} else if (palette_index == 13) {
-			return vec4f(0.29020, 0.90980, 0.56863, 1.0);
-		} else if (palette_index == 14) {
-			return vec4f(0.30980, 0.70980, 0.27059, 1.0);
+		match palette_index {
+			0 => return vec4f(0.16863, 0.40392, 0.77647, 1.0),
+			1 => return vec4f(0.32941, 0.76863, 0.21961, 1.0),
+			2 => return vec4f(0.81961, 0.16078, 0.67451, 1.0),
+			3 => return vec4f(0.96863, 0.98824, 0.45490, 1.0),
+			4 => return vec4f(0.75294, 0.09020, 0.75686, 1.0),
+			5 => return vec4f(0.30588, 0.95686, 0.54510, 1.0),
+			6 => return vec4f(0.66667, 0.06667, 0.75686, 1.0),
+			7 => return vec4f(0.78824, 0.91765, 0.27451, 1.0),
+			8 => return vec4f(0.40980, 0.12745, 0.48627, 1.0),
+			9 => return vec4f(0.89804, 0.28235, 0.20784, 1.0),
+			10 => return vec4f(0.93725, 0.67843, 0.33725, 1.0),
+			11 => return vec4f(0.95294, 0.96863, 0.00392, 1.0),
+			12 => return vec4f(1.00000, 0.27843, 0.67843, 1.0),
+			13 => return vec4f(0.29020, 0.90980, 0.56863, 1.0),
+			14 => return vec4f(0.30980, 0.70980, 0.27059, 1.0),
+			_ => return vec4f(0.69804, 0.16078, 0.39216, 1.0),
 		}
-		return vec4f(0.69804, 0.16078, 0.39216, 1.0);
 	}
 "#;
 

@@ -602,11 +602,13 @@ mod tests {
 		let mut helpers = besl::parse(
 			r#"
 			sample_material: fn (slot: u32) -> vec4f {
-				if (slot == 3) { return sample(base_color_texture, vec2f(0.5, 0.5)); }
-				if (slot == 4) { return sample(metallic_roughness_texture, vec2f(0.5, 0.5)); }
-				if (slot == 5) { return sample(normal_texture, vec2f(0.5, 0.5)); }
-				if (slot == 6) { return sample(occlusion_texture, vec2f(0.5, 0.5)); }
-				return sample(emission_texture, vec2f(0.5, 0.5));
+				match slot {
+					3 => return sample(base_color_texture, vec2f(0.5, 0.5)),
+					4 => return sample(metallic_roughness_texture, vec2f(0.5, 0.5)),
+					5 => return sample(normal_texture, vec2f(0.5, 0.5)),
+					6 => return sample(occlusion_texture, vec2f(0.5, 0.5)),
+					_ => return sample(emission_texture, vec2f(0.5, 0.5)),
+				}
 			}
 
 			decode_material_normal_f16: fn (encoded: vec4f16) -> vec3f16 {

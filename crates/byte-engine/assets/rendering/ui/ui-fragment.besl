@@ -675,71 +675,67 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 	let kind: u32 = primitives[index].kind;
 	let color: vec4f = paint(index, pixel);
 
-	// Outline glyph.
-	if (kind == 4) {
-		return vec4f(color.x, color.y, color.z, color.w * glyph_coverage(index, pixel));
-	}
-	// Filled path.
-	if (kind == 8) {
-		return vec4f(color.x, color.y, color.z, color.w * path_coverage(index, pixel));
-	}
-	// Rectangle layer.
-	if (kind == 0) {
-		return vec4f(color.x, color.y, color.z, color.w * rect_coverage(primitives[index].a, primitives[index].b, pixel));
-	}
-	// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
-	if (kind == 6) {
-		let inset: f32 = f32(primitives[index].data0) / 256.0;
-		return vec4f(color.x, color.y, color.z, color.w * sector_coverage(primitives[index].a, primitives[index].b, inset, pixel));
-	}
-	// Curve piece.
-	if (kind == 2) {
-		let coverage: f32 = curve_coverage(
-			index,
-			vec2f(curve_from.x, curve_from.y),
-			vec2f(curve_from.z, curve_from.w),
-			curve_to,
-			pixel
-		);
-		return vec4f(color.x, color.y, color.z, color.w * coverage);
-	}
-	// Image. Its color alpha holds the opacity.
-	if (kind == 3) {
-		let slot: u32 = primitives[index].data0;
-		let texel: vec4f = sample(textures[slot], uv);
-		return vec4f(texel.x, texel.y, texel.z, texel.w * color.w);
-	}
-	// Atlas glyph.
-	if (kind == 5) {
-		return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x);
-	}
-	// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
-	// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
-	if (kind == 12) {
-		let blurred_caster: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
-		return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
-	}
-	// Shadow. `a` is the element's rectangle, `b` the corner radius, corner exponent, sigma, and
-	// spread, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
-	// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
-	if (kind == 10 || kind == 11) {
-		let rect: vec4f = primitives[index].a;
-		let shape: vec4f = primitives[index].b;
-		let offset: vec2f = vec2f(
-			(f32(primitives[index].data0) - 8388608.0) / 64.0,
-			(f32(primitives[index].data1) - 8388608.0) / 64.0
-		);
-		let sigma: f32 = max(shape.z, 0.5);
-		let spread: f32 = shape.w;
-		if (kind == 10) {
-			let caster: vec4f = vec4f(rect.x + offset.x - spread, rect.y + offset.y - spread, rect.z + spread * 2.0, rect.w + spread * 2.0);
-			return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, shape.x + spread, sigma, pixel));
+	match kind {
+		// Outline glyph.
+		4 => return vec4f(color.x, color.y, color.z, color.w * glyph_coverage(index, pixel)),
+		// Filled path.
+		8 => return vec4f(color.x, color.y, color.z, color.w * path_coverage(index, pixel)),
+		// Rectangle layer.
+		0 => return vec4f(color.x, color.y, color.z, color.w * rect_coverage(primitives[index].a, primitives[index].b, pixel)),
+		// Sector layer. Its edge inset rides in `data0` as 1/256 pixel fixed point.
+		6 => {
+			let inset: f32 = f32(primitives[index].data0) / 256.0;
+			return vec4f(color.x, color.y, color.z, color.w * sector_coverage(primitives[index].a, primitives[index].b, inset, pixel));
 		}
-		// An inset shadow darkens the element around a hole moved by the offset and shrunk by the spread.
-		let hole: vec4f = vec4f(rect.x + offset.x + spread, rect.y + offset.y + spread, rect.z - spread * 2.0, rect.w - spread * 2.0);
-		let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), pixel);
-		let shadowed: f32 = 1.0 - shadow_coverage(hole, shape.x - spread, sigma, pixel);
-		return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
+		// Curve piece.
+		2 => {
+			let coverage: f32 = curve_coverage(
+				index,
+				vec2f(curve_from.x, curve_from.y),
+				vec2f(curve_from.z, curve_from.w),
+				curve_to,
+				pixel
+			);
+			return vec4f(color.x, color.y, color.z, color.w * coverage);
+		}
+		// Image. Its color alpha holds the opacity.
+		3 => {
+			let slot: u32 = primitives[index].data0;
+			let texel: vec4f = sample(textures[slot], uv);
+			return vec4f(texel.x, texel.y, texel.z, texel.w * color.w);
+		}
+		// Atlas glyph.
+		5 => return vec4f(color.x, color.y, color.z, color.w * sample(textures[0], uv).x),
+		// Sampled shadow of a sector or a path. Its caster was drawn in white and blurred like a
+		// backdrop, so the blurred alpha is the shadow's coverage. `b.w` holds the resolution mix.
+		12 => {
+			let blurred_caster: vec4f = sample_backdrop(screen, clamp(primitives[index].b.w, 0.0, 1.0));
+			return vec4f(color.x, color.y, color.z, color.w * clamp(blurred_caster.w, 0.0, 1.0));
+		}
+		// Shadow. `a` is the element's rectangle, `b` the corner radius, corner exponent, sigma, and
+		// spread, and `data0` and `data1` the offset as biased 1/64 pixel fixed point. A sigma under
+		// half a pixel is raised to it, which anti-aliases a sharp shadow's edge.
+		10 | 11 => {
+			let rect: vec4f = primitives[index].a;
+			let shape: vec4f = primitives[index].b;
+			let offset: vec2f = vec2f(
+				(f32(primitives[index].data0) - 8388608.0) / 64.0,
+				(f32(primitives[index].data1) - 8388608.0) / 64.0
+			);
+			let sigma: f32 = max(shape.z, 0.5);
+			let spread: f32 = shape.w;
+			if (kind == 10) {
+				let caster: vec4f = vec4f(rect.x + offset.x - spread, rect.y + offset.y - spread, rect.z + spread * 2.0, rect.w + spread * 2.0);
+				return vec4f(color.x, color.y, color.z, color.w * shadow_coverage(caster, shape.x + spread, sigma, pixel));
+			}
+			// An inset shadow darkens the element around a hole moved by the offset and shrunk by the spread.
+			let hole: vec4f = vec4f(rect.x + offset.x + spread, rect.y + offset.y + spread, rect.z - spread * 2.0, rect.w - spread * 2.0);
+			let inside: f32 = rect_coverage(rect, vec4f(shape.x, shape.y, 0.0, 0.0), pixel);
+			let shadowed: f32 = 1.0 - shadow_coverage(hole, shape.x - spread, sigma, pixel);
+			return vec4f(color.x, color.y, color.z, color.w * inside * shadowed);
+		}
+		// Backdrop blurs are shaded after the match.
+		_ => {}
 	}
 	// Backdrop blur. The mask coverage is the source alpha.
 	let resolution_mix: f32 = 0.0;
@@ -750,16 +746,16 @@ shade: fn (index: u32, pixel: vec2f, screen: vec2f, uv: vec2f, curve_from: vec4f
 		resolution_mix = primitives[index].b.w;
 	}
 	let blurred: vec4f = sample_backdrop(screen, clamp(resolution_mix, 0.0, 1.0));
-	if (kind == 9) {
-		return vec4f(blurred.x, blurred.y, blurred.z, path_coverage(index, pixel));
+	match kind {
+		9 => return vec4f(blurred.x, blurred.y, blurred.z, path_coverage(index, pixel)),
+		// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.
+		7 => {
+			let shape: vec4f = vec4f(primitives[index].b.x, primitives[index].b.y, primitives[index].b.z, 0.0);
+			let inset: f32 = f32(primitives[index].data0) / 256.0;
+			return vec4f(blurred.x, blurred.y, blurred.z, sector_coverage(primitives[index].a, shape, inset, pixel));
+		}
+		_ => return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(primitives[index].a, primitives[index].b, pixel)),
 	}
-	// A sector blur keeps its shape in the stroke slot, so the shape is read with no stroke.
-	if (kind == 7) {
-		let shape: vec4f = vec4f(primitives[index].b.x, primitives[index].b.y, primitives[index].b.z, 0.0);
-		let inset: f32 = f32(primitives[index].data0) / 256.0;
-		return vec4f(blurred.x, blurred.y, blurred.z, sector_coverage(primitives[index].a, shape, inset, pixel));
-	}
-	return vec4f(blurred.x, blurred.y, blurred.z, rect_coverage(primitives[index].a, primitives[index].b, pixel));
 }
 
 main: fn(pipeline_input: interface {

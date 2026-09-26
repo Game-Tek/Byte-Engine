@@ -309,12 +309,10 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
 				let parent_type = self.local_path_type(left)?;
-				match extract_member_name(right) {
-					Ok(member_name) => aggregate_member(&parent_type, &member_name)
-						.ok()
-						.map(|(_, member_type)| member_type),
-					Err(_) => array_element_type(&parent_type).ok().map(|(element_type, _)| element_type),
-				}
+				Some(match extract_member_name(right) {
+					Ok(member_name) => aggregate_member(&parent_type, &member_name).ok()?.1,
+					Err(_) => array_element_type(&parent_type).ok()?.0,
+				})
 			}
 			_ => None,
 		}
@@ -323,8 +321,7 @@ impl<'a> Compiler<'a> {
 	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
 	///
 	/// Registers hold whole values, so a member or element store inserts `value` into the enclosing value and stores that
-	/// in turn, until it reaches the local. Element stores such as `weights[i] = value` evaluate `i` at run time and use
-	/// [`Instruction::InsertDynamic`].
+	/// in turn, until it reaches the local.
 	fn compile_local_store(
 		&mut self,
 		target: &NodeReference,

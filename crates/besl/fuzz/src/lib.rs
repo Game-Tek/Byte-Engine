@@ -176,7 +176,7 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 		return;
 	}
 
-	match cursor.choose(6) {
+	match cursor.choose(5) {
 		0 => emit_u32_leaf(source, cursor, u32_locals),
 		1 => {
 			let operator = ["+", "-", "*", "/", "%"][cursor.choose(5)];
@@ -199,15 +199,8 @@ fn emit_u32_expression(source: &mut String, cursor: &mut ByteCursor<'_>, u32_loc
 			emit_f32_leaf(source, cursor, f32_locals);
 			source.push(')');
 		}
-		4 => source.push_str("thread_idx()"),
-		_ => {
-			let operator = ["<", "<=", ">", ">=", "==", "!="][cursor.choose(6)];
-			source.push('(');
-			emit_u32_leaf(source, cursor, u32_locals);
-			let _ = write!(source, " {operator} ");
-			emit_u32_leaf(source, cursor, u32_locals);
-			source.push(')');
-		}
+		// Comparisons produce `bool`, so they are only emitted as `if` conditions by `emit_conditional`.
+		_ => source.push_str("thread_idx()"),
 	}
 }
 

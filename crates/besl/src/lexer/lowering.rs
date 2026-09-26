@@ -510,7 +510,7 @@ pub(super) fn lex_parsed_node(
 					let right = match &right.node {
 						parser::Nodes::Expression(parser::Expressions::Member { name }) => {
 							Node::expression(Expressions::Member {
-								source: resolve_accessed_member(&chain, &left, name)?,
+								source: resolve_accessed_member(&left, name)?,
 								name: name.to_string(),
 							})
 							.into()

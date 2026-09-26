@@ -664,7 +664,24 @@ fn stores_to_local_members_change_only_that_member() {
 		"#,
 	);
 
+	let matrix = run_value_output(
+		r#"
+		main: fn () -> output { value: vec4f } {
+			let basis: mat4f = mat4f(
+				vec4f(1.0, 0.0, 0.0, 0.0),
+				vec4f(0.0, 1.0, 0.0, 0.0),
+				vec4f(0.0, 0.0, 1.0, 0.0),
+				vec4f(0.0, 0.0, 0.0, 1.0)
+			);
+			basis.y.x = 6.0;
+			let value: vec4f = basis.y;
+			return { value };
+		}
+		"#,
+	);
+
 	assert_eq!(vector, Value::Vec2F([5.0, 2.0]));
+	assert_eq!(matrix, Value::Vec4F([6.0, 1.0, 0.0, 0.0]));
 	assert_eq!(nested, Value::Vec3F([2.0, 3.0, 9.0]));
 	assert_eq!(parameter, Value::Vec2F([1.0, 3.0]));
 }

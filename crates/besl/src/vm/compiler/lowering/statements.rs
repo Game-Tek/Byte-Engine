@@ -300,8 +300,8 @@ impl<'a> Compiler<'a> {
 
 	/// Stores `right` into one member of a local value, such as `position.x = 1.0`.
 	///
-	/// Registers hold whole values, so this loads the local, rebuilds each level of `path` around the new member, and
-	/// stores the rebuilt value back.
+	/// Registers hold whole values, so this loads the local, inserts the new member at each level of `path`, and
+	/// stores the result back.
 	fn compile_local_member_store(
 		&mut self,
 		local: usize,
@@ -316,13 +316,13 @@ impl<'a> Compiler<'a> {
 			.ok_or(VmError::UninitializedLocal { local })?;
 		let source = self.allocate_register();
 		self.instructions.push(Instruction::LoadLocal { register: source, local });
-		let register = self.compile_rebuilt_member(source, &local_type, path, right, descriptor_layouts)?;
+		let register = self.compile_member_insert(source, &local_type, path, right, descriptor_layouts)?;
 		self.instructions.push(Instruction::StoreLocal { local, register });
 		Ok(())
 	}
 
-	/// Returns a register holding `source` of `value_type` with the member at `path` replaced by `right`.
-	fn compile_rebuilt_member(
+	/// Returns a register holding `source` with the member at the non-empty `path` replaced by `right`.
+	fn compile_member_insert(
 		&mut self,
 		source: usize,
 		value_type: &ValueType,
@@ -330,44 +330,27 @@ impl<'a> Compiler<'a> {
 		right: &NodeReference,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
-		let Some((member_name, inner_path)) = path.split_first() else {
-			return self.compile_value_expression(right, value_type, descriptor_layouts);
-		};
-		let (changed_index, member_type) = aggregate_member(value_type, member_name)?;
-		let changed = if inner_path.is_empty() {
+		let (member_name, inner_path) = path.split_first().expect("Member stores name at least one member");
+		let (index, member_type) = aggregate_member(value_type, member_name)?;
+		let value = if inner_path.is_empty() {
 			self.compile_value_expression(right, &member_type, descriptor_layouts)?
 		} else {
 			let member = self.allocate_register();
 			self.instructions.push(Instruction::Extract {
 				register: member,
 				source,
-				index: changed_index,
+				index,
 				value_type: member_type.clone(),
 			});
-			self.compile_rebuilt_member(member, &member_type, inner_path, right, descriptor_layouts)?
+			self.compile_member_insert(member, &member_type, inner_path, right, descriptor_layouts)?
 		};
 
-		let mut components = Vec::new();
-		for (index, component_type) in (0..).map_while(|index| Some((index, aggregate_member_type_at(value_type, index)?))) {
-			if index == changed_index {
-				components.push(changed);
-				continue;
-			}
-			let register = self.allocate_register();
-			self.instructions.push(Instruction::Extract {
-				register,
-				source,
-				index,
-				value_type: component_type,
-			});
-			components.push(register);
-		}
-
 		let register = self.allocate_register();
-		self.instructions.push(Instruction::Construct {
+		self.instructions.push(Instruction::Insert {
 			register,
-			value_type: value_type.clone(),
-			components,
+			source,
+			index,
+			value,
 		});
 		Ok(register)
 	}

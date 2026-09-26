@@ -758,23 +758,6 @@ pub(super) fn aggregate_member(value_type: &ValueType, member_name: &str) -> Res
 	}
 }
 
-/// Returns the type of the member at `index` in the order that [`Instruction::Construct`] takes components, or `None`
-/// past the last member.
-///
-/// Rebuilding a value around one changed member walks the members with this.
-pub(super) fn aggregate_member_type_at(value_type: &ValueType, index: usize) -> Option<ValueType> {
-	let component_count = match value_type {
-		ValueType::Struct { fields, .. } => return fields.get(index).map(|field| field.value_type().clone()),
-		ValueType::Mat4F => return (index < 4).then_some(ValueType::Vec4F),
-		ValueType::Mat4x3F => return (index < 4).then_some(ValueType::Vec3F),
-		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec2F16 | ValueType::Vec2F => 2,
-		ValueType::Vec3U | ValueType::Vec3F16 | ValueType::Vec3F => 3,
-		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F | ValueType::PackedVec4F => 4,
-		_ => return None,
-	};
-	(index < component_count).then(|| vector_scalar_type(value_type).expect("Vector types have scalar components"))
-}
-
 pub(super) fn array_element_type(value_type: &ValueType) -> Result<(ValueType, usize), VmError> {
 	match value_type {
 		ValueType::Mat4F => return Ok((ValueType::Vec4F, 4)),

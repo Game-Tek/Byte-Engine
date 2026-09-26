@@ -190,21 +190,10 @@ pub(super) fn resolve_member(chain: &[NodeReference], name: &str) -> Result<Node
 /// Resolves the name after `.` in `left.name` to a member of `left`'s type.
 ///
 /// Member names form their own namespace, so a local, binding, or field named `name` elsewhere in scope never
-/// shadows the member. When the type of `left` is unknown, the lookup falls back to searching `left` itself.
-pub(super) fn resolve_accessed_member(
-	chain: &[NodeReference],
-	left: &NodeReference,
-	name: &str,
-) -> Result<NodeReference, LexError> {
-	if let Some(member) = find_accessed_member(left, name) {
-		return Ok(member);
-	}
+/// shadows the member.
+pub(super) fn resolve_accessed_member(left: &NodeReference, name: &str) -> Result<NodeReference, LexError> {
+	let undeclared = || LexError::AccessingUndeclaredMember { name: name.to_string() };
 
-	resolve_member(&extend_chain(chain, left), name)
-}
-
-/// Returns the member named `name` that `left` exposes, or `None` when `left` has no known member namespace.
-fn find_accessed_member(left: &NodeReference, name: &str) -> Option<NodeReference> {
 	// Buffer bindings and push constants declare their members on themselves rather than on a value type.
 	if let Some(source) = expression_source(left) {
 		match source.borrow().node() {
@@ -212,16 +201,16 @@ fn find_accessed_member(left: &NodeReference, name: &str) -> Option<NodeReferenc
 				r#type: BindingTypes::Buffer { members },
 				..
 			}
-			| Nodes::PushConstant { members } => return find_named_child(members, name),
+			| Nodes::PushConstant { members } => return find_named_child(members, name).ok_or_else(undeclared),
 			_ => {}
 		}
 	}
 
-	let r#type = infer_expression_type(left)?;
+	let r#type = infer_expression_type(left).ok_or_else(undeclared)?;
 	let r#type = r#type.borrow();
 	match r#type.node() {
-		Nodes::Struct { fields, .. } => find_named_child(fields, name),
-		_ => None,
+		Nodes::Struct { fields, .. } => find_named_child(fields, name).ok_or_else(undeclared),
+		_ => Err(undeclared()),
 	}
 }
 
@@ -419,33 +408,27 @@ pub(super) fn find_in_function_expression(
 		},
 		DescendantSearch::NonIntrinsic => match expression {
 			Expressions::VariableDeclaration { name, .. } if child_name == name => Some(statement.clone()),
-			Expressions::Operator { left, .. }
-				if matches!(
-					left.borrow().node(),
-					Nodes::Expression(Expressions::VariableDeclaration { .. })
-				) =>
-			{
-				find_descendant(left, child_name, mode)
-			}
+			Expressions::Operator { left, .. } if is_declaration(left) => find_descendant(left, child_name, mode),
 			_ => None,
 		},
 	}
+}
+
+/// Reports whether an assignment's left side declares a local, the only kind of statement that adds a name to scope.
+fn is_declaration(left: &NodeReference) -> bool {
+	matches!(
+		left.borrow().node(),
+		Nodes::Expression(Expressions::VariableDeclaration { .. })
+	)
 }
 
 pub(super) fn find_in_expression(expression: &Expressions, child_name: &str, mode: DescendantSearch) -> Option<NodeReference> {
 	match expression {
 		// Only assignment declarations on the left enter the surrounding lexical scope. A store such as
 		// `views.views[i] = …` declares nothing, so its accesses must not shadow later names.
-		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => {
-			if matches!(
-				left.borrow().node(),
-				Nodes::Expression(Expressions::VariableDeclaration { .. })
-			) {
-				find_descendant(left, child_name, mode)
-			} else {
-				None
-			}
-		}
+		Expressions::Operator { left, .. } if mode == DescendantSearch::NonIntrinsic => is_declaration(left)
+			.then(|| find_descendant(left, child_name, mode))
+			.flatten(),
 		Expressions::Operator { left, right, .. } => {
 			find_descendant(left, child_name, mode).or_else(|| find_descendant(right, child_name, mode))
 		}
@@ -638,12 +621,13 @@ pub(super) fn is_array_texture_reference(expression: &NodeReference) -> bool {
 	)
 }
 
-/// Peels direct member wrappers to the declaration that supplies their value.
+/// Peels member wrappers and named accesses to the declaration that supplies their value.
 fn expression_source(expression: &NodeReference) -> Option<NodeReference> {
 	let borrowed = expression.borrow();
 	match borrowed.node() {
 		Nodes::Binding { .. } => Some(expression.clone()),
 		Nodes::Expression(Expressions::Member { source, .. }) => Some(source.clone()),
+		Nodes::Expression(Expressions::Accessor { right, .. }) if !is_index(right) => expression_source(right),
 		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => expression_source(&elements[0]),
 		_ => None,
 	}
@@ -764,11 +748,14 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
 		_ => infer_member_type(&source)?,
 	};
-	// Array types are structs whose template is the element type.
+	// Array types are structs whose template is the element type. Matrices index their columns.
 	match indexed_type.borrow().node() {
 		Nodes::Struct {
 			template: Some(element), ..
 		} => Some(element.clone()),
+		Nodes::Struct { name, fields, .. } if matches!(name.as_str(), "mat4f" | "mat4x3f") => {
+			fields.first().and_then(infer_member_type)
+		}
 		_ => None,
 	}
 }

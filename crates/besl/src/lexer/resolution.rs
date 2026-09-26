@@ -285,18 +285,8 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 		}
 		Nodes::Member { r#type, .. } | Nodes::Parameter { r#type, .. } => find_descendant(r#type, child_name, mode),
 		Nodes::Function { params, statements, .. } => find_in_function(params, statements, child_name, mode),
-		conditional @ Nodes::Conditional { .. } if mode == DescendantSearch::NonIntrinsic => conditional
-			.conditional_children()
-			.find_map(|child| find_descendant(child, child_name, mode)),
-		Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} if mode == DescendantSearch::NonIntrinsic => find_descendant(initializer, child_name, mode)
-			.or_else(|| find_descendant(condition, child_name, mode))
-			.or_else(|| find_descendant(update, child_name, mode))
-			.or_else(|| find_in_descendants(statements, child_name, mode)),
+		// Control-flow statements own their block scopes, so later statements never see declarations inside them.
+		Nodes::Conditional { .. } | Nodes::ForLoop { .. } => None,
 		Nodes::Expression(expression) => find_in_expression(expression, child_name, mode),
 		Nodes::Raw { output, .. } => find_in_descendants(output, child_name, mode),
 		Nodes::Binding {

@@ -35,6 +35,14 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push('\n');
 		}
 	}
+	// A value atomic in the condition is lifted into a statement, which needs a block that runs only when the branch is reached.
+	fn else_if_needs_block(&self, conditional: &besl::NodeReference) -> bool {
+		matches!(
+			conditional.borrow().node(),
+			besl::Nodes::Conditional { condition, .. } if Self::contains_hlsl_value_atomic(condition)
+		)
+	}
+
 	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
 		let formatting = ShaderFormatting::new(self.minified);
 		for statement in statements {

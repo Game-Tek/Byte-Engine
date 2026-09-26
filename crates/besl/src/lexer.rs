@@ -1917,6 +1917,25 @@ main: fn () -> void {
 		));
 	}
 
+	/// Declarations inside a block stay in that block, so statements after it can't reference them.
+	#[test]
+	fn block_declarations_are_not_visible_after_the_block() {
+		for block in [
+			"",
+			"if (true) { let leaked: u32 = 1; }",
+			"if (true) {} else { let leaked: u32 = 1; }",
+			"if (true) {} else if (true) { let leaked: u32 = 1; }",
+			"for (let leaked: u32 = 0; leaked < 1; leaked = leaked + 1) {}",
+			"for (let i: u32 = 0; i < 1; i = i + 1) { let leaked: u32 = 1; }",
+		] {
+			let source = format!("main: fn () -> void {{ {block} leaked = 2; }}");
+			assert!(
+				crate::compile_to_besl(&source, None).is_err(),
+				"`leaked` should not resolve after `{block}`"
+			);
+		}
+	}
+
 	#[test]
 	fn lex_scalar_intrinsic_overloads() {
 		let script = r#"

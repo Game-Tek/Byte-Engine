@@ -779,14 +779,7 @@ pub(crate) trait NodeEmitter {
 		string.push_str("else");
 
 		match else_branch {
-			besl::ElseBranch::Block(else_statements) => {
-				string.push_str(formatting.space_str());
-				string.push('{');
-				string.push_str(formatting.break_str());
-				self.emit_function_statement_block(string, else_statements, 1);
-				self.emit_block_end(string);
-			}
-			besl::ElseBranch::If(conditional) => {
+			besl::ElseBranch::If(conditional) if !self.else_if_needs_block(conditional) => {
 				// Emit the link directly so backend-specific conditional rewrites never apply to an `else if`.
 				let conditional = conditional.borrow();
 				let besl::Nodes::Conditional {
@@ -800,7 +793,22 @@ pub(crate) trait NodeEmitter {
 				string.push(' ');
 				self.emit_conditional_node(string, condition, statements, else_branch.as_ref());
 			}
+			// A block, or an `else if` link the backend emits as `else { if ... }`.
+			else_branch => {
+				string.push_str(formatting.space_str());
+				string.push('{');
+				string.push_str(formatting.break_str());
+				self.emit_function_statement_block(string, else_branch.statements(), 1);
+				self.emit_block_end(string);
+			}
 		}
+	}
+
+	/// Reports whether an `else if` link must be emitted as `else { if ... }`, so that the
+	/// nested conditional goes through [`NodeEmitter::emit_function_statement_block`].
+	/// Override it when the backend emits extra statements before some conditionals.
+	fn else_if_needs_block(&self, _conditional: &besl::NodeReference) -> bool {
+		false
 	}
 
 	fn emit_for_loop_node(

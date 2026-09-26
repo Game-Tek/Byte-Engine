@@ -414,7 +414,7 @@ impl Generator {
 	}
 
 	/// Reports whether an expression tree contains an atomic call that returns a value.
-	fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
+	pub(crate) fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
 		if Self::hlsl_atomic_call(node).is_some() {
 			return true;
 		}

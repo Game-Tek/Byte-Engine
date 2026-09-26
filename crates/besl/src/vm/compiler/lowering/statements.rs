@@ -230,9 +230,9 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
-				let mut member_path = Vec::new();
-				if let Some(local) = self.local_member_path(&left, &mut member_path) {
-					return self.compile_local_member_store(local, &member_path, &right, descriptor_layouts);
+				if let Some(value_type) = self.local_path_type(&left) {
+					let value = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
+					return self.compile_local_store(&left, value, descriptor_layouts);
 				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
@@ -279,80 +279,66 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Returns the local slot that roots a chain of named member accesses such as `local.a.b`, and pushes the member
-	/// names onto `path` from the outermost access inward. Returns `None` when an index or a non-local breaks the chain.
-	fn local_member_path(&self, expression: &NodeReference, path: &mut Vec<String>) -> Option<usize> {
-		let borrowed = expression.borrow();
-		match borrowed.node() {
+	/// Returns the type of `expression` when it is a local or a chain of named members inside one, such as
+	/// `probe.position.z`, and `None` for anything else.
+	fn local_path_type(&self, expression: &NodeReference) -> Option<ValueType> {
+		match expression.borrow().node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
-				self.local_member_path(&elements[0], path)
+				self.local_path_type(&elements[0])
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let local = self.locals_by_reference.get(source)?;
+				self.local_types.get(*local).cloned()
 			}
 			Nodes::Expression(Expressions::Accessor { left, right }) => {
-				let name = extract_member_name(right).ok()?;
-				let local = self.local_member_path(left, path)?;
-				path.push(name);
-				Some(local)
+				let member_name = extract_member_name(right).ok()?;
+				aggregate_member(&self.local_path_type(left)?, &member_name)
+					.ok()
+					.map(|(_, member_type)| member_type)
 			}
-			Nodes::Expression(Expressions::Member { source, .. }) => self.locals_by_reference.get(source).copied(),
 			_ => None,
 		}
 	}
 
-	/// Stores `right` into one member of a local value, such as `position.x = 1.0`.
+	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
 	///
-	/// Registers hold whole values, so this loads the local, inserts the new member at each level of `path`, and
-	/// stores the result back.
-	fn compile_local_member_store(
+	/// Registers hold whole values, so a member store inserts `value` into the enclosing value and stores that in turn,
+	/// until it reaches the local.
+	fn compile_local_store(
 		&mut self,
-		local: usize,
-		path: &[String],
-		right: &NodeReference,
+		target: &NodeReference,
+		value: usize,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
-		let local_type = self
-			.local_types
-			.get(local)
-			.cloned()
-			.ok_or(VmError::UninitializedLocal { local })?;
-		let source = self.allocate_register();
-		self.instructions.push(Instruction::LoadLocal { register: source, local });
-		let register = self.compile_member_insert(source, &local_type, path, right, descriptor_layouts)?;
-		self.instructions.push(Instruction::StoreLocal { local, register });
-		Ok(())
-	}
-
-	/// Returns a register holding `source` with the member at the non-empty `path` replaced by `right`.
-	fn compile_member_insert(
-		&mut self,
-		source: usize,
-		value_type: &ValueType,
-		path: &[String],
-		right: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<usize, VmError> {
-		let (member_name, inner_path) = path.split_first().expect("Member stores name at least one member");
-		let (index, member_type) = aggregate_member(value_type, member_name)?;
-		let value = if inner_path.is_empty() {
-			self.compile_value_expression(right, &member_type, descriptor_layouts)?
-		} else {
-			let member = self.allocate_register();
-			self.instructions.push(Instruction::Extract {
-				register: member,
-				source,
-				index,
-				value_type: member_type.clone(),
-			});
-			self.compile_member_insert(member, &member_type, inner_path, right, descriptor_layouts)?
-		};
-
-		let register = self.allocate_register();
-		self.instructions.push(Instruction::Insert {
-			register,
-			source,
-			index,
-			value,
-		});
-		Ok(register)
+		let borrowed = target.borrow();
+		match borrowed.node() {
+			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
+				let inner = elements[0].clone();
+				drop(borrowed);
+				self.compile_local_store(&inner, value, descriptor_layouts)
+			}
+			Nodes::Expression(Expressions::Member { source, .. }) => {
+				let local = self.locals_by_reference[source];
+				self.instructions.push(Instruction::StoreLocal { local, register: value });
+				Ok(())
+			}
+			Nodes::Expression(Expressions::Accessor { left, right }) => {
+				let (left, member_name) = (left.clone(), extract_member_name(right)?);
+				drop(borrowed);
+				let parent_type = self.local_path_type(&left).expect("Local store targets are local paths");
+				let (index, _) = aggregate_member(&parent_type, &member_name)?;
+				let source = self.compile_value_expression(&left, &parent_type, descriptor_layouts)?;
+				let register = self.allocate_register();
+				self.instructions.push(Instruction::Insert {
+					register,
+					source,
+					index,
+					value,
+				});
+				self.compile_local_store(&left, register, descriptor_layouts)
+			}
+			_ => unreachable!("Local store targets are local paths"),
+		}
 	}
 
 	pub(super) fn compile_call_statement(

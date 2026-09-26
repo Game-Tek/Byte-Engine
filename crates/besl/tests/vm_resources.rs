@@ -542,36 +542,6 @@ fn compile_error(source: &str, root: Node) -> VmError {
 }
 
 #[test]
-fn locals_named_like_vector_components_keep_their_own_values() {
-	let program = compile_to_besl(
-		r#"
-		main: fn () -> output { value: f32 } {
-			let x: f32 = 10.0;
-			let y: f32 = 20.0;
-			let point: vec2f = vec2f(1.0, 2.0);
-			let value: f32 = point.x + point.y + x + y;
-			return { value };
-		}
-		"#,
-		None,
-	)
-	.expect("Expected locals named like vector components to link");
-	let executable = ExecutableProgram::compile(program).expect("Expected component-named locals to compile");
-	let mut output = Buffer::new(executable.output_layout(0).expect("Expected value output").clone());
-
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(output_slot(0), &mut output);
-	executable
-		.run_main(&mut descriptors)
-		.expect("Expected component-named locals to execute");
-
-	assert_eq!(
-		output.read("_besl_output_value").expect("Expected output value"),
-		Value::F32(33.0)
-	);
-}
-
-#[test]
 fn bindings_named_like_their_member_stay_rooted_after_a_store() {
 	let program = compile_to_besl(
 		r#"
@@ -626,6 +596,23 @@ fn run_value_output(source: &str) -> Value {
 		.expect("Expected value-output source to execute");
 
 	output.read("_besl_output_value").expect("Expected output value")
+}
+
+#[test]
+fn locals_named_like_vector_components_keep_their_own_values() {
+	let value = run_value_output(
+		r#"
+		main: fn () -> output { value: f32 } {
+			let x: f32 = 10.0;
+			let y: f32 = 20.0;
+			let point: vec2f = vec2f(1.0, 2.0);
+			let value: f32 = point.x + point.y + x + y;
+			return { value };
+		}
+		"#,
+	);
+
+	assert_eq!(value, Value::F32(33.0));
 }
 
 #[test]

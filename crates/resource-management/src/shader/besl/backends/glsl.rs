@@ -211,13 +211,15 @@ mod tests {
 		let root = besl::compile_to_besl(
 			r#"
 			sampler: struct { half: f32, output: u32 }
+			Wrapper: struct { value: sampler }
 			buffer: descriptor<{ type: sampler, binding: 0, access: read_write }>;
 			texture: fn (input: f32, besl_float: f32) -> f32 {
 				let min: f32 = min(input, besl_float);
 				return min;
 			}
 			main: fn () -> void {
-				let float: f32 = texture(buffer.half, 2.0);
+				let wrapper: Wrapper = Wrapper(sampler(buffer.half, buffer.output));
+				let float: f32 = texture(wrapper.value.half, 2.0);
 				buffer.half = float;
 				buffer.output = 1;
 			}
@@ -234,7 +236,9 @@ mod tests {
 		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_buffer;");
 		assert_string_contains!(shader, "float besl_texture(float besl_input,float besl_besl_float)");
 		assert_string_contains!(shader, "float besl_min=min(besl_input,besl_besl_float);");
-		assert_string_contains!(shader, "float besl_float=besl_texture(besl_buffer.besl_half,2.0);");
+		assert_string_contains!(shader, "struct besl_sampler{float besl_half;uint32_t besl_output;};");
+		assert_string_contains!(shader, "struct Wrapper{besl_sampler value;};");
+		assert_string_contains!(shader, "float besl_float=besl_texture(wrapper.value.besl_half,2.0);");
 		assert_string_contains!(shader, "void main(");
 
 		#[cfg(target_os = "linux")]

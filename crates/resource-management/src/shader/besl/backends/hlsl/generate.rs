@@ -396,9 +396,8 @@ impl Generator {
 			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name);
-
-					string.push_str(type_name);
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
 				Self::identifier(name).push_to(string);
@@ -473,7 +472,7 @@ impl Generator {
 			}
 			besl::Nodes::Workgroup { name, format, count } => {
 				string.push_str("groupshared ");
-				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 				string.push(' ');
 				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
@@ -526,11 +525,11 @@ impl Generator {
 							string.push_str(buffer_type);
 							string.push('<');
 							// Narrow arrays share 32-bit words so their lane writes can use InterlockedCompareExchange.
-							string.push_str(if matches!(element_type.as_str(), "u8" | "u16") {
-								"uint"
+							if matches!(element_type.as_str(), "u8" | "u16") {
+								string.push_str("uint");
 							} else {
-								Self::translate_type(&element_type)
-							});
+								Self::type_identifier(&element_type).push_to(string);
+							}
 							string.push_str("> ");
 							Self::identifier(name).push_to(string);
 							if let Some(count) = count {
@@ -577,7 +576,7 @@ impl Generator {
 					besl::BindingTypes::BufferArray { element } => {
 						string.push_str(buffer_type);
 						string.push('<');
-						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						Self::type_identifier(element.borrow().get_name().unwrap()).push_to(string);
 						string.push_str("> ");
 						Self::identifier(name).push_to(string);
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));

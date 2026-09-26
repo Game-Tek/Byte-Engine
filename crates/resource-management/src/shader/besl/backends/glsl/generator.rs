@@ -723,9 +723,8 @@ impl Generator {
 			}
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					let type_name = Self::translate_type(type_name);
-
-					string.push_str(type_name);
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
 					string.push(' ');
 				}
 				Self::identifier(name).push_to(string);
@@ -794,7 +793,7 @@ impl Generator {
 			}
 			besl::Nodes::Workgroup { name, format, count } if self.current_stage_supports_workgroup_storage => {
 				string.push_str("shared ");
-				string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+				Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 				string.push(' ');
 				Self::identifier(name).push_to(string);
 				if let Some(count) = count {

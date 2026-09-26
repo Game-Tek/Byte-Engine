@@ -699,7 +699,7 @@ impl Generator {
 			string.push_str(" = ");
 			self.emit_node_string(string, value);
 		} else if let Some((element_type, count)) = Self::hlsl_array_type(type_name) {
-			string.push_str(Self::translate_type(element_type));
+			Self::type_identifier(element_type).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
 			string.push('[');

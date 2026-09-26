@@ -283,6 +283,10 @@ mod tests {
 			float3: vec3f,
 		}
 
+		Wrapper: struct {
+			value: half,
+		}
+
 		lerp: fn (sampler: f32) -> f32 {
 			return sampler;
 		}
@@ -291,7 +295,8 @@ mod tests {
 
 		main: fn () -> void {
 			let float4: half = half(vec3f(1.0, 2.0, 3.0));
-			let mul: f32 = lerp(float4.float3.x);
+			let wrapper: Wrapper = Wrapper(float4);
+			let mul: f32 = lerp(wrapper.value.float3.x);
 			let color: vec4f = sample(texture, vec2f(0.0, 0.0));
 			Buffer.min = mul;
 			color;
@@ -321,6 +326,7 @@ mod tests {
 			.expect("Expected reserved-name shader source to generate HLSL");
 
 		assert_string_contains!(shader, "struct besl_half{float3 besl_float3;};");
+		assert_string_contains!(shader, "struct Wrapper{besl_half value;};");
 		assert_string_contains!(shader, "besl_half besl_construct_half(float3 besl_argument_float3)");
 		assert_string_contains!(shader, "besl_value.besl_float3=besl_argument_float3;");
 		assert_string_contains!(shader, "float besl_lerp(float besl_sampler){return besl_sampler;}");
@@ -329,7 +335,7 @@ mod tests {
 		assert_string_contains!(shader, "Texture2D<float4> besl_texture : register(t2, space0);");
 		assert_string_contains!(shader, "SamplerState besl_texture_sampler : register(s2, space0);");
 		assert_string_contains!(shader, "besl_half besl_float4=besl_construct_half(float3(1.0,2.0,3.0));");
-		assert_string_contains!(shader, "float besl_mul=besl_lerp(besl_float4.besl_float3.x);");
+		assert_string_contains!(shader, "float besl_mul=besl_lerp(wrapper.value.besl_float3.x);");
 		assert_string_contains!(shader, "besl_texture.Sample(besl_texture_sampler, float2(0.0,0.0))");
 		assert_string_contains!(shader, "besl_Buffer[0].besl_min=besl_mul;");
 		assert_string_contains!(shader, "void besl_main(");

@@ -14,7 +14,7 @@ impl Generator {
 			};
 
 			formatting.push_indentation(string, 1);
-			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
+			Self::type_identifier(format.borrow().get_name().unwrap()).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
 			string.push('[');

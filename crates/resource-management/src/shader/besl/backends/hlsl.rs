@@ -11,6 +11,7 @@ mod emit;
 mod facade;
 mod generate;
 mod node_emitter;
+mod reserved;
 
 pub(crate) use analysis::*;
 pub(crate) use emit::*;
@@ -267,11 +268,77 @@ mod tests {
 		assert_string_contains!(shader, "RWTexture2D<float4> image : register(u1, space0);");
 
 		// Check for Texture2D and SamplerState (combined image sampler)
-		assert_string_contains!(shader, "Texture2D<float4> texture : register(t2, space0);");
-		assert_string_contains!(shader, "SamplerState texture_sampler : register(s2, space0);");
+		// `texture` is an HLSL keyword, so the binding and its sampler use the escaped name.
+		assert_string_contains!(shader, "Texture2D<float4> besl_texture : register(t2, space0);");
+		assert_string_contains!(shader, "SamplerState besl_texture_sampler : register(s2, space0);");
 
 		// Check main function
-		assert_string_contains!(shader, "void besl_main(){buff;image;texture;}");
+		assert_string_contains!(shader, "void besl_main(){buff;image;besl_texture;}");
+	}
+
+	#[test]
+	fn user_names_that_collide_with_hlsl_reserved_words_are_prefixed() {
+		let script = r#"
+		half: struct {
+			float3: vec3f,
+		}
+
+		Wrapper: struct {
+			value: half,
+		}
+
+		lerp: fn (sampler: f32) -> f32 {
+			return sampler;
+		}
+
+		texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+
+		main: fn () -> void {
+			let float4: half = half(vec3f(1.0, 2.0, 3.0));
+			let wrapper: Wrapper = Wrapper(float4);
+			let mul: f32 = lerp(wrapper.value.float3.x);
+			let color: vec4f = sample(texture, vec2f(0.0, 0.0));
+			Buffer.min = mul;
+			color;
+		}
+		"#;
+
+		let mut root = besl::Node::root();
+		let f32_type = root.get_child("f32").expect("Expected f32 type");
+		root.add_children(vec![
+			besl::Node::binding(
+				"Buffer",
+				besl::BindingTypes::Buffer {
+					members: vec![besl::Node::member("min", f32_type).into()],
+				},
+				0,
+				true,
+				true,
+			)
+			.into(),
+		]);
+		let root = besl::compile_to_besl(script, Some(root)).expect("Expected reserved-name shader source to compile");
+		let main = root.get_main().expect("Expected reserved-name shader source to contain main");
+
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::fragment(), &main)
+			.expect("Expected reserved-name shader source to generate HLSL");
+
+		assert_string_contains!(shader, "struct besl_half{float3 besl_float3;};");
+		assert_string_contains!(shader, "struct Wrapper{besl_half value;};");
+		assert_string_contains!(shader, "besl_half besl_construct_half(float3 besl_argument_float3)");
+		assert_string_contains!(shader, "besl_value.besl_float3=besl_argument_float3;");
+		assert_string_contains!(shader, "float besl_lerp(float besl_sampler){return besl_sampler;}");
+		assert_string_contains!(shader, "struct _Buffer{float besl_min;};");
+		assert_string_contains!(shader, "RWStructuredBuffer<_Buffer> besl_Buffer : register(u0, space0);");
+		assert_string_contains!(shader, "Texture2D<float4> besl_texture : register(t2, space0);");
+		assert_string_contains!(shader, "SamplerState besl_texture_sampler : register(s2, space0);");
+		assert_string_contains!(shader, "besl_half besl_float4=besl_construct_half(float3(1.0,2.0,3.0));");
+		assert_string_contains!(shader, "float besl_mul=besl_lerp(wrapper.value.besl_float3.x);");
+		assert_string_contains!(shader, "besl_texture.Sample(besl_texture_sampler, float2(0.0,0.0))");
+		assert_string_contains!(shader, "besl_Buffer[0].besl_min=besl_mul;");
+		assert_string_contains!(shader, "void besl_main(");
 	}
 
 	#[test]
@@ -543,8 +610,8 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected vector access shader source to generate HLSL");
-		assert_string_contains!(shader, "float component=vector.x;");
-		assert_string_contains!(shader, "float indexed_component=vector[1];");
+		assert_string_contains!(shader, "float component=besl_vector.x;");
+		assert_string_contains!(shader, "float indexed_component=besl_vector[1];");
 		assert_string_contains!(shader, "uint16_t joint_component=joints.x;");
 		assert_string_contains!(shader, "uint16_t indexed_joint=joints[1];");
 		assert_string_does_not_contain!(shader, "vector[x]");
@@ -771,24 +838,24 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
 			.expect("Expected buffered matrix-column shader source to generate HLSL");
-		assert_string_contains!(shader, "results[0]=transpose(wrapped[0].matrix)[1];");
+		assert_string_contains!(shader, "results[0]=transpose(wrapped[0].besl_matrix)[1];");
 		assert_string_contains!(shader, "results[1]=transpose(matrices[0])[2];");
-		assert_string_contains!(shader, "results[2]=transpose(wrapped[0].matrix+matrices[0])[3];");
+		assert_string_contains!(shader, "results[2]=transpose(wrapped[0].besl_matrix+matrices[0])[3];");
 		assert_string_contains!(
 			shader,
-			"return transpose(float4x4(transpose(matrix)[0],transpose(matrix)[1],transpose(matrix)[2],transpose(matrix)[3]));"
+			"return transpose(float4x4(transpose(besl_matrix)[0],transpose(besl_matrix)[1],transpose(besl_matrix)[2],transpose(besl_matrix)[3]));"
 		);
 		assert_string_contains!(
 			shader,
-			"return transpose(transpose(float4x4(transpose(matrix)[0],transpose(matrix)[1],transpose(matrix)[2],transpose(matrix)[3])))[2];"
+			"return transpose(transpose(float4x4(transpose(besl_matrix)[0],transpose(besl_matrix)[1],transpose(besl_matrix)[2],transpose(besl_matrix)[3])))[2];"
 		);
-		assert_string_contains!(shader, "results[3]=transpose(copy_matrix_columns(wrapped[0].matrix))[2];");
+		assert_string_contains!(shader, "results[3]=transpose(copy_matrix_columns(wrapped[0].besl_matrix))[2];");
 		assert_string_contains!(shader, "results[4]=direct_constructed_column(matrices[1]);");
-		assert_string_contains!(shader, "float4 multiplied=transpose(mul(matrix, 2.0))[0];");
-		assert_string_contains!(shader, "float4 added=transpose(matrix+scale)[1];");
-		assert_string_contains!(shader, "float4 divided=transpose(matrix/scale)[2];");
-		assert_string_contains!(shader, "float4 subtracted=transpose(scale-matrix)[3];");
-		assert_string_contains!(shader, "float4 remainder=transpose(matrix%scale)[0];");
+		assert_string_contains!(shader, "float4 multiplied=transpose(mul(besl_matrix, 2.0))[0];");
+		assert_string_contains!(shader, "float4 added=transpose(besl_matrix+scale)[1];");
+		assert_string_contains!(shader, "float4 divided=transpose(besl_matrix/scale)[2];");
+		assert_string_contains!(shader, "float4 subtracted=transpose(scale-besl_matrix)[3];");
+		assert_string_contains!(shader, "float4 remainder=transpose(besl_matrix%scale)[0];");
 
 		#[cfg(target_os = "windows")]
 		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
@@ -1057,7 +1124,7 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "float4 texel=texture.Load(int3(coord, 0));");
+		assert_string_contains!(shader, "float4 texel=besl_texture.Load(int3(coord, 0));");
 	}
 
 	#[test]
@@ -1872,8 +1939,9 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "static const float PI = 3.14;");
-		assert_string_contains!(shader, "void besl_main(){PI;}");
+		// The backend declares its own `PI`, so the user constant takes the escaped name.
+		assert_string_contains!(shader, "static const float besl_PI = 3.14;");
+		assert_string_contains!(shader, "void besl_main(){besl_PI;}");
 	}
 
 	#[test]

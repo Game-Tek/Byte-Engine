@@ -1,6 +1,7 @@
 mod analysis;
 mod generator;
 mod header;
+mod reserved;
 
 pub use Generator as GLSLTranspiler;
 pub use analysis::Generator;
@@ -118,12 +119,12 @@ mod tests {
 		// We have to split the assertions because the order of the bindings is not guaranteed.
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) buffer _buff{float member;}buff;");
 		assert_string_contains!(shader, "layout(set=0,binding=1,r8) writeonly uniform image2D image;");
-		assert_string_contains!(shader, "layout(set=0,binding=2) uniform sampler2D texture;");
-		assert_string_contains!(shader, "void main(){buff;image;texture;}");
+		assert_string_contains!(shader, "layout(set=0,binding=2) uniform sampler2D besl_texture;");
+		assert_string_contains!(shader, "void main(){buff;image;besl_texture;}");
 		assert!(!shader.contains("GL_EXT_shader_explicit_arithmetic_types_float16"));
 
 		// Assert that main is the last element in the shader string, which means that the bindings are before it.
-		shader.ends_with("void main(){buff;image;texture;}");
+		shader.ends_with("void main(){buff;image;besl_texture;}");
 	}
 
 	#[test]
@@ -203,6 +204,46 @@ mod tests {
 		assert_string_contains!(shader, "vec4 position=vec4(float(uint(gl_VertexIndex)),0.0,0.0,1.0);");
 		assert_string_contains!(shader, "gl_Position=position;");
 		assert!(!shader.contains("out vec4 _besl_interface_position"));
+	}
+
+	#[test]
+	fn names_reserved_by_glsl_are_prefixed_at_declarations_and_uses() {
+		let root = besl::compile_to_besl(
+			r#"
+			sampler: struct { half: f32, output: u32 }
+			Wrapper: struct { value: sampler }
+			buffer: descriptor<{ type: sampler, binding: 0, access: read_write }>;
+			texture: fn (input: f32, besl_float: f32) -> f32 {
+				let min: f32 = min(input, besl_float);
+				return min;
+			}
+			main: fn () -> void {
+				let wrapper: Wrapper = Wrapper(sampler(buffer.half, buffer.output));
+				let float: f32 = texture(wrapper.value.half, 2.0);
+				buffer.half = float;
+				buffer.output = 1;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected reserved-name fixture source to link");
+		let main = root.get_main().expect("Expected reserved-name fixture main function");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
+			.expect("Expected reserved-name fixture to lower to GLSL");
+
+		assert_string_contains!(shader, "buffer _buffer{float besl_half;uint32_t besl_output;}besl_buffer;");
+		assert_string_contains!(shader, "float besl_texture(float besl_input,float besl_besl_float)");
+		assert_string_contains!(shader, "float besl_min=min(besl_input,besl_besl_float);");
+		assert_string_contains!(shader, "struct besl_sampler{float besl_half;uint32_t besl_output;};");
+		assert_string_contains!(shader, "struct Wrapper{besl_sampler value;};");
+		assert_string_contains!(shader, "float besl_float=besl_texture(wrapper.value.besl_half,2.0);");
+		assert_string_contains!(shader, "void main(");
+
+		#[cfg(target_os = "linux")]
+		crate::shader::glsl_compile::compile(&shader, "besl-reserved-names")
+			.expect("Expected GLSL with prefixed reserved names to compile to SPIR-V");
 	}
 
 	#[test]
@@ -636,8 +677,8 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::vertex(), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "const float PI = 3.14;");
-		assert_string_contains!(shader, "void main(){PI;}");
+		assert_string_contains!(shader, "const float besl_PI = 3.14;");
+		assert_string_contains!(shader, "void main(){besl_PI;}");
 	}
 
 	#[test]
@@ -949,7 +990,7 @@ mod tests {
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
 			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "vec4 texel=texelFetch(texture,ivec2(coord),0);");
+		assert_string_contains!(shader, "vec4 texel=texelFetch(besl_texture,ivec2(coord),0);");
 	}
 
 	#[test]

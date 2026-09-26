@@ -16,7 +16,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
 		string.push(' ');
-		string.push_str(name);
+		Self::identifier(name).push_to(string);
 		string.push('(');
 
 		let formatting = ShaderFormatting::new(self.minified);
@@ -146,7 +146,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						string.push_str(", ");
 					}
 					string.push('.');
-					string.push_str(field);
+					Self::identifier(field).push_to(string);
 					string.push_str(" = ");
 					self.emit_node_string(string, value);
 				}
@@ -259,7 +259,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				let r#type = r#type.borrow();
 
 				let t = r#type.get_name().unwrap();
-				let type_name = Self::translate_type(t);
+				let type_name = Self::type_identifier(t);
 
 				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
 					for (i, field) in fields.iter().enumerate() {
@@ -285,7 +285,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(&format!(
 					"constant {} {}={};{}",
 					type_name,
-					name,
+					Self::identifier(name),
 					format!("{}({})", &type_name, members.join(",")),
 					if !self.minified { "\n" } else { "" }
 				));
@@ -293,19 +293,17 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					if self.is_packed_mat4x3_member(this_node) {
-						string.push_str(Self::translate_buffer_member_type(type_name));
+						Self::emit_buffer_member_type(string, type_name);
 					} else if self.in_buffer_binding_struct
 						&& (count.is_some() || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16"))
 					{
-						string.push_str(Self::translate_buffer_member_type(type_name));
-					} else if type_name.contains('[') {
-						Self::emit_type_name(string, type_name);
+						Self::emit_buffer_member_type(string, type_name);
 					} else {
-						string.push_str(Self::translate_type(type_name));
+						Self::emit_type_name(string, type_name);
 					}
 					string.push(' ');
 				}
-				string.push_str(name.as_str());
+				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
 					string.push('[');
 					string.push_str(count.to_string().as_str());
@@ -322,7 +320,11 @@ impl<A: Allocator + Clone> Generator<A> {
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
 				// TODO: Map interpolation qualifiers to Metal (flat/linear).
-				string.push_str(&format!("{} {} [[attribute({})]];{break_char}", type_name, name, location));
+				let _ = write!(
+					string,
+					"{type_name} {} [[attribute({location})]];{break_char}",
+					Self::identifier(name)
+				);
 			}
 			besl::Nodes::Output {
 				name,
@@ -336,7 +338,11 @@ impl<A: Allocator + Clone> Generator<A> {
 
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
-				string.push_str(&format!("{} {} [[color({})]];{break_char}", type_name, name, location));
+				let _ = write!(
+					string,
+					"{type_name} {} [[color({location})]];{break_char}",
+					Self::identifier(name)
+				);
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional { condition, statements } => self.emit_conditional_node(string, condition, statements),
@@ -365,7 +371,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
-						self.emit_named_struct_start(string, &format!("_{name}"));
+						self.emit_named_struct_start(string, format_args!("_{name}"));
 
 						for member in members.iter() {
 							self.emit_indentation(string, 1);
@@ -379,7 +385,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 						string.push_str(address_space);
 						string.push(' ');
-						string.push_str(&format!("_{}* {}", name, name));
+						let _ = write!(string, "_{name}* {}", Self::identifier(name));
 
 						if let Some(count) = count {
 							string.push('[');
@@ -396,10 +402,10 @@ impl<A: Allocator + Clone> Generator<A> {
 						let address_space = buffer_address_space(*memory_class, *write);
 						string.push_str(address_space);
 						string.push(' ');
-						string.push_str(Self::translate_type(element.borrow().get_name().unwrap()));
+						Self::type_identifier(element.borrow().get_name().unwrap()).push_to(string);
 						string.push_str("* ");
-						string.push_str(name);
-						string.push_str(&format!(" [[buffer({index})]];"));
+						Self::identifier(name).push_to(string);
+						let _ = write!(string, " [[buffer({index})]];");
 						if !self.minified {
 							string.push('\n');
 						}
@@ -418,7 +424,7 @@ impl<A: Allocator + Clone> Generator<A> {
 							"access::read"
 						};
 
-						string.push_str(&format!("texture2d<{}, {}> {}", element_type, access, name));
+						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
 
 						if let Some(count) = count {
 							string.push('[');
@@ -442,7 +448,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 						string.push_str(texture_type);
 						string.push(' ');
-						string.push_str(name);
+						Self::identifier(name).push_to(string);
 
 						if let Some(count) = count {
 							string.push('[');
@@ -455,9 +461,7 @@ impl<A: Allocator + Clone> Generator<A> {
 							string.push('\n');
 						}
 
-						string.push_str("sampler ");
-						string.push_str(&format!("{}_sampler", name));
-						string.push_str(&format!(" [[sampler({})]];", index));
+						let _ = write!(string, "sampler {}_sampler [[sampler({index})]];", Self::identifier(name));
 						if !self.minified {
 							string.push('\n');
 						}
@@ -479,18 +483,18 @@ impl<A: Allocator + Clone> Generator<A> {
 				if let Some(vector_type) = short_scalar_array {
 					string.push_str(Self::translate_type(vector_type));
 					string.push(' ');
-					string.push_str(name);
+					Self::identifier(name).push_to(string);
 				} else if let Some((element_type, count)) = type_name.split_once('[') {
-					string.push_str(Self::translate_type(element_type));
+					Self::type_identifier(element_type).push_to(string);
 					string.push(' ');
-					string.push_str(name);
+					Self::identifier(name).push_to(string);
 					string.push('[');
 					string.push_str(count.trim_end_matches(']'));
 					string.push(']');
 				} else {
 					Self::emit_type_name(string, &type_name);
 					string.push(' ');
-					string.push_str(name);
+					Self::identifier(name).push_to(string);
 				}
 				string.push_str(" = ");
 				if let besl::Nodes::Expression(besl::Expressions::FunctionCall {

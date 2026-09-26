@@ -247,9 +247,8 @@ impl<'a> Compiler<'a> {
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
-				if let Some(value_type) = self.local_path_type(&left) {
-					let value = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
-					return self.compile_local_store(&left, value, descriptor_layouts);
+				if self.local_path_type(&left).is_some() {
+					return self.compile_local_store(&left, &right, descriptor_layouts);
 				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
@@ -318,15 +317,16 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	/// Stores the `value` register into `target`, a path that [`Self::local_path_type`] accepts.
+	/// Stores the `value` expression into `target`, a path that [`Self::local_path_type`] accepts.
 	///
 	/// Registers hold whole values, so the store loads each enclosing value down the path, then inserts `value` into the
-	/// innermost one and each result into its parent until it reaches the local. Every index is evaluated exactly once,
-	/// so indices with side effects, such as `points[atomic_add(counter.count, 1)].y`, select one element.
+	/// innermost one and each result into its parent until it reaches the local. Every index is evaluated exactly once
+	/// and before `value`, like other indexed stores, so indices with side effects such as
+	/// `points[atomic_add(counter.count, 1)].y` select one element.
 	fn compile_local_store(
 		&mut self,
 		target: &NodeReference,
-		value: usize,
+		value: &NodeReference,
 		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		// Walk from the target up to its local, collecting each accessor from the innermost outward.
@@ -389,7 +389,7 @@ impl<'a> Compiler<'a> {
 		}
 
 		// Insert the stored value into the innermost enclosing value, then each result into its parent.
-		let mut value = value;
+		let mut value = self.compile_value_expression(value, &value_type, descriptor_layouts)?;
 		for (source, index, count) in inserts.into_iter().rev() {
 			let register = self.allocate_register();
 			self.instructions.push(match count {

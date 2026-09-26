@@ -774,14 +774,14 @@ fn stores_to_indexed_local_elements_change_only_that_element() {
 }
 
 #[test]
-fn indexed_local_stores_evaluate_each_index_once() {
+fn indexed_local_stores_evaluate_each_index_once_before_the_value() {
 	let program = compile_to_besl(
 		r#"
 		Counter: struct { count: atomicu32, }
 		counter: descriptor<{ type: Counter, binding: 0, access: read_write }>;
 		main: fn () -> output { value: vec2f } {
 			let points: vec2f[2] = vec2f[2](vec2f(1.0, 2.0), vec2f(3.0, 4.0));
-			points[atomic_add(counter.count, 1)].y = 9.0;
+			points[atomic_add(counter.count, 1)].y = f32(atomic_add(counter.count, 1));
 			let value: vec2f = points[1];
 			return { value };
 		}
@@ -808,9 +808,9 @@ fn indexed_local_stores_evaluate_each_index_once() {
 
 	assert_eq!(
 		output.read("_besl_output_value").expect("Expected output value"),
-		Value::Vec2F([3.0, 9.0])
+		Value::Vec2F([3.0, 2.0])
 	);
-	assert_eq!(counter.read("count").expect("Expected counter"), Value::U32(2));
+	assert_eq!(counter.read("count").expect("Expected counter"), Value::U32(3));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use resource_management::resource::{
 	ReDBStorageBackend, ReadStorageBackend,
-	storage_backend::{Query, QueryCursor, QueryError},
+	storage_backend::{Query, QueryCursor},
 };
 
 #[cfg(debug_assertions)]
@@ -40,7 +40,7 @@ pub async fn query(
 	}
 
 	let page = storage_backend.query(query).await.map_err(|error| {
-		log::error!("{}", query_error_message(error));
+		log::error!("{error}");
 		1
 	})?;
 
@@ -71,16 +71,6 @@ pub(super) fn parse_query_property(property: &str) -> Result<(&str, &str), i32> 
 	}
 
 	Ok((name, value))
-}
-
-/// Returns a concise command-line message for a storage query error.
-pub(super) fn query_error_message(error: QueryError) -> &'static str {
-	match error {
-		QueryError::InvalidCursor => "Failed to query resources. The most likely cause is that the provided cursor is invalid.",
-		QueryError::StorageFailure => {
-			"Failed to query resources. The most likely cause is that the resources database could not be read."
-		}
-	}
 }
 
 /// Prints query results in a compact human-readable form.

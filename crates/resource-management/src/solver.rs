@@ -9,7 +9,7 @@ use crate::{
 /// [`ResourceManager`](crate::ResourceManager) starts resolution for the requested
 /// resource. Nested models await [`Solver::solve`] to resolve their dependencies.
 pub trait Solver<'de, T> {
-	fn solve(self, storage_backend: &'de dyn DynReadStorageBackend) -> BoxedFuture<'de, Result<T, SolveErrors>>
+	fn solve(self, storage_backend: &'de dyn DynReadStorageBackend) -> BoxedFuture<'de, Result<T, SolveError>>
 	where
 		Self: 'de;
 }
@@ -28,36 +28,54 @@ pub trait StoredModel: Model + Sized {
 		stored: SerializableResource,
 		reader: MultiResourceReader,
 		storage_backend: &'de dyn DynReadStorageBackend,
-	) -> BoxedFuture<'de, Result<Reference<Self::Resource>, SolveErrors>>;
+	) -> BoxedFuture<'de, Result<Reference<Self::Resource>, SolveError>>;
 }
 
 impl<'de, M: StoredModel> Solver<'de, Reference<M::Resource>> for ReferenceModel<M> {
 	fn solve(
 		self,
 		storage_backend: &'de dyn DynReadStorageBackend,
-	) -> BoxedFuture<'de, Result<Reference<M::Resource>, SolveErrors>>
+	) -> BoxedFuture<'de, Result<Reference<M::Resource>, SolveError>>
 	where
 		Self: 'de,
 	{
 		crate::r#async::future(async move {
-			let (stored, reader) = storage_backend.read(self.id()).await.ok_or(SolveErrors::StorageError)?;
+			let id = self.id();
+			let (stored, reader) = storage_backend
+				.read(id)
+				.await
+				.ok_or_else(|| SolveError::MissingDependency { id: id.to_string() })?;
 
 			M::solve_stored(stored, reader, storage_backend).await
 		})
 	}
 }
 
-#[derive(Debug)]
-pub enum SolveErrors {
+/// The `SolveError` enum reports why a stored model could not become a typed runtime resource.
+///
+/// [`ResourceManager::request`](crate::ResourceManager::request) wraps it in
+/// [`RequestError::Solve`](crate::RequestError::Solve) together with the requested ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SolveError {
+	/// The stored record or one of its dependencies could not be deserialized.
 	DeserializationFailed(String),
-	StorageError,
+	/// A dependency named by the stored record is not in storage.
+	MissingDependency { id: String },
 }
 
-impl From<SolveErrors> for &'static str {
-	fn from(err: SolveErrors) -> Self {
-		match err {
-			SolveErrors::DeserializationFailed(_) => "Solve deserialization failed",
-			SolveErrors::StorageError => "Solve related storage error",
+impl std::fmt::Display for SolveError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			SolveError::DeserializationFailed(error) => write!(
+				f,
+				"Could not deserialize the stored resource: {error}. The most likely cause is that the resource was baked by an incompatible resource-management version."
+			),
+			SolveError::MissingDependency { id } => write!(
+				f,
+				"Dependency '{id}' is missing from storage. The most likely cause is that the dependency was not baked with the resource that references it."
+			),
 		}
 	}
 }
+
+impl std::error::Error for SolveError {}

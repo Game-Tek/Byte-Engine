@@ -57,91 +57,155 @@ impl ResourceUpdateBroadcaster {
 
 const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/resource-management/baking-app-resources";
 
-/// Formats the failure for a resource that is absent from storage when no asset manager can bake it.
-fn missing_resource_error(id: &str) -> String {
-	let (cause, fix) = if cfg!(debug_assertions) {
-		(
-			"The resource does not exist and no asset manager is available.",
-			"Install an asset manager or bake the application resources with BELD.",
-		)
-	} else {
-		(
-			"The resource is missing from the baked release store.",
-			"Bake the application resources with BELD and include the resource store in the application bundle.",
-		)
-	};
-
-	format!(
-		"Could not load resource.\n\n  Resource: {id}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {}",
-		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-	)
+/// The `RequestError` enum reports why [`ResourceManager::request`] could not produce a resource.
+///
+/// Every variant carries the requested ID. Match on it to decide how to recover, or
+/// format it with [`Display`](std::fmt::Display) to show the cause and the fix.
+/// See [baking app resources](/docs/develop/resource-management/baking-app-resources) for the recovery workflow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestError {
+	/// The resource is not in storage and no asset manager can bake it.
+	Missing { id: String },
+	/// The development asset manager could not bake or find the resource.
+	#[cfg(debug_assertions)]
+	Bake {
+		id: String,
+		source: LoadMessages,
+		/// Whether the engine's `assets/byte-engine` link is broken, which changes the suggested fix.
+		engine_assets_inaccessible: bool,
+	},
+	/// The stored record could not become the requested typed resource.
+	Solve { id: String, source: SolveError },
 }
 
-/// Formats one asset-loading failure with its cause and recovery workflow.
-#[cfg(debug_assertions)]
-fn asset_request_error(id: &str, error: &LoadMessages, asset_manager: &AssetManager) -> String {
-	let byte_engine_root_inaccessible = matches!(
-		error,
-		LoadMessages::FailedToBake {
-			error: LoadErrors::AssetCouldNotBeRead,
-			..
+impl RequestError {
+	/// Returns the ID the caller requested.
+	pub fn id(&self) -> &str {
+		match self {
+			RequestError::Missing { id } | RequestError::Solve { id, .. } => id,
+			#[cfg(debug_assertions)]
+			RequestError::Bake { id, .. } => id,
 		}
-	) && (id == "byte-engine" || id.starts_with("byte-engine/"))
-		&& asset_manager.source_directory_accessible(std::path::Path::new("byte-engine")) == Some(false);
+	}
 
-	let (summary, asset, cause, fix) = match error {
-		LoadMessages::NoAsset => (
-			"Could not load asset.",
-			id,
-			"The asset manager did not produce a resource.",
-			"Verify the source asset and its dependencies, then bake the application resources with BELD.",
-		),
-		LoadMessages::IO => (
-			"Could not load asset.",
-			id,
-			"The asset source could not be read.",
-			"Verify that the asset source is accessible, then bake the application resources with BELD.",
-		),
-		LoadMessages::NoURL => (
-			"Could not load asset.",
-			id,
-			"The asset description has no source URL.",
-			"Add the source URL, then bake the application resources with BELD.",
-		),
-		LoadMessages::NoAssetHandler => (
-			"Could not bake asset.",
-			id,
-			"No asset handler supports this asset type.",
-			"Use a supported asset type or register its handler, then bake the application resources with BELD.",
-		),
-		LoadMessages::FailedToBake { asset, error } => (
-			"Could not bake asset.",
-			asset.as_str(),
-			error.message(),
-			if byte_engine_root_inaccessible {
-				"Configure or repair the 'assets/byte-engine' directory link, then retry."
-			} else {
-				error.fix()
-			},
-		),
-		LoadMessages::FailedToStore { asset, error } => (
-			"Could not store baked asset.",
-			asset.as_str(),
-			error.as_str(),
-			"Verify that the resource destination is writable, then bake the application resources with BELD.",
-		),
-		LoadMessages::ExecutionUnavailable => (
-			"Could not bake asset.",
-			id,
-			"No asset worker was available.",
-			"Verify the asset-processing runtime, then bake the application resources with BELD.",
-		),
-	};
+	/// Classifies one asset-manager failure, checking whether the engine asset link explains it.
+	#[cfg(debug_assertions)]
+	fn bake(id: &str, source: LoadMessages, asset_manager: &AssetManager) -> Self {
+		let engine_assets_inaccessible = matches!(
+			source,
+			LoadMessages::FailedToBake {
+				error: LoadErrors::AssetCouldNotBeRead,
+				..
+			}
+		) && (id == "byte-engine" || id.starts_with("byte-engine/"))
+			&& asset_manager.source_directory_accessible(std::path::Path::new("byte-engine")) == Some(false);
 
-	format!(
-		"{summary}\n\n  Asset: {asset}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {}",
-		online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
-	)
+		RequestError::Bake {
+			id: id.to_owned(),
+			source,
+			engine_assets_inaccessible,
+		}
+	}
+}
+
+impl std::fmt::Display for RequestError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let guide = online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH);
+
+		match self {
+			RequestError::Missing { id } => {
+				let (cause, fix) = if cfg!(debug_assertions) {
+					(
+						"The resource does not exist and no asset manager is available.",
+						"Install an asset manager or bake the application resources with BELD.",
+					)
+				} else {
+					(
+						"The resource is missing from the baked release store.",
+						"Bake the application resources with BELD and include the resource store in the application bundle.",
+					)
+				};
+
+				write!(
+					f,
+					"Could not load resource.\n\n  Resource: {id}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {guide}"
+				)
+			}
+			#[cfg(debug_assertions)]
+			RequestError::Bake {
+				id,
+				source,
+				engine_assets_inaccessible,
+			} => {
+				let (summary, asset, cause, fix) = match source {
+					LoadMessages::NoAsset => (
+						"Could not load asset.",
+						id.as_str(),
+						"The asset manager did not produce a resource.",
+						"Verify the source asset and its dependencies, then bake the application resources with BELD.",
+					),
+					LoadMessages::IO => (
+						"Could not load asset.",
+						id.as_str(),
+						"The asset source could not be read.",
+						"Verify that the asset source is accessible, then bake the application resources with BELD.",
+					),
+					LoadMessages::NoURL => (
+						"Could not load asset.",
+						id.as_str(),
+						"The asset description has no source URL.",
+						"Add the source URL, then bake the application resources with BELD.",
+					),
+					LoadMessages::NoAssetHandler => (
+						"Could not bake asset.",
+						id.as_str(),
+						"No asset handler supports this asset type.",
+						"Use a supported asset type or register its handler, then bake the application resources with BELD.",
+					),
+					LoadMessages::FailedToBake { asset, error } => (
+						"Could not bake asset.",
+						asset.as_str(),
+						error.message(),
+						if *engine_assets_inaccessible {
+							"Configure or repair the 'assets/byte-engine' directory link, then retry."
+						} else {
+							error.fix()
+						},
+					),
+					LoadMessages::FailedToStore { asset, error } => (
+						"Could not store baked asset.",
+						asset.as_str(),
+						error.as_str(),
+						"Verify that the resource destination is writable, then bake the application resources with BELD.",
+					),
+					LoadMessages::ExecutionUnavailable => (
+						"Could not bake asset.",
+						id.as_str(),
+						"No asset worker was available.",
+						"Verify the asset-processing runtime, then bake the application resources with BELD.",
+					),
+				};
+
+				write!(
+					f,
+					"{summary}\n\n  Asset: {asset}\n  Cause: {cause}\n  Fix: {fix}\n  Guide: {guide}"
+				)
+			}
+			RequestError::Solve { id, source } => write!(
+				f,
+				"Could not load resource.\n\n  Resource: {id}\n  Cause: {source}\n  Fix: Bake the application resources again with BELD.\n  Guide: {guide}"
+			),
+		}
+	}
+}
+
+impl std::error::Error for RequestError {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			RequestError::Solve { source, .. } => Some(source),
+			_ => None,
+		}
+	}
 }
 
 /// The `ResourceManager` struct provides typed resource loading and caching across storage backends.
@@ -246,7 +310,7 @@ impl ResourceManager {
 	/// Use [`Reference::load`](crate::Reference::load) to load the binary data into
 	/// caller-provided memory or reader-owned storage. After loading, access the
 	/// typed metadata through [`Reference::resource`](crate::Reference::resource).
-	pub async fn request<T: Resource>(&self, id: &str) -> Result<Reference<T>, String>
+	pub async fn request<T: Resource>(&self, id: &str) -> Result<Reference<T>, RequestError>
 	where
 		T::Model: StoredModel<Resource = T>,
 	{
@@ -255,14 +319,17 @@ impl ResourceManager {
 
 		T::Model::solve_stored(stored, reader, self.get_storage_backend())
 			.await
-			.map_err(|error| Into::<&'static str>::into(error).to_string())
+			.map_err(|source| RequestError::Solve {
+				id: id.to_owned(),
+				source,
+			})
 	}
 
 	/// Returns the stored class of `id`, such as `Mesh`, `Variant`, or `Image`.
 	///
 	/// Use this to route a resource whose type the caller does not know, then
 	/// call [`Self::request`] with the matching resource type.
-	pub async fn class(&self, id: &str) -> Result<String, String> {
+	pub async fn class(&self, id: &str) -> Result<String, RequestError> {
 		let (stored, _) = self.read_stored(id).await?;
 		Ok(stored.class().to_owned())
 	}
@@ -280,7 +347,7 @@ impl ResourceManager {
 	}
 
 	/// Bakes `id` when stale in development builds, then reads its stored record.
-	async fn read_stored(&self, id: &str) -> Result<(SerializableResource, MultiResourceReader), String> {
+	async fn read_stored(&self, id: &str) -> Result<(SerializableResource, MultiResourceReader), RequestError> {
 		let storage_backend = self.get_storage_backend();
 
 		#[cfg(debug_assertions)]
@@ -291,16 +358,16 @@ impl ResourceManager {
 			asset_manager
 				.bake_if_stale(id)
 				.await
-				.map_err(|error| asset_request_error(id, &error, asset_manager))?;
+				.map_err(|source| RequestError::bake(id, source, asset_manager))?;
 		}
 
 		let Some((stored, reader)) = storage_backend.read(ResourceId::new(id)).await else {
 			#[cfg(debug_assertions)]
 			if let Some(asset_manager) = asset_manager {
-				return Err(asset_request_error(id, &LoadMessages::NoAsset, asset_manager));
+				return Err(RequestError::bake(id, LoadMessages::NoAsset, asset_manager));
 			}
 
-			return Err(missing_resource_error(id));
+			return Err(RequestError::Missing { id: id.to_owned() });
 		};
 
 		#[cfg(debug_assertions)]
@@ -315,7 +382,11 @@ impl ResourceManager {
 	///
 	/// Use this method when every ID is known before any individual result is
 	/// needed. `max_concurrency` bounds debug baking and storage pressure.
-	pub async fn request_many<T: Resource>(&self, ids: &[String], max_concurrency: usize) -> Result<Vec<Reference<T>>, String>
+	pub async fn request_many<T: Resource>(
+		&self,
+		ids: &[String],
+		max_concurrency: usize,
+	) -> Result<Vec<Reference<T>>, RequestError>
 	where
 		T::Model: StoredModel<Resource = T>,
 	{
@@ -360,11 +431,12 @@ impl ResourceManager {
 
 		// Each query item already carries its record and reader, so solving it needs no second read.
 		for (stored, reader) in page.items {
-			items.push(
-				T::Model::solve_stored(stored, reader, self.get_storage_backend())
-					.await
-					.unwrap(),
-			);
+			// Keep the failing record's ID, because the page may hold many records of the same class.
+			let id = stored.id().to_owned();
+			let item = T::Model::solve_stored(stored, reader, self.get_storage_backend())
+				.await
+				.map_err(|source| QueryError::Solve { id, source })?;
+			items.push(item);
 		}
 
 		Ok(QueryPage {
@@ -377,14 +449,22 @@ impl ResourceManager {
 #[cfg(test)]
 mod tests {
 
-	use super::ResourceManager;
+	use super::{RequestError, ResourceManager};
 	use crate::{
-		ProcessedAsset,
+		ProcessedAsset, ReferenceModel,
 		asset::ResourceId,
 		r#async,
-		resource::{ReadTargetsMut, WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		resources::audio::Audio,
-		types::BitDepths,
+		resource::{
+			ReDBStorageBackend, ReadTargetsMut, ResourceStorageMode, WriteStorageBackend,
+			storage_backend::{Query, QueryError, tests::TestStorageBackend},
+		},
+		resources::{
+			audio::Audio,
+			flipbook::{Flipbook, FlipbookModel},
+			image::Image,
+		},
+		solver::SolveError,
+		types::{BitDepths, Formats, Gamma},
 	};
 
 	#[r#async::test]
@@ -421,6 +501,80 @@ mod tests {
 			.expect("deferred payload");
 
 		assert_eq!(loaded.buffer(), Some([1, 2, 3, 4].as_slice()));
+	}
+
+	#[r#async::test]
+	async fn query_reports_the_record_that_cannot_be_solved() {
+		let directory = std::env::temp_dir().join(format!(
+			"byte-engine-resource-manager-query-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		let storage = ReDBStorageBackend::new_writable_with_mode(directory.clone(), ResourceStorageMode::Files).unwrap();
+
+		storage
+			.store(
+				ProcessedAsset::new_with_serialized("broken.image", "Image", vec![1, 2, 3]),
+				&[],
+			)
+			.await
+			.unwrap();
+
+		let resource_manager = ResourceManager::new(storage);
+
+		let error = resource_manager
+			.query::<Image>(Query::new("Image").eq("name", "broken.image"))
+			.await
+			.unwrap_err();
+
+		assert!(matches!(
+			error,
+			QueryError::Solve {
+				id,
+				source: SolveError::DeserializationFailed(_),
+			} if id == "broken.image"
+		));
+
+		drop(resource_manager);
+		std::fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[r#async::test]
+	async fn request_reports_a_missing_dependency_by_id() {
+		let storage = TestStorageBackend::new();
+		let image = Image {
+			format: Formats::RGBA8,
+			gamma: Gamma::Linear,
+			extent: [1, 1, 0],
+			mip_count: 1,
+			ibl: None,
+			photometry: None,
+		};
+		let flipbook = FlipbookModel {
+			frames_per_second: 12,
+			images: vec![ReferenceModel::new("frames.image", 0, 0, &image, None)],
+		};
+
+		storage
+			.store(ProcessedAsset::new(ResourceId::new("run.flipbook"), flipbook), &[])
+			.await
+			.unwrap();
+
+		let error = ResourceManager::new(storage)
+			.request::<Flipbook>("run.flipbook")
+			.await
+			.unwrap_err();
+
+		assert!(matches!(
+			error,
+			RequestError::Solve {
+				id,
+				source: SolveError::MissingDependency { id: dependency },
+			} if id == "run.flipbook" && dependency == "frames.image"
+		));
 	}
 }
 
@@ -599,7 +753,7 @@ mod debug_tests {
 			.unwrap_err();
 
 		assert_eq!(
-			error,
+			error.to_string(),
 			format!(
 				"Could not bake asset.\n\n  Asset: byte-engine/missing.test\n  Cause: The source asset could not be read.\n  Fix: Configure or repair the 'assets/byte-engine' directory link, then retry.\n  Guide: {}",
 				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
@@ -623,7 +777,7 @@ mod debug_tests {
 			.unwrap_err();
 
 		assert_eq!(
-			error,
+			error.to_string(),
 			format!(
 				"Could not bake asset.\n\n  Asset: rendering/simple/vertex.besl\n  Cause: The source asset could not be read.\n  Fix: Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'.\n  Guide: {}",
 				super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
@@ -749,7 +903,7 @@ mod release_tests {
 		assert!(matches!(
 			result,
 			Err(error)
-				if error == format!(
+				if error.to_string() == format!(
 					"Could not load resource.\n\n  Resource: missing/render-pass.besl\n  Cause: The resource is missing from the baked release store.\n  Fix: Bake the application resources with BELD and include the resource store in the application bundle.\n  Guide: {}",
 					super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
 				)
@@ -770,4 +924,6 @@ use crate::asset::{
 	handler::LoadErrors,
 	manager::{AssetManager, LoadMessages},
 };
-use crate::{Model, Reference, Resource, SerializableResource, StoredModel, asset::ResourceId, online_docs_url};
+use crate::{
+	Model, Reference, Resource, SerializableResource, StoredModel, asset::ResourceId, online_docs_url, solver::SolveError,
+};

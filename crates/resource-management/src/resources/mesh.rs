@@ -2,7 +2,7 @@ use crate::{
 	Reference, ReferenceModel, Solver, resource,
 	resources::material::VariantModel,
 	resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint},
-	solver::SolveErrors,
+	solver::SolveError,
 	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
 };
 
@@ -136,7 +136,7 @@ impl crate::StoredModel for MeshModel {
 		gr: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Mesh>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Mesh>, SolveError>> {
 		crate::r#async::future(async move {
 			let MeshModel {
 				skeleton,
@@ -146,7 +146,7 @@ impl crate::StoredModel for MeshModel {
 				materials,
 				primitives,
 			} = crate::from_slice(&gr.resource).map_err(|error| {
-				SolveErrors::DeserializationFailed(format!(
+				SolveError::DeserializationFailed(format!(
 					"Mesh resource could not be deserialized. The most likely cause is incompatible or corrupted mesh metadata: {error}."
 				))
 			})?;
@@ -175,12 +175,12 @@ impl crate::StoredModel for MeshModel {
 }
 
 /// Rejects a primitive whose material index falls outside the mesh's material list.
-fn validate_material_indices(material_count: usize, primitives: &[Primitive]) -> Result<(), SolveErrors> {
+fn validate_material_indices(material_count: usize, primitives: &[Primitive]) -> Result<(), SolveError> {
 	match primitives
 		.iter()
 		.position(|primitive| primitive.material as usize >= material_count)
 	{
-		Some(index) => Err(SolveErrors::DeserializationFailed(format!(
+		Some(index) => Err(SolveError::DeserializationFailed(format!(
 			"Mesh primitive {index} references material {} of {material_count}. The most likely cause is corrupted mesh metadata.",
 			primitives[index].material
 		))),
@@ -194,7 +194,7 @@ fn validate_skin_metadata(
 	skins: &[SkinBinding],
 	vertex_components: &[VertexComponent],
 	primitives: &[Primitive],
-) -> Result<(), SolveErrors> {
+) -> Result<(), SolveError> {
 	if !skins.is_empty() && skeleton.is_none() {
 		return invalid_mesh_skeletal_metadata("skin bindings exist without a skeleton");
 	}
@@ -294,7 +294,7 @@ fn validate_skin_vertex_component(
 	vertex_components: &[VertexComponent],
 	semantic: VertexSemantics,
 	expected_format: &'static str,
-) -> Result<(), SolveErrors> {
+) -> Result<(), SolveError> {
 	let Some(component) = vertex_components
 		.iter()
 		.find(|component| component.semantic == semantic && component.channel == 0)
@@ -310,8 +310,8 @@ fn validate_skin_vertex_component(
 	Ok(())
 }
 
-fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), SolveErrors> {
-	Err(SolveErrors::DeserializationFailed(format!(
+fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), SolveError> {
+	Err(SolveError::DeserializationFailed(format!(
 		"Mesh skeletal metadata is invalid. The most likely cause is malformed imported hierarchy or skin data: {reason}."
 	)))
 }

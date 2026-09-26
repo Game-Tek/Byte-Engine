@@ -238,12 +238,10 @@ impl PipelineManagerServer {
 		let resources = self.resource_manager.as_ref().ok_or_else(|| {
 			"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager.".to_string()
 		})?;
-		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
-			resources.request(id).await.map_err(|_| {
-				format!(
-					"Pipeline resource '{id}' could not be loaded. The most likely cause is that the pipeline asset was not baked."
-				)
-			})?;
+		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> = resources
+			.request(id)
+			.await
+			.map_err(|error| format!("Could not load pipeline '{id}'. {error}"))?;
 		match &pipeline.resource().kind {
 			PipelineKind::Compute { shader, push_constants } => {
 				let prepared = prepare_shader(resources, shader).await?;
@@ -343,12 +341,10 @@ impl PipelineManagerServer {
 			material_variant_id,
 			push_constant_ranges,
 		} = request;
-		let variant: resource_management::Reference<resource_management::resources::material::Variant> =
-			resources.request(&material_variant_id).await.map_err(|_| {
-				format!(
-					"Material variant '{material_variant_id}' could not be loaded. The most likely cause is that the material asset was not baked."
-				)
-			})?;
+		let variant: resource_management::Reference<resource_management::resources::material::Variant> = resources
+			.request(&material_variant_id)
+			.await
+			.map_err(|error| format!("Could not load material variant '{material_variant_id}'. {error}"))?;
 		let shader_resource_id = variant
 			.resource()
 			.material
@@ -507,10 +503,10 @@ fn shader_artifact_source<'a>(
 async fn prepare_shader(resources: &resource_management::ResourceManager, id: &str) -> Result<PreparedShader, String> {
 	use resource_management::resource::ReadStorageBackend as _;
 
-	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> =
-		resources.request(id).await.map_err(|_| {
-			format!("Shader resource '{id}' could not be loaded. The most likely cause is that the shader asset was not baked.")
-		})?;
+	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> = resources
+		.request(id)
+		.await
+		.map_err(|error| format!("Could not load shader '{id}'. {error}"))?;
 	let stage = shader_type_to_ghi(shader.resource().stage);
 	let artifact = shader.resource().artifact.clone();
 	let workgroup = shader.resource().interface.workgroup_size;

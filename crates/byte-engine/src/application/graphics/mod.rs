@@ -230,7 +230,7 @@ impl Application for GraphicsApplication {
 						));
 					});
 				},
-				|| rendering::renderer::Renderer::new(&application, &configuration),
+				|| rendering::renderer::Renderer::new(&application, &configuration).unwrap_or_else(|error| panic!("{error}")),
 			)
 			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 		let resource_storage = storage.unwrap();

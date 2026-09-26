@@ -9,9 +9,9 @@ mod shared;
 pub use bake::bake;
 pub use inspect::inspect;
 pub use maintenance::{clear, delete, list, wipe};
-pub use query::query;
 #[cfg(test)]
-use query::{parse_query_property, query_error_message};
+use query::parse_query_property;
+pub use query::query;
 #[cfg(all(test, debug_assertions))]
 use shared::resource_trace_json;
 #[cfg(test)]
@@ -30,10 +30,7 @@ mod tests {
 	use resource_management::{
 		QueryableProperty, QueryableValue,
 		asset::{FileStorageBackend, ResourceId},
-		resource::{
-			ReDBStorageBackend,
-			storage_backend::{QueryCursor, QueryError},
-		},
+		resource::{ReDBStorageBackend, storage_backend::QueryCursor},
 	};
 	use serde_json::json;
 
@@ -42,8 +39,7 @@ mod tests {
 	#[cfg(debug_assertions)]
 	use super::{bake, inspect, query, resource_trace_json};
 	use super::{
-		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, query_error_message,
-		queryable_properties_json,
+		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, queryable_properties_json,
 	};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
@@ -97,12 +93,6 @@ mod tests {
 			queryable_properties_json(&properties),
 			json!({"name": "hero", "group": "opaque"})
 		);
-	}
-
-	#[test]
-	fn query_errors_keep_distinct_actionable_causes() {
-		assert!(query_error_message(QueryError::InvalidCursor).contains("cursor is invalid"));
-		assert!(query_error_message(QueryError::StorageFailure).contains("database could not be read"));
 	}
 
 	#[cfg(debug_assertions)]

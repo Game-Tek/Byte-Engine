@@ -393,11 +393,11 @@ impl VisibilityLoader {
 
 	/// Reads the stored class of `id` and forwards it as the matching family request.
 	async fn load_resource(&self, id: &'static str) -> Result<Loaded<Self>, LoadError> {
-		let class = self.resource_manager.class(id).await.map_err(|error| {
-			LoadError(format!(
-				"Visibility resource request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded. Request error: {error}"
-			))
-		})?;
+		let class = self
+			.resource_manager
+			.class(id)
+			.await
+			.map_err(|error| LoadError(format!("Visibility could not read the class of {id}. {error}")))?;
 		let request = if class == "Mesh" {
 			VisibilityLoadRequest::Mesh(MeshSource::Resource(id))
 		} else {
@@ -418,11 +418,11 @@ impl VisibilityLoader {
 			));
 		}
 		let class = query.class.clone();
-		let ids = self.resource_manager.query_ids(query).await.map_err(|error| {
-			LoadError(format!(
-				"Visibility query for {class} resources failed. The most likely cause is that the asset database is not loaded. Query error: {error:?}"
-			))
-		})?;
+		let ids = self
+			.resource_manager
+			.query_ids(query)
+			.await
+			.map_err(|error| LoadError(format!("Visibility query for {class} resources failed. {error}")))?;
 		let mut dependencies = Vec::with_capacity(ids.items.len());
 		for id in ids.items {
 			// One unroutable match must not discard the rest of the query.
@@ -442,9 +442,11 @@ impl VisibilityLoader {
 		match class {
 			"Variant" => Ok(VisibilityLoadRequest::Material(id)),
 			"Image" => {
-				let image: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
-					LoadError(format!("Visibility image request failed for {id}. Request error: {error}"))
-				})?;
+				let image: Reference<ResourceImage> = self
+					.resource_manager
+					.request(&id)
+					.await
+					.map_err(|error| LoadError(format!("Visibility could not load image {id}. {error}")))?;
 				if image.resource().ibl.is_some() {
 					Ok(VisibilityLoadRequest::Environment(id))
 				} else {
@@ -462,11 +464,11 @@ impl VisibilityLoader {
 		let staging = lane.staging().clone();
 		let prepared = match source {
 			MeshSource::Resource(id) => {
-				let resource: Reference<Mesh> = self.resource_manager.request(id).await.map_err(|_| {
-					LoadError(format!(
-						"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
-					))
-				})?;
+				let resource: Reference<Mesh> = self
+					.resource_manager
+					.request(id)
+					.await
+					.map_err(|error| LoadError(format!("Visibility could not load mesh {id}. {error}")))?;
 				PreparedMesh::resource(resource, staging).await
 			}
 			MeshSource::Generated(generator) => PreparedMesh::generated(generator.as_ref(), staging).await,
@@ -535,11 +537,11 @@ impl VisibilityLoader {
 
 	/// Loads and validates one material, then publishes its textures through the pipeline dependency stream.
 	async fn load_material(&self, id: String) -> Result<Loaded<Self>, LoadError> {
-		let mut reference: Reference<ResourceVariant> = self.resource_manager.request(&id).await.map_err(|_| {
-			LoadError(format!(
-				"Visibility material variant request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded."
-			))
-		})?;
+		let mut reference: Reference<ResourceVariant> = self
+			.resource_manager
+			.request(&id)
+			.await
+			.map_err(|error| LoadError(format!("Visibility could not load material variant {id}. {error}")))?;
 		let variant = reference.resource_mut();
 		let alpha_mode = variant.alpha_mode.clone();
 		let texture_ids: Vec<Option<String>> = variant
@@ -603,11 +605,11 @@ impl VisibilityLoader {
 
 	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
 	async fn load_texture(&self, id: String, lane: &mut LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
-		let resource: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
-			LoadError(format!(
-				"Visibility texture resource request failed for {id}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {error}"
-			))
-		})?;
+		let resource: Reference<ResourceImage> = self
+			.resource_manager
+			.request(&id)
+			.await
+			.map_err(|error| LoadError(format!("Visibility could not load texture {id}. {error}")))?;
 		let texture = resource.resource();
 		let photometry = texture
 			.photometry
@@ -647,9 +649,9 @@ impl VisibilityLoader {
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
 	async fn load_environment(&self, id: String, lane: &mut LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let docs = crate::online_docs_url("develop/resource-management/assets#environment-maps");
-		let mut reference: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|_| {
+		let mut reference: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
 			LoadError(format!(
-				"Visibility environment request failed for {id}. The most likely cause is that the `.environment.bead` resource is missing or the asset database is not loaded. See {docs}."
+				"Visibility could not load environment {id}. {error}\nEnvironment maps must come from a `.environment.bead` asset. See {docs}."
 			))
 		})?;
 		let ibl = reference.resource().ibl.clone().ok_or_else(|| {

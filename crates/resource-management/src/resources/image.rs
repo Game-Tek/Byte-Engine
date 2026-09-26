@@ -93,7 +93,7 @@ mod tests {
 		ProcessedAsset, ReferenceModel, Resource, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		solver::SolveErrors,
+		solver::SolveError,
 		types::{Formats, Gamma},
 	};
 
@@ -161,7 +161,7 @@ mod tests {
 
 		assert!(matches!(
 			missing.solve(&TestStorageBackend::new()).await,
-			Err(SolveErrors::StorageError)
+			Err(SolveError::MissingDependency { id }) if id == "missing.image"
 		));
 
 		let storage = TestStorageBackend::new();
@@ -176,7 +176,7 @@ mod tests {
 
 		assert!(matches!(
 			broken.solve(&storage).await,
-			Err(SolveErrors::DeserializationFailed(_))
+			Err(SolveError::DeserializationFailed(_))
 		));
 	}
 

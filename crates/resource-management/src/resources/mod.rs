@@ -30,10 +30,10 @@ macro_rules! impl_direct_resource {
 				stored: $crate::SerializableResource,
 				reader: $crate::resource::resource_handler::MultiResourceReader,
 				_: &'de dyn $crate::resource::DynReadStorageBackend,
-			) -> $crate::r#async::BoxedFuture<'de, Result<$crate::Reference<$resource>, $crate::solver::SolveErrors>> {
+			) -> $crate::r#async::BoxedFuture<'de, Result<$crate::Reference<$resource>, $crate::solver::SolveError>> {
 				$crate::r#async::future(async move {
 					let resource: $resource = $crate::from_slice(stored.resource())
-						.map_err(|error| $crate::solver::SolveErrors::DeserializationFailed(error.to_string()))?;
+						.map_err(|error| $crate::solver::SolveError::DeserializationFailed(error.to_string()))?;
 
 					Ok($crate::Reference::from_stored(stored, resource, reader))
 				})
@@ -54,7 +54,7 @@ const DEPENDENCY_SOLVE_CONCURRENCY: usize = 8;
 pub(crate) async fn solve_all<'de, M, T>(
 	models: Vec<M>,
 	storage_backend: &'de dyn crate::resource::DynReadStorageBackend,
-) -> Result<Vec<T>, crate::solver::SolveErrors>
+) -> Result<Vec<T>, crate::solver::SolveError>
 where
 	M: crate::Solver<'de, T> + 'de,
 {

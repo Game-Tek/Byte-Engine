@@ -3,7 +3,7 @@ mod core;
 mod targets;
 
 pub(crate) use core::RendererScreenshotError;
-pub use core::{Renderer, Settings};
+pub use core::{Renderer, RendererCreateError, Settings};
 #[cfg(test)]
 use std::collections::VecDeque;
 

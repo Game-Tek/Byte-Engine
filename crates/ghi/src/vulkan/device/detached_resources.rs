@@ -101,6 +101,7 @@ impl crate::device::Device for Device {
 			resource_uses: builder.resource_uses,
 			device_accesses: builder.device_accesses,
 			use_case: builder.use_case,
+			mip_levels: builder.mip_levels,
 			array_layers: builder.array_layers,
 			cube_compatible: builder.cube_compatible,
 			cube_array_compatible: builder.cube_array_compatible,

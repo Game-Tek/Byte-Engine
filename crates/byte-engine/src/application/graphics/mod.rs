@@ -686,11 +686,13 @@ impl GraphicsApplication {
 		// callback so their scene can request resources before native window setup begins.
 		// An acquired image must be presented, so on-demand rendering only hoists the acquisition while frames keep
 		// coming; the first frame after an idle stretch acquires when it renders.
+		let measure_acquire = std::time::Instant::now();
 		let present_time = if self.rendering_active {
 			self.renderer.acquire_swapchain_images()
 		} else {
 			None
 		};
+		let measure_acquire = measure_acquire.elapsed();
 		if self.tick_count > 0 && !waited && !self.renderer.presents_this_frame() {
 			// The first tick has no previous frame to pace. Later ticks that neither present nor wait for
 			// events sleep here so a windowless or unchanged application does not spin a core.
@@ -716,9 +718,16 @@ impl GraphicsApplication {
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
 		self.rendering_active = changed || !self.render_on_demand;
+		let measure_render = std::time::Instant::now();
 		if self.rendering_active || self.renderer.presents_this_frame() {
 			self.render_frame(screenshot_requests, time.elapsed());
 		}
+		log::info!(
+			target: "measure",
+			"tick acquire_us={} render_us={}",
+			measure_acquire.as_micros(),
+			measure_render.elapsed().as_micros()
+		);
 
 		{
 			let span = debug_span!("GraphicsApplication::flush_world_deletions");

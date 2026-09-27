@@ -1653,3 +1653,49 @@ pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, qu
 		assert!(!device.has_errors());
 	}
 }
+
+pub(super) fn factory_image_last_mip_upload(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that an image built by a detached factory keeps its mip count after a context interns it.
+	//! Texture loaders build mipmapped images this way and then upload every mip, so the last mip must accept a copy.
+
+	const MIP_LEVELS: u32 = 3;
+	// Every backend expects texture upload rows padded to 256 bytes, so one padded row holds the 1x1 last mip.
+	const ROW_PITCH: usize = 256;
+
+	let mut factory = context.create_factory().expect(
+		"Failed to create the GHI test factory. The most likely cause is that the active backend has no detached resource support.",
+	);
+	let image = factory.build_image(
+		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
+			.name("Factory Mip Image")
+			.extent(Extent::square(4))
+			.mip_levels(MIP_LEVELS),
+	);
+	let image = context.intern_image(image);
+	let staging = context.build_buffer::<[u8; ROW_PITCH]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Factory Mip Staging")
+			.device_accesses(DeviceAccesses::HostOnly),
+	);
+
+	let command_buffer_handle = context.queue(queue_handle).create_command_buffer(None);
+	let synchronizer = context.create_synchronizer(None, true);
+	context
+		.queue(queue_handle)
+		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
+			execution.record(command_buffer_handle, |recording| {
+				recording.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
+					staging.into(),
+					0,
+					ROW_PITCH,
+					ROW_PITCH,
+					image.into(),
+					MIP_LEVELS - 1,
+				)]);
+			});
+			[]
+		});
+	context.wait();
+
+	assert!(!ghi::context::Context::has_errors(context));
+}

@@ -462,7 +462,8 @@ impl Context {
 		let mut builder = crate::image::Builder::new(image.format, image.resource_uses)
 			.extent(image.extent)
 			.device_accesses(image.device_accesses)
-			.use_case(image.use_case);
+			.use_case(image.use_case)
+			.mip_levels(image.mip_levels);
 		builder.name = image.name.as_deref();
 		builder.array_layers = image.array_layers;
 		builder.cube_compatible = image.cube_compatible;

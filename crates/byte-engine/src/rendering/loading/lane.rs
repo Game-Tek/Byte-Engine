@@ -99,7 +99,18 @@ impl<P: LoadPipeline> LoaderLane<P> {
 	/// The render thread holds the context for a whole frame, so a commit can wait that long. Batch the
 	/// work of several resources into one commit rather than committing each one separately.
 	pub fn commit<T>(&self, work: impl FnOnce(&mut ghi::implementation::Context) -> T) -> T {
-		work(&mut self.context.lock())
+		let measure_wait = std::time::Instant::now();
+		let mut context = self.context.lock();
+		let measure_held = std::time::Instant::now();
+		let value = work(&mut context);
+		drop(context);
+		log::info!(
+			target: "measure",
+			"commit wait_us={} held_us={}",
+			measure_held.duration_since(measure_wait).as_micros(),
+			measure_held.elapsed().as_micros()
+		);
+		value
 	}
 
 	/// Records transfers on this lane's command buffer, submits them, and waits for the copies to finish.

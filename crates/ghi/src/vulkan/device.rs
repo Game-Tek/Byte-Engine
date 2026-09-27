@@ -143,6 +143,7 @@ pub struct FactoryImage {
 	pub(crate) resource_uses: crate::Uses,
 	pub(crate) device_accesses: crate::DeviceAccesses,
 	pub(crate) use_case: crate::UseCases,
+	pub(crate) mip_levels: u32,
 	pub(crate) array_layers: Option<NonZeroU32>,
 	pub(crate) cube_compatible: bool,
 	pub(crate) cube_array_compatible: bool,

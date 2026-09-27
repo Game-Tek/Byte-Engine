@@ -217,6 +217,12 @@ fn render_with_ray_tracing() {
 }
 
 #[test]
+fn factory_image_accepts_last_mip_upload() {
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
+	resources::factory_image_last_mip_upload(&mut context, queue_handle);
+}
+
+#[test]
 fn update_texture_regions() {
 	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
 	resources::texture_region_uploads(&mut context, queue_handle);

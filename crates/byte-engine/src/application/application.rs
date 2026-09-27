@@ -38,7 +38,7 @@ pub struct BaseApplication {
 
 impl Application for BaseApplication {
 	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
-		env_logger::init();
+		env_logger::Builder::from_default_env().format_timestamp_micros().init();
 
 		let mut parameters = parameters.to_vec();
 		for (key, value) in std::env::vars().filter(|(key, _)| key.as_str().starts_with("BE_")) {

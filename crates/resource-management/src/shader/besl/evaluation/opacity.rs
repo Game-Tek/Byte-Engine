@@ -94,10 +94,15 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				}
 			}
 			besl::Expressions::FunctionCall {
-				function: callable,
+				function,
 				parameters: arguments,
+			} => {
+				collect_local_output_symbols(&function.get(), local_output_symbols);
+				for argument in arguments {
+					collect_local_output_symbols(argument, local_output_symbols);
+				}
 			}
-			| besl::Expressions::IntrinsicCall {
+			besl::Expressions::IntrinsicCall {
 				intrinsic: callable,
 				elements: arguments,
 				..
@@ -208,10 +213,15 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 				.iter()
 				.any(|element| references_non_local_output(element, local_output_symbols)),
 			besl::Expressions::FunctionCall {
-				function: callable,
+				function,
 				parameters: arguments,
+			} => {
+				references_non_local_output(&function.get(), local_output_symbols)
+					|| arguments
+						.iter()
+						.any(|argument| references_non_local_output(argument, local_output_symbols))
 			}
-			| besl::Expressions::IntrinsicCall {
+			besl::Expressions::IntrinsicCall {
 				intrinsic: callable,
 				elements: arguments,
 				..
@@ -308,10 +318,15 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				.iter()
 				.any(|element| writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols)),
 			besl::Expressions::FunctionCall {
-				function: callable,
+				function,
 				parameters: arguments,
+			} => {
+				writes_non_opaque_vec4f_to_non_local_output(&function.get(), local_output_symbols)
+					|| arguments
+						.iter()
+						.any(|argument| writes_non_opaque_vec4f_to_non_local_output(argument, local_output_symbols))
 			}
-			| besl::Expressions::IntrinsicCall {
+			besl::Expressions::IntrinsicCall {
 				intrinsic: callable,
 				elements: arguments,
 				..
@@ -392,7 +407,8 @@ fn is_non_opaque_vec4f_constructor(node: &besl::NodeReference) -> bool {
 
 	match node_ref {
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
-			let function_borrow = RefCell::borrow(function);
+			let function = function.get();
+			let function_borrow = RefCell::borrow(&function);
 			if function_borrow.get_name() != Some("vec4f") {
 				return false;
 			}
@@ -422,7 +438,8 @@ fn is_vec3f_constructor(node: &besl::NodeReference) -> bool {
 
 	match node_ref {
 		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
-			let function_borrow = RefCell::borrow(function);
+			let function = function.get();
+			let function_borrow = RefCell::borrow(&function);
 			function_borrow.get_name() == Some("vec3f") && parameters.len() == 3
 		}
 		_ => false,

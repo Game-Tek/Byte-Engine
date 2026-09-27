@@ -611,7 +611,7 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 				infer_expression_type(right)
 			}
 		}
-		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
+		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(&function.get()),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
 		_ => None,

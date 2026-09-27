@@ -99,7 +99,7 @@ impl<'a> Compiler<'a> {
 				Ok(())
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				let function = function.clone();
+				let function = function.get();
 				let parameters = parameters.clone();
 				drop(borrowed);
 				self.compile_call_statement(&function, &parameters, descriptor_layouts)

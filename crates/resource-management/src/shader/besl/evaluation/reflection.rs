@@ -525,7 +525,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 				function: callable,
 				parameters: arguments,
 			} => {
-				build_bindings(bindings, callable, state);
+				build_bindings(bindings, &callable.get(), state);
 				for argument in arguments {
 					build_bindings(bindings, argument, state);
 				}

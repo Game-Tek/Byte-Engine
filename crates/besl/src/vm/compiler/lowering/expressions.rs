@@ -50,7 +50,7 @@ impl<'a> Compiler<'a> {
 				self.compile_value_expression(&inner, expected_type, descriptor_layouts)
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				let function = function.clone();
+				let function = function.get();
 				let parameters = parameters.clone();
 				drop(borrowed);
 				self.compile_function_call_expression(&function, &parameters, expected_type, descriptor_layouts)
@@ -527,7 +527,7 @@ impl<'a> Compiler<'a> {
 				drop(borrowed);
 				resolve_callable_return_type(&intrinsic)
 			}
-			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(function),
+			Nodes::Expression(Expressions::FunctionCall { function, .. }) => resolve_callable_return_type(&function.get()),
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				if comparison_operator(operator).is_some() {
 					Ok(ValueType::Bool)

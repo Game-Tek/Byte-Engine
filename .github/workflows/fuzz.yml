@@ -57,7 +57,9 @@ jobs:
         restore-keys: |
           besl-fuzz-corpus-${{ matrix.target }}-
     - name: Fuzz ${{ matrix.target }}
-      run: cargo fuzz run ${{ matrix.target }} -- ${{ matrix.args }} -timeout=5 -max_total_time=${{ inputs.seconds || '1200' }}
+      # cargo-fuzz defaults to the target it was built for. The prebuilt binary is musl, and
+      # AddressSanitizer can't link against static musl libc, so pin the glibc target.
+      run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- ${{ matrix.args }} -timeout=5 -max_total_time=${{ inputs.seconds || '1200' }}
     - name: Upload crash artifacts
       if: failure()
       uses: actions/upload-artifact@v6

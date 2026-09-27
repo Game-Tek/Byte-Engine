@@ -22,6 +22,16 @@ jobs:
         working-directory: crates/besl/fuzz
     steps:
     - uses: actions/checkout@v7
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          crates/besl/fuzz/target
+        key: ${{ runner.os }}-cargo-fuzz-besl-tests-${{ hashFiles('crates/besl/fuzz/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-fuzz-besl-tests-
     - name: Run grammar generator tests
       # Runs a fixed set of generated programs through VM compilation.
       run: cargo test --lib
@@ -48,6 +58,17 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-fuzz
+    - name: Cache Cargo dependencies
+      # Blacksmith backs actions/cache, so this matches the regular test workflow's build cache.
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          crates/besl/fuzz/target
+        key: ${{ runner.os }}-cargo-fuzz-besl-${{ matrix.target }}-${{ hashFiles('crates/besl/fuzz/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-fuzz-besl-${{ matrix.target }}-
     - name: Restore corpus
       # Each run saves its grown corpus under a new key; the newest one seeds the next run.
       uses: actions/cache@v6

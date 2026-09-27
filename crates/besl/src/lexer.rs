@@ -726,6 +726,21 @@ Foo: struct {
 	}
 
 	#[test]
+	fn lex_rejects_non_type_names_as_types() {
+		// `root` names the program scope and `main` names the function itself. Neither declares a type.
+		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
+			let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+			let node = parser::parse(&tokens).expect("Failed to parse");
+			assert_eq!(
+				lex(node).err(),
+				Some(LexError::ReferenceToUndefinedType {
+					type_name: type_name.to_string(),
+				})
+			);
+		}
+	}
+
+	#[test]
 	fn lex_non_existant_function_return_type() {
 		let source = "
 main: fn () -> NonExistantType {}";

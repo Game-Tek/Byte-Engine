@@ -37,8 +37,13 @@ pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeR
 	None
 }
 
+/// Resolves a type name to its struct declaration.
+///
+/// Only struct nodes declare types. Accepting any named node would let a type name such as `root` or a function's own
+/// name point back at an ancestor, which forms an `Rc` cycle that is never freed.
 pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReference, LexError> {
-	if let Some(existing) = get_reference(chain, type_name) {
+	let existing = get_reference(chain, type_name);
+	if let Some(existing) = existing.filter(|node| matches!(node.borrow().node(), Nodes::Struct { .. })) {
 		return Ok(existing);
 	}
 
@@ -61,7 +66,7 @@ pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<N
 		return resolve_array_type(chain, &element_type, count);
 	}
 
-	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
+	Err(LexError::ReferenceToUndefinedType {
 		type_name: type_name.to_string(),
 	})
 }
@@ -815,7 +820,8 @@ pub(super) fn resolve_call_target(
 		}
 	}
 
-	if let Ok(r#type) = resolve_type(chain, name) {
+	// Calls may name an intrinsic or a type constructor, so this fallback accepts any declaration, not only types.
+	if let Some(r#type) = get_reference(chain, name) {
 		let mismatched_intrinsic_with_known_types =
 			matches!(r#type.borrow().node(), Nodes::Intrinsic { .. }) && parameters.iter().all(expression_has_reliable_type);
 		// Resource expressions do not always expose a value type during linking, so keep the established fallback only when

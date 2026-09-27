@@ -1,4 +1,4 @@
-name: Fuzz BESL
+name: Fuzz
 
 on:
   schedule:
@@ -15,7 +15,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  generator-tests:
+  besl-generator-tests:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     defaults:
       run:
@@ -37,21 +37,34 @@ jobs:
       run: cargo test --lib
 
   fuzz:
+    name: fuzz ${{ matrix.crate }}/${{ matrix.target }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     strategy:
       # Let every target finish so one crash doesn't hide another.
       fail-fast: false
       matrix:
         include:
-          - target: parse
+          - crate: besl
+            target: parse
             args: -dict=fuzz/dictionaries/besl.dict -max_len=4096
-          - target: compile
+          - crate: besl
+            target: compile
             args: -dict=fuzz/dictionaries/besl.dict -max_len=4096
-          - target: grammar_compile
+          - crate: besl
+            target: grammar_compile
             args: -max_len=512
+          - crate: betp
+            target: decode_packet
+            args: -dict=fuzz/dictionaries/betp.dict -max_len=2048
+          - crate: betp
+            target: client_session
+            args: -max_len=8192
+          - crate: betp
+            target: server_session
+            args: -max_len=8192
     defaults:
       run:
-        working-directory: crates/besl
+        working-directory: crates/${{ matrix.crate }}
     steps:
     - uses: actions/checkout@v7
     - name: Install cargo-fuzz
@@ -65,19 +78,19 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          crates/besl/fuzz/target
-        key: ${{ runner.os }}-cargo-fuzz-besl-${{ matrix.target }}-${{ hashFiles('crates/besl/fuzz/Cargo.lock') }}
+          crates/${{ matrix.crate }}/fuzz/target
+        key: ${{ runner.os }}-cargo-fuzz-${{ matrix.crate }}-${{ matrix.target }}-${{ hashFiles(format('crates/{0}/fuzz/Cargo.lock', matrix.crate)) }}
         restore-keys: |
-          ${{ runner.os }}-cargo-fuzz-besl-${{ matrix.target }}-
+          ${{ runner.os }}-cargo-fuzz-${{ matrix.crate }}-${{ matrix.target }}-
     - name: Restore corpus
       # Each run saves its grown corpus under a new key; the newest one seeds the next run.
       uses: actions/cache@v6
       with:
-        path: crates/besl/fuzz/corpus/${{ matrix.target }}
-        key: besl-fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+        path: crates/${{ matrix.crate }}/fuzz/corpus/${{ matrix.target }}
+        key: ${{ matrix.crate }}-fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
         restore-keys: |
-          besl-fuzz-corpus-${{ matrix.target }}-
-    - name: Fuzz ${{ matrix.target }}
+          ${{ matrix.crate }}-fuzz-corpus-${{ matrix.target }}-
+    - name: Fuzz ${{ matrix.crate }}/${{ matrix.target }}
       # cargo-fuzz defaults to the target it was built for. The prebuilt binary is musl, and
       # AddressSanitizer can't link against static musl libc, so pin the glibc target.
       run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- ${{ matrix.args }} -timeout=5 -max_total_time=${{ inputs.seconds || '1200' }}
@@ -85,6 +98,6 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v6
       with:
-        name: besl-fuzz-${{ matrix.target }}-artifacts
-        path: crates/besl/fuzz/artifacts/${{ matrix.target }}
+        name: ${{ matrix.crate }}-fuzz-${{ matrix.target }}-artifacts
+        path: crates/${{ matrix.crate }}/fuzz/artifacts/${{ matrix.target }}
         if-no-files-found: ignore

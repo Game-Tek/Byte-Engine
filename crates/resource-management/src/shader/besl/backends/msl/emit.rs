@@ -511,7 +511,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					parameters, function, ..
 				}) = value.borrow().node()
 				{
-					if short_scalar_array.is_none() && function.borrow().get_name() == Some(type_name.as_str()) {
+					if short_scalar_array.is_none() && function.get().borrow().get_name() == Some(type_name.as_str()) {
 						string.push('{');
 						self.emit_call_arguments(string, parameters);
 						string.push('}');

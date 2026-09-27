@@ -155,7 +155,7 @@ fn function_arity_is_validated_before_arguments_are_lowered() {
 	let invalid_argument = Node::expression(Expressions::Continue).into();
 	let extra_argument = Node::expression(Expressions::Literal { value: "1".to_string() }).into();
 	let call = Node::expression(Expressions::FunctionCall {
-		function: called_function,
+		function: called_function.into(),
 		parameters: vec![invalid_argument, extra_argument],
 	})
 	.into();

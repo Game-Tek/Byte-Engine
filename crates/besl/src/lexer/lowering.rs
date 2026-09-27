@@ -631,10 +631,22 @@ pub(super) fn lex_parsed_node(
 
 					Node::expression(Expressions::Accessor { left, right })
 				}
-				parser::Expressions::Member { name } => Node::expression(Expressions::Member {
-					source: resolve_member(&chain, name)?,
-					name: name.to_string(),
-				}),
+				parser::Expressions::Member { name } => {
+					let source = resolve_member(&chain, name)?;
+					// Functions are not values. A function body that names its own function would also hold a strong
+					// reference to its ancestor, which forms an `Rc` cycle that is never freed.
+					if matches!(source.borrow().node(), Nodes::Function { .. }) {
+						return Err(LexError::Undefined {
+							message: Some(format!(
+								"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
+							)),
+						});
+					}
+					Node::expression(Expressions::Member {
+						source,
+						name: name.to_string(),
+					})
+				}
 				parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
 					value: value.to_string(),
 				}),
@@ -670,7 +682,10 @@ pub(super) fn lex_parsed_node(
 								if params.len() != parameters.len() {
 									return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
 								}
-								Node::expression(Expressions::FunctionCall { function: r, parameters })
+								Node::expression(Expressions::FunctionCall {
+									function: r.into(),
+									parameters,
+								})
 							}
 							Nodes::Intrinsic { name, elements, .. } => {
 								if let Some(requirement) = atomic_access_requirement(name)

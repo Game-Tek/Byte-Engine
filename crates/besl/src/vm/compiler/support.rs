@@ -274,9 +274,7 @@ pub(super) fn collect_function_references(node: &NodeReference, seen: &mut HashS
 				children.extend(statements.iter().cloned());
 				(None, children)
 			}
-			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-				(Some(function.clone()), parameters.clone())
-			}
+			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => (Some(function.get()), parameters.clone()),
 			Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => (None, arguments.clone()),
 			Nodes::Expression(Expressions::Operator { left, right, .. })
 			| Nodes::Expression(Expressions::Accessor { left, right }) => (None, vec![left.clone(), right.clone()]),

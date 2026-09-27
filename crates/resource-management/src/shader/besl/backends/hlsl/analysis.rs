@@ -133,7 +133,7 @@ impl Generator {
 			| besl::Nodes::Intrinsic {
 				r#return: return_type, ..
 			} => return_type.borrow().get_name().map(str::to_string),
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Self::node_type_name(function),
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Self::node_type_name(&function.get()),
 			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => Self::node_type_name(intrinsic),
 			besl::Nodes::Expression(besl::Expressions::Literal { value }) => Some(
 				if matches!(value.as_str(), "true" | "false") {

@@ -345,11 +345,14 @@ impl<A: Allocator + Clone> Generator<A> {
 					Self::logical_node_type(left)
 				}
 			}
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => match function.borrow().node() {
-				besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
-				besl::Nodes::Struct { .. } => Some(function.clone()),
-				_ => None,
-			},
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => {
+				let function = function.get();
+				match function.borrow().node() {
+					besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
+					besl::Nodes::Struct { .. } => Some(function.clone()),
+					_ => None,
+				}
+			}
 			_ => None,
 		}
 	}

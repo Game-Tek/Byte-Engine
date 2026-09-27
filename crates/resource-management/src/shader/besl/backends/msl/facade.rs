@@ -207,7 +207,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Expressions::FunctionCall {
 					function, parameters, ..
 				} => {
-					Self::uses_intrinsic(function, intrinsic_name)
+					Self::uses_intrinsic(&function.get(), intrinsic_name)
 						|| parameters
 							.iter()
 							.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name))
@@ -411,7 +411,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					besl::Expressions::FunctionCall {
 						function, parameters, ..
 					} => {
-						node_requires_resource_context(function, visited, include_push_constant)
+						node_requires_resource_context(&function.get(), visited, include_push_constant)
 							|| parameters
 								.iter()
 								.any(|parameter| node_requires_resource_context(parameter, visited, include_push_constant))

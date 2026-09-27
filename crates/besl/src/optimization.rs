@@ -130,7 +130,7 @@ fn collect_called_functions_in_expression(
 			}
 		}
 		Expressions::FunctionCall { function, parameters } => {
-			collect_reachable_function(function, functions, visited);
+			collect_reachable_function(&function.get(), functions, visited);
 			for parameter in parameters {
 				collect_called_functions(parameter, functions, visited);
 			}
@@ -423,7 +423,7 @@ impl EffectAnalysis {
 			Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } => true,
 			Expressions::Expression { elements } => elements.iter().all(|element| self.is_pure(element)),
 			Expressions::FunctionCall { function, parameters } => {
-				parameters.iter().all(|parameter| self.is_pure(parameter)) && self.callable_is_pure(function)
+				parameters.iter().all(|parameter| self.is_pure(parameter)) && self.callable_is_pure(&function.get())
 			}
 			Expressions::IntrinsicCall {
 				intrinsic,
@@ -554,9 +554,11 @@ mod tests {
 		vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value},
 	};
 
-	fn main(source: &str) -> crate::NodeReference {
+	/// Returns the linked program with its `main` function. Keep the program alive: it owns the functions `main` calls.
+	fn main(source: &str) -> (crate::NodeReference, crate::NodeReference) {
 		let program = compile_to_besl(source, None).expect("Expected BESL source to link");
-		program.get_main().expect("Expected main function")
+		let main = program.get_main().expect("Expected main function");
+		(program, main)
 	}
 
 	fn statements(function: &crate::NodeReference) -> Vec<crate::NodeReference> {
@@ -569,7 +571,7 @@ mod tests {
 
 	#[test]
 	fn culls_an_unused_pure_local_and_its_function() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			Foo: struct {
 				value: f32,
@@ -599,7 +601,7 @@ mod tests {
 
 	#[test]
 	fn retains_a_local_that_contributes_to_the_return_value() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			main: fn() -> f32 {
 				let x: f32 = 42.0;
@@ -614,7 +616,7 @@ mod tests {
 
 	#[test]
 	fn culls_dead_local_chains_to_a_fixed_point() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			main: fn() -> void {
 				let first: f32 = 1.0;
@@ -632,7 +634,7 @@ mod tests {
 
 	#[test]
 	fn preserves_unused_locals_with_atomic_side_effects() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -732,7 +734,7 @@ mod tests {
 
 	#[test]
 	fn culls_unreachable_statements_even_when_they_have_side_effects() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			Counters: struct {
 				value: atomicu32,
@@ -753,7 +755,7 @@ mod tests {
 
 	#[test]
 	fn culls_unreachable_locals_inside_nested_blocks() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			main: fn() -> void {
 				if (true) {
@@ -785,7 +787,7 @@ mod tests {
 
 	#[test]
 	fn is_idempotent_after_the_first_optimization() {
-		let main = main(
+		let (_program, main) = main(
 			r#"
 			main: fn() -> void {
 				let x: f32 = 1.0;

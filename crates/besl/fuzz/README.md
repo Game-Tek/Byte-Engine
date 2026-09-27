@@ -24,10 +24,10 @@ cargo fuzz run grammar_compile -- -runs=1000 -max_len=512
 
 ## Weekly CI run
 
-The `Fuzz BESL` workflow runs every target for 20 minutes each Sunday and keeps
-the grown corpus in the Actions cache. To start it early, open the workflow in
-the Actions tab and select **Run workflow**. If a target crashes, download the
-`besl-fuzz-<target>-artifacts` artifact and replay the input with
+The `Fuzz` workflow runs every BESL and BETP target for 20 minutes each Sunday
+and keeps the grown corpus in the Actions cache. To start it early, open the
+workflow in the Actions tab and select **Run workflow**. If a target crashes,
+download the `besl-fuzz-<target>-artifacts` artifact and replay the input with
 `cargo fuzz run <target> <artifact>`.
 
 ## Choose a target

@@ -10,8 +10,8 @@ mod resolution;
 use std::{cell::RefCell, num::NonZeroUsize};
 
 pub use ast::{
-	BindingTypes, BufferMemoryClass, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference, Nodes,
-	Operators, ParentNodeReference,
+	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
+	Nodes, Operators, ParentNodeReference,
 };
 pub(crate) use ast::{lex, lex_with_root};
 #[cfg(test)]
@@ -726,6 +726,51 @@ Foo: struct {
 	}
 
 	#[test]
+	fn lex_rejects_non_type_names_as_types() {
+		// `root` names the program scope and `main` names the function itself. Neither declares a type.
+		for (source, type_name) in [("main: fn () -> root {}", "root"), ("main: fn () -> main {}", "main")] {
+			let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+			let node = parser::parse(&tokens).expect("Failed to parse");
+			assert_eq!(
+				lex(node).err(),
+				Some(LexError::ReferenceToUndefinedType {
+					type_name: type_name.to_string(),
+				})
+			);
+		}
+	}
+
+	#[test]
+	fn lex_rejects_functions_used_as_values() {
+		let source = "main: fn () -> void { normalize(vec3f(main)); }";
+		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
+		let node = parser::parse(&tokens).expect("Failed to parse");
+
+		assert!(matches!(lex(node), Err(LexError::Undefined { .. })));
+	}
+
+	#[test]
+	fn recursive_function_calls_link_to_their_function() {
+		let program = crate::compile_to_besl("count: fn (n: u32) -> u32 { return count(n); }", None)
+			.expect("Recursive functions should link");
+		let count = program.borrow().get_child("count").expect("Expected count function");
+		let count_ref = count.borrow();
+		let Nodes::Function { statements, .. } = count_ref.node() else {
+			panic!("Expected count function");
+		};
+		let statement = statements[0].borrow();
+		let Nodes::Expression(Expressions::Return { value: Some(value) }) = statement.node() else {
+			panic!("Expected return statement");
+		};
+		let value = value.borrow();
+		let Nodes::Expression(Expressions::FunctionCall { function, .. }) = value.node() else {
+			panic!("Expected recursive call");
+		};
+
+		assert_eq!(function.get(), count);
+	}
+
+	#[test]
 	fn lex_non_existant_function_return_type() {
 		let source = "
 main: fn () -> NonExistantType {}";
@@ -829,7 +874,8 @@ main: fn () -> void {
 									Nodes::Expression(Expressions::FunctionCall {
 										function, parameters, ..
 									}) => {
-										let function = RefCell::borrow(&function.0);
+										let function = function.get();
+										let function = function.borrow();
 										let name = function.get_name().expect("Expected name");
 
 										assert_eq!(name, "vec4f");
@@ -1176,7 +1222,8 @@ main: fn () -> void {
 									Nodes::Expression(Expressions::FunctionCall {
 										function, parameters, ..
 									}) => {
-										let function = RefCell::borrow(&function.0);
+										let function = function.get();
+										let function = function.borrow();
 										let name = function.get_name().expect("Expected name");
 
 										assert_eq!(name, "vec3f");
@@ -1776,7 +1823,7 @@ main: fn () -> void {
 					match right.borrow().node() {
 						Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 							assert_eq!(parameters.len(), 3);
-							assert_eq!(function.borrow().get_name().unwrap(), "f32[3]");
+							assert_eq!(function.get().borrow().get_name().unwrap(), "f32[3]");
 						}
 						_ => panic!("Expected function call"),
 					}

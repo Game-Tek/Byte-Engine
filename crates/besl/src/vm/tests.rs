@@ -2017,7 +2017,7 @@ fn executable_program_evaluates_reflect_intrinsics() {
 						intrinsic: reflect,
 						arguments: vec![
 							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type.clone(),
+								function: vec3f_type.clone().into(),
 								parameters: vec![
 									Node::expression(Expressions::Literal {
 										value: "1.0".to_string(),
@@ -2035,7 +2035,7 @@ fn executable_program_evaluates_reflect_intrinsics() {
 							})
 							.into(),
 							Node::expression(Expressions::FunctionCall {
-								function: vec3f_type,
+								function: vec3f_type.into(),
 								parameters: vec![
 									Node::expression(Expressions::Literal {
 										value: "0.0".to_string(),

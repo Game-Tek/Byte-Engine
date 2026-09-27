@@ -1559,10 +1559,9 @@ mod tests {
 			)
 			.into(),
 		]);
-		let main = besl::compile_to_besl(script, Some(root))
-			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.")
-			.get_main()
-			.expect("Expected read-write narrow-buffer main function");
+		let program = besl::compile_to_besl(script, Some(root))
+			.expect("Failed to compile read-write narrow-buffer BESL. The most likely cause is invalid test source.");
+		let main = program.get_main().expect("Expected read-write narrow-buffer main function");
 		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
@@ -1824,7 +1823,8 @@ mod tests {
 
 	#[test]
 	fn cull_unused_functions() {
-		let main = generator::tests::cull_unused_functions();
+		let program = generator::tests::cull_unused_functions();
+		let main = program.get_main().expect("Expected main");
 
 		let shader = Generator::new()
 			.minified(true)
@@ -1838,7 +1838,8 @@ mod tests {
 
 	#[test]
 	fn structure() {
-		let main = generator::tests::structure();
+		let program = generator::tests::structure();
+		let main = program.get_main().expect("Expected main");
 
 		let shader = Generator::new()
 			.minified(true)

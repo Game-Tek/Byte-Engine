@@ -38,6 +38,3 @@ pub use manager::{
 };
 pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX};
 pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator, VisibilityShaderScope};
-
-/// Size of the shared upload arena used by visibility loader lanes.
-pub const ASYNC_UPLOAD_BUFFER_BYTE_COUNT: usize = 1024 * 1024 * 32;

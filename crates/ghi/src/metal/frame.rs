@@ -55,14 +55,9 @@ impl<'a> Frame<'a> {
 		self.device.intern_compute_pipeline(pipeline)
 	}
 
-	/// Interns a factory-built image through this frame's device.
-	pub fn intern_image(&mut self, image: image::Image) -> graphics_hardware_interface::ImageHandle {
+	/// Interns an image another context exported, so this frame's recordings can use it.
+	pub fn intern_image(&mut self, image: DetachedImage) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
-	}
-
-	/// Interns a factory-built sampler through this frame's device.
-	pub fn intern_sampler(&mut self, sampler: sampler::Sampler) -> graphics_hardware_interface::SamplerHandle {
-		self.device.intern_sampler(sampler)
 	}
 
 	pub fn device(&mut self) -> &mut context::Context {

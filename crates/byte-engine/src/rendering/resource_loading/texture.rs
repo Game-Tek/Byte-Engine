@@ -1,17 +1,12 @@
 //! Resource Manager to GHI utilities for ordinary sampled textures.
 //!
-//! Request an image through the Resource Manager, then pass its
-//! [`Reference`] to [`TextureTransfer::load`]. The utility validates every mip,
-//! chooses staged or native I/O, creates the GHI image and sampler, waits for
-//! transfer completion, and returns [`LoadedTexture`]. Pipeline code keeps only
-//! renderer policy such as request identity, bindless slots, and readiness.
+//! Request an image through the Resource Manager, then pass its [`Reference`] to [`load_texture`] from a loader
+//! lane. The utility validates every mip, chooses staged or native I/O, hands the upload to the
+//! [`Loader`](crate::rendering::loading::Loader), and returns the finished image detached. Pipeline code keeps only
+//! renderer policy such as request identity, bindless slots, samplers, and readiness.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use ghi::Device as _;
-use ghi::command_buffer::CommandBufferRecording as _;
-use ghi::context::ContextCreate as _;
-use ghi::io::{ResourceIoContext as _, ResourceIoQueue as _, ResourceIoTicket as _};
 use resource_management::{
 	Reference, StreamDescription,
 	resource::{ReadTargets, ReadTargetsMut, ResourceGpuBacking, ResourcePayloadEncoding, ResourceReaderBacking},
@@ -23,183 +18,56 @@ use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{StagingLease, UploadStagingArena};
-use crate::rendering::{
-	SharedContext,
-	loading::{LoadPipeline, LoaderLane},
+use crate::rendering::loading::{
+	ImageDescription, ImageRegion, ImageUpload, LoadPipeline, LoaderLane, NativeImageRegion, NativeImageUpload,
 };
 
-/// The `TextureAddressMode` enum selects how an ordinary sampled texture addresses coordinates outside its bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TextureAddressMode {
-	/// Clamp sampling coordinates to the image edge.
-	Clamp,
-	/// Repeat the image outside its normalized coordinate range.
-	Repeat,
-}
-
-/// The `TextureDescriptor` struct describes one sampled texture without exposing GHI builders.
-pub struct TextureDescriptor<'a> {
-	name: &'a str,
-	address_mode: TextureAddressMode,
-}
-
-impl<'a> TextureDescriptor<'a> {
-	/// Creates a linearly filtered, clamped texture description.
-	///
-	/// Next, pass this value to [`TextureTransfer::load`].
-	pub fn new(name: &'a str) -> Self {
-		Self {
-			name,
-			address_mode: TextureAddressMode::Clamp,
-		}
-	}
-
-	/// Selects how sampling behaves outside the normalized image bounds.
-	pub fn address_mode(mut self, address_mode: TextureAddressMode) -> Self {
-		self.address_mode = address_mode;
-		self
-	}
-}
-
-/// The `LoadedTexture` struct identifies one upload-complete GHI image and sampler pair.
-#[derive(Clone, Copy)]
-pub struct LoadedTexture {
-	image: ghi::BaseImageHandle,
-	sampler: ghi::SamplerHandle,
-}
-
-impl LoadedTexture {
-	/// Returns the image for renderer-owned descriptor publication.
-	pub const fn image(self) -> ghi::BaseImageHandle {
-		self.image
-	}
-
-	/// Returns the sampler for renderer-owned descriptor publication.
-	pub const fn sampler(self) -> ghi::SamplerHandle {
-		self.sampler
-	}
-}
-
-/// The `TextureTransfer` struct turns Resource Manager image references into upload-complete GHI textures.
+/// Loads every mip of an image resource through the loader and returns the finished image.
 ///
-/// This is a utility owned by a pipeline loader, not an independent resource
-/// loader. It has no request registry, lane pool, or renderer-visible state.
-pub struct TextureTransfer {
-	staging_buffer: ghi::BaseBufferHandle,
-	io_queue: Option<Mutex<ghi::implementation::ResourceIoQueue>>,
-}
-
-impl TextureTransfer {
-	/// Creates the texture utility used by one pipeline loader.
-	///
-	/// Native I/O remains optional so unsupported devices can still load staged
-	/// textures. Next, pass Resource Manager image references to [`Self::load`].
-	pub fn new(context: &SharedContext, staging_buffer: ghi::BaseBufferHandle, name: &str) -> Self {
-		let io_queue = context
-			.lock()
-			.create_resource_io_queue(ghi::io::ResourceIoQueueDescriptor::new().name(name))
-			.ok()
-			.map(Mutex::new);
-		Self {
-			staging_buffer,
-			io_queue,
+/// CPU-readable resources are staged and copied. GPU-backed resources are read straight from their file through
+/// native I/O. Next, return the image in the pipeline's resident value so the render thread interns it and binds
+/// it with a sampler the pipeline owns.
+pub async fn load_texture<P: LoadPipeline>(
+	reference: Reference<ResourceImage>,
+	name: &str,
+	lane: &LoaderLane<P>,
+) -> Result<ghi::implementation::DetachedImage, TextureTransferError> {
+	let transfer = PreparedTextureTransfer::prepare(reference, lane.staging().clone())
+		.await
+		.map_err(|error| TextureTransferError(format!("Texture preparation failed for {name}. {error}")))?;
+	let (metadata, source) = transfer.into_parts();
+	let description = ImageDescription {
+		name: name.to_owned(),
+		format: metadata.format,
+		extent: metadata.extent,
+		mip_levels: metadata.mip_count,
+		cube: false,
+	};
+	match source {
+		PreparedTextureSource::Staged(source) => {
+			let regions = source.regions();
+			let [image] = lane
+				.upload(source.staging, [ImageUpload { description, regions }], SmallVec::new())
+				.await
+				.map_err(|error| TextureTransferError(format!("Texture upload failed for {name}. {error}")))?;
+			Ok(image)
 		}
-	}
-
-	/// Loads every mip, creates the GHI image and sampler, and waits until the texture is ready.
-	pub async fn load<P: LoadPipeline>(
-		&self,
-		reference: Reference<ResourceImage>,
-		descriptor: TextureDescriptor<'_>,
-		lane: &mut LoaderLane<P>,
-	) -> Result<LoadedTexture, TextureTransferError> {
-		let transfer = PreparedTextureTransfer::prepare(reference, lane.staging().clone())
+		PreparedTextureSource::Native(source) => {
+			let compression = source
+				.compression()
+				.map_err(|error| TextureTransferError(format!("Texture native encoding is unsupported for {name}. {error}")))?;
+			let regions = source
+				.regions(metadata)
+				.map_err(|error| TextureTransferError(format!("Texture I/O requests are invalid for {name}. {error}")))?;
+			lane.upload_native_image(NativeImageUpload {
+				description,
+				path: source.path().to_owned(),
+				compression,
+				regions,
+			})
 			.await
-			.map_err(|error| TextureTransferError(format!("Texture preparation failed for {}. {error}", descriptor.name)))?;
-		let metadata = transfer.metadata;
-		let factory = lane.factory();
-		let image = factory.build_image(
-			ghi::image::Builder::new(metadata.format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name(descriptor.name)
-				.extent(metadata.extent)
-				.mip_levels(metadata.mip_count)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.use_case(ghi::UseCases::STATIC),
-		);
-		let addressing_mode = match descriptor.address_mode {
-			TextureAddressMode::Clamp => ghi::SamplerAddressingModes::Clamp,
-			TextureAddressMode::Repeat => ghi::SamplerAddressingModes::Repeat,
-		};
-		let sampler = factory.build_sampler(
-			ghi::sampler::Builder::new()
-				.addressing_mode(addressing_mode)
-				.max_lod((metadata.mip_count - 1) as f32),
-		);
-		let (image, sampler) = lane.commit(|context| (context.intern_image(image).into(), context.intern_sampler(sampler)));
-		self.upload(transfer, image, descriptor.name, lane)?;
-		Ok(LoadedTexture { image, sampler })
-	}
-
-	/// Completes the storage-specific transfer after the destination image exists.
-	fn upload<P: LoadPipeline>(
-		&self,
-		transfer: PreparedTextureTransfer,
-		image: ghi::BaseImageHandle,
-		name: &str,
-		lane: &LoaderLane<P>,
-	) -> Result<(), TextureTransferError> {
-		let (metadata, source) = transfer.into_parts();
-		match source {
-			PreparedTextureSource::Staged(source) => {
-				// `source` retains its staging lease until the lane has waited for GPU completion.
-				lane.transfer(|recording| {
-					recording.copy_buffer_to_images(&source.copy_descriptors(self.staging_buffer, image));
-				});
-			}
-			PreparedTextureSource::Native(source) => {
-				let compression = source.compression().map_err(|error| {
-					TextureTransferError(format!("Texture native encoding is unsupported for {name}. {error}"))
-				})?;
-				let ticket = {
-					let mut queue = self
-						.io_queue
-						.as_ref()
-						.ok_or_else(|| {
-							TextureTransferError(format!(
-								"Texture native I/O is unavailable for {name}. The most likely cause is unsupported storage capabilities."
-							))
-						})?
-						.lock()
-						.unwrap_or_else(|error| error.into_inner());
-					let file = queue
-						.open_file(
-							ghi::io::ResourceIoFileDescriptor::new(source.path())
-								.compression(compression)
-								.name(name),
-						)
-						.map_err(|error| {
-							TextureTransferError(format!(
-								"Texture I/O file could not be opened for {name}. The most likely cause is missing or unreadable native backing storage. {error}"
-							))
-						})?;
-					let requests = source.requests(metadata, file, image).map_err(|error| {
-						TextureTransferError(format!("Texture I/O requests are invalid for {name}. {error}"))
-					})?;
-					lane.commit(|context| queue.submit(context, Some(name), &requests))
-						.map_err(|error| {
-							TextureTransferError(format!(
-								"Texture I/O submission failed for {name}. The most likely cause is an unsupported request or unavailable native queue. {error}"
-							))
-						})?
-				};
-				ticket.wait().map_err(|error| {
-					TextureTransferError(format!(
-						"Texture I/O failed for {name}. The most likely cause is unreadable or incompatible compressed texture data. {error}"
-					))
-				})?;
-			}
+			.map_err(|error| TextureTransferError(format!("Texture I/O failed for {name}. {error}")))
 		}
-		Ok(())
 	}
 }
 
@@ -223,7 +91,7 @@ struct TextureMetadata {
 	mip_count: u32,
 }
 
-/// The `PreparedTextureTransfer` struct keeps validated texture data alive until its GHI transfer completes.
+/// The `PreparedTextureTransfer` struct keeps validated texture data alive until the loader uploads it.
 struct PreparedTextureTransfer {
 	metadata: TextureMetadata,
 	source: PreparedTextureSource,
@@ -282,7 +150,7 @@ impl PreparedTextureTransfer {
 
 /// The `PreparedTextureSource` enum selects CPU staging or native GPU resource I/O.
 ///
-/// [`TextureTransfer`] consumes this internal delivery choice after creating the destination.
+/// [`load_texture`] turns this internal delivery choice into the matching loader upload.
 enum PreparedTextureSource {
 	/// CPU-readable bytes arranged for transfer command recording.
 	Staged(StagedTextureUpload),
@@ -290,35 +158,28 @@ enum PreparedTextureSource {
 	Native(NativeTextureUpload),
 }
 
-/// The `StagedTextureUpload` struct retains row-padded mip bytes through one loader transfer.
+/// The `StagedTextureUpload` struct keeps row-padded mip bytes until the loader copies them.
 ///
-/// [`TextureTransfer`] keeps this value alive until
-/// [`crate::rendering::loading::LoaderLane::transfer`] returns. Its staging
-/// lease then returns to the arena automatically.
+/// [`load_texture`] hands the lease to the loader, which returns it to the arena once the copies finished.
 struct StagedTextureUpload {
 	staging: StagingLease,
 	layouts: SmallVec<[TextureUploadLayout; 16]>,
 }
 
 impl StagedTextureUpload {
-	/// Builds every buffer-to-image copy for validated renderer-selected destinations.
-	fn copy_descriptors(
-		&self,
-		staging_buffer: ghi::BaseBufferHandle,
-		image: ghi::BaseImageHandle,
-	) -> SmallVec<[ghi::BufferImageCopyDescriptor; 16]> {
+	/// Places every mip inside the staging lease.
+	fn regions(&self) -> SmallVec<[ImageRegion; 16]> {
 		self.layouts
 			.iter()
 			.enumerate()
-			.map(|(mip_level, layout)| layout.copy_descriptor(staging_buffer, self.staging.offset(), image, mip_level as u32))
+			.map(|(mip_level, layout)| layout.region(mip_level as u32))
 			.collect()
 	}
 }
 
 /// The `NativeTextureUpload` struct retains a persisted GPU source and decoded mip ranges.
 ///
-/// [`TextureTransfer`] opens the backing file and retains the resulting
-/// ticket until completion before the pipeline publishes its resident value.
+/// The loader opens the backing file and waits for its reads before [`load_texture`] returns.
 struct NativeTextureUpload {
 	backing: ResourceGpuBacking,
 	streams: Option<Vec<StreamDescription>>,
@@ -338,14 +199,9 @@ impl NativeTextureUpload {
 		}
 	}
 
-	/// Builds one native request per persisted mip for one destination image.
-	fn requests(
-		&self,
-		metadata: TextureMetadata,
-		file: ghi::io::ResourceIoFileHandle,
-		image: ghi::BaseImageHandle,
-	) -> Result<SmallVec<[ghi::io::ResourceIoRequest; 16]>, TexturePreparationError> {
-		let mut requests = SmallVec::new();
+	/// Locates every persisted mip inside the decoded file stream.
+	fn regions(&self, metadata: TextureMetadata) -> Result<SmallVec<[NativeImageRegion; 16]>, TexturePreparationError> {
+		let mut regions = SmallVec::new();
 		for mip_level in 0..metadata.mip_count {
 			let name = MipStreamName::new(mip_level);
 			let decoded_offset = match self.streams.as_deref() {
@@ -359,20 +215,15 @@ impl NativeTextureUpload {
 			};
 			let extent = texture_mip_extent(metadata.extent, mip_level);
 			let (bytes_per_row, _, bytes_per_image) = metadata.format.compact_copy_layout(extent.width(), extent.height());
-			requests.push(
-				ghi::io::ResourceIoImageLoad::new(
-					ghi::io::ResourceIoFileRegion::new(file, decoded_offset),
-					image,
-					0,
-					mip_level,
-					extent,
-					bytes_per_row,
-					bytes_per_image,
-				)
-				.into(),
-			);
+			regions.push(NativeImageRegion {
+				file_offset: decoded_offset,
+				mip_level,
+				extent,
+				bytes_per_row,
+				bytes_per_image,
+			});
 		}
-		Ok(requests)
+		Ok(regions)
 	}
 }
 
@@ -426,22 +277,14 @@ impl TextureUploadLayout {
 		}
 	}
 
-	/// Builds one full-subresource copy descriptor for renderer-specific environment uploads.
-	pub(crate) fn copy_descriptor(
-		&self,
-		staging_buffer: ghi::BaseBufferHandle,
-		staging_offset: usize,
-		image: ghi::BaseImageHandle,
-		mip_level: u32,
-	) -> ghi::BufferImageCopyDescriptor {
-		ghi::BufferImageCopyDescriptor::new(
-			staging_buffer,
-			staging_offset + self.offset,
-			self.source_bytes_per_row,
-			self.source_bytes_per_image,
-			image,
+	/// Places this layout inside its staging lease as the full subresource of one mip.
+	pub(crate) fn region(&self, mip_level: u32) -> ImageRegion {
+		ImageRegion {
+			offset: self.offset,
+			bytes_per_row: self.source_bytes_per_row,
+			bytes_per_image: self.source_bytes_per_image,
 			mip_level,
-		)
+		}
 	}
 }
 

@@ -49,8 +49,6 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 	type Allocator = A;
 	type RasterPipeline = Pipeline;
 	type ComputePipeline = Pipeline;
-	type Image = image::Image;
-	type Sampler = sampler::Sampler;
 
 	fn allocator(&self) -> &Self::Allocator {
 		&self.allocator
@@ -89,17 +87,6 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 		);
 	}
 
-	fn build_image(&mut self, _builder: crate::image::Builder) -> Self::Image {
-		panic!(
-			"Metal device image creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
-		);
-	}
-
-	fn build_sampler(&mut self, _builder: crate::sampler::Builder) -> Self::Sampler {
-		panic!(
-			"Metal device sampler creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
-		);
-	}
 }
 
 /// Checks that one Metal 4 command queue can run every requested workload type.

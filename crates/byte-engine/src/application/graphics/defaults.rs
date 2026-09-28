@@ -59,30 +59,20 @@ pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication)
 
 				runtime.enter(|| {
 					runtime.spawn(server.run()).detach();
-
-					loop {
-						if matches!(events.read(), Some(Events::Close)) {
-							return;
-						}
-
-						let ready = runtime.run();
-
-						runtime.poll_with(Some(if ready {
-							std::time::Duration::ZERO
-						} else {
-							std::time::Duration::from_millis(10)
-						}));
-					}
+					drive_runtime(&runtime, || matches!(events.read(), Some(Events::Close)));
 				});
 			}));
 	}
 }
 
-/// Runs deferred loading tasks on an application-owned asynchronous worker.
+/// Runs deferred loading tasks and the application's [`Loader`](crate::rendering::loading::Loader) on one
+/// application-owned loading thread.
 ///
-/// Build `tasks` with [`build_deferred_tasks_queue`], then launch the worker
-/// after every subsystem has registered its loading work.
+/// Build `tasks` with [`build_deferred_tasks_queue`], then launch the thread
+/// after every subsystem has registered its loading work. Pipelines set up
+/// afterwards cannot add loader lanes.
 pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {
+	let loader = application.take_loader();
 	application
 		.threads
 		.push(Thread::new(application.application_events.0.listener(), move |mut events| {
@@ -91,25 +81,32 @@ pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks
 			// Compio separates task execution from I/O polling. Enter the runtime so
 			// resource futures can access it, then drive both halves until shutdown.
 			runtime.enter(|| {
+				if let Some(loader) = loader {
+					loader.run(&runtime);
+				}
 				for task in tasks {
 					task(&runtime);
 				}
-
-				loop {
-					if let Some(Events::Close) = events.read() {
-						return;
-					}
-
-					let has_ready_tasks = runtime.run();
-
-					let timeout = has_ready_tasks
-						.then_some(std::time::Duration::ZERO)
-						.or(Some(std::time::Duration::from_millis(6)));
-
-					runtime.poll_with(timeout);
-				}
+				drive_runtime(&runtime, || matches!(events.read(), Some(Events::Close)));
 			});
 		}));
+}
+
+/// Runs the tasks of `runtime` until `stop` returns `true`, on the thread that entered the runtime.
+///
+/// The loop wakes for ready tasks, finished I/O, and the earliest timer, so timed tasks such as the loader's
+/// completion checks run on time. While nothing is ready, it still checks `stop` at least every 6 ms.
+pub fn drive_runtime(runtime: &compio::runtime::Runtime, mut stop: impl FnMut() -> bool) {
+	const MAX_IDLE: std::time::Duration = std::time::Duration::from_millis(6);
+
+	while !stop() {
+		let timeout = if runtime.run() {
+			std::time::Duration::ZERO
+		} else {
+			runtime.current_timeout().map_or(MAX_IDLE, |timer| timer.min(MAX_IDLE))
+		};
+		runtime.poll_with(Some(timeout));
+	}
 }
 
 /// Creates the single-threaded runtime used by default background workers.

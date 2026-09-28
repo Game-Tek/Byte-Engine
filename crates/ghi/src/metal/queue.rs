@@ -1,4 +1,4 @@
-enum BatchCommitFeedbackStatus {
+pub(crate) enum BatchCommitFeedbackStatus {
 	Succeeded,
 	Failed(String),
 	HandlerFailed,
@@ -198,6 +198,11 @@ impl QueueResidency {
 			self.spare_addresses.push(retired.addresses);
 		}
 	}
+
+	/// Returns whether every batch submitted on the queue has completed.
+	fn is_idle(&self) -> bool {
+		self.in_flight.is_empty()
+	}
 }
 
 impl Deref for NativeCommand {
@@ -220,8 +225,22 @@ pub(crate) struct SubmittedBatch {
 
 impl SubmittedBatch {
 	/// Waits for Metal's completion message, returns the commands to their queue's pool, and reports any GPU error.
-	pub(crate) fn wait(mut self, queues: &mut [StoredQueue]) -> Option<String> {
+	pub(crate) fn wait(self, queues: &mut [StoredQueue]) -> Option<String> {
 		let feedback = self.feedback.recv().unwrap_or(BatchCommitFeedbackStatus::HandlerFailed);
+		self.finish(feedback, queues)
+	}
+
+	/// Returns Metal's completion message when it already arrived, without blocking.
+	pub(crate) fn try_feedback(&self) -> Option<BatchCommitFeedbackStatus> {
+		match self.feedback.try_recv() {
+			Ok(feedback) => Some(feedback),
+			Err(std::sync::mpsc::TryRecvError::Empty) => None,
+			Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(BatchCommitFeedbackStatus::HandlerFailed),
+		}
+	}
+
+	/// Returns a completed batch's commands to their queue's pool and reports any GPU error.
+	pub(crate) fn finish(mut self, feedback: BatchCommitFeedbackStatus, queues: &mut [StoredQueue]) -> Option<String> {
 		let error = match feedback {
 			BatchCommitFeedbackStatus::Succeeded => None,
 			BatchCommitFeedbackStatus::Failed(error) => Some(format!(
@@ -236,6 +255,11 @@ impl SubmittedBatch {
 		}
 		let queue = &mut queues[self.queue_handle.0 as usize];
 		queue.residency.complete(self.batch);
+		// Finished work cannot race later commands, so an idle queue drops its hazard history. Without this, a queue
+		// whose writes are never read again on it, such as a loader's copy queue, keeps every past write forever.
+		if queue.residency.is_idle() {
+			queue.resource_tracker.forget_history();
+		}
 		queue.command_pool.extend(self.commands);
 		error
 	}

@@ -1,17 +1,15 @@
 //! Pipeline-level loader-thread residency for every visibility resource.
 //!
 //! One request registry and one lane pool serve meshes, materials, textures, environments, and photometric
-//! images. Resource-specific work stays in focused methods, but dependencies return through the same
-//! pipeline protocol so one client coalesces every logical resource.
+//! images. Resource-specific work stays in focused methods. Each load requests the resources its metadata names as
+//! soon as it reads them, so meshes, materials, and textures load at the same time.
 //!
 //! The renderer interacts only with [`VisibilityLoaderClient`]. It submits domain requests and receives
 //! typed ready or unavailable events; generic keys, requests, worker residents, lane types, and material
 //! compilation state remain inside this module.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use ghi::Device as _;
-use ghi::command_buffer::CommandBufferRecording as _;
 use resource_management::Reference;
 use resource_management::resource::resource_manager::ResourceManager;
 use resource_management::resources::{
@@ -24,21 +22,22 @@ use smallvec::SmallVec;
 use utils::Extent;
 use utils::hash::HashMap;
 
-use super::geometry::{GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
+use super::geometry::{GENERATED_MESH_MATERIAL, GeometryBuffers, GeometryHandles, MeshData, PreparedMesh};
 use super::layout::{MAX_BINDLESS_TEXTURES, MAX_MATERIALS};
 use super::slots::assign_slot;
 use crate::core::EntityHandle;
 use crate::rendering::loading::{
-	Event as LoaderEvent, LoadError, LoadPipeline, Loaded, LoaderClient, LoaderLane, spawn as spawn_lanes,
+	Event as LoaderEvent, ImageDescription, ImageUpload, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane,
+	spawn as spawn_lanes,
 };
 use crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest;
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
-use crate::rendering::{Query, Resource};
+use crate::rendering::resource_loading::load_texture;
 use crate::rendering::resource_loading::texture::{
 	TextureUploadLayout, load_image_streams, resource_format_to_ghi, texture_mip_extent,
 };
-use crate::rendering::resource_loading::{TextureAddressMode, TextureDescriptor, TextureTransfer, UploadStagingArena};
-use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState, SharedContext};
+use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
+use crate::rendering::{Query, Resource};
 
 /// Number of prefiltered specular roughness levels stored by a baked environment.
 pub(crate) const IBL_SPECULAR_LEVEL_COUNT: usize =
@@ -131,8 +130,20 @@ enum VisibilityResident {
 	Routed,
 	Mesh(MeshData),
 	Material(PreparedMaterial),
-	Texture(ResidentTexture),
-	Environment { id: String, resident: ResidentEnvironment },
+	/// An upload-complete texture whose image the render thread still interns.
+	Texture {
+		id: String,
+		index: u32,
+		image: ghi::implementation::DetachedImage,
+		photometry: Option<ImagePhotometry>,
+	},
+	/// Upload-complete image-based lighting whose images the render thread still interns.
+	Environment {
+		id: String,
+		diffuse_image: ghi::implementation::DetachedImage,
+		specular_image: ghi::implementation::DetachedImage,
+		upward_illuminance: f32,
+	},
 }
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
@@ -166,11 +177,9 @@ impl MaterialPipelineConfig {
 struct VisibilityLoader {
 	resource_manager: EntityHandle<ResourceManager>,
 	pipeline_config: MaterialPipelineConfig,
-	staging_buffer: ghi::BaseBufferHandle,
 	geometry: Mutex<GeometryBuffers>,
 	material_slots: Mutex<HashMap<String, u32>>,
 	texture_slots: Mutex<HashMap<String, u32>>,
-	texture_transfer: TextureTransfer,
 }
 
 /// The `VisibilityLoaderClient` struct hides the generic loading protocol from the visibility renderer.
@@ -180,6 +189,12 @@ pub(crate) struct VisibilityLoaderClient {
 	meshes: HashMap<MeshKey, MeshData>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
+	/// Samples material textures, which repeat outside their bounds.
+	repeat_sampler: ghi::SamplerHandle,
+	/// Samples spherical IES profiles, which must clamp instead of wrapping around the seam.
+	clamp_sampler: ghi::SamplerHandle,
+	/// Samples environment maps across their prefiltered roughness levels, and the one-level fallback environment.
+	pub(super) environment_sampler: ghi::SamplerHandle,
 }
 
 /// The `MaterialPublication` struct tracks the last compilation state reported to the renderer.
@@ -250,8 +265,9 @@ impl VisibilityLoaderClient {
 
 	/// Appends readiness changes once per frame, after pipeline publication.
 	///
-	/// Drain and retain `events` after renderer adoption to reuse its allocation next frame.
-	pub(crate) fn update(&mut self, events: &mut Vec<VisibilityLoaderEvent>) {
+	/// Interns every image that finished loading into `frame`'s context. Drain and retain `events` after renderer
+	/// adoption to reuse its allocation next frame.
+	pub(crate) fn update(&mut self, frame: &mut ghi::implementation::Frame, events: &mut Vec<VisibilityLoaderEvent>) {
 		while let Some(event) = self.client.poll() {
 			events.push(match event {
 				LoaderEvent::Ready {
@@ -280,12 +296,40 @@ impl VisibilityLoaderClient {
 				}
 				LoaderEvent::Ready {
 					key: VisibilityLoadKey::Texture(_),
-					resident: VisibilityResident::Texture(texture),
-				} => VisibilityLoaderEvent::TextureReady(texture),
+					resident:
+						VisibilityResident::Texture {
+							id,
+							index,
+							image,
+							photometry,
+						},
+				} => VisibilityLoaderEvent::TextureReady(ResidentTexture {
+						id,
+						index,
+						image: frame.intern_image(image).into(),
+						sampler: if photometry.is_some() {
+							self.clamp_sampler
+						} else {
+							self.repeat_sampler
+						},
+						photometry,
+					}),
 				LoaderEvent::Ready {
 					key: VisibilityLoadKey::Environment(_),
-					resident: VisibilityResident::Environment { id, resident },
+					resident:
+						VisibilityResident::Environment {
+							id,
+							diffuse_image,
+							specular_image,
+							upward_illuminance,
+						},
 				} => {
+					let resident = ResidentEnvironment {
+						diffuse_image: frame.intern_image(diffuse_image).into(),
+						specular_image: frame.intern_image(specular_image).into(),
+						sampler: self.environment_sampler,
+						upward_illuminance,
+					};
 					self.environments.insert(id.clone(), resident);
 					VisibilityLoaderEvent::EnvironmentReady {
 						id,
@@ -341,34 +385,26 @@ impl VisibilityLoaderClient {
 
 /// Creates the visibility pipeline's single loader client and lane pool.
 ///
-/// `staging_buffer` must back `staging`. Run every returned lane on an application-owned async task.
+/// `render` is the context that created `geometry` and renders the loaded resources. The loader imports the
+/// geometry streams so lanes append to them. Run every returned lane on the loading thread.
 pub(crate) fn spawn(
-	context: &SharedContext,
-	queue: ghi::QueueHandle,
+	loader: &mut Loader,
+	render: &mut ghi::implementation::Context,
 	resource_manager: EntityHandle<ResourceManager>,
-	staging: Arc<UploadStagingArena>,
-	staging_buffer: ghi::BaseBufferHandle,
-	geometry: GeometryHandles,
+	geometry: &GeometryHandles,
 	pipeline_config: MaterialPipelineConfig,
 ) -> (VisibilityLoaderClient, Vec<VisibilityLoaderLane>) {
+	use ghi::context::ContextCreate as _;
+
 	let pipeline_manager = pipeline_config.pipeline_manager.clone();
-	let loader = VisibilityLoader {
+	let visibility_loader = VisibilityLoader {
 		resource_manager,
 		pipeline_config,
-		staging_buffer,
-		geometry: Mutex::new(GeometryBuffers::new(geometry)),
+		geometry: Mutex::new(GeometryBuffers::import(geometry, render, loader)),
 		material_slots: Mutex::new(HashMap::default()),
 		texture_slots: Mutex::new(HashMap::default()),
-		texture_transfer: TextureTransfer::new(context, staging_buffer, "Visibility Texture I/O"),
 	};
-	let (client, lanes) = spawn_lanes(
-		context,
-		queue,
-		loader,
-		staging,
-		VISIBILITY_LANE_COUNT,
-		VISIBILITY_RESULT_CAPACITY,
-	);
+	let (client, lanes) = spawn_lanes(loader, visibility_loader, VISIBILITY_LANE_COUNT, VISIBILITY_RESULT_CAPACITY);
 	(
 		VisibilityLoaderClient {
 			client,
@@ -376,6 +412,13 @@ pub(crate) fn spawn(
 			meshes: HashMap::default(),
 			environments: HashMap::default(),
 			materials: HashMap::default(),
+			repeat_sampler: render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD)),
+			clamp_sampler: render.build_sampler(
+				material_sampler()
+					.addressing_mode(ghi::SamplerAddressingModes::Clamp)
+					.max_lod(ghi::sampler::UNCLAMPED_MAX_LOD),
+			),
+			environment_sampler: render.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32)),
 		},
 		lanes.into_iter().map(VisibilityLoaderLane).collect(),
 	)
@@ -392,25 +435,22 @@ impl VisibilityLoader {
 	}
 
 	/// Reads the stored class of `id` and forwards it as the matching family request.
-	async fn load_resource(&self, id: &'static str) -> Result<Loaded<Self>, LoadError> {
+	async fn load_resource(&self, id: &'static str, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let class = self.resource_manager.class(id).await.map_err(|error| {
 			LoadError(format!(
 				"Visibility resource request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded. Request error: {error}"
 			))
 		})?;
-		let request = if class == "Mesh" {
+		lane.request(if class == "Mesh" {
 			VisibilityLoadRequest::Mesh(MeshSource::Resource(id))
 		} else {
 			self.route(id.to_owned(), &class).await?
-		};
-		Ok(Loaded {
-			resident: VisibilityResident::Routed,
-			dependencies: vec![request],
-		})
+		});
+		Ok(VisibilityResident::Routed)
 	}
 
 	/// Runs `query` and forwards every match as the request for the query's class.
-	async fn load_query(&self, query: Query) -> Result<Loaded<Self>, LoadError> {
+	async fn load_query(&self, query: Query, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		if query.class == "Mesh" {
 			return Err(LoadError(
 				"Visibility cannot load mesh query results. The most likely cause is that mesh sources only accept static resource ids."
@@ -423,18 +463,14 @@ impl VisibilityLoader {
 				"Visibility query for {class} resources failed. The most likely cause is that the asset database is not loaded. Query error: {error:?}"
 			))
 		})?;
-		let mut dependencies = Vec::with_capacity(ids.items.len());
 		for id in ids.items {
 			// One unroutable match must not discard the rest of the query.
 			match self.route(id, &class).await {
-				Ok(request) => dependencies.push(request),
+				Ok(request) => lane.request(request),
 				Err(error) => log::warn!("{error}"),
 			}
 		}
-		Ok(Loaded {
-			resident: VisibilityResident::Routed,
-			dependencies,
-		})
+		Ok(VisibilityResident::Routed)
 	}
 
 	/// Maps an owned resource ID of a known non-mesh class to its family request.
@@ -457,9 +493,10 @@ impl VisibilityLoader {
 		}
 	}
 
-	/// Resolves, converts, places, and transfers one mesh before publishing its material dependencies.
-	async fn load_mesh(&self, source: MeshSource, lane: &mut LoaderLane<Self>) -> Result<Loaded<Self>, LoadError> {
+	/// Requests one mesh's materials, then resolves, converts, places, and uploads its geometry.
+	async fn load_mesh(&self, source: MeshSource, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let staging = lane.staging().clone();
+		// Materials load while this mesh is read, converted, and uploaded.
 		let prepared = match source {
 			MeshSource::Resource(id) => {
 				let resource: Reference<Mesh> = self.resource_manager.request(id).await.map_err(|_| {
@@ -467,9 +504,18 @@ impl VisibilityLoader {
 						"Visibility mesh resource request failed for {id}. The most likely cause is that the mesh id is missing or the asset database is not loaded."
 					))
 				})?;
+				let mesh = resource.resource();
+				for primitive in &mesh.primitives {
+					lane.request(VisibilityLoadRequest::Material(
+						mesh.material(primitive).id().as_ref().to_string(),
+					));
+				}
 				PreparedMesh::resource(resource, staging).await
 			}
-			MeshSource::Generated(generator) => PreparedMesh::generated(generator.as_ref(), staging).await,
+			MeshSource::Generated(generator) => {
+				lane.request(VisibilityLoadRequest::Material(GENERATED_MESH_MATERIAL.to_string()));
+				PreparedMesh::generated(generator.as_ref(), staging).await
+			}
 		}
 		.ok_or_else(|| {
 			LoadError(
@@ -485,33 +531,19 @@ impl VisibilityLoader {
 			)
 		})?;
 
-		// The copies must complete before `prepared` drops, because dropping it returns its staging memory.
-		let mesh = lane
-			.transfer(|recording| {
-				self.geometry.lock().unwrap_or_else(|error| error.into_inner()).write_mesh(
-					recording,
-					self.staging_buffer,
-					&prepared,
-					&slots,
-				)
-			})
+		let (mesh, copies) = self
+			.geometry
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.append_mesh(&prepared, &slots)
 			.ok_or_else(|| {
 				LoadError(
 					"Visibility geometry placement failed. The most likely cause is that a geometry buffer is full."
 						.to_string(),
 				)
 			})?;
-
-		// Dependencies return through the same client so one pipeline registry coalesces all resource families.
-		let dependencies = prepared
-			.primitives
-			.iter()
-			.map(|primitive| VisibilityLoadRequest::Material(primitive.material_id.clone()))
-			.collect();
-		Ok(Loaded {
-			resident: VisibilityResident::Mesh(mesh),
-			dependencies,
-		})
+		lane.upload(prepared.staging, [], copies).await?;
+		Ok(VisibilityResident::Mesh(mesh))
 	}
 
 	/// Assigns every shader-table slot a material needs before publishing it to the render thread.
@@ -533,8 +565,8 @@ impl VisibilityLoader {
 		Some((index, texture_slots))
 	}
 
-	/// Loads and validates one material, then publishes its textures through the pipeline dependency stream.
-	async fn load_material(&self, id: String) -> Result<Loaded<Self>, LoadError> {
+	/// Loads and validates one material and requests its textures, which load while the material finishes.
+	async fn load_material(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let mut reference: Reference<ResourceVariant> = self.resource_manager.request(&id).await.map_err(|_| {
 			LoadError(format!(
 				"Visibility material variant request failed for {id}. The most likely cause is that the resource id is missing or the asset database is not loaded."
@@ -561,6 +593,9 @@ impl VisibilityLoader {
 				"Visibility material shader is missing for {id}. The most likely cause is that the material was baked without a compute shader."
 			)));
 		}
+		for texture in texture_ids.iter().flatten() {
+			lane.request(VisibilityLoadRequest::Texture(texture.clone()));
+		}
 		let coverage = material.coverage;
 		let double_sided = material.double_sided();
 		let (index, texture_slots) = self.assign_material_slots(&id, &texture_ids).ok_or_else(|| {
@@ -575,24 +610,15 @@ impl VisibilityLoader {
 					id.clone(),
 					self.pipeline_config.push_constant_ranges.clone(),
 				));
-
-		let dependencies = texture_ids
-			.into_iter()
-			.flatten()
-			.map(VisibilityLoadRequest::Texture)
-			.collect();
-		Ok(Loaded {
-			resident: VisibilityResident::Material(PreparedMaterial {
-				id,
-				index,
-				pipeline,
-				alpha_mode,
-				double_sided,
-				coverage,
-				texture_slots,
-			}),
-			dependencies,
-		})
+		Ok(VisibilityResident::Material(PreparedMaterial {
+			id,
+			index,
+			pipeline,
+			alpha_mode,
+			double_sided,
+			coverage,
+			texture_slots,
+		}))
 	}
 
 	/// Returns or assigns the stable bindless slot for `id`, failing once the texture table is full.
@@ -602,7 +628,7 @@ impl VisibilityLoader {
 	}
 
 	/// Loads one image, places it in a bindless slot, and completes its transfer before returning.
-	async fn load_texture(&self, id: String, lane: &mut LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
+	async fn load_texture(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let resource: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|error| {
 			LoadError(format!(
 				"Visibility texture resource request failed for {id}. The most likely cause is that the resource id is missing, its asset handler is not registered, or the asset database is not loaded. Request error: {error}"
@@ -620,32 +646,20 @@ impl VisibilityLoader {
 			)
 		})?;
 
-		// Spherical IES profiles must clamp instead of wrapping around the seam.
-		let texture = self
-			.texture_transfer
-			.load(
-				resource,
-				TextureDescriptor::new(&id).address_mode(if photometry.is_some() {
-					TextureAddressMode::Clamp
-				} else {
-					TextureAddressMode::Repeat
-				}),
-				lane,
-			)
+		let image = load_texture(resource, &id, lane)
 			.await
 			.map_err(|error| LoadError(format!("Visibility texture transfer failed for {id}. {error}")))?;
 
-		Ok(VisibilityResident::Texture(ResidentTexture {
+		Ok(VisibilityResident::Texture {
 			id,
 			index,
-			image: texture.image(),
-			sampler: texture.sampler(),
+			image,
 			photometry,
-		}))
+		})
 	}
 
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
-	async fn load_environment(&self, id: String, lane: &mut LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
+	async fn load_environment(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let docs = crate::online_docs_url("develop/resource-management/assets#environment-maps");
 		let mut reference: Reference<ResourceImage> = self.resource_manager.request(&id).await.map_err(|_| {
 			LoadError(format!(
@@ -738,52 +752,48 @@ impl VisibilityLoader {
 			upload.pack_rows(&mut staging.bytes_mut()[upload.offset..upload.offset + upload.padded_size]);
 		}
 
-		let diffuse_name = format!("{id} diffuse irradiance");
-		let specular_name = format!("{id} prefiltered specular");
-		fn cube<'a>(format: ghi::Formats, name: &'a str, extent: Extent, mips: u32) -> ghi::image::Builder<'a> {
-			ghi::image::Builder::new(format, ghi::Uses::Image | ghi::Uses::TransferDestination)
-				.name(name)
-				.extent(extent)
-				.cube_compatible()
-				.mip_levels(mips)
-				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
-				.use_case(ghi::UseCases::STATIC)
-		}
-		let factory = lane.factory();
-		let diffuse_image = factory.build_image(cube(diffuse_format, &diffuse_name, diffuse_extent, 1));
-		let specular_image = factory.build_image(cube(
-			specular_format,
-			&specular_name,
-			specular_extent,
-			IBL_SPECULAR_LEVEL_COUNT as u32,
-		));
-		let sampler = factory.build_sampler(material_sampler().max_lod((IBL_SPECULAR_LEVEL_COUNT - 1) as f32));
-		let (diffuse_image, specular_image, sampler) = lane.commit(|context| {
-			(
-				context.intern_image(diffuse_image).into(),
-				context.intern_image(specular_image).into(),
-				context.intern_sampler(sampler),
+		let cube = |name: String, format, extent, mip_levels, regions| ImageUpload {
+			description: ImageDescription {
+				name,
+				format,
+				extent,
+				mip_levels,
+				cube: true,
+			},
+			regions,
+		};
+		let [diffuse_image, specular_image] = lane
+			.upload(
+				staging,
+				[
+					cube(
+						format!("{id} diffuse irradiance"),
+						diffuse_format,
+						diffuse_extent,
+						1,
+						smallvec::smallvec![diffuse_upload.region(0)],
+					),
+					cube(
+						format!("{id} prefiltered specular"),
+						specular_format,
+						specular_extent,
+						IBL_SPECULAR_LEVEL_COUNT as u32,
+						specular_uploads
+							.iter()
+							.enumerate()
+							.map(|(mip_level, upload)| upload.region(mip_level as u32))
+							.collect(),
+					),
+				],
+				SmallVec::new(),
 			)
-		});
-
-		let staging_offset = staging.offset();
-		let mut copies = SmallVec::<[ghi::BufferImageCopyDescriptor; 9]>::new();
-		copies.push(diffuse_upload.copy_descriptor(self.staging_buffer, staging_offset, diffuse_image, 0));
-		for (mip_level, mip) in specular_uploads.iter().enumerate() {
-			copies.push(mip.copy_descriptor(self.staging_buffer, staging_offset, specular_image, mip_level as u32));
-		}
-		// The copies must complete before `staging` drops, because dropping it returns its lease to the arena.
-		lane.transfer(|recording| recording.copy_buffer_to_images(&copies));
-		drop(staging);
+			.await?;
 
 		Ok(VisibilityResident::Environment {
 			id,
-			resident: ResidentEnvironment {
-				diffuse_image,
-				specular_image,
-				sampler,
-				upward_illuminance,
-			},
+			diffuse_image,
+			specular_image,
+			upward_illuminance,
 		})
 	}
 }
@@ -828,14 +838,14 @@ impl LoadPipeline for VisibilityLoader {
 	}
 
 	/// Routes every visibility resource family through one request stream and one dependency registry.
-	async fn load(&self, request: VisibilityLoadRequest, lane: &mut LoaderLane<Self>) -> Result<Loaded<Self>, LoadError> {
+	async fn load(&self, request: VisibilityLoadRequest, lane: &mut LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		match request {
-			VisibilityLoadRequest::Resource(id) => self.load_resource(id).await,
-			VisibilityLoadRequest::Query(query) => self.load_query(query).await,
+			VisibilityLoadRequest::Resource(id) => self.load_resource(id, lane).await,
+			VisibilityLoadRequest::Query(query) => self.load_query(query, lane).await,
 			VisibilityLoadRequest::Mesh(source) => self.load_mesh(source, lane).await,
-			VisibilityLoadRequest::Material(id) => self.load_material(id).await,
-			VisibilityLoadRequest::Texture(id) => Ok(Loaded::new(self.load_texture(id, lane).await?)),
-			VisibilityLoadRequest::Environment(id) => Ok(Loaded::new(self.load_environment(id, lane).await?)),
+			VisibilityLoadRequest::Material(id) => self.load_material(id, lane).await,
+			VisibilityLoadRequest::Texture(id) => self.load_texture(id, lane).await,
+			VisibilityLoadRequest::Environment(id) => self.load_environment(id, lane).await,
 		}
 	}
 }

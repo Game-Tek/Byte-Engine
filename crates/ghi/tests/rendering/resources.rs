@@ -1654,48 +1654,167 @@ pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, qu
 	}
 }
 
-pub(super) fn factory_image_last_mip_upload(context: &mut BackendContext, queue_handle: QueueHandle) {
-	//! Tests that an image built by a detached factory keeps its mip count after a context interns it.
-	//! Texture loaders build mipmapped images this way and then upload every mip, so the last mip must accept a copy.
+/// Creates a second context on `device`, the way a resource loader gets its own.
+fn create_loader_context(device: &BackendDevice) -> BackendContext {
+	use ghi::device::Device as _;
+
+	device.create_context().expect(
+		"Failed to create a second GHI test context. The most likely cause is that the active backend cannot create several contexts from one device.",
+	)
+}
+
+/// Records transfers in a context outside any frame and blocks until the GPU finishes them.
+fn record_and_wait(
+	context: &mut BackendContext,
+	queue_handle: QueueHandle,
+	record: impl FnOnce(&mut ghi::implementation::CommandBufferRecording<'_>),
+) {
+	let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+	let finished = context.create_synchronizer(None, false);
+	let mut recording = context.create_command_buffer_recording(command_buffer);
+	record(&mut recording);
+	recording.execute(finished);
+	context.wait_for_synchronizer(finished);
+}
+
+pub(super) fn exported_image_keeps_contents_and_mips(
+	device: &BackendDevice,
+	context: &mut BackendContext,
+	queue_handle: QueueHandle,
+) {
+	//! Tests that an image one context filled keeps its contents and mip count after another context interns it.
+	//! Loaders upload images in their own context and export them, so the rendering context must read the uploaded
+	//! base mip back and accept a copy into the last mip.
 
 	const MIP_LEVELS: u32 = 3;
-	// Every backend expects texture upload rows padded to 256 bytes, so one padded row holds the 1x1 last mip.
+	// Every backend expects texture upload rows padded to 256 bytes.
 	const ROW_PITCH: usize = 256;
+	const SIDE: usize = 4;
+	const ROW_BYTES: usize = SIDE * 4;
 
-	let mut factory = context.create_factory().expect(
-		"Failed to create the GHI test factory. The most likely cause is that the active backend has no detached resource support.",
+	let expected = (0..SIDE * ROW_BYTES).map(|index| index as u8).collect::<Vec<_>>();
+	let mut loader = create_loader_context(device);
+	let image = loader.build_image(
+		ghi::image::Builder::new(
+			Formats::RGBA8UNORM,
+			Uses::Image | Uses::TransferDestination | Uses::TransferSource,
+		)
+		.name("Exported Image")
+		.extent(Extent::square(SIDE as u32))
+		.mip_levels(MIP_LEVELS),
 	);
-	let image = factory.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image | Uses::TransferDestination)
-			.name("Factory Mip Image")
-			.extent(Extent::square(4))
-			.mip_levels(MIP_LEVELS),
-	);
-	let image = context.intern_image(image);
-	let staging = context.build_buffer::<[u8; ROW_PITCH]>(
+	let staging = loader.build_buffer::<[u8; ROW_PITCH * SIDE]>(
 		ghi::buffer::Builder::new(Uses::TransferSource)
-			.name("Factory Mip Staging")
+			.name("Exported Image Staging")
 			.device_accesses(DeviceAccesses::HostOnly),
 	);
+	let bytes = loader.get_mut_buffer_slice(staging);
+	for (row, texels) in expected.chunks(ROW_BYTES).enumerate() {
+		bytes[row * ROW_PITCH..][..ROW_BYTES].copy_from_slice(texels);
+	}
+	record_and_wait(&mut loader, queue_handle, |recording| {
+		recording.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
+			staging.into(),
+			0,
+			ROW_PITCH,
+			ROW_PITCH * SIDE,
+			image.into(),
+			0,
+		)]);
+	});
+	let image = context.intern_image(loader.export_image(image));
 
+	let last_mip = context.build_buffer::<[u8; ROW_PITCH]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Last Mip Staging")
+			.device_accesses(DeviceAccesses::HostOnly),
+	);
 	let command_buffer_handle = context.queue(queue_handle).create_command_buffer(None);
 	let synchronizer = context.create_synchronizer(None, true);
+	let mut transfer = None;
 	context
 		.queue(queue_handle)
 		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
 			execution.record(command_buffer_handle, |recording| {
 				recording.copy_buffer_to_images(&[ghi::BufferImageCopyDescriptor::new(
-					staging.into(),
+					last_mip.into(),
 					0,
 					ROW_PITCH,
 					ROW_PITCH,
 					image.into(),
 					MIP_LEVELS - 1,
 				)]);
+				transfer = Some(recording.transfer_texture(image.into()).unwrap());
 			});
 			[]
 		});
 	context.wait();
 
+	let readback = context.get_image_data(transfer.unwrap()).unwrap();
+	for (row, texels) in expected.chunks(ROW_BYTES).enumerate() {
+		assert_eq!(&readback.bytes[row * readback.bytes_per_row..][..ROW_BYTES], texels);
+	}
+	assert!(!ghi::context::Context::has_errors(context));
+}
+
+pub(super) fn imported_buffer_receives_copies(device: &BackendDevice, context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that a context can copy into a buffer another context owns and shared with it.
+	//! Loaders append geometry to buffers the rendering context draws from, so the owner must see those bytes.
+
+	let expected: [u8; 64] = std::array::from_fn(|index| (index * 3) as u8);
+	let destination = context.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination)
+			.name("Shared Destination")
+			.device_accesses(DeviceAccesses::HostOnly),
+	);
+	let mut loader = create_loader_context(device);
+	let imported = loader.import_buffer(context.share_buffer(destination));
+	let staging = loader.build_buffer::<[u8; 64]>(
+		ghi::buffer::Builder::new(Uses::TransferSource)
+			.name("Shared Source")
+			.device_accesses(DeviceAccesses::HostOnly),
+	);
+	*loader.get_mut_buffer_slice(staging) = expected;
+	record_and_wait(&mut loader, queue_handle, |recording| {
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(staging.into(), 0, imported.into(), 0, 64)]);
+	});
+
+	assert_eq!(context.get_buffer_slice(destination), &expected);
+	assert!(!ghi::context::Context::has_errors(&loader));
+}
+
+pub(super) fn polled_synchronizer_reports_completion(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that polling a synchronizer reports completion without blocking and frees it for the next submission.
+	//! A loader polls its copy batch so its thread keeps reading files while the GPU works.
+
+	let expected: [u8; 16] = std::array::from_fn(|index| index as u8 + 1);
+	let source = context
+		.build_buffer::<[u8; 16]>(ghi::buffer::Builder::new(Uses::TransferSource).device_accesses(DeviceAccesses::HostOnly));
+	let destination = context.build_buffer::<[u8; 16]>(
+		ghi::buffer::Builder::new(Uses::TransferDestination).device_accesses(DeviceAccesses::HostOnly),
+	);
+	*context.get_mut_buffer_slice(source) = expected;
+	let idle = context.create_synchronizer(None, false);
+	assert!(
+		context.poll_synchronizer(idle),
+		"A synchronizer with no submission must report completion."
+	);
+
+	let finished = context.create_synchronizer(None, false);
+	let command_buffer = context.queue(queue_handle).create_command_buffer(None);
+	for _ in 0..2 {
+		let mut recording = context.create_command_buffer_recording(command_buffer);
+		recording.copy_buffers(&[ghi::BufferCopyDescriptor::new(source.into(), 0, destination.into(), 0, 16)]);
+		recording.execute(finished);
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+		while !context.poll_synchronizer(finished) {
+			assert!(
+				std::time::Instant::now() < deadline,
+				"Polled copy did not complete. The most likely cause is that polling never observes GPU completion."
+			);
+			std::thread::yield_now();
+		}
+		assert_eq!(context.get_buffer_slice(destination), &expected);
+	}
 	assert!(!ghi::context::Context::has_errors(context));
 }

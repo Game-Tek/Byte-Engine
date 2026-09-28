@@ -20,7 +20,7 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 	let listener = factory.listener();
 	let delete_listener = application.world().deletions_listener();
 	let scene = std::rc::Rc::new(std::cell::RefCell::new(rendering::DebugSceneManager::new(
-		&mut application.renderer.context_mut(),
+		application.renderer.context_mut(),
 		listener,
 		delete_listener,
 	)));
@@ -40,17 +40,17 @@ pub fn setup_debug_mesh_render_pass(application: &mut GraphicsApplication) -> Fa
 /// Installs the simple scene pipeline and registers its asynchronous mesh-loading worker.
 ///
 /// This setup is the smallest end-to-end implementation of
-/// [`rendering::loading`]. It creates one mapped staging arena, one loader lane,
-/// and a Simple-owned store whose position and index streams intentionally
-/// differ from Visibility storage. The supplied callback owns task placement so
-/// this function does not impose an executor or thread policy on the
-/// application. Simple's shaders use the renderer's asynchronous pipeline
-/// compilation servers; this setup never waits for shader resources.
+/// [`rendering::loading`]. It creates one loader lane and a Simple-owned store
+/// whose position and index streams intentionally differ from Visibility
+/// storage. The application's [`Loader`](rendering::loading::Loader) uploads the
+/// lane's meshes. The supplied callback owns task placement so this function
+/// does not impose an executor or thread policy on the application. Simple's
+/// shaders use the renderer's asynchronous pipeline compilation servers; this
+/// setup never waits for shader resources.
 ///
 /// Add the supplied task to a queue from [`defaults::build_deferred_tasks_queue`],
 /// then start that queue with [`defaults::launch_deferred_tasks_thread`] after
-/// every subsystem has registered its work. At shutdown, join that task before
-/// dropping the renderer and mapped upload buffer.
+/// every subsystem has registered its work. That thread also runs the loader.
 pub fn setup_simple_render_pipeline(
 	application: &mut GraphicsApplication,
 	spawn_loading_task: impl FnOnce(std::boxed::Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
@@ -61,26 +61,19 @@ pub fn setup_simple_render_pipeline(
 	let transforms_listener = application.world().transforms_channel().listener();
 	let application_resources = application.resource_manager.clone();
 
-	let renderer = &mut application.renderer;
+	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_compiler = renderer.pipeline_manager_client();
-	let mut context = renderer.context_mut();
-	let (upload_buffer, upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::create::<
-		{ rendering::pipelines::simple::resource_manager::ASYNC_UPLOAD_BUFFER_BYTE_COUNT },
-	>(&mut context, "Simple Async Upload Buffer");
 	let resource_store = std::sync::Arc::new(std::sync::Mutex::new(
-		rendering::pipelines::simple::resource_manager::SimpleResourceStore::new(&mut context, upload_buffer),
+		rendering::pipelines::simple::resource_manager::SimpleResourceStore::new(renderer.context_mut()),
 	));
-	drop(context);
 	let (simple_loader, simple_loader_lanes) = rendering::pipelines::simple::resource_manager::SimpleLoader::spawn(
-		&renderer.shared_context(),
-		renderer.graphics_queue(),
+		loader,
+		renderer.context_mut(),
 		application_resources,
-		upload_staging,
 		resource_store.clone(),
 	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
-		runtime.spawn(upload_staging_worker.run()).detach();
 		for lane in simple_loader_lanes {
 			runtime.spawn(lane.run()).detach();
 		}
@@ -132,7 +125,7 @@ pub fn setup_simple_render_pipeline(
 	let sm = {
 		CustomPipelineManager {
 			pipeline_manager: SimplePipelineManager::new(
-				&mut renderer.context_mut(),
+				renderer.context_mut(),
 				pipeline_compiler,
 				simple_loader,
 				resource_store,
@@ -146,24 +139,24 @@ pub fn setup_simple_render_pipeline(
 	renderer.add_pipeline_manager(sm);
 }
 
-/// Installs the visibility-buffer PBR scene pipeline and its async upload worker.
+/// Installs the visibility-buffer PBR scene pipeline and its loader lanes.
 ///
-/// Visibility gives meshes, materials, and textures independent loader lanes.
-/// Mesh loaders append parallel geometry streams and request discovered
-/// materials. Material loaders assign table slots and request discovered
-/// textures. Texture loaders finish CPU or native GPU-I/O transfers before
+/// Visibility loads meshes, materials, and textures through one lane pool. A
+/// mesh load requests its materials as soon as it reads their names, and a
+/// material load requests its textures the same way, so all three load at
+/// once. Mesh loads append parallel geometry streams, material loads assign
+/// table slots, and texture loads finish CPU or native GPU-I/O uploads before
 /// publishing residency. These choices belong to Visibility; they are not
 /// requirements of the shared loader.
 ///
-/// The supplied callback must run the staging worker and every loader lane on
-/// application-owned async tasks. Join those tasks before renderer shutdown so
-/// no worker retains a mapping or detached GHI factory after its context is
-/// dropped.
+/// The supplied callback must run every loader lane on the loading thread,
+/// which [`defaults::launch_deferred_tasks_thread`] starts together with the
+/// application's [`Loader`](rendering::loading::Loader).
 ///
 /// Next, create an [`Environment`] through
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
 /// specular reflections.
-// Keep the cross-layer setup sequence contiguous so listeners, workers, mappings, and renderer ownership remain ordered.
+// Keep the cross-layer setup sequence contiguous so listeners, lanes, shared buffers, and renderer ownership remain ordered.
 #[allow(clippy::too_many_lines)]
 pub fn setup_pbr_visibility_shading_render_pipeline(
 	application: &mut GraphicsApplication,
@@ -256,38 +249,27 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 	}
 
 	let application_resource_manager = application.resource_manager.clone();
-	let renderer = &mut application.renderer;
+	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
-	let mut context = renderer.context_mut();
 	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
 		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
 		pipeline_manager.clone(),
 	);
 
-	let (upload_buffer, upload_staging, upload_staging_worker) = rendering::resource_loading::UploadStagingArena::create::<
-		{ rendering::pipelines::visibility::ASYNC_UPLOAD_BUFFER_BYTE_COUNT },
-	>(&mut context, "Renderer Async Upload Buffer");
-
-	let geometry =
-		rendering::pipelines::visibility::GeometryHandles::new(&mut context, visibility_pipeline_settings.geometry_capacity());
-
-	drop(context);
-
-	let shared_context = renderer.shared_context();
-	let graphics_queue = renderer.graphics_queue();
+	let geometry = rendering::pipelines::visibility::GeometryHandles::new(
+		renderer.context_mut(),
+		visibility_pipeline_settings.geometry_capacity(),
+	);
 
 	let (visibility_loader, visibility_loader_lanes) = rendering::pipelines::visibility::spawn_loader(
-		&shared_context,
-		graphics_queue,
+		loader,
+		renderer.context_mut(),
 		application_resource_manager,
-		upload_staging,
-		upload_buffer,
-		geometry,
+		&geometry,
 		material_pipeline_config,
 	);
 
 	spawn_loading_task(std::boxed::Box::new(move |runtime| {
-		runtime.spawn(upload_staging_worker.run()).detach();
 		for lane in visibility_loader_lanes {
 			runtime.spawn(lane.run()).detach();
 		}
@@ -417,7 +399,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(
 		let renderer = &mut application.renderer;
 		let sm = CustomPipelineManager {
 			visibility_pipeline_manager: VisibilityPipelineManager::new(
-				&mut renderer.context_mut(),
+				renderer.context_mut(),
 				geometry,
 				visibility_loader,
 				pipeline_manager,

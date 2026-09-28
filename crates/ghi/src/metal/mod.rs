@@ -1108,7 +1108,7 @@ pub use self::command_buffer::*;
 pub use self::context::*;
 pub(crate) use self::descriptor_set::*;
 pub use self::device::Device;
-pub use self::factory::{ComputePipeline, Factory};
+pub use self::factory::{ComputePipeline, DetachedImage, Factory, SharedBuffer};
 pub use self::frame::*;
 pub use self::instance::*;
 pub(crate) use self::synchronizer::*;

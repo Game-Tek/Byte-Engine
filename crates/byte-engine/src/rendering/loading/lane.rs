@@ -1,11 +1,21 @@
 //! The worker half of the loading couple: one sequential lane per async task.
 
-use std::{hash::Hash, sync::Arc};
+use std::{
+	collections::HashSet,
+	hash::Hash,
+	sync::{
+		Arc, Mutex,
+		atomic::{AtomicUsize, Ordering},
+	},
+};
 
-use ghi::{context::Context as _, context::ContextCreate as _, queue::Queue as _};
+use smallvec::SmallVec;
 
-use super::client::LoaderClient;
-use crate::rendering::{SharedContext, resource_loading::UploadStagingArena};
+use super::{
+	client::LoaderClient,
+	loader::{BufferRegion, ImageUpload, Loader, NativeImageUpload, UploadRequest},
+};
+use crate::rendering::resource_loading::{StagingLease, UploadStagingArena};
 
 /// The `LoadError` struct reports why one resource could not be made resident.
 #[derive(Debug)]
@@ -21,17 +31,20 @@ impl std::fmt::Display for LoadError {
 ///
 /// Implement this trait once per rendering pipeline. Represent meshes, materials, textures, and other
 /// resource families as variants of the associated types so they share one request registry and lane pool.
-/// Every method runs on a loader thread. Implementations are shared across lanes by reference, so any
+/// Every method runs on the loading thread. Implementations are shared across lanes by reference, so any
 /// mutable loader-owned storage belongs behind interior mutability held by the implementation itself.
 ///
 /// The returned future is deliberately not `Send`: resource reads are driven by a per-thread runtime, so a
 /// lane's future never migrates between threads once it starts.
 pub trait LoadPipeline: Send + Sync + 'static {
-	/// Stable logical identity used to coalesce duplicate scene requests.
+	/// Stable logical identity used to coalesce duplicate requests.
 	type Key: Clone + Eq + Hash + Send + 'static;
-	/// Owned input moved from the render thread to one lane.
+	/// Owned input moved from the render thread or another lane to one lane.
 	type Request: Send + 'static;
-	/// The finished value the render thread adopts. Its GPU objects are already interned.
+	/// The finished value the render thread adopts.
+	///
+	/// Its uploads are complete. Detached images in it get their render handles when the render thread interns
+	/// them while adopting the value.
 	type Resident: Send + 'static;
 
 	/// Derives the stable logical identity used to coalesce one request.
@@ -39,107 +52,122 @@ pub trait LoadPipeline: Send + Sync + 'static {
 
 	/// Loads one resource end to end.
 	///
-	/// Do the expensive work first and without touching the context: fetch, decode, write staging memory,
-	/// and create detached objects through [`LoaderLane::factory`]. Take the context only at the end,
-	/// through [`LoaderLane::commit`], to intern those objects and record their transfers.
+	/// Request the resources this one depends on with [`LoaderLane::request`] as soon as you know them, so they load
+	/// while this one does. Fetch and decode, write the bytes into a [`StagingLease`], then hand the GPU work to the
+	/// loader through [`LoaderLane::upload`] or [`LoaderLane::upload_native_image`]. The loader batches it with other
+	/// lanes' uploads and answers once the copies finished.
 	fn load(
 		&self,
 		request: Self::Request,
 		lane: &mut LoaderLane<Self>,
-	) -> impl Future<Output = Result<Loaded<Self>, LoadError>>;
+	) -> impl Future<Output = Result<Self::Resident, LoadError>>;
 }
 
-/// The `Loaded` struct pairs a resident resource with the further requests its content implies.
+/// The `LoaderLane` struct is one sequential worker that prepares uploads for the [`Loader`].
 ///
-/// Dependencies return to the client rather than being requested by the lane, so one registry coalesces
-/// every request in flight.
-pub struct Loaded<P: LoadPipeline + ?Sized> {
-	pub resident: P::Resident,
-	pub dependencies: Vec<P::Request>,
-}
-
-impl<P: LoadPipeline + ?Sized> Loaded<P> {
-	/// Creates a result that implies no further loading.
-	pub fn new(resident: P::Resident) -> Self {
-		Self {
-			resident,
-			dependencies: Vec::new(),
-		}
-	}
-}
-
-/// The `LoaderLane` struct is one sequential worker with its own context-free GPU toolbox.
-///
-/// Run each lane on its own async task. Lanes compete for the same request stream, so lane count is the
-/// loading concurrency.
+/// Run each lane on its own async task on the loading thread. Lanes compete for the same request stream, so lane
+/// count is how many resources read and decode at once. The GPU work of every lane goes through the one loader.
 pub struct LoaderLane<P: LoadPipeline + ?Sized> {
 	pipeline: Arc<P>,
-	factory: ghi::implementation::Factory,
 	staging: Arc<UploadStagingArena>,
-	context: SharedContext,
-	command_buffer: ghi::CommandBufferHandle,
-	synchronizer: ghi::SynchronizerHandle,
+	uploads: kanal::AsyncSender<UploadRequest>,
+	/// Raised while this lane loads a resource, so the loader knows when waiting cannot collect more uploads.
+	busy_lanes: Arc<AtomicUsize>,
+	/// Keys the pipeline's lanes load or loaded. A failed key leaves it so the resource can be requested again.
+	///
+	/// Only this pipeline's lanes use it, so the render thread never waits on the lock.
+	registry: Arc<Mutex<HashSet<P::Key>>>,
+	/// Feeds dependencies into the stream the client sends to, so one registry coalesces both.
+	dependencies: kanal::AsyncSender<(P::Key, P::Request)>,
 	requests: kanal::AsyncReceiver<(P::Key, P::Request)>,
-	results: kanal::AsyncSender<(P::Key, Result<Loaded<P>, LoadError>)>,
+	results: kanal::AsyncSender<(P::Key, Result<P::Resident, LoadError>)>,
 }
 
 impl<P: LoadPipeline> LoaderLane<P> {
-	/// Creates detached GPU objects without touching the context.
-	pub fn factory(&mut self) -> &mut ghi::implementation::Factory {
-		&mut self.factory
-	}
-
-	/// Returns the shared staging arena backing this lane's uploads.
+	/// Returns the shared staging arena that upload bytes are written into.
 	pub fn staging(&self) -> &Arc<UploadStagingArena> {
 		&self.staging
 	}
 
-	/// Takes the context to intern factory objects, then releases it.
+	/// Requests a resource that the one being loaded depends on.
 	///
-	/// The render thread holds the context for a whole frame, so a commit can wait that long. Batch the
-	/// work of several resources into one commit rather than committing each one separately.
-	pub fn commit<T>(&self, work: impl FnOnce(&mut ghi::implementation::Context) -> T) -> T {
-		let measure_wait = std::time::Instant::now();
-		let mut context = self.context.lock();
-		let measure_held = std::time::Instant::now();
-		let value = work(&mut context);
-		drop(context);
-		log::info!(
-			target: "measure",
-			"commit wait_us={} held_us={}",
-			measure_held.duration_since(measure_wait).as_micros(),
-			measure_held.elapsed().as_micros()
-		);
-		value
+	/// A lane picks it up right away, without a round trip through the render thread, and the render thread adopts
+	/// it like any other result. Requests for a key already loading or resident are ignored.
+	pub fn request(&self, request: P::Request) {
+		// A closed stream means the client is gone, so nothing would adopt the result.
+		let _ = self.dependencies.as_sync().try_send((P::key(&request), request));
 	}
 
-	/// Records transfers on this lane's command buffer, submits them, and waits for the copies to finish.
+	/// Creates images from staged mips, copies staged bytes into render buffers, and waits until the loader
+	/// finished every copy.
 	///
-	/// On return the copies have completed, which is what makes it safe to drop a
-	/// [`StagingLease`](crate::rendering::resource_loading::StagingLease) at the end of a load.
-	///
-	/// The context is taken twice, once to record and submit and once to wait, so the render thread can run a
-	/// frame in between. The wait itself still holds the context, because two of the three backends recycle
-	/// command state while waiting. Giving the loader its own queue and a borrow-free wait would remove that
-	/// last stall.
-	pub fn transfer<T>(&self, record: impl FnOnce(&mut ghi::implementation::CommandBufferRecording<'_>) -> T) -> T {
-		use ghi::command_buffer::CommandBufferRecording as _;
+	/// Every buffer destination is a handle from [`Loader::import_buffer`]. Write only ranges no frame reads yet.
+	/// The loader returns `staging` to the arena once the copies finished. The images come back detached, in upload
+	/// order, ready for the render thread to intern.
+	pub async fn upload<const N: usize>(
+		&self,
+		staging: StagingLease,
+		images: [ImageUpload; N],
+		buffers: SmallVec<[BufferRegion; 16]>,
+	) -> Result<[ghi::implementation::DetachedImage; N], LoadError> {
+		let images = self
+			.send(|reply| UploadRequest::Staged {
+				staging,
+				images: SmallVec::from_iter(images),
+				buffers,
+				reply,
+			})
+			.await?;
+		let mut images = images.into_iter();
+		Ok(std::array::from_fn(|_| {
+			images
+				.next()
+				.expect("The loader returns one image per upload. The most likely cause is a mismatched loader reply.")
+		}))
+	}
 
-		let value = self.commit(|context| {
-			let mut recording = context.create_command_buffer_recording(self.command_buffer);
-			let value = record(&mut recording);
-			recording.execute(self.synchronizer);
-			value
-		});
-		self.commit(|context| context.wait_for_synchronizer(self.synchronizer));
-		value
+	/// Creates one image, fills it straight from its file through native I/O, and waits until the reads finished.
+	pub async fn upload_native_image(
+		&self,
+		upload: NativeImageUpload,
+	) -> Result<ghi::implementation::DetachedImage, LoadError> {
+		self.send(|reply| UploadRequest::NativeImage { upload, reply })
+			.await?
+			.map_err(LoadError)
+	}
+
+	/// Sends one upload to the loader and waits for its result without blocking other lanes.
+	async fn send<T>(&self, upload: impl FnOnce(kanal::Sender<T>) -> UploadRequest) -> Result<T, LoadError> {
+		let (reply, result) = kanal::bounded_async(1);
+		let stopped = || {
+			LoadError(
+				"The loader stopped before finishing an upload. The most likely cause is that the application is shutting down."
+					.to_string(),
+			)
+		};
+		self.uploads.send(upload(reply.to_sync())).await.map_err(|_| stopped())?;
+		result.recv().await.map_err(|_| stopped())
 	}
 
 	/// Serves requests until the client is dropped.
 	pub async fn run(mut self) {
 		while let Ok((key, request)) = self.requests.recv().await {
+			// The client and every lane send to this stream, so coalesce here.
+			if !self
+				.registry
+				.lock()
+				.unwrap_or_else(|error| error.into_inner())
+				.insert(key.clone())
+			{
+				continue;
+			}
 			let pipeline = self.pipeline.clone();
+			self.busy_lanes.fetch_add(1, Ordering::AcqRel);
 			let result = pipeline.load(request, &mut self).await;
+			self.busy_lanes.fetch_sub(1, Ordering::AcqRel);
+			if result.is_err() {
+				self.registry.lock().unwrap_or_else(|error| error.into_inner()).remove(&key);
+			}
 			if self.results.send((key, result)).await.is_err() {
 				break;
 			}
@@ -147,47 +175,31 @@ impl<P: LoadPipeline> LoaderLane<P> {
 	}
 }
 
-/// Creates the single client and shared lane pool for one rendering pipeline.
+/// Creates the single client and lane pool for one rendering pipeline.
 ///
-/// Keep the client on the render thread and move every lane to an application-owned async task. The
-/// application must join those tasks before dropping the renderer or the arena's backing buffer.
-///
-/// # Panics
-///
-/// Panics when the context cannot produce a detached factory for a lane.
+/// Keep the client on the render thread and move every lane to a task on the loading thread, where
+/// [`Loader::run`] runs too.
 pub fn spawn<P: LoadPipeline>(
-	context: &SharedContext,
-	queue: ghi::QueueHandle,
+	loader: &Loader,
 	pipeline: P,
-	staging: Arc<UploadStagingArena>,
 	lane_count: usize,
 	queue_capacity: usize,
 ) -> (LoaderClient<P>, Vec<LoaderLane<P>>) {
 	let pipeline = Arc::new(pipeline);
+	let registry = Arc::new(Mutex::new(HashSet::new()));
 	let (request_sender, request_receiver) = kanal::unbounded_async();
 	let (result_sender, result_receiver) = kanal::bounded_async(queue_capacity);
 
 	let lanes = (0..lane_count.max(1))
-		.map(|lane| {
-			let mut owner = context.lock();
-			let factory = owner.create_factory().expect(
-				"Failed to create a loader factory. The most likely cause is that the graphics device does not support detached resource creation.",
-			);
-			let command_buffer = owner
-				.queue(queue)
-				.create_command_buffer(Some(&format!("Resource Loader Lane {lane}")));
-			let synchronizer = owner.create_synchronizer(Some(&format!("Resource Loader Lane {lane}")), false);
-			drop(owner);
-			LoaderLane {
-				pipeline: pipeline.clone(),
-				factory,
-				staging: staging.clone(),
-				context: context.clone(),
-				command_buffer,
-				synchronizer,
-				requests: request_receiver.clone(),
-				results: result_sender.clone(),
-			}
+		.map(|_| LoaderLane {
+			pipeline: pipeline.clone(),
+			staging: loader.batcher.staging.clone(),
+			uploads: loader.uploads.clone(),
+			busy_lanes: loader.batcher.busy_lanes.clone(),
+			registry: registry.clone(),
+			dependencies: request_sender.clone(),
+			requests: request_receiver.clone(),
+			results: result_sender.clone(),
 		})
 		.collect();
 

@@ -1,5 +1,11 @@
 use crate::{FilteringModes, SamplerAddressingModes, SamplingReductionModes};
 
+/// A maximum level of detail that leaves the mip range to each sampled image.
+///
+/// Pass it to [`Builder::max_lod`] when one sampler serves images with different mip counts. Vulkan names this
+/// value `VK_LOD_CLAMP_NONE`.
+pub const UNCLAMPED_MAX_LOD: f32 = 1000.0;
+
 pub struct Builder {
 	pub(crate) filtering_mode: FilteringModes,
 	pub(crate) reduction_mode: SamplingReductionModes,

@@ -365,6 +365,19 @@ impl crate::context::Context for Context {
 		}
 	}
 
+	fn poll_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
+		let mut complete = true;
+		for frame_index in 0..self.frames as usize {
+			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			let (finished, error) = self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
+			if let Some(error) = error {
+				panic!("{error}");
+			}
+			complete &= finished;
+		}
+		complete
+	}
+
 	fn wait(&mut self) {
 		let mut first_error = None;
 		for synchronizer in self.synchronizers.iter_mut() {

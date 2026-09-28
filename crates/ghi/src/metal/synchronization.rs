@@ -530,6 +530,19 @@ impl MetalResourceTracker {
 		}
 	}
 
+	/// Drops the access history of work that has completed, so later commands see no hazards against it.
+	///
+	/// Call this only once every command recorded against this history has finished on the GPU. A recording in
+	/// progress keeps its history.
+	pub(crate) fn forget_history(&mut self) {
+		if self.recording {
+			return;
+		}
+		self.states.clear();
+		// Earlier reads may have been skipped against the old history, so they must be planned again.
+		self.generation += 1;
+	}
+
 	/// Converts command-local encoder scopes into queue history and commits the recording transaction.
 	pub(crate) fn finish_recording(&mut self) {
 		assert!(

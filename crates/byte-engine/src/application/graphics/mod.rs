@@ -107,6 +107,11 @@ pub struct GraphicsApplication {
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
+	/// The loading timeline, created when the first pipeline asks for it and moved to the loading thread by
+	/// [`defaults::launch_deferred_tasks_thread`].
+	loader: Option<rendering::loading::Loader>,
+	/// Whether the loader already moved to the loading thread, after which no pipeline can add lanes.
+	loader_launched: bool,
 
 	threads: SmallVec<[Thread; 64]>,
 	/// Persistent lanes shared by initialization and application frame work.
@@ -121,6 +126,9 @@ pub struct GraphicsApplication {
 
 	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
+
+	/// The device every context comes from. Declared last so the renderer's and the loader's contexts drop first.
+	graphics_device: rendering::GraphicsDevice,
 }
 
 impl Drop for GraphicsApplication {
@@ -148,7 +156,7 @@ impl Application for GraphicsApplication {
 		let mut storage = None;
 		let mut services = None;
 		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
-		let mut renderer = alley
+		let (graphics_device, mut renderer) = alley
 			.join_with_mut(
 				(&mut storage, &mut services),
 				|lane, (storage, services)| {
@@ -230,7 +238,11 @@ impl Application for GraphicsApplication {
 						));
 					});
 				},
-				|| rendering::renderer::Renderer::new(&application, &configuration),
+				|| {
+					let graphics_device = rendering::GraphicsDevice::new(&application);
+					let renderer = rendering::renderer::Renderer::new(&graphics_device, &application, &configuration);
+					(graphics_device, renderer)
+				},
 			)
 			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 		let resource_storage = storage.unwrap();
@@ -304,6 +316,8 @@ impl Application for GraphicsApplication {
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
+			loader: None,
+			loader_launched: false,
 
 			threads: SmallVec::new(),
 			alley,
@@ -337,6 +351,8 @@ impl Application for GraphicsApplication {
 
 			#[cfg(debug_assertions)]
 			kill_after,
+
+			graphics_device,
 		}
 	}
 
@@ -686,13 +702,11 @@ impl GraphicsApplication {
 		// callback so their scene can request resources before native window setup begins.
 		// An acquired image must be presented, so on-demand rendering only hoists the acquisition while frames keep
 		// coming; the first frame after an idle stretch acquires when it renders.
-		let measure_acquire = std::time::Instant::now();
 		let present_time = if self.rendering_active {
 			self.renderer.acquire_swapchain_images()
 		} else {
 			None
 		};
-		let measure_acquire = measure_acquire.elapsed();
 		if self.tick_count > 0 && !waited && !self.renderer.presents_this_frame() {
 			// The first tick has no previous frame to pace. Later ticks that neither present nor wait for
 			// events sleep here so a windowless or unchanged application does not spin a core.
@@ -718,16 +732,9 @@ impl GraphicsApplication {
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
 		self.rendering_active = changed || !self.render_on_demand;
-		let measure_render = std::time::Instant::now();
 		if self.rendering_active || self.renderer.presents_this_frame() {
 			self.render_frame(screenshot_requests, time.elapsed());
 		}
-		log::info!(
-			target: "measure",
-			"tick acquire_us={} render_us={}",
-			measure_acquire.as_micros(),
-			measure_render.elapsed().as_micros()
-		);
 
 		{
 			let span = debug_span!("GraphicsApplication::flush_world_deletions");
@@ -837,18 +844,41 @@ impl GraphicsApplication {
 
 	/// Returns mutable renderer access for application-defined pipeline setup.
 	///
-	/// Use this during startup to create renderer-owned GHI resources. For an
-	/// asynchronous resource integration, create the mapped transfer buffer and
-	/// [`crate::rendering::resource_loading::UploadStagingArena`] here, keep the
-	/// buffer handle in the pipeline manager's upload store, and run the staging
-	/// worker and resource servers through application-owned tasks. Then call
-	/// [`Renderer::add_pipeline_manager`] before the application starts rendering.
-	///
-	/// The opposite lifetime is equally important: stop and join those tasks
-	/// before this application drops the renderer. The built-in Simple and
-	/// Visibility setup functions demonstrate that shutdown ordering.
+	/// Use this during startup to create renderer-owned GHI resources, such as the samplers a pipeline binds
+	/// loaded images with. Then call [`Renderer::add_pipeline_manager`] before the application starts rendering.
+	/// For asynchronous loading, create lanes from [`Self::loader_mut`].
 	pub fn renderer_mut(&mut self) -> &mut Renderer {
 		&mut self.renderer
+	}
+
+	/// Returns the loader that uploads resources for every pipeline, creating it on first use.
+	///
+	/// Create a pipeline's lanes with [`rendering::loading::spawn`] during setup. The loader then starts on the
+	/// loading thread with [`defaults::launch_deferred_tasks_thread`].
+	///
+	/// # Panics
+	///
+	/// Panics after the loading thread started, because a lane created then would never be served.
+	pub fn loader_mut(&mut self) -> &mut rendering::loading::Loader {
+		self.loader_and_renderer_mut().0
+	}
+
+	/// Returns the loader and the renderer together, for setup that shares render buffers with the loader.
+	pub(crate) fn loader_and_renderer_mut(&mut self) -> (&mut rendering::loading::Loader, &mut Renderer) {
+		assert!(
+			!self.loader_launched,
+			"Loader setup failed. The most likely cause is that a pipeline was set up after `launch_deferred_tasks_thread` started the loading thread. Set up every pipeline first."
+		);
+		let loader = self
+			.loader
+			.get_or_insert_with(|| rendering::loading::Loader::new(&self.graphics_device, &self.application));
+		(loader, &mut self.renderer)
+	}
+
+	/// Takes the loader so the loading thread can run it. Pipelines set up afterwards cannot add lanes.
+	pub(crate) fn take_loader(&mut self) -> Option<rendering::loading::Loader> {
+		self.loader_launched = true;
+		self.loader.take()
 	}
 
 	/// Returns the factory used to request new windows.

@@ -73,10 +73,13 @@ pub mod implementation {
 	#[cfg(target_os = "linux")]
 	pub use crate::vulkan::*;
 
-	/// A context may be moved between threads, which is what lets a renderer put resource loading on threads of
-	/// its own. Every backend must uphold this. Concurrent use is not implied: a shared context needs a lock.
-	const fn _context_moves_between_threads<T: Send>() {}
-	const _: () = _context_moves_between_threads::<Context>();
+	/// A context may be moved between threads, which is what lets a loader own a context on a thread of its own.
+	/// Images and buffers cross between the contexts of one device the same way. Every backend must uphold this.
+	/// Concurrent use is not implied: each context belongs to one thread at a time.
+	const fn _moves_between_threads<T: Send>() {}
+	const _: () = _moves_between_threads::<Context>();
+	const _: () = _moves_between_threads::<DetachedImage>();
+	const _: () = _moves_between_threads::<SharedBuffer<[u8]>>();
 }
 
 #[cfg(target_os = "windows")]

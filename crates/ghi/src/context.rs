@@ -473,6 +473,13 @@ pub trait Context: ContextCreate {
 	/// Call this after submitting a command buffer when later CPU work depends only on that submission.
 	fn wait_for_synchronizer(&mut self, synchronizer: SynchronizerHandle);
 
+	/// Returns whether every submission signaled through one synchronizer has completed, without blocking.
+	///
+	/// Use this instead of [`Self::wait_for_synchronizer`] on a thread that has other work to do while the GPU
+	/// finishes, such as a resource loader that keeps reading files during a copy. A `true` result frees the same
+	/// command state that a wait frees, so the synchronizer can signal the next submission.
+	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool;
+
 	/// Waits for all pending operations to complete.
 	fn wait(&mut self);
 }

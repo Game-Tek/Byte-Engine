@@ -52,7 +52,8 @@ pub mod image {
 
 	/// The `Image` struct owns one Metal texture, the description it was created from, and its CPU staging bytes.
 	///
-	/// A [`Factory`] can build one away from the render thread; [`Frame::intern_image`] hands it to a context.
+	/// [`Context::export_image`] moves one out of a context as a [`DetachedImage`], and [`Frame::intern_image`] hands it
+	/// to another context of the same device.
 	pub struct Image {
 		pub(crate) name: Option<String>,
 		pub(crate) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
@@ -85,7 +86,7 @@ pub mod image {
 pub mod sampler {
 	use super::*;
 
-	/// The `Sampler` struct owns one Metal sampler state; a [`Factory`] can build it for later interning.
+	/// The `Sampler` struct owns one Metal sampler state that recordings bind through descriptor writes.
 	pub struct Sampler {
 		pub(crate) sampler: Retained<ProtocolObject<dyn mtl::MTLSamplerState>>,
 	}
@@ -129,6 +130,24 @@ pub mod synchronizer {
 
 		pub(crate) fn signal(&mut self, workload: SubmittedBatch) {
 			self.workloads.push(workload);
+		}
+
+		/// Finishes every batch Metal already completed without blocking.
+		///
+		/// Returns whether no batch is still running, and the first GPU error among the finished batches.
+		pub(crate) fn poll(&mut self, queues: &mut [StoredQueue]) -> (bool, Option<String>) {
+			let mut first_error = None;
+			for workload in std::mem::take(&mut self.workloads) {
+				match workload.try_feedback() {
+					Some(feedback) => {
+						if let Some(error) = workload.finish(feedback, queues) {
+							first_error.get_or_insert(error);
+						}
+					}
+					None => self.workloads.push(workload),
+				}
+			}
+			(self.workloads.is_empty(), first_error)
 		}
 
 		/// Waits for every submitted batch, returns its commands to `queues` for reuse, and reports the first GPU error.

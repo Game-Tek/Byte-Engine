@@ -25,25 +25,11 @@ pub(crate) fn frame_index_with_offset(sequence_index: usize, frame_offset: i32, 
 /// The `MasterFrameResource` struct links one backend resource to its next frame-specific representation.
 pub(crate) struct MasterFrameResource<T, PH> {
 	next: Option<PH>,
-	resource: T,
+	/// `None` after [`ResourceCollection::take`] moved the resource out. The slot stays so no handle is reused.
+	resource: Option<T>,
 }
 
-impl<T, PH: Copy> MasterFrameResource<T, PH> {
-	/// Returns the backend-private resource stored in this chain entry.
-	pub(crate) fn resource(&self) -> &T {
-		&self.resource
-	}
-
-	/// Returns mutable access to the backend-private resource stored in this chain entry.
-	pub(crate) fn resource_mut(&mut self) -> &mut T {
-		&mut self.resource
-	}
-
-	/// Extracts the backend-private resource from this chain entry.
-	pub(crate) fn into_inner(self) -> T {
-		self.resource
-	}
-}
+const TAKEN_RESOURCE: &str = "Resource was moved out of its context. The most likely cause is that a handle was used after its image was exported to another context.";
 
 #[derive(Debug)]
 /// The `ResourceCollection` struct provides master-handle lookup across per-frame resource chains.
@@ -84,7 +70,10 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		let master_handle = MH::new(i);
 		let private_handle = PH::new(i);
 
-		self.resources.push(MasterFrameResource { next: None, resource });
+		self.resources.push(MasterFrameResource {
+			next: None,
+			resource: Some(resource),
+		});
 
 		(master_handle, private_handle)
 	}
@@ -94,9 +83,35 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		let i = master_handle.index();
 		let private_handle = PH::new(i);
 
-		self.resources.push(MasterFrameResource { next: None, resource });
+		self.resources.push(MasterFrameResource {
+			next: None,
+			resource: Some(resource),
+		});
 
 		private_handle
+	}
+
+	/// Returns the resource a master handle names when it has a single representation for every frame.
+	///
+	/// Returns `None` when the handle is unknown, was taken, or names a chain with one representation per frame.
+	pub(crate) fn get_unique(&self, handle: MH) -> Option<&T> {
+		self.resources
+			.get(handle.index() as usize)
+			.filter(|entry| entry.next.is_none())?
+			.resource
+			.as_ref()
+	}
+
+	/// Moves a resource with a single representation out and leaves its slot empty.
+	///
+	/// Use this to hand a resource to another owner. The master handle stays reserved, so it can never name a
+	/// different resource later. Returns `None` in the same cases as [`Self::get_unique`].
+	pub(crate) fn take(&mut self, handle: MH) -> Option<T> {
+		self.resources
+			.get_mut(handle.index() as usize)
+			.filter(|entry| entry.next.is_none())?
+			.resource
+			.take()
 	}
 
 	/// Updates the next link for one private resource in the chain.
@@ -120,19 +135,19 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 
 	/// Returns the backend-private resource addressed by the provided private handle.
 	pub(crate) fn resource(&self, private_handle: PH) -> &T {
-		&self.entry(private_handle).resource
+		self.entry(private_handle).resource.as_ref().expect(TAKEN_RESOURCE)
 	}
 
 	/// Returns mutable access to the backend-private resource addressed by the provided private handle.
 	pub(crate) fn resource_mut(&mut self, private_handle: PH) -> &mut T {
-		&mut self.entry_mut(private_handle).resource
+		self.entry_mut(private_handle).resource.as_mut().expect(TAKEN_RESOURCE)
 	}
 
 	/// Returns the first resource for a master handle without walking any per-frame chain.
 	///
 	/// Use this method for a resource with one representation.
 	pub(crate) fn get_single(&self, handle: MH) -> Option<&T> {
-		self.resources.get(handle.index() as usize).map(|r| &r.resource)
+		self.resources.get(handle.index() as usize).and_then(|r| r.resource.as_ref())
 	}
 
 	/// Returns the resource for the requested frame offset by walking the master's private chain.
@@ -162,14 +177,14 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		Some(current)
 	}
 
-	/// Iterates over all stored private resources in insertion order.
+	/// Iterates over all stored private resources in insertion order, skipping resources that were taken.
 	pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
-		self.resources.iter().map(|r| &r.resource)
+		self.resources.iter().filter_map(|r| r.resource.as_ref())
 	}
 
-	/// Iterates mutably over all stored private resources in insertion order.
+	/// Iterates mutably over all stored private resources in insertion order, skipping resources that were taken.
 	pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-		self.resources.iter_mut().map(|r| &mut r.resource)
+		self.resources.iter_mut().filter_map(|r| r.resource.as_mut())
 	}
 
 	/// Starts building a chained resource sequence that will share one master handle.
@@ -199,7 +214,10 @@ impl<'a, T, MH: MasterHandle, PH: PrivateHandle> Creator<'a, T, MH, PH> {
 	/// Appends a private resource to the end of the current master handle's chain.
 	pub(crate) fn add(&mut self, resource: T) -> PH {
 		let private_handle = PH::new(self.resources.len() as u64);
-		self.resources.push(MasterFrameResource { next: None, resource });
+		self.resources.push(MasterFrameResource {
+			next: None,
+			resource: Some(resource),
+		});
 
 		let mut current = PH::new(self.handle.index());
 		while let Some(last) = self.resources.get_mut(current.index() as usize).unwrap().next {

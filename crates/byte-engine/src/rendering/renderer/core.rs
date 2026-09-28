@@ -19,9 +19,6 @@ type PipelineManagerId = usize;
 /// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
 /// windows and cameras before handing frame preparation to the graphics application.
 pub struct Renderer {
-	/// The GHI instance that manages devices.
-	instance: ghi::implementation::Instance,
-
 	/// The monotonically increasing identity of the next graphics submission frame.
 	started_frame_count: u64,
 
@@ -73,124 +70,29 @@ pub struct Renderer {
 	/// Whether renderer state changed in a way that the last presented frame does not show.
 	redraw_requested: bool,
 
-	/// The GHI context where all rendering resources and operations are performed.
+	/// The GHI context where all rendering resources and operations are performed. Only the render thread uses it.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
-	context: crate::rendering::SharedContext,
+	context: ghi::implementation::Context,
 }
 
 impl Renderer {
-	/// Creates a renderer from application configuration parameters.
+	/// Creates a renderer that records and presents on `device`'s graphics queue.
 	///
 	/// # Parameters
-	/// - `render.debug`: Enables validation layers for debugging. Defaults to true on debug builds.
-	/// - `render.debug.dump`: Enables API dump for debugging. Defaults to false.
-	/// - `render.debug.extended`: Enables extended validation for debugging. Defaults to false.
-	/// - `render.debug.labels`: Enables graphics API object labels and command debug groups. Defaults to `render.debug`.
-	/// - `render.ghi.features.mesh-shading`: Enables mesh shading features on the graphics context. Defaults to true.
 	/// - `render.startup.defer-sink-setup`: Presents the first window frame before constructing sink render pipelines.
 	///   Defaults to false.
+	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
+	///   available cores, between one and four.
 	///
 	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
 	/// render passes that load resources.
-	// Keep device, queue, compilation, and frame-resource initialization in their required ownership order.
-	#[allow(clippy::too_many_lines)]
-	pub fn new(parameters: &dyn Parameters, configuration: &Configuration) -> Self {
-		let settings = Settings::new();
-
-		let settings = if let Some(param) = parameters.get_parameter("render.debug") {
-			settings.validation(param.as_bool_simple())
-		} else {
-			settings
-		};
-
-		let settings = if let Some(param) = parameters.get_parameter("render.debug.dump") {
-			settings.api_dump(param.as_bool_simple())
-		} else {
-			settings
-		};
-
-		let settings = if let Some(param) = parameters.get_parameter("render.debug.extended") {
-			settings.extended_validation(param.as_bool_simple())
-		} else {
-			settings
-		};
-
-		let settings = if let Some(param) = parameters.get_parameter("render.debug.labels") {
-			settings.debug_labels(param.as_bool_simple())
-		} else {
-			let validation = settings.validation;
-			settings.debug_labels(validation)
-		};
-
-		let settings = if let Some(param) = parameters.get_parameter("render.ghi.features.mesh-shading") {
-			settings.mesh_shading(param.as_bool_simple())
-		} else {
-			settings
-		};
+	pub fn new(device: &crate::rendering::GraphicsDevice, parameters: &dyn Parameters, configuration: &Configuration) -> Self {
 		let defer_first_frame_sink_setup = parameters
 			.get_parameter("render.startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
 			.unwrap_or(false);
 
-		let mut features = ghi::device::Features::new()
-			.validation(settings.validation)
-			.api_dump(settings.api_dump)
-			.gpu_validation(settings.extended_validation)
-			.debug_labels(settings.debug_labels)
-			.debug_log_function(|message| {
-				let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-				let manifest_dir = env!("CARGO_MANIFEST_DIR");
-				let workspace_root = manifest_dir
-					.rsplit_once("/crates/")
-					.map(|(root, _)| root)
-					.unwrap_or(manifest_dir);
-
-				let mut filtered = String::new();
-				for line in backtrace.lines() {
-					if line.contains(workspace_root) {
-						filtered.push_str(line);
-						filtered.push('\n');
-					}
-				}
-
-				if filtered.trim().is_empty() {
-					log::error!("{}\n{}", message, backtrace);
-				} else {
-					log::error!("{}\n{}", message, filtered.trim_end());
-				}
-			})
-			.geometry_shader(false)
-			.mesh_shading(settings.mesh_shading);
-
-		let mut instance = match ghi::implementation::Instance::new(features) {
-			Ok(instance) => instance,
-			Err(error) if settings.validation => {
-				log::warn!(
-					"Renderer validation was requested but could not be enabled: {error} Falling back to renderer validation disabled. The most likely cause is missing or unsupported platform graphics tooling. See {}.",
-					crate::online_docs_url("use/setup/environment")
-				);
-				features = features
-					.validation(false)
-					.gpu_validation(false)
-					.api_dump(false)
-					.debug_labels(false);
-				ghi::implementation::Instance::new(features).unwrap()
-			}
-			Err(error) => panic!("Failed to create GHI instance: {error}"),
-		};
-
-		let mut graphics_queue_handle = None;
-
-		let device = instance
-			.create_device(
-				features,
-				&mut [(
-					ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER),
-					&mut graphics_queue_handle,
-				)],
-			)
-			.unwrap();
-		let mut context = device.create_context().unwrap();
+		let mut context = device.create_context();
 		let frame_queue_depth = 2;
 		context.set_frames_in_flight(frame_queue_depth);
 		let pipeline_compilation_server_count = parameters
@@ -200,14 +102,13 @@ impl Renderer {
 		let (pipeline_compilation_client, pipeline_compilation_manager, pipeline_compilation_servers) =
 			crate::rendering::pipeline_compilation::PipelineManager::new(&mut context, pipeline_compilation_server_count);
 
-		let graphics_queue_handle = graphics_queue_handle.unwrap();
+		let graphics_queue_handle = device.graphics_queue();
 
 		let render_command_buffer = context.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
 
 		Renderer {
-			context: crate::rendering::SharedContext::new(context),
-			instance,
+			context,
 
 			started_frame_count: 0,
 
@@ -284,8 +185,6 @@ impl Renderer {
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
 		{
-			let shared_context = self.context.clone();
-			let mut context = shared_context.lock();
 			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
 				.sink_cameras
 				.iter()
@@ -297,7 +196,7 @@ impl Renderer {
 				}
 
 				let mut rpb = RenderPassBuilder::new(
-					&mut context,
+					&mut self.context,
 					&mut self.render_targets,
 					sink_id,
 					swapchain,
@@ -341,11 +240,9 @@ impl Renderer {
 				..
 			} = self;
 
-			let mut context = context.lock();
-
 			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
 				let mut rpb = RenderPassBuilder::new(
-					&mut context,
+					context,
 					render_targets,
 					sink_id,
 					swapchain,
@@ -461,8 +358,6 @@ impl Renderer {
 
 	/// Instantiates all registered post-scene render pass factories for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let shared_context = self.context.clone();
-		let mut context = shared_context.lock();
 		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::ImageOrSwapchain)>); 16]> =
 			SmallVec::new();
 
@@ -476,7 +371,7 @@ impl Renderer {
 			let render_pass = {
 				let mut render_pass_builder = if Some(factory_index) == final_factory_index {
 					RenderPassBuilder::new_for_final_pass(
-						&mut context,
+						&mut self.context,
 						&mut self.render_targets,
 						sink_id,
 						swapchain,
@@ -484,7 +379,7 @@ impl Renderer {
 					)
 				} else {
 					RenderPassBuilder::new(
-						&mut context,
+						&mut self.context,
 						&mut self.render_targets,
 						sink_id,
 						swapchain,
@@ -515,7 +410,7 @@ impl Renderer {
 			// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
 			if self.render_targets.get("main", sink_id).is_some() {
 				let mut builder = RenderPassBuilder::new(
-					&mut context,
+					&mut self.context,
 					&mut self.render_targets,
 					sink_id,
 					swapchain,
@@ -552,9 +447,8 @@ impl Renderer {
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
 		self.present_interval = interval;
-		let mut context = self.context.lock();
 		for (_window, swapchain) in &self.windows {
-			context.set_present_interval(*swapchain, interval);
+			self.context.set_present_interval(*swapchain, interval);
 		}
 	}
 
@@ -586,13 +480,11 @@ impl Renderer {
 		);
 		let _enter = span.enter();
 
-		let shared_context = self.context.clone();
-		let mut context = shared_context.lock();
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
 		for (_window, swapchain) in self.windows.iter().skip(self.acquisitions.1.len()) {
-			let Some(acquisition) = context.acquire_swapchain_image(frame, *swapchain) else {
+			let Some(acquisition) = self.context.acquire_swapchain_image(frame, *swapchain) else {
 				log::warn!(
 					"No swapchain image was available for window {:?}. Rendering will be skipped.",
 					swapchain
@@ -726,10 +618,8 @@ impl Renderer {
 			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
 			.collect::<Vec<_>>();
 
-		let shared_context = self.context.clone();
-		let mut context = shared_context.lock();
 
-		context.start_frame_capture();
+		self.context.start_frame_capture();
 
 		{
 			let span = debug_span!("Renderer::update_camera_transforms");
@@ -748,7 +638,7 @@ impl Renderer {
 			}
 		}
 
-		let mut queue = context.queue(self.graphics_queue_handle);
+		let mut queue = self.context.queue(self.graphics_queue_handle);
 		let frame =
 			ghi::queue::FrameRequest::new_in(self.started_frame_count, self.render_finished_synchronizer, &frame_allocator);
 
@@ -1011,14 +901,14 @@ impl Renderer {
 		}
 
 		if screenshot_transfers.iter().any(|transfer| matches!(transfer, Some(Ok(_)))) {
-			context.wait_for_synchronizer(self.render_finished_synchronizer);
+			self.context.wait_for_synchronizer(self.render_finished_synchronizer);
 		}
 
 		let screenshots = screenshot_transfers
 			.into_iter()
 			.map(|transfer| {
 				let handle = transfer.unwrap_or(Err(RendererScreenshotError::SinkUnavailable))?;
-				context.get_image_data(handle).map_err(RendererScreenshotError::Transfer)
+				self.context.get_image_data(handle).map_err(RendererScreenshotError::Transfer)
 			})
 			.collect();
 		(submitted_frame, screenshots)
@@ -1074,21 +964,9 @@ impl Renderer {
 		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, target })
 	}
 
-	/// Borrows the GHI context for setup work that must run before the first frame.
-	pub fn context_mut(&self) -> impl std::ops::DerefMut<Target = ghi::implementation::Context> + '_ {
-		self.context.lock()
-	}
-
-	/// Returns the queue where rendering and resource transfers are submitted.
-	#[must_use]
-	pub fn graphics_queue(&self) -> ghi::QueueHandle {
-		self.graphics_queue_handle
-	}
-
-	/// Returns shared ownership of the GHI context for loader threads.
-	#[must_use]
-	pub fn shared_context(&self) -> crate::rendering::SharedContext {
-		self.context.clone()
+	/// Borrows the render thread's GHI context for setup work that must run before the first frame.
+	pub fn context_mut(&mut self) -> &mut ghi::implementation::Context {
+		&mut self.context
 	}
 
 	/// Returns a client for requesting renderer-owned asynchronous pipelines.
@@ -1131,18 +1009,15 @@ impl Renderer {
 			Ok(window) => {
 				let os_handles = window.os_handles();
 
-				// Hold the context only for the swapchain binding. The sink initialization below
-				// takes the same lock, and `SharedContext` is a plain mutex that does not re-enter.
 				let swapchain_handle = {
-					let mut context = self.context.lock();
-					let swapchain_handle = context.bind_to_window(
+					let swapchain_handle = self.context.bind_to_window(
 						&os_handles,
 						ghi::PresentationModes::FIFO,
 						extent,
 						ghi::Uses::RenderTarget | ghi::Uses::Storage | ghi::Uses::TransferSource,
 					);
 					if self.present_interval.is_some() {
-						context.set_present_interval(swapchain_handle, self.present_interval);
+						self.context.set_present_interval(swapchain_handle, self.present_interval);
 					}
 					swapchain_handle
 				};
@@ -1296,66 +1171,6 @@ pub(crate) enum RendererScreenshotError {
 	Transfer(ghi::TextureTransferError),
 }
 
-/// The `Settings` struct configures a [`Renderer`] during creation.
-pub struct Settings {
-	/// Controls whether the GHI context enables validation layers.
-	validation: bool,
-	/// Controls whether the renderer logs parameters sent to the underlying graphics API.
-	///
-	/// This option requires `validation`.
-	api_dump: bool,
-	/// Controls whether the graphics API performs additional validation, including
-	/// GPU validation.
-	///
-	/// This option can be expensive and requires `validation`.
-	extended_validation: bool,
-	/// Controls whether graphics API object labels and command debug groups are emitted.
-	debug_labels: bool,
-	/// Controls whether the GHI context enables mesh shading.
-	mesh_shading: bool,
-}
-
-impl Settings {
-	/// Creates renderer settings with the engine defaults.
-	///
-	/// - `validation` is true by default in debug builds and false in release.
-	/// - `api_dump` is false by default.
-	/// - `extended_validation` is false by default.
-	pub fn new() -> Self {
-		Self {
-			validation: cfg!(debug_assertions),
-			api_dump: false,
-			extended_validation: false,
-			debug_labels: cfg!(debug_assertions),
-			mesh_shading: true,
-		}
-	}
-
-	pub fn validation(mut self, value: bool) -> Self {
-		self.validation = value;
-		self
-	}
-
-	pub fn api_dump(mut self, value: bool) -> Self {
-		self.api_dump = value;
-		self
-	}
-
-	pub fn extended_validation(mut self, value: bool) -> Self {
-		self.extended_validation = value;
-		self
-	}
-
-	pub fn debug_labels(mut self, value: bool) -> Self {
-		self.debug_labels = value;
-		self
-	}
-
-	pub fn mesh_shading(mut self, value: bool) -> Self {
-		self.mesh_shading = value;
-		self
-	}
-}
 
 use std::{
 	collections::VecDeque,
@@ -1369,7 +1184,6 @@ use ghi::{
 		RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
-	device::Device as _,
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
 };

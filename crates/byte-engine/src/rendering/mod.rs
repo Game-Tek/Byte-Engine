@@ -23,6 +23,7 @@ mod environment;
 
 /// Retained wireframe geometry for renderer and gameplay diagnostics.
 pub mod debug;
+pub mod device;
 
 #[doc(hidden)]
 pub mod lights;
@@ -61,7 +62,6 @@ pub(crate) mod shader_vm_test;
 pub mod pipelines;
 
 /// Per-output render target state passed to render passes.
-pub mod shared_context;
 pub mod sink;
 /// Projection and view matrix construction for cameras and lights.
 pub mod view;
@@ -74,6 +74,7 @@ pub mod utils;
 
 pub use camera::Camera;
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
+pub use device::GraphicsDevice;
 pub use environment::Environment;
 pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, PhotometricError, PhotometricIntensity,
@@ -88,9 +89,8 @@ pub use render_pass::{
 	RenderPassState, RenderToResult,
 };
 pub use renderable::mesh::RenderableMesh;
-pub use renderer::{RenderTargets, Renderer, Settings};
+pub use renderer::{RenderTargets, Renderer};
 pub use resource::{Query, Resource};
-pub use shared_context::SharedContext;
 pub use sink::Sink;
 pub use view::View;
 pub use window::{Features, Window};

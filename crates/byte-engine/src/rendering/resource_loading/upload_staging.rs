@@ -1,17 +1,21 @@
-use std::{collections::VecDeque, sync::Arc};
-
-use ghi::{
-	Device as _,
-	context::{Context as _, ContextCreate as _},
+use std::{
+	collections::VecDeque,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 };
+
+use ghi::context::{Context as _, ContextCreate as _};
 
 /// The `UploadStagingArena` struct gives loader lanes exclusive regions of one persistently mapped transfer buffer.
 ///
 /// Share this lightweight client with asynchronous loader lanes. Request a
 /// [`StagingLease`] with [`Self::allocate`], load or convert directly into its
-/// bytes, and keep the lease alive through the loader transfer. When the loader
-/// drops the lease after GPU completion, its region returns to
-/// [`UploadStagingWorker`] for coalescing and reuse.
+/// bytes, and hand the lease to the loader with the upload that reads it. The
+/// [`Loader`](crate::rendering::loading::Loader) drops the lease once the GPU
+/// finished the copy, and its region returns to [`UploadStagingWorker`] for
+/// coalescing and reuse.
 ///
 /// The arena owns raw access transferred from one GHI mapping, not the backing
 /// buffer or context. Keep the GHI context and mapped buffer alive until the
@@ -20,19 +24,21 @@ pub struct UploadStagingArena {
 	byte_count: usize,
 	commands: kanal::AsyncSender<StagingCommand>,
 	returner: kanal::Sender<StagingCommand>,
+	exhausted: Arc<AtomicBool>,
 }
 
 /// The `UploadStagingWorker` struct serializes allocation and reclamation for one mapped staging arena.
 ///
-/// Run one worker per [`UploadStagingArena`] on an application-owned async task.
+/// The [`Loader`](crate::rendering::loading::Loader) runs the one worker of its arena on the loading thread.
 /// Keeping free-region state here lets loader lanes share the arena without
 /// placing synchronization inside GHI or exposing mapped pointers across the
 /// public allocation API. The worker exits after every arena client and lease
 /// return channel has been dropped.
-pub struct UploadStagingWorker {
+pub(crate) struct UploadStagingWorker {
 	available_regions: Vec<StagingRegion>,
 	pending_allocations: VecDeque<StagingAllocationRequest>,
 	commands: kanal::AsyncReceiver<StagingCommand>,
+	exhausted: Arc<AtomicBool>,
 }
 
 struct StagingRegion {
@@ -55,15 +61,17 @@ enum StagingCommand {
 impl UploadStagingArena {
 	/// Creates a host-mapped GHI upload buffer and its staging client and worker.
 	///
-	/// Run the returned worker on an application-owned task. Pass the returned
-	/// buffer and arena to the pipeline loader that records transfers.
-	pub fn create<const BYTE_COUNT: usize>(
+	/// Run the returned worker on the loading thread. Record copies from the
+	/// returned buffer in the same `context`.
+	pub(crate) fn create(
 		context: &mut ghi::implementation::Context,
+		byte_count: usize,
 		name: &str,
 	) -> (ghi::BaseBufferHandle, Arc<Self>, UploadStagingWorker) {
-		let buffer: ghi::BufferHandle<[u8; BYTE_COUNT]> = context.build_buffer(
+		let buffer: ghi::BufferHandle<[u8]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::TransferSource)
 				.name(name)
+				.length(byte_count)
 				.device_accesses(ghi::DeviceAccesses::HostOnly),
 		);
 		// SAFETY: The arena becomes the only CPU owner of this mapping and keeps
@@ -92,18 +100,29 @@ impl UploadStagingArena {
 	fn from_region(region: StagingRegion) -> (Arc<Self>, UploadStagingWorker) {
 		let byte_count = region.byte_count;
 		let (commands, command_receiver) = kanal::unbounded_async();
+		let exhausted = Arc::new(AtomicBool::new(false));
 		(
 			Arc::new(Self {
 				byte_count,
 				returner: commands.clone().to_sync(),
 				commands,
+				exhausted: exhausted.clone(),
 			}),
 			UploadStagingWorker {
 				available_regions: vec![region],
 				pending_allocations: VecDeque::new(),
 				commands: command_receiver,
+				exhausted,
 			},
 		)
+	}
+
+	/// Returns whether an allocation is waiting for regions that only finished uploads can return.
+	///
+	/// The loader submits its collected uploads early when this is `true`, because waiting longer cannot free
+	/// staging space.
+	pub(crate) fn is_exhausted(&self) -> bool {
+		self.exhausted.load(Ordering::Relaxed)
 	}
 
 	/// Creates the client and worker halves over a caller-owned test buffer.
@@ -157,7 +176,7 @@ impl UploadStagingWorker {
 	/// Move this future to the same application-owned runtime as loader lanes. Do
 	/// not run two workers for one arena because this value is the
 	/// exclusive owner of free-region state.
-	pub async fn run(mut self) {
+	pub(crate) async fn run(mut self) {
 		while let Ok(command) = self.commands.recv().await {
 			match command {
 				StagingCommand::Allocate(request) => self.pending_allocations.push_back(request),
@@ -171,10 +190,12 @@ impl UploadStagingWorker {
 	fn satisfy_pending_allocations(&mut self) {
 		loop {
 			let Some(request) = self.pending_allocations.pop_front() else {
+				self.exhausted.store(false, Ordering::Relaxed);
 				return;
 			};
 			let Some(region) = self.try_take_region(request.byte_count, request.alignment) else {
 				self.pending_allocations.push_front(request);
+				self.exhausted.store(true, Ordering::Relaxed);
 				return;
 			};
 			let mut region = Some(region);
@@ -244,10 +265,10 @@ impl UploadStagingWorker {
 
 /// The `StagingLease` struct ties exclusive mapped bytes to their GPU-use lifetime.
 ///
-/// Fill the region through [`Self::bytes_mut`], use [`Self::offset`] when
-/// recording a copy from the arena's backing buffer, and move the lease into
-/// the prepared upload. Do not free it manually. Dropping the lease returns the
-/// region to the worker, so the loader must keep it until the transfer completes.
+/// Fill the region through [`Self::bytes_mut`], describe where each part lies
+/// relative to the start of the lease, and hand the lease to the loader with the
+/// upload that reads it. Do not free it manually. Dropping the lease returns the
+/// region to the worker, so the loader keeps it until the copy completes.
 pub struct StagingLease {
 	region: Option<StagingRegion>,
 	returner: kanal::Sender<StagingCommand>,
@@ -256,9 +277,8 @@ pub struct StagingLease {
 impl StagingLease {
 	/// Returns the lease's absolute byte offset in the GPU upload buffer.
 	///
-	/// Add renderer-specific subrange offsets to this value when building copy
-	/// descriptors.
-	pub fn offset(&self) -> usize {
+	/// The loader adds the lease-relative offsets of an upload to this value when it records the copies.
+	pub(crate) fn offset(&self) -> usize {
 		self.region
 			.as_ref()
 			.expect("Live staging leases retain their mapped region.")
@@ -267,7 +287,7 @@ impl StagingLease {
 
 	/// Returns exclusive CPU access to the persistently mapped region.
 	///
-	/// Finish all writes before recording the loader transfer. The
+	/// Finish all writes before handing the lease to the loader. The
 	/// exclusive borrow prevents concurrent safe access through this lease.
 	#[allow(unsafe_code)]
 	pub fn bytes_mut(&mut self) -> &mut [u8] {
@@ -325,6 +345,40 @@ mod tests {
 				.await
 				.expect("A cancelled staging request must not leak its granted region.");
 			assert_eq!(reused.offset(), 0);
+		});
+	}
+
+	#[test]
+	fn full_arena_reports_exhaustion_until_a_lease_returns() {
+		use std::{future::Future as _, task::Poll};
+
+		let mut bytes = vec![0u8; 64];
+		let executor = resource_management::r#async::Executor::new().expect("staging test executor");
+		executor.block_on(async {
+			let (arena, worker) = UploadStagingArena::new_for_test(&mut bytes);
+			resource_management::r#async::spawn(worker.run()).detach();
+			let full = arena.allocate(64, 16).await.expect("full lease");
+			assert!(!arena.is_exhausted(), "A granted request must not report exhaustion.");
+
+			let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+			let mut waiting = Box::pin(arena.allocate(16, 16));
+			assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
+			// The worker runs on this executor, so give it turns until it sees the request it cannot grant.
+			for _ in 0..16 {
+				if arena.is_exhausted() {
+					break;
+				}
+				crate::core::async_runtime::yield_now().await;
+			}
+			assert!(
+				arena.is_exhausted(),
+				"A request the arena cannot grant must report exhaustion."
+			);
+
+			drop(full);
+			let lease = waiting.await.expect("A returned lease must satisfy the waiting request.");
+			assert!(!arena.is_exhausted(), "Exhaustion must clear once every request was granted.");
+			drop(lease);
 		});
 	}
 }

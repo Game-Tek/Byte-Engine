@@ -13,8 +13,9 @@
 //! [`MeshKey`], coalesces it through [`SimpleLoader`], and retains each scene
 //! instance as pending. A loader lane resolves the owned [`MeshSource`], writes
 //! Simple's streams into a [`StagingLease`], reserves renderer-owned buffer
-//! offsets, and waits for the transfer before reporting [`ResidentSimpleMesh`].
-//! The manager then creates every pending instance for that key.
+//! offsets, and waits for the loader to copy them before reporting
+//! [`ResidentSimpleMesh`]. The manager then creates every pending instance for
+//! that key.
 //!
 //! # Adapt this example
 //!
@@ -29,32 +30,28 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
-use ghi::{
-	command_buffer::CommandBufferRecording as _,
-	context::{Context as _, ContextCreate as _},
-};
+use ghi::context::ContextCreate as _;
 use resource_management::{
 	Reference,
 	resource::{ReadTargets, ReadTargetsMut},
 	resources::mesh::Mesh as ResourceMesh,
 	types::{IndexStreamTypes, Streams, VertexSemantics},
 };
+use smallvec::smallvec;
 
 use crate::{
 	core::{EntityHandle, factory::Handle},
 	rendering::{
-		SharedContext,
-		loading::{LoadError, LoadPipeline, Loaded, LoaderClient, LoaderLane, spawn},
+		loading::{BufferRegion, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane, spawn},
 		mesh::generator::MeshGenerator,
 		renderable::mesh::{MeshKey, MeshSource},
 		resource_loading::{StagingLease, UploadStagingArena},
-		utils::{InstanceBatch, MeshBuffersStats, MeshStats},
+		utils::{AddMeshResponse, InstanceBatch, MeshBuffersStats, MeshStats},
 	},
 };
 
 pub(super) const SIMPLE_VERTEX_CAPACITY: usize = 1024 * 1024;
 pub(super) const SIMPLE_INDEX_CAPACITY: usize = 1024 * 1024;
-pub(crate) const ASYNC_UPLOAD_BUFFER_BYTE_COUNT: usize = 1024 * 1024 * 16;
 const POSITION_STRIDE: usize = std::mem::size_of::<(f32, f32, f32)>();
 const INDEX_STRIDE: usize = std::mem::size_of::<u16>();
 const SIMPLE_LOADER_LANE_COUNT: usize = 1;
@@ -83,6 +80,10 @@ pub(crate) struct ResidentSimpleMesh {
 pub(crate) struct SimpleLoader {
 	resources: EntityHandle<resource_management::ResourceManager>,
 	store: SharedSimpleResourceStore,
+	/// The store's position buffer, as the loader context imported it.
+	vertex_positions: ghi::BaseBufferHandle,
+	/// The store's index buffer, as the loader context imported it.
+	indices: ghi::BaseBufferHandle,
 }
 
 pub(crate) type SimpleLoaderClient = LoaderClient<SimpleLoader>;
@@ -92,20 +93,28 @@ pub(crate) type SharedSimpleResourceStore = Arc<Mutex<SimpleResourceStore>>;
 impl SimpleLoader {
 	/// Creates the Simple pipeline's loader client and lane.
 	///
-	/// `store` owns the destination buffers backed by `staging_buffer`. Run the
-	/// returned lane on the same application-owned runtime as the staging worker.
+	/// `render` is the context that created `store`'s buffers. The loader imports them so its copies append to
+	/// them. Run the returned lane on the loading thread.
 	pub(crate) fn spawn(
-		context: &SharedContext,
-		queue: ghi::QueueHandle,
+		loader: &mut Loader,
+		render: &ghi::implementation::Context,
 		resources: EntityHandle<resource_management::ResourceManager>,
-		staging: Arc<UploadStagingArena>,
 		store: SharedSimpleResourceStore,
 	) -> (SimpleLoaderClient, Vec<SimpleLoaderLane>) {
+		let (vertex_positions, indices) = {
+			let store = store.lock().unwrap_or_else(|error| error.into_inner());
+			(store.vertex_positions_buffer, store.indices_buffer)
+		};
+		let vertex_positions = loader.import_buffer(render.share_buffer(vertex_positions)).into();
+		let indices = loader.import_buffer(render.share_buffer(indices)).into();
 		spawn(
-			context,
-			queue,
-			Self { resources, store },
-			staging,
+			loader,
+			Self {
+				resources,
+				store,
+				vertex_positions,
+				indices,
+			},
 			SIMPLE_LOADER_LANE_COUNT,
 			SIMPLE_LOADER_RESULT_CAPACITY,
 		)
@@ -121,8 +130,8 @@ impl LoadPipeline for SimpleLoader {
 		request.key()
 	}
 
-	/// Resolves, converts, places, and transfers one mesh before publishing it.
-	async fn load(&self, request: MeshSource, lane: &mut LoaderLane<Self>) -> Result<Loaded<Self>, LoadError> {
+	/// Resolves, converts, places, and uploads one mesh before publishing it.
+	async fn load(&self, request: MeshSource, lane: &mut LoaderLane<Self>) -> Result<ResidentSimpleMesh, LoadError> {
 		let staging = lane.staging().clone();
 		let prepared = match request {
 			MeshSource::Generated(generator) => prepare_generated_mesh(generator.as_ref(), staging).await,
@@ -137,16 +146,28 @@ impl LoadPipeline for SimpleLoader {
 		}
 		.map_err(|error| LoadError(error.to_string()))?;
 
-		// The transfer must complete before `prepared` drops and returns its staging lease.
-		let resident = lane
-			.transfer(|recording| {
-				self.store
-					.lock()
-					.unwrap_or_else(|error| error.into_inner())
-					.write_mesh(recording, &prepared)
-			})
+		let mesh = self
+			.store
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.reserve_mesh(prepared.vertex_count, prepared.index_count)
 			.map_err(|error| LoadError(error.to_string()))?;
-		Ok(Loaded::new(resident))
+		let regions = smallvec![
+			BufferRegion {
+				offset: prepared.positions.start,
+				destination: self.vertex_positions,
+				destination_offset: mesh.vertex_offset() * POSITION_STRIDE,
+				size: prepared.positions.len(),
+			},
+			BufferRegion {
+				offset: prepared.indices.start,
+				destination: self.indices,
+				destination_offset: mesh.index_offset() * INDEX_STRIDE,
+				size: prepared.indices.len(),
+			},
+		];
+		lane.upload(prepared.staging, [], regions).await?;
+		Ok(ResidentSimpleMesh { mesh_id: mesh.id() })
 	}
 }
 
@@ -158,16 +179,14 @@ impl LoadPipeline for SimpleLoader {
 pub(crate) struct SimpleResourceStore {
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; SIMPLE_INDEX_CAPACITY]>,
-	staging_buffer: ghi::BaseBufferHandle,
 	mesh_buffers_stats: MeshBuffersStats<Handle>,
 }
 
 impl SimpleResourceStore {
 	/// Creates fixed renderer-owned geometry buffers and empty allocation state.
 	///
-	/// `staging_buffer` must be the backing buffer mapped by the shared staging
-	/// arena. Share this store between the loader and pipeline manager.
-	pub(crate) fn new(context: &mut ghi::implementation::Context, staging_buffer: ghi::BaseBufferHandle) -> Self {
+	/// Share this store between the loader and pipeline manager.
+	pub(crate) fn new(context: &mut ghi::implementation::Context) -> Self {
 		let vertex_positions_buffer = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Vertex | ghi::Uses::TransferDestination)
 				.name("Vertex Positions")
@@ -182,7 +201,6 @@ impl SimpleResourceStore {
 		Self {
 			vertex_positions_buffer,
 			indices_buffer,
-			staging_buffer,
 			mesh_buffers_stats: MeshBuffersStats::default(),
 		}
 	}
@@ -213,53 +231,27 @@ impl SimpleResourceStore {
 }
 
 impl SimpleResourceStore {
-	/// Records one prepared mesh into Simple's parallel position and index streams.
+	/// Reserves room for one mesh in Simple's parallel position and index streams.
 	///
-	/// Both capacities are checked before allocation metadata changes or commands
-	/// are recorded. The loader publishes the returned resident only after its
-	/// transfer synchronizer completes.
-	fn write_mesh(
-		&mut self,
-		recording: &mut ghi::implementation::CommandBufferRecording<'_>,
-		prepared: &PreparedSimpleMesh,
-	) -> Result<ResidentSimpleMesh, SimpleMeshError> {
+	/// Both capacities are checked before allocation metadata changes. The loader publishes the mesh only after its
+	/// copies into the returned ranges completed.
+	fn reserve_mesh(&mut self, vertex_count: usize, index_count: usize) -> Result<AddMeshResponse, SimpleMeshError> {
 		let vertex_offset = self.mesh_buffers_stats.vertex_offset();
 		let index_offset = self.mesh_buffers_stats.index_offset();
 		if vertex_offset
-			.checked_add(prepared.vertex_count)
+			.checked_add(vertex_count)
 			.is_none_or(|end| end > SIMPLE_VERTEX_CAPACITY)
 		{
 			return Err(SimpleMeshError::VertexCapacity);
 		}
 		if index_offset
-			.checked_add(prepared.index_count)
+			.checked_add(index_count)
 			.is_none_or(|end| end > SIMPLE_INDEX_CAPACITY)
 		{
 			return Err(SimpleMeshError::IndexCapacity);
 		}
 
-		let staging_offset = prepared.staging.offset();
-		recording.copy_buffers(&[
-			ghi::BufferCopyDescriptor::new(
-				self.staging_buffer,
-				staging_offset + prepared.positions.start,
-				self.vertex_positions_buffer.into(),
-				vertex_offset * POSITION_STRIDE,
-				prepared.positions.len(),
-			),
-			ghi::BufferCopyDescriptor::new(
-				self.staging_buffer,
-				staging_offset + prepared.indices.start,
-				self.indices_buffer.into(),
-				index_offset * INDEX_STRIDE,
-				prepared.indices.len(),
-			),
-		]);
-
-		let mesh = self
-			.mesh_buffers_stats
-			.add_mesh(MeshStats::new(prepared.vertex_count, prepared.index_count));
-		Ok(ResidentSimpleMesh { mesh_id: mesh.id() })
+		Ok(self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count)))
 	}
 }
 

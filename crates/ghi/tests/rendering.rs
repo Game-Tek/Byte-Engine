@@ -217,9 +217,21 @@ fn render_with_ray_tracing() {
 }
 
 #[test]
-fn factory_image_accepts_last_mip_upload() {
+fn exported_image_keeps_contents_and_mips() {
+	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
+	resources::exported_image_keeps_contents_and_mips(&device, &mut context, queue_handle);
+}
+
+#[test]
+fn imported_buffer_receives_copies() {
+	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
+	resources::imported_buffer_receives_copies(&device, &mut context, queue_handle);
+}
+
+#[test]
+fn polled_synchronizer_reports_completion() {
 	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
-	resources::factory_image_last_mip_upload(&mut context, queue_handle);
+	resources::polled_synchronizer_reports_completion(&mut context, queue_handle);
 }
 
 #[test]

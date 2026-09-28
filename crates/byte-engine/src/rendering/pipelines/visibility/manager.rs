@@ -200,7 +200,7 @@ impl ResidentEnvironment {
 }
 
 /// Creates the opaque black environment sampled while no HDR environment is configured or its upload is pending.
-fn create_fallback_environment(context: &mut ghi::implementation::Context) -> ResidentEnvironment {
+fn create_fallback_environment(context: &mut ghi::implementation::Context, sampler: ghi::SamplerHandle) -> ResidentEnvironment {
 	let image = context.build_image(
 		ghi::image::Builder::new(ghi::Formats::RGBA8UNORM, ghi::Uses::Image | ghi::Uses::TransferDestination)
 			.name("Visibility Environment Fallback")
@@ -212,15 +212,6 @@ fn create_fallback_environment(context: &mut ghi::implementation::Context) -> Re
 	// reserved for explicitly transparent environment texels.
 	context.get_texture_slice_mut(image).copy_from_slice(&[0, 0, 0, u8::MAX]);
 	context.sync_texture(image);
-	let sampler = context.build_sampler(
-		ghi::sampler::Builder::new()
-			.filtering_mode(ghi::FilteringModes::Linear)
-			.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-			.mip_map_mode(ghi::FilteringModes::Linear)
-			.addressing_mode(ghi::SamplerAddressingModes::Repeat)
-			.min_lod(0.0)
-			.max_lod(0.0),
-	);
 	ResidentEnvironment {
 		diffuse_image: image.into(),
 		specular_image: image.into(),
@@ -490,7 +481,7 @@ impl VisibilityPipelineManager {
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
-		let environment = create_fallback_environment(context);
+		let environment = create_fallback_environment(context, loader.environment_sampler);
 		let skinning_pass = SkinningPass::new(context, &pipeline_manager, geometry);
 		let host_buffer = |name, uses| {
 			ghi::buffer::Builder::new(uses)
@@ -665,7 +656,7 @@ impl VisibilityPipelineManager {
 	/// Finishes renderer-specific adoption of loaded resources and publishes only fully usable ones.
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		let mut events = std::mem::take(&mut self.resource_events);
-		self.loader.update(&mut events);
+		self.loader.update(frame, &mut events);
 		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh),

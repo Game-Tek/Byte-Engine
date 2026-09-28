@@ -1,7 +1,7 @@
 use std::alloc::Allocator;
 
 use crate::{
-	ShaderHandle, ShaderTypes, image, pipelines, sampler,
+	ShaderHandle, ShaderTypes, pipelines,
 	shader::{self, Sources},
 };
 
@@ -14,8 +14,6 @@ where
 	type Allocator: Allocator;
 	type RasterPipeline;
 	type ComputePipeline;
-	type Image;
-	type Sampler;
 
 	/// Returns the allocator used for device-owned host memory.
 	fn allocator(&self) -> &Self::Allocator;
@@ -41,12 +39,6 @@ where
 
 	/// Creates a compute pipeline from a builder.
 	fn create_compute_pipeline(&mut self, builder: pipelines::compute::Builder) -> Self::ComputePipeline;
-
-	/// Creates an image that can be interned into a rendering context later.
-	fn build_image(&mut self, builder: image::Builder) -> Self::Image;
-
-	/// Creates a sampler that can be interned into a rendering context later.
-	fn build_sampler(&mut self, builder: sampler::Builder) -> Self::Sampler;
 }
 
 /// The `Features` struct selects optional GPU features during device creation.

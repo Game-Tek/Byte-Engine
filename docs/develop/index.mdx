@@ -37,6 +37,15 @@ This command runs the rendering tests for your operating system's active GHI
 backend. Presentation and ray-tracing tests that are marked as ignored remain
 skipped.
 
+The loader tests need a GPU too. Run them when you change resource loading, and
+read the [loading timeline](/docs/develop/rendering/loading) design first:
+
+```bash
+cargo nextest run --ignore-default-filter \
+  -p byte-engine \
+  --test loading
+```
+
 ## Run benchmarks
 
 Run all available benchmarks from the repository root:

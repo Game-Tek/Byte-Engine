@@ -1,0 +1,220 @@
+---
+title: Loading timeline
+description: Keep resource loading on its own timeline so it never blocks rendering.
+icon: Download
+---
+
+Read this page before you change resource loading, texture or mesh uploads, a
+rendering pipeline's loader, or the GHI calls they use. It explains how the
+loader and the renderer share one GPU without waiting on each other, and which
+rules keep it that way.
+
+<Callout type="info" title="Change the rules on purpose">
+	The rules on this page are the renderer's loading contract. If a change needs
+	to break one, treat it as a design change: update this page in the same
+	change and explain why.
+</Callout>
+
+## Two independent timelines
+
+Rendering and loading run on separate timelines. Each has its own thread, its
+own GHI context, and its own queue.
+
+| | Render timeline | Loading timeline |
+|---|---|---|
+| Thread | The main thread | The loading thread that `launch_deferred_tasks_thread` starts |
+| Context owner | `Renderer` | `Loader` |
+| Queue | Graphics queue | Copy queue |
+| Work | Records, submits, and presents frames | Reads, decodes, stages, and copies resources |
+
+Both contexts come from one `GraphicsDevice`. `GraphicsApplication` creates it
+at startup and keeps it until both contexts are dropped. Neither timeline owns
+the other.
+
+```text
+                 GraphicsDevice (owned by GraphicsApplication)
+                /                                             \
+  render context on the graphics queue        loader context on the copy queue
+  main thread: record, submit, present        loading thread: lanes, batches, submit, wait
+                \                                             /
+                 LoaderClient: requests out, Ready and Failed in
+```
+
+The only link between the timelines while the app runs is each pipeline's
+`LoaderClient`. The render thread sends requests and adopts `Ready` and `Failed`
+notifications. It knows nothing else about the loader.
+
+## How a resource becomes resident
+
+1. A pipeline calls `LoaderClient::request` on the render thread.
+2. A lane on the loading thread picks up the request and reads the resource's
+   metadata. It requests every resource that metadata names, such as a mesh's
+   materials or a material's textures, with `LoaderLane::request`. Other lanes
+   start loading those right away.
+3. The lane reads and decodes the resource, and writes its bytes into a
+   `StagingLease`.
+4. The lane hands the loader an upload as plain data through
+   `LoaderLane::upload` or `upload_native_image`.
+5. The loader adds the upload to the current batch, submits the batch on the
+   copy queue, and waits for it without blocking its thread.
+6. When the batch finishes, the loader returns its staging to the arena, exports
+   each finished image from the loader context, and answers the lane.
+7. The lane sends `Ready` with a resident value that holds detached images, never
+   handles.
+8. On its next frame, the pipeline polls its client, interns the images into the
+   render context, and writes descriptors with samplers it owns. Resources can
+   become ready in any order, so adopt each one on its own.
+
+## Rules that keep rendering independent
+
+Keep these rules when you change loading. Each one prevents a regression that
+already happened once or that this design exists to avoid.
+
+- **The render thread never waits on the loader.** It doesn't share a lock with
+  the loader, record loader copies, or wait on a loader fence. It only adopts
+  notifications.
+- **The renderer doesn't own the loader.** `GraphicsApplication` owns the
+  `GraphicsDevice` and creates the `Loader` when the first pipeline asks for it
+  with `loader_mut`. `launch_deferred_tasks_thread` moves the loader to the
+  loading thread. Don't create, hold, or start the loader from `Renderer`.
+- **A notification means the upload is complete.** The loader answers a lane
+  only after its batch finished. Anything a `Ready` names can be used in the
+  frame that adopts it, without a wait.
+- **Resources cross contexts only through GHI.** Images move with `export_image`
+  and `intern_image`. Render buffers that lanes write are shared once, at setup,
+  with `share_buffer` and `import_buffer`. A resident value never carries a
+  loader-context handle.
+- **Resource state travels with the resource.** When a backend needs state from
+  the loading timeline, such as a Vulkan image layout, keep it in the exported
+  image and restore it in `intern_image`. Don't add render-side logic about
+  loader work.
+- **Lanes schedule dependencies.** A load requests the resources its metadata
+  names as soon as it reads them, before its own upload, and never waits for a
+  render frame to relay them. Lanes coalesce requests where they pick them up, so
+  a resource with several parents loads once.
+- **The loader owns all GPU work of loading.** Lanes do CPU work and file I/O
+  only. They never touch a context.
+- **Lanes only append to shared buffers.** A lane writes only ranges that no
+  frame reads yet, and publishes a range only after its copy finished.
+- **Samplers belong to pipelines.** A pipeline creates its few samplers at setup.
+  Loaded textures don't carry samplers.
+
+## How the loader batches uploads
+
+The loader collects uploads from every lane of every pipeline into one batch.
+It submits the batch as soon as any of these is true:
+
+- The batch window passed. Set the window in milliseconds with the
+  `render.loading.batch-window` parameter. It defaults to 4.
+- Staging ran out, so a lane waits for space that only a finished batch can free.
+- Every busy lane is waiting on the loader, so waiting longer can't add an upload.
+- Every lane is gone.
+
+Only one batch is on the copy queue at a time. While it runs, the loader keeps
+collecting the next batch, and lanes keep reading and decoding. The loader
+checks the running batch with `Context::poll_synchronizer` every 0.5 ms instead
+of blocking, because the lanes share its thread.
+
+<Callout type="info" title="Why busy lanes end a batch early">
+	A lane that loads a flipbook's frames one after another waits for each upload
+	before it prepares the next. Without the busy-lane rule, each of those uploads
+	waits out the whole batch window alone. In the isometric sandbox, that made
+	loading slower than the old design until the rule was added.
+</Callout>
+
+## Follow the staging rules
+
+All lanes share one 32 MB staging arena that the loader owns.
+
+- Put all of an upload's bytes in one lease, and hand the lease to the loader
+  before you allocate another. If lanes hold unsubmitted leases while they wait
+  for more space, a full arena deadlocks.
+- Place each region relative to the start of its lease. The loader adds the
+  lease's offset when it records the copy.
+- Don't keep or drop the lease yourself after you hand it over. The loader
+  returns it to the arena once the copy finished.
+- An upload larger than the whole arena fails with an error instead of waiting.
+
+## Why the design looks like this
+
+The renderer and every loader lane used to share one GHI context behind a mutex.
+Measurements in the isometric sandbox showed why that was too slow:
+
+- The render thread held the lock through each frame, including while
+  `acquire_swapchain_images` waited for the display. A loader could only take
+  the lock in the short gap between frames.
+- Each texture took the lock three times: to intern its image, to record and
+  submit its copy, and to wait for the copy.
+- Lanes share one thread, so a lane blocked on the lock stopped every other lane
+  and the staging worker too.
+- A loader waited on the GPU while it held the lock, so the render thread could
+  end up waiting on loader copies queued behind frame work.
+
+Loading the sandbox's 23 startup resources on Metal, three runs each:
+
+| | Shared context lock | Loading timeline |
+|---|---|---|
+| First upload to last resident | 241–568 ms | 105–124 ms |
+| Time loaders waited on the lock | 131–351 ms | None |
+| Frames until everything is resident | 21–58 | 5–7 |
+| Render-thread tick interval, p95 | About 9.4 ms | About 9.4 ms |
+
+When you change loading, measure it the same way. Run the isometric sandbox
+with `--kill-after=600`, log timestamps for the first upload and for each
+resource that becomes resident, and compare tick intervals while loading
+against the steady state.
+
+## Backend contract
+
+A GHI backend supports the loading timeline when it provides all of these:
+
+- Several contexts from one device, each of which can move to another thread.
+  Contexts that submit to the same native queue share one lock.
+- A copy queue, requested as `WorkloadTypes::TRANSFER` next to the graphics queue.
+- `Context::export_image` and `intern_image`, which move an image and its
+  tracked state between contexts. A detached image dropped before it's interned
+  frees its memory.
+- `Context::share_buffer` and `import_buffer` for static buffers. The importing
+  context only records copies with the handle, and the owning context sees those
+  writes before it next reads the buffer.
+- `Context::poll_synchronizer`, which reports completion without blocking.
+
+Metal implements the contract. Vulkan and DX12 don't yet, so Linux and Windows
+builds fail until they do. `todo.md` lists what each backend needs.
+
+## Run the tests that guard the design
+
+Run these tests when you change loading or the GHI calls above. They need a
+GPU, so the default Nextest profile skips them:
+
+```bash
+cargo nextest run --ignore-default-filter -p byte-engine-ghi --test rendering
+cargo nextest run --ignore-default-filter -p byte-engine --test loading
+```
+
+| Test | What it checks |
+|---|---|
+| `exported_image_keeps_contents_and_mips` | An image filled in one context keeps its contents and mip count in another. |
+| `imported_buffer_receives_copies` | A context sees the copies another context made into its shared buffer. |
+| `polled_synchronizer_reports_completion` | Polling reports completion without blocking and frees the synchronizer. |
+| `uploads_are_visible_when_ready_even_beyond_staging_capacity` | Uploads larger than the staging arena all finish, and each `Ready` arrives only after its bytes landed. |
+| `dependencies_load_once_without_render_requests` | Lanes load the dependencies a load names without a render-side request, and a resource with two parents loads once. |
+
+The default test run also covers
+`full_arena_reports_exhaustion_until_a_lease_returns`, which checks the signal
+that ends a batch when staging runs out.
+
+## Known limits
+
+- Lanes are cooperative tasks on one thread. A long synchronous decode step
+  delays batch submission and completion checks.
+- Each batch costs one copy-queue round trip, about 0.75 ms on Metal. A lane that
+  loads a flipbook's frames one after another pays it for every frame. Load the
+  frames concurrently to let them share a batch.
+- Vulkan and DX12 still compile pipelines when the render thread interns them.
+  `todo.md` tracks moving that work to the compiler threads.
+
+## Related API
+
+- [`rendering` module](/docs/api/latest/byte_engine/rendering): the `loading`,
+  `resource_loading`, and `device` modules and their types.

@@ -1,20 +1,23 @@
 //! GPU geometry storage for the visibility pipeline: parallel vertex streams, meshlet records, and skinning sources.
 //!
-//! [`PreparedMesh`] is built on a worker without touching GPU state, then [`GeometryBuffers::write_mesh`] appends
-//! it to the fixed-capacity buffers on the render thread and returns the [`MeshData`] ranges the scene needs.
+//! [`PreparedMesh`] is built on a loader lane without touching GPU state. [`GeometryBuffers::append_mesh`] then
+//! places it after every resident mesh and returns the [`MeshData`] ranges the scene needs, with the copies the
+//! loader records to fill them.
 
 mod prepare;
 
 use std::sync::Arc;
 
-use ghi::{command_buffer::CommandBufferRecording as _, context::ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use resource_management::resources::skeleton::SkinBinding;
+use smallvec::SmallVec;
 
-pub(crate) use self::prepare::{PreparedMesh, encode_octahedral_unit_vector};
+pub(crate) use self::prepare::{GENERATED_MESH_MATERIAL, PreparedMesh, encode_octahedral_unit_vector};
 use super::layout::{
 	MAX_ADDRESSABLE_MESHLETS, MAX_INSTANCE_MESHLETS, RuntimeVertexNormal, RuntimeVertexUv, ShaderMeshletData,
 	VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
+use crate::rendering::loading::{BufferRegion, Loader};
 
 /// Byte strides of the compact bind-pose streams consumed by GPU skinning.
 pub(crate) const SKINNING_POSITION_STRIDE: usize = std::mem::size_of::<[f32; 3]>();
@@ -176,6 +179,8 @@ pub(crate) struct GeometryHandles {
 }
 
 /// The `GeometryBuffers` struct appends meshes to the geometry streams in the order they become resident.
+///
+/// It lives with the loader. Its handles name the render context's streams as the loader context imported them.
 pub(crate) struct GeometryBuffers {
 	counts: GeometryCounts,
 	handles: GeometryHandles,
@@ -185,7 +190,7 @@ impl GeometryHandles {
 	/// Creates every geometry stream with the element count `capacity` gives it.
 	///
 	/// `capacity` comes from [`super::VisibilityPipelineSettings::geometry_capacity`], which only holds validated values.
-	/// Next, hand the handles to [`GeometryBuffers::new`] so meshes can be appended.
+	/// Next, hand the handles to [`GeometryBuffers::import`] so the loader can append meshes.
 	pub(crate) fn new(context: &mut ghi::implementation::Context, capacity: GeometryCapacity) -> Self {
 		debug_assert!(capacity.validate().is_ok());
 		let geometry = ghi::Uses::Vertex | ghi::Uses::AccelerationStructureBuild | ghi::Uses::Storage;
@@ -221,25 +226,43 @@ impl GeometryHandles {
 }
 
 impl GeometryBuffers {
-	/// Creates the append cursor over already-created geometry streams.
-	pub(crate) fn new(handles: GeometryHandles) -> Self {
+	/// Imports every stream `handles` names from the render context into the loader and starts an empty cursor.
+	pub(crate) fn import(handles: &GeometryHandles, render: &ghi::implementation::Context, loader: &mut Loader) -> Self {
+		fn import<T: ?Sized>(
+			render: &ghi::implementation::Context,
+			loader: &mut Loader,
+			buffer: ghi::BufferHandle<T>,
+		) -> ghi::BufferHandle<T> {
+			loader.import_buffer(render.share_buffer(buffer))
+		}
 		Self {
 			counts: GeometryCounts::default(),
-			handles,
+			handles: GeometryHandles {
+				capacity: handles.capacity,
+				vertex_positions: import(render, loader, handles.vertex_positions),
+				vertex_normals: import(render, loader, handles.vertex_normals),
+				vertex_uvs: import(render, loader, handles.vertex_uvs),
+				vertex_indices: import(render, loader, handles.vertex_indices),
+				primitive_indices: import(render, loader, handles.primitive_indices),
+				meshlets: import(render, loader, handles.meshlets),
+				skinning_rest_positions: import(render, loader, handles.skinning_rest_positions),
+				skinning_rest_normals: import(render, loader, handles.skinning_rest_normals),
+				skinning_joints: import(render, loader, handles.skinning_joints),
+				skinning_weights: import(render, loader, handles.skinning_weights),
+			},
 		}
 	}
 
-	/// Records the copies that append a prepared mesh and returns where it now lives.
+	/// Places a prepared mesh after every resident mesh and returns where it lives with the copies that fill it.
 	///
 	/// `material_indices` supplies the render-thread material slot for each prepared primitive. Nothing is
-	/// appended when the mesh does not fit, so partial residency is never published.
-	pub(crate) fn write_mesh(
+	/// reserved when the mesh does not fit, so partial residency is never published. Hand the copies to the loader
+	/// with the mesh's staging lease, and publish the mesh only once they finished.
+	pub(crate) fn append_mesh(
 		&mut self,
-		c: &mut ghi::implementation::CommandBufferRecording<'_>,
-		staging_buffer: ghi::BaseBufferHandle,
 		prepared: &PreparedMesh,
 		material_indices: &[u32],
-	) -> Option<MeshData> {
+	) -> Option<(MeshData, SmallVec<[BufferRegion; 16]>)> {
 		// Task shaders address an instance's meshlets relative to its first one, with a bounded index width.
 		if let Some(primitive) = prepared
 			.primitives
@@ -254,18 +277,15 @@ impl GeometryBuffers {
 		}
 		let next_counts = self.counts.grown_by(prepared.counts, &self.handles.capacity)?;
 		let base = &self.counts;
-		let staging = prepared.staging.offset();
 		let streams = &prepared.streams;
-		let copy = |source: &std::ops::Range<usize>, destination: ghi::BaseBufferHandle, destination_offset: usize| {
-			ghi::BufferCopyDescriptor::new(
-				staging_buffer,
-				staging + source.start,
+		let copy =
+			|source: &std::ops::Range<usize>, destination: ghi::BaseBufferHandle, destination_offset: usize| BufferRegion {
+				offset: source.start,
 				destination,
 				destination_offset,
-				source.len(),
-			)
-		};
-		c.copy_buffers(&[
+				size: source.len(),
+			};
+		let mut copies = SmallVec::<[BufferRegion; 16]>::from_iter([
 			copy(
 				&streams.positions,
 				self.handles.vertex_positions.into(),
@@ -310,7 +330,7 @@ impl GeometryBuffers {
 				{
 					let destination_vertex = (base.skinning_vertices + *relative_offset) as usize;
 					*relative_offset += base.skinning_vertices;
-					c.copy_buffers(&[
+					copies.extend([
 						copy(
 							&skinning.positions,
 							self.handles.skinning_rest_positions.into(),
@@ -346,7 +366,7 @@ impl GeometryBuffers {
 			meshlet_offset: base.meshlets,
 		};
 		self.counts = next_counts;
-		Some(mesh)
+		Some((mesh, copies))
 	}
 }
 

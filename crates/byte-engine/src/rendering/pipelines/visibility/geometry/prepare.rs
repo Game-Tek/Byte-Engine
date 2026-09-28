@@ -2,7 +2,7 @@
 //!
 //! Preparation loads or generates a mesh into one leased region of the upload arena and converts attributes into
 //! the runtime formats (octahedral normals, half-float UVs, [`ShaderMeshletData`] records). It never assigns
-//! renderer slots or buffer offsets; that happens in [`GeometryBuffers::write_mesh`].
+//! renderer slots or buffer offsets; that happens in [`GeometryBuffers::append_mesh`].
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -31,11 +31,11 @@ const F16_UV_STRIDE: usize = 4;
 /// Upload arena alignment that satisfies every backend's buffer-copy requirement.
 const STAGING_ALIGNMENT: usize = 256;
 /// Material used by generated meshes.
-const GENERATED_MESH_MATERIAL: &str = "white_solid.bema";
+pub(crate) const GENERATED_MESH_MATERIAL: &str = "white_solid.bema";
 
-/// The `PreparedMesh` struct retains a mesh's converted geometry in its staging lease until the transfer frame completes.
+/// The `PreparedMesh` struct retains a mesh's converted geometry in its staging lease until the loader copied it.
 pub(crate) struct PreparedMesh {
-	pub(super) staging: StagingLease,
+	pub(crate) staging: StagingLease,
 	pub(super) streams: PreparedStreams,
 	pub(crate) primitives: Vec<PreparedPrimitive>,
 	pub(crate) counts: GeometryCounts,
@@ -55,7 +55,7 @@ pub(super) struct PreparedStreams {
 /// The `PreparedPrimitive` struct is one primitive's record plus the material it needs resolved on the render thread.
 pub(crate) struct PreparedPrimitive {
 	pub(crate) material_id: String,
-	/// `material_index` and `skinning_source_vertex_offset` are finalized by [`GeometryBuffers::write_mesh`].
+	/// `material_index` and `skinning_source_vertex_offset` are finalized by [`GeometryBuffers::append_mesh`].
 	pub(crate) primitive: MeshPrimitive,
 	pub(super) skinning: Option<SkinningCopy>,
 }
@@ -71,7 +71,7 @@ pub(super) struct SkinningCopy {
 /// The `SkinningStagingBases` struct locates the start of each bind-pose source stream in the staging lease.
 ///
 /// A baked primitive records its stream offsets relative to its semantic's aggregate stream, while the copies in
-/// [`GeometryBuffers::write_mesh`] address the staging lease. These bases convert between the two.
+/// [`GeometryBuffers::append_mesh`] address the staging lease. These bases convert between the two.
 #[derive(Clone)]
 struct SkinningStagingBases {
 	positions: Range<usize>,
@@ -824,7 +824,7 @@ mod tests {
 	/// Verifies each skinned source stream is copied from its own staging range.
 	///
 	/// A baked primitive records stream offsets relative to its semantic's aggregate stream, while the copies in
-	/// `write_mesh` address the staging lease. Using a baked offset directly aliased every skinned stream onto the
+	/// `append_mesh` address the staging lease. Using a baked offset directly aliased every skinned stream onto the
 	/// front of the lease, so joints and weights read position bytes and the mesh rendered in its bind pose.
 	#[test]
 	fn skinned_source_streams_occupy_distinct_staging_ranges() {

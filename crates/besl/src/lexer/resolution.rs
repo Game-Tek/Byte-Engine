@@ -11,10 +11,21 @@ pub(super) enum DescendantSearch {
 }
 
 /// Resolves a node reference by searching the current lexical scope chain.
+///
+/// A function in the chain is one the lookup runs inside, so its parameters and earlier locals are visible. Functions
+/// reached while searching an enclosing scope keep theirs private. See [`find_descendant`].
 pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeReference> {
 	for node in chain.iter().rev() {
 		let reference = match node.borrow().node() {
 			Nodes::Intrinsic { .. } => find_descendant(node, name, DescendantSearch::Any),
+			Nodes::Function {
+				name: function_name,
+				params,
+				statements,
+				..
+			} => (function_name == name)
+				.then(|| node.clone())
+				.or_else(|| find_in_function(params, statements, name, DescendantSearch::NonIntrinsic)),
 			_ => find_descendant(node, name, DescendantSearch::NonIntrinsic),
 		};
 
@@ -26,8 +37,13 @@ pub(super) fn get_reference(chain: &[NodeReference], name: &str) -> Option<NodeR
 	None
 }
 
+/// Resolves a type name to its struct declaration.
+///
+/// Only struct nodes declare types. Accepting any named node would let a type name such as `root` or a function's own
+/// name point back at an ancestor, which forms an `Rc` cycle that is never freed.
 pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<NodeReference, LexError> {
-	if let Some(existing) = get_reference(chain, type_name) {
+	let existing = get_reference(chain, type_name);
+	if let Some(existing) = existing.filter(|node| matches!(node.borrow().node(), Nodes::Struct { .. })) {
 		return Ok(existing);
 	}
 
@@ -50,7 +66,7 @@ pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<N
 		return resolve_array_type(chain, &element_type, count);
 	}
 
-	get_reference(chain, type_name).ok_or(LexError::ReferenceToUndefinedType {
+	Err(LexError::ReferenceToUndefinedType {
 		type_name: type_name.to_string(),
 	})
 }
@@ -292,6 +308,19 @@ pub(super) fn find_descendant(node: &NodeReference, child_name: &str, mode: Desc
 	}
 
 	let result = match node.borrow().node() {
+		// Lexical lookup sees only declared names. Struct fields, a value's type members, and resource members are
+		// reached through `value.member` (see `resolve_accessed_member`), and a function's parameters and locals are
+		// private to it.
+		Nodes::Struct { .. }
+		| Nodes::Member { .. }
+		| Nodes::Parameter { .. }
+		| Nodes::Function { .. }
+		| Nodes::PushConstant { .. }
+		| Nodes::Binding { .. }
+			if mode == DescendantSearch::NonIntrinsic =>
+		{
+			None
+		}
 		Nodes::Scope { children, .. } | Nodes::Struct { fields: children, .. } | Nodes::PushConstant { members: children } => {
 			find_in_children(children, child_name, mode == DescendantSearch::NonIntrinsic, mode)
 		}
@@ -582,7 +611,7 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 				infer_expression_type(right)
 			}
 		}
-		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(function),
+		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(&function.get()),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
 		_ => None,
@@ -791,7 +820,8 @@ pub(super) fn resolve_call_target(
 		}
 	}
 
-	if let Ok(r#type) = resolve_type(chain, name) {
+	// Calls may name an intrinsic or a type constructor, so this fallback accepts any declaration, not only types.
+	if let Some(r#type) = get_reference(chain, name) {
 		let mismatched_intrinsic_with_known_types =
 			matches!(r#type.borrow().node(), Nodes::Intrinsic { .. }) && parameters.iter().all(expression_has_reliable_type);
 		// Resource expressions do not always expose a value type during linking, so keep the established fallback only when

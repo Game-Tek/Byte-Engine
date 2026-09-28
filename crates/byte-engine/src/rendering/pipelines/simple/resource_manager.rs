@@ -140,7 +140,7 @@ impl LoadPipeline for SimpleLoader {
 					.resources
 					.request::<ResourceMesh>(id)
 					.await
-					.map_err(|reason| LoadError(SimpleMeshError::ResourceRequest { id, reason }.to_string()))?;
+					.map_err(|source| LoadError(SimpleMeshError::ResourceRequest { id, source }.to_string()))?;
 				prepare_resource_mesh(resource, staging).await
 			}
 		}
@@ -261,14 +261,14 @@ macro_rules! simple_mesh_errors {
 		/// Errors produced while preparing or storing one simple-pipeline mesh.
 		#[derive(Debug)]
 		pub(crate) enum SimpleMeshError {
-			ResourceRequest { id: &'static str, reason: String },
+			ResourceRequest { id: &'static str, source: resource_management::RequestError },
 			$($variant),+
 		}
 
 		impl std::fmt::Display for SimpleMeshError {
 			fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 				match self {
-					Self::ResourceRequest { id, reason } => write!(formatter, "Simple mesh resource '{id}' could not be requested. The most likely cause is a missing or invalid baked resource. {reason}"),
+					Self::ResourceRequest { id, source } => write!(formatter, "Could not load simple mesh '{id}'. {source}"),
 					$(Self::$variant => formatter.write_str($message)),+
 				}
 			}

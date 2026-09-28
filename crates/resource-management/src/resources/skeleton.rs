@@ -1,4 +1,4 @@
-use crate::{Reference, ReferenceModel, Solver, resource, solver::SolveErrors};
+use crate::{Reference, ReferenceModel, Solver, resource, solver::SolveError};
 
 /// Stores an affine four-by-three matrix as four column vectors.
 ///
@@ -306,7 +306,7 @@ impl<'de> Solver<'de, Skeleton> for SkeletonModel {
 	fn solve(
 		self,
 		_storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Skeleton, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Skeleton, SolveError>> {
 		crate::r#async::future(async move {
 			validate_nodes(&self.nodes)?;
 			Ok(Skeleton { nodes: self.nodes })
@@ -322,10 +322,10 @@ impl crate::StoredModel for SkeletonModel {
 		stored: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Skeleton>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Skeleton>, SolveError>> {
 		crate::r#async::future(async move {
 			let model: SkeletonModel = crate::from_slice(stored.resource()).map_err(|error| {
-				SolveErrors::DeserializationFailed(format!(
+				SolveError::DeserializationFailed(format!(
 					"Skeleton resource could not be deserialized. The most likely cause is incompatible or corrupted skeleton data: {error}."
 				))
 			})?;
@@ -336,7 +336,7 @@ impl crate::StoredModel for SkeletonModel {
 }
 
 /// Validates the parent-before-child ordering needed for allocation-free hierarchy evaluation.
-pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveErrors> {
+pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
 	for (index, node) in nodes.iter().enumerate() {
 		validate_node(
 			index,
@@ -351,7 +351,7 @@ pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveErrors> 
 }
 
 /// Validates a skeleton directly in its archived representation without allocating an owned node tree.
-pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<(), SolveErrors> {
+pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<(), SolveError> {
 	for (index, node) in nodes.iter().enumerate() {
 		let translation = node.rest_local.translation.map(|value| value.to_native());
 		let rotation = node.rest_local.rotation.map(|value| value.to_native());
@@ -375,21 +375,21 @@ fn validate_node(
 	translation: &[f32; 3],
 	rotation: &[f32; 4],
 	scale: &[f32; 3],
-) -> Result<(), SolveErrors> {
+) -> Result<(), SolveError> {
 	if parent.is_some_and(|parent| parent as usize >= index) {
-		return Err(SolveErrors::DeserializationFailed(format!(
+		return Err(SolveError::DeserializationFailed(format!(
 			"Skeleton hierarchy is invalid. The most likely cause is that node {index} references a parent that does not precede it."
 		)));
 	}
 	if !translation.iter().chain(rotation).chain(scale).all(|value| value.is_finite()) {
-		return Err(SolveErrors::DeserializationFailed(format!(
+		return Err(SolveError::DeserializationFailed(format!(
 			"Skeleton rest pose is invalid. The most likely cause is that node {index} contains a non-finite local transform."
 		)));
 	}
 
 	let rotation_length_squared = rotation.iter().map(|value| value * value).sum::<f32>();
 	if (rotation_length_squared - 1.0).abs() > 1.0e-3 {
-		return Err(SolveErrors::DeserializationFailed(format!(
+		return Err(SolveError::DeserializationFailed(format!(
 			"Skeleton rest rotation is invalid. The most likely cause is that node {index} contains a zero-length or non-unit quaternion."
 		)));
 	}

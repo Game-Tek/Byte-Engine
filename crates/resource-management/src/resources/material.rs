@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::{
 	Reference, ReferenceModel, Solver, resource,
 	resources::image::Image,
-	solver::SolveErrors,
+	solver::SolveError,
 	types::{AlphaMode, ShaderTypes},
 };
 
@@ -67,7 +67,7 @@ impl crate::StoredModel for MaterialModel {
 		gr: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Material>, SolveError>> {
 		crate::r#async::future(async move {
 			let MaterialModel {
 				double_sided,
@@ -76,7 +76,7 @@ impl crate::StoredModel for MaterialModel {
 				shaders,
 				model,
 				parameters,
-			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveError::DeserializationFailed(e.to_string()))?;
 
 			let resolved_shaders = super::solve_all(shaders, storage_backend).await?;
 			let resolved_parameters = super::solve_all(parameters, storage_backend).await?;
@@ -114,9 +114,9 @@ impl Default for MaterialCoverage {
 }
 
 // impl <'a, 'de> Solver<'de, RequestReference<'a, Material<'a>>> for ReferenceModel<MaterialModel> {
-// 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<RequestReference<'a, Material<'a>>, SolveErrors> {
-// 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveErrors::StorageError)?;
-// 		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+// 	async fn solve(self, storage_backend: &dyn StorageBackend) -> Result<RequestReference<'a, Material<'a>>, SolveError> {
+// 		let (gr, reader) = storage_backend.read(&self.id).await.ok_or_else(|| SolveError::StorageError)?;
+// 		let MaterialModel { double_sided, alpha_mode, shaders, model, parameters } = MaterialModel::deserialize(bson::Deserializer::new(gr.resource.clone().into())).map_err(|e| SolveError::DeserializationFailed(e.to_string()))?;
 
 // 		Ok(RequestReference::new(Reference::new(&self.id, self.hash, gr.size, Material {
 // 			double_sided,
@@ -146,7 +146,7 @@ impl<'de> Solver<'de, VariantVariable> for VariantVariableModel {
 	fn solve(
 		self,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<VariantVariable, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<VariantVariable, SolveError>> {
 		crate::r#async::future(async move {
 			Ok(VariantVariable {
 				name: self.name,
@@ -216,13 +216,13 @@ impl crate::StoredModel for VariantModel {
 		gr: crate::SerializableResource,
 		reader: crate::resource::resource_handler::MultiResourceReader,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Reference<Variant>, SolveError>> {
 		crate::r#async::future(async move {
 			let VariantModel {
 				material,
 				variables,
 				alpha_mode,
-			} = crate::from_slice(&gr.resource).map_err(|e| SolveErrors::DeserializationFailed(e.to_string()))?;
+			} = crate::from_slice(&gr.resource).map_err(|e| SolveError::DeserializationFailed(e.to_string()))?;
 
 			let material = material.solve(storage_backend).await?;
 			let resolved_variables = super::solve_all(variables, storage_backend).await?;
@@ -380,7 +380,7 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 	fn solve(
 		self,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
-	) -> crate::r#async::BoxedFuture<'de, Result<Parameter, SolveErrors>> {
+	) -> crate::r#async::BoxedFuture<'de, Result<Parameter, SolveError>> {
 		crate::r#async::future(async move {
 			Ok(Parameter {
 				r#type: self.r#type,

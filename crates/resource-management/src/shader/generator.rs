@@ -525,7 +525,7 @@ fn expression_uses_f16(node: &besl::NodeReference) -> bool {
 		} => type_uses_f16(return_type),
 		besl::Nodes::Expression(expression) => match expression {
 			besl::Expressions::Member { source, .. } => expression_uses_f16(source),
-			besl::Expressions::FunctionCall { function, .. } => expression_uses_f16(function),
+			besl::Expressions::FunctionCall { function, .. } => expression_uses_f16(&function.get()),
 			besl::Expressions::IntrinsicCall { intrinsic, .. } => expression_uses_f16(intrinsic),
 			besl::Expressions::Operator { operator, left, right } => {
 				if *operator == besl::Operators::Assignment {
@@ -814,7 +814,7 @@ pub(crate) trait NodeEmitter {
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
 			} => {
-				let function_ref = function.clone();
+				let function_ref = function.get();
 				if self.emit_function_call(string, &function_ref, parameters) {
 					return;
 				}
@@ -1502,6 +1502,7 @@ pub mod tests {
 		RefCell::borrow(&fragment_program()).get_child("main").unwrap()
 	}
 
+	/// Returns the linked program. Keep it alive while you use `main`: it owns the functions `main` calls.
 	pub fn cull_unused_functions() -> besl::NodeReference {
 		let script = r#"
 		used_by_used: fn () -> void {}
@@ -1515,11 +1516,10 @@ pub mod tests {
 		}
 		"#;
 
-		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
-
-		RefCell::borrow(&main_function_node).get_child("main").unwrap()
+		besl::compile_to_besl(&script, None).unwrap()
 	}
 
+	/// Returns the linked program. Keep it alive while you use `main`: it owns the functions `main` calls.
 	pub fn structure() -> besl::NodeReference {
 		let script = r#"
 		Vertex: struct {
@@ -1534,9 +1534,7 @@ pub mod tests {
 		}
 		"#;
 
-		let main_function_node = besl::compile_to_besl(&script, None).unwrap();
-
-		RefCell::borrow(&main_function_node).get_child("main").unwrap()
+		besl::compile_to_besl(&script, None).unwrap()
 	}
 
 	pub fn push_constant() -> besl::NodeReference {

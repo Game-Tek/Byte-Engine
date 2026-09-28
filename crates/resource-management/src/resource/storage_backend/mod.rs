@@ -293,11 +293,43 @@ pub struct QueryPage<T> {
 	pub cursor: Option<QueryCursor>,
 }
 
-/// The `QueryError` enum identifies failures while a storage backend executes a query.
+/// The `QueryError` enum reports why a metadata query produced no page.
+///
+/// Storage backends return [`Self::InvalidCursor`] and [`Self::StorageFailure`].
+/// [`ResourceManager::query`](crate::ResourceManager::query) adds [`Self::Solve`] when a matching record cannot become
+/// a typed resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
 	InvalidCursor,
 	StorageFailure,
+	/// The record `id` matched the query but could not be solved into its typed resource.
+	Solve {
+		id: String,
+		source: crate::solver::SolveError,
+	},
+}
+
+impl std::fmt::Display for QueryError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			QueryError::InvalidCursor => {
+				f.write_str("Failed to query resources. The most likely cause is that the provided cursor is invalid.")
+			}
+			QueryError::StorageFailure => f.write_str(
+				"Failed to query resources. The most likely cause is that the resources database could not be read.",
+			),
+			QueryError::Solve { id, source } => write!(f, "Failed to solve queried resource '{id}'. {source}"),
+		}
+	}
+}
+
+impl std::error::Error for QueryError {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			QueryError::Solve { source, .. } => Some(source),
+			QueryError::InvalidCursor | QueryError::StorageFailure => None,
+		}
+	}
 }
 
 impl<T: ReadStorageBackend> DynReadStorageBackend for T {

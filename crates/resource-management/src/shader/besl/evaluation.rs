@@ -792,7 +792,7 @@ mod tests {
 			let output_node: besl::NodeReference = besl::Node::output("output", vec4f_type.clone(), 0).into();
 
 			let vec3f_call = besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec3f_type,
+				function: vec3f_type.into(),
 				parameters: vec![
 					besl::Node::expression(besl::Expressions::Literal {
 						value: "1.0".to_string(),
@@ -811,7 +811,7 @@ mod tests {
 			.into();
 
 			let vec4f_call = besl::Node::expression(besl::Expressions::FunctionCall {
-				function: vec4f_type,
+				function: vec4f_type.into(),
 				parameters: vec![
 					vec3f_call,
 					besl::Node::expression(besl::Expressions::Literal { value: w.to_string() }).into(),

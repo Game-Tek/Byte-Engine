@@ -246,7 +246,7 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 					besl::Expressions::FunctionCall {
 						parameters, function, ..
 					} => {
-						build_graph_impl(node.clone(), function.clone(), graph, expanded, active, allocator.clone());
+						build_graph_impl(node.clone(), function.get(), graph, expanded, active, allocator.clone());
 
 						for parameter in parameters {
 							build_graph_impl(node.clone(), parameter.clone(), graph, expanded, active, allocator.clone());

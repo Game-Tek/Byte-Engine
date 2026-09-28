@@ -59,19 +59,17 @@ impl NodeReference {
 		Rc::as_ptr(&self.0) as usize
 	}
 
-	/// Returns the main function of the program.
+	/// Returns the program's `main` entry-point function.
+	///
+	/// Only functions count, and the search walks nested scopes, never struct fields or function bodies, so a member
+	/// or local named `main` is never returned.
 	pub fn get_main(&self) -> Option<NodeReference> {
-		if let Some(m) = self.get_descendant("main") {
-			return Some(m);
-		} else {
-			for child in self.get_children()? {
-				if let Some(m) = child.get_main() {
-					return Some(m);
-				}
-			}
+		let node = self.borrow();
+		match node.node() {
+			Nodes::Function { name, .. } if name == "main" => Some(self.clone()),
+			Nodes::Scope { children, .. } => children.iter().find_map(NodeReference::get_main),
+			_ => None,
 		}
-
-		None
 	}
 }
 
@@ -103,6 +101,58 @@ impl Deref for NodeReference {
 
 	fn deref(&self) -> &Self::Target {
 		&self.0
+	}
+}
+
+/// The `CallTarget` struct links a function call to the declaration it calls without letting recursion leak the tree.
+///
+/// A call to a [`Nodes::Function`] holds a weak reference, because the function's own statements may contain the call,
+/// and a strong reference would form an `Rc` cycle that is never freed. Calls to anything else, such as a type
+/// constructor or an array type created on demand, keep a strong reference, because the call may be that node's only
+/// owner. Read the target with [`CallTarget::get`].
+#[derive(Clone)]
+pub struct CallTarget(CallTargetLink);
+
+#[derive(Clone)]
+enum CallTargetLink {
+	Function(Weak<RefCell<Node>>),
+	Owned(NodeReference),
+}
+
+impl CallTarget {
+	/// Returns the called declaration.
+	///
+	/// # Panics
+	///
+	/// Panics if the called function was dropped before the call. The program tree owns every function, so keep the
+	/// tree alive while you use its call nodes.
+	pub fn get(&self) -> NodeReference {
+		match &self.0 {
+			CallTargetLink::Function(function) => NodeReference(function.upgrade().expect(
+				"Called function no longer exists. The most likely cause is that the program tree was dropped while one of its call nodes was still in use.",
+			)),
+			CallTargetLink::Owned(target) => target.clone(),
+		}
+	}
+}
+
+impl From<NodeReference> for CallTarget {
+	fn from(target: NodeReference) -> Self {
+		let is_function = matches!(target.borrow().node(), Nodes::Function { .. });
+		if is_function {
+			CallTarget(CallTargetLink::Function(Rc::downgrade(&target.0)))
+		} else {
+			CallTarget(CallTargetLink::Owned(target))
+		}
+	}
+}
+
+impl std::fmt::Debug for CallTarget {
+	// Print only the name: a recursive function's body contains this call, so printing the whole node would not end.
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let target = self.get();
+		let target = target.borrow();
+		write!(f, "CallTarget({:?})", target.get_name())
 	}
 }
 
@@ -1728,7 +1778,7 @@ pub enum Expressions {
 		value: String,
 	},
 	FunctionCall {
-		function: NodeReference,
+		function: CallTarget,
 		parameters: Vec<NodeReference>,
 	},
 	IntrinsicCall {

@@ -88,7 +88,7 @@ pub use model::{QueryableProperty, QueryableValue};
 pub use reference::Reference;
 pub use reference::ReferenceModel;
 pub use resource::Resource;
-pub use resource::resource_manager::ResourceManager;
+pub use resource::resource_manager::{RequestError, ResourceManager};
 pub use solver::{Solver, StoredModel};
 pub use stream::Stream;
 

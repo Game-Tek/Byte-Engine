@@ -556,10 +556,10 @@ fn shader_artifact_source<'a>(
 async fn prepare_shader(resources: &resource_management::ResourceManager, id: &str) -> Result<PreparedShader, String> {
 	use resource_management::resource::ReadStorageBackend as _;
 
-	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> =
-		resources.request(id).await.map_err(|_| {
-			format!("Shader resource '{id}' could not be loaded. The most likely cause is that the shader asset was not baked.")
-		})?;
+	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> = resources
+		.request(id)
+		.await
+		.map_err(|error| format!("Could not load shader '{id}'. {error}"))?;
 	let stage = shader_type_to_ghi(shader.resource().stage);
 	let artifact = shader.resource().artifact.clone();
 	let workgroup = shader.resource().interface.workgroup_size;

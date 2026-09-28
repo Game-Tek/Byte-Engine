@@ -1787,7 +1787,8 @@ struct PrimitiveOutput {
 
 	#[test]
 	fn cull_unused_functions() {
-		let main = generator::tests::cull_unused_functions();
+		let program = generator::tests::cull_unused_functions();
+		let main = program.get_main().expect("Expected main");
 
 		let shader = Generator::new()
 			.minified(true)
@@ -1801,7 +1802,8 @@ struct PrimitiveOutput {
 
 	#[test]
 	fn structure() {
-		let main = generator::tests::structure();
+		let program = generator::tests::structure();
+		let main = program.get_main().expect("Expected main");
 
 		let shader = Generator::new()
 			.minified(true)

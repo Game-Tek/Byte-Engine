@@ -499,7 +499,7 @@ pub(super) fn assert_rgba_len(width: u32, height: u32, pixels: &[u8]) {
 
 /// Builds a container outside any engine from `setup`'s properties, for tests that lay out elements directly.
 #[cfg(test)]
-pub(in crate::ui::layout) fn detached_container(setup: impl Setup<Container>) -> Container {
+pub(in super::super) fn detached_container(setup: impl Setup<Container>) -> Container {
 	let mut container = Container::default();
 	let _ = setup(Properties {
 		target: &mut container,

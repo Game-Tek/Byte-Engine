@@ -37,7 +37,7 @@ fn scene(count: usize, kind: Scene, alternate: bool) -> engine::Render {
 		for index in 0..count {
 			let fill = ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.7, if alternate { 0.7 } else { 0.9 }).into());
 			let mut card = root
-				.element("card")
+				.element(format!("card{index}"))
 				.container(|c| {
 					c.absolute_position((index % 40 * 48) as u32, (index / 40 * 40) as u32)
 						.width(46.into())
@@ -73,9 +73,18 @@ fn scene(count: usize, kind: Scene, alternate: bool) -> engine::Render {
 			}
 		}
 	});
-	let allocator = bumpalo::Bump::new();
-	let mut snapshot = engine.evaluate(Size::new(1920, 1080), &allocator);
-	engine.render().clone()
+	// Mounted elements resolve over several frames, so evaluate until the render settles.
+	let mut allocator = bumpalo::Bump::new();
+	let mut published = None;
+	loop {
+		allocator.reset();
+		engine.evaluate(Size::new(1920, 1080), &allocator);
+		let revision = engine.render().revision();
+		if published == Some(revision) {
+			break engine.render().clone();
+		}
+		published = Some(revision);
+	}
 }
 
 /// Converts a real render once so geometry benchmarks exclude data adoption.
@@ -397,6 +406,7 @@ fn unchanged_revision(bencher: Bencher) {
 		revision: Some(render.revision()),
 		extent: viewport(),
 		glyph_generation: 0,
+		path_generation: 0,
 		damage: vec![UiPixelRegion::full(viewport())],
 		steps: Vec::new(),
 	};
@@ -404,6 +414,7 @@ fn unchanged_revision(bencher: Bencher) {
 		black_box(frame.matches(
 			black_box(Some(render.revision())),
 			black_box(viewport()),
+			black_box(0),
 			black_box(0),
 			black_box(&frame.damage),
 		))

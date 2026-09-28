@@ -2,7 +2,7 @@
 //! This keeps benchmark access out of the public UI API.
 
 #![feature(allocator_api, const_trait_impl, coerce_unsized, trait_alias, unsize)]
-#![feature(clone_from_ref, generic_const_exprs)]
+#![feature(clone_from_ref, context_ext, generic_const_exprs, local_waker)]
 #![allow(incomplete_features, unused_attributes)]
 
 extern crate utils as engine_utils;

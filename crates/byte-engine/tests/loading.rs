@@ -207,3 +207,31 @@ fn dependencies_load_once_without_render_requests() {
 		"Every node must load exactly once."
 	);
 }
+
+#[test]
+fn reloads_load_a_resident_resource_again() {
+	//! Tests that a reload runs the load again for a resource that is already resident, and that the resources it
+	//! depends on stay resident instead of loading again.
+
+	let device = GraphicsDevice::new(&NoParameters);
+	let loader = Loader::new(&device, &NoParameters);
+	let loads = Arc::new(Mutex::new(Vec::new()));
+	let (mut client, lanes) = spawn(&loader, TreePipeline { loads: loads.clone() }, 2, 8);
+
+	let stop = Arc::new(AtomicBool::new(false));
+	let thread = run_loading_thread(loader, lanes, stop.clone());
+
+	// Node 2 depends on nodes 5 and 6, and on node 3.
+	client.request(2);
+	poll_ready(&mut client, 4, |_| {});
+	client.reload(2);
+	let mut reloaded = Vec::new();
+	poll_ready(&mut client, 1, |node| reloaded.push(node));
+
+	stop.store(true, Ordering::Relaxed);
+	thread.join().unwrap();
+	assert_eq!(reloaded, [2]);
+	let mut loads = loads.lock().unwrap().clone();
+	loads.sort_unstable();
+	assert_eq!(loads, [2, 2, 3, 5, 6], "Only the reloaded node must load twice.");
+}

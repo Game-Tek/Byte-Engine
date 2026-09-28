@@ -125,6 +125,7 @@ fn descriptor_task_is_current(
 mod descriptors;
 mod drop;
 mod pipelines;
+pub(crate) use pipelines::build_raster_pipeline;
 mod resources;
 mod runtime;
 mod traits;

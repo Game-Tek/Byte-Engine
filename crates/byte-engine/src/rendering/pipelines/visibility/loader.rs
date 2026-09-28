@@ -189,6 +189,9 @@ pub(crate) struct VisibilityLoaderClient {
 	meshes: HashMap<MeshKey, MeshData>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
+	/// Reports rebaked material variants, so their materials load again.
+	#[cfg(debug_assertions)]
+	resource_updates: resource_management::resource::ResourceUpdateListener,
 	/// Samples material textures, which repeat outside their bounds.
 	repeat_sampler: ghi::SamplerHandle,
 	/// Samples spherical IES profiles, which must clamp instead of wrapping around the seam.
@@ -268,6 +271,9 @@ impl VisibilityLoaderClient {
 	/// Interns every image that finished loading into `frame`'s context. Drain and retain `events` after renderer
 	/// adoption to reuse its allocation next frame.
 	pub(crate) fn update(&mut self, frame: &mut ghi::implementation::Frame, events: &mut Vec<VisibilityLoaderEvent>) {
+		#[cfg(debug_assertions)]
+		self.reload_rebaked_materials();
+
 		while let Some(event) = self.client.poll() {
 			events.push(match event {
 				LoaderEvent::Ready {
@@ -346,7 +352,8 @@ impl VisibilityLoaderClient {
 			});
 		}
 
-		// Visit each material once, even when many compilation results arrive together.
+		// Visit each material once, even when many compilation results arrive together. A reloaded material replaced
+		// its publication, so it reports its new state here too.
 		for publication in self.materials.values_mut() {
 			let state = self.pipeline_manager.get(publication.material.pipeline);
 			if publication.published == Some(state) {
@@ -381,6 +388,26 @@ impl VisibilityLoaderClient {
 			}
 		}
 	}
+
+	/// Loads every resident material whose variant was rebaked again.
+	///
+	/// The reloaded material replaces the resident one once its pipeline is ready, so its textures, alpha mode,
+	/// coverage, and pipeline all follow the new variant.
+	#[cfg(debug_assertions)]
+	fn reload_rebaked_materials(&mut self) {
+		while let Some(update) = self.resource_updates.read() {
+			if update.class() != "Variant" {
+				continue;
+			}
+			if self
+				.materials
+				.values()
+				.any(|publication| publication.material.id == update.id())
+			{
+				self.client.reload(VisibilityLoadRequest::Material(update.id().to_string()));
+			}
+		}
+	}
 }
 
 /// Creates the visibility pipeline's single loader client and lane pool.
@@ -397,6 +424,8 @@ pub(crate) fn spawn(
 	use ghi::context::ContextCreate as _;
 
 	let pipeline_manager = pipeline_config.pipeline_manager.clone();
+	#[cfg(debug_assertions)]
+	let resource_updates = resource_manager.resource_updates();
 	let visibility_loader = VisibilityLoader {
 		resource_manager,
 		pipeline_config,
@@ -412,6 +441,8 @@ pub(crate) fn spawn(
 			meshes: HashMap::default(),
 			environments: HashMap::default(),
 			materials: HashMap::default(),
+			#[cfg(debug_assertions)]
+			resource_updates,
 			repeat_sampler: render.build_sampler(material_sampler().max_lod(ghi::sampler::UNCLAMPED_MAX_LOD)),
 			clamp_sampler: render.build_sampler(
 				material_sampler()
@@ -582,17 +613,18 @@ impl VisibilityLoader {
 				_ => None,
 			})
 			.collect();
+		let specialization = specialization_entries(&variant.variables);
 		let material = variant.material.resource_mut();
 		if material.model.name != "Visibility" || material.model.pass != "MaterialEvaluation" {
 			return Err(LoadError(format!(
 				"Unsupported visibility material model for {id}. The most likely cause is that this material targets a different render model or pass."
 			)));
 		}
-		if material.shaders().is_empty() {
+		let Some(shader_id) = material.shaders().first().map(|shader| shader.id().to_string()) else {
 			return Err(LoadError(format!(
 				"Visibility material shader is missing for {id}. The most likely cause is that the material was baked without a compute shader."
 			)));
-		}
+		};
 		for texture in texture_ids.iter().flatten() {
 			lane.request(VisibilityLoadRequest::Texture(texture.clone()));
 		}
@@ -607,7 +639,8 @@ impl VisibilityLoader {
 			self.pipeline_config
 				.pipeline_manager
 				.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
-					id.clone(),
+					shader_id,
+					specialization,
 					self.pipeline_config.push_constant_ranges.clone(),
 				));
 		Ok(VisibilityResident::Material(PreparedMaterial {
@@ -796,6 +829,28 @@ impl VisibilityLoader {
 			upward_illuminance,
 		})
 	}
+}
+
+/// Converts a variant's constant parameters into shader specialization constants.
+///
+/// Image parameters bind through texture slots instead, so they never split pipelines.
+fn specialization_entries(
+	variables: &[resource_management::resources::material::VariantVariable],
+) -> Vec<ghi::pipelines::SpecializationMapEntry> {
+	variables
+		.iter()
+		.enumerate()
+		.filter_map(|(index, variable)| match &variable.value {
+			Value::Scalar(value) => ghi::pipelines::SpecializationMapEntry::new(index as u32, "f32".to_string(), *value).into(),
+			Value::Vector3(value) => {
+				ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec3f".to_string(), *value).into()
+			}
+			Value::Vector4(value) => {
+				ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec4f".to_string(), *value).into()
+			}
+			Value::Image(_) => None,
+		})
+		.collect()
 }
 
 /// Returns the illuminance that a baked diffuse irradiance cube delivers to an upward-facing surface.

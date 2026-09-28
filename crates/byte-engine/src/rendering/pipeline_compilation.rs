@@ -3,7 +3,9 @@
 /// The `PipelineKey` struct identifies one complete pipeline compilation input.
 ///
 /// The manager derives this value from the resource ID passed to
-/// [`PipelineManagerClient::request_pipeline`].
+/// [`PipelineManagerClient::request_pipeline`], or from every input of a
+/// [`SpecializedComputePipelineRequest`]. Requests with equal keys share one
+/// compiled pipeline.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PipelineKey(u64);
 
@@ -22,26 +24,29 @@ impl PipelineKey {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PipelineRef(PipelineKey);
 
-/// The `SpecializedComputePipelineRequest` struct packages one material variant's compute pipeline inputs.
+/// The `SpecializedComputePipelineRequest` struct describes a specialized compute pipeline by everything it compiles from.
 ///
-/// The material variant resource supplies its current shader and specialization
-/// values each time the request is compiled. Pass this request to
-/// [`PipelineManagerClient::request_specialized_compute_pipeline`] to reuse the
-/// renderer's existing pipeline compilation workers.
-#[derive(Clone)]
+/// Material variants that use the same shader, specialization constants, and
+/// push-constant ranges share one pipeline, even when they bind different
+/// textures. Pass this request to
+/// [`PipelineManagerClient::request_specialized_compute_pipeline`].
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SpecializedComputePipelineRequest {
-	material_variant_id: String,
+	shader_id: String,
+	specialization: Vec<ghi::pipelines::SpecializationMapEntry>,
 	push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
 }
 
 impl SpecializedComputePipelineRequest {
-	/// Creates a specialized compute request whose stable variant ID controls request coalescing.
+	/// Creates a request from the compute shader resource ID and the constants that specialize it.
 	pub(crate) fn new(
-		material_variant_id: impl Into<String>,
+		shader_id: impl Into<String>,
+		specialization: Vec<ghi::pipelines::SpecializationMapEntry>,
 		push_constant_ranges: Vec<ghi::pipelines::PushConstantRange>,
 	) -> Self {
 		Self {
-			material_variant_id: material_variant_id.into(),
+			shader_id: shader_id.into(),
+			specialization,
 			push_constant_ranges,
 		}
 	}
@@ -62,7 +67,7 @@ pub enum PipelineState {
 pub(crate) struct ComputePipeline {
 	pub(crate) handle: ghi::PipelineHandle,
 	pub(crate) workgroup: utils::Extent,
-	pub(crate) bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	pub(crate) bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
 }
 
 /// The `ComputePipelines` struct lends published compute pipelines to descriptor adoption without copying their reflected bindings.
@@ -95,9 +100,11 @@ impl PipelineManagerClient {
 		)
 	}
 
-	/// Requests a material-specialized compute pipeline without waiting for shader loading or compilation.
+	/// Requests a specialized compute pipeline without waiting for shader loading or compilation.
+	///
+	/// Equal requests return the same [`PipelineRef`] and compile once.
 	pub(crate) fn request_specialized_compute_pipeline(&self, request: SpecializedComputePipelineRequest) -> PipelineRef {
-		let key = pipeline_key(PipelineRequestNamespace::SpecializedCompute, &request.material_variant_id);
+		let key = pipeline_key(PipelineRequestNamespace::SpecializedCompute, &request);
 		self.request(key, PipelineRequestKind::SpecializedCompute(request))
 	}
 
@@ -121,8 +128,12 @@ impl PipelineManagerClient {
 	}
 
 	/// Recompiles requests rooted at a resource replaced by development asset baking.
+	///
+	/// A pipeline resource inherits its shaders' sources, so a shader edit updates the pipeline root without naming
+	/// the shader. Clear every prepared shader so the rebuilt pipelines read the new bytes.
 	#[cfg(debug_assertions)]
 	pub(crate) fn resource_updated(&self, id: &str) {
+		self.shared.shaders.lock().clear();
 		let requests = {
 			let mut entries = self.shared.entries.write();
 			entries
@@ -203,6 +214,12 @@ impl PipelineManagerClient {
 pub struct PipelineManagerServer {
 	factory: ghi::implementation::Factory,
 	resource_manager: Option<crate::core::EntityHandle<resource_management::ResourceManager>>,
+	shared: Arc<PipelineManagerShared>,
+	/// Shaders this server's factory already created, keyed by shader resource ID.
+	///
+	/// Each handle is reused only while the shared cache still hands out the same
+	/// prepared shader, so a rebaked shader gets a new handle.
+	shaders: HashMap<String, (Arc<PreparedShader>, ghi::ShaderHandle)>,
 	requests: kanal::AsyncReceiver<PipelineRequest>,
 	completions: kanal::Sender<PipelineCompletion>,
 }
@@ -235,26 +252,23 @@ impl PipelineManagerServer {
 		use ghi::Device as _;
 		use resource_management::resources::pipeline::PipelineKind;
 
-		let resources = self.resource_manager.as_ref().ok_or_else(|| {
-			"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager.".to_string()
-		})?;
+		let resources = self.resource_manager.clone().ok_or_else(missing_resource_manager)?;
 		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
 			resources.request(id).await.map_err(|_| {
 				format!(
 					"Pipeline resource '{id}' could not be loaded. The most likely cause is that the pipeline asset was not baked."
 				)
 			})?;
-		match &pipeline.resource().kind {
+		let pipeline = pipeline.resource();
+		match &pipeline.kind {
 			PipelineKind::Compute { shader, push_constants } => {
-				let prepared = prepare_shader(resources, shader).await?;
+				let prepared = shared_shader(&self.shared, &resources, shader).await?;
 				let workgroup = prepared.workgroup.ok_or_else(|| {
 					format!(
 						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
 					)
 				})?;
-				let mut prepared = prepared;
-				let bindings = std::mem::take(&mut prepared.bindings);
-				let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
+				let (shader, stage) = self.adopt_shader(&prepared)?;
 				let ranges = push_constants
 					.iter()
 					.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
@@ -262,10 +276,10 @@ impl PipelineManagerServer {
 				Ok(DetachedPipeline::Compute {
 					pipeline: self.factory.create_compute_pipeline(
 						ghi::pipelines::compute::Builder::new(&ranges, ghi::ShaderParameter::new(&shader, stage))
-							.name(&pipeline.resource().name),
+							.name(&pipeline.name),
 					),
 					workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
-					bindings,
+					bindings: prepared.bindings.clone(),
 				})
 			}
 			PipelineKind::Raster {
@@ -278,13 +292,14 @@ impl PipelineManagerServer {
 				fill_mode,
 				depth_write,
 			} => {
-				// Resource reads and debug bakes are independent of mutable GHI state, so
+				// Shader reads and debug bakes are independent of mutable GHI state, so
 				// prepare every shader before adopting handles in descriptor order.
 				let prepared =
-					utils::r#async::try_join_all(shaders.iter().map(|shader| prepare_shader(resources, shader))).await?;
+					utils::r#async::try_join_all(shaders.iter().map(|shader| shared_shader(&self.shared, &resources, shader)))
+						.await?;
 				let loaded = prepared
-					.into_iter()
-					.map(|shader| adopt_shader(&mut self.factory, shader))
+					.iter()
+					.map(|shader| self.adopt_shader(shader))
 					.collect::<Result<Vec<_>, _>>()?;
 				let parameters = loaded
 					.iter()
@@ -302,7 +317,7 @@ impl PipelineManagerServer {
 					.collect::<Vec<_>>();
 				let targets = attachments.iter().map(attachment).collect::<Vec<_>>();
 				let builder = ghi::pipelines::raster::Builder::new(&ranges, &vertices, &parameters, &targets)
-					.name(&pipeline.resource().name)
+					.name(&pipeline.name)
 					.face_winding(match face_winding {
 						resource_management::resources::pipeline::FaceWinding::Clockwise => {
 							ghi::pipelines::raster::FaceWinding::Clockwise
@@ -328,92 +343,126 @@ impl PipelineManagerServer {
 		}
 	}
 
-	/// Loads one shader resource and creates its material-specialized detached compute pipeline.
+	/// Creates a specialized detached compute pipeline from its shader and constants.
 	async fn compile_specialized_compute_pipeline(
 		&mut self,
 		request: SpecializedComputePipelineRequest,
 	) -> Result<DetachedPipeline, String> {
 		use ghi::Device as _;
 
-		let resources = self.resource_manager.as_ref().ok_or_else(|| {
-			"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager."
-				.to_string()
-		})?;
+		let resources = self.resource_manager.clone().ok_or_else(missing_resource_manager)?;
 		let SpecializedComputePipelineRequest {
-			material_variant_id,
+			shader_id,
+			specialization,
 			push_constant_ranges,
 		} = request;
-		let variant: resource_management::Reference<resource_management::resources::material::Variant> =
-			resources.request(&material_variant_id).await.map_err(|_| {
-				format!(
-					"Material variant '{material_variant_id}' could not be loaded. The most likely cause is that the material asset was not baked."
-				)
-			})?;
-		let shader_resource_id = variant
-			.resource()
-			.material
-			.resource()
-			.shaders()
-			.first()
-			.map(|shader| shader.id().to_string())
-			.ok_or_else(|| {
-				format!(
-					"Specialized compute pipeline '{material_variant_id}' has no shader. The most likely cause is that the material was baked without a compute shader."
-				)
-			})?;
-		let specialization_map_entries = variant
-			.resource()
-			.variables
-			.iter()
-			.enumerate()
-			.filter_map(|(index, variable)| match &variable.value {
-				resource_management::resources::material::Value::Scalar(value) => {
-					ghi::pipelines::SpecializationMapEntry::new(index as u32, "f32".to_string(), *value).into()
-				}
-				resource_management::resources::material::Value::Vector3(value) => {
-					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec3f".to_string(), *value).into()
-				}
-				resource_management::resources::material::Value::Vector4(value) => {
-					ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec4f".to_string(), *value).into()
-				}
-				resource_management::resources::material::Value::Image(_) => None,
-			})
-			.collect::<Vec<_>>();
-		let prepared = prepare_shader(resources, &shader_resource_id).await?;
+		let prepared = shared_shader(&self.shared, &resources, &shader_id).await?;
 		if !matches!(prepared.stage, ghi::ShaderTypes::Compute) {
 			return Err(format!(
-				"Specialized compute pipeline '{material_variant_id}' uses non-compute shader '{shader_resource_id}'. The most likely cause is that the material variant references the wrong shader stage."
+				"Specialized compute pipeline uses non-compute shader '{shader_id}'. The most likely cause is that the material variant references the wrong shader stage."
 			));
 		}
 		let workgroup = prepared.workgroup.ok_or_else(|| {
 			format!(
-				"Specialized compute pipeline '{material_variant_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
+				"Specialized compute shader '{shader_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
 			)
 		})?;
-		let mut prepared = prepared;
-		let bindings = std::mem::take(&mut prepared.bindings);
-		let (shader, stage) = adopt_shader(&mut self.factory, prepared)?;
-		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(&specialization_map_entries);
+		let (shader, stage) = self.adopt_shader(&prepared)?;
+		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(&specialization);
 
 		Ok(DetachedPipeline::Compute {
-			pipeline: self.factory.create_compute_pipeline(
-				ghi::pipelines::compute::Builder::new(&push_constant_ranges, shader).name(&material_variant_id),
-			),
+			pipeline: self
+				.factory
+				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(&push_constant_ranges, shader).name(&shader_id)),
 			workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
-			bindings,
+			bindings: prepared.bindings.clone(),
 		})
+	}
+
+	/// Returns this factory's shader handle for a prepared shader, creating the native shader only once.
+	fn adopt_shader(&mut self, prepared: &Arc<PreparedShader>) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
+		use ghi::Device as _;
+
+		if let Some((adopted, handle)) = self.shaders.get(&prepared.id)
+			&& Arc::ptr_eq(adopted, prepared)
+		{
+			return Ok((*handle, prepared.stage));
+		}
+		let source = shader_artifact_source(&prepared.artifact, prepared.workgroup, prepared.backing.as_slice())?;
+		let handle = self
+			.factory
+			.create_shader(
+				Some(&prepared.id),
+				source,
+				prepared.stage,
+				prepared.descriptors.iter().copied(),
+			)
+			.map_err(|_| {
+				format!(
+					"Shader '{}' could not be created. The most likely cause is an incompatible persisted interface.",
+					prepared.id
+				)
+			})?;
+		self.shaders.insert(prepared.id.clone(), (Arc::clone(prepared), handle));
+		Ok((handle, prepared.stage))
 	}
 }
 
+/// Formats the error for a server that started before the renderer connected its resource manager.
+fn missing_resource_manager() -> String {
+	"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager."
+		.to_string()
+}
+
 /// The `PreparedShader` struct keeps resource-owned shader inputs ready for ordered GHI adoption.
+///
+/// It is immutable once prepared, so every compilation server shares one copy through [`shared_shader`].
 struct PreparedShader {
 	id: String,
 	stage: ghi::ShaderTypes,
 	artifact: resource_management::resources::material::ShaderArtifact,
 	workgroup: Option<(u32, u32, u32)>,
 	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
-	bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
 	backing: resource_management::resource::reader::ResourceReaderBacking,
+}
+
+/// The `ShaderPreparation` type is one shader's pending or finished preparation, shared by every compilation server.
+type ShaderPreparation = announcement::Announcement<Result<Arc<PreparedShader>, String>>;
+
+/// Returns the prepared shader for `id`, reading the resource only when no server prepared it yet.
+///
+/// The first server to ask reads the shader. Servers that ask while it reads wait for its result, and later
+/// requests reuse it, failures included. Development rebakes clear the cache.
+async fn shared_shader(
+	shared: &PipelineManagerShared,
+	resources: &resource_management::ResourceManager,
+	id: &str,
+) -> Result<Arc<PreparedShader>, String> {
+	let role = {
+		let mut shaders = shared.shaders.lock();
+		match shaders.get(id) {
+			Some(preparation) => Err(preparation.listener()),
+			None => {
+				let (announcer, preparation) = ShaderPreparation::new();
+				shaders.insert(id.to_owned(), preparation);
+				Ok(announcer)
+			}
+		}
+	};
+
+	match role {
+		Err(listener) => listener.listen().await.map_err(|_| {
+			format!(
+				"Shader '{id}' preparation stopped before it finished. The most likely cause is that the compilation server preparing it shut down."
+			)
+		})?,
+		Ok(announcer) => {
+			let result = prepare_shader(resources, id).await.map(Arc::new);
+			let _ = announcer.announce(result.clone());
+			result
+		}
+	}
 }
 
 /// Converts one persisted shader stage into its GHI stage.
@@ -535,8 +584,7 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 			read: binding.read,
 			write: binding.write,
 		})
-		.collect::<Vec<_>>()
-		.into();
+		.collect();
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
@@ -551,25 +599,6 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		bindings,
 		backing,
 	})
-}
-
-/// Creates one shader handle after asynchronous resource preparation has completed.
-fn adopt_shader(
-	factory: &mut ghi::implementation::Factory,
-	prepared: PreparedShader,
-) -> Result<(ghi::ShaderHandle, ghi::ShaderTypes), String> {
-	use ghi::Device as _;
-
-	let source = shader_artifact_source(&prepared.artifact, prepared.workgroup, prepared.backing.as_slice())?;
-	let handle = factory
-		.create_shader(Some(&prepared.id), source, prepared.stage, prepared.descriptors)
-		.map_err(|_| {
-			format!(
-				"Shader '{}' could not be created. The most likely cause is an incompatible persisted interface.",
-				prepared.id
-			)
-		})?;
-	Ok((handle, prepared.stage))
 }
 
 fn data_type(format: resource_management::resources::pipeline::Format) -> ghi::DataTypes {
@@ -612,8 +641,8 @@ enum PipelineRequestNamespace {
 	SpecializedCompute,
 }
 
-/// Hashes one caller-provided identity within its request kind so distinct pipeline workflows never coalesce.
-fn pipeline_key(namespace: PipelineRequestNamespace, id: &str) -> PipelineKey {
+/// Hashes one complete request identity within its request kind so distinct pipeline workflows never coalesce.
+fn pipeline_key(namespace: PipelineRequestNamespace, id: &(impl std::hash::Hash + ?Sized)) -> PipelineKey {
 	use std::hash::{Hash as _, Hasher as _};
 
 	let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -631,10 +660,7 @@ mod tests {
 		let (requests, receiver) = kanal::unbounded();
 		(
 			PipelineManagerClient {
-				shared: Arc::new(PipelineManagerShared {
-					entries: RwLock::new(HashMap::default()),
-					compute_pipelines: RwLock::new(HashMap::default()),
-				}),
+				shared: Arc::new(PipelineManagerShared::default()),
 				requests,
 			},
 			receiver,
@@ -653,14 +679,22 @@ mod tests {
 		assert!(matches!(requests.try_recv(), Ok(None)));
 	}
 
-	#[test]
-	fn duplicate_specialized_compute_requests_enqueue_one_compilation() {
-		let (client, requests) = client();
-		let request =
-			SpecializedComputePipelineRequest::new("material/test", vec![ghi::pipelines::PushConstantRange::new(0, 16)]);
+	/// Builds a specialized request with one scalar constant, like a material variant with one factor.
+	fn specialized(shader_id: &str, factor: f32) -> SpecializedComputePipelineRequest {
+		SpecializedComputePipelineRequest::new(
+			shader_id,
+			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), factor)],
+			vec![ghi::pipelines::PushConstantRange::new(0, 16)],
+		)
+	}
 
-		let first = client.request_specialized_compute_pipeline(request.clone());
-		let second = client.request_specialized_compute_pipeline(request);
+	#[test]
+	fn specialized_requests_with_equal_inputs_enqueue_one_compilation() {
+		let (client, requests) = client();
+
+		// Two material variants that differ only in their textures send equal requests.
+		let first = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
+		let second = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
 
 		assert_eq!(first, second);
 		assert!(matches!(client.get(first), PipelineState::Pending));
@@ -674,17 +708,39 @@ mod tests {
 			);
 		};
 
-		assert_eq!(request.material_variant_id, "material/test");
+		assert_eq!(request.shader_id, "shader/test");
 		assert_eq!(request.push_constant_ranges.len(), 1);
 		assert!(matches!(requests.try_recv(), Ok(None)));
+	}
+
+	#[test]
+	fn specialized_requests_with_different_inputs_compile_separately() {
+		let (client, requests) = client();
+
+		let base = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
+		let other_constant = client.request_specialized_compute_pipeline(specialized("shader/test", 2.0));
+		let other_shader = client.request_specialized_compute_pipeline(specialized("shader/other", 1.0));
+		let other_push_constants = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+			"shader/test",
+			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 1.0f32)],
+			vec![ghi::pipelines::PushConstantRange::new(0, 32)],
+		));
+
+		assert_ne!(base, other_constant);
+		assert_ne!(base, other_shader);
+		assert_ne!(base, other_push_constants);
+		assert_eq!(requests.len(), 4);
 	}
 
 	#[test]
 	fn specialized_and_resource_requests_use_distinct_namespaces() {
 		let (client, requests) = client();
 		let resource = client.request_pipeline("shared/id");
-		let specialized =
-			client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new("shared/id", Vec::new()));
+		let specialized = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
+			"shared/id",
+			Vec::new(),
+			Vec::new(),
+		));
 
 		assert_ne!(resource, specialized);
 		let resource_request = requests
@@ -704,7 +760,7 @@ mod tests {
 		assert!(matches!(
 			specialized_request.kind,
 			PipelineRequestKind::SpecializedCompute(ref request)
-				if request.material_variant_id == "shared/id"
+				if request.shader_id == "shared/id"
 		));
 	}
 
@@ -735,6 +791,30 @@ mod tests {
 		assert_eq!(rebuilt.revision, 1);
 		assert!(matches!(client.get(reference), PipelineState::Pending));
 	}
+
+	#[cfg(debug_assertions)]
+	#[test]
+	fn shader_updates_rebuild_every_specialized_pipeline_that_reads_the_shader() {
+		let (client, requests) = client();
+		let first = client.request_specialized_compute_pipeline(specialized("shader/test", 1.0));
+		let second = client.request_specialized_compute_pipeline(specialized("shader/test", 2.0));
+		let unrelated = client.request_specialized_compute_pipeline(specialized("shader/other", 1.0));
+		while let Ok(Some(_)) = requests.try_recv() {}
+
+		client.resource_updated("shader/test");
+
+		let mut rebuilt = [
+			requests.try_recv().unwrap().unwrap().key,
+			requests.try_recv().unwrap().unwrap().key,
+		];
+		rebuilt.sort_by_key(|key| key.0);
+		let mut expected = [first.0, second.0];
+		expected.sort_by_key(|key| key.0);
+
+		assert_eq!(rebuilt, expected);
+		assert!(!rebuilt.contains(&unrelated.0));
+		assert!(matches!(requests.try_recv(), Ok(None)));
+	}
 }
 
 /// The `PipelineManager` struct owns compilation result publication for the
@@ -754,15 +834,14 @@ impl PipelineManager {
 
 		let (request_sender, request_receiver) = kanal::unbounded_async();
 		let (completion_sender, completion_receiver) = kanal::unbounded();
-		let shared = Arc::new(PipelineManagerShared {
-			entries: RwLock::new(HashMap::default()),
-			compute_pipelines: RwLock::new(HashMap::default()),
-		});
+		let shared = Arc::new(PipelineManagerShared::default());
 		let servers = (0..server_count.max(1))
 			.filter_map(|_| {
 				context.create_factory().map(|factory| PipelineManagerServer {
 					factory,
 					resource_manager: None,
+					shared: shared.clone(),
+					shaders: HashMap::default(),
 					requests: request_receiver.clone(),
 					completions: completion_sender.clone(),
 				})
@@ -834,9 +913,12 @@ impl PipelineManager {
 	}
 }
 
+#[derive(Default)]
 struct PipelineManagerShared {
 	entries: RwLock<HashMap<PipelineKey, PipelineEntry>>,
 	compute_pipelines: RwLock<HashMap<PipelineKey, ComputePipeline>>,
+	/// Prepared shaders keyed by resource ID, see [`shared_shader`].
+	shaders: Mutex<HashMap<String, ShaderPreparation>>,
 }
 
 struct PipelineEntry {
@@ -864,7 +946,7 @@ impl PipelineRequestKind {
 	fn depends_on(&self, id: &str) -> bool {
 		match self {
 			Self::Resource { id: pipeline_id } => pipeline_id == id,
-			Self::SpecializedCompute(request) => request.material_variant_id == id,
+			Self::SpecializedCompute(request) => request.shader_id == id,
 		}
 	}
 }
@@ -879,7 +961,7 @@ enum DetachedPipeline {
 	Compute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		bindings: Box<[resource_management::shader::besl::evaluation::BindingUsage]>,
+		bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
 	},
 	Raster(ghi::factory::RasterPipeline),
 }
@@ -887,4 +969,7 @@ enum DetachedPipeline {
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use utils::{hash::HashMap, sync::RwLock};
+use utils::{
+	hash::HashMap,
+	sync::{Mutex, RwLock},
+};

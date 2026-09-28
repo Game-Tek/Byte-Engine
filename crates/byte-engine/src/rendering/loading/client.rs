@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use super::lane::{LoadError, LoadPipeline};
+use super::lane::{LoadError, LoadPipeline, Submission};
 
 /// The `Event` enum reports what a loader finished since the previous frame.
 pub enum Event<P: LoadPipeline> {
@@ -16,7 +16,7 @@ pub enum Event<P: LoadPipeline> {
 /// already done on a lane. Lanes schedule the dependencies they discover themselves, so their results arrive
 /// here like any other.
 pub struct LoaderClient<P: LoadPipeline> {
-	requests: kanal::AsyncSender<(P::Key, P::Request)>,
+	requests: kanal::AsyncSender<Submission<P>>,
 	results: kanal::AsyncReceiver<(P::Key, Result<P::Resident, LoadError>)>,
 	/// Keys this client already sent. Failed requests become eligible for retry. Lanes coalesce the rest.
 	sent: HashSet<P::Key>,
@@ -24,7 +24,7 @@ pub struct LoaderClient<P: LoadPipeline> {
 
 impl<P: LoadPipeline> LoaderClient<P> {
 	pub(super) fn new(
-		requests: kanal::AsyncSender<(P::Key, P::Request)>,
+		requests: kanal::AsyncSender<Submission<P>>,
 		results: kanal::AsyncReceiver<(P::Key, Result<P::Resident, LoadError>)>,
 	) -> Self {
 		Self {
@@ -42,8 +42,27 @@ impl<P: LoadPipeline> LoaderClient<P> {
 		let key = P::key(&request);
 		if self.sent.insert(key.clone()) {
 			// A closed channel means every lane stopped, which the next poll reports as no progress.
-			let _ = self.requests.as_sync().try_send((key, request));
+			let _ = self.requests.as_sync().try_send(Submission {
+				key,
+				request,
+				reload: false,
+			});
 		}
+	}
+
+	/// Loads one resource again, even when it is already loading or resident.
+	///
+	/// Use this when the stored resource changed, for example after a development rebake. Its result arrives
+	/// through [`Self::poll`] like any other, and the render thread replaces what it adopted before. Resources it
+	/// depends on reload only when they are reloaded themselves.
+	pub fn reload(&mut self, request: P::Request) {
+		let key = P::key(&request);
+		self.sent.insert(key.clone());
+		let _ = self.requests.as_sync().try_send(Submission {
+			key,
+			request,
+			reload: true,
+		});
 	}
 
 	/// Returns the next completion without allocating an intermediate collection.
@@ -92,6 +111,15 @@ mod tests {
 		}
 	}
 
+	/// Reads the next submission as `(key, request, reload)` so tests can compare it directly.
+	fn next(worker_requests: &kanal::AsyncReceiver<Submission<TestPipeline>>) -> Option<(u32, u32, bool)> {
+		worker_requests
+			.as_sync()
+			.try_recv()
+			.unwrap()
+			.map(|submission| (submission.key, submission.request, submission.reload))
+	}
+
 	#[test]
 	fn requests_are_sent_once_until_they_fail() {
 		let (requests, worker_requests) = kanal::unbounded_async();
@@ -100,8 +128,8 @@ mod tests {
 
 		client.request(1);
 		client.request(1);
-		assert_eq!(worker_requests.as_sync().try_recv().unwrap(), Some((1, 1)));
-		assert_eq!(worker_requests.as_sync().try_recv().unwrap(), None);
+		assert_eq!(next(&worker_requests), Some((1, 1, false)));
+		assert_eq!(next(&worker_requests), None);
 
 		worker_results
 			.as_sync()
@@ -109,18 +137,32 @@ mod tests {
 			.unwrap();
 		assert!(matches!(client.poll(), Some(Event::Failed { key: 1, .. })));
 		client.request(1);
-		assert_eq!(worker_requests.as_sync().try_recv().unwrap(), Some((1, 1)));
+		assert_eq!(next(&worker_requests), Some((1, 1, false)));
 
 		worker_results.as_sync().send((1, Ok(10))).unwrap();
 		assert!(matches!(client.poll(), Some(Event::Ready { key: 1, resident: 10 })));
 		client.request(1);
-		assert_eq!(worker_requests.as_sync().try_recv().unwrap(), None);
+		assert_eq!(next(&worker_requests), None);
 		assert!(client.poll().is_none());
 	}
 
 	#[test]
+	fn reloads_are_sent_even_for_requested_keys() {
+		let (requests, worker_requests) = kanal::unbounded_async();
+		let (_worker_results, results) = kanal::unbounded_async();
+		let mut client = LoaderClient::<TestPipeline>::new(requests, results);
+
+		client.request(1);
+		client.reload(1);
+		assert_eq!(next(&worker_requests), Some((1, 1, false)));
+		assert_eq!(next(&worker_requests), Some((1, 1, true)));
+		client.request(1);
+		assert_eq!(next(&worker_requests), None);
+	}
+
+	#[test]
 	fn dropping_the_client_stops_lanes_that_can_still_send_dependencies() {
-		let (requests, worker_requests) = kanal::unbounded_async::<(u32, u32)>();
+		let (requests, worker_requests) = kanal::unbounded_async::<Submission<TestPipeline>>();
 		let (_worker_results, results) = kanal::unbounded_async();
 		// A lane keeps a sender for the dependencies it discovers.
 		let _dependencies = requests.clone();

@@ -91,7 +91,8 @@ already happened once or that this design exists to avoid.
 - **Lanes schedule dependencies.** A load requests the resources its metadata
   names as soon as it reads them, before its own upload, and never waits for a
   render frame to relay them. Lanes coalesce requests where they pick them up, so
-  a resource with several parents loads once.
+  a resource with several parents loads once. To load a changed resource again,
+  call `LoaderClient::reload`. The resources it depends on stay resident.
 - **The loader owns all GPU work of loading.** Lanes do CPU work and file I/O
   only. They never touch a context.
 - **Lanes only append to shared buffers.** A lane writes only ranges that no
@@ -211,8 +212,8 @@ that ends a batch when staging runs out.
 - Each batch costs one copy-queue round trip, about 0.75 ms on Metal. A lane that
   loads a flipbook's frames one after another pays it for every frame. Load the
   frames concurrently to let them share a batch.
-- Vulkan and DX12 still compile pipelines when the render thread interns them.
-  `todo.md` tracks moving that work to the compiler threads.
+- DX12 still compiles pipelines when the render thread interns them. `todo.md`
+  tracks moving that work to the compiler threads.
 
 ## Related API
 

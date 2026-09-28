@@ -217,59 +217,20 @@ impl<'a> Frame<'a> {
 		recording
 	}
 
-	/// Interns a factory-built raster pipeline into this frame's device.
+	/// Interns a raster pipeline that a factory thread already compiled into this frame's device.
 	pub fn intern_raster_pipeline(
 		&mut self,
 		pipeline: crate::implementation::RasterPipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		// Pipelines from one factory share shader modules, and the context destroys each entry once, so reuse interned modules.
-		let shader_handles = pipeline
-			.factory_shaders
-			.into_iter()
-			.map(|shader| {
-				let index = self
-					.device
-					.shaders
-					.iter()
-					.position(|interned| interned.shader == shader.shader)
-					.unwrap_or_else(|| {
-						self.device.shaders.push(shader);
-						self.device.shaders.len() - 1
-					});
-				graphics_hardware_interface::ShaderHandle(index as u64)
-			})
-			.collect::<Vec<_>>();
-		let vertex_elements = pipeline
-			.vertex_elements
-			.iter()
-			.map(|element| crate::pipelines::VertexElement::new(&element.name, element.format, element.binding))
-			.collect::<Vec<_>>();
-		let shaders = pipeline
-			.shaders
-			.iter()
-			.map(|shader| {
-				let handle = shader_handles.get(shader.handle_index).expect(
-					"Missing Vulkan factory shader. The most likely cause is that the detached raster pipeline references a shader from another factory.",
-				);
-				crate::pipelines::ShaderParameter::new(handle, shader.stage)
-					.with_specialization_map(&shader.specialization_map)
-			})
-			.collect::<Vec<_>>();
-		let mut builder = crate::pipelines::raster::Builder::new(
-			&pipeline.push_constant_ranges,
-			&vertex_elements,
-			&shaders,
-			&pipeline.render_targets,
-		)
-		.face_winding(pipeline.face_winding)
-		.cull_mode(pipeline.cull_mode)
-		.fill_mode(pipeline.fill_mode)
-		.depth_write(pipeline.depth_write);
-		if let Some(name) = pipeline.name.as_deref() {
-			builder = builder.name(name);
-		}
+		let layout = self.device.intern_pipeline_layout(pipeline.layout);
+		let handle = graphics_hardware_interface::PipelineHandle(self.device.pipelines.len() as u64);
+		self.device.pipelines.push(crate::vulkan::Pipeline {
+			pipeline: pipeline.pipeline,
+			layout,
+			shader_handles: utils::hash::HashMap::default(),
+		});
 
-		self.device.create_raster_pipeline(builder)
+		handle
 	}
 
 	/// Interns a factory-built compute pipeline into this frame's device.
@@ -277,8 +238,7 @@ impl<'a> Frame<'a> {
 		&mut self,
 		pipeline: crate::implementation::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout_handle = graphics_hardware_interface::PipelineLayoutHandle(self.device.pipeline_layouts.len() as u64);
-		self.device.pipeline_layouts.push(pipeline.layout);
+		let layout_handle = self.device.intern_pipeline_layout(pipeline.layout);
 		let handle = graphics_hardware_interface::PipelineHandle(self.device.pipelines.len() as u64);
 		self.device.pipelines.push(crate::vulkan::Pipeline {
 			pipeline: pipeline.pipeline,

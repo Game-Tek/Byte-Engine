@@ -49,44 +49,13 @@ impl crate::device::Device for Device {
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {
-		// Detached builders borrow caller data, so retain owned state until the render frame interns the pipeline.
-		RasterPipeline {
-			name: crate::debug_name(builder.name),
-			push_constant_ranges: builder.push_constant_ranges.into_owned(),
-			vertex_elements: builder
-				.vertex_elements
-				.iter()
-				.map(|element| FactoryVertexElement {
-					name: element.name.to_owned(),
-					format: element.format,
-					binding: element.binding,
-				})
-				.collect(),
-			shaders: builder
-				.shaders
-				.iter()
-				.enumerate()
-				.map(|(handle_index, shader)| FactoryShaderParameter {
-					handle_index,
-					stage: shader.stage,
-					specialization_map: shader.specialization_map.to_vec(),
-				})
-				.collect(),
-			render_targets: builder.render_targets.into_owned(),
-			face_winding: builder.face_winding,
-			cull_mode: builder.cull_mode,
-			fill_mode: builder.fill_mode,
-			depth_write: builder.depth_write,
-			factory_shaders: builder
-				.shaders
-				.iter()
-				.map(|shader| {
-					self.shaders.get(shader.handle.0 as usize).cloned().expect(
-						"Missing Vulkan factory shader. The most likely cause is that the raster pipeline references a shader from another factory.",
-					)
-				})
-				.collect(),
-		}
+		let (pipeline, layout) = crate::vulkan::context::build_raster_pipeline(
+			&self.device,
+			&self.descriptor_heap_properties,
+			&self.shaders,
+			builder,
+		);
+		RasterPipeline { pipeline, layout }
 	}
 
 	fn create_compute_pipeline(&mut self, builder: crate::pipelines::compute::Builder) -> Self::ComputePipeline {

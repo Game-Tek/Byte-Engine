@@ -78,6 +78,10 @@ pub struct InnerDevice {
 impl Drop for Device {
 	/// Waits for pending device work before destroying the Vulkan device.
 	fn drop(&mut self) {
+		// Pipelines keep what they need from their shader modules, so modules can go before the pipelines using them.
+		for shader in &self.shaders {
+			unsafe { self.device.destroy_shader_module(shader.shader, None) };
+		}
 		// Detached factories borrow the native device; only the primary device owns it.
 		if self.inner.is_none() {
 			return;
@@ -107,32 +111,13 @@ pub struct ComputePipeline {
 	pub(crate) shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 }
 
-/// The `RasterPipeline` struct carries detached Vulkan raster state until a frame interns it.
+/// The `RasterPipeline` struct carries a Vulkan raster pipeline that a factory thread compiled, until a frame gives
+/// it a public GHI handle.
+///
+/// Compiling on the factory thread keeps `vkCreateGraphicsPipelines` off the render thread.
 pub struct RasterPipeline {
-	pub(crate) name: Option<String>,
-	pub(crate) push_constant_ranges: Vec<crate::pipelines::PushConstantRange>,
-	pub(crate) vertex_elements: Vec<FactoryVertexElement>,
-	pub(crate) shaders: Vec<FactoryShaderParameter>,
-	pub(crate) render_targets: Vec<crate::pipelines::raster::AttachmentDescriptor>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
-	pub(crate) depth_write: bool,
-	pub(crate) factory_shaders: Vec<crate::vulkan::Shader>,
-}
-
-/// The `FactoryVertexElement` struct owns vertex input metadata used by a detached Vulkan raster pipeline.
-pub(crate) struct FactoryVertexElement {
-	pub(crate) name: String,
-	pub(crate) format: crate::DataTypes,
-	pub(crate) binding: u32,
-}
-
-/// The `FactoryShaderParameter` struct owns shader selection data used by a detached Vulkan raster pipeline.
-pub(crate) struct FactoryShaderParameter {
-	pub(crate) handle_index: usize,
-	pub(crate) stage: crate::ShaderTypes,
-	pub(crate) specialization_map: Vec<crate::pipelines::SpecializationMapEntry>,
+	pub(crate) pipeline: vk::Pipeline,
+	pub(crate) layout: crate::vulkan::PipelineLayout,
 }
 
 /// The `FactoryImage` struct carries Vulkan image parameters until a context interns them.

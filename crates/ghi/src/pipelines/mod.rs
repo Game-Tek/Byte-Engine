@@ -52,7 +52,7 @@ impl PushConstantRange {
 	}
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SpecializationMapEntry {
 	pub(crate) r#type: String,
 	pub(crate) constant_id: u32,

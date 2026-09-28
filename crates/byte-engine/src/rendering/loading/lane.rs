@@ -63,6 +63,14 @@ pub trait LoadPipeline: Send + Sync + 'static {
 	) -> impl Future<Output = Result<Self::Resident, LoadError>>;
 }
 
+/// The `Submission` struct carries one request through the stream that the client and every lane send to.
+pub(super) struct Submission<P: LoadPipeline + ?Sized> {
+	pub(super) key: P::Key,
+	pub(super) request: P::Request,
+	/// Loads the resource again even when its key is already loading or resident.
+	pub(super) reload: bool,
+}
+
 /// The `LoaderLane` struct is one sequential worker that prepares uploads for the [`Loader`].
 ///
 /// Run each lane on its own async task on the loading thread. Lanes compete for the same request stream, so lane
@@ -78,8 +86,8 @@ pub struct LoaderLane<P: LoadPipeline + ?Sized> {
 	/// Only this pipeline's lanes use it, so the render thread never waits on the lock.
 	registry: Arc<Mutex<HashSet<P::Key>>>,
 	/// Feeds dependencies into the stream the client sends to, so one registry coalesces both.
-	dependencies: kanal::AsyncSender<(P::Key, P::Request)>,
-	requests: kanal::AsyncReceiver<(P::Key, P::Request)>,
+	dependencies: kanal::AsyncSender<Submission<P>>,
+	requests: kanal::AsyncReceiver<Submission<P>>,
 	results: kanal::AsyncSender<(P::Key, Result<P::Resident, LoadError>)>,
 }
 
@@ -95,7 +103,11 @@ impl<P: LoadPipeline> LoaderLane<P> {
 	/// it like any other result. Requests for a key already loading or resident are ignored.
 	pub fn request(&self, request: P::Request) {
 		// A closed stream means the client is gone, so nothing would adopt the result.
-		let _ = self.dependencies.as_sync().try_send((P::key(&request), request));
+		let _ = self.dependencies.as_sync().try_send(Submission {
+			key: P::key(&request),
+			request,
+			reload: false,
+		});
 	}
 
 	/// Creates images from staged mips, copies staged bytes into render buffers, and waits until the loader
@@ -151,13 +163,14 @@ impl<P: LoadPipeline> LoaderLane<P> {
 
 	/// Serves requests until the client is dropped.
 	pub async fn run(mut self) {
-		while let Ok((key, request)) = self.requests.recv().await {
-			// The client and every lane send to this stream, so coalesce here.
+		while let Ok(Submission { key, request, reload }) = self.requests.recv().await {
+			// The client and every lane send to this stream, so coalesce here. A reload still records its key.
 			if !self
 				.registry
 				.lock()
 				.unwrap_or_else(|error| error.into_inner())
 				.insert(key.clone())
+				&& !reload
 			{
 				continue;
 			}

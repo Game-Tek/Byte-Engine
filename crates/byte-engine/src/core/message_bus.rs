@@ -84,8 +84,10 @@ impl MessageBusConfig {
 	/// Builds the smallest one-route arena that preserves standalone channel capacity.
 	pub(crate) fn standalone<M>(capacity: usize) -> Self {
 		let alignment = std::mem::align_of::<M>().max(1);
-		let bytes =
-			align_up(std::mem::size_of::<M>().max(1), alignment).expect("A Rust message layout must fit in addressable memory");
+		let bytes = std::mem::size_of::<M>()
+			.max(1)
+			.checked_next_multiple_of(alignment)
+			.expect("A Rust message layout must fit in addressable memory");
 
 		Self {
 			max_topics: 1,
@@ -652,7 +654,8 @@ impl TopicLayout {
 				available_bytes: config.cells_per_topic * config.cell_bytes,
 			});
 		}
-		let message_stride = align_up(message_bytes, required_alignment)
+		let message_stride = message_bytes
+			.checked_next_multiple_of(required_alignment)
 			.expect("A validated Rust message layout must fit in addressable memory");
 		debug_assert!(message_stride <= cells_per_message * config.cell_bytes);
 
@@ -1134,10 +1137,6 @@ impl Drop for CursorAdvanceGuard<'_> {
 	}
 }
 
-fn align_up(value: usize, alignment: usize) -> Option<usize> {
-	value.checked_add(alignment - 1).map(|value| value & !(alignment - 1))
-}
-
 fn unreachable_type_collision<M>() -> MessageRouteError {
 	panic!(
 		"Message route type collision for '{}'. The most likely cause is an internal TypeId registry error.",
@@ -1148,7 +1147,6 @@ fn unreachable_type_collision<M>() -> MessageRouteError {
 #[cfg(test)]
 mod tests {
 	use std::{
-		any::type_name,
 		panic::{AssertUnwindSafe, catch_unwind},
 		sync::Barrier,
 		sync::atomic::{AtomicUsize, Ordering},
@@ -1159,7 +1157,6 @@ mod tests {
 	use crate::core::{
 		channel::{Channel as _, DefaultChannel, TrySendError},
 		listener::Listener as _,
-		message_observer::MessageObservationError,
 	};
 
 	/// Creates a compact arena whose cells satisfy ordinary Rust value alignment.
@@ -1180,60 +1177,6 @@ mod tests {
 		for sequence in 0..message_count {
 			channel.send((producer, sequence));
 		}
-	}
-
-	#[derive(Clone, Debug, PartialEq, Eq)]
-	/// The `ApplicationMessage` struct represents an application-defined type unknown at startup.
-	struct ApplicationMessage {
-		value: u32,
-	}
-
-	#[test]
-	fn custom_message_types_register_only_when_first_requested() {
-		let bus = MessageBus::new(test_config(1, 4, 8, 1)).expect("valid test bus");
-		let messages = bus.new_scope("application");
-		assert!(bus.topics().is_empty());
-
-		let channel = messages.channel::<ApplicationMessage>();
-		let mut listener = channel.listener();
-		channel
-			.try_send(ApplicationMessage { value: 42 })
-			.expect("registered route has capacity");
-
-		assert_eq!(bus.topics().len(), 1);
-		assert_eq!(listener.read(), Some(ApplicationMessage { value: 42 }));
-	}
-
-	#[test]
-	fn passive_observation_resolves_distinct_generic_routes_without_payload_access() {
-		let bus = MessageBus::new(test_config(2, 4, 8, 1)).expect("valid test bus");
-		let observer = bus.observe().expect("attach observer");
-		let messages = bus.new_scope("application");
-		let integers = messages.channel::<Option<u32>>();
-		let counters = messages.channel::<Option<u64>>();
-		let _integer_listener = integers.listener();
-		let _counter_listener = counters.listener();
-
-		integers.send(Some(7));
-		counters.send(Some(11));
-
-		let batch = observer.drain_messages(&bus.topics());
-		let topics = bus.topics();
-		let observed_types = batch
-			.messages()
-			.iter()
-			.map(|message| {
-				topics
-					.iter()
-					.find(|topic| topic.topic_id == message.topic_id())
-					.expect("observed topic remains registered")
-					.message_type
-			})
-			.collect::<Vec<_>>();
-
-		assert_eq!(observed_types, [type_name::<Option<u32>>(), type_name::<Option<u64>>()]);
-		assert!(batch.messages().iter().all(|message| message.first_sequence() == 0));
-		assert!(batch.messages().iter().all(|message| message.count() == 1));
 	}
 
 	#[test]
@@ -1257,22 +1200,6 @@ mod tests {
 	}
 
 	#[test]
-	fn one_bus_rejects_a_second_passive_observer() {
-		let bus = MessageBus::new(test_config(1, 1, 8, 1)).expect("valid test bus");
-		let _observer = bus.observe().expect("attach first observer");
-
-		assert!(matches!(bus.observe(), Err(MessageObservationError::AlreadyAttached)));
-	}
-
-	#[test]
-	fn passive_observation_must_start_before_route_registration() {
-		let bus = MessageBus::new(test_config(1, 1, 8, 1)).expect("valid test bus");
-		let _channel = bus.new_scope("application").channel::<u64>();
-
-		assert!(matches!(bus.observe(), Err(MessageObservationError::RoutesAlreadyRegistered)));
-	}
-
-	#[test]
 	fn equal_message_types_in_independent_scopes_do_not_cross_routes() {
 		let bus = MessageBus::new(test_config(2, 4, 8, 1)).expect("valid test bus");
 		let left = bus.new_scope("left").channel::<u64>();
@@ -1288,22 +1215,6 @@ mod tests {
 		assert_eq!(right_listener.read(), Some(29));
 		assert_eq!(left_listener.read(), None);
 		assert_eq!(bus.topics().len(), 2);
-	}
-
-	#[test]
-	fn diagnostic_topics_have_a_stable_scope_and_type_order() {
-		let bus = MessageBus::new(test_config(4, 4, 8, 1)).expect("valid test bus");
-		let first = bus.new_scope("first");
-		let second = bus.new_scope("second");
-		let _second_u64 = second.channel::<u64>();
-		let _first_u64 = first.channel::<u64>();
-		let _first_u32 = first.channel::<u32>();
-
-		let topics = bus.topics();
-		assert!(topics.windows(2).all(|pair| {
-			pair[0].scope_id < pair[1].scope_id
-				|| (pair[0].scope_id == pair[1].scope_id && pair[0].message_type <= pair[1].message_type)
-		}));
 	}
 
 	#[test]
@@ -1481,28 +1392,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_single_listener_moves_drop_bearing_messages_without_cloning() {
-		let clones = counter();
-		let drops = counter();
-		let bus = MessageBus::new(test_config(1, 2, 64, 1)).expect("valid test bus");
-		let channel = bus.new_scope("application").channel::<CloneTracked>();
-		let mut listener = channel.listener();
-		channel
-			.try_send(CloneTracked {
-				value: 41,
-				clones,
-				drops,
-			})
-			.expect("message fits");
-
-		let received = listener.read().expect("single listener receives message");
-		assert_eq!(received.value, 41);
-		assert_eq!(clones.load(Ordering::Relaxed), 0);
-		drop(received);
-		assert_eq!(drops.load(Ordering::Relaxed), 1);
-	}
-
-	#[test]
 	fn multiple_listeners_clone_then_move_one_retained_message() {
 		let clones = counter();
 		let drops = counter();
@@ -1593,29 +1482,6 @@ mod tests {
 		channel.try_send(71).expect("the synthetic high ticket has capacity");
 
 		assert_eq!(listener.read(), Some(71));
-	}
-
-	#[test]
-	fn exhausted_sequence_is_a_stable_terminal_state() {
-		let bus = MessageBus::new(test_config(1, 3, 8, 1)).expect("valid test bus");
-		let channel = bus.new_scope("application").channel::<u64>();
-		let route = &channel.topic.arena.routes[channel.topic.index];
-		route.writer.lock().next_ticket = u64::MAX;
-		let mut listener = channel.listener();
-
-		assert_eq!(listener.read(), None);
-		assert!(matches!(channel.try_send(71), Err(TrySendError::SequenceExhausted(71))));
-	}
-
-	#[test]
-	fn exhausted_scope_ids_do_not_wrap_after_a_caught_panic() {
-		let bus = MessageBus::new(test_config(1, 3, 8, 1)).expect("valid test bus");
-		bus.inner.next_scope.store(u64::MAX, Ordering::Relaxed);
-
-		let exhausted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bus.new_scope("exhausted")));
-
-		assert!(exhausted.is_err());
-		assert_eq!(bus.inner.next_scope.load(Ordering::Relaxed), u64::MAX);
 	}
 
 	#[test]

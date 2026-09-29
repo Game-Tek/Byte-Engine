@@ -1,25 +1,10 @@
 /// The `MeshProcessor` struct configures the common mesh-processing pipeline used after format-specific import.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MeshProcessor {
-	triangle_front_face_winding: TriangleFrontFaceWinding,
-}
+pub struct MeshProcessor;
 
 impl MeshProcessor {
 	pub fn new() -> Self {
-		Self::default()
-	}
-
-	pub fn triangle_front_face_winding(&self) -> TriangleFrontFaceWinding {
-		self.triangle_front_face_winding
-	}
-
-	pub fn set_triangle_front_face_winding(&mut self, winding: TriangleFrontFaceWinding) {
-		self.triangle_front_face_winding = winding;
-	}
-
-	pub fn with_triangle_front_face_winding(mut self, winding: TriangleFrontFaceWinding) -> Self {
-		self.set_triangle_front_face_winding(winding);
-		self
+		Self
 	}
 
 	/// Starts a short-lived processing session that borrows one source primitive at a time.
@@ -55,7 +40,6 @@ impl MeshProcessor {
 		]);
 
 		Ok(MeshProcessorSession {
-			triangle_front_face_winding: self.triangle_front_face_winding,
 			vertex_layout,
 			skeleton,
 			skeleton_nodes,
@@ -77,7 +61,6 @@ pub enum MeshPrimitiveProcessingError<E> {
 
 /// The `MeshProcessorSession` struct keeps reusable scratch and final stream writers alive across borrowed primitives.
 pub struct MeshProcessorSession {
-	triangle_front_face_winding: TriangleFrontFaceWinding,
 	vertex_layout: Vec<VertexComponent>,
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	skeleton_nodes: Option<usize>,
@@ -151,7 +134,7 @@ impl MeshProcessorSession {
 				MeshProcessingError::InvalidTriangleIndexCount,
 			));
 		}
-		orient_triangle_indices_in_place(&mut self.scratch.indices, self.triangle_front_face_winding);
+		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
 		let mut primitive_streams = self.append_primitive_vertex_streams(primitive, primitive_index, position_count)?;
 
@@ -213,7 +196,6 @@ impl MeshProcessorSession {
 			transform_node: primitive.transform_node(),
 			skin: primitive.skin(),
 			streams: primitive_streams,
-			quantization: None,
 			bounding_box: bounds,
 			vertex_count: position_count as u32,
 		});
@@ -578,22 +560,15 @@ fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> 
 	Some([minimum, maximum])
 }
 
-fn orient_triangle_indices_in_place(indices: &mut [u32], winding: TriangleFrontFaceWinding) {
-	if winding == TriangleFrontFaceWinding::Clockwise {
-		for triangle in indices.as_chunks_mut::<3>().0 {
-			triangle.swap(1, 2);
-		}
-	}
-}
-
-pub fn orient_triangle_indices_for_front_face(mut indices: Vec<u32>, winding: TriangleFrontFaceWinding) -> Vec<u32> {
-	debug_assert_eq!(
-		indices.len() % 3,
-		0,
+/// Rewinds counter-clockwise source triangles so processed meshes always use clockwise front faces.
+pub(super) fn rewind_triangles_to_clockwise(indices: &mut [u32]) {
+	debug_assert!(
+		indices.len().is_multiple_of(3),
 		"Triangle index streams must be emitted in groups of three"
 	);
-	orient_triangle_indices_in_place(&mut indices, winding);
-	indices
+	for triangle in indices.as_chunks_mut::<3>().0 {
+		triangle.swap(1, 2);
+	}
 }
 
 fn write_meshlet_record(bytes: &mut Vec<u8>, meshlet: meshopt::clusterize::Meshlet<'_>, bounds: &meshopt::clusterize::Bounds) {
@@ -616,8 +591,8 @@ fn write_meshlet_record(bytes: &mut Vec<u8>, meshlet: meshopt::clusterize::Meshl
 fn stream_stride(stream_type: Streams) -> usize {
 	match stream_type {
 		Streams::Vertices(semantic) => semantic.size(),
-		Streams::Indices(IndexStreamTypes::Vertices | IndexStreamTypes::Triangles) => IntegralTypes::U16.size(),
-		Streams::Indices(IndexStreamTypes::Meshlets) => IntegralTypes::U8.size(),
+		Streams::Indices(IndexStreamTypes::Vertices | IndexStreamTypes::Triangles) => size_of::<u16>(),
+		Streams::Indices(IndexStreamTypes::Meshlets) => size_of::<u8>(),
 		Streams::Meshlets => MESHLET_STREAM_STRIDE,
 	}
 }
@@ -639,14 +614,6 @@ fn stream_name(stream_type: Streams) -> &'static str {
 	}
 }
 
-/// The `TriangleFrontFaceWinding` enum identifies the triangle winding used as the processed mesh front face.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum TriangleFrontFaceWinding {
-	#[default]
-	Clockwise,
-	CounterClockwise,
-}
-
 const MESHLET_MAX_VERTICES: usize = 64;
 const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
@@ -666,5 +633,5 @@ use crate::{
 		mesh::{MeshModel, Primitive},
 		skeleton::{SkeletonModel, SkinBinding},
 	},
-	types::{IndexStreamTypes, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{IndexStreamTypes, Size, Stream, Streams, VertexComponent, VertexSemantics},
 };

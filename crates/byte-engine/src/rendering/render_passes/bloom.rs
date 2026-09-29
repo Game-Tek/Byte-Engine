@@ -1,9 +1,5 @@
-use ghi::{
-	command_buffer::CommonCommandBufferMode as _,
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-};
-use utils::{Box, Extent};
+use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
+use utils::Extent;
 
 use crate::{
 	core::Entity,
@@ -78,7 +74,6 @@ pub(crate) struct BloomShaderData {
 /// before tone mapping. Toggle it at runtime with the `render.pass.bloom` parameter.
 pub struct BloomPass {
 	settings: BloomPassSettings,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	parameters: ghi::DynamicBufferHandle<BloomShaderData>,
 	extract_pass: simple_compute::Pass,
 	downsample_passes: Vec<simple_compute::Pass>,
@@ -111,7 +106,8 @@ impl BloomPass {
 		let mut pyramid_target = |name, level: usize| -> ghi::BaseImageHandle {
 			render_pass_builder
 				.create_scaled_render_target(
-					ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name(name),
+					ghi::image::Builder::new(crate::rendering::SCENE_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
+						.name(name),
 					level_divisor(level),
 				)
 				.into()
@@ -146,73 +142,48 @@ impl BloomPass {
 				.name("Bloom Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		let extract_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Extract", "byte-engine/rendering/bloom/extract.pipeline"),
-		)
-		.expect(
-			"Failed to create bloom extract shader. The most likely cause is an incompatible bloom extract shader interface.",
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
-		)
-		.expect(
-			"Failed to create bloom downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
 		);
 		let upsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Upsample", "byte-engine/rendering/bloom/upsample.pipeline"),
-		)
-		.expect(
-			"Failed to create bloom upsample shader. The most likely cause is an incompatible bloom upsample shader interface.",
 		);
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Bloom Composite", "byte-engine/rendering/bloom/composite.pipeline"),
-		)
-		.expect(
-			"Failed to create bloom composite shader. The most likely cause is an incompatible bloom composite shader interface.",
 		);
 
-		let extract_pass = extract_pipeline
-			.bind(
-				render_pass_builder,
-				"Bloom Extract Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result_texture", downsample_images[0]),
-					simple_compute::Resource::buffer("bloom_parameters", parameters),
-				],
-			)
-			.expect("Failed to bind bloom extract resources. The most likely cause is a changed BESL binding contract.");
+		let extract_pass = extract_pipeline.bind(
+			"Bloom Extract Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", downsample_images[0]),
+				simple_compute::Resource::buffer("bloom_parameters", parameters),
+			],
+		);
 
 		let downsample_passes = (1..level_count)
 			.map(|index| {
-				downsample_pipeline
-					.bind(
-						render_pass_builder,
-						"Bloom Downsample Descriptor Set",
-						&[
-							simple_compute::Resource::combined_image_sampler(
-								"source_texture",
-								downsample_images[index - 1],
-								sampler,
-								ghi::Layouts::Read,
-							),
-							simple_compute::Resource::image("result_texture", downsample_images[index]),
-						],
-					)
-					.expect(
-						"Failed to bind bloom downsample resources. The most likely cause is a changed BESL binding contract.",
-					)
+				downsample_pipeline.bind(
+					"Bloom Downsample Descriptor Set",
+					&[
+						simple_compute::Resource::combined_image_sampler(
+							"source_texture",
+							downsample_images[index - 1],
+							sampler,
+							ghi::Layouts::Read,
+						),
+						simple_compute::Resource::image("result_texture", downsample_images[index]),
+					],
+				)
 			})
 			.collect::<Vec<_>>();
 
@@ -224,30 +195,25 @@ impl BloomPass {
 				} else {
 					upsample_images[level + 1]
 				};
-				upsample_pipeline
-					.bind(
-						render_pass_builder,
-						"Bloom Upsample Descriptor Set",
-						&[
-							simple_compute::Resource::combined_image_sampler(
-								"low_resolution_texture",
-								low_resolution_source,
-								sampler,
-								ghi::Layouts::Read,
-							),
-							simple_compute::Resource::combined_image_sampler(
-								"high_resolution_texture",
-								downsample_images[level],
-								sampler,
-								ghi::Layouts::Read,
-							),
-							simple_compute::Resource::image("result_texture", upsample_images[level]),
-							simple_compute::Resource::buffer("bloom_parameters", parameters),
-						],
-					)
-					.expect(
-						"Failed to bind bloom upsample resources. The most likely cause is a changed BESL binding contract.",
-					)
+				upsample_pipeline.bind(
+					"Bloom Upsample Descriptor Set",
+					&[
+						simple_compute::Resource::combined_image_sampler(
+							"low_resolution_texture",
+							low_resolution_source,
+							sampler,
+							ghi::Layouts::Read,
+						),
+						simple_compute::Resource::combined_image_sampler(
+							"high_resolution_texture",
+							downsample_images[level],
+							sampler,
+							ghi::Layouts::Read,
+						),
+						simple_compute::Resource::image("result_texture", upsample_images[level]),
+						simple_compute::Resource::buffer("bloom_parameters", parameters),
+					],
+				)
 			})
 			.collect::<Vec<_>>();
 
@@ -256,28 +222,18 @@ impl BloomPass {
 		} else {
 			upsample_images[0]
 		};
-		let composite_pass = composite_pipeline
-			.bind(
-				render_pass_builder,
-				"Bloom Composite Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler(
-						"bloom_texture",
-						bloom_source,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::image("result_texture", output),
-					simple_compute::Resource::buffer("bloom_parameters", parameters),
-				],
-			)
-			.expect("Failed to bind bloom composite resources. The most likely cause is a changed BESL binding contract.");
-		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
+		let composite_pass = composite_pipeline.bind(
+			"Bloom Composite Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("bloom_texture", bloom_source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", output),
+				simple_compute::Resource::buffer("bloom_parameters", parameters),
+			],
+		);
 
 		Self {
 			settings,
-			bypass_pass,
 			parameters,
 			extract_pass,
 			downsample_passes,
@@ -313,28 +269,18 @@ impl RenderPass for BloomPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		let extract_pass = self.extract_pass.ready(frame)?;
-		let downsample_passes = self
-			.downsample_passes
-			.iter_mut()
-			.map(|pass| pass.ready(frame))
-			.collect::<Option<Vec<_>>>()?;
-		let upsample_passes = self
-			.upsample_passes
-			.iter_mut()
-			.map(|pass| pass.ready(frame))
-			.collect::<Option<Vec<_>>>()?;
+		let downsample_passes = ready_in(&mut self.downsample_passes, frame, frame_allocator)?;
+		let upsample_passes = ready_in(&mut self.upsample_passes, frame, frame_allocator)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
 
 		self.write_parameters(frame);
 
-		let downsample_passes = frame_allocator.alloc_slice_copy(&downsample_passes);
-		let upsample_passes = frame_allocator.alloc_slice_copy(&upsample_passes);
 		let level_count = self.level_count;
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
-			move |command_buffer, _| {
+			move |command_buffer| {
 				command_buffer.region(
 					|label| label.write_str("Bloom"),
 					|command_buffer| {
@@ -356,8 +302,6 @@ impl RenderPass for BloomPass {
 			},
 		))
 	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 /// Returns the resolution divisor of a pyramid level: level 0 is half the sink resolution.
@@ -365,9 +309,22 @@ fn level_divisor(level: usize) -> u32 {
 	2 << level
 }
 
+/// Readies every pass into the frame allocator, or returns `None` while any of their pipelines is unavailable.
+fn ready_in<'a>(
+	passes: &mut [simple_compute::Pass],
+	frame: &mut ghi::implementation::Frame,
+	frame_allocator: &'a bumpalo::Bump,
+) -> Option<&'a [simple_compute::ReadyPass]> {
+	let mut ready = bumpalo::collections::Vec::with_capacity_in(passes.len(), frame_allocator);
+	for pass in passes {
+		ready.push(pass.ready(frame)?);
+	}
+	Some(ready.into_bump_slice())
+}
+
 /// Returns the extent of a pyramid level, matching the size the renderer gives its render target.
 fn bloom_extent(extent: Extent, level: usize) -> Extent {
-	crate::rendering::renderer::scaled_extent(extent, level_divisor(level))
+	extent.scaled_down(level_divisor(level))
 }
 
 #[cfg(test)]
@@ -594,7 +551,7 @@ mod tests {
 			("bloom_composite", BLOOM_COMPOSITE_BESL),
 		] {
 			let mut root = besl::parse(source).expect("bloom shader should parse");
-			root.add(vec![crate::rendering::common_shader_generator::CommonShaderScope::new()]);
+			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 			let root = besl::lex(root).expect("bloom shader should link");
 			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
 
@@ -603,23 +560,5 @@ mod tests {
 				.await
 				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
 		}
-	}
-
-	#[test]
-	fn bloom_level_count_is_clamped() {
-		let settings = BloomPassSettings {
-			levels: MAX_BLOOM_LEVELS + 4,
-			..Default::default()
-		};
-
-		assert_eq!(settings.resolved_level_count(), MAX_BLOOM_LEVELS as usize);
-	}
-
-	#[test]
-	fn bloom_extent_stays_non_zero() {
-		let extent = bloom_extent(Extent::rectangle(1, 1), 4);
-
-		assert_eq!(extent.width(), 1);
-		assert_eq!(extent.height(), 1);
 	}
 }

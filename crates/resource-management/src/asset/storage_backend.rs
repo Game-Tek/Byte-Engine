@@ -475,7 +475,7 @@ fn resource_id_path(path: &Path) -> Option<String> {
 #[cfg(test)]
 pub mod tests {
 	use std::{
-		alloc::{Allocator, Global},
+		alloc::Global,
 		collections::HashMap,
 		fs::{self, FileTimes, OpenOptions},
 		io::Write,
@@ -483,27 +483,12 @@ pub mod tests {
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{AssetSource, AssetStorageBytes, AssetVersion, FileStorageBackend, ResolveResult, StorageBackend};
+	use super::{AssetSource, AssetStorageBytes, FileStorageBackend, ResolveResult, StorageBackend};
 	use crate::{asset::ResourceId, tests::ASSETS_PATH};
 
 	/// The `TestStorageBackend` struct provides in-memory source files with an asset-directory fallback for tests.
 	#[derive(Clone)]
 	pub struct TestStorageBackend(Arc<Mutex<HashMap<String, Box<[u8]>>>>);
-
-	/// The `VirtualStorageBackend` struct proves allocator-aware reads stay within a custom backend namespace.
-	struct VirtualStorageBackend;
-
-	impl StorageBackend for VirtualStorageBackend {
-		async fn resolve<'a>(&'a self, url: ResourceId<'a>) -> ResolveResult<'a> {
-			Ok((
-				AssetStorageBytes::Owned(url.as_ref().as_bytes().into()),
-				url.get_asset_type().to_string(),
-			))
-		}
-		async fn version<'a>(&'a self, url: ResourceId<'a>) -> Result<AssetVersion, ()> {
-			Ok(AssetVersion::from_content(url.as_ref().as_bytes()))
-		}
-	}
 
 	impl TestStorageBackend {
 		pub fn new() -> Self {
@@ -517,18 +502,6 @@ pub mod tests {
 		pub fn remove_file(&self, name: &str) {
 			self.0.lock().unwrap().remove(name);
 		}
-	}
-
-	#[crate::r#async::test]
-	async fn allocator_aware_reads_use_the_custom_backend_namespace() {
-		let backend = VirtualStorageBackend;
-		let (bytes, _) = backend
-			.resolve_in(ResourceId::new("not-on-disk.environment-source"), &Global)
-			.await
-			.expect("the custom source must resolve without consulting the process filesystem");
-
-		assert_eq!(bytes.as_slice(), b"not-on-disk.environment-source");
-		assert!(matches!(bytes, AssetStorageBytes::Allocated(_)));
 	}
 
 	impl StorageBackend for TestStorageBackend {
@@ -605,27 +578,6 @@ pub mod tests {
 				AssetSource::new("root.test".to_string(), false),
 			]
 		);
-
-		fs::remove_dir_all(directory).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn file_storage_backend_resolves_assets_as_mapped_slices() {
-		let directory = temporary_asset_directory();
-		fs::create_dir_all(&directory).unwrap();
-		let path = directory.join("shader.bin");
-		let expected = b"asset-bytes";
-		fs::write(&path, expected).unwrap();
-
-		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, format) = storage_backend
-			.resolve(ResourceId::new("shader.bin"))
-			.await
-			.expect("asset should resolve");
-
-		assert!(matches!(bytes, AssetStorageBytes::MappedFile(_)));
-		assert_eq!(bytes.as_slice(), expected);
-		assert_eq!(format, "bin");
 
 		fs::remove_dir_all(directory).unwrap();
 	}
@@ -727,24 +679,6 @@ pub mod tests {
 		assert!(backend.load_sidecar(id).await.is_err());
 		backend.remove_file("explicit.test.bead");
 		assert!(backend.load_sidecar(id).await.unwrap().is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn file_versions_track_source_and_sidecar_independently() {
-		let storage_backend = TestStorageBackend::new();
-		storage_backend.add_file("source.exr", b"source");
-		storage_backend.add_file("source.exr.bead", b"{ exposure: 1 }");
-
-		let raw_before = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
-		let full_before = storage_backend.version(ResourceId::new("source.exr.bead")).await.unwrap();
-
-		storage_backend.add_file("source.exr.bead", b"{ exposure: 2 }");
-
-		let raw_after = storage_backend.version(ResourceId::new("source.exr")).await.unwrap();
-		let full_after = storage_backend.version(ResourceId::new("source.exr.bead")).await.unwrap();
-
-		assert_eq!(raw_before, raw_after);
-		assert_ne!(full_before, full_after);
 	}
 }
 

@@ -1,10 +1,7 @@
 //! A camera-controlled canvas beside stationary labels and images.
 
 use super::*;
-use crate::ui::{
-	ConcreteLayer, ConcreteStyle, Container, ContainerContext, Context, Curve, CurvePath, ElementContext, Engine, Image, Size,
-	Text, Transform,
-};
+use crate::ui::{ConcreteLayer, ConcreteStyle, Context, ElementContext, Engine, Size, Transform};
 
 /// Builds a graph-like workload with an explicit content-transform boundary.
 pub(super) fn graph_engine(count: usize) -> Engine<(f32, f32)> {
@@ -92,9 +89,9 @@ fn camera_primitives_match_fresh_preparation() {
 		update_from_render(engine.render(), &mut data);
 		let extent = Extent::rectangle(extent, 1080);
 		let mut masks = UiMaskTable::default();
-		let actual = build_ui_primitives(&data, extent, &arena, Some(&mut caches), &mut masks, None, None, None);
+		let actual = build_ui_primitives(&data, extent, &arena, Vec::new(), Some(&mut caches), &mut masks, None, None, None);
 		let mut fresh_masks = UiMaskTable::default();
-		let expected = build_ui_primitives_uncached(&data, extent, &arena, &mut fresh_masks);
+		let expected = build_ui_primitives_uncached(&data, extent, &arena, Vec::new(), &mut fresh_masks);
 		assert_eq!(actual.primitives, expected.primitives);
 		assert_eq!(actual.steps, expected.steps);
 		assert_eq!(actual.images, expected.images);
@@ -123,7 +120,7 @@ fn graph_camera_evaluate_render(bencher: divan::Bencher, zoom: bool) {
 			if frame % 2 == 0 { 12.25 } else { -12.25 },
 			if zoom && frame % 2 == 0 { 1.125 } else { 1.0 },
 		);
-		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
+		engine.evaluate(Size::new(1920, 1080), &arena);
 		divan::black_box(engine.render().revision());
 	});
 }
@@ -136,7 +133,7 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 	let mut arena = bumpalo::Bump::new();
 	let frames = [(-12.25, 1.0), (12.25, if zoom { 1.125 } else { 1.0 })].map(|camera| {
 		*engine.ctx_mut() = camera;
-		let mut snapshot = engine.evaluate(Size::new(1920, 1080), &arena);
+		engine.evaluate(Size::new(1920, 1080), &arena);
 		engine.render().clone()
 	});
 	let mut data = UiDrawList::default();
@@ -144,12 +141,26 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 	let mut masks = UiMaskTable::default();
 	let mut text = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
+	let mut primitives = Vec::new();
 	let mut frame = 0;
 	let extent = Extent::rectangle(1920, 1080);
 	// Warm both glyph sizes and all retained buffers outside the measurement.
 	for _ in 0..4 {
 		update_from_render(&frames[frame % 2], &mut data);
-		build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		masks.clear();
+		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
+		primitives = build_ui_primitives(
+			&data,
+			extent,
+			&arena,
+			std::mem::take(&mut primitives),
+			Some(&mut caches),
+			&mut masks,
+			Some(&glyphs),
+			None,
+			None,
+		)
+		.primitives;
 		frame += 1;
 	}
 	bencher.bench_local(|| {
@@ -157,16 +168,19 @@ fn graph_camera_prepare(bencher: divan::Bencher, zoom: bool) {
 		update_from_render(&frames[frame % 2], &mut data);
 		masks.clear();
 		let glyphs = build_ui_text_geometry(&data, extent, &mut text, &mut atlas, &mut masks, &arena);
-		divan::black_box(build_ui_primitives(
+		// Retain the primitive storage across frames like the render pass does.
+		let output = divan::black_box(build_ui_primitives(
 			&data,
 			extent,
 			&arena,
+			std::mem::take(&mut primitives),
 			Some(&mut caches),
 			&mut masks,
 			Some(&glyphs),
 			None,
 			None,
 		));
+		primitives = output.primitives;
 		frame += 1;
 	});
 }

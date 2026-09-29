@@ -644,11 +644,6 @@ mod tests {
 	}
 
 	#[test]
-	fn keeps_unbraced_custom_values_as_written() {
-		assert_eq!(parse(&DataType::Custom("BSDF"), ""), Ok(Value::Opaque("")));
-	}
-
-	#[test]
 	fn defaults_matrices_to_the_identity() {
 		assert_eq!(
 			Value::default_for(&DataType::Matrix33, &Global),

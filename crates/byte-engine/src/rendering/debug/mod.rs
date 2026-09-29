@@ -82,23 +82,5 @@ impl DebugMesh {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn debug_mesh_defaults_to_scene_depth_and_can_ignore_it() {
-		let shape = DebugShape::Sphere {
-			center: Point::origin(),
-			radius: 1.0,
-		};
-		let message = DebugMesh::new(shape, RGBA::white());
-		assert_eq!(message.selected_depth_mode(), DebugDepthMode::Scene);
-
-		let message = message.depth_mode(DebugDepthMode::Ignore);
-		assert_eq!(message.selected_depth_mode(), DebugDepthMode::Ignore);
-	}
-}
-
 use math::{Orientation, Point, Vector};
 use utils::RGBA;

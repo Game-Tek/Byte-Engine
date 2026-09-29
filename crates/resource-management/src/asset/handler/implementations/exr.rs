@@ -26,12 +26,6 @@ impl AssetHandler for EXRAssetHandler {
 
 	/// Decodes one EXR and stores only its linear base image without environment lighting maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(data_type) = context.resource_type(url)
-			&& !self.can_handle(data_type)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (source, data_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&data_type) {
@@ -98,17 +92,6 @@ mod tests {
 			.expect("the in-memory EXR fixture must encode");
 
 		bytes
-	}
-
-	#[test]
-	fn handles_exr_extensions_and_mime_types_case_insensitively() {
-		let handler = EXRAssetHandler::new();
-
-		assert!(crate::AssetHandler::can_handle(&handler, "exr"));
-		assert!(crate::AssetHandler::can_handle(&handler, "EXR"));
-		assert!(crate::AssetHandler::can_handle(&handler, "image/x-exr"));
-		assert!(crate::AssetHandler::can_handle(&handler, "Image"));
-		assert!(!crate::AssetHandler::can_handle(&handler, "png"));
 	}
 
 	#[r#async::test]

@@ -134,7 +134,7 @@ mod tests {
 	use std::num::NonZeroU64;
 
 	use super::*;
-	use crate::ui::{Container, Context, ElementContext, Engine, UiPoint, intersection::HitTest};
+	use crate::ui::{Context, ElementContext, Engine, UiPoint, intersection::HitTest};
 
 	#[test]
 	fn scaling_origin_keeps_child_rendering_and_retained_hits_on_the_same_bounds() {
@@ -169,11 +169,11 @@ mod tests {
 			let child = hits.query(pointer).expect("the transformed child accepts the pointer");
 			let bounds = hits.bounds(child).unwrap();
 			let child = engine.render_id(child);
-			let visual = render.elements().find(|element| element.id == child).unwrap();
+			let visual = render.elements().find(|element| element.placement.id == child).unwrap();
 			assert_eq!((bounds.x(), bounds.y()), (expected.x, expected.y));
 			assert_eq!((bounds.width(), bounds.height()), (10.0, 5.0));
-			assert_eq!(visual.position, bounds.position);
-			assert_eq!(visual.size, bounds.size);
+			assert_eq!(visual.placement.position, bounds.position);
+			assert_eq!(visual.placement.size, bounds.size);
 		}
 	}
 
@@ -204,17 +204,17 @@ mod tests {
 		let render = engine.render();
 		let child = render
 			.elements()
-			.find(|element| (element.size.x(), element.size.y()) == (10.0, 5.0))
+			.find(|element| (element.placement.size.x(), element.placement.size.y()) == (10.0, 5.0))
 			.expect("the child keeps its unrotated scaled size");
-		assert_eq!((child.position.x(), child.position.y()), (30.0, 35.0));
-		let rotation = child.rotation.expect("the child inherits its parent's turn");
+		assert_eq!((child.placement.position.x(), child.placement.position.y()), (30.0, 35.0));
+		let rotation = child.placement.rotation.expect("the child inherits its parent's turn");
 		// The pivot is the parent's translated top left corner, so it stays put.
 		let (x, y) = rotation.apply(30.0, 35.0);
 		assert!((x - 30.0).abs() < 0.001 && (y - 35.0).abs() < 0.001);
 		// A quarter turn clockwise sends the child's top right corner straight down.
 		let (x, y) = rotation.apply(40.0, 35.0);
 		assert!((x - 30.0).abs() < 0.001 && (y - 45.0).abs() < 0.001);
-		assert!(render.root().rotation.is_none());
+		assert!(render.root().placement.rotation.is_none());
 	}
 
 	#[test]
@@ -225,7 +225,6 @@ mod tests {
 			position: Location3::new(10, 10, 0),
 			size: Size::new(100, 40),
 			hit_testable: false,
-			sector: None,
 		};
 		let physical_positions = (0..=10)
 			.map(|step| {

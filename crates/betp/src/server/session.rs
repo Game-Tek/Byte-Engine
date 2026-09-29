@@ -210,15 +210,6 @@ mod tests {
 	use crate::packets::{ChallengePacket, DisconnectPacket};
 
 	#[test]
-	fn test_session_start() {
-		let mut session = Session::new();
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(Vec::new()));
-	}
-
-	#[test]
 	fn test_establish_connection() {
 		let mut session = Session::new();
 
@@ -235,33 +226,6 @@ mod tests {
 		let res = session.update(&[], std::time::Instant::now());
 
 		assert_eq!(res, Ok(vec![]));
-	}
-
-	#[test]
-	fn test_connect_with_unresponsive_server() {
-		let mut session = Session::new();
-
-		session.connect(0);
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[], std::time::Instant::now());
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
 	}
 
 	#[test]

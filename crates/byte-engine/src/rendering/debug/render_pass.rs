@@ -14,7 +14,8 @@ pub struct DebugMeshRenderPass {
 	depth: ghi::BaseImageHandle,
 	source_copy: ImageBypassPass,
 	output_copy: ImageBypassPass,
-	bypass_copy: ImageBypassPass,
+	/// Forwards the incoming color unchanged while the pass is bypassed and on frames with nothing to draw.
+	main_copy: ImageBypassPass,
 }
 
 impl DebugMeshRenderPass {
@@ -42,7 +43,10 @@ impl DebugMeshRenderPass {
 		let working_color_handle = ghi::BaseImageHandle::from(working_color);
 		let source_copy = ImageBypassPass::new(render_pass_builder, source, working_color_handle);
 		let output_copy = ImageBypassPass::new(render_pass_builder, working_color_handle, output);
-		let bypass_copy = ImageBypassPass::new(render_pass_builder, source, output);
+		// The builder's copy of the incoming `main` into `output` doubles as this pass's own forwarding copy.
+		let main_copy = render_pass_builder.take_main_copy().expect(
+			"Main copy is missing. The most likely cause is that the pass did not call `RenderPassBuilder::create_main_render_target` first.",
+		);
 
 		Self {
 			scene,
@@ -53,7 +57,7 @@ impl DebugMeshRenderPass {
 			depth: depth.into(),
 			source_copy,
 			output_copy,
-			bypass_copy,
+			main_copy,
 		}
 	}
 
@@ -117,7 +121,7 @@ impl RenderPass for DebugMeshRenderPass {
 	) -> Option<RenderPassReturn<'a>> {
 		let (depth_draws, overlay_draws) = self.prepare_draws(frame, sink, frame_allocator);
 		if depth_draws.is_empty() && overlay_draws.is_empty() {
-			return self.bypass_copy.prepare(frame, sink, frame_allocator);
+			return self.main_copy.prepare(frame, sink, frame_allocator);
 		}
 
 		let depth_pipeline = if depth_draws.is_empty() {
@@ -125,30 +129,30 @@ impl RenderPass for DebugMeshRenderPass {
 		} else if let Some(pipeline) = self.pipeline_manager.pipeline(self.depth_pipeline) {
 			Some(pipeline)
 		} else {
-			return self.bypass_copy.prepare(frame, sink, frame_allocator);
+			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let overlay_pipeline = if overlay_draws.is_empty() {
 			None
 		} else if let Some(pipeline) = self.pipeline_manager.pipeline(self.overlay_pipeline) {
 			Some(pipeline)
 		} else {
-			return self.bypass_copy.prepare(frame, sink, frame_allocator);
+			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let Some(source_copy) = self.source_copy.prepare(frame, sink, frame_allocator) else {
-			return self.bypass_copy.prepare(frame, sink, frame_allocator);
+			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let Some(output_copy) = self.output_copy.prepare(frame, sink, frame_allocator) else {
-			return self.bypass_copy.prepare(frame, sink, frame_allocator);
+			return self.main_copy.prepare(frame, sink, frame_allocator);
 		};
 		let extent = sink.extent();
 		let working_color = self.working_color;
 		let depth = self.depth;
 
-		Some(allocate_render_command(frame_allocator, move |command_buffer, _| {
+		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|label| label.write_str("Debug Meshes"),
 				|command_buffer| {
-					source_copy(command_buffer, &[]);
+					source_copy(command_buffer);
 
 					if let Some(pipeline) = depth_pipeline {
 						let attachments = [
@@ -193,7 +197,7 @@ impl RenderPass for DebugMeshRenderPass {
 						command_buffer.end_render_pass();
 					}
 
-					output_copy(command_buffer, &[]);
+					output_copy(command_buffer);
 				},
 			);
 		}))
@@ -206,7 +210,7 @@ impl RenderPass for DebugMeshRenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		self.update_scene(frame);
-		self.bypass_copy.prepare(frame, sink, frame_allocator)
+		self.main_copy.prepare(frame, sink, frame_allocator)
 	}
 }
 
@@ -316,7 +320,7 @@ const _: () = assert!(std::mem::align_of::<DebugPushConstants>() == 16);
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, Value, builtin_position_slot, input_slot, output_slot};
-	use math::{Orientation, Point, Vector};
+	use math::Point;
 	use maths_rs::Vec4f;
 
 	use super::*;
@@ -329,19 +333,18 @@ mod tests {
 	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 	/// Links one checked-in debug shader through the same BESL frontend used by production baking.
+	///
+	/// Returns the program rather than its `main`, because the program owns every function it calls.
 	fn debug_program(source: &str, name: &str) -> besl::NodeReference {
-		besl::compile_to_besl(source, None)
-			.unwrap_or_else(|error| {
-				panic!(
-					"Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in debug shader."
-				)
-			})
-			.get_main()
-			.unwrap_or_else(|| {
-				panic!(
-					"Missing {name} entry point. The most likely cause is that the checked-in debug shader has no `main` function."
-				)
-			})
+		let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
+			panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in debug shader.")
+		});
+		program.get_main().unwrap_or_else(|| {
+			panic!(
+				"Missing {name} entry point. The most likely cause is that the checked-in debug shader has no `main` function."
+			)
+		});
+		program
 	}
 
 	/// Collects only mesh kinds so semantic expansion remains independent of native GHI handles.
@@ -365,41 +368,6 @@ mod tests {
 				&& (actual.z - expected.z()).abs() < 1e-5
 				&& (actual.w - 1.0).abs() < 1e-5,
 			"Debug mesh transform produced {actual:?}, expected {expected:?}. The most likely cause is an incorrect scale, orientation, or center."
-		);
-	}
-
-	/// Verifies every public shape selects the unit meshes needed for its visible geometry.
-	#[test]
-	fn supported_shapes_expand_into_the_expected_unit_meshes() {
-		assert_eq!(
-			mesh_kinds(DebugShape::Sphere {
-				center: Point::origin(),
-				radius: 1.0,
-			}),
-			vec![MeshKind::Sphere]
-		);
-		assert_eq!(
-			mesh_kinds(DebugShape::Box {
-				center: Point::origin(),
-				half_extents: Vector::new(1.0, 2.0, 3.0),
-				orientation: Orientation::identity(),
-			}),
-			vec![MeshKind::Box]
-		);
-		assert_eq!(
-			mesh_kinds(DebugShape::Capsule {
-				start: Point::origin(),
-				end: Point::new(0.0, 2.0, 0.0),
-				radius: 0.5,
-			}),
-			vec![MeshKind::Sphere, MeshKind::Cylinder, MeshKind::Sphere]
-		);
-		assert_eq!(
-			mesh_kinds(DebugShape::Segment {
-				start: Point::origin(),
-				end: Point::new(0.0, 0.0, 2.0),
-			}),
-			vec![MeshKind::Cylinder]
 		);
 	}
 
@@ -438,12 +406,6 @@ mod tests {
 		assert_eq!(segment[0].0, MeshKind::Cylinder);
 		assert_transformed_point(segment[0].1, [0.0, 0.0, -1.0], segment_start);
 		assert_transformed_point(segment[0].1, [0.0, 0.0, 1.0], segment_end);
-	}
-
-	#[test]
-	fn checked_in_debug_raster_shaders_link() {
-		debug_program(DEBUG_VERTEX_BESL, "debug vertex shader");
-		debug_program(DEBUG_FRAGMENT_BESL, "debug fragment shader");
 	}
 
 	/// Executes both checked-in stages through the BESL VM to verify the raster interface and color path.

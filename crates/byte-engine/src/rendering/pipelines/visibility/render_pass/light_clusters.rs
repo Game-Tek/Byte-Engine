@@ -97,23 +97,16 @@ impl LightClusterPass {
 	) -> impl RenderPassFunction + use<> {
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = LightClusterParameters::from(sink.view());
 		frame.sync_buffer(self.parameters);
-		let descriptor_set = self.descriptor_set;
+		// One workgroup per cluster, and one thread per mask word of 32 lights.
+		let workgroup_size = LIGHT_CLUSTER_MASK_WORDS as u32;
+		let stage = super::ComputeStage {
+			label: "Light Clusters",
+			pipeline,
+			descriptor_sets: [self.descriptor_set],
+			extent: Extent::line(LIGHT_CLUSTER_COUNT as u32 * workgroup_size),
+			workgroup: Extent::line(workgroup_size),
+		};
 
-		move |c, _| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
-			};
-
-			c.start_region(|label| label.write_str("Light Clusters"));
-			let c = c.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
-			// One workgroup per cluster, and one thread per mask word of 32 lights.
-			let workgroup_size = LIGHT_CLUSTER_MASK_WORDS as u32;
-			c.dispatch(ghi::DispatchExtent::new(
-				Extent::line(LIGHT_CLUSTER_COUNT as u32 * workgroup_size),
-				Extent::line(workgroup_size),
-			));
-			c.end_region();
-		}
+		move |c| super::record_compute_stages(c, None, &[stage])
 	}
 }

@@ -3,6 +3,11 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn type_from_besl(source: &str) -> &str {
 		Generator::translate_type(source)
 	}
+	const SPECIALIZATION_QUALIFIER: &'static str = "static const";
+	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, _index: usize) {
+		// HLSL has no pipeline specialization, so each constant takes the default value the other backends override.
+		let _ = write!(string, "static const {type_name} {name}=1.0f;");
+	}
 	fn minified(&self) -> bool {
 		self.minified
 	}
@@ -12,9 +17,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	fn is_reserved_identifier(name: &str) -> bool {
 		super::reserved::is_reserved(name)
 	}
-	fn supports_atomic_u32(&self) -> bool {
-		true
-	}
 	fn emit_function_attributes(&mut self, string: &mut String, _node: &besl::NodeReference, name: &str) {
 		if name != "main" {
 			return;
@@ -22,9 +24,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 
 		if self.current_stage == HlslStage::Mesh {
 			string.push_str("[outputtopology(\"triangle\")]");
-			if !self.minified {
-				string.push('\n');
-			}
+			string.push_str(ShaderFormatting::new(self.minified).break_str());
 		}
 
 		let Some(local_size) = self.current_local_size else {
@@ -37,9 +37,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			local_size.height().max(1),
 			local_size.depth().max(1)
 		));
-		if !self.minified {
-			string.push('\n');
-		}
+		string.push_str(ShaderFormatting::new(self.minified).break_str());
 	}
 	// A value atomic in the condition is lifted into a statement, which needs a block that runs only when the branch is reached.
 	fn else_if_needs_block(&self, conditional: &besl::NodeReference) -> bool {
@@ -147,7 +145,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			string.push_str("))");
 			return true;
 		}
-		if crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32()) {
+		if crate::shader::generator::is_builtin_struct_type(name) {
 			return false;
 		}
 		if !self.user_struct_constructors.contains(function) {
@@ -316,34 +314,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				self.emit_node_string(string, right);
 				string.push(')');
 				return true;
-			}
-			if *operator == besl::Operators::Multiply
-				&& !matches!(
-					(left_type.as_deref(), right_type.as_deref()),
-					(Some(left), Some(right))
-						if Self::is_matrix_type(Some(left)) && Self::is_matrix_type(Some(right))
-				) {
-				let left_name = left.borrow().get_name().map(str::to_string);
-				if left_name.as_deref().is_some_and(Self::hlsl_name_likely_matrix_operand) {
-					// Some expression references do not retain resolved types, so preserve known matrix operand names.
-					string.push_str("mul(");
-					self.emit_node_string(string, left);
-					string.push_str(", ");
-					self.emit_node_string(string, right);
-					string.push(')');
-					return true;
-				}
-				let mut left_operand = String::new();
-				self.emit_node_string(&mut left_operand, left);
-				if Self::hlsl_name_likely_matrix_operand(&left_operand) {
-					// Buffer member references can lose their source type but still expose matrix field names.
-					string.push_str("mul(");
-					string.push_str(&left_operand);
-					string.push_str(", ");
-					self.emit_node_string(string, right);
-					string.push(')');
-					return true;
-				}
 			}
 		}
 

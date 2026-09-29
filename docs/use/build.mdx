@@ -89,7 +89,7 @@ inside a macOS application bundle:
 ```rust
 use std::path::PathBuf;
 
-use byte_engine::application::{Application, Parameter};
+use byte_engine::application::Parameter;
 
 fn bundled_resources_path() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;

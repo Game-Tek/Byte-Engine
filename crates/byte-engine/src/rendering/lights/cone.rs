@@ -5,12 +5,10 @@
 /// from the associated [`crate::gameplay::Transform`]'s forward direction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConeLight {
-	pub color: Vec3f,
+	/// The color, optional IES profile, and shadow-range overrides every local light shares.
+	pub emission: LocalEmission,
 	pub inner_angle: Radians,
 	pub outer_angle: Radians,
-	ies_profile: Option<IesProfile>,
-	shadow_near_override: Option<f32>,
-	shadow_far_override: Option<f32>,
 }
 
 impl ConeLight {
@@ -34,14 +32,10 @@ impl ConeLight {
 	) -> Result<Self, PhotometricError> {
 		Self::validate_angles(inner_angle, outer_angle);
 		let chromaticity = color.resolve()?;
-		let candela = intensity.cone_candela(inner_angle, outer_angle)?;
 		Ok(Self {
-			color: Vec3f::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
+			emission: LocalEmission::uniform(chromaticity, intensity.cone_candela(inner_angle, outer_angle)?),
 			inner_angle,
 			outer_angle,
-			ies_profile: None,
-			shadow_near_override: None,
-			shadow_far_override: None,
 		})
 	}
 
@@ -75,20 +69,11 @@ impl ConeLight {
 		outer_angle: Radians,
 	) -> Result<Self, PhotometricError> {
 		Self::validate_angles(inner_angle, outer_angle);
-		let chromaticity = color.resolve()?;
 		Ok(Self {
-			color: chromaticity,
+			emission: LocalEmission::ies(color, dimmer, ies_profile_resource_id)?,
 			inner_angle,
 			outer_angle,
-			ies_profile: Some(IesProfile::new(ies_profile_resource_id, dimmer)),
-			shadow_near_override: None,
-			shadow_far_override: None,
 		})
-	}
-
-	/// Returns the optional IES profile that supplies this cone light's intensity distribution.
-	pub fn ies_profile(&self) -> Option<&IesProfile> {
-		self.ies_profile.as_ref()
 	}
 
 	/// Validates the angular range shared by uniform and IES-backed cone lights.
@@ -101,35 +86,6 @@ impl ConeLight {
 			outer_angle <= Radians::new(std::f32::consts::PI),
 			"Invalid cone light outer angle. The most likely cause is that the supplied half angle exceeds pi radians."
 		);
-	}
-
-	/// Overrides the renderer-derived near clipping distance for this light's shadow view.
-	pub fn with_shadow_near(mut self, shadow_near: f32) -> Self {
-		self.shadow_near_override = Some(shadow_near);
-		self
-	}
-
-	/// Overrides the renderer-derived far clipping distance for this light's shadow view.
-	pub fn with_shadow_far(mut self, shadow_far: f32) -> Self {
-		self.shadow_far_override = Some(shadow_far);
-		self
-	}
-
-	/// Overrides both renderer-derived clipping distances for this light's shadow view.
-	pub fn with_shadow_range(mut self, shadow_near: f32, shadow_far: f32) -> Self {
-		self.shadow_near_override = Some(shadow_near);
-		self.shadow_far_override = Some(shadow_far);
-		self
-	}
-
-	/// Returns the optional near clipping-distance override for the renderer.
-	pub(crate) fn shadow_near_override(&self) -> Option<f32> {
-		self.shadow_near_override
-	}
-
-	/// Returns the optional far clipping-distance override for the renderer.
-	pub(crate) fn shadow_far_override(&self) -> Option<f32> {
-		self.shadow_far_override
 	}
 
 	/// Returns whether this light's cone fits in one perspective shadow view.
@@ -150,90 +106,10 @@ impl Inspectable for ConeLight {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use math::Radians;
-
-	use super::ConeLight;
-	use crate::rendering::lights::{IesProfile, LightColor, PhotometricIntensity};
-
-	fn intensity() -> PhotometricIntensity {
-		PhotometricIntensity::LuminousIntensity {
-			candela: 100.0,
-			reference_distance_m: 1.0,
-		}
-	}
-
-	#[test]
-	fn ies_cone_keeps_its_profile() {
-		let light = ConeLight::new_ies(
-			LightColor::Kelvin(4_500.0),
-			0.25,
-			"lights/office.ies",
-			Radians::new(0.25),
-			Radians::new(0.5),
-		)
-		.expect("physical IES cone light");
-
-		assert_eq!(
-			light.ies_profile().map(|profile| profile.resource_id()),
-			Some("lights/office.ies")
-		);
-		assert_eq!(light.ies_profile().map(IesProfile::dimmer), Some(0.25));
-	}
-
-	#[test]
-	fn cone_light_keeps_shadow_range_overrides() {
-		let light = ConeLight::new(
-			LightColor::Kelvin(4_500.0),
-			intensity(),
-			Radians::new(0.25),
-			Radians::new(0.5),
-		)
-		.expect("physical cone light")
-		.with_shadow_range(0.2, 75.0);
-
-		assert_eq!(light.shadow_near_override(), Some(0.2));
-		assert_eq!(light.shadow_far_override(), Some(75.0));
-	}
-
-	#[test]
-	fn individual_shadow_range_overrides_replace_only_their_endpoint() {
-		let light = ConeLight::new(
-			LightColor::Kelvin(4_500.0),
-			intensity(),
-			Radians::new(0.25),
-			Radians::new(0.5),
-		)
-		.expect("physical cone light")
-		.with_shadow_range(0.2, 75.0)
-		.with_shadow_near(0.4)
-		.with_shadow_far(50.0);
-
-		assert_eq!(light.shadow_near_override(), Some(0.4));
-		assert_eq!(light.shadow_far_override(), Some(50.0));
-	}
-
-	#[test]
-	fn cone_light_wider_than_a_perspective_view_remains_valid_but_unshadowed() {
-		let light = ConeLight::new(
-			LightColor::Kelvin(4_500.0),
-			intensity(),
-			Radians::new(0.25),
-			Radians::new(std::f32::consts::PI),
-		)
-		.expect("physical cone light");
-
-		assert!(!light.supports_shadow_mapping());
-	}
-}
-
 use math::Radians;
-use maths_rs::Vec3f;
 
-use super::{IesProfile, LightColor, PhotometricError, PhotometricIntensity};
+use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity};
 use crate::{
-	core::{Entity, EntityHandle},
 	inspector::Inspectable,
 	rendering::lights::{Light, LightClasses},
 };

@@ -1,19 +1,10 @@
 //! PCM sample allocation, cache residency, and leases.
 
-use std::{mem::size_of, num::NonZeroUsize, ptr::NonNull, sync::Arc};
+use std::{mem::size_of, num::NonZeroUsize, ops::Range, ptr::NonNull};
 
 use crossbeam_queue::ArrayQueue;
-use resource_management::{
-	Reference,
-	resource::{ReadTargetsMut, resource_manager::ResourceManager},
-	resources::audio::Audio,
-	types::BitDepths,
-};
-
-use crate::{
-	core::async_runtime,
-	core::{EntityHandle, factory::Handle},
-};
+use resource_management::{resources::audio::Audio, types::BitDepths};
+use utils::RangeAllocator;
 
 /// Keep both sides bounded so the application loader and audio worker exert
 /// backpressure instead of growing queues during a resource burst.
@@ -22,7 +13,7 @@ pub(crate) const AUDIO_GRAPH_CAPACITY: usize = 64;
 /// Holds every active graph lease plus a full completion queue of stale leases.
 pub(crate) const AUDIO_SAMPLE_RELEASE_CAPACITY: usize = AUDIO_GRAPH_CAPACITY * 2;
 
-/// Covers every possible free interval plus one temporary returned region before coalescing.
+/// Covers the most free intervals the arena can have (one more than the slot count) plus one spare.
 const AUDIO_SAMPLE_FREE_REGION_CAPACITY: usize = AUDIO_GRAPH_CAPACITY + 2;
 
 /// The decoded PCM byte budget used by the default audio setup.
@@ -242,27 +233,13 @@ impl AudioSampleLease {
 		self.id
 	}
 
+	/// Wraps test-owned PCM in a lease that keeps the allocation alive.
 	#[cfg(test)]
 	pub(crate) fn for_test(sample_rate: u32, channel_count: u16, samples: Box<[f32]>) -> Self {
-		assert!(sample_rate > 0);
-		assert!(channel_count == 1 || channel_count == 2);
-		assert!(!samples.is_empty());
-		assert_eq!(samples.len() % usize::from(channel_count), 0);
-		let layout = AudioSampleLayout {
-			channel_count,
-			sample_rate,
-			frame_count: samples.len() / usize::from(channel_count),
-			scalar_count: samples.len(),
-		};
-		Self {
-			id: AudioSampleLeaseId {
-				slot: u8::MAX,
-				generation: 0,
-			},
-			samples: NonNull::new(samples.as_ptr().cast_mut()).expect("Test audio samples are not empty."),
-			layout,
-			owned_samples: Some(samples),
-		}
+		let mut lease = Self::for_benchmark(sample_rate, channel_count, &samples);
+		// Moving the box keeps its heap buffer in place, so the lease pointer stays valid.
+		lease.owned_samples = Some(samples);
+		lease
 	}
 
 	/// Borrows fixture-owned PCM for the external runtime benchmark.
@@ -359,25 +336,12 @@ impl AudioSampleReleaseQueue {
 	}
 }
 
-/// The `AudioSampleRegion` struct identifies one contiguous scalar range in the
-/// preallocated PCM arena.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct AudioSampleRegion {
-	pub(super) offset: usize,
-	pub(super) scalar_count: usize,
-}
-
-impl AudioSampleRegion {
-	pub(super) fn end(self) -> usize {
-		self.offset + self.scalar_count
-	}
-}
-
 /// The `CachedAudioSample` struct retains one arena range and its loader-owned
 /// residency state.
 pub(super) struct CachedAudioSample {
 	pub(super) key: AudioSampleCacheKey,
-	pub(super) region: AudioSampleRegion,
+	/// The sample's scalar range in [`AudioSamplePool::storage`].
+	pub(super) region: Range<usize>,
 	pub(super) layout: AudioSampleLayout,
 	pub(super) resident_bytes: usize,
 	pub(super) last_used: u64,
@@ -395,7 +359,7 @@ pub(super) struct AudioSampleSlot {
 /// byte-bounded LRU cache.
 pub(super) struct AudioSamplePool {
 	pub(super) storage: Box<[f32]>,
-	pub(super) free_regions: Vec<AudioSampleRegion>,
+	pub(super) free_scalars: RangeAllocator,
 	pub(super) slots: [AudioSampleSlot; AUDIO_GRAPH_CAPACITY],
 	pub(super) byte_budget: usize,
 	pub(super) resident_bytes: usize,
@@ -405,16 +369,9 @@ pub(super) struct AudioSamplePool {
 impl AudioSamplePool {
 	pub(super) fn new(config: AudioSamplePoolConfig) -> Self {
 		let scalar_capacity = config.byte_budget() / size_of::<f32>();
-		let mut free_regions = Vec::with_capacity(AUDIO_SAMPLE_FREE_REGION_CAPACITY);
-		if scalar_capacity > 0 {
-			free_regions.push(AudioSampleRegion {
-				offset: 0,
-				scalar_count: scalar_capacity,
-			});
-		}
 		Self {
 			storage: vec![0.0; scalar_capacity].into_boxed_slice(),
-			free_regions,
+			free_scalars: RangeAllocator::new(scalar_capacity, AUDIO_SAMPLE_FREE_REGION_CAPACITY),
 			slots: std::array::from_fn(|_| AudioSampleSlot {
 				generation: 0,
 				entry: None,
@@ -437,7 +394,7 @@ impl AudioSamplePool {
 		let entry = slot.entry.as_mut().expect("The matching audio sample slot is occupied.");
 		entry.last_used = last_used;
 		entry.lease_count += 1;
-		let samples = &storage[entry.region.offset..entry.region.end()];
+		let samples = &storage[entry.region.clone()];
 		Some(AudioSampleLease::new(
 			AudioSampleLeaseId {
 				slot: u8::try_from(slot_index).expect("Audio sample slot indices fit in u8."),
@@ -474,9 +431,7 @@ impl AudioSamplePool {
 			return false;
 		}
 
-		while !self.free_regions.iter().any(|region| region.scalar_count >= required_scalars)
-			|| self.slots.iter().all(|slot| slot.entry.is_some())
-		{
+		while !self.free_scalars.fits(required_scalars, 1) || self.slots.iter().all(|slot| slot.entry.is_some()) {
 			let Some((slot_index, _)) = self
 				.slots
 				.iter()
@@ -492,7 +447,8 @@ impl AudioSamplePool {
 				.take()
 				.expect("The selected audio sample slot is occupied.");
 			self.resident_bytes = self.resident_bytes.saturating_sub(evicted.resident_bytes);
-			self.return_region(evicted.region);
+			self.free_scalars.give_back(evicted.region);
+			self.debug_assert_free_list_bounded();
 		}
 		true
 	}
@@ -506,13 +462,16 @@ impl AudioSamplePool {
 		bytes: &[u8],
 	) -> Result<AudioSampleLease, String> {
 		let region = self
-			.take_region(layout.scalar_count)
+			.free_scalars
+			.take(layout.scalar_count, 1)
 			.expect("Audio sample admission reserved one contiguous PCM region.");
-		let decoded = decode_into(metadata, bytes, &mut self.storage[region.offset..region.end()]);
+		self.debug_assert_free_list_bounded();
+		let decoded = decode_into(metadata, bytes, &mut self.storage[region.clone()]);
 		let decoded_layout = match decoded {
 			Ok(decoded_layout) => decoded_layout,
 			Err(error) => {
-				self.return_region(region);
+				self.free_scalars.give_back(region);
+				self.debug_assert_free_list_bounded();
 				return Err(error);
 			}
 		};
@@ -520,12 +479,20 @@ impl AudioSamplePool {
 		Ok(self.insert(key, layout, region))
 	}
 
+	/// Checks that the free list stayed inside its preallocated capacity, so the audio thread never allocated.
+	fn debug_assert_free_list_bounded(&self) {
+		debug_assert!(
+			self.free_scalars.free_range_count() <= AUDIO_SAMPLE_FREE_REGION_CAPACITY,
+			"The audio sample free list grew past its preallocated capacity. The most likely cause is that more PCM regions are leased than AUDIO_GRAPH_CAPACITY slots allow."
+		);
+	}
+
 	/// Adopts a decoded arena region after [`Self::make_room`] reserved capacity.
 	pub(super) fn insert(
 		&mut self,
 		key: AudioSampleCacheKey,
 		layout: AudioSampleLayout,
-		region: AudioSampleRegion,
+		region: Range<usize>,
 	) -> AudioSampleLease {
 		let resident_bytes = layout
 			.decoded_byte_count()
@@ -533,8 +500,8 @@ impl AudioSamplePool {
 
 		assert!(
 			self.slots.iter().any(|slot| slot.entry.is_none())
-				&& region.end() <= self.storage.len()
-				&& region.scalar_count == layout.scalar_count,
+				&& region.end <= self.storage.len()
+				&& region.len() == layout.scalar_count,
 			"Audio sample pool admission requires available entry and byte capacity."
 		);
 		let last_used = self.next_use();
@@ -554,7 +521,7 @@ impl AudioSamplePool {
 			lease_count: 1,
 		});
 		self.resident_bytes += resident_bytes;
-		let samples = &self.storage[entry.region.offset..entry.region.end()];
+		let samples = &self.storage[entry.region.clone()];
 		AudioSampleLease::new(
 			AudioSampleLeaseId {
 				slot: u8::try_from(slot_index).expect("Audio sample slot indices fit in u8."),
@@ -563,43 +530,6 @@ impl AudioSamplePool {
 			samples,
 			entry.layout,
 		)
-	}
-
-	/// Removes one region from the free list and splits any unused suffix.
-	pub(super) fn take_region(&mut self, scalar_count: usize) -> Option<AudioSampleRegion> {
-		let index = self
-			.free_regions
-			.iter()
-			.position(|region| region.scalar_count >= scalar_count)?;
-		let available = self.free_regions[index];
-		let region = AudioSampleRegion {
-			offset: available.offset,
-			scalar_count,
-		};
-		if available.scalar_count == scalar_count {
-			self.free_regions.swap_remove(index);
-		} else {
-			self.free_regions[index].offset += scalar_count;
-			self.free_regions[index].scalar_count -= scalar_count;
-		}
-		Some(region)
-	}
-
-	/// Returns and coalesces one range without allocating free-list storage.
-	pub(super) fn return_region(&mut self, region: AudioSampleRegion) {
-		debug_assert!(self.free_regions.len() < AUDIO_SAMPLE_FREE_REGION_CAPACITY);
-		self.free_regions.push(region);
-		self.free_regions.sort_unstable_by_key(|region| region.offset);
-		let mut index = 1;
-		while index < self.free_regions.len() {
-			if self.free_regions[index - 1].end() == self.free_regions[index].offset {
-				let scalar_count = self.free_regions[index].scalar_count;
-				self.free_regions[index - 1].scalar_count += scalar_count;
-				self.free_regions.remove(index);
-			} else {
-				index += 1;
-			}
-		}
 	}
 
 	pub(super) fn next_use(&mut self) -> u64 {

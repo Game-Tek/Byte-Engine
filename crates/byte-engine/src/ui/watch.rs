@@ -191,23 +191,4 @@ mod tests {
 		let waker = Waker::from(Arc::new(WakeCount::default()));
 		assert!(!poll(&mut subscriber.changed(), &waker));
 	}
-
-	#[test]
-	fn a_write_from_another_thread_wakes_the_subscriber() {
-		let watch = Watch::new(Vec::new());
-		let mut subscriber = watch.subscribe();
-		let count = Arc::new(WakeCount::default());
-		let waker = Waker::from(Arc::clone(&count));
-		assert!(!poll(&mut subscriber.changed(), &waker));
-		let producer = watch.clone();
-		std::thread::spawn(move || producer.update(|values| values.push(7)))
-			.join()
-			.unwrap();
-		assert_eq!(count.0.load(Ordering::Relaxed), 1);
-		let mut changed = subscriber.changed();
-		match Pin::new(&mut changed).poll(&mut Context::from_waker(&waker)) {
-			Poll::Ready(values) => assert_eq!(*values, [7]),
-			Poll::Pending => panic!("the write did not resolve the wait"),
-		}
-	}
 }

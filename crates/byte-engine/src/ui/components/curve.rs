@@ -1,6 +1,6 @@
 use std::alloc::Allocator;
 
-use crate::ui::{flow::Size, layout::Sizing, style::ConcreteStyle, transform::Transform, visual::Visual};
+use crate::ui::layout::Sizing;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CurvePoint {
@@ -145,6 +145,11 @@ fn point_line_distance(point: CurvePoint, from: CurvePoint, to: CurvePoint) -> f
 	((point.x - from.x) * dy - (point.y - from.y) * dx).abs() / length
 }
 
+/// The `CurvePath` struct holds the segments and the box of an outline built outside the engine, such as one parsed
+/// from SVG path data.
+///
+/// Build it with [`Self::push_line`], [`Self::push_cubic`], and [`Self::push`], then hand it to a curve or path
+/// element with [`crate::ui::Properties::outline`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurvePath {
 	pub(crate) segments: Vec<CurveSegment>,
@@ -159,52 +164,6 @@ impl CurvePath {
 			width,
 			height,
 		}
-	}
-
-	pub fn line(mut self, from: impl Into<CurvePoint>, to: impl Into<CurvePoint>) -> Self {
-		self.segments.push(CurveSegment::Line {
-			from: from.into(),
-			to: to.into(),
-		});
-		self
-	}
-
-	pub fn quadratic(mut self, from: impl Into<CurvePoint>, control: impl Into<CurvePoint>, to: impl Into<CurvePoint>) -> Self {
-		self.segments.push(CurveSegment::Quadratic {
-			from: from.into(),
-			control: control.into(),
-			to: to.into(),
-		});
-		self
-	}
-
-	pub fn cubic(
-		mut self,
-		from: impl Into<CurvePoint>,
-		control0: impl Into<CurvePoint>,
-		control1: impl Into<CurvePoint>,
-		to: impl Into<CurvePoint>,
-	) -> Self {
-		self.segments.push(CurveSegment::Cubic {
-			from: from.into(),
-			control0: control0.into(),
-			control1: control1.into(),
-			to: to.into(),
-		});
-		self
-	}
-
-	pub fn from_segments(width: Sizing, height: Sizing, segments: impl IntoIterator<Item = CurveSegment>) -> Self {
-		Self {
-			segments: segments.into_iter().collect(),
-			width,
-			height,
-		}
-	}
-
-	/// Drops every segment while keeping the buffer, so a re-routed path allocates nothing.
-	pub fn clear(&mut self) {
-		self.segments.clear();
 	}
 
 	pub fn push(&mut self, segment: CurveSegment) {
@@ -233,18 +192,6 @@ impl CurvePath {
 		});
 	}
 
-	pub fn set_size(&mut self, width: Sizing, height: Sizing) {
-		self.width = width;
-		self.height = height;
-	}
-
-	pub fn size(&self, available_space: Size) -> Size {
-		Size::new(
-			self.width.calculate(available_space.x()),
-			self.height.calculate(available_space.y()),
-		)
-	}
-
 	pub fn segments(&self) -> &[CurveSegment] {
 		&self.segments
 	}
@@ -256,9 +203,6 @@ impl CurvePath {
 /// [`crate::ui::EvaluationContext::update_curve`].
 pub struct Curve {
 	pub(crate) path: CurvePath,
-	pub(crate) style: ConcreteStyle,
-	pub(crate) transform: Transform,
-	pub(crate) visual: Visual,
 	pub(crate) hit_width: Option<f32>,
 }
 
@@ -267,9 +211,6 @@ impl Curve {
 	pub(crate) fn new() -> Self {
 		Self {
 			path: CurvePath::new(Sizing::full(), Sizing::full()),
-			style: ConcreteStyle::default(),
-			transform: Transform::default(),
-			visual: Visual::default(),
 			hit_width: None,
 		}
 	}
@@ -285,51 +226,38 @@ impl Curve {
 	pub fn path(&self) -> &CurvePath {
 		&self.path
 	}
-
-	pub fn style_ref(&self) -> &ConcreteStyle {
-		&self.style
-	}
-
-	pub fn transform_ref(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn visual_ref(&self) -> &Visual {
-		&self.visual
-	}
 }
 
-/// The `FlattenedCurve` struct retains local points for translated curves.
-/// A scale or path edit refreshes tessellation at the caller's tolerance.
+/// The `FlattenedCurve` struct keeps a hit-testable curve's polyline between layouts, so a curve that only moves is
+/// not flattened again.
+///
+/// Hit testing keeps one per curve and refreshes it with [`Self::update`] before reading [`Self::points`].
 #[derive(Default)]
 pub(crate) struct FlattenedCurve {
-	segments: Vec<CurveSegment>,
-	scale: [f32; 2],
-	tolerance: f32,
+	/// The element revision and scale the points were flattened for; `None` before the first flatten.
+	key: Option<(u64, [f32; 2])>,
 	pub(crate) points: Vec<CurvePoint>,
-	pub(crate) ranges: Vec<std::ops::Range<usize>>,
 }
 
 impl FlattenedCurve {
-	/// Refreshes local points only when the path or its effective scale changes.
-	pub(crate) fn update(&mut self, segments: &[CurveSegment], scale: [f32; 2], tolerance: f32) {
-		if self.segments == segments && self.scale == scale && self.tolerance == tolerance {
+	/// Layout distance a flattened curve may stray from its true shape for hit testing.
+	const TOLERANCE: f32 = 0.25;
+
+	/// Flattens `segments` again only when the element's `revision` or its effective `scale` changed.
+	///
+	/// The revision advances on every edit of the element, so any segment change is caught without comparing them.
+	pub(crate) fn update(&mut self, revision: u64, segments: &[CurveSegment], scale: [f32; 2]) {
+		if self.key == Some((revision, scale)) {
 			return;
 		}
-		self.segments.clear();
-		self.segments.extend_from_slice(segments);
-		self.scale = scale;
-		self.tolerance = tolerance;
+		self.key = Some((revision, scale));
 		self.points.clear();
-		self.ranges.clear();
 		for segment in segments {
-			let start = self.points.len();
 			segment.flatten(
 				|point| CurvePoint::new(point.x * scale[0], point.y * scale[1]),
-				tolerance,
+				Self::TOLERANCE,
 				&mut self.points,
 			);
-			self.ranges.push(start..self.points.len());
 		}
 	}
 }

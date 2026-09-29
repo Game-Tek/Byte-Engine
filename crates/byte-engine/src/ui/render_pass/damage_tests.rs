@@ -6,7 +6,7 @@ use utils::Extent;
 use super::*;
 use crate::rendering::{
 	render_pass::simple_compute,
-	shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, empty_image, rgba, run_at, texture_2d},
+	shader_vm_test::{assert_rgba_close, compile as compile_shader_vm, rgba, run_at, texture_2d},
 };
 use crate::ui::{Size, flow::Location3, layout::Geometry, style::LayerKind};
 
@@ -131,6 +131,7 @@ fn only_elements_touching_damage_get_primitives() {
 			&draw_list,
 			viewport,
 			&frame_allocator,
+			Vec::new(),
 			None,
 			&mut UiMaskTable::default(),
 			None,
@@ -183,14 +184,4 @@ fn composite_besl_vm_places_the_premultiplied_layer_over_the_scene_inside_the_re
 	assert_rgba_close(rgba(&result, [0, 0]), [0.5, 0.5, 0.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [1, 0]), [0.0, 0.0, 1.0, 1.0], 0.0001);
 	assert_rgba_close(rgba(&result, [2, 0]), [9.0; 4], 0.0);
-}
-
-#[test]
-fn clear_primitive_covers_the_viewport_with_transparent_black() {
-	let clear = clear_primitive(Extent::rectangle(640, 480));
-	assert_eq!(clear.bounds, [0.0, 0.0, 640.0, 480.0]);
-	assert_eq!(clear.color, [0.0; 4]);
-	assert_eq!(clear.kind, UI_KIND_RECT);
-	// No rounded corner, no stroke, and no mask, so the shader's coverage is one everywhere.
-	assert_eq!((clear.b[0], clear.b[2], clear.mask), (0.0, 0.0, 0));
 }

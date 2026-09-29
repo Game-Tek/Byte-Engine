@@ -23,9 +23,15 @@ where
 	fn key(&self) -> crate::FrameKey;
 
 	/// Returns a mutable view into CPU-visible buffer contents for the active frame.
+	///
+	/// The buffer has one copy that every frame in flight reads, so earlier frames may still read it on the GPU.
+	/// Write only ranges no submitted frame reads. For data that changes while frames are in flight, create a
+	/// dynamic buffer and write it with [`Self::get_mut_dynamic_buffer_slice`] instead.
 	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T;
 
 	/// Flushes or uploads pending writes for the provided buffer.
+	///
+	/// For a dynamic buffer this uploads the copy this frame writes.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>);
 
 	/// Returns mutable CPU access to an image's backing bytes for the active frame.
@@ -44,7 +50,11 @@ where
 	/// Writes descriptor set updates during the active frame.
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
-	/// Returns a mutable reference to the dynamic buffer's contents.
+	/// Returns a mutable reference to this frame's copy of the dynamic buffer's contents.
+	///
+	/// Every frame in flight has its own copy, so writing it never races an earlier frame. A copy keeps what its
+	/// last frame wrote, so write everything the frame reads, or track which copies already hold a change with
+	/// [`crate::FrameKey::sequence_index`].
 	fn get_mut_dynamic_buffer_slice<T: Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T;
 
 	/// Returns a mutable reference to the dynamic image's contents for the current frame.

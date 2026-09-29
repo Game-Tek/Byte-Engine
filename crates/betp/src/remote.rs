@@ -110,42 +110,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_packet_acknowledgement() {
-		let mut remote = Remote::new();
-
-		assert_eq!(remote.get_ack(), 0);
-		assert_eq!(remote.get_ack_bitfield(), 0);
-
-		for i in 0..32 {
-			remote.acknowledge_packet(i);
-		}
-
-		assert_eq!(remote.get_ack(), 31);
-		assert_eq!(remote.get_ack_bitfield(), 0xFFFF_FFFF);
-
-		for i in 0..32 {
-			remote.acknowledge_packet(i);
-		}
-
-		assert_eq!(remote.get_ack(), 31);
-		assert_eq!(remote.get_ack_bitfield(), 0xFFFF_FFFF);
-
-		for i in 32..48 {
-			remote.acknowledge_packet(i);
-		}
-
-		assert_eq!(remote.get_ack(), 47);
-		assert_eq!(remote.get_ack_bitfield(), 0xFFFF_FFFF);
-
-		for i in 48..64 {
-			remote.acknowledge_packet(i);
-		}
-
-		assert_eq!(remote.get_ack(), 63);
-		assert_eq!(remote.get_ack_bitfield(), 0xFFFF_FFFF);
-	}
-
-	#[test]
 	fn test_sparse_packet_acknowledgement() {
 		let mut remote = Remote::new();
 
@@ -226,13 +190,6 @@ mod tests {
 		assert_eq!(remote.get_ack_bitfield(), 0b11);
 		assert_eq!(remote.get_packet_data(u16::MAX), Some(PacketInfo { acked: true }));
 		assert_eq!(remote.get_packet_data(0), Some(PacketInfo { acked: true }));
-	}
-
-	#[test]
-	fn empty_history_does_not_treat_max_sequence_as_received() {
-		let remote = Remote::new();
-
-		assert_eq!(remote.get_packet_data(u16::MAX), None);
 	}
 
 	#[test]

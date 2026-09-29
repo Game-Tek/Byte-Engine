@@ -20,22 +20,11 @@ impl AnimationPoolConfig {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AnimationArenaRegion {
-	offset: usize,
-	word_count: usize,
-}
-
-impl AnimationArenaRegion {
-	fn end(self) -> usize {
-		self.offset + self.word_count
-	}
-}
-
 #[derive(Debug)]
 struct CachedAnimation {
 	skeleton: Arc<Skeleton>,
-	region: AnimationArenaRegion,
+	/// The clip's word range in [`AnimationPool::storage`].
+	region: std::ops::Range<usize>,
 	last_used: std::cell::Cell<u64>,
 	lease_count: std::cell::Cell<usize>,
 }
@@ -143,7 +132,7 @@ pub struct AnimationPool {
 	commands: kanal::Sender<AnimationLoadCommand>,
 	completions: kanal::Receiver<AnimationLoadCompletion>,
 	storage: Box<[u32]>,
-	free_regions: Vec<AnimationArenaRegion>,
+	free_words: utils::RangeAllocator,
 	entries: HashMap<AnimationLease, AnimationPoolEntry>,
 	events: VecDeque<AnimationPoolEvent>,
 	byte_budget: usize,
@@ -159,19 +148,12 @@ impl AnimationPool {
 		let (commands, command_receiver) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
 		let (completion_sender, completions) = kanal::bounded_async(ANIMATION_LOAD_QUEUE_CAPACITY);
 		let word_capacity = config.byte_budget() / std::mem::size_of::<u32>();
-		let free_regions = (word_capacity > 0)
-			.then_some(AnimationArenaRegion {
-				offset: 0,
-				word_count: word_capacity,
-			})
-			.into_iter()
-			.collect();
 		(
 			Self {
 				commands: commands.to_sync(),
 				completions: completions.to_sync(),
 				storage: vec![0; word_capacity].into_boxed_slice(),
-				free_regions,
+				free_words: utils::RangeAllocator::new(word_capacity, 1),
 				entries: HashMap::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
 				events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 				byte_budget: config.byte_budget(),
@@ -246,7 +228,7 @@ impl AnimationPool {
 		entry.lease_count.set(entry.lease_count.get() + 1);
 		Some(ResidentAnimationLease {
 			entry,
-			words: &self.storage[entry.region.offset..entry.region.end()],
+			words: &self.storage[entry.region.clone()],
 		})
 	}
 
@@ -390,9 +372,10 @@ impl AnimationPool {
 		let packed = PackedAnimationData::from_resource(animation);
 		let resident_bytes = packed.data.len() * std::mem::size_of::<u32>();
 		let region = self
-			.take_region(packed.data.len())
+			.free_words
+			.take(packed.data.len(), 1)
 			.expect("Animation admission reserved one contiguous arena region.");
-		self.storage[region.offset..region.end()].copy_from_slice(&packed.data);
+		self.storage[region.clone()].copy_from_slice(&packed.data);
 		self.resident_bytes += resident_bytes;
 		let replaced = self.entries.insert(
 			lease,
@@ -418,7 +401,7 @@ impl AnimationPool {
 		if required_bytes > self.byte_budget || required_words > self.storage.len() {
 			return false;
 		}
-		while !self.free_regions.iter().any(|region| region.word_count >= required_words) {
+		while !self.free_words.fits(required_words, 1) {
 			let Some(lease) = self
 				.entries
 				.iter()
@@ -436,46 +419,13 @@ impl AnimationPool {
 			};
 			self.resident_bytes = self
 				.resident_bytes
-				.saturating_sub(evicted.region.word_count * std::mem::size_of::<u32>());
-			self.return_region(evicted.region);
+				.saturating_sub(evicted.region.len() * std::mem::size_of::<u32>());
+			self.free_words.give_back(evicted.region);
 			self.push_event(AnimationPoolEvent::Evicted {
 				resource_id: lease.resource_id().to_owned(),
 			});
 		}
 		true
-	}
-
-	fn take_region(&mut self, word_count: usize) -> Option<AnimationArenaRegion> {
-		let index = self.free_regions.iter().position(|region| region.word_count >= word_count)?;
-		let available = self.free_regions[index];
-		let region = AnimationArenaRegion {
-			offset: available.offset,
-			word_count,
-		};
-		if available.word_count == word_count {
-			self.free_regions.swap_remove(index);
-		} else {
-			self.free_regions[index] = AnimationArenaRegion {
-				offset: available.offset + word_count,
-				word_count: available.word_count - word_count,
-			};
-		}
-		Some(region)
-	}
-
-	/// Returns and coalesces an arena region so fragmented evictions can satisfy later clips.
-	fn return_region(&mut self, region: AnimationArenaRegion) {
-		let index = self.free_regions.partition_point(|free| free.offset < region.offset);
-		self.free_regions.insert(index, region);
-		let mut index = index.saturating_sub(1);
-		while index + 1 < self.free_regions.len() {
-			if self.free_regions[index].end() != self.free_regions[index + 1].offset {
-				index += 1;
-				continue;
-			}
-			let right = self.free_regions.remove(index + 1);
-			self.free_regions[index].word_count += right.word_count;
-		}
 	}
 }
 
@@ -530,10 +480,7 @@ pub(crate) fn test_pool(byte_budget: usize) -> AnimationPool {
 		commands: commands.to_sync(),
 		completions: completions.to_sync(),
 		storage: vec![0; word_capacity].into_boxed_slice(),
-		free_regions: vec![AnimationArenaRegion {
-			offset: 0,
-			word_count: word_capacity,
-		}],
+		free_words: utils::RangeAllocator::new(word_capacity, 1),
 		entries: HashMap::new(),
 		events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 		byte_budget,
@@ -546,18 +493,16 @@ pub(crate) fn test_pool(byte_budget: usize) -> AnimationPool {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::{HashMap, VecDeque};
 
 	use resource_management::{
 		Reference,
 		resources::{
-			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+			animation::{Animation, NodeTrack, Vector3Curve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
 	};
 
 	use super::*;
-	use crate::MediaTime;
 
 	fn test_skeleton() -> Skeleton {
 		Skeleton {
@@ -641,24 +586,6 @@ mod tests {
 
 		assert!(!pool.entries.contains_key(&idle_lease));
 		assert_eq!(pool.request(&walk_lease), AnimationPoolRequest::Ready);
-	}
-
-	#[test]
-	fn pool_entries_follow_lru_eviction() {
-		let clip_bytes = packed_test_animation_bytes("first", 1.0);
-		let mut pool = test_pool(clip_bytes * 2);
-		let first = AnimationLease::new("first.animation");
-		let second = AnimationLease::new("second.animation");
-		let third = AnimationLease::new("third.animation");
-		pool.admit("first.animation".into(), test_animation("first", 1.0));
-		pool.admit("second.animation".into(), test_animation("second", 1.0));
-		pool.admit("third.animation".into(), test_animation("third", 1.0));
-
-		assert!(matches!(pool.entries.get(&second), Some(AnimationPoolEntry::Resident(_))));
-		assert_eq!(pool.request(&first), AnimationPoolRequest::Loading);
-		assert_eq!(pool.request(&second), AnimationPoolRequest::Ready);
-		assert_eq!(pool.request(&third), AnimationPoolRequest::Ready);
-		assert!(pool.acquire(&second).is_some());
 	}
 
 	#[test]

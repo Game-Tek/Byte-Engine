@@ -21,7 +21,7 @@ use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY, ENVIRONMENT_BINDING,
 	MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_MATERIAL_TEXTURES,
-	MAX_MATERIALS, MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
+	MAX_LIGHTS, MAX_MATERIALS, MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
 	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SKINNED_VERTICES_BINDING,
 	SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
 	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
@@ -32,7 +32,7 @@ use super::render_pass::{
 	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
 	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
 };
-use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene, ies_profile};
+use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
 use super::shadow_selection::{
 	SHADOW_DEFAULT_EXPOSURE_SCALE, ShadowLightSelection, make_cone_shadow_view, make_point_shadow_view, select_shadow_lights,
@@ -41,16 +41,18 @@ use super::skinning::{
 	DualQuaternion, MAX_SKINNED_VERTICES, MAX_SKINNING_MATRICES, SkinningDispatch, SkinningPaletteKind, SkinningPass,
 	append_dual_quaternion_palette,
 };
-use crate::core::factory::Handle;
+use crate::core::factory::{CreateMessage, Handle};
 use crate::core::listener::{DefaultListener, Listener as _};
+use crate::core::message::DeleteMessage;
 use crate::gameplay::Transform;
 use crate::gameplay::transform::TransformationUpdate;
-use crate::rendering::lights::{IesProfile, Lights};
+use crate::gameplay::world::DefaultWorld;
+use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
 use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
-use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, View};
+use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, UpdatePose, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
 pub const CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER: &str = "render.cone-shadow-map-pool.capacity";
@@ -252,21 +254,13 @@ fn environment_intensity(requested: Option<f32>, upward_illuminance: f32) -> f32
 	}
 }
 
-/// One uploaded palette shared by every primitive of a renderable that uses the same skin binding.
-#[derive(Clone, Copy)]
-struct PaletteCacheEntry {
-	handle: Handle,
-	binding: *const SkinBinding,
-	palette_base: u32,
-	kind: SkinningPaletteKind,
-}
-
 /// The `SkinningFrame` struct accumulates this frame's palettes without allocating after the scene's high-water mark.
 #[derive(Default)]
 struct SkinningFrame {
 	matrices: Vec<AffineMatrix4x3Columns>,
 	dual_quaternions: Vec<DualQuaternion>,
-	cache: Vec<PaletteCacheEntry>,
+	/// The palette uploaded this frame for each renderable and skin binding, shared by every primitive that uses it.
+	cache: HashMap<(Handle, *const SkinBinding), (u32, SkinningPaletteKind)>,
 }
 
 impl SkinningFrame {
@@ -275,13 +269,6 @@ impl SkinningFrame {
 		self.matrices.clear();
 		self.dual_quaternions.clear();
 		self.cache.clear();
-	}
-
-	fn cached(&self, handle: Handle, binding: *const SkinBinding) -> Option<(u32, SkinningPaletteKind)> {
-		self.cache
-			.iter()
-			.find(|entry| entry.handle == handle && entry.binding == binding)
-			.map(|entry| (entry.palette_base, entry.kind))
 	}
 
 	/// Returns the palette range for one renderable's binding, uploading it once per frame.
@@ -294,8 +281,8 @@ impl SkinningFrame {
 		pose: &[AffineMatrix4x3Columns],
 	) -> Option<(u32, SkinningPaletteKind)> {
 		let binding_ptr = Arc::as_ptr(binding);
-		if let Some(palette) = self.cached(handle, binding_ptr) {
-			return Some(palette);
+		if let Some(palette) = self.cache.get(&(handle, binding_ptr)) {
+			return Some(*palette);
 		}
 		let matrix_base = self.matrices.len();
 		let matrix_end = matrix_base + binding.len();
@@ -321,12 +308,7 @@ impl SkinningFrame {
 			used <= MAX_SKINNING_MATRICES,
 			"Visibility skin palette limit exceeded. The most likely cause is that active skins require more joint transforms than the visibility pipeline supports."
 		);
-		self.cache.push(PaletteCacheEntry {
-			handle,
-			binding: binding_ptr,
-			palette_base: palette_base as u32,
-			kind,
-		});
+		self.cache.insert((handle, binding_ptr), (palette_base as u32, kind));
 		Some((palette_base as u32, kind))
 	}
 }
@@ -342,27 +324,53 @@ fn reserve_deformed_vertex_range(cursor: &mut usize, vertex_count: u32) -> u32 {
 	base as u32
 }
 
-/// Returns the dimmer while a profile texture is pending, then its dimmed calibrated scale after residency.
-fn profile_intensity_scale(profile: Option<&IesProfile>, profiles: &HashMap<String, IesProfileTexture>) -> f32 {
-	let Some(profile) = profile else {
-		return 1.0;
+/// Resolves one light's IES profile to its intensity scale and, once resident, its texture with the dimmer applied.
+///
+/// Analytic lights scale by one. A profile light scales by its dimmer while its texture is pending, then by the
+/// texture's dimmed calibrated candela scale.
+fn resolve_ies_profile(light: &Lights, profiles: &HashMap<String, IesProfileTexture>) -> (f32, Option<IesProfileTexture>) {
+	let Some(profile) = light.local().and_then(LocalEmission::ies_profile) else {
+		return (1.0, None);
 	};
-	profiles
-		.get(profile.resource_id())
-		.map_or(profile.dimmer(), |texture| texture.intensity_scale_candela * profile.dimmer())
+	match profiles.get(profile.resource_id()) {
+		Some(texture) => {
+			let texture = IesProfileTexture {
+				intensity_scale_candela: texture.intensity_scale_candela * profile.dimmer(),
+				..*texture
+			};
+			(texture.intensity_scale_candela, Some(texture))
+		}
+		None => (profile.dimmer(), None),
+	}
 }
 
-/// Returns one light's analytic, fallback-profile, or calibrated-profile intensity scale.
-fn ies_intensity_scale(light: &Lights, profiles: &HashMap<String, IesProfileTexture>) -> f32 {
-	profile_intensity_scale(ies_profile(light), profiles)
-}
-
-/// Resolves a profile light to its resident texture and dimmed calibrated candela scale.
-fn resolved_ies_profile_texture(light: &Lights, profiles: &HashMap<String, IesProfileTexture>) -> Option<IesProfileTexture> {
-	let profile = ies_profile(light)?;
-	let mut texture = profiles.get(profile.resource_id()).copied()?;
-	texture.intensity_scale_candela *= profile.dimmer();
-	Some(texture)
+/// Applies queued runtime settings under `prefix` and reports whether any changed.
+///
+/// Each update is answered: parameters outside `prefix` with `namespace_error`, others with the effective value or
+/// the reason `with_parameter` rejected them.
+fn drain_settings<S: Copy>(
+	port: &crate::configuration::ConfigurationPort,
+	prefix: &str,
+	namespace_error: &'static str,
+	settings: &mut S,
+	with_parameter: impl Fn(S, &str, &crate::configuration::ConfigurationValue) -> Result<(S, crate::configuration::ConfigurationValue), String>,
+) -> bool {
+	let mut changed = false;
+	while let Some(update) = port.read() {
+		let Some(parameter) = update.parameter().strip_prefix(prefix) else {
+			port.not_set(update.id(), namespace_error);
+			continue;
+		};
+		match with_parameter(*settings, parameter, update.value()) {
+			Ok((updated, effective_value)) => {
+				*settings = updated;
+				changed = true;
+				port.set(update.id(), effective_value);
+			}
+			Err(reason) => port.not_set(update.id(), reason),
+		}
+	}
+	changed
 }
 
 /// The `TransformSamples` struct keeps the two most recent transforms of one renderable and which step the latest
@@ -427,7 +435,7 @@ impl TransformSamples {
 /// The `VisibilityPipelineManager` struct provides the visibility-buffer implementation of the world render domain.
 ///
 /// Register it through [`crate::rendering::Renderer::add_pipeline_manager`]. Scene changes arrive through the
-/// creation, deletion, transform, and pose methods; frames flow through the [`PipelineManager`] callbacks.
+/// world listeners it subscribes to when created; frames flow through the [`PipelineManager`] callbacks.
 pub struct VisibilityPipelineManager {
 	/// Domain façade for requesting resources and consuming readiness changes.
 	loader: VisibilityLoaderClient,
@@ -436,9 +444,22 @@ pub struct VisibilityPipelineManager {
 	pipeline_manager: PipelineManagerClient,
 	/// Transform updates consumed after resource completions and before instance rebuilds.
 	transforms_listener: DefaultListener<TransformationUpdate>,
-	/// Canonical material table, copied into the frame-local buffer every frame.
+	/// World creation messages adopted by [`PipelineManager::update`].
+	resource_listener: DefaultListener<CreateMessage<Resource>>,
+	cone_light_listener: DefaultListener<CreateMessage<ConeLight>>,
+	directional_light_listener: DefaultListener<CreateMessage<DirectionalLight>>,
+	point_light_listener: DefaultListener<CreateMessage<PointLight>>,
+	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
+	environment_listener: DefaultListener<CreateMessage<Environment>>,
+	/// World edits adopted at the start of [`PipelineManager::prepare`].
+	pose_listener: DefaultListener<UpdatePose>,
+	deletions_listener: DefaultListener<DeleteMessage>,
+	/// Canonical material table, copied into each frame-local buffer after it changes.
 	materials: Box<[MaterialData; MAX_MATERIALS]>,
 	materials_buffer: ghi::DynamicBufferHandle<[MaterialData; MAX_MATERIALS]>,
+	/// Which frame sequences' copies of the material buffer hold the current table. Every frame sequence keeps its
+	/// own copy, so a change reaches each copy on a frame of that copy's sequence.
+	materials_copies_current: [bool; ghi::MAX_FRAMES_IN_FLIGHT],
 	mesh_dispatch_work: MeshDispatchWorkBuffer,
 	skinning_pass: SkinningPass,
 	skinning_frame: SkinningFrame,
@@ -446,9 +467,12 @@ pub struct VisibilityPipelineManager {
 	/// The two most recent transform samples per renderable, retained so a mesh that loads later starts in the
 	/// right place and so frames can show where a renderable was between two steps.
 	renderable_transforms: HashMap<Handle, TransformSamples>,
+	/// The handles whose samples a frame still has to show, so frames skip renderables at rest.
+	dirty_transforms: Vec<Handle>,
 	/// The number of simulation steps marked so far; a sample tagged with it belongs to the latest step.
 	step_count: u64,
-	loaded_materials: HashMap<u32, LoadedMaterial>,
+	/// Adopted materials indexed by material table slot.
+	loaded_materials: Vec<Option<LoadedMaterial>>,
 	/// Calibrated IES profile textures that completed their GPU upload, keyed by resource ID.
 	loaded_ies_profiles: HashMap<String, IesProfileTexture>,
 	availability: AvailabilityGraph<Availability>,
@@ -466,17 +490,22 @@ pub struct VisibilityPipelineManager {
 	recorded_sinks: SmallVec<[Sink; 4]>,
 	/// The exposure the previous frame's light was multiplied by. Every recorded sink shares it.
 	recorded_exposure: f32,
+	/// Whether the light-count and cone and point shadow-pool warnings were reported while their limit stays exceeded.
+	reported_limits: [bool; 3],
 	pub(crate) scene: VisibilityScene,
 }
 
 impl VisibilityPipelineManager {
 	/// Creates the scene buffers and base descriptor set around an already running resource client.
+	///
+	/// The manager subscribes to `world`'s resources, lights, meshes, environments, poses, transforms, and
+	/// deletions here, so it sees every message published after setup.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
+		world: &DefaultWorld,
 		geometry: GeometryHandles,
 		loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,
-		transforms_listener: DefaultListener<TransformationUpdate>,
 		gtao_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
@@ -517,16 +546,27 @@ impl VisibilityPipelineManager {
 			loader,
 			resource_events: Vec::new(),
 			pipeline_manager,
-			transforms_listener,
+			transforms_listener: world.transforms_channel().listener(),
+			resource_listener: world.factory::<Resource>().listener(),
+			cone_light_listener: world.factory::<ConeLight>().listener(),
+			directional_light_listener: world.factory::<DirectionalLight>().listener(),
+			point_light_listener: world.factory::<PointLight>().listener(),
+			mesh_listener: world.factory::<RenderableMesh>().listener(),
+			environment_listener: world.factory::<Environment>().listener(),
+			pose_listener: world.poses_channel().listener(),
+			deletions_listener: world.deletions_listener(),
 			materials: Box::new([MaterialData::default(); MAX_MATERIALS]),
 			materials_buffer,
+			// The default table must reach every frame sequence too.
+			materials_copies_current: [false; ghi::MAX_FRAMES_IN_FLIGHT],
 			mesh_dispatch_work,
 			skinning_pass,
 			skinning_frame: SkinningFrame::default(),
 			pending_renderables: Vec::new(),
 			renderable_transforms: HashMap::default(),
+			dirty_transforms: Vec::new(),
 			step_count: 0,
-			loaded_materials: HashMap::default(),
+			loaded_materials: Vec::new(),
 			loaded_ies_profiles: HashMap::default(),
 			availability: AvailabilityGraph::with_capacity(
 				MAX_INSTANCES + MAX_MATERIALS + MAX_BINDLESS_TEXTURES,
@@ -548,11 +588,13 @@ impl VisibilityPipelineManager {
 			contact_shadow_settings: ContactShadowSettings::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
+			reported_limits: [false; 3],
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
 				skinning_poses: HashMap::default(),
 				render_entity_handles: HashMap::default(),
 				lights: StableVec::new(),
+				light_handles: HashMap::default(),
 				descriptor_set,
 				views_buffer,
 				meshes_buffer,
@@ -566,51 +608,108 @@ impl VisibilityPipelineManager {
 	/* Scene changes */
 
 	/// Marks the end of one simulation step and keeps the transforms it published as the samples frames move toward.
-	pub(crate) fn step(&mut self) {
+	fn step(&mut self) {
 		self.step_count += 1;
 		while let Some(message) = self.transforms_listener.read() {
-			self.renderable_transforms
-				.entry(message.handle())
-				.or_insert_with(|| TransformSamples::snapped(message.transform()))
-				.sample(message.transform(), self.step_count);
+			self.record_transform(message.handle(), message.transform(), Some(self.step_count));
+		}
+	}
+
+	/// Keeps a published transform as a sample of `step`, or as a placement when it arrived outside a step, and
+	/// queues the handle for the next frame when it was at rest.
+	fn record_transform(&mut self, handle: Handle, transform: &Transform, step: Option<u64>) {
+		use std::collections::hash_map::Entry;
+
+		let samples = match self.renderable_transforms.entry(handle) {
+			Entry::Occupied(entry) => {
+				let samples = entry.into_mut();
+				if !samples.dirty {
+					self.dirty_transforms.push(handle);
+				}
+				samples
+			}
+			Entry::Vacant(entry) => {
+				self.dirty_transforms.push(handle);
+				entry.insert(TransformSamples::snapped(transform))
+			}
+		};
+		match step {
+			Some(step) => samples.sample(transform, step),
+			None => samples.snap(transform),
 		}
 	}
 
 	/// Shows transforms written outside a step where they are, then moves every renderable that changed since its
 	/// last shown transform to where it lies `alpha` of the way between its two samples.
-	pub(crate) fn process_transform_updates(&mut self, alpha: f32) {
+	fn process_transform_updates(&mut self, alpha: f32) {
 		while let Some(message) = self.transforms_listener.read() {
-			self.renderable_transforms
-				.entry(message.handle())
-				.or_insert_with(|| TransformSamples::snapped(message.transform()))
-				.snap(message.transform());
+			self.record_transform(message.handle(), message.transform(), None);
 		}
-		for (handle, samples) in &mut self.renderable_transforms {
-			if let Some(transform) = samples.shown(self.step_count, alpha) {
-				self.scene.update_transform(*handle, &transform);
+		let (transforms, scene, step) = (&mut self.renderable_transforms, &mut self.scene, self.step_count);
+		// A handle leaves the queue once its latest state is shown, or when it was removed.
+		self.dirty_transforms.retain(|handle| {
+			let Some(samples) = transforms.get_mut(handle) else {
+				return false;
+			};
+			if let Some(transform) = samples.shown(step, alpha) {
+				scene.update_transform(*handle, &transform);
 			}
+			samples.dirty
+		});
+	}
+
+	/// Drains creation messages in dependency order: resources first so their loads start before any entity
+	/// needs them, then lights, meshes, and environments.
+	fn adopt_creations(&mut self) {
+		while let Some(message) = self.resource_listener.read() {
+			self.loader.request_resource(message.into_data());
+		}
+		// Concrete routes keep application-defined creation strongly typed. The scene erases each light only at its
+		// storage boundary.
+		while let Some(message) = self.cone_light_listener.read() {
+			let handle = message.handle();
+			self.create_light(handle, message.into_data().into());
+		}
+		while let Some(message) = self.directional_light_listener.read() {
+			let handle = message.handle();
+			self.create_light(handle, message.into_data().into());
+		}
+		while let Some(message) = self.point_light_listener.read() {
+			let handle = message.handle();
+			self.create_light(handle, message.into_data().into());
+		}
+		while let Some(message) = self.mesh_listener.read() {
+			let handle = message.handle();
+			self.request_mesh(handle, message.into_data());
+		}
+		while let Some(message) = self.environment_listener.read() {
+			self.create_environment(message.into_data());
 		}
 	}
 
-	/// Retains a renderable's global skeleton pose for palette generation during frame preparation.
-	pub fn update_pose(&mut self, handle: Handle, global_matrices: &[math::Matrix]) {
-		self.scene.write_skinned_pose(handle, global_matrices);
+	/// Applies the frame's scene edits before anything is drawn: poses, then transforms at `alpha`, then deletions.
+	fn adopt_scene_updates(&mut self, alpha: f32) {
+		while let Some(message) = self.pose_listener.read() {
+			self.scene.write_skinned_pose(message.handle(), message.global_matrices());
+		}
+		self.process_transform_updates(alpha);
+		while let Some(message) = self.deletions_listener.read() {
+			let handle = message.into_handle();
+			self.scene.remove_light(handle);
+			self.remove_mesh(handle);
+		}
 	}
 
 	/// Adds one light and requests its optional photometric texture dependency.
-	pub(crate) fn create_light(&mut self, handle: Handle, light: Lights) {
-		if let Some(profile) = ies_profile(&light) {
+	fn create_light(&mut self, handle: Handle, light: Lights) {
+		if let Some(profile) = light.local().and_then(LocalEmission::ies_profile) {
 			self.loader.request_texture(profile.resource_id().to_owned());
 		}
-		self.scene.lights.push((handle, light, Transform::default()));
-	}
-
-	pub(crate) fn remove_light(&mut self, handle: Handle) {
-		self.scene.remove_light(handle);
+		self.scene.add_light(handle, light);
 	}
 
 	/// Selects an environment and requests its baked lighting resources.
-	pub(crate) fn create_environment(&mut self, environment: Environment) {
+	fn create_environment(&mut self, environment: Environment) {
 		let id = environment.resource_id().to_owned();
 		self.environment.requested = Some(id.clone());
 		self.environment.illuminance = environment.illuminance();
@@ -619,13 +718,8 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Starts loading a resource before any scene entity uses it.
-	pub(crate) fn request_resource(&mut self, resource: Resource) {
-		self.loader.request_resource(resource);
-	}
-
 	/// Requests the renderable's mesh and keeps the scene instance pending until the mesh is resident.
-	pub(crate) fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
+	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
 		// Creation messages are upserts, but the latest independently published transform must survive replacement.
 		self.remove_mesh_instance(handle);
 		let source = renderable.source().clone();
@@ -638,7 +732,7 @@ impl VisibilityPipelineManager {
 	}
 
 	/// Removes a renderable and any transform retained for asynchronous creation.
-	pub(crate) fn remove_mesh(&mut self, handle: Handle) {
+	fn remove_mesh(&mut self, handle: Handle) {
 		self.remove_mesh_instance(handle);
 		self.renderable_transforms.remove(&handle);
 	}
@@ -721,7 +815,12 @@ impl VisibilityPipelineManager {
 				.scene
 				.lights
 				.iter()
-				.any(|(_, light, _)| ies_profile(light).is_some_and(|profile| profile.resource_id() == id.as_str())) =>
+				.any(|(_, light, _)| {
+					light
+						.local()
+						.and_then(LocalEmission::ies_profile)
+						.is_some_and(|profile| profile.resource_id() == id.as_str())
+				}) =>
 			{
 				warn!(
 					"Visibility IES profile is invalid: {id}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See {}",
@@ -734,7 +833,8 @@ impl VisibilityPipelineManager {
 		self.availability.set_available(texture, true);
 		if self
 			.loaded_materials
-			.values()
+			.iter()
+			.flatten()
 			.any(|material| material.texture_indices.contains(&index))
 		{
 			self.rebuild_material_lists();
@@ -780,17 +880,19 @@ impl VisibilityPipelineManager {
 			);
 		}
 		self.availability.set_available(material, true);
-		self.loaded_materials.insert(
+		let slot = index as usize;
+		if slot >= self.loaded_materials.len() {
+			self.loaded_materials.resize_with(slot + 1, || None);
+		}
+		self.loaded_materials[slot] = Some(LoadedMaterial {
 			index,
-			LoadedMaterial {
-				index,
-				pipeline,
-				name: id,
-				alpha_mode,
-				double_sided,
-				texture_indices,
-			},
-		);
+			pipeline,
+			name: id,
+			alpha_mode,
+			double_sided,
+			texture_indices,
+		});
+		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
 		self.rebuild_material_lists();
 	}
 
@@ -799,7 +901,7 @@ impl VisibilityPipelineManager {
 		let render_info = &mut self.scene.render_info;
 		render_info.opaque_materials.clear();
 		render_info.transparent_materials.clear();
-		for material in self.loaded_materials.values() {
+		for material in self.loaded_materials.iter().flatten() {
 			// The availability graph combines pipeline and texture readiness before a material reaches a draw list.
 			if !self.availability.is_key_ready(&Availability::Material(material.index)) {
 				continue;
@@ -873,48 +975,28 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO controls before any sink records this frame's commands.
-	fn apply_gtao_configuration(&mut self) {
-		while let Some(update) = self.gtao_configuration.read() {
-			let Some(parameter) = update.parameter().strip_prefix(GTAO_CONFIGURATION_PREFIX) else {
-				self.gtao_configuration.not_set(
-					update.id(),
-					"GTAO parameter was not set. The most likely cause is that the parameter is outside the `render.gtao.` namespace.",
-				);
-				continue;
-			};
-			match self.gtao_settings.with_parameter(parameter, update.value()) {
-				Ok((settings, effective_value)) => {
-					self.gtao_settings = settings;
-					for sink_state in &mut self.scene.sink_states {
-						sink_state.render_pass.set_gtao_settings(settings);
-					}
-					self.gtao_configuration.set(update.id(), effective_value);
-				}
-				Err(reason) => self.gtao_configuration.not_set(update.id(), reason),
+	/// Applies queued GTAO and contact-shadow controls before any sink records this frame's commands.
+	fn apply_runtime_settings(&mut self) {
+		if drain_settings(
+			&self.gtao_configuration,
+			GTAO_CONFIGURATION_PREFIX,
+			"GTAO parameter was not set. The most likely cause is that the parameter is outside the `render.gtao.` namespace.",
+			&mut self.gtao_settings,
+			GtaoSettings::with_parameter,
+		) {
+			for sink_state in &mut self.scene.sink_states {
+				sink_state.render_pass.set_gtao_settings(self.gtao_settings);
 			}
 		}
-	}
-
-	/// Applies queued contact-shadow controls before any sink records this frame's commands.
-	fn apply_contact_shadow_configuration(&mut self) {
-		while let Some(update) = self.contact_shadow_configuration.read() {
-			let Some(parameter) = update.parameter().strip_prefix(CONTACT_SHADOWS_CONFIGURATION_PREFIX) else {
-				self.contact_shadow_configuration.not_set(
-					update.id(),
-					"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
-				);
-				continue;
-			};
-			match self.contact_shadow_settings.with_parameter(parameter, update.value()) {
-				Ok((settings, effective_value)) => {
-					self.contact_shadow_settings = settings;
-					for sink_state in &mut self.scene.sink_states {
-						sink_state.render_pass.set_contact_shadow_settings(settings);
-					}
-					self.contact_shadow_configuration.set(update.id(), effective_value);
-				}
-				Err(reason) => self.contact_shadow_configuration.not_set(update.id(), reason),
+		if drain_settings(
+			&self.contact_shadow_configuration,
+			CONTACT_SHADOWS_CONFIGURATION_PREFIX,
+			"Contact shadow parameter was not set. The most likely cause is that the parameter is outside the `render.contact-shadows.` namespace.",
+			&mut self.contact_shadow_settings,
+			ContactShadowSettings::with_parameter,
+		) {
+			for sink_state in &mut self.scene.sink_states {
+				sink_state.render_pass.set_contact_shadow_settings(self.contact_shadow_settings);
 			}
 		}
 	}
@@ -932,7 +1014,11 @@ impl VisibilityPipelineManager {
 			if !self.availability.is_ready(entity.availability) {
 				continue;
 			}
-			let Some(material) = self.loaded_materials.get(&entity.shader_mesh.material_index) else {
+			let Some(material) = self
+				.loaded_materials
+				.get(entity.shader_mesh.material_index as usize)
+				.and_then(Option::as_ref)
+			else {
 				continue;
 			};
 			let active_index = render_info.active_instance_count();
@@ -987,13 +1073,15 @@ impl VisibilityPipelineManager {
 
 	/// Writes the camera view and every shadow view selected this frame. Returns the sun's cascades, fitted to the
 	/// camera frustum, or `None` without a sun.
+	///
+	/// `ies_scales` holds each light's IES intensity scale by light index.
 	fn write_views(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		main_view: View,
 		shadows: &ShadowLightSelection<'_>,
+		ies_scales: &[(f32, Option<IesProfileTexture>)],
 	) -> Option<[csm::CascadeFrame; SHADOW_CASCADE_COUNT]> {
-		let profiles = &self.loaded_ies_profiles;
 		let views = frame.get_mut_dynamic_buffer_slice(self.scene.views_buffer);
 		views.fill(ShaderViewData::from(main_view));
 		let cascades = shadows.directional.map(|(_, light_direction)| {
@@ -1014,23 +1102,23 @@ impl VisibilityPipelineManager {
 			}
 			cascades
 		});
-		for (layer, (_, light, transform)) in shadows
+		for (layer, (index, light, transform)) in shadows
 			.cones
 			.iter()
 			.enumerate()
 			.filter_map(|(layer, cone)| cone.map(|cone| (layer, cone)))
 		{
-			let scale = profile_intensity_scale(light.ies_profile(), profiles);
+			let scale = ies_scales[index].0;
 			views[CONE_SHADOW_VIEW_OFFSET + layer] =
 				make_cone_shadow_view(light, transform, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into();
 		}
-		for (cube, (_, light, transform)) in shadows
+		for (cube, (index, light, transform)) in shadows
 			.points
 			.iter()
 			.enumerate()
 			.filter_map(|(cube, point)| point.map(|point| (cube, point)))
 		{
-			let scale = profile_intensity_scale(light.ies_profile(), profiles);
+			let scale = ies_scales[index].0;
 			for face in 0..POINT_SHADOW_FACE_COUNT {
 				views[POINT_SHADOW_VIEW_OFFSET + cube * POINT_SHADOW_FACE_COUNT + face] =
 					make_point_shadow_view(light, transform, face, SHADOW_DEFAULT_EXPOSURE_SCALE, scale).into();
@@ -1042,6 +1130,10 @@ impl VisibilityPipelineManager {
 }
 
 impl PipelineManager for VisibilityPipelineManager {
+	fn update(&mut self) {
+		self.adopt_creations();
+	}
+
 	fn step(&mut self) {
 		Self::step(self);
 	}
@@ -1051,45 +1143,63 @@ impl PipelineManager for VisibilityPipelineManager {
 		frame: &mut ghi::implementation::Frame,
 		sinks: &[Sink],
 		frame_allocator: &'a bumpalo::Bump,
-		_alpha: f32,
+		alpha: f32,
 		_time: crate::time::MediaTime,
-	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
-		self.apply_gtao_configuration();
-		self.apply_contact_shadow_configuration();
+	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
+		self.adopt_scene_updates(alpha);
+		self.apply_runtime_settings();
 		self.adopt_resource_completions(frame);
-		frame
-			.get_mut_dynamic_buffer_slice(self.materials_buffer)
-			.copy_from_slice(&*self.materials);
-		frame.sync_buffer(self.materials_buffer);
+		// Each frame sequence has its own buffer, so a changed table is copied into each one on its own frame.
+		let sequence = frame.key().sequence_index() as usize;
+		if !self.materials_copies_current[sequence] {
+			self.materials_copies_current[sequence] = true;
+			frame
+				.get_mut_dynamic_buffer_slice(self.materials_buffer)
+				.copy_from_slice(&*self.materials);
+			frame.sync_buffer(self.materials_buffer);
+		}
 		self.rebuild_active_instances(frame);
 		let dispatches = self.mesh_dispatch_work.write_phases(frame, &self.scene.render_info);
 
+		crate::rendering::warn_once(&mut self.reported_limits[0], self.scene.lights.len() > MAX_LIGHTS, || {
+			format!(
+				"Too many lights for the visibility pipeline. The most likely cause is that the scene contains more than {MAX_LIGHTS} lights."
+			)
+		});
+		// Resolve each light's IES profile once; selection, shadow views, and the lighting upload read it by index.
 		let profiles = &self.loaded_ies_profiles;
+		let mut ies_scales = Vec::with_capacity_in(self.scene.lights.len().min(MAX_LIGHTS), frame_allocator);
+		ies_scales.extend(
+			self.scene
+				.lights
+				.iter()
+				.take(MAX_LIGHTS)
+				.map(|(_, light, _)| resolve_ies_profile(light, profiles)),
+		);
 		let shadows = select_shadow_lights(
 			self.scene.lights.iter().map(|(_, light, transform)| (light, transform)),
 			sinks,
 			self.cone_shadow_pool_capacity,
 			self.point_shadow_pool_capacity,
-			|light| ies_intensity_scale(light, profiles),
+			|index| ies_scales[index].0,
 		);
-		for (kind, eligible, capacity) in [
-			("Cone", shadows.eligible_cone_count, self.cone_shadow_pool_capacity),
-			("Point", shadows.eligible_point_count, self.point_shadow_pool_capacity),
+		for (reported, kind, lowercase_kind, eligible, capacity) in [
+			(1, "Cone", "cone", shadows.eligible_cone_count, self.cone_shadow_pool_capacity),
+			(2, "Point", "point", shadows.eligible_point_count, self.point_shadow_pool_capacity),
 		] {
-			if eligible > capacity {
-				warn!(
-					"{kind}-light shadow pool capacity exceeded. The most likely cause is that more than {capacity} visible {} lights require shadows. Extra lights remain lit without shadows.",
-					kind.to_lowercase()
-				);
-			}
+			crate::rendering::warn_once(&mut self.reported_limits[reported], eligible > capacity, || {
+				format!(
+					"{kind}-light shadow pool capacity exceeded. The most likely cause is that more than {capacity} visible {lowercase_kind} lights require shadows. Extra lights remain lit without shadows."
+				)
+			});
 		}
-		let cascades = sinks.first().and_then(|sink| self.write_views(frame, sink.view(), &shadows));
+		let cascades = sinks
+			.first()
+			.and_then(|sink| self.write_views(frame, sink.view(), &shadows, &ies_scales));
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
-			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), |light| {
-				resolved_ies_profile_texture(light, profiles)
-			});
+			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), |index| ies_scales[index].1);
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
 			receiver_fit: cascades.filter(|_| self.cascade_fitting == CascadeFitting::Receivers),
@@ -1141,12 +1251,12 @@ impl PipelineManager for VisibilityPipelineManager {
 					frame_allocator,
 				)?;
 				recorded_sinks.push(*sink);
-				Some(allocate_render_command(frame_allocator, command))
+				Some((sink.index(), allocate_render_command(frame_allocator, command)))
 			})
 			.collect();
 		self.recorded_sinks = recorded_sinks;
 		self.recorded_exposure = exposure;
-		Some(commands)
+		commands
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
@@ -1217,7 +1327,7 @@ mod tests {
 	use maths_rs::Vec3f;
 
 	use super::*;
-	use crate::core::factory::Factory;
+	
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
 
 	fn at(x: f32) -> Transform {
@@ -1271,31 +1381,6 @@ mod tests {
 	}
 
 	#[test]
-	fn visibility_pipeline_settings_bound_local_shadow_pool_capacities() {
-		let defaults = VisibilityPipelineSettings::default();
-		let settings = defaults
-			.with_cone_shadow_map_pool_capacity(1)
-			.expect("supported cone shadow map pool capacity")
-			.with_point_shadow_map_pool_capacity(2)
-			.expect("supported point shadow map pool capacity");
-
-		assert_eq!(defaults.cone_shadow_map_pool_capacity(), DEFAULT_CONE_SHADOW_POOL_CAPACITY);
-		assert_eq!(settings.cone_shadow_map_pool_capacity(), 1);
-		assert_eq!(defaults.point_shadow_map_pool_capacity(), DEFAULT_POINT_SHADOW_POOL_CAPACITY);
-		assert_eq!(settings.point_shadow_map_pool_capacity(), 2);
-		assert!(
-			defaults
-				.with_cone_shadow_map_pool_capacity(MAX_CONE_SHADOW_POOL_CAPACITY + 1)
-				.is_err()
-		);
-		assert!(
-			defaults
-				.with_point_shadow_map_pool_capacity(MAX_POINT_SHADOW_POOL_CAPACITY + 1)
-				.is_err()
-		);
-	}
-
-	#[test]
 	fn resolved_ies_profile_texture_applies_the_per_light_dimmer() {
 		let profile_light = Lights::Point(
 			PointLight::new_ies(LightColor::LinearSrgb(Vec3f::new(1.0, 1.0, 1.0)), 0.5, "lights/office.ies")
@@ -1317,73 +1402,20 @@ mod tests {
 		};
 		let mut profiles = HashMap::default();
 
-		assert_eq!(ies_intensity_scale(&profile_light, &profiles), 0.5);
-		assert_eq!(ies_intensity_scale(&analytic_light, &profiles), 1.0);
+		assert_eq!(resolve_ies_profile(&profile_light, &profiles), (0.5, None));
+		assert_eq!(resolve_ies_profile(&analytic_light, &profiles), (1.0, None));
 		profiles.insert("lights/office.ies".to_string(), profile);
 
-		assert_eq!(ies_intensity_scale(&profile_light, &profiles), 90.0);
 		assert_eq!(
-			resolved_ies_profile_texture(&profile_light, &profiles),
-			Some(IesProfileTexture {
-				texture_index: 19,
-				intensity_scale_candela: 90.0,
-			})
+			resolve_ies_profile(&profile_light, &profiles),
+			(
+				90.0,
+				Some(IesProfileTexture {
+					texture_index: 19,
+					intensity_scale_candela: 90.0,
+				})
+			)
 		);
-		assert_eq!(resolved_ies_profile_texture(&analytic_light, &profiles), None);
-	}
-
-	/// Ensures instances that share immutable source vertices cannot overwrite each other's deformation output.
-	#[test]
-	fn active_skin_instances_receive_non_overlapping_vertex_ranges() {
-		let mut cursor = 0;
-		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 0);
-		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 3), 3);
-		assert_eq!(reserve_deformed_vertex_range(&mut cursor, 5), 6);
-		assert_eq!(cursor, 11);
-	}
-
-	/// Ensures interleaved handles keep their palettes instance-local.
-	#[test]
-	fn noncontiguous_primitives_reuse_their_frame_skinning_palette() {
-		let factory = Factory::new();
-		let first_handle = factory.create(());
-		let second_handle = factory.create(());
-		let first_binding = Arc::new(SkinBinding { entries: Vec::new() });
-		let second_binding = Arc::new(SkinBinding { entries: Vec::new() });
-		let mut frame = SkinningFrame::default();
-		for (handle, binding, palette_base, kind) in [
-			(first_handle, &first_binding, 7, SkinningPaletteKind::DualQuaternion),
-			(first_handle, &second_binding, 11, SkinningPaletteKind::Matrix),
-			(second_handle, &first_binding, 17, SkinningPaletteKind::Matrix),
-		] {
-			frame.cache.push(PaletteCacheEntry {
-				handle,
-				binding: Arc::as_ptr(binding),
-				palette_base,
-				kind,
-			});
-		}
-
-		assert_eq!(
-			frame.cached(first_handle, Arc::as_ptr(&first_binding)),
-			Some((7, SkinningPaletteKind::DualQuaternion))
-		);
-		assert_eq!(
-			frame.cached(first_handle, Arc::as_ptr(&second_binding)),
-			Some((11, SkinningPaletteKind::Matrix))
-		);
-		assert_eq!(
-			frame.cached(second_handle, Arc::as_ptr(&first_binding)),
-			Some((17, SkinningPaletteKind::Matrix))
-		);
-		assert_eq!(frame.cached(second_handle, Arc::as_ptr(&second_binding)), None);
-	}
-
-	#[test]
-	fn environment_intensity_calibrates_to_the_requested_illuminance() {
-		assert_eq!(environment_intensity(Some(20_000.0), 2.0), 10_000.0);
-		assert_eq!(environment_intensity(None, 2.0), 1.0);
-		// The black fallback bound while a map loads can't be scaled, so it keeps its own values.
-		assert_eq!(environment_intensity(Some(20_000.0), 0.0), 1.0);
+		assert_eq!(resolve_ies_profile(&analytic_light, &profiles), (1.0, None));
 	}
 }

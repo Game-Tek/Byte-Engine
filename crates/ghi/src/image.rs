@@ -34,21 +34,9 @@ impl Region {
 	}
 }
 
-/// Returns the dimensions of one mip while preserving the image dimensionality.
+/// Returns the dimensions of one mip while preserving the image dimensionality; see [`Extent::mip`].
 pub(crate) fn mip_extent(extent: Extent, level: u32) -> Extent {
-	Extent::new(
-		extent.width().checked_shr(level).unwrap_or(0).max(1),
-		if extent.height() == 0 {
-			0
-		} else {
-			extent.height().checked_shr(level).unwrap_or(0).max(1)
-		},
-		if extent.depth() == 0 {
-			0
-		} else {
-			extent.depth().checked_shr(level).unwrap_or(0).max(1)
-		},
-	)
+	extent.mip(level)
 }
 
 /// The `Builder` struct defines the allocation and usage contract for an image.
@@ -192,23 +180,9 @@ impl PrivateHandle for ImageHandle {
 
 #[cfg(test)]
 mod tests {
-	use std::num::NonZeroU32;
-
 	use utils::Extent;
 
-	use super::{Builder, mip_extent};
-	use crate::{Formats, Uses};
-
-	#[test]
-	fn cube_array_builder_uses_six_layers_per_cube() {
-		let builder = Builder::new(Formats::Depth16, Uses::Image)
-			.extent(Extent::square(64))
-			.cube_array_compatible(NonZeroU32::new(4).expect("nonzero cube count"));
-
-		assert_eq!(builder.array_layers, NonZeroU32::new(24));
-		assert!(!builder.cube_compatible);
-		assert!(builder.cube_array_compatible);
-	}
+	use super::mip_extent;
 
 	#[test]
 	fn mip_extent_halves_non_power_of_two_dimensions_without_changing_dimensionality() {

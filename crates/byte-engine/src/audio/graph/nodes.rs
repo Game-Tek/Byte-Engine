@@ -19,26 +19,31 @@ pub(crate) enum AudioNode {
 }
 
 impl AudioNode {
-	/// Moves every input connection by the offset assigned while graphs are
-	/// merged under a selector node.
-	pub(crate) fn remap_inputs(&mut self, offset: usize) {
+	/// Returns the nodes this node reads from, so graph passes visit connections without matching every node kind.
+	pub(crate) fn inputs(&self) -> &[AudioNodeId] {
 		match self {
-			Self::Sample { .. } => {}
-			Self::RoundRobin(node) => {
-				for input in &mut node.inputs {
-					input.0 += offset;
-				}
-			}
-			Self::Random(node) => {
-				for input in &mut node.inputs {
-					input.0 += offset;
-				}
-			}
+			Self::Sample { .. } => &[],
+			Self::RoundRobin(node) => &node.inputs,
+			Self::Random(node) => &node.inputs,
 			Self::Loop { input }
 			| Self::Gain { input, .. }
 			| Self::Varispeed { input, .. }
-			| Self::PitchShift { input, .. } => input.0 += offset,
-			Self::Custom(input, _) => input.0 += offset,
+			| Self::PitchShift { input, .. }
+			| Self::Custom(input, _) => std::slice::from_ref(input),
+		}
+	}
+
+	/// Returns the nodes this node reads from, for passes that rewrite connections.
+	pub(crate) fn inputs_mut(&mut self) -> &mut [AudioNodeId] {
+		match self {
+			Self::Sample { .. } => &mut [],
+			Self::RoundRobin(node) => &mut node.inputs,
+			Self::Random(node) => &mut node.inputs,
+			Self::Loop { input }
+			| Self::Gain { input, .. }
+			| Self::Varispeed { input, .. }
+			| Self::PitchShift { input, .. }
+			| Self::Custom(input, _) => std::slice::from_mut(input),
 		}
 	}
 }

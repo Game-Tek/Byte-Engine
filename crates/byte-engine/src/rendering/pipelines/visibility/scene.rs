@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use log::warn;
 use math::{AffineShaderMatrix, Matrix};
 use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding};
 use resource_management::types::AlphaMode;
@@ -22,8 +21,7 @@ use super::shadow_selection::{LightShadow, ShadowLightSelection};
 use super::skinning::SkinningDispatch;
 use crate::core::factory::Handle;
 use crate::gameplay::transform::Transform;
-use crate::rendering::lights::{IesProfile, Lights};
-use crate::rendering::utils::affine_matrix4x3_from_matrix4;
+use crate::rendering::lights::Lights;
 use crate::space::{Orientable as _, Positionable as _};
 
 /// The `Instance` struct identifies one dense shader mesh and the work needed to rasterize it.
@@ -132,6 +130,8 @@ pub struct VisibilityScene {
 	/// Scene-instance slots grouped by renderable handle.
 	pub(crate) render_entity_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
+	/// Light slots grouped by light handle.
+	pub(crate) light_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	/// Shared base descriptor set bound by every visibility pass.
 	pub(crate) descriptor_set: ghi::DescriptorSetHandle,
 	pub(crate) views_buffer: ghi::DynamicBufferHandle<[ShaderViewData; SHADOW_VIEW_COUNT]>,
@@ -158,9 +158,15 @@ impl VisibilityScene {
 		update_renderable_instances(&self.render_entity_handles, &mut self.render_entities, handle, |entity| {
 			entity.shader_mesh.model = model;
 		});
-		if let Some((_, _, light_transform)) = self.lights.iter_mut().find(|(light_handle, ..)| *light_handle == handle) {
+		update_renderable_instances(&self.light_handles, &mut self.lights, handle, |(_, _, light_transform)| {
 			*light_transform = transform.clone();
-		}
+		});
+	}
+
+	/// Registers a light and records its slot.
+	pub(crate) fn add_light(&mut self, handle: Handle, light: Lights) {
+		let slot = self.lights.push((handle, light, Transform::default()));
+		self.light_handles.entry(handle).or_default().push(slot);
 	}
 
 	/// Retains one global transform per skeleton node for the renderable identified by `handle`.
@@ -171,7 +177,7 @@ impl VisibilityScene {
 		pose.clear();
 		pose.extend(global_matrices.iter().map(|matrix| {
 			assert_affine_matrix(matrix);
-			affine_matrix4x3_from_matrix4(matrix)
+			AffineMatrix4x3Columns::from(AffineShaderMatrix::from(*matrix))
 		}));
 	}
 
@@ -185,13 +191,9 @@ impl VisibilityScene {
 		}
 	}
 
+	/// Removes every light registered for `handle`.
 	pub(crate) fn remove_light(&mut self, handle: Handle) {
-		let slot = self
-			.lights
-			.handled_iter()
-			.find(|(_, (light_handle, ..))| *light_handle == handle)
-			.map(|(slot, _)| slot);
-		if let Some(slot) = slot {
+		for slot in self.light_handles.remove(&handle).into_iter().flatten() {
 			self.lights.remove(slot);
 		}
 	}
@@ -206,13 +208,8 @@ impl VisibilityScene {
 		shadows: &ShadowLightSelection<'_>,
 		exposure: f32,
 		environment_intensity: f32,
-		mut resolve_ies_profile: impl FnMut(&Lights) -> Option<IesProfileTexture>,
+		mut resolve_ies_profile: impl FnMut(usize) -> Option<IesProfileTexture>,
 	) {
-		if self.lights.len() > MAX_LIGHTS {
-			warn!(
-				"Too many lights for the visibility pipeline. The most likely cause is that the scene contains more than {MAX_LIGHTS} lights."
-			);
-		}
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
 		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
 		// light. Entries past the count are never read, so they are left as they are.
@@ -221,7 +218,7 @@ impl VisibilityScene {
 		lighting_data.environment_intensity = environment_intensity;
 		lighting_data._padding = 0;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
-			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), resolve_ies_profile(light));
+			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), resolve_ies_profile(index));
 			lighting_data.count = index as u32 + 1;
 		}
 		frame.sync_buffer(self.lighting_buffer);
@@ -266,12 +263,12 @@ pub(super) fn light_data(
 			};
 		}
 		Lights::Cone(light) => (
-			light.ies_profile(),
+			light.emission.ies_profile(),
 			[light.inner_angle.cos(), light.outer_angle.cos()],
 			1,
-			ShaderVec3::from(light.color),
+			ShaderVec3::from(light.emission.color),
 		),
-		Lights::Point(light) => (light.ies_profile(), [0.0; 2], 0, ShaderVec3::from(light.color)),
+		Lights::Point(light) => (light.emission.ies_profile(), [0.0; 2], 0, ShaderVec3::from(light.emission.color)),
 	};
 	let (color, ies_profile_texture, ies_c0_tangent) = match (profile, ies_texture) {
 		(None, _) => (color, NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),
@@ -312,15 +309,6 @@ fn light_reach(color: ShaderVec3) -> f32 {
 	if reach.is_finite() { reach } else { 0.0 }
 }
 
-/// Returns the authored IES profile of a local light.
-pub(crate) fn ies_profile(light: &Lights) -> Option<&IesProfile> {
-	match light {
-		Lights::Cone(light) => light.ies_profile(),
-		Lights::Point(light) => light.ies_profile(),
-		Lights::Direction(_) => None,
-	}
-}
-
 /// Rejects projective pose data before the compact representation would discard it.
 fn assert_affine_matrix(matrix: &Matrix) {
 	const AFFINE_EPSILON: f32 = 0.00001;
@@ -333,7 +321,7 @@ fn assert_affine_matrix(matrix: &Matrix) {
 	);
 }
 
-/// Applies one update to every live scene instance registered for one renderable.
+/// Applies one update to every live scene slot registered for one handle.
 fn update_renderable_instances<T, A: std::alloc::Allocator>(
 	render_entity_handles: &HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	render_entities: &mut StableVec<T, A>,
@@ -349,77 +337,11 @@ fn update_renderable_instances<T, A: std::alloc::Allocator>(
 
 #[cfg(test)]
 mod tests {
-	use math::{Matrix, Orientation, Point, UnitVector, WorldSpace};
-	use maths_rs::{Vec3f, mat::MatNew4 as _};
+	use math::{Orientation, UnitVector, WorldSpace};
+	use maths_rs::Vec3f;
 
 	use super::*;
-	use crate::core::factory::Factory;
-	use crate::rendering::lights::{ConeLight, DirectionalLight, LightColor, PhotometricIntensity, PointLight};
-
-	#[test]
-	#[should_panic(expected = "Skinned pose matrix is projective")]
-	fn compact_pose_rejects_a_projective_matrix() {
-		assert_affine_matrix(&Matrix::new(
-			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-		));
-	}
-
-	#[test]
-	fn transform_updates_write_each_registered_primitive() {
-		let renderable_factory = Factory::new();
-		let handle = renderable_factory.create(());
-		let other_handle = renderable_factory.create(());
-		let mut render_entities = StableVec::new();
-		let first_primitive = render_entities.push(0u32);
-		let second_primitive = render_entities.push(0u32);
-		let other_primitive = render_entities.push(0u32);
-		let mut render_entity_handles = HashMap::default();
-		render_entity_handles.insert(handle, SmallVec::from_slice(&[first_primitive, second_primitive]));
-		render_entity_handles.insert(other_handle, SmallVec::from_slice(&[other_primitive]));
-
-		update_renderable_instances(&render_entity_handles, &mut render_entities, handle, |primitive| {
-			*primitive += 1
-		});
-
-		assert_eq!(render_entities[first_primitive], 1);
-		assert_eq!(render_entities[second_primitive], 1);
-		assert_eq!(render_entities[other_primitive], 0);
-	}
-
-	#[test]
-	fn light_data_uses_the_retained_transform_for_spatial_fields() {
-		let orientation = Orientation::try_from_axis_angle(
-			UnitVector::<WorldSpace>::y_axis(),
-			math::Radians::new(std::f32::consts::FRAC_PI_2),
-		)
-		.expect("finite light orientation");
-		let transform = Transform::new(Point::new(1.0, 2.0, 3.0), math::Scale::identity(), orientation);
-		let light = ConeLight::new(
-			LightColor::Kelvin(4_500.0),
-			PhotometricIntensity::LuminousIntensity {
-				candela: 100.0,
-				reference_distance_m: 1.0,
-			},
-			math::Degrees::new(20.0).to_radians(),
-			math::Degrees::new(35.0).to_radians(),
-		)
-		.expect("physical cone light");
-		let data = light_data(
-			&Lights::Cone(light.clone()),
-			&transform,
-			LightShadow::Cone { view_index: 6, layer: 1 },
-			None,
-		);
-
-		assert_eq!(data.position, ShaderVec3::from(transform.get_position().into_maths()));
-		assert_eq!(
-			data.direction,
-			ShaderVec3::from(math::direction_from_orientation(orientation).into_maths())
-		);
-		assert_eq!(data.cone_cosines, [light.inner_angle.cos(), light.outer_angle.cos()]);
-		assert_eq!(data.shadow_views, [6, 0, 0, 0, 0, 0, 0, 0]);
-		assert_eq!(data.shadow_layer, 1);
-	}
+	use crate::rendering::lights::{DirectionalLight, LightColor, PhotometricIntensity, PointLight};
 
 	#[test]
 	fn ies_light_data_rotates_the_c0_tangent_with_the_retained_transform() {

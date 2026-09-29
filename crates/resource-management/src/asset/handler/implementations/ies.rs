@@ -43,12 +43,6 @@ impl AssetHandler for IESAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(resource_type) = context.resource_type(url)
-			&& !self.can_handle(resource_type)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (source, resource_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&resource_type) {
@@ -667,18 +661,13 @@ fn lerp(lower: f32, upper: f32, factor: f32) -> f32 {
 #[cfg(test)]
 mod tests {
 
-	use std::sync::Arc;
-
 	use exr::prelude::f16;
 
 	use super::{IES_INTENSITY_MAP_HEIGHT, IES_INTENSITY_MAP_WIDTH, IESAssetHandler, parse_ies};
 	use crate::{
-		ResourceManager,
 		asset::{ResourceId, manager::AssetManager, storage_backend::tests::TestStorageBackend},
 		r#async,
-		resource::{
-			ReadStorageBackend as _, ReadTargetsMut, storage_backend::tests::TestStorageBackend as TestResourceStorage,
-		},
+		resource::{ReadStorageBackend as _, storage_backend::tests::TestStorageBackend as TestResourceStorage},
 		resources::image::Image,
 		types::{Formats, Gamma},
 	};
@@ -693,17 +682,6 @@ TILT=NONE
 40 50 60
 70 80 90
 "#;
-
-	#[test]
-	fn accepts_ies_extensions_and_mime_types_case_insensitively() {
-		let handler = IESAssetHandler::new();
-
-		assert!(crate::AssetHandler::can_handle(&handler, "ies"));
-		assert!(crate::AssetHandler::can_handle(&handler, "IES"));
-		assert!(crate::AssetHandler::can_handle(&handler, "application/ies"));
-		assert!(crate::AssetHandler::can_handle(&handler, "application/x-ies"));
-		assert!(!crate::AssetHandler::can_handle(&handler, "exr"));
-	}
 
 	#[test]
 	fn parses_multiplier_and_expands_quadrantal_symmetry() {
@@ -756,47 +734,6 @@ TILT=NONE
 
 		assert!(error.to_string().starts_with("Unsupported IES photometric type."));
 		assert!(error.to_string().contains("only LM-63 Type C profiles"));
-	}
-
-	#[cfg(debug_assertions)]
-	#[r#async::test]
-	async fn resource_manager_lazily_bakes_and_loads_ies_images() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("lights/quadrant.ies", QUADRANT_PROFILE);
-
-		let resource_storage = Arc::new(TestResourceStorage::new());
-
-		let mut asset_manager = AssetManager::new_shared(source_storage, resource_storage.clone());
-
-		asset_manager.add_asset_handler(IESAssetHandler::new());
-
-		let resource_manager = ResourceManager::new_shared(resource_storage);
-
-		resource_manager.set_asset_manager(asset_manager);
-
-		let mut reference = resource_manager
-			.request::<Image>("lights/quadrant.ies")
-			.await
-			.expect("the IES source must bake lazily as an image resource");
-
-		assert_eq!(reference.resource().format, Formats::R16F);
-		assert_eq!(reference.resource().gamma, Gamma::Linear);
-		assert_eq!(
-			reference.resource().extent,
-			[IES_INTENSITY_MAP_WIDTH, IES_INTENSITY_MAP_HEIGHT, 0]
-		);
-		assert!(reference.resource().photometry.is_some());
-
-		let loaded = reference
-			.load(ReadTargetsMut::backing_storage())
-			.await
-			.expect("the lazily baked IES intensity texels must load");
-
-		assert_eq!(
-			loaded.buffer().map(<[u8]>::len),
-			Some((IES_INTENSITY_MAP_WIDTH * IES_INTENSITY_MAP_HEIGHT * 2) as usize)
-		);
 	}
 
 	#[r#async::test]

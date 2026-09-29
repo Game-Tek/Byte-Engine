@@ -11,8 +11,17 @@ pub(crate) struct NativeCommand {
 	/// Allocations this recording uses. Submission hands them to the queue's [`QueueResidency`], which keeps them
 	/// resident and alive until the GPU finishes with them.
 	retained_allocations: SmallVec<[Retained<ProtocolObject<dyn mtl::MTLAllocation>>; 32]>,
+	/// Addresses of every allocation and object this recording retains, so repeats cost one set probe.
 	retained_addresses: ::utils::hash::HashSet<usize>,
 	retained_objects: SmallVec<[Retained<ProtocolObject<dyn NSObjectProtocol>>; 4]>,
+	/// Descriptor-set slots, at the set version, whose resources this recording already retains.
+	///
+	/// A slot's resources depend only on the set's contents, which its version identifies, so a pipeline switch
+	/// that re-applies the same sets skips every slot it already walked, including large bindless arrays.
+	retained_descriptor_slots: ::utils::hash::HashSet<(u64, u64, crate::shader::ResourceSlot)>,
+	/// The number the queue's resource tracker published this recording's accesses under, which completion hands
+	/// back to it. Commands recorded without the tracker, such as an empty frame command, have none.
+	tracked_recording: Option<u64>,
 }
 
 impl NativeCommand {
@@ -32,6 +41,8 @@ impl NativeCommand {
 			retained_allocations: SmallVec::new(),
 			retained_addresses: ::utils::hash::HashSet::default(),
 			retained_objects: SmallVec::new(),
+			retained_descriptor_slots: ::utils::hash::HashSet::default(),
+			tracked_recording: None,
 		}
 	}
 
@@ -46,33 +57,47 @@ impl NativeCommand {
 		}
 	}
 
-	/// Retains a buffer, texture, pipeline state, or acceleration structure until GPU completion and makes it
+	/// Retains a buffer, texture, heap, pipeline state, or acceleration structure until GPU completion and makes it
 	/// resident when this command is submitted.
-	pub(crate) fn retain_allocation<T: Message + 'static>(&mut self, allocation: Retained<T>)
+	pub(crate) fn retain_allocation<T: Message + 'static>(&mut self, allocation: &T)
 	where
 		dyn mtl::MTLAllocation: ImplementedBy<T>,
 	{
-		let allocation = ProtocolObject::<dyn mtl::MTLAllocation>::from_retained(allocation);
-		// Commands retain the same buffers and textures once per encoder; a set keeps repeats constant time.
-		let address = Retained::as_ptr(&allocation) as *const () as usize;
-		if !self.retained_addresses.insert(address) {
-			return;
+		let allocation: &ProtocolObject<dyn mtl::MTLAllocation> = ProtocolObject::from_ref(allocation);
+		// Commands reach the same buffers and textures once per command; the set keeps repeats to one probe and
+		// takes the reference count only once.
+		if self.retained_addresses.insert(std::ptr::from_ref(allocation).cast::<()>() as usize) {
+			self.retained_allocations.push(allocation.retain());
 		}
-		self.retained_allocations.push(allocation);
 	}
 
 	/// Retains an object that needs no residency, such as a sampler or an argument table, until GPU completion.
-	pub(crate) fn retain_object<T: Message + 'static>(&mut self, object: Retained<T>)
+	pub(crate) fn retain_object<T: Message + 'static>(&mut self, object: &T)
 	where
 		dyn NSObjectProtocol: ImplementedBy<T>,
 	{
-		self.retained_objects.push(ProtocolObject::from_retained(object));
+		let object: &ProtocolObject<dyn NSObjectProtocol> = ProtocolObject::from_ref(object);
+		if self.retained_addresses.insert(std::ptr::from_ref(object).cast::<()>() as usize) {
+			self.retained_objects.push(object.retain());
+		}
 	}
 
 	/// Retains a drawable and its texture until Metal completes the submitted batch.
-	pub(crate) fn retain_drawable(&mut self, drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>) {
-		self.retain_allocation(drawable.texture());
+	pub(crate) fn retain_drawable(&mut self, drawable: &ProtocolObject<dyn CAMetalDrawable>) {
+		self.retain_allocation(&*drawable.texture());
 		self.retain_object(drawable);
+	}
+
+	/// Records the number [`synchronization::MetalResourceTracker::finish_recording`] published this recording under.
+	pub(crate) fn set_tracked_recording(&mut self, recording: u64) {
+		self.tracked_recording = Some(recording);
+	}
+
+	/// Records that this recording retains the resources of `slot` in the descriptor set `set` at `version`.
+	///
+	/// Returns `false` when an earlier application already retained them, so the caller can skip the slot.
+	pub(crate) fn retain_descriptor_slot(&mut self, set: u64, version: u64, slot: crate::shader::ResourceSlot) -> bool {
+		self.retained_descriptor_slots.insert((set, version, slot))
 	}
 
 	// Ends recording before queue submission.
@@ -86,6 +111,8 @@ impl NativeCommand {
 		self.retained_allocations.clear();
 		self.retained_addresses.clear();
 		self.retained_objects.clear();
+		self.retained_descriptor_slots.clear();
+		self.tracked_recording = None;
 	}
 }
 
@@ -198,11 +225,6 @@ impl QueueResidency {
 			self.spare_addresses.push(retired.addresses);
 		}
 	}
-
-	/// Returns whether every batch submitted on the queue has completed.
-	fn is_idle(&self) -> bool {
-		self.in_flight.is_empty()
-	}
 }
 
 impl Deref for NativeCommand {
@@ -250,16 +272,16 @@ impl SubmittedBatch {
 				"Metal 4 commit feedback failed. The most likely cause is that Metal returned invalid feedback data or the feedback handler encountered an unexpected failure.",
 			)),
 		};
+		let queue = &mut queues[self.queue_handle.0 as usize];
 		for command in &mut self.commands {
+			// Completed accesses cannot race later commands, so the queue's hazard history drops them. Frames overlap,
+			// so the queue is rarely idle, and without this the history would keep every access ever made.
+			if let Some(recording) = command.tracked_recording {
+				queue.resource_tracker.complete_recording(recording);
+			}
 			command.reset();
 		}
-		let queue = &mut queues[self.queue_handle.0 as usize];
 		queue.residency.complete(self.batch);
-		// Finished work cannot race later commands, so an idle queue drops its hazard history. Without this, a queue
-		// whose writes are never read again on it, such as a loader's copy queue, keeps every past write forever.
-		if queue.residency.is_idle() {
-			queue.resource_tracker.forget_history();
-		}
 		queue.command_pool.extend(self.commands);
 		error
 	}
@@ -361,7 +383,7 @@ pub struct Queue<'a> {
 pub struct Execution<'a> {
 	frame: Option<super::Frame<'a>>,
 	completed_frame: Option<graphics_hardware_interface::FrameKey>,
-	command_buffers: SmallVec<[super::FinishedCommandBuffer<'static>; 4]>,
+	command_buffers: SmallVec<[super::FinishedCommandBuffer; 4]>,
 }
 
 impl Drop for Execution<'_> {

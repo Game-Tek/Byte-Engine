@@ -34,7 +34,6 @@ pub struct AnimationGraphBenchmarkFixture {
 	destination: AnimationStateId,
 	pool: AnimationPool,
 	benchmark: AnimationGraphBenchmark,
-	node_count: usize,
 }
 
 impl AnimationGraphBenchmarkFixture {
@@ -58,7 +57,6 @@ impl AnimationGraphBenchmarkFixture {
 			destination,
 			pool,
 			benchmark,
-			node_count,
 		}
 	}
 
@@ -70,7 +68,6 @@ impl AnimationGraphBenchmarkFixture {
 			destination,
 			pool,
 			benchmark,
-			node_count,
 		} = self;
 		let benchmark = *benchmark;
 		let root_motion = (benchmark == AnimationGraphBenchmark::ActiveRootMotion).then(|| RootMotionSettings::full("joint-0"));
@@ -200,10 +197,7 @@ fn benchmark_pool(animations: &[(&str, Animation)]) -> AnimationPool {
 		commands: commands.to_sync(),
 		completions: completions.to_sync(),
 		storage: vec![0; word_capacity].into_boxed_slice(),
-		free_regions: vec![AnimationArenaRegion {
-			offset: 0,
-			word_count: word_capacity,
-		}],
+		free_words: utils::RangeAllocator::new(word_capacity, 1),
 		entries: HashMap::with_capacity(animations.len()),
 		events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 		byte_budget,

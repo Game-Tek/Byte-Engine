@@ -3,11 +3,12 @@
 use ghi::{
 	command_buffer::{
 		BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+		RasterizationRenderPassMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 };
+use utils::RGBA;
 
 use crate::{
 	core::Entity,
@@ -15,13 +16,18 @@ use crate::{
 		Sink,
 		pipelines::simple::{CameraShaderData, PipelineManager},
 		render_pass::RenderPassFunction,
-		utils::InstanceBatch,
+		pipelines::simple::pipeline_manager::InstanceBatch,
 	},
 };
 
+/// The `RenderPass` struct keeps one sink's simple-pipeline draw state.
+///
+/// [`PipelineManager`] creates one in `create_sink` and prepares it every frame the sink renders.
 pub struct RenderPass {
 	pub(super) index: usize,
 	descriptor_set: ghi::DescriptorSetHandle,
+	/// The sink's `main` and `depth` targets, cleared and stored by every frame's scene draw.
+	attachments: [ghi::AttachmentInformation; 2],
 	background: Option<crate::rendering::render_pass::SceneBackground>,
 }
 
@@ -31,6 +37,7 @@ impl RenderPass {
 		camera_data_buffer: ghi::BaseBufferHandle,
 		instance_data_buffer: ghi::BaseBufferHandle,
 		index: usize,
+		targets: [ghi::BaseImageHandle; 2],
 		background: Option<crate::rendering::render_pass::SceneBackground>,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(None);
@@ -40,9 +47,19 @@ impl RenderPass {
 			ghi::DescriptorWrite::buffer(descriptor_set, ghi::ResourceSlot::new(1), instance_data_buffer),
 		]);
 
+		let attachments = targets.map(|target| {
+			ghi::AttachmentInformation::new(
+				target,
+				ghi::Layouts::RenderTarget,
+				ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::black())),
+				ghi::StoreOp::Store,
+			)
+		});
+
 		Self {
 			index,
 			descriptor_set,
+			attachments,
 			background,
 		}
 	}
@@ -52,7 +69,7 @@ impl Entity for RenderPass {}
 
 impl RenderPass {
 	pub(super) fn prepare<'a>(
-		&self,
+		&'a self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		sm: &PipelineManager,
@@ -81,34 +98,35 @@ impl RenderPass {
 		let descriptor_set = self.descriptor_set;
 
 		let extent = sink.extent();
+		let attachments = &self.attachments;
 
-		move |c, t| {
+		move |c| {
 			c.bind_vertex_buffers(&[vertex_buffer.into()]);
 
 			c.bind_index_buffer(&ghi::BufferDescriptor::new(index_buffer).index_type(ghi::DataTypes::U16));
 
-			let render_pass = c.start_render_pass(extent, t);
+			let render_pass = c.start_render_pass(extent, attachments);
 
 			let render_pass = render_pass.bind_raster_pipeline(pipeline);
 
 			render_pass.bind_descriptor_sets(&[descriptor_set]);
 
 			for batch in instance_batches.iter() {
-				render_pass.write_push_constant(0, batch.base_instance() as u32);
+				render_pass.write_push_constant(0, batch.base_instance as u32);
 
 				render_pass.draw_indexed(
-					batch.index_count() as u32,
-					batch.instance_count() as u32,
-					batch.base_index() as _,
-					batch.base_vertex() as _,
-					batch.base_instance() as _,
+					batch.index_count as u32,
+					batch.instance_count as u32,
+					batch.base_index as _,
+					batch.base_vertex as _,
+					batch.base_instance as _,
 				);
 			}
 
 			render_pass.end_render_pass();
 
 			if let Some(background) = background {
-				background(c, t);
+				background(c);
 			}
 		}
 	}

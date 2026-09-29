@@ -244,11 +244,10 @@ fn reflected_storage_member_type_layout(
 ) -> Result<StorageLayout, String> {
 	let packed_msl_vector = target == StorageLayoutTarget::Msl
 		&& direct_binding_member
-		&& (array_member
-			|| matches!(
-				r#type.borrow().get_name(),
-				Some("vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16")
-			));
+		&& crate::shader::besl::backends::msl::msl_packs_direct_binding_member(
+			r#type.borrow().get_name().unwrap_or_default(),
+			array_member,
+		);
 	reflected_storage_type_layout(r#type, target, packed_msl_vector, visiting)
 }
 
@@ -295,12 +294,13 @@ pub(super) fn primitive_storage_layout(
 	packed_msl_vector: bool,
 ) -> Option<StorageLayout> {
 	let (size, alignment) = match target {
-		StorageLayoutTarget::Hlsl => match type_name {
-			// BESL u8 remains a 32-bit uint in HLSL, while native u16 values keep
-			// their exact two-byte object representation and scalar alignment.
-			"bool" | "u8" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
-			"u16" => (2, 2),
-			"f16" => (2, 2),
+		// BESL u8 remains a 32-bit uint in HLSL, while GLSL scalar layout keeps its single byte. Every other scalar
+		// layout is shared, and native u16 values keep their exact two-byte object representation and scalar alignment.
+		StorageLayoutTarget::Hlsl if type_name == "u8" => (4, 4),
+		StorageLayoutTarget::Hlsl | StorageLayoutTarget::GlslScalar => match type_name {
+			"u8" => (1, 1),
+			"u16" | "f16" => (2, 2),
+			"bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
 			"vec2u16" => (4, 2),
 			"vec4u16" => (8, 2),
 			"vec2f16" => (4, 2),
@@ -347,24 +347,6 @@ pub(super) fn primitive_storage_layout(
 			"mat3f" => (48, 16),
 			"mat4f" => (64, 16),
 			// MSL expressions use native float4x3, but buffer storage lowers to four packed_float3 columns.
-			"mat4x3f" => (48, 4),
-			_ => return None,
-		},
-		StorageLayoutTarget::GlslScalar => match type_name {
-			"u8" => (1, 1),
-			"u16" | "f16" => (2, 2),
-			"bool" | "u32" | "atomicu32" | "i32" | "atomici32" | "f32" => (4, 4),
-			"vec2u16" => (4, 2),
-			"vec4u16" => (8, 2),
-			"vec2f16" => (4, 2),
-			"vec3f16" => (6, 2),
-			"vec4f16" => (8, 2),
-			"vec2i" | "vec2u" | "vec2f" => (8, 4),
-			"vec3u" | "vec3f" => (12, 4),
-			"vec4u" | "vec4f" | "packed_vec4f" => (16, 4),
-			"mat2f" => (16, 4),
-			"mat3f" => (36, 4),
-			"mat4f" => (64, 4),
 			"mat4x3f" => (48, 4),
 			_ => return None,
 		},
@@ -629,8 +611,7 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 			}
 			build_bindings(bindings, r#return, state);
 		}
-		besl::Nodes::Literal { value: nested, .. }
-		| besl::Nodes::Member { r#type: nested, .. }
+		besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Parameter { r#type: nested, .. }
 		| besl::Nodes::Specialization { r#type: nested, .. } => {
 			build_bindings(bindings, nested, state);
@@ -648,7 +629,6 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 				build_bindings(bindings, child, state);
 			}
 		}
-		besl::Nodes::Null => {}
 		besl::Nodes::Const { r#type, value, .. } => {
 			build_bindings(bindings, r#type, state);
 			build_bindings(bindings, value, state);

@@ -14,7 +14,7 @@ mod statements;
 /// Compiles one lexed program while keeping compiler implementation details behind this seam.
 #[allow(clippy::mutable_key_type)]
 pub(crate) fn compile(program: NodeReference, specializations: &SpecializationValues) -> Result<ExecutableProgram, VmError> {
-	let main = resolve_main_function(&program)?;
+	let main = program.get_main().ok_or(VmError::MissingMainFunction)?;
 	let main_signature = extract_function_signature(&main)?;
 	if !main_signature.params.is_empty() {
 		return Err(VmError::UnsupportedMainSignature {
@@ -30,7 +30,7 @@ pub(crate) fn compile(program: NodeReference, specializations: &SpecializationVa
 		});
 	}
 
-	let function_nodes = collect_functions(&main);
+	let function_nodes = main.reachable_functions();
 	for function in &function_nodes {
 		reject_raw_code_nodes(function)?;
 	}
@@ -100,18 +100,30 @@ struct Compiler<'a> {
 	register_count: usize,
 	return_type: Option<ValueType>,
 	parameter_count: usize,
-	loop_continue_targets: Vec<usize>,
-	loop_continue_patches: Vec<Vec<usize>>,
-	/// Jumps emitted by `break` in each open loop; they are pointed at the loop's end once it is known.
-	loop_break_patches: Vec<Vec<usize>>,
+	descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,
+	/// The jump placeholders of each open loop, innermost last.
+	loops: Vec<LoopPatches>,
+}
+
+/// The `LoopPatches` struct collects the jumps that `continue` and `break` emit inside one open loop. The loop points
+/// them at its update and its end once both are compiled.
+#[derive(Default)]
+struct LoopPatches {
+	continues: Vec<usize>,
+	breaks: Vec<usize>,
 }
 
 impl<'a> Compiler<'a> {
+	/// Appends one instruction, taking either a grouped sub-enum or a top-level [`Instruction`].
+	fn emit(&mut self, instruction: impl Into<Instruction>) {
+		self.instructions.push(instruction.into());
+	}
+
 	#[allow(clippy::mutable_key_type)]
 	fn compile_function(
 		function: &NodeReference,
 		function_ids: &'a HashMap<NodeReference, usize>,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
+		descriptor_layouts: &'a mut HashMap<ResourceSlot, DescriptorLayout>,
 		specializations: &'a SpecializationValues,
 	) -> Result<ExecutableFunction, VmError> {
 		let signature = extract_function_signature(function)?;
@@ -124,9 +136,8 @@ impl<'a> Compiler<'a> {
 			register_count: 0,
 			return_type: signature.return_type.clone(),
 			parameter_count: signature.params.len(),
-			loop_continue_targets: Vec::new(),
-			loop_continue_patches: Vec::new(),
-			loop_break_patches: Vec::new(),
+			descriptor_layouts,
+			loops: Vec::new(),
 		};
 
 		for (index, param) in signature.params.iter().enumerate() {
@@ -135,11 +146,15 @@ impl<'a> Compiler<'a> {
 		}
 
 		for statement in &signature.statements {
-			compiler.compile_statement(statement, descriptor_layouts)?;
+			compiler.compile_statement(statement)?;
 		}
 
-		if compiler.return_type.is_none() && !matches!(compiler.instructions.last(), Some(Instruction::Return { .. })) {
-			compiler.instructions.push(Instruction::Return { register: None });
+		if compiler.return_type.is_none()
+			&& !matches!(
+				compiler.instructions.last(),
+				Some(Instruction::Control(ControlInstruction::Return { .. }))
+			) {
+			compiler.emit(ControlInstruction::Return { register: None });
 		}
 
 		Ok(ExecutableFunction {

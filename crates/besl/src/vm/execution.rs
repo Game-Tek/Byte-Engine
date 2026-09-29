@@ -256,7 +256,6 @@ impl ExecutableProgram {
 			.functions
 			.get(function_index)
 			.and_then(|function| function.instructions.get(instruction_index))
-			.cloned()
 			.ok_or_else(|| VmError::UnsupportedExpression {
 				message: format!("Unknown subgroup collective instruction {instruction_index}"),
 			})?;
@@ -277,59 +276,26 @@ impl ExecutableProgram {
 			Instruction::SubgroupBallot { register, predicate } => {
 				let mut mask = [0; 4];
 				for lane_index in subgroup {
-					let predicate = expect_bool(read_register(&lanes[*lane_index].frame.registers, predicate)?)?;
+					let predicate = expect_bool(register_ref(&lanes[*lane_index].frame.registers, *predicate)?)?;
 					if predicate {
 						let local_lane = lanes[*lane_index].state.config.thread_idx() % subgroup_size;
 						mask[(local_lane / 32) as usize] |= 1 << (local_lane % 32);
 					}
 				}
 				for lane_index in subgroup {
-					lanes[*lane_index].frame.registers[register] = Some(Value::Vec4U(mask));
+					lanes[*lane_index].frame.registers[*register] = Some(Value::Vec4U(mask));
 				}
 			}
-			Instruction::SubgroupBroadcastU32 {
+			Instruction::SubgroupBroadcast {
 				register,
 				value,
 				source_lane,
+				value_type,
 			} => {
-				let expected_source_lane = expect_u32(read_register(&lanes[first_lane].frame.registers, source_lane)?)?;
+				// Every lane must name the same source lane, so the first lane's choice is the reference.
+				let expected_source_lane = expect_u32(register_ref(&lanes[first_lane].frame.registers, *source_lane)?)?;
 				for lane_index in subgroup {
-					let found_source_lane = expect_u32(read_register(&lanes[*lane_index].frame.registers, source_lane)?)?;
-					if found_source_lane != expected_source_lane {
-						return Err(VmError::DivergentSubgroupBroadcastLane {
-							lane: *lane_index,
-							expected: expected_source_lane,
-							found: found_source_lane,
-						});
-					}
-				}
-				if expected_source_lane >= subgroup_size {
-					return Err(VmError::SubgroupBroadcastLaneOutOfRange {
-						source_lane: expected_source_lane,
-						subgroup_size,
-					});
-				}
-				let source = subgroup
-					.iter()
-					.copied()
-					.find(|lane_index| lanes[*lane_index].state.config.thread_idx() % subgroup_size == expected_source_lane)
-					.ok_or(VmError::SubgroupBroadcastLaneOutOfRange {
-						source_lane: expected_source_lane,
-						subgroup_size,
-					})?;
-				let value = expect_u32(read_register(&lanes[source].frame.registers, value)?)?;
-				for lane_index in subgroup {
-					lanes[*lane_index].frame.registers[register] = Some(Value::U32(value));
-				}
-			}
-			Instruction::SubgroupBroadcastF32 {
-				register,
-				value,
-				source_lane,
-			} => {
-				let expected_source_lane = expect_u32(read_register(&lanes[first_lane].frame.registers, source_lane)?)?;
-				for lane_index in subgroup {
-					let found = expect_u32(read_register(&lanes[*lane_index].frame.registers, source_lane)?)?;
+					let found = expect_u32(register_ref(&lanes[*lane_index].frame.registers, *source_lane)?)?;
 					if found != expected_source_lane {
 						return Err(VmError::DivergentSubgroupBroadcastLane {
 							lane: *lane_index,
@@ -338,6 +304,7 @@ impl ExecutableProgram {
 						});
 					}
 				}
+				// A source lane at or past the subgroup size matches no lane, so this also rejects out-of-range lanes.
 				let source = subgroup
 					.iter()
 					.copied()
@@ -346,15 +313,16 @@ impl ExecutableProgram {
 						source_lane: expected_source_lane,
 						subgroup_size,
 					})?;
-				let source_value = read_register(&lanes[source].frame.registers, value)?;
-				let Value::F32(value) = source_value else {
+				let source_value = register_ref(&lanes[source].frame.registers, *value)?;
+				if !source_value.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
-						expected: ValueType::F32.name().to_string(),
+						expected: value_type.name().to_string(),
 						found: source_value.value_type().name().to_string(),
 					});
-				};
+				}
+				let source_value = source_value.clone();
 				for lane_index in subgroup {
-					lanes[*lane_index].frame.registers[register] = Some(Value::F32(value));
+					lanes[*lane_index].frame.registers[*register] = Some(source_value.clone());
 				}
 			}
 			_ => {
@@ -527,126 +495,52 @@ impl ExecutableProgram {
 		state: &mut ExecutionState<'_>,
 		collective_behavior: CollectiveBehavior,
 	) -> Result<InstructionProgress, VmError> {
+		let registers = &mut frame.registers;
 		match instruction {
-			Instruction::LoadLiteral { .. }
-			| Instruction::LoadResourceIndexed { .. }
-			| Instruction::Construct { .. }
-			| Instruction::Extract { .. }
-			| Instruction::Insert { .. }
-			| Instruction::ExtractDynamic { .. }
-			| Instruction::InsertDynamic { .. } => {
-				Self::execute_value_instruction(instruction, &mut frame.registers, &mut frame.constructor_values)?;
-				Ok(InstructionProgress::Advance)
+			Instruction::Value(instruction) => {
+				Self::execute_value_instruction(instruction, registers, &mut frame.constructor_values)?
 			}
-			Instruction::Arithmetic { .. }
-			| Instruction::Compare { .. }
-			| Instruction::DotProduct { .. }
-			| Instruction::CrossProduct { .. }
-			| Instruction::Length { .. }
-			| Instruction::Normalize { .. }
-			| Instruction::Reflect { .. }
-			| Instruction::UnaryScalar { .. }
-			| Instruction::FloatPredicate { .. }
-			| Instruction::RoundToVec2I { .. }
-			| Instruction::BinaryScalar { .. }
-			| Instruction::TernaryScalar { .. } => {
-				Self::execute_numeric_instruction(instruction, &mut frame.registers)?;
-				Ok(InstructionProgress::Advance)
+			Instruction::Numeric(instruction) => Self::execute_numeric_instruction(instruction, registers)?,
+			Instruction::Local(instruction) => {
+				Self::execute_local_instruction(instruction, registers, &mut frame.locals, state.config)?
 			}
-			Instruction::LoadLocal { .. }
-			| Instruction::StoreLocal { .. }
-			| Instruction::ThreadIdx { .. }
-			| Instruction::ThreadPosition { .. }
-			| Instruction::ThreadId { .. }
-			| Instruction::ThreadgroupPosition { .. }
-			| Instruction::SubgroupBallotAny { .. }
-			| Instruction::SubgroupBallotFindLsb { .. }
-			| Instruction::SubgroupBallotCount { .. }
-			| Instruction::SubgroupBallotAndNot { .. }
-			| Instruction::SubgroupLaneIndex { .. } => {
-				Self::execute_local_and_builtin_instruction(
-					instruction,
-					&mut frame.registers,
-					&mut frame.locals,
-					state.config,
-				)?;
-				Ok(InstructionProgress::Advance)
+			Instruction::Workgroup(instruction) => {
+				Self::execute_workgroup_instruction(instruction, registers, descriptors, state.config)?
+			}
+			Instruction::MeshOutput(instruction) => {
+				Self::execute_mesh_output_instruction(instruction, registers, descriptors, state.config)?
+			}
+			Instruction::Buffer(instruction) => Self::execute_buffer_instruction(instruction, registers, descriptors)?,
+			Instruction::Texture(instruction) => Self::execute_texture_instruction(instruction, registers, descriptors)?,
+			Instruction::Image(instruction) => return Self::execute_image_instruction(instruction, registers, descriptors),
+			Instruction::Control(instruction) => {
+				return self.execute_control_instruction(instruction, registers, descriptors, state, collective_behavior);
 			}
 			Instruction::SubgroupBallot { register, predicate } => {
-				Self::execute_subgroup_ballot(*register, *predicate, &mut frame.registers, collective_behavior)
+				return Self::execute_subgroup_ballot(*register, *predicate, registers, collective_behavior);
 			}
-			Instruction::SubgroupBroadcastU32 { .. } | Instruction::SubgroupBroadcastF32 { .. } => {
-				Self::execute_subgroup_broadcast(collective_behavior)
-			}
-			Instruction::WorkgroupBarrier => Self::execute_workgroup_barrier(collective_behavior),
-			Instruction::LoadTaskPayload { .. }
-			| Instruction::StoreTaskPayload { .. }
-			| Instruction::LoadWorkgroup { .. }
-			| Instruction::StoreWorkgroup { .. }
-			| Instruction::AtomicWorkgroup { .. }
-			| Instruction::AtomicCompareExchangeWorkgroup { .. }
-			| Instruction::SetTaskMeshOutputCount { .. } => {
-				Self::execute_task_and_workgroup_instruction(instruction, &mut frame.registers, descriptors, state.config)?;
-				Ok(InstructionProgress::Advance)
-			}
-			Instruction::SetMeshOutputCounts { .. }
-			| Instruction::SetMeshVertexPosition { .. }
-			| Instruction::SetMeshTriangle { .. }
-			| Instruction::SetMeshPrimitiveRenderTargetArrayIndex { .. } => {
-				Self::execute_mesh_output_instruction(instruction, &mut frame.registers, descriptors, state.config)?;
-				Ok(InstructionProgress::Advance)
-			}
-			Instruction::LoadBuffer { .. }
-			| Instruction::LoadBufferIndexed { .. }
-			| Instruction::StoreBuffer { .. }
-			| Instruction::StoreBufferIndexed { .. }
-			| Instruction::AtomicBuffer { .. }
-			| Instruction::AtomicCompareExchangeBuffer { .. } => {
-				Self::execute_buffer_instruction(instruction, &mut frame.registers, descriptors)?;
-				Ok(InstructionProgress::Advance)
-			}
-			Instruction::FetchTexture { .. }
-			| Instruction::FetchTextureArray { .. }
-			| Instruction::FetchTextureU32 { .. }
-			| Instruction::SampleTexture { .. }
-			| Instruction::SampleTexture3D { .. }
-			| Instruction::TextureSize { .. } => {
-				Self::execute_texture_instruction(instruction, &mut frame.registers, descriptors)?;
-				Ok(InstructionProgress::Advance)
-			}
-			Instruction::ImageSize { .. }
-			| Instruction::LoadImage { .. }
-			| Instruction::LoadImageU32 { .. }
-			| Instruction::GuardImageBounds { .. }
-			| Instruction::ImageAtomicOr { .. }
-			| Instruction::WriteImage { .. } => Self::execute_image_instruction(instruction, &mut frame.registers, descriptors),
-			Instruction::JumpIfZero { .. }
-			| Instruction::Jump { .. }
-			| Instruction::Switch { .. }
-			| Instruction::Discard
-			| Instruction::Call { .. }
-			| Instruction::Return { .. } => {
-				self.execute_control_instruction(instruction, &mut frame.registers, descriptors, state, collective_behavior)
-			}
+			Instruction::SubgroupBroadcast { .. } => return Self::execute_subgroup_broadcast(collective_behavior),
+			Instruction::WorkgroupBarrier => return Self::execute_workgroup_barrier(collective_behavior),
 		}
+		Ok(InstructionProgress::Advance)
 	}
 
 	/// Executes instructions that construct or extract register values.
 	fn execute_value_instruction(
-		instruction: &Instruction,
+		instruction: &ValueInstruction,
 		registers: &mut [Option<Value>],
 		constructor_values: &mut Vec<Value>,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::LoadLiteral { register, value } => registers[*register] = Some(value.clone()),
-			Instruction::LoadResourceIndexed {
+			ValueInstruction::LoadLiteral { register, value } => registers[*register] = Some(value.clone()),
+			ValueInstruction::LoadResourceIndexed {
 				register,
 				slot,
 				index,
 				count,
 				value_type,
 			} => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				if index >= *count {
 					return Err(VmError::DescriptorArrayIndexOutOfBounds {
 						slot: *slot,
@@ -660,7 +554,7 @@ impl ExecutableProgram {
 					value_type: value_type.clone(),
 				});
 			}
-			Instruction::Construct {
+			ValueInstruction::Construct {
 				register,
 				value_type,
 				components,
@@ -668,132 +562,131 @@ impl ExecutableProgram {
 				// Constructors are frequent in shader code. Retain this frame-local scratch vector instead of allocating per instruction.
 				constructor_values.clear();
 				for component in components {
-					constructor_values.push(read_register(registers, *component)?);
+					constructor_values.push(register_ref(registers, *component)?.clone());
 				}
 				registers[*register] = Some(construct_value(value_type, constructor_values)?);
 			}
-			Instruction::Extract {
+			ValueInstruction::Extract {
 				register,
 				source,
 				index,
 				value_type,
 			} => {
-				let source = read_register(registers, *source)?;
-				registers[*register] = Some(extract_value(&source, *index, value_type)?);
+				let source = register_ref(registers, *source)?;
+				registers[*register] = Some(extract_value(source, *index, value_type)?);
 			}
-			Instruction::Insert {
+			ValueInstruction::Insert {
 				register,
 				source,
 				index,
 				value,
 			} => {
-				let mut aggregate = read_register(registers, *source)?;
-				insert_value(&mut aggregate, *index, read_register(registers, *value)?)?;
+				let mut aggregate = register_ref(registers, *source)?.clone();
+				insert_value(&mut aggregate, *index, register_ref(registers, *value)?.clone())?;
 				registers[*register] = Some(aggregate);
 			}
-			Instruction::ExtractDynamic {
+			ValueInstruction::ExtractDynamic {
 				register,
 				source,
 				index,
 				count,
 				value_type,
 			} => {
-				let source = read_register(registers, *source)?;
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
+				let source = register_ref(registers, *source)?;
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				if index >= *count {
 					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
 				}
-				registers[*register] = Some(extract_value(&source, index, value_type)?);
+				registers[*register] = Some(extract_value(source, index, value_type)?);
 			}
-			Instruction::InsertDynamic {
+			ValueInstruction::InsertDynamic {
 				register,
 				source,
 				index,
 				count,
 				value,
 			} => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
 				if index >= *count {
 					return Err(VmError::BufferArrayIndexOutOfBounds { index, count: *count });
 				}
-				let mut aggregate = read_register(registers, *source)?;
-				insert_value(&mut aggregate, index, read_register(registers, *value)?)?;
+				let mut aggregate = register_ref(registers, *source)?.clone();
+				insert_value(&mut aggregate, index, register_ref(registers, *value)?.clone())?;
 				registers[*register] = Some(aggregate);
 			}
-			_ => unreachable!("Value instruction dispatch must select only value instructions"),
 		}
 		Ok(())
 	}
 
 	/// Executes arithmetic and scalar operations against frame registers.
-	fn execute_numeric_instruction(instruction: &Instruction, registers: &mut [Option<Value>]) -> Result<(), VmError> {
+	fn execute_numeric_instruction(instruction: &NumericInstruction, registers: &mut [Option<Value>]) -> Result<(), VmError> {
 		match instruction {
-			Instruction::Arithmetic {
+			NumericInstruction::Arithmetic {
 				register,
 				operator,
 				left,
 				right,
 			} => {
-				let left = read_register(registers, *left)?;
-				let right = read_register(registers, *right)?;
-				registers[*register] = Some(apply_arithmetic(*operator, &left, &right)?);
+				let left = register_ref(registers, *left)?;
+				let right = register_ref(registers, *right)?;
+				registers[*register] = Some(apply_arithmetic(*operator, left, right)?);
 			}
-			Instruction::Compare {
+			NumericInstruction::Compare {
 				register,
 				operator,
 				left,
 				right,
 			} => {
-				let left = read_register(registers, *left)?;
-				let right = read_register(registers, *right)?;
-				registers[*register] = Some(apply_comparison(*operator, &left, &right)?);
+				let left = register_ref(registers, *left)?;
+				let right = register_ref(registers, *right)?;
+				registers[*register] = Some(apply_comparison(*operator, left, right)?);
 			}
-			Instruction::DotProduct { register, left, right } => {
-				let left = read_register(registers, *left)?;
-				let right = read_register(registers, *right)?;
-				registers[*register] = Some(apply_dot_product(&left, &right)?);
+			NumericInstruction::DotProduct { register, left, right } => {
+				let left = register_ref(registers, *left)?;
+				let right = register_ref(registers, *right)?;
+				registers[*register] = Some(apply_dot_product(left, right)?);
 			}
-			Instruction::CrossProduct { register, left, right } => {
-				let left = read_register(registers, *left)?;
-				let right = read_register(registers, *right)?;
-				registers[*register] = Some(apply_cross_product(&left, &right)?);
+			NumericInstruction::CrossProduct { register, left, right } => {
+				let left = register_ref(registers, *left)?;
+				let right = register_ref(registers, *right)?;
+				registers[*register] = Some(apply_cross_product(left, right)?);
 			}
-			Instruction::Length { register, value } => {
-				let value = read_register(registers, *value)?;
-				registers[*register] = Some(apply_length(&value)?);
+			NumericInstruction::Length { register, value } => {
+				let value = register_ref(registers, *value)?;
+				registers[*register] = Some(apply_length(value)?);
 			}
-			Instruction::Normalize { register, value } => {
-				let value = read_register(registers, *value)?;
-				registers[*register] = Some(apply_normalize(&value)?);
+			NumericInstruction::Normalize { register, value } => {
+				let value = register_ref(registers, *value)?;
+				registers[*register] = Some(apply_normalize(value)?);
 			}
-			Instruction::Reflect {
+			NumericInstruction::Reflect {
 				register,
 				incident,
 				normal,
 			} => {
-				let incident = read_register(registers, *incident)?;
-				let normal = read_register(registers, *normal)?;
-				registers[*register] = Some(apply_reflect(&incident, &normal)?);
+				let incident = register_ref(registers, *incident)?;
+				let normal = register_ref(registers, *normal)?;
+				registers[*register] = Some(apply_reflect(incident, normal)?);
 			}
-			Instruction::UnaryScalar {
+			NumericInstruction::UnaryScalar {
 				register,
 				operator,
 				value,
 			} => {
-				let value = read_register(registers, *value)?;
-				registers[*register] = Some(apply_scalar_unary(*operator, &value)?);
+				let value = register_ref(registers, *value)?;
+				registers[*register] = Some(apply_scalar_unary(*operator, value)?);
 			}
-			Instruction::FloatPredicate {
+			NumericInstruction::FloatPredicate {
 				register,
 				predicate,
 				value,
 			} => {
-				let value = read_register(registers, *value)?;
-				registers[*register] = Some(apply_float_predicate(*predicate, &value)?);
+				let value = register_ref(registers, *value)?;
+				registers[*register] = Some(apply_float_predicate(*predicate, value)?);
 			}
-			Instruction::RoundToVec2I { register, value } => {
-				let value = read_register(registers, *value)?;
-				let Value::Vec2F(value) = value else {
+			NumericInstruction::RoundToVec2I { register, value } => {
+				let value = register_ref(registers, *value)?;
+				let &Value::Vec2F(value) = value else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2F.name().to_string(),
 						found: value.value_type().name().to_string(),
@@ -801,86 +694,64 @@ impl ExecutableProgram {
 				};
 				registers[*register] = Some(Value::Vec2I(value.map(|component| component.round() as i32)));
 			}
-			Instruction::BinaryScalar {
+			NumericInstruction::BinaryScalar {
 				register,
 				operator,
 				left,
 				right,
 			} => {
-				let left = read_register(registers, *left)?;
-				let right = read_register(registers, *right)?;
-				registers[*register] = Some(apply_scalar_binary(*operator, &left, &right)?);
+				let left = register_ref(registers, *left)?;
+				let right = register_ref(registers, *right)?;
+				registers[*register] = Some(apply_scalar_binary(*operator, left, right)?);
 			}
-			Instruction::TernaryScalar {
+			NumericInstruction::TernaryScalar {
 				register,
 				operator,
 				first,
 				second,
 				third,
 			} => {
-				let first = read_register(registers, *first)?;
-				let second = read_register(registers, *second)?;
-				let third = read_register(registers, *third)?;
-				registers[*register] = Some(apply_scalar_ternary(*operator, &first, &second, &third)?);
+				let first = register_ref(registers, *first)?;
+				let second = register_ref(registers, *second)?;
+				let third = register_ref(registers, *third)?;
+				registers[*register] = Some(apply_scalar_ternary(*operator, first, second, third)?);
 			}
-			_ => unreachable!("Numeric instruction dispatch must select only numeric instructions"),
 		}
 		Ok(())
 	}
 
 	/// Executes local storage, invocation-coordinate, and non-suspending subgroup instructions.
-	fn execute_local_and_builtin_instruction(
-		instruction: &Instruction,
+	fn execute_local_instruction(
+		instruction: &LocalInstruction,
 		registers: &mut [Option<Value>],
 		locals: &mut [Option<Value>],
 		config: &ExecutionConfig,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::LoadLocal { register, local } => {
+			LocalInstruction::LoadLocal { register, local } => {
 				let value = locals
 					.get(*local)
 					.and_then(Option::clone)
 					.ok_or(VmError::UninitializedLocal { local: *local })?;
 				registers[*register] = Some(value);
 			}
-			Instruction::StoreLocal { local, register } => {
-				let value = read_register(registers, *register)?;
-				locals[*local] = Some(value);
+			LocalInstruction::StoreLocal { local, register } => {
+				locals[*local] = Some(register_ref(registers, *register)?.clone());
 			}
-			Instruction::ThreadIdx { register } => registers[*register] = Some(Value::U32(config.thread_idx())),
-			Instruction::ThreadPosition { register } => {
-				registers[*register] = Some(Value::U32(config.thread_position()));
+			LocalInstruction::LoadBuiltin { register, builtin } => registers[*register] = Some(builtin.value(config)),
+			LocalInstruction::SubgroupMask {
+				register,
+				operator,
+				mask,
+			} => {
+				let mask = expect_vec4u(register_ref(registers, *mask)?)?;
+				registers[*register] = Some(operator.apply(mask));
 			}
-			Instruction::ThreadId { register } => registers[*register] = Some(Value::Vec2U(config.thread_id())),
-			Instruction::ThreadgroupPosition { register } => {
-				registers[*register] = Some(Value::U32(config.threadgroup_position()));
-			}
-			Instruction::SubgroupBallotAny { register, mask } => {
-				let mask = expect_vec4u(read_register(registers, *mask)?)?;
-				registers[*register] = Some(Value::Bool(mask.into_iter().any(|word| word != 0)));
-			}
-			Instruction::SubgroupBallotFindLsb { register, mask } => {
-				let mask = expect_vec4u(read_register(registers, *mask)?)?;
-				let first_lane = mask
-					.into_iter()
-					.enumerate()
-					.find_map(|(word_index, word)| (word != 0).then(|| word_index as u32 * 32 + word.trailing_zeros()))
-					.unwrap_or(u32::MAX);
-				registers[*register] = Some(Value::U32(first_lane));
-			}
-			Instruction::SubgroupBallotCount { register, mask } => {
-				let mask = expect_vec4u(read_register(registers, *mask)?)?;
-				registers[*register] = Some(Value::U32(mask.into_iter().map(u32::count_ones).sum()));
-			}
-			Instruction::SubgroupBallotAndNot { register, mask, removed } => {
-				let mask = expect_vec4u(read_register(registers, *mask)?)?;
-				let removed = expect_vec4u(read_register(registers, *removed)?)?;
+			LocalInstruction::SubgroupBallotAndNot { register, mask, removed } => {
+				let mask = expect_vec4u(register_ref(registers, *mask)?)?;
+				let removed = expect_vec4u(register_ref(registers, *removed)?)?;
 				registers[*register] = Some(Value::Vec4U(std::array::from_fn(|index| mask[index] & !removed[index])));
 			}
-			Instruction::SubgroupLaneIndex { register } => {
-				registers[*register] = Some(Value::U32(config.thread_idx() % config.subgroup_size()));
-			}
-			_ => unreachable!("Local and builtin instruction dispatch must select only matching instructions"),
 		}
 		Ok(())
 	}
@@ -894,7 +765,7 @@ impl ExecutableProgram {
 	) -> Result<InstructionProgress, VmError> {
 		match collective_behavior {
 			CollectiveBehavior::Ignore => {
-				let predicate = expect_bool(read_register(registers, predicate)?)?;
+				let predicate = expect_bool(register_ref(registers, predicate)?)?;
 				registers[register] = Some(Value::Vec4U([predicate as u32, 0, 0, 0]));
 				Ok(InstructionProgress::Advance)
 			}
@@ -931,14 +802,14 @@ impl ExecutableProgram {
 	}
 
 	/// Executes task-payload and workgroup-storage instructions.
-	fn execute_task_and_workgroup_instruction(
-		instruction: &Instruction,
+	fn execute_workgroup_instruction(
+		instruction: &WorkgroupInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 		config: &ExecutionConfig,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::LoadTaskPayload {
+			WorkgroupInstruction::LoadTaskPayload {
 				register,
 				name,
 				index,
@@ -955,24 +826,26 @@ impl ExecutableProgram {
 				}
 				registers[*register] = Some(value);
 			}
-			Instruction::StoreTaskPayload {
+			WorkgroupInstruction::StoreTaskPayload {
 				name,
 				index,
 				count,
 				value_type,
 				value,
 			} => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
-				let value = read_register(registers, *value)?;
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
+				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
 						expected: value_type.name().to_string(),
 						found: value.value_type().name().to_string(),
 					});
 				}
-				descriptors.task_outputs_mut()?.write_payload(name, index, *count, value)?;
+				descriptors
+					.task_outputs_mut()?
+					.write_payload(name, index, *count, value.clone())?;
 			}
-			Instruction::LoadWorkgroup {
+			WorkgroupInstruction::LoadWorkgroup {
 				register,
 				name,
 				index,
@@ -980,13 +853,13 @@ impl ExecutableProgram {
 				value_type,
 			} => {
 				let index = index
-					.map(|index| read_register(registers, index).and_then(expect_u32))
+					.map(|index| register_ref(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
 				let value = descriptors.workgroup_state_mut()?.load(name, index, *count, value_type)?;
 				registers[*register] = Some(value);
 			}
-			Instruction::StoreWorkgroup {
+			WorkgroupInstruction::StoreWorkgroup {
 				name,
 				index,
 				count,
@@ -994,15 +867,15 @@ impl ExecutableProgram {
 				value,
 			} => {
 				let index = index
-					.map(|index| read_register(registers, index).and_then(expect_u32))
+					.map(|index| register_ref(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
-				let value = read_register(registers, *value)?;
+				let value = register_ref(registers, *value)?;
 				descriptors
 					.workgroup_state_mut()?
-					.store(name, index, *count, value_type, value)?;
+					.store(name, index, *count, value_type, value.clone())?;
 			}
-			Instruction::AtomicWorkgroup {
+			WorkgroupInstruction::AtomicWorkgroup {
 				register,
 				operation,
 				name,
@@ -1012,10 +885,10 @@ impl ExecutableProgram {
 				value,
 			} => {
 				let index = index
-					.map(|index| read_register(registers, index).and_then(expect_u32))
+					.map(|index| register_ref(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
-				let value = read_register(registers, *value)?;
+				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
 						expected: value_type.name().to_string(),
@@ -1024,10 +897,10 @@ impl ExecutableProgram {
 				}
 				let previous = descriptors
 					.workgroup_state_mut()?
-					.atomic_apply(name, index, *count, *operation, &value)?;
+					.atomic_apply(name, index, *count, *operation, value)?;
 				registers[*register] = Some(previous);
 			}
-			Instruction::AtomicCompareExchangeWorkgroup {
+			WorkgroupInstruction::AtomicCompareExchangeWorkgroup {
 				register,
 				name,
 				index,
@@ -1037,11 +910,11 @@ impl ExecutableProgram {
 				desired,
 			} => {
 				let index = index
-					.map(|index| read_register(registers, index).and_then(expect_u32))
+					.map(|index| register_ref(registers, index).and_then(expect_u32))
 					.transpose()?
 					.unwrap_or(0) as usize;
-				let expected = read_register(registers, *expected)?;
-				let desired = read_register(registers, *desired)?;
+				let expected = register_ref(registers, *expected)?;
+				let desired = register_ref(registers, *desired)?;
 				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
 						expected: value_type.name().to_string(),
@@ -1050,11 +923,11 @@ impl ExecutableProgram {
 				}
 				let previous = descriptors
 					.workgroup_state_mut()?
-					.atomic_compare_exchange(name, index, *count, &expected, &desired)?;
+					.atomic_compare_exchange(name, index, *count, expected, desired)?;
 				registers[*register] = Some(previous);
 			}
-			Instruction::SetTaskMeshOutputCount { count } => {
-				let count = expect_u32(read_register(registers, *count)?)?;
+			WorkgroupInstruction::SetTaskMeshOutputCount { count } => {
+				let count = expect_u32(register_ref(registers, *count)?)?;
 				if count > config.max_task_mesh_output_count() {
 					return Err(VmError::TaskMeshOutputCountLimitExceeded {
 						requested: count,
@@ -1063,25 +936,24 @@ impl ExecutableProgram {
 				}
 				descriptors.task_outputs_mut()?.set_mesh_output_count(count);
 			}
-			_ => unreachable!("Task and workgroup instruction dispatch must select only matching instructions"),
 		}
 		Ok(())
 	}
 
 	/// Executes mesh-output instructions against the bound output capture.
 	fn execute_mesh_output_instruction(
-		instruction: &Instruction,
+		instruction: &MeshOutputInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 		config: &ExecutionConfig,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::SetMeshOutputCounts {
+			MeshOutputInstruction::Counts {
 				vertex_count,
 				primitive_count,
 			} => {
-				let vertex_count = expect_u32(read_register(registers, *vertex_count)?)?;
-				let primitive_count = expect_u32(read_register(registers, *primitive_count)?)?;
+				let vertex_count = expect_u32(register_ref(registers, *vertex_count)?)?;
+				let primitive_count = expect_u32(register_ref(registers, *primitive_count)?)?;
 				descriptors.mesh_outputs_mut()?.set_counts(
 					vertex_count,
 					primitive_count,
@@ -1090,10 +962,10 @@ impl ExecutableProgram {
 					config.thread_idx() == 0,
 				)?;
 			}
-			Instruction::SetMeshVertexPosition { index, position } => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
-				let position = read_register(registers, *position)?;
-				let Value::Vec4F(position) = position else {
+			MeshOutputInstruction::VertexPosition { index, position } => {
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
+				let position = register_ref(registers, *position)?;
+				let &Value::Vec4F(position) = position else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec4F.name().to_string(),
 						found: position.value_type().name().to_string(),
@@ -1111,10 +983,10 @@ impl ExecutableProgram {
 					})?;
 				*destination = position;
 			}
-			Instruction::SetMeshTriangle { index, triangle } => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
-				let triangle = read_register(registers, *triangle)?;
-				let Value::Vec3U(triangle) = triangle else {
+			MeshOutputInstruction::Triangle { index, triangle } => {
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
+				let triangle = register_ref(registers, *triangle)?;
+				let &Value::Vec3U(triangle) = triangle else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec3U.name().to_string(),
 						found: triangle.value_type().name().to_string(),
@@ -1129,9 +1001,9 @@ impl ExecutableProgram {
 				})?;
 				*destination = triangle;
 			}
-			Instruction::SetMeshPrimitiveRenderTargetArrayIndex { index, array_index } => {
-				let index = expect_u32(read_register(registers, *index)?)? as usize;
-				let array_index = expect_u32(read_register(registers, *array_index)?)?;
+			MeshOutputInstruction::PrimitiveRenderTargetArrayIndex { index, array_index } => {
+				let index = expect_u32(register_ref(registers, *index)?)? as usize;
+				let array_index = expect_u32(register_ref(registers, *array_index)?)?;
 				let outputs = descriptors.mesh_outputs_mut()?;
 				let count = outputs.render_target_array_indices.len();
 				let destination =
@@ -1145,19 +1017,18 @@ impl ExecutableProgram {
 						})?;
 				*destination = array_index;
 			}
-			_ => unreachable!("Mesh-output instruction dispatch must select only mesh-output instructions"),
 		}
 		Ok(())
 	}
 
 	/// Executes reads, writes, and atomics against bound buffers.
 	fn execute_buffer_instruction(
-		instruction: &Instruction,
+		instruction: &BufferInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::LoadBuffer {
+			BufferInstruction::LoadBuffer {
 				register,
 				slot,
 				offset,
@@ -1170,7 +1041,7 @@ impl ExecutableProgram {
 				};
 				registers[*register] = Some(value);
 			}
-			Instruction::LoadBufferIndexed {
+			BufferInstruction::LoadBufferIndexed {
 				register,
 				slot,
 				offset,
@@ -1188,16 +1059,16 @@ impl ExecutableProgram {
 				let value = buffer.read_value(*offset + *stride * index, value_type)?;
 				registers[*register] = Some(value);
 			}
-			Instruction::StoreBuffer {
+			BufferInstruction::StoreBuffer {
 				slot,
 				offset,
 				value_type,
 				register,
 			} => {
-				let value = read_register(registers, *register)?;
-				descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, &value)?;
+				let value = register_ref(registers, *register)?;
+				descriptors.buffer_mut(*slot)?.write_value(*offset, value_type, value)?;
 			}
-			Instruction::StoreBufferIndexed {
+			BufferInstruction::StoreBufferIndexed {
 				slot,
 				offset,
 				stride,
@@ -1206,12 +1077,12 @@ impl ExecutableProgram {
 				value_type,
 				register,
 			} => {
-				let value = read_register(registers, *register)?;
+				let value = register_ref(registers, *register)?;
 				let buffer = descriptors.buffer_mut(*slot)?;
 				let index = read_bound_buffer_array_index(registers, *index, *count, buffer, *stride)?;
-				buffer.write_value(*offset + *stride * index, value_type, &value)?;
+				buffer.write_value(*offset + *stride * index, value_type, value)?;
 			}
-			Instruction::AtomicBuffer {
+			BufferInstruction::AtomicBuffer {
 				register,
 				operation,
 				slot,
@@ -1222,7 +1093,7 @@ impl ExecutableProgram {
 				value_type,
 				value,
 			} => {
-				let value = read_register(registers, *value)?;
+				let value = register_ref(registers, *value)?;
 				if !value.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
 						expected: value_type.name().to_string(),
@@ -1236,11 +1107,11 @@ impl ExecutableProgram {
 				};
 				let address = *offset + *stride * index;
 				let previous = buffer.read_value(address, value_type)?;
-				let replacement = apply_atomic_operation(*operation, &previous, &value)?;
+				let replacement = apply_atomic_operation(*operation, &previous, value)?;
 				buffer.write_value(address, value_type, &replacement)?;
 				registers[*register] = Some(previous);
 			}
-			Instruction::AtomicCompareExchangeBuffer {
+			BufferInstruction::AtomicCompareExchangeBuffer {
 				register,
 				slot,
 				offset,
@@ -1251,8 +1122,8 @@ impl ExecutableProgram {
 				expected,
 				desired,
 			} => {
-				let expected = read_register(registers, *expected)?;
-				let desired = read_register(registers, *desired)?;
+				let expected = register_ref(registers, *expected)?;
+				let desired = register_ref(registers, *desired)?;
 				if !expected.matches_type(value_type) || !desired.matches_type(value_type) {
 					return Err(VmError::TypeMismatch {
 						expected: value_type.name().to_string(),
@@ -1266,44 +1137,25 @@ impl ExecutableProgram {
 				};
 				let address = *offset + *stride * index;
 				let previous = buffer.read_value(address, value_type)?;
-				if previous == expected {
-					buffer.write_value(address, value_type, &desired)?;
+				if previous == *expected {
+					buffer.write_value(address, value_type, desired)?;
 				}
 				registers[*register] = Some(previous);
 			}
-			_ => unreachable!("Buffer instruction dispatch must select only buffer instructions"),
 		}
 		Ok(())
 	}
 
-	/// Routes texture fetch, sample, and size instructions to focused handlers.
+	/// Executes texture fetch, sample, and size instructions.
 	fn execute_texture_instruction(
-		instruction: &Instruction,
+		instruction: &TextureInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 	) -> Result<(), VmError> {
 		match instruction {
-			Instruction::FetchTexture { .. } | Instruction::FetchTextureArray { .. } | Instruction::FetchTextureU32 { .. } => {
-				Self::execute_texture_fetch_instruction(instruction, registers, descriptors)
-			}
-			Instruction::SampleTexture { .. } | Instruction::SampleTexture3D { .. } => {
-				Self::execute_texture_sample_instruction(instruction, registers, descriptors)
-			}
-			Instruction::TextureSize { register, slot } => Self::execute_texture_size(*register, *slot, registers, descriptors),
-			_ => unreachable!("Texture instruction dispatch must select only texture instructions"),
-		}
-	}
-
-	/// Executes texture fetch instructions.
-	fn execute_texture_fetch_instruction(
-		instruction: &Instruction,
-		registers: &mut [Option<Value>],
-		descriptors: &mut DescriptorBindings<'_>,
-	) -> Result<(), VmError> {
-		match instruction {
-			Instruction::FetchTexture { register, slot, coord } => {
-				let coord = read_register(registers, *coord)?;
-				let Value::Vec2U(coord) = coord else {
+			TextureInstruction::FetchTexture { register, slot, coord } => {
+				let coord = register_ref(registers, *coord)?;
+				let &Value::Vec2U(coord) = coord else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2U.name().to_string(),
 						found: coord.value_type().name().to_string(),
@@ -1312,21 +1164,21 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch(coord)?);
 			}
-			Instruction::FetchTextureArray {
+			TextureInstruction::FetchTextureArray {
 				register,
 				slot,
 				coord,
 				layer,
 			} => {
-				let coord = read_register(registers, *coord)?;
-				let Value::Vec2U(coord) = coord else {
+				let coord = register_ref(registers, *coord)?;
+				let &Value::Vec2U(coord) = coord else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2U.name().to_string(),
 						found: coord.value_type().name().to_string(),
 					});
 				};
-				let layer = read_register(registers, *layer)?;
-				let Value::U32(layer) = layer else {
+				let layer = register_ref(registers, *layer)?;
+				let &Value::U32(layer) = layer else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::U32.name().to_string(),
 						found: layer.value_type().name().to_string(),
@@ -1335,9 +1187,9 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_array(coord, layer)?);
 			}
-			Instruction::FetchTextureU32 { register, slot, coord } => {
-				let coord = read_register(registers, *coord)?;
-				let Value::Vec2U(coord) = coord else {
+			TextureInstruction::FetchTextureU32 { register, slot, coord } => {
+				let coord = register_ref(registers, *coord)?;
+				let &Value::Vec2U(coord) = coord else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2U.name().to_string(),
 						found: coord.value_type().name().to_string(),
@@ -1346,19 +1198,7 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.fetch_u32(coord)?);
 			}
-			_ => unreachable!("Texture fetch dispatch must select only fetch instructions"),
-		}
-		Ok(())
-	}
-
-	/// Executes texture sample instructions.
-	fn execute_texture_sample_instruction(
-		instruction: &Instruction,
-		registers: &mut [Option<Value>],
-		descriptors: &mut DescriptorBindings<'_>,
-	) -> Result<(), VmError> {
-		match instruction {
-			Instruction::SampleTexture {
+			TextureInstruction::SampleTexture {
 				register,
 				slot,
 				uv,
@@ -1366,8 +1206,8 @@ impl ExecutableProgram {
 				lod,
 				reduction_mode,
 			} => {
-				let uv = read_register(registers, *uv)?;
-				let Value::Vec2F(uv) = uv else {
+				let uv = register_ref(registers, *uv)?;
+				let &Value::Vec2F(uv) = uv else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2F.name().to_string(),
 						found: uv.value_type().name().to_string(),
@@ -1377,8 +1217,8 @@ impl ExecutableProgram {
 				let (texture, sampler) = descriptors.texture_and_sampler_mut(slot)?;
 				let sampler = reduction_mode.map(Sampler::new).unwrap_or(sampler);
 				let lod = if let Some(lod) = lod {
-					let lod = read_register(registers, *lod)?;
-					let Value::F32(lod) = lod else {
+					let lod = register_ref(registers, *lod)?;
+					let &Value::F32(lod) = lod else {
 						return Err(VmError::TypeMismatch {
 							expected: ValueType::F32.name().to_string(),
 							found: lod.value_type().name().to_string(),
@@ -1389,8 +1229,8 @@ impl ExecutableProgram {
 					None
 				};
 				let sampled = if let Some(layer) = layer {
-					let layer = read_register(registers, *layer)?;
-					let Value::U32(layer) = layer else {
+					let layer = register_ref(registers, *layer)?;
+					let &Value::U32(layer) = layer else {
 						return Err(VmError::TypeMismatch {
 							expected: ValueType::U32.name().to_string(),
 							found: layer.value_type().name().to_string(),
@@ -1404,9 +1244,9 @@ impl ExecutableProgram {
 				};
 				registers[*register] = Some(sampled);
 			}
-			Instruction::SampleTexture3D { register, slot, uvw } => {
-				let uvw = read_register(registers, *uvw)?;
-				let Value::Vec3F(uvw) = uvw else {
+			TextureInstruction::SampleTexture3D { register, slot, uvw } => {
+				let uvw = register_ref(registers, *uvw)?;
+				let &Value::Vec3F(uvw) = uvw else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec3F.name().to_string(),
 						found: uvw.value_type().name().to_string(),
@@ -1415,75 +1255,66 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.texture_mut(slot)?.sample_3d(uvw)?);
 			}
-			_ => unreachable!("Texture sample dispatch must select only sample instructions"),
+			TextureInstruction::TextureSize { register, slot } => {
+				let slot = resolve_resource_slot(*slot, registers)?;
+				let texture = descriptors.texture_mut(slot)?;
+				registers[*register] = Some(Value::Vec2U([texture.width, texture.height]));
+			}
 		}
-		Ok(())
-	}
-
-	/// Reads one texture's two-dimensional extent.
-	fn execute_texture_size(
-		register: usize,
-		slot: ResourceSlot,
-		registers: &mut [Option<Value>],
-		descriptors: &mut DescriptorBindings<'_>,
-	) -> Result<(), VmError> {
-		let slot = resolve_resource_slot(slot, registers)?;
-		let texture = descriptors.texture_mut(slot)?;
-		registers[register] = Some(Value::Vec2U([texture.width, texture.height]));
 		Ok(())
 	}
 
 	/// Executes image reads, writes, atomics, and guard termination.
 	fn execute_image_instruction(
-		instruction: &Instruction,
+		instruction: &ImageInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 	) -> Result<InstructionProgress, VmError> {
 		match instruction {
-			Instruction::ImageSize { register, slot } => {
+			ImageInstruction::ImageSize { register, slot } => {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let image = descriptors.image_mut(slot)?;
 				registers[*register] = Some(Value::Vec2U([image.width, image.height]));
 			}
-			Instruction::LoadImage { register, slot, coord } => {
-				let coord = expect_vec2u(read_register(registers, *coord)?)?;
+			ImageInstruction::LoadImage { register, slot, coord } => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.image_mut(slot)?.fetch(coord)?);
 			}
-			Instruction::LoadImageU32 { register, slot, coord } => {
-				let coord = expect_vec2u(read_register(registers, *coord)?)?;
+			ImageInstruction::LoadImageU32 { register, slot, coord } => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				registers[*register] = Some(descriptors.image_mut(slot)?.fetch_u32(coord)?);
 			}
-			Instruction::GuardImageBounds { slot, coord } => {
-				let coord = expect_vec2u(read_register(registers, *coord)?)?;
+			ImageInstruction::GuardImageBounds { slot, coord } => {
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				if !descriptors.image_mut(slot)?.contains_2d(coord) {
 					return Ok(InstructionProgress::Complete(None));
 				}
 			}
-			Instruction::ImageAtomicOr {
+			ImageInstruction::ImageAtomicOr {
 				register,
 				slot,
 				coord,
 				value,
 			} => {
-				let coord = expect_vec2u(read_register(registers, *coord)?)?;
-				let value = expect_u32(read_register(registers, *value)?)?;
+				let coord = expect_vec2u(register_ref(registers, *coord)?)?;
+				let value = expect_u32(register_ref(registers, *value)?)?;
 				let slot = resolve_resource_slot(*slot, registers)?;
 				let previous = descriptors.image_mut(slot)?.atomic_or(coord, value)?;
 				registers[*register] = Some(Value::U32(previous));
 			}
-			Instruction::WriteImage { slot, coord, value } => {
-				let coord = read_register(registers, *coord)?;
-				let Value::Vec2U(coord) = coord else {
+			ImageInstruction::WriteImage { slot, coord, value } => {
+				let coord = register_ref(registers, *coord)?;
+				let &Value::Vec2U(coord) = coord else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec2U.name().to_string(),
 						found: coord.value_type().name().to_string(),
 					});
 				};
-				let value = read_register(registers, *value)?;
-				let Value::Vec4F(value) = value else {
+				let value = register_ref(registers, *value)?;
+				let &Value::Vec4F(value) = value else {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Vec4F.name().to_string(),
 						found: value.value_type().name().to_string(),
@@ -1492,7 +1323,6 @@ impl ExecutableProgram {
 				let slot = resolve_resource_slot(*slot, registers)?;
 				descriptors.image_mut(slot)?.write(coord, value)?;
 			}
-			_ => unreachable!("Image instruction dispatch must select only image instructions"),
 		}
 		Ok(InstructionProgress::Advance)
 	}
@@ -1500,38 +1330,38 @@ impl ExecutableProgram {
 	/// Executes control-flow, discard, call, and return instructions.
 	fn execute_control_instruction(
 		&self,
-		instruction: &Instruction,
+		instruction: &ControlInstruction,
 		registers: &mut [Option<Value>],
 		descriptors: &mut DescriptorBindings<'_>,
 		state: &mut ExecutionState<'_>,
 		collective_behavior: CollectiveBehavior,
 	) -> Result<InstructionProgress, VmError> {
 		match instruction {
-			Instruction::JumpIfZero { register, target } => {
-				let value = read_register(registers, *register)?;
-				if is_zero_value(&value)? {
+			ControlInstruction::JumpIfZero { register, target } => {
+				let value = register_ref(registers, *register)?;
+				if is_zero_value(value)? {
 					Ok(InstructionProgress::JumpTo(*target))
 				} else {
 					Ok(InstructionProgress::Advance)
 				}
 			}
-			Instruction::Jump { target } => Ok(InstructionProgress::JumpTo(*target)),
-			Instruction::Switch {
+			ControlInstruction::Jump { target } => Ok(InstructionProgress::JumpTo(*target)),
+			ControlInstruction::Switch {
 				register,
 				cases,
 				default,
 			} => {
-				let label = switch_label(&read_register(registers, *register)?)?;
+				let label = switch_label(register_ref(registers, *register)?)?;
 				let target = cases
 					.binary_search_by_key(&label, |&(case, _)| case)
 					.map_or(*default, |case| cases[case].1);
 				Ok(InstructionProgress::JumpTo(target))
 			}
-			Instruction::Discard => {
+			ControlInstruction::Discard => {
 				state.discarded = true;
 				Ok(InstructionProgress::Complete(None))
 			}
-			Instruction::Call {
+			ControlInstruction::Call {
 				register,
 				function,
 				arguments,
@@ -1557,11 +1387,41 @@ impl ExecutableProgram {
 				}
 				Ok(InstructionProgress::Advance)
 			}
-			Instruction::Return { register } => match register {
-				Some(register) => Ok(InstructionProgress::Complete(Some(read_register(registers, *register)?))),
+			ControlInstruction::Return { register } => match register {
+				Some(register) => Ok(InstructionProgress::Complete(Some(
+					register_ref(registers, *register)?.clone(),
+				))),
 				None => Ok(InstructionProgress::Complete(None)),
 			},
-			_ => unreachable!("Control instruction dispatch must select only control instructions"),
+		}
+	}
+}
+
+impl InvocationBuiltin {
+	/// Reads this builtin from the invocation coordinates of `config`.
+	fn value(self, config: &ExecutionConfig) -> Value {
+		match self {
+			InvocationBuiltin::ThreadIdx => Value::U32(config.thread_idx()),
+			InvocationBuiltin::ThreadPosition => Value::U32(config.thread_position()),
+			InvocationBuiltin::ThreadId => Value::Vec2U(config.thread_id()),
+			InvocationBuiltin::ThreadgroupPosition => Value::U32(config.threadgroup_position()),
+			InvocationBuiltin::SubgroupLaneIndex => Value::U32(config.thread_idx() % config.subgroup_size()),
+		}
+	}
+}
+
+impl SubgroupMaskOperator {
+	/// Reduces one 128-lane ballot mask to the scalar this operator names.
+	fn apply(self, mask: [u32; 4]) -> Value {
+		match self {
+			SubgroupMaskOperator::Any => Value::Bool(mask.into_iter().any(|word| word != 0)),
+			SubgroupMaskOperator::FindLsb => Value::U32(
+				mask.into_iter()
+					.enumerate()
+					.find_map(|(word_index, word)| (word != 0).then(|| word_index as u32 * 32 + word.trailing_zeros()))
+					.unwrap_or(u32::MAX),
+			),
+			SubgroupMaskOperator::Count => Value::U32(mask.into_iter().map(u32::count_ones).sum()),
 		}
 	}
 }

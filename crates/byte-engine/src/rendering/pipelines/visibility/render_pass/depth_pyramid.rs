@@ -83,11 +83,6 @@ pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
 	}
 }
 
-/// Returns the nonzero extent of the first physical mip in the depth pyramid.
-pub(crate) fn half_resolution_extent(extent: Extent) -> Extent {
-	Extent::rectangle((extent.width() / 2).max(1), (extent.height() / 2).max(1))
-}
-
 /// The `DepthPyramidPass` struct owns the linear depth pyramid that every half-resolution screen-space pass samples.
 ///
 /// The pyramid is a per-frame image, so temporal passes can also read the previous frame's depth to detect
@@ -182,23 +177,19 @@ impl DepthPyramidPass {
 		pipeline: ghi::PipelineHandle,
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
-		let half_extent = half_resolution_extent(extent);
+		let half_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
 		frame.sync_buffer(self.view_data);
 		frame.resize_image(self.depth_pyramid.into(), extent);
-		let descriptor_set = self.descriptor_set;
+		let stage = super::ComputeStage {
+			label: "Linear Depth Pyramid",
+			pipeline,
+			descriptor_sets: [self.descriptor_set],
+			extent: half_extent,
+			workgroup: Extent::new(8, 4, 1),
+		};
 
-		move |c, _| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
-			};
-
-			c.start_region(|label| label.write_str("Linear Depth Pyramid"));
-			let c = c.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&[descriptor_set]);
-			c.dispatch(ghi::DispatchExtent::new(half_extent, Extent::new(8, 4, 1)));
-			c.end_region();
-		}
+		move |c| super::record_compute_stages(c, None, &[stage])
 	}
 }
 
@@ -222,7 +213,7 @@ mod tests {
 			UnitVector::z_axis(),
 		);
 		let sink = Sink::new(view, extent, 0);
-		let half_extent = half_resolution_extent(extent);
+		let half_extent = extent.scaled_down(2);
 		let constants = screen_view_data(&sink, half_extent);
 		let projection = view.projection();
 
@@ -253,7 +244,5 @@ mod tests {
 
 		assert_eq!(constants.view_z_sign, 1.0);
 		assert_eq!(half_extent, Extent::rectangle(960, 540));
-		assert_eq!(half_resolution_extent(Extent::rectangle(1919, 1079)), Extent::rectangle(959, 539));
-		assert_eq!(half_resolution_extent(Extent::square(1)), Extent::square(1));
 	}
 }

@@ -13,6 +13,10 @@ pub trait AssetHandler {
 	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> impl Future<Output = Result<(), LoadErrors>>;
 }
 
+/// The `DynAssetHandler` trait lets the asset manager keep handlers of different types in one list.
+///
+/// Every [`AssetHandler`] implements it; register handlers with
+/// [`AssetManager::add_asset_handler`](crate::asset::manager::AssetManager::add_asset_handler).
 pub trait DynAssetHandler: Send + Sync {
 	fn can_handle(&self, r#type: &str) -> bool;
 
@@ -21,9 +25,22 @@ pub trait DynAssetHandler: Send + Sync {
 	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>>;
 }
 
+impl<T: AssetHandler + Send + Sync> DynAssetHandler for T {
+	fn can_handle(&self, r#type: &str) -> bool {
+		AssetHandler::can_handle(self, r#type)
+	}
+
+	fn should_discover(&self, id: ResourceId<'_>, has_sidecar: bool) -> bool {
+		AssetHandler::should_discover(self, id, has_sidecar)
+	}
+
+	fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>> {
+		Box::pin(AssetHandler::bake(self, context, url))
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadErrors {
-	AssetDoesNotExist,
 	FailedToProcess,
 	AssetCouldNotBeRead,
 	AssetCouldNotBeLoaded,
@@ -37,7 +54,6 @@ impl LoadErrors {
 	/// Returns the developer-facing cause for this asset loading failure.
 	pub(crate) const fn message(&self) -> &'static str {
 		match self {
-			Self::AssetDoesNotExist => "The source asset does not exist.",
 			Self::FailedToProcess => "The source asset could not be processed.",
 			Self::AssetCouldNotBeRead => "The source asset could not be read.",
 			Self::AssetCouldNotBeLoaded => "The source asset could not be loaded.",
@@ -51,7 +67,7 @@ impl LoadErrors {
 	/// Returns the recovery step most likely to resolve this asset loading failure.
 	pub(crate) const fn fix(&self) -> &'static str {
 		match self {
-			Self::AssetDoesNotExist | Self::AssetCouldNotBeRead => {
+			Self::AssetCouldNotBeRead => {
 				"Check the asset ID and configured assets directory. Engine asset IDs start with 'byte-engine/'."
 			}
 			Self::FailedToProcess | Self::AssetCouldNotBeLoaded => {
@@ -79,15 +95,7 @@ impl<'a> TrackingStorageBackend<'a> {
 
 	/// Records the latest observed version once when handlers resolve the same source repeatedly.
 	fn record(&self, id: ResourceId<'_>, version: AssetVersion) {
-		let dependency = AssetDependency::new(id, version);
-
-		let mut dependencies = self.dependencies.lock();
-
-		if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-			*existing = dependency;
-		} else {
-			dependencies.push(dependency);
-		}
+		upsert_dependency(&mut self.dependencies.lock(), AssetDependency::new(id, version));
 	}
 
 	/// Records a completed read only when its versions match on both sides of the operation.
@@ -208,32 +216,12 @@ impl<'a> BakeContext<'a> {
 
 	/// Adds an informational item to this resource's development trace and terminal log.
 	pub fn info(&self, message: impl fmt::Display) {
-		#[cfg(debug_assertions)]
-		{
-			let message = message.to_string();
-
-			log::info!("{message}");
-
-			self.resource_trace.record(self.primary_id, ResourceTraceLevel::Info, message);
-		}
-
-		#[cfg(not(debug_assertions))]
-		log::info!("{message}");
+		self.log(log::Level::Info, message);
 	}
 
 	/// Adds a warning item to this resource's development trace and terminal log.
 	pub fn warn(&self, message: impl fmt::Display) {
-		#[cfg(debug_assertions)]
-		{
-			let message = message.to_string();
-
-			log::warn!("{message}");
-
-			self.resource_trace.record(self.primary_id, ResourceTraceLevel::Warn, message);
-		}
-
-		#[cfg(not(debug_assertions))]
-		log::warn!("{message}");
+		self.log(log::Level::Warn, message);
 	}
 
 	/// Adds an error item to this resource's development trace and terminal log.
@@ -241,23 +229,28 @@ impl<'a> BakeContext<'a> {
 	/// The item remains available when the handler returns an error and does not
 	/// store the requested resource.
 	pub fn error(&self, message: impl fmt::Display) {
+		self.log(log::Level::Error, message);
+	}
+
+	/// Writes one message to the terminal log and, in development builds, to this resource's trace.
+	fn log(&self, level: log::Level, message: impl fmt::Display) {
 		#[cfg(debug_assertions)]
 		{
 			let message = message.to_string();
 
-			log::error!("{message}");
+			log::log!(level, "{message}");
 
-			self.resource_trace
-				.record(self.primary_id, ResourceTraceLevel::Error, message);
+			let trace_level = match level {
+				log::Level::Error => ResourceTraceLevel::Error,
+				log::Level::Warn => ResourceTraceLevel::Warn,
+				log::Level::Info | log::Level::Debug | log::Level::Trace => ResourceTraceLevel::Info,
+			};
+
+			self.resource_trace.record(self.primary_id, trace_level, message);
 		}
 
 		#[cfg(not(debug_assertions))]
-		log::error!("{message}");
-	}
-
-	/// Returns the resource type used to select and validate a handler.
-	pub fn resource_type<'b>(&'b self, id: ResourceId<'b>) -> Option<&'b str> {
-		self.resource_storage_backend.get_type(id)
+		log::log!(level, "{message}");
 	}
 
 	/// Resolves only the requested source bytes with the bake allocator.
@@ -284,10 +277,7 @@ impl<'a> BakeContext<'a> {
 			.asset_manager
 			.bake_if_not_exists_in(id, self.allocator)
 			.await
-			.map_err(|error| match error {
-				crate::asset::manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
-				_ => LoadErrors::FailedToProcess,
-			})?;
+			.map_err(dependency_load_error)?;
 
 		self.inherit_dependency_provenance(&resource);
 
@@ -315,10 +305,7 @@ impl<'a> BakeContext<'a> {
 					crate::asset::manager::BakeOrigin::Dependency(self.allocator.memory_scope().cloned()),
 				)
 				.await
-				.map_err(|error| match error {
-					crate::asset::manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
-					_ => LoadErrors::FailedToProcess,
-				})?;
+				.map_err(dependency_load_error)?;
 
 			let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await else {
 				return Err(LoadErrors::FailedToProcess);
@@ -352,11 +339,7 @@ impl<'a> BakeContext<'a> {
 		let mut dependencies = self.asset_dependencies.lock();
 
 		for dependency in resource.asset_dependencies() {
-			if let Some(existing) = dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-				*existing = dependency.clone();
-			} else {
-				dependencies.push(dependency.clone());
-			}
+			upsert_dependency(&mut dependencies, dependency.clone());
 		}
 	}
 
@@ -366,8 +349,7 @@ impl<'a> BakeContext<'a> {
 	/// [`Self::store_resource`] when the complete payload is available.
 	///
 	/// Write exactly `size` bytes through [`resource::ResourceTransaction::write_all`], then pass the
-	/// transaction to [`Self::commit_primary`], [`Self::commit_resource`], or
-	/// [`Self::commit_generated`].
+	/// transaction to [`Self::commit_primary`] or [`Self::commit_resource`].
 	pub async fn begin_resource(
 		&self,
 		id: ResourceId<'_>,
@@ -385,53 +367,30 @@ impl<'a> BakeContext<'a> {
 		transaction: resource::ResourceTransaction<'_>,
 		resource: ProcessedAsset,
 	) -> Result<(), LoadErrors> {
-		if resource.id() != self.primary_id.as_ref() {
-			return Err(LoadErrors::PrimaryResourceIdMismatch);
-		}
-
+		self.ensure_primary(&resource)?;
 		self.commit_resource(transaction, resource).await.map(|_| ())
 	}
 
 	/// Commits a resource and records it as primary when its ID matches the current bake.
+	///
+	/// Generated dependencies use this path too; parent resources reference the returned metadata.
 	pub async fn commit_resource(
 		&self,
 		transaction: resource::ResourceTransaction<'_>,
 		resource: ProcessedAsset,
 	) -> Result<SerializableResource, LoadErrors> {
-		let is_primary = resource.id() == self.primary_id.as_ref();
 		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
-		let resource = transaction
+		let stored = transaction
 			.commit(resource, self.allocator)
 			.await
 			.map_err(|_| LoadErrors::FailedToStore)?;
 
-		if is_primary {
-			self.primary_stored.set(true);
-		}
-
-		Ok(resource)
-	}
-
-	/// Commits a generated dependency without marking the requested primary as stored.
-	pub async fn commit_generated(
-		&self,
-		transaction: resource::ResourceTransaction<'_>,
-		resource: ProcessedAsset,
-	) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
-
-		transaction
-			.commit(resource, self.allocator)
-			.await
-			.map_err(|_| LoadErrors::FailedToStore)
+		Ok(self.mark_if_primary(stored))
 	}
 
 	/// Stores the requested resource after all of its generated dependencies are ready.
 	pub async fn store_primary(&self, resource: ProcessedAsset, data: &[u8]) -> Result<(), LoadErrors> {
-		if resource.id != self.primary_id.as_ref() {
-			return Err(LoadErrors::PrimaryResourceIdMismatch);
-		}
-
+		self.ensure_primary(&resource)?;
 		self.store_resource(resource, data).await.map(|_| ())
 	}
 
@@ -441,30 +400,23 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 		data: T,
 	) -> Result<(), LoadErrors> {
-		if resource.id != self.primary_id.as_ref() {
-			return Err(LoadErrors::PrimaryResourceIdMismatch);
-		}
-
+		self.ensure_primary(&resource)?;
 		self.store_resource_owned(resource, data).await.map(|_| ())
 	}
 
 	/// Stores a resource and records it as the requested primary when its ID matches the current bake.
+	///
+	/// Generated dependencies use this path too; parent resources reference the returned metadata.
 	pub async fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
-		let is_primary = resource.id == self.primary_id.as_ref();
-
 		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
 
-		let resource = self
+		let stored = self
 			.resource_storage_backend
 			.store_in(resource, data, self.allocator)
 			.await
 			.map_err(|_| LoadErrors::FailedToStore)?;
 
-		if is_primary {
-			self.primary_stored.set(true);
-		}
-
-		Ok(resource)
+		Ok(self.mark_if_primary(stored))
 	}
 
 	/// Stores an owned payload and records it as primary when its ID matches the current bake.
@@ -473,30 +425,34 @@ impl<'a> BakeContext<'a> {
 		resource: ProcessedAsset,
 		data: T,
 	) -> Result<SerializableResource, LoadErrors> {
-		let transaction = write_complete_owned_resource(self.resource_storage_backend, &resource, data).await?;
+		let id = ResourceId::new(resource.id());
+		let storage = self.resource_storage_backend;
+		let transaction =
+			resource::storage_backend::write_complete_owned_resource(data, storage.cpu_compression_policy(&resource), |size| {
+				storage.begin_resource(id, size)
+			})
+			.await
+			.map_err(|_| LoadErrors::FailedToStore)?;
 
 		self.commit_resource(transaction, resource).await
 	}
 
-	/// Stores a generated dependency and returns the serialized metadata used by parent resources.
-	pub async fn store_generated(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
-
-		self.resource_storage_backend
-			.store_in(resource, data, self.allocator)
-			.await
-			.map_err(|_| LoadErrors::FailedToStore)
+	/// Rejects a primary store whose resource ID differs from the requested asset.
+	fn ensure_primary(&self, resource: &ProcessedAsset) -> Result<(), LoadErrors> {
+		if resource.id() == self.primary_id.as_ref() {
+			Ok(())
+		} else {
+			Err(LoadErrors::PrimaryResourceIdMismatch)
+		}
 	}
 
-	/// Stores an owned generated dependency without marking the requested primary as stored.
-	pub async fn store_generated_owned<T: compio::buf::IoBuf>(
-		&self,
-		resource: ProcessedAsset,
-		data: T,
-	) -> Result<SerializableResource, LoadErrors> {
-		let transaction = write_complete_owned_resource(self.resource_storage_backend, &resource, data).await?;
+	/// Records that the requested primary resource is stored when `stored` is that resource.
+	fn mark_if_primary(&self, stored: SerializableResource) -> SerializableResource {
+		if stored.id() == self.primary_id.as_ref() {
+			self.primary_stored.set(true);
+		}
 
-		self.commit_generated(transaction, resource).await
+		stored
 	}
 
 	/// Returns deterministic source provenance for persisted resource metadata.
@@ -518,18 +474,20 @@ impl<'a> BakeContext<'a> {
 	}
 }
 
-/// Writes a complete owned payload after applying the backend and per-resource CPU compression policy.
-async fn write_complete_owned_resource<'a, T: compio::buf::IoBuf>(
-	storage: &'a dyn resource::DynWriteStorageBackend,
-	resource: &ProcessedAsset,
-	data: T,
-) -> Result<resource::ResourceTransaction<'a>, LoadErrors> {
-	let id = ResourceId::new(resource.id());
-	resource::storage_backend::write_complete_owned_resource(data, storage.cpu_compression_policy(resource), |size| {
-		storage.begin_resource(id, size)
-	})
-	.await
-	.map_err(|_| LoadErrors::FailedToStore)
+/// Replaces the recorded version of a source already in `dependencies`, or adds it.
+fn upsert_dependency(dependencies: &mut Vec<AssetDependency>, dependency: AssetDependency) {
+	match dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
+		Some(existing) => *existing = dependency,
+		None => dependencies.push(dependency),
+	}
+}
+
+/// Maps a failed dependency bake to the error its parent handler returns.
+fn dependency_load_error(error: crate::asset::manager::LoadMessages) -> LoadErrors {
+	match error {
+		crate::asset::manager::LoadMessages::FailedToStore { .. } => LoadErrors::FailedToStore,
+		_ => LoadErrors::FailedToProcess,
+	}
 }
 
 use std::{alloc::Allocator, cell::Cell, fmt, future::Future, sync::Arc};

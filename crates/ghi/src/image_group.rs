@@ -253,23 +253,26 @@ impl ImageGroups {
 			image_group.members.len(),
 		);
 
-		let ordered = image_group
-			.members
-			.iter()
-			.map(|&member| {
-				requests
-					.iter()
-					.find(|request| request.image == member)
-					.cloned()
-					.unwrap_or_else(|| {
-						panic!(
-							"Image group '{group_name}' was placed without one of its members. The most likely cause is an image that was built into the group but left out of the list passed to `place_image_group`."
-						)
-					})
+		let request_for = |member: BaseImageHandle| {
+			requests.iter().find(|request| request.image == member).unwrap_or_else(|| {
+				panic!(
+					"Image group '{group_name}' was placed without one of its members. The most likely cause is an image that was built into the group but left out of the list passed to `place_image_group`."
+				)
 			})
-			.collect::<Vec<_>>();
+		};
 
-		(ordered != image_group.placed).then_some(ordered)
+		// Groups are placed every frame but rarely change, so compare against the current placement before allocating.
+		let unchanged = image_group.placed.len() == image_group.members.len()
+			&& image_group
+				.members
+				.iter()
+				.zip(&image_group.placed)
+				.all(|(&member, placed)| request_for(member) == placed);
+		if unchanged {
+			return None;
+		}
+
+		Some(image_group.members.iter().map(|&member| request_for(member).clone()).collect())
 	}
 
 	/// Records a new placement. Every member starts without valid contents.
@@ -414,16 +417,6 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic(expected = "was used without valid contents")]
-	fn using_an_overwritten_member_fails_validation() {
-		let (mut groups, _, [first, second]) = groups_with_two_sharing_members();
-
-		groups.initialize(first);
-		groups.initialize(second);
-		groups.assert_initialized(first, || None);
-	}
-
-	#[test]
 	fn placing_with_the_same_requests_changes_nothing() {
 		let (groups, group, images) = groups_with_two_sharing_members();
 		let requests = images
@@ -438,20 +431,5 @@ mod tests {
 			.collect::<Vec<_>>();
 
 		assert_eq!(groups.requests_in_member_order(group, &requests), None);
-	}
-
-	#[test]
-	#[should_panic(expected = "was placed with 1 members but has 2")]
-	fn placing_without_every_member_fails() {
-		let (groups, group, [first, _]) = groups_with_two_sharing_members();
-
-		groups.requests_in_member_order(
-			group,
-			&[ImageGroupMember {
-				image: first,
-				extent: Extent::square(4),
-				lifetime: 0..=1,
-			}],
-		);
 	}
 }

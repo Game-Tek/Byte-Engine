@@ -205,29 +205,27 @@ impl Buffer {
 
 		let value = match value_type {
 			ValueType::Bool => Value::Bool(bytes[0] != 0),
-			ValueType::U8 => Value::U8(bytes[0]),
-			ValueType::U16 => Value::U16(u16::from_ne_bytes(bytes.try_into().expect("Invalid u16 byte count"))),
-			ValueType::U32 => Value::U32(u32::from_ne_bytes(bytes.try_into().expect("Invalid u32 byte count"))),
-			ValueType::I32 => Value::I32(i32::from_ne_bytes(bytes.try_into().expect("Invalid i32 byte count"))),
-			ValueType::F16 => Value::F16(f16::from_bits(u16::from_ne_bytes(
-				bytes.try_into().expect("Invalid f16 byte count"),
-			))),
-			ValueType::F32 => Value::F32(f32::from_ne_bytes(bytes.try_into().expect("Invalid f32 byte count"))),
-			ValueType::Vec2U16 => Value::Vec2U16(read_u16_array::<2>(bytes)?),
-			ValueType::Vec4U16 => Value::Vec4U16(read_u16_array::<4>(bytes)?),
-			ValueType::Vec2I => Value::Vec2I(read_i32_array::<2>(bytes)?),
-			ValueType::Vec2U => Value::Vec2U(read_u32_array::<2>(bytes)?),
-			ValueType::Vec3U => Value::Vec3U(read_u32_array::<3>(bytes)?),
-			ValueType::Vec4U => Value::Vec4U(read_u32_array::<4>(bytes)?),
-			ValueType::Vec2F16 => Value::Vec2F16(read_f16_array::<2>(bytes)?),
-			ValueType::Vec3F16 => Value::Vec3F16(read_f16_array::<3>(bytes)?),
-			ValueType::Vec4F16 => Value::Vec4F16(read_f16_array::<4>(bytes)?),
-			ValueType::Vec2F => Value::Vec2F(read_f32_array::<2>(bytes)?),
-			ValueType::Vec3F => Value::Vec3F(read_f32_array::<3>(bytes)?),
-			ValueType::Vec4F => Value::Vec4F(read_f32_array::<4>(bytes)?),
-			ValueType::PackedVec4F => Value::PackedVec4F(read_f32_array::<4>(bytes)?),
-			ValueType::Mat4F => Value::Mat4F(read_f32_array::<16>(bytes)?),
-			ValueType::Mat4x3F => Value::Mat4x3F(read_f32_array::<12>(bytes)?),
+			ValueType::U8 => Value::U8(u8::from_ne(bytes)),
+			ValueType::U16 => Value::U16(u16::from_ne(bytes)),
+			ValueType::U32 => Value::U32(u32::from_ne(bytes)),
+			ValueType::I32 => Value::I32(i32::from_ne(bytes)),
+			ValueType::F16 => Value::F16(f16::from_ne(bytes)),
+			ValueType::F32 => Value::F32(f32::from_ne(bytes)),
+			ValueType::Vec2U16 => Value::Vec2U16(read_lanes(bytes)),
+			ValueType::Vec4U16 => Value::Vec4U16(read_lanes(bytes)),
+			ValueType::Vec2I => Value::Vec2I(read_lanes(bytes)),
+			ValueType::Vec2U => Value::Vec2U(read_lanes(bytes)),
+			ValueType::Vec3U => Value::Vec3U(read_lanes(bytes)),
+			ValueType::Vec4U => Value::Vec4U(read_lanes(bytes)),
+			ValueType::Vec2F16 => Value::Vec2F16(read_lanes(bytes)),
+			ValueType::Vec3F16 => Value::Vec3F16(read_lanes(bytes)),
+			ValueType::Vec4F16 => Value::Vec4F16(read_lanes(bytes)),
+			ValueType::Vec2F => Value::Vec2F(read_lanes(bytes)),
+			ValueType::Vec3F => Value::Vec3F(read_lanes(bytes)),
+			ValueType::Vec4F => Value::Vec4F(read_lanes(bytes)),
+			ValueType::PackedVec4F => Value::PackedVec4F(read_lanes(bytes)),
+			ValueType::Mat4F => Value::Mat4F(read_lanes(bytes)),
+			ValueType::Mat4x3F => Value::Mat4x3F(read_lanes(bytes)),
 			ValueType::Texture2D
 			| ValueType::Texture3D
 			| ValueType::TextureCube
@@ -261,28 +259,27 @@ impl Buffer {
 		}
 
 		match value {
-			Value::Bool(value) => self.write_bytes(offset, &[u8::from(*value)]),
-			Value::U8(value) => self.write_bytes(offset, &value.to_ne_bytes()),
-			Value::U16(value) => self.write_bytes(offset, &value.to_ne_bytes()),
-			Value::U32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
-			Value::I32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
-			Value::F16(value) => self.write_bytes(offset, &value.to_bits().to_ne_bytes()),
-			Value::F32(value) => self.write_bytes(offset, &value.to_ne_bytes()),
-			Value::Vec2U16(value) => write_u16_slice(self, offset, value),
-			Value::Vec4U16(value) => write_u16_slice(self, offset, value),
-			Value::Vec2I(value) => write_i32_slice(self, offset, value),
-			Value::Vec2U(value) => write_u32_slice(self, offset, value),
-			Value::Vec3U(value) => write_u32_slice(self, offset, value),
-			Value::Vec4U(value) => write_u32_slice(self, offset, value),
-			Value::Vec2F16(value) => write_f16_slice(self, offset, value),
-			Value::Vec3F16(value) => write_f16_slice(self, offset, value),
-			Value::Vec4F16(value) => write_f16_slice(self, offset, value),
-			Value::Vec2F(value) => write_f32_slice(self, offset, value),
-			Value::Vec3F(value) => write_f32_slice(self, offset, value),
-			Value::Vec4F(value) => write_f32_slice(self, offset, value),
-			Value::PackedVec4F(value) => write_f32_slice(self, offset, value),
-			Value::Mat4F(value) => write_f32_slice(self, offset, value),
-			Value::Mat4x3F(value) => write_f32_slice(self, offset, value),
+			Value::Bool(value) => write_lanes(self, offset, &[u8::from(*value)]),
+			Value::U8(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::U16(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::U32(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::I32(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::F16(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::F32(value) => write_lanes(self, offset, std::slice::from_ref(value)),
+			Value::Vec2U16(value) => write_lanes(self, offset, value),
+			Value::Vec4U16(value) => write_lanes(self, offset, value),
+			Value::Vec2I(value) => write_lanes(self, offset, value),
+			Value::Vec2U(value) => write_lanes(self, offset, value),
+			Value::Vec3U(value) => write_lanes(self, offset, value),
+			Value::Vec4U(value) => write_lanes(self, offset, value),
+			Value::Vec2F16(value) => write_lanes(self, offset, value),
+			Value::Vec3F16(value) => write_lanes(self, offset, value),
+			Value::Vec4F16(value) => write_lanes(self, offset, value),
+			Value::Vec2F(value) => write_lanes(self, offset, value),
+			Value::Vec3F(value) => write_lanes(self, offset, value),
+			Value::Vec4F(value) | Value::PackedVec4F(value) => write_lanes(self, offset, value),
+			Value::Mat4F(value) => write_lanes(self, offset, value),
+			Value::Mat4x3F(value) => write_lanes(self, offset, value),
 			Value::Resource { .. } => Err(VmError::UnsupportedBufferLayout {
 				message: "Resource handles cannot be written into CPU buffer memory".to_string(),
 			}),
@@ -309,20 +306,16 @@ impl Buffer {
 		})
 	}
 
-	pub(super) fn write_bytes(&mut self, offset: usize, bytes: &[u8]) -> Result<(), VmError> {
+	/// Borrows `size` writable bytes at `offset`, or reports the out-of-bounds access.
+	pub(super) fn bytes_mut(&mut self, offset: usize, size: usize) -> Result<&mut [u8], VmError> {
 		let buffer_size = self.data.len();
-		let slice = self
-			.data
-			.get_mut(offset..offset + bytes.len())
+		self.data
+			.get_mut(offset..offset + size)
 			.ok_or(VmError::BufferAccessOutOfBounds {
 				offset,
-				size: bytes.len(),
+				size,
 				buffer_size,
-			})?;
-
-		slice.copy_from_slice(bytes);
-
-		Ok(())
+			})
 	}
 
 	fn member_layout(&self, member_name: &str) -> Result<&BufferMemberLayout, VmError> {

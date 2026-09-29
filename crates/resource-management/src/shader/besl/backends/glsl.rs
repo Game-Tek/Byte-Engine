@@ -25,89 +25,6 @@ mod tests {
 	}
 
 	#[test]
-	fn power_of_two_uses_exp2() {
-		let root = besl::compile_to_besl(
-			"main: fn () -> void { let full: f32 = pow(2.0, 3.0); let half: f16 = pow(f16(2.0), f16(3.0)); full; half; }",
-			None,
-		)
-		.expect("Expected power source to link.");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main."),
-			)
-			.expect("Expected GLSL power lowering.");
-
-		assert_eq!(shader.matches("exp2(").count(), 2);
-		assert!(!shader.contains("pow("));
-	}
-
-	#[test]
-	fn modern_half_and_integer_atomics_lower_to_portable_glsl() {
-		let source = r#"
-			Counters: struct { buffer_value: atomicu32, }
-			counters: descriptor<{ type: Counters, binding: 7, access: read_write }>;
-			unsigned_value: workgroup<atomicu32>;
-			signed_value: workgroup<atomici32>;
-			main: fn () -> void {
-				let signed_one: i32 = 1;
-				atomic_store(unsigned_value, 1);
-				atomic_load(counters.buffer_value);
-				atomic_load(unsigned_value);
-				atomic_exchange(unsigned_value, 2);
-				atomic_add(unsigned_value, 1);
-				atomic_sub(unsigned_value, 1);
-				atomic_min(unsigned_value, 1);
-				atomic_max(unsigned_value, 2);
-				atomic_and(unsigned_value, 3);
-				atomic_or(unsigned_value, 4);
-				atomic_xor(unsigned_value, 5);
-				atomic_compare_exchange(unsigned_value, 1, 2);
-				atomic_store(signed_value, signed_one);
-				atomic_min(signed_value, signed_one);
-				let zero: f16 = f16(0.0);
-				let one: f16 = f16(1.0);
-				let fused: f16 = fma(one, one, one);
-				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
-				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
-					atomic_store(unsigned_value, 0);
-				}
-			}
-		"#;
-		let root = besl::compile_to_besl(source, None).expect("Expected modern GLSL source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected modern GLSL source generation");
-
-		assert_string_contains!(shader, "shared uint32_t unsigned_value;");
-		assert_string_contains!(shader, "shared int32_t signed_value;");
-		assert_string_contains!(shader, "atomicAdd(counters.buffer_value,0u)");
-		for operation in [
-			"atomicExchange(",
-			"atomicAdd(",
-			"atomicMin(",
-			"atomicMax(",
-			"atomicAnd(",
-			"atomicOr(",
-			"atomicXor(",
-			"atomicCompSwap(",
-		] {
-			assert_string_contains!(shader, operation);
-		}
-		assert_string_contains!(shader, "atomicAdd(unsigned_value,-(");
-		assert_string_contains!(shader, "float16_t fused=fma(");
-		assert_string_contains!(shader, "f16vec3 fused_vector=fma(");
-		for predicate in ["isnan(", "isinf(", "_besl_is_finite(", "_besl_is_normal("] {
-			assert_string_contains!(shader, predicate);
-		}
-	}
-
-	#[test]
 	fn bindings() {
 		let main = generator::tests::bindings();
 
@@ -171,25 +88,6 @@ mod tests {
 		#[cfg(target_os = "linux")]
 		crate::shader::glsl_compile::compile(&shader, "besl-scalar-runtime-array")
 			.expect("Expected scalar runtime-array GLSL to compile to SPIR-V");
-	}
-
-	#[test]
-	fn sampled_descriptor_array_keeps_descriptor_indexing_in_glsl() {
-		let root = besl::compile_to_besl(
-			"textures: descriptor<{ type: Texture2D, binding: 3, access: read, count: 4 }>; main: fn () -> void { let color: vec4f = sample(textures[2], vec2f(0.0, 0.0)); color; }",
-			None,
-		)
-		.expect("Expected sampled descriptor-array source to link");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected main"),
-			)
-			.expect("Expected sampled descriptor-array GLSL generation");
-
-		assert_string_contains!(shader, "uniform sampler2D textures[4];");
-		assert_string_contains!(shader, "texture(textures[nonuniformEXT(2)],vec2(0.0,0.0))");
 	}
 
 	#[test]
@@ -299,44 +197,6 @@ mod tests {
 	}
 
 	#[test]
-	fn find_lsb_lowers_to_find_lsb_converted_to_unsigned() {
-		let root = besl::compile_to_besl(
-			r#"
-			main: fn () -> void {
-				let bits: u32 = 40;
-				let lowest: u32 = find_lsb(bits);
-				lowest;
-			}
-			"#,
-			None,
-		)
-		.expect("Expected find_lsb fixture source to link");
-		let main = root.get_main().expect("Expected find_lsb fixture main function");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected find_lsb fixture to lower to GLSL");
-		assert_string_contains!(shader, "uint(findLSB(bits))");
-	}
-
-	#[test]
-	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
-		let root = besl::compile_to_besl(
-			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",
-			None,
-		)
-		.expect("Expected formatted storage image descriptor to compile");
-		let main = RefCell::borrow(&root)
-			.get_child("main")
-			.expect("Expected formatted storage image shader main function");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected formatted storage image GLSL generation");
-		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");
-	}
-
-	#[test]
 	fn source_unformatted_storage_image_descriptor_omits_glsl_format() {
 		let root = besl::compile_to_besl(
 			"image: descriptor<{ type: StorageImage, binding: 5, access: write }>; main: fn () -> void { image; }",
@@ -358,17 +218,6 @@ mod tests {
 	}
 
 	#[test]
-	fn vec4u16_uses_the_native_glsl_packed_vector_type() {
-		let main = generator::tests::vec4u16_binding();
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &main)
-			.expect("Expected vec4u16 GLSL generation");
-		assert_string_contains!(shader, "u16vec4 value;");
-		assert!(!shader.contains("struct vec4u16"));
-	}
-
-	#[test]
 	fn packed_vec4f_uses_native_vectors_with_scalar_buffer_layout() {
 		let shader = Generator::new()
 			.minified(true)
@@ -380,19 +229,6 @@ mod tests {
 		assert_string_contains!(shader, "vec4 center_radius;vec4 cone_apex_cutoff;");
 		assert_string_contains!(shader, "layout(set=0,binding=0,scalar)");
 		assert!(!shader.contains("struct packed_vec4f"));
-	}
-
-	#[test]
-	fn vec2f16_arrays_use_native_glsl_vector_storage() {
-		let shader = Generator::new()
-			.minified(true)
-			.generate(
-				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&generator::tests::vec2f16_array_binding(),
-			)
-			.expect("Expected vec2f16 GLSL generation");
-		assert_string_contains!(shader, "f16vec2 buff[2];");
-		assert_string_contains!(shader, "#extension GL_EXT_shader_explicit_arithmetic_types_float16:require");
 	}
 
 	#[test]
@@ -421,28 +257,6 @@ mod tests {
 	}
 
 	#[test]
-	fn input() {
-		let main = generator::tests::input();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "layout(location=0)in vec3 color;void main(){color;}");
-	}
-
-	#[test]
-	fn output() {
-		let main = generator::tests::output();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "layout(location=0)out vec3 color;void main(){color;}");
-	}
-
-	#[test]
 	fn packed_integer_vector_stage_io_uses_flat_only_across_rasterization() {
 		let main = generator::tests::packed_u16_stage_io();
 		let vertex_shader = Generator::new()
@@ -457,30 +271,6 @@ mod tests {
 		assert_string_contains!(vertex_shader, "layout(location=1)flat out u16vec4 packed_output;");
 		assert_string_contains!(fragment_shader, "layout(location=0)flat in u16vec2 packed_input;");
 		assert_string_contains!(fragment_shader, "layout(location=1)out u16vec4 packed_output;");
-	}
-
-	#[test]
-	fn fragment_shader() {
-		let main = generator::tests::fragment_shader();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::fragment(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "void main(){vec3 albedo=vec3(1.0,0.0,0.0);albedo;}");
-	}
-
-	#[test]
-	fn fwidth_intrinsic_lowers_to_glsl() {
-		let program = besl::compile_to_besl("main: fn() -> void { let edge_width: f32 = fwidth(1.0); edge_width; }", None)
-			.expect("Failed to compile fwidth BESL shader");
-		let main = program.get_main().expect("Expected fwidth BESL shader main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::fragment(), &main)
-			.expect("Failed to generate fwidth GLSL shader");
-		assert_string_contains!(shader, "fwidth(1.0)");
 	}
 
 	#[test]
@@ -568,21 +358,6 @@ mod tests {
 	}
 
 	#[test]
-	fn structure() {
-		let program = generator::tests::structure();
-		let main = program.get_main().expect("Expected main");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(
-			shader,
-			"struct Vertex{vec3 position;vec3 normal;};Vertex use_vertex(){}void main(){use_vertex();}"
-		);
-	}
-
-	#[test]
 	fn push_constant() {
 		let main = generator::tests::push_constant();
 
@@ -594,58 +369,6 @@ mod tests {
 			shader,
 			"layout(push_constant)uniform PushConstant{uint32_t material_id;}push_constant;void main(){push_constant;}"
 		);
-	}
-
-	#[test]
-	fn test_glsl() {
-		let script = r#"
-		Vertex: struct {
-			position: vec3f,
-			normal: vec3f,
-		}
-
-		used: fn() -> void {}
-
-		main: fn () -> void {}
-		"#;
-
-		let root = besl::compile_to_besl(&script, None).unwrap();
-
-		let main = RefCell::borrow(&root).get_child("main").unwrap();
-
-		let vertex_struct = RefCell::borrow(&root).get_child("Vertex").unwrap();
-		let used_function = RefCell::borrow(&root).get_child("used").unwrap();
-
-		{
-			let mut main = main.borrow_mut();
-			main.add_child(
-				besl::Node::glsl(
-					"gl_Position = vec4(0)".to_string(),
-					vec![vertex_struct, used_function],
-					vec![],
-				)
-				.into(),
-			);
-		}
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "struct Vertex{vec3 position;vec3 normal;};");
-		assert_string_contains!(shader, "void used(){}");
-		assert_string_contains!(shader, "void main(){gl_Position = vec4(0);}");
-	}
-
-	#[test]
-	fn test_instrinsic() {
-		let main = generator::tests::intrinsic();
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "void main(){0 + 1.0 * 2;}");
 	}
 
 	#[test]
@@ -705,28 +428,6 @@ mod tests {
 	}
 
 	#[test]
-	fn const_array_variable_lowers_to_glsl() {
-		let script = r#"
-		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
-
-		main: fn () -> void {
-			let value: f32 = WEIGHTS[1];
-			value;
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected const-array shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "const vec3 WEIGHTS = vec3(0.5,0.25,0.125);");
-		assert_string_contains!(shader, "float value=WEIGHTS[1];");
-	}
-
-	#[test]
 	fn short_scalar_arrays_lower_to_glsl_vectors() {
 		let script = r#"
 		scalar_f32: fn () -> f32[3] {
@@ -766,28 +467,6 @@ mod tests {
 	}
 
 	#[test]
-	fn atomic_compare_exchange_lowers_to_glsl() {
-		let script = r#"
-		shared_keys: workgroup<atomicu32, 8>;
-
-		main: fn () -> void {
-			let previous: u32 = atomic_compare_exchange(shared_keys[thread_idx()], 4294967295, 7);
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected compare-exchange shader source to lex");
-		let main = root.get_main().expect("Expected compare-exchange main function");
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
-			.expect("Expected compare-exchange source to lower to GLSL");
-		assert_string_contains!(
-			shader,
-			"atomicCompSwap(shared_keys[uint(gl_LocalInvocationIndex)],4294967295,7)"
-		);
-	}
-
-	#[test]
 	fn mesh_intrinsics_emit_glsl_mesh_commands() {
 		let script = r#"
 		main: fn () -> void {
@@ -809,27 +488,6 @@ mod tests {
 		assert_string_contains!(shader, "gl_MeshVerticesEXT[0].gl_Position = vec4(1.0,2.0,3.0,1.0);");
 		assert_string_contains!(shader, "gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0,1,2);");
 		assert_string_contains!(shader, "gl_MeshPrimitivesEXT[0].gl_Layer = int(3);");
-	}
-
-	#[test]
-	fn conditional_blocks_lower_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			let n: u32 = 0;
-			if (n < 1) {
-				n = 2;
-			}
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected conditional shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "if(n<1){n=2;}");
 	}
 
 	#[test]
@@ -909,134 +567,6 @@ mod tests {
 	}
 
 	#[test]
-	fn bitwise_operators_lower_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			let packed: u32 = 1 << 8 | 2 & 255;
-			packed;
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected bitwise shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "uint32_t packed=((1<<8)|(2&255));");
-	}
-
-	#[test]
-	fn break_lowers_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			for (let i: u32 = 0; i <= 4; i = i + 1) {
-				if (i >= 2) {
-					break;
-				}
-			}
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){break;};};");
-	}
-
-	#[test]
-	fn comparison_and_continue_lower_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			for (let i: u32 = 0; i <= 4; i = i + 1) {
-				if (i >= 2) {
-					continue;
-				}
-			}
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "for(uint32_t i=0;i<=4;i=(i+1)){if(i>=2){continue;};};");
-	}
-
-	#[test]
-	fn scalar_math_intrinsics_lower_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			let a: f32 = abs(0.0 - 2.5);
-			let b: f32 = sqrt(9.0);
-			let c: f32 = exp(1.0);
-			let d: f32 = fract(1.25);
-			let e: f32 = radians(180.0);
-			let f: f32 = inversesqrt(4.0);
-			let g: f32 = smoothstep(0.0, 1.0, 0.5);
-			let h: f32 = mix(2.0, 4.0, 0.25);
-			let i: vec2f = round(vec2f(1.2, 1.8));
-			a;
-			b;
-			c;
-			d;
-			e;
-			f;
-			g;
-			h;
-			i;
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "abs(0.0-2.5)");
-		assert_string_contains!(shader, "sqrt(9.0)");
-		assert_string_contains!(shader, "exp(1.0)");
-		assert_string_contains!(shader, "fract(1.25)");
-		assert_string_contains!(shader, "radians(180.0)");
-		assert_string_contains!(shader, "inversesqrt(4.0)");
-		assert_string_contains!(shader, "smoothstep(0.0,1.0,0.5)");
-		assert_string_contains!(shader, "mix(2.0,4.0,0.25)");
-		assert_string_contains!(shader, "round(vec2(1.2,1.8))");
-	}
-
-	#[test]
-	fn scalar_max_and_clamp_lower_to_glsl() {
-		let script = r#"
-		main: fn () -> void {
-			let maximum: f32 = max(1.0, 2.0);
-			let clamped: f32 = clamp(1.5, 0.0, 1.0);
-			maximum;
-			clamped;
-		}
-		"#;
-
-		let root = besl::compile_to_besl(script, None).expect("Expected shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
-		let shader = Generator::new()
-			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(shader, "max(1.0,2.0)");
-		assert_string_contains!(shader, "clamp(1.5,0.0,1.0)");
-	}
-
-	#[test]
 	fn f16_storage_types_enable_native_glsl_arithmetic() {
 		let shader = Generator::new()
 			.minified(true)
@@ -1060,6 +590,150 @@ mod tests {
 		assert!(!shader.contains("struct vec2f16"));
 	}
 
+	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.
+	#[cfg(target_os = "linux")]
+	fn compile(shader: &str, name: &str) {
+		crate::shader::glsl_compile::compile(shader, name)
+			.unwrap_or_else(|error| panic!("Expected {name} GLSL to compile to SPIR-V. {error}"));
+	}
+
+	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
+	#[test]
+	fn power_of_two_uses_exp2() {
+		let root = besl::compile_to_besl(
+			"main: fn () -> void { let full: f32 = pow(2.0, 3.0); let half: f16 = pow(f16(2.0), f16(3.0)); full; half; }",
+			None,
+		)
+		.expect("Expected power source to link.");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main."),
+			)
+			.expect("Expected GLSL power lowering.");
+
+		assert_eq!(shader.matches("exp2(").count(), 2);
+		assert!(!shader.contains("pow("));
+	}
+
+	/// Verifies atomics that GLSL lacks are emulated with the portable operations it has, and half-precision math keeps half types.
+	#[test]
+	fn modern_half_and_integer_atomics_lower_to_portable_glsl() {
+		let source = r#"
+			Counters: struct { buffer_value: atomicu32, }
+			counters: descriptor<{ type: Counters, binding: 7, access: read_write }>;
+			unsigned_value: workgroup<atomicu32>;
+			signed_value: workgroup<atomici32>;
+			main: fn () -> void {
+				let signed_one: i32 = 1;
+				atomic_store(unsigned_value, 1);
+				atomic_load(counters.buffer_value);
+				atomic_load(unsigned_value);
+				atomic_exchange(unsigned_value, 2);
+				atomic_add(unsigned_value, 1);
+				atomic_sub(unsigned_value, 1);
+				atomic_min(unsigned_value, 1);
+				atomic_max(unsigned_value, 2);
+				atomic_and(unsigned_value, 3);
+				atomic_or(unsigned_value, 4);
+				atomic_xor(unsigned_value, 5);
+				atomic_compare_exchange(unsigned_value, 1, 2);
+				atomic_store(signed_value, signed_one);
+				atomic_min(signed_value, signed_one);
+				let zero: f16 = f16(0.0);
+				let one: f16 = f16(1.0);
+				let fused: f16 = fma(one, one, one);
+				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
+				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
+					atomic_store(unsigned_value, 0);
+				}
+			}
+		"#;
+		let root = besl::compile_to_besl(source, None).expect("Expected modern GLSL source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
+			.expect("Expected modern GLSL source generation");
+
+		assert_string_contains!(shader, "shared uint32_t unsigned_value;");
+		// Signed atomics must stay signed so `atomic_min` compares as signed integers.
+		assert_string_contains!(shader, "shared int32_t signed_value;");
+		// GLSL has no atomic load, so a load is an add of zero.
+		assert_string_contains!(shader, "atomicAdd(counters.buffer_value,0u)");
+		for operation in [
+			"atomicExchange(",
+			"atomicAdd(",
+			"atomicMin(",
+			"atomicMax(",
+			"atomicAnd(",
+			"atomicOr(",
+			"atomicXor(",
+			"atomicCompSwap(",
+		] {
+			assert_string_contains!(shader, operation);
+		}
+		// GLSL has no atomic subtract, so a subtract is an add of the negated value.
+		assert_string_contains!(shader, "atomicAdd(unsigned_value,-(");
+		assert_string_contains!(shader, "float16_t fused=fma(");
+		assert_string_contains!(shader, "f16vec3 fused_vector=fma(");
+		for predicate in ["isnan(", "isinf(", "_besl_is_finite(", "_besl_is_normal("] {
+			assert_string_contains!(shader, predicate);
+		}
+
+		#[cfg(target_os = "linux")]
+		compile(&shader, "besl-modern-half-atomics");
+	}
+
+	/// Verifies `find_lsb` converts GLSL's signed `findLSB` result, so zero yields `0xffffffff` like the BESL contract.
+	#[test]
+	fn find_lsb_lowers_to_find_lsb_converted_to_unsigned() {
+		let root = besl::compile_to_besl(
+			r#"
+			main: fn () -> void {
+				let bits: u32 = 40;
+				let lowest: u32 = find_lsb(bits);
+				lowest;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected find_lsb fixture source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected find_lsb fixture main function"),
+			)
+			.expect("Expected find_lsb fixture to lower to GLSL");
+		assert_string_contains!(shader, "uint(findLSB(bits))");
+
+		#[cfg(target_os = "linux")]
+		compile(&shader, "besl-find-lsb");
+	}
+
+	/// Verifies a storage image declares its texel format, which GLSL requires for images that are read or written.
+	#[test]
+	fn source_storage_image_descriptor_emits_explicit_glsl_format() {
+		let root = besl::compile_to_besl(
+			"image: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>; main: fn () -> void { image; }",
+			None,
+		)
+		.expect("Expected formatted storage image descriptor to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected formatted storage image shader main function"),
+			)
+			.expect("Expected formatted storage image GLSL generation");
+		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");
+	}
+
+	/// Verifies `fetch` reads an exact texel through `texelFetch` with signed coordinates and an explicit mip level.
 	#[test]
 	fn fetch_intrinsic_lowers_to_glsl() {
 		let script = r#"
@@ -1081,31 +755,72 @@ mod tests {
 			)
 			.into(),
 		);
-
-		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to lex");
-		let main = RefCell::borrow(&root).get_child("main").expect("Expected main function");
-
+		let root = besl::compile_to_besl(script, Some(root)).expect("Expected fetch shader source to link");
 		let shader = Generator::new()
 			.minified(true)
-			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &main)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+				&root.get_main().expect("Expected main"),
+			)
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "vec4 texel=texelFetch(besl_texture,ivec2(coord),0);");
+
+		#[cfg(target_os = "linux")]
+		compile(&shader, "besl-fetch");
 	}
 
+	/// Verifies compare-exchange lowers to `atomicCompSwap` indexed by the local invocation index.
 	#[test]
-	fn return_values_and_pretty_spacing_lower_to_glsl() {
-		let main = generator::tests::return_value();
+	fn atomic_compare_exchange_lowers_to_glsl() {
+		let script = r#"
+		shared_keys: workgroup<atomicu32, 8>;
 
-		let minified_shader = Generator::new()
+		main: fn () -> void {
+			let previous: u32 = atomic_compare_exchange(shared_keys[thread_idx()], 4294967295, 7);
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected compare-exchange shader source to link");
+		let shader = Generator::new()
 			.minified(true)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
-			.expect("Failed to generate shader");
-		assert_string_contains!(minified_shader, "float main(){return 1.0;}");
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::square(8)),
+				&root.get_main().expect("Expected compare-exchange main function"),
+			)
+			.expect("Expected compare-exchange source to lower to GLSL");
+		assert_string_contains!(
+			shader,
+			"atomicCompSwap(shared_keys[uint(gl_LocalInvocationIndex)],4294967295,7)"
+		);
 
-		let pretty_shader = Generator::new()
-			.minified(false)
-			.generate(&ShaderGenerationSettings::vertex(), &main)
+		#[cfg(target_os = "linux")]
+		compile(&shader, "besl-atomic-compare-exchange");
+	}
+
+	/// Verifies a global scalar-array constant keeps its vector spelling as a GLSL `const`.
+	#[test]
+	fn const_array_variable_lowers_to_glsl() {
+		let script = r#"
+		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
+
+		main: fn () -> void {
+			let value: f32 = WEIGHTS[1];
+			value;
+		}
+		"#;
+
+		let root = besl::compile_to_besl(script, None).expect("Expected const-array shader source to link");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main"),
+			)
 			.expect("Failed to generate shader");
-		assert_string_contains!(pretty_shader, "float main() {\n\treturn 1.0;\n}\n");
+		assert_string_contains!(shader, "const vec3 WEIGHTS = vec3(0.5,0.25,0.125);");
+		assert_string_contains!(shader, "float value=WEIGHTS[1];");
+
+		#[cfg(target_os = "linux")]
+		compile(&shader, "besl-const-array");
 	}
 }

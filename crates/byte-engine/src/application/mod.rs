@@ -18,7 +18,8 @@ pub mod thread;
 #[doc(hidden)]
 pub mod tracy;
 pub mod waker;
-pub use application::{Application, BaseApplication};
+pub use application::BaseApplication;
+pub use parameters::ParameterError;
 pub use tracy::{TracySetupError, setup_tracy};
 pub use waker::LoopWaker;
 
@@ -95,6 +96,25 @@ impl Parameter {
 	/// invalid value.
 	pub fn as_bool_simple(&self) -> bool {
 		self.as_bool().unwrap_or(false)
+	}
+
+	/// Parses the parameter's value for a setting of type `T`.
+	///
+	/// Each caller chooses its own policy for an invalid value: ignore it with `.ok()`, or stop with
+	/// `.unwrap_or_else(|error| panic!("{error}"))`.
+	///
+	/// # Errors
+	///
+	/// Returns [`ParameterError`] naming the parameter and the rejected value when `T` cannot parse it.
+	pub fn parse<T: std::str::FromStr>(&self) -> Result<T, ParameterError>
+	where
+		T::Err: std::fmt::Display,
+	{
+		self.value.parse::<T>().map_err(|error| ParameterError {
+			name: self.name.clone(),
+			value: self.value.clone(),
+			reason: error.to_string(),
+		})
 	}
 
 	/// Returns the parameter name used by application configuration lookup.

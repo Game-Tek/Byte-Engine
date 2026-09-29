@@ -286,6 +286,8 @@ struct MetalResourceState {
 	stages: mtl::MTLStages,
 	access: crate::AccessPolicies,
 	scope: MetalEncoderScope,
+	/// The newest recording that made this access, so the state can be dropped once that recording has completed.
+	recording: u64,
 }
 
 /// The `MetalBarrier` struct contains the precise inter-encoder and intra-encoder dependencies for one command.
@@ -349,17 +351,20 @@ impl MetalBarrier {
 ///
 /// Build it once per descriptor materialization with [`Self::new`], then pass it to
 /// [`MetalResourceTracker::consume_descriptors`] for every command that binds the table.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct DescriptorUses {
-	/// Consolidated uses, writable ones first. Every command replans the writable ones, because each command's writes
-	/// conflict with the next command's accesses.
+	/// Consolidated uses, writable ones first and ordered by key inside each part. Every command replans the writable
+	/// ones, because each command's writes conflict with the next command's accesses.
 	uses: SmallVec<[MetalResourceUse; 16]>,
 	/// How many of `uses` write.
 	writable: usize,
-	/// The encoder scope and tracker generation right after this table's uses were last applied. While both still
-	/// match, the read-only uses already have every barrier they need in that encoder.
-	settled: Option<(MetalEncoderScope, u64)>,
 }
+
+/// The encoder scope and tracker generation right after a descriptor table's uses were last applied.
+///
+/// While both still match, the table's read-only uses already have every barrier they need in that encoder. The
+/// encoder that applies the table owns this state, so a table shared by several recordings stays immutable.
+pub(crate) type SettledDescriptors = Option<(MetalEncoderScope, u64)>;
 
 impl DescriptorUses {
 	/// Returns the image-group members the table reaches.
@@ -370,14 +375,30 @@ impl DescriptorUses {
 	/// Consolidates `uses` and orders the writable ones first.
 	pub(crate) fn new(mut uses: SmallVec<[MetalResourceUse; 16]>) -> Self {
 		MetalResourceTracker::consolidate_in_place(&mut uses);
-		// Consolidation merged overlapping uses of a resource, so a read-only use never overlaps a writable one.
+		// Consolidation merged overlapping uses of a resource, so a read-only use never overlaps a writable one. The
+		// sort is stable, so both parts keep the key order consolidation left.
 		uses.sort_by_key(|resource_use| !resource_use.access.intersects(crate::AccessPolicies::WRITE));
 		let writable = uses.partition_point(|resource_use| resource_use.access.intersects(crate::AccessPolicies::WRITE));
-		Self {
-			uses,
-			writable,
-			settled: None,
-		}
+		debug_assert!(
+			uses[..writable].is_sorted_by_key(|resource_use| resource_use.key)
+				&& uses[writable..].is_sorted_by_key(|resource_use| resource_use.key),
+			"Metal descriptor uses lost their key order. The most likely cause is that consolidation stopped sorting uses by key.",
+		);
+		Self { uses, writable }
+	}
+
+	/// Returns whether `resource_use` overlaps one of the table's uses.
+	///
+	/// Each part is ordered by key, so only the uses of the same resource are compared.
+	fn overlaps(&self, resource_use: &MetalResourceUse) -> bool {
+		let (writable, read_only) = self.uses.split_at(self.writable);
+		[writable, read_only].into_iter().any(|part| {
+			let start = part.partition_point(|primary_use| primary_use.key < resource_use.key);
+			part[start..]
+				.iter()
+				.take_while(|primary_use| primary_use.key == resource_use.key)
+				.any(|primary_use| primary_use.region.overlaps(resource_use.region))
+		})
 	}
 }
 
@@ -400,6 +421,13 @@ pub(crate) struct MetalResourceTracker {
 	/// Advances whenever the history changes in a way that could give an earlier read a new hazard: a new or changed
 	/// write, removed states, or a finished or abandoned recording. [`DescriptorUses`] compares it to skip reads.
 	generation: u64,
+	/// The number the recording in progress, or the next one, publishes its accesses under.
+	next_recording: u64,
+	/// Every recording numbered below this has completed on the GPU.
+	completed_below: u64,
+	/// Completed recordings numbered above `completed_below`. Batches complete out of order, so these wait for
+	/// every recording before them to complete too.
+	completed_ahead: SmallVec<[u64; 8]>,
 	/// The hazards behind the barrier of the most recently planned command.
 	#[cfg(debug_assertions)]
 	hazards: SmallVec<[MetalHazard; 4]>,
@@ -456,24 +484,22 @@ impl MetalResourceTracker {
 	pub(crate) fn consume_descriptors(
 		&mut self,
 		scope: MetalEncoderScope,
-		descriptors: &mut DescriptorUses,
+		descriptors: &DescriptorUses,
+		settled: &mut SettledDescriptors,
 		additional_uses: impl IntoIterator<Item = MetalResourceUse>,
 	) -> MetalBarrier {
 		let additional_uses = Self::consolidate(additional_uses);
-		let aliases_primary = additional_uses.iter().any(|additional_use| {
-			descriptors
-				.uses
-				.iter()
-				.any(|primary_use| primary_use.key == additional_use.key && primary_use.region.overlaps(additional_use.region))
-		});
-		let settled = !aliases_primary && descriptors.settled == Some((scope, self.generation));
-		let primary_uses = if settled {
+		let aliases_primary = additional_uses
+			.iter()
+			.any(|additional_use| descriptors.overlaps(additional_use));
+		let reads_settled = !aliases_primary && *settled == Some((scope, self.generation));
+		let primary_uses = if reads_settled {
 			&descriptors.uses[..descriptors.writable]
 		} else {
 			&descriptors.uses[..]
 		};
 		let (barrier, generation) = self.consume_consolidated(scope, primary_uses, &additional_uses, aliases_primary);
-		descriptors.settled = generation.map(|generation| (scope, generation));
+		*settled = generation.map(|generation| (scope, generation));
 		barrier
 	}
 
@@ -530,21 +556,46 @@ impl MetalResourceTracker {
 		}
 	}
 
-	/// Drops the access history of work that has completed, so later commands see no hazards against it.
+	/// Records that the GPU completed the recording that [`Self::finish_recording`] numbered `recording`, and drops
+	/// the accesses no later command can race.
 	///
-	/// Call this only once every command recorded against this history has finished on the GPU. A recording in
-	/// progress keeps its history.
-	pub(crate) fn forget_history(&mut self) {
-		if self.recording {
+	/// Call it when the batch that submitted the recording completes. A state is dropped only once every recording up
+	/// to its newest one has completed, since a merged read can also stand for an earlier recording that is still
+	/// running. This keeps the history bounded while frames overlap, when the queue is never idle.
+	pub(crate) fn complete_recording(&mut self, recording: u64) {
+		if recording < self.completed_below {
 			return;
 		}
-		self.states.clear();
-		// Earlier reads may have been skipped against the old history, so they must be planned again.
-		self.generation += 1;
+		self.completed_ahead.push(recording);
+		let before = self.completed_below;
+		while let Some(index) = self.completed_ahead.iter().position(|&completed| completed == self.completed_below) {
+			self.completed_ahead.swap_remove(index);
+			self.completed_below += 1;
+		}
+		if self.completed_below == before || self.recording {
+			return;
+		}
+
+		let completed_below = self.completed_below;
+		let mut removed = false;
+		self.states.retain(|_, states| {
+			let count = states.len();
+			states.retain(|state| state.recording >= completed_below);
+			removed |= states.len() != count;
+			!states.is_empty()
+		});
+		if removed {
+			// Earlier reads may have been skipped against the removed states, so they must be planned again.
+			self.generation += 1;
+		}
 	}
 
 	/// Converts command-local encoder scopes into queue history and commits the recording transaction.
-	pub(crate) fn finish_recording(&mut self) {
+	///
+	/// Returns the number the recording's accesses were published under. Pass it to [`Self::complete_recording`]
+	/// once the batch that submits the recording completes. A recording that is never submitted keeps its accesses,
+	/// and every later one's, in the history.
+	pub(crate) fn finish_recording(&mut self) -> u64 {
 		assert!(
 			std::mem::take(&mut self.recording),
 			"Metal resource tracker finalization failed. The most likely cause is that resource recording was not started.",
@@ -563,11 +614,15 @@ impl MetalResourceTracker {
 			}) {
 				let right = states.swap_remove(right);
 				states[left].stages |= right.stages;
+				states[left].recording = states[left].recording.max(right.recording);
 			}
 		}
 		self.undo_states.clear();
 		// Every state moved to queue scope, so hazards now need queue barriers rather than encoder barriers.
 		self.generation += 1;
+		let recording = self.next_recording;
+		self.next_recording += 1;
+		recording
 	}
 
 	/// Consolidates one materialized use table once so command recording can consume it by reference.
@@ -655,13 +710,15 @@ impl MetalResourceTracker {
 		if has_hazard {
 			// Recording the same access again with nothing in between, such as a render pass's attachment writes after
 			// each draw, replaces the only state it would remove with an identical one, so the history stays as it is.
-			let mut covered = states.iter().filter(|state| resource_use.region.covers(state.region));
+			let mut covered = states.iter_mut().filter(|state| resource_use.region.covers(state.region));
 			if let (Some(state), None) = (covered.next(), covered.next())
 				&& state.scope == scope
 				&& state.region == resource_use.region
 				&& state.access == resource_use.access
 				&& state.stages == resource_use.stages
 			{
+				// The state now also stands for this recording, so it stays until this recording completes.
+				state.recording = self.next_recording;
 				return;
 			}
 			states.retain(|state| !resource_use.region.covers(state.region));
@@ -672,6 +729,7 @@ impl MetalResourceTracker {
 		{
 			// Without a hazard this use is a read, and widening a read's stages cannot give another read a hazard.
 			state.stages |= resource_use.stages;
+			state.recording = self.next_recording;
 			return;
 		} else if resource_use.access.intersects(crate::AccessPolicies::WRITE) {
 			self.generation += 1;
@@ -682,6 +740,7 @@ impl MetalResourceTracker {
 			stages: resource_use.stages,
 			access: resource_use.access,
 			scope,
+			recording: self.next_recording,
 		});
 	}
 
@@ -822,12 +881,13 @@ mod tests {
 	fn descriptor_read_after_an_intervening_blit_write_is_synchronized() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let mut descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
-		tracker.consume_descriptors(scope, &mut descriptors, []);
+		let mut settled = None;
+		let descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)]);
+		tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 		// The second command settles the reads, so the third must still notice the write in between.
-		tracker.consume_descriptors(scope, &mut descriptors, []);
+		tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 		tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
-		let barrier = tracker.consume_descriptors(scope, &mut descriptors, []);
+		let barrier = tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 
 		assert_eq!(barrier.encoder_after, mtl::MTLStages::Blit);
 		assert_eq!(barrier.encoder_before, mtl::MTLStages::Dispatch);
@@ -838,7 +898,8 @@ mod tests {
 	fn overlapping_uses_in_one_command_preserve_the_write() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let mut descriptors = descriptor_table(&[MetalResourceUse::buffer(
+		let mut settled = None;
+		let descriptors = descriptor_table(&[MetalResourceUse::buffer(
 			BufferHandle(1),
 			0,
 			64,
@@ -847,7 +908,8 @@ mod tests {
 		)]);
 		tracker.consume_descriptors(
 			scope,
-			&mut descriptors,
+			&descriptors,
+			&mut settled,
 			[MetalResourceUse::buffer(
 				BufferHandle(1),
 				0,
@@ -876,9 +938,10 @@ mod tests {
 	fn repeated_descriptor_reads_still_order_a_later_write() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let mut descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Fragment)]);
-		tracker.consume_descriptors(scope, &mut descriptors, []);
-		tracker.consume_descriptors(scope, &mut descriptors, []);
+		let mut settled = None;
+		let descriptors = descriptor_table(&[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Fragment)]);
+		tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
+		tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 
 		let barrier = tracker.consume(scope, [buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit)]);
 
@@ -890,13 +953,14 @@ mod tests {
 	fn repeated_descriptor_writes_order_each_command() {
 		let mut tracker = MetalResourceTracker::default();
 		let scope = MetalEncoderScope::Encoder(1);
-		let mut descriptors = descriptor_table(&[
+		let mut settled = None;
+		let descriptors = descriptor_table(&[
 			buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Dispatch),
 			MetalResourceUse::buffer(BufferHandle(2), 0, 64, mtl::MTLStages::Dispatch, crate::AccessPolicies::READ),
 		]);
-		tracker.consume_descriptors(scope, &mut descriptors, []);
+		tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 
-		let barrier = tracker.consume_descriptors(scope, &mut descriptors, []);
+		let barrier = tracker.consume_descriptors(scope, &descriptors, &mut settled, []);
 
 		assert_eq!(barrier.encoder_after, mtl::MTLStages::Dispatch);
 		assert_eq!(barrier.encoder_before, mtl::MTLStages::Dispatch);
@@ -907,14 +971,15 @@ mod tests {
 		let mut tracker = MetalResourceTracker::default();
 		// Reading one mip level leaves the whole-image write in the history, so every encoder must wait for it.
 		let image = |mip_level, stages, access| MetalResourceUse::image(ImageHandle(1), mip_level, None, stages, access);
-		let mut descriptors = descriptor_table(&[image(Some(0), mtl::MTLStages::Fragment, crate::AccessPolicies::READ)]);
+		let mut settled = None;
+		let descriptors = descriptor_table(&[image(Some(0), mtl::MTLStages::Fragment, crate::AccessPolicies::READ)]);
 		tracker.consume(
 			MetalEncoderScope::Queue,
 			[image(None, mtl::MTLStages::Dispatch, crate::AccessPolicies::WRITE)],
 		);
-		tracker.consume_descriptors(MetalEncoderScope::Encoder(1), &mut descriptors, []);
+		tracker.consume_descriptors(MetalEncoderScope::Encoder(1), &descriptors, &mut settled, []);
 
-		let barrier = tracker.consume_descriptors(MetalEncoderScope::Encoder(2), &mut descriptors, []);
+		let barrier = tracker.consume_descriptors(MetalEncoderScope::Encoder(2), &descriptors, &mut settled, []);
 
 		assert_eq!(barrier.queue_after, mtl::MTLStages::Dispatch);
 		assert_eq!(barrier.queue_before, mtl::MTLStages::Fragment);
@@ -941,6 +1006,52 @@ mod tests {
 
 		assert_eq!(barrier.queue_after, mtl::MTLStages::Blit);
 		assert_eq!(barrier.queue_before, mtl::MTLStages::Dispatch);
+	}
+
+	/// Records one finished recording that makes `resource_use` and returns the number it was published under.
+	fn finished_recording(tracker: &mut MetalResourceTracker, resource_use: MetalResourceUse) -> u64 {
+		tracker.begin_recording();
+		tracker.consume(MetalEncoderScope::Encoder(0), [resource_use]);
+		tracker.finish_recording()
+	}
+
+	#[test]
+	fn completed_recording_write_needs_no_barrier() {
+		let mut tracker = MetalResourceTracker::default();
+		let write = finished_recording(&mut tracker, buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit));
+		tracker.complete_recording(write);
+
+		tracker.begin_recording();
+		let barrier = tracker.consume(
+			MetalEncoderScope::Encoder(0),
+			[buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch)],
+		);
+
+		assert!(!barrier.has_queue_dependency());
+		assert!(!barrier.has_encoder_dependency());
+	}
+
+	#[test]
+	fn reads_stay_ordered_until_every_earlier_recording_completes() {
+		//! Tests that a later recording completing first does not drop a read an earlier, still running recording made.
+
+		let mut tracker = MetalResourceTracker::default();
+		let read = buffer(crate::AccessPolicies::READ, mtl::MTLStages::Dispatch);
+		let earlier = finished_recording(&mut tracker, read);
+		let later = finished_recording(&mut tracker, read);
+		let write = buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Blit);
+
+		tracker.complete_recording(later);
+		tracker.begin_recording();
+		let barrier = tracker.consume(MetalEncoderScope::Encoder(0), [write]);
+		tracker.rollback_recording();
+		assert_eq!(barrier.queue_after, mtl::MTLStages::Dispatch);
+		assert_eq!(barrier.queue_before, mtl::MTLStages::Blit);
+
+		tracker.complete_recording(earlier);
+		tracker.begin_recording();
+		let barrier = tracker.consume(MetalEncoderScope::Encoder(0), [write]);
+		assert!(!barrier.has_queue_dependency());
 	}
 
 	#[test]

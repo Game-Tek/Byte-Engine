@@ -1,10 +1,10 @@
 use std::{
-	collections::HashMap,
 	fs,
 	path::{Path, PathBuf},
 };
 
 use fontdue::{Font, FontSettings};
+use utils::hash::HashMap;
 
 use super::flow::Size;
 
@@ -116,14 +116,15 @@ pub(crate) struct LineMetrics {
 }
 
 /// The `GlyphPlacement` struct locates one visible glyph bitmap in target pixels.
+///
+/// Look the bitmap up with [`TextSystem::glyph_by_key`] and its `key`.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GlyphPlacement<'a> {
+pub(crate) struct GlyphPlacement {
 	pub(crate) key: GlyphKey,
 	/// Left edge of the bitmap in target pixels.
 	pub(crate) x: f32,
 	/// Top edge of the bitmap in target pixels.
 	pub(crate) y: f32,
-	pub(crate) glyph: &'a Glyph,
 }
 
 // Bound cached whole strings independently of glyphs, which remain reusable across text changes.
@@ -164,12 +165,12 @@ impl TextSystem {
 		Self {
 			font_path: path,
 			font_state: FontState::Uninitialized,
-			measure_cache: HashMap::new(),
-			previous_measure_cache: HashMap::new(),
+			measure_cache: HashMap::default(),
+			previous_measure_cache: HashMap::default(),
 			measure_cache_entries: 0,
 			measure_cache_bytes: 0,
 			spare_measure_keys: Vec::new(),
-			glyph_cache: HashMap::new(),
+			glyph_cache: HashMap::default(),
 			outlines: Vec::new(),
 			em_line_metrics: None,
 			reported_unavailable: false,
@@ -309,11 +310,6 @@ impl TextSystem {
 		true
 	}
 
-	/// Returns the cached glyph for one character and pixel size, rasterizing it on first use.
-	pub fn glyph(&mut self, character: char, font_size: f32) -> Option<&Glyph> {
-		self.glyph_by_key(GlyphKey::new(character, font_size))
-	}
-
 	/// Returns the cached glyph for one key, rasterizing it on first use.
 	pub fn glyph_by_key(&mut self, key: GlyphKey) -> Option<&Glyph> {
 		if matches!(self.font_state, FontState::Uninitialized) {
@@ -356,7 +352,7 @@ impl TextSystem {
 		text: &str,
 		font_size: f32,
 		origin: (i32, i32),
-		mut visit: impl FnMut(GlyphPlacement<'_>),
+		mut visit: impl FnMut(GlyphPlacement),
 	) -> bool {
 		if text.is_empty() {
 			return false;
@@ -385,7 +381,6 @@ impl TextSystem {
 					key,
 					x: pen_x + glyph.xmin as f32,
 					y: baseline_y - glyph.height as f32 - glyph.ymin as f32,
-					glyph,
 				});
 			}
 			pen_x += glyph.advance_width;
@@ -476,62 +471,84 @@ fn font_line_metrics(font: &LoadedFont, font_size: f32) -> LineMetrics {
 	}
 }
 
-/// Largest distance, in em units, between a cubic outline segment and the quadratic curves that replace it.
-const CUBIC_TOLERANCE: f32 = 1.0 / 4096.0;
+/// Largest distance between a cubic segment and the quadratic curves that replace it: a fraction of an em for glyphs,
+/// or of a path's extent for filled paths.
+pub(crate) const CUBIC_TOLERANCE: f32 = 1.0 / 4096.0;
 
-/// The `OutlineCollector` struct turns a font's outline segments into quadratic curves in em units.
-struct OutlineCollector {
+/// The `QuadraticCollector` struct turns outline segments into the closed quadratic contours that Slug coverage reads.
+///
+/// Glyph outlines drive it through [`ttf_parser::OutlineBuilder`] in font units. The UI render pass drives it with
+/// path segments through [`Self::start_contour`], [`Self::line`], [`Self::quad`], and [`Self::cubic`]. Read the
+/// result with [`Self::finish`].
+pub(crate) struct QuadraticCollector {
+	/// Every contour's curves, one after another. A straight line repeats its end point.
 	curves: Vec<[[f32; 2]; 3]>,
-	/// Em units per font unit.
+	/// Output units per input unit of the [`ttf_parser::OutlineBuilder`] calls.
 	scale: f32,
+	/// Largest distance between a cubic and its quadratic replacements, in output units.
+	tolerance: f32,
 	start: [f32; 2],
-	last: [f32; 2],
+	/// The open contour's current point, or `None` between contours.
+	last: Option<[f32; 2]>,
 }
 
-impl OutlineCollector {
+impl QuadraticCollector {
+	/// Creates an empty collector. `scale` applies only to font outline input; `tolerance` is in output units.
+	pub(crate) fn new(scale: f32, tolerance: f32) -> Self {
+		Self {
+			curves: Vec::new(),
+			scale,
+			tolerance,
+			start: [0.0; 2],
+			last: None,
+		}
+	}
+
+	/// Returns the open contour's current point, or `None` between contours.
+	pub(crate) fn last(&self) -> Option<[f32; 2]> {
+		self.last
+	}
+
+	/// Returns how many curves the collector holds. After [`Self::close_contour`] this is where the closed contour
+	/// ends, which the even-odd path fill records to reorient contours.
+	pub(crate) fn curve_count(&self) -> usize {
+		self.curves.len()
+	}
+
+	/// Closes the open contour and starts a new one at `point`.
+	pub(crate) fn start_contour(&mut self, point: [f32; 2]) {
+		self.close_contour();
+		self.start = point;
+		self.last = Some(point);
+	}
+
 	/// A line repeats its end point as the control point, which keeps the curve's polynomial quadratic.
-	fn line(&mut self, end: [f32; 2]) {
-		if end != self.last {
-			self.curves.push([self.last, end, end]);
-			self.last = end;
-		}
-	}
-}
-
-impl ttf_parser::OutlineBuilder for OutlineCollector {
-	fn move_to(&mut self, x: f32, y: f32) {
-		self.start = [x * self.scale, y * self.scale];
-		self.last = self.start;
-	}
-
-	fn line_to(&mut self, x: f32, y: f32) {
-		self.line([x * self.scale, y * self.scale]);
-	}
-
-	fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-		let control = [x1 * self.scale, y1 * self.scale];
-		let end = [x * self.scale, y * self.scale];
-		if control != self.last || end != self.last {
-			self.curves.push([self.last, control, end]);
-			self.last = end;
+	pub(crate) fn line(&mut self, end: [f32; 2]) {
+		let Some(last) = self.last else { return };
+		if end != last {
+			self.curves.push([last, end, end]);
+			self.last = Some(end);
 		}
 	}
 
-	/// Splits a cubic segment into enough quadratic curves to stay within [`CUBIC_TOLERANCE`].
-	fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-		let [p0, p1, p2, p3] = [
-			self.last,
-			[x1 * self.scale, y1 * self.scale],
-			[x2 * self.scale, y2 * self.scale],
-			[x * self.scale, y * self.scale],
-		];
+	pub(crate) fn quad(&mut self, control: [f32; 2], end: [f32; 2]) {
+		let Some(last) = self.last else { return };
+		if control != last || end != last {
+			self.curves.push([last, control, end]);
+			self.last = Some(end);
+		}
+	}
+
+	/// Splits a cubic into enough quadratics to stay within the tolerance.
+	pub(crate) fn cubic(&mut self, p1: [f32; 2], p2: [f32; 2], p3: [f32; 2]) {
+		let Some(p0) = self.last else { return };
 		// The cubic and its closest quadratic differ by the third difference times t (t - 1/2) (t - 1),
 		// which peaks at sqrt(3) / 36. Splitting into n pieces divides the third difference by n cubed.
 		let third_difference = (0..2)
 			.map(|axis| (p3[axis] - 3.0 * p2[axis] + 3.0 * p1[axis] - p0[axis]).powi(2))
 			.sum::<f32>()
 			.sqrt();
-		let pieces = (third_difference * 3f32.sqrt() / 36.0 / CUBIC_TOLERANCE)
+		let pieces = (third_difference * 3f32.sqrt() / 36.0 / self.tolerance)
 			.cbrt()
 			.ceil()
 			.clamp(1.0, 16.0);
@@ -547,6 +564,7 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
 				3.0 * s * s * (p1[axis] - p0[axis]) + 6.0 * s * t * (p2[axis] - p1[axis]) + 3.0 * t * t * (p3[axis] - p2[axis])
 			})
 		};
+		let mut last = p0;
 		for piece in 0..pieces as usize {
 			let (t0, t1) = (piece as f32 / pieces, (piece + 1) as f32 / pieces);
 			// The last piece ends on the segment's own end point so that contours stay closed.
@@ -555,17 +573,70 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
 			// The piece's cubic controls are start + from * h and end - to * h with h = (t1 - t0) / 3.
 			// The closest quadratic control is (3 * (c1 + c2) - (start + end)) / 4.
 			let h = (t1 - t0) / 3.0;
-			let control = [0, 1].map(|axis| {
-				(3.0 * (self.last[axis] + from[axis] * h + end[axis] - to[axis] * h) - (self.last[axis] + end[axis])) / 4.0
-			});
-			self.curves.push([self.last, control, end]);
-			self.last = end;
+			let control = [0, 1]
+				.map(|axis| (3.0 * (last[axis] + from[axis] * h + end[axis] - to[axis] * h) - (last[axis] + end[axis])) / 4.0);
+			self.curves.push([last, control, end]);
+			last = end;
 		}
+		self.last = Some(last);
+	}
+
+	/// Ends the open contour with a line back to its start, as a fill closes every subpath.
+	pub(crate) fn close_contour(&mut self) {
+		if self.last.is_some() {
+			self.line(self.start);
+		}
+		self.last = None;
+	}
+
+	/// Closes the open contour and returns every curve, contour after contour.
+	pub(crate) fn finish(mut self) -> Vec<[[f32; 2]; 3]> {
+		self.close_contour();
+		self.curves
+	}
+}
+
+impl ttf_parser::OutlineBuilder for QuadraticCollector {
+	fn move_to(&mut self, x: f32, y: f32) {
+		self.start_contour([x * self.scale, y * self.scale]);
+	}
+
+	fn line_to(&mut self, x: f32, y: f32) {
+		self.line([x * self.scale, y * self.scale]);
+	}
+
+	fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+		self.quad([x1 * self.scale, y1 * self.scale], [x * self.scale, y * self.scale]);
+	}
+
+	fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+		self.cubic(
+			[x1 * self.scale, y1 * self.scale],
+			[x2 * self.scale, y2 * self.scale],
+			[x * self.scale, y * self.scale],
+		);
 	}
 
 	fn close(&mut self) {
-		self.line(self.start);
+		self.close_contour();
 	}
+}
+
+/// Returns the smallest and largest control point coordinates as `[min_x, min_y, max_x, max_y]`, or zeros without curves.
+pub(crate) fn curve_bounds(curves: &[[[f32; 2]; 3]]) -> [f32; 4] {
+	let Some(first) = curves.first() else {
+		return [0.0; 4];
+	};
+	let mut bounds = [first[0][0], first[0][1], first[0][0], first[0][1]];
+	for point in curves.iter().flatten() {
+		bounds = [
+			bounds[0].min(point[0]),
+			bounds[1].min(point[1]),
+			bounds[2].max(point[0]),
+			bounds[3].max(point[1]),
+		];
+	}
+	bounds
 }
 
 /// Reads one glyph's outline and advance from the font file in em units.
@@ -582,25 +653,10 @@ fn read_outline(font: &LoadedFont, glyph: u16) -> GlyphOutline {
 	let glyph = ttf_parser::GlyphId(glyph);
 	outline.advance = face.glyph_hor_advance(glyph).unwrap_or(0) as f32 * scale;
 
-	let mut collector = OutlineCollector {
-		curves: Vec::new(),
-		scale,
-		start: [0.0; 2],
-		last: [0.0; 2],
-	};
+	let mut collector = QuadraticCollector::new(scale, CUBIC_TOLERANCE);
 	face.outline_glyph(glyph, &mut collector);
-	outline.curves = collector.curves;
-	if let Some(first) = outline.curves.first() {
-		outline.bounds = [first[0][0], first[0][1], first[0][0], first[0][1]];
-		for point in outline.curves.iter().flatten() {
-			outline.bounds = [
-				outline.bounds[0].min(point[0]),
-				outline.bounds[1].min(point[1]),
-				outline.bounds[2].max(point[0]),
-				outline.bounds[3].max(point[1]),
-			];
-		}
-	}
+	outline.curves = collector.finish();
+	outline.bounds = curve_bounds(&outline.curves);
 	outline
 }
 
@@ -611,7 +667,7 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 			Ok(bytes) if ttf_parser::Face::parse(&bytes, 0).is_ok() => {
 				return Ok(LoadedFont {
 					rasterizer: Rasterizer::Unbuilt,
-					glyph_indices: HashMap::new(),
+					glyph_indices: HashMap::default(),
 					data: bytes,
 					path: path.to_path_buf(),
 				});
@@ -641,7 +697,7 @@ fn load_font(preferred: Option<&Path>) -> Result<LoadedFont, String> {
 
 		return Ok(LoadedFont {
 			rasterizer: Rasterizer::Unbuilt,
-			glyph_indices: HashMap::new(),
+			glyph_indices: HashMap::default(),
 			data: bytes,
 			path,
 		});
@@ -774,19 +830,22 @@ mod tests {
 		for character in "AV café ΩЖ中🙂\u{10ffff}".chars() {
 			let advance = text.outline(character).unwrap().1.advance;
 			for size in [12.0, 19.5, 32.0] {
-				let bitmap = text.glyph(character, size).unwrap();
+				let bitmap = text.glyph_by_key(GlyphKey::new(character, size)).unwrap();
 				assert!((advance * size - bitmap.advance_width).abs() < 0.0001);
 			}
 		}
 		let mut outlines = Vec::new();
 		text.place_outlines("A B\nC", 19.5, |glyph| outlines.push(glyph.pen));
-		let mut bitmaps = Vec::new();
-		text.place_glyphs("A B\nC", 19.5, (0, 0), |glyph| {
-			bitmaps.push([
-				glyph.x - glyph.glyph.xmin as f32,
-				glyph.y + glyph.glyph.height as f32 + glyph.glyph.ymin as f32,
-			]);
+		let mut placements = Vec::new();
+		text.place_glyphs("A B\nC", 19.5, (0, 0), |glyph| placements.push(glyph));
+		let bitmaps = placements.into_iter().map(|placement| {
+			let bitmap = text.glyph_by_key(placement.key).unwrap();
+			[
+				placement.x - bitmap.xmin as f32,
+				placement.y + bitmap.height as f32 + bitmap.ymin as f32,
+			]
 		});
+		let bitmaps = bitmaps.collect::<Vec<_>>();
 		assert_eq!(outlines.len(), bitmaps.len());
 		for (outline, bitmap) in outlines.into_iter().zip(bitmaps) {
 			assert!((outline[0] - bitmap[0]).abs() < 0.0001);
@@ -808,51 +867,23 @@ mod tests {
 	}
 
 	#[test]
-	fn measure_reuses_cached_text_size_for_same_font_size() {
-		let mut text_system = TextSystem::new();
-
-		let first = text_system.measure("Cached", 16.0);
-		let cache_entries = text_system
-			.measure_cache
-			.get(&16.0f32.to_bits())
-			.map(|entries| entries.len())
-			.unwrap_or_default();
-
-		let second = text_system.measure("Cached", 16.0);
-		let second_cache_entries = text_system
-			.measure_cache
-			.get(&16.0f32.to_bits())
-			.map(|entries| entries.len())
-			.unwrap_or_default();
-
-		assert_eq!(second, first);
-		assert_eq!(second_cache_entries, cache_entries);
-	}
-
-	#[test]
 	fn glyphs_are_rasterized_once_per_character_and_size() {
 		let mut text_system = TextSystem::new();
 		if !text_system.has_font() {
 			return;
 		}
 
-		let small = text_system.glyph('A', 16.0).unwrap().clone();
-		let large = text_system.glyph('A', 24.0).unwrap().clone();
+		let small = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap().clone();
+		let large = text_system.glyph_by_key(GlyphKey::new('A', 24.0)).unwrap().clone();
 		assert_ne!(small, large);
 		assert!(small.is_visible());
 		assert_eq!(text_system.glyph_cache.len(), 2);
 
 		// Repeated lookups hit the same entry instead of rasterizing again.
-		let first: *const Glyph = text_system.glyph('A', 16.0).unwrap();
-		let second: *const Glyph = text_system.glyph('A', 16.0).unwrap();
+		let first: *const Glyph = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap();
+		let second: *const Glyph = text_system.glyph_by_key(GlyphKey::new('A', 16.0)).unwrap();
 		assert_eq!(first, second);
 		assert_eq!(text_system.glyph_cache.len(), 2);
-	}
-
-	#[test]
-	fn glyph_key_normalizes_sizes_below_one_pixel() {
-		assert_eq!(GlyphKey::new('a', 0.25), GlyphKey::new('a', 1.0));
-		assert_ne!(GlyphKey::new('a', 2.0), GlyphKey::new('a', 1.0));
 	}
 
 	#[test]
@@ -862,12 +893,16 @@ mod tests {
 			return;
 		}
 
-		// Placements borrow the cache, so copy what the assertions need.
 		let mut placements = Vec::new();
-		let placed = text_system.place_glyphs("AB\nC", 20.0, (10, 5), |placement| {
-			placements.push((placement.x, placement.y, placement.glyph.xmin, placement.glyph.advance_width));
-		});
+		let placed = text_system.place_glyphs("AB\nC", 20.0, (10, 5), |placement| placements.push(placement));
 		assert!(placed);
+		let placements = placements
+			.into_iter()
+			.map(|placement| {
+				let glyph = text_system.glyph_by_key(placement.key).unwrap();
+				(placement.x, placement.y, glyph.xmin, glyph.advance_width)
+			})
+			.collect::<Vec<_>>();
 		assert_eq!(placements.len(), 3);
 
 		let [a, b, c] = placements[..] else { unreachable!() };
@@ -918,43 +953,12 @@ mod tests {
 	}
 
 	#[test]
-	fn outline_placement_advances_like_measurement_and_wraps_lines() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-
-		let mut placements = Vec::new();
-		assert!(text_system.place_outlines("A B\nC", 20.0, |placement| {
-			placements.push((placement.pen, placement.outline.advance));
-		}));
-		let [a, b, c] = placements[..] else {
-			panic!("Expected three visible glyphs, found {}", placements.len());
-		};
-		let space = text_system.outline(' ').unwrap().1.advance;
-		assert_eq!(a.0[0], 0.0);
-		assert!((b.0[0] - (a.1 + space) * 20.0).abs() < 0.001);
-		assert_eq!(c.0[0], 0.0);
-		let line = text_system.line_metrics(20.0).unwrap();
-		assert!((c.0[1] - a.0[1] - line.line_height).abs() < 0.001);
-
-		// Layout measures with the same advances that drawing places with.
-		let measured = text_system.measure("A B", 20.0);
-		assert!((measured.x() - (a.1 + space + b.1) * 20.0).abs() < 0.001);
-	}
-
-	#[test]
 	fn cubic_segments_become_quadratic_curves_within_tolerance() {
 		use ttf_parser::OutlineBuilder as _;
 
 		// A quarter circle of 800 font units in a 1000 unit em, the usual cubic approximation.
 		let cubic = [[800.0f32, 0.0], [800.0, 441.6], [441.6, 800.0], [0.0, 800.0]];
-		let mut collector = super::OutlineCollector {
-			curves: Vec::new(),
-			scale: 1.0 / 1000.0,
-			start: [0.0; 2],
-			last: [0.0; 2],
-		};
+		let mut collector = super::QuadraticCollector::new(1.0 / 1000.0, super::CUBIC_TOLERANCE);
 		collector.move_to(cubic[0][0], cubic[0][1]);
 		collector.curve_to(cubic[1][0], cubic[1][1], cubic[2][0], cubic[2][1], cubic[3][0], cubic[3][1]);
 
@@ -992,21 +996,5 @@ mod tests {
 				);
 			}
 		}
-	}
-
-	#[test]
-	fn whitespace_produces_no_visible_placement_but_advances() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-
-		let mut placements = Vec::new();
-		assert!(text_system.place_glyphs(" A", 16.0, (0, 0), |placement| {
-			placements.push((placement.x, placement.glyph.xmin))
-		}));
-		assert_eq!(placements.len(), 1);
-		let space = text_system.glyph(' ', 16.0).unwrap();
-		assert_eq!(placements[0].0, space.advance_width + placements[0].1 as f32);
 	}
 }

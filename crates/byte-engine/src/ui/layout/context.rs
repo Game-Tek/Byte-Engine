@@ -9,14 +9,14 @@ use utils::hash::FxHasher;
 
 use crate::ui::{
 	Container, Text,
-	components::{curve::Curve, image::Image, path::Path, shape::Shape, text_field::TextField},
+	components::{curve::Curve, image::Image, path::Path},
 	drag::DragCapture,
 	element::Id,
 	layout::{
 		Geometry,
 		engine::{
-			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, Properties, Read, RenderFuture,
-			Setup, TextEditFuture, With,
+			EvaluationContext, EventFuture, KeyFuture, MountedComponentFuture, PointerState, Read, RenderFuture, Setup,
+			TextEditFuture, With,
 		},
 	},
 	primitive::{Events, Key},
@@ -136,16 +136,8 @@ pub trait Context<C: 'static = ()>: Sized {
 		self.element("text").text(content, setup)
 	}
 
-	fn text_field(
-		&mut self,
-		content: impl Display,
-		setup: impl Setup<TextField>,
-	) -> impl Future<Output = EvaluationContext<C>> {
+	fn text_field(&mut self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>> {
 		self.element("text_field").text_field(content, setup)
-	}
-
-	fn shape(&mut self, setup: impl Setup<Shape>) -> impl Future<Output = EvaluationContext<C>> {
-		self.element("shape").shape(setup)
 	}
 
 	fn curve(&mut self, setup: impl Setup<Curve>) -> impl Future<Output = EvaluationContext<C>> {
@@ -218,9 +210,10 @@ pub trait ElementContext<C: 'static = ()> {
 	fn text(self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>>;
 
 	/// Declares a text field showing `content`, the current value of an application-owned string.
-	fn text_field(self, content: impl Display, setup: impl Setup<TextField>) -> impl Future<Output = EvaluationContext<C>>;
-
-	fn shape(self, setup: impl Setup<Shape>) -> impl Future<Output = EvaluationContext<C>>;
+	///
+	/// It is a [`Text`] the pointer can hit and that receives backward deletes while focused. Edit it with
+	/// [`EvaluationContext::update_text`] once the application changed its string.
+	fn text_field(self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>>;
 
 	/// Declares a stroked curve. It starts full size with no segments; add them with [`Properties::line`] and the
 	/// other segment setters.

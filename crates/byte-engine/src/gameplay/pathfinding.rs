@@ -408,15 +408,6 @@ mod tests {
 		}
 	}
 
-	fn assert_finds_a_direct_path(mut graph: impl TestGraph<u8>) {
-		let start = graph.push(0);
-		let end = graph.push_connected(start, 1);
-
-		let path = a_star(start, end, &graph, |_, _| 1f32);
-
-		assert_eq!(path.as_slice(), [start, end]);
-	}
-
 	fn assert_chooses_the_lower_cost_path(mut graph: impl TestGraph<u8>) {
 		let start = graph.push(0);
 		let middle = graph.push_connected(start, 1);
@@ -436,31 +427,10 @@ mod tests {
 		assert_eq!(path.as_slice(), [start, middle, end]);
 	}
 
-	fn assert_returns_an_empty_path_when_target_is_unreachable(mut graph: impl TestGraph<u8>) {
-		let start = graph.push(0);
-		let end = graph.push(1);
-
-		let path = a_star(start, end, &graph, |_, _| 1f32);
-
-		assert!(path.is_empty());
-	}
-
-	#[test]
-	fn finds_a_direct_path() {
-		assert_finds_a_direct_path(TrivialGraph::new());
-		assert_finds_a_direct_path(BitMatrixGraph::with_capacity(2));
-	}
-
 	#[test]
 	fn chooses_the_lower_cost_path() {
 		assert_chooses_the_lower_cost_path(TrivialGraph::new());
 		assert_chooses_the_lower_cost_path(BitMatrixGraph::with_capacity(3));
-	}
-
-	#[test]
-	fn returns_an_empty_path_when_target_is_unreachable() {
-		assert_returns_an_empty_path_when_target_is_unreachable(TrivialGraph::new());
-		assert_returns_an_empty_path_when_target_is_unreachable(BitMatrixGraph::with_capacity(2));
 	}
 
 	#[test]

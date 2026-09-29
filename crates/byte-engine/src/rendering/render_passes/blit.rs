@@ -3,7 +3,11 @@ use crate::rendering::{
 	render_pass::{RenderPassBuilder, RenderPassReturn, simple_compute},
 };
 
-/// The `ImageBypassPass` struct preserves an intermediate image result when an effect is bypassed.
+/// The `ImageBypassPass` struct copies one image into another so the `main` chain keeps flowing past a pass that
+/// does not write it.
+///
+/// [`RenderPassBuilder::create_main_render_target`] builds one per replacement for bypassed passes, and the renderer
+/// builds one to present scene color when no post-scene pass writes the swapchain.
 pub(crate) struct ImageBypassPass {
 	render_pass: simple_compute::Pass,
 }
@@ -26,20 +30,14 @@ impl ImageBypassPass {
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Render Pass Bypass", Self::PIPELINE),
-		)
-		.expect("Failed to create the render-pass bypass shader. The most likely cause is an incompatible shader interface.");
-		let render_pass = pipeline
-			.bind(
-				render_pass_builder,
-				"Render Pass Bypass Descriptor Set",
-				&[
-					simple_compute::Resource::image("source", source),
-					simple_compute::Resource::image("result", destination),
-				],
-			)
-			.expect(
-				"Failed to bind render-pass bypass resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
-			);
+		);
+		let render_pass = pipeline.bind(
+			"Render Pass Bypass Descriptor Set",
+			&[
+				simple_compute::Resource::image("source", source),
+				simple_compute::Resource::image("result", destination),
+			],
+		);
 
 		Self { render_pass }
 	}
@@ -118,17 +116,32 @@ mod tests {
 
 		for (name, source) in [
 			("blit_image", IMAGE_BYPASS_SHADER),
-			("srgb_display", include_str!("../../../assets/rendering/srgb-display/encode.besl")),
-			("agx_tone_mapping", include_str!("../../../assets/rendering/agx/tone-mapping.besl")),
-			("aces_tone_mapping", include_str!("../../../assets/rendering/aces/tone-mapping.besl")),
+			(
+				"srgb_display",
+				include_str!("../../../assets/rendering/srgb-display/encode.besl"),
+			),
+			(
+				"agx_tone_mapping",
+				include_str!("../../../assets/rendering/agx/tone-mapping.besl"),
+			),
+			(
+				"aces_tone_mapping",
+				include_str!("../../../assets/rendering/aces/tone-mapping.besl"),
+			),
 			("ui_composite", include_str!("../../../assets/rendering/ui/composite.besl")),
 			("sky", include_str!("../../../assets/rendering/sky.besl")),
-			("sky_transmittance", include_str!("../../../assets/rendering/sky-transmittance.besl")),
-			("sky_multiple_scattering", include_str!("../../../assets/rendering/sky-multiple-scattering.besl")),
+			(
+				"sky_transmittance",
+				include_str!("../../../assets/rendering/sky-transmittance.besl"),
+			),
+			(
+				"sky_multiple_scattering",
+				include_str!("../../../assets/rendering/sky-multiple-scattering.besl"),
+			),
 			("sky_view", include_str!("../../../assets/rendering/sky-view.besl")),
 		] {
 			let mut root = besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}"));
-			root.add(vec![crate::rendering::common_shader_generator::CommonShaderScope::new()]);
+			root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 			let root = besl::lex(root).unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
 			let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name(name.to_string());
 

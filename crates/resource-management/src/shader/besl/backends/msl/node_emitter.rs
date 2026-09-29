@@ -3,6 +3,10 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 	fn type_from_besl(source: &str) -> &str {
 		Generator::<A>::translate_type(source)
 	}
+	const SPECIALIZATION_QUALIFIER: &'static str = "constant";
+	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
+		let _ = write!(string, "constant {type_name} {name} [[function_constant({index})]];");
+	}
 	fn minified(&self) -> bool {
 		self.minified
 	}
@@ -28,28 +32,10 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		&mut self,
 		string: &mut String,
 		node: &besl::NodeReference,
-		name: &str,
+		_name: &str,
 		has_previous_parameter: bool,
 	) {
-		if self.task_stage_context.is_some() && name != "main" {
-			self.emit_task_hidden_parameters(string, has_previous_parameter);
-		} else if self.in_compute_body {
-			let uses_simd_lane_id = Self::uses_intrinsic(node, "subgroup_lane_index");
-			if uses_simd_lane_id || self.function_requires_resource_context(node, true) {
-				self.emit_compute_hidden_parameters(string, has_previous_parameter, uses_simd_lane_id);
-			}
-		} else if name != "main"
-			&& (self
-				.raster_stage_context
-				.as_ref()
-				.is_some_and(|context| context.has_hidden_inputs())
-				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(node, true))
-		{
-			self.emit_raster_hidden_parameters(string, has_previous_parameter);
-		}
-		if self.mesh_stage_context.is_some() && name == "main" {
-			self.emit_mesh_hidden_parameters(string, has_previous_parameter);
-		}
+		self.emit_hidden_context(string, node, has_previous_parameter, true);
 	}
 	fn emit_function_statement_block(&mut self, string: &mut String, statements: &[besl::NodeReference], indent: usize) {
 		self.emit_statement_block(string, statements, indent);
@@ -60,24 +46,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		function: &besl::NodeReference,
 		has_previous_argument: bool,
 	) {
-		let function_node = RefCell::borrow(function);
-		if matches!(function_node.node(), besl::Nodes::Function { name, .. } if name != "main") {
-			if self.task_stage_context.is_some() {
-				self.emit_task_hidden_call_arguments(string, has_previous_argument);
-			} else if self.in_compute_body {
-				let uses_simd_lane_id = Self::uses_intrinsic(function, "subgroup_lane_index");
-				if uses_simd_lane_id || self.function_requires_resource_context(function, true) {
-					self.emit_compute_hidden_call_arguments(string, has_previous_argument, uses_simd_lane_id);
-				}
-			} else if self
-				.raster_stage_context
-				.as_ref()
-				.is_some_and(|context| context.has_hidden_inputs())
-				|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function, true)
-			{
-				self.emit_raster_hidden_call_arguments(string, has_previous_argument);
-			}
-		}
+		self.emit_hidden_context(string, function, has_previous_argument, false);
 	}
 	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
 		// Metal declares an array in C position, so the count follows the variable name rather than the
@@ -127,7 +96,7 @@ impl<A: Allocator + Clone> crate::shader::generator::NodeEmitter for Generator<A
 		else {
 			return false;
 		};
-		if crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32()) {
+		if crate::shader::generator::is_builtin_struct_type(name) {
 			return false;
 		}
 

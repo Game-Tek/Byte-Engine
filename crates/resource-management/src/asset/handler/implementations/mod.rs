@@ -1,10 +1,5 @@
 //! Source-format implementations of [`super::AssetHandler`].
 
-pub(crate) mod bema_handler {
-
-	pub(crate) use super::bema::*;
-}
-
 pub(crate) mod handler {
 
 	pub(crate) use super::super::{AssetHandler, BakeContext, LoadErrors};
@@ -16,8 +11,8 @@ pub(crate) mod manager {
 }
 
 pub(crate) use crate::asset::{
-	BEADType, ContainerDefaultResource, ResourceId, container_default_resource, sanitize_material_name, store_model,
-	store_model_owned,
+	ANIMATION_FRAGMENT_PREFIX, BEADType, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
+	commit_mesh, generated_skeleton_id, sanitize_material_name, select_unfragmented_resource, store_model, store_model_owned,
 };
 
 pub mod bema;

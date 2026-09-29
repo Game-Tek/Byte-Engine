@@ -1,4 +1,4 @@
-//! Shared ownership, messaging, factories, and task primitives.
+//! Shared ownership, messaging, factories, and lane primitives.
 //!
 //! Use [`factory::Factory`] when systems need stable creation handles and a
 //! stream of created values. Use [`channel::DefaultChannel`] for general
@@ -29,17 +29,6 @@ pub mod alley;
 #[doc(hidden)]
 pub mod threadpool;
 
-#[doc(hidden)]
-pub mod task;
-
-use std::ops::Deref;
-
 pub use entity::Entity;
 pub use entity::EntityHandle;
 pub use factory::Creator;
-pub use task::Task;
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-}

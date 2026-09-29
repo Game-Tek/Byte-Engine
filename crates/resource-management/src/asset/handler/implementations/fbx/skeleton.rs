@@ -130,11 +130,26 @@ pub(crate) fn import_fbx_animation(
 	for node in &baked.nodes {
 		let target = remap_skeleton_node(source_to_skeleton, node.typed_id)?;
 
-		let translation = import_vec3_curve(&node.translation_keys, "animation translation")?;
+		let translation = import_linear_curve(&node.translation_keys, |key| {
+			Ok((
+				finite_f32(key.time, "animation key time")?,
+				vec3_to_f32(key.value, "animation translation")?,
+			))
+		})?;
 
-		let rotation = import_quaternion_curve(&node.rotation_keys)?;
+		let rotation = import_linear_curve(&node.rotation_keys, |key| {
+			Ok((
+				finite_f32(key.time, "animation key time")?,
+				quat_to_f32(key.value, "animation quaternion")?,
+			))
+		})?;
 
-		let scale = import_vec3_curve(&node.scale_keys, "animation scale")?;
+		let scale = import_linear_curve(&node.scale_keys, |key| {
+			Ok((
+				finite_f32(key.time, "animation key time")?,
+				vec3_to_f32(key.value, "animation scale")?,
+			))
+		})?;
 
 		if translation.is_some() || rotation.is_some() || scale.is_some() {
 			tracks.push(NodeTrack {
@@ -211,11 +226,14 @@ pub(crate) fn remap_skeleton_node(source_to_skeleton: &[u32], source_node: u32) 
 		.ok_or(FbxImportError::InvalidSkeletonNode)
 }
 
-/// Converts baked vectors directly into a persistent linear curve without transient keyframe objects.
-pub(crate) fn import_vec3_curve(
-	keys: &[ufbx::BakedVec3],
-	context: &'static str,
-) -> Result<Option<Vector3Curve>, FbxImportError> {
+/// Converts baked keys directly into a persistent linear curve without transient keyframe objects.
+///
+/// `key` returns one key's checked time and converted value, so translation, rotation, and scale share this path.
+/// Check the time before converting the value, so a key with both defects reports its time first.
+pub(crate) fn import_linear_curve<K, V>(
+	keys: &[K],
+	mut key: impl FnMut(&K) -> Result<(f32, V), FbxImportError>,
+) -> Result<Option<Curve<V>>, FbxImportError> {
 	if keys.is_empty() {
 		return Ok(None);
 	}
@@ -224,30 +242,13 @@ pub(crate) fn import_vec3_curve(
 
 	let mut values = Vec::with_capacity(keys.len());
 
-	for key in keys {
-		times.push(finite_f32(key.time, "animation key time")?);
+	for source in keys {
+		let (time, value) = key(source)?;
 
-		values.push(vec3_to_f32(key.value, context)?);
+		times.push(time);
+
+		values.push(value);
 	}
 
-	Ok(Some(Vector3Curve::Linear { times, values }))
-}
-
-/// Converts baked rotations directly into a persistent linear quaternion curve.
-pub(crate) fn import_quaternion_curve(keys: &[ufbx::BakedQuat]) -> Result<Option<QuaternionCurve>, FbxImportError> {
-	if keys.is_empty() {
-		return Ok(None);
-	}
-
-	let mut times = Vec::with_capacity(keys.len());
-
-	let mut values = Vec::with_capacity(keys.len());
-
-	for key in keys {
-		times.push(finite_f32(key.time, "animation key time")?);
-
-		values.push(quat_to_f32(key.value, "animation quaternion")?);
-	}
-
-	Ok(Some(QuaternionCurve::Linear { times, values }))
+	Ok(Some(Curve::Linear { times, values }))
 }

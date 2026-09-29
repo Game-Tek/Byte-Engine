@@ -6,6 +6,7 @@ use resource_management::resources::skeleton::AffineMatrix4x3Columns;
 use utils::Extent;
 
 use super::geometry::GeometryHandles;
+use crate::animation::math::{cross3, dot_quaternion, dot3, quaternion_product};
 use crate::rendering::PipelineManagerClient;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -203,7 +204,7 @@ fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix4x3Columns) -> Dual
 	let translation = [matrix[3][0], matrix[3][1], matrix[3][2], 0.0];
 	DualQuaternion {
 		real,
-		dual: quaternion_multiply(translation, real).map(|component| component * 0.5),
+		dual: quaternion_product(translation, real).map(|component| component * 0.5),
 	}
 }
 
@@ -226,35 +227,8 @@ fn quaternion_from_rotation_columns(column0: [f32; 3], column1: [f32; 3], column
 		let scale = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
 		[(m02 + m20) / scale, (m12 + m21) / scale, scale * 0.25, (m10 - m01) / scale]
 	};
-	let inverse_length = dot4(quaternion, quaternion).sqrt().recip();
+	let inverse_length = dot_quaternion(quaternion, quaternion).sqrt().recip();
 	quaternion.map(|component| component * inverse_length)
-}
-
-fn quaternion_multiply(left: [f32; 4], right: [f32; 4]) -> [f32; 4] {
-	let [lx, ly, lz, lw] = left;
-	let [rx, ry, rz, rw] = right;
-	[
-		lw * rx + lx * rw + ly * rz - lz * ry,
-		lw * ry - lx * rz + ly * rw + lz * rx,
-		lw * rz + lx * ry - ly * rx + lz * rw,
-		lw * rw - lx * rx - ly * ry - lz * rz,
-	]
-}
-
-fn dot3(left: [f32; 3], right: [f32; 3]) -> f32 {
-	left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-fn dot4(left: [f32; 4], right: [f32; 4]) -> f32 {
-	left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3]
-}
-
-fn cross3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	[
-		left[1] * right[2] - left[2] * right[1],
-		left[2] * right[0] - left[0] * right[2],
-		left[0] * right[1] - left[1] * right[0],
-	]
 }
 
 #[cfg(test)]
@@ -265,19 +239,20 @@ mod tests {
 	use crate::rendering::shader_vm_test::{array_buffer, buffer, compile, push_constant_buffer, run_at};
 
 	/// Parses and links the exact checked-in shader consumed by the runtime resource path.
-	fn production_skinning_main() -> besl::NodeReference {
+	///
+	/// Returns the program rather than its `main`, because the program owns every function it calls.
+	fn production_skinning_program() -> besl::NodeReference {
 		let source = include_str!(concat!(
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/skinning.besl"
 		));
-		besl::compile_to_besl(source, None)
-			.expect(
-				"Failed to compile the checked-in visibility skinning BESL. The most likely cause is invalid production shader syntax.",
-			)
-			.get_main()
-			.expect(
-				"Missing visibility skinning entry point. The most likely cause is that the checked-in shader does not define main.",
-			)
+		let program = besl::compile_to_besl(source, None).expect(
+			"Failed to compile the checked-in visibility skinning BESL. The most likely cause is invalid production shader syntax.",
+		);
+		program.get_main().expect(
+			"Missing visibility skinning entry point. The most likely cause is that the checked-in shader does not define main.",
+		);
+		program
 	}
 
 	/// Binds every skinning slot and runs one lane at the origin.
@@ -339,7 +314,7 @@ mod tests {
 		for (actual, expected) in output[0].real.into_iter().zip([0.0, 0.0, half_sqrt, half_sqrt]) {
 			math::assert_float_eq!(actual, expected);
 		}
-		let recovered_translation = quaternion_multiply(
+		let recovered_translation = quaternion_product(
 			output[0].dual.map(|component| component * 2.0),
 			[-output[0].real[0], -output[0].real[1], -output[0].real[2], output[0].real[3]],
 		);
@@ -383,7 +358,7 @@ mod tests {
 	/// Executes the production skinning semantics with two weighted joints and checks the deformed vertex.
 	#[test]
 	fn skinning_besl_vm_blends_joint_matrices_and_writes_position_and_normal() {
-		let program = compile(production_skinning_main());
+		let program = compile(production_skinning_program());
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, palette, ..] = &mut buffers;
@@ -433,7 +408,7 @@ mod tests {
 	/// Demonstrates that rigid dual-quaternion blending preserves radius across an opposing joint twist.
 	#[test]
 	fn skinning_besl_vm_dual_quaternions_preserve_twist_volume_and_handle_antipodality() {
-		let program = compile(production_skinning_main());
+		let program = compile(production_skinning_program());
 		let mut buffers = skinning_buffers(&program);
 		let mut push_constant = push_constant_buffer(&program);
 		let [positions, normals, joints, weights, _, _, dual_quaternion_palette] = &mut buffers;

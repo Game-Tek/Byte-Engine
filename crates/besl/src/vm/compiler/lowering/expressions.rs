@@ -4,12 +4,11 @@ impl<'a> Compiler<'a> {
 	/// Emits a workgroup-storage load after checking the slot holds the type the caller expects.
 	///
 	/// Both accessor lowering and the `atomic_load` intrinsic read workgroup storage this way, so the
-	/// type check and the [`Instruction::LoadWorkgroup`] emission live here once.
+	/// type check and the [`WorkgroupInstruction::LoadWorkgroup`] emission live here once.
 	pub(super) fn compile_workgroup_load(
 		&mut self,
 		target: ResolvedWorkgroupAccess,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if &target.value_type != expected_type {
 			return Err(VmError::TypeMismatch {
@@ -20,10 +19,10 @@ impl<'a> Compiler<'a> {
 		let index = target
 			.index_expression
 			.as_ref()
-			.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+			.map(|index| self.compile_value_expression(index, &ValueType::U32))
 			.transpose()?;
 		let register = self.allocate_register();
-		self.instructions.push(Instruction::LoadWorkgroup {
+		self.emit(WorkgroupInstruction::LoadWorkgroup {
 			register,
 			name: target.name,
 			index,
@@ -40,20 +39,19 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
 				let inner = elements[0].clone();
 				drop(borrowed);
-				self.compile_value_expression(&inner, expected_type, descriptor_layouts)
+				self.compile_value_expression(&inner, expected_type)
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.get();
 				let parameters = parameters.clone();
 				drop(borrowed);
-				self.compile_function_call_expression(&function, &parameters, expected_type, descriptor_layouts)
+				self.compile_function_call_expression(&function, &parameters, expected_type)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
@@ -61,7 +59,7 @@ impl<'a> Compiler<'a> {
 				let intrinsic = intrinsic.clone();
 				let arguments = arguments.clone();
 				drop(borrowed);
-				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type, descriptor_layouts)
+				self.compile_intrinsic_call_expression(&intrinsic, &arguments, expected_type)
 			}
 			Nodes::Expression(Expressions::Operator { operator, left, right }) => {
 				let comparison = comparison_operator(operator);
@@ -86,8 +84,8 @@ impl<'a> Compiler<'a> {
 				} else {
 					expected_type
 				};
-				let mut left_type = self.infer_expression_type(&left, operand_hint, descriptor_layouts)?;
-				let mut right_type = self.infer_expression_type(&right, operand_hint, descriptor_layouts)?;
+				let mut left_type = self.infer_expression_type(&left, operand_hint)?;
+				let mut right_type = self.infer_expression_type(&right, operand_hint)?;
 				let result_type = if comparison.is_some() {
 					(left_type, right_type) = resolve_comparison_operand_types(&left, &right, left_type, right_type)?;
 					ValueType::Bool
@@ -101,18 +99,18 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let left = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
-				let right = self.compile_value_expression(&right, &right_type, descriptor_layouts)?;
+				let left = self.compile_value_expression(&left, &left_type)?;
+				let right = self.compile_value_expression(&right, &right_type)?;
 				let register = self.allocate_register();
 				if let Some(operator) = comparison {
-					self.instructions.push(Instruction::Compare {
+					self.emit(NumericInstruction::Compare {
 						register,
 						operator,
 						left,
 						right,
 					});
 				} else {
-					self.instructions.push(Instruction::Arithmetic {
+					self.emit(NumericInstruction::Arithmetic {
 						register,
 						operator: arithmetic.expect("Expected arithmetic operator"),
 						left,
@@ -127,7 +125,7 @@ impl<'a> Compiler<'a> {
 
 				let register = self.allocate_register();
 				let value = parse_literal(&value, expected_type)?;
-				self.instructions.push(Instruction::LoadLiteral { register, value });
+				self.emit(ValueInstruction::LoadLiteral { register, value });
 				Ok(register)
 			}
 			Nodes::Expression(Expressions::Member { source, name }) => {
@@ -145,10 +143,10 @@ impl<'a> Compiler<'a> {
 					}
 
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::LoadLocal { register, local });
+					self.emit(LocalInstruction::LoadLocal { register, local });
 					Ok(register)
 				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
-					let target = self.resolve_input_access(expression, descriptor_layouts)?;
+					let target = self.resolve_input_access(expression)?;
 					if &target.value_type != expected_type {
 						return Err(VmError::TypeMismatch {
 							expected: expected_type.name().to_string(),
@@ -157,7 +155,7 @@ impl<'a> Compiler<'a> {
 					}
 
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::LoadBuffer {
+					self.emit(BufferInstruction::LoadBuffer {
 						register,
 						slot: target.slot,
 						offset: target.offset,
@@ -182,7 +180,7 @@ impl<'a> Compiler<'a> {
 						};
 						(ResourceSlot::new(*slot), layout)
 					};
-					match descriptor_layouts.get(&slot) {
+					match self.descriptor_layouts.get(&slot) {
 						Some(existing) if existing != &layout => {
 							return Err(VmError::UnsupportedDescriptor {
 								slot,
@@ -191,11 +189,11 @@ impl<'a> Compiler<'a> {
 						}
 						Some(_) => {}
 						None => {
-							descriptor_layouts.insert(slot, layout);
+							self.descriptor_layouts.insert(slot, layout);
 						}
 					}
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::LoadLiteral {
+					self.emit(ValueInstruction::LoadLiteral {
 						register,
 						value: Value::Resource {
 							slot,
@@ -221,10 +219,10 @@ impl<'a> Compiler<'a> {
 								}
 								Some(Ok(value.clone()))
 							}
-							Nodes::Const { value, .. } | Nodes::Literal { value, .. } => {
+							Nodes::Const { value, .. } => {
 								let value = value.clone();
 								drop(source_ref);
-								return self.compile_value_expression(&value, expected_type, descriptor_layouts);
+								return self.compile_value_expression(&value, expected_type);
 							}
 							_ => None,
 						}
@@ -243,13 +241,13 @@ impl<'a> Compiler<'a> {
 						});
 					}
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::LoadLiteral { register, value });
+					self.emit(ValueInstruction::LoadLiteral { register, value });
 					Ok(register)
 				}
 			}
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(borrowed);
-				self.compile_accessor_expression(expression, expected_type, descriptor_layouts)
+				self.compile_accessor_expression(expression, expected_type)
 			}
 			Nodes::Expression(other) => Err(VmError::UnsupportedExpression {
 				message: format!("Unsupported value expression: {:?}", other),
@@ -265,7 +263,6 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if let Some((slot, count, index, value_type)) = resolve_texture_array_access(expression)? {
 			if &value_type != expected_type {
@@ -277,7 +274,7 @@ impl<'a> Compiler<'a> {
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
 				let element_slot = ResourceSlot::new(slot.slot() + element as u32);
-				match descriptor_layouts.get(&element_slot) {
+				match self.descriptor_layouts.get(&element_slot) {
 					Some(existing) if existing != &DescriptorLayout::Texture => {
 						return Err(VmError::UnsupportedDescriptor {
 							slot: element_slot,
@@ -286,13 +283,13 @@ impl<'a> Compiler<'a> {
 					}
 					Some(_) => {}
 					None => {
-						descriptor_layouts.insert(element_slot, DescriptorLayout::Texture);
+						self.descriptor_layouts.insert(element_slot, DescriptorLayout::Texture);
 					}
 				}
 			}
-			let index = self.compile_value_expression(&index, &ValueType::U32, descriptor_layouts)?;
+			let index = self.compile_value_expression(&index, &ValueType::U32)?;
 			let register = self.allocate_register();
-			self.instructions.push(Instruction::LoadResourceIndexed {
+			self.emit(ValueInstruction::LoadResourceIndexed {
 				register,
 				slot,
 				index,
@@ -302,7 +299,7 @@ impl<'a> Compiler<'a> {
 			return Ok(register);
 		}
 		if let Some(target) = resolve_workgroup_access(expression)? {
-			return self.compile_workgroup_load(target, expected_type, descriptor_layouts);
+			return self.compile_workgroup_load(target, expected_type);
 		}
 		if let Some(target) = resolve_task_payload_access(expression)? {
 			if &target.value_type != expected_type {
@@ -311,9 +308,9 @@ impl<'a> Compiler<'a> {
 					found: target.value_type.name().to_string(),
 				});
 			}
-			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32, descriptor_layouts)?;
+			let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
 			let register = self.allocate_register();
-			self.instructions.push(Instruction::LoadTaskPayload {
+			self.emit(WorkgroupInstruction::LoadTaskPayload {
 				register,
 				name: target.name,
 				index,
@@ -323,14 +320,14 @@ impl<'a> Compiler<'a> {
 			return Ok(register);
 		}
 		if accessor_references_buffer(expression) {
-			let target = self.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?;
+			let target = self.resolve_memory_access(expression, RequiredAccess::Read)?;
 			if &target.value_type != expected_type {
 				return Err(VmError::TypeMismatch {
 					expected: expected_type.name().to_string(),
 					found: target.value_type.name().to_string(),
 				});
 			}
-			return self.compile_resolved_buffer_load(target, descriptor_layouts);
+			return self.compile_resolved_buffer_load(target);
 		}
 		let (left, right) = {
 			let borrowed = expression.borrow();
@@ -341,7 +338,7 @@ impl<'a> Compiler<'a> {
 			};
 			(left.clone(), right.clone())
 		};
-		let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+		let left_type = self.infer_expression_type(&left, expected_type)?;
 		if let Ok(member_name) = extract_member_name(&right) {
 			let (index, result_type) = aggregate_member(&left_type, &member_name)?;
 			if &result_type != expected_type {
@@ -350,9 +347,9 @@ impl<'a> Compiler<'a> {
 					found: result_type.name().to_string(),
 				});
 			}
-			let source = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
+			let source = self.compile_value_expression(&left, &left_type)?;
 			let register = self.allocate_register();
-			self.instructions.push(Instruction::Extract {
+			self.emit(ValueInstruction::Extract {
 				register,
 				source,
 				index,
@@ -368,10 +365,10 @@ impl<'a> Compiler<'a> {
 				found: result_type.name().to_string(),
 			});
 		}
-		let source = self.compile_value_expression(&left, &left_type, descriptor_layouts)?;
-		let index = self.compile_value_expression(&right, &ValueType::U32, descriptor_layouts)?;
+		let source = self.compile_value_expression(&left, &left_type)?;
+		let index = self.compile_value_expression(&right, &ValueType::U32)?;
 		let register = self.allocate_register();
-		self.instructions.push(Instruction::ExtractDynamic {
+		self.emit(ValueInstruction::ExtractDynamic {
 			register,
 			source,
 			index,
@@ -381,15 +378,11 @@ impl<'a> Compiler<'a> {
 		Ok(register)
 	}
 
-	pub(super) fn compile_resolved_buffer_load(
-		&mut self,
-		target: ResolvedBufferAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<usize, VmError> {
-		let target = self.lower_buffer_access(target, descriptor_layouts)?;
+	pub(super) fn compile_resolved_buffer_load(&mut self, target: ResolvedBufferAccess) -> Result<usize, VmError> {
+		let target = self.lower_buffer_access(target)?;
 		let register = self.allocate_register();
 		if let Some(index) = target.index {
-			self.instructions.push(Instruction::LoadBufferIndexed {
+			self.emit(BufferInstruction::LoadBufferIndexed {
 				register,
 				slot: target.slot,
 				offset: target.offset,
@@ -399,7 +392,7 @@ impl<'a> Compiler<'a> {
 				value_type: target.value_type,
 			});
 		} else {
-			self.instructions.push(Instruction::LoadBuffer {
+			self.emit(BufferInstruction::LoadBuffer {
 				register,
 				slot: target.slot,
 				offset: target.offset,
@@ -410,15 +403,9 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Lowers a validated buffer access after type analysis so its dynamic index is emitted exactly once.
-	pub(super) fn lower_buffer_access(
-		&mut self,
-		target: ResolvedBufferAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<LoweredBufferAccess, VmError> {
+	pub(super) fn lower_buffer_access(&mut self, target: ResolvedBufferAccess) -> Result<LoweredBufferAccess, VmError> {
 		let index = match target.index_expression {
-			Some(index_expression) => {
-				Some(self.compile_value_expression(&index_expression, &ValueType::U32, descriptor_layouts)?)
-			}
+			Some(index_expression) => Some(self.compile_value_expression(&index_expression, &ValueType::U32)?),
 			None => None,
 		};
 
@@ -435,7 +422,7 @@ impl<'a> Compiler<'a> {
 	/// Emits the indexed or direct store selected by a lowered buffer access.
 	pub(super) fn emit_buffer_store(&mut self, target: LoweredBufferAccess, register: usize) {
 		if let Some(index) = target.index {
-			self.instructions.push(Instruction::StoreBufferIndexed {
+			self.emit(BufferInstruction::StoreBufferIndexed {
 				slot: target.slot,
 				offset: target.offset,
 				stride: target.stride,
@@ -445,7 +432,7 @@ impl<'a> Compiler<'a> {
 				register,
 			});
 		} else {
-			self.instructions.push(Instruction::StoreBuffer {
+			self.emit(BufferInstruction::StoreBuffer {
 				slot: target.slot,
 				offset: target.offset,
 				value_type: target.value_type,
@@ -456,17 +443,16 @@ impl<'a> Compiler<'a> {
 
 	/// Lowers value-producing texture, image, atomic, numeric, and invocation intrinsics into typed instructions.
 	pub(super) fn infer_expression_type(
-		&self,
+		&mut self,
 		expression: &NodeReference,
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ValueType, VmError> {
 		let borrowed = expression.borrow();
 		match borrowed.node() {
 			Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => {
 				let inner = elements[0].clone();
 				drop(borrowed);
-				self.infer_expression_type(&inner, expected_type, descriptor_layouts)
+				self.infer_expression_type(&inner, expected_type)
 			}
 			Nodes::Expression(Expressions::Literal { value }) => {
 				if matches!(value.as_str(), "true" | "false") {
@@ -494,7 +480,7 @@ impl<'a> Compiler<'a> {
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })
 				} else if matches!(source.borrow().node(), Nodes::Input { .. }) {
-					Ok(self.resolve_input_access(expression, descriptor_layouts)?.value_type)
+					Ok(self.resolve_input_access(expression)?.value_type)
 				} else {
 					resolve_referenced_value_type(&source)
 				}
@@ -510,11 +496,9 @@ impl<'a> Compiler<'a> {
 				} else if let Some(target) = resolve_task_payload_access(expression)? {
 					Ok(target.value_type)
 				} else if accessor_references_buffer(expression) {
-					Ok(self
-						.resolve_memory_access(expression, RequiredAccess::Read, descriptor_layouts)?
-						.value_type)
+					Ok(self.resolve_memory_access(expression, RequiredAccess::Read)?.value_type)
 				} else {
-					let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
+					let left_type = self.infer_expression_type(&left, expected_type)?;
 					if let Ok(member_name) = extract_member_name(&right) {
 						Ok(aggregate_member(&left_type, &member_name)?.1)
 					} else {
@@ -541,8 +525,8 @@ impl<'a> Compiler<'a> {
 					let left = left.clone();
 					let right = right.clone();
 					drop(borrowed);
-					let left_type = self.infer_expression_type(&left, expected_type, descriptor_layouts)?;
-					let right_type = self.infer_expression_type(&right, expected_type, descriptor_layouts)?;
+					let left_type = self.infer_expression_type(&left, expected_type)?;
+					let right_type = self.infer_expression_type(&right, expected_type)?;
 					binary_result_type(operator, &left_type, &right_type)
 				}
 			}

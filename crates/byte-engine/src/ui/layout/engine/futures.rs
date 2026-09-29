@@ -284,17 +284,46 @@ impl<C: 'static> FusedFuture for RenderFuture<C> {
 	}
 }
 
-pub struct EventFuture<C = ()> {
+/// The `InputFuture` struct resolves with the next input of one kind that reaches its element, such as a click.
+///
+/// Get one from [`ContainerContext::on`], [`ContainerContext::on_key`], or [`ContainerContext::on_text_edit`] and
+/// await it, usually inside a loop or a `select!`. A wait counts only while its task keeps polling it, so an input
+/// that arrives after the task stops awaiting the future is not kept for it.
+///
+/// [`ContainerContext::on`]: crate::ui::ContainerContext::on
+/// [`ContainerContext::on_key`]: crate::ui::ContainerContext::on_key
+/// [`ContainerContext::on_text_edit`]: crate::ui::ContainerContext::on_text_edit
+pub struct InputFuture<C, E: UiInput> {
 	pub(super) target: Id,
-	pub(super) kind: Events,
+	pub(super) filter: E::Filter,
 	pub(super) complete: bool,
 	pub(super) ctx: PhantomData<fn() -> C>,
 }
 
-impl<C> Unpin for EventFuture<C> {}
+/// Resolves with the next pointer [`UiEvent`] of one [`Events`] kind.
+pub type EventFuture<C = ()> = InputFuture<C, UiEvent>;
 
-impl<C: 'static> Future for EventFuture<C> {
-	type Output = UiEvent;
+/// Resolves with the next press of one [`Key`] while the element is focused.
+pub type KeyFuture<C = ()> = InputFuture<C, UiKeyEvent>;
+
+/// Resolves with the next [`TextEdit`] made while the element is focused.
+pub type TextEditFuture<C = ()> = InputFuture<C, UiTextEditEvent>;
+
+impl<C, E: UiInput> InputFuture<C, E> {
+	pub(super) fn new(target: Id, filter: E::Filter) -> Self {
+		Self {
+			target,
+			filter,
+			complete: false,
+			ctx: PhantomData,
+		}
+	}
+}
+
+impl<C, E: UiInput> Unpin for InputFuture<C, E> {}
+
+impl<C: 'static, E: Routed> Future for InputFuture<C, E> {
+	type Output = E;
 
 	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
 		if self.complete {
@@ -302,81 +331,16 @@ impl<C: 'static> Future for EventFuture<C> {
 		}
 		let access = UiPoll::<C>::from_context(cx);
 		let (task, poll) = access.current();
-		if let Some(event) = access.runtime.take_event(task, self.target, self.kind) {
+		if let Some(input) = access.runtime.take_event::<E>(task, self.target, self.filter) {
 			self.complete = true;
-			return Poll::Ready(event);
+			return Poll::Ready(input);
 		}
-		access.runtime.wait_for_event(task, self.target, self.kind, poll);
+		access.runtime.wait_for_event::<E>(task, self.target, self.filter, poll);
 		Poll::Pending
 	}
 }
 
-impl<C: 'static> FusedFuture for EventFuture<C> {
-	fn is_terminated(&self) -> bool {
-		self.complete
-	}
-}
-
-pub struct KeyFuture<C = ()> {
-	pub(super) target: Id,
-	pub(super) key: Key,
-	pub(super) complete: bool,
-	pub(super) ctx: PhantomData<fn() -> C>,
-}
-
-impl<C> Unpin for KeyFuture<C> {}
-
-impl<C: 'static> Future for KeyFuture<C> {
-	type Output = UiKeyEvent;
-
-	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-		if self.complete {
-			return Poll::Pending;
-		}
-		let access = UiPoll::<C>::from_context(cx);
-		let (task, poll) = access.current();
-		if let Some(event) = access.runtime.take_key_event(task, self.target, self.key) {
-			self.complete = true;
-			return Poll::Ready(event);
-		}
-		access.runtime.wait_for_key(task, self.target, self.key, poll);
-		Poll::Pending
-	}
-}
-
-impl<C: 'static> FusedFuture for KeyFuture<C> {
-	fn is_terminated(&self) -> bool {
-		self.complete
-	}
-}
-
-pub struct TextEditFuture<C = ()> {
-	pub(super) target: Id,
-	pub(super) complete: bool,
-	pub(super) ctx: PhantomData<fn() -> C>,
-}
-
-impl<C> Unpin for TextEditFuture<C> {}
-
-impl<C: 'static> Future for TextEditFuture<C> {
-	type Output = UiTextEditEvent;
-
-	fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-		if self.complete {
-			return Poll::Pending;
-		}
-		let access = UiPoll::<C>::from_context(cx);
-		let (task, poll) = access.current();
-		if let Some(event) = access.runtime.take_text_edit_event(task, self.target) {
-			self.complete = true;
-			return Poll::Ready(event);
-		}
-		access.runtime.wait_for_text_edit(task, self.target, poll);
-		Poll::Pending
-	}
-}
-
-impl<C: 'static> FusedFuture for TextEditFuture<C> {
+impl<C: 'static, E: Routed> FusedFuture for InputFuture<C, E> {
 	fn is_terminated(&self) -> bool {
 		self.complete
 	}

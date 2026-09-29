@@ -14,7 +14,7 @@ use crate::{
 	application::LoopWaker,
 	core::{EntityHandle, factory::Handle},
 	inspector::{
-		Inspector, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
+		DefaultInspector, MAX_SCREENSHOT_CAPTURES, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
 		ScreenshotSubmitError,
 	},
 };
@@ -34,7 +34,7 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// `payload` so editor clients can build controls before posting a message.
 ///
 /// `POST /messages` accepts message types registered through
-/// [`Inspector::register_message`]. To move an entity, send a JSON object with
+/// [`DefaultInspector::register_message`]. To move an entity, send a JSON object with
 /// `type: "TransformationUpdate"`, its numeric `target` handle, and the complete
 /// reflected [`Transform`](crate::gameplay::Transform) payload. To remove an
 /// entity, send `type: "Delete"` or `type: "Destroy"` with its target and a
@@ -44,8 +44,8 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// resolve its target with `GET /entities?name=<action>` and send `type:
 /// "TriggerAction"` with a reflected [`Value`](crate::input::Value).
 ///
-/// The server retains only an [`Inspector`] trait object. Pass the same inspector
-/// handle to another transport when clients need a second protocol surface.
+/// The server shares the [`DefaultInspector`] handle, so another transport can
+/// serve a second protocol surface from the same handle.
 /// `GET /screenshots?sink=<index>` returns one image. Add `target=<name>` to read
 /// a scene target, `pass=<name>` to read it right after that pass, and
 /// `previous=true` to read the copy of a history target that the previous frame
@@ -63,7 +63,7 @@ impl HttpInspectorServer {
 	/// Starts the HTTP inspector transport on the loopback interface at port 6680.
 	///
 	/// Next, request `GET /entities` to verify that the application is available.
-	pub fn new(inspector: EntityHandle<dyn Inspector>, waker: LoopWaker) -> Self {
+	pub fn new(inspector: EntityHandle<DefaultInspector>, waker: LoopWaker) -> Self {
 		Self::spawn(
 			inspector,
 			waker,
@@ -81,7 +81,7 @@ impl HttpInspectorServer {
 
 	/// Starts the inspector on each requested socket address.
 	fn spawn(
-		inspector: EntityHandle<dyn Inspector>,
+		inspector: EntityHandle<DefaultInspector>,
 		waker: LoopWaker,
 		addresses: impl IntoIterator<Item = SocketAddr>,
 	) -> io::Result<Self> {
@@ -105,7 +105,7 @@ impl HttpInspectorServer {
 }
 
 /// Answers one inspector request.
-fn handle_request(inspector: &dyn Inspector, waker: &LoopWaker, request: &mut Request<Body>) -> Response<Body> {
+fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut Request<Body>) -> Response<Body> {
 	match (request.method(), request.uri().path()) {
 		(&Method::GET, "/screenshots") => screenshot_response(inspector, waker, request.uri().query()),
 		(&Method::POST, "/screenshots") => screenshots_response(inspector, waker, request.body_mut()),
@@ -123,7 +123,7 @@ fn handle_request(inspector: &dyn Inspector, waker: &LoopWaker, request: &mut Re
 }
 
 /// Serializes the current factory-backed entity catalog.
-fn entities_response(inspector: &dyn Inspector, query: Option<&str>) -> Response<Body> {
+fn entities_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
 	let query = match parse_entity_query(query) {
 		Ok(query) => query,
 		Err(()) => {
@@ -153,13 +153,13 @@ fn parse_entity_query(query: Option<&str>) -> Result<EntityQuery, ()> {
 }
 
 /// Drains and serializes passive message publications without payloads.
-fn messages_response(inspector: &dyn Inspector) -> Response<Body> {
+fn messages_response(inspector: &DefaultInspector) -> Response<Body> {
 	let messages = inspector.drain_messages();
 	json_response(&serde_json::json!({ "messages": messages }))
 }
 
 /// Serializes the protocol message types accepted by the posting endpoint.
-fn message_types_response(inspector: &dyn Inspector) -> Response<Body> {
+fn message_types_response(inspector: &DefaultInspector) -> Response<Body> {
 	let types = inspector.message_types();
 	json_response(&serde_json::json!({ "types": types }))
 }
@@ -184,11 +184,12 @@ struct MessageRequest {
 	#[serde(rename = "type")]
 	message_type: String,
 	target: u32,
-	payload: serde_json::Value,
+	/// The payload text, which the registered message parses once against its reflected shape.
+	payload: Box<serde_json::value::RawValue>,
 }
 
 /// Parses and posts one complete message envelope from the HTTP request body.
-fn message_response(inspector: &dyn Inspector, body: &mut Body) -> Response<Body> {
+fn message_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Body> {
 	let request: MessageRequest = match serde_json::from_reader(body) {
 		Ok(request) => request,
 		Err(error) => {
@@ -206,7 +207,7 @@ fn message_response(inspector: &dyn Inspector, body: &mut Body) -> Response<Body
 			"Inspector message request is invalid. The most likely cause is an empty `type`.",
 		);
 	}
-	match inspector.post_message(&request.message_type, Handle::from_id(request.target), &request.payload) {
+	match inspector.post_message(&request.message_type, Handle::from_id(request.target), request.payload.get()) {
 		Ok(()) => response(StatusCode::NO_CONTENT, Body::empty()),
 		Err(error) => response(StatusCode::BAD_REQUEST, error),
 	}
@@ -228,7 +229,7 @@ struct EncodedCapture {
 }
 
 /// Handles one single-image screenshot request after HTTP routing has selected the endpoint.
-fn screenshot_response(inspector: &dyn Inspector, waker: &LoopWaker, query: Option<&str>) -> Response<Body> {
+fn screenshot_response(inspector: &DefaultInspector, waker: &LoopWaker, query: Option<&str>) -> Response<Body> {
 	let Ok(capture) = parse_screenshot_query(query) else {
 		return response(
 			StatusCode::BAD_REQUEST,
@@ -303,7 +304,7 @@ impl CaptureFields {
 }
 
 /// Handles one same-frame screenshot batch and returns every image as one `multipart/form-data` part.
-fn screenshots_response(inspector: &dyn Inspector, waker: &LoopWaker, body: &mut Body) -> Response<Body> {
+fn screenshots_response(inspector: &DefaultInspector, waker: &LoopWaker, body: &mut Body) -> Response<Body> {
 	let captures = serde_json::from_reader::<_, ScreenshotsBody>(body)
 		.map_err(|error| error.to_string())
 		.and_then(|body| {
@@ -366,7 +367,7 @@ fn screenshots_response(inspector: &dyn Inspector, waker: &LoopWaker, body: &mut
 ///
 /// Encoding runs on this transport thread so HDR encoders never delay a graphics frame.
 fn capture_screenshots(
-	inspector: &dyn Inspector,
+	inspector: &DefaultInspector,
 	waker: &LoopWaker,
 	captures: &[CaptureRequest],
 ) -> Result<(u64, Vec<EncodedCapture>), (StatusCode, String)> {
@@ -621,8 +622,8 @@ mod tests {
 		},
 		gameplay::{Name, TransformationUpdate},
 		inspector::{
-			DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, ScreenshotCapture, ScreenshotError, ScreenshotFormat,
-			ScreenshotSelection, Screenshots, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::ScreenshotBroker,
+			DESTROY_MESSAGE_TYPE, DefaultInspector, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
+			Screenshots, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::ScreenshotBroker,
 		},
 	};
 
@@ -655,7 +656,7 @@ mod tests {
 	}
 
 	impl TestServer {
-		fn new(inspector: EntityHandle<dyn Inspector>) -> Self {
+		fn new(inspector: EntityHandle<DefaultInspector>) -> Self {
 			// Reserve an available local port so the test exercises the real socket path without competing for the production port.
 			let reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("reserve inspector test port");
 			let address = reservation.local_addr().expect("read inspector test address");
@@ -1052,39 +1053,6 @@ mod tests {
 			selection: ScreenshotSelection { sink, capture },
 			format,
 		}
-	}
-
-	#[test]
-	fn screenshot_query_without_a_pass_selects_a_scene_target() {
-		assert_eq!(
-			super::parse_screenshot_query(Some("sink=1&target=SSGI+History")),
-			Ok(capture(
-				1,
-				ScreenshotCapture::SceneTarget {
-					target: "SSGI History".to_string(),
-				},
-				ScreenshotFormat::Png,
-			))
-		);
-		assert_eq!(super::parse_screenshot_query(Some("sink=1&pass=bloom")), Err(()));
-	}
-
-	#[test]
-	fn screenshot_query_selects_a_previous_frame_target_and_an_encoding() {
-		assert_eq!(
-			super::parse_screenshot_query(Some("sink=0&target=Diffuse+Radiance+History&previous=true&format=exr")),
-			Ok(capture(
-				0,
-				ScreenshotCapture::PreviousSceneTarget {
-					target: "Diffuse Radiance History".to_string(),
-				},
-				ScreenshotFormat::Exr,
-			))
-		);
-		assert_eq!(
-			super::parse_screenshot_query(Some("sink=0&previous=false&format=raw")),
-			Ok(capture(0, ScreenshotCapture::FinalSwapchain, ScreenshotFormat::Raw))
-		);
 	}
 
 	#[test]

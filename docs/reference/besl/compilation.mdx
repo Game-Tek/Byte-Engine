@@ -34,7 +34,7 @@ code. They are not syntax you can write in a `.besl` file.
 | Backend-specific code | `ParserNode::glsl`, `ParserNode::hlsl`, `ParserNode::msl`, or `ParserNode::raw_code` | Bridge a feature that portable BESL can't express. Declare every graph input and output. |
 | Specialization value | `ParserNode::specialization` | Add a host-selected typed value. The VM receives values through `SpecializationValues`. |
 | Custom intrinsic | `ParserNode::intrinsic` or `ParserNode::intrinsic_with_parameters` | Register a generated callable operation and its typed body. |
-| Generated struct | `#[derive(BeslStruct)]` or `besl_struct_node!` | Expose a Rust record shape to the BESL parent scope. |
+| Generated struct | `ParserNode::r#struct` with `ParserNode::member` fields | Expose a Rust record shape to the BESL parent scope. |
 | Parent scope | `compile_to_besl(source, Some(parent))` | Let authored source resolve generated types, values, bindings, and helpers. |
 
 Raw nodes declare their dependencies explicitly. For example, renderer code can
@@ -108,7 +108,6 @@ invocation coordinates, subgroup size, and task or mesh output limits.
 - [`lex`](https://docs.rs/byte-engine-besl/latest/besl/fn.lex.html)
 - [`compile_to_besl`](https://docs.rs/byte-engine-besl/latest/besl/fn.compile_to_besl.html)
 - [`optimization` module](https://docs.rs/byte-engine-besl/latest/besl/optimization/)
-- [`BeslStruct`](https://docs.rs/byte-engine-besl/latest/besl/derive.BeslStruct.html)
 - [`vm` module](https://docs.rs/byte-engine-besl/latest/besl/vm/)
 
 Return to the [BESL language reference](/docs/reference/besl) for the normal

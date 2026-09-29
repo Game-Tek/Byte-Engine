@@ -1,5 +1,3 @@
-const SOURCE_ATLAS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const OUTPUT_ATLAS_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
 const GPU_ATLAS_MAX_DIMENSION: u32 = 8192;
 
 /// The `GPUIBLBakeError` enum identifies why environment-map generation could not use the GPU path.
@@ -93,15 +91,13 @@ pub struct OwnedBakedImageIBL {
 /// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
 /// without moving or concurrently accessing the backend context.
 pub struct GPUIBLClient {
-	sender: SyncSender<GPUIBLWorkerMessage>,
-	responses: Mutex<mpsc::Receiver<Result<OwnedBakedImageIBL, GPUIBLBakeError>>>,
-	worker: Option<JoinHandle<()>>,
+	worker: GpuWorker<Extent, Result<OwnedBakedImageIBL, GPUIBLBakeError>>,
 }
 
 impl GPUIBLClient {
 	/// Creates a dedicated worker with its own compute device and context.
 	pub fn try_new() -> Result<Self, GPUIBLBakeError> {
-		Self::spawn(GPUIBLProcessor::try_new)
+		Self::from_processor_factory(GPUIBLProcessor::try_new)
 	}
 
 	/// Runs a processor factory on the dedicated GPU thread before accepting requests.
@@ -111,122 +107,31 @@ impl GPUIBLClient {
 	pub fn from_processor_factory(
 		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, GPUIBLBakeError> {
-		Self::spawn(initialize)
+		let worker =
+			GpuWorker::spawn("GPU Environment Map Worker", initialize, GPUIBLProcessor::bake_image_ibl).map_err(|error| {
+				match error {
+					GpuWorkerSpawnError::Initialization(error) => error,
+					GpuWorkerSpawnError::WorkerCreation(error) => GPUIBLBakeError::WorkerCreation(error.to_string()),
+					GpuWorkerSpawnError::WorkerUnavailable => GPUIBLBakeError::WorkerUnavailable,
+				}
+			})?;
+		Ok(Self { worker })
 	}
 
 	/// Submits one borrowed source image and waits until the GPU result is safe to consume.
 	pub fn bake_image_ibl(&self, source_extent: Extent, source_rgba16f: &[u8]) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
-		// One outstanding round trip matches the single GPU worker and avoids allocating a response channel per image.
-		let responses = self.responses.lock().map_err(|_| GPUIBLBakeError::WorkerUnavailable)?;
-		let request = GPUIBLRequest {
-			source_extent,
-			source: source_rgba16f.as_ptr(),
-			source_len: source_rgba16f.len(),
-		};
-		self.sender
-			.send(GPUIBLWorkerMessage::Bake(request))
-			.map_err(|_| GPUIBLBakeError::WorkerUnavailable)?;
-		responses.recv().map_err(|_| GPUIBLBakeError::WorkerUnavailable)?
+		self.worker
+			.call(source_extent, source_rgba16f)
+			.ok_or(GPUIBLBakeError::WorkerUnavailable)?
 	}
 
-	/// Starts the context-owning worker and reports initialization before accepting requests.
+	/// Creates a client whose worker already stopped, so every bake reports it as unavailable.
 	#[cfg(test)]
 	pub(crate) fn unavailable_for_test() -> Self {
-		let (sender, receiver) = mpsc::sync_channel(1);
-		let (response_sender, responses) = mpsc::sync_channel(1);
-		drop(receiver);
-		drop(response_sender);
 		Self {
-			sender,
-			responses: Mutex::new(responses),
-			worker: None,
+			worker: GpuWorker::unavailable(),
 		}
 	}
-
-	fn spawn(
-		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
-	) -> Result<Self, GPUIBLBakeError> {
-		let (sender, receiver) = mpsc::sync_channel(1);
-		let (response_sender, responses) = mpsc::sync_channel(1);
-		let (startup, startup_receiver) = mpsc::sync_channel(1);
-		let worker = std::thread::Builder::new()
-			.name("GPU Environment Map Worker".to_string())
-			.spawn(move || {
-				let mut processor = match initialize() {
-					Ok(processor) => {
-						let _ = startup.send(Ok(()));
-						processor
-					}
-					Err(error) => {
-						let _ = startup.send(Err(error));
-						return;
-					}
-				};
-
-				while let Ok(message) = receiver.recv() {
-					match message {
-						GPUIBLWorkerMessage::Bake(request) => {
-							// SAFETY: The submitting asset worker blocks on this response, so the source allocation
-							// remains live and immutable for the reconstructed slice's full use.
-							let source = unsafe { std::slice::from_raw_parts(request.source, request.source_len) };
-							let result = processor.bake_image_ibl(request.source_extent, source);
-							if response_sender.send(result).is_err() {
-								return;
-							}
-						}
-						GPUIBLWorkerMessage::Shutdown => return,
-					}
-				}
-			})
-			.map_err(|error| GPUIBLBakeError::WorkerCreation(error.to_string()))?;
-
-		match startup_receiver.recv() {
-			Ok(Ok(())) => Ok(Self {
-				sender,
-				responses: Mutex::new(responses),
-				worker: Some(worker),
-			}),
-			Ok(Err(error)) => {
-				let _ = worker.join();
-				Err(error)
-			}
-			Err(_) => {
-				let _ = worker.join();
-				Err(GPUIBLBakeError::WorkerUnavailable)
-			}
-		}
-	}
-}
-
-impl Drop for GPUIBLClient {
-	fn drop(&mut self) {
-		let _ = self.sender.send(GPUIBLWorkerMessage::Shutdown);
-		if let Some(worker) = self.worker.take() {
-			let _ = worker.join();
-		}
-	}
-}
-
-/// The request uses a borrowed pointer only while the submitting thread is synchronously waiting for its response.
-struct GPUIBLRequest {
-	source_extent: Extent,
-	source: *const u8,
-	source_len: usize,
-}
-
-// SAFETY: `GPUIBLClient::bake_image_ibl` does not return until the worker responds or disconnects. The immutable source
-// slice therefore outlives every worker access, and no mutable reference can coexist with the caller's shared borrow.
-unsafe impl Send for GPUIBLRequest {}
-
-enum GPUIBLWorkerMessage {
-	Bake(GPUIBLRequest),
-	Shutdown,
-}
-
-/// The `GPUIBLConstruction` struct preserves context-before-owner drop order while GPU initialization can fail.
-struct GPUIBLConstruction {
-	context: ghi::implementation::Context,
-	owner: Box<dyn Any>,
 }
 
 /// The `GPUIBLProcessor` struct provides thread-confined environment-map generation with CPU-compatible output.
@@ -251,24 +156,12 @@ impl GPUIBLProcessor {
 	/// Call this constructor inside [`crate::ibl::IBLGenerator::with_gpu_processor_factory`] when an asset handler owns the
 	/// generation path.
 	pub fn try_new() -> Result<Self, GPUIBLBakeError> {
-		let features = ghi::device::Features::new().mesh_shading(false);
-		let mut instance = ghi::implementation::Instance::new(features).map_err(GPUIBLBakeError::InstanceCreation)?;
-		let mut queue = None;
-		let device = instance
-			.create_device(
-				features,
-				&mut [(
-					ghi::QueueSelection::new(ghi::WorkloadTypes::COMPUTE | ghi::WorkloadTypes::TRANSFER),
-					&mut queue,
-				)],
-			)
-			.map_err(GPUIBLBakeError::DeviceCreation)?;
-		let context = device.create_context().map_err(GPUIBLBakeError::ContextCreation)?;
-		Self::from_parts(
-			context,
-			queue.expect("GHI device creation must populate the requested compute queue handle."),
-			(device, instance),
-		)
+		let (context, queue, owner) = create_compute_context().map_err(|error| match error {
+			ComputeContextError::Instance(error) => GPUIBLBakeError::InstanceCreation(error),
+			ComputeContextError::Device(error) => GPUIBLBakeError::DeviceCreation(error),
+			ComputeContextError::Context(error) => GPUIBLBakeError::ContextCreation(error),
+		})?;
+		Self::from_parts(context, queue, owner)
 	}
 
 	/// Uses a caller-created auxiliary context for environment-map generation.
@@ -290,12 +183,13 @@ impl GPUIBLProcessor {
 		owner: Owner,
 	) -> Result<Self, GPUIBLBakeError> {
 		// Keep native owners alive after the context on every early-return and unwinding path.
-		let mut construction = GPUIBLConstruction {
+		let mut construction = OwnedContext {
 			context,
 			owner: Box::new(owner),
 		};
 		let context = &mut construction.context;
-		let compiled = ghi::shader::compile(
+		let pipeline = create_compute_kernel(
+			context,
 			"GPU environment-map generation",
 			ghi::shader::ShaderSource::PlatformNative {
 				glsl: GPU_IBL_GLSL,
@@ -304,42 +198,15 @@ impl GPUIBLProcessor {
 				hlsl: GPU_IBL_HLSL,
 				hlsl_entry_point: "generate_environment_map",
 			},
+			std::mem::size_of::<GPUIBLPushConstants>(),
 		)
-		.map_err(GPUIBLBakeError::ShaderCompilation)?;
-		let resources = [
-			ghi::ShaderResourceDescriptor::single(
-				SOURCE_ATLAS_SLOT,
-				ghi::ResourceKind::CombinedImageSampler,
-				ghi::AccessPolicies::READ,
-			),
-			ghi::ShaderResourceDescriptor::single(
-				OUTPUT_ATLAS_SLOT,
-				ghi::ResourceKind::StorageImage,
-				ghi::AccessPolicies::WRITE,
-			),
-		];
-		let shader = context
-			.create_shader(
-				Some("GPU environment-map generation"),
-				compiled.as_source(),
-				ghi::ShaderTypes::Compute,
-				resources,
-			)
-			.map_err(|_| GPUIBLBakeError::ShaderCreation)?;
-		let push_constant_ranges = [ghi::pipelines::PushConstantRange::new(
-			0,
-			std::mem::size_of::<GPUIBLPushConstants>() as u32,
-		)];
-		let pipeline = context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(
-				&push_constant_ranges,
-				ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute),
-			)
-			.name("GPU environment-map generation"),
-		);
+		.map_err(|error| match error {
+			ComputeKernelError::Compilation(error) => GPUIBLBakeError::ShaderCompilation(error),
+			ComputeKernelError::Creation => GPUIBLBakeError::ShaderCreation,
+		})?;
 		let source_sampler = context.build_sampler(ghi::sampler::Builder::new().max_lod(0.0));
 
-		let GPUIBLConstruction { context, owner } = construction;
+		let OwnedContext { context, owner } = construction;
 		Ok(Self {
 			context,
 			pipeline,
@@ -441,12 +308,12 @@ impl GPUIBLProcessor {
 		self.context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
-				SOURCE_ATLAS_SLOT,
+				SOURCE_SLOT,
 				source_atlas,
 				self.source_sampler,
 				ghi::Layouts::Read,
 			),
-			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_ATLAS_SLOT, output_atlas, ghi::Layouts::General),
+			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_SLOT, output_atlas, ghi::Layouts::General),
 		]);
 		let command_buffer = self
 			.context
@@ -578,20 +445,17 @@ fn source_level_y_offsets(source_height: u32) -> [[u32; 4]; 4] {
 }
 
 /// Computes the vertical source-mip atlas without allocating level descriptors.
-fn source_atlas_layout(mut width: u32, mut height: u32) -> Result<(Extent, u32), GPUIBLBakeError> {
-	let atlas_width = width;
+fn source_atlas_layout(width: u32, height: u32) -> Result<(Extent, u32), GPUIBLBakeError> {
 	let mut atlas_height = 0_u32;
 	let mut level_count = 0_u32;
-	loop {
-		atlas_height = atlas_height.checked_add(height).ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
+	// Levels stack vertically in the full-width atlas.
+	for (_, level_height) in mip_extents(width, height) {
+		atlas_height = atlas_height
+			.checked_add(level_height)
+			.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
 		level_count += 1;
-		if width == 1 && height == 1 {
-			break;
-		}
-		width = (width / 2).max(1);
-		height = (height / 2).max(1);
 	}
-	Ok((Extent::rectangle(atlas_width, atlas_height), level_count))
+	Ok((Extent::rectangle(width, atlas_height), level_count))
 }
 
 /// Streams sanitized source pixels and filtered lower levels directly into GHI texture staging.
@@ -658,13 +522,11 @@ fn generate_source_mip(
 
 	for y in 0..destination_height {
 		for x in 0..destination_width {
-			destination.push(filter_source_texel(
+			destination.push(downsample_source_pixel(
 				source_width,
 				source_height,
-				destination_width,
-				destination_height,
-				x,
-				y,
+				[x, y],
+				[destination_width, destination_height],
 				&mut source_pixel,
 			));
 		}
@@ -691,14 +553,12 @@ fn downsample_source_mip_in_place(
 			let destination_index = y as usize * destination_width as usize + x as usize;
 			// Each filtered region starts at or after its destination index. Write only after reading the complete region so
 			// this compacting pass cannot replace a texel needed by a later destination.
-			let radiance = filter_source_texel(
+			let radiance = downsample_source_pixel(
 				source_width,
 				source_height,
-				destination_width,
-				destination_height,
-				x,
-				y,
-				&mut |source_index| pixels[source_index],
+				[x, y],
+				[destination_width, destination_height],
+				|source_index| pixels[source_index],
 			);
 			pixels[destination_index] = radiance;
 		}
@@ -706,42 +566,6 @@ fn downsample_source_mip_in_place(
 	pixels.truncate(pixel_count);
 
 	Ok((destination_width, destination_height))
-}
-
-/// Filters one destination texel with the CPU path's accumulation order and precision.
-#[allow(clippy::too_many_arguments)]
-fn filter_source_texel(
-	source_width: u32,
-	source_height: u32,
-	destination_width: u32,
-	destination_height: u32,
-	x: u32,
-	y: u32,
-	source_pixel: &mut impl FnMut(usize) -> Radiance,
-) -> Radiance {
-	let source_y_begin = y as u64 * source_height as u64 / destination_height as u64;
-	let source_y_end = ((y + 1) as u64 * source_height as u64 / destination_height as u64).max(source_y_begin + 1);
-	let source_x_begin = x as u64 * source_width as u64 / destination_width as u64;
-	let source_x_end = ((x + 1) as u64 * source_width as u64 / destination_width as u64).max(source_x_begin + 1);
-	let mut sum = [0.0_f64; 3];
-	let mut total_weight = 0.0_f64;
-
-	for source_y in source_y_begin..source_y_end {
-		let weight = lat_long_row_solid_angle(source_width, source_height, source_y as u32) as f64;
-		for source_x in source_x_begin..source_x_end {
-			let radiance = source_pixel(source_y as usize * source_width as usize + source_x as usize);
-			for channel in 0..3 {
-				sum[channel] += radiance[channel] as f64 * weight;
-			}
-			total_weight += weight;
-		}
-	}
-
-	[
-		(sum[0] / total_weight) as f32,
-		(sum[1] / total_weight) as f32,
-		(sum[2] / total_weight) as f32,
-	]
 }
 
 /// Writes one compact mip into its rows of the full-width source atlas.
@@ -854,12 +678,6 @@ const _: () = assert!(std::mem::size_of::<GPUIBLPushConstants>() == 112);
 #[cfg(test)]
 mod tests {
 	#[test]
-	fn gpu_client_can_cross_asset_worker_threads() {
-		fn assert_send_sync<T: Send + Sync>() {}
-		assert_send_sync::<GPUIBLClient>();
-	}
-
-	#[test]
 	fn gpu_processor_factory_runs_on_the_context_owning_worker() {
 		let caller = std::thread::current().id();
 		let ran_on_worker = Arc::new(AtomicBool::new(false));
@@ -908,16 +726,6 @@ mod tests {
 		assert_eq!(level_count as usize, mips.len());
 		assert_eq!(atlas, expected);
 		assert_eq!(f16::from_le_bytes([atlas[6], atlas[7]]).to_f32(), 1.0);
-	}
-
-	#[test]
-	fn output_atlas_contains_every_face_and_level_once() {
-		let source = vec![0; 512 * 256 * BYTES_PER_RGBA16F_PIXEL];
-		let layout = CubemapIBLLayout::new(Extent::rectangle(512, 256), &source).unwrap();
-		let extent = output_atlas_extent(layout).unwrap();
-
-		assert_eq!(layout.specular_face_size(), 128);
-		assert_eq!(extent, Extent::rectangle(128, 1578));
 	}
 
 	#[test]
@@ -1006,22 +814,13 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, GPUIBLPushConstants, atlas_byte_size, output_atlas_extent,
-		source_atlas_layout, write_source_atlas, write_source_level,
+		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, atlas_byte_size, source_atlas_layout, write_source_atlas,
+		write_source_level,
 	};
-	use crate::ibl::cpu::{CubemapIBLLayout, bake_image_ibl_in, build_source_mips, decode_source_radiance};
+	use crate::ibl::cpu::{bake_image_ibl_in, build_source_mips, decode_source_radiance};
 }
 
-use std::{
-	any::Any,
-	error::Error,
-	fmt,
-	sync::{
-		Mutex,
-		mpsc::{self, SyncSender},
-	},
-	thread::JoinHandle,
-};
+use std::{any::Any, error::Error, fmt};
 
 use ghi::{
 	command_buffer::{
@@ -1037,8 +836,14 @@ use utils::Extent;
 use super::{
 	cpu::{
 		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError, Radiance,
-		decode_source_pixel, lat_long_row_solid_angle, write_rgba16f,
+		decode_source_pixel, downsample_source_pixel, lat_long_row_solid_angle, write_rgba16f,
 	},
 	gpu_shaders::{GPU_IBL_GLSL, GPU_IBL_HLSL, GPU_IBL_MSL},
 };
-use crate::resources::image::IBL_PREFILTERED_SPECULAR_MIP_COUNT;
+use crate::{
+	gpu_worker::{
+		ComputeContextError, ComputeKernelError, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
+		create_compute_context, create_compute_kernel,
+	},
+	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},
+};

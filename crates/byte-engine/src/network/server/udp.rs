@@ -4,33 +4,19 @@ use std::net::ToSocketAddrs;
 
 use betp::{
 	packets::Packets,
-	server::{
-		Events,
-		interface::{ConnectionResults, Settings},
-		session::Session,
-	},
+	server::{Events, interface::ConnectionResults, session::Session},
 };
 
 /// The `Server` struct provides an authoritative BETP endpoint over UDP.
 pub struct Server {
-	settings: Settings,
 	clients: [Option<Session>; 64],
 	socket: std::net::UdpSocket,
 }
 
 impl Server {
 	/// Creates a server bound to the specified address.
-	///
-	/// The server uses these default settings:
-	///
-	/// - `max_clients`: 32
-	/// - `timeout`: 5 seconds
 	pub fn new<A: ToSocketAddrs>(address: A) -> Result<Self, ()> {
 		Ok(Self {
-			settings: Settings {
-				max_clients: 32,
-				timeout: std::time::Duration::from_secs(5),
-			},
 			clients: [None; 64],
 			socket: std::net::UdpSocket::bind(address).map_err(|_| ())?,
 		})
@@ -44,17 +30,17 @@ impl betp::Server for Server {
 
 		let mut buffer = [0u8; 1024];
 
-		let bytes_read = socket.recv(&mut buffer).map_err(|_| ConnectionResults::ServerFull);
+		let _ = socket.recv(&mut buffer);
 
 		let packets: [Packets; _] = [];
 
 		for packet in &packets {
 			match packet {
-				Packets::ConnectionRequest(packet) => {}
-				Packets::Challenge(packet) => {}
-				Packets::ChallengeResponse(packet) => {}
-				Packets::Data(packet) => {}
-				Packets::Disconnect(packet) => {}
+				Packets::ConnectionRequest(_) => {}
+				Packets::Challenge(_) => {}
+				Packets::ChallengeResponse(_) => {}
+				Packets::Data(_) => {}
+				Packets::Disconnect(_) => {}
 			}
 		}
 

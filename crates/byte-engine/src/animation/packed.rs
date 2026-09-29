@@ -1,24 +1,17 @@
 use resource_management::{
 	Reference,
 	resources::{
-		animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+		animation::{Animation, Curve, NodeTrack},
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
 };
 
-use super::math::{hermite, nlerp_quaternion, normalize_quaternion};
+use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
 const TRACK_WORDS: usize = 4;
 const CURVE_WORDS: usize = 4;
-
-#[derive(Clone, Copy)]
-enum CurveInterpolation {
-	Step = 0,
-	Linear = 1,
-	CubicSpline = 2,
-}
 
 #[derive(Clone, Copy)]
 struct CurveDescriptor {
@@ -56,9 +49,9 @@ impl PackedAnimationData {
 			.sum::<usize>();
 		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
 			total
-				+ track.translation.as_ref().map_or(0, vector3_curve_words)
-				+ track.rotation.as_ref().map_or(0, quaternion_curve_words)
-				+ track.scale.as_ref().map_or(0, vector3_curve_words)
+				+ track.translation.as_ref().map_or(0, curve_words)
+				+ track.rotation.as_ref().map_or(0, curve_words)
+				+ track.scale.as_ref().map_or(0, curve_words)
 		});
 		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
 			* std::mem::size_of::<u32>()
@@ -124,13 +117,13 @@ impl<'a> PackedAnimation<'a> {
 	/// Applies the sampled channels from one packed track to a local transform.
 	fn sample_track(self, track: PackedTrack, time: f32, local: &mut LocalTransform) {
 		if let Some(curve) = track.translation {
-			local.translation = self.sample_vector3(curve, time);
+			local.translation = self.sample(curve, time, Self::vector3);
 		}
 		if let Some(curve) = track.rotation {
-			local.rotation = self.sample_rotation(curve, time);
+			local.rotation = self.sample(curve, time, Self::quaternion);
 		}
 		if let Some(curve) = track.scale {
-			local.scale = self.sample_vector3(curve, time);
+			local.scale = self.sample(curve, time, Self::vector3);
 		}
 	}
 
@@ -179,84 +172,27 @@ impl<'a> PackedAnimation<'a> {
 		std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
 	}
 
-	fn sample_vector3(self, curve: PackedCurve, time: f32) -> [f32; 3] {
-		match curve.interpolation {
-			CurveInterpolation::Step => self.vector3(curve.value_start + self.step_key(curve, time)),
-			CurveInterpolation::Linear => {
-				let (lower, upper, factor, _) = self.interpolation_segment(curve, time);
-				let lower = self.vector3(curve.value_start + lower);
-				let upper = self.vector3(curve.value_start + upper);
-				std::array::from_fn(|component| lower[component] + (upper[component] - lower[component]) * factor)
-			}
-			CurveInterpolation::CubicSpline => {
-				let (lower, upper, factor, span) = self.interpolation_segment(curve, time);
-				hermite(
-					self.vector3(curve.value_start + lower * 3),
-					self.vector3(curve.value_start + lower * 3 + 2),
-					self.vector3(curve.value_start + upper * 3),
-					self.vector3(curve.value_start + upper * 3 + 1),
-					factor,
-					span,
-				)
-			}
-		}
-	}
-
-	fn sample_rotation(self, curve: PackedCurve, time: f32) -> [f32; 4] {
-		match curve.interpolation {
-			CurveInterpolation::Step => self.quaternion(curve.value_start + self.step_key(curve, time)),
-			CurveInterpolation::Linear => {
-				let (lower, upper, factor, _) = self.interpolation_segment(curve, time);
-				nlerp_quaternion(
-					self.quaternion(curve.value_start + lower),
-					self.quaternion(curve.value_start + upper),
-					factor,
-				)
-			}
-			CurveInterpolation::CubicSpline => {
-				let (lower, upper, factor, span) = self.interpolation_segment(curve, time);
-				normalize_quaternion(hermite(
-					self.quaternion(curve.value_start + lower * 3),
-					self.quaternion(curve.value_start + lower * 3 + 2),
-					self.quaternion(curve.value_start + upper * 3),
-					self.quaternion(curve.value_start + upper * 3 + 1),
-					factor,
-					span,
-				))
-			}
-		}
-	}
-
-	fn step_key(self, curve: PackedCurve, time: f32) -> usize {
-		self.upper_key(curve, time).saturating_sub(1)
-	}
-
-	/// Finds the first key after `time` without materializing a typed time slice from the packed words.
-	fn upper_key(self, curve: PackedCurve, time: f32) -> usize {
-		let mut lower = 0;
-		let mut upper = curve.key_count;
-		while lower < upper {
-			let middle = lower + (upper - lower) / 2;
-			if self.time(curve, middle) <= time {
-				lower = middle + 1;
-			} else {
-				upper = middle;
-			}
-		}
-		lower
-	}
-
-	fn interpolation_segment(self, curve: PackedCurve, time: f32) -> (usize, usize, f32, f32) {
-		let upper = self.upper_key(curve, time).min(curve.key_count.saturating_sub(1));
-		let lower = upper.saturating_sub(1);
-		let span = self.time(curve, upper) - self.time(curve, lower);
-		let factor = if span > 0.0 {
-			(time - self.time(curve, lower)) / span
+	/// Samples one packed curve whose values `read` decodes from the value array.
+	///
+	/// Cubic curves store each key as `[value, in_tangent, out_tangent]`; other curves store one value per key.
+	fn sample<const N: usize>(self, curve: PackedCurve, time: f32, read: impl Fn(Self, usize) -> [f32; N]) -> [f32; N]
+	where
+		[f32; N]: CurveValue,
+	{
+		let stride = if curve.interpolation == CurveInterpolation::CubicSpline {
+			3
 		} else {
-			0.0
-		}
-		.clamp(0.0, 1.0);
-		(lower, upper, factor, span)
+			1
+		};
+		let value_index = |key: usize| curve.value_start + key * stride;
+		sample_curve(
+			curve.interpolation,
+			curve.key_count,
+			time,
+			|key| self.time(curve, key),
+			|key| read(self, value_index(key)),
+			|key| (read(self, value_index(key) + 1), read(self, value_index(key) + 2)),
+		)
 	}
 }
 
@@ -286,13 +222,13 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	for track in tracks {
 		let translation = track
 			.translation
-			.map(|curve| pack_vector3_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
+			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
 		let rotation = track
 			.rotation
-			.map(|curve| pack_quaternion_curve(curve, &mut descriptors, &mut times, &mut quaternion_values));
+			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut quaternion_values));
 		let scale = track
 			.scale
-			.map(|curve| pack_vector3_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
+			.map(|curve| pack_curve(curve, &mut descriptors, &mut times, &mut vector3_values));
 		packed_tracks.push(TrackDescriptor {
 			node: track.node,
 			translation,
@@ -340,55 +276,22 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 	words.into_boxed_slice()
 }
 
-fn vector3_curve_words(curve: &Vector3Curve) -> usize {
+/// Counts the packed words one curve adds: a time plus every value of each key, where cubic keys also carry two tangents.
+fn curve_words<const N: usize>(curve: &Curve<[f32; N]>) -> usize {
 	match curve {
-		Vector3Curve::Step { times, .. } | Vector3Curve::Linear { times, .. } => times.len() * 4,
-		Vector3Curve::CubicSpline { times, .. } => times.len() * 10,
+		Curve::Step { times, .. } | Curve::Linear { times, .. } => times.len() * (1 + N),
+		Curve::CubicSpline { times, .. } => times.len() * (1 + 3 * N),
 	}
 }
 
-fn quaternion_curve_words(curve: &QuaternionCurve) -> usize {
-	match curve {
-		QuaternionCurve::Step { times, .. } | QuaternionCurve::Linear { times, .. } => times.len() * 5,
-		QuaternionCurve::CubicSpline { times, .. } => times.len() * 13,
-	}
-}
-
-fn pack_vector3_curve(
-	curve: Vector3Curve,
-	descriptors: &mut Vec<CurveDescriptor>,
-	times: &mut Vec<f32>,
-	values: &mut Vec<[f32; 3]>,
-) -> u32 {
+/// Appends one curve to the packed tables and returns its descriptor index.
+///
+/// Cubic keys are stored as consecutive `[value, in_tangent, out_tangent]` triples.
+fn pack_curve<V>(curve: Curve<V>, descriptors: &mut Vec<CurveDescriptor>, times: &mut Vec<f32>, values: &mut Vec<V>) -> u32 {
 	let (interpolation, curve_times, curve_values) = match curve {
-		Vector3Curve::Step { times, values } => (CurveInterpolation::Step, times, values),
-		Vector3Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values),
-		Vector3Curve::CubicSpline {
-			times,
-			values,
-			in_tangents,
-			out_tangents,
-		} => {
-			let mut packed = Vec::with_capacity(values.len() * 3);
-			for ((value, incoming), outgoing) in values.into_iter().zip(in_tangents).zip(out_tangents) {
-				packed.extend([value, incoming, outgoing]);
-			}
-			(CurveInterpolation::CubicSpline, times, packed)
-		}
-	};
-	push_curve(interpolation, curve_times, curve_values, descriptors, times, values)
-}
-
-fn pack_quaternion_curve(
-	curve: QuaternionCurve,
-	descriptors: &mut Vec<CurveDescriptor>,
-	times: &mut Vec<f32>,
-	values: &mut Vec<[f32; 4]>,
-) -> u32 {
-	let (interpolation, curve_times, curve_values) = match curve {
-		QuaternionCurve::Step { times, values } => (CurveInterpolation::Step, times, values),
-		QuaternionCurve::Linear { times, values } => (CurveInterpolation::Linear, times, values),
-		QuaternionCurve::CubicSpline {
+		Curve::Step { times, values } => (CurveInterpolation::Step, times, values),
+		Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values),
+		Curve::CubicSpline {
 			times,
 			values,
 			in_tangents,

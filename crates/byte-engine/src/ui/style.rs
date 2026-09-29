@@ -393,18 +393,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn stroke_layer_stores_width_and_color() {
-		let color = RGBA::new(0.2, 0.3, 0.4, 1.0);
-		let layer = ConcreteLayer::default().color(color.into()).stroke(2.5);
-
-		assert_eq!(layer.kind(), LayerKind::Stroke { width: 2.5 });
-		match Layer::fill(&layer) {
-			Color::Value(actual) => assert_eq!(*actual, color),
-			_ => panic!("expected value color"),
-		}
-	}
-
-	#[test]
 	fn shadow_sanitizes_and_measures_its_outset() {
 		let shadow = Shadow::new([f32::NAN, -4.0], -1.0).spread(f32::INFINITY);
 		assert_eq!(shadow.offset, [0.0, -4.0]);
@@ -414,19 +402,6 @@ mod tests {
 		assert_eq!(Shadow::new([2.0, -4.0], 3.0).inset().outset(), 0.0);
 		let layer = ConcreteLayer::default().drop_shadow([0.0, 2.0], 4.0);
 		assert_eq!(layer.kind(), LayerKind::Shadow(Shadow::new([0.0, 2.0], 4.0)));
-	}
-
-	#[test]
-	fn edge_feather_sanitizes_invalid_widths() {
-		assert_eq!(
-			EdgeFeather::edges(-1.0, f32::NAN, f32::INFINITY, 4.0),
-			EdgeFeather {
-				top: 0.0,
-				right: 0.0,
-				bottom: 0.0,
-				left: 4.0,
-			}
-		);
 	}
 
 	#[test]

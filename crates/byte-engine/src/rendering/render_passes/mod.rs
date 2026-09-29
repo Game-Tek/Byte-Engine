@@ -5,20 +5,15 @@
 //! [`crate::rendering::renderer::Renderer`] or the corresponding helpers in
 //! [`crate::application::graphics`].
 
-#[cfg(test)]
-mod bilateral_blur;
 pub mod blit;
 
 pub mod aces;
 pub mod agx;
 pub mod bloom;
-pub mod color_grading;
 pub mod lens_flare;
 pub mod lut;
 pub mod sky;
 pub mod smaa;
 pub mod srgb_display;
 
-pub mod serial;
-
-mod tone_map;
+pub mod image_transform;

@@ -15,12 +15,9 @@ impl Context {
 		queue_handle: graphics_hardware_interface::QueueHandle,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> crate::queue::StartedFrame<super::super::Frame<'a>> {
-		let frame_key = graphics_hardware_interface::FrameKey {
-			frame_index: index,
-			sequence_index: (index % u64::from(self.frames)) as u8,
-		};
+		let frame_key = graphics_hardware_interface::FrameKey::new(index, self.frames);
 		let completed_frame = crate::queue::completed_frame_key(index, self.frames);
-		let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_key.sequence_index);
+		let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_key.sequence_index);
 		self.wait_for_private_synchronizer(synchronizer_handle);
 		self.retire_internal_uploads(frame_key.sequence_index);
 		// Every command that read this sequence's upload pages has completed, so the pages can be rewound.

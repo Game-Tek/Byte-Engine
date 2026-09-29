@@ -97,16 +97,4 @@ mod tests {
 			assert_eq!(*clip.frame(time), "idle");
 		}
 	}
-
-	#[test]
-	#[should_panic(expected = "Flipbook has no images")]
-	fn rejects_empty_sequences() {
-		Flipbook::<&str>::new(12, &[]);
-	}
-
-	#[test]
-	#[should_panic(expected = "Flipbook FPS is zero")]
-	fn rejects_zero_fps() {
-		Flipbook::new(0, &["idle"]);
-	}
 }

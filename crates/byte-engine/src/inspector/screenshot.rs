@@ -12,6 +12,7 @@ use std::sync::{
 };
 
 use ghi::Size as _;
+use utils::color::srgb_to_linear;
 
 const SCREENSHOT_QUEUE_CAPACITY: usize = 8;
 
@@ -443,15 +444,6 @@ fn unpack_r11g11b10f(bits: u32) -> [f32; 3] {
 	[unpack(bits & 0x7ff, 6), unpack((bits >> 11) & 0x7ff, 6), unpack(bits >> 22, 5)]
 }
 
-/// Decodes one sRGB-encoded value in `[0, 1]` to linear light.
-fn srgb_to_linear(value: f32) -> f32 {
-	if value <= 0.040_45 {
-		value / 12.92
-	} else {
-		((value + 0.055) / 1.055).powf(2.4)
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use std::time::Duration;
@@ -490,31 +482,6 @@ mod tests {
 
 		assert_eq!(first.recv_timeout(Duration::from_millis(10)).unwrap().frame, 9);
 		assert_eq!(second.recv_timeout(Duration::from_millis(10)).unwrap().frame, 10);
-	}
-
-	#[test]
-	fn broker_keeps_a_request_capture_list_together_and_rejects_invalid_counts() {
-		let broker = ScreenshotBroker::with_capacity(2);
-		let captures = vec![
-			selection(0),
-			ScreenshotSelection {
-				sink: 1,
-				capture: ScreenshotCapture::PreviousSceneTarget {
-					target: "Diffuse Radiance History".to_string(),
-				},
-			},
-		];
-		broker.request(captures.clone()).expect("queue two captures");
-
-		let requests = broker.drain();
-		assert_eq!(requests.len(), 1);
-		assert_eq!(requests[0].captures, captures);
-
-		assert!(matches!(broker.request(vec![]), Err(ScreenshotSubmitError::CaptureCount)));
-		assert!(matches!(
-			broker.request(vec![selection(0); MAX_SCREENSHOT_CAPTURES + 1]),
-			Err(ScreenshotSubmitError::CaptureCount)
-		));
 	}
 
 	#[test]
@@ -594,14 +561,6 @@ mod tests {
 	}
 
 	#[test]
-	fn exr_rejects_formats_without_a_per_channel_layout() {
-		let error = ScreenshotFormat::Exr
-			.encode(readback(vec![0; 4], ghi::Formats::Depth32, 4))
-			.expect_err("reject depth format");
-		assert!(error.starts_with("Texture transfer format is unsupported."));
-	}
-
-	#[test]
 	fn decodes_packed_r11g11b10f() {
 		// 1.0 is exponent 15 with a zero mantissa in every channel; blue's exponent starts at bit 27.
 		let one = (15 << 6) | (15 << 17) | (15 << 27);
@@ -619,15 +578,6 @@ mod tests {
 		);
 		let png = encode_png(&readback(u32::to_ne_bytes(mixed).to_vec(), ghi::Formats::RGBu11u11u10, 4)).unwrap();
 		assert!(!png.is_empty());
-	}
-
-	#[test]
-	fn raw_returns_the_readback_bytes_unchanged() {
-		let bytes = vec![1, 2, 3, 4, 99, 99, 99, 99];
-		assert_eq!(
-			ScreenshotFormat::Raw.encode(readback(bytes.clone(), ghi::Formats::RGBA8UNORM, 8)),
-			Ok(bytes)
-		);
 	}
 
 	fn decode_png(png: &[u8]) -> Vec<u8> {

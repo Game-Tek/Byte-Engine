@@ -144,8 +144,7 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 			}
 			collect_local_output_symbols(r#return, local_output_symbols);
 		}
-		besl::Nodes::Literal { value: nested, .. }
-		| besl::Nodes::Member { r#type: nested, .. }
+		besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
 		| besl::Nodes::TaskPayload { format: nested, .. }
@@ -169,7 +168,7 @@ fn collect_local_output_symbols(node: &besl::NodeReference, local_output_symbols
 				collect_local_output_symbols(child, local_output_symbols);
 			}
 		}
-		besl::Nodes::Binding { .. } | besl::Nodes::Null => {}
+		besl::Nodes::Binding { .. } => {}
 		besl::Nodes::Const { r#type, value, .. } => {
 			collect_local_output_symbols(r#type, local_output_symbols);
 			collect_local_output_symbols(value, local_output_symbols);
@@ -254,8 +253,7 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 				.any(|element| references_non_local_output(element, local_output_symbols))
 				|| references_non_local_output(r#return, local_output_symbols)
 		}
-		besl::Nodes::Literal { value: nested, .. }
-		| besl::Nodes::Member { r#type: nested, .. }
+		besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
 		| besl::Nodes::TaskPayload { format: nested, .. }
@@ -267,7 +265,7 @@ fn references_non_local_output(node: &besl::NodeReference, local_output_symbols:
 		| besl::Nodes::Scope { children: nested, .. } => nested
 			.iter()
 			.any(|child| references_non_local_output(child, local_output_symbols)),
-		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
+		besl::Nodes::Binding { .. } => false,
 		besl::Nodes::Const { r#type, value, .. } => {
 			references_non_local_output(r#type, local_output_symbols)
 				|| references_non_local_output(value, local_output_symbols)
@@ -362,8 +360,7 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 				.any(|element| writes_non_opaque_vec4f_to_non_local_output(element, local_output_symbols))
 				|| writes_non_opaque_vec4f_to_non_local_output(r#return, local_output_symbols)
 		}
-		besl::Nodes::Literal { value: nested, .. }
-		| besl::Nodes::Member { r#type: nested, .. }
+		besl::Nodes::Member { r#type: nested, .. }
 		| besl::Nodes::Input { format: nested, .. }
 		| besl::Nodes::Output { format: nested, .. }
 		| besl::Nodes::TaskPayload { format: nested, .. }
@@ -377,7 +374,7 @@ fn writes_non_opaque_vec4f_to_non_local_output(
 		| besl::Nodes::Scope { children: nested, .. } => nested
 			.iter()
 			.any(|child| writes_non_opaque_vec4f_to_non_local_output(child, local_output_symbols)),
-		besl::Nodes::Binding { .. } | besl::Nodes::Null => false,
+		besl::Nodes::Binding { .. } => false,
 		besl::Nodes::Const { r#type, value, .. } => {
 			writes_non_opaque_vec4f_to_non_local_output(r#type, local_output_symbols)
 				|| writes_non_opaque_vec4f_to_non_local_output(value, local_output_symbols)

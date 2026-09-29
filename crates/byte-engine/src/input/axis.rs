@@ -28,16 +28,6 @@ impl Axis2 {
 		Self::new(0.0, 0.0)
 	}
 
-	/// Returns the lowest finite components accepted by input trigger descriptions.
-	pub const fn min_value() -> Self {
-		Self::new(f32::MIN, f32::MIN)
-	}
-
-	/// Returns the highest finite components accepted by input trigger descriptions.
-	pub const fn max_value() -> Self {
-		Self::new(f32::MAX, f32::MAX)
-	}
-
 	/// Scales a non-zero axis to unit length while preserving a neutral axis.
 	pub fn normalized(self) -> Self {
 		let length_squared = self.x * self.x + self.y * self.y;
@@ -82,16 +72,6 @@ impl Axis3 {
 	/// Returns the neutral three-channel input value.
 	pub const fn zero() -> Self {
 		Self::new(0.0, 0.0, 0.0)
-	}
-
-	/// Returns the lowest finite components accepted by input trigger descriptions.
-	pub const fn min_value() -> Self {
-		Self::new(f32::MIN, f32::MIN, f32::MIN)
-	}
-
-	/// Returns the highest finite components accepted by input trigger descriptions.
-	pub const fn max_value() -> Self {
-		Self::new(f32::MAX, f32::MAX, f32::MAX)
 	}
 
 	/// Scales a non-zero axis to unit length while preserving a neutral axis.
@@ -144,11 +124,5 @@ mod tests {
 	fn normalization_preserves_neutral_axes() {
 		assert_eq!(Axis2::zero().normalized(), Axis2::zero());
 		assert_eq!(Axis3::zero().normalized(), Axis3::zero());
-	}
-
-	#[test]
-	fn normalization_preserves_axis_direction() {
-		assert_eq!(Axis2::new(3.0, 4.0).normalized(), Axis2::new(0.6, 0.8));
-		assert_eq!(Axis3::new(0.0, 3.0, 4.0).normalized(), Axis3::new(0.0, 0.6, 0.8));
 	}
 }

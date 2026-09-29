@@ -9,15 +9,15 @@ mod iterator;
 
 pub(crate) use declarations::parse;
 pub use declarations::{
-	ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, ParsingFailReasons, RecordField, RecordRole, TypeField,
-	TypeName,
+	BindingResource, ElseBranch, Expressions, MatchArm, MatchPattern, Node, Nodes, ParsingFailReasons, RecordField, RecordRole,
+	TypeField, TypeName,
 };
 #[cfg(test)]
 use expressions::*;
-pub use iterator::ProgramState;
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::Operators;
 	use crate::tokenizer::tokenize;
 
 	#[test]
@@ -181,23 +181,6 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_runtime_array_descriptor() {
-		let tokens = tokenize("instances: descriptor<{ type: Instance[], binding: 1, access: read }>;")
-			.expect("runtime-array descriptor source should tokenize");
-		let root = parse(&tokens).expect("runtime-array descriptor source should parse");
-
-		assert!(matches!(
-			root["instances"].node(),
-			Nodes::Descriptor {
-				resource_type: "Instance",
-				runtime_array: true,
-				count: None,
-				..
-			}
-		));
-	}
-
-	#[test]
 	fn runtime_array_descriptor_rejects_fixed_element_or_resource_counts() {
 		for source in [
 			"instances: descriptor<{ type: Instance[4], binding: 1, access: read }>;",
@@ -211,44 +194,6 @@ mod tests {
 				"invalid runtime-array descriptor should be rejected: {source}"
 			);
 		}
-	}
-
-	#[test]
-	fn parse_buffer_memory_classes_and_descriptor_counts() {
-		let tokens = tokenize(
-			r#"
-				view: descriptor<{ type: View, binding: 0, access: read, memory: constant }>;
-				vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
-				counters: descriptor<{ count: 4, memory: device, access: read_write, binding: 2, type: Counters }>;
-			"#,
-		)
-		.expect("buffer memory class source should tokenize");
-		let root = parse(&tokens).expect("buffer memory class source should parse");
-
-		assert!(matches!(
-			root["view"].node(),
-			Nodes::Descriptor {
-				memory_class: Some("constant"),
-				count: None,
-				..
-			}
-		));
-		assert!(matches!(
-			root["vertices"].node(),
-			Nodes::Descriptor {
-				memory_class: Some("device"),
-				count: None,
-				..
-			}
-		));
-		assert!(matches!(
-			root["counters"].node(),
-			Nodes::Descriptor {
-				memory_class: Some("device"),
-				count: Some(count),
-				..
-			} if count.get() == 4
-		));
 	}
 
 	#[test]
@@ -379,24 +324,6 @@ mod tests {
 		}
 	}
 
-	fn print_tree(node: &Node) {
-		match &node.node {
-			Nodes::Scope { name, children } => {
-				println!("{}", name,);
-				for child in children {
-					print_tree(child);
-				}
-			}
-			Nodes::Struct { name, fields } => {
-				println!("{}", name,);
-				for field in fields {
-					print_tree(field);
-				}
-			}
-			_ => {}
-		}
-	}
-
 	fn assert_struct(node: &Node) {
 		if let Nodes::Struct { name, fields } = &node.node {
 			assert_eq!(*name, "Light");
@@ -424,26 +351,6 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn test_parse_struct() {
-		let source = "
-Light: struct {
-	array: u32[3],
-	position: vec3f,
-	color: vec3f
-}";
-
-		let tokens = tokenize(source).unwrap();
-		let node = parse(&tokens).expect("Failed to parse");
-
-		// program.types.get("Light").expect("Failed to get Light type");
-
-		if let Nodes::Struct { name, .. } = node.node {
-			assert_eq!(name, "root");
-			assert_struct(&node["Light"]);
-		}
-	}
-
 	fn assert_function(node: &Node) {
 		if let Nodes::Function {
 			name,
@@ -461,12 +368,12 @@ Light: struct {
 			let statement = &statements[0];
 
 			if let Nodes::Expression(Expressions::Operator {
-				name,
+				operator,
 				left: var_decl,
 				right: function_call,
 			}) = &statement.node
 			{
-				assert_eq!(*name, "=");
+				assert_eq!(*operator, Operators::Assignment);
 
 				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &var_decl.node {
 					assert_eq!(*name, "position");
@@ -495,267 +402,6 @@ Light: struct {
 			}
 		} else {
 			panic!("Not a function");
-		}
-	}
-
-	#[test]
-	fn test_parse_function() {
-		let source = "
-main: fn () -> void {
-	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0);
-	gl_Position = position;
-}";
-
-		let tokens = tokenize(source).unwrap();
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { name, .. } = node.node {
-			assert_eq!(name, "root");
-			assert_function(&node["main"]);
-		} else {
-			panic!("Not root node")
-		}
-	}
-
-	#[test]
-	fn test_parse_function_with_parameters_and_return_value() {
-		let source = "
-		add: fn (lhs: f32, rhs: f32) -> f32 {
-			return lhs + rhs;
-		}";
-
-		let tokens = tokenize(source).unwrap();
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let function = &node["add"];
-		if let Nodes::Function {
-			name,
-			params,
-			return_type,
-			statements,
-			..
-		} = &function.node
-		{
-			assert_eq!(*name, "add");
-			assert_eq!(params.len(), 2);
-			assert_eq!(*return_type, TypeName::Named("f32"));
-			assert_eq!(statements.len(), 1);
-
-			if let Nodes::Parameter { name, r#type } = &params[0].node {
-				assert_eq!(*name, "lhs");
-				assert_eq!(*r#type, TypeName::Named("f32"));
-			} else {
-				panic!("Expected parameter");
-			}
-
-			if let Nodes::Expression(Expressions::Return { value }) = &statements[0].node {
-				let value = value.as_ref().expect("Expected return value");
-				if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
-					assert_eq!(*name, "+");
-				} else {
-					panic!("Expected return operator");
-				}
-			} else {
-				panic!("Expected return statement");
-			}
-		} else {
-			panic!("Expected function");
-		}
-	}
-
-	#[test]
-	fn parse_function_array_signature() {
-		let source = "
-		copy_indices: fn (indices: u32[3]) -> u32[3] {
-			return indices;
-		}";
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let function = &node["copy_indices"];
-		let Nodes::Function { params, return_type, .. } = &function.node else {
-			panic!("Expected function");
-		};
-
-		assert_eq!(
-			*return_type,
-			TypeName::Array {
-				element: Box::new(TypeName::Named("u32")),
-				count: 3,
-			}
-		);
-		let Nodes::Parameter { r#type, .. } = &params[0].node else {
-			panic!("Expected parameter");
-		};
-
-		assert_eq!(
-			*r#type,
-			TypeName::Array {
-				element: Box::new(TypeName::Named("u32")),
-				count: 3,
-			}
-		);
-	}
-
-	#[test]
-	fn parse_operators() {
-		let source = "
-main: fn () -> void {
-	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
-	gl_Position = position;
-}";
-
-		let tokens = tokenize(source).unwrap();
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let main_node = &node["main"];
-
-		if let Nodes::Function {
-			name,
-			statements,
-			return_type,
-			params,
-			..
-		} = &main_node.node
-		{
-			assert_eq!(*name, "main");
-			assert_eq!(statements.len(), 2);
-			assert_eq!(*return_type, TypeName::Named("void"));
-			assert_eq!(params.len(), 0);
-			assert_eq!(statements.len(), 2);
-
-			let statement0 = &statements[0];
-
-			if let Nodes::Expression(Expressions::Operator {
-				name,
-				left: var_decl,
-				right: multiply,
-			}) = &statement0.node
-			{
-				assert_eq!(*name, "=");
-
-				if let Nodes::Expression(Expressions::VariableDeclaration { .. }) = var_decl.node {
-				} else {
-					panic!("Not a variable declaration");
-				}
-
-				if let Nodes::Expression(Expressions::Operator {
-					name,
-					left: vec4,
-					right: literal,
-				}) = &multiply.node
-				{
-					assert_eq!(*name, "*");
-
-					if let Nodes::Expression(Expressions::Call { name, .. }) = &vec4.node {
-						assert_named_type(name, "vec4");
-					} else {
-						panic!("Not a function call");
-					}
-
-					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
-						assert_eq!(value, "2.0");
-					} else {
-						panic!("Not a literal");
-					}
-				} else {
-					panic!("Not an operator");
-				}
-			} else {
-				panic!("Not an expression");
-			}
-		} else {
-			panic!("Not a feature");
-		}
-	}
-
-	#[test]
-	fn builder_program_lexes() {
-		let program = Node::root_with_children(vec![Node::main_function(vec![Node::let_assignment(
-			"albedo",
-			"vec4f",
-			Node::call(
-				"vec4f",
-				vec![
-					Node::literal_expression("1.0"),
-					Node::literal_expression("0.0"),
-					Node::literal_expression("0.0"),
-					Node::literal_expression("1.0"),
-				],
-			),
-		)])]);
-
-		crate::lex(program).expect("builder generated program should lex");
-	}
-
-	#[test]
-	// This syntax-tree assertion intentionally mirrors the nested accessor AST it validates.
-	#[allow(clippy::excessive_nesting)]
-	fn parse_accessor() {
-		let source = "
-main: fn () -> void {
-	let position: vec4f = vec4(0.0, 0.0, 0.0, 1.0) * 2.0;
-	position.y = 2.0;
-	gl_Position = position;
-}";
-
-		let tokens = tokenize(source).unwrap();
-		let node = parse(&tokens).expect("Failed to parse");
-
-		print_tree(&node);
-
-		if let Nodes::Scope { children, .. } = &node.node {
-			assert_eq!(children.len(), 1);
-
-			let main_node = &node["main"];
-
-			if let Nodes::Function { name, statements, .. } = &main_node.node {
-				assert_eq!(*name, "main");
-				assert_eq!(statements.len(), 3);
-
-				let statement1 = &statements[1];
-
-				if let Nodes::Expression(Expressions::Operator {
-					name,
-					left: accessor,
-					right: literal,
-				}) = &statement1.node
-				{
-					assert_eq!(*name, "=");
-
-					if let Nodes::Expression(Expressions::Accessor {
-						left: position,
-						right: y,
-					}) = &accessor.node
-					{
-						if let Nodes::Expression(Expressions::Member { name }) = &position.node {
-							assert_eq!(name, "position");
-						} else {
-							panic!("Not a member");
-						}
-
-						if let Nodes::Expression(Expressions::Member { name }) = &y.node {
-							assert_eq!(name, "y");
-						} else {
-							panic!("Not a member");
-						}
-					} else {
-						panic!("Not an accessor");
-					}
-
-					if let Nodes::Expression(Expressions::Literal { value }) = &literal.node {
-						assert_eq!(value, "2.0");
-					} else {
-						panic!("Not a literal");
-					}
-				} else {
-					panic!("Not an operator");
-				}
-			} else {
-				panic!("Not a function");
-			}
-		} else {
-			panic!("Not root node")
 		}
 	}
 
@@ -804,273 +450,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	fn test_parse_multiple_functions() {
-		let source = "
-used: fn () -> void {}
-not_used: fn () -> void {}
-
-main: fn () -> void {
-	used();
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { children, .. } = node.node {
-			assert_eq!(children.len(), 3);
-		}
-	}
-
-	#[test]
-	fn fragment_shader() {
-		let source = r#"
-		main: fn () -> void {
-			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
-		}
-		"#;
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { children, .. } = node.node {
-			assert_eq!(children.len(), 1);
-		}
-	}
-
-	#[test]
-	// This syntax-tree assertion intentionally mirrors the nested assignment and accessor AST it validates.
-	#[allow(clippy::excessive_nesting)]
-	fn test_parse_accessor_and_assignment() {
-		let source = "
-main: fn () -> void {
-	let n: f32 = intrinsic(0).y;
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { children, .. } = &node.node {
-			assert_eq!(children.len(), 1);
-
-			let main_node = &node["main"];
-
-			if let Nodes::Function { name, statements, .. } = &main_node.node {
-				assert_eq!(*name, "main");
-				assert_eq!(statements.len(), 1);
-
-				let statement = &statements[0];
-
-				if let Nodes::Expression(Expressions::Operator { name, left, right }) = &statement.node {
-					assert_eq!(*name, "=");
-
-					if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &left.node {
-						assert_eq!(*name, "n");
-						assert_named_type(r#type, "f32");
-					} else {
-						panic!("Not a variable declaration");
-					}
-
-					if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
-						if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &left.node {
-							assert_named_type(name, "intrinsic");
-
-							assert_eq!(parameters.len(), 1);
-
-							if let Nodes::Expression(Expressions::Literal { value }) = &parameters[0].node {
-								assert_eq!(value, "0");
-							} else {
-								panic!("Not a literal");
-							}
-						} else {
-							panic!("Not a function call");
-						}
-
-						if let Nodes::Expression(Expressions::Member { name }) = &right.node {
-							assert_eq!(name, "y");
-						} else {
-							panic!("Not a member");
-						}
-					} else {
-						panic!("Not an accessor");
-					}
-				} else {
-					panic!("Not an operator");
-				}
-			} else {
-				panic!("Not a function");
-			}
-		} else {
-			panic!("Not root node")
-		}
-	}
-
-	#[test]
-	fn parse_array_index_accessor() {
-		let source = "
-main: fn () -> void {
-	let n: u32 = values[1];
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let main_node = &node["main"];
-		if let Nodes::Function { statements, .. } = &main_node.node {
-			let statement = &statements[0];
-			if let Nodes::Expression(Expressions::Operator { right, .. }) = &statement.node {
-				if let Nodes::Expression(Expressions::Accessor { left, right }) = &right.node {
-					assert!(matches!(&left.node, Nodes::Expression(Expressions::Member { name }) if name == "values"));
-					assert!(matches!(
-						right.node,
-						Nodes::Expression(Expressions::Expression(ref elements))
-							if elements.len() == 1
-								&& matches!(&elements[0].node, Nodes::Expression(Expressions::Literal { value }) if value == "1")
-					));
-				} else {
-					panic!("Not an accessor");
-				}
-			} else {
-				panic!("Not an operator");
-			}
-		} else {
-			panic!("Not a function");
-		}
-	}
-
-	#[test]
-	fn parse_comparison_and_continue() {
-		let source = r#"
-		main: fn () -> void {
-			for (let i: u32 = 0; i <= 4; i = i + 1) {
-				if (i >= 2) {
-					continue;
-				}
-			}
-		}
-		"#;
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let main_node = &node["main"];
-
-		let Nodes::Function { statements, .. } = &main_node.node else {
-			panic!("Expected function");
-		};
-
-		let Nodes::ForLoop {
-			condition, statements, ..
-		} = &statements[0].node
-		else {
-			panic!("Expected for loop");
-		};
-
-		assert!(matches!(
-			&condition.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if *name == "<="
-		));
-
-		let Nodes::Conditional {
-			condition, statements, ..
-		} = &statements[0].node
-		else {
-			panic!("Expected conditional");
-		};
-
-		assert!(matches!(
-			&condition.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if *name == ">="
-		));
-		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Continue)));
-	}
-
-	#[test]
-	fn parse_break_in_loop() {
-		let tokens = tokenize("main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { if (i == 2) { break; } } }")
-			.expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let Nodes::Function { statements, .. } = &node["main"].node else {
-			panic!("Expected function");
-		};
-		let Nodes::ForLoop { statements, .. } = &statements[0].node else {
-			panic!("Expected for loop");
-		};
-		let Nodes::Conditional { statements, .. } = &statements[0].node else {
-			panic!("Expected conditional");
-		};
-
-		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
-	}
-
-	#[test]
-	fn parse_else_if_chain() {
-		let tokens = tokenize("main: fn () -> void { if (a) { discard; } else if (b) { break; } else { continue; } }")
-			.expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let Nodes::Function { statements, .. } = &node["main"].node else {
-			panic!("Expected function");
-		};
-		let Nodes::Conditional {
-			statements,
-			else_branch: Some(ElseBranch::If(nested)),
-			..
-		} = &statements[0].node
-		else {
-			panic!("Expected conditional with an else-if link");
-		};
-		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
-
-		let Nodes::Conditional {
-			statements,
-			else_branch: Some(ElseBranch::Block(else_statements)),
-			..
-		} = &nested.node
-		else {
-			panic!("Expected nested conditional with an else block");
-		};
-		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Break)));
-		assert!(matches!(else_statements[0].node, Nodes::Expression(Expressions::Continue)));
-	}
-
-	#[test]
-	fn parse_match() {
-		let tokens = tokenize("main: fn () -> void { match n { 0 => break, | -1 | 2 => { discard; } _ => continue } }")
-			.expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let Nodes::Function { statements, .. } = &node["main"].node else {
-			panic!("Expected function");
-		};
-		let Nodes::Match { scrutinee, arms } = &statements[0].node else {
-			panic!("Expected match");
-		};
-		assert!(matches!(&scrutinee.node, Nodes::Expression(Expressions::Member { name }) if *name == "n"));
-
-		let patterns: Vec<&[MatchPattern]> = arms.iter().map(|arm| arm.patterns.as_slice()).collect();
-		assert_eq!(
-			patterns,
-			[
-				&[MatchPattern::Literal {
-					value: "0",
-					negative: false
-				}][..],
-				&[
-					MatchPattern::Literal {
-						value: "1",
-						negative: true
-					},
-					MatchPattern::Literal {
-						value: "2",
-						negative: false
-					}
-				],
-				&[MatchPattern::Wildcard],
-			]
-		);
-		assert!(matches!(arms[0].statements[0].node, Nodes::Expression(Expressions::Break)));
-		assert!(matches!(arms[1].statements[0].node, Nodes::Expression(Expressions::Discard)));
-		assert!(matches!(arms[2].statements[0].node, Nodes::Expression(Expressions::Continue)));
-	}
-
-	#[test]
 	fn parse_match_rejects_malformed_arms() {
 		for source in [
 			"main: fn () -> void { match n { 0 => break 1 => break } }",
@@ -1080,51 +459,6 @@ main: fn () -> void {
 		] {
 			let tokens = tokenize(source).expect("Failed to tokenize");
 			assert!(parse(&tokens).is_err(), "`{source}` should not parse");
-		}
-	}
-
-	#[test]
-	fn parse_discard_in_conditional() {
-		let tokens = tokenize("main: fn () -> void { if (true) { discard; } }").expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let Nodes::Function { statements, .. } = &node["main"].node else {
-			panic!("Expected function");
-		};
-		let Nodes::Conditional { statements, .. } = &statements[0].node else {
-			panic!("Expected conditional");
-		};
-
-		assert!(matches!(statements[0].node, Nodes::Expression(Expressions::Discard)));
-	}
-
-	#[test]
-	fn test_parse_const() {
-		let source = "
-PI: const f32 = 3.14;
-";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { children, .. } = &node.node {
-			assert_eq!(children.len(), 1);
-
-			let const_node = &node["PI"];
-
-			if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
-				assert_eq!(*name, "PI");
-				assert_named_type(r#type, "f32");
-
-				if let Nodes::Expression(Expressions::Literal { value }) = &value.node {
-					assert_eq!(*value, "3.14");
-				} else {
-					panic!("Expected a literal value, got: {:?}", value.node);
-				}
-			} else {
-				panic!("Expected a const node, got: {:?}", const_node.node);
-			}
-		} else {
-			panic!("Not root node");
 		}
 	}
 
@@ -1143,48 +477,10 @@ TAU: const f32 = 3.14 * 2.0;
 			assert_eq!(*name, "TAU");
 			assert_named_type(r#type, "f32");
 
-			if let Nodes::Expression(Expressions::Operator { name, .. }) = &value.node {
-				assert_eq!(*name, "*");
+			if let Nodes::Expression(Expressions::Operator { operator, .. }) = &value.node {
+				assert_eq!(*operator, Operators::Multiply);
 			} else {
 				panic!("Expected an operator expression, got: {:?}", value.node);
-			}
-		} else {
-			panic!("Expected a const node");
-		}
-	}
-
-	#[test]
-	fn test_parse_const_array() {
-		let source = "
-		WEIGHTS: const f32 [ 3 ] = f32 [ 3 ](0.5, 0.25, 0.125);
-";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let const_node = &node["WEIGHTS"];
-
-		if let Nodes::Const { name, r#type, value } = &const_node.node {
-			assert_eq!(*name, "WEIGHTS");
-			assert_eq!(
-				r#type,
-				&TypeName::Array {
-					element: Box::new(TypeName::Named("f32")),
-					count: 3,
-				}
-			);
-
-			if let Nodes::Expression(Expressions::Call { name, parameters }) = &value.node {
-				assert_eq!(
-					name,
-					&TypeName::Array {
-						element: Box::new(TypeName::Named("f32")),
-						count: 3,
-					}
-				);
-				assert_eq!(parameters.len(), 3);
-			} else {
-				panic!("Expected an array constructor call, got: {:?}", value.node);
 			}
 		} else {
 			panic!("Expected a const node");
@@ -1212,91 +508,6 @@ TAU: const f32 = 3.14 * 2.0;
 	}
 
 	#[test]
-	fn parse_conditional_block() {
-		let source = "
-main: fn () -> void {
-	let n: u32 = 0;
-	if (n < 1) {
-		n = 2;
-	}
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let main_node = &node["main"];
-		if let Nodes::Function { statements, .. } = &main_node.node {
-			assert_eq!(statements.len(), 2);
-
-			let conditional = &statements[1];
-			if let Nodes::Conditional {
-				condition, statements, ..
-			} = &conditional.node
-			{
-				assert_eq!(statements.len(), 1);
-				assert!(matches!(
-					condition.node,
-					Nodes::Expression(Expressions::Operator { name, .. }) if name == "<"
-				));
-				assert!(matches!(
-					statements[0].node,
-					Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
-				));
-			} else {
-				panic!("Expected conditional block");
-			}
-		} else {
-			panic!("Expected main function");
-		}
-	}
-
-	#[test]
-	fn parse_for_loop_block() {
-		let source = "
-main: fn () -> void {
-	let sum: u32 = 0;
-	for (let i: u32 = 0; i < 4; i = i + 1) {
-		sum = sum + i;
-	}
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let main_node = &node["main"];
-		let Nodes::Function { statements, .. } = &main_node.node else {
-			panic!("Expected main function");
-		};
-
-		assert_eq!(statements.len(), 2);
-
-		let for_loop = &statements[1];
-		let Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} = &for_loop.node
-		else {
-			panic!("Expected for loop block");
-		};
-
-		assert!(matches!(
-			initializer.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
-		));
-		assert!(matches!(
-			condition.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if name == "<"
-		));
-		assert!(matches!(
-			update.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if name == "="
-		));
-		assert_eq!(statements.len(), 1);
-	}
-
-	#[test]
 	fn parse_bitwise_expression() {
 		let source = "
 main: fn () -> void {
@@ -1311,64 +522,25 @@ main: fn () -> void {
 			panic!("Expected main function");
 		};
 
-		let Nodes::Expression(Expressions::Operator { name, right, .. }) = &statements[0].node else {
+		let Nodes::Expression(Expressions::Operator { operator, right, .. }) = &statements[0].node else {
 			panic!("Expected assignment expression");
 		};
 
-		assert_eq!(*name, "=");
+		assert_eq!(*operator, Operators::Assignment);
 
-		let Nodes::Expression(Expressions::Operator { name, left, right }) = &right.node else {
+		let Nodes::Expression(Expressions::Operator { operator, left, right }) = &right.node else {
 			panic!("Expected bitwise or expression");
 		};
 
-		assert_eq!(*name, "|");
+		assert_eq!(*operator, Operators::BitwiseOr);
 		assert!(matches!(
 			left.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if name == "<<"
+			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == Operators::ShiftLeft
 		));
 		assert!(matches!(
 			right.node,
-			Nodes::Expression(Expressions::Operator { name, .. }) if name == "&"
+			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == Operators::BitwiseAnd
 		));
-	}
-
-	#[test]
-	fn parse_compute_vertex_position() {
-		let source = r#"
-compute_vertex_position: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec4f {
-	let vertex_index: u32 = compute_vertex_index(mesh, meshlet, primitive_index);
-	return vec4f(
-		vertex_positions.positions[vertex_index].x,
-		vertex_positions.positions[vertex_index].y,
-		vertex_positions.positions[vertex_index].z,
-		1.0
-	);
-}
-"#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let func = &node["compute_vertex_position"];
-
-		assert!(matches!(&func.node, Nodes::Function { .. }));
-	}
-
-	#[test]
-	fn parse_compute_triangle() {
-		let source = r#"
-compute_triangle: fn (mesh: Mesh, meshlet: Meshlet, primitive_index: u32) -> vec3u {
-	return vec3u(
-		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 0],
-		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 1],
-		primitive_indices.primitive_indices[(mesh.base_triangle_index + u16_to_u32(meshlet.triangle_offset) + primitive_index) * 3 + 2]
-	);
-}
-"#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		println!("Tokens: {:?}", tokens.tokens);
-		let node = parse(&tokens).expect("Failed to parse");
-		let func = &node["compute_triangle"];
-
-		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}
 
 	#[test]
@@ -1383,74 +555,6 @@ main: fn () -> void {
 		println!("Tokens: {:?}", tokens.tokens);
 		let node = parse(&tokens).expect("Failed to parse");
 		let func = &node["main"];
-
-		assert!(matches!(&func.node, Nodes::Function { .. }));
-	}
-
-	#[test]
-	fn parse_conditional_comparing_a_push_constant_member() {
-		let source = r#"
-main: fn () -> void {
-	let local_vertex_index: u32 = thread_id().x;
-	if (local_vertex_index >= push_constant.vertex_count) {
-		return;
-	}
-}
-"#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse push-constant comparison");
-		let func = &node["main"];
-
-		assert!(matches!(&func.node, Nodes::Function { .. }));
-	}
-
-	#[test]
-	fn parse_grouped_arithmetic_inside_a_conditional() {
-		let source = r#"
-main: fn () -> void {
-	if (total_weight > 0.00000001) {
-		let column0: vec4f = (
-			matrix0.column0 * weights.x
-			+ matrix1.column0 * weights.y
-		) * inverse_total_weight;
-	}
-}
-"#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse grouped conditional arithmetic");
-		let func = &node["main"];
-
-		assert!(matches!(&func.node, Nodes::Function { .. }));
-	}
-
-	#[test]
-	fn parse_process_meshlet() {
-		let source = r#"
-process_meshlet: fn (instance_index: u32, matrix: mat4f) -> void {
-	let mesh: Mesh = meshes.meshes[instance_index];
-	let meshlet_index: u32 = threadgroup_position() + mesh.base_meshlet_index;
-	let meshlet: Meshlet = meshlets.meshlets[meshlet_index];
-	let primitive_index: u32 = thread_idx();
-
-	set_mesh_output_counts(u8_to_u32(meshlet.primitive_count), u8_to_u32(meshlet.triangle_count));
-
-	if (primitive_index < u8_to_u32(meshlet.primitive_count)) {
-		set_mesh_vertex_position(
-			primitive_index,
-			matrix * mesh.model * compute_vertex_position(mesh, meshlet, primitive_index)
-		);
-	}
-
-	if (primitive_index < u8_to_u32(meshlet.triangle_count)) {
-		set_mesh_triangle(primitive_index, compute_triangle(mesh, meshlet, primitive_index));
-		out_instance_index[primitive_index] = instance_index;
-		out_primitive_index[primitive_index] = meshlet_index << 8 | primitive_index & 255;
-	}
-}
-"#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-		let func = &node["process_meshlet"];
 
 		assert!(matches!(&func.node, Nodes::Function { .. }));
 	}

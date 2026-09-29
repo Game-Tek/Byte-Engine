@@ -1,6 +1,6 @@
 //! Material dispatch bookkeeping and evaluation: count pixels per material, prefix-sum offsets, map pixels, shade.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use utils::{Extent, RGBA};
 
 use super::super::layout::{ActiveMaterialMask, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES};
@@ -93,24 +93,26 @@ impl MaterialPrepasses {
 		extent: Extent,
 		pipelines: MaterialPrepassPipelines,
 	) {
-		use ghi::command_buffer::{
-			BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
-			CommonCommandBufferMode as _,
-		};
+		use ghi::command_buffer::CommandBufferRecording as _;
 
-		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set];
-		let dispatch = |c: &mut ghi::implementation::CommandBufferRecording, name, pipeline, extent, workgroup| {
-			c.start_region(|label| label.write_str(name));
-			let c = c.bind_compute_pipeline(pipeline);
-			c.bind_descriptor_sets(&descriptor_sets);
-			c.dispatch(ghi::DispatchExtent::new(extent, workgroup));
-			c.end_region();
+		let stage = |label, pipeline, extent, workgroup| super::ComputeStage {
+			label,
+			pipeline,
+			descriptor_sets: [self.base_descriptor_set, self.visibility_descriptor_set],
+			extent,
+			workgroup,
 		};
 		// The offset pass reads these counts without resetting them, so clear before every dispatch.
 		c.clear_buffers(&[self.count_buffer.into()]);
-		dispatch(c, "Material Count", pipelines.count, extent, Extent::square(8));
-		dispatch(c, "Material Offset", pipelines.offset, Extent::line(1), Extent::line(1));
-		dispatch(c, "Pixel Mapping", pipelines.pixel_mapping, extent, Extent::square(16));
+		super::record_compute_stages(
+			c,
+			None,
+			&[
+				stage("Material Count", pipelines.count, extent, Extent::square(8)),
+				stage("Material Offset", pipelines.offset, Extent::line(1), Extent::line(1)),
+				stage("Pixel Mapping", pipelines.pixel_mapping, extent, Extent::square(16)),
+			],
+		);
 	}
 }
 
@@ -162,7 +164,7 @@ impl MaterialEvaluationPass {
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
 
-		move |c, _| {
+		move |c| {
 			use ghi::command_buffer::{
 				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
 				CommonCommandBufferMode as _,

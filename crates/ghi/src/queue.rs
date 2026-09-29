@@ -74,11 +74,9 @@ impl<F> StartedFrame<F> {
 ///
 /// `None` is returned only during startup, before every sequence has been submitted once.
 pub fn completed_frame_key(frame_identity: u64, frames_in_flight: u8) -> Option<FrameKey> {
-	let frames_in_flight = u64::from(frames_in_flight);
-	frame_identity.checked_sub(frames_in_flight).map(|frame_identity| FrameKey {
-		frame_index: frame_identity,
-		sequence_index: (frame_identity % frames_in_flight) as u8,
-	})
+	frame_identity
+		.checked_sub(u64::from(frames_in_flight))
+		.map(|frame_identity| FrameKey::new(frame_identity, frames_in_flight))
 }
 
 /// The `QueueExecution` trait scopes command-buffer recordings created during one queue submission.

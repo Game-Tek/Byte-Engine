@@ -88,7 +88,7 @@ Most smoke examples set `kill-after=60` and exit automatically after about one m
 ## 🧱 Create a minimal headed application
 
 ```rust
-use byte_engine::application::{Application, Parameter};
+use byte_engine::application::Parameter;
 use byte_engine::application::graphics::{default_setup, GraphicsApplication};
 
 fn main() {
@@ -122,7 +122,6 @@ Getting the latest unreleased changes requires pulling Byte-Engine from Git and 
 | `crates/ahi` | Audio hardware interface used by engine audio systems. |
 | `crates/resource-management` | Asset handling, resource storage, shader resources, and runtime reads. |
 | `crates/besl` | Byte Engine Shader Language parser, lexer, semantic graph, and integration. |
-| `crates/besl-derive` | Procedural macros for BESL-related structures. |
 | `crates/betp` | Byte Engine transport protocol primitives for local and remote sessions. |
 | `crates/math` | Shared math aliases and helpers. |
 | `crates/utils` | Shared allocation, async, sync, collection, and geometry utilities. |

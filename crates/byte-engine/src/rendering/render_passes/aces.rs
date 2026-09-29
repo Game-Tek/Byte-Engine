@@ -1,65 +1,16 @@
-use super::tone_map;
-use crate::core::Entity;
-use crate::rendering::{
-	Sink,
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-};
+use super::image_transform::Configuration;
 
-const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
+/// The ACES v1 tone mapper, installed by [`crate::application::graphics::setup_aces_tonemap_render_pass`].
+pub const TONE_MAPPING: Configuration = Configuration {
+	name: "aces",
+	label: "ACES Tonemap",
 	pipeline_id: "byte-engine/rendering/aces/tone-mapping.pipeline",
-	descriptor_set_name: "Tonemap Pass Descriptor Set",
 	output_name: "ACES Tonemap Output",
-	shader_error: "Failed to create ACES tone mapping shader. The most likely cause is an incompatible shader interface.",
+	requires_float_input: false,
 };
-
-/// The `BaseAcesToneMapPass` struct provides shared ACES compute pipeline state to per-view passes.
-#[derive(Clone)]
-pub struct BaseAcesToneMapPass {
-	pipeline: crate::rendering::render_pass::simple_compute::Pipeline,
-}
-
-impl Entity for BaseAcesToneMapPass {}
-
-impl BaseAcesToneMapPass {
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
-		Self {
-			pipeline: tone_map::create_pipeline(render_pass_builder, &CONFIGURATION),
-		}
-	}
-}
-
-/// The `AcesToneMapPass` struct provides one view with ACES tonemapping descriptor bindings.
-pub struct AcesToneMapPass {
-	render_pass: crate::rendering::render_pass::simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
-}
-
-impl AcesToneMapPass {
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let base = BaseAcesToneMapPass::new(render_pass_builder);
-		let passes = tone_map::create_passes(render_pass_builder, &base.pipeline, &CONFIGURATION);
-		AcesToneMapPass {
-			render_pass: passes.active,
-			bypass_pass: passes.bypass,
-		}
-	}
-}
-
-impl Entity for AcesToneMapPass {}
-
-impl RenderPass for AcesToneMapPass {
-	fn name(&self) -> &'static str {
-		"aces"
-	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(prepare = render_pass);
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
-}
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot};
 
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};

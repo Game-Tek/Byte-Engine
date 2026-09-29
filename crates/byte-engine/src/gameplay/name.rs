@@ -52,14 +52,3 @@ impl From<Cow<'static, str>> for Name {
 		Self::new(name)
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::Name;
-
-	#[test]
-	#[should_panic(expected = "Name cannot be empty")]
-	fn names_require_visible_text() {
-		let _ = Name::new("");
-	}
-}

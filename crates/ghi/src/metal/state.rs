@@ -94,12 +94,10 @@ pub mod sampler {
 
 pub mod descriptor_set {
 	use super::*;
-	use crate::descriptors::DescriptorSetHandle;
 
 	/// The `DescriptorSet` struct provides Metal descriptor state for one frame.
 	#[derive(Clone)]
 	pub(crate) struct DescriptorSet {
-		pub next: Option<DescriptorSetHandle>,
 		pub version: u64,
 		pub descriptors: HashMap<crate::shader::ResourceSlot, HashMap<u32, Descriptor>>,
 		/// Argument-buffer snapshots encoded with this set bound first, one per pipeline layout and set union.
@@ -110,20 +108,17 @@ pub mod descriptor_set {
 pub mod synchronizer {
 	use super::*;
 	use crate::metal::queue::{StoredQueue, SubmittedBatch};
-	use crate::synchronizer::SynchronizerHandle;
 
 	/// The `Synchronizer` struct owns the Metal workloads associated with one GHI synchronization point.
 	///
 	/// A synchronizer with no pending workloads is signaled.
 	pub(crate) struct Synchronizer {
-		pub next: Option<SynchronizerHandle>,
 		workloads: SmallVec<[SubmittedBatch; 4]>,
 	}
 
 	impl Synchronizer {
 		pub(crate) fn new() -> Self {
 			Self {
-				next: None,
 				workloads: SmallVec::new(),
 			}
 		}

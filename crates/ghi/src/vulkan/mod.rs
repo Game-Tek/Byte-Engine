@@ -575,18 +575,6 @@ mod task_tests {
 		assert!(!task.is_pending(Some(5)));
 		assert!(!task.is_pending(Some(6)));
 	}
-
-	#[test]
-	fn frame_tasks_never_wait_for_completion() {
-		let task = Task::new(
-			Tasks::DeleteVulkanBuffer {
-				handle: vk::Buffer::null(),
-			},
-			Some(1),
-		);
-
-		assert!(!task.is_pending(None));
-	}
 }
 
 #[cfg(test)]

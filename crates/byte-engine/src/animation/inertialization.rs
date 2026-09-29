@@ -2,7 +2,7 @@
 
 use resource_management::resources::skeleton::LocalTransform;
 
-use super::math::{conjugate_quaternion, multiply_quaternion, quaternion_exp, quaternion_log};
+use super::math::{add3, conjugate_quaternion, multiply_quaternion, quaternion_exp, quaternion_log, sub3};
 use crate::MediaTime;
 
 const DECAY_TO_ONE_THOUSANDTH: f32 = 6.907_755_4;
@@ -79,8 +79,8 @@ impl PoseInertializer {
 			.zip(destination)
 			.zip(&mut self.nodes)
 		{
-			state.translation_offset = subtract3(source.translation, destination.translation);
-			state.translation_velocity = subtract3(
+			state.translation_offset = sub3(source.translation, destination.translation);
+			state.translation_velocity = sub3(
 				velocity3(source_previous.translation, source.translation, sample_delta_seconds),
 				velocity3(
 					destination_previous.translation,
@@ -88,15 +88,15 @@ impl PoseInertializer {
 					sample_delta_seconds,
 				),
 			);
-			state.scale_offset = subtract3(source.scale, destination.scale);
-			state.scale_velocity = subtract3(
+			state.scale_offset = sub3(source.scale, destination.scale);
+			state.scale_velocity = sub3(
 				velocity3(source_previous.scale, source.scale, sample_delta_seconds),
 				velocity3(destination_previous.scale, destination.scale, sample_delta_seconds),
 			);
 
 			let rotation_offset = multiply_quaternion(source.rotation, conjugate_quaternion(destination.rotation));
 			state.rotation_offset = quaternion_log(rotation_offset);
-			state.rotation_velocity = subtract3(
+			state.rotation_velocity = sub3(
 				angular_velocity(source_previous.rotation, source.rotation, sample_delta_seconds),
 				angular_velocity(destination_previous.rotation, destination.rotation, sample_delta_seconds),
 			);
@@ -255,14 +255,6 @@ fn angular_velocity(previous: [f32; 4], current: [f32; 4], delta: f32) -> [f32; 
 	let delta_rotation = multiply_quaternion(current, conjugate_quaternion(previous));
 	let rotation_vector = quaternion_log(delta_rotation);
 	std::array::from_fn(|component| rotation_vector[component] / delta)
-}
-
-fn add3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	std::array::from_fn(|component| left[component] + right[component])
-}
-
-fn subtract3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	std::array::from_fn(|component| left[component] - right[component])
 }
 
 #[cfg(test)]

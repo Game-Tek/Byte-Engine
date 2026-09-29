@@ -14,14 +14,13 @@ use besl::parser::Node;
 use ghi::AccessPolicies;
 use resource_management::asset::JsonObject;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
-use utils::json::{JsonContainerTrait, JsonValueTrait};
 
 use self::ast::*;
 use self::sources::*;
 use super::layout::{
 	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
 };
-use crate::rendering::common_shader_generator::CommonShaderScope;
+use crate::rendering::common_shader_generator::common_shader_scope;
 
 // BESL array types are spelled out so the scope stays a plain literal; these guards catch limit changes.
 const LIGHT_ARRAY: &str = "Light[1024]";
@@ -91,7 +90,7 @@ impl VisibilityShaderGenerator {
 
 	pub fn with_access(access: ScopeAccess) -> Self {
 		Self {
-			common: CommonShaderScope::new(),
+			common: common_shader_scope(),
 			scope: VisibilityShaderScope::new(access),
 		}
 	}
@@ -150,13 +149,7 @@ impl VisibilityShaderScope {
 					Node::member("far", "f32"),
 				],
 			),
-			Node::constant_buffer_binding(
-				"views",
-				Node::buffer("ViewsBuffer", vec![Node::member("views", "View[9]")]),
-				0,
-				true,
-				false,
-			),
+			Node::constant_buffer_binding("views", Node::buffer(vec![Node::member("views", "View[9]")]), 0, true, false),
 			Node::r#struct(
 				"Mesh",
 				vec![
@@ -225,19 +218,13 @@ impl VisibilityShaderScope {
 			),
 		];
 
-		let read_buffer = |name, buffer_name, member, r#type, slot| {
-			Node::device_buffer_binding(
-				name,
-				Node::buffer(buffer_name, vec![Node::member(member, r#type)]),
-				slot,
-				true,
-				false,
-			)
+		let read_buffer = |name, member, r#type, slot| {
+			Node::device_buffer_binding(name, Node::buffer(vec![Node::member(member, r#type)]), slot, true, false)
 		};
-		let access_buffer = |name, buffer_name, member, r#type, slot, access: AccessPolicies| {
+		let access_buffer = |name, member, r#type, slot, access: AccessPolicies| {
 			Node::device_buffer_binding(
 				name,
-				Node::buffer(buffer_name, vec![Node::member(member, r#type)]),
+				Node::buffer(vec![Node::member(member, r#type)]),
 				slot,
 				access.contains(AccessPolicies::READ),
 				access.contains(AccessPolicies::WRITE),
@@ -247,10 +234,10 @@ impl VisibilityShaderScope {
 		let geometry_stream = |name, element, slot| Node::runtime_array_binding(name, element, slot, true, false);
 		let sampled = |name, image, slot| Node::binding(name, image, slot, true, false);
 		let base_bindings = vec![
-			read_buffer("meshes", "MeshBuffer", "meshes", "Mesh[1024]", 1),
+			read_buffer("meshes", "meshes", "Mesh[1024]", 1),
 			geometry_stream("vertex_positions", "vec3f", 2),
 			geometry_stream("vertex_normals", "vec2u16", 3),
-			read_buffer("skinned_vertices", "SkinnedVertices", "vertices", SKINNED_VERTEX_ARRAY, 4),
+			read_buffer("skinned_vertices", "vertices", SKINNED_VERTEX_ARRAY, 4),
 			geometry_stream("vertex_uvs", "vec2f16", 5),
 			geometry_stream("vertex_indices", "u16", 6),
 			// Three meshlet-local vertex indices per triangle, read as `primitive_indices[triangle * 3 + corner]`.
@@ -264,17 +251,9 @@ impl VisibilityShaderScope {
 				false,
 				MAX_BINDLESS_TEXTURES as u32,
 			),
-			access_buffer(
-				"material_count",
-				"MaterialCount",
-				"material_count",
-				"u32[1024]",
-				1033,
-				access.material_count,
-			),
+			access_buffer("material_count", "material_count", "u32[1024]", 1033, access.material_count),
 			access_buffer(
 				"material_offset",
-				"MaterialOffset",
 				"material_offset",
 				"u32[1024]",
 				1034,
@@ -282,7 +261,6 @@ impl VisibilityShaderScope {
 			),
 			access_buffer(
 				"material_offset_scratch",
-				"MaterialOffsetScratch",
 				"material_offset_scratch",
 				"u32[1024]",
 				1035,
@@ -290,7 +268,6 @@ impl VisibilityShaderScope {
 			),
 			access_buffer(
 				"pixel_mapping",
-				"PixelMapping",
 				"pixel_mapping",
 				PIXEL_MAPPING_ARRAY,
 				1037,
@@ -305,44 +282,32 @@ impl VisibilityShaderScope {
 			// The light table outgrows constant-buffer limits, so it is a read-only storage buffer.
 			Node::device_buffer_binding(
 				"lighting_data",
-				Node::buffer(
-					"LightingBuffer",
-					vec![
-						Node::member("light_count", "u32"),
-						Node::member("exposure", "f32"),
-						Node::member("environment_intensity", "f32"),
-						// Keep the light array at the CPU record's 16-byte boundary on scalar-layout backends.
-						Node::member("_light_count_padding", "u32"),
-						Node::member("lights", LIGHT_ARRAY),
-					],
-				),
+				Node::buffer(vec![
+					Node::member("light_count", "u32"),
+					Node::member("exposure", "f32"),
+					Node::member("environment_intensity", "f32"),
+					// Keep the light array at the CPU record's 16-byte boundary on scalar-layout backends.
+					Node::member("_light_count_padding", "u32"),
+					Node::member("lights", LIGHT_ARRAY),
+				]),
 				1045,
 				true,
 				false,
 			),
-			read_buffer(
-				"light_cluster_masks",
-				"LightClusterMasks",
-				"words",
-				LIGHT_CLUSTER_MASK_ARRAY,
-				1066,
-			),
+			read_buffer("light_cluster_masks", "words", LIGHT_CLUSTER_MASK_ARRAY, 1066),
 			Node::constant_buffer_binding(
 				"light_cluster_parameters",
-				Node::buffer(
-					"LightClusterParameters",
-					vec![
-						Node::member("view", "mat4x3f"),
-						Node::member("edge_slopes", "vec2f"),
-						Node::member("near", "f32"),
-						Node::member("depth_slice_scale", "f32"),
-					],
-				),
+				Node::buffer(vec![
+					Node::member("view", "mat4x3f"),
+					Node::member("edge_slopes", "vec2f"),
+					Node::member("near", "f32"),
+					Node::member("depth_slice_scale", "f32"),
+				]),
 				1067,
 				true,
 				false,
 			),
-			read_buffer("materials", "MaterialBuffer", "materials", MATERIAL_ARRAY, 1046),
+			read_buffer("materials", "materials", MATERIAL_ARRAY, 1046),
 			sampled("ao", Node::combined_image_sampler(), 1051),
 			sampled("indirect_diffuse", Node::combined_image_sampler(), 1056),
 			sampled("contact_shadows", Node::combined_image_sampler(), 1058),
@@ -443,15 +408,12 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 		),
 		Node::constant_buffer_binding(
 			"reflection_parameters",
-			Node::buffer(
-				"ReflectionParameters",
-				vec![
-					Node::member("world_to_previous_clip", "mat4f"),
-					Node::member("previous_exposure", "f32"),
-					Node::member("history_valid", "u32"),
-					Node::member("_padding", "u32[2]"),
-				],
-			),
+			Node::buffer(vec![
+				Node::member("world_to_previous_clip", "mat4f"),
+				Node::member("previous_exposure", "f32"),
+				Node::member("history_valid", "u32"),
+				Node::member("_padding", "u32[2]"),
+			]),
 			1059,
 			true,
 			false,

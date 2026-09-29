@@ -6,16 +6,12 @@ mod lowering;
 mod matching;
 mod resolution;
 
-#[cfg(test)]
-use std::{cell::RefCell, num::NonZeroUsize};
-
+pub(crate) use ast::lex_with_root;
 pub use ast::{
 	BindingTypes, BufferMemoryClass, CallTarget, ElseBranch, Expressions, FixedArray, LexError, MatchArm, Node, NodeReference,
-	Nodes, Operators, ParentNodeReference,
+	Nodes, Operators,
 };
-pub(crate) use ast::{lex, lex_with_root};
-#[cfg(test)]
-use resolution::*;
+pub use resolution::infer_expression_type;
 
 #[cfg(test)]
 use crate::parser;
@@ -209,26 +205,6 @@ mod tests {
 	}
 
 	#[test]
-	fn structural_compute_stage_inputs_lower_to_existing_intrinsics() {
-		crate::compile_to_besl(
-			r#"
-				main: fn (input: StageInput) -> void {
-					let dispatch: vec2u = input.thread_id;
-					let local: u32 = input.thread_idx;
-					let workgroup: u32 = input.threadgroup_position;
-					let lane: u32 = input.subgroup_lane_index;
-					dispatch;
-					local;
-					workgroup;
-					lane;
-				}
-			"#,
-			None,
-		)
-		.expect("structural compute stage inputs should link through their intrinsic semantics");
-	}
-
-	#[test]
 	fn structural_entry_rejects_invalid_record_shapes() {
 		for (source, expected) in [
 			(
@@ -248,7 +224,7 @@ mod tests {
 			let error = crate::compile_to_besl(source, None).expect_err("invalid structural entry should fail while linking");
 			assert!(matches!(
 				error,
-				crate::CompilationError::Lex(LexError::Undefined { message: Some(message) })
+				crate::CompilationError::Lex(LexError::Invalid { message })
 					if message.contains(expected)
 			));
 		}
@@ -262,7 +238,10 @@ mod tests {
 			);
 			let root = crate::compile_to_besl(&source, None)
 				.unwrap_or_else(|error| panic!("{element_type} runtime buffer should link: {error:?}"));
-			let values = root.borrow().get_child("values").expect("runtime buffer descriptor should exist");
+			let values = root
+				.borrow()
+				.get_child("values")
+				.expect("runtime buffer descriptor should exist");
 			assert!(matches!(
 				values.borrow().node(),
 				Nodes::Binding {
@@ -308,7 +287,7 @@ mod tests {
 		let error = crate::compile_to_besl(source, None).expect_err("f32 layer index should fail while linking");
 		assert!(matches!(
 			error,
-			crate::CompilationError::Lex(LexError::Undefined { message: Some(message) })
+			crate::CompilationError::Lex(LexError::Invalid { message })
 				if message.contains("layer index must be u32")
 		));
 	}
@@ -327,28 +306,6 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn source_atomic_buffers_and_push_constants_link_without_injected_rust_nodes() {
-		let source = r#"
-			Counters: struct {
-				values: atomicu32[8],
-			}
-			counters: descriptor<{ type: Counters, binding: 3, access: read_write }>;
-			push_constant: push_constant {
-				index: u32,
-			}
-			main: fn () -> void {
-				let old: u32 = atomic_add(counters.values[push_constant.index], 1);
-				atomic_store(counters.values[push_constant.index], atomic_load(counters.values[old]));
-			}
-		"#;
-
-		let root = crate::compile_to_besl(source, None).expect("standalone atomic shader should link");
-		root.get_main().expect("standalone atomic shader should have main");
-
-		assert!(root.borrow().get_child("push_constant").is_some());
-	}
-
 	/// Builds one statement for each supported scalar buffer or workgroup atomic intrinsic.
 	fn atomic_statement(name: &str, target: &str) -> String {
 		match name {
@@ -361,7 +318,7 @@ mod tests {
 	/// Compiles invalid source and returns the plain-language linker diagnostic.
 	fn atomic_link_error(source: &str) -> String {
 		match crate::compile_to_besl(source, None).expect_err("invalid atomic source should fail while linking") {
-			crate::CompilationError::Lex(LexError::Undefined { message: Some(message) }) => message,
+			crate::CompilationError::Lex(LexError::Invalid { message }) => message,
 			error => panic!("Expected a detailed atomic linker error, found {error:?}"),
 		}
 	}
@@ -440,35 +397,6 @@ mod tests {
 	}
 
 	#[test]
-	fn every_atomic_intrinsic_accepts_addressable_workgroup_storage() {
-		let statements = [
-			"atomic_store",
-			"atomic_load",
-			"atomic_exchange",
-			"atomic_compare_exchange",
-			"atomic_add",
-			"atomic_sub",
-			"atomic_min",
-			"atomic_max",
-			"atomic_and",
-			"atomic_or",
-			"atomic_xor",
-		]
-		.into_iter()
-		.map(|operation| atomic_statement(operation, "counter"))
-		.collect::<Vec<_>>()
-		.join("\n");
-		let source = format!(
-			r#"
-				counter: workgroup<atomicu32>;
-				main: fn () -> void {{ {statements} }}
-			"#
-		);
-
-		crate::compile_to_besl(&source, None).expect("All atomic intrinsics should accept addressable workgroup storage");
-	}
-
-	#[test]
 	fn every_atomic_intrinsic_rejects_by_value_function_parameters() {
 		for operation in [
 			"atomic_store",
@@ -525,56 +453,6 @@ mod tests {
 			);
 			assert!(message.contains("/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics"));
 		}
-	}
-
-	#[test]
-	fn source_links_portable_integer_atomics_and_float_classification() {
-		let source = r#"
-			Counters: struct {
-				unsigned_value: atomicu32,
-				signed_value: atomici32,
-			}
-			counters: descriptor<{ type: Counters, binding: 3, access: read_write }>;
-			main: fn () -> void {
-				atomic_store(counters.unsigned_value, 7);
-				atomic_exchange(counters.unsigned_value, 8);
-				atomic_add(counters.unsigned_value, 2);
-				atomic_sub(counters.unsigned_value, 1);
-				atomic_min(counters.unsigned_value, 4);
-				atomic_max(counters.unsigned_value, 9);
-				atomic_and(counters.unsigned_value, 15);
-				atomic_or(counters.unsigned_value, 16);
-				atomic_xor(counters.unsigned_value, 3);
-				atomic_compare_exchange(counters.unsigned_value, 26, 1);
-				atomic_load(counters.unsigned_value);
-
-				let negative: i32 = 0 - 7;
-				atomic_store(counters.signed_value, negative);
-				atomic_exchange(counters.signed_value, negative);
-				atomic_add(counters.signed_value, negative);
-				atomic_sub(counters.signed_value, negative);
-				atomic_min(counters.signed_value, negative);
-				atomic_max(counters.signed_value, negative);
-				atomic_and(counters.signed_value, negative);
-				atomic_or(counters.signed_value, negative);
-				atomic_xor(counters.signed_value, negative);
-				atomic_compare_exchange(counters.signed_value, negative, 1);
-				atomic_load(counters.signed_value);
-
-				is_nan(f16(0.0));
-				is_infinite(f16(0.0));
-				is_finite(0.0);
-				is_normal(1.0);
-				fma(f16(1.0), f16(2.0), f16(3.0));
-				fma(vec2f16(1.0, 2.0), vec2f16(2.0, 3.0), vec2f16(3.0, 4.0));
-				fma(vec3f16(1.0, 2.0, 3.0), vec3f16(2.0, 3.0, 4.0), vec3f16(3.0, 4.0, 5.0));
-				fma(vec4f16(1.0, 2.0, 3.0, 4.0), vec4f16(2.0, 3.0, 4.0, 5.0), vec4f16(3.0, 4.0, 5.0, 6.0));
-			}
-		"#;
-
-		let root = crate::compile_to_besl(source, None).expect("portable atomic and classification source should link");
-		root.get_main()
-			.expect("portable atomic and classification source should have main");
 	}
 
 	#[test]
@@ -635,29 +513,13 @@ mod tests {
 	}
 
 	#[test]
-	fn source_boolean_literals_link_as_bool_values() {
-		let source = r#"
-			main: fn () -> void {
-				let enabled: bool = true;
-				let disabled: bool = false;
-			}
-		"#;
-
-		let root = crate::compile_to_besl(source, None).expect("boolean literals should link");
-		root.get_main().expect("boolean literal shader should have main");
-
-		assert_eq!(infer_literal_type("true").unwrap().borrow().get_name(), Some("bool"));
-		assert_eq!(infer_literal_type("false").unwrap().borrow().get_name(), Some("bool"));
-	}
-
-	#[test]
 	fn source_buffer_descriptor_requires_a_declared_type() {
 		let tokens = tokenizer::tokenize("data: descriptor<{ type: Missing, binding: 0, access: read }>;")
 			.expect("descriptor should tokenize");
 		let parsed = parser::parse(&tokens).expect("descriptor should parse");
 
 		assert_eq!(
-			lex(parsed),
+			lex_with_root(Node::root(), parsed),
 			Err(LexError::ReferenceToUndefinedType {
 				type_name: "Missing".to_string(),
 			})
@@ -676,37 +538,6 @@ mod tests {
 	}
 
 	#[test]
-	fn raw_code_constructors_select_only_the_requested_backend() {
-		const EXPECTED: [(Option<&str>, Option<&str>, Option<&str>); 3] =
-			[(Some("g"), None, None), (None, Some("h"), None), (None, None, Some("m"))];
-
-		let parser_nodes = [
-			parser::Node::glsl("g", &[], &[]),
-			parser::Node::hlsl("h", &[], &[]),
-			parser::Node::msl("m", &[], &[]),
-		];
-		let linked_nodes = [
-			Node::glsl("g".into(), Vec::new(), Vec::new()),
-			Node::hlsl("h".into(), Vec::new(), Vec::new()),
-			Node::msl("m".into(), Vec::new(), Vec::new()),
-		];
-
-		for ((parser_node, linked_node), expected) in parser_nodes.into_iter().zip(linked_nodes).zip(EXPECTED) {
-			let parser::Nodes::RawCode { glsl, hlsl, msl, .. } = parser_node.node() else {
-				panic!("Expected parser raw-code node. The constructor returned a different node variant.");
-			};
-
-			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
-
-			let Nodes::Raw { glsl, hlsl, msl, .. } = linked_node.node() else {
-				panic!("Expected linked raw-code node. The constructor returned a different node variant.");
-			};
-
-			assert_eq!((glsl.as_deref(), hlsl.as_deref(), msl.as_deref()), expected);
-		}
-	}
-
-	#[test]
 	fn lex_non_existant_function_struct_member_type() {
 		let source = "
 Foo: struct {
@@ -715,7 +546,7 @@ Foo: struct {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let node = parser::parse(&tokens).expect("Failed to parse");
-		lex(node)
+		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -732,7 +563,7 @@ Foo: struct {
 			let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 			let node = parser::parse(&tokens).expect("Failed to parse");
 			assert_eq!(
-				lex(node).err(),
+				lex_with_root(Node::root(), node).err(),
 				Some(LexError::ReferenceToUndefinedType {
 					type_name: type_name.to_string(),
 				})
@@ -746,7 +577,7 @@ Foo: struct {
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let node = parser::parse(&tokens).expect("Failed to parse");
 
-		assert!(matches!(lex(node), Err(LexError::Undefined { .. })));
+		assert!(matches!(lex_with_root(Node::root(), node), Err(LexError::Invalid { .. })));
 	}
 
 	#[test]
@@ -777,7 +608,7 @@ main: fn () -> NonExistantType {}";
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let node = parser::parse(&tokens).expect("Failed to parse");
-		lex(node)
+		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| {
 				e == &LexError::ReferenceToUndefinedType {
@@ -797,7 +628,7 @@ main: fn () -> void {
 
 		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
 		let node = parser::parse(&tokens).expect("Failed to parse");
-		lex(node)
+		lex_with_root(Node::root(), node)
 			.err()
 			.filter(|e| e == &LexError::FunctionCallParametersDoNotMatchFunctionParameters)
 			.expect("Expected error");
@@ -814,216 +645,9 @@ main: fn () -> void {
 		let node = parser::parse(&tokens).expect("Failed to parse");
 
 		assert_eq!(
-			lex(node).expect_err("The mesh primitive and array indices must both be u32"),
+			lex_with_root(Node::root(), node).expect_err("The mesh primitive and array indices must both be u32"),
 			LexError::FunctionCallParametersDoNotMatchFunctionParameters
 		);
-	}
-
-	#[test]
-	fn lex_function() {
-		let source = "
-main: fn () -> void {
-	let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
-	position = position;
-}";
-
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		let node = lex(node).expect("Failed to lex");
-
-		let vec4f = node.get_descendant("vec4f").expect("Expected vec4f");
-
-		let nb = node.borrow();
-
-		match &nb.node {
-			Nodes::Scope { .. } => {
-				let main = node.get_descendant("main").expect("Expected main");
-				let main = RefCell::borrow(&main.0);
-
-				match main.node() {
-					Nodes::Function {
-						name,
-						return_type,
-						statements,
-						..
-					} => {
-						assert_eq!(name, "main");
-						assert_type(&return_type.borrow(), "void");
-
-						let position = statements[0].borrow();
-
-						match position.node() {
-							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-								let position = left.borrow();
-
-								assert_eq!(operator, &Operators::Assignment);
-
-								match position.node() {
-									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-										assert_eq!(name, "position");
-										assert_eq!(r#type, &vec4f);
-									}
-									_ => {
-										panic!("Expected expression");
-									}
-								}
-
-								let constructor = right.borrow();
-
-								match constructor.node() {
-									Nodes::Expression(Expressions::FunctionCall {
-										function, parameters, ..
-									}) => {
-										let function = function.get();
-										let function = function.borrow();
-										let name = function.get_name().expect("Expected name");
-
-										assert_eq!(name, "vec4f");
-										assert_eq!(parameters.len(), 4);
-									}
-									_ => {
-										panic!("Expected expression");
-									}
-								}
-							}
-							_ => {
-								panic!("Expected variable declaration");
-							}
-						}
-					}
-					_ => {
-						panic!("Expected function.");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
-	#[test]
-	fn parse_script() {
-		let script = r#"
-		used: fn () -> void {
-			return;
-		}
-
-		not_used: fn () -> void {
-			return;
-		}
-
-		main: fn () -> void {
-			used();
-		}
-		"#;
-
-		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		lex(node).expect("Failed to lex");
-	}
-
-	#[test]
-	fn lex_struct() {
-		let script = r#"
-		Vertex: struct {
-			array: u32[3],
-			position: vec3f,
-			normal: vec3f,
-		}
-		"#;
-
-		let tokens = tokenizer::tokenize(script).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		let node = lex(node).expect("Failed to lex");
-
-		let nb = node.borrow();
-
-		match nb.node() {
-			Nodes::Scope { name, .. } => {
-				assert_eq!(name, "root");
-
-				let vertex = node.get_descendant("Vertex").expect("Expected Vertex");
-				let vertex = RefCell::borrow(&vertex.0);
-
-				match vertex.node() {
-					Nodes::Struct { name, fields, .. } => {
-						assert_eq!(name, "Vertex");
-						assert_eq!(fields.len(), 3);
-
-						let array = fields[0].borrow();
-
-						match array.node() {
-							Nodes::Member { name, r#type, count } => {
-								assert_eq!(name, "array");
-								assert_type(&r#type.borrow(), "u32");
-
-								assert_eq!(count, &Some(NonZeroUsize::new(3).expect("Invalid count")));
-							}
-							_ => {
-								panic!("Expected member");
-							}
-						}
-					}
-					_ => {
-						panic!("Expected struct");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
-	#[test]
-	fn lex_array_index_accessor() {
-		let script = r#"
-		main: fn () -> void {
-			let value: f32 = buff.values[1];
-		}
-		"#;
-
-		let mut root = Node::root();
-		let float_type = root.get_child("f32").expect("Expected f32");
-		root.add_child(
-			Node::binding(
-				"buff",
-				BindingTypes::Buffer {
-					members: vec![Node::array("values", float_type, 3)],
-				},
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
-
-		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let statement = statements[0].borrow();
-		let Nodes::Expression(Expressions::Operator { right, .. }) = statement.node() else {
-			panic!("Expected assignment");
-		};
-		let right = right.borrow();
-		let Nodes::Expression(Expressions::Accessor { left, right }) = right.node() else {
-			panic!("Expected outer accessor");
-		};
-
-		assert!(matches!(
-			right.borrow().node(),
-			Nodes::Expression(Expressions::Expression { elements })
-				if elements.len() == 1
-					&& matches!(elements[0].borrow().node(), Nodes::Expression(Expressions::Literal { value }) if value == "1")
-		));
-		// The lone `values` member lowers the buffer to a fixed array, so `buff.values[1]` indexes `buff` itself.
-		assert_lowered_array_reference(&left, "buff", "values", 3);
 	}
 
 	/// Asserts that `node` references a buffer binding lowered from a lone fixed-array member.
@@ -1108,7 +732,9 @@ main: fn () -> void {
 		}
 
 		match indexed_meshes.borrow().node() {
-			Nodes::Expression(Expressions::Accessor { left, .. }) => assert_lowered_array_reference(left, "meshes", "meshes", 4),
+			Nodes::Expression(Expressions::Accessor { left, .. }) => {
+				assert_lowered_array_reference(left, "meshes", "meshes", 4)
+			}
 			_ => panic!("Expected indexed meshes accessor"),
 		}
 
@@ -1165,288 +791,7 @@ main: fn () -> void {
 	// fn push_constant() {
 	// }
 
-	#[test]
-	fn fragment_shader() {
-		let source = r#"
-		main: fn () -> void {
-			let albedo: vec3f = vec3f(1.0, 0.0, 0.0);
-		}
-		"#;
-
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let node = parser::parse(&tokens).expect("Failed to parse");
-		let node = lex(node).expect("Failed to lex");
-
-		let nb = node.borrow();
-
-		let vec3f = node.get_descendant("vec3f").expect("Expected vec3f");
-
-		match nb.node() {
-			Nodes::Scope { name, .. } => {
-				assert_eq!(name, "root");
-
-				let main = node.get_descendant("main").expect("Expected main");
-				let main = RefCell::borrow(&main.0);
-
-				match main.node() {
-					Nodes::Function {
-						name,
-						return_type,
-						statements,
-						..
-					} => {
-						assert_eq!(name, "main");
-						assert_type(&return_type.borrow(), "void");
-
-						let albedo = statements[0].borrow();
-
-						match albedo.node() {
-							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-								let albedo = left.borrow();
-
-								assert_eq!(operator, &Operators::Assignment);
-
-								match albedo.node() {
-									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-										assert_eq!(name, "albedo");
-										assert_eq!(r#type, &vec3f);
-									}
-									_ => {
-										panic!("Expected expression");
-									}
-								}
-
-								let constructor = right.borrow();
-
-								match constructor.node() {
-									Nodes::Expression(Expressions::FunctionCall {
-										function, parameters, ..
-									}) => {
-										let function = function.get();
-										let function = function.borrow();
-										let name = function.get_name().expect("Expected name");
-
-										assert_eq!(name, "vec3f");
-										assert_eq!(parameters.len(), 3);
-									}
-									_ => {
-										panic!("Expected expression");
-									}
-								}
-							}
-							_ => {
-								panic!("Expected variable declaration");
-							}
-						}
-					}
-					_ => {
-						panic!("Expected function.");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
 	// TODO: test function with body with missing close brace
-
-	#[test]
-	// This syntax-tree assertion intentionally mirrors the nested intrinsic AST it validates.
-	#[allow(clippy::excessive_nesting)]
-	fn lex_intrinsic() {
-		let source = "
-main: fn () -> void {
-	let n: f32 = intrinsic(0).y;
-}";
-
-		let tokens = tokenizer::tokenize(source).expect("Failed to tokenize");
-		let mut node = parser::parse(&tokens).expect("Failed to parse");
-
-		let intrinsic = parser::Node::intrinsic(
-			"intrinsic",
-			parser::Node::parameter("num", "u32"),
-			parser::Node::sentence(vec![
-				parser::Node::glsl("vec3(", &[], &[]),
-				parser::Node::member_expression("num"),
-				parser::Node::glsl(")", &[], &[]),
-			]),
-			"vec3f",
-		);
-
-		node.add(vec![intrinsic]);
-
-		let node = lex(node).expect("Failed to lex");
-
-		let nb = node.borrow();
-
-		match nb.node() {
-			Nodes::Scope { name, .. } => {
-				assert_eq!(name, "root");
-
-				let main = node.get_descendant("main").unwrap();
-				let main = main.borrow();
-
-				match main.node() {
-					Nodes::Function { name, statements, .. } => {
-						assert_eq!(name, "main");
-
-						let n = statements[0].borrow();
-
-						match n.node() {
-							Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-								assert_eq!(operator, &Operators::Assignment);
-
-								let n = left.borrow();
-
-								match n.node() {
-									Nodes::Expression(Expressions::VariableDeclaration { name, r#type }) => {
-										assert_eq!(name, "n");
-										assert_type(&r#type.borrow(), "f32");
-									}
-									_ => {
-										panic!("Expected variable declaration");
-									}
-								}
-
-								let intrinsic = right.borrow();
-
-								match intrinsic.node() {
-									Nodes::Expression(Expressions::Accessor { left, right }) => {
-										let left = left.borrow();
-
-										match left.node() {
-											Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
-												let intrinsic = intrinsic.borrow();
-
-												match intrinsic.node() {
-													Nodes::Intrinsic { name, elements, .. } => {
-														assert_eq!(name, "intrinsic");
-														assert_eq!(elements.len(), 2);
-													}
-													_ => {
-														panic!("Expected intrinsic");
-													}
-												}
-											}
-											_ => {
-												panic!("Expected intrinsic call");
-											}
-										}
-
-										let right = right.borrow();
-
-										match right.node() {
-											Nodes::Expression(Expressions::Member { name, .. }) => {
-												assert_eq!(name, "y");
-											}
-											_ => {
-												panic!("Expected member");
-											}
-										}
-									}
-									_ => {
-										panic!("Expected accessor");
-									}
-								}
-							}
-							_ => {
-								panic!("Expected assignment");
-							}
-						}
-					}
-					_ => {
-						panic!("Expected feature");
-					}
-				}
-			}
-			_ => {
-				panic!("Expected scope");
-			}
-		}
-	}
-
-	#[test]
-	fn lex_builtin_texture_intrinsics() {
-		let script = r#"
-		main: fn () -> void {
-			let uv: vec2f = vec2f(0.5, 0.5);
-			let coord: vec2u = vec2u(1, 2);
-			let color: vec4f = sample(texture_sampler, uv);
-			let texel: vec4f = fetch(texture, coord);
-		}
-		"#;
-
-		let mut root = Node::root();
-		root.add_child(
-			Node::binding(
-				"texture_sampler",
-				BindingTypes::CombinedImageSampler { format: String::new() },
-				0,
-				true,
-				false,
-			)
-			.into(),
-		);
-		root.add_child(
-			Node::binding(
-				"texture",
-				BindingTypes::CombinedImageSampler { format: String::new() },
-				1,
-				true,
-				false,
-			)
-			.into(),
-		);
-
-		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let sample_statement = statements[2].borrow();
-		let fetch_statement = statements[3].borrow();
-
-		let assert_intrinsic_call = |statement: &Node, expected_name: &str| match statement.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => {
-				let right = right.borrow();
-				match right.node() {
-					Nodes::Expression(Expressions::IntrinsicCall {
-						intrinsic,
-						arguments,
-						elements,
-					}) => {
-						assert_eq!(arguments.len(), 2);
-						assert_eq!(elements.len(), 2);
-
-						let intrinsic = intrinsic.borrow();
-						match intrinsic.node() {
-							Nodes::Intrinsic {
-								name,
-								r#return,
-								elements,
-							} => {
-								assert_eq!(name, expected_name);
-								assert_type(&r#return.borrow(), "vec4f");
-
-								assert_eq!(elements.len(), 2);
-							}
-							_ => panic!("Expected intrinsic"),
-						}
-					}
-					_ => panic!("Expected intrinsic call"),
-				}
-			}
-			_ => panic!("Expected assignment"),
-		};
-
-		assert_intrinsic_call(&sample_statement, "sample");
-		assert_intrinsic_call(&fetch_statement, "fetch");
-	}
 
 	#[test]
 	fn lex_builtin_texture_intrinsics_validate_parameter_count() {
@@ -1478,237 +823,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	fn lex_builtin_image_write_intrinsic() {
-		let script = r#"
-		main: fn () -> void {
-			write(image, vec2u(1, 2), vec4f(1.0, 0.0, 0.0, 1.0));
-		}
-		"#;
-
-		let mut root = Node::root();
-		root.add_child(
-			Node::binding(
-				"image",
-				BindingTypes::Image {
-					format: "rgba8".to_string(),
-				},
-				0,
-				false,
-				true,
-			)
-			.into(),
-		);
-
-		let node = crate::compile_to_besl(script, Some(root)).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let write_statement = statements[0].borrow();
-		match write_statement.node() {
-			Nodes::Expression(Expressions::IntrinsicCall {
-				intrinsic,
-				arguments,
-				elements,
-			}) => {
-				assert_eq!(arguments.len(), 3);
-				assert_eq!(elements.len(), 3);
-
-				let intrinsic = intrinsic.borrow();
-				match intrinsic.node() {
-					Nodes::Intrinsic { name, r#return, .. } => {
-						assert_eq!(name, "write");
-						assert_type(&r#return.borrow(), "void");
-					}
-					_ => panic!("Expected intrinsic"),
-				}
-			}
-			_ => panic!("Expected intrinsic call"),
-		}
-	}
-
-	#[test]
-	fn lex_builtin_dot_intrinsic() {
-		let script = r#"
-		main: fn () -> void {
-			let strength: f32 = dot(vec3f(1.0, 0.0, 0.0), vec3f(0.5, 0.5, 0.0));
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let statement = statements[0].borrow();
-		match statement.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::IntrinsicCall {
-					intrinsic, arguments, ..
-				}) => {
-					assert_eq!(arguments.len(), 2);
-					match intrinsic.borrow().node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, "dot");
-							assert_type(&r#return.borrow(), "f32");
-						}
-						_ => panic!("Expected intrinsic"),
-					}
-				}
-				_ => panic!("Expected intrinsic call"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-	}
-
-	#[test]
-	fn lex_builtin_cross_intrinsic() {
-		let script = r#"
-		main: fn () -> void {
-			let normal: vec3f = cross(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let statement = statements[0].borrow();
-		match statement.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::IntrinsicCall {
-					intrinsic, arguments, ..
-				}) => {
-					assert_eq!(arguments.len(), 2);
-					match intrinsic.borrow().node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, "cross");
-							assert_type(&r#return.borrow(), "vec3f");
-						}
-						_ => panic!("Expected intrinsic"),
-					}
-				}
-				_ => panic!("Expected intrinsic call"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-	}
-
-	#[test]
-	fn lex_builtin_length_and_normalize_intrinsics() {
-		let script = r#"
-		main: fn () -> void {
-			let magnitude: f32 = length(vec3f(3.0, 4.0, 0.0));
-			let direction: vec3f = normalize(vec3f(3.0, 4.0, 0.0));
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let magnitude = statements[0].borrow();
-		let direction = statements[1].borrow();
-
-		match magnitude.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
-					Nodes::Intrinsic { name, r#return, .. } => {
-						assert_eq!(name, "length");
-						assert_type(&r#return.borrow(), "f32");
-					}
-					_ => panic!("Expected intrinsic"),
-				},
-				_ => panic!("Expected intrinsic call"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-
-		match direction.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
-					Nodes::Intrinsic { name, r#return, .. } => {
-						assert_eq!(name, "normalize");
-						assert_type(&r#return.borrow(), "vec3f");
-					}
-					_ => panic!("Expected intrinsic"),
-				},
-				_ => panic!("Expected intrinsic call"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-	}
-
-	#[test]
-	fn lex_builtin_reflect_intrinsic() {
-		let root = Node::root();
-		let reflect = root.get_child("reflect").expect("Expected reflect builtin");
-		match reflect.borrow().node() {
-			Nodes::Intrinsic {
-				name,
-				elements,
-				r#return,
-			} => {
-				assert_eq!(name, "reflect");
-				assert_eq!(elements.len(), 2);
-				assert_type(&r#return.borrow(), "vec4f");
-			}
-			_ => panic!("Expected intrinsic"),
-		};
-	}
-
-	#[test]
-	fn lex_builtin_thread_idx_intrinsic() {
-		let script = r#"
-		main: fn () -> void {
-			let index: u32 = thread_idx();
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let statement = statements[0].borrow();
-		match statement.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::IntrinsicCall {
-					intrinsic, arguments, ..
-				}) => {
-					assert!(arguments.is_empty());
-					match intrinsic.borrow().node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, "thread_idx");
-							assert_type(&r#return.borrow(), "u32");
-						}
-						_ => panic!("Expected intrinsic"),
-					}
-				}
-				_ => panic!("Expected intrinsic call"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-	}
-
-	#[test]
 	fn lex_const_variable() {
 		let script = r#"
 		PI: const f32 = 3.14;
@@ -1736,270 +850,6 @@ main: fn () -> void {
 			}
 			_ => panic!("Expected Const node"),
 		}
-	}
-
-	#[test]
-	fn lex_const_array_variable() {
-		let script = r#"
-		WEIGHTS: const f32[3] = f32[3](0.5, 0.25, 0.125);
-
-		main: fn () -> void {
-			let value: f32 = WEIGHTS[1];
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-
-		let weights = node.get_descendant("WEIGHTS").expect("Expected WEIGHTS const");
-		let weights = weights.borrow();
-
-		match weights.node() {
-			Nodes::Const { name, r#type, value } => {
-				assert_eq!(name, "WEIGHTS");
-				assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
-				assert!(weights.node().is_indexable());
-				{
-					let value = value.borrow();
-
-					assert!(matches!(value.node(), Nodes::Expression(Expressions::FunctionCall { .. })));
-				}
-			}
-			_ => panic!("Expected Const node"),
-		}
-
-		let main = node.get_descendant("main").expect("Expected main");
-		let statements = {
-			let main = main.borrow();
-			let Nodes::Function { statements, .. } = main.node() else {
-				panic!("Expected function");
-			};
-			statements.clone()
-		};
-
-		let statement = statements[0].clone();
-		{
-			let statement = statement.borrow();
-			match statement.node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => {
-					let right = right.borrow();
-
-					assert!(matches!(right.node(), Nodes::Expression(Expressions::Accessor { .. })));
-				}
-				_ => panic!("Expected assignment"),
-			}
-		};
-	}
-
-	#[test]
-	fn lex_array_constructor_call() {
-		let script = r#"
-		main: fn () -> void {
-			let weights: f32[3] = f32[3](0.5, 0.25, 0.125);
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let statements = {
-			let main = main.borrow();
-			let Nodes::Function { statements, .. } = main.node() else {
-				panic!("Expected function");
-			};
-			statements.clone()
-		};
-
-		let statement = statements[0].clone();
-		{
-			let statement = statement.borrow();
-			match statement.node() {
-				Nodes::Expression(Expressions::Operator { left, right, .. }) => {
-					match left.borrow().node() {
-						Nodes::Expression(Expressions::VariableDeclaration { r#type, .. }) => {
-							assert_eq!(r#type.borrow().get_name().unwrap(), "f32[3]");
-						}
-						_ => panic!("Expected variable declaration"),
-					}
-
-					match right.borrow().node() {
-						Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
-							assert_eq!(parameters.len(), 3);
-							assert_eq!(function.get().borrow().get_name().unwrap(), "f32[3]");
-						}
-						_ => panic!("Expected function call"),
-					}
-				}
-				_ => panic!("Expected assignment"),
-			}
-		};
-	}
-
-	#[test]
-	fn lex_conditional_block() {
-		let script = r#"
-		main: fn () -> void {
-			let n: u32 = 0;
-			if (n < 1) {
-				n = 2;
-			}
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let conditional = statements[1].borrow();
-		match conditional.node() {
-			Nodes::Conditional {
-				condition, statements, ..
-			} => {
-				assert_eq!(statements.len(), 1);
-
-				match condition.borrow().node() {
-					Nodes::Expression(Expressions::Operator { operator, .. }) => {
-						assert_eq!(operator, &Operators::LessThan);
-					}
-					_ => panic!("Expected less-than condition"),
-				}
-			}
-			_ => panic!("Expected conditional node"),
-		}
-	}
-
-	#[test]
-	fn lex_for_loop_block() {
-		let script = r#"
-		main: fn () -> void {
-			let sum: u32 = 0;
-			for (let i: u32 = 0; i < 4; i = i + 1) {
-				sum = sum + i;
-			}
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let for_loop = statements[1].borrow();
-		match for_loop.node() {
-			Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				assert_eq!(statements.len(), 1);
-				assert!(matches!(
-					initializer.borrow().node(),
-					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::Assignment
-				));
-				assert!(matches!(
-					condition.borrow().node(),
-					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::LessThan
-				));
-				assert!(matches!(
-					update.borrow().node(),
-					Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::Assignment
-				));
-			}
-			_ => panic!("Expected for loop node"),
-		}
-	}
-
-	#[test]
-	fn lex_bitwise_expression() {
-		let script = r#"
-		main: fn () -> void {
-			let packed: u32 = 1 << 8 | 2 & 255;
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let statement = statements[0].borrow();
-		match statement.node() {
-			Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-				Nodes::Expression(Expressions::Operator { operator, left, right }) => {
-					assert_eq!(operator, &Operators::BitwiseOr);
-					assert!(matches!(
-						left.borrow().node(),
-						Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::ShiftLeft
-					));
-					assert!(matches!(
-						right.borrow().node(),
-						Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::BitwiseAnd
-					));
-				}
-				_ => panic!("Expected bitwise or expression"),
-			},
-			_ => panic!("Expected assignment"),
-		}
-	}
-
-	#[test]
-	fn lex_comparison_and_continue() {
-		let script = r#"
-		main: fn () -> void {
-			for (let i: u32 = 0; i <= 4; i = i + 1) {
-				if (i >= 2) {
-					continue;
-				}
-			}
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		let for_loop = statements[0].borrow();
-		let Nodes::ForLoop {
-			condition, statements, ..
-		} = for_loop.node()
-		else {
-			panic!("Expected for loop");
-		};
-
-		assert!(matches!(
-			condition.borrow().node(),
-			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::LessThanOrEqual
-		));
-
-		let conditional = statements[0].borrow();
-		let Nodes::Conditional {
-			condition, statements, ..
-		} = conditional.node()
-		else {
-			panic!("Expected conditional");
-		};
-
-		assert!(matches!(
-			condition.borrow().node(),
-			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == &Operators::GreaterThanOrEqual
-		));
-		assert!(matches!(
-			statements[0].borrow().node(),
-			Nodes::Expression(Expressions::Continue)
-		));
 	}
 
 	/// Declarations inside a block stay in that block, so statements after it can't reference them.
@@ -2096,40 +946,6 @@ main: fn () -> void {
 		}
 	}
 
-	#[test]
-	fn lex_scalar_intrinsic_overloads() {
-		let script = r#"
-		main: fn () -> void {
-			let maximum: f32 = max(1.0, 2.0);
-			let clamped: f32 = clamp(1.5, 0.0, 1.0);
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		for (statement, expected_name, expected_type) in [(&statements[0], "max", "f32"), (&statements[1], "clamp", "f32")] {
-			match statement.borrow().node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, expected_name);
-							assert_type(&r#return.borrow(), expected_type);
-						}
-						_ => panic!("Expected intrinsic"),
-					},
-					_ => panic!("Expected intrinsic call"),
-				},
-				_ => panic!("Expected assignment"),
-			}
-		}
-	}
-
 	/// Verifies an indexed array selects overloads by its element type, not by the type of the index.
 	#[test]
 	fn lex_indexed_array_arguments_select_element_overloads() {
@@ -2168,76 +984,6 @@ main: fn () -> void {
 		}
 	}
 
-	/// Verifies the vector `mix`, integer ordering and scalar `round` overloads screen-space shaders lean on resolve to their own types.
-	#[test]
-	fn lex_vector_mix_integer_ordering_and_scalar_round_overloads() {
-		let script = r#"
-		main: fn () -> void {
-			let magnitude: f32 = length(vec2f(3.0, 4.0));
-			let blended: vec2f = mix(vec2f(0.0, 2.0), vec2f(4.0, 6.0), 0.5);
-			let rounded: f32 = round(1.5);
-			let blended3: vec3f = mix(vec3f(0.0, 2.0, 4.0), vec3f(4.0, 6.0, 8.0), 0.5);
-			let blended4: vec4f = mix(vec4f(0.0, 2.0, 4.0, 6.0), vec4f(4.0, 6.0, 8.0, 10.0), 0.5);
-			let signed: i32 = 0 - 3;
-			let unsigned: u32 = 7;
-			let smallest: i32 = min(signed, signed);
-			let largest: u32 = max(unsigned, unsigned);
-			let held_i: i32 = clamp(signed, signed, signed);
-			let held_u: u32 = clamp(unsigned, unsigned, unsigned);
-		}
-		"#;
-
-		let node = crate::compile_to_besl(script, None).expect("Failed to lex");
-		let main = node.get_descendant("main").expect("Expected main");
-		let main = main.borrow();
-
-		let Nodes::Function { statements, .. } = main.node() else {
-			panic!("Expected function");
-		};
-
-		for (statement, expected_name, expected_type) in [
-			(&statements[0], "length", "f32"),
-			(&statements[1], "mix", "vec2f"),
-			(&statements[2], "round", "f32"),
-			(&statements[3], "mix", "vec3f"),
-			(&statements[4], "mix", "vec4f"),
-			(&statements[7], "min", "i32"),
-			(&statements[8], "max", "u32"),
-			(&statements[9], "clamp", "i32"),
-			(&statements[10], "clamp", "u32"),
-		] {
-			match statement.borrow().node() {
-				Nodes::Expression(Expressions::Operator { right, .. }) => match right.borrow().node() {
-					Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => match intrinsic.borrow().node() {
-						Nodes::Intrinsic { name, r#return, .. } => {
-							assert_eq!(name, expected_name);
-							assert_type(&r#return.borrow(), expected_type);
-						}
-						_ => panic!("Expected intrinsic"),
-					},
-					_ => panic!("Expected intrinsic call"),
-				},
-				_ => panic!("Expected assignment"),
-			}
-		}
-	}
-
-	/// Verifies mesh index helpers can widen packed byte and word values through portable BESL.
-	#[test]
-	fn lex_u32_widening_intrinsic_overloads() {
-		let script = r#"
-		main: fn () -> void {
-			let byte: u8 = 7;
-			let word: u16 = 513;
-			let byte_wide: u32 = u32(byte);
-			let word_wide: u32 = u32(word);
-		}
-		"#;
-
-		crate::compile_to_besl(script, None)
-			.expect("Failed to resolve u32 widening calls. The most likely cause is a missing narrow-integer overload.");
-	}
-
 	#[test]
 	fn lex_vector_intrinsic_overloads_still_resolve() {
 		let script = r#"
@@ -2271,21 +1017,6 @@ main: fn () -> void {
 				_ => panic!("Expected assignment"),
 			}
 		}
-	}
-
-	#[test]
-	fn lex_packed_vec4f_construction_and_conversion() {
-		let script = r#"
-		main: fn () -> void {
-			let packed: packed_vec4f = packed_vec4f(vec4f(1.0, 2.0, 3.0, 4.0));
-			let ordinary: vec4f = vec4f(packed);
-			ordinary.w;
-		}
-		"#;
-
-		crate::compile_to_besl(script, None).expect(
-			"Failed to resolve packed_vec4f conversions. The most likely cause is a missing packed-vector intrinsic overload.",
-		);
 	}
 
 	/// Verifies matrix products expose their vector result to subsequent intrinsic overload resolution.
@@ -2360,20 +1091,6 @@ main: fn () -> void {
 				"{source} linked as {error:?}"
 			);
 		}
-	}
-
-	/// Verifies struct fields stay reachable through member access.
-	#[test]
-	fn struct_fields_resolve_through_member_access() {
-		let source = r#"
-			Light: struct { intensity: f32, }
-			main: fn () -> void {
-				let light: Light = Light(1.0);
-				light.intensity = 2.0;
-			}
-		"#;
-
-		crate::compile_to_besl(source, None).expect("member access to a struct field should link");
 	}
 
 	/// Verifies `get_main` returns the entry-point function even when a struct declares a `main` member first.

@@ -6,10 +6,27 @@ pub trait Parameters {
 	fn get_parameter(&self, name: &str) -> Option<&Parameter>;
 }
 
-pub fn parse_variable(value: &str) -> Result<Parameter, ()> {
-	let value = value.trim_start_matches("BE_");
-	parse_parameter(value)
+/// The `ParameterError` struct reports a startup parameter whose value could not be parsed for its setting.
+///
+/// Returned by [`Parameter::parse`]; its message names the parameter and the rejected value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterError {
+	pub(super) name: String,
+	pub(super) value: String,
+	pub(super) reason: String,
 }
+
+impl std::fmt::Display for ParameterError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(
+			f,
+			"Parameter `{}` is invalid. The most likely cause is that `{}` is not a valid value for it: {}",
+			self.name, self.value, self.reason
+		)
+	}
+}
+
+impl std::error::Error for ParameterError {}
 
 pub fn parse_argument(value: &str) -> Result<Parameter, ()> {
 	parse_parameter(value.trim_start_matches("--"))
@@ -27,7 +44,7 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn parses_parameters_variables_and_arguments() {
+	fn parses_parameters_and_arguments() {
 		// Cover each input source with and without an explicit value.
 		let cases = [
 			(
@@ -38,8 +55,6 @@ mod tests {
 			),
 			(parse_parameter, "parameter", "parameter", ""),
 			(parse_parameter, "", "", ""),
-			(parse_variable, "BE_VARIABLE=value", "VARIABLE", "value"),
-			(parse_variable, "BE_VARIABLE", "VARIABLE", ""),
 			(parse_argument, "--argument=value", "argument", "value"),
 			(parse_argument, "--argument", "argument", ""),
 		];

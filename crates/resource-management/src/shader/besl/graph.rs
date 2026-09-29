@@ -168,7 +168,6 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 		let node_ref = node_borrow.node();
 
 		match node_ref {
-			besl::Nodes::Null => {}
 			besl::Nodes::Scope { children, .. } => {
 				for child in children {
 					build_graph_impl(node.clone(), child.clone(), graph, expanded, active, allocator.clone());
@@ -308,9 +307,6 @@ pub fn build_graph_in<A: Allocator + Clone>(main_function_node: besl::NodeRefere
 				for element in elements {
 					build_graph_impl(node.clone(), element.clone(), graph, expanded, active, allocator.clone());
 				}
-			}
-			besl::Nodes::Literal { value, .. } => {
-				build_graph_impl(node.clone(), value.clone(), graph, expanded, active, allocator);
 			}
 			besl::Nodes::Const { r#type, value, .. } => {
 				build_graph_impl(node.clone(), r#type.clone(), graph, expanded, active, allocator.clone());

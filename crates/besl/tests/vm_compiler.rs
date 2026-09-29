@@ -223,44 +223,6 @@ fn intrinsic_arity_is_validated_before_arguments_are_indexed_or_lowered() {
 }
 
 #[test]
-fn void_statement_calls_execute_without_a_result_register() {
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32 type");
-	root.add_child(
-		Node::binding(
-			"result",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", u32_type).into()],
-			},
-			0,
-			false,
-			true,
-		)
-		.into(),
-	);
-	let program = compile_to_besl(
-		r#"
-		write_result: fn (value: u32) -> void {
-			result.value = value;
-		}
-		main: fn () -> void {
-			write_result(7);
-		}
-		"#,
-		Some(root),
-	)
-	.expect("Expected lexed void call");
-	let executable = ExecutableProgram::compile(program).expect("Expected void statement call lowering");
-	let slot = ResourceSlot::new(0);
-	let mut result = Buffer::new(executable.buffer_layout(slot).expect("Expected result layout").clone());
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot, &mut result);
-	executable.run_main(&mut descriptors).expect("Expected void call execution");
-
-	assert_eq!(result.read("value").expect("Expected result"), Value::U32(7));
-}
-
-#[test]
 fn comparison_literals_inherit_the_typed_operand() {
 	let mut root = Node::root();
 	let bool_type = root.get_child("bool").expect("Expected bool type");

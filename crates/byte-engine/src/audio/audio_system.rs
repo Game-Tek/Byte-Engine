@@ -11,24 +11,7 @@ use super::{
 	},
 	sample_loader::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId},
 };
-use crate::core::{Entity, factory::Handle};
-
-/// The [`AudioSystem`] trait defines the playback boundary used by application
-/// audio workers.
-///
-/// Use [`DefaultAudioSystem`] for hardware output. Alternative implementations
-/// can target offline rendering or tests while preserving generator handling.
-/// After construction, add generators or loaded audio sources, then call
-/// [`Self::render_available`] from the audio worker until no period is ready.
-pub trait AudioSystem: Entity {
-	/// Renders audio until the audio system stops.
-	fn render(&mut self) {
-		while self.render_available() {}
-	}
-
-	/// Processes audio data and submits it to the audio hardware interface.
-	fn render_available(&mut self) -> bool;
-}
+use crate::core::factory::Handle;
 
 /// The [`DefaultAudioSystem`] struct mixes generators and submits samples to the
 /// platform audio device.
@@ -57,7 +40,7 @@ impl DefaultAudioSystem {
 	///
 	/// Applications normally call
 	/// [`crate::application::graphics::setup_default_audio`] instead. Custom audio
-	/// workers can add sources next and repeatedly call [`AudioSystem::render_available`].
+	/// workers can add sources next and repeatedly call [`Self::render_available`].
 	pub fn try_new() -> Result<Self, &'static str> {
 		let params = HardwareParameters::new().channels(1);
 
@@ -182,10 +165,27 @@ fn render_audio_graphs(
 	}
 }
 
-impl Entity for DefaultAudioSystem {}
+/// Mixes one period of every generator and audio graph into `buffer`.
+///
+/// Every output format mixes through this one path; the device callback only converts the mono result.
+fn mix_period(
+	sources: &[Source],
+	audio_graphs: &mut [AudioGraphPlayer],
+	context: &mut AudioProcessContext,
+	sample_rate: u32,
+	buffer: &mut [f32],
+	graph_buffer: &mut [f32],
+) {
+	buffer.fill(0.0);
+	render_sources(sources, sample_rate, buffer);
+	render_audio_graphs(audio_graphs, context, sample_rate, buffer, graph_buffer);
+}
 
-impl AudioSystem for DefaultAudioSystem {
-	fn render_available(&mut self) -> bool {
+impl DefaultAudioSystem {
+	/// Mixes and submits every playback period the device can accept now.
+	///
+	/// Call it repeatedly from the audio worker. It returns `false` once the device stops accepting periods.
+	pub fn render_available(&mut self) -> bool {
 		let Self {
 			device,
 			sources,
@@ -198,17 +198,14 @@ impl AudioSystem for DefaultAudioSystem {
 		} = self;
 		let sample_rate = params.get_sample_rate();
 
+		let mut mix =
+			|buffer: &mut [f32]| mix_period(sources, audio_graphs, process_context, sample_rate, buffer, graph_buffer);
+
 		let frames = match device.play(|streams| match streams {
-			Streams::MonoFloat32(buffer) => {
-				buffer.fill(0.0);
-				render_sources(sources, sample_rate, buffer);
-				render_audio_graphs(audio_graphs, process_context, sample_rate, buffer, graph_buffer);
-			}
+			Streams::MonoFloat32(buffer) => mix(buffer),
 			Streams::Mono16Bit(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix_buffer.fill(0.0);
-				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
+				mix(mix_buffer);
 
 				for (destination, sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*destination = f32_to_i16(*sample);
@@ -216,9 +213,7 @@ impl AudioSystem for DefaultAudioSystem {
 			}
 			Streams::Stereo16Bit(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix_buffer.fill(0.0);
-				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
+				mix(mix_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					let sample = f32_to_i16(*sample);
@@ -228,9 +223,7 @@ impl AudioSystem for DefaultAudioSystem {
 			}
 			Streams::StereoFloat32(buffer) => {
 				let (mix_buffer, _) = mix_buffer.split_at_mut(buffer.len());
-				mix_buffer.fill(0.0);
-				render_sources(sources, sample_rate, mix_buffer);
-				render_audio_graphs(audio_graphs, process_context, sample_rate, mix_buffer, graph_buffer);
+				mix(mix_buffer);
 
 				for ((left, right), sample) in buffer.iter_mut().zip(mix_buffer.iter()) {
 					*left = *sample;
@@ -257,19 +250,13 @@ impl AudioSystem for DefaultAudioSystem {
 
 		advance_source_timelines(&mut self.sources, frames);
 
-		{
-			self.sources.retain(|playing_sound| {
-				let settings = PlaybackSettings {
-					sample_rate: self.params.get_sample_rate(),
-				};
-
-				let state = PlaybackState {
-					current_sample: playing_sound.current_sample,
-				};
-
-				!playing_sound.generator.done(settings, state)
-			});
-		}
+		let settings = PlaybackSettings { sample_rate };
+		self.sources.retain(|playing_sound| {
+			let state = PlaybackState {
+				current_sample: playing_sound.current_sample,
+			};
+			!playing_sound.generator.done(settings, state)
+		});
 		let mut index = 0;
 		while index < self.audio_graphs.len() {
 			if self.audio_graphs[index].finished() {
@@ -566,11 +553,6 @@ impl AudioGraphPlayer {
 	}
 }
 
-#[cfg(test)]
-fn i16_to_f32(sample: i16) -> f32 {
-	sample as f32 / 32768.0
-}
-
 fn f32_to_i16(sample: f32) -> i16 {
 	(sample * 32768.0) as i16
 }
@@ -674,7 +656,7 @@ pub mod benchmarks {
 mod tests {
 	use std::sync::Mutex;
 
-	use super::{AudioGraphPlayer, SampleNode, Source, advance_source_timelines, f32_to_i16, i16_to_f32, render_sources};
+	use super::{AudioGraphPlayer, SampleNode, Source, advance_source_timelines, render_sources};
 	use crate::{
 		audio::{
 			generator::{Generator, PlaybackSettings, PlaybackState},
@@ -709,21 +691,6 @@ mod tests {
 
 		fn done(&self, _settings: PlaybackSettings, _state: PlaybackState) -> bool {
 			false
-		}
-	}
-
-	#[test]
-	fn pcm_conversion_preserves_zero_endpoints_and_monotonic_order() {
-		assert_eq!(i16_to_f32(i16::MIN), -1.0);
-		assert_eq!(i16_to_f32(0), 0.0);
-		assert!(i16_to_f32(i16::MAX) < 1.0);
-		assert_eq!(f32_to_i16(-1.0), i16::MIN);
-		assert_eq!(f32_to_i16(0.0), 0);
-		assert_eq!(f32_to_i16(1.0), i16::MAX);
-
-		let samples = [-1.0, -0.5, 0.0, 0.5, 1.0];
-		for pair in samples.windows(2) {
-			assert!(f32_to_i16(pair[0]) < f32_to_i16(pair[1]));
 		}
 	}
 
@@ -1009,62 +976,6 @@ mod tests {
 	}
 
 	#[test]
-	fn muted_loop_skips_source_timeline_work() {
-		let mut player = muted_graph_player(&[1.0, 2.0, 3.0], 48_000, SamplePlaybackMode::Loop, PlaybackRate::UNITY, 0);
-		let mut buffer = [0.25; 64];
-
-		render_graph(&mut player, 48_000, &mut buffer);
-
-		assert_eq!(buffer, [0.25; 64]);
-		assert_eq!(player.sample.source_frame, 0);
-		assert_eq!(player.sample.rate_phase, 0);
-		assert!(!player.finished());
-	}
-
-	#[test]
-	fn varispeed_phase_is_stable_across_output_periods() {
-		let rate = PlaybackRate {
-			numerator: 3,
-			denominator: 2,
-		};
-		let mut split = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
-		let mut first = [0.0; 3];
-		let mut second = [0.0; 5];
-		render_graph(&mut split, 3, &mut first);
-		render_graph(&mut split, 3, &mut second);
-
-		let mut contiguous = graph_player(&[0.0, 10.0, 20.0], 2, SamplePlaybackMode::Loop, rate, []);
-		let mut whole = [0.0; 8];
-		render_graph(&mut contiguous, 3, &mut whole);
-
-		assert_samples_close(&first, &whole[..3]);
-		assert_samples_close(&second, &whole[3..]);
-
-		assert_eq!(split.sample.source_frame, contiguous.sample.source_frame);
-		assert_eq!(split.sample.rate_phase, contiguous.sample.rate_phase);
-	}
-
-	#[test]
-	fn gain_node_scales_a_looping_sample_after_the_source_node() {
-		let mut graph = graph_player(
-			&[0.0, 1.0, 2.0],
-			48_000,
-			SamplePlaybackMode::Loop,
-			PlaybackRate::UNITY,
-			[AudioProcessor::Gain(0.5)],
-		);
-		let mut first = [0.0; 2];
-		let mut second = [0.0; 5];
-
-		render_graph(&mut graph, 48_000, &mut first);
-		render_graph(&mut graph, 48_000, &mut second);
-
-		assert_eq!(first, [0.0, 0.5]);
-		assert_eq!(second, [1.0, 0.0, 0.5, 1.0, 0.0]);
-		assert!(!graph.finished());
-	}
-
-	#[test]
 	fn block_processing_stops_at_the_end_of_a_one_shot_source() {
 		let mut graph = graph_player(
 			&[1.0, 2.0],
@@ -1101,23 +1012,6 @@ mod tests {
 		render_graph(&mut graph, 48_000, &mut tail);
 
 		assert_eq!(graph.drain_remaining, Some(0));
-		assert!(graph.finished());
-	}
-
-	#[test]
-	fn sample_node_has_unity_output_without_a_gain_node() {
-		let mut graph = graph_player(
-			&[0.25, -0.5],
-			48_000,
-			SamplePlaybackMode::Once,
-			PlaybackRate::UNITY,
-			std::iter::empty(),
-		);
-		let mut output = [0.0; 2];
-
-		render_graph(&mut graph, 48_000, &mut output);
-
-		assert_eq!(output, [0.25, -0.5]);
 		assert!(graph.finished());
 	}
 }

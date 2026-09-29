@@ -1,4 +1,4 @@
-use crate::core::{channel::DefaultChannel, factory::Handle, listener::FilteredListener, targeted_message::TargetedMessage};
+use crate::core::{factory::Handle, targeted_message::TargetedMessage};
 
 /// The `Message` trait marks values that engine publishers can send.
 pub trait Message {}

@@ -1,8 +1,8 @@
 //! Simple scene rendering and adoption of loader-resident meshes.
 //!
-//! Scene creation enters through [`PipelineManager::request_mesh`] during the renderer's `update` phase, so
-//! loading overlaps window setup. Loader lanes prepare, place, and transfer meshes, then `prepare` adopts
-//! their residency, resolves pending scene instances, and builds draws.
+//! Scene creation messages are adopted during the renderer's `update` phase, so loading overlaps window setup.
+//! Loader lanes prepare, place, and transfer meshes, then `prepare` adopts their residency, resolves pending scene
+//! instances, and builds draws.
 //!
 //! Keep this orchestration layer when adapting the example, but replace the
 //! loader and store with the future renderer's formats and resident tables.
@@ -11,23 +11,32 @@
 
 /// The `PipelineManager` struct coordinates Simple scene state with shared loading and renderer-owned storage.
 ///
-/// It owns pending scene instances, resident lookup, instance bookkeeping, and
+/// It owns the world listeners, pending scene instances, resident lookup, instance bookkeeping, and
 /// sink-local passes. Loader lanes own mesh preparation, placement, and transfer.
 pub struct PipelineManager {
-	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[AffineShaderMatrix; 1024]>,
+	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[AffineShaderMatrix; MAX_INSTANCES]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; super::resource_manager::SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; super::resource_manager::SIMPLE_INDEX_CAPACITY]>,
 	pipeline: crate::rendering::PipelineRef,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	loader: SimpleLoaderClient,
-	pub(super) resource_store: SharedSimpleResourceStore,
+	mesh_listener: DefaultListener<CreateMessage<RenderableMesh>>,
+	deletions_listener: DefaultListener<DeleteMessage>,
+	transforms_listener: DefaultListener<TransformationUpdate>,
 	resident_meshes: HashMap<MeshKey, ResidentSimpleMesh>,
 	pending_renderables: Vec<PendingRenderable>,
+	/// Live scene instances in draw order. A slot's index is its instance-data index.
+	instances: StableVec<(ResidentSimpleMesh, Handle)>,
+	/// The instance slot of each renderable that has one.
+	instance_slots: HashMap<Handle, StableVecHandle>,
 	// TODO: Replace this temporary map with proper retained component storage.
 	renderable_transforms: HashMap<Handle, Transform>,
 	sinks: Vec<RenderPass>,
 }
+
+/// The number of instances Simple's instance-data buffer holds.
+const MAX_INSTANCES: usize = 1024;
 
 /// The `PendingRenderable` struct keeps scene identity separate from one coalesced mesh request.
 ///
@@ -37,20 +46,68 @@ struct PendingRenderable {
 	key: MeshKey,
 }
 
+/// The `InstanceBatch` struct is one indexed draw over consecutive instance slots that share a mesh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InstanceBatch {
+	pub(crate) base_index: usize,
+	pub(crate) base_vertex: usize,
+	pub(crate) instance_count: usize,
+	pub(crate) index_count: usize,
+	pub(crate) base_instance: usize,
+}
+
+/// Groups live instances into frame-allocated draws in slot order.
+///
+/// A batch ends at a mesh switch or an empty slot, so every draw's instances are contiguous in instance data.
+fn instance_batches_in<'a, T>(
+	instances: &StableVec<(ResidentSimpleMesh, T)>,
+	allocator: &'a bumpalo::Bump,
+) -> Vec<InstanceBatch, &'a bumpalo::Bump> {
+	let mut batches = Vec::with_capacity_in(instances.len(), allocator);
+	let mut current: Option<(ResidentSimpleMesh, InstanceBatch)> = None;
+	for slot in 0..instances.slots_len() {
+		match (instances.get_slot(slot), &mut current) {
+			(Some((mesh, _)), Some((current_mesh, batch))) if mesh == current_mesh => batch.instance_count += 1,
+			(Some((mesh, _)), _) => {
+				let batch = InstanceBatch {
+					base_index: mesh.base_index,
+					base_vertex: mesh.base_vertex,
+					instance_count: 1,
+					index_count: mesh.index_count,
+					base_instance: slot,
+				};
+				if let Some((_, finished)) = current.replace((*mesh, batch)) {
+					batches.push(finished);
+				}
+			}
+			(None, _) => {
+				if let Some((_, finished)) = current.take() {
+					batches.push(finished);
+				}
+			}
+		}
+	}
+	if let Some((_, finished)) = current {
+		batches.push(finished);
+	}
+	batches
+}
+
 impl PipelineManager {
 	/// Creates the Simple scene, renderer-owned mesh store, and shared async loading client.
 	///
 	/// The application must already have created the loader, its running lane,
 	/// its shared resource store, and the asynchronously driven
-	/// pipeline compiler represented by `pipeline_manager`. This constructor only
-	/// queues the Simple pipeline request; it never waits for shader resources or
+	/// pipeline compiler represented by `pipeline_manager`. This constructor subscribes to `world`'s meshes,
+	/// deletions, and transforms and queues the Simple pipeline request; it never waits for shader resources or
 	/// creates shaders on the render thread. Next, register this value through
 	/// [`crate::rendering::Renderer::add_pipeline_manager`].
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
+		world: &DefaultWorld,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
 		loader: SimpleLoaderClient,
-		resource_store: SharedSimpleResourceStore,
+		resource_store: &SharedSimpleResourceStore,
 	) -> Self {
 		let camera_data_buffer = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -78,9 +135,13 @@ impl PipelineManager {
 			pipeline,
 			pipeline_manager,
 			loader,
-			resource_store,
+			mesh_listener: world.factory::<RenderableMesh>().listener(),
+			deletions_listener: world.deletions_listener(),
+			transforms_listener: world.transforms_channel().listener(),
 			resident_meshes: HashMap::default(),
 			pending_renderables: Vec::new(),
+			instances: StableVec::new(),
+			instance_slots: HashMap::default(),
 			renderable_transforms: HashMap::default(),
 			sinks: Vec::with_capacity(4),
 		}
@@ -88,10 +149,9 @@ impl PipelineManager {
 
 	/// Requests or reuses a mesh and delays instance creation until GPU upload completion.
 	///
-	/// Call this while adopting a scene creation message, from [`crate::rendering::PipelineManager::update`] so
-	/// loading overlaps window setup. Duplicate mesh keys coalesce in the loader while each handle retains
+	/// Duplicate mesh keys coalesce in the loader while each handle retains
 	/// independent pending state. Failed keys retry when scene demand requests them again.
-	pub fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
+	fn request_mesh(&mut self, handle: Handle, renderable: RenderableMesh) {
 		let source = renderable.source().clone();
 		let key = source.key();
 
@@ -107,31 +167,29 @@ impl PipelineManager {
 		self.pending_renderables.push(PendingRenderable { handle, key });
 	}
 
-	/// Retains the latest transform and applies it immediately when the mesh instance is resident.
+	/// Retains the latest transform, which the next [`Self::write_instance_data`] uploads.
 	///
-	/// Updates arriving before residency are not lost; instance creation reads the
-	/// retained transform after the upload completes.
-	pub fn update_transform(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, transform: &Transform) {
+	/// Updates arriving before residency are not lost; the instance reads the retained transform once it exists.
+	fn update_transform(&mut self, handle: Handle, transform: &Transform) {
 		self.renderable_transforms.insert(handle, transform.clone());
+	}
 
-		let Some(idx) = self
-			.resource_store
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.instance_id(handle)
-		else {
-			return;
-		};
-
-		let instance_data_buffer = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
-
-		instance_data_buffer[idx.index()] = transform.get_matrix().into();
+	/// Writes every live instance's transform into this frame's copy of the instance-data buffer.
+	///
+	/// Each frame in flight reads its own copy, and a copy last written by an earlier frame misses every change
+	/// since. So each frame writes its whole copy instead of only the slots that changed.
+	fn write_instance_data(&self, frame: &mut ghi::implementation::Frame) {
+		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
+		for (slot, (_, handle)) in self.instances.indexed_iter() {
+			let transform = self.renderable_transforms.get(handle).cloned().unwrap_or_default();
+			instance_data[slot] = transform.get_matrix().into();
+		}
 	}
 
 	/// Removes a mesh and any transform retained for later creation.
 	///
 	/// In-flight loader work remains coalesced and may populate the resident cache.
-	pub fn remove_mesh(&mut self, handle: Handle) {
+	fn remove_mesh(&mut self, handle: Handle) {
 		self.remove_mesh_instance(handle);
 		self.remove_pending(handle);
 		self.renderable_transforms.remove(&handle);
@@ -139,19 +197,9 @@ impl PipelineManager {
 
 	/// Removes only resident instance state so an upsert can reuse the retained transform.
 	fn remove_mesh_instance(&mut self, handle: Handle) {
-		let Some(instance_id) = self
-			.resource_store
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.instance_id(handle)
-		else {
-			return;
-		};
-
-		self.resource_store
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.remove_instance(instance_id);
+		if let Some(slot) = self.instance_slots.remove(&handle) {
+			self.instances.remove(slot);
+		}
 	}
 
 	/// Removes pending scene state for one deleted handle.
@@ -162,28 +210,19 @@ impl PipelineManager {
 		self.pending_renderables.swap_remove(index);
 	}
 
-	/// Allocates one resident instance and initializes its retained transform.
-	fn add_resident_instance(&mut self, frame: &mut ghi::implementation::Frame, handle: Handle, resident: ResidentSimpleMesh) {
-		let instance = self
-			.resource_store
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.add_instance(&resident, handle);
-		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
-		if instance.index() >= instance_data.len() {
-			self.resource_store
-				.lock()
-				.unwrap_or_else(|error| error.into_inner())
-				.remove_instance(instance);
+	/// Allocates one resident instance; [`Self::write_instance_data`] uploads its retained transform.
+	fn add_resident_instance(&mut self, handle: Handle, resident: ResidentSimpleMesh) {
+		let slot = self.instances.push((resident, handle));
+		if slot.index() >= MAX_INSTANCES {
+			self.instances.remove(slot);
 			log::error!("Simple instance storage is full. The most likely cause is more than 1,024 live renderable instances.");
 			return;
 		}
-		let transform = self.renderable_transforms.get(&handle).cloned().unwrap_or_default();
-		instance_data[instance.index()] = transform.get_matrix().into();
+		self.instance_slots.insert(handle, slot);
 	}
 
 	/// Creates scene instances whose shared mesh uploads completed at the frame boundary.
-	fn resolve_pending_renderables(&mut self, frame: &mut ghi::implementation::Frame) {
+	fn resolve_pending_renderables(&mut self) {
 		let mut index = 0usize;
 		while index < self.pending_renderables.len() {
 			let key = self.pending_renderables[index].key;
@@ -192,12 +231,20 @@ impl PipelineManager {
 				continue;
 			};
 			let pending = self.pending_renderables.swap_remove(index);
-			self.add_resident_instance(frame, pending.handle, resident);
+			self.add_resident_instance(pending.handle, resident);
 		}
 	}
 }
 
 impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
+	/// Adopts mesh creation messages so their loads overlap window setup.
+	fn update(&mut self) {
+		while let Some(message) = self.mesh_listener.read() {
+			let handle = message.handle();
+			self.request_mesh(handle, message.into_data());
+		}
+	}
+
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -205,7 +252,14 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 		_alpha: f32,
 		_time: crate::time::MediaTime,
-	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>> {
+	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
+		// Transforms apply before deletions, so a renderable moved and deleted in one tick ends deleted.
+		while let Some(message) = self.transforms_listener.read() {
+			self.update_transform(message.handle(), message.transform());
+		}
+		while let Some(message) = self.deletions_listener.read() {
+			self.remove_mesh(message.into_handle());
+		}
 		while let Some(event) = self.loader.poll() {
 			match event {
 				crate::rendering::loading::Event::Ready { key, resident } => {
@@ -216,17 +270,14 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 				}
 			}
 		}
-		let pipeline = self.pipeline_manager.pipeline(self.pipeline)?;
-		self.resolve_pending_renderables(frame);
-		let instance_batches = self
-			.resource_store
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.instance_batches_in(frame_allocator);
+		let Some(pipeline) = self.pipeline_manager.pipeline(self.pipeline) else {
+			return SmallVec::new();
+		};
+		self.resolve_pending_renderables();
+		self.write_instance_data(frame);
+		let instance_batches: &[InstanceBatch] = instance_batches_in(&self.instances, frame_allocator).leak();
 
-		let instance_batches = frame_allocator.alloc_slice_copy(&instance_batches);
-
-		let commands = sinks
+		sinks
 			.iter()
 			.filter_map(|sink| {
 				self.sinks
@@ -235,14 +286,13 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 					.map(|sink_state| (sink, sink_state))
 			})
 			.map(|(sink, sink_state)| {
-				crate::rendering::render_pass::allocate_render_command(
-					frame_allocator,
-					sink_state.prepare(frame, sink, self, pipeline, instance_batches, frame_allocator),
+				let command = sink_state.prepare(frame, sink, self, pipeline, instance_batches, frame_allocator);
+				(
+					sink.index(),
+					crate::rendering::render_pass::allocate_render_command(frame_allocator, command),
 				)
 			})
-			.collect::<SmallVec<[_; 16]>>();
-
-		Some(commands)
+			.collect()
 	}
 
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder) {
@@ -269,64 +319,100 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 			self.camera_data_buffer.into(),
 			self.instance_data_buffer.into(),
 			sink_id,
+			[main.into(), depth.into()],
 			background,
 		))
 	}
 }
 
-use ghi::{
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-};
+use ghi::{context::ContextCreate as _, frame::Frame as _};
 use math::AffineShaderMatrix;
 use smallvec::SmallVec;
-use utils::hash::HashMap;
+use utils::{StableVec, StableVecHandle, hash::HashMap};
 
 use crate::{
-	core::factory::Handle,
-	gameplay::transform::Transform,
+	core::{
+		factory::{CreateMessage, Handle},
+		listener::{DefaultListener, Listener as _},
+		message::DeleteMessage,
+	},
+	gameplay::{
+		transform::{Transform, TransformationUpdate},
+		world::DefaultWorld,
+	},
 	rendering::{
 		RenderableMesh, Sink,
 		pipelines::simple::{
 			CameraShaderData, RenderPass,
 			resource_manager::{ResidentSimpleMesh, SharedSimpleResourceStore, SimpleLoaderClient},
 		},
-		render_pass::{FramePrepare, RenderPassBuilder, RenderPassReturn},
+		render_pass::{RenderPassBuilder, RenderPassReturn},
 		renderable::mesh::MeshKey,
 	},
 };
 
 #[cfg(test)]
 mod tests {
+	use utils::StableVec;
+
+	use super::{ResidentSimpleMesh, instance_batches_in};
+
+	fn mesh(base_vertex: usize, base_index: usize, index_count: usize) -> ResidentSimpleMesh {
+		ResidentSimpleMesh {
+			index_count,
+			base_vertex,
+			base_index,
+		}
+	}
+
+	#[test]
+	fn batches_split_at_mesh_switches_and_holes() {
+		let first_mesh = mesh(0, 0, 30);
+		let second_mesh = mesh(10, 30, 60);
+		let mut instances = StableVec::new();
+		instances.push((first_mesh, "first"));
+		let removed = instances.push((first_mesh, "removed"));
+		instances.push((second_mesh, "second-a"));
+		instances.push((second_mesh, "second-b"));
+		instances.push((first_mesh, "last"));
+		instances.remove(removed);
+		let allocator = bumpalo::Bump::new();
+
+		let batches = instance_batches_in(&instances, &allocator);
+
+		assert_eq!(batches.len(), 3);
+		assert_eq!((batches[0].index_count, batches[0].base_instance), (30, 0));
+		assert_eq!((batches[1].index_count, batches[1].instance_count), (60, 2));
+		assert_eq!((batches[1].base_vertex, batches[1].base_index), (10, 30));
+		assert_eq!((batches[2].index_count, batches[2].base_instance), (30, 4));
+	}
 
 	use besl::vm::{
 		DescriptorBindings, ResourceSlot, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot,
 	};
-	use resource_management::shader::{
-		besl::backends::{hlsl::HLSLTranspiler, msl::MSLTranspiler},
-		generator::ShaderGenerationSettings,
-	};
 
 	use crate::rendering::shader_vm_test::{buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at};
 
+	/// Links the checked-in Simple fragment shader and returns the program, which owns every function it calls.
 	fn create_simple_fragment_program() -> besl::NodeReference {
-		besl::compile_to_besl(
+		let program = besl::compile_to_besl(
 			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/fragment.besl")),
 			None,
 		)
-		.expect("Simple fragment asset should compile")
-		.get_main()
-		.expect("Simple fragment asset should contain main")
+		.expect("Simple fragment asset should compile");
+		program.get_main().expect("Simple fragment asset should contain main");
+		program
 	}
 
+	/// Links the checked-in Simple vertex shader and returns the program, which owns every function it calls.
 	fn create_simple_vertex_program() -> besl::NodeReference {
-		besl::compile_to_besl(
+		let program = besl::compile_to_besl(
 			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/vertex.besl")),
 			None,
 		)
-		.expect("Simple vertex asset should compile")
-		.get_main()
-		.expect("Simple vertex asset should contain main")
+		.expect("Simple vertex asset should compile");
+		program.get_main().expect("Simple vertex asset should contain main");
+		program
 	}
 
 	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
@@ -398,7 +484,8 @@ mod tests {
 			.expect("Failed to seed camera matrix. The most likely cause is a struct buffer layout mismatch.");
 
 		instances
-			.write_array_element(3,
+			.write_array_element(
+				3,
 				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]),
 			)
 			.expect("Failed to seed instance transform. The most likely cause is a compact transform buffer layout mismatch.");

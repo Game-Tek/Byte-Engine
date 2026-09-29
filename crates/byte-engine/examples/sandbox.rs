@@ -3,7 +3,7 @@
 //! This example verifies that the complete application can start and run. It
 //! does not verify simulation results.
 
-use byte_engine::application::{Application, Parameter};
+use byte_engine::application::Parameter;
 
 fn main() {
 	let mut app = byte_engine::application::graphics::GraphicsApplication::new(

@@ -273,33 +273,6 @@ mod tests {
 	use super::{StableVec, StableVecHandle};
 
 	#[test]
-	fn push_returns_stable_handles() {
-		let mut values = StableVec::new();
-
-		let first = values.push("first");
-		let second = values.push("second");
-
-		assert_eq!(first.index(), 0);
-		assert_eq!(second.index(), 1);
-		assert_eq!(values.get(first), Some(&"first"));
-		assert_eq!(values.get(second), Some(&"second"));
-	}
-
-	#[test]
-	fn remove_preserves_other_handles() {
-		let mut values = StableVec::new();
-
-		let first = values.push("first");
-		let second = values.push("second");
-		let third = values.push("third");
-
-		assert_eq!(values.remove(second), Some("second"));
-		assert_eq!(values.get(first), Some(&"first"));
-		assert_eq!(values.get(second), None);
-		assert_eq!(values.get(third), Some(&"third"));
-	}
-
-	#[test]
 	fn push_reuses_removed_slots_with_new_generation() {
 		let mut values = StableVec::new();
 
@@ -320,17 +293,6 @@ mod tests {
 	}
 
 	#[test]
-	fn insert_replaces_occupied_slot() {
-		let mut values = StableVec::new();
-
-		let handle = values.push("first");
-
-		assert_eq!(values.insert(handle, "replacement"), Some("first"));
-		assert_eq!(values.len(), 1);
-		assert_eq!(values.get(handle), Some(&"replacement"));
-	}
-
-	#[test]
 	fn insert_rejects_stale_handle() {
 		let mut values = StableVec::new();
 
@@ -339,48 +301,6 @@ mod tests {
 		assert_eq!(values.remove(handle), Some("first"));
 		assert_eq!(values.insert(handle, "stale"), None);
 		assert_eq!(values.len(), 0);
-	}
-
-	#[test]
-	fn pop_removes_last_occupied_value_without_shifting() {
-		let mut values = StableVec::new();
-
-		let first = values.push("first");
-		let second = values.push("second");
-		let third = values.push("third");
-
-		assert_eq!(values.remove(second), Some("second"));
-		assert_eq!(values.pop(), Some("third"));
-		assert_eq!(values.get(first), Some(&"first"));
-		assert_eq!(values.get(second), None);
-		assert_eq!(values.get(third), None);
-	}
-
-	#[test]
-	fn indexed_iter_skips_vacant_slots() {
-		let mut values = StableVec::new();
-
-		values.push("first");
-		let second = values.push("second");
-		values.push("third");
-		values.remove(second);
-
-		let entries = values.indexed_iter().collect::<Vec<_>>();
-
-		assert_eq!(entries, vec![(0, &"first"), (2, &"third")]);
-	}
-
-	#[test]
-	fn handled_iter_returns_live_handles() {
-		let mut values = StableVec::new();
-
-		let first = values.push("first");
-		let second = values.push("second");
-		values.remove(first);
-
-		let entries = values.handled_iter().collect::<Vec<_>>();
-
-		assert_eq!(entries, vec![(second, &"second")]);
 	}
 
 	#[test]

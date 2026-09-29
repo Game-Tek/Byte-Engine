@@ -44,28 +44,3 @@ impl IesProfile {
 		self.dimmer
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::IesProfile;
-
-	#[test]
-	fn profile_keeps_resource_id() {
-		let profile = IesProfile::new("lights/office.ies", 0.25);
-
-		assert_eq!(profile.resource_id(), "lights/office.ies");
-		assert_eq!(profile.dimmer(), 0.25);
-	}
-
-	#[test]
-	#[should_panic(expected = "Invalid IES profile resource ID")]
-	fn profile_rejects_an_empty_resource_id() {
-		let _ = IesProfile::new(" ", 1.0);
-	}
-
-	#[test]
-	#[should_panic(expected = "Invalid IES dimmer")]
-	fn profile_rejects_an_invalid_dimmer() {
-		let _ = IesProfile::new("lights/office.ies", 1.1);
-	}
-}

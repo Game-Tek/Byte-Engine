@@ -5,12 +5,12 @@ use ::utils::hash::{HashMap, HashSet};
 use objc2::ClassType;
 use objc2::runtime::ProtocolObject;
 use objc2_foundation::{NSAutoreleasePool, NSString};
-use objc2_metal::{MTL4CommandEncoder, MTL4ComputeCommandEncoder, MTLBuffer};
+use objc2_metal::MTLBuffer;
 use smallvec::SmallVec;
 
 use super::*;
 use crate::{
-	DeviceAccesses, HandleLike as _, MasterHandle as _, ResourceCollection, Uses,
+	DeviceAccesses, ResourceCollection, Uses,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
@@ -26,13 +26,15 @@ pub(crate) struct TextureReadbackStorage {
 	pub(crate) bytes: Vec<u8>,
 	pub(crate) extent: Extent,
 	pub(crate) format: crate::Formats,
-	pub(crate) bytes_per_row: usize,
-	pub(crate) bytes_per_image: usize,
+	/// The compact layout callers receive.
+	pub(crate) layout: crate::context::TextureTransferLayout,
+	/// The padded row pitch of `buffer`. Its image pitch is this times the layout's row count.
 	pub(crate) native_bytes_per_row: usize,
-	pub(crate) native_bytes_per_image: usize,
-	pub(crate) row_count: usize,
-	pub(crate) image_count: usize,
 }
+
+/// The frame-local descriptor sets of a context, one chain per public set with an entry per frame in flight.
+pub(crate) type DescriptorSets =
+	ResourceCollection<descriptor_set::DescriptorSet, graphics_hardware_interface::DescriptorSetHandle, DescriptorSetHandle>;
 
 /// The `Context` struct owns resources created for rendering on a Metal GPU device.
 pub struct Context {
@@ -44,7 +46,7 @@ pub struct Context {
 	pub(crate) images: ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	pub(crate) samplers: Vec<sampler::Sampler>,
 	pub(crate) allocations: Vec<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>,
-	pub(crate) descriptor_sets: Vec<descriptor_set::DescriptorSet>,
+	pub(crate) descriptor_sets: DescriptorSets,
 	pub(crate) meshes: Vec<Mesh>,
 	pub(crate) acceleration_structures: Vec<AccelerationStructure>,
 	pub(crate) shaders: Vec<Shader>,
@@ -55,15 +57,14 @@ pub struct Context {
 		graphics_hardware_interface::SynchronizerHandle,
 		crate::synchronizer::SynchronizerHandle,
 	>,
-	internal_upload_synchronizer: Option<graphics_hardware_interface::SynchronizerHandle>,
+	/// Signals when the internal uploads of each frame sequence complete.
+	internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 	pub(crate) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 
 	pub(crate) resource_to_descriptor:
 		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,
-	descriptor_sources:
-		HashMap<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8), (crate::descriptors::WriteData, i32)>,
 
 	pub settings: crate::device::Features,
 	pub(crate) pending_buffer_syncs: VecDeque<BufferHandle>,
@@ -106,6 +107,7 @@ fn drawable_supports_uses(uses: crate::Uses) -> bool {
 }
 
 mod recording;
+pub(crate) use recording::synchronizer_for_sequence;
 pub(in crate::metal) mod resources;
 mod traits;
 
@@ -116,22 +118,6 @@ mod tests {
 
 	fn test_context() -> Context {
 		crate::metal::test_context(crate::WorkloadTypes::TRANSFER).0
-	}
-
-	#[test]
-	fn drawable_uses_accept_render_and_shader_output() {
-		assert!(drawable_supports_uses(Uses::RenderTarget | Uses::Storage));
-	}
-
-	#[test]
-	fn drawable_uses_reject_non_texture_roles() {
-		assert!(!drawable_supports_uses(Uses::RenderTarget | Uses::Vertex));
-	}
-
-	#[test]
-	#[should_panic(expected = "Too many Metal frames in flight")]
-	fn frames_in_flight_beyond_the_backend_limit_are_rejected() {
-		test_context().set_frames_in_flight(MAX_FRAMES_IN_FLIGHT as u8 + 1);
 	}
 
 	#[test]

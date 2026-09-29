@@ -1,11 +1,7 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-	pub(super) fn compile_statement(
-		&mut self,
-		statement: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<(), VmError> {
+	pub(super) fn compile_statement(&mut self, statement: &NodeReference) -> Result<(), VmError> {
 		let borrowed = statement.borrow();
 
 		match borrowed.node() {
@@ -18,7 +14,7 @@ impl<'a> Compiler<'a> {
 				let statements = statements.clone();
 				let else_branch = else_branch.clone();
 				drop(borrowed);
-				self.compile_conditional(&condition, &statements, else_branch.as_ref(), descriptor_layouts)
+				self.compile_conditional(&condition, &statements, else_branch.as_ref())
 			}
 			Nodes::Match {
 				scrutinee,
@@ -31,7 +27,7 @@ impl<'a> Compiler<'a> {
 				let arms = arms.clone();
 				let default = default.clone();
 				drop(borrowed);
-				self.compile_match(&scrutinee, &r#type, &arms, &default, descriptor_layouts)
+				self.compile_match(&scrutinee, &r#type, &arms, &default)
 			}
 			Nodes::ForLoop {
 				initializer,
@@ -44,7 +40,7 @@ impl<'a> Compiler<'a> {
 				let update = update.clone();
 				let statements = statements.clone();
 				drop(borrowed);
-				self.compile_for_loop(&initializer, &condition, &update, &statements, descriptor_layouts)
+				self.compile_for_loop(&initializer, &condition, &update, &statements)
 			}
 			Nodes::Expression(Expressions::Operator {
 				operator: Operators::Assignment,
@@ -54,55 +50,47 @@ impl<'a> Compiler<'a> {
 				let left = left.clone();
 				let right = right.clone();
 				drop(borrowed);
-				self.compile_assignment(statement, left, right, descriptor_layouts)
+				self.compile_assignment(statement, left, right)
 			}
 			Nodes::Expression(Expressions::Return { value }) => {
 				let value = value.clone();
 				drop(borrowed);
-				self.compile_return_statement(value.as_ref(), descriptor_layouts)
+				self.compile_return_statement(value.as_ref())
 			}
 			Nodes::Expression(Expressions::Continue) => {
 				drop(borrowed);
-				if self.loop_continue_targets.is_empty() {
+				let Some(patches) = self.loops.last_mut() else {
 					return Err(VmError::UnsupportedStatement {
 						message: "`continue` must be used inside a loop".to_string(),
 					});
-				}
-				let jump_index = self.instructions.len();
-				let target = self
-					.loop_continue_targets
-					.last()
-					.copied()
-					.expect("Expected loop continue target");
-				self.instructions.push(Instruction::Jump { target });
-				self.loop_continue_patches
-					.last_mut()
-					.expect("Expected continue patch stack")
-					.push(jump_index);
+				};
+				// The loop's update is compiled after its body, so the jump is patched afterwards.
+				patches.continues.push(self.instructions.len());
+				self.emit(ControlInstruction::Jump { target: usize::MAX });
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Break) => {
 				drop(borrowed);
-				let Some(patches) = self.loop_break_patches.last_mut() else {
+				let Some(patches) = self.loops.last_mut() else {
 					return Err(VmError::UnsupportedStatement {
 						message: "`break` must be used inside a loop".to_string(),
 					});
 				};
 				// The loop's end is unknown until its body is compiled, so the jump is patched afterwards.
-				patches.push(self.instructions.len());
-				self.instructions.push(Instruction::Jump { target: usize::MAX });
+				patches.breaks.push(self.instructions.len());
+				self.emit(ControlInstruction::Jump { target: usize::MAX });
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Discard) => {
 				drop(borrowed);
-				self.instructions.push(Instruction::Discard);
+				self.emit(ControlInstruction::Discard);
 				Ok(())
 			}
 			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				let function = function.get();
 				let parameters = parameters.clone();
 				drop(borrowed);
-				self.compile_call_statement(&function, &parameters, descriptor_layouts)
+				self.compile_call_statement(&function, &parameters)
 			}
 			Nodes::Expression(Expressions::IntrinsicCall {
 				intrinsic, arguments, ..
@@ -110,7 +98,7 @@ impl<'a> Compiler<'a> {
 				let intrinsic = intrinsic.clone();
 				let arguments = arguments.clone();
 				drop(borrowed);
-				self.compile_intrinsic_call_statement(&intrinsic, &arguments, descriptor_layouts)
+				self.compile_intrinsic_call_statement(&intrinsic, &arguments)
 			}
 			Nodes::Raw { .. } => Ok(()),
 			Nodes::Expression(Expressions::Member { .. }) | Nodes::Expression(Expressions::Accessor { .. }) => Ok(()),
@@ -126,7 +114,9 @@ impl<'a> Compiler<'a> {
 	/// Points the placeholder `Jump` or `JumpIfZero` at `index` to `target`, once the target is known.
 	fn patch_jump(&mut self, index: usize, target: usize) {
 		match &mut self.instructions[index] {
-			Instruction::Jump { target: placeholder } | Instruction::JumpIfZero { target: placeholder, .. } => {
+			Instruction::Control(
+				ControlInstruction::Jump { target: placeholder } | ControlInstruction::JumpIfZero { target: placeholder, .. },
+			) => {
 				*placeholder = target;
 			}
 			_ => unreachable!("Expected a jump placeholder"),
@@ -138,17 +128,16 @@ impl<'a> Compiler<'a> {
 		condition: &NodeReference,
 		statements: &[NodeReference],
 		else_branch: Option<&crate::ElseBranch>,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
-		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
+		let condition_register = self.compile_value_expression(condition, &ValueType::Bool)?;
 		let jump_if_zero_index = self.instructions.len();
-		self.instructions.push(Instruction::JumpIfZero {
+		self.emit(ControlInstruction::JumpIfZero {
 			register: condition_register,
 			target: usize::MAX,
 		});
 
 		for statement in statements {
-			self.compile_statement(statement, descriptor_layouts)?;
+			self.compile_statement(statement)?;
 		}
 
 		let Some(else_branch) = else_branch else {
@@ -158,12 +147,12 @@ impl<'a> Compiler<'a> {
 
 		// The then branch ends by jumping over the else branch.
 		let skip_else_index = self.instructions.len();
-		self.instructions.push(Instruction::Jump { target: usize::MAX });
+		self.emit(ControlInstruction::Jump { target: usize::MAX });
 		self.patch_jump(jump_if_zero_index, self.instructions.len());
 
 		// An `else if` link compiles as one nested conditional statement.
 		for statement in else_branch.statements() {
-			self.compile_statement(statement, descriptor_layouts)?;
+			self.compile_statement(statement)?;
 		}
 		self.patch_jump(skip_else_index, self.instructions.len());
 
@@ -178,12 +167,11 @@ impl<'a> Compiler<'a> {
 		r#type: &NodeReference,
 		arms: &[crate::MatchArm],
 		default: &[NodeReference],
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let value_type = resolve_value_type(r#type)?;
-		let register = self.compile_value_expression(scrutinee, &value_type, descriptor_layouts)?;
+		let register = self.compile_value_expression(scrutinee, &value_type)?;
 		let switch_index = self.instructions.len();
-		self.instructions.push(Instruction::Switch {
+		self.emit(ControlInstruction::Switch {
 			register,
 			cases: Box::default(),
 			default: usize::MAX,
@@ -196,15 +184,15 @@ impl<'a> Compiler<'a> {
 			// The lexer checks that every label fits the scrutinee type, so truncating keeps its 32-bit pattern.
 			cases.extend(arm.values.iter().map(|&value| (value as u32, start)));
 			for statement in &arm.statements {
-				self.compile_statement(statement, descriptor_layouts)?;
+				self.compile_statement(statement)?;
 			}
 			end_jumps.push(self.instructions.len());
-			self.instructions.push(Instruction::Jump { target: usize::MAX });
+			self.emit(ControlInstruction::Jump { target: usize::MAX });
 		}
 
 		let default_start = self.instructions.len();
 		for statement in default {
-			self.compile_statement(statement, descriptor_layouts)?;
+			self.compile_statement(statement)?;
 		}
 
 		let end = self.instructions.len();
@@ -212,11 +200,11 @@ impl<'a> Compiler<'a> {
 			self.patch_jump(jump, end);
 		}
 		cases.sort_unstable_by_key(|&(label, _)| label);
-		self.instructions[switch_index] = Instruction::Switch {
+		self.instructions[switch_index] = Instruction::Control(ControlInstruction::Switch {
 			register,
 			cases: cases.into_boxed_slice(),
 			default: default_start,
-		};
+		});
 
 		Ok(())
 	}
@@ -227,38 +215,33 @@ impl<'a> Compiler<'a> {
 		condition: &NodeReference,
 		update: &NodeReference,
 		statements: &[NodeReference],
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
-		self.compile_statement(initializer, descriptor_layouts)?;
+		self.compile_statement(initializer)?;
 
 		let condition_start = self.instructions.len();
-		let condition_register = self.compile_value_expression(condition, &ValueType::Bool, descriptor_layouts)?;
+		let condition_register = self.compile_value_expression(condition, &ValueType::Bool)?;
 		let jump_if_zero_index = self.instructions.len();
-		self.instructions.push(Instruction::JumpIfZero {
+		self.emit(ControlInstruction::JumpIfZero {
 			register: condition_register,
 			target: usize::MAX,
 		});
-		let loop_end_placeholder_index = jump_if_zero_index;
 
-		let continue_target = usize::MAX;
-		self.loop_continue_targets.push(continue_target);
-		self.loop_continue_patches.push(Vec::new());
-		self.loop_break_patches.push(Vec::new());
+		self.loops.push(LoopPatches::default());
 		for statement in statements {
-			self.compile_statement(statement, descriptor_layouts)?;
+			self.compile_statement(statement)?;
 		}
-		self.loop_continue_targets.pop();
+		let patches = self.loops.pop().expect("Expected the loop pushed above");
 
 		let update_start = self.instructions.len();
-		self.compile_statement(update, descriptor_layouts)?;
-		for jump_index in self.loop_continue_patches.pop().expect("Expected continue patch list") {
+		self.compile_statement(update)?;
+		for jump_index in patches.continues {
 			self.patch_jump(jump_index, update_start);
 		}
-		self.instructions.push(Instruction::Jump { target: condition_start });
+		self.emit(ControlInstruction::Jump { target: condition_start });
 
 		let loop_end = self.instructions.len();
-		self.patch_jump(loop_end_placeholder_index, loop_end);
-		for jump_index in self.loop_break_patches.pop().expect("Expected break patch list") {
+		self.patch_jump(jump_if_zero_index, loop_end);
+		for jump_index in patches.breaks {
 			self.patch_jump(jump_index, loop_end);
 		}
 
@@ -270,7 +253,6 @@ impl<'a> Compiler<'a> {
 		statement: &NodeReference,
 		left: NodeReference,
 		right: NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let left_expression = left.borrow();
 
@@ -281,8 +263,8 @@ impl<'a> Compiler<'a> {
 				drop(left_expression);
 
 				let local = self.define_local(statement.clone(), left, &name, value_type.clone());
-				let register = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
-				self.instructions.push(Instruction::StoreLocal { local, register });
+				let register = self.compile_value_expression(&right, &value_type)?;
+				self.emit(LocalInstruction::StoreLocal { local, register });
 				Ok(())
 			}
 			Nodes::Expression(Expressions::Member { source, .. }) => {
@@ -295,16 +277,16 @@ impl<'a> Compiler<'a> {
 						.get(local)
 						.cloned()
 						.ok_or(VmError::UninitializedLocal { local })?;
-					let register = self.compile_value_expression(&right, &value_type, descriptor_layouts)?;
-					self.instructions.push(Instruction::StoreLocal { local, register });
+					let register = self.compile_value_expression(&right, &value_type)?;
+					self.emit(LocalInstruction::StoreLocal { local, register });
 					// Later references resolve to the most recent assignment, so every assignment must remain an alias for the local slot.
 					self.locals_by_reference.insert(statement.clone(), local);
 					self.locals_by_reference.insert(left, local);
 					Ok(())
 				} else {
-					let target = self.resolve_output_access(&left, descriptor_layouts)?;
-					let target = self.lower_buffer_access(target, descriptor_layouts)?;
-					let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+					let target = self.resolve_output_access(&left)?;
+					let target = self.lower_buffer_access(target)?;
+					let register = self.compile_value_expression(&right, &target.value_type)?;
 					self.emit_buffer_store(target, register);
 					Ok(())
 				}
@@ -312,16 +294,16 @@ impl<'a> Compiler<'a> {
 			Nodes::Expression(Expressions::Accessor { .. }) => {
 				drop(left_expression);
 				if self.local_path_type(&left).is_some() {
-					return self.compile_local_store(&left, &right, descriptor_layouts);
+					return self.compile_local_store(&left, &right);
 				}
 				if let Some(target) = resolve_workgroup_access(&left)? {
 					let index = target
 						.index_expression
 						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.map(|index| self.compile_value_expression(index, &ValueType::U32))
 						.transpose()?;
-					let value = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
-					self.instructions.push(Instruction::StoreWorkgroup {
+					let value = self.compile_value_expression(&right, &target.value_type)?;
+					self.emit(WorkgroupInstruction::StoreWorkgroup {
 						name: target.name,
 						index,
 						count: target.count,
@@ -331,9 +313,9 @@ impl<'a> Compiler<'a> {
 					return Ok(());
 				}
 				if let Some(target) = resolve_task_payload_access(&left)? {
-					let index = self.compile_value_expression(&target.index_expression, &ValueType::U32, descriptor_layouts)?;
-					let value = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
-					self.instructions.push(Instruction::StoreTaskPayload {
+					let index = self.compile_value_expression(&target.index_expression, &ValueType::U32)?;
+					let value = self.compile_value_expression(&right, &target.value_type)?;
+					self.emit(WorkgroupInstruction::StoreTaskPayload {
 						name: target.name,
 						index,
 						count: target.count,
@@ -344,12 +326,12 @@ impl<'a> Compiler<'a> {
 				}
 
 				let target = if accessor_references_output(&left) {
-					self.resolve_output_array_access(&left, descriptor_layouts)?
+					self.resolve_output_array_access(&left)?
 				} else {
-					self.resolve_memory_access(&left, RequiredAccess::Write, descriptor_layouts)?
+					self.resolve_memory_access(&left, RequiredAccess::Write)?
 				};
-				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let register = self.compile_value_expression(&right, &target.value_type, descriptor_layouts)?;
+				let target = self.lower_buffer_access(target)?;
+				let register = self.compile_value_expression(&right, &target.value_type)?;
 				self.emit_buffer_store(target, register);
 				Ok(())
 			}
@@ -387,12 +369,7 @@ impl<'a> Compiler<'a> {
 	/// innermost one and each result into its parent until it reaches the local. Every index is evaluated exactly once
 	/// and before `value`, like other indexed stores, so indices with side effects such as
 	/// `points[atomic_add(counter.count, 1)].y` select one element.
-	fn compile_local_store(
-		&mut self,
-		target: &NodeReference,
-		value: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<(), VmError> {
+	fn compile_local_store(&mut self, target: &NodeReference, value: &NodeReference) -> Result<(), VmError> {
 		// Walk from the target up to its local, collecting each accessor from the innermost outward.
 		let mut accessors = Vec::new();
 		let mut node = target.clone();
@@ -412,7 +389,7 @@ impl<'a> Compiler<'a> {
 		// Load the enclosing values from the local inward, resolving each member index or evaluating each element index.
 		let mut value_type = self.local_types[local].clone();
 		let mut enclosing = self.allocate_register();
-		self.instructions.push(Instruction::LoadLocal {
+		self.emit(LocalInstruction::LoadLocal {
 			register: enclosing,
 			local,
 		});
@@ -425,21 +402,21 @@ impl<'a> Compiler<'a> {
 				}
 				Err(_) => {
 					let (element_type, count) = array_element_type(&value_type)?;
-					let index = self.compile_value_expression(accessor, &ValueType::U32, descriptor_layouts)?;
+					let index = self.compile_value_expression(accessor, &ValueType::U32)?;
 					(index, element_type, Some(count))
 				}
 			};
 			inserts.push((enclosing, index, count));
 			if depth + 1 < accessors.len() {
 				let register = self.allocate_register();
-				self.instructions.push(match count {
-					None => Instruction::Extract {
+				self.emit(match count {
+					None => ValueInstruction::Extract {
 						register,
 						source: enclosing,
 						index,
 						value_type: member_type.clone(),
 					},
-					Some(count) => Instruction::ExtractDynamic {
+					Some(count) => ValueInstruction::ExtractDynamic {
 						register,
 						source: enclosing,
 						index,
@@ -453,17 +430,17 @@ impl<'a> Compiler<'a> {
 		}
 
 		// Insert the stored value into the innermost enclosing value, then each result into its parent.
-		let mut value = self.compile_value_expression(value, &value_type, descriptor_layouts)?;
+		let mut value = self.compile_value_expression(value, &value_type)?;
 		for (source, index, count) in inserts.into_iter().rev() {
 			let register = self.allocate_register();
-			self.instructions.push(match count {
-				None => Instruction::Insert {
+			self.emit(match count {
+				None => ValueInstruction::Insert {
 					register,
 					source,
 					index,
 					value,
 				},
-				Some(count) => Instruction::InsertDynamic {
+				Some(count) => ValueInstruction::InsertDynamic {
 					register,
 					source,
 					index,
@@ -473,7 +450,7 @@ impl<'a> Compiler<'a> {
 			});
 			value = register;
 		}
-		self.instructions.push(Instruction::StoreLocal { local, register: value });
+		self.emit(LocalInstruction::StoreLocal { local, register: value });
 		Ok(())
 	}
 
@@ -481,7 +458,6 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		function: &NodeReference,
 		parameters: &[NodeReference],
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let function_ref = function.borrow();
 		match function_ref.node() {
@@ -491,13 +467,9 @@ impl<'a> Compiler<'a> {
 				require_argument_count(parameters, signature.params.len())?;
 				let mut arguments = Vec::with_capacity(parameters.len());
 				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
-					arguments.push(self.compile_value_expression(
-						parameter,
-						&signature_parameter.value_type,
-						descriptor_layouts,
-					)?);
+					arguments.push(self.compile_value_expression(parameter, &signature_parameter.value_type)?);
 				}
-				self.instructions.push(Instruction::Call {
+				self.emit(ControlInstruction::Call {
 					register: None,
 					function: *self
 						.function_ids
@@ -515,22 +487,18 @@ impl<'a> Compiler<'a> {
 		}
 	}
 
-	pub(super) fn compile_return_statement(
-		&mut self,
-		value: Option<&NodeReference>,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<(), VmError> {
+	pub(super) fn compile_return_statement(&mut self, value: Option<&NodeReference>) -> Result<(), VmError> {
 		match (self.return_type.clone(), value) {
 			(None, None) => {
-				self.instructions.push(Instruction::Return { register: None });
+				self.emit(ControlInstruction::Return { register: None });
 				Ok(())
 			}
 			(None, Some(_)) => Err(VmError::UnsupportedStatement {
 				message: "Void functions cannot return a value".to_string(),
 			}),
 			(Some(return_type), Some(value)) => {
-				let register = self.compile_value_expression(value, &return_type, descriptor_layouts)?;
-				self.instructions.push(Instruction::Return {
+				let register = self.compile_value_expression(value, &return_type)?;
+				self.emit(ControlInstruction::Return {
 					register: Some(register),
 				});
 				Ok(())
@@ -545,7 +513,6 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		intrinsic: &NodeReference,
 		arguments: &[NodeReference],
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<(), VmError> {
 		let intrinsic_ref = intrinsic.borrow();
 		let name = match intrinsic_ref.node() {
@@ -561,21 +528,21 @@ impl<'a> Compiler<'a> {
 		match name.as_str() {
 			"set_task_mesh_output_count" => {
 				require_argument_count(arguments, 1)?;
-				let count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				self.instructions.push(Instruction::SetTaskMeshOutputCount { count });
+				let count = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
+				self.emit(WorkgroupInstruction::SetTaskMeshOutputCount { count });
 				Ok(())
 			}
 			"workgroup_barrier" => {
 				require_argument_count(arguments, 0)?;
 				// Preserve the barrier as an instruction so workgroup execution can rendezvous every lane.
-				self.instructions.push(Instruction::WorkgroupBarrier);
+				self.emit(Instruction::WorkgroupBarrier);
 				Ok(())
 			}
 			"set_mesh_output_counts" => {
 				require_argument_count(arguments, 2)?;
-				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let primitive_count = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
-				self.instructions.push(Instruction::SetMeshOutputCounts {
+				let vertex_count = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
+				let primitive_count = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
+				self.emit(MeshOutputInstruction::Counts {
 					vertex_count,
 					primitive_count,
 				});
@@ -583,40 +550,39 @@ impl<'a> Compiler<'a> {
 			}
 			"set_mesh_vertex_position" => {
 				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F, descriptor_layouts)?;
-				self.instructions.push(Instruction::SetMeshVertexPosition { index, position });
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
+				let position = self.compile_value_expression(&arguments[1], &ValueType::Vec4F)?;
+				self.emit(MeshOutputInstruction::VertexPosition { index, position });
 				Ok(())
 			}
 			"set_mesh_triangle" => {
 				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U, descriptor_layouts)?;
-				self.instructions.push(Instruction::SetMeshTriangle { index, triangle });
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
+				let triangle = self.compile_value_expression(&arguments[1], &ValueType::Vec3U)?;
+				self.emit(MeshOutputInstruction::Triangle { index, triangle });
 				Ok(())
 			}
 			"set_mesh_primitive_render_target_array_index" => {
 				require_argument_count(arguments, 2)?;
-				let index = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let array_index = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
-				self.instructions
-					.push(Instruction::SetMeshPrimitiveRenderTargetArrayIndex { index, array_index });
+				let index = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
+				let array_index = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
+				self.emit(MeshOutputInstruction::PrimitiveRenderTargetArrayIndex { index, array_index });
 				Ok(())
 			}
 			"write" => {
 				require_argument_count(arguments, 3)?;
 
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
-				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F, descriptor_layouts)?;
-				self.instructions.push(Instruction::WriteImage { slot, coord, value });
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Write)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::Vec4F)?;
+				self.emit(ImageInstruction::WriteImage { slot, coord, value });
 				Ok(())
 			}
 			"guard_image_bounds" => {
 				require_argument_count(arguments, 2)?;
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
-				self.instructions.push(Instruction::GuardImageBounds { slot, coord });
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				self.emit(ImageInstruction::GuardImageBounds { slot, coord });
 				Ok(())
 			}
 			"atomic_store" => {
@@ -631,10 +597,10 @@ impl<'a> Compiler<'a> {
 					let index = target
 						.index_expression
 						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.map(|index| self.compile_value_expression(index, &ValueType::U32))
 						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &target.value_type, descriptor_layouts)?;
-					self.instructions.push(Instruction::StoreWorkgroup {
+					let value = self.compile_value_expression(&arguments[1], &target.value_type)?;
+					self.emit(WorkgroupInstruction::StoreWorkgroup {
 						name: target.name,
 						index,
 						count: target.count,
@@ -643,7 +609,7 @@ impl<'a> Compiler<'a> {
 					});
 					return Ok(());
 				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::Write)?;
 				if !matches!(target.value_type, ValueType::U32 | ValueType::I32) {
 					return Err(VmError::TypeMismatch {
 						expected: "u32 or i32".to_string(),
@@ -651,8 +617,8 @@ impl<'a> Compiler<'a> {
 					});
 				}
 				let value_type = target.value_type.clone();
-				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let register = self.compile_value_expression(&arguments[1], &value_type, descriptor_layouts)?;
+				let target = self.lower_buffer_access(target)?;
+				let register = self.compile_value_expression(&arguments[1], &value_type)?;
 				self.emit_buffer_store(target, register);
 				Ok(())
 			}
@@ -669,11 +635,11 @@ impl<'a> Compiler<'a> {
 					Nodes::Intrinsic { r#return, .. } => resolve_value_type(r#return)?,
 					_ => unreachable!("Statement intrinsic was already validated"),
 				};
-				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type, descriptor_layouts)?;
+				self.compile_intrinsic_call_expression(intrinsic, arguments, &return_type)?;
 				Ok(())
 			}
 			"image_atomic_or" => {
-				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32, descriptor_layouts)?;
+				self.compile_intrinsic_call_expression(intrinsic, arguments, &ValueType::U32)?;
 				Ok(())
 			}
 			_ => Err(VmError::UnsupportedStatement {

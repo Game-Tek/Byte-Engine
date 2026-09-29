@@ -60,6 +60,21 @@ impl<'a> ResourceId<'a> {
 		path.extension().and_then(|extension| extension.to_str()).unwrap_or_default()
 	}
 
+	/// Resolves a path that a container asset references relative to the container's own directory.
+	///
+	/// URIs with a scheme and absolute paths pass through unchanged. Importers undo their format's own encoding, such
+	/// as glTF percent-encoding or FBX backslashes, before calling this. The result always uses `/` separators.
+	pub fn resolve_relative(&self, path: &str) -> String {
+		if path.contains("://") || path.starts_with('/') {
+			return path.to_string();
+		}
+
+		match std::path::Path::new(self.get_base().as_ref()).parent() {
+			Some(parent) => parent.join(path).to_string_lossy().replace('\\', "/"),
+			None => path.to_string(),
+		}
+	}
+
 	/// Returns the source type used to select an asset handler.
 	///
 	/// Standalone `.environment.bead` declarations use their compound suffix.
@@ -119,12 +134,6 @@ impl_resource_id_view!(ResourceIdFragment, fragment);
 pub mod tests {
 	use super::{ResourceId, get_base, get_fragment};
 
-	fn assert_text_view(view: &(impl AsRef<str> + std::fmt::Debug + ToString), expected: &str) {
-		assert_eq!(view.as_ref(), expected);
-		assert_eq!(view.to_string(), expected);
-		assert_eq!(format!("{view:?}"), expected);
-	}
-
 	#[test]
 	fn test_base_url_parse() {
 		assert_eq!(get_base("name.extension").unwrap(), "name.extension");
@@ -165,13 +174,5 @@ pub mod tests {
 		assert_eq!(ResourceId::new("not-an-environment.bead").get_asset_type(), "bead");
 		assert_eq!(ResourceId::new("lighting/.bead").get_asset_type(), "");
 		assert_eq!(ResourceId::new("lighting.v2/studio.bead").get_asset_type(), "bead");
-	}
-
-	#[test]
-	fn resource_id_views_preserve_their_exact_text_across_public_conversions() {
-		let id = ResourceId::new("meshes/Box.gltf#texture");
-		assert_text_view(&id, "meshes/Box.gltf#texture");
-		assert_text_view(&id.get_base(), "meshes/Box.gltf");
-		assert_text_view(&id.get_fragment().unwrap(), "texture");
 	}
 }

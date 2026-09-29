@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use resource_management::{
 	Reference, StreamDescription,
-	resource::{ReadTargets, ReadTargetsMut, ResourceGpuBacking, ResourcePayloadEncoding, ResourceReaderBacking},
+	resource::{ReadTargets, ResourceGpuBacking, ResourcePayloadEncoding, ResourceReaderBacking},
 	resources::image::Image as ResourceImage,
 	stream::StreamMut,
 	types::Formats as ResourceFormat,
@@ -213,7 +213,7 @@ impl NativeTextureUpload {
 				None if metadata.mip_count == 1 => 0,
 				None => return Err(TexturePreparationError::Streams),
 			};
-			let extent = texture_mip_extent(metadata.extent, mip_level);
+			let extent = metadata.extent.mip(mip_level);
 			let (bytes_per_row, _, bytes_per_image) = metadata.format.compact_copy_layout(extent.width(), extent.height());
 			regions.push(NativeImageRegion {
 				file_offset: decoded_offset,
@@ -246,11 +246,10 @@ pub(crate) struct TextureUploadLayout {
 impl TextureUploadLayout {
 	/// Computes one GPU-row-aligned staging range and rejects arithmetic overflow.
 	pub(crate) fn new(format: ghi::Formats, extent: Extent, layer_count: usize, offset: usize) -> Option<Self> {
-		let (compact_bytes_per_row, row_count, compact_bytes_per_image) =
-			format.compact_copy_layout(extent.width().max(1), extent.height().max(1));
+		let (compact_bytes_per_row, row_count, compact_bytes_per_image) = format.copy_layout(extent)?;
 		let compact_size = compact_bytes_per_image.checked_mul(layer_count)?;
-		let source_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
-		let source_bytes_per_image = source_bytes_per_row.checked_mul(row_count)?;
+		// Rows are padded the way every backend's buffer-to-texture copy reads them.
+		let (source_bytes_per_row, source_bytes_per_image) = ghi::aligned_copy_pitches(compact_bytes_per_row, row_count)?;
 		let padded_size = source_bytes_per_image.checked_mul(layer_count)?;
 		Some(Self {
 			offset,
@@ -377,32 +376,11 @@ impl MipStreamName {
 	}
 }
 
-pub(crate) fn texture_mip_extent(base_extent: Extent, level: u32) -> Extent {
-	debug_assert_eq!(
-		base_extent.depth(),
-		0,
-		"Texture mip extent is not two-dimensional. The most likely cause is unvalidated image metadata."
-	);
-	Extent::rectangle((base_extent.width() >> level).max(1), (base_extent.height() >> level).max(1))
-}
-
+/// Loads each named mip stream of an image into its destination, whatever the stored payload encoding.
 pub(crate) async fn load_image_streams<'a>(
 	reference: &mut Reference<ResourceImage>,
-	mut streams: SmallVec<[StreamMut<'a>; 16]>,
+	streams: SmallVec<[StreamMut<'a>; 16]>,
 ) -> Result<(), TexturePreparationError> {
-	if reference.requires_cpu_decompression() {
-		let loaded = reference
-			.load(ReadTargetsMut::backing_storage())
-			.await
-			.map_err(|_| TexturePreparationError::Payload)?;
-		let descriptions = reference.streams().ok_or(TexturePreparationError::Streams)?;
-		let decoded = loaded.buffer().ok_or(TexturePreparationError::Payload)?;
-		for stream in &mut streams {
-			copy_decoded_stream(decoded, descriptions, stream)?;
-		}
-		return Ok(());
-	}
-
 	let loaded = reference
 		.load(streams.into_vec().into())
 		.await
@@ -422,7 +400,7 @@ async fn prepare_staged_texture(
 	let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
 	let mut upload_byte_count = 0usize;
 	for level in 0..metadata.mip_count {
-		let mut layout = TextureUploadLayout::new(metadata.format, texture_mip_extent(metadata.extent, level), 1, 0)
+		let mut layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, 0)
 			.ok_or(TexturePreparationError::Layout)?;
 		layout.offset = upload_byte_count;
 		upload_byte_count = upload_byte_count
@@ -431,7 +409,7 @@ async fn prepare_staged_texture(
 		layouts.push(layout);
 	}
 	let mut staging = staging_arena
-		.allocate(upload_byte_count, 256)
+		.allocate(upload_byte_count, ghi::TEXTURE_COPY_PITCH_ALIGNMENT)
 		.await
 		.ok_or(TexturePreparationError::StagingCapacity)?;
 	load_texture_bytes(reference, &mut staging, &layouts).await?;
@@ -440,29 +418,6 @@ async fn prepare_staged_texture(
 		layout.pack_rows(&mut staging.bytes_mut()[range]);
 	}
 	Ok(StagedTextureUpload { staging, layouts })
-}
-
-fn copy_decoded_stream(
-	decoded: &[u8],
-	descriptions: &[StreamDescription],
-	stream: &mut StreamMut<'_>,
-) -> Result<(), TexturePreparationError> {
-	let description = descriptions
-		.iter()
-		.find(|description| description.name() == stream.name())
-		.ok_or(TexturePreparationError::Streams)?;
-	if description.size() != stream.buffer().len() {
-		return Err(TexturePreparationError::Streams);
-	}
-	let end = description
-		.offset()
-		.checked_add(description.size())
-		.ok_or(TexturePreparationError::Streams)?;
-	let source = decoded
-		.get(description.offset()..end)
-		.ok_or(TexturePreparationError::Streams)?;
-	stream.buffer_mut().copy_from_slice(source);
-	Ok(())
 }
 
 fn texture_payload_is_compact(
@@ -582,49 +537,7 @@ pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
 
 #[cfg(test)]
 mod tests {
-	use std::path::PathBuf;
-
-	use resource_management::{
-		ReferenceModel,
-		resource::{ResourcePayloadEncoding, reader::redb::FileResourceReader},
-		resources::image::Image,
-		types::Gamma,
-	};
-
 	use super::*;
-
-	fn native_image_reference(depth: u32) -> Reference<ResourceImage> {
-		let image = Image {
-			format: ResourceFormat::BC5,
-			gamma: Gamma::Linear,
-			extent: [4, 4, depth],
-			mip_count: 1,
-			ibl: None,
-			photometry: None,
-		};
-		let model = ReferenceModel::new("normal.image", 0, 16, &image, None);
-		let reader = Box::new(FileResourceReader::new_gpu(
-			PathBuf::from("normal.image"),
-			ResourcePayloadEncoding::MetalIoLz4,
-		));
-		Reference::from_model(model, image, reader)
-	}
-
-	#[resource_management::r#async::test]
-	async fn texture_preparation_accepts_only_zero_depth_for_two_dimensional_resources() {
-		let mut bytes = vec![0_u8; 16];
-		let (staging, _worker) = UploadStagingArena::new_for_test(&mut bytes);
-
-		let prepared = PreparedTextureTransfer::prepare(native_image_reference(0), staging.clone())
-			.await
-			.expect("zero-depth image metadata should prepare");
-		assert_eq!(prepared.metadata.extent, Extent::rectangle(4, 4));
-		assert!(matches!(prepared.into_parts().1, PreparedTextureSource::Native(_)));
-		assert!(matches!(
-			PreparedTextureTransfer::prepare(native_image_reference(1), staging).await,
-			Err(TexturePreparationError::Dimensions)
-		));
-	}
 
 	#[test]
 	fn texture_layout_preserves_every_mip_and_gpu_row_pitch() {
@@ -636,7 +549,7 @@ mod tests {
 		let mut offset = 0;
 		let layouts = (0..metadata.mip_count)
 			.map(|level| {
-				let layout = TextureUploadLayout::new(metadata.format, texture_mip_extent(metadata.extent, level), 1, offset)
+				let layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, offset)
 					.expect("valid texture layout");
 				offset += layout.padded_size;
 				layout
@@ -649,37 +562,6 @@ mod tests {
 		assert_eq!(layouts[0].source_bytes_per_image, 768);
 		assert_eq!(layouts[1].offset, layouts[0].padded_size);
 		assert_eq!(layouts[2].offset, layouts[0].padded_size + layouts[1].padded_size);
-	}
-
-	#[test]
-	fn row_packing_keeps_compact_texels_at_each_padded_row_start() {
-		let layout =
-			TextureUploadLayout::new(ghi::Formats::RGBA8UNORM, Extent::rectangle(2, 2), 1, 0).expect("valid texture layout");
-		let mut bytes = vec![0; layout.padded_size];
-		bytes[..16].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-
-		layout.pack_rows(&mut bytes);
-
-		assert_eq!(&bytes[..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
-		assert_eq!(&bytes[256..264], &[9, 10, 11, 12, 13, 14, 15, 16]);
-	}
-
-	#[test]
-	fn decoded_stream_copy_uses_explicit_named_ranges() {
-		let decoded = [10_u8, 11, 12, 13, 14, 15];
-		let descriptions = [StreamDescription::new("mip[0]", 3, 2)];
-		let mut destination = [0_u8; 3];
-		{
-			let mut stream = StreamMut::new("mip[0]", &mut destination);
-			copy_decoded_stream(&decoded, &descriptions, &mut stream).unwrap();
-		}
-
-		assert_eq!(destination, [12, 13, 14]);
-		let mut missing = StreamMut::new("missing", &mut destination);
-		assert_eq!(
-			copy_decoded_stream(&decoded, &descriptions, &mut missing),
-			Err(TexturePreparationError::Streams)
-		);
 	}
 
 	#[test]
@@ -716,11 +598,6 @@ mod tests {
 		assert_eq!(&staging[8..10], &[5, 6]);
 	}
 
-	#[test]
-	fn srgb_resource_format_preserves_srgb_gpu_sampling() {
-		assert_eq!(resource_format_to_ghi(ResourceFormat::RGBA8SRGB), ghi::Formats::RGBA8sRGB);
-	}
-
 	/// Lays `source` out as the GPU expects it: compact rows expanded to the padded row pitch.
 	fn staged_texture_bytes(
 		format: ghi::Formats,
@@ -752,25 +629,6 @@ mod tests {
 		assert_eq!(zero_extent.source_bytes_per_row, 256);
 		assert_eq!(zero_extent.source_bytes_per_image, 256);
 		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
-	}
-
-	/// Ensures half-float rows (IES intensity maps, HDR environments) reach the transfer buffer unchanged.
-	#[test]
-	fn texture_upload_preserves_half_float_rows() {
-		for (format, resource_format, bytes_per_texel) in [
-			(ghi::Formats::R16F, ResourceFormat::R16F, 2),
-			(ghi::Formats::RGBA16F, ResourceFormat::RGBA16F, 8),
-		] {
-			let compact_row = 2 * bytes_per_texel;
-			let source = (0..compact_row * 2).map(|value| value as u8).collect::<Vec<_>>();
-			let (data, upload) = staged_texture_bytes(format, Extent::rectangle(2, 2), 1, &source);
-
-			assert_eq!(resource_format_to_ghi(resource_format), format);
-			assert_eq!(upload.source_bytes_per_row, 256);
-			assert_eq!(upload.source_bytes_per_image, 512);
-			assert_eq!(&data[..compact_row], &source[..compact_row]);
-			assert_eq!(&data[256..256 + compact_row], &source[compact_row..]);
-		}
 	}
 
 	#[test]

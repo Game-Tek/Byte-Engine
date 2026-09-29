@@ -1,6 +1,5 @@
 use std::{collections::HashMap, fmt::Write as _};
 
-use super::lowering::lex_parsed_node;
 use super::*;
 use crate::parser;
 
@@ -49,18 +48,12 @@ pub(super) fn resolve_type(chain: &[NodeReference], type_name: &str) -> Result<N
 
 	if type_name.contains('[') {
 		let mut parts = type_name.split(['[', ']']);
-		let element_type_name = parts.next().ok_or(LexError::Undefined {
-			message: Some("No type name".to_string()),
-		})?;
+		let element_type_name = parts.next().ok_or(LexError::invalid("No type name"))?;
 		let count = parts
 			.next()
-			.ok_or(LexError::Undefined {
-				message: Some("No count".to_string()),
-			})?
+			.ok_or(LexError::invalid("No count"))?
 			.parse::<usize>()
-			.map_err(|_| LexError::Undefined {
-				message: Some("Invalid count".to_string()),
-			})?;
+			.map_err(|_| LexError::invalid("Invalid count"))?;
 
 		let element_type = parser::TypeName::Named(element_type_name);
 		return resolve_array_type(chain, &element_type, count);
@@ -80,12 +73,9 @@ pub(super) fn resolve_descriptor_type(
 ) -> Result<BindingTypes, LexError> {
 	if runtime_array {
 		if format.is_some() {
-			return Err(LexError::Undefined {
-				message: Some(
-					"Runtime buffer arrays cannot declare an image format. The most likely cause is that [] was attached to a formatted storage image."
-						.to_string(),
-				),
-			});
+			return Err(LexError::invalid(
+				"Runtime buffer arrays cannot declare an image format. The most likely cause is that [] was attached to a formatted storage image.",
+			));
 		}
 		let element = resolve_type(chain, resource_type)?;
 		// Records (user structs and built-in vectors) have fields; numeric scalars are field-less built-ins that still
@@ -96,21 +86,17 @@ pub(super) fn resolve_descriptor_type(
 			_ => false,
 		};
 		if !storable {
-			return Err(LexError::Undefined {
-				message: Some(format!(
-					"Runtime buffer element `{resource_type}` has no storable buffer representation. The most likely cause is that [] was attached to a boolean, empty, or resource-handle type."
-				)),
-			});
+			return Err(LexError::invalid(format!(
+				"Runtime buffer element `{resource_type}` has no storable buffer representation. The most likely cause is that [] was attached to a boolean, empty, or resource-handle type."
+			)));
 		}
 		return Ok(BindingTypes::BufferArray { element, fixed: None });
 	}
 
 	if format.is_some() && resource_type != "StorageImage" {
-		return Err(LexError::Undefined {
-			message: Some(format!(
-				"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a non-StorageImage descriptor."
-			)),
-		});
+		return Err(LexError::invalid(format!(
+			"Resource type {resource_type} cannot declare a storage image format. The most likely cause is that a format was attached to a non-StorageImage descriptor."
+		)));
 	}
 
 	match resource_type {
@@ -159,7 +145,7 @@ pub(super) fn resolve_array_type(
 	}
 
 	let element_type = resolve_type_name(chain, element_type_name)?;
-	let array_type = Node::internal_new(Node {
+	let array_type = NodeReference::from(Node {
 		node: Nodes::Struct {
 			name: array_name,
 			template: Some(element_type.clone()),
@@ -192,16 +178,12 @@ pub(super) fn resolve_type_name(chain: &[NodeReference], type_name: &parser::Typ
 	match type_name {
 		parser::TypeName::Named(type_name) => resolve_type(chain, type_name),
 		parser::TypeName::Array { element, count } => {
-			let count = usize::try_from(*count).map_err(|_| LexError::Undefined {
-				message: Some("Invalid count".to_string()),
-			})?;
+			let count = usize::try_from(*count).map_err(|_| LexError::invalid("Invalid count"))?;
 			resolve_array_type(chain, element, count)
 		}
-		parser::TypeName::Record { role, .. } => Err(LexError::Undefined {
-			message: Some(format!(
-				"Anonymous {role} types are valid only on main. The most likely cause is that a structural stage type was used as an ordinary value type."
-			)),
-		}),
+		parser::TypeName::Record { role, .. } => Err(LexError::invalid(format!(
+			"Anonymous {role} types are valid only on main. The most likely cause is that a structural stage type was used as an ordinary value type."
+		))),
 	}
 }
 
@@ -235,23 +217,6 @@ pub(super) fn resolve_accessed_member(left: &NodeReference, name: &str) -> Resul
 		Nodes::Struct { fields, .. } => find_named_child(fields, name).ok_or_else(undeclared),
 		_ => Err(undeclared()),
 	}
-}
-
-/// Clones the lexical scope chain and appends the current parent node.
-pub(super) fn extend_chain(chain: &[NodeReference], parent: &NodeReference) -> Vec<NodeReference> {
-	let mut extended = chain.to_vec();
-	extended.push(parent.clone());
-	extended
-}
-
-/// Lexes one parser child in the scope of its parent node.
-pub(super) fn lex_child_with_parent(
-	chain: &[NodeReference],
-	parent: &NodeReference,
-	parser_node: &parser::Node,
-	next_intrinsic_expansion_id: &mut usize,
-) -> Result<NodeReference, LexError> {
-	lex_parsed_node(extend_chain(chain, parent), parser_node, next_intrinsic_expansion_id)
 }
 
 /// Resolves raw-code IO references and lowers them into a lexer node.
@@ -589,7 +554,14 @@ pub(super) fn expression_matches_type(expression: &NodeReference, expected_type:
 		.unwrap_or(true)
 }
 
-pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
+/// Returns the type node of the value `expression` produces, or `None` when linking cannot know it, such as for a
+/// resource binding.
+///
+/// Overload resolution uses it to pick an intrinsic, and shader backends use it to choose type-dependent spellings,
+/// such as a matrix product. It accepts linked expressions and the declarations they reference. Built-in types of
+/// literals and comparisons come from a shared [`Node::root`] registry, so compare the result by
+/// [`Node::get_name`] rather than by node identity.
+pub fn infer_expression_type(expression: &NodeReference) -> Option<NodeReference> {
 	match expression.borrow().node() {
 		Nodes::Expression(Expressions::Expression { elements }) if elements.len() == 1 => infer_expression_type(&elements[0]),
 		Nodes::Expression(Expressions::Literal { value }) => infer_literal_type(value),
@@ -614,6 +586,15 @@ pub(super) fn infer_expression_type(expression: &NodeReference) -> Option<NodeRe
 		Nodes::Expression(Expressions::FunctionCall { function, .. }) => infer_callable_return_type(&function.get()),
 		Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => infer_callable_return_type(intrinsic),
 		Nodes::Expression(Expressions::Operator { operator, left, right }) => infer_operator_result_type(operator, left, right),
+		// A declaration read in place, such as the workgroup array under an index, has its declared type.
+		Nodes::Member { .. }
+		| Nodes::Parameter { .. }
+		| Nodes::Input { .. }
+		| Nodes::Output { .. }
+		| Nodes::TaskPayload { .. }
+		| Nodes::Workgroup { .. }
+		| Nodes::Specialization { .. }
+		| Nodes::Const { .. } => infer_member_type(expression),
 		_ => None,
 	}
 }
@@ -679,7 +660,7 @@ pub(super) fn infer_operator_result_type(
 			| Operators::LogicalAnd
 			| Operators::LogicalOr
 	) {
-		return Node::root().get_child("bool");
+		return builtin_type("bool");
 	}
 
 	let left_type = infer_expression_type(left);
@@ -698,7 +679,7 @@ pub(super) fn infer_operator_result_type(
 			_ => None,
 		};
 		if let Some(product_type) = product_type {
-			return Node::root().get_child(product_type);
+			return builtin_type(product_type);
 		}
 	}
 
@@ -716,14 +697,27 @@ pub(super) fn infer_operator_result_type(
 }
 
 pub(super) fn infer_literal_type(value: &str) -> Option<NodeReference> {
-	let root = Node::root();
 	if matches!(value, "true" | "false") {
-		root.get_child("bool")
+		builtin_type("bool")
 	} else if value.contains(['.', 'e', 'E']) {
-		root.get_child("f32")
+		builtin_type("f32")
 	} else {
-		root.get_child("u32")
+		builtin_type("u32")
 	}
+}
+
+thread_local! {
+	/// One built-in registry per thread, so inference names `bool` or `vec4f` without rebuilding [`Node::root`] for
+	/// every literal and comparison it types.
+	static BUILTIN_REGISTRY: Node = Node::root();
+}
+
+/// Returns the built-in type named `name` from the shared registry.
+fn builtin_type(name: &str) -> Option<NodeReference> {
+	BUILTIN_REGISTRY.with(|root| match root.node() {
+		Nodes::Scope { children, .. } => find_named_child(children, name),
+		_ => None,
+	})
 }
 
 pub(super) fn infer_member_type(source: &NodeReference) -> Option<NodeReference> {
@@ -774,12 +768,13 @@ fn indexed_element_type(indexed: &NodeReference) -> Option<NodeReference> {
 		Nodes::TaskPayload { format, .. } => return Some(format.clone()),
 		_ => infer_member_type(&source)?,
 	};
-	// Array types are structs whose template is the element type. Matrices index their columns.
+	// Array types are structs whose template is the element type. Matrices index their columns and vectors their
+	// components, and both declare those as same-typed fields.
 	match indexed_type.borrow().node() {
 		Nodes::Struct {
 			template: Some(element), ..
 		} => Some(element.clone()),
-		Nodes::Struct { name, fields, .. } if matches!(name.as_str(), "mat4f" | "mat4x3f") => {
+		Nodes::Struct { name, fields, .. } if name.starts_with("vec") || name.starts_with("mat") || name == "packed_vec4f" => {
 			fields.first().and_then(infer_member_type)
 		}
 		_ => None,
@@ -888,79 +883,19 @@ pub(super) fn resolve_call_target_in_node(
 fn collect_intrinsic_local_declarations(node: &NodeReference, declarations: &mut Vec<NodeReference>) {
 	match node.borrow().node() {
 		Nodes::Expression(Expressions::VariableDeclaration { .. }) => declarations.push(node.clone()),
-		Nodes::Expression(expression) => match expression {
-			Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
-				collect_intrinsic_local_declarations(left, declarations);
-				collect_intrinsic_local_declarations(right, declarations);
-			}
-			Expressions::FunctionCall { parameters, .. } => {
-				for parameter in parameters {
-					collect_intrinsic_local_declarations(parameter, declarations);
-				}
-			}
-			Expressions::IntrinsicCall { arguments, elements, .. } => {
-				for node in arguments.iter().chain(elements) {
-					collect_intrinsic_local_declarations(node, declarations);
-				}
-			}
-			Expressions::Expression { elements } => {
-				for element in elements {
-					collect_intrinsic_local_declarations(element, declarations);
-				}
-			}
-			Expressions::Macro { body, .. } => collect_intrinsic_local_declarations(body, declarations),
-			Expressions::Return { value } => {
-				if let Some(value) = value {
-					collect_intrinsic_local_declarations(value, declarations);
-				}
-			}
-			Expressions::VariableDeclaration { .. }
-			| Expressions::Member { .. }
-			| Expressions::Literal { .. }
-			| Expressions::Continue
-			| Expressions::Break
-			| Expressions::Discard => {}
-		},
 		Nodes::Scope { children, .. } => {
 			for child in children {
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => {
-			for child in branch.branch_children() {
+		// Raw backend source is opaque, so its declared textual names must remain unchanged. Functions and constants
+		// are declarations the body refers to, not part of it.
+		Nodes::Raw { .. } | Nodes::Function { .. } | Nodes::Const { .. } => {}
+		other => {
+			for child in other.children() {
 				collect_intrinsic_local_declarations(child, declarations);
 			}
 		}
-		Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} => {
-			collect_intrinsic_local_declarations(initializer, declarations);
-			collect_intrinsic_local_declarations(condition, declarations);
-			collect_intrinsic_local_declarations(update, declarations);
-			for statement in statements {
-				collect_intrinsic_local_declarations(statement, declarations);
-			}
-		}
-		// Raw backend source is opaque. Its declared textual names must remain unchanged.
-		Nodes::Raw { .. }
-		| Nodes::Null
-		| Nodes::Struct { .. }
-		| Nodes::Member { .. }
-		| Nodes::Function { .. }
-		| Nodes::Specialization { .. }
-		| Nodes::Binding { .. }
-		| Nodes::PushConstant { .. }
-		| Nodes::Intrinsic { .. }
-		| Nodes::Input { .. }
-		| Nodes::Output { .. }
-		| Nodes::TaskPayload { .. }
-		| Nodes::Workgroup { .. }
-		| Nodes::Parameter { .. }
-		| Nodes::Literal { .. }
-		| Nodes::Const { .. } => {}
 	}
 }
 
@@ -1069,7 +1004,7 @@ fn instantiate_intrinsic_node(node: &NodeReference, instantiation: &IntrinsicIns
 fn instantiate_intrinsic_expression(expression: &Expressions, instantiation: &IntrinsicInstantiation) -> Expressions {
 	match expression {
 		Expressions::Operator { operator, left, right } => Expressions::Operator {
-			operator: operator.clone(),
+			operator: *operator,
 			left: instantiate_intrinsic_node(left, instantiation),
 			right: instantiate_intrinsic_node(right, instantiation),
 		},

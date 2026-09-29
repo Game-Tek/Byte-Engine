@@ -14,7 +14,7 @@ pub(super) struct SurfaceCache<K, V> {
 impl<K, V> Default for SurfaceCache<K, V> {
 	fn default() -> Self {
 		Self {
-			entries: HashMap::new(),
+			entries: HashMap::default(),
 			viewport: None,
 			previous: None,
 			layer: 0,

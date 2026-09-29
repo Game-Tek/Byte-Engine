@@ -91,10 +91,6 @@ impl<'a, T: Resource + 'a> Reference<T> {
 		self.hash
 	}
 
-	pub fn get_hash(&self) -> u64 {
-		self.hash
-	}
-
 	pub fn resource(&self) -> &T {
 		&self.resource
 	}
@@ -145,8 +141,8 @@ impl<'a, T: Resource + 'a> Reference<T> {
 	/// If `read_target` requests backing storage, the reader serves resource-owned bytes directly.
 	/// File-backed resources use mapped files when the storage backend supports them. If direct
 	/// backing storage is unavailable, the resource falls back to an owned buffer. CPU-compressed
-	/// resources require one exact post-decompression buffer or reader-owned backing storage;
-	/// partial ranges and separate stream targets are rejected.
+	/// resources require one exact post-decompression buffer, named streams, or reader-owned backing
+	/// storage; partial ranges are rejected.
 	///
 	/// Await this method, then pass the returned [`ReadTargets`] to the renderer,
 	/// audio system, or other consumer together with the metadata from
@@ -197,7 +193,6 @@ pub struct ReferenceModel<T: Model> {
 	id: String,
 	hash: u64,
 	size: usize,
-	class: String,
 	pub(crate) resource: DataStorage, // TODO: remove this visibility and use proper methods
 	#[serde(skip)]
 	#[rkyv(with = rkyv::with::Skip)]
@@ -211,7 +206,6 @@ impl<T: Model> Clone for ReferenceModel<T> {
 			id: self.id.clone(),
 			hash: self.hash,
 			size: self.size,
-			class: self.class.clone(),
 			resource: self.resource.clone(),
 			phantom: std::marker::PhantomData,
 			streams: self.streams.clone(),
@@ -235,7 +229,6 @@ impl<T: Model> ReferenceModel<T> {
 			id: id.to_string(),
 			hash,
 			size,
-			class: T::get_class().to_string(),
 			resource,
 			phantom: std::marker::PhantomData,
 			streams,
@@ -246,101 +239,8 @@ impl<T: Model> ReferenceModel<T> {
 		ResourceId::new(&self.id)
 	}
 
-	pub fn class(&self) -> &str {
-		&self.class
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use std::{
-		fs,
-		io::Write,
-		path::PathBuf,
-		time::{SystemTime, UNIX_EPOCH},
-	};
-
-	use super::{Reference, ReferenceModel};
-	use crate::{
-		Model, Resource,
-		resource::{
-			ReadTargets, ReadTargetsMut,
-			reader::{ResourceReaderBacking, redb::FileResourceReader},
-		},
-	};
-
-	#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-	/// The `DefaultLoadModel` struct gives the reference test a serializable resource model.
-	struct DefaultLoadModel;
-
-	impl Model for DefaultLoadModel {
-		fn get_class() -> &'static str {
-			"DefaultLoad"
-		}
-	}
-
-	#[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-	struct NonCloneModel;
-
-	impl Model for NonCloneModel {
-		fn get_class() -> &'static str {
-			"NonClone"
-		}
-	}
-
-	#[derive(Debug)]
-	/// The `DefaultLoadResource` struct gives the reference test a concrete resource type.
-	struct DefaultLoadResource;
-
-	impl Resource for DefaultLoadResource {
-		type Model = DefaultLoadModel;
-	}
-
-	fn temporary_file_path() -> PathBuf {
-		std::env::temp_dir().join(format!(
-			"byte-engine-reference-default-load-{}-{}.bin",
-			std::process::id(),
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-		))
-	}
-
-	#[test]
-	fn reference_model_clone_does_not_require_model_clone() {
-		let original = ReferenceModel::<NonCloneModel>::new("non-clone", 42, 7, &NonCloneModel, None);
-
-		let cloned = original.clone();
-
-		assert_eq!(cloned.id, original.id);
-		assert_eq!(cloned.hash, original.hash);
-		assert_eq!(cloned.size, original.size);
-		assert_eq!(cloned.class, original.class);
-		assert_eq!(cloned.resource, original.resource);
-		assert!(cloned.streams.is_none());
-		assert!(original.streams.is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn default_reference_load_uses_reader_backing_storage() {
-		let path = temporary_file_path();
-		let expected = b"default-load-bytes";
-
-		{
-			let mut file = fs::File::create(&path).unwrap();
-			file.write_all(expected).unwrap();
-			file.sync_all().unwrap();
-		}
-
-		let model = ReferenceModel::<DefaultLoadModel>::new("default-load", 0, expected.len(), &DefaultLoadModel, None);
-		let reader = Box::new(FileResourceReader::new(&fs::File::open(&path).unwrap(), expected.len() as u64).unwrap());
-		let mut reference = Reference::from_model(model, DefaultLoadResource, reader);
-
-		assert_eq!(reference.resource.get_class(), DefaultLoadModel::get_class());
-		let target = ReadTargetsMut::from(&reference);
-		let result = reference.load(target).await.unwrap();
-
-		assert_eq!(result.buffer().unwrap(), expected);
-		assert!(matches!(result, ReadTargets::Backing(ResourceReaderBacking::MappedFile(_))));
-
-		fs::remove_file(path).unwrap();
+	/// Returns the stored class of the referenced resource, which is always its model's class.
+	pub fn class(&self) -> &'static str {
+		T::get_class()
 	}
 }

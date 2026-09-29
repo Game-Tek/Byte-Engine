@@ -39,7 +39,6 @@ pub(super) const UI_BLUR_SIGMA_SCALE: f32 = crate::ui::style::BACKDROP_BLUR_SIGM
 pub(super) const UI_BLUR_FULL_ONLY_SIGMA: f32 = 4.0;
 pub(super) const UI_BLUR_HALF_ONLY_SIGMA: f32 = 6.0;
 pub(super) const UI_BLUR_HALF_RESAMPLING_VARIANCE: f32 = 2.75;
-pub(super) const UI_BLUR_DOWNSAMPLE_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiRegionPush>() as u32;
 /// Pixels added around every damaged rectangle for anti-aliasing and glyph atlas padding.
 pub(super) const UI_DAMAGE_MARGIN_PIXELS: f32 = 4.0;
 /// Pixels a backdrop blur reads around its quad through both the full and half resolution paths.
@@ -48,11 +47,9 @@ pub(super) const UI_BLUR_FOOTPRINT_MARGIN: u32 = UI_BLUR_GAUSSIAN_SUPPORT * UI_B
 pub(super) const MAX_UI_DAMAGE_REGIONS: usize = 4;
 /// Damage covering this share of the viewport becomes one full redraw.
 pub(super) const UI_FULL_REDRAW_AREA_SHARE: f32 = 0.6;
-/// Workgroup edge of the region clear and backdrop resolve compute shaders.
+/// Workgroup edge shared by the composite (which also resolves the backdrop) and the backdrop blur downsample and
+/// filter compute shaders; see [`super::dispatch_region`].
 pub(super) const UI_REGION_WORKGROUP: u32 = 16;
-pub(super) const UI_BLUR_FILTER_PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<UiBlurFilterPush>() as u32;
-pub(super) const UI_BLUR_DOWNSAMPLE_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-downsample.besl";
-pub(super) const UI_BLUR_FILTER_SHADER_ID: &str = "byte-engine/rendering/ui/backdrop-blur-filter.besl";
 
 /// Vertices the ubershader pulls per primitive: two triangles with no index buffer.
 pub(super) const UI_VERTICES_PER_PRIMITIVE: u32 = 6;
@@ -427,7 +424,7 @@ pub(super) const UI_CURVE_CAP_END: u32 = 2;
 /// | Sector, sector blur | clipped quad | unclipped x, y, width, height | inner radius ratio, start angle, sweep angle, stroke width or blur resolution mix | edge inset in 1/256 pixels | |
 /// | Curve piece | control points 0 and 1 | control points 2 and 3 | half width | piece, and piece count above bit 16 | cap flags |
 /// | Image | clipped quad | texture rectangle | | texture slot | |
-/// | Slug glyph | clipped quad | pen x, pen y, pixels per em | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
+/// | Slug glyph, path | clipped quad | origin x, origin y, pixels per outline unit on x and y | band scale and offset | band data location | last horizontal band, and last vertical band above bit 16 |
 /// | Atlas glyph | clipped quad | texture rectangle | | | |
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -714,10 +711,13 @@ pub(super) enum UiStep {
 }
 
 /// The `UiPrimitives` struct carries one frame's primitives in painter order and the steps that draw them.
+///
+/// The primitive records live in the storage the caller passed to [`build_ui_primitives`], so the render pass can keep
+/// them across frames without another copy. The steps and images live in the frame arena.
 #[derive(Debug)]
 pub(super) struct UiPrimitives<'a> {
 	/// The first record is the quad that clears damaged regions; the steps start after it.
-	pub(super) primitives: Vec<UiPrimitive, &'a bumpalo::Bump>,
+	pub(super) primitives: Vec<UiPrimitive>,
 	pub(super) steps: Vec<UiStep, &'a bumpalo::Bump>,
 	/// Each image primitive and the draw-list image it shows. The pass writes the texture slot into it.
 	pub(super) images: Vec<(u32, u32), &'a bumpalo::Bump>,
@@ -1138,14 +1138,17 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	let mut text_count = 0;
 
 	for element in render.elements() {
-		let position = element.position;
-		let size = element.size;
+		let position = element.placement.position;
+		let size = element.placement.size;
+		// The first fill with a blur radius blurs the backdrop instead of painting; it is listed after the layers.
+		let mut backdrop = None;
 
 		for layer in element.style.layers() {
 			if matches!(layer.kind, LayerKind::Fill) && layer.backdrop_blur_radius > 0.0 {
+				backdrop.get_or_insert(layer);
 				continue;
 			}
-			let paint = UiPaint::resolve(&layer.color, element.opacity);
+			let paint = UiPaint::resolve(&layer.color, element.placement.opacity);
 			let stroke_width = stroke_width(layer.kind);
 			if matches!(layer.kind, LayerKind::Stroke { .. }) && stroke_width <= 0.0 {
 				continue;
@@ -1155,11 +1158,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				if !shadow.inset && paint.alpha() > 0.0 {
 					draw_list.blurs.push(UiBlurDrawElement {
 						depth: position.z(),
-						order: element.id,
+						order: element.placement.id,
 						position: [position.x(), position.y()],
 						size: [size.x(), size.y()],
-						clip: draw_clip_from_geometry(element.clip),
-						clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
+						clip: draw_clip_from_geometry(element.placement.clip),
+						clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
 						color: paint.color,
 						corner_radius: element.corner_radius,
 						corner_exponent: element.corner_exponent,
@@ -1177,11 +1180,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 
 			draw_list.elements.push(UiDrawElement {
 				depth: position.z(),
-				order: element.id,
+				order: element.placement.id,
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(element.clip),
-				clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
+				clip: draw_clip_from_geometry(element.placement.clip),
+				clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
 				paint,
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1191,27 +1194,23 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			});
 		}
 
-		let radius = backdrop_blur_radius(element.backdrop_blur_radius);
-		if radius > 0.0 {
-			let mut color = element
-				.style
-				.layers()
-				.iter()
-				.find(|layer| matches!(layer.kind, LayerKind::Fill) && layer.backdrop_blur_radius > 0.0)
-				.map(|layer| match &layer.color {
-					Color::Value(rgba) => *rgba,
-					Color::Sample(_) => RGBA::white(),
-					Color::Gradient(gradient) => gradient.start,
-				})
-				.unwrap_or_else(RGBA::transparent);
-			color.a *= element.opacity;
+		if let Some(layer) = backdrop
+			&& let radius = backdrop_blur_radius(layer.backdrop_blur_radius)
+			&& radius > 0.0
+		{
+			let mut color = match &layer.color {
+				Color::Value(rgba) => *rgba,
+				Color::Sample(_) => RGBA::white(),
+				Color::Gradient(gradient) => gradient.start,
+			};
+			color.a *= element.placement.opacity;
 			draw_list.blurs.push(UiBlurDrawElement {
 				depth: position.z(),
-				order: element.id,
+				order: element.placement.id,
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(element.clip),
-				clip_mask: draw_clip_mask_from_layout(element.clip_mask, element.rotation),
+				clip: draw_clip_from_geometry(element.placement.clip),
+				clip_mask: draw_clip_mask_from_layout(element.placement.clip_mask, element.placement.rotation),
 				color: color.into(),
 				corner_radius: element.corner_radius,
 				corner_exponent: element.corner_exponent,
@@ -1224,8 +1223,8 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	}
 
 	for curve in render.curves() {
-		let position = curve.position;
-		let size = curve.size;
+		let position = curve.placement.position;
+		let size = curve.placement.size;
 
 		for layer in curve.style.layers() {
 			let stroke_width = stroke_width(layer.kind);
@@ -1233,7 +1232,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 
-			let paint = UiPaint::resolve(&layer.color, curve.opacity);
+			let paint = UiPaint::resolve(&layer.color, curve.placement.opacity);
 			if paint.alpha() <= 0.0 {
 				continue;
 			}
@@ -1242,13 +1241,13 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			// element's origin, the gradient axis, and the stroke follow the inherited scale.
 			let mut entry = UiCurveDrawElement {
 				depth: position.z(),
-				order: curve.id,
+				order: curve.placement.id,
 				position: [position.x(), position.y()],
 				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(curve.clip),
-				clip_mask: draw_clip_mask_from_layout(curve.clip_mask, curve.rotation),
-				paint: paint.placed([0.0, 0.0], curve.scale),
-				stroke_width: stroke_width * curve.scale[0].min(curve.scale[1]),
+				clip: draw_clip_from_geometry(curve.placement.clip),
+				clip_mask: draw_clip_mask_from_layout(curve.placement.clip_mask, curve.placement.rotation),
+				paint: paint.placed([0.0, 0.0], curve.placement.scale),
+				stroke_width: stroke_width * curve.placement.scale[0].min(curve.placement.scale[1]),
 				segments: Vec::new(),
 			};
 			// Reuse by output slot; filtered layers must not consume a retained buffer.
@@ -1260,7 +1259,12 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			}
 			let segments = &mut draw_list.curves[curve_count].segments;
 			segments.clear();
-			segments.extend(curve.segments.iter().map(|segment| scale_segment(segment, curve.scale)));
+			segments.extend(
+				curve
+					.segments
+					.iter()
+					.map(|segment| scale_segment(segment, curve.placement.scale)),
+			);
 			curve_count += 1;
 		}
 	}
@@ -1268,8 +1272,8 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 
 	draw_list.paths.clear();
 	for path in render.paths() {
-		let position = path.position;
-		let size = path.size;
+		let position = path.placement.position;
+		let size = path.placement.size;
 		let shape = UiPathShape {
 			path_id: path.path_id,
 			version: path.version,
@@ -1281,18 +1285,18 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 					if width > 0.0 { size.x() / width } else { 0.0 },
 					if height > 0.0 { size.y() / height } else { 0.0 },
 				],
-				None => path.scale,
+				None => path.placement.scale,
 			},
 			segments: Arc::clone(&path.segments),
 		};
 		let placed = |depth: u32| {
 			(
 				depth,
-				path.id,
+				path.placement.id,
 				[position.x(), position.y()],
 				[size.x(), size.y()],
-				draw_clip_from_geometry(path.clip),
-				draw_clip_mask_from_layout(path.clip_mask, path.rotation),
+				draw_clip_from_geometry(path.placement.clip),
+				draw_clip_mask_from_layout(path.placement.clip_mask, path.placement.rotation),
 			)
 		};
 
@@ -1302,7 +1306,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		for layer in path.style.layers() {
 			// A path's outer shadow is blurred offscreen like a sector's; inset ones are not drawn.
 			if let LayerKind::Shadow(shadow) = layer.kind {
-				let paint = UiPaint::resolve(&layer.color, path.opacity);
+				let paint = UiPaint::resolve(&layer.color, path.placement.opacity);
 				if !shadow.inset && paint.alpha() > 0.0 {
 					let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 					draw_list.blurs.push(UiBlurDrawElement {
@@ -1329,7 +1333,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if !matches!(layer.kind, LayerKind::Fill) {
 				continue;
 			}
-			let paint = UiPaint::resolve(&layer.color, path.opacity);
+			let paint = UiPaint::resolve(&layer.color, path.placement.opacity);
 			let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 			let radius = backdrop_blur_radius(layer.backdrop_blur_radius);
 			if radius > 0.0 {
@@ -1369,37 +1373,37 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 
 	for image in render.images() {
 		draw_list.images.push(UiImageDrawElement {
-			depth: image.position.z(),
-			order: image.id,
+			depth: image.placement.position.z(),
+			order: image.placement.id,
 			image_id: image.image_id,
 			version: image.version,
 			source_width: image.source_width,
 			source_height: image.source_height,
 			pixels: Arc::clone(&image.pixels),
-			position: [image.position.x(), image.position.y()],
-			size: [image.size.x(), image.size.y()],
-			clip: draw_clip_from_geometry(image.clip),
-			clip_mask: draw_clip_mask_from_layout(image.clip_mask, image.rotation),
-			opacity: image.opacity,
+			position: [image.placement.position.x(), image.placement.position.y()],
+			size: [image.placement.size.x(), image.placement.size.y()],
+			clip: draw_clip_from_geometry(image.placement.clip),
+			clip_mask: draw_clip_mask_from_layout(image.placement.clip_mask, image.placement.rotation),
+			opacity: image.placement.opacity,
 		});
 	}
 
 	for text in render.texts() {
 		let mut color = text.color;
-		color.a *= text.opacity;
+		color.a *= text.placement.opacity;
 		// Filter before touching retained strings so hidden text cannot discard reusable storage.
-		if text.content.is_empty() || !(color.a > 0.0 && text.size.x() > 0.0 && text.size.y() > 0.0) {
+		if text.content.is_empty() || !(color.a > 0.0 && text.placement.size.x() > 0.0 && text.placement.size.y() > 0.0) {
 			continue;
 		}
 		let mut entry = UiTextDrawElement {
-			depth: text.position.z(),
-			order: text.id,
-			position: [text.position.x(), text.position.y()],
-			size: [text.size.x(), text.size.y()],
-			clip: draw_clip_from_geometry(text.clip),
-			clip_mask: draw_clip_mask_from_layout(text.clip_mask, text.rotation),
+			depth: text.placement.position.z(),
+			order: text.placement.id,
+			position: [text.placement.position.x(), text.placement.position.y()],
+			size: [text.placement.size.x(), text.placement.size.y()],
+			clip: draw_clip_from_geometry(text.placement.clip),
+			clip_mask: draw_clip_mask_from_layout(text.placement.clip_mask, text.placement.rotation),
 			color,
-			font_size: text.font_size * text.scale,
+			font_size: text.font_size * text.placement.scale[0].min(text.placement.scale[1]),
 			text: String::new(),
 		};
 		if let Some(previous) = draw_list.texts.get_mut(text_count) {

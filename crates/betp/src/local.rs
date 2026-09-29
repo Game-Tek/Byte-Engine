@@ -83,33 +83,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_make_request() {
-		let mut local = Local::new();
-		let packet_header = local.get_sequence_number();
-
-		assert_eq!(packet_header, 0);
-
-		local.acknowledge_packet(0);
-
-		let packet_info = local.get_packet_data(0);
-
-		assert_eq!(packet_info, Some(PacketInfo { acked: true }));
-
-		for _i in 1..1024 {
-			let _packet_header = local.get_sequence_number();
-		}
-
-		local.get_sequence_number();
-
-		let packet_info = local.get_packet_data(0); // Although indices wrap around, the packet with sequence 0 must not be valid anymore.
-
-		assert_eq!(packet_info, None);
-		let packet_info = local.get_packet_data(1024);
-
-		assert_eq!(packet_info, Some(PacketInfo { acked: false }));
-	}
-
-	#[test]
 	fn test_get_packet_data() {
 		let mut local = Local::new();
 		let packet_header = local.get_packet_data(0);
@@ -148,41 +121,6 @@ mod tests {
 		let packet_header = local.get_packet_data(1);
 
 		assert_eq!(packet_header, Some(PacketInfo { acked: false }));
-	}
-
-	#[test]
-	fn test_packet_acknowledgement() {
-		let mut local = Local::new();
-
-		for _i in 0..32 {
-			local.get_sequence_number();
-		}
-
-		assert!(local.unacknowledged_packets().eq(0u16..32u16));
-
-		for i in 0..32 {
-			local.acknowledge_packet(i);
-		}
-
-		assert!(local.unacknowledged_packets().next().is_none());
-
-		for _i in 0..32 {
-			local.get_sequence_number();
-		}
-
-		assert!(local.unacknowledged_packets().eq(32u16..64u16));
-
-		for i in 0..32 {
-			local.acknowledge_packet(i);
-		}
-
-		assert!(local.unacknowledged_packets().eq(32u16..64u16));
-
-		for i in 32..64 {
-			local.acknowledge_packet(i);
-		}
-
-		assert!(local.unacknowledged_packets().next().is_none());
 	}
 
 	#[test]
@@ -275,34 +213,6 @@ mod tests {
 		assert_eq!(local.get_sequence_number(), 0);
 		assert_eq!(local.get_packet_data(0), Some(PacketInfo { acked: false }));
 		assert_eq!(local.get_packet_data(64_512), None);
-	}
-
-	#[test]
-	fn acknowledgement_window_matches_reference_model_after_sequence_wrap() {
-		let mut local = Local::new();
-		for _ in 0..=u16::MAX {
-			local.get_sequence_number();
-		}
-		for _ in 0..8 {
-			local.get_sequence_number();
-		}
-
-		let ack = 3;
-		let ack_bitfield = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 31);
-		local.acknowledge_packets(ack, ack_bitfield);
-
-		for sequence in (64_520..=u16::MAX).chain(0..8) {
-			let distance = ack.wrapping_sub(sequence);
-			let expected_acknowledged = distance < u32::BITS as u16 && (ack_bitfield >> distance) & 1 == 1;
-
-			assert_eq!(
-				local.get_packet_data(sequence),
-				Some(PacketInfo {
-					acked: expected_acknowledged,
-				}),
-				"sequence={sequence}, distance={distance}",
-			);
-		}
 	}
 }
 

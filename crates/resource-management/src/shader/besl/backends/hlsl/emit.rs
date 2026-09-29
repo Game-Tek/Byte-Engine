@@ -54,8 +54,9 @@ impl Generator {
 
 			formatting.push_indentation(string, 1);
 			let format = format.borrow();
-			let type_name = Self::translate_type(format.get_name().unwrap());
-			if Self::is_integer_type(type_name) {
+			let besl_type = format.get_name().unwrap();
+			let type_name = Self::translate_type(besl_type);
+			if is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str(type_name);
@@ -66,83 +67,6 @@ impl Generator {
 			formatting.push_statement_end(string);
 		}
 		self.emit_struct_declaration_end(string);
-	}
-
-	/// Reports whether one reachable AST branch uses the requested intrinsic.
-	pub(crate) fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
-		match node.borrow().node() {
-			besl::Nodes::Function { statements, .. } => statements
-				.iter()
-				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
-				.branch_children()
-				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				Self::uses_intrinsic(initializer, intrinsic_name)
-					|| Self::uses_intrinsic(condition, intrinsic_name)
-					|| Self::uses_intrinsic(update, intrinsic_name)
-					|| statements
-						.iter()
-						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
-			}
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::IntrinsicCall {
-					intrinsic, arguments, ..
-				} => {
-					intrinsic.borrow().get_name() == Some(intrinsic_name)
-						|| arguments
-							.iter()
-							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
-				}
-				besl::Expressions::Operator { left, right, .. } => {
-					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
-				}
-				besl::Expressions::FunctionCall { parameters, .. } => parameters
-					.iter()
-					.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name)),
-				besl::Expressions::Expression { elements } => {
-					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
-				}
-				besl::Expressions::Macro { body, .. } => Self::uses_intrinsic(body, intrinsic_name),
-				besl::Expressions::Member { source, .. } => Self::uses_intrinsic(source, intrinsic_name),
-				besl::Expressions::Return { value } => value
-					.as_ref()
-					.is_some_and(|value| Self::uses_intrinsic(value, intrinsic_name)),
-				besl::Expressions::Accessor { left, right } => {
-					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
-				}
-				besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. }
-				| besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard => false,
-			},
-			_ => false,
-		}
-	}
-
-	/// Reports whether reachable code uses one of BESL's compute-only subgroup operations.
-	pub(crate) fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-		const SUBGROUP_INTRINSICS: [&str; 8] = [
-			"subgroup_lane_index",
-			"subgroup_ballot",
-			"subgroup_ballot_any",
-			"subgroup_ballot_find_lsb",
-			"subgroup_ballot_count",
-			"subgroup_ballot_and_not",
-			"subgroup_broadcast_u32",
-			"subgroup_broadcast_f32",
-		];
-		order.iter().any(|node| {
-			SUBGROUP_INTRINSICS
-				.iter()
-				.any(|intrinsic| Self::uses_intrinsic(node, intrinsic))
-		})
 	}
 
 	/// Recovers an indexed mesh-output declaration so HLSL can address its primitive structure field.
@@ -197,7 +121,8 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			let format = format.borrow();
-			let type_name = Self::translate_type(format.get_name().unwrap());
+			let besl_type = format.get_name().unwrap();
+			let type_name = Self::translate_type(besl_type);
 			if self.current_stage == HlslStage::Vertex && crate::shader::generator::is_vertex_builtin_input(name) {
 				string.push_str(type_name);
 				string.push(' ');
@@ -210,7 +135,7 @@ impl Generator {
 				has_previous_parameter = true;
 				continue;
 			}
-			if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+			if self.current_stage_interpolates_inputs && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str(type_name);
@@ -236,8 +161,9 @@ impl Generator {
 				self.emit_separator(string);
 			}
 			let format = format.borrow();
-			let type_name = Self::translate_type(format.get_name().unwrap());
-			if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+			let besl_type = format.get_name().unwrap();
+			let type_name = Self::translate_type(besl_type);
+			if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
 				string.push_str("nointerpolation ");
 			}
 			string.push_str("out ");

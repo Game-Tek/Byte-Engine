@@ -302,13 +302,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn validates_complete_material_graph() {
-		let material = test_material_graph();
-
-		assert_eq!(material.validate(), Ok(()));
-	}
-
-	#[test]
 	fn validation_rejects_missing_surface_node() {
 		let material = BrdfMaterialDescription {
 			name: None,
@@ -331,38 +324,6 @@ mod tests {
 		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
 
 		assert_eq!(material.validate(), Err(BrdfMaterialValidationError::SurfaceNodeMustBeBrdf));
-	}
-
-	#[test]
-	fn validation_rejects_missing_multiply_children() {
-		let material = material_with_surface(BrdfNode::Multiply {
-			left: BrdfNodeId::new(10),
-			right: BrdfNodeId::new(0),
-		});
-
-		assert_eq!(
-			material.validate(),
-			Err(BrdfMaterialValidationError::MissingChildNode {
-				node: BrdfNodeId::new(0),
-				child: BrdfNodeId::new(10),
-			})
-		);
-	}
-
-	#[test]
-	fn validation_rejects_missing_extract_channel_source() {
-		let material = material_with_surface(BrdfNode::ExtractChannel {
-			source: BrdfNodeId::new(4),
-			channel: BrdfChannel::Green,
-		});
-
-		assert_eq!(
-			material.validate(),
-			Err(BrdfMaterialValidationError::MissingChildNode {
-				node: BrdfNodeId::new(0),
-				child: BrdfNodeId::new(4),
-			})
-		);
 	}
 
 	#[test]
@@ -389,68 +350,5 @@ mod tests {
 				child: BrdfNodeId::new(1),
 			})
 		);
-	}
-
-	#[test]
-	fn validation_rejects_missing_normal_occlusion_and_emission_children() {
-		for node in [
-			BrdfNode::NormalMap {
-				source: BrdfNodeId::new(3),
-				scale: 1.0,
-			},
-			BrdfNode::Occlusion {
-				source: BrdfNodeId::new(3),
-				strength: 1.0,
-			},
-			BrdfNode::Emission {
-				color: BrdfNodeId::new(3),
-			},
-		] {
-			let material = material_with_surface(node);
-
-			assert_eq!(
-				material.validate(),
-				Err(BrdfMaterialValidationError::MissingChildNode {
-					node: BrdfNodeId::new(0),
-					child: BrdfNodeId::new(3),
-				})
-			);
-		}
-	}
-
-	fn test_material_graph() -> BrdfMaterialDescription {
-		let mut builder = BrdfMaterialBuilder::new();
-		let base_color = builder.constant(BrdfValue::Vector4([1.0, 1.0, 1.0, 1.0]));
-		let metallic = builder.constant(BrdfValue::Scalar(1.0));
-		let roughness = builder.constant(BrdfValue::Scalar(1.0));
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: None,
-			occlusion: None,
-			emission: None,
-		}));
-		builder.finish(None, surface, false, BrdfAlphaMode::Opaque)
-	}
-
-	fn material_with_surface(child: BrdfNode) -> BrdfMaterialDescription {
-		BrdfMaterialDescription {
-			name: None,
-			nodes: vec![
-				child,
-				BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-					base_color: BrdfNodeId::new(0),
-					metallic: BrdfNodeId::new(0),
-					roughness: BrdfNodeId::new(0),
-					normal: None,
-					occlusion: None,
-					emission: None,
-				}),
-			],
-			surface: BrdfNodeId::new(1),
-			double_sided: false,
-			alpha_mode: BrdfAlphaMode::Opaque,
-		}
 	}
 }

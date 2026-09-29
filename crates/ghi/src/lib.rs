@@ -114,10 +114,14 @@ use smallvec::SmallVec;
 pub use types::{
 	AccessPolicies, BufferCopyDescriptor, BufferDescriptor, BufferImageCopyDescriptor, BufferStridedRange, ChannelBitSize,
 	ChannelLayout, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, SamplerAddressingModes,
-	SamplingReductionModes, ShaderTypes, Size, Stages, UseCases, Uses, WorkloadTypes,
+	SamplingReductionModes, ShaderTypes, Size, Stages, TEXTURE_COPY_PITCH_ALIGNMENT, UseCases, Uses, WorkloadTypes,
+	aligned_copy_pitches,
 };
 
-pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
+/// The most frames a context keeps in flight, and so the most per-frame copies a dynamic resource has.
+///
+/// Rewrite a dynamic buffer this many frames in a row to reach every copy.
+pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
 
 #[cfg(debug_assertions)]
 #[inline]
@@ -168,7 +172,10 @@ mod scissor_tests {
 
 #[cfg(target_os = "windows")]
 pub(crate) use implementation::Binding;
+// Metal chains these through `ResourceCollection`; the other backends link them with `Next`.
+#[cfg(not(target_os = "macos"))]
 pub(crate) use implementation::DescriptorSet;
+#[cfg(not(target_os = "macos"))]
 pub(crate) use implementation::Synchronizer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

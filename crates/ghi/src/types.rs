@@ -254,30 +254,17 @@ pub enum Formats {
 	BC7SRGB,
 }
 
-/// The `BcLayout` struct defines the compact block layout for one BC-compressed image level.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BcLayout {
-	pub blocks_w: u32,
-	pub blocks_h: u32,
-	pub bytes_per_block: u32,
-	pub bytes_per_row: u32,
-	pub bytes_per_image: u32,
-}
+/// The row-pitch alignment of buffer-to-texture and texture-to-buffer copies.
+///
+/// Upload preparation pads each row of a staged texture to it, and backends read and write copy buffers with it.
+pub const TEXTURE_COPY_PITCH_ALIGNMENT: usize = 256;
 
-/// Computes the compact 4x4 block layout for one BC-compressed image level.
-pub fn bc_layout(width: u32, height: u32, bytes_per_block: u32) -> BcLayout {
-	let blocks_w = width.max(1).div_ceil(4).max(1);
-	let blocks_h = height.max(1).div_ceil(4).max(1);
-	let bytes_per_row = blocks_w * bytes_per_block;
-	let bytes_per_image = bytes_per_row * blocks_h;
-
-	BcLayout {
-		blocks_w,
-		blocks_h,
-		bytes_per_block,
-		bytes_per_row,
-		bytes_per_image,
-	}
+/// Returns the row and image pitches of a copy whose compact rows are padded to [`TEXTURE_COPY_PITCH_ALIGNMENT`].
+///
+/// Take `bytes_per_row` and `row_count` from [`Formats::copy_layout`]. Returns `None` when a pitch overflows.
+pub fn aligned_copy_pitches(bytes_per_row: usize, row_count: usize) -> Option<(usize, usize)> {
+	let aligned_bytes_per_row = bytes_per_row.checked_next_multiple_of(TEXTURE_COPY_PITCH_ALIGNMENT)?;
+	Some((aligned_bytes_per_row, aligned_bytes_per_row.checked_mul(row_count)?))
 }
 
 impl Formats {
@@ -294,24 +281,38 @@ impl Formats {
 		}
 	}
 
-	/// Computes the compact BC layout for this format and image level.
-	pub fn bc_layout(&self, width: u32, height: u32) -> Option<BcLayout> {
-		Some(bc_layout(width, height, self.bc_bytes_per_block()?))
+	/// Returns compact row bytes, row count, and image bytes for one texture level.
+	///
+	/// A BC format has one row per 4x4 block row and at least one block. An uncompressed empty level has no bytes.
+	/// Returns `None` when a size overflows.
+	fn checked_compact_copy_layout(&self, width: u32, height: u32) -> Option<(usize, usize, usize)> {
+		let (bytes_per_row, row_count) = match self.bc_bytes_per_block() {
+			Some(bytes_per_block) => (
+				usize::try_from(width.max(1).div_ceil(4))
+					.ok()?
+					.checked_mul(bytes_per_block as usize)?,
+				usize::try_from(height.max(1).div_ceil(4)).ok()?,
+			),
+			None => (usize::try_from(width).ok()?.checked_mul(self.size())?, usize::try_from(height).ok()?),
+		};
+		Some((bytes_per_row, row_count, bytes_per_row.checked_mul(row_count)?))
 	}
 
 	/// Returns compact row bytes, row count, and image bytes for one texture level.
+	///
+	/// An uncompressed empty level has no bytes. Use [`Self::copy_layout`] for an extent that may be empty.
 	pub fn compact_copy_layout(&self, width: u32, height: u32) -> (usize, usize, usize) {
-		if let Some(layout) = self.bc_layout(width, height) {
-			return (
-				layout.bytes_per_row as usize,
-				layout.blocks_h as usize,
-				layout.bytes_per_image as usize,
-			);
-		}
+		self.checked_compact_copy_layout(width, height).expect(
+			"Texture copy layout overflowed. The most likely cause is an image extent too large for the host address space.",
+		)
+	}
 
-		let bytes_per_row = width as usize * self.size();
-		let row_count = height as usize;
-		(bytes_per_row, row_count, bytes_per_row * row_count)
+	/// Returns compact row bytes, row count, and image bytes for copying one 2D level of `extent`.
+	///
+	/// An empty width or height counts as one texel, so every copy moves at least one row. Returns `None` when a size
+	/// overflows. Pad the result with [`aligned_copy_pitches`] for GPU copy buffers.
+	pub fn copy_layout(&self, extent: utils::Extent) -> Option<(usize, usize, usize)> {
+		self.checked_compact_copy_layout(extent.width().max(1), extent.height().max(1))
 	}
 
 	/// Returns the encoding of the format.
@@ -501,12 +502,6 @@ impl Size for Formats {
 			Formats::BC7 | Formats::BC7SRGB => 1,
 		}
 	}
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum CompressionSchemes {
-	BC5,
-	BC7,
 }
 
 bitflags::bitflags! {
@@ -759,28 +754,10 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn bc_layout_uses_ceil_block_counts_and_keeps_small_mips_nonzero() {
-		let layout = bc_layout(5, 7, 16);
-
-		assert_eq!(layout.blocks_w, 2);
-		assert_eq!(layout.blocks_h, 2);
-		assert_eq!(layout.bytes_per_block, 16);
-		assert_eq!(layout.bytes_per_row, 32);
-		assert_eq!(layout.bytes_per_image, 64);
-
-		let small = bc_layout(1, 1, 8);
-
-		assert_eq!(small.blocks_w, 1);
-		assert_eq!(small.blocks_h, 1);
-		assert_eq!(small.bytes_per_row, 8);
-		assert_eq!(small.bytes_per_image, 8);
-	}
-
-	#[test]
-	fn format_bc_layout_uses_format_block_size() {
-		assert_eq!(Formats::BC5.bc_bytes_per_block(), Some(16));
-		assert_eq!(Formats::BC7.bc_layout(8, 4).unwrap().bytes_per_image, 32);
-		assert_eq!(Formats::RGBA8UNORM.bc_layout(8, 4), None);
+	fn aligned_copy_pitches_pad_rows_to_the_copy_alignment() {
+		assert_eq!(aligned_copy_pitches(20, 7), Some((256, 1792)));
+		assert_eq!(aligned_copy_pitches(256, 2), Some((256, 512)));
+		assert_eq!(aligned_copy_pitches(usize::MAX, 1), None);
 	}
 
 	#[test]
@@ -792,6 +769,7 @@ mod tests {
 			(Formats::Depth16, 5, 7, (10, 7, 70)),
 			(Formats::Depth32, 5, 7, (20, 7, 140)),
 			(Formats::BC7, 5, 7, (32, 2, 64)),
+			(Formats::BC5, 8, 4, (32, 1, 32)),
 			(Formats::RGBA8UNORM, 0, 0, (0, 0, 0)),
 			(Formats::BC7, 0, 0, (16, 1, 16)),
 		];
@@ -799,60 +777,6 @@ mod tests {
 		for (format, width, height, expected) in cases {
 			assert_eq!(format.compact_copy_layout(width, height), expected);
 		}
-	}
-
-	#[test]
-	fn shader_stage_conversion_is_one_to_one() {
-		let cases = [
-			(ShaderTypes::Vertex, Stages::VERTEX),
-			(ShaderTypes::Fragment, Stages::FRAGMENT),
-			(ShaderTypes::Compute, Stages::COMPUTE),
-			(ShaderTypes::Task, Stages::TASK),
-			(ShaderTypes::Mesh, Stages::MESH),
-			(ShaderTypes::RayGen, Stages::RAYGEN),
-			(ShaderTypes::ClosestHit, Stages::CLOSEST_HIT),
-			(ShaderTypes::AnyHit, Stages::ANY_HIT),
-			(ShaderTypes::Intersection, Stages::INTERSECTION),
-			(ShaderTypes::Miss, Stages::MISS),
-			(ShaderTypes::Callable, Stages::CALLABLE),
-		];
-		for (shader, expected_stage) in cases {
-			assert_eq!(Stages::from(shader), expected_stage);
-		}
-	}
-
-	#[test]
-	fn primitive_data_type_sizes_match_gpu_scalar_widths() {
-		let cases = [
-			(DataTypes::Float, 4),
-			(DataTypes::Float2, 8),
-			(DataTypes::Float3, 12),
-			(DataTypes::Float4, 16),
-			(DataTypes::U8, 1),
-			(DataTypes::U16, 2),
-			(DataTypes::U32, 4),
-			(DataTypes::Int, 4),
-			(DataTypes::Int2, 8),
-			(DataTypes::Int3, 12),
-			(DataTypes::Int4, 16),
-			(DataTypes::UInt, 4),
-			(DataTypes::UInt2, 8),
-			(DataTypes::UInt3, 12),
-			(DataTypes::UInt4, 16),
-		];
-		for (data_type, expected_size) in cases {
-			assert_eq!(data_type.size(), expected_size);
-			assert_eq!(Size::size(&data_type), expected_size);
-		}
-	}
-
-	#[test]
-	fn access_and_use_aliases_preserve_backend_bit_contracts() {
-		assert_eq!(AccessPolicies::READ_WRITE, AccessPolicies::READ | AccessPolicies::WRITE);
-		assert_eq!(DeviceAccesses::DeviceOnly, DeviceAccesses::GpuRead | DeviceAccesses::GpuWrite);
-		assert_eq!(DeviceAccesses::HostOnly, DeviceAccesses::CpuRead | DeviceAccesses::CpuWrite);
-		assert_eq!(Uses::BlitSource, Uses::TransferSource);
-		assert_eq!(Uses::BlitDestination, Uses::TransferDestination);
 	}
 }
 

@@ -1,16 +1,7 @@
-use math::{UnitVector, Vector};
+use math::Vector;
 use smallvec::SmallVec;
 
 use crate::physics::dynabit::{body::PhysicsBody, contact::Pair};
-
-/// The `Intersection` struct records a physics contact with world-space geometry.
-#[derive(Debug, Clone, Copy)]
-pub struct Intersection {
-	pub(crate) normal: UnitVector,
-	pub(crate) depth: f32,
-	pub(crate) point_on_a: math::Point,
-	pub(crate) point_on_b: math::Point,
-}
 
 /// The `PseudoBody` struct represents one sortable swept-bounds endpoint.
 pub struct PseudoBody {
@@ -152,7 +143,6 @@ mod tests {
 			position,
 			orientation: Orientation::identity(),
 			scale: math::Scale::identity(),
-			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),
 			inv_mass: 1.0,

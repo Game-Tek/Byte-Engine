@@ -238,14 +238,16 @@ impl<'a> Node<'a> {
 		make_function("main", Vec::new(), "void", statements)
 	}
 
-	pub fn binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+	/// Builds a resource binding. Pass [`Node::buffer`], [`Node::image`], or a `combined_*_image_sampler` builder as
+	/// `r#type`.
+	pub fn binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
 		Self::binding_with_count(name, r#type, slot, read, write, None, None)
 	}
 
 	/// Builds a buffer binding whose memory class is independent from its read and write access.
 	pub fn binding_in_memory(
 		name: &'a str,
-		r#type: Node<'a>,
+		r#type: BindingResource<'a>,
 		slot: u32,
 		read: bool,
 		write: bool,
@@ -255,7 +257,7 @@ impl<'a> Node<'a> {
 	}
 
 	/// Builds a buffer binding that stores thread-varying data in device memory.
-	pub fn device_buffer_binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+	pub fn device_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
 		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
 	}
 
@@ -280,13 +282,13 @@ impl<'a> Node<'a> {
 	}
 
 	/// Builds a buffer binding that stores dispatch-shared values in constant memory.
-	pub fn constant_buffer_binding(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
+	pub fn constant_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
 		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Constant)
 	}
 
 	fn binding_with_count(
 		name: &'a str,
-		r#type: Node<'a>,
+		r#type: BindingResource<'a>,
 		slot: u32,
 		read: bool,
 		write: bool,
@@ -296,7 +298,7 @@ impl<'a> Node<'a> {
 		Node {
 			node: Nodes::Binding {
 				name,
-				r#type: Box::new(r#type),
+				r#type,
 				slot,
 				read,
 				write,
@@ -306,7 +308,14 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn binding_array(name: &'a str, r#type: Node<'a>, slot: u32, read: bool, write: bool, count: u32) -> Node<'a> {
+	pub fn binding_array(
+		name: &'a str,
+		r#type: BindingResource<'a>,
+		slot: u32,
+		read: bool,
+		write: bool,
+		count: u32,
+	) -> Node<'a> {
 		let count = NonZeroUsize::new(count as usize).expect(
 			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
 		);
@@ -319,16 +328,14 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn buffer(name: &'a str, members: Vec<Node<'a>>) -> Node<'a> {
-		Node {
-			node: Nodes::Type { name, members },
-		}
+	/// Describes a buffer resource for [`Node::binding`] whose contents are `members`.
+	pub fn buffer(members: Vec<Node<'a>>) -> BindingResource<'a> {
+		BindingResource::Buffer { members }
 	}
 
-	pub fn image(format: &'a str) -> Node<'a> {
-		Node {
-			node: Nodes::Image { format },
-		}
+	/// Describes a storage image resource with texel `format` for [`Node::binding`].
+	pub fn image(format: &'a str) -> BindingResource<'a> {
+		BindingResource::Image { format }
 	}
 
 	pub fn push_constant(members: Vec<Node<'a>>) -> Node<'a> {
@@ -337,31 +344,27 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn combined_image_sampler() -> Node<'a> {
-		Node {
-			node: Nodes::CombinedImageSampler { format: "" },
+	/// Describes a sampled 2D texture resource for [`Node::binding`].
+	pub fn combined_image_sampler() -> BindingResource<'a> {
+		BindingResource::CombinedImageSampler { format: "" }
+	}
+
+	/// Describes a sampled layered 2D texture resource for [`Node::binding`].
+	pub fn combined_array_image_sampler() -> BindingResource<'a> {
+		BindingResource::CombinedImageSampler {
+			format: "ArrayTexture2D",
 		}
 	}
 
-	pub fn combined_array_image_sampler() -> Node<'a> {
-		Node {
-			node: Nodes::CombinedImageSampler {
-				format: "ArrayTexture2D",
-			},
-		}
+	/// Describes a sampled cube texture resource for [`Node::binding`].
+	pub fn combined_cube_image_sampler() -> BindingResource<'a> {
+		BindingResource::CombinedImageSampler { format: "TextureCube" }
 	}
 
-	pub fn combined_cube_image_sampler() -> Node<'a> {
-		Node {
-			node: Nodes::CombinedImageSampler { format: "TextureCube" },
-		}
-	}
-
-	pub fn combined_cube_array_image_sampler() -> Node<'a> {
-		Node {
-			node: Nodes::CombinedImageSampler {
-				format: "TextureCubeArray",
-			},
+	/// Describes a sampled cube-array texture resource for [`Node::binding`].
+	pub fn combined_cube_array_image_sampler() -> BindingResource<'a> {
+		BindingResource::CombinedImageSampler {
+			format: "TextureCubeArray",
 		}
 	}
 
@@ -402,10 +405,21 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn operator(name: &'a str, left: Node<'a>, right: Node<'a>) -> Node<'a> {
+	/// Builds `left token right`, where `token` is a BESL operator such as `+` or `=`.
+	///
+	/// # Panics
+	///
+	/// Panics if `token` is not a BESL operator. The most likely cause is a generator that spelled an operator BESL
+	/// does not define, such as `^`.
+	pub fn operator(token: &str, left: Node<'a>, right: Node<'a>) -> Node<'a> {
+		let operator = crate::Operators::from_token(token).unwrap_or_else(|| {
+			panic!(
+				"Invalid BESL operator `{token}`. The most likely cause is a generator that spelled an operator BESL does not define."
+			)
+		});
 		Node {
 			node: Nodes::Expression(Expressions::Operator {
-				name,
+				operator,
 				left: Box::new(left),
 				right: Box::new(right),
 			}),
@@ -494,15 +508,6 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn literal(name: &'a str, body: Node<'a>) -> Node<'a> {
-		Node {
-			node: Nodes::Literal {
-				name,
-				body: Box::new(body),
-			},
-		}
-	}
-
 	pub fn input(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
 		Node {
 			node: Nodes::Input { name, format, location },
@@ -560,10 +565,6 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn null() -> Node<'a> {
-		Node { node: Nodes::Null }
-	}
-
 	pub fn parameter(name: &'a str, r#type: impl Into<TypeName<'a>>) -> Node<'a> {
 		Node {
 			node: Nodes::Parameter {
@@ -598,13 +599,9 @@ impl<'a> Node<'a> {
 			Nodes::Binding { name, .. } => Some(name),
 			Nodes::Descriptor { name, .. } => Some(name),
 			Nodes::Specialization { name, .. } => Some(name),
-			Nodes::Type { name, .. } => Some(name),
-			Nodes::Image { .. } => None,
-			Nodes::CombinedImageSampler { .. } => None,
 			Nodes::Expression(_) => None,
 			Nodes::RawCode { .. } => None,
 			Nodes::Intrinsic { name, .. } => Some(name),
-			Nodes::Literal { name, .. } => Some(name),
 			Nodes::Parameter { name, .. } => Some(name),
 			Nodes::PushConstant { .. } => None,
 			Nodes::Input { name, .. }
@@ -612,7 +609,6 @@ impl<'a> Node<'a> {
 			| Nodes::TaskPayload { name, .. }
 			| Nodes::Workgroup { name, .. } => Some(name),
 			Nodes::Const { name, .. } => Some(name),
-			Nodes::Null => None,
 		}
 	}
 
@@ -664,10 +660,20 @@ impl<'a> Node<'a> {
 	}
 }
 
+/// The `BindingResource` enum describes what a [`Nodes::Binding`] built by engine code gives shaders access to, so
+/// the lexer can link every binding kind in one place.
+#[derive(Clone, Debug)]
+pub enum BindingResource<'a> {
+	/// A buffer whose contents are `members`, which shaders read through the binding name.
+	Buffer { members: Vec<Node<'a>> },
+	/// A storage image with texel `format`.
+	Image { format: &'a str },
+	/// A sampled texture. `format` names the texture shape, or is empty for a 2D texture.
+	CombinedImageSampler { format: &'a str },
+}
+
 #[derive(Clone, Debug)]
 pub enum Nodes<'a> {
-	/// A placeholder for syntax that does not yet have a specialized node.
-	Null,
 	/// A named group of BESL declarations, similar to a Rust module.
 	Scope {
 		/// The name used for imports and namespaces.
@@ -708,10 +714,10 @@ pub enum Nodes<'a> {
 		update: Box<Node<'a>>,
 		statements: Vec<Node<'a>>,
 	},
-	/// A shader resource binding declaration.
+	/// A shader resource binding built by engine code. Source declares resources as [`Nodes::Descriptor`].
 	Binding {
 		name: &'a str,
-		r#type: Box<Node<'a>>,
+		r#type: BindingResource<'a>,
 		slot: u32,
 		read: bool,
 		write: bool,
@@ -738,17 +744,6 @@ pub enum Nodes<'a> {
 	/// A small constant buffer updated during rendering.
 	PushConstant {
 		members: Vec<Node<'a>>,
-	},
-	/// An abstract type declaration, such as the declaration for `f32`.
-	Type {
-		name: &'a str,
-		members: Vec<Node<'a>>,
-	},
-	Image {
-		format: &'a str,
-	},
-	CombinedImageSampler {
-		format: &'a str,
 	},
 	Expression(Expressions<'a>),
 	RawCode {
@@ -786,10 +781,6 @@ pub enum Nodes<'a> {
 		format: &'a str,
 		count: Option<NonZeroUsize>,
 	},
-	Literal {
-		name: &'a str,
-		body: Box<Node<'a>>,
-	},
 	Parameter {
 		name: &'a str,
 		r#type: TypeName<'a>,
@@ -823,7 +814,7 @@ pub enum Expressions<'a> {
 		parameters: Vec<Node<'a>>,
 	},
 	Operator {
-		name: &'a str,
+		operator: crate::Operators,
 		left: Box<Node<'a>>,
 		right: Box<Node<'a>>,
 	},
@@ -872,7 +863,7 @@ pub(super) enum Atoms<'a> {
 		parameters: Vec<Vec<Atoms<'a>>>,
 	},
 	Operator {
-		name: &'a str,
+		operator: crate::Operators,
 	},
 	VariableDeclaration {
 		name: &'a str,
@@ -964,27 +955,7 @@ impl Precedence for Atoms<'_> {
 			Atoms::Literal { .. } => 0,
 			Atoms::RecordLiteral { .. } => 0,
 			Atoms::FunctionCall { .. } => 0,
-			Atoms::Operator { name } => match *name {
-				"=" => 8,
-				"||" => 7,
-				"&&" => 6,
-				"|" => 7,
-				"&" => 6,
-				"==" => 5,
-				"!=" => 5,
-				"<" => 5,
-				">" => 5,
-				"<=" => 5,
-				">=" => 5,
-				"<<" => 4,
-				">>" => 4,
-				"+" => 3,
-				"-" => 3,
-				"*" => 2,
-				"/" => 2,
-				"%" => 2,
-				_ => 0,
-			},
+			Atoms::Operator { operator } => operator.precedence(),
 			Atoms::VariableDeclaration { .. } => 0,
 		}
 	}
@@ -996,5 +967,8 @@ pub(super) type FeatureParserResult<'i, 'a> = Result<(Node<'a>, std::slice::Iter
 /// A function that tries to parse a token sequence.
 pub(super) type FeatureParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a>;
 
-pub(super) type ExpressionParserResult<'i, 'a> = Result<(Vec<Atoms<'a>>, std::slice::Iter<'i, &'a str>), ParsingFailReasons>;
-pub(super) type ExpressionParser<'i, 'a> = fn(std::slice::Iter<'i, &'a str>, Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;
+/// The result of an expression parser: where it stopped reading tokens.
+pub(super) type ExpressionParserResult<'i, 'a> = Result<std::slice::Iter<'i, &'a str>, ParsingFailReasons>;
+/// A function that tries to parse expression tokens, appending the atoms it reads to the accumulator.
+pub(super) type ExpressionParser<'i, 'a> =
+	fn(std::slice::Iter<'i, &'a str>, &mut Vec<Atoms<'a>>) -> ExpressionParserResult<'i, 'a>;

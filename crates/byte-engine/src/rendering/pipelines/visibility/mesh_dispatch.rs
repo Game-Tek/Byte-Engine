@@ -64,14 +64,6 @@ impl MeshDispatch {
 	pub(crate) fn work_item_base(self) -> u32 {
 		self.work_item_base
 	}
-
-	#[cfg(test)]
-	pub(crate) fn with_workgroup_count(workgroup_count: u32) -> Self {
-		Self {
-			work_item_base: 0,
-			workgroup_count,
-		}
-	}
 }
 
 /// The `PhaseDispatches` struct groups the frame's work ranges by the raster phase that consumes them.

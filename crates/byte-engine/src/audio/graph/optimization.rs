@@ -31,8 +31,8 @@ fn eliminate_identity_nodes(graph: &mut AudioGraph) {
 		debug_assert_ne!(removed, replacement);
 		graph.nodes.remove(removed.0);
 
-		for node in &mut graph.nodes {
-			node.reconnect_after_removal(removed, replacement);
+		for input in graph.nodes.iter_mut().flat_map(|node| node.inputs_mut()) {
+			reconnect_id_after_removal(input, removed, replacement);
 		}
 		reconnect_id_after_removal(&mut graph.output, removed, replacement);
 	}
@@ -45,29 +45,5 @@ fn reconnect_id_after_removal(id: &mut AudioNodeId, removed: AudioNodeId, replac
 	}
 	if id.0 > removed.0 {
 		id.0 -= 1;
-	}
-}
-
-impl AudioNode {
-	/// Reconnects every input after an intermediate node is removed.
-	fn reconnect_after_removal(&mut self, removed: AudioNodeId, replacement: AudioNodeId) {
-		match self {
-			Self::Sample { .. } => {}
-			Self::RoundRobin(node) => {
-				for input in &mut node.inputs {
-					reconnect_id_after_removal(input, removed, replacement);
-				}
-			}
-			Self::Random(node) => {
-				for input in &mut node.inputs {
-					reconnect_id_after_removal(input, removed, replacement);
-				}
-			}
-			Self::Loop { input }
-			| Self::Gain { input, .. }
-			| Self::Varispeed { input, .. }
-			| Self::PitchShift { input, .. } => reconnect_id_after_removal(input, removed, replacement),
-			Self::Custom(input, _) => reconnect_id_after_removal(input, removed, replacement),
-		}
 	}
 }

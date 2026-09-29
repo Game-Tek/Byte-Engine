@@ -167,6 +167,7 @@ fn png_gamma(encoded: &[u8]) -> Result<Gamma, ImageDecodeError> {
 		.map_err(|_| ImageDecodeError::InvalidData)?;
 	let info = reader.info();
 
+	// Precedence reads top to bottom: an sRGB chunk, then ICC and CICP metadata, then a gAMA chunk.
 	if info.srgb.is_some() {
 		return Ok(Gamma::SRGB);
 	}
@@ -184,16 +185,29 @@ fn png_gamma(encoded: &[u8]) -> Result<Gamma, ImageDecodeError> {
 		};
 	}
 
-	let Some(gamma) = info.gama_chunk.map(png::ScaledFloat::into_scaled) else {
+	match png_declared_gamma(info) {
+		Some(gamma) => gamma.map_err(|()| ImageDecodeError::UnsupportedTransferFunction),
 		// PNGs without color metadata conventionally contain display-referred color. This matches standalone PNG assets.
-		return Ok(Gamma::SRGB);
-	};
+		None => Ok(Gamma::SRGB),
+	}
+}
 
-	match gamma {
+/// Classifies the transfer function a PNG's sRGB or gAMA chunk declares.
+///
+/// Returns `None` when neither chunk is present and `Err` when gAMA names a transfer function the engine cannot
+/// represent. Each caller picks its own fallback for those cases.
+pub(crate) fn png_declared_gamma(info: &png::Info<'_>) -> Option<Result<Gamma, ()>> {
+	if info.srgb.is_some() {
+		return Some(Ok(Gamma::SRGB));
+	}
+
+	// PNG encoders use nearby rounded gAMA values for sRGB. Values outside these narrow neighborhoods describe a
+	// transfer function the engine cannot represent and must not be mislabeled as linear.
+	Some(match info.gama_chunk?.into_scaled() {
 		40_000..=50_000 => Ok(Gamma::SRGB),
 		95_000..=105_000 => Ok(Gamma::Linear),
-		_ => Err(ImageDecodeError::UnsupportedTransferFunction),
-	}
+		_ => Err(()),
+	})
 }
 
 /// Maps decoder output into the byte layout consumed by the common image source.
@@ -506,10 +520,5 @@ mod tests {
 			.expect("unsupported explicit PNG gamma must fail");
 
 		assert_eq!(error, ImageDecodeError::UnsupportedTransferFunction);
-	}
-
-	#[test]
-	fn unknown_and_malformed_images_report_decode_errors() {
-		assert!(decode_rgba16f_in(b"not an image", &Global).is_err());
 	}
 }

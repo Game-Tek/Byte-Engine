@@ -33,20 +33,19 @@ use std::{
 use ghi::context::ContextCreate as _;
 use resource_management::{
 	Reference,
-	resource::{ReadTargets, ReadTargetsMut},
+	resource::ReadTargets,
 	resources::mesh::Mesh as ResourceMesh,
 	types::{IndexStreamTypes, Streams, VertexSemantics},
 };
 use smallvec::smallvec;
 
 use crate::{
-	core::{EntityHandle, factory::Handle},
+	core::EntityHandle,
 	rendering::{
 		loading::{BufferRegion, LoadError, LoadPipeline, Loader, LoaderClient, LoaderLane, spawn},
-		mesh::generator::MeshGenerator,
+		mesh::generator::{GeneratedIndexError, MeshGenerator, validate_triangle_indices},
 		renderable::mesh::{MeshKey, MeshSource},
 		resource_loading::{StagingLease, UploadStagingArena},
-		utils::{AddMeshResponse, InstanceBatch, MeshBuffersStats, MeshStats},
 	},
 };
 
@@ -70,10 +69,14 @@ struct PreparedSimpleMesh {
 	index_count: usize,
 }
 
-/// The `ResidentSimpleMesh` struct identifies geometry whose loader transfer has completed.
+/// The `ResidentSimpleMesh` struct locates geometry whose loader transfer has completed, so scene instances can draw it.
+///
+/// Distinct meshes never share a range, so equal values name the same mesh.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResidentSimpleMesh {
-	mesh_id: usize,
+	pub(super) index_count: usize,
+	pub(super) base_vertex: usize,
+	pub(super) base_index: usize,
 }
 
 /// The `SimpleLoader` struct owns all resource loading and GPU placement for the Simple pipeline.
@@ -156,30 +159,32 @@ impl LoadPipeline for SimpleLoader {
 			BufferRegion {
 				offset: prepared.positions.start,
 				destination: self.vertex_positions,
-				destination_offset: mesh.vertex_offset() * POSITION_STRIDE,
+				destination_offset: mesh.base_vertex * POSITION_STRIDE,
 				size: prepared.positions.len(),
 			},
 			BufferRegion {
 				offset: prepared.indices.start,
 				destination: self.indices,
-				destination_offset: mesh.index_offset() * INDEX_STRIDE,
+				destination_offset: mesh.base_index * INDEX_STRIDE,
 				size: prepared.indices.len(),
 			},
 		];
 		lane.upload(prepared.staging, [], regions).await?;
-		Ok(ResidentSimpleMesh { mesh_id: mesh.id() })
+		Ok(mesh)
 	}
 }
 
-/// The `SimpleResourceStore` struct centralizes Simple's GPU placement and scene-instance allocation policy.
+/// The `SimpleResourceStore` struct centralizes Simple's GPU placement policy for the loader lanes.
 ///
 /// Simple chooses fixed, append-only parallel position and index buffers. Loader
-/// lanes reserve mesh ranges while the render thread uses the same store for
-/// scene instances and draw batches.
+/// lanes reserve mesh ranges here; scene instances belong to the pipeline manager.
 pub(crate) struct SimpleResourceStore {
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; SIMPLE_INDEX_CAPACITY]>,
-	mesh_buffers_stats: MeshBuffersStats<Handle>,
+	/// The first free vertex of the position buffer.
+	vertex_cursor: usize,
+	/// The first free index of the index buffer.
+	index_cursor: usize,
 }
 
 impl SimpleResourceStore {
@@ -201,57 +206,34 @@ impl SimpleResourceStore {
 		Self {
 			vertex_positions_buffer,
 			indices_buffer,
-			mesh_buffers_stats: MeshBuffersStats::default(),
+			vertex_cursor: 0,
+			index_cursor: 0,
 		}
 	}
 
-	/// Creates one scene instance after its mesh upload is visible to rendering.
-	///
-	/// Call this only for a [`ResidentSimpleMesh`] returned by the loader.
-	pub(crate) fn add_instance(&mut self, mesh: &ResidentSimpleMesh, handle: Handle) -> utils::StableVecHandle {
-		self.mesh_buffers_stats.add_instance(mesh.mesh_id, handle)
-	}
-
-	/// Returns the renderer-local instance slot for one scene handle.
-	pub(crate) fn instance_id(&self, handle: Handle) -> Option<utils::StableVecHandle> {
-		self.mesh_buffers_stats.get_instance_id(handle)
-	}
-
-	/// Releases one scene instance without moving other instance slots.
-	pub(crate) fn remove_instance(&mut self, instance: utils::StableVecHandle) {
-		self.mesh_buffers_stats.remove_instance(instance);
-	}
-
-	/// Groups live instances into frame-allocated draws over the renderer's mesh offsets.
-	///
-	/// This is the return path from resident storage into Simple's draw builder.
-	pub(crate) fn instance_batches_in<'a>(&self, allocator: &'a bumpalo::Bump) -> Vec<InstanceBatch, &'a bumpalo::Bump> {
-		self.mesh_buffers_stats.get_instance_batches_in(allocator)
-	}
-}
-
-impl SimpleResourceStore {
 	/// Reserves room for one mesh in Simple's parallel position and index streams.
 	///
-	/// Both capacities are checked before allocation metadata changes. The loader publishes the mesh only after its
+	/// Both capacities are checked before either cursor moves. The loader publishes the mesh only after its
 	/// copies into the returned ranges completed.
-	fn reserve_mesh(&mut self, vertex_count: usize, index_count: usize) -> Result<AddMeshResponse, SimpleMeshError> {
-		let vertex_offset = self.mesh_buffers_stats.vertex_offset();
-		let index_offset = self.mesh_buffers_stats.index_offset();
-		if vertex_offset
+	fn reserve_mesh(&mut self, vertex_count: usize, index_count: usize) -> Result<ResidentSimpleMesh, SimpleMeshError> {
+		let vertex_end = self
+			.vertex_cursor
 			.checked_add(vertex_count)
-			.is_none_or(|end| end > SIMPLE_VERTEX_CAPACITY)
-		{
-			return Err(SimpleMeshError::VertexCapacity);
-		}
-		if index_offset
+			.filter(|end| *end <= SIMPLE_VERTEX_CAPACITY)
+			.ok_or(SimpleMeshError::VertexCapacity)?;
+		let index_end = self
+			.index_cursor
 			.checked_add(index_count)
-			.is_none_or(|end| end > SIMPLE_INDEX_CAPACITY)
-		{
-			return Err(SimpleMeshError::IndexCapacity);
-		}
-
-		Ok(self.mesh_buffers_stats.add_mesh(MeshStats::new(vertex_count, index_count)))
+			.filter(|end| *end <= SIMPLE_INDEX_CAPACITY)
+			.ok_or(SimpleMeshError::IndexCapacity)?;
+		let mesh = ResidentSimpleMesh {
+			index_count,
+			base_vertex: self.vertex_cursor,
+			base_index: self.index_cursor,
+		};
+		self.vertex_cursor = vertex_end;
+		self.index_cursor = index_end;
+		Ok(mesh)
 	}
 }
 
@@ -320,7 +302,7 @@ fn resource_mesh_layout(mesh: &ResourceMesh) -> Result<ResourceMeshLayout, Simpl
 		|| mesh
 			.primitives
 			.iter()
-			.any(|primitive| primitive.transform_node.is_some() || primitive.skin.is_some() || primitive.quantization.is_some())
+			.any(|primitive| primitive.transform_node.is_some() || primitive.skin.is_some())
 	{
 		return Err(SimpleMeshError::UnsupportedMeshFeatures);
 	}
@@ -391,17 +373,14 @@ async fn prepare_generated_mesh(
 ) -> Result<PreparedSimpleMesh, SimpleMeshError> {
 	let positions = generator.positions();
 	let source_indices = generator.indices();
-	if !source_indices.len().is_multiple_of(3) {
-		return Err(SimpleMeshError::InvalidIndexStream);
-	}
+	validate_triangle_indices(&source_indices, positions.len()).map_err(|error| match error {
+		GeneratedIndexError::NotTriangles => SimpleMeshError::InvalidIndexStream,
+		GeneratedIndexError::OutOfRange { .. } => SimpleMeshError::IndexOutOfRange,
+		GeneratedIndexError::IndexLimit { .. } => SimpleMeshError::IndexLimit,
+	})?;
+	// Simple draws one mesh-local index stream, so the whole mesh must fit in 16-bit indices.
 	if positions.len() > usize::from(u16::MAX) + 1 {
 		return Err(SimpleMeshError::IndexLimit);
-	}
-	if source_indices
-		.iter()
-		.any(|&index| index as usize >= positions.len() || u16::try_from(index).is_err())
-	{
-		return Err(SimpleMeshError::IndexOutOfRange);
 	}
 	let position_size = positions
 		.len()
@@ -418,7 +397,14 @@ async fn prepare_generated_mesh(
 		.await
 		.ok_or(SimpleMeshError::StagingCapacity)?;
 	let bytes = staging.bytes_mut();
-	bytes[..position_size].copy_from_slice(utils::as_byte_slice(positions.as_ref()));
+	for (destination, &(x, y, z)) in bytes[..position_size]
+		.as_chunks_mut::<POSITION_STRIDE>()
+		.0
+		.iter_mut()
+		.zip(positions.iter())
+	{
+		*destination = bytemuck::cast([x, y, z]);
+	}
 	for (destination, &index) in bytes[index_start..][..index_size]
 		.as_chunks_mut::<INDEX_STRIDE>()
 		.0
@@ -452,44 +438,23 @@ async fn prepare_resource_mesh(
 		.await
 		.ok_or(SimpleMeshError::StagingCapacity)?;
 
-	if resource.requires_cpu_decompression() {
-		let loaded = resource
-			.load(ReadTargetsMut::backing_storage())
+	let loaded = {
+		let bytes = staging.bytes_mut();
+		let (positions, remainder) = bytes.split_at_mut(index_start);
+		let indices = &mut remainder[..layout.index_size];
+		resource
+			.load(
+				vec![
+					resource_management::stream::StreamMut::new("Vertex.Position", &mut positions[..layout.position_size]),
+					resource_management::stream::StreamMut::new("TriangleIndices", indices),
+				]
+				.into(),
+			)
 			.await
-			.map_err(|_| SimpleMeshError::ResourceLoad)?;
-		let decoded = loaded.buffer().ok_or(SimpleMeshError::ResourceLoad)?;
-		let descriptions = resource.streams().ok_or(SimpleMeshError::ResourceLoad)?;
-		copy_named_stream(
-			decoded,
-			descriptions,
-			"Vertex.Position",
-			&mut staging.bytes_mut()[..layout.position_size],
-		)?;
-		copy_named_stream(
-			decoded,
-			descriptions,
-			"TriangleIndices",
-			&mut staging.bytes_mut()[index_start..][..layout.index_size],
-		)?;
-	} else {
-		let loaded = {
-			let bytes = staging.bytes_mut();
-			let (positions, remainder) = bytes.split_at_mut(index_start);
-			let indices = &mut remainder[..layout.index_size];
-			resource
-				.load(
-					vec![
-						resource_management::stream::StreamMut::new("Vertex.Position", &mut positions[..layout.position_size]),
-						resource_management::stream::StreamMut::new("TriangleIndices", indices),
-					]
-					.into(),
-				)
-				.await
-				.map_err(|_| SimpleMeshError::ResourceLoad)?
-		};
-		if !matches!(loaded, ReadTargets::Streams(_)) {
-			return Err(SimpleMeshError::ResourceLoad);
-		}
+			.map_err(|_| SimpleMeshError::ResourceLoad)?
+	};
+	if !matches!(loaded, ReadTargets::Streams(_)) {
+		return Err(SimpleMeshError::ResourceLoad);
 	}
 
 	for component in staging.bytes_mut()[..layout.position_size]
@@ -511,29 +476,6 @@ async fn prepare_resource_mesh(
 		vertex_count: layout.position_size / POSITION_STRIDE,
 		index_count: layout.index_size / INDEX_STRIDE,
 	})
-}
-
-/// Copies one exact named range out of a fully decoded resource payload.
-fn copy_named_stream(
-	decoded: &[u8],
-	descriptions: &[resource_management::StreamDescription],
-	name: &str,
-	destination: &mut [u8],
-) -> Result<(), SimpleMeshError> {
-	let description = descriptions
-		.iter()
-		.find(|description| description.name() == name)
-		.ok_or(SimpleMeshError::ResourceLoad)?;
-	if description.size() != destination.len() {
-		return Err(SimpleMeshError::ResourceLoad);
-	}
-	let end = description
-		.offset()
-		.checked_add(description.size())
-		.ok_or(SimpleMeshError::ResourceLoad)?;
-	let source = decoded.get(description.offset()..end).ok_or(SimpleMeshError::ResourceLoad)?;
-	destination.copy_from_slice(source);
-	Ok(())
 }
 
 /// Converts primitive-local baked indices into the one mesh-local stream expected by Simple draws.
@@ -560,8 +502,6 @@ fn rebase_resource_indices(indices: &mut [u8], primitives: &[ResourcePrimitiveLa
 
 #[cfg(test)]
 mod tests {
-	use resource_management::{resources::skeleton::Skeleton, types::VertexComponent};
-
 	use super::*;
 	use crate::rendering::mesh::generator::BoxMeshGenerator;
 
@@ -582,10 +522,16 @@ mod tests {
 			let index_range = prepared.indices.clone();
 			let prepared_bytes = prepared.staging.bytes_mut();
 
-			assert_eq!(
-				&prepared_bytes[position_range],
-				utils::as_byte_slice(expected_positions.as_ref())
-			);
+			let actual_positions = prepared_bytes[position_range]
+				.as_chunks::<POSITION_STRIDE>()
+				.0
+				.iter()
+				.map(|bytes| {
+					let [x, y, z] = bytemuck::pod_read_unaligned::<[f32; 3]>(bytes);
+					(x, y, z)
+				})
+				.collect::<Vec<_>>();
+			assert_eq!(actual_positions, expected_positions.as_ref());
 			let actual_indices = prepared_bytes[index_range]
 				.as_chunks::<INDEX_STRIDE>()
 				.0
@@ -600,22 +546,11 @@ mod tests {
 	}
 
 	#[test]
-	fn decoded_two_primitive_streams_are_copied_and_rebased_for_one_simple_draw() {
-		let encoded_indices = [0u16, 1, 2, 0, 1, 2]
+	fn two_primitive_indices_are_rebased_for_one_simple_draw() {
+		let mut indices = [0u16, 1, 2, 0, 1, 2]
 			.into_iter()
 			.flat_map(u16::to_le_bytes)
 			.collect::<Vec<_>>();
-		let encoded_positions = [0.0f32; 18].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>();
-		let mut decoded = encoded_indices.clone();
-		decoded.extend_from_slice(&encoded_positions);
-		let descriptions = [
-			resource_management::StreamDescription::new("TriangleIndices", encoded_indices.len(), 0),
-			resource_management::StreamDescription::new("Vertex.Position", encoded_positions.len(), encoded_indices.len()),
-		];
-		let mut positions = vec![0u8; encoded_positions.len()];
-		let mut indices = vec![0u8; encoded_indices.len()];
-		copy_named_stream(&decoded, &descriptions, "Vertex.Position", &mut positions).expect("position stream");
-		copy_named_stream(&decoded, &descriptions, "TriangleIndices", &mut indices).expect("index stream");
 		let primitives = [
 			ResourcePrimitiveLayout {
 				vertex_offset: 0,
@@ -631,7 +566,6 @@ mod tests {
 
 		rebase_resource_indices(&mut indices, &primitives).expect("valid primitive-local indices");
 
-		assert_eq!(positions, encoded_positions);
 		let actual = indices
 			.as_chunks::<INDEX_STRIDE>()
 			.0
@@ -648,43 +582,6 @@ mod tests {
 		assert!(matches!(
 			rebase_resource_indices(&mut indices, &primitives),
 			Err(SimpleMeshError::IndexOutOfRange)
-		));
-	}
-
-	#[test]
-	fn baked_mesh_requires_an_unquantized_vec3_position_layout() {
-		let invalid_positions = ResourceMesh {
-			skeleton: None,
-			skins: Vec::new(),
-			vertex_components: vec![VertexComponent {
-				semantic: VertexSemantics::Position,
-				format: "vec4f".to_string(),
-				channel: 0,
-			}],
-			streams: Vec::new(),
-			materials: Vec::new(),
-			primitives: Vec::new(),
-		};
-		assert!(matches!(
-			resource_mesh_layout(&invalid_positions),
-			Err(SimpleMeshError::InvalidPositionStream)
-		));
-
-		let transformed = ResourceMesh {
-			skeleton: Some(Reference::in_memory("test-skeleton", Skeleton { nodes: Vec::new() })),
-			skins: Vec::new(),
-			vertex_components: vec![VertexComponent {
-				semantic: VertexSemantics::Position,
-				format: "vec3f".to_string(),
-				channel: 0,
-			}],
-			streams: Vec::new(),
-			materials: Vec::new(),
-			primitives: Vec::new(),
-		};
-		assert!(matches!(
-			resource_mesh_layout(&transformed),
-			Err(SimpleMeshError::UnsupportedMeshFeatures)
 		));
 	}
 }

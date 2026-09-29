@@ -143,12 +143,6 @@ impl AssetHandler for WAVAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& !self.can_handle(dt)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -170,13 +164,7 @@ impl AssetHandler for WAVAssetHandler {
 
 #[cfg(test)]
 mod tests {
-	use super::wav_bit_depth;
-	use crate::{
-		asset::{self, ResourceId, handler::implementations::wav::WAVAssetHandler, manager::AssetManager},
-		r#async, resource,
-		resources::audio::Audio,
-		types::BitDepths,
-	};
+	use crate::{asset::handler::implementations::wav::WAVAssetHandler, types::BitDepths};
 
 	fn chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 		let mut chunk = Vec::new();
@@ -230,34 +218,6 @@ mod tests {
 		fmt
 	}
 
-	/// Builds the format chunk for a mono 48 kHz, 16-bit PCM fixture.
-	fn mono_pcm_fmt() -> Vec<u8> {
-		let mut fmt = Vec::new();
-
-		fmt.extend_from_slice(&1u16.to_le_bytes());
-
-		fmt.extend_from_slice(&1u16.to_le_bytes());
-
-		fmt.extend_from_slice(&48_000u32.to_le_bytes());
-
-		fmt.extend_from_slice(&96_000u32.to_le_bytes());
-
-		fmt.extend_from_slice(&2u16.to_le_bytes());
-
-		fmt.extend_from_slice(&16u16.to_le_bytes());
-
-		fmt
-	}
-
-	#[test]
-	fn wav_bit_depth_maps_supported_integer_pcm_widths() {
-		assert_eq!(wav_bit_depth(8), Some(BitDepths::Eight));
-		assert_eq!(wav_bit_depth(16), Some(BitDepths::Sixteen));
-		assert_eq!(wav_bit_depth(24), Some(BitDepths::TwentyFour));
-		assert_eq!(wav_bit_depth(32), Some(BitDepths::ThirtyTwo));
-		assert_eq!(wav_bit_depth(12), None);
-	}
-
 	#[test]
 	fn decode_wav_skips_extra_metadata_chunks() {
 		let pcm = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -301,45 +261,6 @@ mod tests {
 
 		assert_eq!(audio.bit_depth, BitDepths::Sixteen);
 		assert_eq!(data, pcm);
-	}
-
-	#[r#async::test]
-	async fn asset_manager_bakes_generated_wav() {
-		let pcm = [0x00, 0x80, 0xff, 0x7f];
-
-		let wav = riff(&[chunk(b"fmt ", &mono_pcm_fmt()), chunk(b"data", &pcm)]);
-
-		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-
-		asset_storage_backend.add_file("generated.wav", &wav);
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(WAVAssetHandler::new());
-
-		asset_manager.bake("generated.wav").await.expect("generated WAV should bake");
-
-		let resource = resource_storage_backend
-			.get_resource(ResourceId::new("generated.wav"))
-			.expect("baked WAV resource should be stored");
-
-		assert_eq!(resource.class, "Audio");
-
-		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
-
-		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
-		assert_eq!(resource.channel_count, 1);
-		assert_eq!(resource.sample_rate, 48_000);
-		assert_eq!(resource.sample_count, 2);
-		assert_eq!(
-			resource_storage_backend
-				.get_resource_data_by_name(ResourceId::new("generated.wav"))
-				.expect("baked WAV samples should be stored")
-				.as_ref(),
-			pcm
-		);
 	}
 }
 

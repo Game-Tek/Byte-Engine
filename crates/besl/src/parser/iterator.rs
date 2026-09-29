@@ -57,8 +57,3 @@ impl<'i, 'a> ParserIterator<'a> for std::slice::Iter<'i, &'a str> {
 		self.next_is(is_identifier)
 	}
 }
-
-#[derive(Clone)]
-pub struct ProgramState {
-	// pub(super) types: HashMap<String, NodeReference>,
-}

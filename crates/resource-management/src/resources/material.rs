@@ -178,10 +178,6 @@ pub struct VariantModel {
 
 impl crate::Resource for Variant {
 	type Model = VariantModel;
-
-	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
-		variant_queryable_properties(id, Some(&self.material.resource().model))
-	}
 }
 
 impl crate::Model for VariantModel {
@@ -306,6 +302,21 @@ impl Binding {
 	}
 }
 
+impl From<crate::shader::besl::evaluation::BindingUsage> for Binding {
+	/// Persists one reflected BESL binding, keeping its authored name for runtime lookups.
+	fn from(binding: crate::shader::besl::evaluation::BindingUsage) -> Self {
+		Self::named(
+			binding.name,
+			binding.slot,
+			binding.kind,
+			binding.count,
+			binding.buffer_stride,
+			binding.read,
+			binding.write,
+		)
+	}
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ShaderInterface {
 	pub workgroup_size: Option<(u32, u32, u32)>,
@@ -327,7 +338,6 @@ pub struct Shader {
 	pub stage: ShaderTypes,
 	pub interface: ShaderInterface,
 	pub artifact: ShaderArtifact,
-	pub source_hash: u64,
 }
 
 impl Shader {
@@ -400,52 +410,4 @@ impl<'de> Solver<'de, Parameter> for ParameterModel {
 pub enum Property {
 	Factor(Value),
 	Texture(String),
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{Binding, BindingKind, ShaderArtifact};
-
-	#[test]
-	#[should_panic(expected = "Invalid resource slot range")]
-	fn persisted_binding_rejects_flat_slot_overflow() {
-		Binding::new(u32::MAX, BindingKind::StorageBuffer, 1, Some(4), true, false);
-	}
-
-	#[test]
-	fn shader_artifacts_round_trip_through_resource_archiving() {
-		let round_trip = |artifact: &ShaderArtifact| {
-			let bytes = crate::to_vec(artifact).expect("Shader artifact should serialize");
-			crate::from_slice::<ShaderArtifact>(&bytes).expect("Shader artifact should deserialize")
-		};
-
-		assert!(matches!(round_trip(&ShaderArtifact::Dxil), ShaderArtifact::Dxil));
-
-		let entry_point = crate::shader::besl::backends::msl::MSL_ENTRY_POINT;
-		let msl = round_trip(&ShaderArtifact::Msl {
-			entry_point: entry_point.to_string(),
-		});
-		let mtlb = round_trip(&ShaderArtifact::Mtlb {
-			entry_point: entry_point.to_string(),
-		});
-
-		assert!(matches!(
-			msl,
-			ShaderArtifact::Msl { entry_point: ref archived_entry_point } if archived_entry_point == entry_point
-		));
-		assert!(matches!(
-			mtlb,
-			ShaderArtifact::Mtlb { entry_point: ref archived_entry_point } if archived_entry_point == entry_point
-		));
-	}
-
-	#[test]
-	fn storage_buffer_stride_round_trips_through_resource_archiving() {
-		let binding = Binding::named("meshlets", 8, BindingKind::StorageBuffer, 1, Some(64), true, false);
-		let bytes = crate::to_vec(&binding).expect("Storage-buffer binding should serialize");
-		let archived: Binding = crate::from_slice(&bytes).expect("Storage-buffer binding should deserialize");
-
-		assert_eq!(archived.name, "meshlets");
-		assert_eq!(archived.buffer_stride, Some(64));
-	}
 }

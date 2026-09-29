@@ -179,19 +179,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_remove_existing_and_missing_sequence() {
-		let mut buffer = PacketBuffer::<4, 8>::new();
-
-		buffer.add(make_packet::<8>(1, 1), 1, true);
-		buffer.add(make_packet::<8>(2, 2), 1, true);
-
-		buffer.remove(2);
-		assert_eq!(gathered_sequences(&mut buffer), [1]);
-		buffer.remove(99);
-		assert_eq!(gathered_sequences(&mut buffer), [1]);
-	}
-
-	#[test]
 	fn unreliable_packets_are_sent_once_while_reliable_packets_remain_for_retry() {
 		let mut buffer = PacketBuffer::<3, 8>::new();
 

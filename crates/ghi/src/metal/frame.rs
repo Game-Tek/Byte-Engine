@@ -1,6 +1,5 @@
 use objc2_foundation::NSAutoreleasePool;
-use objc2_foundation::NSString;
-use objc2_metal::{MTL4CommandEncoder, MTL4CommandQueue, MTL4ComputeCommandEncoder, MTLDrawable};
+use objc2_metal::{MTL4CommandQueue, MTLDrawable};
 
 use super::*;
 use crate::SwapchainHandle;
@@ -93,9 +92,9 @@ impl<'a> Frame<'a> {
 	}
 
 	/// Finishes and submits all frame command buffers through one Metal 4 queue commit.
-	pub(crate) fn execute_finished_batch<'command>(
+	pub(crate) fn execute_finished_batch(
 		&mut self,
-		command_buffers: SmallVec<[super::FinishedCommandBuffer<'command>; 4]>,
+		command_buffers: SmallVec<[super::FinishedCommandBuffer; 4]>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
@@ -105,15 +104,13 @@ impl<'a> Frame<'a> {
 		let mut submitted_readbacks = SmallVec::<[graphics_hardware_interface::TextureCopyHandle; 8]>::new();
 		for command_buffer in command_buffers {
 			let super::FinishedCommandBuffer {
-				command_buffer_handle,
+				queue_handle,
 				command_buffer,
 				texture_readbacks,
-				_marker,
 			} = command_buffer;
-			let command_queue = self.device.command_buffers[command_buffer_handle.0 as usize].queue_handle;
 
 			assert_eq!(
-				command_queue, self.queue_handle,
+				queue_handle, self.queue_handle,
 				"Metal 4 frame batch submission failed. The most likely cause is that a command buffer from another GHI queue was recorded into this execution.",
 			);
 			native_commands.push(command_buffer);
@@ -122,63 +119,14 @@ impl<'a> Frame<'a> {
 
 		if self.uses_proxy_swapchain(present_keys) {
 			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
-			let mut resolve_command = self.device.queues[self.queue_handle.0 as usize]
-				.acquire_native_command(Some("Present Resolve"), self.device.settings.debug_labels);
-			let copy_encoder = resolve_command.computeCommandEncoder().expect(
-				"Metal 4 present resolve encoder creation failed. The most likely cause is that the resolve command was not recording.",
+			let mut recording = self.device.begin_recording(
+				self.queue_handle,
+				Some("Present Resolve"),
+				Some(self.frame_key),
+				&std::alloc::Global,
 			);
-			let queue_index = self.queue_handle.0 as usize;
-			let mut resource_tracker = std::mem::take(&mut self.device.queues[queue_index].resource_tracker);
-			resource_tracker.begin_recording();
-			let resolve_scope = synchronization::MetalEncoderScope::Encoder(0);
-			#[cfg(debug_assertions)]
-			if self.device.settings.debug_labels {
-				copy_encoder.setLabel(Some(&NSString::from_str("Present Resolve")));
-			}
-
-			for (present_key, drawable) in &present_drawables {
-				if !self.device.swapchains[present_key.swapchain.0 as usize].uses_proxy {
-					continue;
-				}
-				let Some(drawable) = drawable else {
-					continue;
-				};
-				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
-				let Some(proxy_image) = swapchain.images[present_key.sequence_index as usize] else {
-					continue;
-				};
-				let source_texture = self.device.images.resource(proxy_image).texture.clone();
-				let destination_texture = drawable.texture();
-				resolve_command.retain_allocation(source_texture.clone());
-				resolve_command.retain_allocation(destination_texture.clone());
-				let barrier = resource_tracker.consume(
-					resolve_scope,
-					[
-						synchronization::MetalResourceUse::image(
-							proxy_image,
-							None,
-							None,
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::READ,
-						),
-						synchronization::MetalResourceUse::drawable(
-							destination_texture.as_ref(),
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::WRITE,
-						),
-					],
-				);
-				barrier.encode(&*copy_encoder);
-
-				// SAFETY: Source and drawable textures are retained and validated for the proxy resolve copy.
-				unsafe {
-					copy_encoder.copyFromTexture_toTexture(source_texture.as_ref(), destination_texture.as_ref());
-				}
-			}
-			copy_encoder.endEncoding();
-			resource_tracker.finish_recording();
-			self.device.queues[queue_index].resource_tracker = resource_tracker;
-			native_commands.push(resolve_command);
+			recording.resolve_swapchain_proxies(&present_drawables);
+			native_commands.push(recording.into_finished().command_buffer);
 		}
 
 		// An empty command still advances the frame synchronizer and provides a valid commit point for presentation.
@@ -191,7 +139,7 @@ impl<'a> Frame<'a> {
 		for command in &mut native_commands {
 			for (_, drawable) in &present_drawables {
 				if let Some(drawable) = drawable {
-					command.retain_drawable(drawable.clone());
+					command.retain_drawable(drawable);
 				}
 			}
 		}
@@ -234,9 +182,8 @@ impl<'a> Frame<'a> {
 			}
 		}
 
-		let synchronizer = self
-			.device
-			.synchronizer_for_sequence(synchronizer, self.frame_key.sequence_index);
+		let synchronizer =
+			context::synchronizer_for_sequence(&self.device.synchronizers, synchronizer, self.frame_key.sequence_index);
 		self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }
@@ -272,8 +219,10 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
+	/// Queues the upload of this frame's copy of the buffer, so a dynamic buffer uploads the copy this frame wrote.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
-		self.device.sync_buffer(buffer_handle);
+		self.device
+			.sync_buffer_copy(buffer_handle.into(), self.frame_key.sequence_index);
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::BaseImageHandle) -> &mut [u8] {
@@ -312,17 +261,9 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 	) -> &mut T {
-		let handle = self
+		let pointer = self
 			.device
-			.buffers
-			.nth_handle(buffer_handle.into(), self.frame_key.sequence_index as _)
-			.expect(
-				"Missing Metal frame-local buffer. The most likely cause is that the dynamic buffer chain was not created for this frame.",
-			);
-		let buffer = self.device.buffers.resource(handle);
-		let pointer = <T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
-			"Failed to map a typed Metal frame buffer. The most likely cause is that the frame-local buffer has no sufficiently large, aligned CPU-visible storage.",
-		);
+			.typed_buffer_pointer::<T>(buffer_handle, self.frame_key.sequence_index);
 		// SAFETY: The validated pointer addresses initialized POD storage and the frame owns exclusive access to its sequence resource.
 		unsafe { &mut *pointer }
 	}

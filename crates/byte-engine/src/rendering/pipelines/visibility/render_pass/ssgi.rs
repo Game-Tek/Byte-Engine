@@ -14,7 +14,8 @@ use ghi::frame::Frame as _;
 use math::{Matrix, ShaderMatrix};
 use utils::Extent;
 
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData, half_resolution_extent};
+use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::{ComputeStage, record_compute_stages};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
 
@@ -271,7 +272,7 @@ impl SsgiPass {
 		pipelines: SsgiPipelines,
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
-		let half_extent = half_resolution_extent(extent);
+		let half_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
 			current_view_to_previous_clip: previous_view
 				.map(|previous| current_view_to_previous_clip(sink.view(), previous))
@@ -284,36 +285,29 @@ impl SsgiPass {
 		};
 		frame.sync_buffer(self.parameters);
 
+		let stage = |label, pipeline, descriptor_set, extent| ComputeStage {
+			label,
+			pipeline,
+			descriptor_sets: [descriptor_set],
+			extent,
+			workgroup: Extent::new(8, 8, 1),
+		};
 		let stages = [
-			("SSGI Trace", pipelines.trace, self.trace_descriptor_set, half_extent),
-			(
+			stage("SSGI Trace", pipelines.trace, self.trace_descriptor_set, half_extent),
+			stage(
 				"SSGI Denoise and Accumulate",
 				pipelines.temporal,
 				self.temporal_descriptor_set,
 				half_extent,
 			),
-			(
+			stage(
 				"SSGI Depth-Aware Upscale",
 				pipelines.upscale,
 				self.upscale_descriptor_set,
 				extent,
 			),
 		];
-		move |c, _| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
-			};
-
-			c.start_region(|label| label.write_str("SSGI"));
-			for (name, pipeline, descriptor_set, extent) in stages {
-				c.start_region(|label| label.write_str(name));
-				let c = c.bind_compute_pipeline(pipeline);
-				c.bind_descriptor_sets(&[descriptor_set]);
-				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
-				c.end_region();
-			}
-			c.end_region();
-		}
+		move |c| record_compute_stages(c, Some("SSGI"), &stages)
 	}
 }
 

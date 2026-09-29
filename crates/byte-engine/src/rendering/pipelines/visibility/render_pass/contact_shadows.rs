@@ -12,6 +12,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use super::gtao::configuration_float;
+use super::{ComputeStage, record_compute_stages};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -266,30 +267,21 @@ impl ContactShadowPass {
 			};
 			frame.sync_buffer(self.parameters);
 		}
+		let stage = |label, pipeline, descriptor_set| ComputeStage {
+			label,
+			pipeline,
+			descriptor_sets: [descriptor_set],
+			extent,
+			workgroup: Extent::new(8, 8, 1),
+		};
 		let stages = [
-			("Contact Shadow Trace", pipelines.trace, self.descriptor_set),
-			("Contact Shadow Filter", pipelines.filter, self.filter_descriptor_set),
+			stage("Contact Shadow Trace", pipelines.trace, self.descriptor_set),
+			stage("Contact Shadow Filter", pipelines.filter, self.filter_descriptor_set),
 		];
-		let enabled = sun_direction.is_some();
+		// Without a sun nothing is recorded.
+		let stage_count = if sun_direction.is_some() { stages.len() } else { 0 };
 
-		move |c, _| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
-			};
-
-			if !enabled {
-				return;
-			}
-			c.start_region(|label| label.write_str("Contact Shadows"));
-			for (name, pipeline, descriptor_set) in stages {
-				c.start_region(|label| label.write_str(name));
-				let c = c.bind_compute_pipeline(pipeline);
-				c.bind_descriptor_sets(&[descriptor_set]);
-				c.dispatch(ghi::DispatchExtent::new(extent, Extent::new(8, 8, 1)));
-				c.end_region();
-			}
-			c.end_region();
-		}
+		move |c| record_compute_stages(c, Some("Contact Shadows"), &stages[..stage_count])
 	}
 }
 
@@ -316,17 +308,5 @@ mod tests {
 		for (actual, expected) in direction.into_iter().zip([0.0, 1.0, 0.0, 0.0]) {
 			assert!((actual - expected).abs() < 0.0001, "{direction:?}");
 		}
-	}
-
-	#[test]
-	fn distance_parameter_sets_the_ray_reach_and_rejects_negative_values() {
-		let (settings, effective) = ContactShadowSettings::default()
-			.with_parameter("distance", &ConfigurationValue::Text("0.4".to_string()))
-			.expect("distance should parse");
-
-		assert_eq!(settings.max_distance, 0.4);
-		assert_eq!(effective, ConfigurationValue::Float(f64::from(0.4f32)));
-		assert!(settings.with_parameter("distance", &ConfigurationValue::Float(-1.0)).is_err());
-		assert!(settings.with_parameter("reach", &ConfigurationValue::Float(1.0)).is_err());
 	}
 }

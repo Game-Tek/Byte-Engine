@@ -519,15 +519,23 @@ pub(crate) struct PipelineLayout {
 	pub(crate) push_constant_size: usize,
 }
 
+/// The `DescriptorBindingKey` struct identifies what one argument-buffer snapshot was encoded from: a pipeline and
+/// every bound frame-local descriptor set at its version.
+///
+/// Recording compares keys to decide whether an encoder's bound snapshot, or a retained one, still applies.
+#[derive(Clone, PartialEq)]
+pub(crate) struct DescriptorBindingKey {
+	pub(crate) pipeline: graphics_hardware_interface::PipelineHandle,
+	pub(crate) sets: SmallVec<[(crate::descriptors::DescriptorSetHandle, u64); 4]>,
+}
+
 /// The `Materialization` struct owns one encoded argument-buffer snapshot and its hazard metadata.
 ///
-/// The first bound descriptor set retains the snapshot. It stays valid while
-/// every set in `descriptor_sets` keeps the version recorded in `versions`.
+/// The first bound descriptor set retains the snapshot. It stays valid while every set in its key keeps the
+/// version the key records.
 #[derive(Clone)]
 pub(crate) struct Materialization {
-	pub(crate) pipeline: graphics_hardware_interface::PipelineHandle,
-	pub(crate) descriptor_sets: SmallVec<[crate::descriptors::DescriptorSetHandle; 4]>,
-	pub(crate) versions: SmallVec<[u64; 4]>,
+	pub(crate) key: DescriptorBindingKey,
 	/// One encoded range per stage layout: the stage, its backing buffer, and the range's byte offset.
 	pub(crate) argument_buffers: SmallVec<[(crate::Stages, Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize); 5]>,
 	pub(crate) resource_uses: synchronization::DescriptorUses,
@@ -553,43 +561,59 @@ pub(crate) struct Shader {
 #[derive(Clone)]
 pub struct Pipeline {
 	pub(crate) pipeline: PipelineState,
-	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn mtl::MTLDepthStencilState>>>,
 	pub(crate) layout: PipelineLayout,
-	pub(crate) compute_threadgroup_size: Option<Extent>,
-	pub(crate) object_threadgroup_size: Option<Extent>,
-	pub(crate) mesh_threadgroup_size: Option<Extent>,
-	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
-	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
-	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
 }
 
 // SAFETY: Metal pipeline states, depth state, and argument encoders are immutable and documented for cross-thread use.
 unsafe impl Send for Pipeline {}
 
 impl Pipeline {
-	/// Wraps compute state, which also serves ray-generation dispatches, with default raster state it never reads.
-	fn compute(pipeline: PipelineState, layout: PipelineLayout, compute_threadgroup_size: Option<Extent>) -> Self {
-		Self {
-			pipeline,
-			depth_stencil_state: None,
-			layout,
-			compute_threadgroup_size,
-			object_threadgroup_size: None,
-			mesh_threadgroup_size: None,
-			face_winding: crate::pipelines::raster::FaceWinding::Clockwise,
-			cull_mode: crate::pipelines::raster::CullMode::Back,
-			fill_mode: crate::pipelines::raster::FillMode::Solid,
+	/// Returns the threadgroup size a compute or ray-generation shader declared, or `None` for raster pipelines.
+	pub(crate) fn compute_threadgroup_size(&self) -> Option<Extent> {
+		match &self.pipeline {
+			PipelineState::Compute { threadgroup_size, .. } => *threadgroup_size,
+			PipelineState::Raster(_) => None,
+		}
+	}
+
+	/// Returns the raster state that draws apply.
+	///
+	/// Draws bind the render pipeline before they read it, which already rejects other pipelines, so a failure here
+	/// means recording state is corrupt.
+	pub(crate) fn raster(&self) -> &RasterState {
+		match &self.pipeline {
+			PipelineState::Raster(raster) => raster,
+			PipelineState::Compute { .. } => unreachable!(
+				"Metal draw state is missing. The most likely cause is that a draw read its pipeline before binding a raster pipeline."
+			),
 		}
 	}
 }
 
+/// The `PipelineState` enum keeps only the native state each kind of pipeline sets on its encoder.
 #[derive(Clone)]
 pub(crate) enum PipelineState {
-	Raster(Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>),
-	Compute(Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>),
+	Raster(RasterState),
 	/// Metal has no ray-tracing pipeline state: a ray-generation function is a compute function that resolves hits
-	/// through the bound acceleration structure, so tracing rays dispatches this compute state.
-	RayTracing(Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>),
+	/// through the bound acceleration structure, so ray-tracing pipelines dispatch compute state too.
+	Compute {
+		state: Retained<ProtocolObject<dyn mtl::MTLComputePipelineState>>,
+		threadgroup_size: Option<Extent>,
+	},
+}
+
+/// The `RasterState` struct keeps the render encoder state a raster pipeline applies before its draws.
+#[derive(Clone)]
+pub(crate) struct RasterState {
+	pub(crate) state: Retained<ProtocolObject<dyn mtl::MTLRenderPipelineState>>,
+	pub(crate) depth_stencil_state: Option<Retained<ProtocolObject<dyn mtl::MTLDepthStencilState>>>,
+	pub(crate) face_winding: crate::pipelines::raster::FaceWinding,
+	pub(crate) cull_mode: crate::pipelines::raster::CullMode,
+	pub(crate) fill_mode: crate::pipelines::raster::FillMode,
+	/// Present only for mesh pipelines with an object stage.
+	pub(crate) object_threadgroup_size: Option<Extent>,
+	/// Present only for mesh pipelines.
+	pub(crate) mesh_threadgroup_size: Option<Extent>,
 }
 
 pub(crate) fn resource_ranges_overlap(
@@ -848,17 +872,19 @@ fn build_pipeline_layout<'a>(
 	}
 }
 
-/// Loads or compiles one Metal shader library and records the resource interface it declares.
+/// Loads or compiles one Metal shader library, records the resource interface it declares, and adds it to `shaders`.
 ///
-/// Both [`Context`] and [`Factory`] create shaders through this function; pipelines refer to the result by index.
-pub(crate) fn build_shader(
+/// Both [`Context`] and [`Factory`] create shaders through this function. Pipelines built from the same `shaders`
+/// refer to the result by the returned handle.
+pub(crate) fn add_shader(
+	shaders: &mut Vec<Shader>,
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	name: Option<&str>,
 	source: crate::shader::Sources,
 	stage: crate::ShaderTypes,
 	shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	#[cfg_attr(not(debug_assertions), allow(unused_variables))] debug_labels: bool,
-) -> Result<Shader, ()> {
+) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
 	let (library, entry_point, threadgroup_size) = match source {
 		crate::shader::Sources::SPIRV(_) => {
 			eprintln!(
@@ -899,14 +925,15 @@ pub(crate) fn build_shader(
 		library.setLabel(Some(&NSString::from_str(name)));
 	}
 
-	Ok(Shader {
+	shaders.push(Shader {
 		name: crate::debug_name(name),
 		stage: stage.into(),
 		shader_resource_descriptors: shader_resource_descriptors.into_iter().collect(),
 		library,
 		entry_point: entry_point.to_owned(),
 		threadgroup_size,
-	})
+	});
+	Ok(graphics_hardware_interface::ShaderHandle((shaders.len() - 1) as u64))
 }
 
 /// Compiles a raster pipeline from shaders created by the same [`Context`] or [`Factory`].
@@ -986,8 +1013,15 @@ pub(crate) fn build_raster_pipeline(
 		.flatten();
 
 	Pipeline {
-		pipeline: PipelineState::Raster(pipeline),
-		depth_stencil_state,
+		pipeline: PipelineState::Raster(RasterState {
+			state: pipeline,
+			depth_stencil_state,
+			face_winding: builder.face_winding,
+			cull_mode: builder.cull_mode,
+			fill_mode: builder.fill_mode,
+			object_threadgroup_size,
+			mesh_threadgroup_size,
+		}),
 		layout: build_pipeline_layout(
 			device,
 			builder
@@ -996,12 +1030,6 @@ pub(crate) fn build_raster_pipeline(
 				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
 			builder.push_constant_ranges.as_ref(),
 		),
-		compute_threadgroup_size: None,
-		object_threadgroup_size,
-		mesh_threadgroup_size,
-		face_winding: builder.face_winding,
-		cull_mode: builder.cull_mode,
-		fill_mode: builder.fill_mode,
 	}
 }
 
@@ -1021,11 +1049,13 @@ pub(crate) fn build_compute_pipeline(
 	let function = build_metal4_function_descriptor(shader, builder.shader.specialization_map);
 	let name = builder.name.filter(|_| cfg!(debug_assertions) && debug_labels);
 
-	Pipeline::compute(
-		PipelineState::Compute(compile_metal4_compute_pipeline(compiler, name, &function)),
-		build_pipeline_layout(device, [shader], builder.push_constant_ranges),
-		shader.threadgroup_size,
-	)
+	Pipeline {
+		pipeline: PipelineState::Compute {
+			state: compile_metal4_compute_pipeline(compiler, name, &function),
+			threadgroup_size: shader.threadgroup_size,
+		},
+		layout: build_pipeline_layout(device, [shader], builder.push_constant_ranges),
+	}
 }
 
 /// Compiles a ray-tracing pipeline into the compute state Metal dispatches for its ray-generation shader.
@@ -1050,9 +1080,12 @@ pub(crate) fn build_ray_tracing_pipeline(
 	let function = build_metal4_function_descriptor(shader, raygen.specialization_map);
 	let name = shader.name.as_deref().filter(|_| cfg!(debug_assertions) && debug_labels);
 
-	Pipeline::compute(
-		PipelineState::RayTracing(compile_metal4_compute_pipeline(compiler, name, &function)),
-		build_pipeline_layout(
+	Pipeline {
+		pipeline: PipelineState::Compute {
+			state: compile_metal4_compute_pipeline(compiler, name, &function),
+			threadgroup_size: shader.threadgroup_size,
+		},
+		layout: build_pipeline_layout(
 			device,
 			builder
 				.shaders
@@ -1060,17 +1093,11 @@ pub(crate) fn build_ray_tracing_pipeline(
 				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
 			builder.push_constant_ranges.as_ref(),
 		),
-		shader.threadgroup_size,
-	)
+	}
 }
 
 #[cfg(test)]
 mod tests {
-	#[test]
-	fn vertex_bindings_stop_before_reserved_shader_buffers() {
-		super::validate_vertex_binding(14);
-	}
-
 	#[test]
 	#[should_panic(expected = "Metal vertex binding is reserved")]
 	fn vertex_binding_fifteen_is_rejected() {

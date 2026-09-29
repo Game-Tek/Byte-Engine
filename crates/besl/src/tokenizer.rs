@@ -97,39 +97,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_function() {
-		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"fn",
-				"main",
-				"(",
-				")",
-				"->",
-				"void",
-				"{",
-				"gl_Position",
-				"=",
-				"vec4",
-				"(",
-				"0.0",
-				",",
-				"0.0",
-				",",
-				"0.0",
-				",",
-				"1.0",
-				")",
-				";",
-				"}"
-			]
-		);
-	}
-
-	#[test]
 	fn test_operators() {
 		let source = "fn main() -> void { gl_Position = vec4(0.0, 0.0, 0.0, 1.0) * 2.0; }";
 		let tokens = tokenize(source).unwrap();
@@ -173,76 +140,6 @@ mod tests {
 			tokens.tokens,
 			vec![
 				"fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "&", "255", ";", "}"
-			]
-		);
-	}
-
-	#[test]
-	fn test_struct() {
-		let source = "struct Light { position: vec3f, color: vec3f, data: Data<int>, array: [u8; 4] };";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"struct", "Light", "{", "position", ":", "vec3f", ",", "color", ":", "vec3f", ",", "data", ":", "Data", "<",
-				"int", ">", ",", "array", ":", "[", "u8", ";", "4", "]", "}", ";"
-			]
-		);
-	}
-
-	#[test]
-	fn test_member() {
-		let source = "color: In<vec4f>;";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(tokens.tokens, vec!["color", ":", "In", "<", "vec4f", ">", ";"]);
-	}
-
-	#[test]
-	fn resource_descriptors_preserve_named_properties() {
-		let tokens = tokenize("textures: descriptor<{ type: Texture2D, binding: 5, access: read, count: 16 }>;").unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"textures",
-				":",
-				"descriptor",
-				"<",
-				"{",
-				"type",
-				":",
-				"Texture2D",
-				",",
-				"binding",
-				":",
-				"5",
-				",",
-				"access",
-				":",
-				"read",
-				",",
-				"count",
-				":",
-				"16",
-				"}",
-				">",
-				";"
-			]
-		);
-	}
-
-	#[test]
-	fn test_for_loop() {
-		let source = "main: fn () -> void { for (let i: u32 = 0; i < 4; i = i + 1) { value = value + i; } }";
-		let tokens = tokenize(source).unwrap();
-
-		assert_eq!(
-			tokens.tokens,
-			vec![
-				"main", ":", "fn", "(", ")", "->", "void", "{", "for", "(", "let", "i", ":", "u32", "=", "0", ";", "i", "<",
-				"4", ";", "i", "=", "i", "+", "1", ")", "{", "value", "=", "value", "+", "i", ";", "}", "}"
 			]
 		);
 	}

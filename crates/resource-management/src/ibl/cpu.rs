@@ -403,9 +403,11 @@ fn downsample_source_mip<'a>(
 	for y in 0..destination_height {
 		for x in 0..destination_width {
 			destination.push(downsample_source_pixel(
-				source,
+				source.width,
+				source.height,
 				[x, y],
 				[destination_width, destination_height],
+				|index| source.pixels[index],
 			));
 		}
 	}
@@ -414,20 +416,29 @@ fn downsample_source_mip<'a>(
 }
 
 /// Integrates the solid-angle-weighted source texels covered by one destination texel.
-fn downsample_source_pixel(source: &SourceMIP<'_>, destination: [u32; 2], destination_extent: [u32; 2]) -> Radiance {
-	let source_x_begin = destination[0] as u64 * source.width as u64 / destination_extent[0] as u64;
+///
+/// `source_pixel` reads the source texel at a row-major index, so the CPU pyramid and the GPU atlas staging share
+/// this kernel and its accumulation order and precision.
+pub(super) fn downsample_source_pixel(
+	source_width: u32,
+	source_height: u32,
+	destination: [u32; 2],
+	destination_extent: [u32; 2],
+	mut source_pixel: impl FnMut(usize) -> Radiance,
+) -> Radiance {
+	let source_x_begin = destination[0] as u64 * source_width as u64 / destination_extent[0] as u64;
 	let source_x_end =
-		((destination[0] + 1) as u64 * source.width as u64 / destination_extent[0] as u64).max(source_x_begin + 1);
-	let source_y_begin = destination[1] as u64 * source.height as u64 / destination_extent[1] as u64;
+		((destination[0] + 1) as u64 * source_width as u64 / destination_extent[0] as u64).max(source_x_begin + 1);
+	let source_y_begin = destination[1] as u64 * source_height as u64 / destination_extent[1] as u64;
 	let source_y_end =
-		((destination[1] + 1) as u64 * source.height as u64 / destination_extent[1] as u64).max(source_y_begin + 1);
+		((destination[1] + 1) as u64 * source_height as u64 / destination_extent[1] as u64).max(source_y_begin + 1);
 	let mut sum = [0.0_f64; 3];
 	let mut total_weight = 0.0_f64;
 
 	for source_y in source_y_begin..source_y_end {
-		let weight = lat_long_row_solid_angle(source.width, source.height, source_y as u32) as f64;
+		let weight = lat_long_row_solid_angle(source_width, source_height, source_y as u32) as f64;
 		for source_x in source_x_begin..source_x_end {
-			let radiance = source.pixels[source_y as usize * source.width as usize + source_x as usize];
+			let radiance = source_pixel(source_y as usize * source_width as usize + source_x as usize);
 			for channel in 0..3 {
 				sum[channel] += radiance[channel] as f64 * weight;
 			}
@@ -449,12 +460,11 @@ fn image_byte_size(width: u32, height: u32) -> Result<usize, IBLBakeError> {
 		.ok_or(IBLBakeError::DimensionsTooLarge)
 }
 
-fn specular_extents(mut width: u32, mut height: u32) -> [(u32, u32); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize] {
+/// Returns the extent of each prefiltered specular level; levels past 1x1 stay 1x1.
+fn specular_extents(width: u32, height: u32) -> [(u32, u32); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize] {
 	let mut extents = [(1, 1); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize];
-	for extent in &mut extents {
-		*extent = (width, height);
-		width = (width / 2).max(1);
-		height = (height / 2).max(1);
+	for (extent, level) in extents.iter_mut().zip(mip_extents(width, height)) {
+		*extent = level;
 	}
 	extents
 }
@@ -1156,9 +1166,12 @@ use utils::Extent;
 
 use crate::{
 	StreamDescription,
-	resources::image::{
-		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
-		ImageSubresource, ibl_prefiltered_specular_stream_name,
+	resources::{
+		image::{
+			IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME, ImageIBL,
+			ImageSubresource, ibl_prefiltered_specular_stream_name,
+		},
+		mips::mip_extents,
 	},
 	types::{Formats, Gamma},
 };

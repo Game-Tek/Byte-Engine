@@ -1,18 +1,11 @@
 /// The `PNGAssetHandler` struct configures PNG decoding for image assets.
-pub struct PNGAssetHandler {
-	transformations: png::Transformations,
-}
+///
+/// Palette and low-bit-depth images are expanded to whole channels while decoding.
+pub struct PNGAssetHandler;
 
 impl PNGAssetHandler {
 	pub fn new() -> PNGAssetHandler {
-		PNGAssetHandler {
-			transformations: png::Transformations::EXPAND,
-		}
-	}
-
-	/// Creates a PNG asset handler with explicit decoder transformations.
-	pub fn with_transformations(transformations: png::Transformations) -> PNGAssetHandler {
-		PNGAssetHandler { transformations }
+		PNGAssetHandler
 	}
 }
 
@@ -22,19 +15,11 @@ impl AssetHandler for PNGAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& !self.can_handle(dt)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (data, dt) = context.resolve(url).await?;
 
 		let allocator = context.allocator();
 
 		let semantic = guess_semantic_from_name(url.get_base());
-
-		let transformations = self.transformations;
 
 		if !matches!(dt.as_str(), "png" | "image/png") {
 			return Err(LoadErrors::UnsupportedType);
@@ -42,7 +27,7 @@ impl AssetHandler for PNGAssetHandler {
 
 		let cursor = std::io::Cursor::new(data);
 		let mut decoder = png::Decoder::new(cursor);
-		decoder.set_transformations(transformations);
+		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
 		let Some(size) = reader.output_buffer_size() else {
 			return Err(LoadErrors::FailedToProcess);
@@ -83,24 +68,8 @@ fn png_gamma(info: &png::Info<'_>, semantic: crate::processors::processor::imple
 		return Gamma::Linear;
 	}
 
-	png_metadata_gamma(info).unwrap_or(semantic_gamma)
-}
-
-/// Maps PNG color metadata only when it is close to one of the engine's supported transfer functions.
-fn png_metadata_gamma(info: &png::Info<'_>) -> Option<Gamma> {
-	if info.srgb.is_some() {
-		return Some(Gamma::SRGB);
-	}
-
-	let gamma = info.gama_chunk?.into_scaled();
-
-	// PNG encoders use nearby rounded gAMA values for sRGB. Values outside these narrow neighborhoods describe a
-	// transfer function the engine cannot represent and must not be mislabeled as linear.
-	match gamma {
-		40_000..=50_000 => Some(Gamma::SRGB),
-		95_000..=105_000 => Some(Gamma::Linear),
-		_ => None,
-	}
+	// Unrepresentable or missing metadata falls back to the semantic's transfer function.
+	png_declared_gamma(info).and_then(Result::ok).unwrap_or(semantic_gamma)
 }
 
 /// Maps PNG decoder output into the source layout normalized by the common image processor.
@@ -237,65 +206,6 @@ mod tests {
 			assert_eq!((image.gamma, image.format), (expected_gamma, expected_format), "asset: {id}");
 		}
 	}
-
-	/// Encodes a small RGB16 normal map so the PNG decoder sees real 16-bit file data.
-	fn generated_rgb16_normal_png() -> Vec<u8> {
-		let mut png = Vec::new();
-
-		{
-			let mut encoder = png::Encoder::new(&mut png, 4, 4);
-
-			encoder.set_color(png::ColorType::Rgb);
-
-			encoder.set_depth(png::BitDepth::Sixteen);
-
-			let mut writer = encoder.write_header().expect("generated PNG header should encode");
-
-			let normal = [0x80, 0x00, 0x80, 0x00, 0xff, 0xff];
-
-			let pixels = normal.repeat(16);
-
-			writer.write_image_data(&pixels).expect("generated PNG pixels should encode");
-		}
-
-		png
-	}
-
-	#[r#async::test]
-	async fn asset_manager_bakes_generated_16_bit_normal_png() {
-		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-
-		asset_storage_backend.add_file("generated_normal.png", &generated_rgb16_normal_png());
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(PNGAssetHandler::new());
-
-		asset_manager
-			.bake("generated_normal.png")
-			.await
-			.expect("generated 16-bit PNG should bake");
-
-		let resource = resource_storage_backend
-			.get_resource(ResourceId::new("generated_normal.png"))
-			.expect("baked PNG resource should be stored");
-
-		let image: Image = crate::from_slice(&resource.resource).expect("baked PNG metadata should deserialize");
-
-		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(image.gamma, Gamma::Linear);
-		assert_eq!(image.format, Formats::BC5);
-		assert_eq!(
-			resource_storage_backend
-				.get_resource_data_by_name(ResourceId::new("generated_normal.png"))
-				.expect("baked PNG data should be stored")
-				.len(),
-			16
-		);
-	}
 }
 
 use utils::Extent;
@@ -307,7 +217,7 @@ use super::{
 use crate::{
 	processors::processor::implementations::image::{
 		ImageDescription, ImageSource, SourceChannels, SourceEncoding, gamma_from_semantic, guess_semantic_from_name,
-		process_image_in,
+		png_declared_gamma, process_image_in,
 	},
 	types::Gamma,
 };

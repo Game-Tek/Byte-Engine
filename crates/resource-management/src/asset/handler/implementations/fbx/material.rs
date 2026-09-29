@@ -15,12 +15,10 @@ impl ResolvedFbxMaterials {
 	}
 }
 
-/// Bounds concurrent BEAD material override bakes.
-const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
-
 /// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a fallback.
 ///
-/// Overrides bake as dependencies. Every other material is generated through [`store_generated_materials`].
+/// Maps each material to a BEAD override or a generated BRDF graph, then resolves them all through
+/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest.
 pub(crate) async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
 	spec: Option<&Value>,
@@ -30,28 +28,23 @@ pub(crate) async fn resolve_fbx_materials(
 ) -> Result<ResolvedFbxMaterials, LoadErrors> {
 	let keys = used_material_keys(scene, context.allocator());
 
-	let mut override_keys = Vec::new();
-	let mut overrides = Vec::new();
-	let mut generated_keys = Vec::new();
-	let mut generated = Vec::new();
+	let sources = keys
+		.iter()
+		.map(|&key| {
+			let material = match key {
+				MaterialKey::Default => None,
+				MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
+			};
 
-	for &key in &keys {
-		let material = match key {
-			MaterialKey::Default => None,
-			MaterialKey::Material(index) => scene.materials.as_ref().get(index as usize).map(AsRef::as_ref),
-		};
-
-		if let Some(override_id) = fbx_material_override(spec, material) {
-			override_keys.push(key);
-			overrides.push(override_id);
-		} else {
-			generated_keys.push(key);
-			generated.push(GeneratedMaterial {
-				base_id: generated_fbx_material_base_id(url, key, material),
-				brdf: fbx_brdf_material(material),
-			});
-		}
-	}
+			match fbx_material_override(spec, material) {
+				Some(override_id) => MaterialSource::Override(override_id),
+				None => MaterialSource::Generated(GeneratedMaterial {
+					base_id: generated_fbx_material_base_id(url, key, material),
+					brdf: fbx_brdf_material(material),
+				}),
+			}
+		})
+		.collect::<Vec<_>>();
 
 	// FBX graphs index textures by their position in the scene's texture list.
 	let image_ids = scene
@@ -60,17 +53,9 @@ pub(crate) async fn resolve_fbx_materials(
 		.map(|texture| generated_fbx_image_id(url, texture))
 		.collect::<Vec<_>>();
 
-	let (overridden, generated) = std::future::join!(
-		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
-		store_generated_materials(context, generator, url, &image_ids, generated),
-	)
-	.await;
+	let variants = resolve_container_materials(context, generator, url, &image_ids, sources).await?;
 
-	let materials = override_keys
-		.into_iter()
-		.zip(overridden?)
-		.chain(generated_keys.into_iter().zip(generated?))
-		.collect();
+	let materials = keys.iter().copied().zip(variants).collect();
 
 	Ok(ResolvedFbxMaterials { materials })
 }
@@ -164,9 +149,7 @@ pub(crate) fn fbx_material_override(spec: Option<&Value>, material: Option<&ufbx
 		.filter(|name| !name.is_empty())
 		.unwrap_or("default");
 
-	let material = &spec?["asset"][&key];
-
-	material["asset"].as_str().map(ToString::to_string)
+	bead_material_override(spec, key)
 }
 
 /// Loads an embedded or file-local FBX texture, processes its RGBA pixels, and stores its image resource.
@@ -271,19 +254,11 @@ pub(crate) fn resolve_fbx_texture_path(mesh_url: ResourceId<'_>, texture_path: &
 	let is_windows_absolute =
 		texture_path.len() > 2 && texture_path.as_bytes()[1] == b':' && texture_path.as_bytes()[2] == b'/';
 
-	if texture_path.contains("://") || texture_path.starts_with('/') || is_windows_absolute {
+	if is_windows_absolute {
 		return Ok(texture_path);
 	}
 
-	let base = mesh_url.get_base();
-
-	let parent = Path::new(base.as_ref()).parent();
-
-	if let Some(parent) = parent {
-		Ok(parent.join(texture_path).to_string_lossy().replace('\\', "/"))
-	} else {
-		Ok(texture_path)
-	}
+	Ok(mesh_url.resolve_relative(&texture_path))
 }
 
 /// Builds a deterministic resource ID for one texture owned by an FBX source asset.

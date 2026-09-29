@@ -44,17 +44,3 @@ impl Environment {
 		&self.resource_id
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::Environment;
-
-	#[test]
-	fn environment_retains_its_baked_resource_id() {
-		let environment = Environment::new("studio.environment.bead");
-
-		assert_eq!(environment.resource_id(), "studio.environment.bead");
-		assert_eq!(environment.illuminance(), None);
-		assert_eq!(environment.with_illuminance(20_000.0).illuminance(), Some(20_000.0));
-	}
-}

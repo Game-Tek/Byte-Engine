@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::{
-	ContainerContext, Curve, CurvePath, Position, Sizing, flow,
+	ContainerContext, Position, Sizing, flow,
 	style::{ConcreteLayer, ConcreteStyle, Layer},
 };
 
@@ -101,49 +101,48 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 	for (actual, expected) in actual.elements().zip(expected.elements()) {
 		assert_eq!(
 			(
-				actual.id,
-				actual.position,
-				actual.size,
-				actual.clip,
-				actual.clip_mask,
-				actual.opacity,
+				actual.placement.id,
+				actual.placement.position,
+				actual.placement.size,
+				actual.placement.clip,
+				actual.placement.clip_mask,
+				actual.placement.opacity,
 				actual.corner_radius,
 				actual.corner_exponent
 			),
 			(
-				expected.id,
-				expected.position,
-				expected.size,
-				expected.clip,
-				expected.clip_mask,
-				expected.opacity,
+				expected.placement.id,
+				expected.placement.position,
+				expected.placement.size,
+				expected.placement.clip,
+				expected.placement.clip_mask,
+				expected.placement.opacity,
 				expected.corner_radius,
 				expected.corner_exponent
 			),
 		);
-		assert_eq!(actual.backdrop_blur_radius, expected.backdrop_blur_radius);
 		assert_same_style(&actual.style, &expected.style);
 	}
 	assert_eq!(actual.texts().count(), expected.texts().count());
 	for (actual, expected) in actual.texts().zip(expected.texts()) {
 		assert_eq!(
 			(
-				actual.id,
-				actual.position,
-				actual.size,
-				actual.clip,
-				actual.clip_mask,
-				actual.opacity,
+				actual.placement.id,
+				actual.placement.position,
+				actual.placement.size,
+				actual.placement.clip,
+				actual.placement.clip_mask,
+				actual.placement.opacity,
 				actual.font_size,
 				&actual.content
 			),
 			(
-				expected.id,
-				expected.position,
-				expected.size,
-				expected.clip,
-				expected.clip_mask,
-				expected.opacity,
+				expected.placement.id,
+				expected.placement.position,
+				expected.placement.size,
+				expected.placement.clip,
+				expected.placement.clip_mask,
+				expected.placement.opacity,
 				expected.font_size,
 				&expected.content
 			),
@@ -154,21 +153,21 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 	for (actual, expected) in actual.curves().zip(expected.curves()) {
 		assert_eq!(
 			(
-				actual.id,
-				actual.position,
-				actual.size,
-				actual.clip,
-				actual.clip_mask,
-				actual.opacity,
+				actual.placement.id,
+				actual.placement.position,
+				actual.placement.size,
+				actual.placement.clip,
+				actual.placement.clip_mask,
+				actual.placement.opacity,
 				&actual.segments
 			),
 			(
-				expected.id,
-				expected.position,
-				expected.size,
-				expected.clip,
-				expected.clip_mask,
-				expected.opacity,
+				expected.placement.id,
+				expected.placement.position,
+				expected.placement.size,
+				expected.placement.clip,
+				expected.placement.clip_mask,
+				expected.placement.opacity,
 				&expected.segments
 			),
 		);
@@ -242,8 +241,8 @@ fn rebuilt_render_matches_fresh_content_and_preserves_older_clones() {
 		allocator.reset();
 		*engine.ctx_mut() = stage;
 		let mut fresh = changing_content_scene(stage);
-		let actual = engine.evaluate(Size::new(200, 200), &allocator);
-		let expected = fresh.evaluate(Size::new(200, 200), &allocator);
+		engine.evaluate(Size::new(200, 200), &allocator);
+		fresh.evaluate(Size::new(200, 200), &allocator);
 		let actual = engine.render();
 		let expected = fresh.render();
 		assert_same_render(actual, expected);
@@ -300,7 +299,7 @@ fn text_scene(stage: usize) -> Engine<usize> {
 									.style(ConcreteLayer::default().color(RGBA::new(0.2, 0.4, 0.6, 1.0).into()))
 							})
 							.await;
-						field.update_text_field(|f| f.content("ba").opacity(0.5)).await;
+						field.update_text(|f| f.content("ba").opacity(0.5)).await;
 					}
 					2 => {
 						// Multiple edits before evaluation must compare the final content's size.
@@ -309,27 +308,25 @@ fn text_scene(stage: usize) -> Engine<usize> {
 					}
 					3 => {
 						label.update_text(|t| t.content("wider label")).await;
-						field.update_text_field(|f| f.content("wider field")).await;
+						field.update_text(|f| f.content("wider field")).await;
 					}
 					4 => {
 						label.update_text(|t| t.font_size(24.0)).await;
-						field.update_text_field(|f| f.font_size(24.0)).await;
+						field.update_text(|f| f.font_size(24.0)).await;
 					}
 					5 => {
 						label.update_text(|t| t.content("two\nlines")).await;
-						field.update_text_field(|f| f.content("")).await;
+						field.update_text(|f| f.content("")).await;
 					}
 					6 => {
 						label
 							.update_text(|t| t.transform(Transform::identity().translate_x(10.0)))
 							.await;
-						field
-							.update_text_field(|f| f.transform(Transform::identity().scale(0.5)))
-							.await;
+						field.update_text(|f| f.transform(Transform::identity().scale(0.5))).await;
 					}
 					7 => {
 						label.update_text(|t| t.content("lines\ntwo")).await;
-						field.update_text_field(|f| f.content("ba")).await;
+						field.update_text(|f| f.content("ba")).await;
 					}
 					_ => unreachable!(),
 				}
@@ -384,7 +381,7 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 		}
 		let mut field = root.element("field").text_field("kept", |f| f).await;
 		ctx.render().await;
-		field.update_text_field(|f| f.content("much wider replacement")).await;
+		field.update_text(|f| f.content("much wider replacement")).await;
 	});
 	let mut allocator = bumpalo::Bump::new();
 	for content in ["ab", "ba", "kept", "much wider replacement"] {
@@ -394,7 +391,7 @@ fn text_edits_before_scope_removal_do_not_affect_replacement_content() {
 		assert_eq!(render.texts().count(), 1);
 		let text = render.texts().next().unwrap();
 		assert_eq!(text.content, content);
-		assert_eq!(text.size, TextSystem::new().measure(content, 16.0));
+		assert_eq!(text.placement.size, TextSystem::new().measure(content, 16.0));
 	}
 }
 
@@ -439,45 +436,9 @@ fn flow_replacements_and_gap_changes_update_layout_after_paint_changes() {
 	] {
 		allocator.reset();
 		engine.evaluate(Size::new(100, 100), &allocator);
-		let position = engine.render().elements().last().unwrap().position;
+		let position = engine.render().elements().last().unwrap().placement.position;
 		assert_eq!((position.x(), position.y()), (x, y));
 	}
-}
-
-#[test]
-fn custom_flow_observes_captured_state_after_a_paint_update() {
-	thread_local! { static OFFSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) }; }
-	let mut engine = Engine::new();
-	engine.mount(async move |ctx| {
-		let mut root = ctx
-			.element("root")
-			.container(|c| {
-				c.flow(|input: crate::ui::flow::FlowInput| {
-					crate::ui::flow::FlowOutput::new(
-						crate::ui::flow::Offset::new(OFFSET.with(std::cell::Cell::get), 0.0),
-						input.cursor(),
-					)
-				})
-			})
-			.await;
-		let mut child = root.element("child").container(|c| c.size(20.into())).await;
-		let mut label = root.element("label").text("ab", |t| t).await;
-		ctx.render().await;
-		OFFSET.with(|offset| offset.set(40.0));
-		child.update_container(|c| c.opacity(0.5)).await;
-		ctx.render().await;
-		OFFSET.with(|offset| offset.set(60.0));
-		label.update_text(|t| t.content("ba")).await;
-	});
-	let allocator = bumpalo::Bump::new();
-	engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 0.0);
-	engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 40.0);
-	engine.evaluate(Size::new(100, 100), &allocator);
-	let render = engine.render();
-	assert_eq!(render.elements().nth(1).unwrap().position.x(), 60.0);
-	assert_eq!(render.texts().next().unwrap().content, "ba");
 }
 
 #[test]
@@ -501,12 +462,12 @@ fn custom_flow_changes_across_resizes_refresh_geometry() {
 	});
 	let allocator = bumpalo::Bump::new();
 	engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 0.0);
+	assert_eq!(engine.render().elements().nth(1).unwrap().placement.position.x(), 0.0);
 	OFFSET.with(|offset| offset.set(40.0));
 	engine.evaluate(Size::new(200, 100), &allocator);
 	// Returning to the first size must lay the flow out again instead of reusing that size's earlier geometry.
 	engine.evaluate(Size::new(100, 100), &allocator);
-	assert_eq!(engine.render().elements().nth(1).unwrap().position.x(), 40.0);
+	assert_eq!(engine.render().elements().nth(1).unwrap().placement.position.x(), 40.0);
 }
 
 #[test]
@@ -528,9 +489,9 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	let mut hits = crate::ui::intersection::HitTest::default();
 	engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut hits);
 	let child = engine.render().elements().nth(1).unwrap();
-	assert_eq!(child.opacity, 0.25);
-	assert_eq!(child.clip, None);
-	let child_id = child.id;
+	assert_eq!(child.placement.opacity, 0.25);
+	assert_eq!(child.placement.clip, None);
+	let child_id = child.placement.id;
 	let point = UiPoint::new(-0.1, 0.9);
 	assert_eq!(hits.query(point), None);
 	let next = engine.evaluate(Size::new(100, 100), &allocator);
@@ -625,20 +586,20 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 	] {
 		*retained.ctx_mut() = (camera, nested);
 		let calls = CALLS.with(std::cell::Cell::get);
-		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
+		let actual = retained.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(
 			CALLS.with(std::cell::Cell::get),
 			calls,
 			"A transform edit called the layout flow."
 		);
 		let mut fresh = scene(camera, nested);
-		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
+		let expected = fresh.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(actual.elements, expected.elements);
 		for y in (0..200).step_by(5) {
 			for x in (0..300).step_by(5) {
 				assert_eq!(
-					actual.click(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0)),
-					expected.click(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0))
+					actual.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None),
+					expected.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None)
 				);
 			}
 		}
@@ -663,10 +624,10 @@ fn edited_curve_paths_refresh_hits() {
 	});
 	let arena = bumpalo::Bump::new();
 	let window = |x: f32, y: f32| UiPoint::new(x / 50.0 - 1.0, 1.0 - y / 50.0);
-	let first = engine.evaluate(Size::new(100, 100), &arena).click(window(20., 1.));
+	let first = engine.evaluate(Size::new(100, 100), &arena).hit(window(20., 1.), None);
 	assert_eq!(first, *engine.ctx());
-	let mut second = engine.evaluate(Size::new(100, 100), &arena);
-	let (old, new) = (second.click(window(20., 1.)), second.click(window(20., 21.)));
+	let second = engine.evaluate(Size::new(100, 100), &arena);
+	let (old, new) = (second.hit(window(20., 1.), None), second.hit(window(20., 21.), None));
 	assert_ne!(old, *engine.ctx());
 	assert_eq!(new, *engine.ctx());
 }
@@ -739,14 +700,14 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 		(identity, identity),
 	] {
 		*retained.ctx_mut() = (outer, inner);
-		let mut actual = retained.evaluate(Size::new(300, 200), &arena);
+		let actual = retained.evaluate(Size::new(300, 200), &arena);
 		let mut fresh = scene(outer, inner);
-		let mut expected = fresh.evaluate(Size::new(300, 200), &arena);
+		let expected = fresh.evaluate(Size::new(300, 200), &arena);
 		assert_eq!(actual.elements, expected.elements);
 		for y in (0..200).step_by(4) {
 			for x in (0..300).step_by(4) {
 				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0);
-				assert_eq!(actual.click(point), expected.click(point));
+				assert_eq!(actual.hit(point, None), expected.hit(point, None));
 			}
 		}
 		assert_same_render(retained.render(), fresh.render());

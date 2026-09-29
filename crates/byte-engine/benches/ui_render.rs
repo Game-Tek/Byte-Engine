@@ -7,7 +7,10 @@
 
 extern crate utils as engine_utils;
 
+// Checking this harness enables `cfg(test)` without a test harness, so the `#[test]` functions are stripped and the
+// helpers and imports only they use look unused. The library's own targets report its dead code.
 #[path = "../src/lib.rs"]
+#[allow(dead_code, unused_imports, unused_macros)]
 mod library;
 pub use library::*;
 

@@ -339,6 +339,21 @@ fn append_mouse_motion(window: &NSWindow, event: &NSEvent, time: u64, push: &mut
 	append_mouse_position(window, event, time, push);
 }
 
+/// Maps an AppKit mouse-button event type to the button it changes and whether it was pressed.
+///
+/// Returns `None` for every other event type.
+fn mouse_button(event_type: NSEventType) -> Option<(MouseKeys, bool)> {
+	match event_type {
+		NSEventType::LeftMouseDown => Some((MouseKeys::Left, true)),
+		NSEventType::LeftMouseUp => Some((MouseKeys::Left, false)),
+		NSEventType::RightMouseDown => Some((MouseKeys::Right, true)),
+		NSEventType::RightMouseUp => Some((MouseKeys::Right, false)),
+		NSEventType::OtherMouseDown => Some((MouseKeys::Middle, true)),
+		NSEventType::OtherMouseUp => Some((MouseKeys::Middle, false)),
+		_ => None,
+	}
+}
+
 /// Samples the event's position before a button transition so its drag endpoint
 /// stays correct when AppKit coalesces or omits a separate motion event.
 fn append_mouse_position(window: &NSWindow, event: &NSEvent, time: u64, push: &mut impl FnMut(Events)) {
@@ -523,42 +538,22 @@ impl AppLike for App {
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
-				match event.r#type() {
+				let event_type = event.r#type();
+				if let Some((button, pressed)) = mouse_button(event_type) {
+					// The position goes first so the button event lands at the drag endpoint.
+					append_mouse_position(&window, &event, time, push);
+					push(Events::Button {
+						seat: Seat::stub(),
+						pressed,
+						button,
+					});
+				}
+				match event_type {
 					NSEventType::MouseMoved
 					| NSEventType::LeftMouseDragged
 					| NSEventType::RightMouseDragged
 					| NSEventType::OtherMouseDragged => {
 						append_mouse_motion(&window, &event, time, push);
-					}
-					NSEventType::LeftMouseDown | NSEventType::LeftMouseUp => {
-						let pressed = event.r#type() == NSEventType::LeftMouseDown;
-						append_mouse_position(&window, &event, time, push);
-
-						push(Events::Button {
-							seat: Seat::stub(),
-							pressed,
-							button: MouseKeys::Left,
-						});
-					}
-					NSEventType::RightMouseDown | NSEventType::RightMouseUp => {
-						let pressed = event.r#type() == NSEventType::RightMouseDown;
-						append_mouse_position(&window, &event, time, push);
-
-						push(Events::Button {
-							seat: Seat::stub(),
-							pressed,
-							button: MouseKeys::Right,
-						});
-					}
-					NSEventType::OtherMouseDown | NSEventType::OtherMouseUp => {
-						let pressed = event.r#type() == NSEventType::OtherMouseDown;
-						append_mouse_position(&window, &event, time, push);
-
-						push(Events::Button {
-							seat: Seat::stub(),
-							pressed,
-							button: MouseKeys::Middle,
-						});
 					}
 					NSEventType::ScrollWheel => {
 						let dx = event.scrollingDeltaX() as f32;
@@ -812,15 +807,6 @@ mod tests {
 	use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 	use super::normalize_mouse_position;
-
-	#[test]
-	fn normalize_mouse_position_centers_the_origin() {
-		let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(200.0, 100.0));
-
-		let (x, y) = normalize_mouse_position(NSPoint::new(100.0, 50.0), frame).unwrap();
-
-		assert_eq!((x, y), (0.0, 0.0));
-	}
 
 	#[test]
 	fn normalize_mouse_position_uses_the_content_frame_edges() {

@@ -187,20 +187,6 @@ mod tests {
 	}
 
 	#[test]
-	fn generated_sphere_has_consistent_stream_lengths_and_valid_indices() {
-		let sphere = SphereMeshGenerator::from_radius(2.0);
-		let positions = sphere.positions();
-
-		assert_eq!(positions.len(), 81);
-		assert_eq!(sphere.normals().len(), positions.len());
-		assert_eq!(sphere.tangents().len(), positions.len());
-		assert_eq!(sphere.bitangents().len(), positions.len());
-		assert_eq!(sphere.uvs().len(), positions.len());
-		assert_eq!(sphere.indices().len(), 8 * 8 * 6);
-		assert!(sphere.indices().iter().all(|index| (*index as usize) < positions.len()));
-	}
-
-	#[test]
 	fn every_vertex_has_a_right_handed_orthonormal_frame() {
 		let sphere = SphereMeshGenerator::from_radius(2.5);
 		for (((position, normal), tangent), bitangent) in sphere

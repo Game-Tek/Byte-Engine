@@ -25,27 +25,17 @@ pub(crate) struct AccelerationStructure {
 }
 
 /// The `Tasks` enum lists backend work that must wait until a frame's previous submission has completed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tasks {
 	/// Replaces one frame-local image with a new extent.
 	ResizeImage {
 		handle: graphics_hardware_interface::BaseImageHandle,
 		extent: Extent,
 	},
-	/// Creates the next frame-local image of a dynamic image chain after `previous`.
-	BuildImage {
-		previous: ImageHandle,
-		master: graphics_hardware_interface::BaseImageHandle,
-	},
-	/// Creates the next frame-local buffer of a dynamic buffer chain after `previous`.
-	BuildBuffer {
-		previous: BufferHandle,
-		master: graphics_hardware_interface::BaseBufferHandle,
-	},
 }
 
 /// The `Task` struct schedules backend work for the frame sequence that can safely perform it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct Task {
 	pub(crate) task: Tasks,
 	pub(crate) frame: u8,

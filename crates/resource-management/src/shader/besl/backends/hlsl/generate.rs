@@ -51,14 +51,14 @@ impl Generator {
 		if order.iter().any(Self::has_unsupported_hlsl_atomic_context) {
 			return Err(());
 		}
-		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
-		let uses_fma = order.iter().any(|node| Self::uses_intrinsic(node, "fma"));
+		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
+		let uses_fma = order.iter().any(|node| uses_intrinsic(node, "fma"));
 		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {
 			return Err(());
 		}
 		self.mesh_uses_render_target_array_index = order
 			.iter()
-			.any(|node| Self::uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
+			.any(|node| uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
 		self.task_payloads.clear();
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
@@ -88,9 +88,7 @@ impl Generator {
 		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics, uses_fma);
 		if self.current_stage == HlslStage::Task {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
-			if !self.minified {
-				string.push('\n');
-			}
+			string.push_str(ShaderFormatting::new(self.minified).break_str());
 		}
 		if self.current_stage == HlslStage::Mesh {
 			self.emit_mesh_output_structs(&mut string);
@@ -114,7 +112,7 @@ impl Generator {
 	) {
 		self.emit_struct_node(string, name, fields, template);
 		if template.is_none()
-			&& !crate::shader::generator::is_builtin_struct_type(name, self.supports_atomic_u32())
+			&& !crate::shader::generator::is_builtin_struct_type(name)
 			&& self.user_struct_constructors.contains(node)
 		{
 			self.emit_hlsl_struct_factory(string, name, fields);
@@ -134,9 +132,7 @@ impl Generator {
 		if !self.task_payloads.is_empty() {
 			// Every amplification lane contributes to one payload, so it must use group-shared storage.
 			string.push_str("groupshared ObjectPayload payload;");
-			if !self.minified {
-				string.push('\n');
-			}
+			string.push_str(ShaderFormatting::new(self.minified).break_str());
 		}
 		self.emit_function_attributes(string, node, "main");
 		Self::emit_type_name(string, return_type.borrow().get_name().unwrap());
@@ -216,9 +212,7 @@ impl Generator {
 				string.push_str("[besl_index]=besl_argument_");
 				string.push_str(field_name);
 				string.push_str("[besl_index];}");
-				if !self.minified {
-					string.push('\n');
-				}
+				string.push_str(ShaderFormatting::new(self.minified).break_str());
 			} else {
 				formatting.push_indentation(string, 1);
 				string.push_str("besl_value.");
@@ -273,64 +267,6 @@ impl Generator {
 		}
 	}
 
-	/// Reports whether a backend type needs non-interpolated raster-stage I/O.
-	pub(crate) fn is_integer_type(type_name: &str) -> bool {
-		matches!(
-			type_name,
-			"int8_t"
-				| "uint8_t" | "int16_t"
-				| "uint16_t" | "int"
-				| "int32_t" | "uint"
-				| "uint32_t" | "int64_t"
-				| "uint64_t" | "int2"
-				| "uint2" | "uint3"
-				| "uint4" | "uint16_t2"
-				| "uint16_t4"
-		)
-	}
-
-	/// Emits one specialization aggregate as plain HLSL constants for DXC.
-	fn emit_specialization_node(&self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
-		let mut members = Vec::new();
-		let r#type = r#type.borrow();
-		let type_name = Self::type_identifier(r#type.get_name().unwrap());
-
-		if let besl::Nodes::Struct { fields, .. } = r#type.node() {
-			for field in fields {
-				let field = field.borrow();
-				let besl::Nodes::Member {
-					name: member_name,
-					r#type,
-					..
-				} = field.node()
-				else {
-					continue;
-				};
-				let member_name = format!("{name}_{member_name}");
-				string.push_str("static const ");
-				string.push_str(Self::translate_type(r#type.borrow().get_name().unwrap()));
-				string.push(' ');
-				string.push_str(&member_name);
-				string.push_str("=1.0f;");
-				if !self.minified {
-					string.push('\n');
-				}
-				members.push(member_name);
-			}
-		}
-
-		string.push_str("static const ");
-		type_name.push_to(string);
-		string.push(' ');
-		Self::identifier(name).push_to(string);
-		string.push('=');
-		string.push_str(&format!("{}({})", type_name, members.join(",")));
-		string.push(';');
-		if !self.minified {
-			string.push('\n');
-		}
-	}
-
 	// This function appends to the `string` parameter the string representation of the node.
 	//
 	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
@@ -349,7 +285,6 @@ impl Generator {
 		let break_char = formatting.break_str();
 
 		match node.node() {
-			besl::Nodes::Null => {}
 			besl::Nodes::Scope { .. } => {}
 			besl::Nodes::Function {
 				name,
@@ -422,12 +357,13 @@ impl Generator {
 					return;
 				}
 				let format = format.borrow();
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let besl_type = format.get_name().unwrap();
+				let type_name = Self::translate_type(besl_type);
 
 				// HLSL uses semantics like TEXCOORD0, TEXCOORD1, etc.
 				string.push_str(&format!(
 					"{}{} {} : TEXCOORD{};{break_char}",
-					if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+					if self.current_stage_interpolates_inputs && is_integer_besl_type(besl_type) {
 						"nointerpolation "
 					} else {
 						""
@@ -450,12 +386,13 @@ impl Generator {
 					return;
 				}
 				let format = format.borrow();
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let besl_type = format.get_name().unwrap();
+				let type_name = Self::translate_type(besl_type);
 
 				// HLSL uses SV_Target0, SV_Target1, etc. for render targets
 				string.push_str(&format!(
 					"{}{} {} : SV_Target{};{break_char}",
-					if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+					if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
 						"nointerpolation "
 					} else {
 						""
@@ -481,9 +418,7 @@ impl Generator {
 					string.push(']');
 				}
 				string.push(';');
-				if !self.minified {
-					string.push('\n');
-				}
+				string.push_str(ShaderFormatting::new(self.minified).break_str());
 			}
 			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
 			besl::Nodes::Conditional {
@@ -541,11 +476,8 @@ impl Generator {
 							self.emit_statement_end(string);
 						}
 
-						if self.minified {
-							string.push_str("};");
-						} else {
-							string.push_str("};\n");
-						}
+						string.push('}');
+						self.emit_statement_end(string);
 
 						string.push_str(&format!("{buffer_type}<_{name}> "));
 						Self::identifier(name).push_to(string);
@@ -557,9 +489,7 @@ impl Generator {
 						}
 
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
 						let element = element.borrow();
@@ -575,9 +505,7 @@ impl Generator {
 						string.push_str("> ");
 						Self::identifier(name).push_to(string);
 						string.push_str(&format!(" : register({register_type}{register_index}, space0);"));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::Image { format } => {
 						// UAV (unordered access view) for images
@@ -597,9 +525,7 @@ impl Generator {
 						}
 
 						string.push_str(&format!(" : register(u{register_index}, space0);"));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						// HLSL separates textures and samplers, but for combined sampler we use Texture2D
@@ -626,9 +552,7 @@ impl Generator {
 						}
 
 						string.push_str(&format!(" : register(t{register_index}, space0);"));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 
 						// Also declare a sampler with the same name + _sampler suffix
 						string.push_str("SamplerState ");
@@ -641,9 +565,7 @@ impl Generator {
 							string.push(']');
 						}
 						string.push_str(&format!(" : register(s{register_index}, space0);"));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 				}
 			}
@@ -651,9 +573,6 @@ impl Generator {
 				for element in elements {
 					self.emit_node_string(string, element);
 				}
-			}
-			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				self.emit_const_node(string, name, r#type, value);
@@ -694,17 +613,12 @@ impl Generator {
 		}
 
 		// Matrix layout
-		match compilation_settings.matrix_layout {
-			MatrixLayouts::RowMajor => hlsl_block.push_str("#pragma pack_matrix(row_major)\n"),
-			MatrixLayouts::ColumnMajor => hlsl_block.push_str("#pragma pack_matrix(column_major)\n"),
-		}
+		hlsl_block.push_str("#pragma pack_matrix(row_major)\n");
 
 		// Constants
 		hlsl_block.push_str("static const float PI = 3.14159265359;");
 
-		if !self.minified {
-			hlsl_block.push('\n');
-		}
+		hlsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
 		if uses_subgroup_intrinsics {
 			hlsl_block.push_str(
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\

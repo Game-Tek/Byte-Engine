@@ -1,61 +1,16 @@
-const CONFIGURATION: tone_map::Configuration = tone_map::Configuration {
+use super::image_transform::Configuration;
+
+/// The AgX tone mapper, installed by [`crate::application::graphics::setup_agx_tonemap_render_pass`].
+pub const TONE_MAPPING: Configuration = Configuration {
+	name: "agx",
+	label: "AgX Tonemap",
 	pipeline_id: "byte-engine/rendering/agx/tone-mapping.pipeline",
-	descriptor_set_name: "AGX Tonemap Pass Descriptor Set",
 	output_name: "AGX Tonemap Output",
-	shader_error: "Failed to create AGX tone mapping shader",
+	requires_float_input: false,
 };
-
-/// The `BaseAgxToneMapPass` struct defines the shared GPU state required for AGX tonemapping.
-#[derive(Clone)]
-pub struct BaseAgxToneMapPass {
-	pipeline: crate::rendering::render_pass::simple_compute::Pipeline,
-}
-
-impl Entity for BaseAgxToneMapPass {}
-
-impl BaseAgxToneMapPass {
-	/// Creates the shared AGX compute pipeline resources used by per-view tonemap passes.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
-		Self {
-			pipeline: tone_map::create_pipeline(render_pass_builder, &CONFIGURATION),
-		}
-	}
-}
-
-/// The `AgxToneMapPass` struct defines a per-view AGX tonemapping pass instance.
-pub struct AgxToneMapPass {
-	render_pass: crate::rendering::render_pass::simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
-}
-
-impl AgxToneMapPass {
-	/// Creates the per-view descriptor bindings for the AGX tonemap pass.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder) -> Self {
-		let base = BaseAgxToneMapPass::new(render_pass_builder);
-		let passes = tone_map::create_passes(render_pass_builder, &base.pipeline, &CONFIGURATION);
-		AgxToneMapPass {
-			render_pass: passes.active,
-			bypass_pass: passes.bypass,
-		}
-	}
-}
-
-impl Entity for AgxToneMapPass {}
-
-impl RenderPass for AgxToneMapPass {
-	fn name(&self) -> &'static str {
-		"agx"
-	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(prepare = render_pass);
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
-}
 
 #[cfg(test)]
 mod tests {
-	use besl::vm::{DescriptorBindings, ResourceSlot};
-	use resource_management::shader::{besl::backends::msl::MSLTranspiler, generator::ShaderGenerationSettings};
 
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, run_image_transform_vm};
@@ -97,10 +52,3 @@ mod tests {
 		);
 	}
 }
-
-use super::tone_map;
-use crate::core::Entity;
-use crate::rendering::{
-	Sink,
-	render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn},
-};

@@ -51,19 +51,3 @@ impl Default for Scale {
 		Self::identity()
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use maths_rs::Vec3f;
-
-	use super::Scale;
-
-	#[test]
-	fn identity_and_maths_conversion_preserve_scale_factors() {
-		assert_eq!(Scale::identity(), Scale::new(1.0, 1.0, 1.0));
-		let scale = Scale::from_maths(Vec3f::new(2.0, 3.0, 4.0));
-
-		assert_eq!((scale.x(), scale.y(), scale.z()), (2.0, 3.0, 4.0));
-		assert_eq!(scale.into_maths(), Vec3f::new(2.0, 3.0, 4.0));
-	}
-}

@@ -1,5 +1,5 @@
 use super::analysis::Generator;
-use crate::shader::generator::{MatrixLayouts, ShaderGenerationSettings, Stages};
+use crate::shader::generator::{ShaderFormatting, ShaderGenerationSettings, Stages};
 
 /// Emits the GLSL version, stage, extension, and layout declarations.
 pub(super) fn generate_glsl_header_block(
@@ -9,8 +9,7 @@ pub(super) fn generate_glsl_header_block(
 	uses_subgroup_intrinsics: bool,
 	uses_f16_types: bool,
 ) {
-	let glsl_version = &compilation_settings.glsl.version;
-	glsl_block.push_str(&format!("#version {glsl_version} core\n"));
+	glsl_block.push_str("#version 450 core\n");
 
 	match compilation_settings.stage {
 		Stages::Vertex => glsl_block.push_str("#pragma shader_stage(vertex)\n"),
@@ -64,10 +63,8 @@ pub(super) fn generate_glsl_header_block(
 		_ => {}
 	}
 
-	match compilation_settings.matrix_layout {
-		MatrixLayouts::RowMajor => glsl_block.push_str("layout(row_major) uniform;layout(row_major) buffer;\n"),
-		MatrixLayouts::ColumnMajor => glsl_block.push_str("layout(column_major) uniform;layout(column_major) buffer;\n"),
-	}
+	// BESL matrices are always row major in uniform and storage buffers.
+	glsl_block.push_str("layout(row_major) uniform;layout(row_major) buffer;\n");
 
 	glsl_block.push_str("const float PI = 3.14159265359;");
 	glsl_block.push_str(
@@ -80,7 +77,5 @@ pub(super) fn generate_glsl_header_block(
 			 bool _besl_is_normal(float16_t value){return _besl_is_finite(value)&&abs(value)>=float16_t(0.00006103515625);}\n",
 		);
 	}
-	if !generator.minified {
-		glsl_block.push('\n');
-	}
+	glsl_block.push_str(ShaderFormatting::new(generator.minified).break_str());
 }

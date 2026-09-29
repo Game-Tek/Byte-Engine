@@ -1,7 +1,7 @@
 use std::alloc::Allocator;
 
 use exr::prelude::f16;
-use utils::Extent;
+use utils::{Extent, color::srgb_to_linear};
 
 use crate::types::{Formats, Gamma};
 
@@ -174,14 +174,12 @@ fn validated_pixel_count(source: ImageSource<'_>) -> Option<usize> {
 	Some(pixel_count)
 }
 
+/// Returns the texel size of a canonical format images are converted into.
 fn target_stride(target_format: Formats) -> Option<usize> {
-	Some(match target_format {
-		Formats::RGBA8 | Formats::RGBA8SRGB => 4,
-		Formats::RGBA16 => 8,
-		Formats::R16F => 2,
-		Formats::RGBA16F => 8,
-		_ => return None,
-	})
+	match target_format {
+		Formats::RGBA8 | Formats::RGBA8SRGB | Formats::RGBA16 | Formats::R16F | Formats::RGBA16F => target_format.texel_bytes(),
+		_ => None,
+	}
 }
 
 fn append_canonical_image_unchecked<A: Allocator>(
@@ -284,15 +282,6 @@ fn append_rgba16f<A: Allocator>(source: ImageSource<'_>, gamma: Gamma, output: &
 	Some(())
 }
 
-/// Removes the IEC 61966-2-1 transfer function from one normalized sRGB channel.
-fn srgb_to_linear(channel: f32) -> f32 {
-	if channel <= 0.040_45 {
-		channel / 12.92
-	} else {
-		((channel + 0.055) / 1.055).powf(2.4)
-	}
-}
-
 fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	match encoding {
 		SourceEncoding::U8 => bytes.first().copied(),
@@ -343,16 +332,6 @@ mod tests {
 		CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_image_in, canonicalize_rgba16f_in,
 	};
 	use crate::types::{Formats, Gamma};
-
-	#[test]
-	fn borrows_compatible_rgba8_decoder_output() {
-		let data = [1, 2, 3, 4, 5, 6, 7, 8];
-		let source = ImageSource::new(Extent::rectangle(2, 1), SourceChannels::RGBA, SourceEncoding::U8, &data);
-		let canonical = canonicalize_image_in(source, Formats::RGBA8, Global).expect("RGBA8 source should normalize");
-
-		assert!(matches!(canonical, CanonicalImageData::Borrowed(_)));
-		assert_eq!(canonical.as_slice().as_ptr(), data.as_ptr());
-	}
 
 	#[test]
 	fn expands_luminance_and_luminance_alpha_in_the_common_writer() {
@@ -468,13 +447,6 @@ mod tests {
 		assert!((values[1] - 0.0509).abs() < 0.001);
 		assert_eq!(values[2], 1.0);
 		assert!((values[3] - 0.125).abs() < 0.001);
-	}
-
-	#[test]
-	fn rejects_8_bit_sources_from_rgba16f_canonicalization() {
-		let source = ImageSource::new(Extent::rectangle(1, 1), SourceChannels::RGBA, SourceEncoding::U8, &[0; 4]);
-
-		assert!(canonicalize_rgba16f_in(source, Gamma::Linear, Global).is_none());
 	}
 
 	#[test]

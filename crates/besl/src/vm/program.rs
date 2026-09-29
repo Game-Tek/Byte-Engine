@@ -271,7 +271,7 @@ impl ExecutionFrame {
 		}
 		self.reset_storage(function_index, function);
 		for (local, register) in arguments.iter().copied().enumerate() {
-			self.locals[local] = Some(read_register(caller_registers, register)?);
+			self.locals[local] = Some(register_ref(caller_registers, register)?.clone());
 		}
 		Ok(())
 	}

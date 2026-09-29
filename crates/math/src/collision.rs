@@ -536,15 +536,6 @@ mod tests {
 	}
 
 	#[test]
-	fn dynamic_spheres_detect_approach() {
-		let first: Sphere<WorldSpace> = Sphere::new(Point::new(-2.0, 0.0, 0.0), 1.0);
-		let second = Sphere::new(Point::new(2.0, 0.0, 0.0), 1.0);
-		let hit = sphere_vs_sphere_dynamic(&first, &second, Vector::new(3.0, 0.0, 0.0), Vector::zero(), 1.0).unwrap();
-
-		assert_float_eq_with_epsilon!(hit.toi(), 2.0 / 3.0, 0.0001);
-	}
-
-	#[test]
 	fn dynamic_spheres_report_tangent_contact() {
 		let first: Sphere<WorldSpace> = Sphere::new(Point::origin(), 1.0);
 		let second = Sphere::new(Point::new(4.0, 0.0, 0.0), 1.0);

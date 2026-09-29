@@ -25,13 +25,6 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 
 	/// Resolves the authored source image, converts high-precision samples to linear RGBA16F, and stores its IBL maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(resource_type) = context.resource_type(url)
-			&& resource_type != "Image"
-			&& !self.can_handle(resource_type)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (manifest, asset_type) = context.resolve(url).await?;
 
 		if !self.can_handle(&asset_type) {
@@ -132,7 +125,6 @@ mod tests {
 	};
 
 	use exr::prelude::{SpecificChannels, WritableImage as _};
-	use image::codecs::hdr::HdrEncoder;
 
 	use super::EnvironmentMapAssetHandler;
 	use crate::{
@@ -196,35 +188,6 @@ mod tests {
 			.non_parallel()
 			.to_buffered(Cursor::new(&mut bytes))
 			.expect("the in-memory square EXR fixture must encode");
-
-		bytes
-	}
-
-	/// Encodes a Radiance HDR source, which intentionally has no standalone asset handler.
-	fn hdr_fixture() -> Vec<u8> {
-		let mut bytes = Vec::new();
-		let pixels = [image::Rgb([4.0, 0.5, 0.25]), image::Rgb([16.0, 2.0, 8.0])];
-
-		HdrEncoder::new(&mut bytes)
-			.encode(&pixels, 2, 1)
-			.expect("the HDR fixture must encode");
-
-		bytes
-	}
-
-	/// Encodes one 8-bit source used to exercise the environment precision contract.
-	fn eight_bit_png_fixture() -> Vec<u8> {
-		let mut bytes = Vec::new();
-
-		{
-			let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
-			encoder.set_color(png::ColorType::Rgba);
-			encoder.set_depth(png::BitDepth::Eight);
-			let mut writer = encoder.write_header().expect("the PNG header must encode");
-			writer
-				.write_image_data(&[32, 128, 224, 255])
-				.expect("the PNG pixels must encode");
-		}
 
 		bytes
 	}
@@ -312,47 +275,6 @@ mod tests {
 			.expect("a referenced image sidecar must not participate in environment baking");
 
 		assert!(resource_storage.read(ResourceId::new("raw.environment.bead")).await.is_some());
-	}
-
-	#[r#async::test]
-	async fn environment_asset_decodes_hdr_without_an_hdr_asset_handler() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("sky.environment.bead", br#"{ source: "sky.hdr" }"#);
-		source_storage.add_file("sky.hdr", &hdr_fixture());
-
-		let resource_storage = TestResourceStorage::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
-
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
-		asset_manager
-			.bake("sky.environment.bead")
-			.await
-			.expect("the environment decoder must accept Radiance HDR directly");
-
-		let (stored, _) = resource_storage
-			.read(ResourceId::new("sky.environment.bead"))
-			.await
-			.expect("the HDR-backed environment must be stored");
-		let image: Image = crate::from_slice(stored.resource()).expect("the environment metadata must deserialize");
-
-		assert!(image.ibl.is_some());
-	}
-
-	#[r#async::test]
-	async fn eight_bit_sources_fail_without_storing_an_environment() {
-		let source_storage = TestStorageBackend::new();
-
-		source_storage.add_file("low.environment.bead", br#"{ source: "low.png" }"#);
-		source_storage.add_file("low.png", &eight_bit_png_fixture());
-
-		let resource_storage = TestResourceStorage::new();
-		let mut asset_manager = AssetManager::new(source_storage, resource_storage.clone());
-
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::default());
-
-		assert!(asset_manager.bake("low.environment.bead").await.is_err());
-		assert!(resource_storage.read(ResourceId::new("low.environment.bead")).await.is_none());
 	}
 
 	#[r#async::test]

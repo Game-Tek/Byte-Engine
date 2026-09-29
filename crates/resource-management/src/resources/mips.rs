@@ -1,9 +1,6 @@
-use std::{
-	alloc::{Allocator, Global},
-	error::Error,
-	fmt,
-	simd::Simd,
-};
+use std::{error::Error, fmt, simd::Simd};
+
+use utils::color::{linear_to_srgb, srgb_to_linear};
 
 use crate::types::{Formats, Gamma};
 
@@ -77,26 +74,10 @@ impl OwnedMipChain {
 
 	#[cfg(feature = "gpu-mips")]
 	pub(super) fn from_packed_rgba8_lower_levels(width: u32, height: u32, data: Box<[u8]>) -> Result<Self, MipGenerationError> {
-		let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
-		let (mut level_width, mut level_height) = (width, height);
-		let mut level_count = 0usize;
-		let mut offset = 0usize;
-		while level_width > 1 || level_height > 1 {
-			level_width = (level_width / 2).max(1);
-			level_height = (level_height / 2).max(1);
-			let size = expected_size(level_width, level_height, 4).ok_or(MipGenerationError::DimensionsTooLarge)?;
-			levels[level_count] = OwnedMipRange {
-				width: level_width,
-				height: level_height,
-				offset,
-				size,
-			};
-			offset = offset.checked_add(size).ok_or(MipGenerationError::DimensionsTooLarge)?;
-			level_count += 1;
-		}
-		if data.len() != offset {
+		let (levels, level_count, total_size) = lower_level_layout(width, height, 4)?;
+		if data.len() != total_size {
 			return Err(MipGenerationError::BufferSizeMismatch {
-				expected: offset,
+				expected: total_size,
 				got: data.len(),
 			});
 		}
@@ -136,62 +117,6 @@ impl MipGenerationBackend for CPUMipGenerationBackend {
 		base_level: &[u8],
 	) -> Result<OwnedMipChain, MipGenerationError> {
 		generate_owned_lower_mip_chain(format, gamma, width, height, base_level)
-	}
-}
-
-/// The `MipChain` struct owns generated levels while exposing each level as a borrowed slice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MipChain<'a, A: Allocator = Global> {
-	levels: Vec<StoredMipLevel<'a, A>, A>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StoredMipLevel<'a, A: Allocator = Global> {
-	width: u32,
-	height: u32,
-	data: MipLevelData<'a, A>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MipLevelData<'a, A: Allocator = Global> {
-	Borrowed(&'a [u8]),
-	Owned(Vec<u8, A>),
-}
-
-impl<A: Allocator> MipLevelData<'_, A> {
-	fn as_slice(&self) -> &[u8] {
-		match self {
-			MipLevelData::Borrowed(data) => data,
-			MipLevelData::Owned(data) => data.as_slice(),
-		}
-	}
-}
-
-impl<'a, A: Allocator> StoredMipLevel<'a, A> {
-	fn as_borrowed(&self) -> MipLevel<'_> {
-		MipLevel {
-			width: self.width,
-			height: self.height,
-			data: self.data.as_slice(),
-		}
-	}
-}
-
-impl<'a, A: Allocator> MipChain<'a, A> {
-	pub fn len(&self) -> usize {
-		self.levels.len()
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.levels.is_empty()
-	}
-
-	pub fn level(&self, index: usize) -> Option<MipLevel<'_>> {
-		self.levels.get(index).map(StoredMipLevel::as_borrowed)
-	}
-
-	pub fn levels(&self) -> impl ExactSizeIterator<Item = MipLevel<'_>> + '_ {
-		self.levels.iter().map(StoredMipLevel::as_borrowed)
 	}
 }
 
@@ -236,27 +161,38 @@ pub fn mip_level_count(width: u32, height: u32) -> Result<u32, MipGenerationErro
 		return Err(MipGenerationError::ZeroDimensions);
 	}
 
-	let mut levels = 1_u32;
-	let mut current_width = width;
-	let mut current_height = height;
-
-	while current_width > 1 || current_height > 1 {
-		current_width = (current_width / 2).max(1);
-		current_height = (current_height / 2).max(1);
-		levels += 1;
-	}
-
-	Ok(levels)
+	// Halving stops once the larger side reaches one texel, so the count is its bit length.
+	Ok(u32::BITS - width.max(height).leading_zeros())
 }
 
-/// Generates a full mip chain, including the base level, using a 2x2 box filter.
-pub fn generate_mip_chain<'a>(
-	format: Formats,
+/// Returns each level extent from `width` by `height` down to 1x1, halving each side and flooring it at one texel.
+pub(crate) fn mip_extents(width: u32, height: u32) -> impl Iterator<Item = (u32, u32)> {
+	std::iter::successors(Some((width, height)), |&(width, height)| {
+		(width > 1 || height > 1).then(|| ((width / 2).max(1), (height / 2).max(1)))
+	})
+}
+
+/// Lays out every level below the base level back to back and returns the ranges, their count, and the total size.
+fn lower_level_layout(
 	width: u32,
 	height: u32,
-	base_level: &'a [u8],
-) -> Result<MipChain<'a>, MipGenerationError> {
-	generate_mip_chain_in(format, width, height, base_level, Global)
+	bytes_per_pixel: usize,
+) -> Result<([OwnedMipRange; MAX_MIP_LEVELS], usize, usize), MipGenerationError> {
+	let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
+	let mut level_count = 0usize;
+	let mut offset = 0usize;
+	for (level_width, level_height) in mip_extents(width, height).skip(1) {
+		let size = expected_size(level_width, level_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
+		levels[level_count] = OwnedMipRange {
+			width: level_width,
+			height: level_height,
+			offset,
+			size,
+		};
+		offset = offset.checked_add(size).ok_or(MipGenerationError::DimensionsTooLarge)?;
+		level_count += 1;
+	}
+	Ok((levels, level_count, offset))
 }
 
 /// Generates packed lower mip levels using one output allocation.
@@ -282,31 +218,15 @@ fn generate_owned_lower_mip_chain(
 		return Ok(OwnedMipChain::empty());
 	}
 
-	let mut total_size = 0usize;
-	let (mut level_width, mut level_height) = (width, height);
-	while level_width > 1 || level_height > 1 {
-		level_width = (level_width / 2).max(1);
-		level_height = (level_height / 2).max(1);
-		total_size = total_size
-			.checked_add(
-				expected_size(level_width, level_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?,
-			)
-			.ok_or(MipGenerationError::DimensionsTooLarge)?;
-	}
+	let (levels, level_count, total_size) = lower_level_layout(width, height, bytes_per_pixel)?;
 
 	let mut data = vec![0_u8; total_size];
-	let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
 	let (mut source_width, mut source_height) = (width, height);
-	let mut source_range = None;
-	let mut offset = 0usize;
-	let mut level_count = 0usize;
-	while source_width > 1 || source_height > 1 {
-		let destination_width = (source_width / 2).max(1);
-		let destination_height = (source_height / 2).max(1);
-		let destination_size = expected_size(destination_width, destination_height, bytes_per_pixel)
-			.ok_or(MipGenerationError::DimensionsTooLarge)?;
-		let (completed, destination) = data.split_at_mut(offset);
-		let source = source_range
+	let mut source = None;
+	for level in &levels[..level_count] {
+		let (completed, destination) = data.split_at_mut(level.offset);
+		// Each level filters the one before it, which the previous iteration just wrote.
+		let source_bytes = source
 			.map(|range: std::ops::Range<usize>| &completed[range])
 			.unwrap_or(base_level);
 		downsample_level(
@@ -314,19 +234,11 @@ fn generate_owned_lower_mip_chain(
 			gamma,
 			source_width,
 			source_height,
-			source,
-			&mut destination[..destination_size],
+			source_bytes,
+			&mut destination[..level.size],
 		)?;
-		levels[level_count] = OwnedMipRange {
-			width: destination_width,
-			height: destination_height,
-			offset,
-			size: destination_size,
-		};
-		source_range = Some(offset..offset + destination_size);
-		offset += destination_size;
-		level_count += 1;
-		(source_width, source_height) = (destination_width, destination_height);
+		source = Some(level.offset..level.offset + level.size);
+		(source_width, source_height) = (level.width, level.height);
 	}
 
 	Ok(OwnedMipChain {
@@ -336,81 +248,11 @@ fn generate_owned_lower_mip_chain(
 	})
 }
 
-/// Generates a full mip chain using the provided allocator for generated levels.
-pub fn generate_mip_chain_in<'a, A: Allocator + Clone>(
-	format: Formats,
-	width: u32,
-	height: u32,
-	base_level: &'a [u8],
-	allocator: A,
-) -> Result<MipChain<'a, A>, MipGenerationError> {
-	if width == 0 || height == 0 {
-		return Err(MipGenerationError::ZeroDimensions);
-	}
-
-	let bytes_per_pixel = bytes_per_pixel(format).ok_or(MipGenerationError::UnsupportedFormat(format))?;
-	let expected_base_size = expected_size(width, height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
-
-	if base_level.len() != expected_base_size {
-		return Err(MipGenerationError::BufferSizeMismatch {
-			expected: expected_base_size,
-			got: base_level.len(),
-		});
-	}
-
-	let levels_count = mip_level_count(width, height)?;
-	let mut levels = Vec::with_capacity_in(levels_count as usize, allocator.clone());
-
-	let mut current_level = StoredMipLevel {
-		width,
-		height,
-		data: MipLevelData::Borrowed(base_level),
-	};
-
-	loop {
-		let current_width = current_level.width;
-		let current_height = current_level.height;
-
-		if current_width == 1 && current_height == 1 {
-			levels.push(current_level);
-			break;
-		}
-
-		let next_width = (current_width / 2).max(1);
-		let next_height = (current_height / 2).max(1);
-		let next_size =
-			expected_size(next_width, next_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
-
-		let mut next_data = Vec::with_capacity_in(next_size, allocator.clone());
-		next_data.resize(next_size, 0_u8);
-		downsample_level(
-			format,
-			Gamma::Linear,
-			current_width,
-			current_height,
-			current_level.data.as_slice(),
-			&mut next_data,
-		)?;
-
-		levels.push(current_level);
-		current_level = StoredMipLevel {
-			width: next_width,
-			height: next_height,
-			data: MipLevelData::Owned(next_data),
-		};
-	}
-
-	Ok(MipChain { levels })
-}
-
+/// Returns the texel size of a format the CPU downsampler supports.
 fn bytes_per_pixel(format: Formats) -> Option<usize> {
 	match format {
-		Formats::RG8 => Some(2),
-		Formats::RGB8 => Some(3),
-		Formats::RGBA8 | Formats::RGBA8SRGB => Some(4),
-		Formats::RGB16 => Some(6),
-		Formats::RGBA16 => Some(8),
-		Formats::R16F | Formats::RGBA16F | Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => None,
+		Formats::R16F | Formats::RGBA16F => None,
+		format => format.texel_bytes(),
 	}
 }
 
@@ -481,21 +323,11 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 }
 
 fn srgb_u8_to_linear(value: u8) -> f32 {
-	let encoded = f32::from(value) / 255.0;
-	if encoded <= 0.04045 {
-		encoded / 12.92
-	} else {
-		((encoded + 0.055) / 1.055).powf(2.4)
-	}
+	srgb_to_linear(f32::from(value) / 255.0)
 }
 
 fn linear_to_srgb_u8(value: f32) -> u8 {
-	let encoded = if value <= 0.0031308 {
-		12.92 * value
-	} else {
-		1.055 * value.powf(1.0 / 2.4) - 0.055
-	};
-	(encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+	(linear_to_srgb(value).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Downsamples an 8-bit format level with SIMD lane arithmetic for channel averaging.
@@ -598,7 +430,7 @@ fn load_u16_pixel<const CHANNELS: usize>(source: &[u8], offset: usize) -> Simd<u
 
 #[cfg(test)]
 mod tests {
-	use super::{MipChain, MipGenerationError, generate_mip_chain, generate_owned_lower_mip_chain, mip_level_count};
+	use super::{MipGenerationError, generate_owned_lower_mip_chain, mip_level_count};
 	use crate::types::{Formats, Gamma};
 
 	#[derive(Debug, Clone, PartialEq, Eq)]
@@ -606,18 +438,6 @@ mod tests {
 		width: u32,
 		height: u32,
 		data: Vec<u8>,
-	}
-
-	#[test]
-	fn generates_rgba8_chain_with_even_extent() {
-		let width = 4_u32;
-		let height = 4_u32;
-		let data = create_rgba8_pattern(width, height);
-
-		let generated = generate_mip_chain(Formats::RGBA8, width, height, &data).expect("mips must generate");
-		let expected = scalar_mip_chain_u8::<4>(width, height, &data);
-
-		assert_chain_matches(&generated, &expected);
 	}
 
 	#[test]
@@ -663,34 +483,37 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_invalid_buffer_size() {
-		let error = generate_mip_chain(Formats::RGBA8, 2, 2, &[0_u8; 3]).expect_err("must fail");
-
-		assert_eq!(error, MipGenerationError::BufferSizeMismatch { expected: 16, got: 3 });
-	}
-
-	#[test]
-	fn rejects_unsupported_format() {
-		let error = generate_mip_chain(Formats::BC7, 1, 1, &[]).expect_err("must fail");
-
-		assert_eq!(error, MipGenerationError::UnsupportedFormat(Formats::BC7));
-	}
-
-	#[test]
 	fn counts_mip_levels() {
 		let count = mip_level_count(17, 9).expect("valid size");
 
 		assert_eq!(count, 5);
 	}
 
-	fn assert_chain_matches(chain: &MipChain<'_>, expected: &[ExpectedMipLevel]) {
-		assert_eq!(chain.len(), expected.len());
+	/// Generates the complete linear chain, base level first, the way consumers store it.
+	fn generate_mip_chain(
+		format: Formats,
+		width: u32,
+		height: u32,
+		base_level: &[u8],
+	) -> Result<Vec<ExpectedMipLevel>, MipGenerationError> {
+		let lower = generate_owned_lower_mip_chain(format, Gamma::Linear, width, height, base_level)?;
+		let base = ExpectedMipLevel {
+			width,
+			height,
+			data: base_level.to_vec(),
+		};
 
-		for (generated, expected_level) in chain.levels().zip(expected.iter()) {
-			assert_eq!(generated.width, expected_level.width);
-			assert_eq!(generated.height, expected_level.height);
-			assert_eq!(generated.data, expected_level.data.as_slice());
-		}
+		Ok(std::iter::once(base)
+			.chain(lower.levels().map(|level| ExpectedMipLevel {
+				width: level.width,
+				height: level.height,
+				data: level.data.to_vec(),
+			}))
+			.collect())
+	}
+
+	fn assert_chain_matches(chain: &[ExpectedMipLevel], expected: &[ExpectedMipLevel]) {
+		assert_eq!(chain, expected);
 	}
 
 	fn create_rgba8_pattern(width: u32, height: u32) -> Vec<u8> {

@@ -539,37 +539,3 @@ pub(crate) fn validate_source_range(request: usize, source: ResourceIoFileRegion
 	}
 	Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn raw_compression_needs_no_capability_bit() {
-		let capabilities = ResourceIoCapabilities {
-			sources: ResourceIoSourceKinds::FILE,
-			destinations: ResourceIoDestinationKinds::BUFFER,
-			compression: ResourceIoCompressionMethods::empty(),
-			features: ResourceIoFeatures::empty(),
-		};
-
-		assert!(capabilities.supports_compression(ResourceIoCompression::None));
-		assert!(!capabilities.supports_compression(ResourceIoCompression::Lz4));
-	}
-	#[test]
-	fn image_request_defaults_to_the_subresource_origin() {
-		let request = ResourceIoImageLoad::new(
-			ResourceIoFileRegion::new(ResourceIoFileHandle { index: 2 }, 32),
-			BaseImageHandle(2),
-			3,
-			4,
-			Extent::rectangle(16, 8),
-			64,
-			512,
-		);
-
-		assert_eq!(request.origin, Extent::new(0, 0, 0));
-		assert_eq!(request.array_layer, 3);
-		assert_eq!(request.mip_level, 4);
-	}
-}

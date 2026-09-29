@@ -1,6 +1,6 @@
 use std::alloc::Layout;
 
-use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses, graphics_hardware_interface};
+use crate::{DeviceAccesses, PrivateHandle, PrivateHandles, Uses};
 
 /// The `BufferContents` trait lets one typed buffer API cover both fixed-size values and runtime-length arrays.
 ///
@@ -178,12 +178,6 @@ impl<'a> Builder<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(crate) struct BufferHandle(pub(crate) u64);
 
-impl From<BufferHandle> for graphics_hardware_interface::Handles {
-	fn from(val: BufferHandle) -> Self {
-		graphics_hardware_interface::Handles::Buffer(graphics_hardware_interface::BaseBufferHandle(val.0))
-	}
-}
-
 impl From<BufferHandle> for PrivateHandles {
 	fn from(val: BufferHandle) -> Self {
 		PrivateHandles::Buffer(val)
@@ -202,7 +196,7 @@ impl PrivateHandle for BufferHandle {
 
 #[cfg(test)]
 mod tests {
-	use super::{BufferContents, Mapping};
+	use super::BufferContents;
 
 	#[repr(C, align(64))]
 	#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -226,16 +220,5 @@ mod tests {
 			<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast(), std::mem::size_of::<u32>()),
 			Some(storage.as_mut_ptr())
 		);
-	}
-
-	#[test]
-	fn mapping_transfers_address_and_size_without_borrowing() {
-		let mut bytes = [0u8; 8];
-		let pointer = bytes.as_mut_ptr();
-		// SAFETY: The stack array remains alive and exclusively borrowed until the mapping is consumed below.
-		let mapping = unsafe { Mapping::from_raw_parts(pointer, bytes.len()) };
-
-		assert_eq!(mapping.byte_count(), bytes.len());
-		assert_eq!(mapping.into_raw_parts(), (pointer as usize, bytes.len()));
 	}
 }

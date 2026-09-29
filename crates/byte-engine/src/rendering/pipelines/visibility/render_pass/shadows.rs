@@ -9,7 +9,7 @@ use super::super::layout::{
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
 	SHADOW_MAP_RESOLUTION,
 };
-use super::super::mesh_dispatch::{MeshDispatch, PhaseDispatches};
+use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
@@ -66,38 +66,6 @@ pub(crate) struct ShadowWork {
 	pub(crate) receiver_fit: Option<[CascadeFrame; SHADOW_CASCADE_COUNT]>,
 	pub(crate) cone_count: usize,
 	pub(crate) point_count: usize,
-}
-
-impl ShadowWork {
-	pub(crate) fn any(self) -> bool {
-		self.directional.is_some() || self.cone_count > 0 || self.point_count > 0
-	}
-}
-
-/// Returns the cascade view indices that receive one batched shadow dispatch.
-pub(super) fn directional_shadow_view_indices(mesh_dispatch: MeshDispatch) -> impl Iterator<Item = u32> {
-	let has_work = !mesh_dispatch.is_empty();
-	(1..=SHADOW_CASCADE_COUNT as u32).filter(move |_| has_work)
-}
-
-/// Returns the packed cone view and target-layer indices that receive shadow dispatches.
-pub(super) fn cone_shadow_view_indices(mesh_dispatch: MeshDispatch, cone_count: usize) -> impl Iterator<Item = (u32, u32)> {
-	let count = if mesh_dispatch.is_empty() {
-		0
-	} else {
-		cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY)
-	};
-	(0..count).map(|layer| ((CONE_SHADOW_VIEW_OFFSET + layer) as u32, layer as u32))
-}
-
-/// Returns the packed point-cube view and target-face indices that receive shadow dispatches.
-pub(super) fn point_shadow_view_indices(mesh_dispatch: MeshDispatch, point_count: usize) -> impl Iterator<Item = (u32, u32)> {
-	let count = if mesh_dispatch.is_empty() {
-		0
-	} else {
-		point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY)
-	};
-	(0..count * POINT_SHADOW_FACE_COUNT).map(|face| ((POINT_SHADOW_VIEW_OFFSET + face) as u32, face as u32))
 }
 
 /// The `ReceiverFitShaderData` struct carries what the receiver-bounds and cascade-fit passes need from the CPU: how to
@@ -175,7 +143,6 @@ pub(super) struct ShadowPass {
 	double_sided_directional_pipeline: crate::rendering::PipelineRef,
 	double_sided_local_pipeline: crate::rendering::PipelineRef,
 	pub(super) directional_shadow_map: ghi::BaseImageHandle,
-	pub(super) depth_pyramid: ghi::BaseImageHandle,
 	pub(super) cone_shadow_map: ghi::BaseImageHandle,
 	pub(super) point_shadow_map: ghi::BaseImageHandle,
 }
@@ -294,7 +261,6 @@ impl ShadowPass {
 			),
 			double_sided_local_pipeline: request("byte-engine/rendering/visibility/double-sided-cone-shadow.pipeline"),
 			directional_shadow_map,
-			depth_pyramid,
 			cone_shadow_map,
 			point_shadow_map,
 		}
@@ -362,7 +328,7 @@ impl ShadowPass {
 			frame.resize_image(point_shadow_map, point_extent);
 		}
 
-		let fit = move |c: &mut ghi::implementation::CommandBufferRecording, _: &[ghi::AttachmentInformation]| {
+		let fit = move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::{
 				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
 				CommonCommandBufferMode as _,
@@ -393,13 +359,14 @@ impl ShadowPass {
 
 		Some((
 			fit,
-			move |c: &mut ghi::implementation::CommandBufferRecording, _: &[ghi::AttachmentInformation]| {
+			move |c: &mut ghi::implementation::CommandBufferRecording| {
 				use ghi::command_buffer::{
 					BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 					CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 				};
 
-				// Draws every solid, masked, and double-sided work range into the layers named by `views`.
+				// Draws every solid, masked, and double-sided work range into `view_count` layers: layer `n` shows packed
+				// view `view_base + n`.
 				let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
 				                   name: &str,
 				                   target: ghi::BaseImageHandle,
@@ -408,7 +375,8 @@ impl ShadowPass {
 				                   solid_pipeline: ghi::PipelineHandle,
 				                   masked_pipeline: ghi::PipelineHandle,
 				                   double_sided_pipeline: ghi::PipelineHandle,
-				                   views: &dyn Fn(MeshDispatch) -> Vec<(u32, u32)>| {
+				                   view_base: usize,
+				                   view_count: usize| {
 					c.start_region(|label| label.write_str(name));
 					let attachments = [ghi::AttachmentInformation::new(
 						target,
@@ -428,9 +396,9 @@ impl ShadowPass {
 						}
 						let c = c.bind_raster_pipeline(pipeline);
 						c.bind_descriptor_sets(&[descriptor_set]);
-						for (view_index, layer) in views(dispatch) {
+						for layer in 0..view_count as u32 {
 							c.write_push_constant(0, dispatch.work_item_base());
-							c.write_push_constant(4, view_index);
+							c.write_push_constant(4, view_base as u32 + layer);
 							c.write_push_constant(8, layer);
 							c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
 						}
@@ -449,11 +417,9 @@ impl ShadowPass {
 						pipelines.directional,
 						pipelines.masked_directional,
 						pipelines.double_sided_directional,
-						&|dispatch| {
-							directional_shadow_view_indices(dispatch)
-								.map(|view| (view, view - 1))
-								.collect()
-						},
+						// View zero is the camera, so the cascades follow it.
+						1,
+						SHADOW_CASCADE_COUNT,
 					);
 					// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
 					c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
@@ -472,7 +438,8 @@ impl ShadowPass {
 						pipelines.local,
 						pipelines.masked_local,
 						pipelines.double_sided_local,
-						&|dispatch| cone_shadow_view_indices(dispatch, work.cone_count).collect(),
+						CONE_SHADOW_VIEW_OFFSET,
+						work.cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY),
 					);
 				}
 				if work.point_count > 0 {
@@ -485,49 +452,11 @@ impl ShadowPass {
 						pipelines.local,
 						pipelines.masked_local,
 						pipelines.double_sided_local,
-						&|dispatch| point_shadow_view_indices(dispatch, work.point_count).collect(),
+						POINT_SHADOW_VIEW_OFFSET,
+						work.point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY) * POINT_SHADOW_FACE_COUNT,
 					);
 				}
 			},
 		))
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn shadow_dispatches_preserve_directional_cascades_cone_layers_and_point_cube_faces() {
-		let dispatch = MeshDispatch::with_workgroup_count(19);
-
-		assert_eq!(directional_shadow_view_indices(dispatch).collect::<Vec<_>>(), [1, 2, 3, 4]);
-		assert_eq!(
-			cone_shadow_view_indices(dispatch, 4).collect::<Vec<_>>(),
-			[(5, 0), (6, 1), (7, 2), (8, 3)]
-		);
-		assert_eq!(
-			cone_shadow_view_indices(dispatch, MAX_CONE_SHADOW_POOL_CAPACITY + 1).last(),
-			Some((
-				(CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY - 1) as u32,
-				(MAX_CONE_SHADOW_POOL_CAPACITY - 1) as u32
-			))
-		);
-		assert_eq!(directional_shadow_view_indices(MeshDispatch::default()).count(), 0);
-		assert_eq!(cone_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
-		assert_eq!(
-			point_shadow_view_indices(dispatch, 2).collect::<Vec<_>>(),
-			(0..12u32)
-				.map(|face| (POINT_SHADOW_VIEW_OFFSET as u32 + face, face))
-				.collect::<Vec<_>>()
-		);
-		assert_eq!(
-			point_shadow_view_indices(dispatch, MAX_POINT_SHADOW_POOL_CAPACITY + 1).last(),
-			Some((
-				(POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT - 1) as u32,
-				(MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT - 1) as u32,
-			))
-		);
-		assert_eq!(point_shadow_view_indices(MeshDispatch::default(), 4).count(), 0);
 	}
 }

@@ -4,6 +4,11 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Records a staging-to-buffer upload on this command buffer.
 	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
 		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		self.sync_private_buffer(buffer_handle);
+	}
+
+	/// Records the upload of one frame-local buffer copy from its staging buffer, if it has one.
+	pub(crate) fn sync_private_buffer(&mut self, buffer_handle: BufferHandle) {
 		let buffer = self.device.buffers.resource(buffer_handle);
 
 		let Some(staging_handle) = buffer.staging else {
@@ -14,8 +19,6 @@ impl<'a> CommandBufferRecording<'a> {
 		let staging_buffer = staging.buffer.clone();
 		let destination_buffer = buffer.buffer.clone();
 		let destination_size = buffer.size;
-		self.command_buffer.retain_allocation(staging_buffer.clone());
-		self.command_buffer.retain_allocation(destination_buffer.clone());
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([
 			synchronization::MetalResourceUse::buffer(
@@ -46,10 +49,79 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
+	/// Records the upload of one frame-local image copy from its CPU staging bytes, or of one `region` of them.
+	///
+	/// Does nothing for images the CPU cannot access.
+	pub(crate) fn sync_image(&mut self, image_handle: ImageHandle, region: Option<crate::image::Region>) {
+		let image = self.device.images.resource(image_handle);
+		let Some(staging) = image.staging.as_deref() else {
+			return;
+		};
+		let transfer_encoder = self.ensure_compute_encoder().clone();
+		self.consume_resources([synchronization::MetalResourceUse::image(
+			image_handle,
+			Some(0),
+			None,
+			mtl::MTLStages::Blit,
+			crate::AccessPolicies::WRITE,
+		)]);
+		let upload_buffer = encode_texture_upload(
+			self.device.metal_device,
+			self.commit.upload_arena,
+			transfer_encoder.as_ref(),
+			image.texture.as_ref(),
+			image.description.format,
+			image.description.extent,
+			image.description.array_layers,
+			staging,
+			region,
+		);
+		// Hazard tracking never sees the upload page, so the command retains it here.
+		self.command_buffer.retain_allocation(&*upload_buffer);
+	}
+
+	/// Copies each proxied swapchain's frame image into the drawable it presents.
+	pub(crate) fn resolve_swapchain_proxies(
+		&mut self,
+		present_drawables: &[(
+			graphics_hardware_interface::PresentKey,
+			Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+		)],
+	) {
+		// The region names the shared compute encoder in capture tools, as "Compute: Present Resolve".
+		self.start_region(|label| label.write_str("Present Resolve"));
+		for (present_key, drawable) in present_drawables {
+			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+			let (true, Some(drawable), Some(proxy)) = (
+				swapchain.uses_proxy,
+				drawable,
+				swapchain.images[present_key.sequence_index as usize],
+			) else {
+				continue;
+			};
+			let source = self.device.images.resource(proxy).texture.clone();
+			// The frame batch retains every presented drawable, so tracking the drawable write is enough here.
+			let destination = drawable.texture();
+			let transfer_encoder = self.ensure_compute_encoder().clone();
+			self.consume_resources([
+				synchronization::MetalResourceUse::image(proxy, None, None, mtl::MTLStages::Blit, crate::AccessPolicies::READ),
+				synchronization::MetalResourceUse::drawable(
+					destination.as_ref(),
+					mtl::MTLStages::Blit,
+					crate::AccessPolicies::WRITE,
+				),
+			]);
+			// SAFETY: Source and drawable textures are retained and validated for the proxy resolve copy.
+			unsafe {
+				transfer_encoder.copyFromTexture_toTexture(source.as_ref(), destination.as_ref());
+			}
+		}
+		self.end_region();
+	}
+
 	pub(crate) fn new(
 		device: RecordingDevice<'a>,
 		commit: RecordingCommit<'a>,
-		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		mut command_buffer: queue::NativeCommand,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
@@ -60,47 +132,32 @@ impl<'a> CommandBufferRecording<'a> {
 		resource_tracker.begin_recording();
 		// Shared argument tables are snapshotted by every command that binds them, so retain them up front.
 		for table in commit.argument_tables.iter() {
-			command_buffer.retain_object(table.clone());
+			command_buffer.retain_object(&**table);
 		}
 
 		Self {
 			device,
 			commit,
-			command_buffer_handle,
 			frame_key,
 			sequence_index,
 			command_buffer: NativeCommandSlot(Some(command_buffer)),
 			#[cfg(debug_assertions)]
 			debug_regions: Vec::new_in(allocator),
-			#[cfg(debug_assertions)]
-			compute_debug_region_depth: 0,
-			#[cfg(debug_assertions)]
-			render_debug_region_depth: 0,
 			drawables: Vec::new_in(allocator),
 			bound_pipeline: None,
 			bound_descriptor_set_roots: SmallVec::new(),
-			bound_descriptor_set_handles: SmallVec::new(),
-			bound_descriptor_set_versions: SmallVec::new(),
+			bound_descriptor_sets: SmallVec::new(),
 			bound_vertex_buffers: SmallVec::new(),
 			render_vertex_buffers_dirty: false,
 			encoded_vertex_buffer_count: 0,
 			bound_index_buffer: None,
 			push_constant_data: Vec::new_in(allocator),
-			compute_push_constants_dirty: false,
-			render_push_constants_dirty: false,
-			active_compute_encoder: None,
-			active_render_encoder: None,
+			encoder: None,
 			active_render_extent: Extent::rectangle(0, 0),
-			active_encoder_scope: None,
 			next_encoder_id: 0,
 			resource_tracker,
-			encoded_compute_pipeline: None,
-			encoded_render_pipeline: None,
-			applied_compute_descriptor_binding: None,
-			applied_render_descriptor_binding: None,
 			active_render_attachment_uses: SmallVec::new(),
 			texture_readbacks: SmallVec::new(),
-			readbacks_finalized: false,
 			_autorelease_pool: autorelease_pool,
 		}
 	}
@@ -110,24 +167,23 @@ impl<'a> CommandBufferRecording<'a> {
 	/// The label reads `<kind>: <region path> → <targets>`, so capture tools list what each encoder does and writes.
 	/// A `None` target is a drawable. Returns how many regions it pushed, which the encoder pops before it ends.
 	#[cfg(debug_assertions)]
-	pub(super) fn begin_encoder_debug_regions<E: objc2::Message + ?Sized>(
-		&mut self,
-		encoder: &E,
+	fn begin_encoder_debug_regions(
+		&self,
+		encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder>,
 		kind: &str,
 		targets: impl IntoIterator<Item = Option<ImageHandle>>,
-	) -> usize
-	where
-		dyn mtl::MTL4CommandEncoder: objc2::runtime::ImplementedBy<E>,
-	{
+	) -> usize {
+		use std::fmt::Write as _;
+
 		if !self.device.debug_labels {
 			return 0;
 		}
-		let encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder> = ProtocolObject::from_ref(encoder);
 		let mut label = crate::command_buffer::DebugLabelWriter::new();
 		let _ = label.write_str(kind);
 		for (index, region) in self.debug_regions.iter().enumerate() {
 			let _ = label.write_str(if index == 0 { ": " } else { " › " });
-			let _ = label.write_str(&region.to_string());
+			// Formatting the native string writes it in place, so no temporary String is allocated per region.
+			let _ = write!(label, "{region}");
 		}
 		for (index, target) in targets.into_iter().enumerate() {
 			let _ = label.write_str(if index == 0 { " → " } else { ", " });
@@ -148,10 +204,7 @@ impl<'a> CommandBufferRecording<'a> {
 	///
 	/// The label reads `Barrier: <resource> (<earlier access> → <next access>), ...`.
 	#[cfg(debug_assertions)]
-	fn signpost_barrier_hazards<E: objc2::Message + ?Sized>(&self, encoder: &E)
-	where
-		dyn mtl::MTL4CommandEncoder: objc2::runtime::ImplementedBy<E>,
-	{
+	fn signpost_barrier_hazards(&self, encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder>) {
 		use std::fmt::Write as _;
 
 		let hazards = self.resource_tracker.hazards();
@@ -191,59 +244,90 @@ impl<'a> CommandBufferRecording<'a> {
 			}
 			let _ = write!(label, " ({} → {})", access(hazard.previous), access(hazard.next));
 		}
-		let encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder> = ProtocolObject::from_ref(encoder);
 		encoder.insertDebugSignpost(&NSString::from_str(label.as_str()));
 	}
 
-	/// Ends the active compute encoder and resets state that is native-encoder-local.
-	pub(super) fn end_compute_encoder(&mut self) {
-		let Some(encoder) = self.active_compute_encoder.take() else {
+	/// Makes `encoder` the recording's active encoder.
+	///
+	/// Call [`Self::end_encoder`] before creating the native encoder, since Metal allows one open encoder per command
+	/// buffer. This is the only place encoder-local state is built, so every new encoder starts with no pipeline, no
+	/// bound snapshot, and push constants to re-upload. A render encoder also starts with its vertex bindings
+	/// unencoded. `kind` and `targets` label the encoder in capture tools; a `None` target is a drawable.
+	pub(super) fn begin_encoder(
+		&mut self,
+		encoder: ActiveEncoder,
+		_kind: &str,
+		_targets: impl IntoIterator<Item = Option<ImageHandle>>,
+	) {
+		assert!(
+			self.encoder.is_none(),
+			"A Metal encoder is already open. The most likely cause is that a new encoder was created before end_encoder.",
+		);
+		#[cfg(debug_assertions)]
+		let debug_region_depth = self.begin_encoder_debug_regions(encoder.common(), _kind, _targets);
+		if matches!(encoder, ActiveEncoder::Render(_)) {
+			self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
+			self.encoded_vertex_buffer_count = 0;
+		}
+		self.encoder = Some(EncoderState {
+			encoder,
+			scope: self.allocate_encoder_scope(),
+			pipeline: None,
+			descriptors: None,
+			push_constants_dirty: !self.push_constant_data.is_empty(),
+			#[cfg(debug_assertions)]
+			debug_region_depth,
+		});
+	}
+
+	/// Ends the active encoder, if any, after balancing its mirrored debug regions.
+	///
+	/// A render encoder also records its attachment writes, so later commands order after them.
+	pub(super) fn end_encoder(&mut self) {
+		let Some(state) = self.encoder.take() else {
 			return;
 		};
+		let encoder = state.encoder.common();
 		#[cfg(debug_assertions)]
-		if self.device.debug_labels {
-			for _ in 0..self.compute_debug_region_depth {
-				encoder.popDebugGroup();
-			}
-			self.compute_debug_region_depth = 0;
+		for _ in 0..state.debug_region_depth {
+			encoder.popDebugGroup();
 		}
 		encoder.endEncoding();
-		self.active_encoder_scope = None;
-		self.encoded_compute_pipeline = None;
-		self.applied_compute_descriptor_binding = None;
-		self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
+		if let ActiveEncoder::Render(_) = state.encoder {
+			self.resource_tracker
+				.record_final(state.scope, self.active_render_attachment_uses.drain(..));
+		}
 	}
 
 	/// Records render-target writes after a draw so a later aliased access sees the dependency.
 	pub(super) fn record_render_attachment_writes(&mut self) {
-		let scope = self.active_encoder_scope.expect(
-			"Metal render resource finalization failed. The most likely cause is that attachment writes were recorded without an active encoder.",
-		);
+		let scope = self.encoder_state().scope;
 		self.resource_tracker
 			.record_final(scope, self.active_render_attachment_uses.iter().copied());
 	}
 
-	/// Ends the active render encoder and balances its mirrored debug regions.
-	pub(super) fn end_render_encoder(&mut self) {
-		let Some(encoder) = self.active_render_encoder.take() else {
-			return;
-		};
-		#[cfg(debug_assertions)]
-		if self.device.debug_labels {
-			for _ in 0..self.render_debug_region_depth {
-				encoder.popDebugGroup();
-			}
-			self.render_debug_region_depth = 0;
+	/// Returns the active encoder's local state.
+	pub(super) fn encoder_state(&self) -> &EncoderState {
+		self.encoder.as_ref().expect(
+			"No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.",
+		)
+	}
+
+	/// Returns the active encoder's local state for updates.
+	pub(super) fn encoder_state_mut(&mut self) -> &mut EncoderState {
+		self.encoder.as_mut().expect(
+			"No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.",
+		)
+	}
+
+	/// Returns the active render encoder, or panics naming `operation` when no render pass is open.
+	pub(super) fn render_encoder(&self, operation: &str) -> &Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>> {
+		match self.encoder.as_ref().map(|state| &state.encoder) {
+			Some(ActiveEncoder::Render(encoder)) => encoder,
+			_ => panic!(
+				"No active render pass. The most likely cause is that {operation} was called outside start_render_pass."
+			),
 		}
-		encoder.endEncoding();
-		self.record_render_attachment_writes();
-		self.active_render_attachment_uses.clear();
-		self.active_encoder_scope = None;
-		self.encoded_render_pipeline = None;
-		self.applied_render_descriptor_binding = None;
-		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
-		self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
-		self.encoded_vertex_buffer_count = 0;
 	}
 
 	/// Retains acquired drawables that may be referenced directly while recording this frame.
@@ -257,49 +341,40 @@ impl<'a> CommandBufferRecording<'a> {
 		>,
 	) {
 		for (handle, drawable) in drawables {
-			self.command_buffer.retain_drawable(drawable.clone());
+			self.command_buffer.retain_drawable(&drawable);
 			self.drawables.push((handle, drawable));
 		}
 	}
 
-	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer<'static> {
-		self.end_render_encoder();
-		self.end_compute_encoder();
+	pub(crate) fn into_finished(mut self) -> FinishedCommandBuffer {
+		self.end_encoder();
 		self.publish_resource_states();
-		self.readbacks_finalized = true;
 
 		FinishedCommandBuffer {
-			command_buffer_handle: self.command_buffer_handle,
+			queue_handle: self.commit.queue_handle,
 			command_buffer: self.command_buffer.take(),
 			texture_readbacks: std::mem::take(&mut self.texture_readbacks),
-			_marker: std::marker::PhantomData,
 		}
 	}
 
 	pub(super) fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
-		self.end_render_encoder();
-
-		if self.active_compute_encoder.is_none() {
+		if !matches!(self.encoder.as_ref().map(|state| &state.encoder), Some(ActiveEncoder::Compute(_))) {
+			self.end_encoder();
 			// One serial MTL4 compute encoder records both copy and dispatch commands. Phase transitions add explicit visibility.
 			let encoder = self.command_buffer.computeCommandEncoder().expect(
 				"Metal compute command encoder creation failed. The most likely cause is that the command buffer could not start a compute pass.",
 			);
-			#[cfg(debug_assertions)]
-			{
-				self.compute_debug_region_depth = self.begin_encoder_debug_regions(&*encoder, "Compute", []);
-			}
-			self.active_compute_encoder = Some(encoder);
-			self.active_encoder_scope = Some(self.allocate_encoder_scope());
-			self.encoded_compute_pipeline = None;
-			self.applied_compute_descriptor_binding = None;
-			self.compute_push_constants_dirty = !self.push_constant_data.is_empty();
+			self.begin_encoder(ActiveEncoder::Compute(encoder), "Compute", []);
 		}
 
-		self.active_compute_encoder.as_ref().unwrap()
+		match self.encoder.as_ref().map(|state| &state.encoder) {
+			Some(ActiveEncoder::Compute(encoder)) => encoder,
+			_ => unreachable!("The compute encoder was started above."),
+		}
 	}
 
 	/// Allocates one command-local identity for hazard tracking within a native encoder.
-	pub(super) fn allocate_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
+	fn allocate_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
 		let id = self.next_encoder_id;
 		self.next_encoder_id = self.next_encoder_id.checked_add(1).expect(
 			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
@@ -307,62 +382,61 @@ impl<'a> CommandBufferRecording<'a> {
 		synchronization::MetalEncoderScope::Encoder(id)
 	}
 
-	/// Applies the dependencies one command needs on the active encoder without copying its descriptor-use table.
+	/// Applies the dependencies one command needs on the active encoder and retains what it uses.
+	///
+	/// `descriptors` is the snapshot the command binds, whose uses are read in place. Every use in `additional_uses`
+	/// has its native allocation retained here, so commands only retain objects hazard tracking never sees.
 	pub(super) fn consume_resources_with_descriptors(
 		&mut self,
-		descriptor_uses: &mut synchronization::DescriptorUses,
+		descriptors: Option<&mut AppliedDescriptorBinding>,
 		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
 	) {
-		let scope = self.active_encoder_scope.expect(
-			"Metal resource tracking failed. The most likely cause is that a command consumed resources without an active encoder.",
-		);
-		let images = self.device.images;
+		let scope = self.encoder_state().scope;
+		let Self {
+			device,
+			commit,
+			command_buffer,
+			resource_tracker,
+			..
+		} = self;
 		let additional_uses = additional_uses
 			.into_iter()
-			.map(|resource_use| resource_use.in_group_memory(images))
+			.map(|resource_use| resource_use.in_group_memory(device.images))
 			.collect::<SmallVec<[_; 8]>>();
-		for member in descriptor_uses
-			.members()
-			.chain(additional_uses.iter().filter_map(|resource_use| resource_use.member))
-		{
-			let image = images.resource(member);
-			self.commit
-				.image_groups
-				.assert_initialized(graphics_hardware_interface::BaseImageHandle(member.0), || image.name.clone());
-			// Commands retain member textures, but the heap holds their memory, so it must stay alive and resident too.
-			if let Some(slot) = &image.slot {
-				self.command_buffer.retain_allocation(slot.heap.clone());
+		for resource_use in &additional_uses {
+			retain_tracked_use(device, command_buffer, resource_use);
+		}
+		let descriptors = descriptors.map(|binding| (binding.snapshot.uses(commit.descriptor_sets), &mut binding.settled));
+		// Only debug builds check members; descriptor members' memory was retained when their snapshot was applied.
+		if cfg!(debug_assertions) {
+			let descriptor_members = descriptors.iter().flat_map(|(uses, _)| uses.members());
+			for member in descriptor_members.chain(additional_uses.iter().filter_map(|resource_use| resource_use.member)) {
+				commit
+					.image_groups
+					.assert_initialized(graphics_hardware_interface::BaseImageHandle(member.0), || {
+						device.images.resource(member).name.clone()
+					});
 			}
 		}
-		let barrier = self
-			.resource_tracker
-			.consume_descriptors(scope, descriptor_uses, additional_uses);
-		// Starting either encoder ends the other, so at most one is active.
-		match (&self.active_compute_encoder, &self.active_render_encoder) {
-			(Some(encoder), _) => {
-				#[cfg(debug_assertions)]
-				self.signpost_barrier_hazards(&**encoder);
-				barrier.encode(&**encoder)
-			}
-			(None, Some(encoder)) => {
-				#[cfg(debug_assertions)]
-				self.signpost_barrier_hazards(&**encoder);
-				barrier.encode(&**encoder)
-			}
-			(None, None) => unreachable!(
-				"Metal resource tracking failed. The most likely cause is that the active encoder was ended before its resource barrier."
-			),
-		}
+		let barrier = match descriptors {
+			Some((uses, settled)) => resource_tracker.consume_descriptors(scope, uses, settled, additional_uses),
+			None => resource_tracker.consume(scope, additional_uses),
+		};
+		let encoder = self.encoder_state().encoder.common();
+		#[cfg(debug_assertions)]
+		self.signpost_barrier_hazards(encoder);
+		barrier.encode(encoder);
 	}
 
 	/// Applies only the queue and encoder dependencies required by the resources one command consumes.
 	pub(super) fn consume_resources(&mut self, uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
-		self.consume_resources_with_descriptors(&mut synchronization::DescriptorUses::default(), uses);
+		self.consume_resources_with_descriptors(None, uses);
 	}
 
 	/// Publishes this finalized recording's resource history to its queue.
 	fn publish_resource_states(&mut self) {
-		self.resource_tracker.finish_recording();
+		let recording = self.resource_tracker.finish_recording();
+		self.command_buffer.set_tracked_recording(recording);
 		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
@@ -383,7 +457,7 @@ impl<'a> CommandBufferRecording<'a> {
 		let table = table.expect(
 			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
 		);
-		self.command_buffer.retain_object(table.clone());
+		self.command_buffer.retain_object(&*table);
 		self.commit.argument_tables.insert(stage, table.clone());
 		table
 	}
@@ -400,21 +474,15 @@ impl<'a> CommandBufferRecording<'a> {
 			table.setAddress_atIndex(address, binding as _);
 		}
 
-		match stage {
-			ArgumentTableStage::Compute => self
-				.active_compute_encoder
-				.as_ref()
-				.expect(
-					"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
-				)
-				.setArgumentTable(Some(table.as_ref())),
-			stage => self
-				.active_render_encoder
-				.as_ref()
-				.expect(
-					"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
-				)
-				.setArgumentTable_atStages(table.as_ref(), stage.render_stage()),
+		match (stage, &self.encoder_state().encoder) {
+			(ArgumentTableStage::Compute, ActiveEncoder::Compute(encoder)) => encoder.setArgumentTable(Some(table.as_ref())),
+			(ArgumentTableStage::Compute, ActiveEncoder::Render(_)) => panic!(
+				"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
+			),
+			(stage, ActiveEncoder::Render(encoder)) => encoder.setArgumentTable_atStages(table.as_ref(), stage.render_stage()),
+			(_, ActiveEncoder::Compute(_)) => panic!(
+				"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
+			),
 		}
 	}
 
@@ -427,7 +495,7 @@ impl<'a> CommandBufferRecording<'a> {
 		let address = buffer.gpuAddress().checked_add(offset as u64).expect(
 			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
 		);
-		self.command_buffer.retain_allocation(buffer.clone());
+		self.command_buffer.retain_allocation(&**buffer);
 		address
 	}
 
@@ -439,29 +507,72 @@ impl<'a> CommandBufferRecording<'a> {
 		self.device.images.nth_handle(handle, self.sequence_index as _).unwrap()
 	}
 
-	/// Returns the proxy image a swapchain renders into this frame, or `None` when it renders to its drawable.
-	pub(super) fn swapchain_proxy(&self, handle: crate::swapchain::SwapchainHandle) -> Option<ImageHandle> {
-		self.device.swapchains[handle.0 as usize].images[self.sequence_index as usize]
+	/// Resolves an image or swapchain to the surface this frame's commands use.
+	///
+	/// `frame_offset` selects another frame's copy of a per-frame image; a swapchain only has this frame's surface.
+	/// Returns `None` for an unknown handle, or for a direct swapchain whose drawable was not acquired.
+	pub(super) fn surface(&self, target: ImageOrSwapchain, frame_offset: i32) -> Option<Surface> {
+		match target {
+			ImageOrSwapchain::Image(image) => {
+				self.device.images.get_single(image)?;
+				let frame_index = crate::frame_resources::frame_index_with_offset(
+					self.sequence_index as usize,
+					frame_offset,
+					self.device.frames as usize,
+				);
+				Some(self.image_surface(self.device.images.nth_handle(image, frame_index)?))
+			}
+			ImageOrSwapchain::Swapchain(swapchain) => self.swapchain_surface(crate::swapchain::SwapchainHandle(swapchain.0)),
+		}
 	}
 
-	/// Returns the acquired drawable texture for a direct swapchain.
-	pub(super) fn drawable_texture(
-		&self,
-		handle: crate::swapchain::SwapchainHandle,
-	) -> Retained<ProtocolObject<dyn mtl::MTLTexture>> {
-		self.drawables
-			.iter()
-			.find(|(swapchain, _)| swapchain.0 == handle.0)
-			.map(|(_, drawable)| drawable.texture())
-			.expect(
-				"Missing Metal drawable. The most likely cause is that a direct swapchain was used before its frame image was acquired.",
-			)
+	/// Returns the surface a swapchain renders into this frame: its proxy image when it has one, else its drawable.
+	///
+	/// Both report the swapchain's uses. Returns `None` in the same cases as [`Self::surface`].
+	pub(super) fn swapchain_surface(&self, handle: crate::swapchain::SwapchainHandle) -> Option<Surface> {
+		let swapchain = self.device.swapchains.get(handle.0 as usize)?;
+		// A proxy image reports the swapchain's uses, so both arms validate against the swapchain.
+		Some(match swapchain.images[self.sequence_index as usize] {
+			Some(proxy) => Surface {
+				uses: swapchain.uses,
+				..self.image_surface(proxy)
+			},
+			None => Surface {
+				image: None,
+				texture: self
+					.drawables
+					.iter()
+					.find(|(swapchain, _)| swapchain.0 == handle.0)
+					.map(|(_, drawable)| drawable.texture())?,
+				// TODO: get the drawable's actual format.
+				format: crate::Formats::BGRAu8,
+				extent: swapchain.extent,
+				array_layers: 1,
+				uses: swapchain.uses,
+			},
+		})
+	}
+
+	/// Returns the surface of one frame-local image.
+	fn image_surface(&self, handle: ImageHandle) -> Surface {
+		let image = self.device.images.resource(handle);
+		Surface {
+			image: Some(handle),
+			texture: image.texture.clone(),
+			format: image.description.format,
+			extent: image.description.extent,
+			array_layers: image.description.array_layers,
+			uses: image.description.uses,
+		}
 	}
 
 	pub(super) fn descriptors_at_slot(&self, slot: crate::shader::ResourceSlot) -> Option<&HashMap<u32, Descriptor>> {
-		self.bound_descriptor_set_handles
-			.iter()
-			.find_map(|set_handle| self.commit.descriptor_sets[set_handle.0 as usize].descriptors.get(&slot))
+		descriptors_at_slot(self.commit.descriptor_sets, &self.bound_descriptor_sets, slot).map(|(_, descriptors)| descriptors)
+	}
+
+	/// Returns the frame-local handles of the bound descriptor sets.
+	fn bound_descriptor_set_handles(&self) -> impl Iterator<Item = DescriptorSetHandle> + '_ {
+		self.bound_descriptor_sets.iter().map(|(handle, _)| *handle)
 	}
 
 	pub(super) fn descriptor_matches_kind(descriptor: Descriptor, kind: crate::shader::ResourceKind) -> bool {
@@ -483,11 +594,13 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	/// Validates the retained set union against the active pipeline without requiring fixed arrays to be fully populated.
+	///
+	/// Only debug builds call it, because it scans every bound set against every pipeline resource.
 	pub(super) fn validate_bound_descriptor_sets(&self, layout: &PipelineLayout) {
-		for (left_index, left_handle) in self.bound_descriptor_set_handles.iter().enumerate() {
-			let left = &self.commit.descriptor_sets[left_handle.0 as usize];
-			for right_handle in self.bound_descriptor_set_handles.iter().skip(left_index + 1) {
-				let right = &self.commit.descriptor_sets[right_handle.0 as usize];
+		for (left_index, left_handle) in self.bound_descriptor_set_handles().enumerate() {
+			let left = self.commit.descriptor_sets.resource(left_handle);
+			for right_handle in self.bound_descriptor_set_handles().skip(left_index + 1) {
+				let right = self.commit.descriptor_sets.resource(right_handle);
 
 				assert!(
 					left.descriptors.keys().all(|slot| !right.descriptors.contains_key(slot)),
@@ -500,8 +613,8 @@ impl<'a> CommandBufferRecording<'a> {
 			let descriptor = resource.descriptor;
 			let range_start = descriptor.slot().index();
 			let range_end = resource_range_end(descriptor);
-			for set_handle in &self.bound_descriptor_set_handles {
-				let descriptor_set = &self.commit.descriptor_sets[set_handle.0 as usize];
+			for set_handle in self.bound_descriptor_set_handles() {
+				let descriptor_set = self.commit.descriptor_sets.resource(set_handle);
 
 				assert!(
 					descriptor_set
@@ -512,10 +625,9 @@ impl<'a> CommandBufferRecording<'a> {
 				);
 			}
 			let owner_count = self
-				.bound_descriptor_set_handles
-				.iter()
+				.bound_descriptor_set_handles()
 				.filter(|set_handle| {
-					self.commit.descriptor_sets[set_handle.0 as usize]
+					self.commit.descriptor_sets.resource(*set_handle)
 						.descriptors
 						.keys()
 						.any(|slot| (range_start..range_end).contains(&slot.index()))
@@ -558,8 +670,9 @@ impl<'a> CommandBufferRecording<'a> {
 			let push_constant_size = self.device.pipelines[pipeline_handle.0 as usize].layout.push_constant_size;
 			self.push_constant_data.clear();
 			self.push_constant_data.resize(push_constant_size, 0);
-			self.compute_push_constants_dirty = push_constant_size > 0;
-			self.render_push_constants_dirty = push_constant_size > 0;
+			if let Some(state) = &mut self.encoder {
+				state.push_constants_dirty = push_constant_size > 0;
+			}
 		}
 		self
 	}
@@ -593,72 +706,130 @@ impl<'a> CommandBufferRecording<'a> {
 			"Too many Metal vertex buffers were bound. The most likely cause is that a vertex binding overlaps the reserved push-constant slot."
 		);
 
-		for binding in 0..self.bound_vertex_buffers.len() {
-			let (buffer_handle, offset) = self.bound_vertex_buffers[binding];
-			let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
-			let address = buffer.gpu_address.checked_add(offset as u64).expect(
-				"Metal vertex buffer address overflowed. The most likely cause is that the requested vertex offset exceeds the native buffer address range.",
-			);
-			self.command_buffer.retain_allocation(buffer.buffer.clone());
-			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, address);
-		}
-		for binding in self.bound_vertex_buffers.len()..self.encoded_vertex_buffer_count {
-			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, 0);
-		}
-		self.encoded_vertex_buffer_count = self.bound_vertex_buffers.len();
+		// The draw that follows tracks these buffers, which retains them.
+		let addresses = self
+			.bound_vertex_buffers
+			.iter()
+			.map(|&(buffer_handle, offset)| {
+				let buffer = self.device.buffers.resource(self.get_internal_buffer_handle(buffer_handle));
+				buffer.gpu_address.checked_add(offset as u64).expect(
+					"Metal vertex buffer address overflowed. The most likely cause is that the requested vertex offset exceeds the native buffer address range.",
+				)
+			})
+			.collect::<SmallVec<[_; PUSH_CONSTANT_BINDING_INDEX as usize]>>();
+		self.encode_vertex_addresses(&addresses);
 		self.render_vertex_buffers_dirty = false;
 	}
 
-	/// Uploads changed push constants once before the next render command.
-	pub(super) fn flush_render_push_constants(&mut self) {
-		if !self.render_push_constants_dirty || self.push_constant_data.is_empty() {
+	/// Writes `addresses` into the leading vertex argument-table bindings and zeroes bindings an earlier draw left.
+	pub(super) fn encode_vertex_addresses(&mut self, addresses: &[mtl::MTLGPUAddress]) {
+		for (binding, &address) in addresses.iter().enumerate() {
+			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, address);
+		}
+		for binding in addresses.len()..self.encoded_vertex_buffer_count {
+			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, 0);
+		}
+		self.encoded_vertex_buffer_count = addresses.len();
+	}
+
+	/// Uploads changed push constants once before the next command and binds them for the stages it runs.
+	pub(super) fn flush_push_constants(&mut self) {
+		let state = self.encoder_state();
+		if !state.push_constants_dirty || self.push_constant_data.is_empty() {
 			return;
 		}
 
 		let pipeline_handle = self.bound_pipeline.expect(
-			"No pipeline bound. The most likely cause is that render push constants were flushed before binding a pipeline.",
+			"No pipeline bound. The most likely cause is that push constants were flushed before binding a pipeline.",
 		);
-		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
-		let uses_mesh = pipeline.mesh_threadgroup_size.is_some();
-		let uses_object = pipeline.object_threadgroup_size.is_some();
-		let address = self.upload_push_constants();
-		if uses_mesh {
-			if uses_object {
-				self.set_stage_buffer_address(ArgumentTableStage::Object, PUSH_CONSTANT_BINDING_INDEX, address);
+		// Compute work reads one table. Draws read the fragment table and either the vertex table or the mesh tables.
+		let mut stages = SmallVec::<[ArgumentTableStage; 3]>::new();
+		match state.encoder {
+			ActiveEncoder::Compute(_) => stages.push(ArgumentTableStage::Compute),
+			ActiveEncoder::Render(_) => {
+				let raster = self.device.pipelines[pipeline_handle.0 as usize].raster();
+				if raster.mesh_threadgroup_size.is_some() {
+					if raster.object_threadgroup_size.is_some() {
+						stages.push(ArgumentTableStage::Object);
+					}
+					stages.push(ArgumentTableStage::Mesh);
+				} else {
+					stages.push(ArgumentTableStage::Vertex);
+				}
+				stages.push(ArgumentTableStage::Fragment);
 			}
-			self.set_stage_buffer_address(ArgumentTableStage::Mesh, PUSH_CONSTANT_BINDING_INDEX, address);
-		} else {
-			self.set_stage_buffer_address(ArgumentTableStage::Vertex, PUSH_CONSTANT_BINDING_INDEX, address);
 		}
-		self.set_stage_buffer_address(ArgumentTableStage::Fragment, PUSH_CONSTANT_BINDING_INDEX, address);
-		self.render_push_constants_dirty = false;
-	}
-
-	/// Uploads changed push constants once before the next compute dispatch.
-	pub(super) fn flush_compute_push_constants(&mut self) {
-		if !self.compute_push_constants_dirty || self.push_constant_data.is_empty() {
-			return;
-		}
-
 		let address = self.upload_push_constants();
-		self.set_stage_buffer_address(ArgumentTableStage::Compute, PUSH_CONSTANT_BINDING_INDEX, address);
-		self.compute_push_constants_dirty = false;
+		for stage in stages {
+			self.set_stage_buffer_address(stage, PUSH_CONSTANT_BINDING_INDEX, address);
+		}
+		self.encoder_state_mut().push_constants_dirty = false;
 	}
 
 	/// Ends and submits a non-frame recording as a one-command Metal 4 batch.
-	pub(super) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
-		self.end_compute_encoder();
-		self.end_render_encoder();
+	pub(crate) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
+		self.end_encoder();
 		self.publish_resource_states();
-		for handle in &self.texture_readbacks {
-			self.commit.texture_readbacks.mark_submitted(*handle);
+		for handle in self.texture_readbacks.drain(..) {
+			self.commit.texture_readbacks.mark_submitted(handle);
 		}
-		self.readbacks_finalized = true;
 
-		let synchronizer = self.commit.synchronizer_for_sequence(synchronizer, self.sequence_index);
+		let synchronizer = context::synchronizer_for_sequence(self.commit.synchronizers, synchronizer, self.sequence_index);
 		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
 		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
 		// The synchronizer owns the submitted batch until its completion message arrives.
 		self.commit.synchronizers.resource_mut(synchronizer).signal(submitted);
+	}
+}
+
+/// Returns the first bound set that writes `slot`, and that set's descriptors there.
+pub(super) fn descriptors_at_slot<'s>(
+	descriptor_sets: &'s context::DescriptorSets,
+	bound_descriptor_sets: &[(DescriptorSetHandle, u64)],
+	slot: crate::shader::ResourceSlot,
+) -> Option<(DescriptorSetHandle, &'s HashMap<u32, Descriptor>)> {
+	bound_descriptor_sets.iter().find_map(|&(set_handle, _)| {
+		descriptor_sets
+			.resource(set_handle)
+			.descriptors
+			.get(&slot)
+			.map(|descriptors| (set_handle, descriptors))
+	})
+}
+
+/// Retains the native allocation behind one tracked use until the command completes.
+///
+/// Drawables need nothing here: the recording retains each acquired drawable when it attaches it.
+fn retain_tracked_use(
+	device: &RecordingDevice<'_>,
+	command_buffer: &mut queue::NativeCommand,
+	resource_use: &synchronization::MetalResourceUse,
+) {
+	match resource_use.key {
+		synchronization::MetalResourceKey::Buffer(handle) => {
+			command_buffer.retain_allocation(&*device.buffers.resource(handle).buffer);
+		}
+		synchronization::MetalResourceKey::Image(handle) => {
+			command_buffer.retain_allocation(&*device.images.resource(handle).texture);
+		}
+		synchronization::MetalResourceKey::GroupHeap(_) => {
+			let member = resource_use.member.expect(
+				"Metal image-group use has no member. The most likely cause is that a heap use was built outside in_group_memory.",
+			);
+			retain_image(device, command_buffer, member);
+		}
+		synchronization::MetalResourceKey::AccelerationStructure(index) => {
+			command_buffer.retain_allocation(&*device.acceleration_structures[index].structure);
+		}
+		synchronization::MetalResourceKey::SwapchainDrawable(_) => {}
+	}
+}
+
+/// Retains an image's texture and, for an image-group member, the heap that holds its memory.
+pub(super) fn retain_image(device: &RecordingDevice<'_>, command_buffer: &mut queue::NativeCommand, handle: ImageHandle) {
+	let image = device.images.resource(handle);
+	command_buffer.retain_allocation(&*image.texture);
+	if let Some(slot) = &image.slot {
+		command_buffer.retain_allocation(&*slot.heap);
 	}
 }

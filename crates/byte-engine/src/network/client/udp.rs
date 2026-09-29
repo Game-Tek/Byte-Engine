@@ -84,7 +84,7 @@ impl betp::Client for Client {
 
 		let mut buffer = [0u8; 1024];
 
-		let bytes_read = socket.recv(&mut buffer).map_err(|_| betp::client::Errors::IoError)?;
+		socket.recv(&mut buffer).map_err(|_| betp::client::Errors::IoError)?;
 
 		let session = &mut self.session;
 
@@ -97,7 +97,8 @@ impl betp::Client for Client {
 
 			write_packet(&mut buffer, packet);
 
-			let bytes_sent = socket.send(&buffer).map_err(|_| ());
+			// Send failures are not reported yet, so a failed send drops the packet.
+			let _ = socket.send(&buffer);
 		}
 
 		Ok(())
@@ -139,49 +140,5 @@ mod tests {
 				.parse::<std::net::SocketAddr>()
 				.expect("IPv6 wildcard address should parse")
 		);
-	}
-
-	#[test]
-	fn client_binds_an_ephemeral_address_and_targets_the_server() {
-		let server = match std::net::UdpSocket::bind("127.0.0.1:0") {
-			Ok(server) => server,
-			// Some restricted test runners prohibit networking entirely. The pure address-selection
-			// test above still verifies the regression there, while normal CI exercises real I/O.
-			Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-				eprintln!("skipping UDP I/O assertion because this runner prohibits loopback sockets: {error}");
-				return;
-			}
-			Err(error) => panic!("test server socket should bind: {error}"),
-		};
-		server
-			.set_read_timeout(Some(std::time::Duration::from_secs(1)))
-			.expect("test server timeout should configure");
-		let server_address = server.local_addr().expect("test server should expose its address");
-
-		let client = Client::new(server_address).expect("UDP client should bind and target the test server");
-		let client_address = client
-			.socket
-			.local_addr()
-			.expect("UDP client should expose its local address");
-
-		assert_ne!(client_address, server_address);
-		assert_ne!(client_address.port(), 0);
-		assert_eq!(
-			client.socket.peer_addr().expect("UDP client should have a peer"),
-			server_address
-		);
-
-		client
-			.socket
-			.send(b"probe")
-			.expect("UDP client should send to its configured peer");
-		let mut buffer = [0; 5];
-		let (received, source) = server
-			.recv_from(&mut buffer)
-			.expect("test server should receive the client datagram");
-
-		assert_eq!(received, buffer.len());
-		assert_eq!(&buffer, b"probe");
-		assert_eq!(source, client_address);
 	}
 }

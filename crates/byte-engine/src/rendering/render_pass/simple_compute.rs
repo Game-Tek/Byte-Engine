@@ -1,18 +1,17 @@
 //! Reusable construction for flat-resource BESL compute render passes.
 
 use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
-	},
-	context::{Context as _, ContextCreate as _},
+	command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
 	frame::Frame as _,
 };
-use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
+use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage};
 use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
-use crate::rendering::{Sink, common_shader_generator::CommonShaderScope};
+use crate::rendering::Sink;
+#[cfg(test)]
+use crate::rendering::common_shader_generator::common_shader_scope;
 
 /// The `Descriptor` struct identifies one single-set compute pipeline and its command label.
 pub struct Descriptor<'a> {
@@ -27,19 +26,22 @@ impl<'a> Descriptor<'a> {
 	}
 }
 
-/// Compiles one canonical BESL asset and returns its compute entry point for semantic tests.
+/// Links one canonical BESL asset and returns its program for semantic tests.
+///
+/// The program owns every function, so keep it alive while compiling or running its `main`.
 #[cfg(test)]
 pub fn compile_test_program(source: &str) -> besl::NodeReference {
 	let mut root = besl::parse(source).expect(
 		"Failed to parse a canonical render-pass BESL asset. The most likely cause is invalid source syntax or descriptor declarations.",
 	);
-	root.add(vec![CommonShaderScope::new()]);
+	root.add(vec![common_shader_scope()]);
 	let program = besl::lex(root).expect(
 		"Failed to link a canonical render-pass BESL asset. The most likely cause is an unresolved shared helper or descriptor declaration.",
 	);
 	program.get_main().expect(
 		"Canonical render-pass entry point is missing. The most likely cause is that the BESL asset does not define `main`.",
-	)
+	);
+	program
 }
 
 /// The `Pipeline` struct provides reusable compute state to sink-specific retained resource sets.
@@ -48,60 +50,37 @@ pub struct Pipeline {
 	reference: crate::rendering::PipelineRef,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	label: &'static str,
-	shared_layout: Option<crate::rendering::PipelineRef>,
 }
 
 impl Pipeline {
 	/// Requests a baked pipeline and defers descriptor adoption until compilation is published.
-	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Result<Self, String> {
-		Self::build(render_pass_builder, descriptor, None)
-	}
-
-	/// Requests another baked pipeline against this pipeline's validated binding layout.
-	pub fn compile_variant(
-		&self,
-		render_pass_builder: &mut RenderPassBuilder<'_>,
-		descriptor: Descriptor<'_>,
-	) -> Result<Self, String> {
-		Self::build(render_pass_builder, descriptor, Some(self))
-	}
-
-	/// Builds a pipeline while optionally reusing a schema already validated by a sibling pipeline.
-	fn build(
-		render_pass_builder: &mut RenderPassBuilder<'_>,
-		descriptor: Descriptor<'_>,
-		shared_layout: Option<&Self>,
-	) -> Result<Self, String> {
+	pub fn compile(render_pass_builder: &mut RenderPassBuilder<'_>, descriptor: Descriptor<'_>) -> Self {
 		let Descriptor { label, pipeline_id } = descriptor;
 		let pipeline_manager = render_pass_builder.pipeline_manager().clone();
 		let reference = pipeline_manager.request_pipeline(pipeline_id);
 
-		Ok(Self {
+		Self {
 			reference,
 			pipeline_manager,
 			label,
-			shared_layout: shared_layout.map(|pipeline| pipeline.reference),
-		})
+		}
 	}
 
-	/// Validates named resources, creates the descriptor set, and freezes binding order for frame recording.
-	pub fn bind(
-		&self,
-		render_pass_builder: &mut RenderPassBuilder<'_>,
-		descriptor_set_name: &'static str,
-		resources: &[Resource],
-	) -> Result<Pass, String> {
-		Ok(Pass {
+	/// Freezes the named resources for one sink.
+	///
+	/// The pass validates them against the reflected bindings and creates its descriptor set once the pipeline is
+	/// published, in [`Pass::ready`], and logs an error there when they do not match.
+	pub fn bind(&self, descriptor_set_name: &'static str, resources: &[Resource]) -> Pass {
+		Pass {
 			pipeline: self.reference,
 			pipeline_manager: self.pipeline_manager.clone(),
-			shared_layout: self.shared_layout,
 			descriptor_set_name,
 			resources: resources.to_vec(),
 			ready: None,
 			revision: 0,
 			failed: false,
 			label: self.label,
-		})
+		}
 	}
 }
 
@@ -181,7 +160,6 @@ impl Resource {
 pub struct Pass {
 	pipeline: crate::rendering::PipelineRef,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
-	shared_layout: Option<crate::rendering::PipelineRef>,
 	descriptor_set_name: &'static str,
 	resources: Vec<Resource>,
 	ready: Option<ReadyPass>,
@@ -193,7 +171,6 @@ pub struct Pass {
 impl Pass {
 	/// Adopts a published pipeline and creates this sink's descriptor set once.
 	pub fn ready(&mut self, frame: &mut ghi::implementation::Frame) -> Option<ReadyPass> {
-		use ghi::context::Context as _;
 		use ghi::context::ContextCreate as _;
 
 		let revision = self.pipeline_manager.revision(self.pipeline);
@@ -229,14 +206,6 @@ impl Pass {
 			log::error!("Simple compute pipeline adoption failed: {error}");
 			self.failed = true;
 			return None;
-		}
-		if let Some(shared) = self.shared_layout {
-			let shared = pipelines.get(shared)?;
-			if let Err(error) = validate_shared_schema(&shared.bindings, &compiled.bindings) {
-				log::error!("Simple compute pipeline adoption failed: {error}");
-				self.failed = true;
-				return None;
-			}
 		}
 		if let Err(error) = validate_resources(&compiled.bindings, &self.resources) {
 			log::error!("Simple compute pipeline adoption failed: {error}");
@@ -276,7 +245,7 @@ impl Pass {
 		let pass = self.ready(_frame)?;
 		let extent = sink.extent();
 
-		Some(allocate_render_command(frame_allocator, move |command_buffer, _| {
+		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|region_label| region_label.write_str(pass.label),
 				|command_buffer| pass.record(command_buffer, extent),
@@ -303,16 +272,6 @@ impl ReadyPass {
 	}
 }
 
-fn texture_view(view: TextureView) -> ghi::TextureViewTypes {
-	match view {
-		TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
-		TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
-		TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
-		TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
-		TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
-	}
-}
-
 fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str> {
 	for (index, binding) in bindings.iter().enumerate() {
 		if binding.count != 1 {
@@ -335,17 +294,6 @@ fn validate_binding_schema(bindings: &[BindingUsage]) -> Result<(), &'static str
 		}
 	}
 	Ok(())
-}
-
-/// Ensures a shader variant cannot silently reinterpret its sibling's descriptor layout.
-fn validate_shared_schema(schema: &[BindingUsage], bindings: &[BindingUsage]) -> Result<(), &'static str> {
-	if bindings.iter().all(|binding| schema.contains(binding)) {
-		Ok(())
-	} else {
-		Err(
-			"Compute pipeline variant has an incompatible binding schema. The most likely cause is that a sibling BESL shader changed a shared descriptor declaration.",
-		)
-	}
 }
 
 fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Result<(), String> {
@@ -386,7 +334,7 @@ fn validate_resources(bindings: &[BindingUsage], resources: &[Resource]) -> Resu
 mod tests {
 	use resource_management::shader::besl::evaluation::{BindingKind, BindingUsage, TextureView};
 
-	use super::{Resource, texture_view, validate_binding_schema, validate_resources, validate_shared_schema};
+	use super::{Resource, validate_binding_schema, validate_resources};
 
 	fn binding(name: &str, kind: BindingKind, slot: u32, read: bool, write: bool) -> BindingUsage {
 		BindingUsage {
@@ -430,14 +378,6 @@ mod tests {
 		validate_resources(&bindings, &resources).expect("complete resources should validate");
 
 		assert!(bindings[0].read && !bindings[0].write);
-		validate_shared_schema(&bindings, &[bindings[0].clone(), bindings[2].clone()])
-			.expect("compatible shared bindings should validate");
-		let incompatible = BindingUsage {
-			kind: BindingKind::StorageImage,
-			..bindings[0].clone()
-		};
-
-		assert!(validate_shared_schema(&bindings, &[incompatible]).is_err());
 		let mut array = bindings[0].clone();
 		array.count = 2;
 
@@ -446,10 +386,6 @@ mod tests {
 		writable_sampler.write = true;
 
 		assert!(validate_binding_schema(&[writable_sampler]).is_err());
-		assert!(matches!(
-			texture_view(TextureView::Texture3D),
-			ghi::TextureViewTypes::Texture3D
-		));
 		assert!(
 			validate_resources(&bindings, &resources[..2])
 				.expect_err("Expected a missing resource")

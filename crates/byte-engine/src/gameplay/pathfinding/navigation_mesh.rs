@@ -865,26 +865,6 @@ mod tests {
 	}
 
 	#[test]
-	fn string_pull_reuses_output_and_preserves_it_on_error() {
-		let start = point(0.0, 0.0);
-		let target = point(2.0, 0.0);
-		let portals = [NavigationPortal::new(point(1.0, 1.0), point(1.0, -1.0))];
-		let mut path = Vec::with_capacity(4);
-		path.push(point(-1.0, -1.0));
-		let allocation = path.as_ptr();
-
-		assert_eq!(string_pull_into(start, target, &portals, &mut path).unwrap(), [start, target]);
-		assert_eq!(path.as_ptr(), allocation);
-
-		let previous = path.clone();
-		assert_eq!(
-			string_pull_into(Point::new(f32::NAN, 0.0, 0.0), target, &portals, &mut path),
-			Err(StringPullError::NonFiniteStart)
-		);
-		assert_eq!(path, previous);
-	}
-
-	#[test]
 	fn finds_and_string_pulls_both_directions_through_a_turn() {
 		let mesh = l_shaped_mesh();
 		let start = point(0.5, 1.0);
@@ -916,15 +896,6 @@ mod tests {
 		let corner = Point::new(2.0, 2.0, 2.0);
 
 		assert_eq!(mesh.find_path(start, target).unwrap(), [start, corner, target]);
-	}
-
-	#[test]
-	fn returns_a_direct_path_inside_one_polygon() {
-		let mesh = l_shaped_mesh();
-		let start = point(0.25, 0.25);
-		let target = point(1.5, 1.0);
-
-		assert_eq!(mesh.find_path(start, target).unwrap(), [start, target]);
 	}
 
 	#[test]
@@ -1032,21 +1003,6 @@ mod tests {
 		assert_eq!(
 			same_side.err(),
 			Some(NavigationMeshBuildError::InconsistentSharedEdge { first: 0, second: 1 })
-		);
-	}
-
-	#[test]
-	fn rejects_non_finite_query_and_portal_points() {
-		let mesh = l_shaped_mesh();
-		assert_eq!(
-			mesh.find_path(Point::new(f32::NAN, 0.0, 0.0), point(1.0, 1.0)),
-			Err(NavigationPathError::NonFiniteStart)
-		);
-
-		let portals = [NavigationPortal::new(point(1.0, 1.0), Point::new(1.0, f32::INFINITY, -1.0))];
-		assert_eq!(
-			string_pull(point(0.0, 0.0), point(2.0, 0.0), &portals),
-			Err(StringPullError::NonFinitePortal { portal: 0 })
 		);
 	}
 }

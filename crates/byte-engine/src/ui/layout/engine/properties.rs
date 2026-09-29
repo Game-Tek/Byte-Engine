@@ -49,7 +49,7 @@ macro_rules! element_kinds {
 			/// Pass one [`ConcreteLayer`], an array of layers, or a [`crate::ui::ConcreteStyle`]. Layers paint in order.
 			pub fn style(self, layers: impl IntoIterator<Item = ConcreteLayer>) -> Self {
 				let layers = layers.into_iter();
-				let style = &mut self.target.style.layers;
+				let style = &mut self.style.layers;
 				style.clear();
 				self.spares.fit_layers(style, layers.size_hint().0);
 				style.extend(layers);
@@ -59,26 +59,26 @@ macro_rules! element_kinds {
 			/// Adds one layer on top of the element's current style. A new element starts with one white fill layer,
 			/// so call [`Self::style`] first to start from an empty style.
 			pub fn layer(self, layer: ConcreteLayer) -> Self {
-				let style = &mut self.target.style.layers;
+				let style = &mut self.style.layers;
 				self.spares.fit_layers(style, style.len() + 1);
 				style.push(layer);
 				self
 			}
 
 			pub fn transform(self, transform: impl Into<Transform>) -> Self {
-				self.target.transform = transform.into();
+				*self.transform = transform.into();
 				self
 			}
 
 			pub fn opacity(self, opacity: f32) -> Self {
-				self.target.visual.opacity = opacity;
+				*self.opacity = opacity;
 				self
 			}
 		}
 	)*};
 }
 
-element_kinds!(Container, Shape, Curve, Path, Image, Text, TextField);
+element_kinds!(Container, Curve, Path, Image, Text);
 
 /// The `Setup` trait is a function that sets the properties of a `K` element, such as
 /// `|frame| frame.width(240.into()).clip(false)`.
@@ -159,16 +159,33 @@ impl Spares {
 	}
 
 	/// Takes the heap buffers of an element the tree is removing.
-	pub(crate) fn recycle(&mut self, primitive: &mut Primitives) {
-		self.keep_layers(std::mem::take(&mut primitive.style_mut().layers));
-		match primitive {
+	pub(crate) fn recycle(&mut self, element: &mut IdedElement) {
+		self.keep_layers(std::mem::take(&mut element.style.layers));
+		match &mut element.primitive {
 			Primitives::Text(text) => self.keep_string(std::mem::take(&mut text.content)),
-			Primitives::TextField(text_field) => self.keep_string(std::mem::take(&mut text_field.content)),
 			Primitives::Curve(curve) => self.keep_segments(std::mem::take(&mut curve.path.segments)),
 			Primitives::Path(path) => self.keep_segments(std::mem::take(&mut path.path.segments)),
-			Primitives::Container(_) | Primitives::Shape(_) | Primitives::Image(_) => {}
+			Primitives::Container(_) | Primitives::Image(_) => {}
 		}
 	}
+}
+
+/// Lends `element` to setup as the properties of a `K` element, or returns `None` when it is of another kind.
+fn properties<'a, K: ElementKind>(element: &'a mut IdedElement, spares: &'a mut Spares) -> Option<Properties<'a, K>> {
+	let IdedElement {
+		style,
+		transform,
+		opacity,
+		primitive,
+		..
+	} = element;
+	Some(Properties {
+		target: K::from_primitive(primitive)?,
+		style,
+		transform,
+		opacity,
+		spares,
+	})
 }
 
 /// Returns a future that declares the element `slot` names. Its first poll creates the element with `create` when the
@@ -181,9 +198,8 @@ pub(super) fn declare<C: 'static, K: ElementKind>(
 	let EvaluationContext { parent, path, owner, .. } = *slot.parent;
 	let id = crate::ui::layout::context::slot_path(path, slot.key);
 	direct(move |poll: &mut UiPoll<C>| {
-		if let Some((primitive, spares)) = poll.tree.add_element(parent, path, id, create) {
-			let target = K::from_primitive(primitive).expect("a new element has its declared kind");
-			let _ = setup(Properties { target, spares });
+		if let Some((element, spares)) = poll.tree.add_element(parent, path, id, create) {
+			let _ = setup(properties(element, spares).expect("a new element has its declared kind"));
 		}
 		EvaluationContext::new(id, Some(id), id.get(), owner)
 	})
@@ -193,11 +209,9 @@ pub(super) fn declare<C: 'static, K: ElementKind>(
 /// after the whole edit, so writing values it already has changes nothing.
 pub(super) fn update<C: 'static, K: ElementKind>(id: Id, setup: impl Setup<K>) -> impl Future<Output = ()> {
 	direct(move |poll: &mut UiPoll<C>| {
-		let updated = poll.tree.update_element(id, |primitive, spares| {
-			K::from_primitive(primitive)
-				.map(|target| setup(Properties { target, spares }))
-				.is_some()
-		});
+		let updated = poll
+			.tree
+			.update_element(id, |element, spares| properties(element, spares).map(setup).is_some());
 		match updated {
 			Some(true) => {}
 			Some(false) => log::error!(
@@ -226,7 +240,12 @@ pub(super) fn update<C: 'static, K: ElementKind>(id: Id, setup: impl Setup<K>) -
 /// panel.update_container(|panel| card(panel).opacity(0.5)).await;
 /// ```
 pub struct Properties<'a, K> {
+	/// The kind-specific state of the element.
 	target: &'a mut K,
+	/// The look every kind shares, which the tree keeps on the element's node.
+	style: &'a mut ConcreteStyle,
+	transform: &'a mut Transform,
+	opacity: &'a mut f32,
 	/// Storage of removed elements, which setters take instead of allocating.
 	spares: &'a mut Spares,
 }
@@ -255,35 +274,22 @@ macro_rules! box_setters {
 
 box_setters! {
 	Container => [];
-	Shape => [settings];
 	Image => [];
 	Curve => [path];
 	Path => [path];
 }
 
-/// Setters for elements drawn as a rounded rectangle: containers and shapes.
-macro_rules! corner_setters {
-	($($kind:ty => [$($path:ident)*];)*) => {$(
-		impl Properties<'_, $kind> {
-			pub fn corner_radius(self, corner_radius: f32) -> Self {
-				self.target $(.$path)* .corner_radius = corner_radius;
-				self
-			}
-
-			pub fn corner_exponent(self, corner_exponent: f32) -> Self {
-				self.target $(.$path)* .corner_exponent = corner_exponent;
-				self
-			}
-		}
-	)*};
-}
-
-corner_setters! {
-	Container => [];
-	Shape => [settings];
-}
-
 impl Properties<'_, Container> {
+	pub fn corner_radius(self, corner_radius: f32) -> Self {
+		self.target.corner_radius = corner_radius;
+		self
+	}
+
+	pub fn corner_exponent(self, corner_exponent: f32) -> Self {
+		self.target.corner_exponent = corner_exponent;
+		self
+	}
+
 	/// Selects whether this surface participates in pointer hit testing.
 	/// Disable this for decorative roots; children retain their own policy.
 	pub fn hit_testable(self, enabled: bool) -> Self {
@@ -294,26 +300,6 @@ impl Properties<'_, Container> {
 	/// Shapes this container as an annular sector, or as a rounded rectangle again with `None`. See [`Sector`].
 	pub fn sector(self, sector: impl Into<Option<Sector>>) -> Self {
 		self.target.sector = sector.into();
-		self
-	}
-
-	pub fn min_width(self, min_width: Sizing) -> Self {
-		self.target.min_width = Some(min_width);
-		self
-	}
-
-	pub fn min_height(self, min_height: Sizing) -> Self {
-		self.target.min_height = Some(min_height);
-		self
-	}
-
-	pub fn max_width(self, max_width: Sizing) -> Self {
-		self.target.max_width = Some(max_width);
-		self
-	}
-
-	pub fn max_height(self, max_height: Sizing) -> Self {
-		self.target.max_height = Some(max_height);
 		self
 	}
 
@@ -341,33 +327,27 @@ impl Properties<'_, Container> {
 
 	/// Lays out this container's children with `flow`, such as [`crate::ui::flow::row_with_gap`].
 	pub fn flow(self, flow: impl FlowFunction + 'static) -> Self {
-		self.target.flow = utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow);
+		self.target.flow = utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow);
 		self
 	}
 }
 
 /// Setters for text elements: static labels and text fields.
-macro_rules! text_setters {
-	($($kind:ty),*) => {$(
-		impl Properties<'_, $kind> {
-			/// Replaces the text by formatting `content` into the element's own string storage, so a label that fits
-			/// allocates nothing. Pass a `&str`, a number, or `format_args!` instead of a formatted `String`.
-			pub fn content(self, content: impl std::fmt::Display) -> Self {
-				self.target.content.clear();
-				// Writing to a string fails only when `content`'s own formatting fails, which leaves what it wrote.
-				let _ = write!(self.target.content, "{content}");
-				self
-			}
+impl Properties<'_, Text> {
+	/// Replaces the text by formatting `content` into the element's own string storage, so a label that fits
+	/// allocates nothing. Pass a `&str`, a number, or `format_args!` instead of a formatted `String`.
+	pub fn content(self, content: impl std::fmt::Display) -> Self {
+		self.target.content.clear();
+		// Writing to a string fails only when `content`'s own formatting fails, which leaves what it wrote.
+		let _ = write!(self.target.content, "{content}");
+		self
+	}
 
-			pub fn font_size(self, font_size: f32) -> Self {
-				self.target.settings.font_size = font_size;
-				self
-			}
-		}
-	)*};
+	pub fn font_size(self, font_size: f32) -> Self {
+		self.target.settings.font_size = font_size;
+		self
+	}
 }
-
-text_setters!(Text, TextField);
 
 /// Setters for elements drawn from curve segments: stroked curves and filled paths.
 macro_rules! segment_setters {
@@ -498,12 +478,14 @@ pub(super) fn assert_rgba_len(width: u32, height: u32, pixels: &[u8]) {
 }
 
 /// Builds a container outside any engine from `setup`'s properties, for tests that lay out elements directly.
+///
+/// Only the container's own properties are kept: style, transform, and opacity belong to the tree node.
 #[cfg(test)]
 pub(in super::super) fn detached_container(setup: impl Setup<Container>) -> Container {
-	let mut container = Container::default();
-	let _ = setup(Properties {
-		target: &mut container,
-		spares: &mut Spares::default(),
-	});
+	let mut element = IdedElement::new(Id::MIN, 0, 0, Primitives::Container(Container::default()));
+	let _ = setup(properties(&mut element, &mut Spares::default()).expect("the element is a container"));
+	let Primitives::Container(container) = element.primitive else {
+		unreachable!("the element was made as a container");
+	};
 	container
 }

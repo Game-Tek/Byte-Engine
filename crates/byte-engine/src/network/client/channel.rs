@@ -1,7 +1,7 @@
 //! In-memory client transport for deterministic replication tests.
 
 use std::{
-	sync::mpsc::{Receiver, Sender, TryRecvError},
+	sync::mpsc::{Receiver, Sender},
 	time::Instant,
 };
 

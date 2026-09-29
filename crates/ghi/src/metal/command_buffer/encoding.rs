@@ -1,55 +1,56 @@
+use super::recording::{descriptors_at_slot, retain_image};
 use super::*;
 
 /// Retains every materialized argument buffer and descriptor allocation through native command completion.
 ///
-/// Takes split borrows so a cached materialization can stay inside the context while the command retains it.
+/// Takes split borrows so a cached materialization can stay inside the context while the command retains it. A slot
+/// this command already retained at the same set version is skipped, so re-applying the same sets after a pipeline
+/// switch does not walk large bindless arrays again.
 fn retain_descriptor_resources(
 	device: &RecordingDevice<'_>,
-	descriptor_sets: &[DescriptorSet],
-	command_buffer: &mut NativeCommandSlot,
-	bound_descriptor_set_handles: &[DescriptorSetHandle],
+	descriptor_sets: &context::DescriptorSets,
+	command_buffer: &mut queue::NativeCommand,
+	bound_descriptor_sets: &[(DescriptorSetHandle, u64)],
 	sequence_index: u8,
 	layout: &PipelineLayout,
 	materialization: &Materialization,
 ) {
-	for (_, argument_buffer, _) in materialization.argument_buffers.iter() {
-		command_buffer.retain_allocation(argument_buffer.clone());
+	for (_, argument_buffer, _) in &materialization.argument_buffers {
+		command_buffer.retain_allocation(&**argument_buffer);
 	}
-	for texture_view in materialization._texture_views.iter() {
-		command_buffer.retain_allocation(texture_view.clone());
+	for texture_view in &materialization._texture_views {
+		command_buffer.retain_allocation(&**texture_view);
 	}
 
 	for resource in &layout.resources {
-		let Some(descriptors) = bound_descriptor_set_handles.iter().find_map(|set_handle| {
-			descriptor_sets[set_handle.0 as usize]
-				.descriptors
-				.get(&resource.descriptor.slot())
-		}) else {
+		let slot = resource.descriptor.slot();
+		let Some((set_handle, descriptors)) = descriptors_at_slot(descriptor_sets, bound_descriptor_sets, slot) else {
 			continue;
 		};
+		if !command_buffer.retain_descriptor_slot(set_handle.0, descriptor_sets.resource(set_handle).version, slot) {
+			continue;
+		}
 		for descriptor in descriptors.values().copied() {
 			match descriptor {
-				Descriptor::Image { image, .. } => {
-					command_buffer.retain_allocation(device.images.resource(image).texture.clone());
-				}
+				Descriptor::Image { image, .. } => retain_image(device, command_buffer, image),
 				Descriptor::CombinedImageSampler { image, sampler, .. } => {
-					command_buffer.retain_allocation(device.images.resource(image).texture.clone());
-					command_buffer.retain_object(device.samplers[sampler.0 as usize].sampler.clone());
+					retain_image(device, command_buffer, image);
+					command_buffer.retain_object(&*device.samplers[sampler.0 as usize].sampler);
 				}
 				Descriptor::Buffer { buffer, .. } => {
-					command_buffer.retain_allocation(device.buffers.resource(buffer).buffer.clone());
+					command_buffer.retain_allocation(&*device.buffers.resource(buffer).buffer);
 				}
 				// Acquired drawables are retained when they are attached to the recording, so only proxies remain.
 				Descriptor::Swapchain { handle } => {
 					if let Some(proxy) = device.swapchains[handle.0 as usize].images[sequence_index as usize] {
-						command_buffer.retain_allocation(device.images.resource(proxy).texture.clone());
+						retain_image(device, command_buffer, proxy);
 					}
 				}
 				Descriptor::AccelerationStructure { handle } => {
-					command_buffer.retain_allocation(device.acceleration_structures[handle.0 as usize].structure.clone());
+					command_buffer.retain_allocation(&*device.acceleration_structures[handle.0 as usize].structure);
 				}
 				Descriptor::Sampler { sampler } => {
-					command_buffer.retain_object(device.samplers[sampler.0 as usize].sampler.clone());
+					command_buffer.retain_object(&*device.samplers[sampler.0 as usize].sampler);
 				}
 			}
 		}
@@ -109,10 +110,7 @@ impl CommandBufferRecording<'_> {
 						}
 					},
 					(DescriptorBindingSlot::Texture(slot), Descriptor::Swapchain { handle }) => {
-						let texture = match self.swapchain_proxy(handle) {
-							Some(proxy) => self.device.images.resource(proxy).texture.clone(),
-							None => self.drawable_texture(handle),
-						};
+						let texture = self.swapchain_surface(handle).expect(MISSING_SURFACE).texture;
 						// SAFETY: The materialized slot was produced by this argument encoder's reflection layout.
 						unsafe { layout.argument_encoder.setTexture_atIndex(Some(&texture), slot as _) };
 					}
@@ -168,40 +166,30 @@ impl CommandBufferRecording<'_> {
 		if self.bound_descriptor_set_roots.as_slice() != sets {
 			self.bound_descriptor_set_roots.clear();
 			self.bound_descriptor_set_roots.extend_from_slice(sets);
-			self.bound_descriptor_set_handles.clear();
+			self.bound_descriptor_sets.clear();
 
-			for descriptor_set_handle in sets {
-				let mut resolved = DescriptorSetHandle(descriptor_set_handle.0);
-				for _ in 0..self.sequence_index {
-					resolved = self.commit.descriptor_sets[resolved.0 as usize].next.expect(
-						"Missing frame-local Metal descriptor set. The most likely cause is that the retained set chain is shorter than the frame count.",
-					);
-				}
-				self.bound_descriptor_set_handles.push(resolved);
+			for &descriptor_set_handle in sets {
+				let resolved = self
+					.commit
+					.descriptor_sets
+					.nth_handle(descriptor_set_handle, self.sequence_index as usize)
+					.expect("Missing frame-local Metal descriptor set. The most likely cause is that the set handle came from another context.");
+				// The version is read before each command, since writes can follow the bind.
+				self.bound_descriptor_sets.push((resolved, 0));
 			}
 		}
 	}
 
 	/// Refreshes retained-set versions so writes made after a logical bind are visible before execution.
-	pub(super) fn refresh_bound_descriptor_set_versions(&mut self) {
-		self.bound_descriptor_set_versions.clear();
-		self.bound_descriptor_set_versions.extend(
-			self.bound_descriptor_set_handles
-				.iter()
-				.map(|handle| self.commit.descriptor_sets[handle.0 as usize].version),
-		);
+	fn refresh_bound_descriptor_set_versions(&mut self) {
+		for (handle, version) in &mut self.bound_descriptor_sets {
+			*version = self.commit.descriptor_sets.resource(*handle).version;
+		}
 	}
 
-	fn descriptor_binding_is_current(
-		&self,
-		applied: Option<&AppliedDescriptorBinding>,
-		pipeline: graphics_hardware_interface::PipelineHandle,
-	) -> bool {
-		applied.is_some_and(|applied| {
-			applied.pipeline == pipeline
-				&& applied.descriptor_sets.as_slice() == self.bound_descriptor_set_handles.as_slice()
-				&& applied.versions.as_slice() == self.bound_descriptor_set_versions.as_slice()
-		})
+	/// Returns whether `key` names the pipeline and the bound sets at their current versions.
+	fn binding_is_current(&self, key: &DescriptorBindingKey, pipeline: graphics_hardware_interface::PipelineHandle) -> bool {
+		key.pipeline == pipeline && key.sets == self.bound_descriptor_sets
 	}
 
 	/// Returns whether any bound descriptor references a swapchain, whose native texture can change per frame.
@@ -228,21 +216,28 @@ impl CommandBufferRecording<'_> {
 		mut bind: impl FnMut(&mut Self, crate::Stages, mtl::MTLGPUAddress),
 	) -> AppliedDescriptorBinding {
 		let layout = &self.device.pipelines[pipeline_handle.0 as usize].layout;
-		let owner = self.bound_descriptor_set_handles.first().map(|handle| handle.0 as usize);
+		let owner = self.bound_descriptor_sets.first().map(|(handle, _)| *handle);
 		let existing = owner.and_then(|owner| {
-			let snapshots = &self.commit.descriptor_sets[owner].argument_buffers;
+			let snapshots = &self.commit.descriptor_sets.resource(owner).argument_buffers;
+			// A snapshot for the same pipeline and sets is replaced in place when only the versions differ.
 			let index = snapshots.iter().position(|snapshot| {
-				snapshot.pipeline == pipeline_handle && snapshot.descriptor_sets == self.bound_descriptor_set_handles
+				snapshot.key.pipeline == pipeline_handle
+					&& snapshot
+						.key
+						.sets
+						.iter()
+						.map(|(handle, _)| handle)
+						.eq(self.bound_descriptor_sets.iter().map(|(handle, _)| handle))
 			})?;
-			Some((index, snapshots[index].versions == self.bound_descriptor_set_versions))
+			Some((index, self.binding_is_current(&snapshots[index].key, pipeline_handle)))
 		});
 
 		// Either the owner set's retained snapshot, or a transient one encoded into the frame arena.
-		let source: Result<(usize, usize), Materialization> = match (owner, existing) {
+		let source: Result<(DescriptorSetHandle, usize), Materialization> = match (owner, existing) {
 			(Some(owner), Some((index, true))) => Ok((owner, index)),
 			(Some(owner), existing) if !self.bound_descriptors_reference_swapchain(layout) => {
 				let snapshot = self.materialize_argument_buffers(pipeline_handle, false);
-				let snapshots = &mut self.commit.descriptor_sets[owner].argument_buffers;
+				let snapshots = &mut self.commit.descriptor_sets.resource_mut(owner).argument_buffers;
 				let index = match existing {
 					Some((index, _)) => {
 						snapshots[index] = snapshot;
@@ -262,19 +257,19 @@ impl CommandBufferRecording<'_> {
 			device,
 			commit,
 			command_buffer,
-			bound_descriptor_set_handles,
+			bound_descriptor_sets,
 			sequence_index,
 			..
 		} = self;
 		let snapshot = match &source {
-			Ok((owner, index)) => &commit.descriptor_sets[*owner].argument_buffers[*index],
+			Ok((owner, index)) => &commit.descriptor_sets.resource(*owner).argument_buffers[*index],
 			Err(snapshot) => snapshot,
 		};
 		retain_descriptor_resources(
 			device,
 			commit.descriptor_sets,
 			command_buffer,
-			bound_descriptor_set_handles,
+			bound_descriptor_sets,
 			*sequence_index,
 			layout,
 			snapshot,
@@ -291,10 +286,13 @@ impl CommandBufferRecording<'_> {
 			})
 			.collect::<SmallVec<[_; 5]>>();
 		let applied = AppliedDescriptorBinding {
-			pipeline: pipeline_handle,
-			descriptor_sets: bound_descriptor_set_handles.clone(),
-			versions: snapshot.versions.clone(),
-			resource_uses: snapshot.resource_uses.clone(),
+			key: snapshot.key.clone(),
+			// A transient snapshot's buffers are retained by the command now, so only its uses need to outlive it.
+			snapshot: match source {
+				Ok((owner, index)) => AppliedSnapshot::Retained { owner, index },
+				Err(snapshot) => AppliedSnapshot::Transient(snapshot.resource_uses),
+			},
+			settled: None,
 		};
 		for (stage, address) in addresses {
 			bind(self, stage, address);
@@ -327,14 +325,10 @@ impl CommandBufferRecording<'_> {
 					Descriptor::CombinedImageSampler { image, .. } => {
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}
-					Descriptor::Swapchain { handle } => {
-						if let Some(proxy) = self.swapchain_proxy(handle) {
-							synchronization::MetalResourceUse::image(proxy, None, None, stages, access)
-						} else {
-							let drawable = self.drawable_texture(handle);
-							synchronization::MetalResourceUse::drawable(drawable.as_ref(), stages, access)
-						}
-					}
+					Descriptor::Swapchain { handle } => self
+						.swapchain_surface(handle)
+						.expect(MISSING_SURFACE)
+						.resource_use(None, None, stages, access),
 					Descriptor::AccelerationStructure { handle } => {
 						synchronization::MetalResourceUse::acceleration_structure(handle.0 as usize, stages, access)
 					}
@@ -357,7 +351,11 @@ impl CommandBufferRecording<'_> {
 		transient: bool,
 	) -> Materialization {
 		let layout = &self.device.pipelines[pipeline_handle.0 as usize].layout;
-		self.validate_bound_descriptor_sets(layout);
+		// Validation scans every bound set against every resource, and transient snapshots materialize every frame,
+		// so only debug builds pay for it.
+		if cfg!(debug_assertions) {
+			self.validate_bound_descriptor_sets(layout);
+		}
 		let mut argument_buffers = layout
 			.stage_argument_layouts
 			.iter()
@@ -397,108 +395,84 @@ impl CommandBufferRecording<'_> {
 			self.encode_stage_argument_buffer(stage_layout, buffer, *offset, &mut texture_views);
 		}
 		Materialization {
-			pipeline: pipeline_handle,
-			descriptor_sets: self.bound_descriptor_set_handles.clone(),
-			versions: self.bound_descriptor_set_versions.clone(),
+			key: DescriptorBindingKey {
+				pipeline: pipeline_handle,
+				sets: self.bound_descriptor_sets.clone(),
+			},
 			argument_buffers,
 			resource_uses: self.descriptor_resource_uses(layout),
 			_texture_views: texture_views,
 		}
 	}
 
-	/// Applies the logical compute pipeline to the current native encoder when required.
-	pub(super) fn apply_bound_compute_pipeline(&mut self) {
-		let pipeline_handle = self.bound_pipeline.expect(
-			"No pipeline bound. The most likely cause is that a compute dispatch was recorded before bind_compute_pipeline.",
+	/// Sets the bound pipeline's native state on the active encoder when the encoder does not hold it yet.
+	fn apply_bound_pipeline(&mut self) {
+		let Self {
+			device,
+			command_buffer,
+			bound_pipeline,
+			encoder,
+			..
+		} = self;
+		let pipeline_handle = bound_pipeline.expect(
+			"No pipeline bound. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
 		);
-		if self.encoded_compute_pipeline == Some(pipeline_handle) {
+		let state = encoder.as_mut().expect(
+			"No active Metal encoder. The most likely cause is that a draw or dispatch was recorded after its encoder ended.",
+		);
+		if state.pipeline == Some(pipeline_handle) {
 			return;
 		}
 
-		let compute_pipeline_state = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
-			PipelineState::Compute(compute_pipeline_state) | PipelineState::RayTracing(compute_pipeline_state) => {
-				compute_pipeline_state.clone()
+		match (&state.encoder, &device.pipelines[pipeline_handle.0 as usize].pipeline) {
+			(ActiveEncoder::Compute(encoder), PipelineState::Compute { state: pipeline_state, .. }) => {
+				command_buffer.retain_allocation(&**pipeline_state);
+				encoder.setComputePipelineState(pipeline_state);
 			}
-			PipelineState::Raster(_) => panic!(
+			(ActiveEncoder::Render(encoder), PipelineState::Raster(raster)) => {
+				command_buffer.retain_allocation(&*raster.state);
+				encoder.setFrontFacingWinding(utils::winding(raster.face_winding));
+				encoder.setCullMode(utils::cull_mode(raster.cull_mode));
+				encoder.setTriangleFillMode(utils::fill_mode(raster.fill_mode));
+				encoder.setDepthStencilState(raster.depth_stencil_state.as_deref());
+				encoder.setRenderPipelineState(&raster.state);
+			}
+			(ActiveEncoder::Compute(_), PipelineState::Raster(_)) => panic!(
 				"Cannot dispatch a raster Metal pipeline. The most likely cause is that a raster pipeline handle was passed to bind_compute_pipeline."
 			),
-		};
-		self.command_buffer.retain_allocation(compute_pipeline_state.clone());
-		self.ensure_compute_encoder()
-			.setComputePipelineState(compute_pipeline_state.as_ref());
-		self.encoded_compute_pipeline = Some(pipeline_handle);
-	}
-
-	/// Applies the logical render pipeline to the active render pass when required.
-	pub(super) fn apply_bound_render_pipeline(&mut self) {
-		let pipeline_handle = self
-			.bound_pipeline
-			.expect("No pipeline bound. The most likely cause is that a draw was recorded before bind_raster_pipeline.");
-		if self.encoded_render_pipeline == Some(pipeline_handle) {
-			return;
-		}
-
-		let pipeline = &self.device.pipelines[pipeline_handle.0 as usize];
-		let render_pipeline_state = match &pipeline.pipeline {
-			PipelineState::Raster(render_pipeline_state) => render_pipeline_state.clone(),
-			_ => panic!(
+			(ActiveEncoder::Render(_), PipelineState::Compute { .. }) => panic!(
 				"Cannot draw with a non-raster Metal pipeline. The most likely cause is that a compute or ray tracing pipeline handle was passed to bind_raster_pipeline.",
 			),
-		};
-		let depth_stencil_state = pipeline.depth_stencil_state.clone();
-		let face_winding = pipeline.face_winding;
-		let cull_mode = pipeline.cull_mode;
-		let fill_mode = pipeline.fill_mode;
-		self.command_buffer.retain_allocation(render_pipeline_state.clone());
-		let encoder = self
-			.active_render_encoder
-			.as_ref()
-			.expect("No active render pass. The most likely cause is that a draw was recorded outside start_render_pass.");
-
-		encoder.setFrontFacingWinding(utils::winding(face_winding));
-		encoder.setCullMode(utils::cull_mode(cull_mode));
-		encoder.setTriangleFillMode(utils::fill_mode(fill_mode));
-		encoder.setDepthStencilState(depth_stencil_state.as_ref().map(|state| state.as_ref()));
-		encoder.setRenderPipelineState(render_pipeline_state.as_ref());
-
-		self.encoded_render_pipeline = Some(pipeline_handle);
+		}
+		state.pipeline = Some(pipeline_handle);
 	}
 
-	/// Materializes and binds compute descriptors once per pipeline, set version, and native encoder.
-	pub(super) fn apply_bound_compute_descriptors(&mut self) {
+	/// Materializes and binds descriptors once per pipeline, set version, and native encoder.
+	fn apply_bound_descriptors(&mut self) {
 		self.refresh_bound_descriptor_set_versions();
 		let pipeline_handle = self.bound_pipeline.expect(
-			"No pipeline bound. The most likely cause is that a compute dispatch was recorded before bind_compute_pipeline.",
+			"No pipeline bound. The most likely cause is that a draw or dispatch was recorded before binding a pipeline.",
 		);
-		if self.descriptor_binding_is_current(self.applied_compute_descriptor_binding.as_ref(), pipeline_handle) {
+		let state = self.encoder_state();
+		if state
+			.descriptors
+			.as_ref()
+			.is_some_and(|applied| self.binding_is_current(&applied.key, pipeline_handle))
+		{
 			return;
 		}
 
-		// A ray-tracing pipeline runs only its ray-generation function on Metal, so the dispatch binds that stage's
-		// argument buffer and leaves the hit and miss stages, which have no Metal function, unbound.
-		let dispatched_stage = match &self.device.pipelines[pipeline_handle.0 as usize].pipeline {
-			PipelineState::RayTracing(_) => crate::Stages::RAYGEN,
-			_ => crate::Stages::COMPUTE,
-		};
+		let compute = matches!(state.encoder, ActiveEncoder::Compute(_));
 		let applied = self.apply_argument_buffers(pipeline_handle, |recording, stage, address| {
-			if stage.intersects(dispatched_stage) {
-				recording.set_stage_buffer_address(ArgumentTableStage::Compute, ARGUMENT_BUFFER_BINDING_BASE, address);
+			if compute {
+				// A ray-tracing pipeline runs only its ray-generation function on Metal, so the dispatch binds that
+				// stage's argument buffer and leaves the hit and miss stages, which have no Metal function, unbound. A
+				// compute pipeline's layouts only hold the compute stage, so one filter serves both kinds.
+				if stage.intersects(crate::Stages::COMPUTE | crate::Stages::RAYGEN) {
+					recording.set_stage_buffer_address(ArgumentTableStage::Compute, ARGUMENT_BUFFER_BINDING_BASE, address);
+				}
+				return;
 			}
-		});
-		self.applied_compute_descriptor_binding = Some(applied);
-	}
-
-	/// Materializes and binds render descriptors once per pipeline, set version, and native encoder.
-	pub(super) fn apply_bound_render_descriptors(&mut self) {
-		self.refresh_bound_descriptor_set_versions();
-		let pipeline_handle = self
-			.bound_pipeline
-			.expect("No pipeline bound. The most likely cause is that a draw was recorded before bind_raster_pipeline.");
-		if self.descriptor_binding_is_current(self.applied_render_descriptor_binding.as_ref(), pipeline_handle) {
-			return;
-		}
-
-		let applied = self.apply_argument_buffers(pipeline_handle, |recording, stage, address| {
 			for (stages, table_stage) in [
 				(crate::Stages::TASK, ArgumentTableStage::Object),
 				(crate::Stages::MESH, ArgumentTableStage::Mesh),
@@ -510,33 +484,35 @@ impl CommandBufferRecording<'_> {
 				}
 			}
 		});
-		self.applied_render_descriptor_binding = Some(applied);
+		self.encoder_state_mut().descriptors = Some(applied);
 	}
 
-	/// Restores encoder-local compute state and synchronizes only resources consumed by the next dispatch.
-	pub(super) fn prepare_compute_dispatch(
+	/// Restores encoder-local state and synchronizes only the resources the next draw or dispatch consumes.
+	fn prepare_command(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
+		self.apply_bound_pipeline();
+		self.apply_bound_descriptors();
+		let mut binding = self.encoder_state_mut().descriptors.take().expect(
+			"Metal descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
+		);
+		self.consume_resources_with_descriptors(Some(&mut binding), additional_uses);
+		self.encoder_state_mut().descriptors = Some(binding);
+		self.flush_push_constants();
+	}
+
+	/// Prepares the next dispatch on the compute encoder, starting one when needed.
+	pub(super) fn prepare_dispatch(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
+		self.ensure_compute_encoder();
+		self.prepare_command(additional_uses);
+	}
+
+	/// Prepares the next draw in the open render pass; `operation` names the draw call if no pass is open.
+	pub(super) fn prepare_draw(
 		&mut self,
+		operation: &str,
 		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
 	) {
-		self.ensure_compute_encoder();
-		self.apply_bound_compute_pipeline();
-		self.apply_bound_compute_descriptors();
-		let mut binding = self.applied_compute_descriptor_binding.take().expect(
-			"Metal compute descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
-		);
-		self.consume_resources_with_descriptors(&mut binding.resource_uses, additional_uses);
-		self.applied_compute_descriptor_binding = Some(binding);
-	}
-
-	/// Restores encoder-local render state and synchronizes only resources consumed by the next draw.
-	pub(super) fn prepare_render_draw(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
-		self.apply_bound_render_pipeline();
-		self.apply_bound_render_descriptors();
-		let mut binding = self.applied_render_descriptor_binding.take().expect(
-			"Metal render descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
-		);
-		self.consume_resources_with_descriptors(&mut binding.resource_uses, additional_uses);
-		self.applied_render_descriptor_binding = Some(binding);
+		self.render_encoder(operation);
+		self.prepare_command(additional_uses);
 	}
 
 	/// Encodes one render-pass clear for a compatible group of color and depth images.
@@ -553,7 +529,6 @@ impl CommandBufferRecording<'_> {
 		let mut color_index = 0;
 		for (handle, clear_value) in images {
 			let image = self.device.images.resource(*handle);
-			self.command_buffer.retain_allocation(image.texture.clone());
 			if image.description.format.is_depth() {
 				let attachment = rpd.depthAttachment();
 				attachment.setTexture(Some(image.texture.as_ref()));
@@ -574,13 +549,11 @@ impl CommandBufferRecording<'_> {
 		let encoder = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
 			"Metal render command encoder creation failed. The most likely cause is that the command buffer could not start an image clear pass.",
 		);
-		#[cfg(debug_assertions)]
-		{
-			self.render_debug_region_depth =
-				self.begin_encoder_debug_regions(&*encoder, "Clear", images.iter().map(|(handle, _)| Some(*handle)));
-		}
-		self.active_encoder_scope = Some(self.allocate_encoder_scope());
-		self.active_render_encoder = Some(encoder);
+		self.begin_encoder(
+			ActiveEncoder::Render(encoder),
+			"Clear",
+			images.iter().map(|(handle, _)| Some(*handle)),
+		);
 		self.consume_resources(images.iter().map(|(handle, _)| {
 			synchronization::MetalResourceUse::image(
 				*handle,
@@ -590,6 +563,6 @@ impl CommandBufferRecording<'_> {
 				crate::AccessPolicies::WRITE,
 			)
 		}));
-		self.end_render_encoder();
+		self.end_encoder();
 	}
 }

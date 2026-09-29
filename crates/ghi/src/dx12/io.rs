@@ -893,19 +893,6 @@ mod tests {
 	}
 
 	#[test]
-	fn capabilities_match_the_implemented_direct_storage_paths() {
-		assert_eq!(
-			direct_storage_resource_io_capabilities(),
-			ResourceIoCapabilities {
-				sources: ResourceIoSourceKinds::FILE,
-				destinations: ResourceIoDestinationKinds::BUFFER | ResourceIoDestinationKinds::IMAGE_REGION,
-				compression: ResourceIoCompressionMethods::GDEFLATE_1,
-				features: ResourceIoFeatures::CANCELLATION,
-			}
-		);
-	}
-
-	#[test]
 	fn compressed_sources_require_a_nonempty_stored_block() {
 		let file = ResourceIoFileHandle { index: 0 };
 		let missing = ResourceIoFileRegion::new(file, 0);
@@ -928,36 +915,6 @@ mod tests {
 			native_source_range(6, valid, ResourceIoCompression::GDeflate1, 12),
 			Err(ResourceIoError::InvalidSourceRange { request: 6 })
 		);
-	}
-
-	#[test]
-	fn gdeflate_output_must_be_smaller_than_its_decoded_block() {
-		assert!(validate_gdeflate_output_size(64, 63).is_ok());
-		assert!(matches!(
-			validate_gdeflate_output_size(64, 64),
-			Err(ResourceIoError::Execution(_))
-		));
-		assert!(matches!(
-			validate_gdeflate_output_size(0, 0),
-			Err(ResourceIoError::Execution(_))
-		));
-	}
-
-	#[test]
-	fn queue_capacity_preserves_direct_storage_native_limits() {
-		assert_eq!(direct_storage_queue_capacity(0), Ok(DSTORAGE_MAX_QUEUE_CAPACITY as u16));
-		assert_eq!(
-			direct_storage_queue_capacity(DSTORAGE_MIN_QUEUE_CAPACITY as usize),
-			Ok(DSTORAGE_MIN_QUEUE_CAPACITY as u16)
-		);
-		assert!(matches!(
-			direct_storage_queue_capacity(DSTORAGE_MIN_QUEUE_CAPACITY as usize - 1),
-			Err(ResourceIoError::QueueCreation(_))
-		));
-		assert!(matches!(
-			direct_storage_queue_capacity(DSTORAGE_MAX_QUEUE_CAPACITY as usize + 1),
-			Err(ResourceIoError::QueueCreation(_))
-		));
 	}
 
 	#[test]

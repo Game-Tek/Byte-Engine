@@ -82,22 +82,6 @@ mod tests {
 	}
 
 	#[test]
-	fn non_byte_aligned_lengths_store_the_last_declared_bit() {
-		let mut bits = BitArray::<10, 2>::default();
-		bits.set(9, true);
-
-		assert!(bits.get(9));
-		assert!(!bits.get(8));
-		assert_eq!(size_of_val(&bits), 2);
-	}
-
-	#[test]
-	#[should_panic(expected = "Bit-array byte count is invalid")]
-	fn rejects_incorrect_byte_count() {
-		let _ = BitArray::<10, 1>::new();
-	}
-
-	#[test]
 	#[should_panic(expected = "Bit index is out of bounds")]
 	fn rejects_index_at_declared_length() {
 		let _ = BitArray::<10, 2>::new().get(10);

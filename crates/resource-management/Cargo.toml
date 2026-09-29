@@ -32,6 +32,7 @@ md5 = "0.8.0"
 
 [dependencies]
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
+math = { package = "byte-engine-math", path = "../math", version = "0.2.0" }
 besl = { package = "byte-engine-besl", path = "../besl", version = "0.2.0" }
 ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.2.0", optional = true }
 bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }

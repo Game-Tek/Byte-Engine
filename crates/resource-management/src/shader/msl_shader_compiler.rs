@@ -283,33 +283,8 @@ pub use Compiler as MSLShaderCompiler;
 
 #[cfg(test)]
 mod tests {
-	use utils::Extent;
-
-	use super::{
-		CompiledShaderBinding, format_tool_failure, metal_debug_info_arguments, metal_toolchain_missing,
-		reflected_workgroup_extent,
-	};
+	use super::CompiledShaderBinding;
 	use crate::shader::besl::evaluation::{BindingRecord, BindingUsage, collect_bindings};
-	use crate::shader::generator::ShaderGenerationSettings;
-
-	#[test]
-	fn workgroup_reflection_includes_compute_task_and_mesh_stages() {
-		let extent = Extent::new(32, 1, 1);
-
-		assert_eq!(
-			reflected_workgroup_extent(&ShaderGenerationSettings::compute(extent)),
-			Some(extent)
-		);
-		assert_eq!(
-			reflected_workgroup_extent(&ShaderGenerationSettings::task(extent, 32)),
-			Some(extent)
-		);
-		assert_eq!(
-			reflected_workgroup_extent(&ShaderGenerationSettings::mesh(64, 126, extent)),
-			Some(extent)
-		);
-		assert_eq!(reflected_workgroup_extent(&ShaderGenerationSettings::fragment()), None);
-	}
 
 	fn binding(name: &str, slot: u32, read: bool, write: bool) -> besl::NodeReference {
 		besl::Node::binding(
@@ -391,65 +366,5 @@ mod tests {
 		let error = collect_bindings::<BindingUsage>(&main).expect_err("Expected distinct same-slot declarations to fail");
 
 		assert!(error.contains("Duplicate resource declaration at slot 3"));
-	}
-
-	#[test]
-	fn tool_failure_includes_exit_status_and_stderr() {
-		let failure = format_tool_failure(
-			"Failed to compile MSL shader",
-			"The Metal compiler reported an error",
-			"1",
-			b"",
-			b"shader.metal:7:3: error: unknown identifier\n",
-		);
-
-		assert_eq!(
-			failure,
-			"Failed to compile MSL shader. The Metal compiler reported an error.\n\
-Exit status: 1\n\
-stderr:\n\
-shader.metal:7:3: error: unknown identifier\n\
-stdout:\n\
-<empty>"
-		);
-	}
-
-	#[test]
-	fn tool_failure_includes_stdout_when_stderr_is_empty() {
-		let failure = format_tool_failure(
-			"Failed to link Metal library",
-			"The metallib tool reported an error",
-			"2",
-			b"metallib: malformed AIR input\n",
-			b"",
-		);
-
-		assert_eq!(
-			failure,
-			"Failed to link Metal library. The metallib tool reported an error.\n\
-Exit status: 2\n\
-stderr:\n\
-<empty>\n\
-stdout:\n\
-metallib: malformed AIR input"
-		);
-	}
-
-	#[test]
-	fn missing_metal_toolchain_failure_has_an_actionable_cause() {
-		let stderr = b"error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain";
-
-		assert!(metal_toolchain_missing(stderr));
-		assert!(!metal_toolchain_missing(b"shader.metal:7:3: error: unknown identifier"));
-		let failure = format_tool_failure(
-			"Failed to compile MSL shader",
-			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
-			"1",
-			b"",
-			stderr,
-		);
-
-		assert!(failure.contains("The Metal Toolchain is missing"));
-		assert!(failure.contains("xcodebuild -downloadComponent MetalToolchain"));
 	}
 }

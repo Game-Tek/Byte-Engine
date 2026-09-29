@@ -14,7 +14,7 @@ use byte_engine::{
 		AnimationTransition, RootMotionRotation, RootMotionSettings, RootMotionTranslation,
 	},
 	application::{
-		Application, Parameter,
+		Parameter,
 		graphics::{
 			GraphicsApplication, setup_default_audio, setup_default_input, setup_default_resource_and_asset_management,
 			setup_pbr_visibility_shading_render_pipeline,
@@ -90,10 +90,9 @@ fn main() {
 		],
 	);
 
-	// Keep the deferred-task queue until every resource worker is registered.
-	// `default_setup` launches this queue internally, so this explicit setup form
+	// Register every resource worker before the loading thread starts.
+	// `default_setup` launches that thread internally, so this explicit setup form
 	// is the one to use when an app also owns animation-loading workers.
-	let mut loading_tasks = byte_engine::application::graphics::defaults::build_deferred_tasks_queue();
 	#[cfg(debug_assertions)]
 	{
 		use byte_engine::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
@@ -109,8 +108,8 @@ fn main() {
 		);
 	}
 	setup_default_input(&mut app);
-	setup_default_audio(&mut app, |task| loading_tasks.push(task));
-	setup_pbr_visibility_shading_render_pipeline(&mut app, |task| loading_tasks.push(task));
+	setup_default_audio(&mut app);
+	setup_pbr_visibility_shading_render_pipeline(&mut app);
 
 	let animation = locomotion_graph();
 	let (mut pool, animation_worker) = AnimationPool::new(
@@ -119,10 +118,10 @@ fn main() {
 	);
 
 	let mut player = pool.create_player(&animation.graph, ROOT_MOTION);
-	loading_tasks.push(Box::new(move |runtime| {
+	app.add_deferred_task(move |runtime| {
 		runtime.spawn(animation_worker.run()).detach();
-	}));
-	byte_engine::application::graphics::defaults::launch_deferred_tasks_thread(&mut app, loading_tasks);
+	});
+	byte_engine::application::graphics::defaults::launch_deferred_tasks_thread(&mut app);
 
 	let animated_handle = create_scene(&mut app);
 	let mut root_position = Point::origin();

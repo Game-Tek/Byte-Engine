@@ -247,13 +247,3 @@ pub trait BoundRayTracingPipelineMode: BoundPipelineLayoutMode + CommandBufferRe
 	/// Traces rays using the currently bound ray-tracing pipeline.
 	fn trace_rays(&mut self, binding_tables: rt::BindingTables, x: u32, y: u32, z: u32);
 }
-
-/// A workload supported by a command buffer.
-pub enum CommandBufferType {
-	/// Graphics work, including drawing, blitting, and presentation.
-	GRAPHICS,
-	/// Compute dispatch work.
-	COMPUTE,
-	/// Transfer work, including buffer and image copies.
-	TRANSFER,
-}

@@ -7,12 +7,6 @@ pub struct LutDescription {
 	pub domain_max: [f32; 3],
 }
 
-impl Description for LutDescription {
-	fn get_resource_class() -> &'static str {
-		"Lut"
-	}
-}
-
 pub fn process_lut<'a>(
 	id: ResourceId<'a>,
 	description: LutDescription,
@@ -83,49 +77,8 @@ mod tests {
 	use crate::{
 		asset::ResourceId,
 		processors::processor::implementations::lut::{LutDescription, process_lut},
-		resources::lut::{Lut, LutKind},
+		resources::lut::LutKind,
 	};
-
-	#[test]
-	fn process_3d_lut_serializes_metadata_and_float_payload() {
-		let description = LutDescription {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-
-		let entries = vec![
-			[0.0, 0.0, 0.0],
-			[1.0, 0.0, 0.0],
-			[0.0, 1.0, 0.0],
-			[1.0, 1.0, 0.0],
-			[0.0, 0.0, 1.0],
-			[1.0, 0.0, 1.0],
-			[0.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0],
-		];
-
-		let (asset, data) =
-			process_lut(ResourceId::new("grading/neutral.lut"), description, entries).expect("LUT processing should succeed");
-
-		let lut: Lut = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as a LUT");
-
-		assert_eq!(asset.id, "grading/neutral.lut");
-		assert_eq!(asset.class, "Lut");
-		assert_eq!(
-			lut,
-			Lut {
-				kind: LutKind::ThreeDimensional,
-				size: 2,
-				domain_min: [0.0, 0.0, 0.0],
-				domain_max: [1.0, 1.0, 1.0],
-			}
-		);
-		assert_eq!(data.len(), 8 * 3 * std::mem::size_of::<f32>());
-		assert_eq!(f32::from_le_bytes(data[0..4].try_into().unwrap()), 0.0);
-		assert_eq!(f32::from_le_bytes(data[data.len() - 4..].try_into().unwrap()), 1.0);
-	}
 
 	#[test]
 	fn process_lut_rejects_incorrect_entry_count() {
@@ -147,7 +100,7 @@ mod tests {
 }
 
 use crate::{
-	Description, ProcessedAsset,
+	ProcessedAsset,
 	asset::{ResourceId, handler::LoadErrors},
 	resources::lut::{Lut, LutKind},
 };

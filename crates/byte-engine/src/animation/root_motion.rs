@@ -1,8 +1,8 @@
-//! Root-motion extraction and composition utilities.
+//! Root-motion deltas that the animation graph player reports to gameplay.
 
 use resource_management::resources::skeleton::LocalTransform;
 
-use super::math::{conjugate_quaternion, multiply_quaternion, nlerp_quaternion};
+use super::math::{add3, conjugate_quaternion, lerp3, multiply_quaternion, nlerp_quaternion, sub3};
 
 /// The `RootMotionDelta` struct carries one frame's local translation and rotation change to gameplay.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,7 +23,7 @@ impl RootMotionDelta {
 	/// Calculates the shortest local transform delta between two sampled root poses.
 	pub fn between(previous: LocalTransform, current: LocalTransform) -> Self {
 		Self {
-			translation: subtract3(current.translation, previous.translation),
+			translation: sub3(current.translation, previous.translation),
 			rotation: multiply_quaternion(current.rotation, conjugate_quaternion(previous.rotation)),
 		}
 	}
@@ -44,9 +44,7 @@ impl RootMotionDelta {
 	pub fn blend(self, other: Self, factor: f32) -> Self {
 		let factor = factor.clamp(0.0, 1.0);
 		Self {
-			translation: std::array::from_fn(|component| {
-				self.translation[component] + (other.translation[component] - self.translation[component]) * factor
-			}),
+			translation: lerp3(self.translation, other.translation, factor),
 			rotation: nlerp_quaternion(self.rotation, other.rotation, factor),
 		}
 	}
@@ -58,101 +56,11 @@ impl Default for RootMotionDelta {
 	}
 }
 
-/// Extracts one root node's motion and resets its translation and rotation to a reference pose.
-///
-/// Keep `previous_pose` unmodified between frames. The current root keeps its
-/// sampled scale because scale is not locomotion.
-pub fn extract_root_motion(
-	previous_pose: &[LocalTransform],
-	current_pose: &mut [LocalTransform],
-	root_node: usize,
-	reference: LocalTransform,
-) -> Result<RootMotionDelta, RootMotionError> {
-	if previous_pose.len() != current_pose.len() {
-		return Err(RootMotionError::PoseLength {
-			previous: previous_pose.len(),
-			current: current_pose.len(),
-		});
-	}
-	let previous = previous_pose
-		.get(root_node)
-		.copied()
-		.ok_or(RootMotionError::RootNodeOutOfRange {
-			root_node,
-			pose_len: current_pose.len(),
-		})?;
-	debug_assert!(
-		root_node < current_pose.len(),
-		"Root-motion node is missing from the current pose. The most likely cause is inconsistent pose validation."
-	);
-	let current = current_pose[root_node];
-	let delta = RootMotionDelta::between(previous, current);
-	current_pose[root_node].translation = reference.translation;
-	current_pose[root_node].rotation = reference.rotation;
-	Ok(delta)
-}
-
-/// Calculates a forward loop-wrap delta by joining the end and start segments.
-pub fn forward_loop_root_motion(
-	previous: LocalTransform,
-	loop_end: LocalTransform,
-	loop_start: LocalTransform,
-	current: LocalTransform,
-) -> RootMotionDelta {
-	RootMotionDelta::between(previous, loop_end).then(RootMotionDelta::between(loop_start, current))
-}
-
-/// Errors returned when root motion cannot be extracted from a pose pair.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootMotionError {
-	/// The previous and current poses have different node counts.
-	PoseLength {
-		/// Previous pose node count.
-		previous: usize,
-		/// Current pose node count.
-		current: usize,
-	},
-	/// The selected root node is outside the pose.
-	RootNodeOutOfRange {
-		/// Requested root node index.
-		root_node: usize,
-		/// Available pose node count.
-		pose_len: usize,
-	},
-}
-
-impl std::fmt::Display for RootMotionError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::PoseLength { previous, current } => write!(
-				formatter,
-				"Root-motion poses have different node counts. The most likely cause is comparing poses with {previous} and {current} nodes."
-			),
-			Self::RootNodeOutOfRange { root_node, pose_len } => write!(
-				formatter,
-				"Root-motion node is outside the pose. The most likely cause is selecting node {root_node} in a pose with {pose_len} nodes."
-			),
-		}
-	}
-}
-
-impl std::error::Error for RootMotionError {}
-
-fn add3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	std::array::from_fn(|component| left[component] + right[component])
-}
-
-fn subtract3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	std::array::from_fn(|component| left[component] - right[component])
-}
-
 #[cfg(test)]
 mod tests {
-	use std::f32::consts::FRAC_PI_2;
-
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{RootMotionDelta, extract_root_motion, forward_loop_root_motion};
+	use super::RootMotionDelta;
 	use crate::animation::math::quaternion_exp;
 
 	fn root(translation: [f32; 3], yaw: f32) -> LocalTransform {
@@ -164,25 +72,10 @@ mod tests {
 	}
 
 	#[test]
-	fn extraction_returns_delta_and_makes_current_pose_in_place() {
-		let previous = [root([1.0, 0.0, 0.0], 0.0)];
-		let mut current = [root([3.0, 0.0, 1.0], FRAC_PI_2)];
-		let reference = LocalTransform::identity();
-		let delta = extract_root_motion(&previous, &mut current, 0, reference).expect("expected test value");
-
-		assert_eq!(delta.translation, [2.0, 0.0, 1.0]);
-		assert_eq!(current[0].translation, reference.translation);
-		assert_eq!(current[0].rotation, reference.rotation);
-		assert_eq!(current[0].scale, [2.0; 3]);
-	}
-
-	#[test]
 	fn loop_delta_does_not_move_back_to_the_clip_start() {
-		let delta = forward_loop_root_motion(
-			root([9.0, 0.0, 0.0], 0.0),
-			root([10.0, 0.0, 0.0], 0.0),
-			root([0.0, 0.0, 0.0], 0.0),
-			root([2.0, 0.0, 0.0], 0.0),
+		// Join the segment up to the clip end with the segment from the clip start, as a loop wrap does.
+		let delta = RootMotionDelta::between(root([9.0, 0.0, 0.0], 0.0), root([10.0, 0.0, 0.0], 0.0)).then(
+			RootMotionDelta::between(root([0.0, 0.0, 0.0], 0.0), root([2.0, 0.0, 0.0], 0.0)),
 		);
 
 		assert_eq!(

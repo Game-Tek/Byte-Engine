@@ -3,8 +3,6 @@
 #![feature(allocator_api)]
 
 pub type BoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
-pub type SendSyncBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + Sync + 'a>>;
-pub type SendBoxedFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 pub mod sync;
 
@@ -12,15 +10,30 @@ pub mod r#async;
 pub mod availability_graph;
 pub mod bit_array;
 pub mod copy_fn;
+pub mod hex;
+pub mod range_allocator;
 pub mod smoothed_value;
 pub mod stable_vec;
-pub mod stale_map;
 
-use std::ops::Div;
+
+/// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.
+const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
+	Some(url) => url,
+	None => "https://byte-engine.0x44491229.dev/docs",
+};
+
+/// Builds a link to one online documentation page, such as the recovery guide an error message points to.
+pub fn online_docs_url(path: &str) -> String {
+	format!(
+		"{}/{}",
+		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
+		path.trim_start_matches('/')
+	)
+}
 
 pub type Box<T> = smallbox::SmallBox<T, [u8; 32]>;
 pub use availability_graph::{AvailabilityGraph, AvailabilityGraphError, AvailabilityHandle};
-pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3};
+pub use copy_fn::{InlineCopyFn, InlineCopyFnError};
 /// Fast in-memory hashing for engine collections.
 ///
 /// Use [`hash::HashMap`] or [`hash::HashSet`] for global allocations. For a custom
@@ -28,6 +41,7 @@ pub use copy_fn::{InlineCopyFn, InlineCopyFnError, RefCall1, RefCall2, RefCall3}
 pub mod hash {
 	pub use rustc_hash::{FxBuildHasher, FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 }
+pub use range_allocator::RangeAllocator;
 pub use sonic_rs as json;
 pub use stable_vec::{StableVec, StableVecHandle};
 pub struct BufferAllocator<'a> {
@@ -56,34 +70,6 @@ impl<'a> BufferAllocator<'a> {
 		self.offset = self.offset.next_multiple_of(alignment.max(1));
 		self.take_with_offset(size)
 	}
-
-	pub fn remaining_aligned(&self, alignment: usize) -> usize {
-		self.buffer
-			.len()
-			.saturating_sub(self.offset.next_multiple_of(alignment.max(1)))
-	}
-
-	pub fn remaining(&self) -> usize {
-		self.buffer.len().saturating_sub(self.offset)
-	}
-}
-
-pub fn partition<T>(slice: &[T], key_fn: impl Fn(&T) -> usize) -> Vec<(usize, &[T])> {
-	let mut partitions = Vec::new();
-	let mut slice_start = 0;
-
-	for i in 1..slice.len() {
-		if key_fn(&slice[i - 1]) + 1usize != key_fn(&slice[i]) {
-			partitions.push((key_fn(&slice[slice_start]), &slice[slice_start..i]));
-			slice_start = i;
-		}
-	}
-
-	if !slice.is_empty() {
-		partitions.push((key_fn(&slice[slice_start]), &slice[slice_start..]));
-	}
-
-	partitions
 }
 
 /// The `Extent` struct represents the size and dimensionality of a region.
@@ -160,6 +146,25 @@ impl Extent {
 		(self.width as f32) / (self.height as f32)
 	}
 
+	/// Returns the dimensions of mip `level`, halving each axis per level and keeping it at least one.
+	///
+	/// An unused height or depth stays zero, so the mip keeps the image's dimensionality.
+	pub fn mip(self, level: u32) -> Self {
+		let shrink = |size: u32| size.checked_shr(level).unwrap_or(0).max(1);
+		Self {
+			width: shrink(self.width),
+			height: if self.height == 0 { 0 } else { shrink(self.height) },
+			depth: if self.depth == 0 { 0 } else { shrink(self.depth) },
+		}
+	}
+
+	/// Divides a two-dimensional extent for a reduced-resolution image, keeping each side at least one.
+	///
+	/// A `divisor` of `2` gives a half-resolution image.
+	pub fn scaled_down(self, divisor: u32) -> Self {
+		Self::rectangle((self.width / divisor).max(1), (self.height / divisor).max(1))
+	}
+
 	/// Returns the number of active axes encoded by nonzero dimensions.
 	pub fn dimensions(&self) -> u32 {
 		if self.width == 0 {
@@ -184,15 +189,32 @@ impl From<[u32; 3]> for Extent {
 	}
 }
 
-impl Div<u32> for Extent {
-	type Output = Self;
-
-	fn div(self, rhs: u32) -> Self::Output {
-		Self {
-			width: if self.width == 1 { 1 } else { self.width / rhs },
-			height: if self.height == 1 { 1 } else { self.height / rhs },
-			depth: if self.depth == 1 { 1 } else { self.depth / rhs },
+/// Color transfer and luminance functions shared by CPU image processing, lighting, and diagnostics.
+///
+/// Use these instead of restating the constants, so every CPU path encodes and weighs color the same way. GPU
+/// shaders keep their own copies.
+pub mod color {
+	/// Removes the IEC 61966-2-1 sRGB transfer function from one normalized channel.
+	pub fn srgb_to_linear(encoded: f32) -> f32 {
+		if encoded <= 0.04045 {
+			encoded / 12.92
+		} else {
+			((encoded + 0.055) / 1.055).powf(2.4)
 		}
+	}
+
+	/// Applies the IEC 61966-2-1 sRGB transfer function to one linear channel.
+	pub fn linear_to_srgb(value: f32) -> f32 {
+		if value <= 0.0031308 {
+			12.92 * value
+		} else {
+			1.055 * value.powf(1.0 / 2.4) - 0.055
+		}
+	}
+
+	/// Returns the Rec. 709 relative luminance of linear RGB.
+	pub fn rec709_luminance(red: f32, green: f32, blue: f32) -> f32 {
+		0.2126 * red + 0.7152 * green + 0.0722 * blue
 	}
 }
 
@@ -284,55 +306,18 @@ impl From<RGBA> for [f32; 4] {
 	}
 }
 
-pub fn insert_return_length<T>(collection: &mut Vec<T>, value: T) -> usize {
-	let length = collection.len();
-	collection.push(value);
-	length
-}
-
+/// Views a typed slice as its native bytes, for backends that hand raw host memory to a driver.
+///
+/// Prefer [`bytemuck::cast_slice`](https://docs.rs/bytemuck) where the element type is `Pod`: it proves at
+/// compile time that `T` has no padding, which this function leaves to the caller.
 pub fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
 	// SAFETY: The byte slice covers the same live allocation and cannot outlive the typed source slice.
 	unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 
-pub fn as_byte_slice_mut<T>(slice: &mut [T]) -> &mut [u8] {
-	// SAFETY: The byte slice covers the same exclusively borrowed allocation and preserves its lifetime.
-	unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
-}
-
 #[cfg(test)]
 mod tests {
-	use std::hash::{DefaultHasher, Hash as _, Hasher as _};
-
-	use super::{BufferAllocator, Extent, RGBA, as_byte_slice, as_byte_slice_mut};
-
-	#[test]
-	fn test_partition() {
-		let input = [];
-		let expected: Vec<(usize, &[usize])> = vec![];
-
-		assert_eq!(super::partition(&input, |x| *x,), expected);
-
-		let input = [0];
-		let expected: Vec<(usize, &[usize])> = vec![(0, &[0])];
-
-		assert_eq!(super::partition(&input, |x| *x,), expected);
-
-		let input = [0, 1];
-		let expected: Vec<(usize, &[usize])> = vec![(0, &[0, 1])];
-
-		assert_eq!(super::partition(&input, |x| *x,), expected);
-
-		let input = [0, 2];
-		let expected: Vec<(usize, &[usize])> = vec![(0, &[0]), (2, &[2])];
-
-		assert_eq!(super::partition(&input, |x| *x,), expected);
-
-		let input = [1, 2, 3, 5, 6, 7, 9, 10, 11];
-		let expected: Vec<(usize, &[usize])> = vec![(1, &[1, 2, 3]), (5, &[5, 6, 7]), (9, &[9, 10, 11])];
-
-		assert_eq!(super::partition(&input, |x| *x,), expected);
-	}
+	use super::{BufferAllocator, Extent, as_byte_slice};
 
 	#[test]
 	fn buffer_allocator_returns_disjoint_ranges_and_tracks_padding() {
@@ -347,42 +332,25 @@ mod tests {
 
 			assert_eq!(first_offset, 0);
 			assert_eq!(second_offset, 4);
-			assert_eq!(allocator.remaining(), 8);
-			assert_eq!(allocator.remaining_aligned(8), 8);
 		}
 
 		assert_eq!(&storage[..8], &[1, 2, 3, 0, 4, 5, 6, 7]);
 	}
 
 	#[test]
-	fn extent_dimensions_and_division_preserve_active_axes() {
+	fn extent_dimensions_mips_and_reductions_preserve_active_axes() {
 		assert_eq!(Extent::line(8).dimensions(), 1);
 		assert_eq!(Extent::square(8).dimensions(), 2);
 		assert_eq!(Extent::cube(8, 4, 2).dimensions(), 3);
 		assert_eq!(Extent::new(8, 1, 1).dimensions(), 3);
 		assert_eq!(Extent::rectangle(8, 1).dimensions(), 2);
 		assert_eq!(Extent::new(0, 0, 0).dimensions(), 0);
-		assert_eq!((Extent::new(8, 1, 1) / 2).as_tuple(), (4, 1, 1));
-		assert_eq!((Extent::new(8, 4, 2) / 2).as_array(), [4, 2, 1]);
+		assert_eq!(Extent::rectangle(17, 9).mip(1), Extent::rectangle(8, 4));
+		assert_eq!(Extent::rectangle(17, 9).mip(40), Extent::rectangle(1, 1));
+		assert_eq!(Extent::cube(8, 4, 2).mip(2), Extent::cube(2, 1, 1));
+		assert_eq!(Extent::rectangle(1919, 1079).scaled_down(2), Extent::rectangle(959, 539));
+		assert_eq!(Extent::square(1).scaled_down(2), Extent::square(1));
 		assert_eq!(Extent::rectangle(16, 9).aspect_ratio(), 16.0 / 9.0);
-	}
-
-	#[test]
-	fn rgba_multiplication_is_component_wise_and_hashes_all_channels() {
-		let tint = RGBA::new(0.5, 0.25, 1.0, 0.5);
-
-		assert_eq!(tint * RGBA::white(), tint);
-		assert_eq!(tint * 2.0, RGBA::new(1.0, 0.5, 2.0, 1.0));
-		assert_eq!(<[f32; 4]>::from(RGBA::transparent()), [0.0, 0.0, 0.0, 0.0]);
-		assert_eq!(RGBA::default(), RGBA::black());
-
-		let hash = |color: RGBA| {
-			let mut hasher = DefaultHasher::new();
-			color.hash(&mut hasher);
-			hasher.finish()
-		};
-
-		assert_ne!(hash(tint), hash(RGBA::new(0.5, 0.25, 1.0, 0.25)));
 	}
 
 	#[test]
@@ -392,9 +360,6 @@ mod tests {
 
 		assert_eq!(bytes.len(), std::mem::size_of_val(&values));
 
-		let mut mutable = [0u16; 2];
-		as_byte_slice_mut(&mut mutable).copy_from_slice(bytes);
-
-		assert_eq!(mutable, values);
+		assert_eq!(bytes, [values[0].to_ne_bytes(), values[1].to_ne_bytes()].concat());
 	}
 }

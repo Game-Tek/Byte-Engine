@@ -1,17 +1,15 @@
 //! Runtime inspection contracts and protocol-facing state access.
 //!
-//! The [`Inspector`] trait exposes factory-created handles, attached [`Name`]
+//! [`DefaultInspector`] exposes factory-created handles, attached [`Name`]
 //! values, application controls, screenshots, and passive message publication
 //! headers without choosing a transport. Other application values and
 //! published payloads remain opaque.
 
 use std::{collections::HashMap, sync::Arc};
 
-use facet::Facet;
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
-use serde_json::Value;
 use utils::sync::Mutex;
 
 use crate::{
@@ -22,7 +20,6 @@ use crate::{
 		factory::Handle,
 		message_bus::{MessageBus, MessageScope},
 		message_observer::{MessageObserver, ObservedEntity},
-		targeted_message::TargetedMessage,
 	},
 	gameplay::Name,
 };
@@ -57,53 +54,12 @@ pub trait Inspectable: Send + Sync {
 	}
 
 	/// Applies an inspector-provided string value to a named property.
-	fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+	fn set(&mut self, _key: &str, _value: &str) -> Result<(), String> {
 		Err(
 			"Inspector mutation is not implemented. The most likely cause is that this inspectable type did not override set."
 				.to_string(),
 		)
 	}
-}
-
-/// The `Inspector` trait defines the transport-neutral controls and diagnostics exposed to external engine tooling.
-///
-/// Register supported messages on a concrete implementation before sharing it
-/// as `dyn Inspector`, then pass the same handle to each protocol transport.
-pub trait Inspector: Send + Sync {
-	/// Registers one reflected targeted message and its destination channel for protocol posting.
-	///
-	/// Create the channel's listeners before registration. The channel may belong
-	/// to any scope on the shared message bus.
-	fn register_message<M>(&mut self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
-	where
-		Self: Sized,
-		M: TargetedMessage + Clone + Send + Sync + 'static,
-		M::Payload: Facet<'static>;
-
-	/// Returns the latest configuration event states for protocol adapters.
-	fn configuration_events(&self) -> Vec<ConfigurationEvent>;
-
-	/// Returns current factory-created entities filtered by an exact Rust type or attached name.
-	fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity>;
-
-	/// Drains passive publication headers and resolves their route metadata.
-	fn drain_messages(&self) -> Vec<InspectedMessage>;
-
-	/// Returns registered protocol message types in stable name order.
-	fn message_types(&self) -> Vec<RegisteredMessageType<'_>>;
-
-	/// Publishes one registered targeted world message from its reflected JSON payload.
-	fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String>;
-
-	/// Queues captures that must come from the same frame and returns their one-shot response.
-	///
-	/// Next, receive the [`Screenshots`] from the response and encode each readback with
-	/// [`ScreenshotFormat::encode`].
-	#[cfg(feature = "headed")]
-	fn request_screenshots(&self, captures: Vec<ScreenshotSelection>) -> Result<ScreenshotResponse, ScreenshotSubmitError>;
-
-	/// Requests application shutdown through the inspector event channel.
-	fn close_application(&self);
 }
 
 /// The `InspectedMessage` struct resolves one passive publication to its scope and Rust message type.
@@ -175,7 +131,7 @@ impl DefaultInspector {
 	/// Register the application and world listeners before passing their routes so
 	/// inspector requests cannot be published without a consumer. Attach message
 	/// observation before acquiring any routes in `messages`. Next, call
-	/// [`Inspector::register_message`] with each supported destination channel before sharing
+	/// [`Self::register_message`] with each supported destination channel before sharing
 	/// the inspector with a protocol adapter. Spawn named entities after
 	/// construction because name collection is future-only.
 	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
@@ -215,22 +171,14 @@ impl DefaultInspector {
 	pub(crate) fn screenshot_broker(&self) -> Arc<ScreenshotBroker> {
 		Arc::clone(&self.screenshots)
 	}
-}
 
-impl Inspector for DefaultInspector {
-	fn register_message<M>(&mut self, message_type: &'static str, channel: DefaultChannel<M>) -> Result<(), String>
-	where
-		M: TargetedMessage + Clone + Send + Sync + 'static,
-		M::Payload: Facet<'static>,
-	{
-		self.register_reflected_message(message_type, channel)
-	}
-
-	fn configuration_events(&self) -> Vec<ConfigurationEvent> {
+	/// Returns the latest configuration event states for protocol adapters.
+	pub fn configuration_events(&self) -> Vec<ConfigurationEvent> {
 		self.configuration.events()
 	}
 
-	fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
+	/// Returns current factory-created entities filtered by an exact Rust type or attached name.
+	pub fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
 		let names = self.entity_names.lock();
 		self.message_observer
 			.entities()
@@ -251,7 +199,8 @@ impl Inspector for DefaultInspector {
 			.collect()
 	}
 
-	fn drain_messages(&self) -> Vec<InspectedMessage> {
+	/// Drains passive publication headers and resolves their route metadata.
+	pub fn drain_messages(&self) -> Vec<InspectedMessage> {
 		let topic_snapshots = self.message_bus.topics();
 		let batch = self.message_observer.drain_messages(&topic_snapshots);
 		let mut topics = vec![None; self.message_bus.config().max_topics];
@@ -277,27 +226,24 @@ impl Inspector for DefaultInspector {
 			.collect()
 	}
 
-	fn message_types(&self) -> Vec<RegisteredMessageType<'_>> {
-		self.registered_message_types()
-	}
-
-	fn post_message(&self, message_type: &str, target: Handle, payload: &Value) -> Result<(), String> {
-		self.post_registered_message(message_type, target, payload)
-	}
-
+	/// Queues captures that must come from the same frame and returns their one-shot response.
+	///
+	/// Next, receive the [`Screenshots`] from the response and encode each readback with
+	/// [`ScreenshotFormat::encode`].
 	#[cfg(feature = "headed")]
-	fn request_screenshots(&self, captures: Vec<ScreenshotSelection>) -> Result<ScreenshotResponse, ScreenshotSubmitError> {
+	pub fn request_screenshots(&self, captures: Vec<ScreenshotSelection>) -> Result<ScreenshotResponse, ScreenshotSubmitError> {
 		self.screenshots.request(captures)
 	}
 
-	fn close_application(&self) {
+	/// Requests application shutdown through the inspector event channel.
+	pub fn close_application(&self) {
 		self.events.send(Events::Close);
 	}
 }
 
 #[cfg(all(test, feature = "headed"))]
 mod tests {
-	use super::{DefaultInspector, Inspector};
+	use super::DefaultInspector;
 	use crate::{
 		configuration::Configuration,
 		core::{Creator as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},

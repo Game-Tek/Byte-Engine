@@ -164,7 +164,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 }
 
 /// Selects the Shader Model 6.9 DXC profile for one generated shader.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn dxil_target_profile(stage: ShaderTypes) -> Result<&'static str, String> {
 	match stage {
 		ShaderTypes::Vertex => Ok("vs_6_9"),
@@ -213,22 +213,7 @@ fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult
 
 #[cfg(test)]
 mod tests {
-	use super::{dxc_version_supports_shader_model_6_9, dxil_target_profile};
-	use crate::types::ShaderTypes;
-
-	#[test]
-	fn dxil_profiles_use_shader_model_6_9_for_every_baked_stage() {
-		assert_eq!(dxil_target_profile(ShaderTypes::Vertex).unwrap(), "vs_6_9");
-		assert_eq!(dxil_target_profile(ShaderTypes::Fragment).unwrap(), "ps_6_9");
-		assert_eq!(dxil_target_profile(ShaderTypes::Compute).unwrap(), "cs_6_9");
-		assert_eq!(dxil_target_profile(ShaderTypes::Task).unwrap(), "as_6_9");
-		assert_eq!(dxil_target_profile(ShaderTypes::Mesh).unwrap(), "ms_6_9");
-	}
-
-	#[test]
-	fn dxil_profile_rejects_non_baked_shader_stages() {
-		assert!(dxil_target_profile(ShaderTypes::RayGen).is_err());
-	}
+	use super::dxc_version_supports_shader_model_6_9;
 
 	#[test]
 	fn shader_model_6_9_dxc_policy_rejects_older_compilers() {

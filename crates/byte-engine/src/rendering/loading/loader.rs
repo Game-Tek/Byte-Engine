@@ -70,7 +70,7 @@ impl Loader {
 			.ok();
 		let batch_window = parameters
 			.get_parameter("render.loading.batch-window")
-			.and_then(|parameter| parameter.value().parse::<f64>().ok())
+			.and_then(|parameter| parameter.parse::<f64>().ok())
 			.filter(|milliseconds| milliseconds.is_finite() && *milliseconds >= 0.0)
 			.map_or(DEFAULT_BATCH_WINDOW, |milliseconds| {
 				Duration::from_secs_f64(milliseconds / 1000.0)

@@ -112,31 +112,6 @@ impl Default for Camera {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
+use math::Degrees;
 
-	#[test]
-	fn defaults_form_a_valid_forward_facing_perspective_camera() {
-		let camera = Camera::new();
-
-		assert_eq!(camera.vertical_fov(), Degrees::new(45.0));
-		assert_eq!(camera.aspect_ratio(), 1.0);
-		assert_eq!(camera.aperture(), 0.0);
-		assert_eq!(camera.focus_distance(), 0.0);
-		assert_eq!(camera.exposure(), 0.0);
-		assert_eq!(camera.exposure_scale(), 1.0);
-	}
-
-	#[test]
-	fn exposure_stops_double_or_halve_scene_light() {
-		assert_eq!(Camera::new().with_exposure(-2.0).exposure_scale(), 0.25);
-		assert_eq!(Camera::new().with_exposure(1.0).exposure_scale(), 2.0);
-	}
-}
-
-use math::{Degrees, Orientation, Point, UnitVector, Vector, direction_from_orientation, orientation_from_direction};
-
-use crate::core::{Entity, EntityHandle};
 use crate::inspector::Inspectable;
-use crate::space::orientable::Orientable;

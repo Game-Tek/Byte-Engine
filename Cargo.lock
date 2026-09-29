@@ -244,7 +244,6 @@ dependencies = [
  "crossbeam-queue",
  "ctrlc",
  "divan",
- "downcast-rs 2.0.2",
  "env_logger",
  "exr",
  "facet",
@@ -286,17 +285,8 @@ dependencies = [
 name = "byte-engine-besl"
 version = "0.2.0"
 dependencies = [
- "byte-engine-besl-derive",
  "divan",
  "half",
-]
-
-[[package]]
-name = "byte-engine-besl-derive"
-version = "0.2.0"
-dependencies = [
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -353,6 +343,7 @@ dependencies = [
  "bumpalo",
  "byte-engine-besl",
  "byte-engine-ghi",
+ "byte-engine-math",
  "byte-engine-utils",
  "bytemuck",
  "colored",
@@ -930,12 +921,6 @@ name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
-
-[[package]]
-name = "downcast-rs"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
 name = "env_filter"
@@ -3375,7 +3360,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2857dd20b54e916ec7253b3d6b4d5c4d7d4ca2c33c2e11c6c76a99bd8744755d"
 dependencies = [
  "cc",
- "downcast-rs 1.2.1",
+ "downcast-rs",
  "rustix",
  "scoped-tls",
  "smallvec 1.15.2",

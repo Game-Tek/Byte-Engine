@@ -382,6 +382,6 @@ use crate::{
 	},
 	rendering::{
 		debug::{DebugMesh, DebugShape},
-		mesh::generator::{BoxMeshGenerator, MeshGenerator as _, SphereMeshGenerator},
+		mesh::generator::{BoxMeshGenerator, SphereMeshGenerator},
 	},
 };

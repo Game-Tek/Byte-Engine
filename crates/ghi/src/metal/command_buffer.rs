@@ -21,15 +21,102 @@ use crate::{
 const ARGUMENT_BUFFER_BINDING_BASE: u32 = 16;
 pub(super) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
 const ARGUMENT_TABLE_BUFFER_COUNT: usize = 17;
-pub(super) const UPLOAD_ALIGNMENT: usize = 256;
+/// Upload ranges start at the texture copy alignment, so any range can be the source of a buffer-to-texture copy.
+pub(super) const UPLOAD_ALIGNMENT: usize = crate::TEXTURE_COPY_PITCH_ALIGNMENT;
 const UPLOAD_PAGE_SIZE: usize = 256 * 1024;
 
 /// The `AppliedDescriptorBinding` struct records which argument-buffer snapshot the active native encoder references.
 struct AppliedDescriptorBinding {
-	pipeline: graphics_hardware_interface::PipelineHandle,
-	descriptor_sets: SmallVec<[DescriptorSetHandle; 4]>,
-	versions: SmallVec<[u64; 4]>,
-	resource_uses: synchronization::DescriptorUses,
+	key: DescriptorBindingKey,
+	snapshot: AppliedSnapshot,
+	settled: synchronization::SettledDescriptors,
+}
+
+/// The `AppliedSnapshot` enum locates the resource uses of an applied snapshot without copying them.
+enum AppliedSnapshot {
+	/// A snapshot that descriptor set `owner` retains at `index` of its snapshot list. The list only grows or
+	/// replaces entries in place, so the location stays valid for the whole recording.
+	Retained { owner: DescriptorSetHandle, index: usize },
+	/// A snapshot encoded for this command alone, which owns its uses.
+	Transient(synchronization::DescriptorUses),
+}
+
+impl AppliedSnapshot {
+	/// Returns the snapshot's resource uses.
+	fn uses<'s>(&'s self, descriptor_sets: &'s context::DescriptorSets) -> &'s synchronization::DescriptorUses {
+		match self {
+			Self::Retained { owner, index } => &descriptor_sets.resource(*owner).argument_buffers[*index].resource_uses,
+			Self::Transient(uses) => uses,
+		}
+	}
+}
+
+/// The panic message for a surface a command needs but cannot resolve.
+pub(super) const MISSING_SURFACE: &str = "Missing Metal surface. The most likely cause is that an image handle came from another context, or that a direct swapchain was used before its frame image was acquired.";
+
+/// The `Surface` struct is the texture a command reaches through an image or swapchain handle.
+///
+/// It is a frame image, a swapchain's proxy image, or a swapchain's acquired drawable. Resolve one with
+/// [`CommandBufferRecording::surface`] and describe each access with [`Self::resource_use`]; consuming that use
+/// retains the texture.
+pub(super) struct Surface {
+	/// The image behind the texture, or `None` for a drawable, which hazard tracking identifies by its texture.
+	pub(super) image: Option<ImageHandle>,
+	pub(super) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
+	pub(super) format: crate::Formats,
+	pub(super) extent: Extent,
+	pub(super) array_layers: u32,
+	/// The uses the texture was created with. A swapchain's surfaces report the swapchain's uses.
+	pub(super) uses: crate::Uses,
+}
+
+impl Surface {
+	/// Describes one access to this surface for hazard tracking.
+	pub(super) fn resource_use(
+		&self,
+		mip_level: Option<u32>,
+		layer: Option<u32>,
+		stages: mtl::MTLStages,
+		access: crate::AccessPolicies,
+	) -> synchronization::MetalResourceUse {
+		match self.image {
+			Some(image) => synchronization::MetalResourceUse::image(image, mip_level, layer, stages, access),
+			None => synchronization::MetalResourceUse::drawable(&self.texture, stages, access),
+		}
+	}
+}
+
+/// The `ActiveEncoder` enum holds the one native encoder a recording writes into at a time.
+enum ActiveEncoder {
+	Compute(Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>),
+	Render(Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>),
+}
+
+impl ActiveEncoder {
+	/// Returns the protocol both encoder kinds share, which barriers, debug groups, and labels go through.
+	fn common(&self) -> &ProtocolObject<dyn mtl::MTL4CommandEncoder> {
+		match self {
+			Self::Compute(encoder) => ProtocolObject::from_ref(&**encoder),
+			Self::Render(encoder) => ProtocolObject::from_ref(&**encoder),
+		}
+	}
+}
+
+/// The `EncoderState` struct keeps what is local to the active native encoder, so ending the encoder drops all of it.
+///
+/// [`CommandBufferRecording::begin_encoder`] is the only place that builds it.
+struct EncoderState {
+	encoder: ActiveEncoder,
+	/// The identity hazard tracking gives this encoder.
+	scope: synchronization::MetalEncoderScope,
+	/// The pipeline whose native state this encoder has set.
+	pipeline: Option<graphics_hardware_interface::PipelineHandle>,
+	/// The argument-buffer snapshot this encoder's tables reference.
+	descriptors: Option<AppliedDescriptorBinding>,
+	push_constants_dirty: bool,
+	/// How many logical debug regions this encoder mirrors, which it pops before it ends.
+	#[cfg(debug_assertions)]
+	debug_region_depth: usize,
 }
 
 /// Creates a 2D view of one mip level and array layer, for attachments and descriptors that select a subresource.
@@ -83,14 +170,6 @@ fn validate_attachment_layer_selection(
 
 #[cfg(test)]
 mod tests {
-	use super::validate_attachment_layer_selection;
-
-	#[test]
-	#[should_panic(expected = "Render-pass attachment layer count is out of bounds")]
-	fn layered_rendering_rejects_a_native_texture_with_too_few_layers() {
-		validate_attachment_layer_selection(None, std::num::NonZeroU32::new(4), 3);
-	}
-
 	#[test]
 	fn upload_ranges_are_aligned_and_do_not_overlap() {
 		assert_eq!(super::upload_offset(0, 4, 1024), Some(0));
@@ -140,10 +219,7 @@ pub(in crate::metal) fn encode_texture_upload(
 		);
 	}
 
-	let aligned_bytes_per_row = bytes_per_row.next_multiple_of(256);
-	let aligned_bytes_per_image = aligned_bytes_per_row
-		.checked_mul(row_count)
-		.expect("Metal texture upload pitch overflowed. The most likely cause is an invalid row count or aligned row size.");
+	let (aligned_bytes_per_row, aligned_bytes_per_image) = utils::texture_copy_pitches(bytes_per_row, row_count);
 	let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
 		"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
 	);
@@ -154,15 +230,18 @@ pub(in crate::metal) fn encode_texture_upload(
 
 	for slice in 0..array_layers as usize {
 		let source_offset = slice * source_image_pitch;
-		let destination_offset = slice * aligned_bytes_per_image;
 		let source_bytes = &staging[source_offset..source_offset + source_image_pitch];
-		for row in 0..row_count {
-			// SAFETY: Slice bounds above validate the source row offset.
-			let source = unsafe { source_bytes.as_ptr().add(source_start + row * source_row_pitch) };
-			// SAFETY: The upload allocation covers every padded row in every array layer.
-			let destination = unsafe { destination.add(destination_offset + row * aligned_bytes_per_row) };
-			// SAFETY: Source and upload allocations do not overlap and both expose `bytes_per_row` bytes.
-			unsafe { std::ptr::copy_nonoverlapping(source, destination, bytes_per_row) };
+		// SAFETY: The size checks above keep every source row of the region inside this slice, the upload allocation
+		// covers every padded row of every layer, and staging memory never aliases an upload page.
+		unsafe {
+			utils::copy_rows(
+				source_bytes.as_ptr().add(source_start),
+				source_row_pitch,
+				destination.add(slice * aligned_bytes_per_image),
+				aligned_bytes_per_row,
+				bytes_per_row,
+				row_count,
+			);
 		}
 	}
 
@@ -219,7 +298,7 @@ pub(super) struct RecordingCommit<'a> {
 	>,
 	pub(super) texture_readbacks: &'a mut crate::context::TextureReadbackRegistry<context::TextureReadbackStorage>,
 	/// Frame-local sets are mutable so a recording can retain the argument buffers it encodes from them.
-	pub(super) descriptor_sets: &'a mut [DescriptorSet],
+	pub(super) descriptor_sets: &'a mut context::DescriptorSets,
 	/// Upload pages owned by this recording's frame, or the transient arena for detached recordings.
 	pub(super) upload_arena: &'a mut UploadArena,
 	pub(super) argument_tables: &'a mut CommandArgumentTables,
@@ -434,7 +513,7 @@ impl UploadArena {
 
 /// Returns the next aligned upload offset when the requested range fits in the page.
 fn upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usize> {
-	let aligned = cursor.checked_add(UPLOAD_ALIGNMENT - 1)? & !(UPLOAD_ALIGNMENT - 1);
+	let aligned = cursor.checked_next_multiple_of(UPLOAD_ALIGNMENT)?;
 	(aligned.checked_add(size)? <= capacity).then_some(aligned)
 }
 
@@ -442,41 +521,28 @@ fn upload_offset(cursor: usize, size: usize, capacity: usize) -> Option<usize> {
 pub struct CommandBufferRecording<'a> {
 	device: RecordingDevice<'a>,
 	commit: RecordingCommit<'a>,
-	command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	frame_key: Option<graphics_hardware_interface::FrameKey>,
 	sequence_index: u8,
 	command_buffer: NativeCommandSlot,
 	#[cfg(debug_assertions)]
 	debug_regions: Vec<Retained<NSString>, &'a dyn std::alloc::Allocator>,
-	#[cfg(debug_assertions)]
-	compute_debug_region_depth: usize,
-	#[cfg(debug_assertions)]
-	render_debug_region_depth: usize,
 	bound_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	bound_descriptor_set_roots: SmallVec<[graphics_hardware_interface::DescriptorSetHandle; 4]>,
-	bound_descriptor_set_handles: SmallVec<[DescriptorSetHandle; 4]>,
-	bound_descriptor_set_versions: SmallVec<[u64; 4]>,
+	/// The frame-local sets the roots resolve to, each with the version the next command will read.
+	bound_descriptor_sets: SmallVec<[(DescriptorSetHandle, u64); 4]>,
 	bound_vertex_buffers: SmallVec<[(graphics_hardware_interface::BaseBufferHandle, usize); 8]>,
 	render_vertex_buffers_dirty: bool,
 	encoded_vertex_buffer_count: usize,
 	bound_index_buffer: Option<(graphics_hardware_interface::BaseBufferHandle, usize, crate::DataTypes)>,
 	push_constant_data: Vec<u8, &'a dyn std::alloc::Allocator>,
-	compute_push_constants_dirty: bool,
-	render_push_constants_dirty: bool,
-	active_compute_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>>>,
-	active_render_encoder: Option<Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>>>,
+	encoder: Option<EncoderState>,
 	/// Extent of the render pass being encoded; scissors are clamped to it.
 	active_render_extent: Extent,
-	active_encoder_scope: Option<synchronization::MetalEncoderScope>,
 	next_encoder_id: u32,
 	resource_tracker: synchronization::MetalResourceTracker,
-	encoded_compute_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	encoded_render_pipeline: Option<graphics_hardware_interface::PipelineHandle>,
-	applied_compute_descriptor_binding: Option<AppliedDescriptorBinding>,
-	applied_render_descriptor_binding: Option<AppliedDescriptorBinding>,
 	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
+	/// Readbacks recorded but not yet handed to submission. Dropping the recording abandons whatever is left.
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
-	readbacks_finalized: bool,
 	drawables: Vec<
 		(
 			graphics_hardware_interface::SwapchainHandle,
@@ -492,20 +558,19 @@ impl Drop for CommandBufferRecording<'_> {
 		if self.resource_tracker.rollback_recording() {
 			self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 		}
-		if !self.readbacks_finalized {
-			for handle in self.texture_readbacks.drain(..) {
-				// Dropping the returned storage releases the retained native staging buffer immediately.
-				self.commit.texture_readbacks.abandon_recorded(handle);
-			}
+		for handle in self.texture_readbacks.drain(..) {
+			// Dropping the returned storage releases the retained native staging buffer immediately.
+			self.commit.texture_readbacks.abandon_recorded(handle);
 		}
 	}
 }
 
-pub struct FinishedCommandBuffer<'a> {
-	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+/// The `FinishedCommandBuffer` struct carries one ended recording to the frame batch that submits it.
+pub struct FinishedCommandBuffer {
+	/// The queue the recording was made for, which must be the queue that submits it.
+	pub(crate) queue_handle: graphics_hardware_interface::QueueHandle,
 	pub(crate) command_buffer: queue::NativeCommand,
 	pub(crate) texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
-	pub(crate) _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
@@ -519,20 +584,6 @@ impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
 impl super::CommandBuffer<'_> {
 	pub fn create_command_buffer_recording(&mut self) -> super::CommandBufferRecording<'_> {
 		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
-}
-
-impl RecordingCommit<'_> {
-	fn synchronizer_for_sequence(
-		&self,
-		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-		sequence_index: u8,
-	) -> crate::synchronizer::SynchronizerHandle {
-		self.synchronizers
-			.nth_handle(synchronizer_handle, sequence_index as usize)
-			.expect(
-				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
-			)
 	}
 }
 

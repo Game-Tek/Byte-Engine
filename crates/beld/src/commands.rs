@@ -12,10 +12,8 @@ pub use maintenance::{clear, delete, list, wipe};
 #[cfg(test)]
 use query::parse_query_property;
 pub use query::query;
-#[cfg(all(test, debug_assertions))]
-use shared::resource_trace_json;
 #[cfg(test)]
-use shared::{decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, queryable_properties_json};
+use shared::{decode_query_cursor, encode_query_cursor};
 #[cfg(test)]
 mod tests {
 	use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,19 +26,15 @@ mod tests {
 		types::BitDepths,
 	};
 	use resource_management::{
-		QueryableProperty, QueryableValue,
 		asset::{FileStorageBackend, ResourceId},
 		resource::{ReDBStorageBackend, storage_backend::QueryCursor},
 	};
-	use serde_json::json;
 
 	#[cfg(debug_assertions)]
 	use super::list;
 	#[cfg(debug_assertions)]
-	use super::{bake, inspect, query, resource_trace_json};
-	use super::{
-		decode_hex, decode_query_cursor, encode_hex, encode_query_cursor, parse_query_property, queryable_properties_json,
-	};
+	use super::{bake, inspect, query};
+	use super::{decode_query_cursor, encode_query_cursor, parse_query_property};
 	#[cfg(debug_assertions)]
 	use crate::OutputFormat;
 	use crate::utils::get_asset_manager;
@@ -55,44 +49,13 @@ mod tests {
 	}
 
 	#[test]
-	fn hex_codec_round_trips_all_byte_values_and_accepts_uppercase() {
-		let bytes: Vec<u8> = (u8::MIN..=u8::MAX).collect();
-		let encoded = encode_hex(&bytes);
-
-		assert_eq!(encoded.len(), bytes.len() * 2);
-		assert_eq!(decode_hex(&encoded), Some(bytes.clone()));
-		assert_eq!(decode_hex(&encoded.to_uppercase()), Some(bytes));
-		assert_eq!(decode_hex("0"), None);
-		assert_eq!(decode_hex("gg"), None);
-	}
-
-	#[test]
 	fn query_cursor_codec_is_lossless_and_rejects_non_cursor_json() {
 		let cursor = QueryCursor::new(vec![0, 1, 2, 0xfe, 0xff]);
 		let encoded = encode_query_cursor(&cursor);
 
 		assert_eq!(decode_query_cursor(&encoded), Ok(cursor));
 		assert_eq!(decode_query_cursor("not-hex"), Err(1));
-		assert_eq!(decode_query_cursor(&encode_hex(br#"{"wrong":true}"#)), Err(1));
-	}
-
-	#[test]
-	fn query_properties_convert_to_json_without_losing_names_or_values() {
-		let properties = [
-			QueryableProperty {
-				name: "name".into(),
-				value: QueryableValue::String("hero".into()),
-			},
-			QueryableProperty {
-				name: "group".into(),
-				value: QueryableValue::String("opaque".into()),
-			},
-		];
-
-		assert_eq!(
-			queryable_properties_json(&properties),
-			json!({"name": "hero", "group": "opaque"})
-		);
+		assert_eq!(decode_query_cursor(&utils::hex::encode(br#"{"wrong":true}"#)), Err(1));
 	}
 
 	#[cfg(debug_assertions)]
@@ -116,25 +79,6 @@ mod tests {
 		assert_eq!(std::fs::read(&sentinel_path).unwrap(), b"retain-me");
 
 		std::fs::remove_dir_all(root).unwrap();
-	}
-
-	#[cfg(debug_assertions)]
-	#[test]
-	fn trace_json_preserves_item_order_levels_and_messages() {
-		let items = [
-			ResourceTraceItem::new(ResourceTraceLevel::Info, "Imported metadata.".to_string()),
-			ResourceTraceItem::new(ResourceTraceLevel::Warn, "Discarded optional data.".to_string()),
-			ResourceTraceItem::new(ResourceTraceLevel::Error, "Source is malformed.".to_string()),
-		];
-
-		assert_eq!(
-			resource_trace_json(&items),
-			json!([
-				{"level": "info", "message": "Imported metadata."},
-				{"level": "warn", "message": "Discarded optional data."},
-				{"level": "error", "message": "Source is malformed."},
-			])
-		);
 	}
 
 	#[test]

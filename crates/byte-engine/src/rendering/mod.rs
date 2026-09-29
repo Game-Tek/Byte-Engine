@@ -13,7 +13,6 @@
 //! to create and submit scene lights with lux, candela, lumens, or nits.
 
 use ::utils::Extent;
-use ghi::context::{Context as _, ContextCreate as _};
 use math::direction_from_orientation;
 
 #[doc(hidden)]
@@ -49,7 +48,6 @@ mod resource;
 pub mod renderer;
 
 #[doc(hidden)]
-#[doc(hidden)]
 pub mod render_pass;
 #[doc(hidden)]
 pub mod render_passes;
@@ -69,24 +67,20 @@ pub mod view;
 #[doc(hidden)]
 pub mod csm;
 
-#[doc(hidden)]
-pub mod utils;
-
 pub use camera::Camera;
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
 pub use device::GraphicsDevice;
 pub use environment::Environment;
 pub use lights::{
-	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, PhotometricError, PhotometricIntensity,
-	PointLight,
+	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
+	PhotometricIntensity, PointLight,
 };
 pub use pipeline_compilation::{PipelineKey, PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
 pub use pipeline_manager::PipelineManager;
-pub use pipelines::{SimplePipelineManager, SimpleRenderPass, VisibilityPipelineManager};
+pub use pipelines::{SimplePipelineManager, VisibilityPipelineManager};
 pub use pose::UpdatePose;
 pub use render_pass::{
-	FramePrepare, MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassReturn,
-	RenderPassState, RenderToResult,
+	MainRenderTarget, ReadFromResult, RenderPass, RenderPassBuilder, RenderPassReturn, RenderPassState, RenderToResult,
 };
 pub use renderable::mesh::RenderableMesh;
 pub use renderer::{RenderTargets, Renderer};
@@ -107,80 +101,15 @@ pub(crate) const SCENE_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBu11u11u10;
 /// Display-referred color written by tone mapping and grading.
 pub(crate) const DISPLAY_COLOR_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
 
-/// Maps a shader resource binding to a GHI shader binding descriptor.
-pub fn map_shader_binding_to_shader_binding_descriptor(
-	b: &resource_management::shader::generator::CompiledShaderBinding,
-) -> ghi::ShaderResourceDescriptor {
-	use resource_management::shader::besl::evaluation::{BindingKind, TextureView};
-
-	let kind = match b.kind {
-		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
-		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
-		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
-	};
-	let descriptor = ghi::ShaderResourceDescriptor::new(
-		ghi::ResourceSlot::new(b.slot),
-		kind,
-		b.count,
-		if b.read {
-			ghi::AccessPolicies::READ
-		} else {
-			ghi::AccessPolicies::empty()
-		} | if b.write {
-			ghi::AccessPolicies::WRITE
-		} else {
-			ghi::AccessPolicies::empty()
-		},
-	);
-	let descriptor = match b.kind {
-		BindingKind::StorageBuffer => {
-			let stride = b.buffer_stride.expect(
-				"Missing compiled storage-buffer stride. The most likely cause is that shader reflection did not retain the element layout.",
-			);
-
-			assert!(
-				stride > 0,
-				"Invalid compiled storage-buffer stride. The most likely cause is that shader reflection produced a zero-byte element."
-			);
-			descriptor.buffer_stride(stride)
-		}
-		_ => {
-			assert!(
-				b.buffer_stride.is_none(),
-				"Unexpected compiled buffer stride. The most likely cause is that reflection attached buffer metadata to a non-buffer resource."
-			);
-			descriptor
-		}
-	};
-
-	match b.kind {
-		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
-			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
-			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
-			TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
-			TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
-			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
-		}),
-		_ => descriptor,
-	}
-}
-
-/// Compiles shader source and creates a GHI shader handle for render pipeline setup.
+/// Warns when a condition first holds, and again only after a frame where it did not.
 ///
-/// Returns an error when shader compilation or GHI shader creation fails. The
-/// most likely cause is invalid shader source or a binding interface that does
-/// not match the selected shader stage.
-pub fn create_shader_from_source(
-	context: &mut ghi::implementation::Context,
-	name: Option<&str>,
-	source: ghi::shader::ShaderSource,
-	stage: ghi::ShaderTypes,
-	resource_descriptors: impl IntoIterator<Item = ghi::ShaderResourceDescriptor>,
-) -> Result<ghi::ShaderHandle, String> {
-	let compiled = ghi::shader::compile(name.unwrap_or(""), source)?;
-	context
-		.create_shader(name, compiled.as_source(), stage, resource_descriptors)
-		.map_err(|_| "Failed to create shader. The most likely cause is an incompatible shader interface.".to_string())
+/// Keep one `reported` flag per condition and call this every frame, so a lasting problem logs once instead of
+/// every frame.
+pub(crate) fn warn_once(reported: &mut bool, exceeded: bool, message: impl FnOnce() -> String) {
+	if exceeded && !*reported {
+		log::warn!("{}", message());
+	}
+	*reported = exceeded;
 }
 
 /// Builds a perspective [`View`] from a scene camera and render target extent.

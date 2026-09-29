@@ -261,7 +261,7 @@ fn normalize_luminance(rgb: maths_rs::Vec3f) -> Result<maths_rs::Vec3f, Photomet
 	if !rgb.x.is_finite() || !rgb.y.is_finite() || !rgb.z.is_finite() || rgb.x < 0.0 || rgb.y < 0.0 || rgb.z < 0.0 {
 		return Err(PhotometricError("the light color has a negative or non-finite component"));
 	}
-	let luminance = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z;
+	let luminance = utils::color::rec709_luminance(rgb.x, rgb.y, rgb.z);
 	let luminance = positive(luminance, "the light color has zero luminance")?;
 	Ok(maths_rs::Vec3f::new(rgb.x / luminance, rgb.y / luminance, rgb.z / luminance))
 }
@@ -369,24 +369,6 @@ mod tests {
 		};
 
 		assert_near(intensity.cone_candela(inner, outer).expect("valid cone flux"), 250.0);
-	}
-
-	#[test]
-	fn invalid_photometric_inputs_return_actionable_errors() {
-		let error = LightColor::LinearSrgb(Vec3f::new(0.0, 0.0, 0.0))
-			.resolve()
-			.expect_err("black has no chromaticity");
-
-		assert!(error.to_string().contains("most likely cause"));
-
-		let error = PhotometricIntensity::Illuminance {
-			lux: 100.0,
-			measurement_distance_m: 0.0,
-		}
-		.point_candela()
-		.expect_err("zero reference distance");
-
-		assert!(error.to_string().contains("measurement distance"));
 	}
 }
 

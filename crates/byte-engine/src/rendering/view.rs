@@ -1,8 +1,6 @@
 use math::{Degrees, Matrix, Plane, Point, UnitVector, Vector, WorldSpace, inverse, orthographic_matrix, projection_matrix};
 use maths_rs::{Vec3f, Vec4f, mat::MatTranslate as _};
 
-use crate::gameplay::transform::Transform;
-
 /// The `View` struct provides projection and orientation data shared by
 /// cameras, lights, render sinks, and shader setup.
 #[derive(Clone, Copy, Debug, PartialEq)]

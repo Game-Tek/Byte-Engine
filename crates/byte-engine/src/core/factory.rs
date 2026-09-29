@@ -28,13 +28,14 @@ pub trait Creator<T> {
 	where
 		Self: Sized,
 	{
-		let handle = self.publish(None, value);
+		let handle = Handle::new();
+		self.publish(handle, value);
 		Creation { creator: self, handle }
 	}
 
-	/// Publishes a value with a new handle or the supplied shared handle.
+	/// Publishes a value under `handle` in the owner's matching factory.
 	#[doc(hidden)]
-	fn publish(&self, handle: Option<Handle>, value: T) -> Handle;
+	fn publish(&self, handle: Handle, value: T);
 }
 
 /// The `Creation` struct keeps one stable handle while an owner creates multiple entity representations.
@@ -52,8 +53,7 @@ impl<C: ?Sized> Creation<'_, C> {
 	where
 		C: Creator<T>,
 	{
-		let published_handle = self.creator.publish(Some(self.handle), value);
-		debug_assert_eq!(published_handle, self.handle);
+		self.creator.publish(self.handle, value);
 		self
 	}
 
@@ -96,13 +96,7 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	#[inline]
 	pub fn create(&self, data: T) -> Handle {
 		let handle = Handle::new();
-		if let Some(observer) = &self.observer {
-			record_observed_entity(observer, handle, &data);
-		}
-		let message = CreateMessage::new(handle, data);
-
-		self.channel.send(message);
-
+		self.derive(handle, data);
 		handle
 	}
 
@@ -214,7 +208,7 @@ impl Handle {
 
 #[cfg(test)]
 mod tests {
-	use super::{Creator, Factory, Handle};
+	use super::Factory;
 	use crate::core::{listener::Listener, message_bus::MessageBus};
 
 	#[test]
@@ -232,75 +226,6 @@ mod tests {
 		assert_eq!(messages[0].data(), &"first");
 		assert_eq!(messages[1].handle(), second);
 		assert_eq!(messages[1].data(), &"second");
-	}
-
-	#[test]
-	fn creator_chains_different_values_under_one_handle() {
-		struct Owner {
-			labels: Factory<String>,
-			indices: Factory<u32>,
-		}
-
-		impl Creator<String> for Owner {
-			fn publish(&self, handle: Option<Handle>, value: String) -> Handle {
-				if let Some(handle) = handle {
-					self.labels.derive(handle, value);
-					handle
-				} else {
-					self.labels.create(value)
-				}
-			}
-		}
-
-		impl Creator<u32> for Owner {
-			fn publish(&self, handle: Option<Handle>, value: u32) -> Handle {
-				if let Some(handle) = handle {
-					self.indices.derive(handle, value);
-					handle
-				} else {
-					self.indices.create(value)
-				}
-			}
-		}
-
-		let owner = Owner {
-			labels: Factory::new(),
-			indices: Factory::new(),
-		};
-		let mut labels = owner.labels.listener();
-		let mut indices = owner.indices.listener();
-
-		let handle: Handle = owner.create(String::from("entity")).with(7).into();
-
-		assert_eq!(labels.read().expect("label creation").handle(), handle);
-		assert_eq!(indices.read().expect("index creation").handle(), handle);
-	}
-
-	#[test]
-	fn derive_reuses_the_supplied_identity() {
-		let factory = Factory::new();
-		let mut listener = factory.listener();
-		let handle = factory.create(String::from("source"));
-		factory.derive(handle, String::from("derived"));
-
-		let created = listener.read().expect("source creation");
-		let derived = listener.read().expect("derived creation");
-
-		assert_eq!(created.handle(), derived.handle());
-		assert_eq!(derived.into_data(), "derived");
-	}
-
-	#[test]
-	fn cloned_factories_share_the_creation_stream() {
-		let original = Factory::new();
-		let clone = original.clone();
-		let mut listener = original.listener();
-
-		let handle = clone.create(7);
-		let message = listener.read().expect("clone publishes to shared channel");
-
-		assert_eq!(message.handle(), handle);
-		assert_eq!(message.data(), &7);
 	}
 
 	#[test]
@@ -329,7 +254,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::core::{
 	channel::{Channel as _, DefaultChannel},
-	listener::{DefaultListener, Listener},
+	listener::DefaultListener,
 	message::Message,
 	message_observer::MessageObserver,
 	targeted_message::TargetedMessage,

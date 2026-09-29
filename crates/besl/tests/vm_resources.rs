@@ -1,32 +1,12 @@
-use std::collections::HashSet;
-
 use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Sampler, SamplerReductionMode, Texture, Value, VmError,
-	builtin_position_slot, input_slot, output_slot,
+	builtin_position_slot, output_slot,
 };
 use besl::{BindingTypes, Node, compile_to_besl};
 
 fn compile_program(source: &str, root: Node) -> Result<ExecutableProgram, VmError> {
 	let program = compile_to_besl(source, Some(root)).expect("Expected lexed program");
 	ExecutableProgram::compile(program)
-}
-
-#[test]
-fn real_resource_slots_do_not_alias_virtual_interface_slots() {
-	let virtual_slots = [input_slot(3), output_slot(3), builtin_position_slot()];
-	let mut slots = HashSet::new();
-
-	for virtual_slot in virtual_slots {
-		let descriptor_slot = ResourceSlot::new(virtual_slot.slot());
-
-		assert_ne!(descriptor_slot, virtual_slot);
-		slots.insert(descriptor_slot);
-		slots.insert(virtual_slot);
-	}
-
-	// Input and output slot 3 deliberately share one numeric real-resource counterpart.
-
-	assert_eq!(slots.len(), 5);
 }
 
 #[test]

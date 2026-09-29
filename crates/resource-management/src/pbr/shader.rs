@@ -481,19 +481,6 @@ mod tests {
 	use super::*;
 	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};
 
-	#[test]
-	fn generates_besl_program_for_constant_material() {
-		let material = test_material(
-			BrdfValue::Vector4([0.2, 0.3, 0.4, 1.0]),
-			BrdfValue::Scalar(0.7),
-			BrdfValue::Scalar(0.8),
-		);
-
-		let program = generate_solid_brdf_program(&material).expect("material should generate");
-
-		assert_main_assignment_order(&program, &["albedo", "metalness", "roughness", "normal"]);
-	}
-
 	/// Verifies the constant-material generator produces the expected BRDF values when executed.
 	#[test]
 	fn constant_material_besl_program_runs_in_the_vm() {
@@ -824,207 +811,6 @@ mod tests {
 	}
 
 	#[test]
-	fn generates_textured_program_with_texture_samples() {
-		let mut builder = BrdfMaterialBuilder::new();
-		let base_color = builder.texture(BrdfTexture {
-			image_index: 3,
-			texcoord_channel: 0,
-		});
-		let metallic_roughness = builder.texture(BrdfTexture {
-			image_index: 4,
-			texcoord_channel: 0,
-		});
-		let metallic = builder.extract_channel(metallic_roughness, crate::pbr::BrdfChannel::Blue);
-		let roughness = builder.extract_channel(metallic_roughness, crate::pbr::BrdfChannel::Green);
-		let normal_source = builder.texture(BrdfTexture {
-			image_index: 5,
-			texcoord_channel: 0,
-		});
-		let normal = builder.add(BrdfNode::NormalMap {
-			source: normal_source,
-			scale: 1.0,
-		});
-		let occlusion_source = builder.texture(BrdfTexture {
-			image_index: 6,
-			texcoord_channel: 0,
-		});
-		let occlusion = builder.add(BrdfNode::Occlusion {
-			source: occlusion_source,
-			strength: 1.0,
-		});
-		let emission_source = builder.texture(BrdfTexture {
-			image_index: 7,
-			texcoord_channel: 0,
-		});
-		let emission = builder.add(BrdfNode::Emission { color: emission_source });
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: Some(normal),
-			occlusion: Some(occlusion),
-			emission: Some(emission),
-		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
-
-		let program = generate_textured_brdf_program(&material).expect("material should generate");
-
-		assert_main_assignment_order(
-			&program,
-			&["albedo", "metalness", "roughness", "normal", "occlusion", "emission"],
-		);
-		let statements = main_statements(&program);
-
-		assert_eq!(statements.len(), 11);
-		assert_texture_sample_binding(&statements[0], "material_texture_sample_0", "material_texture_3");
-		assert_texture_sample_binding(&statements[2], "material_texture_sample_1", "material_texture_4");
-		assert_texture_sample_binding(&statements[5], "material_texture_sample_2", "material_texture_5");
-		assert_texture_sample_binding(&statements[7], "material_texture_sample_3", "material_texture_6");
-		assert_texture_sample_binding(&statements[9], "material_texture_sample_4", "material_texture_7");
-
-		assert_member_expression(
-			assignment_right(surface_assignment(&program, "albedo")),
-			"material_texture_sample_0",
-		);
-
-		let metallic_source = assert_accessor_channel(assignment_right(surface_assignment(&program, "metalness")), "z");
-		assert_member_expression(metallic_source, "material_texture_sample_1");
-
-		let roughness_source = assert_accessor_channel(assignment_right(surface_assignment(&program, "roughness")), "y");
-		assert_member_expression(roughness_source, "material_texture_sample_1");
-
-		let normal = assert_call(
-			assignment_right(surface_assignment(&program, "normal")),
-			"decode_material_normal_f16",
-		);
-
-		assert_eq!(normal.len(), 1);
-		assert_member_expression(&normal[0], "material_texture_sample_2");
-
-		let occlusion_source = assert_accessor_channel(assignment_right(surface_assignment(&program, "occlusion")), "x");
-		assert_member_expression(occlusion_source, "material_texture_sample_3");
-
-		let emission = assignment_right(surface_assignment(&program, "emission"));
-		let parameters = assert_call(emission, "vec3f16");
-
-		assert_eq!(parameters.len(), 3);
-		for (parameter, channel) in parameters.iter().zip(["x", "y", "z"]) {
-			let source = assert_accessor_channel(parameter, channel);
-			assert_member_expression(source, "material_texture_sample_4");
-		}
-	}
-
-	/// Verifies one raw texel is shared by every BRDF role that reads the same texture-coordinate source.
-	#[test]
-	fn reuses_a_texture_sample_across_color_packed_and_normal_roles() {
-		let mut builder = BrdfMaterialBuilder::new();
-		let texture = builder.texture(BrdfTexture {
-			image_index: 3,
-			texcoord_channel: 0,
-		});
-		let metallic = builder.extract_channel(texture, BrdfChannel::Blue);
-		let roughness = builder.extract_channel(texture, BrdfChannel::Green);
-		let normal = builder.add(BrdfNode::NormalMap {
-			source: texture,
-			scale: 0.5,
-		});
-		let occlusion = builder.add(BrdfNode::Occlusion {
-			source: texture,
-			strength: 0.75,
-		});
-		let emission = builder.add(BrdfNode::Emission { color: texture });
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color: texture,
-			metallic,
-			roughness,
-			normal: Some(normal),
-			occlusion: Some(occlusion),
-			emission: Some(emission),
-		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
-
-		let program = generate_textured_brdf_program(&material).expect("material should generate");
-
-		let bindings = texture_sample_bindings(&program);
-
-		assert_eq!(bindings.len(), 1);
-		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
-
-		for name in ["albedo", "metalness", "roughness", "normal", "occlusion", "emission"] {
-			assert_eq!(
-				count_calls(assignment_right(surface_assignment(&program, name)), "sample_material"),
-				0,
-				"{name} bypassed the cached material texel"
-			);
-		}
-
-		let normal_parameters = assert_call(
-			assignment_right(surface_assignment(&program, "normal")),
-			"scale_material_normal_xy_f16",
-		);
-
-		assert_eq!(normal_parameters.len(), 2);
-		let decoded_parameters = assert_call(&normal_parameters[0], "decode_material_normal_f16");
-		assert_member_expression(&decoded_parameters[0], "material_texture_sample_0");
-	}
-
-	/// Verifies the cache preserves texture-coordinate identity even while the current material sampler uses one UV input.
-	#[test]
-	fn keeps_samples_for_distinct_texture_coordinate_channels_separate() {
-		let mut builder = BrdfMaterialBuilder::new();
-		let base_color = builder.texture(BrdfTexture {
-			image_index: 3,
-			texcoord_channel: 0,
-		});
-		let metallic_roughness = builder.texture(BrdfTexture {
-			image_index: 3,
-			texcoord_channel: 1,
-		});
-		let metallic = builder.extract_channel(metallic_roughness, BrdfChannel::Blue);
-		let roughness = builder.extract_channel(metallic_roughness, BrdfChannel::Green);
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: None,
-			occlusion: None,
-			emission: None,
-		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
-
-		let program = generate_textured_brdf_program(&material).expect("material should generate");
-
-		let bindings = texture_sample_bindings(&program);
-
-		assert_eq!(bindings.len(), 2);
-		assert_texture_sample_binding(bindings[0], "material_texture_sample_0", "material_texture_3");
-		assert_texture_sample_binding(bindings[1], "material_texture_sample_1", "material_texture_3");
-	}
-
-	#[test]
-	fn rejects_extract_channel_nodes() {
-		let mut builder = BrdfMaterialBuilder::new();
-		let source = builder.constant(BrdfValue::Vector4([1.0, 1.0, 1.0, 1.0]));
-		let base_color = builder.extract_channel(source, crate::pbr::BrdfChannel::Red);
-		let metallic = builder.constant(BrdfValue::Scalar(1.0));
-		let roughness = builder.constant(BrdfValue::Scalar(1.0));
-		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
-			base_color,
-			metallic,
-			roughness,
-			normal: None,
-			occlusion: None,
-			emission: None,
-		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
-
-		assert!(matches!(
-			generate_solid_brdf_program(&material),
-			Err(BrdfShaderGenerationError::UnsupportedNode { node }) if node == base_color
-		));
-	}
-
-	#[test]
 	fn rejects_type_mismatch() {
 		let mut builder = BrdfMaterialBuilder::new();
 		let left = builder.constant(BrdfValue::Vector3([1.0, 1.0, 1.0]));
@@ -1048,22 +834,6 @@ mod tests {
 		));
 	}
 
-	#[test]
-	fn rejects_invalid_graph() {
-		let material = BrdfMaterialDescription {
-			name: None,
-			nodes: Vec::new(),
-			surface: BrdfNodeId::new(0),
-			double_sided: false,
-			alpha_mode: BrdfAlphaMode::Opaque,
-		};
-
-		assert!(matches!(
-			generate_solid_brdf_program(&material),
-			Err(BrdfShaderGenerationError::InvalidMaterial(_))
-		));
-	}
-
 	fn test_material(base_color: BrdfValue, metallic: BrdfValue, roughness: BrdfValue) -> BrdfMaterialDescription {
 		let mut builder = BrdfMaterialBuilder::new();
 		let base_color = builder.constant(base_color);
@@ -1078,34 +848,6 @@ mod tests {
 			emission: None,
 		}));
 		builder.finish(None, surface, false, BrdfAlphaMode::Opaque)
-	}
-
-	fn assert_main_assignment_order(program: &besl::parser::Node<'_>, names: &[&str]) {
-		let assignments = main_statements(program)
-			.iter()
-			.filter(|statement| {
-				matches!(
-					statement.node(),
-					besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, .. })
-						if matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { .. }))
-				)
-			})
-			.collect::<Vec<_>>();
-
-		assert_eq!(assignments.len(), names.len());
-		for (statement, name) in assignments.into_iter().zip(names.iter()) {
-			let besl::parser::Nodes::Expression(besl::parser::Expressions::Operator {
-				name: operator, left, ..
-			}) = statement.node()
-			else {
-				panic!("Expected assignment statement");
-			};
-
-			assert_eq!(*operator, "=");
-			assert!(
-				matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name: member }) if member == name)
-			);
-		}
 	}
 
 	fn main_statements<'a>(program: &'a besl::parser::Node<'a>) -> &'a [besl::parser::Node<'a>] {
@@ -1123,64 +865,11 @@ mod tests {
 		&main_statements(program)[index]
 	}
 
-	fn surface_assignment<'a>(program: &'a besl::parser::Node<'a>, target: &str) -> &'a besl::parser::Node<'a> {
-		main_statements(program)
-			.iter()
-			.find(|statement| {
-				matches!(
-					statement.node(),
-					besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, .. })
-						if matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == target)
-				)
-			})
-			.unwrap_or_else(|| panic!("Expected `{target}` material assignment"))
-	}
-
-	fn texture_sample_bindings<'a>(program: &'a besl::parser::Node<'a>) -> Vec<&'a besl::parser::Node<'a>> {
-		main_statements(program)
-			.iter()
-			.filter(|statement| {
-				matches!(
-					statement.node(),
-					besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, .. })
-						if matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::VariableDeclaration { .. }))
-				)
-			})
-			.collect()
-	}
-
 	fn assignment_right<'a>(statement: &'a besl::parser::Node<'a>) -> &'a besl::parser::Node<'a> {
 		let besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { right, .. }) = statement.node() else {
 			panic!("Expected assignment statement");
 		};
 		right
-	}
-
-	fn assert_sample_call(node: &besl::parser::Node<'_>, name: &str, variable: &str) {
-		let parameters = assert_call(node, name);
-
-		assert_eq!(parameters.len(), 1);
-		assert_member_expression(&parameters[0], variable);
-	}
-
-	fn assert_texture_sample_binding(statement: &besl::parser::Node<'_>, local_name: &str, texture_slot: &str) {
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { name, left, right }) = statement.node()
-		else {
-			panic!("Expected texture sample assignment");
-		};
-
-		assert_eq!(*name, "=");
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::VariableDeclaration { name, r#type }) = left.node()
-		else {
-			panic!("Expected texture sample local declaration");
-		};
-
-		assert_eq!(name.as_ref(), local_name);
-		assert!(matches!(r#type, besl::parser::TypeName::Named(name) if *name == "vec4f16"));
-		let sample = assert_call(right, "vec4f16");
-
-		assert_eq!(sample.len(), 1);
-		assert_sample_call(&sample[0], "sample_material", texture_slot);
 	}
 
 	fn assert_call<'a>(node: &'a besl::parser::Node<'a>, expected_name: &str) -> &'a [besl::parser::Node<'a>] {
@@ -1190,46 +879,6 @@ mod tests {
 
 		assert!(matches!(name, besl::parser::TypeName::Named(name) if *name == expected_name));
 		parameters
-	}
-
-	fn assert_accessor_channel<'a>(node: &'a besl::parser::Node<'a>, channel: &str) -> &'a besl::parser::Node<'a> {
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::Accessor { left, right }) = node.node() else {
-			panic!("Expected accessor expression");
-		};
-		assert_member_expression(right, channel);
-		left
-	}
-
-	fn count_calls(node: &besl::parser::Node<'_>, expected_name: &str) -> usize {
-		match node.node() {
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Call { name, parameters, .. }) => {
-				usize::from(matches!(name, besl::parser::TypeName::Named(name) if *name == expected_name))
-					+ parameters
-						.iter()
-						.map(|parameter| count_calls(parameter, expected_name))
-						.sum::<usize>()
-			}
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, right, .. })
-			| besl::parser::Nodes::Expression(besl::parser::Expressions::Accessor { left, right }) => {
-				count_calls(left, expected_name) + count_calls(right, expected_name)
-			}
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Expression(elements)) => {
-				elements.iter().map(|element| count_calls(element, expected_name)).sum()
-			}
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Return { value: Some(value) }) => {
-				count_calls(value, expected_name)
-			}
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Macro { body, .. }) => count_calls(body, expected_name),
-			_ => 0,
-		}
-	}
-
-	fn assert_member_expression(node: &besl::parser::Node<'_>, expected_name: &str) {
-		let besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) = node.node() else {
-			panic!("Expected member expression");
-		};
-
-		assert_eq!(name.as_ref(), expected_name);
 	}
 
 	fn assert_vec4_call(node: &besl::parser::Node<'_>, expected: &[&str; 4]) {

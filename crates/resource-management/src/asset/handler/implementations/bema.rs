@@ -4,49 +4,6 @@ pub trait ProgramGenerator: Send + Sync {
 	fn transform<'a>(&self, node: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a>;
 }
 
-/// The `ShaderCompiler` trait isolates BEMA resource orchestration from platform shader toolchains.
-trait ShaderCompiler: Send + Sync {
-	fn compile<'a>(
-		&'a self,
-		generator: &'a dyn ProgramGenerator,
-		name: &'a str,
-		shader_code: &'a str,
-		format: &'a str,
-		domain: &'a str,
-		material: &'a JsonObject,
-		shader_json: &'a Value,
-		stage: &'a str,
-	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), ()>>;
-}
-
-/// The `PlatformShaderCompilerAdapter` struct routes production BEMA shaders through the active platform compiler.
-struct PlatformShaderCompilerAdapter;
-
-impl ShaderCompiler for PlatformShaderCompilerAdapter {
-	fn compile<'a>(
-		&'a self,
-		generator: &'a dyn ProgramGenerator,
-		name: &'a str,
-		shader_code: &'a str,
-		format: &'a str,
-		domain: &'a str,
-		material: &'a JsonObject,
-		shader_json: &'a Value,
-		stage: &'a str,
-	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), ()>> {
-		Box::pin(compile_shader(
-			generator,
-			name,
-			shader_code,
-			format,
-			domain,
-			material,
-			shader_json,
-			stage,
-		))
-	}
-}
-
 pub struct BEMAAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
 	compiler: Box<dyn ShaderCompiler>,
@@ -75,7 +32,8 @@ impl BEMAAssetHandler {
 		use utils::r#async::StreamExt as _;
 
 		let asset_object = asset.as_object().ok_or(LoadErrors::FailedToProcess)?;
-		let material_domain = asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
+		// Every material declares its render domain, even though shader compilation does not read it.
+		asset["domain"].as_str().ok_or(LoadErrors::FailedToProcess)?;
 		let generator = self.generator.as_deref().ok_or(LoadErrors::FailedToProcess)?;
 		let asset_shaders = asset["shaders"].as_object().ok_or(LoadErrors::FailedToProcess)?;
 
@@ -85,7 +43,6 @@ impl BEMAAssetHandler {
 				context,
 				self.compiler.as_ref(),
 				generator,
-				material_domain,
 				asset_object,
 				shader_json,
 				shader_type,
@@ -192,12 +149,6 @@ impl AssetHandler for BEMAAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& dt != "bema"
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (data, at) = context.resolve(url).await?;
 
 		if at != "bema" {
@@ -215,154 +166,27 @@ impl AssetHandler for BEMAAssetHandler {
 	}
 }
 
-/// Converts a shader source into a compiled shader and binary payload.
-async fn compile_shader(
-	generator: &dyn ProgramGenerator,
-	name: &str,
-	shader_code: &str,
-	format: &str,
-	_domain: &str,
-	material: &JsonObject,
-	_shader_json: &Value,
-	stage: &str,
-) -> Result<(Shader, Box<[u8]>), ()> {
-	let root_node = if format == "glsl" {
-		// besl::parser::NodeReference::glsl(&shader_code,/*Vec::new()*/)
-		panic!()
-	} else if format == "besl" {
-		if let Ok(e) = besl::parse(shader_code) {
-			e
-		} else {
-			log::error!(
-				"Failed to parse BESL material shader. The most likely cause is invalid BESL syntax. See {}.",
-				online_docs_url(BESL_DOCS_PATH)
-			);
-
-			return Err(());
+/// Maps a BEMA shader stage name to its resource stage and its generation settings for the shader named `name`.
+fn material_shader_stage(name: &str, stage: &str) -> Result<(ShaderTypes, ShaderGenerationSettings), String> {
+	let (stage, settings) = match stage {
+		"Vertex" => (ShaderTypes::Vertex, ShaderGenerationSettings::vertex()),
+		"Fragment" => (ShaderTypes::Fragment, ShaderGenerationSettings::fragment()),
+		"Compute" => return Ok(compute_material_stage(name)),
+		stage => {
+			return Err(format!(
+				"Unsupported material shader stage '{stage}'. The most likely cause is that a `shaders` key in the .bema declaration is not `Vertex`, `Fragment`, or `Compute`."
+			));
 		}
-	} else {
-		log::error!(
-			"Unknown material shader format '{format}'. The most likely cause is an unsupported format in the .bema declaration. See {}.",
-			online_docs_url(BEMA_DOCS_PATH)
-		);
-
-		return Err(());
 	};
-
-	compile_shader_program(generator, name, root_node, _domain, material, stage).await
+	Ok((stage, settings.name(name.to_string())))
 }
 
-/// Compiles a BESL shader program into a stored shader model and binary payload.
-pub(crate) async fn compile_shader_program(
-	generator: &dyn ProgramGenerator,
-	name: &str,
-	root_node: besl::parser::Node<'_>,
-	_domain: &str,
-	material: &JsonObject,
-	stage: &str,
-) -> Result<(Shader, Box<[u8]>), ()> {
-	let root = generator.transform(root_node, material);
-
-	let root_node = match besl::lex(root) {
-		Ok(e) => e,
-		Err(e) => {
-			log::error!(
-				"Failed to compile shader '{name}' for stage '{stage}': {e:#?}. See {}.",
-				online_docs_url(BESL_DOCS_PATH)
-			);
-
-			return Err(());
-		}
-	};
-
-	if root_node.get_main().is_none() {
-		log::error!(
-			"Failed to compile shader '{name}' for stage '{stage}'. The generated BESL program has no main function. See {}.",
-			online_docs_url(BESL_DOCS_PATH)
-		);
-
-		return Err(());
-	}
-
-	let settings = match stage {
-		"Vertex" => ShaderGenerationSettings::vertex(),
-		"Fragment" => ShaderGenerationSettings::fragment(),
-		"Compute" => ShaderGenerationSettings::compute(Extent::line(128)),
-		_ => {
-			panic!("Invalid shader stage")
-		}
-	}
-	.name(name.to_string());
-
-	let evaluation = ProgramEvaluation::from_program(&root_node).map_err(|error| {
-		log::error!(
-			"Failed to reflect shader '{name}' for stage '{stage}': {error}. See {}.",
-			online_docs_url(BESL_DOCS_PATH)
-		);
-	})?;
-
-	let shader_program = PlatformShaderCompiler::new()
-		.generate(&settings, &root_node)
-		.await
-		.map_err(|error| {
-			// The BESL program already linked and reflected, so the platform compiler rejected shader code the
-			// engine generated. No BESL reference link belongs here: the defect is in the backend, not the source.
-			log::error!(
-				"Failed to compile shader '{name}' for stage '{stage}': {error}. The most likely cause is a defect in the platform shader backend. Report this with the shader name and the compiler output above."
-			);
-		})?;
-
-	let stage = match stage {
-		"Vertex" => ShaderTypes::Vertex,
-		"Fragment" => ShaderTypes::Fragment,
-		"Compute" => ShaderTypes::Compute,
-		_ => {
-			panic!("Invalid shader stage")
-		}
-	};
-
-	let interface = ShaderInterface {
-		workgroup_size: shader_program.extent().map(|e| (e.width(), e.height(), e.depth())),
-		bindings: evaluation
-			.into_bindings()
-			.into_iter()
-			.map(|binding| {
-				Binding::named(
-					binding.name,
-					binding.slot,
-					binding.kind,
-					binding.count,
-					binding.buffer_stride,
-					binding.read,
-					binding.write,
-				)
-			})
-			.collect(),
-	};
-
-	let language = PlatformShaderLanguage::current_platform();
-
-	let entry_point = shader_program.entry_point();
-
-	let (artifact, payload) =
-		finalize_platform_shader_artifact(language, stage, name, entry_point, shader_program.into_binary()).map_err(
-			|error| {
-				log::error!(
-					"Failed to finalize shader artifact '{name}' for stage '{stage:?}': {error}. See {}.",
-					online_docs_url(BESL_DOCS_PATH)
-				);
-			},
-		)?;
-
-	let shader = Shader {
-		id: name.to_string(),
-		stage,
-		interface,
-		artifact,
-		source_hash: 0,
-	};
-
-	Ok((shader, payload))
+/// Returns the compute stage and generation settings shared by authored BEMA and generated BRDF material shaders.
+fn compute_material_stage(name: &str) -> (ShaderTypes, ShaderGenerationSettings) {
+	(
+		ShaderTypes::Compute,
+		ShaderGenerationSettings::compute(Extent::line(128)).name(name.to_string()),
+	)
 }
 
 /// Bounds concurrent generated-material shader compiles so platform compiler processes do not oversubscribe the machine.
@@ -379,14 +203,70 @@ pub(crate) struct GeneratedMaterial {
 	pub(crate) brdf: BrdfMaterialDescription,
 }
 
-/// Generates and stores the variants of a container's materials, in the order given.
+/// The `MaterialSource` enum tells [`resolve_container_materials`] where one glTF or FBX material's variant comes from.
+pub(crate) enum MaterialSource {
+	/// A BEAD sidecar names an authored variant, which bakes as a dependency.
+	Override(String),
+	/// The importer describes the material as a BRDF graph, which is generated.
+	Generated(GeneratedMaterial),
+}
+
+/// Bounds concurrent BEAD material override bakes.
+const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
+
+/// Resolves the variants of a container's materials, in the order given.
 ///
-/// glTF and FBX importers describe each material as a BRDF graph and call this once per container. Every image the
-/// graphs sample bakes once, as its own dependency, while materials whose graphs match share one compiled shader.
-/// `image_ids` holds the resource ID of each container image, indexed by the graphs' texture nodes.
+/// glTF and FBX importers call this once per container. Overrides bake as dependencies while the other materials are
+/// generated through [`store_generated_materials`]; both run concurrently. `image_ids` holds the resource ID of each
+/// container image, indexed by the graphs' texture nodes.
 ///
 /// Next, reference the returned variants from the container's mesh primitives.
-pub(crate) async fn store_generated_materials(
+pub(crate) async fn resolve_container_materials(
+	context: BakeContext<'_>,
+	generator: Option<&dyn ProgramGenerator>,
+	container_id: ResourceId<'_>,
+	image_ids: &[String],
+	materials: Vec<MaterialSource>,
+) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+	let mut is_override = Vec::with_capacity(materials.len());
+	let mut overrides = Vec::new();
+	let mut generated = Vec::new();
+
+	for material in materials {
+		is_override.push(matches!(material, MaterialSource::Override(_)));
+
+		match material {
+			MaterialSource::Override(id) => overrides.push(id),
+			MaterialSource::Generated(material) => generated.push(material),
+		}
+	}
+
+	let (overridden, generated) = std::future::join!(
+		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
+		store_generated_materials(context, generator, container_id, image_ids, generated),
+	)
+	.await;
+
+	let (mut overridden, mut generated) = (overridden?.into_iter(), generated?.into_iter());
+
+	// Put overridden and generated variants back in material order.
+	is_override
+		.into_iter()
+		.map(|is_override| if is_override { overridden.next() } else { generated.next() })
+		.collect::<Option<Vec<_>>>()
+		.ok_or(LoadErrors::FailedToProcess)
+}
+
+/// Reads the variant a BEAD sidecar assigns to the container material `name`, from `asset.<name>.asset`.
+pub(crate) fn bead_material_override(spec: Option<&serde_json::Value>, name: &str) -> Option<String> {
+	spec?["asset"][name]["asset"].as_str().map(ToString::to_string)
+}
+
+/// Generates and stores the variants of a container's generated materials, in the order given.
+///
+/// Every image the graphs sample bakes once, as its own dependency, while materials whose graphs match share one
+/// compiled shader.
+async fn store_generated_materials(
 	context: BakeContext<'_>,
 	generator: Option<&dyn ProgramGenerator>,
 	container_id: ResourceId<'_>,
@@ -406,7 +286,7 @@ pub(crate) async fn store_generated_materials(
 	})?;
 
 	// Slots follow each graph's first use of an image, so graphs that differ only in their images become identical.
-	let mut materials = materials
+	let materials = materials
 		.into_iter()
 		.map(|mut material| {
 			let slots = assign_first_use_texture_slots(&mut material.brdf);
@@ -578,14 +458,13 @@ async fn store_generated_brdf_shaders(
 		let program = generate_textured_brdf_program(material).map_err(|_| LoadErrors::FailedToProcess)?;
 		let material_json = generated_brdf_material_json(material);
 
-		let (shader, shader_bytes) = compile_shader_program(generator, &shader_id, program, "World", &material_json, "Compute")
-			.await
-			.map_err(|_| {
-				context.error(format_args!(
-					"Failed to compile generated material shader '{shader_id}'. The most likely cause is an invalid generated shader or unavailable platform compiler."
-				));
-				LoadErrors::FailedToProcess
-			})?;
+		// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
+		let (stage, settings) = compute_material_stage(&shader_id);
+		let compiled = compile_besl_shader(&shader_id, program, Some((generator, &material_json)), stage, settings).await;
+		let (shader, shader_bytes) = compiled.map_err(|error| {
+			context.error(shader_compilation_error_message(&shader_id, &error));
+			LoadErrors::FailedToProcess
+		})?;
 
 		store_model_owned::<Shader, _>(context, &shader_id, shader, shader_bytes).await
 	});
@@ -631,7 +510,6 @@ async fn compile_and_store_shader(
 	context: BakeContext<'_>,
 	compiler: &dyn ShaderCompiler,
 	generator: &dyn ProgramGenerator,
-	domain: &str,
 	material: &JsonObject,
 	shader_json: &Value,
 	stage: &str,
@@ -642,38 +520,31 @@ async fn compile_and_store_shader(
 
 	let (arlp, format) = context.resolve(path).await?;
 
-	let shader_code = std::str::from_utf8(&arlp)
-		.map_err(|_| LoadErrors::FailedToProcess)?
-		.to_string();
+	if format != "besl" {
+		context.error(format_args!(
+			"Unknown material shader format '{format}'. The most likely cause is an unsupported format in the .bema declaration. See {}.",
+			online_docs_url(BEMA_DOCS_PATH)
+		));
+		return Err(LoadErrors::FailedToProcess);
+	}
 
-	let material = material.clone();
+	let shader_code = std::str::from_utf8(&arlp).map_err(|_| LoadErrors::FailedToProcess)?;
 
-	let domain = domain.to_string();
+	let base = path.get_base();
+	let name = base.as_ref();
 
-	let stage = stage.to_string();
-
-	let format = format.to_string();
-
-	let name = path.get_base().as_ref().to_string();
-
-	let shader_json = shader_json.clone();
-
+	let compile_error = |error: String| {
+		context.error(shader_compilation_error_message(name, &error));
+		LoadErrors::FailedToProcess
+	};
+	let (stage, settings) = material_shader_stage(name, stage).map_err(compile_error)?;
 	let (shader, result_shader_bytes) = compiler
-		.compile(
-			generator,
-			&name,
-			&shader_code,
-			&format,
-			&domain,
-			&material,
-			&shader_json,
-			&stage,
-		)
+		.compile(name, shader_code, Some((generator, material)), stage, settings)
 		.await
-		.map_err(|_| LoadErrors::FailedToProcess)?;
+		.map_err(compile_error)?;
 
 	context
-		.store_generated_owned(ProcessedAsset::new(path, shader), result_shader_bytes)
+		.store_resource_owned(ProcessedAsset::new(path, shader), result_shader_bytes)
 		.await
 		.map(Into::into)
 }
@@ -713,17 +584,14 @@ async fn resolve_value(context: BakeContext<'_>, data_type: &str, value: &str) -
 
 const BEMA_DOCS_PATH: &str = "develop/resource-management/bema";
 
-const BESL_DOCS_PATH: &str = "reference/besl";
-
 #[cfg(test)]
 pub mod tests {
 
 	use std::sync::Arc;
 
-	use serde_json::Value;
-
 	use super::ProgramGenerator;
 	use crate::asset::JsonObject;
+	use crate::asset::handler::implementations::besl::ShaderCompiler;
 	use crate::{
 		ReferenceModel,
 		asset::{
@@ -737,28 +605,16 @@ pub mod tests {
 
 	struct TestShaderCompiler;
 
-	impl super::ShaderCompiler for TestShaderCompiler {
+	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			_generator: &'a dyn ProgramGenerator,
 			name: &'a str,
-			_shader_code: &'a str,
-			format: &'a str,
-			_domain: &'a str,
-			_material: &'a JsonObject,
-			_shader_json: &'a Value,
-			stage: &'a str,
-		) -> crate::r#async::BoxedFuture<'a, Result<(crate::resources::material::Shader, Box<[u8]>), ()>> {
+			_source: &'a str,
+			_generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
+			stage: crate::types::ShaderTypes,
+			_settings: crate::shader::generator::ShaderGenerationSettings,
+		) -> crate::r#async::BoxedFuture<'a, Result<(crate::resources::material::Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
-				assert_eq!(format, "besl");
-
-				let stage = match stage {
-					"Vertex" => crate::types::ShaderTypes::Vertex,
-					"Fragment" => crate::types::ShaderTypes::Fragment,
-					"Compute" => crate::types::ShaderTypes::Compute,
-					_ => return Err(()),
-				};
-
 				Ok((
 					crate::resources::material::Shader {
 						id: name.to_string(),
@@ -777,7 +633,6 @@ pub mod tests {
 						artifact: crate::resources::material::ShaderArtifact::Msl {
 							entry_point: crate::shader::besl::backends::msl::MSL_ENTRY_POINT.to_string(),
 						},
-						source_hash: 42,
 					},
 					b"compiled-test-shader".to_vec().into_boxed_slice(),
 				))
@@ -805,7 +660,7 @@ pub mod tests {
 
 	impl ProgramGenerator for RootTestShaderGenerator {
 		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
-			let material_struct = besl::parser::Node::buffer("Material", vec![besl::parser::Node::member("color", "vec4f")]);
+			let material_struct = besl::parser::Node::r#struct("Material", vec![besl::parser::Node::member("color", "vec4f")]);
 
 			let sample_function =
 				besl::parser::Node::function("sample_", vec![besl::parser::Node::member("t", "u32")], "void", vec![]);
@@ -830,7 +685,7 @@ pub mod tests {
 		fn transform<'a>(&self, mut root: besl::parser::Node<'a>, material: &'a JsonObject) -> besl::parser::Node<'a> {
 			let binding = besl::parser::Node::binding(
 				"materials",
-				besl::parser::Node::buffer("Materials", vec![besl::parser::Node::member("materials", "Material[16]")]),
+				besl::parser::Node::buffer(vec![besl::parser::Node::member("materials", "Material[16]")]),
 				0,
 				true,
 				false,
@@ -871,94 +726,6 @@ pub mod tests {
 
 			root
 		}
-	}
-
-	#[r#async::test]
-	async fn load_material() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		let material_json = r#"{
-			// Authored material files accept the JSON5 conveniences used by hand-written assets.
-			domain: 'World',
-				type: 'Surface',
-				shaders: {
-					Compute: 'load_material_fragment.besl',
-				},
-			variables: [
-				{
-					name: 'color',
-					data_type: 'vec4f',
-					type: 'Static',
-					value: 'Purple',
-				},
-			],
-		}"#;
-
-		asset_storage_backend.add_file("load_material.bema", material_json.as_bytes());
-
-		let shader_file = "main: fn () -> void {
-			materials;
-		}";
-
-		asset_storage_backend.add_file("load_material_fragment.besl", shader_file.as_bytes());
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut asset_handler = BEMAAssetHandler::new();
-
-		asset_handler.compiler = Box::new(TestShaderCompiler);
-
-		let shader_generator = RootTestShaderGenerator::new();
-
-		asset_handler.set_shader_generator(shader_generator);
-
-		asset_manager.add_asset_handler(asset_handler);
-
-		asset_manager
-			.bake("load_material.bema")
-			.await
-			.expect("Failed to load material");
-
-		let generated_resources = resource_storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 2);
-
-		let shader = resource_storage_backend
-			.get_resource(ResourceId::new("load_material_fragment.besl"))
-			.expect("Expected shader");
-
-		assert_eq!(shader.id, "load_material_fragment.besl");
-		assert_eq!(shader.class, "Shader");
-
-		let shader_spirv = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("load_material_fragment.besl"))
-			.expect("Expected shader data");
-
-		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
-
-		assert_eq!(shader_spirv, "compiled-test-shader");
-
-		let shader_model: crate::resources::material::Shader = crate::from_slice(&shader.resource).unwrap();
-
-		assert_eq!(shader_model.id, "load_material_fragment.besl");
-		assert!(matches!(shader_model.stage, crate::types::ShaderTypes::Compute));
-		assert_eq!(shader_model.interface.workgroup_size, Some((128, 0, 0)));
-		assert_eq!(shader_model.interface.bindings.len(), 1);
-		assert_eq!(shader_model.source_hash, 42);
-		assert!(matches!(
-			shader_model.artifact,
-			crate::resources::material::ShaderArtifact::Msl { ref entry_point }
-				if entry_point == crate::shader::besl::backends::msl::MSL_ENTRY_POINT
-		));
-
-		let material = resource_storage_backend
-			.get_resource(ResourceId::new("load_material.bema"))
-			.expect("Expected material");
-
-		assert_eq!(material.id, "load_material.bema");
-		assert_eq!(material.class, "Material");
 	}
 
 	#[r#async::test]
@@ -1066,25 +833,20 @@ use super::{
 	manager::AssetManager,
 	store_model, store_model_owned,
 };
+use crate::asset::handler::implementations::besl::{
+	PlatformShaderCompilerAdapter, ShaderCompiler, compile_besl_shader, shader_compilation_error_message,
+};
 use crate::pbr::{
 	BrdfMaterialDescription, BrdfNode, BrdfNodeId, BrdfValue, generate_textured_brdf_program, material_texture_variable_name,
 };
 use crate::resources::image::Image;
-use crate::shader::{
-	artifact::finalize_platform_shader_artifact,
-	besl::{
-		backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage},
-		evaluation::ProgramEvaluation,
-	},
-};
 use crate::{
 	ProcessedAsset, ReferenceModel,
 	asset::{self, JsonObject},
 	r#async::spawn_cpu_task,
 	online_docs_url, resource,
 	resources::material::{
-		Binding, MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ShaderInterface, ValueModel,
-		VariantModel, VariantVariableModel,
+		MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel,
 	},
 	shader::generator::ShaderGenerationSettings,
 	types::{AlphaMode, ShaderTypes},

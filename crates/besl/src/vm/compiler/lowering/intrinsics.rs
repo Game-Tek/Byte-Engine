@@ -8,7 +8,6 @@ impl<'a> Compiler<'a> {
 		intrinsic: &NodeReference,
 		arguments: &[NodeReference],
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let intrinsic_ref = intrinsic.borrow();
 		let (name, return_type) = match intrinsic_ref.node() {
@@ -32,22 +31,16 @@ impl<'a> Compiler<'a> {
 			"sample" => {
 				require_argument_count(arguments, 2)?;
 
-				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
+				let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
 				let register = self.allocate_register();
 				let (slot, layer) = if let Some((slot, layer)) =
-					self.resolve_array_texture_layer_access(&arguments[0], RequiredAccess::Read, descriptor_layouts)?
+					self.resolve_array_texture_layer_access(&arguments[0], RequiredAccess::Read)?
 				{
-					(
-						slot,
-						Some(self.compile_value_expression(&layer, &ValueType::U32, descriptor_layouts)?),
-					)
+					(slot, Some(self.compile_value_expression(&layer, &ValueType::U32)?))
 				} else {
-					(
-						self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?,
-						None,
-					)
+					(self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?, None)
 				};
-				self.instructions.push(Instruction::SampleTexture {
+				self.emit(TextureInstruction::SampleTexture {
 					register,
 					slot,
 					uv,
@@ -59,13 +52,13 @@ impl<'a> Compiler<'a> {
 			}
 			"texture_cube_array_lod" => {
 				require_argument_count(arguments, 4)?;
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-				let direction = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
-				let _cube = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
-				let _lod = self.compile_value_expression(&arguments[3], &ValueType::F32, descriptor_layouts)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let direction = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
+				let _cube = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
+				let _lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 				let register = self.allocate_register();
 				// The VM has no cube-array storage model. Sampling the supplied direction preserves the shader seam's typed execution.
-				self.instructions.push(Instruction::SampleTexture3D {
+				self.emit(TextureInstruction::SampleTexture3D {
 					register,
 					slot,
 					uvw: direction,
@@ -74,12 +67,12 @@ impl<'a> Compiler<'a> {
 			}
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				if arguments.len() == 4 && name == "downsample_max" {
-					let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-					let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
-					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
-					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32, descriptor_layouts)?;
+					let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+					let uv = self.compile_value_expression(&arguments[1], &ValueType::Vec2F)?;
+					let layer = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
+					let lod = self.compile_value_expression(&arguments[3], &ValueType::F32)?;
 					let sample_register = self.allocate_register();
-					self.instructions.push(Instruction::SampleTexture {
+					self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
 						slot,
 						uv,
@@ -88,7 +81,7 @@ impl<'a> Compiler<'a> {
 						reduction_mode: Some(SamplerReductionMode::Max),
 					});
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::Extract {
+					self.emit(ValueInstruction::Extract {
 						register,
 						source: sample_register,
 						index: 0,
@@ -103,16 +96,16 @@ impl<'a> Compiler<'a> {
 						),
 					});
 				}
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &coord_type, descriptor_layouts)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let coord_type = self.infer_expression_type(&arguments[1], &ValueType::Vec2F)?;
+				let coord = self.compile_value_expression(&arguments[1], &coord_type)?;
 				let lod = arguments
 					.get(2)
-					.map(|lod| self.compile_value_expression(lod, &ValueType::F32, descriptor_layouts))
+					.map(|lod| self.compile_value_expression(lod, &ValueType::F32))
 					.transpose()?;
 				let sample_register = self.allocate_register();
 				match coord_type {
-					ValueType::Vec2F => self.instructions.push(Instruction::SampleTexture {
+					ValueType::Vec2F => self.emit(TextureInstruction::SampleTexture {
 						register: sample_register,
 						slot,
 						uv: coord,
@@ -124,7 +117,7 @@ impl<'a> Compiler<'a> {
 							_ => None,
 						},
 					}),
-					ValueType::Vec3F => self.instructions.push(Instruction::SampleTexture3D {
+					ValueType::Vec3F => self.emit(TextureInstruction::SampleTexture3D {
 						register: sample_register,
 						slot,
 						uvw: coord,
@@ -142,7 +135,7 @@ impl<'a> Compiler<'a> {
 					// Conservative downsampling is scalar because both production pyramids reduce depth.
 					// The instruction-level override keeps VM behavior independent of fixture sampler state.
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::Extract {
+					self.emit(ValueInstruction::Extract {
 						register,
 						source: sample_register,
 						index: 0,
@@ -158,49 +151,49 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let register = self.allocate_register();
 				if let Some(layer) = arguments.get(2) {
-					let layer = self.compile_value_expression(layer, &ValueType::U32, descriptor_layouts)?;
-					self.instructions.push(Instruction::FetchTextureArray {
+					let layer = self.compile_value_expression(layer, &ValueType::U32)?;
+					self.emit(TextureInstruction::FetchTextureArray {
 						register,
 						slot,
 						coord,
 						layer,
 					});
 				} else {
-					self.instructions.push(Instruction::FetchTexture { register, slot, coord });
+					self.emit(TextureInstruction::FetchTexture { register, slot, coord });
 				}
 				Ok(register)
 			}
 			"fetch_u32" => {
 				require_argument_count(arguments, 2)?;
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::FetchTextureU32 { register, slot, coord });
+				self.emit(TextureInstruction::FetchTextureU32 { register, slot, coord });
 				Ok(register)
 			}
 			"image_load" | "image_load_u32" => {
 				require_argument_count(arguments, 2)?;
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Read)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
 				let register = self.allocate_register();
 				if name == "image_load" {
-					self.instructions.push(Instruction::LoadImage { register, slot, coord });
+					self.emit(ImageInstruction::LoadImage { register, slot, coord });
 				} else {
-					self.instructions.push(Instruction::LoadImageU32 { register, slot, coord });
+					self.emit(ImageInstruction::LoadImageU32 { register, slot, coord });
 				}
 				Ok(register)
 			}
 			"image_atomic_or" => {
 				require_argument_count(arguments, 3)?;
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
-				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U, descriptor_layouts)?;
-				let value = self.compile_value_expression(&arguments[2], &ValueType::U32, descriptor_layouts)?;
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::ReadWrite)?;
+				let coord = self.compile_value_expression(&arguments[1], &ValueType::Vec2U)?;
+				let value = self.compile_value_expression(&arguments[2], &ValueType::U32)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::ImageAtomicOr {
+				self.emit(ImageInstruction::ImageAtomicOr {
 					register,
 					slot,
 					coord,
@@ -217,16 +210,16 @@ impl<'a> Compiler<'a> {
 					});
 				}
 				if let Some(target) = resolve_workgroup_access(&arguments[0])? {
-					return self.compile_workgroup_load(target, &return_type, descriptor_layouts);
+					return self.compile_workgroup_load(target, &return_type);
 				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
 				if target.value_type != return_type {
 					return Err(VmError::TypeMismatch {
 						expected: return_type.name().to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
-				self.compile_resolved_buffer_load(target, descriptor_layouts)
+				self.compile_resolved_buffer_load(target)
 			}
 			"atomic_exchange" | "atomic_add" | "atomic_sub" | "atomic_min" | "atomic_max" | "atomic_and" | "atomic_or"
 			| "atomic_xor" => {
@@ -258,11 +251,11 @@ impl<'a> Compiler<'a> {
 					let index = target
 						.index_expression
 						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.map(|index| self.compile_value_expression(index, &ValueType::U32))
 						.transpose()?;
-					let value = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
+					let value = self.compile_value_expression(&arguments[1], &return_type)?;
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::AtomicWorkgroup {
+					self.emit(WorkgroupInstruction::AtomicWorkgroup {
 						register,
 						operation,
 						name: target.name,
@@ -273,17 +266,17 @@ impl<'a> Compiler<'a> {
 					});
 					return Ok(register);
 				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
 				if target.value_type != return_type {
 					return Err(VmError::TypeMismatch {
 						expected: return_type.name().to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
-				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let value = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
+				let target = self.lower_buffer_access(target)?;
+				let value = self.compile_value_expression(&arguments[1], &return_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::AtomicBuffer {
+				self.emit(BufferInstruction::AtomicBuffer {
 					register,
 					operation,
 					slot: target.slot,
@@ -314,12 +307,12 @@ impl<'a> Compiler<'a> {
 					let index = target
 						.index_expression
 						.as_ref()
-						.map(|index| self.compile_value_expression(index, &ValueType::U32, descriptor_layouts))
+						.map(|index| self.compile_value_expression(index, &ValueType::U32))
 						.transpose()?;
-					let expected = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
-					let desired = self.compile_value_expression(&arguments[2], &return_type, descriptor_layouts)?;
+					let expected = self.compile_value_expression(&arguments[1], &return_type)?;
+					let desired = self.compile_value_expression(&arguments[2], &return_type)?;
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::AtomicCompareExchangeWorkgroup {
+					self.emit(WorkgroupInstruction::AtomicCompareExchangeWorkgroup {
 						register,
 						name: target.name,
 						index,
@@ -330,18 +323,18 @@ impl<'a> Compiler<'a> {
 					});
 					return Ok(register);
 				}
-				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite, descriptor_layouts)?;
+				let target = self.resolve_memory_access(&arguments[0], RequiredAccess::ReadWrite)?;
 				if target.value_type != return_type {
 					return Err(VmError::TypeMismatch {
 						expected: return_type.name().to_string(),
 						found: target.value_type.name().to_string(),
 					});
 				}
-				let target = self.lower_buffer_access(target, descriptor_layouts)?;
-				let expected = self.compile_value_expression(&arguments[1], &return_type, descriptor_layouts)?;
-				let desired = self.compile_value_expression(&arguments[2], &return_type, descriptor_layouts)?;
+				let target = self.lower_buffer_access(target)?;
+				let expected = self.compile_value_expression(&arguments[1], &return_type)?;
+				let desired = self.compile_value_expression(&arguments[2], &return_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::AtomicCompareExchangeBuffer {
+				self.emit(BufferInstruction::AtomicCompareExchangeBuffer {
 					register,
 					slot: target.slot,
 					offset: target.offset,
@@ -357,17 +350,17 @@ impl<'a> Compiler<'a> {
 			"texture_size" => {
 				require_argument_count(arguments, 1)?;
 
-				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read, descriptor_layouts)?;
+				let slot = self.resolve_texture_slot(&arguments[0], RequiredAccess::Read)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::TextureSize { register, slot });
+				self.emit(TextureInstruction::TextureSize { register, slot });
 				Ok(register)
 			}
 			"image_size" => {
 				require_argument_count(arguments, 1)?;
 
-				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any, descriptor_layouts)?;
+				let slot = self.resolve_image_slot(&arguments[0], RequiredAccess::Any)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::ImageSize { register, slot });
+				self.emit(ImageInstruction::ImageSize { register, slot });
 				Ok(register)
 			}
 			"dot" => {
@@ -383,27 +376,26 @@ impl<'a> Compiler<'a> {
 				]
 				.into_iter()
 				.find(|candidate| {
-					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-						&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
-							== Some(candidate.clone())
+					self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone())
+						&& self.infer_expression_type(&arguments[1], candidate).ok() == Some(candidate.clone())
 				})
 				.ok_or_else(|| VmError::UnsupportedExpression {
 					message: "`dot` expects two float vectors of matching size".to_string(),
 				})?;
 
-				let left = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
-				let right = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
+				let left = self.compile_value_expression(&arguments[0], &supported_type)?;
+				let right = self.compile_value_expression(&arguments[1], &supported_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::DotProduct { register, left, right });
+				self.emit(NumericInstruction::DotProduct { register, left, right });
 				Ok(register)
 			}
 			"cross" => {
 				require_argument_count(arguments, 2)?;
 
-				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F, descriptor_layouts)?;
-				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F, descriptor_layouts)?;
+				let left = self.compile_value_expression(&arguments[0], &ValueType::Vec3F)?;
+				let right = self.compile_value_expression(&arguments[1], &ValueType::Vec3F)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::CrossProduct { register, left, right });
+				self.emit(NumericInstruction::CrossProduct { register, left, right });
 				Ok(register)
 			}
 			"length" => {
@@ -418,16 +410,14 @@ impl<'a> Compiler<'a> {
 					ValueType::Vec4F16,
 				]
 				.into_iter()
-				.find(|candidate| {
-					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-				})
+				.find(|candidate| self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone()))
 				.ok_or_else(|| VmError::UnsupportedExpression {
 					message: "`length` expects one float vector argument".to_string(),
 				})?;
 
-				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &supported_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Length { register, value });
+				self.emit(NumericInstruction::Length { register, value });
 				Ok(register)
 			}
 			"normalize" => {
@@ -442,9 +432,7 @@ impl<'a> Compiler<'a> {
 					ValueType::Vec4F16,
 				]
 				.into_iter()
-				.find(|candidate| {
-					self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-				})
+				.find(|candidate| self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone()))
 				.ok_or_else(|| VmError::UnsupportedExpression {
 					message: "`normalize` expects one float vector argument".to_string(),
 				})?;
@@ -455,9 +443,9 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let value = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &supported_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Normalize { register, value });
+				self.emit(NumericInstruction::Normalize { register, value });
 				Ok(register)
 			}
 			"reflect" => {
@@ -466,9 +454,8 @@ impl<'a> Compiler<'a> {
 				let supported_type = [ValueType::Vec2F, ValueType::Vec3F, ValueType::Vec4F]
 					.into_iter()
 					.find(|candidate| {
-						self.infer_expression_type(&arguments[0], candidate, descriptor_layouts).ok() == Some(candidate.clone())
-							&& self.infer_expression_type(&arguments[1], candidate, descriptor_layouts).ok()
-								== Some(candidate.clone())
+						self.infer_expression_type(&arguments[0], candidate).ok() == Some(candidate.clone())
+							&& self.infer_expression_type(&arguments[1], candidate).ok() == Some(candidate.clone())
 					})
 					.ok_or_else(|| VmError::UnsupportedExpression {
 						message: "`reflect` expects two float vectors of matching size".to_string(),
@@ -480,10 +467,10 @@ impl<'a> Compiler<'a> {
 					});
 				}
 
-				let incident = self.compile_value_expression(&arguments[0], &supported_type, descriptor_layouts)?;
-				let normal = self.compile_value_expression(&arguments[1], &supported_type, descriptor_layouts)?;
+				let incident = self.compile_value_expression(&arguments[0], &supported_type)?;
+				let normal = self.compile_value_expression(&arguments[1], &supported_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Reflect {
+				self.emit(NumericInstruction::Reflect {
 					register,
 					incident,
 					normal,
@@ -499,9 +486,9 @@ impl<'a> Compiler<'a> {
 						found: source_type.name().to_string(),
 					});
 				}
-				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &source_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::FloatPredicate {
+				self.emit(NumericInstruction::FloatPredicate {
 					register,
 					predicate: match name.as_str() {
 						"is_nan" => FloatPredicate::Nan,
@@ -518,9 +505,9 @@ impl<'a> Compiler<'a> {
 			| "inversesqrt" | "log2" | "fwidth" => {
 				require_argument_count(arguments, 1)?;
 
-				let value = self.compile_value_expression(&arguments[0], &return_type, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &return_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
+				self.emit(NumericInstruction::UnaryScalar {
 					register,
 					operator: match name.as_str() {
 						"abs" => ScalarUnaryOperator::Abs,
@@ -545,9 +532,9 @@ impl<'a> Compiler<'a> {
 			}
 			"find_lsb" => {
 				require_argument_count(arguments, 1)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::U32)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
+				self.emit(NumericInstruction::UnaryScalar {
 					register,
 					operator: ScalarUnaryOperator::FindLsb,
 					value,
@@ -556,21 +543,21 @@ impl<'a> Compiler<'a> {
 			}
 			"sincos" => {
 				require_argument_count(arguments, 1)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::F32)?;
 				let sine = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
+				self.emit(NumericInstruction::UnaryScalar {
 					register: sine,
 					operator: ScalarUnaryOperator::Sin,
 					value,
 				});
 				let cosine = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
+				self.emit(NumericInstruction::UnaryScalar {
 					register: cosine,
 					operator: ScalarUnaryOperator::Cos,
 					value,
 				});
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Construct {
+				self.emit(ValueInstruction::Construct {
 					register,
 					value_type: ValueType::Vec2F,
 					components: vec![sine, cosine],
@@ -579,130 +566,34 @@ impl<'a> Compiler<'a> {
 			}
 			"round_to_i32" => {
 				require_argument_count(arguments, 1)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::Vec2F, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &ValueType::Vec2F)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::RoundToVec2I { register, value });
+				self.emit(NumericInstruction::RoundToVec2I { register, value });
 				Ok(register)
 			}
-			"f32" => {
+			"f32" | "f16" | "u32" | "u16" => {
 				require_argument_count(arguments, 1)?;
-				if expected_type != &ValueType::F32 {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: ValueType::F32.name().to_string(),
-					});
-				}
-
-				let source_type = self.infer_expression_type(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let operator = match source_type {
-					ValueType::F16 => ScalarUnaryOperator::FromF16ToF32,
-					ValueType::U32 => ScalarUnaryOperator::FromU32ToF32,
-					ValueType::I32 => ScalarUnaryOperator::FromI32ToF32,
-					ref other => {
-						return Err(VmError::TypeMismatch {
-							expected: "f16, u32, or i32".to_string(),
-							found: other.name().to_string(),
-						});
-					}
+				// Each target keeps the type untyped literals fall back to and the source list its mismatch reports.
+				let (fallback_type, accepted_sources) = match name.as_str() {
+					"f32" => (ValueType::U32, "f16, u32, or i32"),
+					"f16" => (ValueType::F32, "f32, u32, or i32"),
+					"u32" => (ValueType::F32, "u8, u16, i32, f16, or f32"),
+					_ => (ValueType::U32, "u32"),
 				};
-				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let source_type = self.infer_expression_type(&arguments[0], &fallback_type)?;
+				// Integer conversions to their own type are the identity and emit no instruction.
+				if source_type == return_type && matches!(return_type, ValueType::U32 | ValueType::U16) {
+					return self.compile_value_expression(&arguments[0], &return_type);
+				}
+				let operator = conversion_operator(&source_type, &return_type).ok_or_else(|| VmError::TypeMismatch {
+					expected: accepted_sources.to_string(),
+					found: source_type.name().to_string(),
+				})?;
+				let value = self.compile_value_expression(&arguments[0], &source_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
+				self.emit(NumericInstruction::UnaryScalar {
 					register,
 					operator,
-					value,
-				});
-				Ok(register)
-			}
-			"f16" => {
-				require_argument_count(arguments, 1)?;
-				if expected_type != &ValueType::F16 {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: ValueType::F16.name().to_string(),
-					});
-				}
-
-				let source_type = self.infer_expression_type(&arguments[0], &ValueType::F32, descriptor_layouts)?;
-				let operator = match source_type {
-					ValueType::F32 => ScalarUnaryOperator::FromF32ToF16,
-					ValueType::U32 => ScalarUnaryOperator::FromU32ToF16,
-					ValueType::I32 => ScalarUnaryOperator::FromI32ToF16,
-					ref other => {
-						return Err(VmError::TypeMismatch {
-							expected: "f32, u32, or i32".to_string(),
-							found: other.name().to_string(),
-						});
-					}
-				};
-				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
-					register,
-					operator,
-					value,
-				});
-				Ok(register)
-			}
-			"u32" => {
-				require_argument_count(arguments, 1)?;
-				if expected_type != &ValueType::U32 {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: ValueType::U32.name().to_string(),
-					});
-				}
-
-				let source_type = self.infer_expression_type(&arguments[0], &ValueType::F32, descriptor_layouts)?;
-				if source_type == ValueType::U32 {
-					return self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts);
-				}
-				let operator = match source_type {
-					ValueType::U8 => ScalarUnaryOperator::FromU8ToU32,
-					ValueType::U16 => ScalarUnaryOperator::FromU16ToU32,
-					ValueType::I32 => ScalarUnaryOperator::FromI32ToU32,
-					ValueType::F16 => ScalarUnaryOperator::FromF16ToU32,
-					ValueType::F32 => ScalarUnaryOperator::FromF32ToU32,
-					ref other => {
-						return Err(VmError::TypeMismatch {
-							expected: "u8, u16, i32, f16, or f32".to_string(),
-							found: other.name().to_string(),
-						});
-					}
-				};
-				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
-					register,
-					operator,
-					value,
-				});
-				Ok(register)
-			}
-			"u16" => {
-				require_argument_count(arguments, 1)?;
-				if expected_type != &ValueType::U16 {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: ValueType::U16.name().to_string(),
-					});
-				}
-
-				let source_type = self.infer_expression_type(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				if source_type == ValueType::U16 {
-					return self.compile_value_expression(&arguments[0], &ValueType::U16, descriptor_layouts);
-				}
-				if source_type != ValueType::U32 {
-					return Err(VmError::TypeMismatch {
-						expected: "u32".to_string(),
-						found: source_type.name().to_string(),
-					});
-				}
-				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::UnaryScalar {
-					register,
-					operator: ScalarUnaryOperator::FromU32ToU16,
 					value,
 				});
 				Ok(register)
@@ -712,19 +603,12 @@ impl<'a> Compiler<'a> {
 				// The selected overload carries the source type. This also distinguishes
 				// vec4f conversions from f16 and packed storage vectors.
 				let source_type = resolve_intrinsic_parameter_type(intrinsic, 0)?;
-				let target_type = return_type.clone();
-				if expected_type != &target_type {
-					return Err(VmError::TypeMismatch {
-						expected: expected_type.name().to_string(),
-						found: target_type.name().to_string(),
-					});
-				}
-				let value = self.compile_value_expression(&arguments[0], &source_type, descriptor_layouts)?;
+				let value = self.compile_value_expression(&arguments[0], &source_type)?;
 				let register = self.allocate_register();
 				// Constructors perform the precision conversion without adding a dedicated VM instruction.
-				self.instructions.push(Instruction::Construct {
+				self.emit(ValueInstruction::Construct {
 					register,
-					value_type: target_type,
+					value_type: return_type,
 					components: vec![value],
 				});
 				Ok(register)
@@ -732,10 +616,10 @@ impl<'a> Compiler<'a> {
 			"min" | "max" | "pow" | "step" | "atan2" => {
 				require_argument_count(arguments, 2)?;
 				let argument_type = if name == "step" { ValueType::F32 } else { return_type.clone() };
-				let left = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
-				let right = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
+				let left = self.compile_value_expression(&arguments[0], &argument_type)?;
+				let right = self.compile_value_expression(&arguments[1], &argument_type)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::BinaryScalar {
+				self.emit(NumericInstruction::BinaryScalar {
 					register,
 					operator: match name.as_str() {
 						"min" => ScalarBinaryOperator::Min,
@@ -758,8 +642,8 @@ impl<'a> Compiler<'a> {
 				} else {
 					ValueType::F32
 				};
-				let first = self.compile_value_expression(&arguments[0], &argument_type, descriptor_layouts)?;
-				let second = self.compile_value_expression(&arguments[1], &argument_type, descriptor_layouts)?;
+				let first = self.compile_value_expression(&arguments[0], &argument_type)?;
+				let second = self.compile_value_expression(&arguments[1], &argument_type)?;
 				// `mix` on a vector takes one scalar factor. The ternary instruction works component-wise on
 				// same-typed operands, so the factor is broadcast into a vector before the blend.
 				let lane_count = match argument_type {
@@ -769,19 +653,19 @@ impl<'a> Compiler<'a> {
 					_ => None,
 				};
 				let third = if let (true, Some(lane_count)) = (name == "mix", lane_count) {
-					let factor = self.compile_value_expression(&arguments[2], &ValueType::F32, descriptor_layouts)?;
+					let factor = self.compile_value_expression(&arguments[2], &ValueType::F32)?;
 					let register = self.allocate_register();
-					self.instructions.push(Instruction::Construct {
+					self.emit(ValueInstruction::Construct {
 						register,
 						value_type: argument_type.clone(),
 						components: vec![factor; lane_count],
 					});
 					register
 				} else {
-					self.compile_value_expression(&arguments[2], &argument_type, descriptor_layouts)?
+					self.compile_value_expression(&arguments[2], &argument_type)?
 				};
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::TernaryScalar {
+				self.emit(NumericInstruction::TernaryScalar {
 					register,
 					operator: match name.as_str() {
 						"smoothstep" => ScalarTernaryOperator::Smoothstep,
@@ -796,95 +680,67 @@ impl<'a> Compiler<'a> {
 				});
 				Ok(register)
 			}
-			"thread_idx" => {
+			"thread_idx" | "thread_position" | "thread_id" | "threadgroup_position" | "subgroup_lane_index" => {
 				require_argument_count(arguments, 0)?;
-
+				let builtin = match name.as_str() {
+					"thread_idx" => InvocationBuiltin::ThreadIdx,
+					"thread_position" => InvocationBuiltin::ThreadPosition,
+					"thread_id" => InvocationBuiltin::ThreadId,
+					"threadgroup_position" => InvocationBuiltin::ThreadgroupPosition,
+					"subgroup_lane_index" => InvocationBuiltin::SubgroupLaneIndex,
+					_ => unreachable!("Expected an invocation builtin intrinsic"),
+				};
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::ThreadIdx { register });
-				Ok(register)
-			}
-			"subgroup_lane_index" => {
-				require_argument_count(arguments, 0)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupLaneIndex { register });
-				Ok(register)
-			}
-			"thread_position" => {
-				require_argument_count(arguments, 0)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::ThreadPosition { register });
-				Ok(register)
-			}
-			"thread_id" => {
-				require_argument_count(arguments, 0)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::ThreadId { register });
-				Ok(register)
-			}
-			"threadgroup_position" => {
-				require_argument_count(arguments, 0)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::ThreadgroupPosition { register });
+				self.emit(LocalInstruction::LoadBuiltin { register, builtin });
 				Ok(register)
 			}
 			"subgroup_ballot" => {
 				require_argument_count(arguments, 1)?;
-				let predicate = self.compile_value_expression(&arguments[0], &ValueType::Bool, descriptor_layouts)?;
+				let predicate = self.compile_value_expression(&arguments[0], &ValueType::Bool)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBallot { register, predicate });
+				self.emit(Instruction::SubgroupBallot { register, predicate });
 				Ok(register)
 			}
-			"subgroup_ballot_any" => {
+			"subgroup_ballot_any" | "subgroup_ballot_find_lsb" | "subgroup_ballot_count" => {
 				require_argument_count(arguments, 1)?;
-				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
+				let operator = match name.as_str() {
+					"subgroup_ballot_any" => SubgroupMaskOperator::Any,
+					"subgroup_ballot_find_lsb" => SubgroupMaskOperator::FindLsb,
+					"subgroup_ballot_count" => SubgroupMaskOperator::Count,
+					_ => unreachable!("Expected a subgroup mask intrinsic"),
+				};
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBallotAny { register, mask });
-				Ok(register)
-			}
-			"subgroup_ballot_find_lsb" => {
-				require_argument_count(arguments, 1)?;
-				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBallotFindLsb { register, mask });
-				Ok(register)
-			}
-			"subgroup_ballot_count" => {
-				require_argument_count(arguments, 1)?;
-				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBallotCount { register, mask });
+				self.emit(LocalInstruction::SubgroupMask {
+					register,
+					operator,
+					mask,
+				});
 				Ok(register)
 			}
 			"subgroup_ballot_and_not" => {
 				require_argument_count(arguments, 2)?;
-				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U, descriptor_layouts)?;
-				let removed = self.compile_value_expression(&arguments[1], &ValueType::Vec4U, descriptor_layouts)?;
+				let mask = self.compile_value_expression(&arguments[0], &ValueType::Vec4U)?;
+				let removed = self.compile_value_expression(&arguments[1], &ValueType::Vec4U)?;
 				let register = self.allocate_register();
-				self.instructions
-					.push(Instruction::SubgroupBallotAndNot { register, mask, removed });
+				self.emit(LocalInstruction::SubgroupBallotAndNot { register, mask, removed });
 				Ok(register)
 			}
-			"subgroup_broadcast_u32" => {
+			"subgroup_broadcast_u32" | "subgroup_broadcast_f32" => {
 				require_argument_count(arguments, 2)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::U32, descriptor_layouts)?;
-				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
+				let value_type = if name == "subgroup_broadcast_u32" {
+					ValueType::U32
+				} else {
+					ValueType::F32
+				};
+				let value = self.compile_value_expression(&arguments[0], &value_type)?;
+				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32)?;
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBroadcastU32 {
+				self.emit(Instruction::SubgroupBroadcast {
 					register,
 					value,
 					source_lane,
-				});
-				Ok(register)
-			}
-			"subgroup_broadcast_f32" => {
-				require_argument_count(arguments, 2)?;
-				let value = self.compile_value_expression(&arguments[0], &ValueType::F32, descriptor_layouts)?;
-				let source_lane = self.compile_value_expression(&arguments[1], &ValueType::U32, descriptor_layouts)?;
-				let register = self.allocate_register();
-				self.instructions.push(Instruction::SubgroupBroadcastF32 {
-					register,
-					value,
-					source_lane,
+					value_type,
 				});
 				Ok(register)
 			}

@@ -247,7 +247,7 @@ pub trait FlowFunction = Fn(FlowInput) -> FlowOutput + Copy;
 
 /// Identifies pure built-in flows and the gap captured by their closure variants.
 /// Custom callables, including erased function pointers, must replay placement.
-pub(crate) fn placement_key(flow: &utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>) -> Option<(std::any::TypeId, FlowOutput)> {
+pub(crate) fn placement_key(flow: &utils::InlineCopyFn<FlowInput, FlowOutput>) -> Option<(std::any::TypeId, FlowOutput)> {
 	use std::any::Any;
 	let kind = flow.callable_type_id();
 	let builtin = [

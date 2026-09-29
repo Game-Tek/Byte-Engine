@@ -38,23 +38,10 @@
 	unused_imports
 )]
 
-use std::{alloc::Allocator, any::Any};
+use std::alloc::Allocator;
 
 use asset::ResourceId;
-
-pub(crate) const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
-	Some(url) => url,
-	None => "https://byte-engine.0x44491229.dev/docs",
-};
-
-/// Builds a link to one online documentation page.
-pub(crate) fn online_docs_url(path: &str) -> String {
-	format!(
-		"{}/{}",
-		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
-		path.trim_start_matches('/')
-	)
-}
+pub(crate) use utils::online_docs_url;
 
 pub mod asset;
 pub mod resource;
@@ -70,6 +57,8 @@ pub mod resources;
 
 pub mod shader;
 
+#[cfg(feature = "gpu-processing")]
+mod gpu_worker;
 pub mod ibl;
 pub mod materialx;
 pub mod pbr;
@@ -234,11 +223,9 @@ impl ProcessedAsset {
 		}
 	}
 
-	/// Creates processed metadata from an already serialized model with CPU compression enabled.
-	///
-	/// Next, pass the result and its complete binary payload to
-	/// [`WriteStorageBackend::store`](resource::WriteStorageBackend::store).
-	pub fn new_with_serialized(id: &str, class: &str, resource: DataStorage) -> Self {
+	/// Creates processed metadata from already serialized bytes, so tests can store resources whose metadata is invalid.
+	#[cfg(test)]
+	pub(crate) fn new_with_serialized(id: &str, class: &str, resource: DataStorage) -> Self {
 		ProcessedAsset {
 			id: id.to_string(),
 			class: class.to_string(),
@@ -253,10 +240,7 @@ impl ProcessedAsset {
 		}
 	}
 
-	/// Attaches named decoded ranges that consumers can select from an uncompressed payload.
-	///
-	/// If whole-resource compression is retained, load decoded backing storage with
-	/// [`Reference::load`] before selecting these ranges.
+	/// Attaches named decoded ranges that consumers select with [`Reference::load`], whatever the payload encoding.
 	pub fn with_streams(mut self, streams: Vec<StreamDescription>) -> Self {
 		self.streams = Some(streams);
 
@@ -270,38 +254,6 @@ impl ProcessedAsset {
 	pub fn with_compression(mut self, compression: resource::ResourceCompressionPolicy) -> Self {
 		self.compression = compression;
 		self
-	}
-}
-
-impl<'a, T: Resource + ResourceArchive + Clone> From<Reference<T>> for ProcessedAsset {
-	fn from(value: Reference<T>) -> Self {
-		let id = value.id.clone();
-
-		let queryable_properties = value.resource.queryable_properties(&id);
-
-		ProcessedAsset {
-			id,
-			class: value.resource.get_class().to_string(),
-			asset_dependencies: Vec::new(),
-			resource: to_vec(&value.resource).unwrap(),
-			streams: None,
-			queryable_properties,
-			compression: resource::ResourceCompressionPolicy::Enabled,
-		}
-	}
-}
-
-impl From<SerializableResource> for ProcessedAsset {
-	fn from(value: SerializableResource) -> Self {
-		ProcessedAsset {
-			id: value.id,
-			class: value.class,
-			asset_dependencies: value.asset_dependencies,
-			resource: value.resource.clone(),
-			streams: None,
-			queryable_properties: value.queryable_properties,
-			compression: resource::ResourceCompressionPolicy::Enabled,
-		}
 	}
 }
 
@@ -368,37 +320,6 @@ pub(crate) fn unix_time_nanos() -> u64 {
 }
 
 impl SerializableResource {
-	/// Creates persisted resource metadata for an explicitly encoded payload.
-	///
-	/// `size` is the decoded size clients receive and `stored_size` is the physical
-	/// payload extent. Next, construct a reader that applies [`Self::encoding`]
-	/// before exposing the payload.
-	pub fn new(
-		id: String,
-		hash: u64,
-		class: String,
-		size: usize,
-		stored_size: usize,
-		encoding: resource::ResourcePayloadEncoding,
-		resource: DataStorage,
-		streams: Option<Vec<StreamDescription>>,
-		queryable_properties: Vec<QueryableProperty>,
-	) -> Self {
-		SerializableResource {
-			id,
-			hash,
-			class,
-			asset_dependencies: Vec::new(),
-			size,
-			stored_size,
-			encoding,
-			resource,
-			streams,
-			queryable_properties,
-			baked_at: unix_time_nanos(),
-		}
-	}
-
 	/// Returns when the resource was stored, in nanoseconds since the Unix epoch.
 	pub(crate) fn baked_at(&self) -> u64 {
 		self.baked_at
@@ -462,23 +383,10 @@ impl<M: Model> From<SerializableResource> for ReferenceModel<M> {
 /// The `LoadResults` enum identifies failures that can occur while loading a resource.
 #[derive(Debug)]
 pub enum LoadResults {
-	/// No resource could be resolved for the given path.
-	ResourceNotFound,
 	/// The resource could not be loaded.
 	LoadFailed,
-	/// The resource could not be found in cache.
-	CacheFileNotFound,
-	/// The resource type is not supported.
-	UnsuportedResourceType,
 	/// No read target was set for the resource.
 	NoReadTarget,
-}
-
-pub trait Description: Any + Send + Sync {
-	// type Resource: Resource;
-	fn get_resource_class() -> &'static str
-	where
-		Self: Sized;
 }
 
 #[cfg(test)]

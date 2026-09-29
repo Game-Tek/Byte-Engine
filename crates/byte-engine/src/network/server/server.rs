@@ -37,10 +37,10 @@ impl Server {
 			log::debug!("Server event: {:#?}", event);
 
 			match event {
-				betp::server::Events::ClientConnected { id } => {
+				betp::server::Events::ClientConnected { .. } => {
 					// TODO: spawn client
 				}
-				betp::server::Events::ClientDisconnected { id } => {
+				betp::server::Events::ClientDisconnected { .. } => {
 					// TODO: kill client
 				}
 			}
@@ -49,7 +49,3 @@ impl Server {
 }
 
 impl Entity for Server {}
-
-struct Client {}
-
-impl Entity for Client {}

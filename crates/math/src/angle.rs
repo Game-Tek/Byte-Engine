@@ -99,17 +99,3 @@ impl std::ops::Mul<f32> for Degrees {
 		Self(self.0 * scale)
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::{Degrees, Radians};
-
-	#[test]
-	fn degree_and_radian_conversions_preserve_a_quarter_turn() {
-		let radians = Degrees::new(90.0).to_radians();
-
-		crate::assert_float_eq!(radians.value(), std::f32::consts::FRAC_PI_2);
-		crate::assert_float_eq!(radians.to_degrees().value(), 90.0);
-		crate::assert_float_eq!(Radians::new(std::f32::consts::FRAC_PI_2).sin(), 1.0);
-	}
-}

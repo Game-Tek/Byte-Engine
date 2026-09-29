@@ -2,8 +2,40 @@
 
 use super::{ResourceSlot, SamplerReductionMode, Value, ValueType};
 
+/// The `Instruction` enum is one VM operation. Lowering pushes it and execution dispatches it by group, so each
+/// group handler can match its own sub-enum exhaustively.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Instruction {
+	Value(ValueInstruction),
+	Numeric(NumericInstruction),
+	Local(LocalInstruction),
+	Workgroup(WorkgroupInstruction),
+	MeshOutput(MeshOutputInstruction),
+	Buffer(BufferInstruction),
+	Texture(TextureInstruction),
+	Image(ImageInstruction),
+	Control(ControlInstruction),
+	/// Builds a ballot mask from every subgroup lane's `predicate`. Under workgroup scheduling it suspends the lane
+	/// until the whole subgroup arrives.
+	SubgroupBallot {
+		register: usize,
+		predicate: usize,
+	},
+	/// Copies `value` from the subgroup lane selected by `source_lane`. `value_type` is the scalar type the
+	/// broadcast accepts, `u32` or `f32`.
+	SubgroupBroadcast {
+		register: usize,
+		value: usize,
+		source_lane: usize,
+		value_type: ValueType,
+	},
+	WorkgroupBarrier,
+}
+
+/// The `ValueInstruction` enum groups the instructions that load literals and resource handles, or build and take
+/// apart aggregate register values.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ValueInstruction {
 	LoadLiteral {
 		register: usize,
 		value: Value,
@@ -49,6 +81,18 @@ pub(super) enum Instruction {
 		count: usize,
 		value: usize,
 	},
+}
+
+impl From<ValueInstruction> for Instruction {
+	fn from(instruction: ValueInstruction) -> Self {
+		Self::Value(instruction)
+	}
+}
+
+/// The `NumericInstruction` enum groups the pure arithmetic, comparison, and math-library instructions. Each reads its
+/// operand registers and writes one result register.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum NumericInstruction {
 	Arithmetic {
 		register: usize,
 		operator: ArithmeticOperator,
@@ -61,21 +105,6 @@ pub(super) enum Instruction {
 		left: usize,
 		right: usize,
 	},
-	JumpIfZero {
-		register: usize,
-		target: usize,
-	},
-	Jump {
-		target: usize,
-	},
-	/// Jumps to the target of the case whose label equals the scalar in `register`, or to `default`.
-	/// Labels are the value's 32-bit pattern, sorted for binary search. Lowers a BESL `match`.
-	Switch {
-		register: usize,
-		cases: Box<[(u32, usize)]>,
-		default: usize,
-	},
-	Discard,
 	DotProduct {
 		register: usize,
 		left: usize,
@@ -126,32 +155,35 @@ pub(super) enum Instruction {
 		second: usize,
 		third: usize,
 	},
-	ThreadIdx {
+}
+
+impl From<NumericInstruction> for Instruction {
+	fn from(instruction: NumericInstruction) -> Self {
+		Self::Numeric(instruction)
+	}
+}
+
+/// The `LocalInstruction` enum groups the frame-local storage, invocation builtin, and non-suspending subgroup mask
+/// instructions.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum LocalInstruction {
+	LoadLocal {
+		register: usize,
+		local: usize,
+	},
+	StoreLocal {
+		local: usize,
 		register: usize,
 	},
-	ThreadPosition {
+	/// Writes one invocation builtin, such as the thread index, into `register`.
+	LoadBuiltin {
 		register: usize,
+		builtin: InvocationBuiltin,
 	},
-	ThreadId {
+	/// Reduces the ballot `mask` to one scalar with `operator`.
+	SubgroupMask {
 		register: usize,
-	},
-	ThreadgroupPosition {
-		register: usize,
-	},
-	SubgroupBallot {
-		register: usize,
-		predicate: usize,
-	},
-	SubgroupBallotAny {
-		register: usize,
-		mask: usize,
-	},
-	SubgroupBallotFindLsb {
-		register: usize,
-		mask: usize,
-	},
-	SubgroupBallotCount {
-		register: usize,
+		operator: SubgroupMaskOperator,
 		mask: usize,
 	},
 	SubgroupBallotAndNot {
@@ -159,19 +191,17 @@ pub(super) enum Instruction {
 		mask: usize,
 		removed: usize,
 	},
-	SubgroupBroadcastU32 {
-		register: usize,
-		value: usize,
-		source_lane: usize,
-	},
-	SubgroupBroadcastF32 {
-		register: usize,
-		value: usize,
-		source_lane: usize,
-	},
-	SubgroupLaneIndex {
-		register: usize,
-	},
+}
+
+impl From<LocalInstruction> for Instruction {
+	fn from(instruction: LocalInstruction) -> Self {
+		Self::Local(instruction)
+	}
+}
+
+/// The `WorkgroupInstruction` enum groups the task-payload and workgroup-shared storage instructions.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum WorkgroupInstruction {
 	LoadTaskPayload {
 		register: usize,
 		name: String,
@@ -218,34 +248,36 @@ pub(super) enum Instruction {
 		expected: usize,
 		desired: usize,
 	},
-	WorkgroupBarrier,
 	SetTaskMeshOutputCount {
 		count: usize,
 	},
-	SetMeshOutputCounts {
-		vertex_count: usize,
-		primitive_count: usize,
-	},
-	SetMeshVertexPosition {
-		index: usize,
-		position: usize,
-	},
-	SetMeshTriangle {
-		index: usize,
-		triangle: usize,
-	},
-	SetMeshPrimitiveRenderTargetArrayIndex {
-		index: usize,
-		array_index: usize,
-	},
-	LoadLocal {
-		register: usize,
-		local: usize,
-	},
-	StoreLocal {
-		local: usize,
-		register: usize,
-	},
+}
+
+impl From<WorkgroupInstruction> for Instruction {
+	fn from(instruction: WorkgroupInstruction) -> Self {
+		Self::Workgroup(instruction)
+	}
+}
+
+/// The `MeshOutputInstruction` enum groups the instructions that write the bound mesh-shader output capture. Each
+/// variant names the output it sets.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum MeshOutputInstruction {
+	Counts { vertex_count: usize, primitive_count: usize },
+	VertexPosition { index: usize, position: usize },
+	Triangle { index: usize, triangle: usize },
+	PrimitiveRenderTargetArrayIndex { index: usize, array_index: usize },
+}
+
+impl From<MeshOutputInstruction> for Instruction {
+	fn from(instruction: MeshOutputInstruction) -> Self {
+		Self::MeshOutput(instruction)
+	}
+}
+
+/// The `BufferInstruction` enum groups the reads, writes, and atomics against bound buffers and push constants.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum BufferInstruction {
 	LoadBuffer {
 		register: usize,
 		slot: ResourceSlot,
@@ -260,68 +292,6 @@ pub(super) enum Instruction {
 		count: Option<usize>,
 		index: usize,
 		value_type: ValueType,
-	},
-	FetchTexture {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-	},
-	FetchTextureArray {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-		layer: usize,
-	},
-	FetchTextureU32 {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-	},
-	SampleTexture {
-		register: usize,
-		slot: ResourceSlot,
-		uv: usize,
-		layer: Option<usize>,
-		lod: Option<usize>,
-		reduction_mode: Option<SamplerReductionMode>,
-	},
-	SampleTexture3D {
-		register: usize,
-		slot: ResourceSlot,
-		uvw: usize,
-	},
-	TextureSize {
-		register: usize,
-		slot: ResourceSlot,
-	},
-	ImageSize {
-		register: usize,
-		slot: ResourceSlot,
-	},
-	LoadImage {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-	},
-	LoadImageU32 {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-	},
-	GuardImageBounds {
-		slot: ResourceSlot,
-		coord: usize,
-	},
-	ImageAtomicOr {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-		value: usize,
-	},
-	WriteImage {
-		slot: ResourceSlot,
-		coord: usize,
-		value: usize,
 	},
 	StoreBuffer {
 		slot: ResourceSlot,
@@ -360,6 +330,117 @@ pub(super) enum Instruction {
 		expected: usize,
 		desired: usize,
 	},
+}
+
+impl From<BufferInstruction> for Instruction {
+	fn from(instruction: BufferInstruction) -> Self {
+		Self::Buffer(instruction)
+	}
+}
+
+/// The `TextureInstruction` enum groups the fetch, sample, and size queries against bound textures.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum TextureInstruction {
+	FetchTexture {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+	},
+	FetchTextureArray {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+		layer: usize,
+	},
+	FetchTextureU32 {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+	},
+	SampleTexture {
+		register: usize,
+		slot: ResourceSlot,
+		uv: usize,
+		layer: Option<usize>,
+		lod: Option<usize>,
+		reduction_mode: Option<SamplerReductionMode>,
+	},
+	SampleTexture3D {
+		register: usize,
+		slot: ResourceSlot,
+		uvw: usize,
+	},
+	TextureSize {
+		register: usize,
+		slot: ResourceSlot,
+	},
+}
+
+impl From<TextureInstruction> for Instruction {
+	fn from(instruction: TextureInstruction) -> Self {
+		Self::Texture(instruction)
+	}
+}
+
+/// The `ImageInstruction` enum groups the reads, writes, atomics, and bounds guards against bound storage images.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ImageInstruction {
+	ImageSize {
+		register: usize,
+		slot: ResourceSlot,
+	},
+	LoadImage {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+	},
+	LoadImageU32 {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+	},
+	GuardImageBounds {
+		slot: ResourceSlot,
+		coord: usize,
+	},
+	ImageAtomicOr {
+		register: usize,
+		slot: ResourceSlot,
+		coord: usize,
+		value: usize,
+	},
+	WriteImage {
+		slot: ResourceSlot,
+		coord: usize,
+		value: usize,
+	},
+}
+
+impl From<ImageInstruction> for Instruction {
+	fn from(instruction: ImageInstruction) -> Self {
+		Self::Image(instruction)
+	}
+}
+
+/// The `ControlInstruction` enum groups the instructions that move the frame's instruction pointer, call functions, or
+/// end the frame.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ControlInstruction {
+	JumpIfZero {
+		register: usize,
+		target: usize,
+	},
+	Jump {
+		target: usize,
+	},
+	/// Jumps to the target of the case whose label equals the scalar in `register`, or to `default`.
+	/// Labels are the value's 32-bit pattern, sorted for binary search. Lowers a BESL `match`.
+	Switch {
+		register: usize,
+		cases: Box<[(u32, usize)]>,
+		default: usize,
+	},
+	Discard,
 	Call {
 		register: Option<usize>,
 		function: usize,
@@ -368,6 +449,34 @@ pub(super) enum Instruction {
 	Return {
 		register: Option<usize>,
 	},
+}
+
+impl From<ControlInstruction> for Instruction {
+	fn from(instruction: ControlInstruction) -> Self {
+		Self::Control(instruction)
+	}
+}
+
+/// The `InvocationBuiltin` enum names the per-invocation coordinates a shader can read from its
+/// [`ExecutionConfig`](super::ExecutionConfig).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InvocationBuiltin {
+	ThreadIdx,
+	ThreadPosition,
+	ThreadId,
+	ThreadgroupPosition,
+	SubgroupLaneIndex,
+}
+
+/// The `SubgroupMaskOperator` enum names the scalar reductions of a subgroup ballot mask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SubgroupMaskOperator {
+	/// Whether any lane bit is set.
+	Any,
+	/// The index of the lowest set lane bit, or `u32::MAX` when no bit is set.
+	FindLsb,
+	/// The number of set lane bits.
+	Count,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

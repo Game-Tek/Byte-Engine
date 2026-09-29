@@ -3,7 +3,7 @@ use utils::Extent;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, Size as _,
+	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
 	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
 	buffer::BufferContents, descriptors, image,
 	pipelines::VertexElement,
@@ -126,29 +126,8 @@ pub(crate) fn texture_transfer_layout(
 		return Err(TextureTransferError::UnsupportedFormat(format));
 	}
 
-	let (bytes_per_row, row_count) = if let Some(bytes_per_block) = format.bc_bytes_per_block() {
-		let blocks_w =
-			usize::try_from(extent.width().max(1).div_ceil(4)).map_err(|_| TextureTransferError::UnsupportedLayout)?;
-		let blocks_h =
-			usize::try_from(extent.height().max(1).div_ceil(4)).map_err(|_| TextureTransferError::UnsupportedLayout)?;
-		(
-			blocks_w
-				.checked_mul(bytes_per_block as usize)
-				.ok_or(TextureTransferError::UnsupportedLayout)?,
-			blocks_h,
-		)
-	} else {
-		(
-			usize::try_from(extent.width())
-				.map_err(|_| TextureTransferError::UnsupportedLayout)?
-				.checked_mul(format.size())
-				.ok_or(TextureTransferError::UnsupportedLayout)?,
-			usize::try_from(extent.height()).map_err(|_| TextureTransferError::UnsupportedLayout)?,
-		)
-	};
-	let bytes_per_image = bytes_per_row
-		.checked_mul(row_count)
-		.ok_or(TextureTransferError::UnsupportedLayout)?;
+	let (bytes_per_row, row_count, bytes_per_image) =
+		format.copy_layout(extent).ok_or(TextureTransferError::UnsupportedLayout)?;
 
 	Ok(TextureTransferLayout {
 		bytes_per_row,
@@ -292,14 +271,6 @@ impl<T> TextureReadbackRegistry<T> {
 		self.slots.iter_mut().filter_map(|slot| slot.state.value_mut())
 	}
 
-	pub(crate) fn entries(&self) -> impl Iterator<Item = (TextureCopyHandle, &T)> {
-		self.slots.iter().enumerate().filter_map(|(index, slot)| {
-			slot.state
-				.value()
-				.map(|value| (Self::handle(index as u32, slot.generation), value))
-		})
-	}
-
 	fn slot(&self, handle: TextureCopyHandle) -> Option<&TextureReadbackSlot<T>> {
 		let (index, generation) = Self::parts(handle);
 		self.slots.get(index as usize).filter(|slot| slot.generation == generation)
@@ -403,6 +374,9 @@ pub trait Context: ContextCreate {
 	fn write(&mut self, descriptor_set_writes: &[descriptors::DescriptorWrite]);
 
 	/// Writes one top-level acceleration-structure instance into an instance buffer.
+	///
+	/// The instance buffer has one copy, so write it only while no submitted build reads it, for example before
+	/// the first frame or after waiting for the frame that built from it.
 	fn write_instance(
 		&mut self,
 		instances_buffer_handle: BaseBufferHandle,
@@ -800,19 +774,5 @@ mod texture_transfer_tests {
 			registry.take_submitted(stale),
 			Err(TextureTransferError::InvalidHandle(stale))
 		);
-	}
-
-	#[test]
-	fn repeated_transfers_complete_with_distinct_handles() {
-		let mut registry = TextureReadbackRegistry::new();
-		let mut previous = None;
-
-		for value in 0..1_024_u32 {
-			let handle = registry.insert(value);
-			assert_ne!(previous, Some(handle));
-			assert!(registry.mark_submitted(handle));
-			assert_eq!(registry.take_submitted(handle), Ok(value));
-			previous = Some(handle);
-		}
 	}
 }

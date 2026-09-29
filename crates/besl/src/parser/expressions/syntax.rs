@@ -1,8 +1,18 @@
 use super::*;
 
+/// Parses the optional operator, member access, or index after an operand, as in `a + b`, `a.b`, or `a[i]`. Without
+/// one, it returns `iterator` unchanged.
+fn parse_followers<'i, 'a: 'i>(
+	iterator: std::slice::Iter<'i, &'a str>,
+	expressions: &mut Vec<Atoms<'a>>,
+) -> std::slice::Iter<'i, &'a str> {
+	let followers: [ExpressionParser<'i, 'a>; 3] = [parse_operator, parse_accessor, parse_index_accessor];
+	try_expression_parsers(&followers, &iterator, expressions).unwrap_or(iterator)
+}
+
 pub(crate) fn parse_var_decl<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("let")?;
 	let variable_name = iterator.next_identifier()?;
@@ -20,15 +30,12 @@ pub(crate) fn parse_var_decl<'i, 'a: 'i>(
 		r#type: variable_type,
 	});
 
-	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![parse_operator];
-
-	let expressions = execute_expression_parsers(&possible_following_expressions, iterator, expressions)?;
-
-	Ok(expressions)
+	execute_expression_parsers(&[parse_operator], iterator, expressions)
 }
+
 pub(crate) fn parse_keywords<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("return")?;
 
@@ -41,78 +48,73 @@ pub(crate) fn parse_keywords<'i, 'a: 'i>(
 		.ok_or(ParsingFailReasons::StreamEndedPrematurely)?
 		== ";"
 	{
-		return Ok((expressions, iterator));
+		return Ok(iterator);
 	}
 
-	try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), expressions.clone())
-		.unwrap_or(Ok((expressions, iterator)))
+	Ok(try_expression_parsers(&[parse_rvalue], &iterator, expressions).unwrap_or(iterator))
 }
 
 pub(crate) fn parse_continue<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("continue")?;
 	expressions.push(Atoms::Continue);
-	Ok((expressions, iterator))
+	Ok(iterator)
 }
 
 pub(crate) fn parse_break<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("break")?;
 	expressions.push(Atoms::Break);
-	Ok((expressions, iterator))
+	Ok(iterator)
 }
 
 pub(crate) fn parse_discard<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("discard")?;
 	expressions.push(Atoms::Discard);
-	Ok((expressions, iterator))
+	Ok(iterator)
 }
 
 pub(crate) fn parse_variable<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let name = iterator.next_identifier()?;
 
 	expressions.push(Atoms::Member { name });
 
-	let lexers = vec![parse_operator, parse_accessor, parse_index_accessor];
-
-	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
+	Ok(parse_followers(iterator, expressions))
 }
 
 pub(crate) fn parse_accessor<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let _ = iterator.next_str(".")?;
 
 	expressions.push(Atoms::Accessor);
 
-	let lexers: Vec<ExpressionParser<'i, 'a>> = vec![parse_variable];
-
-	execute_expression_parsers(&lexers, iterator, expressions)
+	execute_expression_parsers(&[parse_variable], iterator, expressions)
 }
 
 pub(crate) fn parse_index_accessor<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let _ = iterator.next_str("[")?;
 	expressions.push(Atoms::Accessor);
-	let (inner_expressions, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	let mut inner_expressions = Vec::new();
+	let mut iterator = execute_expression_parsers(&[parse_rvalue], iterator, &mut inner_expressions)?;
 	expressions.push(Atoms::GroupedExpression(inner_expressions));
 	iterator.next_str("]")?;
 
-	let lexers = vec![parse_operator, parse_accessor, parse_index_accessor];
-	try_execute_expression_parsers(&lexers, iterator.clone(), expressions.clone()).unwrap_or(Ok((expressions, iterator)))
+	Ok(parse_followers(iterator, expressions))
 }
 
 pub(crate) fn is_literal(s: &str) -> bool {
@@ -121,27 +123,24 @@ pub(crate) fn is_literal(s: &str) -> bool {
 
 pub(crate) fn parse_literal<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let value = iterator.next_is(is_literal)?;
 
 	expressions.push(Atoms::Literal { value });
 
-	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
-
-	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone())
-		.unwrap_or(Ok((expressions, iterator)))
+	Ok(parse_followers(iterator, expressions))
 }
 
 /// Parses a parenthesized sub-expression like `(a + b)`.
 pub(crate) fn parse_grouped_expression<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("(")?;
 
-	// Parse the inner expression
-	let (inner_expressions, mut inner_iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
+	let mut inner_expressions = Vec::new();
+	let mut inner_iterator = execute_expression_parsers(&[parse_rvalue], iterator, &mut inner_expressions)?;
 
 	inner_iterator.next_str(")").map_err(|_| ParsingFailReasons::BadSyntax {
 		message: "Expected closing ')' for grouped expression".to_string(),
@@ -150,17 +149,13 @@ pub(crate) fn parse_grouped_expression<'i, 'a: 'i>(
 	// Keep grouped expressions intact so later lowering can preserve precedence.
 	expressions.push(Atoms::GroupedExpression(inner_expressions));
 
-	// Check for following expressions (operators, accessors, etc.)
-	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
-
-	try_execute_expression_parsers(&possible_following_expressions, inner_iterator.clone(), expressions.clone())
-		.unwrap_or(Ok((expressions, inner_iterator)))
+	Ok(parse_followers(inner_iterator, expressions))
 }
 
 /// Parses an anonymous record value with named or shorthand fields.
 pub(crate) fn parse_record_literal<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	iterator.next_str("{")?;
 	let invalid = || ParsingFailReasons::BadSyntax {
@@ -175,9 +170,8 @@ pub(crate) fn parse_record_literal<'i, 'a: 'i>(
 		let field_name = iterator.next_identifier().map_err(|_| invalid())?;
 		let value = if iterator.clone().next().copied() == Some(":") {
 			iterator.next();
-			let (value, next_iterator) =
-				execute_expression_parsers(&[parse_rvalue], iterator, Vec::new()).map_err(|_| invalid())?;
-			iterator = next_iterator;
+			let mut value = Vec::new();
+			iterator = execute_expression_parsers(&[parse_rvalue], iterator, &mut value).map_err(|_| invalid())?;
 			Some(value)
 		} else {
 			None
@@ -196,47 +190,36 @@ pub(crate) fn parse_record_literal<'i, 'a: 'i>(
 	}
 
 	expressions.push(Atoms::RecordLiteral { fields });
-	Ok((expressions, iterator))
+	Ok(iterator)
 }
 
 pub(crate) fn parse_rvalue<'i, 'a: 'i>(
 	iterator: std::slice::Iter<'i, &'a str>,
-	expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let parsers = vec![
-		parse_record_literal,
-		parse_function_call,
-		parse_grouped_expression,
-		parse_literal,
-		parse_variable,
-	];
-
-	execute_expression_parsers(&parsers, iterator.clone(), expressions)
+	execute_expression_parsers(
+		&[
+			parse_record_literal,
+			parse_function_call,
+			parse_grouped_expression,
+			parse_literal,
+			parse_variable,
+		],
+		iterator,
+		expressions,
+	)
 }
 
 pub(crate) fn parse_operator<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
-	let operator =
-		iterator.next_is(|v| {
-			v == "*"
-				|| v == "+" || v == "-"
-				|| v == "/" || v == "%"
-				|| v == "=" || v == "<"
-				|| v == ">" || v == "=="
-				|| v == "!=" || v == "<="
-				|| v == ">=" || v == "&&"
-				|| v == "||" || v == "<<"
-				|| v == ">>" || v == "&"
-				|| v == "|"
-		})?;
+	let token = iterator.next().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
+	let operator = crate::Operators::from_token(token).ok_or(ParsingFailReasons::NotMine)?;
 
-	expressions.push(Atoms::Operator { name: operator });
+	expressions.push(Atoms::Operator { operator });
 
-	let possible_following_expressions: Vec<ExpressionParser<'i, 'a>> = vec![parse_rvalue];
-
-	execute_expression_parsers(&possible_following_expressions, iterator, expressions)
+	execute_expression_parsers(&[parse_rvalue], iterator, expressions)
 }
 
 pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
@@ -283,13 +266,13 @@ pub(crate) fn expression_atoms_to_node<'a>(atoms: &[Atoms<'a>]) -> Node<'a> {
 			Atoms::Discard => Node {
 				node: Nodes::Expression(Expressions::Discard),
 			},
-			Atoms::Operator { name } => {
+			Atoms::Operator { operator } => {
 				let left = expression_atoms_to_node(&atoms[..i]);
 				let right = expression_atoms_to_node(&atoms[i + 1..]);
 
 				Node {
 					node: Nodes::Expression(Expressions::Operator {
-						name,
+						operator: *operator,
 						left: Box::new(left),
 						right: Box::new(right),
 					}),
@@ -351,8 +334,7 @@ pub(crate) fn parse_conditional<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &
 	iterator.next_str("if")?;
 	iterator.next_str("(")?;
 
-	let (condition_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
-	let condition = expression_atoms_to_node(&condition_atoms);
+	let (condition, mut iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
 
 	iterator.next_str(")")?;
 
@@ -407,18 +389,15 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	iterator.next_str("(")?;
 
 	let statement_parsers = statement_expression_parsers();
-	let (initializer_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
-	let initializer = expression_atoms_to_node(&initializer_atoms);
+	let (initializer, mut iterator) = parse_expression_node(&statement_parsers, iterator)?;
 
 	iterator.next_str(";")?;
 
-	let (condition_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
-	let condition = expression_atoms_to_node(&condition_atoms);
+	let (condition, mut iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
 
 	iterator.next_str(";")?;
 
-	let (update_atoms, mut iterator) = execute_expression_parsers(&statement_parsers, iterator, Vec::new())?;
-	let update = expression_atoms_to_node(&update_atoms);
+	let (update, mut iterator) = parse_expression_node(&statement_parsers, iterator)?;
 
 	iterator.next_str(")")?;
 
@@ -429,7 +408,7 @@ pub(crate) fn parse_for_loop<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 
 pub(crate) fn parse_function_call<'i, 'a: 'i>(
 	mut iterator: std::slice::Iter<'i, &'a str>,
-	mut expressions: Vec<Atoms<'a>>,
+	expressions: &mut Vec<Atoms<'a>>,
 ) -> ExpressionParserResult<'i, 'a> {
 	let function_name = iterator.next_identifier()?;
 	let (function_name, mut iterator) = parse_type_name(iterator, function_name)?;
@@ -440,9 +419,9 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 	loop {
 		let iter_before = iterator.clone();
 
-		if let Some(a) = try_execute_expression_parsers(&[parse_rvalue], iterator.clone(), Vec::new()) {
-			let (expressions, new_iterator) = a?;
-			parameters.push(expressions);
+		let mut parameter = Vec::new();
+		if let Some(new_iterator) = try_expression_parsers(&[parse_rvalue], &iterator, &mut parameter) {
+			parameters.push(parameter);
 			iterator = new_iterator;
 		}
 
@@ -483,10 +462,7 @@ pub(crate) fn parse_function_call<'i, 'a: 'i>(
 		parameters,
 	});
 
-	let possible_following_expressions = vec![parse_operator, parse_accessor, parse_index_accessor];
-
-	try_execute_expression_parsers(&possible_following_expressions, iterator.clone(), expressions.clone())
-		.unwrap_or(Ok((expressions, iterator)))
+	Ok(parse_followers(iterator, expressions))
 }
 
 /// Lists the parsers for expressions that can stand alone as a statement, such as assignments and calls.
@@ -508,19 +484,19 @@ pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str
 		return parse_match(iterator);
 	}
 
-	if let Some(result) = try_execute_parsers(&[parse_conditional], iterator.clone()) {
-		return result;
+	if let Ok(result) = parse_conditional(iterator.clone()) {
+		return Ok(result);
 	}
 
-	if let Some(result) = try_execute_parsers(&[parse_for_loop], iterator.clone()) {
-		return result;
+	if let Ok(result) = parse_for_loop(iterator.clone()) {
+		return Ok(result);
 	}
 
-	let (expressions, mut iterator) = execute_expression_parsers(&statement_expression_parsers(), iterator, Vec::new())?;
+	let (statement, mut iterator) = parse_expression_node(&statement_expression_parsers(), iterator)?;
 
 	iterator.next_str(";")?; // Skip semicolon
 
-	Ok((expression_atoms_to_node(&expressions), iterator))
+	Ok((statement, iterator))
 }
 
 /// Parses a Rust-style `match` statement, such as `match n { 0 => a = 1, 1 | 2 => { a = 2; } _ => {} }`.
@@ -528,8 +504,7 @@ pub(crate) fn parse_statement<'i, 'a: 'i>(iterator: std::slice::Iter<'i, &'a str
 pub(crate) fn parse_match<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str>) -> FeatureParserResult<'i, 'a> {
 	iterator.next_str("match")?;
 
-	let (scrutinee_atoms, mut iterator) = execute_expression_parsers(&[parse_rvalue], iterator, Vec::new())?;
-	let scrutinee = expression_atoms_to_node(&scrutinee_atoms);
+	let (scrutinee, mut iterator) = parse_expression_node(&[parse_rvalue], iterator)?;
 
 	iterator.next_str("{").map_err(|_| ParsingFailReasons::BadSyntax {
 		message: "Expected `{` after the match scrutinee. The most likely cause is a missing brace before the match arms."
@@ -610,8 +585,8 @@ fn parse_match_arm_body<'i, 'a: 'i>(
 			(vec![statement], true, iterator)
 		}
 		_ => {
-			let (expressions, iterator) = execute_expression_parsers(&statement_expression_parsers(), iterator, Vec::new())?;
-			(vec![expression_atoms_to_node(&expressions)], false, iterator)
+			let (statement, iterator) = parse_expression_node(&statement_expression_parsers(), iterator)?;
+			(vec![statement], false, iterator)
 		}
 	};
 
@@ -699,7 +674,7 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 	let mut statements = vec![];
 
 	loop {
-		if let Some(Ok((expression, new_iterator))) = try_execute_parsers(&[parse_statement], iterator.clone()) {
+		if let Ok((expression, new_iterator)) = parse_statement(iterator.clone()) {
 			iterator = new_iterator;
 
 			statements.push(expression);

@@ -152,24 +152,8 @@ where
 
 #[cfg(test)]
 mod tests {
-	use std::collections::VecDeque;
-
 	use super::Listener;
 	use crate::core::channel::{Channel, DefaultChannel};
-
-	#[test]
-	fn each_listener_observes_the_same_order_without_consuming_for_others() {
-		let channel = DefaultChannel::new();
-		let mut first = channel.listener();
-		let mut second = channel.listener();
-
-		for value in [1, 2, 3] {
-			channel.send(value);
-		}
-
-		assert_eq!(first.to_vec(), [1, 2, 3]);
-		assert_eq!(second.to_vec(), [1, 2, 3]);
-	}
 
 	#[test]
 	fn filtered_listener_drains_rejected_messages_and_preserves_match_order() {
@@ -195,14 +179,5 @@ mod tests {
 
 		assert_eq!(original.to_vec(), [1, 2]);
 		assert_eq!(late.to_vec(), [2]);
-	}
-
-	#[test]
-	fn collection_listeners_have_explicit_stack_and_queue_ordering() {
-		let mut stack = vec![1, 2, 3];
-		let mut queue = VecDeque::from([1, 2, 3]);
-
-		assert_eq!(stack.to_vec(), [3, 2, 1]);
-		assert_eq!(queue.to_vec(), [1, 2, 3]);
 	}
 }

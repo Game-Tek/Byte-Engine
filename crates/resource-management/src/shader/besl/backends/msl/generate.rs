@@ -283,7 +283,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let member = if self.is_packed_mat4x3_member(source) {
 			source.clone()
 		} else {
-			let parent_type = parent.and_then(Self::logical_node_type)?;
+			let parent_type = parent.and_then(besl::infer_expression_type)?;
 			let parent_type = parent_type.borrow();
 			let besl::Nodes::Struct { fields, .. } = parent_type.node() else {
 				return None;
@@ -300,59 +300,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		match member.node() {
 			besl::Nodes::Member { count, .. } => Some(count.is_some()),
 			besl::Nodes::Binding { .. } => Some(true),
-			_ => None,
-		}
-	}
-
-	/// Resolves enough expression types to identify fields of packed storage structs.
-	pub(crate) fn logical_node_type(node: &besl::NodeReference) -> Option<besl::NodeReference> {
-		let node = node.borrow();
-		match node.node() {
-			besl::Nodes::Member { r#type, .. } | besl::Nodes::Parameter { r#type, .. } => Some(r#type.clone()),
-			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => Some(r#type.clone()),
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
-				if let Some(element) = runtime_buffer_element(source) {
-					return Some(element);
-				}
-				match source.borrow().node() {
-					besl::Nodes::Member { r#type, .. } => return Some(r#type.clone()),
-					besl::Nodes::Parameter { .. } | besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
-						return Self::logical_node_type(source);
-					}
-					_ => {}
-				}
-				let source_type = Self::logical_node_type(source)?;
-				let source_type = source_type.borrow();
-				let besl::Nodes::Struct { fields, .. } = source_type.node() else {
-					return None;
-				};
-				fields.iter().find_map(|field| match field.borrow().node() {
-					besl::Nodes::Member {
-						name: field_name,
-						r#type,
-						..
-					} if field_name == name => Some(r#type.clone()),
-					_ => None,
-				})
-			}
-			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
-				if matches!(
-					right.borrow().node(),
-					besl::Nodes::Expression(besl::Expressions::Member { .. })
-				) {
-					Self::logical_node_type(right)
-				} else {
-					Self::logical_node_type(left)
-				}
-			}
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => {
-				let function = function.get();
-				match function.borrow().node() {
-					besl::Nodes::Function { return_type, .. } => Some(return_type.clone()),
-					besl::Nodes::Struct { .. } => Some(function.clone()),
-					_ => None,
-				}
-			}
 			_ => None,
 		}
 	}

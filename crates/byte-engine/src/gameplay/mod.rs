@@ -9,10 +9,6 @@
 #[doc(hidden)]
 pub mod anchor;
 #[doc(hidden)]
-pub mod collider;
-#[doc(hidden)]
-pub mod killer;
-#[doc(hidden)]
 pub mod name;
 
 #[doc(hidden)]
@@ -20,16 +16,12 @@ pub mod pathfinding;
 #[doc(hidden)]
 pub mod scene;
 #[doc(hidden)]
-pub mod timer;
-#[doc(hidden)]
 pub mod transform;
 #[cfg(feature = "headed")]
 #[doc(hidden)]
 pub mod world;
 
-pub use anchor::{Anchor, AnchorSystem, Anchorage, Anchoring};
-pub use collider::{Cube, Sphere};
-pub use killer::KillMessage;
+pub use anchor::{Anchor, Anchorage, Anchoring};
 pub use name::Name;
 pub use scene::{Scene, SceneNode};
 pub use transform::{Transform, TransformationUpdate};

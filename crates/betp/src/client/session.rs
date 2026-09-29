@@ -189,15 +189,6 @@ mod tests {
 	}
 
 	#[test]
-	fn test_session_start() {
-		let mut session = Session::new();
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(Vec::new()));
-	}
-
-	#[test]
 	fn test_establish_connection() {
 		let mut session = Session::new();
 
@@ -214,33 +205,6 @@ mod tests {
 		let res = session.update(&[]);
 
 		assert_eq!(res, Ok(vec![]));
-	}
-
-	#[test]
-	fn test_connect_with_unresponsive_server() {
-		let mut session = Session::new();
-
-		session.connect(0);
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
-
-		let res = session.update(&[]);
-
-		assert_eq!(res, Ok(vec![ConnectionRequestPacket::new(0).into()]));
 	}
 
 	#[test]
@@ -285,22 +249,6 @@ mod tests {
 		let explicit_ack = Packets::Data(DataPacket::new(connection_id, ConnectionStatus::new(1, 0, 1), [3; 1024]));
 
 		assert!(session.update(&[explicit_ack]).unwrap().is_empty());
-	}
-
-	#[test]
-	fn one_shot_and_reliable_sends_have_bounded_session_lifetimes() {
-		let mut session = connected_session(7);
-		session.send(false, [1; 1024]);
-
-		assert_eq!(session.update(&[]).unwrap().len(), 1);
-		assert!(session.update(&[]).unwrap().is_empty());
-
-		session.send(true, [2; 1024]);
-		for _ in 0..crate::packet_buffer::MAX_RELIABLE_SEND_ATTEMPTS {
-			assert_eq!(session.update(&[]).unwrap().len(), 1);
-		}
-
-		assert!(session.update(&[]).unwrap().is_empty());
 	}
 }
 

@@ -76,7 +76,7 @@ flate2 = { version = "1.1.9", optional = true }
 png = { version = "0.18.1", optional = true }
 facet = "0.50.0-rc.7"
 facet-json = "0.50.0-rc.7"
-serde_json = "1.0.140"
+serde_json = { version = "1.0.140", features = ["raw_value"] }
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
 ghi = { package = "byte-engine-ghi", path = "../ghi", version = "0.2.0", optional = true }
 ahi = { package = "byte-engine-ahi", path = "../ahi", version = "0.2.0", optional = true }
@@ -89,7 +89,6 @@ betp = { package = "byte-engine-betp", path = "../betp", version = "0.2.0", opti
 serde = "1.0.219"
 log = "0.4.26"
 env_logger = "0.11.10"
-downcast-rs = "2.0.1"
 oxhttp = { version = "0.3.1", default-features = false, features = ["server"] }
 tracing = { version = "0.1.41" }
 tracing-log = { version = "0.2.0", optional = true }

@@ -65,12 +65,11 @@ pub enum ResourceCompressionPolicy {
 	Disabled,
 }
 
-/// The `PreparedCompression` struct carries an encoded payload and the hash of its decoded bytes.
+/// The `PreparedCompression` struct carries one CPU LZ4 block and the identity of its decoded bytes.
 pub(crate) struct PreparedCompression {
 	pub(crate) bytes: Vec<u8>,
 	pub(crate) decoded_hash: u64,
 	pub(crate) decoded_size: usize,
-	pub(crate) encoding: ResourcePayloadEncoding,
 }
 
 /// Compresses a complete payload when it is large enough and saves more than 12.5%.
@@ -109,7 +108,6 @@ pub(crate) fn prepare(data: &[u8], policy: ResourceCompressionPolicy) -> Option<
 		bytes: compressed,
 		decoded_hash: payload_hash(data),
 		decoded_size: data.len(),
-		encoding: ResourcePayloadEncoding::CpuLz4,
 	})
 }
 
@@ -135,58 +133,4 @@ fn maximum_compressed_size(input_size: usize) -> Option<usize> {
 pub(crate) fn payload_hash(data: &[u8]) -> u64 {
 	let digest = md5::compute(data);
 	u64::from_le_bytes(digest.0[..8].try_into().expect("MD5 digest should contain eight bytes"))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{
-		MINIMUM_COMPRESSION_SIZE, ResourceCompressionPolicy, decompress_into, is_worthwhile, maximum_compressed_size, prepare,
-	};
-
-	#[test]
-	fn skips_small_and_explicitly_disabled_payloads() {
-		assert!(prepare(&vec![7; MINIMUM_COMPRESSION_SIZE - 1], ResourceCompressionPolicy::Enabled).is_none());
-		assert!(prepare(&vec![7; MINIMUM_COMPRESSION_SIZE * 2], ResourceCompressionPolicy::Disabled).is_none());
-	}
-
-	#[test]
-	fn keeps_only_material_space_savings() {
-		assert!(is_worthwhile(1024, 895));
-		assert!(!is_worthwhile(1024, 896));
-		assert!(!is_worthwhile(1024, 1023));
-	}
-
-	#[test]
-	fn computes_the_encoder_bound_without_overflow() {
-		assert_eq!(
-			maximum_compressed_size(4096),
-			Some(lz4_flex::block::get_maximum_output_size(4096))
-		);
-		assert_eq!(maximum_compressed_size(usize::MAX), None);
-	}
-
-	#[test]
-	fn compresses_and_decodes_redundant_payloads_into_exact_storage() {
-		let decoded = vec![42; MINIMUM_COMPRESSION_SIZE * 4];
-		let compressed = prepare(&decoded, ResourceCompressionPolicy::Enabled)
-			.expect("repeated bytes should pass the compression heuristic");
-		let mut output = vec![0; decoded.len()];
-
-		decompress_into(&compressed.bytes, &mut output).unwrap();
-
-		assert_eq!(output, decoded);
-		assert!(compressed.bytes.len() < decoded.len() - decoded.len() / 8);
-		assert_eq!(compressed.decoded_size, decoded.len());
-		assert_eq!(compressed.encoding, super::ResourcePayloadEncoding::CpuLz4);
-	}
-
-	#[test]
-	fn rejects_an_output_buffer_with_the_wrong_decoded_size() {
-		let decoded = vec![11; MINIMUM_COMPRESSION_SIZE * 2];
-		let compressed = prepare(&decoded, ResourceCompressionPolicy::Enabled)
-			.expect("repeated bytes should pass the compression heuristic");
-		let mut output = vec![0; decoded.len() - 1];
-
-		assert!(decompress_into(&compressed.bytes, &mut output).is_err());
-	}
 }

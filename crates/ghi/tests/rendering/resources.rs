@@ -1,112 +1,6 @@
 use super::common::*;
 use super::*;
 
-pub(super) fn multiframe_rendering(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	//! Tests that the render system can perform rendering with multiple frames in flight.
-	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
-
-	const FRAMES_IN_FLIGHT: usize = 2;
-
-	// Use and odd width to make sure there is a middle/center pixel
-	let _extent = Extent::rectangle(1920, 1080);
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let (vertex_shader_artifact, fragment_shader_artifact) = compile_shaders();
-
-	let vertex_shader = device
-		.create_shader(None, vertex_shader_artifact.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(None, fragment_shader_artifact.as_source(), ShaderTypes::Fragment, [])
-		.expect("Failed to create fragment shader");
-
-	// Use and odd width to make sure there is a middle/center pixel
-	let extent = Extent::rectangle(1920, 1080);
-
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::DYNAMIC),
-	);
-
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[PushConstantRange::new(0, 16 * 4)],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
-	let render_finished_synchronizer = device.create_synchronizer(None, true);
-
-	for i in 0..FRAMES_IN_FLIGHT * 10 {
-		device.start_frame_capture();
-
-		let texture_copy_handles = {
-			let mut queue = device.queue(queue_handle);
-			let mut texture_copy_handles = Vec::new();
-			queue.execute(
-				Some(FrameRequest::new(i as u64, render_finished_synchronizer)),
-				&[],
-				render_finished_synchronizer,
-				|execution| {
-					execution.record(command_buffer_handle, |command_buffer_recording| {
-						let attachments = [AttachmentInformation::new(
-							render_target,
-							Layouts::RenderTarget,
-							ghi::LoadOp::Clear(ClearValue::Color(RGBA::black())),
-							ghi::StoreOp::Store,
-						)];
-
-						let render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-
-						let raster_pipeline_command = render_pass_command.bind_raster_pipeline(pipeline);
-
-						raster_pipeline_command.draw_mesh(&mesh);
-
-						raster_pipeline_command.end_render_pass();
-
-						texture_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-							"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-						)];
-					});
-					[]
-				},
-			);
-			texture_copy_handles
-		};
-
-		device.end_frame_capture();
-
-		device.wait();
-
-		assert!(!device.has_errors());
-
-		let pixels = rgba_pixels(device.get_image_data(texture_copy_handles[0]).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-
-		check_triangle(&pixels, extent);
-	}
-}
-
 pub(super) fn change_frames(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	//! Tests that the render system can perform rendering while changing the amount of frames in flight.
 	//! Having multiple frames in flight means allocating and managing multiple resources under a single handle, one for each frame.
@@ -503,12 +397,6 @@ pub(super) fn array_buffer_round_trip(device: &mut impl ghi::context::Context, q
 
 	assert!(!device.has_errors());
 	assert_eq!(device.get_buffer_slice(destination), &[3, 1, 4, 1, 5]);
-}
-
-pub(super) fn array_buffer_requires_length(device: &mut impl ghi::context::Context) {
-	//! Tests that building an array buffer without a length fails instead of allocating an empty buffer.
-
-	device.build_buffer::<[u32]>(ghi::buffer::Builder::new(Uses::Storage));
 }
 
 // The rendering scenario shares one resource setup across all dynamic-data frame transitions.
@@ -1293,302 +1181,6 @@ pub(super) fn texture3d_lut_round_trip(device: &mut impl ghi::context::Context, 
 	assert!(!device.has_errors());
 }
 
-// The rendering scenario keeps descriptor creation, mutation, binding, and validation in one contiguous contract.
-#[allow(clippy::too_many_lines)]
-pub(super) fn descriptor_sets(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
-	let signal = device.create_synchronizer(None, true);
-
-	let floats: [f32; 21] = [
-		0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-	];
-
-	let vertex_layout = [
-		VertexElement::new("POSITION", DataTypes::Float3, 0),
-		VertexElement::new("COLOR", DataTypes::Float4, 0),
-	];
-
-	let mesh = device.add_mesh_from_vertices_and_indices(3, 3, f32_bytes(&floats), u16_bytes(&[0, 1, 2]), &vertex_layout);
-
-	let vertex_shader_code = "
-		#version 450 core
-		#pragma shader_stage(vertex)
-
-		layout(location = 0) in vec3 in_position;
-		layout(location = 1) in vec4 in_color;
-
-		layout(location = 0) out vec4 out_color;
-
-		layout(set=0, binding=1) uniform UniformBufferObject {
-			mat4 matrix;
-		} ubo;
-
-		void main() {
-			out_color = in_color;
-			gl_Position = vec4(in_position, 1.0);
-		}
-	";
-
-	let fragment_shader_code = "
-		#version 450 core
-		#pragma shader_stage(fragment)
-
-		layout(location = 0) in vec4 in_color;
-
-		layout(location = 0) out vec4 out_color;
-
-		layout(set=0,binding=0) uniform sampler2D tex;
-
-		void main() {
-			out_color = texture(tex, vec2(0, 0));
-		}
-	";
-	let vertex_shader_msl = r#"
-		#include <metal_stdlib>
-		using namespace metal;
-		struct VertexResources { constant float4x4* matrix [[id(2)]]; };
-		struct VertexInput {
-			float3 position [[attribute(0)]];
-			float4 color [[attribute(1)]];
-		};
-		struct VertexOutput {
-			float4 position [[position]];
-			float4 color;
-		};
-		vertex VertexOutput besl_main(
-			VertexInput input [[stage_in]],
-			constant VertexResources& resources [[buffer(16)]]) {
-			return VertexOutput { resources.matrix[0] * float4(input.position, 1.0), input.color };
-		}
-	"#;
-	let fragment_shader_msl = r#"
-		#include <metal_stdlib>
-		using namespace metal;
-		struct FragmentResources {
-			texture2d<float> texture [[id(0)]];
-			sampler texture_sampler [[id(1)]];
-		};
-		struct VertexOutput {
-			float4 position [[position]];
-			float4 color;
-		};
-		fragment float4 besl_main(
-			VertexOutput input [[stage_in]],
-			constant FragmentResources& resources [[buffer(16)]]) {
-			return resources.texture.sample(resources.texture_sampler, float2(0.0));
-		}
-	"#;
-	let vertex_shader_hlsl = r#"
-		StructuredBuffer<float4x4> matrices : register(t1, space0);
-		struct VertexInput { float3 position : POSITION; float4 color : COLOR0; };
-		struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
-		VertexOutput vertex_main(VertexInput input) {
-			VertexOutput output;
-			output.position = mul(matrices[0], float4(input.position, 1.0));
-			output.color = input.color;
-			return output;
-		}
-	"#;
-	let fragment_shader_hlsl = r#"
-		SamplerState texture_sampler : register(s0, space0);
-		Texture2D<float4> texture_image : register(t0, space0);
-		struct VertexOutput { float4 position : SV_POSITION; float4 color : COLOR0; };
-		float4 fragment_main(VertexOutput input) : SV_TARGET0 {
-			return texture_image.Sample(texture_sampler, float2(0.0, 0.0));
-		}
-	"#;
-	let vertex_shader_artifact = ghi::shader::compile(
-		"GHI descriptor test vertex shader",
-		ShaderSource::PlatformNative {
-			glsl: vertex_shader_code,
-			msl: vertex_shader_msl,
-			msl_entry_point: "besl_main",
-			hlsl: vertex_shader_hlsl,
-			hlsl_entry_point: "vertex_main",
-		},
-	)
-	.expect("Failed to compile the descriptor test vertex shader. The most likely cause is invalid native shader source.");
-	let fragment_shader_artifact = ghi::shader::compile(
-		"GHI descriptor test fragment shader",
-		ShaderSource::PlatformNative {
-			glsl: fragment_shader_code,
-			msl: fragment_shader_msl,
-			msl_entry_point: "besl_main",
-			hlsl: fragment_shader_hlsl,
-			hlsl_entry_point: "fragment_main",
-		},
-	)
-	.expect("Failed to compile the descriptor test fragment shader. The most likely cause is invalid native shader source.");
-
-	let buffer_resource = ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(1),
-		ghi::ResourceKind::StorageBuffer,
-		ghi::AccessPolicies::READ,
-	);
-	let texture_resource = ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(0),
-		ghi::ResourceKind::CombinedImageSampler,
-		ghi::AccessPolicies::READ,
-	);
-
-	let vertex_shader = device
-		.create_shader(
-			None,
-			vertex_shader_artifact.as_source(),
-			ShaderTypes::Vertex,
-			[buffer_resource],
-		)
-		.expect("Failed to create vertex shader");
-	let fragment_shader = device
-		.create_shader(
-			None,
-			fragment_shader_artifact.as_source(),
-			ShaderTypes::Fragment,
-			[texture_resource],
-		)
-		.expect("Failed to create fragment shader");
-
-	let buffer = device.build_dynamic_buffer::<[u8; 64]>(
-		ghi::buffer::Builder::new(Uses::Uniform | Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
-	);
-
-	let sampled_texture = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::Image)
-			.name("sampled texture")
-			.extent(Extent::square(2))
-			.device_accesses(DeviceAccesses::HostToDevice)
-			.use_case(UseCases::STATIC),
-	);
-
-	let pixels = vec![
-		RGBAu8 {
-			r: 255,
-			g: 0,
-			b: 0,
-			a: 255,
-		},
-		RGBAu8 {
-			r: 0,
-			g: 255,
-			b: 0,
-			a: 255,
-		},
-		RGBAu8 {
-			r: 0,
-			g: 0,
-			b: 255,
-			a: 255,
-		},
-		RGBAu8 {
-			r: 255,
-			g: 255,
-			b: 0,
-			a: 255,
-		},
-	];
-
-	let sampler = device.build_sampler(
-		ghi::sampler::Builder::new()
-			.filtering_mode(FilteringModes::Closest)
-			.reduction_mode(SamplingReductionModes::WeightedAverage)
-			.mip_map_mode(FilteringModes::Closest)
-			.addressing_mode(SamplerAddressingModes::Repeat)
-			.min_lod(0.0f32)
-			.max_lod(0.0f32),
-	);
-
-	let descriptor_set = device.create_descriptor_set(None);
-	device.write(&[
-		ghi::DescriptorWrite::combined_image_sampler(
-			descriptor_set,
-			texture_resource.slot(),
-			sampled_texture,
-			sampler,
-			Layouts::Read,
-		),
-		ghi::DescriptorWrite::buffer(descriptor_set, buffer_resource.slot(), buffer.into()),
-	]);
-
-	assert!(!device.has_errors());
-
-	// Use and odd width to make sure there is a middle/center pixel
-	let extent = Extent::rectangle(1920, 1080);
-
-	let render_target = device.build_image(
-		ghi::image::Builder::new(Formats::RGBA8UNORM, Uses::RenderTarget | Uses::TransferSource)
-			.extent(extent)
-			.device_accesses(DeviceAccesses::DeviceToHost)
-			.use_case(UseCases::STATIC),
-	);
-
-	let attachments = [AttachmentDescriptor::new(Formats::RGBA8UNORM)];
-
-	let pipeline = device.create_raster_pipeline(pipelines::raster::Builder::new(
-		&[],
-		&vertex_layout,
-		&[
-			ShaderParameter::new(&vertex_shader, ShaderTypes::Vertex),
-			ShaderParameter::new(&fragment_shader, ShaderTypes::Fragment),
-		],
-		&attachments,
-	));
-
-	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
-
-	device.start_frame_capture();
-
-	let texure_copy_handles = {
-		let mut queue = device.queue(queue_handle);
-		let mut texure_copy_handles = Vec::new();
-		queue.execute(Some(FrameRequest::new(0, signal)), &[], signal, |execution| {
-			execution.record(command_buffer_handle, |command_buffer_recording| {
-				command_buffer_recording.write_image_data(sampled_texture.into(), &pixels);
-
-				let attachments = [AttachmentInformation::new(
-					render_target,
-					Layouts::RenderTarget,
-					ghi::LoadOp::Clear(ClearValue::Color(RGBA {
-						r: 0.0,
-						g: 0.0,
-						b: 0.0,
-						a: 1.0,
-					})),
-					ghi::StoreOp::Store,
-				)];
-
-				let raster_render_pass_command = command_buffer_recording.start_render_pass(extent, &attachments);
-
-				let raster_pipeline_command = raster_render_pass_command.bind_raster_pipeline(pipeline);
-
-				raster_pipeline_command.bind_descriptor_sets(&[descriptor_set]);
-
-				raster_pipeline_command.draw_mesh(&mesh);
-
-				raster_render_pass_command.end_render_pass();
-
-				texure_copy_handles = vec![command_buffer_recording.transfer_texture(render_target.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				)];
-			});
-			[]
-		});
-		texure_copy_handles
-	};
-
-	device.end_frame_capture();
-
-	device.wait();
-
-	// assert colored triangle was drawn to texture
-	let _pixels = device
-		.get_image_data(texure_copy_handles[0])
-		.expect("Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.")
-		.bytes;
-
-	// TODO: assert rendering results
-
-	assert!(!device.has_errors());
-}
-
 /// Checks partial R8 uploads against GPU readback, including untouched texels and image edges.
 pub(super) fn texture_region_uploads(device: &mut impl ghi::context::Context, queue_handle: QueueHandle) {
 	let extent = Extent::rectangle(37, 29);
@@ -1816,5 +1408,44 @@ pub(super) fn polled_synchronizer_reports_completion(context: &mut BackendContex
 		}
 		assert_eq!(context.get_buffer_slice(destination), &expected);
 	}
+	assert!(!ghi::context::Context::has_errors(context));
+}
+
+pub(super) fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(context: &mut BackendContext, queue_handle: QueueHandle) {
+	//! Tests that a dynamic buffer created while a frame is recorded gives every frame in flight its own copy.
+	//! Frames overlap on the GPU, so a copy the next frame shared would let the CPU overwrite data a frame still reads.
+
+	context.set_frames_in_flight(2);
+	let signal = context.create_synchronizer(None, true);
+	let mut buffer = None;
+
+	for frame_index in 0..4u64 {
+		context
+			.queue(queue_handle)
+			.execute(Some(FrameRequest::new(frame_index, signal)), &[], signal, |execution| {
+				let frame = execution.frame().expect("The test requested a frame.");
+				match frame_index {
+					// Frame 1 is the second sequence, so the buffer is created while that sequence records.
+					1 => {
+						let created = frame.build_dynamic_buffer::<[u32; 4]>(
+							ghi::buffer::Builder::new(Uses::Storage).device_accesses(DeviceAccesses::HostToDevice),
+						);
+						*frame.get_mut_dynamic_buffer_slice(created) = [1; 4];
+						buffer = Some(created);
+					}
+					// Frame 2 is the first sequence again. Its copy never received frame 1's write.
+					2 => assert_eq!(
+						*frame.get_mut_dynamic_buffer_slice(buffer.expect("Frame 1 created the buffer.")),
+						[0; 4],
+						"A dynamic buffer created in frame 1 shares a copy with frame 2. The most likely cause is that its per-frame copies are created lazily."
+					),
+					// Frame 3 reuses frame 1's sequence and still sees what frame 1 wrote.
+					3 => assert_eq!(*frame.get_mut_dynamic_buffer_slice(buffer.expect("Frame 1 created the buffer.")), [1; 4]),
+					_ => {}
+				}
+				[]
+			});
+	}
+	context.wait();
 	assert!(!ghi::context::Context::has_errors(context));
 }

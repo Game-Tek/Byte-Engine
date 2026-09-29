@@ -1,29 +1,8 @@
-//! Core application contract and the minimal implementation used by higher-level runtimes.
+//! The minimal process configuration shared by higher-level runtimes.
 //!
-//! Implement [`Application`] for a new top-level runtime, or compose
-//! [`BaseApplication`] into it to reuse parameter precedence, logging setup, and
-//! frame-local allocation. `GraphicsApplication` is the main headed example of
-//! that composition.
-
-/// The [`Application`] trait defines the lifecycle contract for a process-level
-/// Byte-Engine runtime.
-///
-/// Applications are intended to be singletons that own engine-wide state. Most
-/// headed programs should use `GraphicsApplication` instead of implementing this
-/// trait directly.
-///
-/// Parameters passed to [`Application::new`] may be overridden by `BE_*`
-/// environment variables and then by `--name=value` command-line arguments.
-pub trait Application {
-	/// Creates an application with the specified name and configuration parameters.
-	fn new(name: &str, parameters: &[Parameter]) -> Self;
-
-	/// Returns the name of the application.
-	fn get_name(&self) -> &str;
-
-	/// Advances the application by one tick.
-	fn tick(&mut self) -> bool;
-}
+//! Compose [`BaseApplication`] into a new top-level runtime to reuse parameter
+//! precedence, logging setup, and frame-local allocation. `GraphicsApplication`
+//! is the main headed example of that composition.
 
 /// The [`BaseApplication`] struct provides shared process configuration and
 /// frame-local storage for application implementations.
@@ -36,8 +15,12 @@ pub struct BaseApplication {
 	pub(crate) frame_allocator: bumpalo::Bump,
 }
 
-impl Application for BaseApplication {
-	fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
+impl BaseApplication {
+	/// Creates the process configuration with the specified name and configuration parameters.
+	///
+	/// Parameters may be overridden by `BE_*` environment variables and then by `--name=value` command-line
+	/// arguments. Applications are singletons: this also installs the process logger.
+	pub fn new(name: &str, parameters: &[Parameter]) -> BaseApplication {
 		env_logger::init();
 
 		let mut parameters = parameters.to_vec();
@@ -97,12 +80,14 @@ impl Application for BaseApplication {
 		application
 	}
 
-	fn tick(&mut self) -> bool {
-		true
+	/// Returns the name of the application.
+	pub fn get_name(&self) -> &str {
+		&self.name
 	}
 
-	fn get_name(&self) -> &str {
-		&self.name
+	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
+	pub(crate) fn parameters(&self) -> &[Parameter] {
+		&self.parameters
 	}
 }
 
@@ -112,34 +97,12 @@ impl Parameters for BaseApplication {
 	}
 }
 
-impl BaseApplication {
-	/// Returns the resolved startup parameters after code, environment, and command-line precedence.
-	pub(crate) fn parameters(&self) -> &[Parameter] {
-		&self.parameters
-	}
-}
-
 /// Replaces a previous parameter with the same name so later sources have deterministic precedence.
 fn upsert_parameter(parameters: &mut Vec<Parameter>, parameter: Parameter) {
 	if let Some(existing) = parameters.iter_mut().find(|existing| existing.name == parameter.name) {
 		*existing = parameter;
 	} else {
 		parameters.push(parameter);
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn upsert_parameter_replaces_value_with_same_name() {
-		let mut parameters = vec![Parameter::new("render.debug.extended", "true")];
-
-		upsert_parameter(&mut parameters, Parameter::new("render.debug.extended", "false"));
-
-		assert_eq!(parameters.len(), 1);
-		assert_eq!(parameters[0].value(), "false");
 	}
 }
 

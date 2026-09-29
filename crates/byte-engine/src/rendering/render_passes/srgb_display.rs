@@ -1,83 +1,19 @@
 //! Display encoding for scene-linear color without tone mapping.
 
-use crate::{
-	core::Entity,
-	rendering::{
-		Sink,
-		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
-		render_passes::blit::ImageBypassPass,
-	},
-};
+use super::image_transform::Configuration;
 
-const PIPELINE: &str = "byte-engine/rendering/srgb-display/encode.pipeline";
-
-/// The `SrgbDisplayPass` struct converts scene-linear RGB into display-encoded sRGB.
+/// Converts scene-linear RGB into display-encoded sRGB, installed by
+/// [`crate::application::graphics::setup_srgb_display_render_pass`].
 ///
-/// Install this as the final post-scene pass when the application needs SDR
-/// presentation without tone mapping. Bypassing the pass forwards the scene
-/// color unchanged.
-pub struct SrgbDisplayPass {
-	encode: simple_compute::Pass,
-	bypass: ImageBypassPass,
-}
-
-impl Entity for SrgbDisplayPass {}
-
-impl SrgbDisplayPass {
-	/// Starts display and bypass shaders while window creation is still pending.
-	pub(crate) fn request_pipelines(manager: &crate::rendering::PipelineManagerClient) {
-		manager.request_pipeline(PIPELINE);
-		ImageBypassPass::request_pipeline(manager);
-	}
-
-	/// Creates one sink-local display encoder from the current `main` image.
-	///
-	/// Register the pass before creating a window. The renderer then supplies
-	/// the swapchain directly when this is the final post-scene pass.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder<'_>) -> Self {
-		let source = render_pass_builder.read_from("main");
-		let format = render_pass_builder.format_of("main");
-		assert_eq!(
-			format.encoding(),
-			Some(ghi::Encodings::FloatingPoint),
-			"sRGB display encoding requires scene-linear floating-point input. The most likely cause is a preceding pass that replaced `main` with another format."
-		);
-		let destination = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(crate::rendering::DISPLAY_COLOR_FORMAT, ghi::Uses::Storage | ghi::Uses::Image).name("sRGB Display Output"),
-		);
-		let pipeline = simple_compute::Pipeline::compile(
-			render_pass_builder,
-			simple_compute::Descriptor::new("sRGB Display Encoding", PIPELINE),
-		)
-		.expect(
-			"Failed to create the sRGB display-encoding shader. The most likely cause is an incompatible shader interface.",
-		);
-		let encode = pipeline
-			.bind(
-				render_pass_builder,
-				"sRGB Display Descriptor Set",
-				&[
-					simple_compute::Resource::image("source", source),
-					simple_compute::Resource::image("result", destination),
-				],
-			)
-			.expect(
-				"Failed to bind sRGB display resources. The most likely cause is a mismatch between the BESL bindings and pass resources.",
-			);
-		let bypass = ImageBypassPass::new(render_pass_builder, source, destination);
-
-		Self { encode, bypass }
-	}
-}
-
-impl RenderPass for SrgbDisplayPass {
-	fn name(&self) -> &'static str {
-		"srgb-display"
-	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(prepare = encode);
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass);
-}
+/// Install this as the final post-scene pass when the application needs SDR presentation without tone mapping.
+/// Bypassing the pass forwards the scene color unchanged.
+pub const ENCODING: Configuration = Configuration {
+	name: "srgb-display",
+	label: "sRGB Display Encoding",
+	pipeline_id: "byte-engine/rendering/srgb-display/encode.pipeline",
+	output_name: "sRGB Display Output",
+	requires_float_input: true,
+};
 
 #[cfg(test)]
 mod tests {

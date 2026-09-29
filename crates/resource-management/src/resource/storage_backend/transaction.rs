@@ -24,13 +24,8 @@ pub struct ResourceTransaction<'a> {
 	guard: ResourceReservationGuard<'a>,
 	resource_id: ResourceId,
 	writer: ResourceWriter,
-	decoded_payload: Option<DecodedResourcePayload>,
-}
-
-/// The `DecodedResourcePayload` struct carries a precomputed client-facing identity for encoded bytes.
-struct DecodedResourcePayload {
-	decoded_size: usize,
-	encoding: ResourcePayloadEncoding,
+	/// The size clients receive after CPU decompression, when the written bytes are one CPU LZ4 block.
+	decoded_size: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,26 +59,17 @@ impl<'a> ResourceTransaction<'a> {
 		Self {
 			guard: ResourceReservationGuard { backend, reservation },
 			resource_id,
-			decoded_payload: None,
+			decoded_size: None,
 			writer,
 		}
 	}
 
-	/// Records the decoded identity of a complete payload compressed before this transaction began.
-	pub(crate) fn with_compressed_payload(
-		mut self,
-		decoded_size: usize,
-		decoded_hash: u64,
-		encoding: ResourcePayloadEncoding,
-	) -> Self {
-		assert!(
-			encoding.requires_cpu_decompression(),
-			"Compressed resource metadata requires a CPU encoding. The most likely cause is that a prepared payload was marked as raw or GPU-backed."
-		);
+	/// Records the decoded identity of a complete payload CPU-compressed before this transaction began.
+	pub(crate) fn with_compressed_payload(mut self, decoded_size: usize, decoded_hash: u64) -> Self {
 		// The decoded hash is already known, so hashing the encoded bytes while
 		// writing would add work and produce an identity that is immediately discarded.
 		self.writer.set_hash(decoded_hash);
-		self.decoded_payload = Some(DecodedResourcePayload { decoded_size, encoding });
+		self.decoded_size = Some(decoded_size);
 		self
 	}
 
@@ -133,13 +119,13 @@ impl<'a> ResourceTransaction<'a> {
 			mut guard,
 			resource_id,
 			writer,
-			decoded_payload,
+			decoded_size,
 		} = self;
 		if ResourceId::from(resource.id()) != resource_id {
 			return Err(());
 		}
 
-		let output = writer.finish(decoded_payload).await.map_err(|_| ())?;
+		let output = writer.finish(decoded_size).await.map_err(|_| ())?;
 		let stored = guard
 			.backend
 			.commit_resource(resource_id, guard.reservation, resource, output, allocator)?;
@@ -177,11 +163,9 @@ where
 {
 	let prepared = crate::resource::compression::prepare(data.as_init(), compression_policy);
 	if let Some(prepared) = prepared {
-		let mut transaction = begin(prepared.bytes.len()).await?.with_compressed_payload(
-			prepared.decoded_size,
-			prepared.decoded_hash,
-			prepared.encoding,
-		);
+		let mut transaction = begin(prepared.bytes.len())
+			.await?
+			.with_compressed_payload(prepared.decoded_size, prepared.decoded_hash);
 		let BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, prepared.bytes).await;
 		result.map_err(|_| ())?;
 		Ok(transaction)
@@ -318,7 +302,7 @@ impl ResourceWriter {
 	}
 
 	/// Verifies the exact-size contract and durably finishes payload I/O before metadata publication.
-	async fn finish(self, decoded_payload: Option<DecodedResourcePayload>) -> std::io::Result<ResourceWriteOutput> {
+	async fn finish(self, decoded_size: Option<usize>) -> std::io::Result<ResourceWriteOutput> {
 		if self.written_size != self.expected_size {
 			return Err(std::io::Error::new(
 				std::io::ErrorKind::UnexpectedEof,
@@ -328,8 +312,8 @@ impl ResourceWriter {
 
 		let target = self.target.finish().await?;
 		let hash = self.hash.finish();
-		let (size, encoding) = if let Some(decoded) = decoded_payload {
-			(decoded.decoded_size, decoded.encoding)
+		let (size, encoding) = if let Some(decoded_size) = decoded_size {
+			(decoded_size, ResourcePayloadEncoding::CpuLz4)
 		} else {
 			(self.written_size, ResourcePayloadEncoding::Raw)
 		};

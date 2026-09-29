@@ -7,22 +7,18 @@ pub use core::Renderer;
 #[cfg(test)]
 use std::collections::VecDeque;
 
+pub(crate) use configuration::RENDER_PASS_PARAMETER_PREFIX;
 #[cfg(test)]
-use configuration::{
-	RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration, render_pass_harness_with_state,
-	set_render_pass_state_by_name,
-};
+use configuration::{apply_render_pass_configuration, set_render_pass_state};
+pub(crate) use targets::RenderNode;
 pub use targets::RenderTargets;
-pub(crate) use targets::scaled_extent;
-#[cfg(test)]
-use utils::hash::HashMap;
 
 #[cfg(test)]
 use crate::{
 	configuration::{Configuration, ConfigurationValue},
 	rendering::{
 		Sink,
-		render_pass::{RenderPass, RenderPassHarness, RenderPassReturn, RenderPassState},
+		render_pass::{RenderPass, RenderPassHarness, RenderPassReturn, RenderPassState, RenderPassStates},
 	},
 };
 
@@ -35,7 +31,6 @@ use crate::{
 mod tests {
 	use utils::Box;
 
-	use super::core::{ResolvedScreenshotCapture, captures_after_pass};
 	use super::*;
 	use crate::configuration::ConfigurationUpdateState;
 
@@ -61,50 +56,25 @@ mod tests {
 		) -> Option<RenderPassReturn<'a>> {
 			None
 		}
-
-		fn bypass<'a>(
-			&mut self,
-			_frame: &mut ghi::implementation::Frame,
-			_sink: &Sink,
-			_frame_allocator: &'a bumpalo::Bump,
-		) -> Option<RenderPassReturn<'a>> {
-			None
-		}
 	}
 
-	#[test]
-	fn captures_keep_request_order_at_a_prepared_pass_entry() {
-		let image: ghi::BaseImageHandle = image_handle(7);
-		let target = ghi::ImageOrSwapchain::Image(image);
-		let captures = [
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 3, target }),
-			Ok(ResolvedScreenshotCapture::AfterPass { pass: 2, target }),
-		];
-
-		// Scheduling depends on the retained pass entry, not on whether its prepared command is Some or None.
-		assert_eq!(captures_after_pass(&captures, 2).collect::<Vec<_>>(), [0, 2]);
-		assert!(captures_after_pass(&captures, 1).next().is_none());
+	/// Creates one harness per name, sharing state by name the way the renderer does for every sink.
+	fn harnesses<const N: usize>(states: &mut RenderPassStates, names: [&'static str; N]) -> [RenderPassHarness; N] {
+		names.map(|name| RenderPassHarness::new(Box::new(NamedRenderPass(name)), states))
 	}
 
 	#[test]
 	fn render_pass_state_updates_every_sink_instance_with_the_requested_name() {
-		let mut render_passes = [
-			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
-			RenderPassHarness::new(Box::new(NamedRenderPass("ui"))),
-			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
-		];
+		let mut states = RenderPassStates::default();
+		let render_passes = harnesses(&mut states, ["bloom", "ui", "bloom"]);
 
-		let updated = set_render_pass_state_by_name(&mut render_passes, "bloom", RenderPassState::Bypassed);
+		let updated = set_render_pass_state(&mut states, "bloom", RenderPassState::Bypassed);
 
 		assert_eq!(updated, 2);
 		assert_eq!(render_passes[0].state(), RenderPassState::Bypassed);
 		assert_eq!(render_passes[1].state(), RenderPassState::Enabled);
 		assert_eq!(render_passes[2].state(), RenderPassState::Bypassed);
-		assert_eq!(
-			set_render_pass_state_by_name(&mut render_passes, "missing", RenderPassState::Enabled),
-			0
-		);
+		assert_eq!(set_render_pass_state(&mut states, "missing", RenderPassState::Enabled), 0);
 	}
 
 	#[test]
@@ -113,15 +83,10 @@ mod tests {
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut states = HashMap::default();
-		let mut passes = [
-			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
-			RenderPassHarness::new(Box::new(NamedRenderPass("bloom"))),
-		];
+		let mut states = RenderPassStates::default();
+		let passes = harnesses(&mut states, ["bloom", "bloom"]);
 
-		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
-			set_render_pass_state_by_name(&mut passes, name, state)
-		});
+		apply_render_pass_configuration(&port, &mut pending, &states);
 
 		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
 		assert_eq!(passes[1].state(), RenderPassState::Bypassed);
@@ -131,7 +96,7 @@ mod tests {
 				if value == &ConfigurationValue::from("bypassed")
 		));
 
-		let future = render_pass_harness_with_state(Box::new(NamedRenderPass("bloom")), &states);
+		let [future] = harnesses(&mut states, ["bloom"]);
 
 		assert_eq!(future.state(), RenderPassState::Bypassed);
 	}
@@ -142,12 +107,9 @@ mod tests {
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let event = configuration.update("render.pass.bloom", "bypassed");
 		let mut pending = VecDeque::new();
-		let mut states = HashMap::default();
-		let mut passes = [];
+		let mut states = RenderPassStates::default();
 
-		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
-			set_render_pass_state_by_name(&mut passes, name, state)
-		});
+		apply_render_pass_configuration(&port, &mut pending, &states);
 
 		assert_eq!(pending.len(), 1);
 		assert_eq!(
@@ -155,33 +117,11 @@ mod tests {
 			&ConfigurationUpdateState::Pending
 		);
 
-		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
-		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
-			set_render_pass_state_by_name(&mut passes, name, state)
-		});
+		let passes = harnesses(&mut states, ["bloom"]);
+		apply_render_pass_configuration(&port, &mut pending, &states);
 
 		assert_eq!(pending.len(), 0);
 		assert_eq!(passes[0].state(), RenderPassState::Bypassed);
-	}
-
-	#[test]
-	fn render_configuration_reports_an_unsupported_state() {
-		let configuration = Configuration::new();
-		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
-		let event = configuration.update("render.pass.bloom", "disabled");
-		let mut pending = VecDeque::new();
-		let mut states = HashMap::default();
-		let mut passes = [RenderPassHarness::new(Box::new(NamedRenderPass("bloom")))];
-
-		apply_render_pass_configuration(&port, &mut pending, &mut states, |name, state| {
-			set_render_pass_state_by_name(&mut passes, name, state)
-		});
-
-		assert!(matches!(
-			configuration.event(event).unwrap().state(),
-			ConfigurationUpdateState::NotSet { reason } if reason.contains("neither `enabled` nor `bypassed`")
-		));
-		assert_eq!(passes[0].state(), RenderPassState::Enabled);
 	}
 
 	#[test]
@@ -200,11 +140,8 @@ mod tests {
 		let (sink0_image, _) = rt.get("main", 0).expect("sink 0 main should resolve");
 		let (sink1_image, _) = rt.get("main", 1).expect("sink 1 main should resolve");
 
-		assert_eq!(*sink0_image, second_image);
-		assert_eq!(*sink1_image, other_sink_image);
+		assert_eq!(sink0_image, second_image);
+		assert_eq!(sink1_image, other_sink_image);
 		assert_eq!(rt.get("missing", 0), None);
-		assert_eq!(rt.get_attachment_infos(0).len(), 2);
-		assert_eq!(rt.get_attachment_infos(1).len(), 1);
-		assert!(RenderTargets::new().get_attachment_infos(0).is_empty());
 	}
 }

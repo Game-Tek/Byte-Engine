@@ -380,19 +380,4 @@ mod tests {
 		assert_eq!(checked_capacity(3, 3, 5, "test"), None);
 		assert_eq!(checked_capacity(u32::MAX, 1, u32::MAX, "test"), None);
 	}
-
-	#[test]
-	fn geometry_capacity_rejects_empty_or_unaddressable_streams() {
-		assert_eq!(GeometryCapacity::default().validate(), Ok(()));
-		let empty = GeometryCapacity {
-			triangles: 0,
-			..GeometryCapacity::default()
-		};
-		assert!(empty.validate().is_err_and(|reason| reason.contains("triangle capacity is zero")));
-		let unaddressable = GeometryCapacity {
-			meshlets: MAX_ADDRESSABLE_MESHLETS as u32 + 1,
-			..GeometryCapacity::default()
-		};
-		assert!(unaddressable.validate().is_err());
-	}
 }

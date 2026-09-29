@@ -54,7 +54,6 @@ pub struct GeneratedCompiledPlatformShader {
 	binary: Box<[u8]>,
 	bindings: Vec<CompiledShaderBinding>,
 	extent: Option<utils::Extent>,
-	entry_point: Option<&'static str>,
 }
 
 impl GeneratedCompiledPlatformShader {
@@ -72,10 +71,6 @@ impl GeneratedCompiledPlatformShader {
 
 	pub fn extent(&self) -> Option<utils::Extent> {
 		self.extent
-	}
-
-	pub fn entry_point(&self) -> Option<&'static str> {
-		self.entry_point
 	}
 }
 
@@ -149,7 +144,6 @@ impl Generator {
 					binary,
 					bindings,
 					extent,
-					entry_point: None,
 				})
 			}
 			#[cfg(target_vendor = "apple")]
@@ -164,7 +158,6 @@ impl Generator {
 					binary,
 					bindings,
 					extent,
-					entry_point: Some(PlatformShaderLanguage::Msl.entry_point()),
 				})
 			}
 			#[cfg(target_os = "windows")]
@@ -184,7 +177,6 @@ impl Generator {
 						| crate::shader::generator::Stages::Mesh { local_size, .. } => Some(local_size),
 						_ => None,
 					},
-					entry_point: Some(PlatformShaderLanguage::Hlsl.entry_point()),
 				})
 			}
 			_ => Err(
@@ -203,20 +195,7 @@ fn missing_main_error() -> String {
 #[cfg(test)]
 mod tests {
 	use super::Generator;
-	use super::PlatformShaderLanguage;
-	use crate::shader::generator::{self, ShaderGenerationSettings};
-
-	#[test]
-	fn current_platform_language_matches_target() {
-		#[cfg(target_vendor = "apple")]
-		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Msl);
-
-		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
-		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Hlsl);
-
-		#[cfg(all(not(target_vendor = "apple"), target_os = "linux"))]
-		assert_eq!(PlatformShaderLanguage::current_platform(), PlatformShaderLanguage::Glsl);
-	}
+	use crate::shader::generator::ShaderGenerationSettings;
 
 	/// Verifies bit-scan and scalar logarithm intrinsics compile with the real platform shader compiler.
 	#[compio::test]
@@ -249,42 +228,6 @@ mod tests {
 			.generate(&settings, &root)
 			.await
 			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
-	}
-
-	#[cfg(target_os = "linux")]
-	#[compio::test]
-	async fn generate_uses_current_platform_compiler() {
-		let program = generator::tests::fragment_program();
-		let settings = ShaderGenerationSettings::fragment();
-		let mut generator = Generator::new();
-		let generated = generator
-			.generate(&settings, &program)
-			.await
-			.expect("Failed to generate compiled platform shader");
-
-		if cfg!(target_vendor = "apple") {
-			assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Msl.entry_point()));
-		} else {
-			assert_eq!(generated.entry_point(), None);
-		}
-
-		assert!(!generated.binary().is_empty());
-	}
-
-	#[cfg(target_os = "windows")]
-	#[compio::test]
-	async fn generate_uses_hlsl_on_windows() {
-		let program = generator::tests::fragment_program();
-		let settings = ShaderGenerationSettings::fragment();
-		let mut generator = Generator::new();
-		let generated = generator
-			.generate(&settings, &program)
-			.await
-			.expect("Failed to generate HLSL shader");
-
-		assert_eq!(generated.entry_point(), Some(PlatformShaderLanguage::Hlsl.entry_point()));
-		assert!(std::str::from_utf8(generated.binary()).is_ok());
-		assert!(!generated.binary().is_empty());
 	}
 }
 

@@ -59,17 +59,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_intrinsic_resource_reference(string, texture_array);
 		string.push_str("_sampler[");
 		self.emit_node_string(string, texture_index);
-		string.push_str("],");
-		if !self.minified {
-			string.push(' ');
-		}
+		string.push(']');
+		self.emit_separator(string);
 		self.emit_node_string(string, uv);
 		string.push_str(", metal::gradient2d(");
 		self.emit_node_string(string, uv_derivative_x);
-		string.push(',');
-		if !self.minified {
-			string.push(' ');
-		}
+		self.emit_separator(string);
 		self.emit_node_string(string, uv_derivative_y);
 		string.push_str("))");
 	}
@@ -422,11 +417,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				string.push_str(".read(");
 				self.emit_node_string(string, &arguments[1]);
 				if let Some(layer) = arguments.get(2) {
-					if self.minified {
-						string.push(',');
-					} else {
-						string.push_str(", ");
-					}
+					self.emit_separator(string);
 					self.emit_node_string(string, layer);
 				}
 				string.push(')');
@@ -442,11 +433,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_node_string(string, &arguments[0]);
 				string.push_str(".write(");
 				self.emit_node_string(string, &arguments[2]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}

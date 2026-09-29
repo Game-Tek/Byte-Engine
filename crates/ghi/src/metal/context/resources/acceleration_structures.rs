@@ -15,17 +15,6 @@ pub(in crate::metal) fn to_vertex_format(encoding: crate::Encodings) -> mtl::MTL
 	}
 }
 
-/// Maps a GHI index data type to the Metal index type acceleration structures read triangle indices with.
-pub(in crate::metal) fn to_index_type(data_type: crate::DataTypes) -> mtl::MTLIndexType {
-	match data_type {
-		crate::DataTypes::U16 => mtl::MTLIndexType::UInt16,
-		crate::DataTypes::U32 | crate::DataTypes::UInt => mtl::MTLIndexType::UInt32,
-		_ => panic!(
-			"Metal acceleration structure index format is unsupported. The most likely cause is that a non 16 or 32-bit index type was used for ray tracing geometry.",
-		),
-	}
-}
-
 impl Context {
 	/// Allocates the Metal storage for one acceleration structure and records the scratch size its builds need.
 	///

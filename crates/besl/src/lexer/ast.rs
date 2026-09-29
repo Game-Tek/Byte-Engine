@@ -1,5 +1,6 @@
 //! Resolves parsed BESL syntax into a linked semantic tree for compilation.
 
+use std::collections::HashSet;
 use std::hash::Hash;
 use std::{
 	cell::RefCell,
@@ -8,11 +9,9 @@ use std::{
 	rc::{Rc, Weak},
 };
 
-use super::lowering::lex_parsed_node;
+use super::lowering::Lexer;
 use super::resolution::{DescendantSearch, find_descendant};
 use crate::parser;
-
-pub type ParentNodeReference = Weak<RefCell<Node>>;
 
 #[derive(Clone)]
 pub struct NodeReference(pub(super) Rc<RefCell<Node>>);
@@ -24,34 +23,9 @@ impl std::fmt::Debug for NodeReference {
 }
 
 impl NodeReference {
-	pub fn new<F, E>(f: F) -> Result<NodeReference, E>
-	where
-		F: FnOnce(ParentNodeReference) -> Result<Node, E>,
-	{
-		let mut error = None;
-
-		let node = Rc::new_cyclic(|r| match f(r.clone()) {
-			Ok(node) => RefCell::new(node),
-			Err(e) => {
-				error = Some(e);
-				RefCell::new(Node::root())
-			}
-		});
-
-		if let Some(e) = error {
-			Err(e)
-		} else {
-			Ok(NodeReference(node))
-		}
-	}
-
 	/// Recursively searches for a child node with the given name.
 	pub fn get_descendant(&self, child_name: &str) -> Option<NodeReference> {
 		find_descendant(self, child_name, DescendantSearch::Any)
-	}
-
-	pub fn get_children(&self) -> Option<Vec<NodeReference>> {
-		self.borrow().get_children()
 	}
 
 	/// Returns the stable pointer identity used to deduplicate linked semantic nodes without borrowing their contents.
@@ -70,6 +44,51 @@ impl NodeReference {
 			Nodes::Scope { children, .. } => children.iter().find_map(NodeReference::get_main),
 			_ => None,
 		}
+	}
+
+	/// Returns `self`, a function such as `main`, followed by every function it calls directly or transitively, each
+	/// once, in first-call order.
+	///
+	/// Compilers use it to find the functions they must lower. It follows calls through [`Nodes::children`], but not
+	/// through inlined intrinsic bodies or macro bodies, which backends expand on their own.
+	pub(crate) fn reachable_functions(&self) -> Vec<NodeReference> {
+		/// Adds `function` and walks its body once, so recursion and repeated calls add nothing new.
+		fn visit_function(function: &NodeReference, seen: &mut HashSet<usize>, functions: &mut Vec<NodeReference>) {
+			if !seen.insert(function.identity()) {
+				return;
+			}
+			functions.push(function.clone());
+			visit_calls(function, seen, functions);
+		}
+
+		fn visit_calls(node: &NodeReference, seen: &mut HashSet<usize>, functions: &mut Vec<NodeReference>) {
+			let node = node.borrow();
+			let children = match node.node() {
+				Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
+					let function = function.get();
+					if matches!(function.borrow().node(), Nodes::Function { .. }) {
+						visit_function(&function, seen, functions);
+					}
+					parameters.as_slice()
+				}
+				// Intrinsic bodies and macro bodies are expanded by each backend, so calls inside them are not followed.
+				Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => arguments.as_slice(),
+				Nodes::Expression(Expressions::Macro { .. }) => &[],
+				other => {
+					for child in other.children() {
+						visit_calls(child, seen, functions);
+					}
+					&[]
+				}
+			};
+			for child in children {
+				visit_calls(child, seen, functions);
+			}
+		}
+
+		let mut functions = Vec::new();
+		visit_function(self, &mut HashSet::new(), &mut functions);
+		functions
 	}
 }
 
@@ -156,11 +175,8 @@ impl std::fmt::Debug for CallTarget {
 	}
 }
 
-pub(crate) fn lex(mut node: parser::Node) -> Result<NodeReference, LexError> {
-	node.sort();
-	lex_with_root(Node::root(), node)
-}
-
+/// Links a parsed program under `root`, which supplies the built-in registry from [`Node::root`] and any generated
+/// declarations the program may reference.
 pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeReference, LexError> {
 	node.sort();
 
@@ -170,32 +186,29 @@ pub(crate) fn lex_with_root(root: Node, mut node: parser::Node) -> Result<NodeRe
 		parser::Nodes::Scope { name, children } => {
 			assert_eq!(*name, "root");
 
-			let mut next_intrinsic_expansion_id = 0;
+			let mut lexer = Lexer::new(root.clone());
 			for child in children {
 				for declaration in super::entry::normalize_entry(child, &root)? {
 					root.borrow_mut().add_child(declaration.into());
 				}
-				let c = lex_parsed_node(vec![root.clone()], child, &mut next_intrinsic_expansion_id)?;
-				root.borrow_mut().add_child(c);
+				let child = lexer.lex(child)?;
+				root.borrow_mut().add_child(child);
 			}
 
 			Ok(root)
 		}
-		_ => Err(LexError::Undefined { message: None }),
+		_ => Err(LexError::invalid(
+			"Invalid program root: the parsed node is not a scope. The most likely cause is that the node passed to the lexer is not the root that besl::parse returns.",
+		)),
 	}
 }
 
 #[derive(Clone)]
 pub struct Node {
-	// parent: Option<ParentNodeReference>,
 	pub(super) node: Nodes,
 }
 
 impl Node {
-	pub(super) fn internal_new(node: Node) -> NodeReference {
-		NodeReference(Rc::new(RefCell::new(node)))
-	}
-
 	/// Creates the single root node that owns a program's other nodes.
 	// Keep the built-in registry contiguous so overload ordering and shared type handles remain auditable together.
 	#[allow(clippy::too_many_lines)]
@@ -336,6 +349,29 @@ impl Node {
 				vec4f32.clone(),
 			),
 			builtin_intrinsic(
+				"texture_lod",
+				vec![
+					("texture", texture_2d.clone()),
+					("uv", vec2f32.clone()),
+					("lod", f32_t.clone()),
+				],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![("texture", texture_3d), ("uv", vec3f32.clone())],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
+				"texture_lod",
+				vec![
+					("texture", texture_cube),
+					("direction", vec3f32.clone()),
+					("lod", f32_t.clone()),
+				],
+				vec4f32.clone(),
+			),
+			builtin_intrinsic(
 				"texture_cube_array_lod",
 				vec![
 					("texture", texture_cube_array),
@@ -374,29 +410,6 @@ impl Node {
 				f32_t.clone(),
 			),
 			builtin_intrinsic(
-				"texture_lod",
-				vec![
-					("texture", texture_2d.clone()),
-					("uv", vec2f32.clone()),
-					("lod", f32_t.clone()),
-				],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic(
-				"texture_lod",
-				vec![("texture", texture_3d), ("uv", vec3f32.clone())],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic(
-				"texture_lod",
-				vec![
-					("texture", texture_cube),
-					("direction", vec3f32.clone()),
-					("lod", f32_t.clone()),
-				],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic(
 				"fetch",
 				vec![("texture", texture_2d.clone()), ("coord", vec2u32.clone())],
 				vec4f32.clone(),
@@ -416,312 +429,22 @@ impl Node {
 				u32_t.clone(),
 			),
 			builtin_intrinsic(
-				"dot",
-				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"dot",
-				vec![("left", vec4f32.clone()), ("right", vec4f32.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"dot",
-				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"dot",
-				vec![("left", vec2f16.clone()), ("right", vec2f16.clone())],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
-				"dot",
-				vec![("left", vec3f16.clone()), ("right", vec3f16.clone())],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
-				"dot",
-				vec![("left", vec4f16.clone()), ("right", vec4f16.clone())],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
 				"cross",
 				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
 				vec3f32.clone(),
 			),
-			builtin_intrinsic("length", vec![("value", vec4f32.clone())], f32_t.clone()),
-			builtin_intrinsic("length", vec![("value", vec3f32.clone())], f32_t.clone()),
-			builtin_intrinsic("length", vec![("value", vec2f32.clone())], f32_t.clone()),
-			builtin_intrinsic("length", vec![("value", vec2f16.clone())], f16_t.clone()),
-			builtin_intrinsic("length", vec![("value", vec3f16.clone())], f16_t.clone()),
-			builtin_intrinsic("length", vec![("value", vec4f16.clone())], f16_t.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec4f32.clone())], vec4f32.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec3f32.clone())], vec3f32.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec2f32.clone())], vec2f32.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec2f16.clone())], vec2f16.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec3f16.clone())], vec3f16.clone()),
-			builtin_intrinsic("normalize", vec![("value", vec4f16.clone())], vec4f16.clone()),
-			builtin_intrinsic("max", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("min", vec![("left", f32_t.clone()), ("right", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("max", vec![("left", f16_t.clone()), ("right", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("min", vec![("left", f16_t.clone()), ("right", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("max", vec![("left", i32_t.clone()), ("right", i32_t.clone())], i32_t.clone()),
-			builtin_intrinsic("min", vec![("left", i32_t.clone()), ("right", i32_t.clone())], i32_t.clone()),
-			builtin_intrinsic("max", vec![("left", u32_t.clone()), ("right", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic("min", vec![("left", u32_t.clone()), ("right", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic(
-				"max",
-				vec![("left", vec2f32.clone()), ("right", vec2f32.clone())],
-				vec2f32.clone(),
-			),
-			builtin_intrinsic(
-				"max",
-				vec![("left", vec3f32.clone()), ("right", vec3f32.clone())],
-				vec3f32.clone(),
-			),
-			builtin_intrinsic(
-				"clamp",
-				vec![
-					("value", f32_t.clone()),
-					("minimum", f32_t.clone()),
-					("maximum", f32_t.clone()),
-				],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"clamp",
-				vec![
-					("value", f16_t.clone()),
-					("minimum", f16_t.clone()),
-					("maximum", f16_t.clone()),
-				],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
-				"clamp",
-				vec![
-					("value", i32_t.clone()),
-					("minimum", i32_t.clone()),
-					("maximum", i32_t.clone()),
-				],
-				i32_t.clone(),
-			),
-			builtin_intrinsic(
-				"clamp",
-				vec![
-					("value", u32_t.clone()),
-					("minimum", u32_t.clone()),
-					("maximum", u32_t.clone()),
-				],
-				u32_t.clone(),
-			),
-			builtin_intrinsic(
-				"clamp",
-				vec![
-					("value", vec3f32.clone()),
-					("minimum", vec3f32.clone()),
-					("maximum", vec3f32.clone()),
-				],
-				vec3f32.clone(),
-			),
-			builtin_intrinsic("log2", vec![("value", vec3f32.clone())], vec3f32.clone()),
-			builtin_intrinsic("log2", vec![("value", f32_t.clone())], f32_t.clone()),
-			// Returns the index of the lowest set bit, or 0xFFFFFFFF when no bit is set.
 			builtin_intrinsic("find_lsb", vec![("value", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic(
-				"pow",
-				vec![("value", vec3f32.clone()), ("exponent", vec3f32.clone())],
-				vec3f32.clone(),
-			),
-			builtin_intrinsic(
-				"pow",
-				vec![("value", f32_t.clone()), ("exponent", f32_t.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"pow",
-				vec![("value", f16_t.clone()), ("exponent", f16_t.clone())],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
-				"reflect",
-				vec![("incident", vec4f32.clone()), ("normal", vec4f32.clone())],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic("abs", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("abs", vec![("value", vec2f32.clone())], vec2f32.clone()),
-			builtin_intrinsic("sqrt", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("abs", vec![("value", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("abs", vec![("value", vec2f16.clone())], vec2f16.clone()),
-			builtin_intrinsic("sqrt", vec![("value", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("is_nan", vec![("value", f16_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_nan", vec![("value", f32_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_infinite", vec![("value", f16_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_infinite", vec![("value", f32_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_finite", vec![("value", f16_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_finite", vec![("value", f32_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_normal", vec![("value", f16_t.clone())], bool_t.clone()),
-			builtin_intrinsic("is_normal", vec![("value", f32_t.clone())], bool_t.clone()),
-			builtin_intrinsic("exp", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("exp", vec![("value", vec3f32.clone())], vec3f32.clone()),
-			builtin_intrinsic("sin", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("cos", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("asin", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("atan2", vec![("y", f32_t.clone()), ("x", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("floor", vec![("value", f32_t.clone())], f32_t.clone()),
 			builtin_intrinsic("sincos", vec![("value", f32_t.clone())], vec2f32.clone()),
-			builtin_intrinsic("tan", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("round", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("round", vec![("value", vec2f32.clone())], vec2f32.clone()),
-			builtin_intrinsic("round", vec![("value", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("round", vec![("value", vec2f16.clone())], vec2f16.clone()),
 			builtin_intrinsic("round_to_i32", vec![("value", vec2f32.clone())], vec2i32),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", f32_t.clone()),
-					("multiplier", f32_t.clone()),
-					("addend", f32_t.clone()),
-				],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec2f32.clone()),
-					("multiplier", vec2f32.clone()),
-					("addend", vec2f32.clone()),
-				],
-				vec2f32.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec3f32.clone()),
-					("multiplier", vec3f32.clone()),
-					("addend", vec3f32.clone()),
-				],
-				vec3f32.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec4f32.clone()),
-					("multiplier", vec4f32.clone()),
-					("addend", vec4f32.clone()),
-				],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", f16_t.clone()),
-					("multiplier", f16_t.clone()),
-					("addend", f16_t.clone()),
-				],
-				f16_t.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec2f16.clone()),
-					("multiplier", vec2f16.clone()),
-					("addend", vec2f16.clone()),
-				],
-				vec2f16.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec3f16.clone()),
-					("multiplier", vec3f16.clone()),
-					("addend", vec3f16.clone()),
-				],
-				vec3f16.clone(),
-			),
-			builtin_intrinsic(
-				"fma",
-				vec![
-					("multiplicand", vec4f16.clone()),
-					("multiplier", vec4f16.clone()),
-					("addend", vec4f16.clone()),
-				],
-				vec4f16.clone(),
-			),
-			builtin_intrinsic("fract", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("fwidth", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("radians", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("inversesqrt", vec![("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("f16", vec![("value", f32_t.clone())], f16_t.clone()),
-			builtin_intrinsic("f16", vec![("value", f16_t.clone())], f16_t.clone()),
-			builtin_intrinsic("f16", vec![("value", u32_t.clone())], f16_t.clone()),
-			builtin_intrinsic("f16", vec![("value", i32_t.clone())], f16_t.clone()),
-			builtin_intrinsic("u16", vec![("value", u32_t.clone())], u16_t.clone()),
-			builtin_intrinsic("f32", vec![("value", f16_t.clone())], f32_t.clone()),
-			builtin_intrinsic("f32", vec![("value", u32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("f32", vec![("value", i32_t.clone())], f32_t.clone()),
-			builtin_intrinsic("vec2f16", vec![("value", vec2f32.clone())], vec2f16.clone()),
-			builtin_intrinsic("vec2f16", vec![("value", vec2f16.clone())], vec2f16.clone()),
-			builtin_intrinsic("vec3f16", vec![("value", vec3f32.clone())], vec3f16.clone()),
-			builtin_intrinsic("vec3f16", vec![("value", vec3f16.clone())], vec3f16.clone()),
-			builtin_intrinsic("vec4f16", vec![("value", vec4f32.clone())], vec4f16.clone()),
-			builtin_intrinsic("vec4f16", vec![("value", vec4f16.clone())], vec4f16.clone()),
-			builtin_intrinsic("vec2f", vec![("value", vec2f16)], vec2f32.clone()),
-			builtin_intrinsic("vec3f", vec![("value", vec3f16)], vec3f32.clone()),
-			builtin_intrinsic("vec4f", vec![("value", vec4f16)], vec4f32.clone()),
-			builtin_intrinsic("packed_vec4f", vec![("value", vec4f32.clone())], packed_vec4f32.clone()),
-			builtin_intrinsic("vec4f", vec![("value", packed_vec4f32)], vec4f32.clone()),
-			builtin_intrinsic("u32", vec![("value", u32_t.clone())], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", u8_t)], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", u16_t)], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", i32_t.clone())], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", f16_t)], u32_t.clone()),
-			builtin_intrinsic("u32", vec![("value", f32_t.clone())], u32_t.clone()),
 			builtin_intrinsic(
 				"smoothstep",
 				vec![("edge0", f32_t.clone()), ("edge1", f32_t.clone()), ("value", f32_t.clone())],
 				f32_t.clone(),
 			),
 			builtin_intrinsic("step", vec![("edge", f32_t.clone()), ("value", f32_t.clone())], f32_t.clone()),
-			builtin_intrinsic(
-				"mix",
-				vec![("left", f32_t.clone()), ("right", f32_t.clone()), ("factor", f32_t.clone())],
-				f32_t.clone(),
-			),
-			builtin_intrinsic(
-				"mix",
-				vec![
-					("left", vec2f32.clone()),
-					("right", vec2f32.clone()),
-					("factor", f32_t.clone()),
-				],
-				vec2f32,
-			),
-			builtin_intrinsic(
-				"mix",
-				vec![
-					("left", vec3f32.clone()),
-					("right", vec3f32.clone()),
-					("factor", f32_t.clone()),
-				],
-				vec3f32.clone(),
-			),
-			builtin_intrinsic(
-				"mix",
-				vec![
-					("left", vec4f32.clone()),
-					("right", vec4f32.clone()),
-					("factor", f32_t.clone()),
-				],
-				vec4f32.clone(),
-			),
-			builtin_intrinsic("thread_idx", vec![], u32_t.clone()),
-			builtin_intrinsic("subgroup_lane_index", vec![], u32_t.clone()),
-			builtin_intrinsic("threadgroup_position", vec![], u32_t.clone()),
-			builtin_intrinsic("thread_position", vec![], u32_t.clone()),
 			builtin_intrinsic("subgroup_ballot", vec![("predicate", bool_t.clone())], vec4u32.clone()),
-			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t),
+			builtin_intrinsic("subgroup_ballot_any", vec![("mask", vec4u32.clone())], bool_t.clone()),
 			builtin_intrinsic("subgroup_ballot_find_lsb", vec![("mask", vec4u32.clone())], u32_t.clone()),
 			builtin_intrinsic("subgroup_ballot_count", vec![("mask", vec4u32.clone())], u32_t.clone()),
 			builtin_intrinsic(
@@ -737,7 +460,7 @@ impl Node {
 			builtin_intrinsic(
 				"subgroup_broadcast_f32",
 				vec![("value", f32_t.clone()), ("source_lane", u32_t.clone())],
-				f32_t,
+				f32_t.clone(),
 			),
 			builtin_intrinsic("workgroup_barrier", vec![], void.clone()),
 			builtin_intrinsic("set_task_mesh_output_count", vec![("count", u32_t.clone())], void.clone()),
@@ -782,7 +505,11 @@ impl Node {
 			),
 			builtin_intrinsic(
 				"write",
-				vec![("image", texture_2d.clone()), ("coord", vec2u32.clone()), ("value", vec4f32)],
+				vec![
+					("image", texture_2d.clone()),
+					("coord", vec2u32.clone()),
+					("value", vec4f32.clone()),
+				],
 				void.clone(),
 			),
 			builtin_intrinsic(
@@ -791,6 +518,122 @@ impl Node {
 				u32_t.clone(),
 			),
 		];
+
+		// Families whose overloads differ only in type. Each list keeps its name's overload order, because call
+		// resolution selects the first overload whose parameters match.
+		builtins.extend(converted_overloads(
+			"dot",
+			&["left", "right"],
+			[
+				(&vec2f32, &f32_t),
+				(&vec4f32, &f32_t),
+				(&vec3f32, &f32_t),
+				(&vec2f16, &f16_t),
+				(&vec3f16, &f16_t),
+				(&vec4f16, &f16_t),
+			],
+		));
+		builtins.extend(converted_overloads(
+			"length",
+			&["value"],
+			[
+				(&vec4f32, &f32_t),
+				(&vec3f32, &f32_t),
+				(&vec2f32, &f32_t),
+				(&vec2f16, &f16_t),
+				(&vec3f16, &f16_t),
+				(&vec4f16, &f16_t),
+			],
+		));
+		builtins.extend(same_type_overloads(
+			"normalize",
+			&["value"],
+			[&vec4f32, &vec3f32, &vec2f32, &vec2f16, &vec3f16, &vec4f16],
+		));
+		builtins.extend(same_type_overloads(
+			"max",
+			&["left", "right"],
+			[&f32_t, &f16_t, &i32_t, &u32_t, &vec2f32, &vec3f32],
+		));
+		builtins.extend(same_type_overloads(
+			"min",
+			&["left", "right"],
+			[&f32_t, &f16_t, &i32_t, &u32_t],
+		));
+		builtins.extend(same_type_overloads(
+			"clamp",
+			&["value", "minimum", "maximum"],
+			[&f32_t, &f16_t, &i32_t, &u32_t, &vec3f32],
+		));
+		builtins.extend(same_type_overloads("log2", &["value"], [&vec3f32, &f32_t]));
+		builtins.extend(same_type_overloads("pow", &["value", "exponent"], [&vec3f32, &f32_t, &f16_t]));
+		builtins.extend(same_type_overloads("reflect", &["incident", "normal"], [&vec4f32]));
+		builtins.extend(same_type_overloads("abs", &["value"], [&f32_t, &vec2f32, &f16_t, &vec2f16]));
+		builtins.extend(same_type_overloads("sqrt", &["value"], [&f32_t, &f16_t]));
+		for predicate in ["is_nan", "is_infinite", "is_finite", "is_normal"] {
+			builtins.extend(converted_overloads(
+				predicate,
+				&["value"],
+				[(&f16_t, &bool_t), (&f32_t, &bool_t)],
+			));
+		}
+		builtins.extend(same_type_overloads("exp", &["value"], [&f32_t, &vec3f32]));
+		for name in [
+			"sin",
+			"cos",
+			"asin",
+			"floor",
+			"tan",
+			"fract",
+			"fwidth",
+			"radians",
+			"inversesqrt",
+		] {
+			builtins.extend(same_type_overloads(name, &["value"], [&f32_t]));
+		}
+		builtins.extend(same_type_overloads("round", &["value"], [&f32_t, &vec2f32, &f16_t, &vec2f16]));
+		builtins.extend(same_type_overloads(
+			"fma",
+			&["multiplicand", "multiplier", "addend"],
+			[&f32_t, &vec2f32, &vec3f32, &vec4f32, &f16_t, &vec2f16, &vec3f16, &vec4f16],
+		));
+		// `mix` blends two same-typed values by one scalar factor.
+		for value in [&f32_t, &vec2f32, &vec3f32, &vec4f32] {
+			builtins.push(builtin_intrinsic(
+				"mix",
+				vec![("left", value.clone()), ("right", value.clone()), ("factor", f32_t.clone())],
+				value.clone(),
+			));
+		}
+		// Conversions take one `value` of the source type and return the target type.
+		let conversions: [(&str, &[&NodeReference], &NodeReference); 10] = [
+			("f16", &[&f32_t, &f16_t, &u32_t, &i32_t], &f16_t),
+			("u16", &[&u32_t], &u16_t),
+			("f32", &[&f16_t, &u32_t, &i32_t], &f32_t),
+			("vec2f16", &[&vec2f32, &vec2f16], &vec2f16),
+			("vec3f16", &[&vec3f32, &vec3f16], &vec3f16),
+			("vec4f16", &[&vec4f32, &vec4f16], &vec4f16),
+			("vec2f", &[&vec2f16], &vec2f32),
+			("vec3f", &[&vec3f16], &vec3f32),
+			("vec4f", &[&vec4f16, &packed_vec4f32], &vec4f32),
+			("packed_vec4f", &[&vec4f32], &packed_vec4f32),
+		];
+		for (name, sources, target) in conversions {
+			builtins.extend(converted_overloads(
+				name,
+				&["value"],
+				sources.iter().map(|source| (*source, target)),
+			));
+		}
+		builtins.extend(converted_overloads(
+			"u32",
+			&["value"],
+			[&u32_t, &u8_t, &u16_t, &i32_t, &f16_t, &f32_t].map(|source| (source, &u32_t)),
+		));
+		// Invocation builtins take no arguments and read the invocation's coordinates.
+		for name in ["thread_idx", "subgroup_lane_index", "threadgroup_position", "thread_position"] {
+			builtins.push(builtin_intrinsic(name, vec![], u32_t.clone()));
+		}
 		builtins.extend(atomic_intrinsics(atomic_u32, u32_t, void.clone()));
 		builtins.extend(atomic_intrinsics(atomic_i32, i32_t, void));
 
@@ -803,7 +646,6 @@ impl Node {
 	/// Creates a scope that groups child nodes.
 	pub fn scope(name: String) -> Node {
 		Node {
-			// parent: None,
 			node: Nodes::Scope {
 				name,
 				children: Vec::with_capacity(16),
@@ -834,13 +676,14 @@ impl Node {
 	}
 
 	pub fn array(name: &str, r#type: NodeReference, size: usize) -> NodeReference {
-		Self::internal_new(Node {
+		Node {
 			node: Nodes::Member {
 				name: name.to_string(),
 				r#type,
 				count: Some(NonZeroUsize::new(size).expect("Invalid size")),
 			},
-		})
+		}
+		.into()
 	}
 
 	pub fn function(
@@ -973,7 +816,11 @@ impl Node {
 		count: Option<NonZeroU32>,
 	) -> Node {
 		// A descriptor array of buffers keeps its wrapper struct per resource; only single buffers are lowered.
-		let r#type = if count.is_none() { r#type.lowered_single_array() } else { r#type };
+		let r#type = if count.is_none() {
+			r#type.lowered_single_array()
+		} else {
+			r#type
+		};
 		Node {
 			node: Nodes::Binding {
 				name: name.to_string(),
@@ -1147,7 +994,6 @@ impl Node {
 			| Nodes::Binding { name, .. }
 			| Nodes::Parameter { name, .. }
 			| Nodes::Specialization { name, .. }
-			| Nodes::Literal { name, .. }
 			| Nodes::Const { name, .. } => Some(name),
 			Nodes::Input { name, .. }
 			| Nodes::Output { name, .. }
@@ -1159,49 +1005,26 @@ impl Node {
 		}
 	}
 
-	pub fn get_children(&self) -> Option<Vec<NodeReference>> {
-		match &self.node {
+	/// Returns the direct child named `child_name`, such as a function in a scope or a field in a struct.
+	///
+	/// Declaration containers (scopes, structs and intrinsics) search their declarations. Every other node searches
+	/// the executable parts that [`Nodes::children`] yields.
+	pub fn get_child(&self, child_name: &str) -> Option<NodeReference> {
+		let declarations: &[NodeReference] = match &self.node {
 			Nodes::Scope { children, .. }
 			| Nodes::Struct { fields: children, .. }
-			| Nodes::Intrinsic { elements: children, .. } => Some(children.clone()),
-			Nodes::Function { statements, .. } => Some(statements.clone()),
-			Nodes::Conditional { .. } | Nodes::Match { .. } => Some(self.node.branch_children().cloned().collect()),
-			Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				let mut children = Vec::with_capacity(statements.len() + 3);
-				children.push(initializer.clone());
-				children.push(condition.clone());
-				children.push(update.clone());
-				children.extend(statements.iter().cloned());
-				Some(children)
-			}
-			Nodes::Expression(Expressions::IntrinsicCall { arguments, elements, .. }) => {
-				let mut children = Vec::with_capacity(arguments.len() + elements.len());
-				children.extend(arguments.iter().cloned());
-				children.extend(elements.iter().cloned());
-				Some(children)
-			}
-			_ => None,
-		}
-	}
-
-	pub fn get_child(&self, child_name: &str) -> Option<NodeReference> {
-		self.get_children()?
+			| Nodes::Intrinsic { elements: children, .. } => children,
+			_ => &[],
+		};
+		declarations
 			.iter()
+			.chain(self.node.children())
 			.find(|child| child.borrow().get_name() == Some(child_name))
 			.cloned()
 	}
 
 	pub fn node_mut(&mut self) -> &mut Nodes {
 		&mut self.node
-	}
-
-	pub fn null() -> Node {
-		Self { node: Nodes::Null }
 	}
 }
 
@@ -1305,7 +1128,6 @@ pub struct MatchArm {
 
 #[derive(Clone)]
 pub enum Nodes {
-	Null,
 	Scope {
 		name: String,
 		children: Vec<NodeReference>,
@@ -1404,10 +1226,6 @@ pub enum Nodes {
 		name: String,
 		r#type: NodeReference,
 	},
-	Literal {
-		name: String,
-		value: NodeReference,
-	},
 	/// A named module-level value known at compile time.
 	Const {
 		name: String,
@@ -1417,6 +1235,49 @@ pub enum Nodes {
 }
 
 impl Nodes {
+	/// Iterates the executable parts this node owns, in source order: a function's statements, the parts of a branch or
+	/// loop, a constant's value, and the operands of an expression.
+	///
+	/// Use it in AST walkers so they list only the nodes they treat specially and recurse into every other node alike.
+	/// It never follows a reference to another declaration, such as the declaration a [`Expressions::Member`] reads, a
+	/// call's target, or a declared type. Raw backend code and declaration containers such as scopes and structs
+	/// yield nothing.
+	pub fn children(&self) -> impl Iterator<Item = &NodeReference> {
+		let (singles, first, second): ([Option<&NodeReference>; 3], &[NodeReference], &[NodeReference]) = match self {
+			Nodes::Function { statements, .. } => ([None; 3], statements, &[]),
+			Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => ([Some(initializer), Some(condition), Some(update)], statements, &[]),
+			Nodes::Const { value, .. } => ([Some(value), None, None], &[], &[]),
+			Nodes::Expression(expression) => match expression {
+				Expressions::Return { value } => ([value.as_ref(), None, None], &[], &[]),
+				Expressions::Expression { elements } => ([None; 3], elements, &[]),
+				Expressions::FunctionCall { parameters, .. } => ([None; 3], parameters, &[]),
+				Expressions::IntrinsicCall { arguments, elements, .. } => ([None; 3], arguments, elements),
+				Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
+					([Some(left), Some(right), None], &[], &[])
+				}
+				Expressions::Macro { body, .. } => ([Some(body), None, None], &[], &[]),
+				Expressions::Continue
+				| Expressions::Break
+				| Expressions::Discard
+				| Expressions::Member { .. }
+				| Expressions::Literal { .. }
+				| Expressions::VariableDeclaration { .. } => ([None; 3], &[], &[]),
+			},
+			_ => ([None; 3], &[], &[]),
+		};
+		singles
+			.into_iter()
+			.flatten()
+			.chain(first)
+			.chain(second)
+			.chain(self.branch_children())
+	}
+
 	/// Iterates every part of a branching statement: the condition, then the `if` and `else` statements of a
 	/// [`Nodes::Conditional`], or the scrutinee, then the arm and default statements of a [`Nodes::Match`].
 	/// Use it in AST walkers that treat every part of a branch alike, so they don't list its fields by hand.
@@ -1457,9 +1318,7 @@ impl Nodes {
 			Nodes::Input { .. } | Nodes::Output { .. } | Nodes::TaskPayload { .. } | Nodes::Workgroup { .. } => false,
 			Nodes::Specialization { .. } => false,
 			Nodes::Const { .. } => false,
-			Nodes::Literal { .. } => true,
 			Nodes::Parameter { .. } => true,
-			Nodes::Null => true,
 			Nodes::Scope { .. } => true,
 			Nodes::Intrinsic { .. } => true,
 			Nodes::Member { .. } => true,
@@ -1518,29 +1377,24 @@ impl Nodes {
 	}
 }
 
+/// Collects the names of `nodes` so Debug output lists children by name instead of printing whole subtrees.
+fn names(nodes: &[NodeReference]) -> Vec<Option<String>> {
+	nodes
+		.iter()
+		.map(|node| node.borrow().get_name().map(str::to_string))
+		.collect()
+}
+
 impl std::fmt::Debug for Node {
 	// Every node variant is formatted here so Debug output stays exhaustive when the AST grows.
 	#[allow(clippy::too_many_lines)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match &self.node {
-			Nodes::Null => {
-				write!(f, "Null")
-			}
 			Nodes::Scope { name, children } => {
-				write!(
-					f,
-					"Scope {{ name: {}, children: {:#?} }}",
-					name,
-					children.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
-				)
+				write!(f, "Scope {{ name: {}, children: {:#?} }}", name, names(children))
 			}
 			Nodes::Struct { name, fields, .. } => {
-				write!(
-					f,
-					"Struct {{ name: {}, fields: {:?} }}",
-					name,
-					fields.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
-				)
+				write!(f, "Struct {{ name: {}, fields: {:?} }}", name, names(fields))
 			}
 			Nodes::Member { name, r#type, .. } => {
 				write!(
@@ -1560,8 +1414,8 @@ impl std::fmt::Debug for Node {
 					f,
 					"Function {{ name: {}, parameters: {:?}, statements: {:?} }}",
 					name,
-					params.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())),
-					statements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
+					names(params),
+					names(statements)
 				)
 			}
 			Nodes::Conditional {
@@ -1626,8 +1480,8 @@ impl std::fmt::Debug for Node {
 					glsl,
 					hlsl,
 					msl,
-					input.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())),
-					output.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
+					names(input),
+					names(output)
 				)
 			}
 			Nodes::Binding {
@@ -1646,11 +1500,7 @@ impl std::fmt::Debug for Node {
 				)
 			}
 			Nodes::PushConstant { members } => {
-				write!(
-					f,
-					"PushConstant {{ members: {:?} }}",
-					members.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string()))
-				)
+				write!(f, "PushConstant {{ members: {:?} }}", names(members))
 			}
 			Nodes::Intrinsic {
 				name,
@@ -1661,7 +1511,7 @@ impl std::fmt::Debug for Node {
 					f,
 					"Intrinsic {{ name: {}, elements: {:?}, return: {:?} }}",
 					name,
-					elements.iter().map(|c| c.0.borrow().get_name().map(|e| e.to_string())),
+					names(elements),
 					r#return.0.borrow().get_name().map(|e| e.to_string())
 				)
 			}
@@ -1715,14 +1565,6 @@ impl std::fmt::Debug for Node {
 					count
 				)
 			}
-			Nodes::Literal { name, value } => {
-				write!(
-					f,
-					"Literal {{ name: {}, value: {:?} }}",
-					name,
-					value.0.borrow().get_name().map(|e| e.to_string())
-				)
-			}
 			Nodes::Const { name, r#type, value } => {
 				write!(
 					f,
@@ -1736,7 +1578,10 @@ impl std::fmt::Debug for Node {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The `Operators` enum names every BESL binary operator. The parser reads it from source tokens with
+/// [`Operators::from_token`] and orders expressions by [`Operators::precedence`], and backends match it to emit
+/// operator syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operators {
 	Plus,
 	Minus,
@@ -1756,6 +1601,46 @@ pub enum Operators {
 	GreaterThanOrEqual,
 	LogicalAnd,
 	LogicalOr,
+}
+
+/// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter.
+const OPERATOR_TOKENS: [(&str, Operators, u8); 18] = [
+	("=", Operators::Assignment, 8),
+	("||", Operators::LogicalOr, 7),
+	("|", Operators::BitwiseOr, 7),
+	("&&", Operators::LogicalAnd, 6),
+	("&", Operators::BitwiseAnd, 6),
+	("==", Operators::Equality, 5),
+	("!=", Operators::Inequality, 5),
+	("<", Operators::LessThan, 5),
+	(">", Operators::GreaterThan, 5),
+	("<=", Operators::LessThanOrEqual, 5),
+	(">=", Operators::GreaterThanOrEqual, 5),
+	("<<", Operators::ShiftLeft, 4),
+	(">>", Operators::ShiftRight, 4),
+	("+", Operators::Plus, 3),
+	("-", Operators::Minus, 3),
+	("*", Operators::Multiply, 2),
+	("/", Operators::Divide, 2),
+	("%", Operators::Modulo, 2),
+];
+
+impl Operators {
+	/// Reads the operator a source token spells, or returns `None` for any other token.
+	pub fn from_token(token: &str) -> Option<Self> {
+		OPERATOR_TOKENS
+			.iter()
+			.find(|(operator_token, ..)| *operator_token == token)
+			.map(|(_, operator, _)| *operator)
+	}
+
+	/// Returns how loosely this operator binds. The parser splits an expression at its loosest operator first.
+	pub fn precedence(&self) -> u8 {
+		OPERATOR_TOKENS
+			.iter()
+			.find(|(_, operator, _)| operator == self)
+			.map_or(0, |(.., precedence)| *precedence)
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -1805,12 +1690,28 @@ pub enum Expressions {
 	},
 }
 
+/// The `LexError` enum reports why a parsed program could not be linked, so callers can show the cause to shader
+/// authors.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LexError {
-	Undefined { message: Option<String> },
+	/// A program that does not follow a BESL rule. The message names the rule and its most likely cause.
+	Invalid {
+		message: String,
+	},
 	FunctionCallParametersDoNotMatchFunctionParameters,
-	AccessingUndeclaredMember { name: String },
-	ReferenceToUndefinedType { type_name: String },
+	AccessingUndeclaredMember {
+		name: String,
+	},
+	ReferenceToUndefinedType {
+		type_name: String,
+	},
+}
+
+impl LexError {
+	/// Reports a rule violation. Write `message` as a succinct error followed by its most likely cause.
+	pub(crate) fn invalid(message: impl Into<String>) -> Self {
+		LexError::Invalid { message: message.into() }
+	}
 }
 
 fn builtin_intrinsic(name: &str, parameters: Vec<(&str, NodeReference)>, r#return: NodeReference) -> NodeReference {
@@ -1864,6 +1765,34 @@ fn atomic_intrinsics(atomic: NodeReference, scalar: NodeReference, void: NodeRef
 		binary("atomic_or", "mask"),
 		binary("atomic_xor", "mask"),
 	]
+}
+
+/// Declares one `name` overload per `(operand, result)` signature, in order. Every parameter in `parameters` takes the
+/// operand type. Keep each name's overloads in their intended order, because call resolution picks the first match.
+fn converted_overloads<'a>(
+	name: &str,
+	parameters: &[&str],
+	signatures: impl IntoIterator<Item = (&'a NodeReference, &'a NodeReference)>,
+) -> Vec<NodeReference> {
+	signatures
+		.into_iter()
+		.map(|(operand, result)| {
+			builtin_intrinsic(
+				name,
+				parameters.iter().map(|parameter| (*parameter, operand.clone())).collect(),
+				result.clone(),
+			)
+		})
+		.collect()
+}
+
+/// Declares one `name` overload per type in `types`, where every parameter and the result share that type.
+fn same_type_overloads<'a>(
+	name: &str,
+	parameters: &[&str],
+	types: impl IntoIterator<Item = &'a NodeReference>,
+) -> Vec<NodeReference> {
+	converted_overloads(name, parameters, types.into_iter().map(|r#type| (r#type, r#type)))
 }
 
 /// Built-in scalar types with a byte representation in storage buffers. `bool`, `void`, and resource handles have none.

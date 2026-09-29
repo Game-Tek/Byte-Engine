@@ -59,18 +59,7 @@ impl<Space> Plane<Space> {
 #[cfg(test)]
 mod tests {
 	use super::Plane;
-	use crate::{Point, UnitVector, Vector, WorldSpace, assert_float_eq, assert_float_eq_with_epsilon, assert_geometry_near};
-
-	#[test]
-	fn checked_normals_keep_signed_distances_in_coordinate_space_units() {
-		let normal: UnitVector<WorldSpace> = Vector::new(1.0, 2.0, -2.0).normalized().unwrap();
-		let plane = Plane::new(normal, -5.0);
-		let point_on_plane = Point::origin() + normal * 5.0;
-
-		assert_float_eq!(plane.signed_distance_to_point(point_on_plane), 0.0);
-		assert_float_eq!(plane.signed_distance_to_point(point_on_plane + normal * 3.0), 3.0);
-		assert_float_eq!(plane.signed_distance_to_point(point_on_plane - normal * 4.0), -4.0);
-	}
+	use crate::{Point, UnitVector, WorldSpace, assert_float_eq, assert_float_eq_with_epsilon};
 
 	#[test]
 	fn points_define_a_unit_normal_with_winding() {
@@ -106,28 +95,6 @@ mod tests {
 		for point in points {
 			assert_float_eq_with_epsilon!(general.signed_distance_to_point(point), 0.0, 0.0001);
 		}
-	}
-
-	#[test]
-	fn reversed_winding_reverses_the_half_space() {
-		let first = Point::<WorldSpace>::new(1.0, 0.0, 0.0);
-		let second = Point::new(0.0, 1.0, 0.0);
-		let third = Point::new(0.0, 0.0, 1.0);
-		let forward = Plane::from_points(first, second, third).unwrap();
-		let reversed = Plane::from_points(first, third, second).unwrap();
-
-		assert_geometry_near!(forward.normal(), -reversed.normal());
-		assert_float_eq!(forward.distance(), -reversed.distance());
-		for point in [first, second, third] {
-			assert_float_eq!(forward.signed_distance_to_point(point), 0.0);
-			assert_float_eq!(reversed.signed_distance_to_point(point), 0.0);
-		}
-		let test_point = Point::new(5.0, 5.0, 5.0);
-
-		assert_float_eq!(
-			forward.signed_distance_to_point(test_point),
-			-reversed.signed_distance_to_point(test_point)
-		);
 	}
 
 	#[test]

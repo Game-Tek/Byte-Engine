@@ -1,5 +1,5 @@
 use super::curve::CurvePath;
-use crate::ui::{Transform, Visual, layout::Sizing, style::ConcreteStyle};
+use crate::ui::layout::Sizing;
 
 /// How a point's winding number decides whether it lies inside a [`Path`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -28,9 +28,6 @@ pub struct Path {
 	pub(crate) path: CurvePath,
 	pub(crate) view_box: Option<[f32; 2]>,
 	pub(crate) fill_rule: FillRule,
-	pub(crate) style: ConcreteStyle,
-	pub(crate) transform: Transform,
-	pub(crate) visual: Visual,
 }
 
 impl Path {
@@ -43,9 +40,6 @@ impl Path {
 			path: CurvePath::new(Sizing::full(), Sizing::full()),
 			view_box: None,
 			fill_rule: FillRule::NonZero,
-			style: ConcreteStyle::default(),
-			transform: Transform::default(),
-			visual: Visual::default(),
 		}
 	}
 
@@ -69,17 +63,5 @@ impl Path {
 
 	pub fn path(&self) -> &CurvePath {
 		&self.path
-	}
-
-	pub fn style_ref(&self) -> &ConcreteStyle {
-		&self.style
-	}
-
-	pub fn transform_ref(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn visual_ref(&self) -> &Visual {
-		&self.visual
 	}
 }

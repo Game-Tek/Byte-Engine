@@ -2,7 +2,7 @@
 //!
 //! A class describes the trigger layout one category of hardware shares, and a
 //! device is one instance of that class with its own control values. Register
-//! classes through [`TriggerRegistry`](crate::input::TriggerRegistry), using the
+//! classes with [`InputCollector::register_device_class`](crate::input::InputCollector::register_device_class), using the
 //! predefined layouts in [`utils`](crate::input::utils) where they fit, then
 //! create devices with
 //! [`InputCollector::create_device`](crate::input::InputCollector::create_device).

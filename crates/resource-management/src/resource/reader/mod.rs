@@ -1,5 +1,3 @@
-pub mod redb;
-
 use std::{fmt::Debug, ops::Range, sync::Arc};
 
 use memmap2::{Mmap, MmapOptions};
@@ -139,9 +137,12 @@ pub trait ResourceReader: Send + Sync + Debug {
 	fn into_backing_storage(self: Box<Self>) -> BoxedFuture<'static, Result<ResourceReaderBacking, Box<dyn ResourceReader>>>;
 }
 
-/// The `StoredResourceReader` struct keeps stored bytes private until CPU compression has been decoded.
+/// The `StoredResourceReader` struct is the reader storage backends hand to a [`Reference`](crate::Reference).
+///
+/// It keeps stored bytes private until CPU compression has been decoded, so every consumer reads decoded bytes
+/// through [`Reference::load`](crate::Reference::load) whatever the payload encoding.
 #[derive(Debug)]
-pub(crate) struct StoredResourceReader {
+pub struct StoredResourceReader {
 	backing: ResourceReaderBacking,
 	encoding: ResourcePayloadEncoding,
 	decoded_size: usize,
@@ -157,9 +158,50 @@ impl StoredResourceReader {
 		}
 	}
 
-	/// Decodes a compressed payload into exact caller-owned post-decompression storage.
-	fn read_compressed<'a>(&self, mut read_target: ReadTargetsMut<'a>) -> Result<ReadTargets<'a>, ()> {
+	/// Maps one optionally leased stored range of a payload file.
+	///
+	/// `stored_size` is the encoded extent in the file and `decoded_size` the size clients receive. An empty range
+	/// maps nothing.
+	pub(crate) fn mapped(
+		file: impl memmap2::MmapAsRawDesc,
+		file_size: u64,
+		offset: u64,
+		stored_size: u64,
+		decoded_size: usize,
+		encoding: ResourcePayloadEncoding,
+		lease: Option<Arc<()>>,
+	) -> Result<Self, ()> {
+		let backing = if stored_size == 0 {
+			ResourceReaderBacking::Buffer(Box::new([]))
+		} else {
+			ResourceReaderBacking::MappedFile(MappedFileBacking::new_range(file, file_size, offset, stored_size, lease)?)
+		};
+		Ok(Self::new(backing, encoding, decoded_size))
+	}
+
+	/// Creates a reader that transfers ownership of a native GPU I/O source instead of mapping CPU bytes.
+	pub fn gpu(path: std::path::PathBuf, encoding: ResourcePayloadEncoding) -> Self {
+		Self::new(
+			ResourceReaderBacking::Gpu(ResourceGpuBacking::new(path, encoding)),
+			encoding,
+			0,
+		)
+	}
+
+	/// Decodes a compressed payload into exact caller-owned post-decompression storage or into named streams.
+	fn read_compressed<'a>(
+		&self,
+		stream_descriptions: Option<&[StreamDescription]>,
+		mut read_target: ReadTargetsMut<'a>,
+	) -> Result<ReadTargets<'a>, ()> {
 		let compressed = self.backing.try_as_slice().ok_or(())?;
+
+		// Stream ranges address decoded bytes, so the payload is decoded once and every stream is copied from it.
+		if let ReadTargetsMut::Streams(streams) = read_target {
+			let decoded = decode_owned(compressed, self.decoded_size)?;
+			return copy_streams(&decoded, stream_descriptions, streams);
+		}
+
 		let (buffer, offset, size) = match &mut read_target {
 			ReadTargetsMut::Buffer { buffer, offset, size } => (&mut **buffer, *offset, *size),
 			ReadTargetsMut::Box { buffer, offset, size } => (&mut **buffer, *offset, *size),
@@ -169,12 +211,7 @@ impl StoredResourceReader {
 					self.decoded_size,
 				)?)));
 			}
-			ReadTargetsMut::Streams(_) => {
-				log::error!(
-					"Compressed resource streams cannot be loaded separately. The most likely cause is that a partial read was requested for a resource stored as one compressed block. Load the complete resource into a post-decompression buffer or reader-owned backing storage."
-				);
-				return Err(());
-			}
+			ReadTargetsMut::Streams(_) => unreachable!("stream targets were decoded above"),
 		};
 		validate_full_decode_target(buffer.len(), offset, size, self.decoded_size)?;
 		decode_resource(compressed, buffer)?;
@@ -207,26 +244,29 @@ impl StoredResourceReader {
 					Ok(ReadTargets::Box(buffer))
 				}
 			}
-			ReadTargetsMut::Streams(mut streams) => {
-				let Some(stream_descriptions) = stream_descriptions else {
-					log::error!(
-						"Resource streams could not be loaded. The most likely cause is that stream descriptions are missing."
-					);
-					return Err(());
-				};
-
-				for stream in &mut streams {
-					let description = find_stream_description(stream_descriptions, stream.name())?;
-					copy_uncompressed_stream(data, description, stream)?;
-				}
-
-				Ok(ReadTargets::Streams(
-					streams.into_iter().map(|stream| stream.into()).collect(),
-				))
-			}
+			ReadTargetsMut::Streams(streams) => copy_streams(data, stream_descriptions, streams),
 			ReadTargetsMut::BackingStorage => Err(()),
 		}
 	}
+}
+
+/// Copies each requested named range of decoded payload bytes into its stream.
+fn copy_streams<'a>(
+	data: &[u8],
+	stream_descriptions: Option<&[StreamDescription]>,
+	mut streams: Vec<StreamMut<'a>>,
+) -> Result<ReadTargets<'a>, ()> {
+	let Some(stream_descriptions) = stream_descriptions else {
+		log::error!("Resource streams could not be loaded. The most likely cause is that stream descriptions are missing.");
+		return Err(());
+	};
+
+	for stream in &mut streams {
+		let description = find_stream_description(stream_descriptions, stream.name())?;
+		copy_stream(data, description, stream)?;
+	}
+
+	Ok(ReadTargets::Streams(streams.into_iter().map(Into::into).collect()))
 }
 
 /// Finds one requested stream and reports mismatched resource metadata at the read boundary.
@@ -254,20 +294,14 @@ fn copy_resource_range(data: &[u8], destination: &mut [u8], offset: usize, reque
 }
 
 /// Copies one requested named range while enforcing its persisted bounds.
-fn copy_uncompressed_stream(data: &[u8], description: &StreamDescription, stream: &mut StreamMut<'_>) -> Result<(), ()> {
+fn copy_stream(data: &[u8], description: &StreamDescription, stream: &mut StreamMut<'_>) -> Result<(), ()> {
 	let description_end = description.offset.checked_add(description.size).ok_or_else(|| {
 		log::error!("Resource stream range overflowed. The most likely cause is corrupt stored stream metadata.");
 	})?;
 	let described = data.get(description.offset..description_end).ok_or_else(|| {
 		log::error!("Resource stream is outside its payload. The most likely cause is corrupt stored stream metadata.");
 	})?;
-	let source = described.get(stream.offset()..).ok_or_else(|| {
-		log::error!(
-			"Resource stream offset is outside its named range. The most likely cause is an invalid partial stream request."
-		);
-	})?;
-	let requested_size = stream.size();
-	copy_resource_range(source, stream.buffer_mut(), 0, requested_size);
+	copy_resource_range(described, stream.buffer_mut(), 0, None);
 	Ok(())
 }
 
@@ -284,7 +318,7 @@ impl ResourceReader for StoredResourceReader {
 		crate::r#async::future(async move {
 			match self.encoding {
 				ResourcePayloadEncoding::Raw => self.read_uncompressed(stream_descriptions, read_target),
-				ResourcePayloadEncoding::CpuLz4 => self.read_compressed(read_target),
+				ResourcePayloadEncoding::CpuLz4 => self.read_compressed(stream_descriptions, read_target),
 				ResourcePayloadEncoding::MetalIoLz4 => {
 					log::error!(
 						"GPU-encoded resource data cannot be read through a CPU target. The most likely cause is that a native GPU payload reached a CPU-only consumer."
@@ -354,7 +388,125 @@ fn decode_owned(compressed: &[u8], decoded_size: usize) -> Result<Box<[u8]>, ()>
 
 #[cfg(test)]
 mod tests {
+	use std::{fs, path::PathBuf};
+
 	use super::*;
+
+	/// Reserves a fresh file under the system temp directory.
+	///
+	/// `create_new` fails when the path already exists, so retrying with a new
+	/// timestamp suffix gives each test its own file without shared counters.
+	fn temporary_file_path() -> PathBuf {
+		loop {
+			let nanos = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos();
+			let path = std::env::temp_dir().join(format!(
+				"byte-engine-stored-resource-reader-{}-{nanos}.bin",
+				std::process::id()
+			));
+			match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+				Ok(_) => return path,
+				Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+				Err(error) => {
+					panic!("Failed to create a test file: {error}. The most likely cause is an unwritable temp directory.")
+				}
+			}
+		}
+	}
+
+	/// Maps `size` raw bytes starting at `offset` of a `file_size`-byte file.
+	fn mapped_raw(file: &fs::File, file_size: u64, offset: u64, size: u64) -> Result<StoredResourceReader, ()> {
+		StoredResourceReader::mapped(
+			file,
+			file_size,
+			offset,
+			size,
+			size as usize,
+			ResourcePayloadEncoding::Raw,
+			None,
+		)
+	}
+
+	#[crate::r#async::test]
+	async fn mapped_reader_loads_directly_into_a_borrowed_target() {
+		let path = temporary_file_path();
+		let expected = b"mapped-resource-bytes";
+		fs::write(&path, expected).unwrap();
+
+		let length = expected.len() as u64;
+		let mut reader = mapped_raw(&fs::File::open(&path).unwrap(), length, 0, length).unwrap();
+		let mut destination = [0_u8; 8];
+		let loaded = reader
+			.read_into(
+				None,
+				ReadTargetsMut::Buffer {
+					buffer: &mut destination,
+					offset: 7,
+					size: None,
+				},
+			)
+			.await
+			.unwrap();
+
+		assert_eq!(loaded.buffer(), Some(&expected[7..15]));
+		assert_eq!(&destination, &expected[7..15]);
+		fs::remove_file(path).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn ranged_reader_maps_an_unaligned_range_deep_in_a_large_file() {
+		let path = temporary_file_path();
+		let contents = (0..300_000_u32).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+		fs::write(&path, &contents).unwrap();
+		let file = fs::File::open(&path).unwrap();
+
+		// The offset sits past several mapping-alignment boundaries and between them.
+		let reader: Box<dyn ResourceReader> = Box::new(mapped_raw(&file, contents.len() as u64, 200_003, 1_000).unwrap());
+		let backing = reader.into_backing_storage().await.unwrap();
+
+		assert_eq!(backing.as_slice(), &contents[200_003..201_003]);
+		assert!(mapped_raw(&file, contents.len() as u64, 299_500, 1_000).is_err());
+		fs::remove_file(path).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn empty_mapped_reader_returns_empty_backing_storage() {
+		let path = temporary_file_path();
+		fs::write(&path, []).unwrap();
+
+		let reader: Box<dyn ResourceReader> = Box::new(mapped_raw(&fs::File::open(&path).unwrap(), 0, 0, 0).unwrap());
+		let backing = reader.into_backing_storage().await.unwrap();
+
+		assert!(backing.as_slice().is_empty());
+		fs::remove_file(path).unwrap();
+	}
+
+	#[crate::r#async::test]
+	async fn compressed_stream_reads_return_the_decoded_named_ranges() {
+		// Runs of 64 equal bytes compress well, so the payload is stored as one LZ4 block.
+		let decoded = (0..4096_usize).map(|index| (index / 64) as u8).collect::<Vec<_>>();
+		let compressed = compression::prepare(&decoded, crate::resource::ResourceCompressionPolicy::Enabled)
+			.expect("repeated bytes should pass the compression heuristic");
+		let mut reader = StoredResourceReader::new(
+			ResourceReaderBacking::Buffer(compressed.bytes.into_boxed_slice()),
+			ResourcePayloadEncoding::CpuLz4,
+			decoded.len(),
+		);
+		let descriptions = [StreamDescription::new("head", 8, 60), StreamDescription::new("tail", 4, 4092)];
+		let mut head = [0_u8; 8];
+		let mut tail = [0_u8; 4];
+		let streams = vec![StreamMut::new("head", &mut head), StreamMut::new("tail", &mut tail)];
+
+		let loaded = reader.read_into(Some(&descriptions), streams.into()).await.unwrap();
+
+		assert_eq!(
+			loaded.stream("head").map(crate::Stream::buffer),
+			Some([0, 0, 0, 0, 1, 1, 1, 1].as_slice())
+		);
+		assert_eq!(loaded.stream("tail").map(crate::Stream::buffer), Some([63; 4].as_slice()));
+	}
 
 	#[crate::r#async::test]
 	async fn uncompressed_ranges_past_the_payload_return_empty_without_touching_the_target() {

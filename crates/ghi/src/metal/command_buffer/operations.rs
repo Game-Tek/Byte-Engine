@@ -2,127 +2,42 @@ use super::*;
 use crate::metal::context::resources::acceleration_structures;
 
 impl CommandBufferRecording<'_> {
-	/// Resolves one public transfer source to the retained Metal texture and synchronization use recorded by a copy.
-	///
-	/// `frame_offset` selects another frame's copy of a per-frame image. Swapchains only have this frame's image.
-	fn resolve_transfer_texture_source(
-		&self,
-		source: graphics_hardware_interface::ImageOrSwapchain,
-		frame_offset: i32,
-	) -> Result<
-		(
-			synchronization::MetalResourceUse,
-			Retained<ProtocolObject<dyn mtl::MTLTexture>>,
-			crate::Formats,
-			Extent,
-			u32,
-			crate::Uses,
-		),
-		crate::TextureTransferError,
-	> {
-		Ok(match source {
-			ImageOrSwapchain::Image(image) => {
-				if self.device.images.get_single(image).is_none() {
-					return Err(crate::TextureTransferError::InvalidSource);
-				}
-				let frame_index = crate::frame_resources::frame_index_with_offset(
-					self.sequence_index as usize,
-					frame_offset,
-					self.device.frames as usize,
-				);
-				let handle = self
-					.device
-					.images
-					.nth_handle(image, frame_index)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				let source = self.device.images.resource(handle);
-				(
-					synchronization::MetalResourceUse::image(
-						handle,
-						Some(0),
-						None,
-						mtl::MTLStages::Blit,
-						crate::AccessPolicies::READ,
-					),
-					source.texture.clone(),
-					source.description.format,
-					source.description.extent,
-					source.description.array_layers,
-					source.description.uses,
-				)
-			}
-			ImageOrSwapchain::Swapchain(swapchain) => {
-				let swapchain_resource = self
-					.device
-					.swapchains
-					.get(swapchain.0 as usize)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				if !swapchain_resource.uses.contains(crate::Uses::TransferSource) {
-					return Err(crate::TextureTransferError::MissingTransferSource);
-				}
-				if let Some(proxy) = swapchain_resource.images[self.sequence_index as usize] {
-					let source = self.device.images.resource(proxy);
-					(
-						synchronization::MetalResourceUse::image(
-							proxy,
-							Some(0),
-							None,
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::READ,
-						),
-						source.texture.clone(),
-						source.description.format,
-						source.description.extent,
-						source.description.array_layers,
-						swapchain_resource.uses,
-					)
-				} else {
-					let drawable = self
-						.drawables
-						.iter()
-						.find(|(handle, _)| *handle == swapchain)
-						.map(|(_, drawable)| drawable.texture())
-						.ok_or(crate::TextureTransferError::InvalidSource)?;
-					(
-						synchronization::MetalResourceUse::drawable(
-							drawable.as_ref(),
-							mtl::MTLStages::Blit,
-							crate::AccessPolicies::READ,
-						),
-						drawable,
-						crate::Formats::BGRAu8,
-						swapchain_resource.extent,
-						1,
-						swapchain_resource.uses,
-					)
-				}
-			}
-		})
-	}
-
 	/// Records one copy of a transfer source, or another frame's copy of a per-frame image, into shared staging.
 	fn record_texture_transfer(
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
 		frame_offset: i32,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let (source_use, source_texture, format, extent, array_layers, uses) =
-			self.resolve_transfer_texture_source(source, frame_offset)?;
+		if let ImageOrSwapchain::Swapchain(swapchain) = source
+			&& self
+				.device
+				.swapchains
+				.get(swapchain.0 as usize)
+				.is_some_and(|swapchain| !swapchain.uses.contains(crate::Uses::TransferSource))
+		{
+			return Err(crate::TextureTransferError::MissingTransferSource);
+		}
+		let surface = self
+			.surface(source, frame_offset)
+			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		let source_use = surface.resource_use(Some(0), None, mtl::MTLStages::Blit, crate::AccessPolicies::READ);
+		let Surface {
+			texture: source_texture,
+			format,
+			extent,
+			array_layers,
+			uses,
+			..
+		} = surface;
 		let layout = crate::context::texture_transfer_layout(format, extent, array_layers, uses)?;
-		let bytes_per_row = layout.bytes_per_row;
-		let row_count = layout.row_count;
-		let bytes_per_image = layout.bytes_per_image;
-		let native_bytes_per_row = bytes_per_row
-			.checked_add(255)
-			.map(|bytes| bytes & !255)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let native_bytes_per_image = native_bytes_per_row
-			.checked_mul(row_count)
-			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		let (native_bytes_per_row, native_bytes_per_image) =
+			crate::aligned_copy_pitches(layout.bytes_per_row, layout.row_count)
+				.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let size = native_bytes_per_image
 			.checked_mul(layout.depth_slices)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
-		let compact_size = bytes_per_image
+		let compact_size = layout
+			.bytes_per_image
 			.checked_mul(layout.depth_slices)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
 		let mut bytes = Vec::new();
@@ -142,8 +57,8 @@ impl CommandBufferRecording<'_> {
 
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([source_use]);
-		self.command_buffer.retain_allocation(source_texture.clone());
-		self.command_buffer.retain_allocation(staging.clone());
+		// Hazard tracking never sees the staging buffer, so the command retains it here.
+		self.command_buffer.retain_allocation(&*staging);
 		let source_size = utils::mtl_size(extent);
 		let source_origin = mtl::MTLOrigin { x: 0, y: 0, z: 0 };
 		for slice in 0..array_layers as usize {
@@ -168,12 +83,8 @@ impl CommandBufferRecording<'_> {
 			bytes,
 			extent,
 			format,
-			bytes_per_row,
-			bytes_per_image,
+			layout,
 			native_bytes_per_row,
-			native_bytes_per_image,
-			row_count,
-			image_count: layout.depth_slices,
 		});
 		self.texture_readbacks.push(handle);
 		Ok(handle)
@@ -187,11 +98,11 @@ struct AccelerationStructureRange {
 }
 
 impl CommandBufferRecording<'_> {
-	/// Resolves one acceleration-structure build input to a Metal address range and retains its buffer.
+	/// Resolves one acceleration-structure build input to a Metal address range and its tracked access.
 	///
-	/// Metal 4 reads build inputs by GPU address, so the buffer is declared resident here rather than bound.
+	/// Metal 4 reads build inputs by GPU address, so consuming the returned use is what makes the buffer resident.
 	fn resolve_acceleration_structure_buffer(
-		&mut self,
+		&self,
 		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
 		offset: usize,
 		size: usize,
@@ -209,9 +120,6 @@ impl CommandBufferRecording<'_> {
 		let address = buffer.gpu_address.checked_add(offset as u64).expect(
 			"Metal acceleration structure build address overflowed. The most likely cause is that the build offset exceeds the native address space.",
 		);
-		let native_buffer = buffer.buffer.clone();
-
-		self.command_buffer.retain_allocation(native_buffer);
 
 		AccelerationStructureRange {
 			range: mtl::MTL4BufferRange {
@@ -230,7 +138,7 @@ impl CommandBufferRecording<'_> {
 
 	/// Resolves one strided geometry range from a build description.
 	fn resolve_acceleration_structure_strided_range(
-		&mut self,
+		&self,
 		range: &crate::BufferStridedRange,
 		access: crate::AccessPolicies,
 	) -> AccelerationStructureRange {
@@ -261,7 +169,6 @@ impl CommandBufferRecording<'_> {
 			build_scratch_size,
 			crate::AccessPolicies::WRITE,
 		);
-		self.command_buffer.retain_allocation(structure.clone());
 
 		let encoder = self.ensure_compute_encoder().clone();
 
@@ -317,14 +224,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		descriptor.setInstanceDescriptorType(mtl::MTLAccelerationStructureInstanceDescriptorType::Indirect);
 
 		// Instance records name their bottom-level structures by GPU resource handle, which the descriptor does not
-		// enumerate, so every structure this context owns stays resident for the build.
-		for acceleration_structure in self.device.acceleration_structures {
-			self.command_buffer
-				.retain_allocation(acceleration_structure.structure.clone());
-		}
-
-		// The instance records also make every bottom-level structure a read input of this build, so the build
-		// waits on the bottom-level builds recorded before it.
+		// enumerate, so every structure this context owns is a read input of this build. Tracking them keeps them
+		// resident and makes the build wait on the bottom-level builds recorded before it.
 		let bottom_level_reads = (0..self.device.acceleration_structures.len())
 			.filter(|index| *index != structure_index)
 			.map(|index| {
@@ -365,7 +266,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 					let descriptor = mtl::MTL4AccelerationStructureTriangleGeometryDescriptor::new();
 
 					descriptor.setVertexFormat(acceleration_structures::to_vertex_format(*vertex_position_encoding));
-					descriptor.setIndexType(acceleration_structures::to_index_type(*index_format));
+					descriptor.setIndexType(utils::to_index_type(*index_format));
 					// SAFETY: Both ranges were bounds-checked against the buffers that back them, and the counts they
 					// describe come from the caller's geometry description.
 					unsafe {
@@ -421,44 +322,23 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		extent: Extent,
 		attachments: &[graphics_hardware_interface::AttachmentInformation],
 	) -> &mut impl RasterizationRenderPassMode {
-		self.end_compute_encoder();
+		self.end_encoder();
 
 		let render_target_array_length =
 			graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
 		let layered = attachments.first().is_some_and(|attachment| attachment.layer_count.is_some());
-		let attachment_image = |handle: ImageHandle| {
-			let image = self.device.images.resource(handle);
-			let description = image.description;
-			(
-				Some(handle),
-				image.texture.clone(),
-				description.format,
-				description.array_layers,
-			)
-		};
 		let attachments = attachments
 			.iter()
 			.map(|attachment| {
-				// `image` is `None` only for a drawable, which hazard tracking identifies by its texture.
-				let (image, texture, format, array_layers) = match attachment.target {
-					ImageOrSwapchain::Image(image) => attachment_image(self.get_internal_image_handle(image)),
-					ImageOrSwapchain::Swapchain(swapchain) => {
-						let swapchain = crate::swapchain::SwapchainHandle(swapchain.0);
-						match self.swapchain_proxy(swapchain) {
-							// Presentation copies the proxy to the drawable, so the pass must render into the proxy.
-							Some(proxy) => attachment_image(proxy),
-							// TODO: get the drawable's actual format.
-							None => (None, self.drawable_texture(swapchain), crate::Formats::BGRAu8, 1),
-						}
-					}
-				};
-				validate_attachment_layer_selection(attachment.layer, attachment.layer_count, array_layers);
+				// A proxied swapchain resolves to its proxy, since presentation copies the proxy to the drawable.
+				let surface = self.surface(attachment.target, 0).expect(MISSING_SURFACE);
+				validate_attachment_layer_selection(attachment.layer, attachment.layer_count, surface.array_layers);
 				// A layer of an array image is rendered through a 2D view of that layer.
 				let view = attachment
 					.layer
-					.filter(|_| array_layers > 1)
-					.map(|layer| texture_view_2d(&texture, format, 0, layer));
-				(attachment, image, texture, view, format)
+					.filter(|_| surface.array_layers > 1)
+					.map(|layer| texture_view_2d(&surface.texture, surface.format, 0, layer));
+				(attachment, surface, view)
 			})
 			.collect::<SmallVec<[_; 8]>>();
 
@@ -468,11 +348,13 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		}
 
 		let mut color_index = 0;
-		for (attachment, _, texture, view, format) in &attachments {
-			let target = view.as_ref().unwrap_or(texture);
-			self.command_buffer.retain_allocation(texture.clone());
-			self.command_buffer.retain_allocation(target.clone());
-			let descriptor: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if format.is_depth() {
+		for (attachment, surface, view) in &attachments {
+			let target = view.as_ref().unwrap_or(&surface.texture);
+			// Attachment tracking retains the texture, but a layer view is a separate object nothing else retains.
+			if let Some(view) = view {
+				self.command_buffer.retain_allocation(&**view);
+			}
+			let descriptor: Retained<mtl::MTLRenderPassAttachmentDescriptor> = if surface.format.is_depth() {
 				let depth = rpd.depthAttachment();
 				depth.setClearDepth(utils::clear_depth(attachment.clear_value()));
 				Retained::into_super(depth)
@@ -491,24 +373,16 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let rce = self.command_buffer.renderCommandEncoderWithDescriptor(&rpd).expect(
 			"Metal 4 render command encoder creation failed. The most likely cause is that the command buffer could not start the render pass.",
 		);
-		#[cfg(debug_assertions)]
-		{
-			self.render_debug_region_depth =
-				self.begin_encoder_debug_regions(&*rce, "Render", attachments.iter().map(|(_, image, ..)| *image));
-		}
+		self.begin_encoder(
+			ActiveEncoder::Render(rce),
+			"Render",
+			attachments.iter().map(|(_, surface, _)| surface.image),
+		);
 
-		let scope = self.allocate_encoder_scope();
-		self.active_encoder_scope = Some(scope);
-		self.active_render_encoder = Some(rce);
 		let mut initial_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
 		let mut final_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
-		for (attachment, image, texture, ..) in &attachments {
-			let resource_use = |access| match *image {
-				Some(image) => {
-					synchronization::MetalResourceUse::image(image, Some(0), attachment.layer, mtl::MTLStages::Fragment, access)
-				}
-				None => synchronization::MetalResourceUse::drawable(texture.as_ref(), mtl::MTLStages::Fragment, access),
-			};
+		for (attachment, surface, _) in &attachments {
+			let resource_use = |access| surface.resource_use(Some(0), attachment.layer, mtl::MTLStages::Fragment, access);
 			let initial_access = crate::AccessPolicies::WRITE
 				| if attachment.loads() {
 					crate::AccessPolicies::READ
@@ -527,9 +401,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		self.consume_resources(initial_attachment_uses);
 		self.active_render_attachment_uses = final_attachment_uses;
 
-		let rce = self.active_render_encoder.as_ref().expect(
-			"Metal 4 render encoder setup failed. The most likely cause is that attachment synchronization ended the encoder early.",
-		);
+		let rce = self.render_encoder("start_render_pass");
 		rce.setViewport(mtl::MTLViewport {
 			originX: 0.0,
 			originY: 0.0,
@@ -546,11 +418,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		});
 
 		self.active_render_extent = extent;
-		self.encoded_render_pipeline = None;
-		self.applied_render_descriptor_binding = None;
-		self.render_push_constants_dirty = !self.push_constant_data.is_empty();
-		self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
-		self.encoded_vertex_buffer_count = 0;
 
 		self
 	}
@@ -574,8 +441,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			return;
 		}
 
-		self.end_compute_encoder();
-		self.end_render_encoder();
+		self.end_encoder();
 
 		let mut batch = SmallVec::<[(ImageHandle, graphics_hardware_interface::ClearValue); 9]>::new();
 		let mut batch_extent = None;
@@ -586,7 +452,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		for (handle, clear_value) in textures {
 			let image_handle = self.get_internal_image_handle(*handle);
 			let image = self.device.images.resource(image_handle);
-			self.command_buffer.retain_allocation(image.texture.clone());
 			self.commit.image_groups.initialize(*handle);
 			let is_depth = image.description.format.is_depth();
 			let compatible = batch.is_empty()
@@ -632,7 +497,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			if size == 0 {
 				continue;
 			}
-			self.command_buffer.retain_allocation(buffer.clone());
 			self.consume_resources([synchronization::MetalResourceUse::buffer(
 				handle,
 				0,
@@ -662,8 +526,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let source = self.device.buffers.resource(source_handle).buffer.clone();
 			let destination = self.device.buffers.resource(destination_handle).buffer.clone();
 
-			self.command_buffer.retain_allocation(source.clone());
-			self.command_buffer.retain_allocation(destination.clone());
 			self.consume_resources([
 				synchronization::MetalResourceUse::buffer(
 					source_handle,
@@ -726,8 +588,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			]);
 			let source = self.device.buffers.resource(source_handle);
 			let destination = self.device.images.resource(destination_handle);
-			self.command_buffer.retain_allocation(source.buffer.clone());
-			self.command_buffer.retain_allocation(destination.texture.clone());
 
 			assert!(
 				copy.destination_mip_level < destination.description.mip_levels,
@@ -738,11 +598,11 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			let destination_extent = crate::image::mip_extent(destination.description.extent, copy.destination_mip_level);
 			let (compact_bytes_per_row, row_count, compact_bytes_per_image) =
 				utils::texture_upload_layout(destination.description.format, destination_extent);
-			let expected_bytes_per_row = compact_bytes_per_row.next_multiple_of(256);
-			let expected_bytes_per_image = expected_bytes_per_row * row_count;
+			let (expected_bytes_per_row, expected_bytes_per_image) =
+				utils::texture_copy_pitches(compact_bytes_per_row, row_count);
 
 			assert_eq!(
-				copy.source_offset % 256,
+				copy.source_offset % crate::TEXTURE_COPY_PITCH_ALIGNMENT,
 				0,
 				"Metal texture copy source offset alignment mismatch. The most likely cause is that the staging allocator did not provide a 256-byte aligned texture upload offset. source_offset={}, source_bytes_per_row={}, source_bytes_per_image={}, format={:?}, extent={:?}",
 				copy.source_offset,
@@ -840,7 +700,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		// The upload buffer snapshots caller memory now; the tracked blit performs the GPU-visible write in command order.
 		// SAFETY: `data` is a live initialized slice and the byte view preserves its exact extent.
 		let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), std::mem::size_of_val(data)) };
-		self.command_buffer.retain_allocation(texture.clone());
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([synchronization::MetalResourceUse::image(
 			image_handle,
@@ -860,7 +719,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			bytes,
 			None,
 		);
-		self.command_buffer.retain_allocation(upload_buffer);
+		// Hazard tracking never sees the upload page, so the command retains it here.
+		self.command_buffer.retain_allocation(&*upload_buffer);
 	}
 
 	fn blit_image(
@@ -875,8 +735,6 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 
 		let source_texture = self.device.images.resource(source_internal).texture.clone();
 		let destination_texture = self.device.images.resource(destination_internal).texture.clone();
-		self.command_buffer.retain_allocation(source_texture.clone());
-		self.command_buffer.retain_allocation(destination_texture.clone());
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([
 			synchronization::MetalResourceUse::image(
@@ -935,13 +793,9 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 			let name = label.as_str();
 			let name = NSString::from_str(name);
 
-			if let Some(encoder) = self.active_compute_encoder.as_ref() {
-				encoder.pushDebugGroup(&name);
-				self.compute_debug_region_depth += 1;
-			}
-			if let Some(encoder) = self.active_render_encoder.as_ref() {
-				encoder.pushDebugGroup(&name);
-				self.render_debug_region_depth += 1;
+			if let Some(state) = self.encoder.as_mut() {
+				state.encoder.common().pushDebugGroup(&name);
+				state.debug_region_depth += 1;
 			}
 			self.debug_regions.push(name);
 		}
@@ -954,13 +808,9 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 				"Unbalanced Metal debug region. The most likely cause is that end_region was called without start_region.",
 			);
 
-			if let Some(encoder) = self.active_compute_encoder.as_ref() {
-				encoder.popDebugGroup();
-				self.compute_debug_region_depth -= 1;
-			}
-			if let Some(encoder) = self.active_render_encoder.as_ref() {
-				encoder.popDebugGroup();
-				self.render_debug_region_depth -= 1;
+			if let Some(state) = self.encoder.as_mut() {
+				state.encoder.common().popDebugGroup();
+				state.debug_region_depth -= 1;
 			}
 		}
 	}
@@ -998,10 +848,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn set_scissor(&mut self, origin: [u32; 2], extent: Extent) {
-		let rce = self
-			.active_render_encoder
-			.as_ref()
-			.expect("No active render pass. The most likely cause is that set_scissor was called outside start_render_pass.");
+		let rce = self.render_encoder("set_scissor");
 		// Metal rejects scissors outside the render target, so clamp to the pass extent.
 		let (origin, extent) = crate::clamp_scissor(origin, extent, self.active_render_extent);
 		rce.setScissorRect(mtl::MTLScissorRect {
@@ -1013,7 +860,7 @@ impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	}
 
 	fn end_render_pass(&mut self) {
-		self.end_render_encoder();
+		self.end_encoder();
 	}
 }
 
@@ -1041,44 +888,40 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 		self.push_constant_data[offset as usize..end].copy_from_slice(bytemuck::bytes_of(&data));
 
-		self.compute_push_constants_dirty = true;
-		self.render_push_constants_dirty = true;
+		if let Some(state) = self.encoder.as_mut() {
+			state.push_constants_dirty = true;
+		}
 	}
 }
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
-		self.prepare_render_draw([]);
-		self.flush_render_push_constants();
-		let mesh_index = mesh_handle.0 as usize;
-		let vertex_buffer_count = self.device.meshes[mesh_index].vertex_buffers.len();
+		self.prepare_draw("draw_mesh", []);
+		let mesh = &self.device.meshes[mesh_handle.0 as usize];
 
 		assert!(
-			vertex_buffer_count <= PUSH_CONSTANT_BINDING_INDEX as usize,
+			mesh.vertex_buffers.len() <= PUSH_CONSTANT_BINDING_INDEX as usize,
 			"Too many Metal mesh vertex buffers were bound. The most likely cause is that mesh bindings overlap the reserved push-constant or argument-buffer slots."
 		);
 
-		// Metal 4 snapshots mesh vertex addresses through the shared stage argument table ABI.
-		let binding_count = vertex_buffer_count.max(self.encoded_vertex_buffer_count);
-		for binding in 0..binding_count {
-			let vertex_buffer = self.device.meshes[mesh_index].vertex_buffers.get(binding).cloned().flatten();
-			let address = vertex_buffer.as_ref().map_or(0, |vertex_buffer| vertex_buffer.gpuAddress());
-			if let Some(vertex_buffer) = vertex_buffer {
-				self.command_buffer.retain_allocation(vertex_buffer);
-			}
-			self.set_stage_buffer_address(ArgumentTableStage::Vertex, binding as u32, address);
+		// Metal 4 snapshots mesh vertex addresses through the shared stage argument table ABI. Hazard tracking never
+		// sees mesh buffers, so the command retains them here.
+		// The binding count is checked against the push-constant slot above, so the addresses never spill.
+		let mut addresses = SmallVec::<[mtl::MTLGPUAddress; PUSH_CONSTANT_BINDING_INDEX as usize]>::new();
+		for vertex_buffer in &mesh.vertex_buffers {
+			addresses.push(vertex_buffer.as_ref().map_or(0, |vertex_buffer| {
+				self.command_buffer.retain_allocation(&**vertex_buffer);
+				vertex_buffer.gpuAddress()
+			}));
 		}
-
-		let mesh = &self.device.meshes[mesh_index];
 		let index_buffer = mesh.index_buffer.clone();
 		let index_count = mesh.index_count;
+		self.command_buffer.retain_allocation(&*index_buffer);
+		self.encode_vertex_addresses(&addresses);
+
 		let index_buffer_address = index_buffer.gpuAddress();
 		let index_buffer_length = index_buffer.length();
-		self.command_buffer.retain_allocation(index_buffer);
-		let encoder = self
-			.active_render_encoder
-			.as_ref()
-			.expect("No active render pass. The most likely cause is that draw_mesh was called outside start_render_pass.");
+		let encoder = self.render_encoder("draw_mesh");
 
 		// SAFETY: Mesh metadata provides a live retained index buffer and a bounds-checked index range.
 		unsafe {
@@ -1090,22 +933,18 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 				index_buffer_length,
 			);
 		}
-		self.encoded_vertex_buffer_count = vertex_buffer_count;
 		// Mesh-owned bindings replace the ordinary logical bindings even when that logical list is empty.
 		self.render_vertex_buffers_dirty = true;
 		self.record_render_attachment_writes();
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
-		self.apply_bound_vertex_buffers();
 		let resource_uses = self.bound_vertex_resource_uses();
-		self.prepare_render_draw(resource_uses);
-		self.flush_render_push_constants();
+		self.prepare_draw("draw", resource_uses);
+		self.apply_bound_vertex_buffers();
 		// SAFETY: An active render encoder exists and the validated vertex range belongs to the bound pipeline.
 		unsafe {
-			self.active_render_encoder
-				.as_ref()
-				.expect("No active render pass. The most likely cause is that draw was called outside start_render_pass.")
+			self.render_encoder("draw")
 				.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
 					mtl::MTLPrimitiveType::Triangle,
 					first_vertex as _,
@@ -1125,22 +964,15 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		self.apply_bound_vertex_buffers();
 		let (buffer_handle, offset, index_type) = self
 			.bound_index_buffer
 			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
 		let internal_buffer = self.get_internal_buffer_handle(buffer_handle);
-		let (buffer_size, buffer_gpu_address, native_buffer) = {
+		let (buffer_size, buffer_gpu_address) = {
 			let buffer = self.device.buffers.resource(internal_buffer);
-			(buffer.size, buffer.gpu_address, buffer.buffer.clone())
+			(buffer.size, buffer.gpu_address)
 		};
-		let (metal_index_type, index_size) = match index_type {
-			crate::DataTypes::U16 => (mtl::MTLIndexType::UInt16, std::mem::size_of::<u16>()),
-			crate::DataTypes::U32 => (mtl::MTLIndexType::UInt32, std::mem::size_of::<u32>()),
-			_ => panic!(
-				"Unsupported index buffer type. The most likely cause is that bind_index_buffer was given a DataTypes value other than U16 or U32."
-			),
-		};
+		let (metal_index_type, index_size) = (utils::to_index_type(index_type), index_type.size());
 		let first_index_offset = (first_index as usize).checked_mul(index_size).expect(
 			"Metal indexed draw offset overflowed. The most likely cause is that first_index exceeds the host address range.",
 		);
@@ -1163,8 +995,6 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		let index_buffer_address = buffer_gpu_address.checked_add(index_buffer_offset as u64).expect(
 			"Metal index-buffer GPU address overflowed. The most likely cause is that the bound index range exceeds the native address space.",
 		);
-		self.command_buffer.retain_allocation(native_buffer);
-
 		let mut resource_uses = self.bound_vertex_resource_uses();
 		if index_data_size > 0 {
 			resource_uses.push(synchronization::MetalResourceUse::buffer(
@@ -1174,17 +1004,17 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 				mtl::MTLStages::Vertex,
 				crate::AccessPolicies::READ,
 			));
+		} else {
+			// An empty index range is not tracked, but the draw still names the buffer, so the command retains it.
+			self.command_buffer
+				.retain_allocation(&*self.device.buffers.resource(internal_buffer).buffer);
 		}
-		self.prepare_render_draw(resource_uses);
-		self.flush_render_push_constants();
+		self.prepare_draw("draw_indexed", resource_uses);
+		self.apply_bound_vertex_buffers();
 
 		// SAFETY: An active render encoder exists and the index-buffer address and draw ranges were validated above.
 		unsafe {
-			self.active_render_encoder
-				.as_ref()
-				.expect(
-					"No active render pass. The most likely cause is that draw_indexed was called outside start_render_pass.",
-				)
+			self.render_encoder("draw_indexed")
 				.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferLength_instanceCount_baseVertex_baseInstance(
 					mtl::MTLPrimitiveType::Triangle,
 					index_count as _,
@@ -1200,22 +1030,17 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
-		self.prepare_render_draw([]);
-		self.flush_render_push_constants();
+		self.prepare_draw("dispatch_meshes", []);
 		let bound_pipeline = self
 			.bound_pipeline
 			.expect("No pipeline bound. The most likely cause is that dispatch_meshes was called before bind_raster_pipeline.");
-		let pipeline = &self.device.pipelines[bound_pipeline.0 as usize];
-		let mesh_threadgroup_size = pipeline.mesh_threadgroup_size.expect(
+		let raster = self.device.pipelines[bound_pipeline.0 as usize].raster();
+		let mesh_threadgroup_size = raster.mesh_threadgroup_size.expect(
 			"Metal mesh dispatch requires mesh threadgroup metadata. The most likely cause is that the mesh shader was not generated with Metal mesh threadgroup size metadata.",
 		);
-		let object_threadgroup_size = pipeline.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
+		let object_threadgroup_size = raster.object_threadgroup_size.unwrap_or(Extent::new(1, 1, 1));
 
-		self.active_render_encoder
-			.as_ref()
-			.expect(
-				"No active render pass. The most likely cause is that dispatch_meshes was called outside start_render_pass.",
-			)
+		self.render_encoder("dispatch_meshes")
 			.drawMeshThreadgroups_threadsPerObjectThreadgroup_threadsPerMeshThreadgroup(
 				mtl::MTLSize {
 					width: x as _,
@@ -1233,8 +1058,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	fn dispatch(&mut self, dispatch: graphics_hardware_interface::DispatchExtent) {
 		let threadgroups = dispatch.get_extent();
 		let threads_per_threadgroup = dispatch.get_workgroup_extent();
-		self.prepare_compute_dispatch([]);
-		self.flush_compute_push_constants();
+		self.prepare_dispatch([]);
 
 		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
 			mtl::MTLSize {
@@ -1272,22 +1096,21 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		let indirect_buffer_address = buffer.gpu_address.checked_add(indirect_offset as u64).expect(
 			"Metal indirect dispatch GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
 		);
-		self.command_buffer.retain_allocation(buffer.buffer.clone());
 
-		self.prepare_compute_dispatch([synchronization::MetalResourceUse::buffer(
+		self.prepare_dispatch([synchronization::MetalResourceUse::buffer(
 			internal_buffer,
 			indirect_offset,
 			std::mem::size_of::<[u32; 3]>(),
 			mtl::MTLStages::Dispatch,
 			crate::AccessPolicies::READ,
 		)]);
-		self.flush_compute_push_constants();
 
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that indirect_dispatch was called before bind_compute_pipeline.",
 		);
-		let pipeline = &self.device.pipelines[bound_pipeline.0 as usize];
-		let threadgroup_extent = pipeline.compute_threadgroup_size.unwrap_or(Extent::line(128));
+		let threadgroup_extent = self.device.pipelines[bound_pipeline.0 as usize]
+			.compute_threadgroup_size()
+			.unwrap_or(Extent::line(128));
 
 		// SAFETY: The indirect buffer address is retained, aligned, and valid for one Metal dispatch argument record.
 		unsafe {
@@ -1308,18 +1131,18 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 			.bound_pipeline
 			.expect("No pipeline bound. The most likely cause is that trace_rays was called before bind_ray_tracing_pipeline.");
 		let threadgroup_extent = self.device.pipelines[bound_pipeline.0 as usize]
-			.compute_threadgroup_size
+			.compute_threadgroup_size()
 			.unwrap_or(Extent::square(8));
 
-		self.prepare_compute_dispatch([]);
-		self.flush_compute_push_constants();
+		self.prepare_dispatch([]);
 
+		// `DispatchExtent` rounds an empty dimension up to one threadgroup, but an empty ray grid must trace nothing.
+		if x == 0 || y == 0 || z == 0 {
+			return;
+		}
+		let threadgroups = graphics_hardware_interface::DispatchExtent::new(Extent::new(x, y, z), threadgroup_extent).get_extent();
 		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
-			mtl::MTLSize {
-				width: x.div_ceil(threadgroup_extent.width().max(1)) as _,
-				height: y.div_ceil(threadgroup_extent.height().max(1)) as _,
-				depth: z.div_ceil(threadgroup_extent.depth().max(1)) as _,
-			},
+			utils::mtl_size(threadgroups),
 			utils::mtl_size(threadgroup_extent),
 		);
 	}

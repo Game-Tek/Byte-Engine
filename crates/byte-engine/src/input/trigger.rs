@@ -1,27 +1,3 @@
-/// The `TriggerRegistry` trait declares the controls an input source provides.
-///
-/// [`InputCollector`](super::InputCollector) implements it, so the helpers in
-/// [`utils`](super::utils) register the standard classes on any collector.
-/// Next, create devices of a registered class and record their values.
-pub trait TriggerRegistry {
-	/// Registers a named device class, such as `Keyboard`.
-	///
-	/// Use PascalCase for `name` so trigger paths stay consistent.
-	fn register_device_class(&mut self, name: &str) -> DeviceClassHandle;
-
-	/// Registers a named trigger on a device class.
-	///
-	/// `description` defines the trigger's initial value, its valid Rust type,
-	/// and whether records are impulses. Use the returned [`TriggerHandle`] to
-	/// bind actions or record values.
-	fn register_trigger<T: InputValue + Into<Value>>(
-		&mut self,
-		device_class: &DeviceClassHandle,
-		name: &str,
-		description: TriggerDescription<T>,
-	) -> TriggerHandle;
-}
-
 /// The `TriggerReference` enum lets callers select a trigger by handle or name.
 #[derive(Copy, Clone, Debug)]
 pub enum TriggerReference {
@@ -48,32 +24,27 @@ pub(super) struct Trigger<A: std::alloc::Allocator> {
 	pub(super) transient: bool,
 }
 
+/// The `TriggerDescription` struct describes a control when it is registered with
+/// [`InputCollector::register_trigger`](crate::input::InputCollector::register_trigger).
+///
+/// Use [`Default`] for the standard initial value of a type, or [`Self::new`] for a custom one.
 #[derive(Copy, Clone)]
 pub struct TriggerDescription<T: InputValue> {
 	/// The value used until the first input record arrives.
 	pub(super) default: T,
 	/// Marks a control whose records are individual impulses instead of a hold.
 	pub(super) transient: bool,
-	/// The value used when the control is released.
-	rest: T,
-	/// The minimum valid value.
-	min: T,
-	/// The maximum valid value.
-	max: T,
 }
 
 impl<T: InputValue> TriggerDescription<T> {
-	/// Describes a persistent control, such as a key or a stick axis.
+	/// Describes a persistent control, such as a key or a stick axis, that reads `default` until its first record.
 	///
 	/// Next, register it with
-	/// [`TriggerRegistry::register_trigger`](crate::input::TriggerRegistry::register_trigger).
-	pub fn new(default: T, rest: T, min: T, max: T) -> Self {
+	/// [`InputCollector::register_trigger`](crate::input::InputCollector::register_trigger).
+	pub fn new(default: T) -> Self {
 		TriggerDescription {
 			default,
 			transient: false,
-			rest,
-			min,
-			max,
 		}
 	}
 
@@ -89,69 +60,49 @@ impl<T: InputValue> TriggerDescription<T> {
 
 impl Default for TriggerDescription<bool> {
 	fn default() -> Self {
-		TriggerDescription::new(false, false, false, true)
+		Self::new(false)
 	}
 }
 
 impl Default for TriggerDescription<char> {
 	fn default() -> Self {
-		TriggerDescription::new('\0', '\0', '\0', '\u{10FFFF}')
+		Self::new('\0')
 	}
 }
 
 impl Default for TriggerDescription<f32> {
 	fn default() -> Self {
-		TriggerDescription::new(0f32, 0f32, 0f32, 1f32)
+		Self::new(0.0)
 	}
 }
 
 impl Default for TriggerDescription<i32> {
 	fn default() -> Self {
-		TriggerDescription::new(0, 0, i32::MIN, i32::MAX)
+		Self::new(0)
 	}
 }
 
 impl Default for TriggerDescription<RGBA> {
 	fn default() -> Self {
-		TriggerDescription::new(
-			RGBA::new(0f32, 0f32, 0f32, 1f32),
-			RGBA::new(0f32, 0f32, 0f32, 1f32),
-			RGBA::new(0f32, 0f32, 0f32, 1f32),
-			RGBA::new(1f32, 1f32, 1f32, 1f32),
-		)
+		Self::new(RGBA::new(0f32, 0f32, 0f32, 1f32))
 	}
 }
 
 impl Default for TriggerDescription<Axis2> {
 	fn default() -> Self {
-		TriggerDescription::new(
-			Axis2::new(0f32, 0f32),
-			Axis2::new(0f32, 0f32),
-			Axis2::new(-1f32, -1f32),
-			Axis2::new(1f32, 1f32),
-		)
+		Self::new(Axis2::new(0f32, 0f32))
 	}
 }
 
 impl Default for TriggerDescription<Axis3> {
 	fn default() -> Self {
-		TriggerDescription::new(
-			Axis3::new(0f32, 0f32, 0f32),
-			Axis3::new(0f32, 0f32, 0f32),
-			Axis3::new(-1f32, -1f32, -1f32),
-			Axis3::new(1f32, 1f32, 1f32),
-		)
+		Self::new(Axis3::new(0f32, 0f32, 0f32))
 	}
 }
 
 impl Default for TriggerDescription<Quaternion> {
 	fn default() -> Self {
-		TriggerDescription::new(
-			Quaternion::identity(),
-			Quaternion::identity(),
-			Quaternion::identity(),
-			Quaternion::identity(),
-		)
+		Self::new(Quaternion::identity())
 	}
 }
 

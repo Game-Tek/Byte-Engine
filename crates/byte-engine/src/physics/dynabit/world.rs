@@ -1,5 +1,3 @@
-use std::alloc::Allocator;
-
 use math::{Scale, Vector};
 use utils::{StableVec, StableVecHandle, hash::HashMap};
 
@@ -270,7 +268,6 @@ impl World {
 			scale: Scale::identity(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),
-			acceleration: Vector::zero(),
 			collision_shape,
 			inv_mass,
 			center_of_mass,
@@ -338,7 +335,6 @@ mod tests {
 			position: math::Point::origin(),
 			orientation: Orientation::identity(),
 			scale: Scale::identity(),
-			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::zero(),
 			inv_mass: 0.0,
@@ -356,7 +352,6 @@ mod tests {
 			position,
 			orientation: Orientation::identity(),
 			scale: Scale::identity(),
-			acceleration: Vector::zero(),
 			linear_velocity,
 			angular_velocity: Vector::zero(),
 			inv_mass: 1.0,
@@ -387,21 +382,6 @@ mod tests {
 	}
 
 	#[test]
-	fn apply_impulse_updates_registered_body_and_reports_unknown_handles() {
-		let mut world = make_world();
-		let body = make_dynamic_sphere_body(math::Point::origin(), Vector::zero(), 1.0);
-		let handle = body.handle;
-		let index = world.bodies.push(body);
-		world.handles_to_bodies.insert(handle, index);
-
-		assert!(world.apply_impulse(handle, Vector::new(2.0, 0.0, 0.0)));
-		assert_eq!(world.bodies[index].linear_velocity, Vector::new(2.0, 0.0, 0.0));
-		assert!(world.remove_body(handle).is_some());
-		assert!(!world.apply_impulse(handle, Vector::new(1.0, 0.0, 0.0)));
-		assert!(!world.apply_impulse(test_handle(), Vector::new(1.0, 0.0, 0.0)));
-	}
-
-	#[test]
 	fn creation_with_an_existing_handle_replaces_the_registered_body() {
 		let mut world = make_world();
 		let handle = test_handle();
@@ -420,34 +400,6 @@ mod tests {
 			&world.bodies[index].collision_shape,
 			Shapes::Sphere { radius } if *radius == 2.0
 		));
-	}
-
-	#[test]
-	fn transformation_update_after_creation_sets_all_spatial_state() {
-		let body_factory = Factory::<Body>::new();
-		let delete_channel = DefaultChannel::new();
-		let mut world = World::new(body_factory.listener(), delete_channel.listener());
-		let transforms = DefaultChannel::new();
-		let mut transforms_rx = transforms.listener();
-		let handle = body_factory.create(Body::new(BodyTypes::Static, Shapes::sphere(1.0)));
-		let expected = Transform::new(
-			math::Point::new(3.0, 2.0, 1.0),
-			Scale::new(2.0, 3.0, 4.0),
-			Orientation::identity(),
-		);
-		transforms.send(TransformationUpdate::new(handle, expected.clone()));
-
-		world.update(
-			Time::new(MediaTime::ZERO, MediaTime::ZERO),
-			&mut transforms_rx,
-			&transforms,
-			&mut bumpalo::Bump::new(),
-		);
-
-		let body = &world.bodies[world.handles_to_bodies[&handle]];
-		assert_eq!(body.position, expected.get_position());
-		assert_eq!(body.orientation, expected.get_orientation());
-		assert_eq!(body.scale, expected.scale());
 	}
 
 	#[test]

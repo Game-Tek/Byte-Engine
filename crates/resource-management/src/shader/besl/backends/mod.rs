@@ -117,3 +117,69 @@ fn is_two(node: &besl::NodeReference) -> bool {
 		_ => false,
 	}
 }
+
+/// Reports whether `predicate` holds for `node` or for any code nested in it, stopping at the first match.
+///
+/// Backends use it to scan shader code for intrinsics or constructs they must declare, enable, or reject. The walk
+/// follows [`besl::Nodes::children`], visits an intrinsic call's arguments but not its expansion, and visits the
+/// declaration a member expression reads. Set `follow_calls` to also search the bodies of called functions, for
+/// properties a caller inherits from its callees, such as a hidden stage parameter.
+fn any_code_node<F: FnMut(&besl::NodeReference) -> bool>(
+	node: &besl::NodeReference,
+	follow_calls: bool,
+	predicate: &mut F,
+) -> bool {
+	if predicate(node) {
+		return true;
+	}
+	let mut visit = |child: &besl::NodeReference| any_code_node(child, follow_calls, predicate);
+	match node.borrow().node() {
+		besl::Nodes::Expression(besl::Expressions::IntrinsicCall { arguments, .. }) => arguments.iter().any(visit),
+		besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => visit(source),
+		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters }) => {
+			(follow_calls && visit(&function.get())) || parameters.iter().any(visit)
+		}
+		// A constant's value is compile-time data, not code that runs where the constant is read.
+		besl::Nodes::Const { .. } => false,
+		other => other.children().any(visit),
+	}
+}
+
+/// Reports whether `node`, or code nested in it, calls the intrinsic named `intrinsic_name`.
+///
+/// Backends use it to enable extensions or declare helpers only for shaders that need them. It does not search the
+/// bodies of called functions, so pass every emitted function, as [`crate::shader::generator::ordered_shader_nodes`]
+/// returns them, to cover a whole shader.
+fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
+	any_code_node(node, false, &mut |node| is_intrinsic_call(node, intrinsic_name))
+}
+
+/// Reports whether `node` is a call to the intrinsic named `intrinsic_name`.
+fn is_intrinsic_call(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
+	matches!(
+		node.borrow().node(),
+		besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. })
+			if intrinsic.borrow().get_name() == Some(intrinsic_name)
+	)
+}
+
+/// The BESL subgroup operations, which every backend supports only in compute shaders.
+const SUBGROUP_INTRINSICS: [&str; 8] = [
+	"subgroup_lane_index",
+	"subgroup_ballot",
+	"subgroup_ballot_any",
+	"subgroup_ballot_find_lsb",
+	"subgroup_ballot_count",
+	"subgroup_ballot_and_not",
+	"subgroup_broadcast_u32",
+	"subgroup_broadcast_f32",
+];
+
+/// Reports whether any node in `order` uses one of BESL's compute-only subgroup operations.
+fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
+	order.iter().any(|node| {
+		any_code_node(node, false, &mut |node| {
+			SUBGROUP_INTRINSICS.iter().any(|intrinsic| is_intrinsic_call(node, intrinsic))
+		})
+	})
+}

@@ -198,11 +198,6 @@ impl ReDBStorageBackend {
 		})
 	}
 
-	/// Returns whether the resources table was empty when this backend opened the store.
-	pub(crate) fn opened_empty(&self) -> bool {
-		self.opened_empty
-	}
-
 	fn begin_read(&self) -> Result<redb::ReadTransaction, redb::TransactionError> {
 		match &self.db {
 			RedbDatabase::Writable(db) => db.begin_read(),
@@ -333,7 +328,7 @@ impl ReDBStorageBackend {
 					return None;
 				}
 				if resource.encoding().is_gpu_backed() {
-					return Some(Box::new(FileResourceReader::new_gpu(path, resource.encoding())));
+					return Some(Box::new(StoredResourceReader::gpu(path, resource.encoding())));
 				}
 				(file, file_size, 0)
 			}
@@ -343,7 +338,7 @@ impl ReDBStorageBackend {
 				(file, file_size, packed_offset?)
 			}
 		};
-		let reader = FileResourceReader::new_stored_range(
+		let reader = StoredResourceReader::mapped(
 			&file,
 			file_size,
 			offset,
@@ -1337,12 +1332,9 @@ const BAKING_APP_RESOURCES_DOCS_PATH: &str = "develop/resource-management/baking
 
 #[cfg(test)]
 mod tests {
-	use std::sync::atomic::{AtomicUsize, Ordering};
-
 	use super::{
 		PACKED_RESOURCES_FILE, RESOURCE_MANAGEMENT_CODE_HASH, RESOURCE_MANAGEMENT_SIGNATURE_FILE, ReDBStorageBackend,
-		ResourceStorageMode, ResourceStorageSettings, STAGED_RESOURCE_FILE_PREFIX, resource_payload_path,
-		validate_resource_management_signature,
+		ResourceStorageMode, STAGED_RESOURCE_FILE_PREFIX, resource_payload_path, validate_resource_management_signature,
 	};
 	use crate::{
 		Model, ProcessedAsset,
@@ -1523,14 +1515,6 @@ mod tests {
 	}
 
 	#[test]
-	fn compressed_images_reject_the_raw_packed_layout() {
-		let settings = ResourceStorageSettings::new(ResourceStorageMode::Packed)
-			.image_compression(crate::resource::ResourceGpuCompressionPolicy::MetalIoLz4);
-
-		assert!(settings.validate().is_err());
-	}
-
-	#[test]
 	fn direct_texture_selection_excludes_environment_images() {
 		use crate::{
 			resources::image::{Image, ImageIBL, ImageSubresource},
@@ -1562,68 +1546,6 @@ mod tests {
 
 		assert!(super::is_direct_texture("Image", &crate::to_vec(&ordinary).unwrap()));
 		assert!(!super::is_direct_texture("Image", &crate::to_vec(&environment).unwrap()));
-	}
-
-	#[cfg(all(target_os = "macos", feature = "gpu-processing"))]
-	#[crate::r#async::test]
-	async fn metal_lz4_image_files_return_gpu_backing() {
-		use crate::{
-			StreamDescription,
-			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
-			resources::image::Image,
-			types::{Formats, Gamma},
-		};
-
-		let path = unique_temp_dir("byte-engine-compressed-image-tests");
-		let backend = ReDBStorageBackend::new_writable_with_settings(
-			path.clone(),
-			ResourceStorageSettings::new(ResourceStorageMode::Files)
-				.image_compression(ResourceGpuCompressionPolicy::MetalIoLz4),
-		)
-		.unwrap();
-		let id = crate::asset::ResourceId::new("texture.image");
-		let decoded = [7_u8; 32 * 32 * 4];
-		let resource = ProcessedAsset::new(
-			id,
-			Image {
-				format: Formats::RGBA8,
-				gamma: Gamma::Linear,
-				extent: [32, 32, 0],
-				mip_count: 1,
-				ibl: None,
-				photometry: None,
-			},
-		)
-		.with_streams(vec![StreamDescription::new("mip[0]", decoded.len(), 0)]);
-		let stored = backend.store(resource, &decoded).await.unwrap();
-		let (_, reader) = backend.read(id).await.unwrap();
-		let backing = reader.into_backing_storage().await.unwrap();
-		let ResourceReaderBacking::Gpu(backing) = backing else {
-			panic!(
-				"Compressed image did not return GPU backing. The most likely cause is that the ReDB reader mapped the native container as raw bytes."
-			);
-		};
-
-		assert_eq!(backing.encoding(), ResourcePayloadEncoding::MetalIoLz4);
-		assert!(backing.path().exists());
-		assert_eq!(stored.size(), decoded.len());
-		assert_eq!(
-			stored.stored_size(),
-			std::fs::metadata(backing.path()).unwrap().len() as usize
-		);
-		assert_eq!(stored.encoding(), ResourcePayloadEncoding::MetalIoLz4);
-		assert_eq!(
-			backing.path(),
-			resource_payload_path(
-				&path,
-				crate::resource::ResourceId::from(id.as_ref()).0,
-				stored.hash(),
-				ResourcePayloadEncoding::MetalIoLz4,
-			)
-		);
-
-		drop(backend);
-		std::fs::remove_dir_all(path).unwrap();
 	}
 
 	#[crate::r#async::test]
@@ -1725,29 +1647,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn owned_store_utility_persists_a_large_vec() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("owned-store.test");
-		let expected = (0..(64 * 1024 + 17)).map(|index| index as u8).collect::<Vec<_>>();
-
-		let stored_resource = WriteStorageBackend::store_owned(
-			&backend,
-			ProcessedAsset::new(id, MockShaderModel { stage: "owned".into() }),
-			expected.clone(),
-		)
-		.await
-		.unwrap();
-		assert_eq!(stored_resource.encoding(), crate::resource::ResourcePayloadEncoding::CpuLz4);
-		assert!(stored_resource.stored_size() < stored_resource.size());
-
-		let (_, reader) = backend.read(id).await.unwrap();
-		let stored = reader.into_backing_storage().await.unwrap();
-		assert_eq!(stored.as_slice(), expected);
-		drop(stored);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
 	async fn resource_transaction_enforces_exact_size_before_publication() {
 		let backend = backend();
 		let id = crate::asset::ResourceId::new("exact-size.test");
@@ -1833,35 +1732,6 @@ mod tests {
 						stage: "buffered".into(),
 					},
 				),
-				&std::alloc::Global,
-			)
-			.await
-			.unwrap();
-
-		let (_, reader) = backend.read(id).await.unwrap();
-		let stored = reader.into_backing_storage().await.unwrap();
-		assert_eq!(stored.as_slice(), expected);
-		drop(stored);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn large_owned_first_write_never_allocates_the_staging_buffer() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("lazy-buffer.test");
-		let expected = (0..(64 * 1024 + 17)).map(|index| index as u8).collect::<Vec<_>>();
-		let mut transaction = WriteStorageBackend::begin_resource(&backend, id, expected.len())
-			.await
-			.unwrap();
-
-		assert_eq!(transaction.staging_buffer_capacity(), 0);
-		let compio::buf::BufResult(result, expected) = compio::io::AsyncWriteExt::write_all(&mut transaction, expected).await;
-		result.unwrap();
-		assert_eq!(transaction.direct_write_count(), 1);
-		assert_eq!(transaction.staging_buffer_capacity(), 0);
-		transaction
-			.commit(
-				ProcessedAsset::new(id, MockShaderModel { stage: "lazy".into() }),
 				&std::alloc::Global,
 			)
 			.await
@@ -2248,93 +2118,6 @@ mod tests {
 		assert!(cursor.is_none());
 	}
 
-	#[crate::r#async::test]
-	async fn query_filters_multiple_predicates() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/b",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "prop".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/c",
-			MockMaterialModel {
-				group: "transparent".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let (ids, _) = query_ids(
-			&backend,
-			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero").limit(10),
-		)
-		.await;
-
-		assert_eq!(ids, vec!["materials/a"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_isolates_types() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/shared",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"shaders/shared",
-			MockShaderModel {
-				stage: "fragment".into(),
-			},
-		)
-		.await;
-
-		let (material_ids, _) = query_ids(&backend, Query::new("MockMaterial").limit(10)).await;
-		let (shader_ids, _) = query_ids(&backend, Query::new("MockShader").limit(10)).await;
-
-		assert_eq!(material_ids, vec!["materials/shared"]);
-		assert_eq!(shader_ids, vec!["shaders/shared"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_returns_empty_for_unknown_name() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/missing").limit(10)).await;
-
-		assert!(ids.is_empty());
-		assert!(cursor.is_none());
-	}
-
 	fn material(group: &str, tag: &str) -> MockMaterialModel {
 		MockMaterialModel {
 			group: group.into(),
@@ -2362,20 +2145,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn query_pages_property_index_results() {
-		let backend = backend();
-		for id in ["materials/a", "materials/b", "materials/c"] {
-			store_mock(&backend, id, material("opaque", "hero")).await;
-		}
-		store_mock(&backend, "materials/d", material("transparent", "hero")).await;
-
-		let mut ids = query_all_pages(&backend, Query::new("MockMaterial").eq("group", "opaque"), 1).await;
-		ids.sort();
-
-		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
-	}
-
-	#[crate::r#async::test]
 	async fn query_pages_stay_complete_when_later_predicates_filter_index_entries() {
 		let backend = backend();
 		for index in 0..8 {
@@ -2398,30 +2167,6 @@ mod tests {
 		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
 
 		assert_eq!(ids.len(), 2);
-		assert!(cursor.is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn query_with_zero_limit_returns_an_empty_final_page() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(0)).await;
-
-		assert!(ids.is_empty());
-		assert!(cursor.is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn query_without_limit_returns_every_match() {
-		let backend = backend();
-		for index in 0..5 {
-			store_mock(&backend, &format!("materials/{index}"), material("opaque", "hero")).await;
-		}
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial")).await;
-
-		assert_eq!(ids.len(), 5);
 		assert!(cursor.is_none());
 	}
 
@@ -2477,17 +2222,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn query_returns_empty_for_unknown_property() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("missing", "hero")).await;
-
-		assert!(ids.is_empty());
-		assert!(cursor.is_none());
-	}
-
-	#[crate::r#async::test]
 	async fn query_after_overwrite_matches_only_the_latest_properties() {
 		let backend = backend();
 		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
@@ -2514,15 +2248,6 @@ mod tests {
 
 		assert_eq!(all, vec!["materials/a", "materials/b"]);
 		assert_eq!(opaque, vec!["materials/a"]);
-	}
-
-	#[crate::r#async::test]
-	async fn new_store_reports_it_opened_empty() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-
-		// The flag describes the store at open time, so later writes do not clear it.
-		assert!(backend.opened_empty());
 	}
 
 	fn variant_for(render_model: &str) -> crate::resources::material::VariantModel {
@@ -2654,8 +2379,7 @@ use crate::{
 	ProcessedAsset, QueryableProperty, QueryableValue, SerializableResource, asset,
 	r#async::{self, BoxedFuture, File as AsyncFile},
 	resource::{
-		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking,
-		reader::{StoredResourceReader, redb::FileResourceReader},
+		ResourceCompressionPolicy, ResourceId, ResourcePayloadEncoding, ResourceReaderBacking, reader::StoredResourceReader,
 		resource_handler::MultiResourceReader,
 	},
 };

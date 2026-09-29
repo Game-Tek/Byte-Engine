@@ -88,16 +88,15 @@ impl crate::device::Device for Factory {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = build_shader(
+		add_shader(
+			&mut self.shaders,
 			&self.device,
 			name,
 			shader_source_type,
 			stage,
 			shader_resource_descriptors,
 			self.settings.debug_labels,
-		)?;
-		self.shaders.push(shader);
-		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
+		)
 	}
 
 	fn create_raster_pipeline(&mut self, builder: crate::pipelines::raster::Builder) -> Self::RasterPipeline {

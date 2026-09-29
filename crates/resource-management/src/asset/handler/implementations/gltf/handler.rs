@@ -1,48 +1,24 @@
 use super::*;
 
-pub(crate) const DEFAULT_ANIMATION_FRAGMENT: &str = "animation";
-
-pub(crate) const ANIMATION_FRAGMENT_PREFIX: &str = "animations/";
-
-pub(crate) const SKELETON_FRAGMENT: &str = "skeleton";
-
 pub(crate) const MAX_SKIN_JOINTS: usize = u16::MAX as usize + 1;
 
+/// Picks the resource an unfragmented glTF request bakes. See [`select_unfragmented_resource`].
 pub(crate) fn select_unfragmented_gltf_resource(
 	gltf: &gltf::Gltf,
 	spec: Option<&asset::BEADType>,
 ) -> Result<ContainerDefaultResource, String> {
-	let selected = container_default_resource(spec)?;
-
-	let animation_count = gltf.animations().len();
-
-	if let Some(selected) = selected {
-		if selected == ContainerDefaultResource::Animation && animation_count != 1 {
-			return Err(format!(
-				"BEAD selects animation, but the glTF contains {animation_count} clips; use an explicit animation fragment"
-			));
-		}
-
-		return Ok(selected);
-	}
-
-	if gltf.meshes().next().is_some() {
-		return Ok(ContainerDefaultResource::Mesh);
-	}
-
-	if animation_count == 1 {
-		return Ok(ContainerDefaultResource::Animation);
-	}
-
-	Err(format!(
-		"the glTF contains no mesh and {animation_count} animation clips; use an explicit fragment"
-	))
+	select_unfragmented_resource(
+		spec,
+		gltf.meshes().next().is_some(),
+		gltf.animations().len(),
+		"glTF",
+		"animation clips",
+	)
 }
 
 /// The `GLTFAssetHandler` struct provides the glTF boundary used to bake renderable meshes, skeletal clips, materials, and images.
 #[derive(Default)]
 pub struct GLTFAssetHandler {
-	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Box<dyn ProgramGenerator>>,
 	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
@@ -50,20 +26,6 @@ pub struct GLTFAssetHandler {
 impl GLTFAssetHandler {
 	pub fn new() -> GLTFAssetHandler {
 		Self::default()
-	}
-
-	pub fn triangle_front_face_winding(&self) -> TriangleFrontFaceWinding {
-		self.triangle_front_face_winding
-	}
-
-	pub fn set_triangle_front_face_winding(&mut self, winding: TriangleFrontFaceWinding) {
-		self.triangle_front_face_winding = winding;
-	}
-
-	pub fn with_triangle_front_face_winding(mut self, winding: TriangleFrontFaceWinding) -> GLTFAssetHandler {
-		self.set_triangle_front_face_winding(winding);
-
-		self
 	}
 
 	pub fn set_shader_generator<G: ProgramGenerator + 'static>(&mut self, generator: G) {
@@ -88,7 +50,7 @@ impl GLTFAssetHandler {
 			log::error!("Failed to import glTF animation skeleton '{}': {error}", url.as_ref());
 			LoadErrors::FailedToProcess
 		})?;
-		let skeleton_id = generated_gltf_skeleton_id(source_id);
+		let skeleton_id = generated_skeleton_id(source_id.get_base().as_ref());
 		let skeleton = store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?;
 		let animation = import_gltf_animation(gltf, buffers, fragment, &graph.source_to_dense, skeleton).map_err(|error| {
 			log::error!("Failed to import glTF animation '{}': {error}", url.as_ref());
@@ -131,7 +93,6 @@ impl GLTFAssetHandler {
 		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
 		let mut mesh_processor = MeshProcessor::new()
-			.with_triangle_front_face_winding(self.triangle_front_face_winding)
 			.begin(vertex_layout, skeleton, skin_bindings)
 			.map_err(|error| {
 				log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());
@@ -171,14 +132,7 @@ impl GLTFAssetHandler {
 			})?;
 		}
 
-		let mut transaction = context.begin_resource(url, mesh_processor.payload_size()).await?;
-		let (mesh, stream_descriptions) = mesh_processor
-			.finish_into_resource(&mut transaction)
-			.await
-			.map_err(|_| LoadErrors::FailedToStore)?;
-		context
-			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
-			.await
+		commit_mesh(context, url, mesh_processor).await
 	}
 
 	/// Imports the mesh hierarchy, skins, materials, and primitives selected by an unfragmented glTF request.
@@ -262,7 +216,7 @@ impl GLTFAssetHandler {
 			.flatten()
 			.collect::<Vec<_>>();
 		let skeleton = if retain_skeleton {
-			let skeleton_id = generated_gltf_skeleton_id(source_id);
+			let skeleton_id = generated_skeleton_id(source_id.get_base().as_ref());
 			Some(store_model::<SkeletonModel>(context, &skeleton_id, graph.skeleton, &[]).await?)
 		} else {
 			None
@@ -290,12 +244,6 @@ impl AssetHandler for GLTFAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& !self.can_handle(dt)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		// Resolve the container base so generated skeleton and animation fragments never become part of the source filename.
 		let base = url.get_base();
 

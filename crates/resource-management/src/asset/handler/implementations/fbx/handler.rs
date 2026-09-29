@@ -1,11 +1,5 @@
 use super::*;
 
-pub(crate) const DEFAULT_ANIMATION_FRAGMENT: &str = "animation";
-
-pub(crate) const ANIMATION_FRAGMENT_PREFIX: &str = "animations/";
-
-pub(crate) const SKELETON_FRAGMENT: &str = "skeleton";
-
 pub(crate) const MAX_PRIMITIVE_VERTICES: usize = u16::MAX as usize + 1;
 
 const ANIMATION_SKELETON_SETTING: &str = "skeleton";
@@ -72,7 +66,7 @@ async fn resolve_animation_skeleton(
 		LoadErrors::FailedToProcess
 	})?
 	else {
-		let skeleton_id = format!("{base}#{SKELETON_FRAGMENT}");
+		let skeleton_id = generated_skeleton_id(base);
 		let skeleton = store_model::<SkeletonModel>(*context, &skeleton_id, imported.model, &[]).await?;
 		return Ok((skeleton, imported.source_to_skeleton));
 	};
@@ -96,41 +90,23 @@ async fn resolve_animation_skeleton(
 	Ok((target, source_to_skeleton))
 }
 
+/// Picks the resource an unfragmented FBX request bakes. See [`select_unfragmented_resource`].
 pub(crate) fn select_unfragmented_fbx_resource(
 	scene: &ufbx::Scene,
 	spec: Option<&asset::BEADType>,
 ) -> Result<ContainerDefaultResource, String> {
-	let selected = container_default_resource(spec)?;
-
-	if let Some(selected) = selected {
-		if selected == ContainerDefaultResource::Animation && scene.anim_stacks.len() != 1 {
-			return Err(format!(
-				"BEAD selects animation, but the FBX contains {} animation stacks; use an explicit animation fragment",
-				scene.anim_stacks.len()
-			));
-		}
-
-		return Ok(selected);
-	}
-
-	if !scene.meshes.is_empty() {
-		return Ok(ContainerDefaultResource::Mesh);
-	}
-
-	if scene.anim_stacks.len() == 1 {
-		return Ok(ContainerDefaultResource::Animation);
-	}
-
-	Err(format!(
-		"the FBX contains no mesh and {} animation stacks; use an explicit fragment",
-		scene.anim_stacks.len()
-	))
+	select_unfragmented_resource(
+		spec,
+		!scene.meshes.is_empty(),
+		scene.anim_stacks.len(),
+		"FBX",
+		"animation stacks",
+	)
 }
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
 #[derive(Default)]
 pub struct FBXAssetHandler {
-	triangle_front_face_winding: TriangleFrontFaceWinding,
 	generator: Option<Box<dyn ProgramGenerator>>,
 	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
 }
@@ -139,23 +115,6 @@ impl FBXAssetHandler {
 	/// Creates an FBX importer using the engine's clockwise mesh-processing convention.
 	pub fn new() -> Self {
 		Self::default()
-	}
-
-	/// Returns the winding convention that will be forwarded to mesh processing.
-	pub fn triangle_front_face_winding(&self) -> TriangleFrontFaceWinding {
-		self.triangle_front_face_winding
-	}
-
-	/// Selects the winding convention used when FBX triangles are packed into mesh streams.
-	pub fn set_triangle_front_face_winding(&mut self, winding: TriangleFrontFaceWinding) {
-		self.triangle_front_face_winding = winding;
-	}
-
-	/// Returns this handler configured with the requested triangle winding convention.
-	pub fn with_triangle_front_face_winding(mut self, winding: TriangleFrontFaceWinding) -> Self {
-		self.set_triangle_front_face_winding(winding);
-
-		self
 	}
 
 	/// Installs the renderer-specific shader transformation used for generated FBX materials.
@@ -211,12 +170,6 @@ impl AssetHandler for FBXAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(resource_type) = context.resource_type(url)
-			&& !self.can_handle(resource_type)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let allocator = context.allocator();
 
 		// Resolve the container base so animation fragments never become part of the source filename.
@@ -315,7 +268,7 @@ impl AssetHandler for FBXAssetHandler {
 		})?;
 
 		let (skeleton, source_to_skeleton) = if let Some(imported) = imported_skeleton {
-			let skeleton_id = format!("{}#{SKELETON_FRAGMENT}", base.as_ref());
+			let skeleton_id = generated_skeleton_id(base.as_ref());
 
 			(
 				Some(store_model::<SkeletonModel>(context, &skeleton_id, imported.model, &[]).await?),
@@ -334,7 +287,7 @@ impl AssetHandler for FBXAssetHandler {
 			&materials,
 			skeleton,
 			&source_to_skeleton,
-			MeshProcessor::new().with_triangle_front_face_winding(self.triangle_front_face_winding),
+			MeshProcessor::new(),
 			allocator,
 			&mut culled_polygons,
 		);
@@ -346,14 +299,6 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
-		let (mesh, stream_descriptions) = mesh
-			.finish_into_resource(&mut transaction)
-			.await
-			.map_err(|_| LoadErrors::FailedToStore)?;
-
-		context
-			.commit_primary(transaction, ProcessedAsset::new(url, mesh).with_streams(stream_descriptions))
-			.await
+		commit_mesh(context, url, mesh).await
 	}
 }

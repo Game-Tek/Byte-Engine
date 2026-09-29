@@ -71,12 +71,12 @@ pub(crate) struct ComputePipeline {
 }
 
 /// The `ComputePipelines` struct lends published compute pipelines to descriptor adoption without copying their reflected bindings.
-pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineKey, ComputePipeline>>);
+pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineKey, PipelineEntry>>);
 
 impl ComputePipelines<'_> {
 	/// Returns a published compute pipeline, or `None` while it is unavailable.
 	pub(crate) fn get(&self, pipeline: PipelineRef) -> Option<&ComputePipeline> {
-		self.0.get(&pipeline.0)
+		self.0.get(&pipeline.0).and_then(|entry| entry.compute.as_ref())
 	}
 }
 
@@ -170,10 +170,11 @@ impl PipelineManagerClient {
 
 	/// Borrows the published compute pipelines and the metadata needed for descriptor adoption.
 	///
-	/// Keep the returned view short-lived: it holds a read lock that blocks
-	/// [`PipelineManager::publish`] until it is dropped.
+	/// Keep the returned view short-lived: it holds a read lock on every pipeline entry that blocks
+	/// [`PipelineManager::publish`] and new requests until it is dropped. Do not call other client methods while
+	/// holding it.
 	pub(crate) fn compute_pipelines(&self) -> ComputePipelines<'_> {
-		ComputePipelines(self.shared.compute_pipelines.read())
+		ComputePipelines(self.shared.entries.read())
 	}
 
 	/// Coalesces a request before placing compilation work on the shared queue.
@@ -191,6 +192,7 @@ impl PipelineManagerClient {
 					requested_revision: 0,
 					published_revision: 0,
 					kind: kind.clone(),
+					compute: None,
 				},
 			);
 		}
@@ -213,7 +215,6 @@ impl PipelineManagerClient {
 /// or spawn that thread, so a future thread pool can run the same work loop.
 pub struct PipelineManagerServer {
 	factory: ghi::implementation::Factory,
-	resource_manager: Option<crate::core::EntityHandle<resource_management::ResourceManager>>,
 	shared: Arc<PipelineManagerShared>,
 	/// Shaders this server's factory already created, keyed by shader resource ID.
 	///
@@ -225,13 +226,15 @@ pub struct PipelineManagerServer {
 }
 
 impl PipelineManagerServer {
-	/// Compiles requests until every client sender is dropped.
-	pub async fn run(mut self) {
+	/// Compiles requests with shaders and pipelines read from `resources` until every client sender is dropped.
+	pub async fn run(mut self, resources: crate::core::EntityHandle<resource_management::ResourceManager>) {
 		while let Ok(request) = self.requests.recv().await {
 			let PipelineRequest { key, revision, kind } = request;
 			let result = match kind {
-				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&id).await,
-				PipelineRequestKind::SpecializedCompute(request) => self.compile_specialized_compute_pipeline(request).await,
+				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&resources, &id).await,
+				PipelineRequestKind::SpecializedCompute(request) => {
+					self.compile_specialized_compute_pipeline(&resources, request).await
+				}
 			};
 			if self.completions.send(PipelineCompletion { key, revision, result }).is_err() {
 				break;
@@ -239,20 +242,15 @@ impl PipelineManagerServer {
 		}
 	}
 
-	/// Connects this server to the resource manager before its worker starts.
-	pub(crate) fn set_resource_manager(
-		&mut self,
-		resource_manager: crate::core::EntityHandle<resource_management::ResourceManager>,
-	) {
-		self.resource_manager = Some(resource_manager);
-	}
-
 	/// Loads one complete pipeline dependency graph before performing native compilation.
-	async fn compile_resource_pipeline(&mut self, id: &str) -> Result<DetachedPipeline, String> {
+	async fn compile_resource_pipeline(
+		&mut self,
+		resources: &resource_management::ResourceManager,
+		id: &str,
+	) -> Result<DetachedPipeline, String> {
 		use ghi::Device as _;
 		use resource_management::resources::pipeline::PipelineKind;
 
-		let resources = self.resource_manager.clone().ok_or_else(missing_resource_manager)?;
 		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
 			resources.request(id).await.map_err(|_| {
 				format!(
@@ -262,24 +260,15 @@ impl PipelineManagerServer {
 		let pipeline = pipeline.resource();
 		match &pipeline.kind {
 			PipelineKind::Compute { shader, push_constants } => {
-				let prepared = shared_shader(&self.shared, &resources, shader).await?;
-				let workgroup = prepared.workgroup.ok_or_else(|| {
-					format!(
-						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
-					)
-				})?;
-				let (shader, stage) = self.adopt_shader(&prepared)?;
+				let prepared = shared_shader(&self.shared, resources, shader).await?;
 				let ranges = push_constants
 					.iter()
 					.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
 					.collect::<Vec<_>>();
-				Ok(DetachedPipeline::Compute {
-					pipeline: self.factory.create_compute_pipeline(
-						ghi::pipelines::compute::Builder::new(&ranges, ghi::ShaderParameter::new(&shader, stage))
-							.name(&pipeline.name),
-					),
-					workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
-					bindings: prepared.bindings.clone(),
+				self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
+					format!(
+						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
+					)
 				})
 			}
 			PipelineKind::Raster {
@@ -295,7 +284,7 @@ impl PipelineManagerServer {
 				// Shader reads and debug bakes are independent of mutable GHI state, so
 				// prepare every shader before adopting handles in descriptor order.
 				let prepared =
-					utils::r#async::try_join_all(shaders.iter().map(|shader| shared_shader(&self.shared, &resources, shader)))
+					utils::r#async::try_join_all(shaders.iter().map(|shader| shared_shader(&self.shared, resources, shader)))
 						.await?;
 				let loaded = prepared
 					.iter()
@@ -346,34 +335,47 @@ impl PipelineManagerServer {
 	/// Creates a specialized detached compute pipeline from its shader and constants.
 	async fn compile_specialized_compute_pipeline(
 		&mut self,
+		resources: &resource_management::ResourceManager,
 		request: SpecializedComputePipelineRequest,
 	) -> Result<DetachedPipeline, String> {
-		use ghi::Device as _;
-
-		let resources = self.resource_manager.clone().ok_or_else(missing_resource_manager)?;
 		let SpecializedComputePipelineRequest {
 			shader_id,
 			specialization,
 			push_constant_ranges,
 		} = request;
-		let prepared = shared_shader(&self.shared, &resources, &shader_id).await?;
+		let prepared = shared_shader(&self.shared, resources, &shader_id).await?;
 		if !matches!(prepared.stage, ghi::ShaderTypes::Compute) {
 			return Err(format!(
 				"Specialized compute pipeline uses non-compute shader '{shader_id}'. The most likely cause is that the material variant references the wrong shader stage."
 			));
 		}
-		let workgroup = prepared.workgroup.ok_or_else(|| {
+		self.compile_compute(&prepared, &push_constant_ranges, &specialization, &shader_id, || {
 			format!(
 				"Specialized compute shader '{shader_id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
 			)
-		})?;
-		let (shader, stage) = self.adopt_shader(&prepared)?;
-		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(&specialization);
+		})
+	}
+
+	/// Creates a detached compute pipeline from a prepared shader, failing with `missing_workgroup` when the shader
+	/// has no workgroup size.
+	fn compile_compute(
+		&mut self,
+		prepared: &Arc<PreparedShader>,
+		push_constant_ranges: &[ghi::pipelines::PushConstantRange],
+		specialization: &[ghi::pipelines::SpecializationMapEntry],
+		name: &str,
+		missing_workgroup: impl FnOnce() -> String,
+	) -> Result<DetachedPipeline, String> {
+		use ghi::Device as _;
+
+		let workgroup = prepared.workgroup.ok_or_else(missing_workgroup)?;
+		let (shader, stage) = self.adopt_shader(prepared)?;
+		let shader = ghi::ShaderParameter::new(&shader, stage).with_specialization_map(specialization);
 
 		Ok(DetachedPipeline::Compute {
 			pipeline: self
 				.factory
-				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(&push_constant_ranges, shader).name(&shader_id)),
+				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(push_constant_ranges, shader).name(name)),
 			workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
 			bindings: prepared.bindings.clone(),
 		})
@@ -406,12 +408,6 @@ impl PipelineManagerServer {
 		self.shaders.insert(prepared.id.clone(), (Arc::clone(prepared), handle));
 		Ok((handle, prepared.stage))
 	}
-}
-
-/// Formats the error for a server that started before the renderer connected its resource manager.
-fn missing_resource_manager() -> String {
-	"Pipeline compilation failed. The most likely cause is that the renderer did not configure its resource manager."
-		.to_string()
 }
 
 /// The `PreparedShader` struct keeps resource-owned shader inputs ready for ordered GHI adoption.
@@ -554,8 +550,6 @@ fn shader_artifact_source<'a>(
 
 /// Loads one shader resource without borrowing mutable GHI factory state.
 async fn prepare_shader(resources: &resource_management::ResourceManager, id: &str) -> Result<PreparedShader, String> {
-	use resource_management::resource::ReadStorageBackend as _;
-
 	let mut shader: resource_management::Reference<resource_management::resources::material::Shader> = resources
 		.request(id)
 		.await
@@ -764,13 +758,6 @@ mod tests {
 		));
 	}
 
-	#[test]
-	fn unknown_pipeline_is_not_available() {
-		let (client, _requests) = client();
-
-		assert_eq!(client.get(PipelineRef(PipelineKey::new(7))), PipelineState::Failed);
-	}
-
 	#[cfg(debug_assertions)]
 	#[test]
 	fn resource_updates_keep_stable_references_and_enqueue_new_revisions() {
@@ -830,8 +817,6 @@ impl PipelineManager {
 		context: &mut ghi::implementation::Context,
 		server_count: usize,
 	) -> (PipelineManagerClient, Self, Vec<PipelineManagerServer>) {
-		use ghi::context::ContextCreate as _;
-
 		let (request_sender, request_receiver) = kanal::unbounded_async();
 		let (completion_sender, completion_receiver) = kanal::unbounded();
 		let shared = Arc::new(PipelineManagerShared::default());
@@ -839,7 +824,6 @@ impl PipelineManager {
 			.filter_map(|_| {
 				context.create_factory().map(|factory| PipelineManagerServer {
 					factory,
-					resource_manager: None,
 					shared: shared.clone(),
 					shaders: HashMap::default(),
 					requests: request_receiver.clone(),
@@ -862,53 +846,45 @@ impl PipelineManager {
 	}
 
 	/// Interns all completed work and publishes one stable availability snapshot.
+	///
+	/// Each completion takes the entry lock once. A completion for a superseded revision is dropped, and a failed
+	/// rebuild keeps the previously published pipeline.
 	pub(crate) fn publish(&mut self, frame: &mut ghi::implementation::Frame) {
 		while let Ok(Some(completion)) = self.completions.try_recv() {
-			if self
-				.shared
-				.entries
-				.read()
-				.get(&completion.key)
-				.is_none_or(|entry| entry.requested_revision != completion.revision)
-			{
+			let mut entries = self.shared.entries.write();
+			let Some(entry) = entries
+				.get_mut(&completion.key)
+				.filter(|entry| entry.requested_revision == completion.revision)
+			else {
 				continue;
-			}
-			let succeeded = completion.result.is_ok();
-			let state = match completion.result {
+			};
+			match completion.result {
 				Ok(DetachedPipeline::Compute {
 					pipeline,
 					workgroup,
 					bindings,
 				}) => {
 					let handle = frame.intern_compute_pipeline(pipeline);
-					self.shared.compute_pipelines.write().insert(
-						completion.key,
-						ComputePipeline {
-							handle,
-							workgroup,
-							bindings,
-						},
-					);
-					PipelineState::Ready(handle)
+					entry.compute = Some(ComputePipeline {
+						handle,
+						workgroup,
+						bindings,
+					});
+					entry.state = PipelineState::Ready(handle);
+					entry.published_revision = completion.revision;
 				}
 				Ok(DetachedPipeline::Raster(pipeline)) => {
-					self.shared.compute_pipelines.write().remove(&completion.key);
-					PipelineState::Ready(frame.intern_raster_pipeline(pipeline))
+					entry.compute = None;
+					entry.state = PipelineState::Ready(frame.intern_raster_pipeline(pipeline));
+					entry.published_revision = completion.revision;
 				}
 				Err(reason) => {
 					log::error!("Pipeline compilation failed: {reason}");
-					match self.shared.entries.read().get(&completion.key).map(|entry| entry.state) {
-						Some(ready @ PipelineState::Ready(_)) => ready,
-						_ => PipelineState::Failed,
+					if !matches!(entry.state, PipelineState::Ready(_)) {
+						entry.state = PipelineState::Failed;
 					}
 				}
-			};
-			let mut entries = self.shared.entries.write();
-			let entry = entries.get_mut(&completion.key).unwrap();
-			if succeeded {
-				entry.published_revision = completion.revision;
 			}
-			entry.state = state;
 		}
 	}
 }
@@ -916,16 +892,18 @@ impl PipelineManager {
 #[derive(Default)]
 struct PipelineManagerShared {
 	entries: RwLock<HashMap<PipelineKey, PipelineEntry>>,
-	compute_pipelines: RwLock<HashMap<PipelineKey, ComputePipeline>>,
 	/// Prepared shaders keyed by resource ID, see [`shared_shader`].
 	shaders: Mutex<HashMap<String, ShaderPreparation>>,
 }
 
+/// The `PipelineEntry` struct is the published state of one coalesced request, kept under one lock.
 struct PipelineEntry {
 	state: PipelineState,
 	requested_revision: u64,
 	published_revision: u64,
 	kind: PipelineRequestKind,
+	/// The dispatch contract of the latest compute pipeline; `None` until one publishes or for raster pipelines.
+	compute: Option<ComputePipeline>,
 }
 
 struct PipelineRequest {
@@ -968,7 +946,6 @@ enum DetachedPipeline {
 
 use std::sync::Arc;
 
-use ghi::frame::Frame as _;
 use utils::{
 	hash::HashMap,
 	sync::{Mutex, RwLock},

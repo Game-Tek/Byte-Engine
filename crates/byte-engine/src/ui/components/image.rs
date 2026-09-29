@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::ui::{Transform, Visual, layout::Sizing, style::ConcreteStyle};
+use crate::ui::layout::Sizing;
 
 /// The `Image` struct is the retained state of an RGBA bitmap drawn in a box.
 ///
@@ -14,9 +14,6 @@ pub struct Image {
 	pixels: Arc<[u8]>,
 	pub width: Sizing,
 	pub height: Sizing,
-	pub(crate) style: ConcreteStyle,
-	pub(crate) transform: Transform,
-	pub(crate) visual: Visual,
 }
 
 impl Image {
@@ -36,9 +33,6 @@ impl Image {
 			pixels: Arc::from(pixels),
 			width: Sizing::Absolute(width as f32),
 			height: Sizing::Absolute(height as f32),
-			style: ConcreteStyle::default(),
-			transform: Transform::default(),
-			visual: Visual::default(),
 		}
 	}
 
@@ -70,18 +64,6 @@ impl Image {
 	/// edits.
 	pub fn pixels(&self) -> &Arc<[u8]> {
 		&self.pixels
-	}
-
-	pub fn style_ref(&self) -> &ConcreteStyle {
-		&self.style
-	}
-
-	pub fn transform_ref(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn visual_ref(&self) -> &Visual {
-		&self.visual
 	}
 }
 

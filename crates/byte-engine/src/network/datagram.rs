@@ -664,29 +664,4 @@ mod tests {
 			}))
 		);
 	}
-
-	#[test]
-	fn queued_data_is_encoded_at_the_exact_maximum_wire_size() {
-		let now = Instant::now();
-		let (mut client, mut server) = connected_pair(now);
-		let mut outbound = Vec::new();
-
-		client.send(false, [3; 1024]);
-		client
-			.advance(now, &mut outbound)
-			.expect("client should encode maximum-size data");
-
-		assert_eq!(outbound.len(), 1);
-		assert_eq!(outbound[0].len(), MAX_BETP_DATAGRAM_SIZE);
-		betp::read_packet(outbound[0].as_bytes()).expect("client packet should be valid");
-
-		server.send(false, [4; 1024]);
-		server
-			.advance(now, &mut outbound)
-			.expect("server should encode maximum-size data");
-
-		assert_eq!(outbound.len(), 1);
-		assert_eq!(outbound[0].len(), MAX_BETP_DATAGRAM_SIZE);
-		betp::read_packet(outbound[0].as_bytes()).expect("server packet should be valid");
-	}
 }

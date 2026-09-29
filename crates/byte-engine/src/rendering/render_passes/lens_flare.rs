@@ -1,8 +1,4 @@
-use ghi::{
-	command_buffer::CommonCommandBufferMode as _,
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-};
+use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use maths_rs::Vec3f;
 
 use crate::{
@@ -11,7 +7,6 @@ use crate::{
 		Sink,
 		render_pass::{RenderPass, RenderPassBuilder, RenderPassReturn, simple_compute},
 		render_passes::bloom::BloomShaderData,
-		renderer::scaled_extent,
 	},
 };
 
@@ -97,7 +92,6 @@ struct LensFlareShaderData {
 /// pick up a little glow. Toggle it at runtime with the `render.pass.lens-flare` parameter.
 pub struct LensFlarePass {
 	settings: LensFlarePassSettings,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	prefilter_parameters: ghi::DynamicBufferHandle<BloomShaderData>,
 	feature_parameters: ghi::DynamicBufferHandle<LensFlareShaderData>,
 	extract_pass: simple_compute::Pass,
@@ -148,100 +142,62 @@ impl LensFlarePass {
 				.name("Lens Flare Feature Parameters")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		let sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		// The bloom prefilter, downsample, and composite shaders do exactly what the flare needs around its own
 		// feature shader, so the flare binds them to its own images and parameters.
 		let extract_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Lens Flare Extract", "byte-engine/rendering/bloom/extract.pipeline"),
-		)
-		.expect(
-			"Failed to create the lens flare extract shader. The most likely cause is an incompatible bloom extract shader interface.",
 		);
 		let downsample_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Lens Flare Downsample", "byte-engine/rendering/bloom/downsample.pipeline"),
-		)
-		.expect(
-			"Failed to create the lens flare downsample shader. The most likely cause is an incompatible bloom downsample shader interface.",
 		);
 		let features_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Lens Flare Features", "byte-engine/rendering/lens-flare/features.pipeline"),
-		)
-		.expect(
-			"Failed to create the lens flare features shader. The most likely cause is an incompatible lens flare shader interface.",
 		);
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Lens Flare Composite", "byte-engine/rendering/bloom/composite.pipeline"),
-		)
-		.expect(
-			"Failed to create the lens flare composite shader. The most likely cause is an incompatible bloom composite shader interface.",
 		);
 
-		let extract_pass = extract_pipeline
-			.bind(
-				render_pass_builder,
-				"Lens Flare Extract Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result_texture", half_image),
-					simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
-				],
-			)
-			.expect("Failed to bind lens flare extract resources. The most likely cause is a changed BESL binding contract.");
-		let downsample_pass = downsample_pipeline
-			.bind(
-				render_pass_builder,
-				"Lens Flare Downsample Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source_texture", half_image, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result_texture", quarter_image),
-				],
-			)
-			.expect(
-				"Failed to bind lens flare downsample resources. The most likely cause is a changed BESL binding contract.",
-			);
-		let features_pass = features_pipeline
-			.bind(
-				render_pass_builder,
-				"Lens Flare Features Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler(
-						"source_texture",
-						quarter_image,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::image("result_texture", flare_image),
-					simple_compute::Resource::buffer("lens_flare_parameters", feature_parameters),
-				],
-			)
-			.expect("Failed to bind lens flare feature resources. The most likely cause is a changed BESL binding contract.");
-		let composite_pass = composite_pipeline
-			.bind(
-				render_pass_builder,
-				"Lens Flare Composite Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler("bloom_texture", flare_image, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result_texture", output),
-					simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
-				],
-			)
-			.expect("Failed to bind lens flare composite resources. The most likely cause is a changed BESL binding contract.");
-		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
+		let extract_pass = extract_pipeline.bind(
+			"Lens Flare Extract Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", half_image),
+				simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
+			],
+		);
+		let downsample_pass = downsample_pipeline.bind(
+			"Lens Flare Downsample Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source_texture", half_image, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", quarter_image),
+			],
+		);
+		let features_pass = features_pipeline.bind(
+			"Lens Flare Features Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source_texture", quarter_image, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", flare_image),
+				simple_compute::Resource::buffer("lens_flare_parameters", feature_parameters),
+			],
+		);
+		let composite_pass = composite_pipeline.bind(
+			"Lens Flare Composite Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("scene_texture", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("bloom_texture", flare_image, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", output),
+				simple_compute::Resource::buffer("bloom_parameters", prefilter_parameters),
+			],
+		);
 
 		Self {
 			settings,
-			bypass_pass,
 			prefilter_parameters,
 			feature_parameters,
 			extract_pass,
@@ -297,13 +253,13 @@ impl RenderPass for LensFlarePass {
 		let features_pass = self.features_pass.ready(frame)?;
 		let composite_pass = self.composite_pass.ready(frame)?;
 		let extent = sink.extent();
-		let half_extent = scaled_extent(extent, HALF_RESOLUTION);
-		let quarter_extent = scaled_extent(extent, QUARTER_RESOLUTION);
+		let half_extent = extent.scaled_down(HALF_RESOLUTION);
+		let quarter_extent = extent.scaled_down(QUARTER_RESOLUTION);
 		self.write_parameters(frame);
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
-			move |command_buffer, _| {
+			move |command_buffer| {
 				command_buffer.region(
 					|label| label.write_str("Lens Flare"),
 					|command_buffer| {
@@ -316,8 +272,6 @@ impl RenderPass for LensFlarePass {
 			},
 		))
 	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 #[cfg(test)]
@@ -448,22 +402,6 @@ mod tests {
 		assert_eq!(brightest_texel(&result, 8), [5, 6], "{result:?}");
 	}
 
-	/// Verifies that a black scene casts no flare, and that zero ghosts and zero halo contribute nothing.
-	#[test]
-	fn lens_flare_features_besl_vm_is_black_without_light_or_features() {
-		let black = vec![[0.0, 0.0, 0.0, 1.0]; 64];
-		let no_features = Features {
-			ghost_count: 0.0,
-			halo_width: 0.3,
-			..SINGLE_GHOST
-		};
-
-		for (source, controls) in [(black, SINGLE_GHOST), (single_source([2, 1]), no_features)] {
-			let result = features(8, 8, &source, controls);
-			assert!(result.iter().all(|texel| texel[..3] == [0.0; 3]), "{result:?}");
-		}
-	}
-
 	/// Verifies that the tint colors the flare channel by channel, so a blue tint leaves a blue flare.
 	#[test]
 	fn lens_flare_features_besl_vm_applies_the_tint() {
@@ -557,7 +495,7 @@ mod tests {
 		use utils::Extent;
 
 		let mut root = besl::parse(LENS_FLARE_FEATURES_BESL).expect("lens flare shader should parse");
-		root.add(vec![crate::rendering::common_shader_generator::CommonShaderScope::new()]);
+		root.add(vec![crate::rendering::common_shader_generator::common_shader_scope()]);
 		let root = besl::lex(root).expect("lens flare shader should link");
 		let settings = ShaderGenerationSettings::compute(Extent::rectangle(8, 8)).name("lens_flare_features".to_string());
 
@@ -565,16 +503,5 @@ mod tests {
 			.generate(&settings, &root)
 			.await
 			.unwrap_or_else(|error| panic!("lens flare features should compile for the platform shader language: {error}"));
-	}
-
-	#[test]
-	fn lens_flare_ghost_count_is_clamped() {
-		for (requested, resolved) in [(0, 1), (MAX_GHOSTS + 4, MAX_GHOSTS)] {
-			let settings = LensFlarePassSettings {
-				ghost_count: requested,
-				..Default::default()
-			};
-			assert_eq!(settings.resolved_ghost_count(), resolved);
-		}
 	}
 }

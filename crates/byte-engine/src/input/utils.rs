@@ -7,7 +7,7 @@
 /// - `LeftButton`: State of the left mouse button as a Boolean value.
 /// - `RightButton`: State of the right mouse button as a Boolean value.
 /// - `Scroll`: Vertical scroll amount as a float from -1 to 1. Each record is one impulse.
-pub fn register_mouse_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+pub fn register_mouse_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let mouse_device_class_handle = registry.register_device_class("Mouse");
 
 	registry.register_trigger(&mouse_device_class_handle, "Position", TriggerDescription::<Axis2>::default());
@@ -29,7 +29,7 @@ pub fn register_mouse_device_class(registry: &mut impl TriggerRegistry) -> Devic
 	registry.register_trigger(
 		&mouse_device_class_handle,
 		"Scroll",
-		TriggerDescription::new(0f32, 0f32, -1f32, 1f32).transient(),
+		TriggerDescription::<f32>::default().transient(),
 	);
 
 	mouse_device_class_handle
@@ -42,7 +42,7 @@ pub fn register_mouse_device_class(registry: &mut impl TriggerRegistry) -> Devic
 /// The class exposes Boolean triggers for `W`, `S`, `A`, `D`, `Space`, the four
 /// arrow keys, `Escape`, and `Backspace`. The `Character` trigger emits typed
 /// text as a `char`, one impulse per character.
-pub fn register_keyboard_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+pub fn register_keyboard_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let keyboard_device_class_handle = registry.register_device_class("Keyboard");
 
 	for name in [
@@ -77,7 +77,7 @@ pub fn register_keyboard_device_class(registry: &mut impl TriggerRegistry) -> De
 /// - `LeftStick` and `RightStick`: 2D vectors from -1 to 1. Positive X is right and positive Y is up.
 /// - `LeftTrigger` and `RightTrigger`: floats from 0 to 1.
 /// - Face, bumper, stick, menu, and directional-pad buttons: Boolean values.
-pub fn register_gamepad_device_class(registry: &mut impl TriggerRegistry) -> DeviceClassHandle {
+pub fn register_gamepad_device_class<A: Allocator + Clone>(registry: &mut InputCollector<A>) -> DeviceClassHandle {
 	let gamepad_device_class_handle = registry.register_device_class("Gamepad");
 
 	registry.register_trigger(
@@ -125,5 +125,6 @@ pub fn register_gamepad_device_class(registry: &mut impl TriggerRegistry) -> Dev
 	gamepad_device_class_handle
 }
 
-use super::Axis2;
-use super::{TriggerRegistry, device::DeviceClassHandle, trigger::TriggerDescription};
+use std::alloc::Allocator;
+
+use super::{Axis2, InputCollector, device::DeviceClassHandle, trigger::TriggerDescription};

@@ -51,6 +51,64 @@ pub(crate) fn container_default_resource(spec: Option<&BEADType>) -> Result<Opti
 	}
 }
 
+/// The fragment that selects a container's only animation clip.
+pub(crate) const DEFAULT_ANIMATION_FRAGMENT: &str = "animation";
+
+/// The fragment prefix that selects one named animation clip of a container.
+pub(crate) const ANIMATION_FRAGMENT_PREFIX: &str = "animations/";
+
+/// The fragment that selects the skeleton a container generates for its skins and animations.
+pub(crate) const SKELETON_FRAGMENT: &str = "skeleton";
+
+/// Returns the resource ID of the skeleton generated for the container at `base`.
+pub(crate) fn generated_skeleton_id(base: &str) -> String {
+	format!("{base}#{SKELETON_FRAGMENT}")
+}
+
+/// Picks the resource an unfragmented glTF or FBX request bakes.
+///
+/// A BEAD `default_resource` wins. Otherwise a container with a mesh bakes the mesh, and one with no mesh and exactly
+/// one animation bakes that animation. `format` and `clips` name the container format and its animations in errors.
+pub(crate) fn select_unfragmented_resource(
+	spec: Option<&BEADType>,
+	has_mesh: bool,
+	animation_count: usize,
+	format: &str,
+	clips: &str,
+) -> Result<ContainerDefaultResource, String> {
+	match container_default_resource(spec)? {
+		Some(ContainerDefaultResource::Animation) if animation_count != 1 => Err(format!(
+			"BEAD selects animation, but the {format} contains {animation_count} {clips}; use an explicit animation fragment"
+		)),
+		Some(selected) => Ok(selected),
+		None if has_mesh => Ok(ContainerDefaultResource::Mesh),
+		None if animation_count == 1 => Ok(ContainerDefaultResource::Animation),
+		None => Err(format!(
+			"the {format} contains no mesh and {animation_count} {clips}; use an explicit fragment"
+		)),
+	}
+}
+
+/// Writes a processed container mesh into resource storage and commits it as the requested primary resource.
+pub(crate) async fn commit_mesh(
+	context: handler::BakeContext<'_>,
+	url: ResourceId<'_>,
+	mesh: crate::processors::processor::implementations::mesh::MeshProcessorSession,
+) -> Result<(), handler::LoadErrors> {
+	let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
+	let (mesh, stream_descriptions) = mesh
+		.finish_into_resource(&mut transaction)
+		.await
+		.map_err(|_| handler::LoadErrors::FailedToStore)?;
+
+	context
+		.commit_primary(
+			transaction,
+			crate::ProcessedAsset::new(url, mesh).with_streams(stream_descriptions),
+		)
+		.await
+}
+
 /// Stores one generated model and returns the serialized reference used by its parent resource.
 pub(crate) async fn store_model<M: crate::Model>(
 	context: handler::BakeContext<'_>,
@@ -59,7 +117,7 @@ pub(crate) async fn store_model<M: crate::Model>(
 	data: &[u8],
 ) -> Result<crate::ReferenceModel<M>, handler::LoadErrors> {
 	context
-		.store_generated(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+		.store_resource(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
 		.await
 		.map(Into::into)
 }
@@ -72,7 +130,7 @@ pub(crate) async fn store_model_owned<M: crate::Model, T: compio::buf::IoBuf>(
 	data: T,
 ) -> Result<crate::ReferenceModel<M>, handler::LoadErrors> {
 	context
-		.store_generated_owned(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
+		.store_resource_owned(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
 		.await
 		.map(Into::into)
 }

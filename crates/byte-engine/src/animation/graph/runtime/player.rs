@@ -803,34 +803,14 @@ fn compose_local_transform(parent: LocalTransform, child: LocalTransform) -> Loc
 	let scaled_translation = std::array::from_fn(|component| child.translation[component] * parent.scale[component]);
 	let rotated_translation = rotate_vector(parent.rotation, scaled_translation);
 	LocalTransform {
-		translation: std::array::from_fn(|component| parent.translation[component] + rotated_translation[component]),
+		translation: add3(parent.translation, rotated_translation),
 		rotation: multiply_quaternion(parent.rotation, child.rotation),
 		scale: std::array::from_fn(|component| parent.scale[component] * child.scale[component]),
 	}
 }
 
-/// Rotates one translation vector by a normalized quaternion without changing its magnitude.
-fn rotate_vector([x, y, z, w]: [f32; 4], vector: [f32; 3]) -> [f32; 3] {
-	let quaternion_vector = [x, y, z];
-	let twice_cross = [
-		2.0 * (quaternion_vector[1] * vector[2] - quaternion_vector[2] * vector[1]),
-		2.0 * (quaternion_vector[2] * vector[0] - quaternion_vector[0] * vector[2]),
-		2.0 * (quaternion_vector[0] * vector[1] - quaternion_vector[1] * vector[0]),
-	];
-	let cross_again = [
-		quaternion_vector[1] * twice_cross[2] - quaternion_vector[2] * twice_cross[1],
-		quaternion_vector[2] * twice_cross[0] - quaternion_vector[0] * twice_cross[2],
-		quaternion_vector[0] * twice_cross[1] - quaternion_vector[1] * twice_cross[0],
-	];
-	std::array::from_fn(|component| vector[component] + w * twice_cross[component] + cross_again[component])
-}
-
 #[cfg(test)]
 mod tests {
-	use std::{
-		collections::{HashMap, VecDeque},
-		num::NonZeroUsize,
-	};
 
 	use resource_management::{
 		Reference,
@@ -1099,65 +1079,6 @@ mod tests {
 		pool.admit("idle.animation".into(), animation);
 		let pose = ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
 		assert_eq!(pose.skeleton().nodes.len(), 1);
-	}
-
-	#[test]
-	fn player_rejects_a_state_from_another_graph() {
-		let first_builder = AnimationGraph::builder();
-		let first = first_builder.state("first").with(AnimationClip::looping("first.animation"));
-		let first_graph = first_builder.build(first).expect("first graph should build");
-		let second_builder = AnimationGraph::builder();
-		let second = second_builder
-			.state("second")
-			.with(AnimationClip::looping("second.animation"));
-		let second_graph = second_builder.build(second).expect("second graph should build");
-		let mut pool = super::super::test_pool(1);
-		let mut player = pool.create_player(&first_graph, None);
-
-		assert_eq!(
-			player.advance(MediaTime::ZERO, second_graph.initial_state(), &mut pool).err(),
-			Some(AnimationGraphPlayerError::StateFromDifferentGraph)
-		);
-	}
-
-	#[test]
-	fn player_requires_one_uniquely_named_root_motion_node() {
-		let builder = AnimationGraph::builder();
-		let state = builder.state("idle").with(AnimationClip::looping("idle.animation"));
-		let graph = builder.build(state).expect("graph should build");
-		let missing_animation = test_animation("missing", 0.0);
-		let mut missing_pool = super::super::test_pool(PackedAnimationData::resident_bytes(&missing_animation));
-		missing_pool.admit("idle.animation".into(), missing_animation);
-		let mut missing_player = missing_pool.create_player(&graph, Some(RootMotionSettings::full("Hips")));
-
-		assert!(matches!(
-			missing_player.advance(MediaTime::ZERO, state.id(), &mut missing_pool),
-			Err(super::AnimationGraphPlayerError::RootMotionNodeNotFound { name }) if name == "Hips"
-		));
-
-		let duplicate_skeleton = Skeleton {
-			nodes: vec![
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
-			],
-		};
-		let duplicate_animation = test_animation_with_skeleton("duplicate", 0.0, duplicate_skeleton);
-		let mut duplicate_pool = super::super::test_pool(PackedAnimationData::resident_bytes(&duplicate_animation));
-		duplicate_pool.admit("idle.animation".into(), duplicate_animation);
-		let mut duplicate_player = duplicate_pool.create_player(&graph, Some(RootMotionSettings::full("Hips")));
-
-		assert!(matches!(
-			duplicate_player.advance(MediaTime::ZERO, state.id(), &mut duplicate_pool),
-			Err(super::AnimationGraphPlayerError::DuplicateRootMotionNodeName { name }) if name == "Hips"
-		));
 	}
 
 	#[test]

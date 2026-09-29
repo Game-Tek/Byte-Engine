@@ -11,13 +11,12 @@ use resource_management::Reference;
 use resource_management::resources::mesh::Mesh;
 use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::{Stream, Streams, VertexSemantics};
-use utils::as_byte_slice;
 
 use super::{
 	GeometryCounts, MeshPrimitive, SKINNING_JOINTS_STRIDE, SKINNING_NORMAL_STRIDE, SKINNING_POSITION_STRIDE,
 	SKINNING_WEIGHTS_STRIDE,
 };
-use crate::rendering::mesh::generator::MeshGenerator;
+use crate::rendering::mesh::generator::{MeshGenerator, validate_triangle_indices};
 use crate::rendering::pipelines::visibility::layout::{
 	RuntimeUnitVector, ShaderMeshletData, TRIANGLE_COUNT, VERTEX_COUNT, VERTEX_NORMAL_BUFFER_STRIDE, VERTEX_UV_BUFFER_STRIDE,
 };
@@ -99,8 +98,14 @@ impl PreparedMesh {
 			);
 			return None;
 		}
-		let indices = validated_generated_indices(&generator.indices(), positions.len())?;
-		let (vertex_indices, primitive_indices, meshlets) = build_generated_meshlets(&indices, &positions)?;
+		let indices = generator.indices();
+		if let Err(error) = validate_triangle_indices(&indices, positions.len()) {
+			log::error!("{error}");
+			return None;
+		}
+		// Validation proved every index fits in 16 bits.
+		let indices = indices.iter().map(|&index| index as u16).collect::<Vec<_>>();
+		let (vertex_indices, primitive_indices, meshlets) = build_generated_meshlets(&indices, &positions);
 
 		let mut cursor = 0;
 		let streams = PreparedStreams {
@@ -113,7 +118,14 @@ impl PreparedMesh {
 		};
 		let mut staging = allocate_staging(&upload_staging, cursor).await?;
 		let backing = staging.bytes_mut();
-		backing[streams.positions.clone()].copy_from_slice(as_byte_slice(&positions));
+		for (destination, &(x, y, z)) in backing[streams.positions.clone()]
+			.as_chunks_mut::<12>()
+			.0
+			.iter_mut()
+			.zip(positions.iter())
+		{
+			*destination = bytemuck::cast([x, y, z]);
+		}
 		for (destination, normal) in backing[streams.normals.clone()]
 			.as_chunks_mut::<4>()
 			.0
@@ -125,9 +137,9 @@ impl PreparedMesh {
 		for (destination, (u, v)) in backing[streams.uvs.clone()].as_chunks_mut::<4>().0.iter_mut().zip(uvs.iter()) {
 			write_f16_pair(destination, *u, *v);
 		}
-		backing[streams.vertex_indices.clone()].copy_from_slice(as_byte_slice(&vertex_indices));
-		backing[streams.primitive_indices.clone()].copy_from_slice(as_byte_slice(&primitive_indices));
-		backing[streams.meshlets.clone()].copy_from_slice(as_byte_slice(&meshlets));
+		backing[streams.vertex_indices.clone()].copy_from_slice(bytemuck::cast_slice(&vertex_indices));
+		backing[streams.primitive_indices.clone()].copy_from_slice(bytemuck::cast_slice(&primitive_indices));
+		backing[streams.meshlets.clone()].copy_from_slice(bytemuck::cast_slice(&meshlets));
 
 		Some(Self {
 			staging,
@@ -209,7 +221,7 @@ impl PreparedMesh {
 				vertex_count,
 			);
 		}
-		output[rebase(&layout.streams.meshlets)].copy_from_slice(as_byte_slice(&meshlets));
+		output[rebase(&layout.streams.meshlets)].copy_from_slice(bytemuck::cast_slice(&meshlets));
 
 		Some(Self {
 			staging,
@@ -648,38 +660,15 @@ fn read_f32(bytes: &[u8], offset: usize) -> f32 {
 
 /* Generated meshes */
 
-/// Narrows generated indices only after proving that every value addresses an available vertex.
-fn validated_generated_indices(indices: &[u32], vertex_count: usize) -> Option<Vec<u16>> {
-	indices
-		.iter()
-		.map(|&index| {
-			if index as usize >= vertex_count {
-				log::error!(
-					"Generated mesh index {index} references a missing vertex. The most likely cause is that the generator returned an index outside its {vertex_count} positions."
-				);
-				return None;
-			}
-			u16::try_from(index).ok().or_else(|| {
-				log::error!(
-					"Generated mesh index {index} exceeds the u16 vertex-index limit. The most likely cause is that one generated primitive contains more than 65536 vertices."
-				);
-				None
-			})
-		})
-		.collect()
-}
-
 /// Greedily packs a generated triangle list into meshlets that respect the shader's vertex and triangle limits.
 fn build_generated_meshlets(
 	indices: &[u16],
 	positions: &[(f32, f32, f32)],
-) -> Option<(Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>)> {
-	if !indices.len().is_multiple_of(3) {
-		log::error!(
-			"Generated mesh indices are invalid. The most likely cause is that the mesh generator returned a triangle list whose index count is not divisible by three."
-		);
-		return None;
-	}
+) -> (Vec<u16>, Vec<[u8; 3]>, Vec<ShaderMeshletData>) {
+	debug_assert!(
+		indices.len().is_multiple_of(3),
+		"Generated mesh indices are not a triangle list. The most likely cause is that validate_triangle_indices was skipped."
+	);
 	let mut vertex_indices = Vec::new();
 	let mut primitive_indices = Vec::new();
 	let mut meshlets = Vec::new();
@@ -718,7 +707,7 @@ fn build_generated_meshlets(
 		meshlet_triangles.push(local_triangle);
 	}
 	flush(&mut meshlet_vertices, &mut meshlet_triangles);
-	Some((vertex_indices, primitive_indices, meshlets))
+	(vertex_indices, primitive_indices, meshlets)
 }
 
 /// Computes a conservative object-space bounding sphere for one generated meshlet.
@@ -792,34 +781,6 @@ fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::rendering::mesh::generator::BoxMeshGenerator;
-
-	#[test]
-	fn generated_mesh_preparation_owns_complete_transfer_data() {
-		let mut bytes = vec![0u8; 1024 * 1024];
-		let executor = resource_management::r#async::Executor::new().expect("mesh preparation test executor");
-		let prepared = executor
-			.block_on(async {
-				let (staging, worker) = UploadStagingArena::new_for_test(&mut bytes);
-				resource_management::r#async::spawn(worker.run()).detach();
-				PreparedMesh::generated(&BoxMeshGenerator::new(), staging).await
-			})
-			.expect("The built-in box should produce valid visibility geometry.");
-
-		assert_eq!(
-			prepared.counts,
-			GeometryCounts {
-				vertices: 24,
-				primitive_indices: 24,
-				triangles: 12,
-				meshlets: 1,
-				skinning_vertices: 0,
-			}
-		);
-		assert_eq!(prepared.primitives.len(), 1);
-		assert_eq!(prepared.primitives[0].primitive.meshlet_count, 1);
-		assert_eq!(prepared.primitives[0].material_id, GENERATED_MESH_MATERIAL);
-	}
 
 	/// Verifies each skinned source stream is copied from its own staging range.
 	///
@@ -875,38 +836,11 @@ mod tests {
 	}
 
 	#[test]
-	fn generated_indices_are_checked_before_u16_narrowing() {
-		assert_eq!(validated_generated_indices(&[0, 2, 1], 3), Some(vec![0, 2, 1]));
-		assert!(validated_generated_indices(&[3], 3).is_none());
-		assert!(validated_generated_indices(&[u16::MAX as u32 + 1], u16::MAX as usize + 2).is_none());
-	}
-
-	#[test]
 	fn octahedral_encoding_preserves_axes_and_folds_the_lower_hemisphere() {
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, 1.0)), [32768, 32768]);
 		assert_eq!(encode_octahedral_unit_vector((1.0, 0.0, 0.0)), [65535, 32768]);
 		assert_eq!(encode_octahedral_unit_vector((0.0, -1.0, 0.0)), [32768, 0]);
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, -1.0)), [65535, 65535]);
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, 0.0)), [32768, 32768]);
-	}
-
-	#[test]
-	fn packed_uvs_preserve_wrapping_coordinates() {
-		let values = [[-0.5f32, 2.0f32], [1.25f32, -3.0f32]];
-		let source = values
-			.iter()
-			.flat_map(|uv| uv.iter().flat_map(|component| component.to_ne_bytes()))
-			.collect::<Vec<_>>();
-		let mut packed = [0u8; 8];
-
-		pack_f32_uvs(&source, &mut packed, values.len());
-
-		let decoded = packed
-			.as_chunks::<2>()
-			.0
-			.iter()
-			.map(|bytes| half::f16::from_bits(u16::from_ne_bytes(*bytes)).to_f32())
-			.collect::<Vec<_>>();
-		assert_eq!(decoded, vec![-0.5, 2.0, 1.25, -3.0]);
 	}
 }

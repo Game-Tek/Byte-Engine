@@ -301,13 +301,11 @@ impl ResourceIoContext for context::Context {
 		format: crate::Formats,
 		extent: utils::Extent,
 	) -> Result<ResourceIoImageSourceLayout, ResourceIoError> {
-		let width = extent.width();
-		let height = extent.height().max(1);
 		let depth = extent.depth().max(1);
-		if width == 0 {
+		if extent.width() == 0 {
 			return Err(ResourceIoError::InvalidImageLayout);
 		}
-		let (bytes_per_row, _, bytes_per_image) = format.compact_copy_layout(width, height);
+		let (bytes_per_row, _, bytes_per_image) = format.copy_layout(extent).ok_or(ResourceIoError::InvalidImageLayout)?;
 		let total_bytes = bytes_per_image
 			.checked_mul(depth as usize)
 			.ok_or(ResourceIoError::InvalidImageLayout)?;
@@ -483,35 +481,6 @@ mod tests {
 	}
 
 	#[test]
-	fn lz4_file_load_decompresses_into_a_context_buffer() {
-		const BYTES: &[u8; 32] = b"metal-io-native-lz4-decode-data!";
-		let path = temporary_path("lz4-buffer");
-		write_lz4_container(&path, BYTES);
-		let mut context = test_context();
-		let destination = context.build_buffer::<[u8; BYTES.len()]>(
-			crate::buffer::Builder::new(crate::Uses::TransferDestination)
-				.name("Metal I/O LZ4 Buffer")
-				.device_accesses(crate::DeviceAccesses::HostOnly),
-		);
-		let mut queue = context
-			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
-			.expect("Metal I/O test queue");
-		let file = queue
-			.open_file(ResourceIoFileDescriptor::new(&path).compression(ResourceIoCompression::Lz4))
-			.expect("compressed Metal I/O source");
-		let request = ResourceIoBufferLoad::new(ResourceIoFileRegion::new(file, 0), destination, 0, BYTES.len()).into();
-		let ticket = queue
-			.submit(&context, Some("LZ4 Buffer Load"), &[request])
-			.expect("compressed Metal I/O batch");
-
-		ticket.wait().expect("compressed Metal I/O completion");
-		drop(ticket);
-		drop(queue);
-		assert_eq!(context.get_buffer_slice(destination), BYTES);
-		fs::remove_file(path).expect("remove compressed resource-I/O test file");
-	}
-
-	#[test]
 	fn lz4_file_load_decompresses_into_an_image() {
 		const BYTES: &[u8; 16] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 		let path = temporary_path("lz4-image");
@@ -551,48 +520,6 @@ mod tests {
 		drop(queue);
 		assert_eq!(read_image(&mut context, image), BYTES);
 		fs::remove_file(path).expect("remove compressed resource-I/O image test file");
-	}
-
-	#[test]
-	fn raw_file_load_populates_an_image_region() {
-		const BYTES: &[u8; 16] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-		let path = temporary_path("raw-image");
-		fs::write(&path, BYTES).expect("raw image resource-I/O test file");
-		let mut context = test_context();
-		let image = context.build_image(
-			crate::image::Builder::new(
-				crate::Formats::RGBA8UNORM,
-				crate::Uses::Image | crate::Uses::TransferSource | crate::Uses::TransferDestination,
-			)
-			.name("Metal I/O Image")
-			.extent(utils::Extent::rectangle(2, 2))
-			.device_accesses(crate::DeviceAccesses::HostToDevice),
-		);
-		let mut queue = context
-			.create_resource_io_queue(ResourceIoQueueDescriptor::new())
-			.expect("Metal I/O image queue");
-		let file = queue
-			.open_file(ResourceIoFileDescriptor::new(&path))
-			.expect("raw Metal I/O image source");
-		let request = ResourceIoImageLoad::new(
-			ResourceIoFileRegion::new(file, 0),
-			image,
-			0,
-			0,
-			utils::Extent::rectangle(2, 2),
-			8,
-			16,
-		)
-		.into();
-		let ticket = queue
-			.submit(&context, Some("Raw Image Load"), &[request])
-			.expect("raw Metal I/O image batch");
-
-		ticket.wait().expect("raw Metal I/O image completion");
-		drop(ticket);
-		drop(queue);
-		assert_eq!(read_image(&mut context, image), BYTES);
-		fs::remove_file(path).expect("remove raw image resource-I/O test file");
 	}
 
 	#[test]

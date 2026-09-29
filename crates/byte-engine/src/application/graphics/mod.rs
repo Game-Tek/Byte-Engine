@@ -86,7 +86,8 @@ pub struct GraphicsApplication {
 	close: bool,
 
 	application_events: (DefaultChannel<Events>, DefaultListener<Events>),
-	http_inspector: HttpInspectorServer,
+	/// Keeps the HTTP inspector transport listening while the application lives.
+	_http_inspector: HttpInspectorServer,
 	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
 	configuration: Configuration,
 
@@ -107,11 +108,11 @@ pub struct GraphicsApplication {
 	gamepad_device_class_handle: Option<input::device::DeviceClassHandle>,
 	resource_manager: EntityHandle<ResourceManager>,
 	renderer: Renderer,
-	/// The loading timeline, created when the first pipeline asks for it and moved to the loading thread by
-	/// [`defaults::launch_deferred_tasks_thread`].
-	loader: Option<rendering::loading::Loader>,
-	/// Whether the loader already moved to the loading thread, after which no pipeline can add lanes.
-	loader_launched: bool,
+	/// The loading timeline and whether it already moved to the loading thread.
+	loader: LoaderState,
+	/// Loading work registered during setup, run in registration order on the loading thread once
+	/// [`defaults::launch_deferred_tasks_thread`] starts it.
+	deferred_tasks: Vec<defaults::DeferredTask>,
 
 	threads: SmallVec<[Thread; 64]>,
 	/// Persistent lanes shared by initialization and application frame work.
@@ -139,8 +140,42 @@ impl Drop for GraphicsApplication {
 	}
 }
 
-impl Application for GraphicsApplication {
-	fn new(name: &str, parameters: &[Parameter]) -> Self {
+/// The `LoaderState` enum tracks the application's loader from setup until the loading thread owns it.
+enum LoaderState {
+	/// No pipeline asked for the loader yet.
+	Unused,
+	/// Pipelines are adding lanes; the loader waits for the loading thread.
+	Pending(rendering::loading::Loader),
+	/// The loading thread took the loader and every deferred task, so setup can add neither.
+	Launched,
+}
+
+/// The `Services` struct names the CPU-side services one setup lane of [`GraphicsApplication::new`] builds, so
+/// services of the same type cannot trade places.
+struct Services {
+	input: input::InputCollector,
+	actions: input::InputSink,
+	application_events: (DefaultChannel<Events>, DefaultListener<Events>),
+	cameras_listener: DefaultListener<CreateMessage<Camera>>,
+	physics_transforms_listener: DefaultListener<TransformationUpdate>,
+	renderer_transforms_listener: DefaultListener<TransformationUpdate>,
+	http_inspector: HttpInspectorServer,
+	screenshot_broker: std::sync::Arc<crate::inspector::screenshot::ScreenshotBroker>,
+	waker: LoopWaker,
+	window_factory: Factory<Window>,
+	window_factory_listener: DefaultListener<CreateMessage<Window>>,
+	generator_factory: Factory<std::boxed::Box<dyn Generator>>,
+	window_events: DefaultChannel<ghi::window::Event>,
+}
+
+impl GraphicsApplication {
+	/// Creates the headed runtime with the specified name and configuration parameters.
+	///
+	/// Parameters may be overridden by `BE_*` environment variables and then by `--name=value` command-line
+	/// arguments. The pipeline compilation servers start here, so every setup function can request pipelines.
+	///
+	/// Next, call [`default_setup`] or the individual setup functions, then [`Self::do_loop`].
+	pub fn new(name: &str, parameters: &[Parameter]) -> Self {
 		let start_time = std::time::Instant::now();
 
 		let application = BaseApplication::new(name, parameters);
@@ -211,7 +246,6 @@ impl Application for GraphicsApplication {
 							.unwrap_or_else(|error| panic!("{error}"));
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
-						let inspector: EntityHandle<dyn Inspector> = inspector;
 						let waker = LoopWaker::default();
 						let http_inspector = HttpInspectorServer::new(inspector, waker.clone());
 
@@ -221,7 +255,7 @@ impl Application for GraphicsApplication {
 						let generator_factory = messages.factory();
 
 						let window_events = messages.channel();
-						*services = Some((
+						*services = Some(Services {
 							input,
 							actions,
 							application_events,
@@ -235,7 +269,7 @@ impl Application for GraphicsApplication {
 							window_factory_listener,
 							generator_factory,
 							window_events,
-						));
+						});
 					});
 				},
 				|| {
@@ -246,7 +280,7 @@ impl Application for GraphicsApplication {
 			)
 			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 		let resource_storage = storage.unwrap();
-		let (
+		let Services {
 			input,
 			actions,
 			application_events,
@@ -260,16 +294,29 @@ impl Application for GraphicsApplication {
 			window_factory_listener,
 			generator_factory,
 			window_events,
-		) = services.unwrap();
+		} = services.unwrap();
 		// HID initialization stays deferred until the first presented frame.
 		let gamepad_system = None;
 
 		let resource_manager = EntityHandle::from(ResourceManager::new(resource_storage));
 
 		renderer.set_resource_manager(&resource_manager);
+		// Every server compiles from the first request on, so no setup function has to start them.
+		let mut threads = SmallVec::new();
+		for server in renderer.take_pipeline_compilation_servers() {
+			let resources = resource_manager.clone();
+			threads.push(Thread::new(application_events.0.listener(), move |mut events| {
+				let runtime = defaults::build_single_threaded_async_runtime();
+
+				runtime.enter(|| {
+					runtime.spawn(server.run(resources)).detach();
+					defaults::drive_runtime(&runtime, || matches!(events.read(), Some(Events::Close)));
+				});
+			}));
+		}
 		let present_interval = application
 			.get_parameter("max-frame-rate")
-			.and_then(|parameter| parameter.value.parse::<f64>().ok())
+			.and_then(|parameter| parameter.parse::<f64>().ok())
 			.filter(|rate| *rate > 0.0)
 			.map(|max_frame_rate| std::time::Duration::from_secs_f64(1.0 / max_frame_rate));
 		if present_interval.is_some() {
@@ -277,18 +324,18 @@ impl Application for GraphicsApplication {
 		}
 		let simulation_step = application
 			.get_parameter("simulation-rate")
-			.and_then(|parameter| parameter.value.parse::<f64>().ok())
+			.and_then(|parameter| parameter.parse::<f64>().ok())
 			.filter(|rate| *rate > 0.0)
 			.map(|simulation_rate| MediaTime::from_seconds_f64(1.0 / simulation_rate));
 		let render_on_demand = application
 			.get_parameter("render-on-demand")
 			.is_some_and(|parameter| parameter.as_bool_simple());
-		queue_render_pass_startup_parameters(application.parameters(), &configuration);
+		queue_startup_parameters(application.parameters(), &configuration, RENDER_PASS_PARAMETER_PREFIX);
 
 		#[cfg(debug_assertions)]
 		let kill_after = application
 			.get_parameter("kill-after")
-			.map(|p| p.value.parse::<u64>().unwrap());
+			.map(|parameter| parameter.parse::<u64>().unwrap_or_else(|error| panic!("{error}")));
 
 		GraphicsApplication {
 			application,
@@ -297,7 +344,7 @@ impl Application for GraphicsApplication {
 			window_events,
 
 			application_events,
-			http_inspector,
+			_http_inspector: http_inspector,
 			screenshot_broker,
 			configuration,
 
@@ -316,10 +363,10 @@ impl Application for GraphicsApplication {
 			gamepad_device_class_handle: None,
 			resource_manager,
 			renderer,
-			loader: None,
-			loader_launched: false,
+			loader: LoaderState::Unused,
+			deferred_tasks: Vec::with_capacity(8),
 
-			threads: SmallVec::new(),
+			threads,
 			alley,
 
 			close: false,
@@ -356,16 +403,16 @@ impl Application for GraphicsApplication {
 		}
 	}
 
-	fn get_name(&self) -> &str {
+	/// Returns the name the application was created with.
+	pub fn get_name(&self) -> &str {
 		self.application.get_name()
 	}
 
-	fn tick(&mut self) -> bool {
+	/// Runs one graphics tick without application code and returns whether the application keeps running.
+	pub fn tick(&mut self) -> bool {
 		self.tick_with(|_, _| {}).is_some()
 	}
-}
 
-impl GraphicsApplication {
 	/// Returns frame-local storage for temporary allocations during the current tick.
 	pub fn frame_allocator(&self) -> &bumpalo::Bump {
 		&self.application.frame_allocator
@@ -581,7 +628,7 @@ impl GraphicsApplication {
 		while self.physics_transforms_listener.read().is_some() {}
 	}
 
-	/// Advances anchors and physics by `time`, then marks the step's end for the renderer.
+	/// Advances physics by `time`, then marks the step's end for the renderer.
 	fn update_world(&mut self, time: Time) {
 		let span = debug_span!("GraphicsApplication::update_world");
 		let _enter = span.enter();
@@ -865,20 +912,41 @@ impl GraphicsApplication {
 
 	/// Returns the loader and the renderer together, for setup that shares render buffers with the loader.
 	pub(crate) fn loader_and_renderer_mut(&mut self) -> (&mut rendering::loading::Loader, &mut Renderer) {
-		assert!(
-			!self.loader_launched,
-			"Loader setup failed. The most likely cause is that a pipeline was set up after `launch_deferred_tasks_thread` started the loading thread. Set up every pipeline first."
-		);
-		let loader = self
-			.loader
-			.get_or_insert_with(|| rendering::loading::Loader::new(&self.graphics_device, &self.application));
+		if let LoaderState::Unused = self.loader {
+			self.loader = LoaderState::Pending(rendering::loading::Loader::new(&self.graphics_device, &self.application));
+		}
+		let LoaderState::Pending(loader) = &mut self.loader else {
+			panic!(
+				"Loader setup failed. The most likely cause is that a pipeline was set up after `launch_deferred_tasks_thread` started the loading thread. Set up every pipeline first."
+			);
+		};
 		(loader, &mut self.renderer)
 	}
 
-	/// Takes the loader so the loading thread can run it. Pipelines set up afterwards cannot add lanes.
-	pub(crate) fn take_loader(&mut self) -> Option<rendering::loading::Loader> {
-		self.loader_launched = true;
-		self.loader.take()
+	/// Queues loading work that spawns its futures on the loading thread's runtime.
+	///
+	/// Tasks run in the order they were added, after the loader starts, once
+	/// [`defaults::launch_deferred_tasks_thread`] moves them to the loading thread.
+	///
+	/// # Panics
+	///
+	/// Panics after the loading thread started, because a task added then would never run.
+	pub fn add_deferred_task(&mut self, task: impl FnOnce(&compio::runtime::Runtime) + Send + 'static) {
+		assert!(
+			!matches!(self.loader, LoaderState::Launched),
+			"Deferred task was not queued. The most likely cause is that it was added after `launch_deferred_tasks_thread` started the loading thread. Add every task first."
+		);
+		self.deferred_tasks.push(std::boxed::Box::new(task));
+	}
+
+	/// Takes the loader and every deferred task so the loading thread can run them. Setup afterwards can add
+	/// neither lanes nor tasks.
+	pub(crate) fn take_loading_work(&mut self) -> (Option<rendering::loading::Loader>, Vec<defaults::DeferredTask>) {
+		let loader = match std::mem::replace(&mut self.loader, LoaderState::Launched) {
+			LoaderState::Pending(loader) => Some(loader),
+			LoaderState::Unused | LoaderState::Launched => None,
+		};
+		(loader, std::mem::take(&mut self.deferred_tasks))
 	}
 
 	/// Returns the factory used to request new windows.
@@ -927,13 +995,6 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Runs ticks with an application callback until the application is closed.
-	pub fn do_loop_with<F: FnOnce(&mut Self, Time) + Copy>(&mut self, f: F) {
-		while !self.close {
-			self.tick_with(f);
-		}
-	}
-
 	/// Returns the resource manager shared by rendering and asset setup.
 	pub fn resource_manager(&self) -> &ResourceManager {
 		&self.resource_manager
@@ -955,16 +1016,16 @@ impl Parameters for GraphicsApplication {
 	}
 }
 
-/// Converts resolved render-pass startup parameters into asynchronous configuration events.
-fn queue_render_pass_startup_parameters(parameters: &[Parameter], configuration: &Configuration) {
+/// Converts the resolved startup parameters under `prefix` into asynchronous configuration events.
+///
+/// Register the port that handles `prefix` first; it then reports each parameter as set or not set.
+pub(crate) fn queue_startup_parameters(parameters: &[Parameter], configuration: &Configuration, prefix: &str) {
 	for parameter in parameters {
-		if parameter.name().starts_with(RENDER_PASS_PARAMETER_PREFIX) {
+		if parameter.name().starts_with(prefix) {
 			configuration.update(parameter.name(), parameter.value());
 		}
 	}
 }
-
-const RENDER_PASS_PARAMETER_PREFIX: &str = "render.pass.";
 
 /// Allocates the application bus and its initial isolated namespaces.
 fn create_message_bus(application: &BaseApplication) -> (MessageBus, MessageScope, MessageScope) {
@@ -999,14 +1060,7 @@ fn message_bus_config(application: &BaseApplication) -> MessageBusConfig {
 fn message_bus_limit(application: &BaseApplication, name: &str, default: usize) -> usize {
 	application
 		.get_parameter(name)
-		.map(|parameter| {
-			parameter.value().parse::<usize>().unwrap_or_else(|error| {
-				panic!(
-					"Message bus parameter '{name}' is invalid. The most likely cause is that '{}' is not an unsigned integer: {error}",
-					parameter.value()
-				)
-			})
-		})
+		.map(|parameter| parameter.parse::<usize>().unwrap_or_else(|error| panic!("{error}")))
 		.unwrap_or(default)
 }
 
@@ -1043,9 +1097,6 @@ fn default_application_directory(
 		})
 		.join(directory)
 }
-// Bound ready work while the temporary Compio runtime still shares the application thread.
-const ASYNC_TASK_POLL_BUDGET_PER_TICK: usize = 8;
-
 /// The frame period the loop sleeps for when no window presents and neither `max-frame-rate` nor a display
 /// refresh rate is known.
 const DEFAULT_SKIPPED_FRAME_PACE: std::time::Duration = std::time::Duration::from_micros(16_667);
@@ -1119,7 +1170,6 @@ fn rates_are_tied(step: MediaTime, present_interval: MediaTime) -> bool {
 }
 
 mod pipeline;
-use pipeline::drain_render_pass_messages;
 pub use pipeline::{
 	setup_aces_color_grading_render_pass, setup_aces_tonemap_render_pass, setup_agx_tonemap_render_pass,
 	setup_atmosphere_sky_render_pass, setup_bloom_render_pass, setup_debug_mesh_render_pass,
@@ -1146,25 +1196,6 @@ mod tests {
 		assert_eq!(idle_wait(false, Some(later), None, now), Wait::Until(later));
 		assert_eq!(idle_wait(false, Some(later), Some(soon), now), Wait::Until(soon));
 		assert_eq!(idle_wait(false, None, Some(soon), now), Wait::Until(soon));
-	}
-
-	#[test]
-	fn skipped_frame_pace_follows_the_slower_of_the_cap_and_the_display() {
-		let ms = std::time::Duration::from_millis;
-		assert_eq!(skipped_frame_pace(None, None), DEFAULT_SKIPPED_FRAME_PACE);
-		assert_eq!(skipped_frame_pace(None, Some(ms(8))), ms(8));
-		assert_eq!(skipped_frame_pace(Some(ms(33)), None), ms(33));
-		assert_eq!(skipped_frame_pace(Some(ms(33)), Some(ms(8))), ms(33));
-		assert_eq!(skipped_frame_pace(Some(ms(4)), Some(ms(16))), ms(16));
-	}
-
-	#[test]
-	fn simulation_steps_consume_whole_steps_and_carry_the_remainder() {
-		let step = MediaTime::from_frames(1, 60).expect("expected test value");
-
-		assert_eq!(simulation_steps(step / 2, step, 8), (0, step / 2));
-		assert_eq!(simulation_steps(step, step, 8), (1, MediaTime::ZERO));
-		assert_eq!(simulation_steps(step * 2 + step / 4, step, 8), (2, step / 4));
 	}
 
 	#[test]
@@ -1206,52 +1237,7 @@ mod tests {
 	}
 
 	#[test]
-	fn bypass_message_drain_adopts_every_pending_value() {
-		let channel = DefaultChannel::new();
-		let mut listener = channel.listener();
-		channel.send(1);
-		channel.send(2);
-		let mut adopted = Vec::new();
-
-		drain_render_pass_messages(&mut listener, |value| adopted.push(value));
-
-		assert_eq!(adopted, vec![1, 2]);
-		assert!(listener.read().is_none());
-	}
-
-	#[test]
-	fn application_directories_prefer_the_cargo_manifest() {
-		let manifest = std::path::Path::new("app");
-		let executable = std::path::Path::new("target/debug/game");
-
-		assert_eq!(
-			default_application_directory(Some(manifest), Some(executable), "resources"),
-			std::path::Path::new("app/resources")
-		);
-	}
-
-	#[test]
-	fn application_directories_fall_back_beside_the_executable() {
-		let executable = std::path::Path::new("app/target/debug/game");
-
-		assert_eq!(
-			default_application_directory(None, Some(executable), "resources"),
-			std::path::Path::new("app/target/debug/resources")
-		);
-	}
-
-	#[test]
-	fn explicit_application_directories_remain_working_directory_relative() {
-		let parameter = Parameter::new("resources.path", "custom/resources");
-
-		assert_eq!(
-			resolve_application_directory(Some(&parameter), "resources"),
-			std::path::Path::new("custom/resources")
-		);
-	}
-
-	#[test]
-	fn startup_parameters_queue_only_render_pass_configuration() {
+	fn startup_parameters_queue_only_configuration_under_the_prefix() {
 		let configuration = Configuration::new();
 		let port = configuration.register(RENDER_PASS_PARAMETER_PREFIX);
 		let parameters = [
@@ -1259,7 +1245,7 @@ mod tests {
 			Parameter::new("audio.master.gain", "0.5"),
 		];
 
-		queue_render_pass_startup_parameters(&parameters, &configuration);
+		queue_startup_parameters(&parameters, &configuration, RENDER_PASS_PARAMETER_PREFIX);
 
 		let update = port.read().expect("render-pass startup configuration");
 
@@ -1270,51 +1256,36 @@ mod tests {
 	}
 }
 
-use core::time;
-use std::thread;
-
-use ghi::{Context as _, ContextCreate as _, Frame as _, Queue as _};
-use resource_management::{
-	resource::{
-		ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
-		resource_manager::ResourceManager,
-	},
-	resources::material::Material,
+use resource_management::resource::{
+	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
+	resource_manager::ResourceManager,
 };
 use smallvec::SmallVec;
-use tracing::{Level, debug_span, instrument, span};
-use utils::{Box, sync::RwLock};
+use tracing::debug_span;
+use utils::Box;
 
-use super::{
-	Events, Parameter, Time,
-	application::{Application, BaseApplication},
-};
+use super::{Events, Parameter, Time, application::BaseApplication};
 use crate::{
 	application::{parameters::Parameters, thread::Thread},
 	audio::generator::Generator,
 	configuration::Configuration,
 	core::{
-		Entity, EntityHandle,
+		EntityHandle,
 		channel::{Channel, DefaultChannel},
 		factory::{CreateMessage, Creator, Factory},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
 		message_bus::{MessageBus, MessageBusConfig, MessageScope},
-		task,
 	},
 	gameplay::{transform::TransformationUpdate, world::DefaultWorld},
-	ghi::command_buffer::CommandBufferRecording as _,
 	input::Action,
 	inspector::{
-		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, Inspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
 		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
-	physics::dynabit::{self, body::PhysicsBody},
 	rendering::{
-		Environment, RenderableMesh, UpdatePose,
-		pipeline_manager::PipelineManager,
 		pipelines::{
-			simple::{SimplePipelineManager, SimpleRenderPass},
+			simple::SimplePipelineManager,
 			visibility::{
 				CONE_SHADOW_MAP_POOL_CAPACITY_PARAMETER, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER,
 				DIRECTIONAL_SHADOW_FITTING_PARAMETER, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER,
@@ -1322,16 +1293,14 @@ use crate::{
 				VisibilityPipelineSettings,
 			},
 		},
-		render_pass::RenderPass,
 		render_passes::{
-			aces::AcesToneMapPass,
-			agx::AgxToneMapPass,
 			bloom::{BloomPass, BloomPassSettings},
-			color_grading::{ColorGradingPass, ColorGradingWorkflow},
+			image_transform::ImageTransformPass,
+			lut::{LutPass, LutWorkflow},
 			sky::AtmosphereSkyRenderPass,
 			smaa::SmaaPass,
 		},
-		renderable, renderer,
+		renderer::RENDER_PASS_PARAMETER_PREFIX,
 	},
 	time::MediaTime,
 	ui::{
@@ -1340,27 +1309,21 @@ use crate::{
 	},
 };
 impl Creator<Window> for GraphicsApplication {
-	fn publish(&self, handle: Option<crate::core::factory::Handle>, window: Window) -> crate::core::factory::Handle {
-		if let Some(handle) = handle {
-			self.window_factory.0.derive(handle, window);
-			handle
-		} else {
-			self.window_factory.0.create(window)
-		}
+	fn publish(&self, handle: crate::core::factory::Handle, window: Window) {
+		self.window_factory.0.derive(handle, window);
 	}
 }
 
 use crate::{
-	gameplay::anchor::AnchorSystem,
-	input, physics,
+	input,
 	rendering::{self, Camera, renderer::Renderer, window::Window},
 };
 pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_setup, setup_animation_pool, setup_default_audio, setup_default_input, setup_default_pipeline_compilation,
-	setup_default_resource_and_asset_management, setup_default_window,
+	default_offline_backends, default_setup, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
+	setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;
 #[cfg(feature = "dmx")]

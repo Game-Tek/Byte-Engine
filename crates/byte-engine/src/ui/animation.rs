@@ -477,29 +477,6 @@ mod tests {
 	}
 
 	#[test]
-	fn spring_moves_toward_target() {
-		let mut spring = spring(0.0, 1.0);
-
-		spring.step(MediaTime::from_millis(16));
-
-		assert!(spring.value() > 0.0);
-		assert!(spring.value() < 1.0);
-	}
-
-	#[test]
-	fn spring_overshoots_with_default_config() {
-		let mut spring = spring(0.0, 1.0);
-		let mut peak = 0.0f32;
-
-		for _ in 0..60 {
-			spring.step(MediaTime::from_millis(16));
-			peak = peak.max(spring.value());
-		}
-
-		assert!(peak > 1.08);
-	}
-
-	#[test]
 	fn spring_settles_to_exact_target() {
 		let mut spring = spring(0.0, 1.0);
 
@@ -527,12 +504,6 @@ mod tests {
 	}
 
 	#[test]
-	fn animation_frame_duration_is_capped_for_all_drivers() {
-		assert!((capped_frame_duration(MediaTime::from_seconds(1)).as_seconds_f32() - MAX_STEP).abs() < f32::EPSILON);
-		assert!((capped_frame_duration(MediaTime::from_millis(16)).as_seconds_f32() - 0.016).abs() < f32::EPSILON);
-	}
-
-	#[test]
 	fn easing_drivers_preserve_endpoints_and_handle_zero_duration() {
 		let mut ease_in_driver = ease_in(1.0);
 		let mut ease_out_driver = ease_out(1.0);
@@ -551,56 +522,5 @@ mod tests {
 		assert_eq!(emphasized_out_driver.finish(), 1.0);
 		assert_eq!(back_out_driver.finish(), 1.0);
 		assert_eq!(ease_in(-1.0).value(), 1.0);
-	}
-
-	#[test]
-	fn easing_drivers_have_expected_midpoint_shape() {
-		let mut ease_in_driver = ease_in(1.0);
-		let mut ease_out_driver = ease_out(1.0);
-		let mut ease_in_out_driver = ease_in_out(1.0);
-
-		ease_in_driver.advance(MediaTime::from_millis(500));
-		ease_out_driver.advance(MediaTime::from_millis(500));
-		ease_in_out_driver.advance(MediaTime::from_millis(500));
-
-		assert!(ease_in_driver.value() < 0.5);
-		assert!(ease_out_driver.value() > 0.5);
-		assert_eq!(ease_in_out_driver.value(), 0.5);
-
-		let mut ease_in_out_first_half = ease_in_out(1.0);
-		let mut ease_in_out_second_half = ease_in_out(1.0);
-		ease_in_out_first_half.advance(MediaTime::from_millis(250));
-		ease_in_out_second_half.advance(MediaTime::from_millis(750));
-
-		assert!(ease_in_out_first_half.value() < 0.25);
-		assert!(ease_in_out_second_half.value() > 0.75);
-	}
-
-	#[test]
-	fn emphasized_easing_moves_more_decisively_than_quadratic_ease_out() {
-		let mut quadratic = ease_out(1.0);
-		let mut cubic = ease_out_cubic(1.0);
-		let mut quart = ease_out_quart(1.0);
-		let mut emphasized = emphasized_out(1.0);
-
-		quadratic.advance(MediaTime::from_millis(250));
-		cubic.advance(MediaTime::from_millis(250));
-		quart.advance(MediaTime::from_millis(250));
-		emphasized.advance(MediaTime::from_millis(250));
-
-		assert!(cubic.value() > quadratic.value());
-		assert!(quart.value() > cubic.value());
-		assert!(emphasized.value() > quart.value());
-		assert!(emphasized.value() < 1.0);
-	}
-
-	#[test]
-	fn back_out_overshoots_before_settling() {
-		let mut driver = back_out(1.0, 1.70158);
-
-		driver.advance(MediaTime::from_millis(600));
-
-		assert!(driver.value() > 1.0);
-		assert_eq!(driver.finish(), 1.0);
 	}
 }

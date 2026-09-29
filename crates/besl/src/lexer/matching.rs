@@ -25,7 +25,7 @@ impl MatchDomain {
 	/// Returns the domain of a scrutinee type, or an error when BESL can't match that type yet.
 	pub(super) fn of(r#type: Option<&NodeReference>) -> Result<Self, LexError> {
 		let Some(r#type) = r#type else {
-			return Err(error(format!(
+			return Err(LexError::invalid(format!(
 				"Can't infer the type of the match scrutinee. The most likely cause is a scrutinee expression without a known scalar type. Store it in a typed `let` first. See {MATCH_DOCUMENTATION}."
 			)));
 		};
@@ -37,7 +37,7 @@ impl MatchDomain {
 			Some("u32") => ("u32", 0, u32::MAX.into()),
 			Some("i32") => ("i32", i32::MIN.into(), i32::MAX.into()),
 			other => {
-				return Err(error(format!(
+				return Err(LexError::invalid(format!(
 					"Can't match on a value of type `{}`. The most likely cause is a scrutinee that isn't a `bool`, `u8`, `u16`, `u32`, or `i32` value. See {MATCH_DOCUMENTATION}.",
 					other.unwrap_or("unnamed")
 				)));
@@ -68,7 +68,7 @@ impl MatchDomain {
 			_ => None,
 		};
 		let Some(magnitude) = magnitude else {
-			return Err(error(format!(
+			return Err(LexError::invalid(format!(
 				"Match pattern `{}{value}` doesn't have type `{}`. The most likely cause is a pattern of a different type than the value being matched. See {MATCH_DOCUMENTATION}.",
 				if negative { "-" } else { "" },
 				self.type_name
@@ -77,7 +77,7 @@ impl MatchDomain {
 
 		let value = if negative { -magnitude } else { magnitude };
 		if !(self.minimum..=self.maximum).contains(&value) {
-			return Err(error(format!(
+			return Err(LexError::invalid(format!(
 				"Match pattern `{value}` is out of range for `{}`. The most likely cause is a literal larger than the scrutinee type can hold. See {MATCH_DOCUMENTATION}.",
 				self.type_name
 			)));
@@ -113,7 +113,7 @@ pub(super) fn normalize_arms(
 	}
 
 	if seen.len() as u64 != domain.maximum.abs_diff(domain.minimum) + 1 {
-		return Err(error(format!(
+		return Err(LexError::invalid(format!(
 			"Non-exhaustive match on `{}`. The most likely cause is a missing `_` arm for the values no other arm lists. See {MATCH_DOCUMENTATION}.",
 			domain.type_name
 		)));
@@ -123,8 +123,4 @@ pub(super) fn normalize_arms(
 		.pop()
 		.expect("A type with at least two values is only covered by at least one arm");
 	Ok((normalized, last.statements))
-}
-
-fn error(message: String) -> LexError {
-	LexError::Undefined { message: Some(message) }
 }

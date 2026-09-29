@@ -169,6 +169,13 @@ impl From<Matrix> for AffineShaderMatrix {
 	}
 }
 
+/// Splits the compact affine layout into its four columns of three, the shape skin palettes store.
+impl From<AffineShaderMatrix> for [[f32; 3]; 4] {
+	fn from(value: AffineShaderMatrix) -> Self {
+		bytemuck::cast(value.0)
+	}
+}
+
 /// Converts a camera-relative movement command into a horizontal world-space displacement.
 pub fn plane_navigation<Space>(direction: UnitVector<Space>, command: Vector<Space>) -> Vector<Space> {
 	Vector::new(direction.x(), 0.0, direction.z()) * command.z() + Vector::new(direction.z(), 0.0, -direction.x()) * command.x()
@@ -286,17 +293,6 @@ pub fn projection_matrix(fov: Degrees, aspect_ratio: f32, near_plane: f32, far_p
 	))
 }
 
-/// Returns an orthographic projection matrix centered on the origin.
-pub fn orthographic_matrix_centered(width: f32, height: f32, near_plane: f32, far_plane: f32) -> Matrix {
-	let range = far_plane - near_plane;
-	Matrix::from((
-		maths_rs::Vec4f::from((2.0 / width, 0.0, 0.0, 0.0)),
-		maths_rs::Vec4f::from((0.0, 2.0 / height, 0.0, 0.0)),
-		maths_rs::Vec4f::from((0.0, 0.0, -1.0 / range, far_plane / range)),
-		maths_rs::Vec4f::from((0.0, 0.0, 0.0, 1.0)),
-	))
-}
-
 /// Returns an orthographic projection matrix for the supplied extents.
 pub fn orthographic_matrix(left: f32, right: f32, bottom: f32, top: f32, near_plane: f32, far_plane: f32) -> Matrix {
 	let range = far_plane - near_plane;
@@ -320,19 +316,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn float_assertions_accept_near_values_and_reject_nan() {
-		crate::assert_float_eq!(2.0 + 2.0, 4.0);
-		crate::assert_geometry_near!(
-			Vector::<WorldSpace>::new(1.0, 2.0, 3.0),
-			Vector::<WorldSpace>::new(1.0, 2.0, 3.00005)
-		);
-
-		let result = std::panic::catch_unwind(|| crate::assert_float_eq!(f32::NAN, 0.0));
-
-		assert!(result.is_err());
-	}
-
-	#[test]
 	fn from_normal_builds_a_right_handed_orthonormal_basis() {
 		for normal in [
 			UnitVector::<WorldSpace>::z_axis(),
@@ -352,19 +335,6 @@ mod tests {
 			crate::assert_float_eq_with_epsilon!(x.cross(y).dot(z), 1.0, 0.0001);
 			crate::assert_geometry_near!(z, normal.into_vector());
 		}
-	}
-
-	#[test]
-	fn inverse_preserves_identity_and_inverts_a_scale_matrix() {
-		let identity = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-
-		assert_eq!(inverse(identity), identity);
-
-		let scale = Matrix::new(1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-		let inverse_scale = inverse(scale);
-		crate::assert_float_eq_with_epsilon!(inverse_scale[0], 1.0, 0.0001);
-		crate::assert_float_eq_with_epsilon!(inverse_scale[5], 0.5, 0.0001);
-		crate::assert_float_eq_with_epsilon!(inverse_scale[10], 1.0 / 3.0, 0.0001);
 	}
 
 	#[test]

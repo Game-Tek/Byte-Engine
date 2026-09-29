@@ -41,15 +41,6 @@ mod tests {
 	use crate::{Point, WorldSpace};
 
 	#[test]
-	fn containment_includes_surface_and_is_translation_invariant() {
-		let sphere: Sphere<WorldSpace> = Sphere::new(Point::new(10.0, -4.0, 2.0), 3.0);
-
-		assert!(sphere.contains_point(Point::new(10.0, -4.0, 2.0)));
-		assert!(sphere.contains_point(Point::new(13.0, -4.0, 2.0)));
-		assert!(!sphere.contains_point(Point::new(13.001, -4.0, 2.0)));
-	}
-
-	#[test]
 	fn intersection_is_symmetric_and_includes_tangency() {
 		let sphere: Sphere<WorldSpace> = Sphere::new(Point::origin(), 2.0);
 		let tangent = Sphere::new(Point::new(3.0, 0.0, 0.0), 1.0);

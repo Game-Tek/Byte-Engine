@@ -135,7 +135,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
 			Self::identifier(name).push_to(string);
-			if Self::is_integer_type(type_name) {
+			if is_integer_besl_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
 			string.push_str(" [[user(locn");
@@ -213,7 +213,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
 			Self::identifier(name).push_to(string);
-			if Self::is_integer_type(type_name) {
+			if is_integer_besl_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
 			string.push_str(" [[user(locn");
@@ -389,9 +389,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_separator(string);
 			string.push_str("uint instance_index [[instance_id]]");
 		}
-		if let Some(push_constant) = push_constant {
+		if push_constant.is_some() {
 			self.emit_separator(string);
-			self.emit_compute_push_constant_parameter(string, push_constant);
+			self.emit_push_constant_parameter(string);
 		}
 		if has_resources {
 			self.emit_separator(string);
@@ -466,9 +466,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_separator(string);
 			string.push_str("bool front_facing [[front_facing]]");
 		}
-		if let Some(push_constant) = push_constant {
+		if push_constant.is_some() {
 			self.emit_separator(string);
-			self.emit_compute_push_constant_parameter(string, push_constant);
+			self.emit_push_constant_parameter(string);
 		}
 		if has_resources {
 			self.emit_separator(string);
@@ -508,13 +508,6 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	pub(crate) fn is_fragment_builtin_input(name: &str) -> bool {
 		matches!(name, "front_facing")
-	}
-
-	pub(crate) fn is_integer_type(name: &str) -> bool {
-		matches!(
-			name,
-			"u8" | "u16" | "u32" | "i32" | "vec2u" | "vec2u16" | "vec4u16" | "vec2i" | "vec3u" | "vec4u"
-		)
 	}
 
 	pub(crate) fn generate_compute_shader(
@@ -776,7 +769,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
 			Self::identifier(Self::mesh_output_field_name(&name)).push_to(string);
-			if Self::is_integer_type(type_name) {
+			if is_integer_besl_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
 			string.push_str(" [[user(locn");

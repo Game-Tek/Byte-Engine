@@ -84,12 +84,29 @@ pub struct FrameKey {
 }
 
 impl FrameKey {
+	/// Identifies frame `frame_index` and selects its GPU sequence among `frames_in_flight` sequences.
+	pub(crate) fn new(frame_index: u64, frames_in_flight: u8) -> Self {
+		Self {
+			frame_index,
+			sequence_index: (frame_index % u64::from(frames_in_flight)) as u8,
+		}
+	}
+
 	/// Returns the monotonically increasing index of this frame.
 	///
 	/// Use it to seed per-frame noise or other state that must change every frame. Use
 	/// [`crate::DescriptorWrite::image_with_frame`] to address another frame's resources instead.
 	pub fn frame_index(&self) -> u64 {
 		self.frame_index
+	}
+
+	/// Returns which per-frame copy of a dynamic resource this frame reads and writes, below
+	/// [`crate::MAX_FRAMES_IN_FLIGHT`].
+	///
+	/// Use it to track which copies already hold data that changed, so a copy is rewritten only on a frame that owns
+	/// it. [`crate::frame::Frame::get_mut_dynamic_buffer_slice`] already resolves this frame's copy.
+	pub fn sequence_index(&self) -> u8 {
+		self.sequence_index
 	}
 }
 
@@ -230,11 +247,6 @@ impl AttachmentInformation {
 			LoadOp::Clear(value) => value,
 			LoadOp::Load | LoadOp::Discard => ClearValue::None,
 		}
-	}
-
-	/// Reports whether the render pass keeps what it writes.
-	pub(crate) fn stores(&self) -> bool {
-		self.store == StoreOp::Store
 	}
 
 	/// Selects the typed attachment view used for this render pass.

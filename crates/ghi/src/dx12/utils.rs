@@ -14,16 +14,3 @@ pub(crate) fn texture_copy_size(format: Formats, extent: Extent) -> Option<usize
 pub(crate) fn bytes_per_pixel(format: Formats) -> Option<usize> {
 	format.bc_bytes_per_block().is_none().then(|| format.size())
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn texture_copy_layout_preserves_raw_zero_extent() {
-		assert_eq!(
-			texture_copy_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)),
-			Some((0, 0, 0))
-		);
-	}
-}

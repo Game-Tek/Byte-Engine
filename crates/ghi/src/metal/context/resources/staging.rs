@@ -1,108 +1,40 @@
 use super::super::*;
+use crate::command_buffer::CommonCommandBufferMode as _;
 
 impl Context {
-	/// Appends every pending buffer and image upload to one Metal 4 compute submission.
+	/// Records every pending buffer and image upload into one Metal 4 submission on `queue_handle`.
+	///
+	/// The uploads use the same recording, copy, and hazard-tracking code as caller recordings, and signal the
+	/// internal upload synchronizer of the frame sequence `frame_key` selects.
 	pub(super) fn flush_pending_uploads(
 		&mut self,
 		queue_handle: graphics_hardware_interface::QueueHandle,
-		sequence_index: u8,
-		arena_index: usize,
+		frame_key: Option<graphics_hardware_interface::FrameKey>,
 	) {
 		if self.pending_buffer_syncs.is_empty() && self.pending_image_syncs.is_empty() {
 			return;
 		}
 
-		let queue_index = queue_handle.0 as usize;
-		let mut command_buffer = self.create_metal_command_buffer(queue_handle, Some("Pending Uploads"));
-		let transfer_encoder = command_buffer.computeCommandEncoder().expect(
-			"Metal 4 transfer encoder creation failed. The most likely cause is that the command buffer is in an invalid state.",
-		);
-		let mut resource_tracker = std::mem::take(&mut self.queues[queue_index].resource_tracker);
-		resource_tracker.begin_recording();
-		let scope = synchronization::MetalEncoderScope::Encoder(0);
-		#[cfg(debug_assertions)]
-		if self.settings.debug_labels {
-			transfer_encoder.setLabel(Some(&NSString::from_str("Pending Uploads")));
+		// The recording borrows the context, so the queues move out and come back empty with their capacity.
+		let mut buffer_syncs = std::mem::take(&mut self.pending_buffer_syncs);
+		let mut image_syncs = std::mem::take(&mut self.pending_image_syncs);
+		let synchronizer = self.internal_upload_synchronizer;
+		let mut recording = self.begin_recording(queue_handle, Some("Pending Uploads"), frame_key, &std::alloc::Global);
+		// The region names the upload encoder in capture tools, as "Compute: Pending Uploads".
+		recording.start_region(|label| label.write_str("Pending Uploads"));
+		for buffer_handle in buffer_syncs.drain(..) {
+			recording.sync_private_buffer(buffer_handle);
 		}
-
-		while let Some(buffer_handle) = self.pending_buffer_syncs.pop_front() {
-			let buffer = self.buffers.resource(buffer_handle);
-			let Some(staging_handle) = buffer.staging else {
-				continue;
-			};
-			let staging = self.buffers.resource(staging_handle);
-			command_buffer.retain_allocation(buffer.buffer.clone());
-			command_buffer.retain_allocation(staging.buffer.clone());
-			let barrier = resource_tracker.consume(
-				scope,
-				[
-					synchronization::MetalResourceUse::buffer(
-						staging_handle,
-						0,
-						buffer.size,
-						mtl::MTLStages::Blit,
-						crate::AccessPolicies::READ,
-					),
-					synchronization::MetalResourceUse::buffer(
-						buffer_handle,
-						0,
-						buffer.size,
-						mtl::MTLStages::Blit,
-						crate::AccessPolicies::WRITE,
-					),
-				],
-			);
-			barrier.encode(&*transfer_encoder);
-			// SAFETY: The staging and destination buffers are retained and each covers the recorded upload size.
-			unsafe {
-				transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-					staging.buffer.as_ref(),
-					0,
-					buffer.buffer.as_ref(),
-					0,
-					buffer.size as _,
-				);
-			}
+		for (image_handle, region) in image_syncs.drain(..) {
+			recording.sync_image(image_handle, region);
 		}
-
-		while let Some((image_handle, region)) = self.pending_image_syncs.pop_front() {
-			let image = self.images.resource(image_handle);
-			let Some(staging) = image.staging.as_ref() else {
-				continue;
-			};
-			command_buffer.retain_allocation(image.texture.clone());
-			let barrier = resource_tracker.consume(
-				scope,
-				[synchronization::MetalResourceUse::image(
-					image_handle,
-					Some(0),
-					None,
-					mtl::MTLStages::Blit,
-					crate::AccessPolicies::WRITE,
-				)],
-			);
-			barrier.encode(&*transfer_encoder);
-			let upload_buffer = crate::metal::command_buffer::encode_texture_upload(
-				self.device.as_ref(),
-				&mut self.upload_arenas[arena_index],
-				transfer_encoder.as_ref(),
-				image.texture.as_ref(),
-				image.description.format,
-				image.description.extent,
-				image.description.array_layers,
-				staging,
-				region,
-			);
-			command_buffer.retain_allocation(upload_buffer);
-		}
-
-		transfer_encoder.endEncoding();
-		resource_tracker.finish_recording();
-		self.queues[queue_index].resource_tracker = resource_tracker;
-		let synchronizer = self.internal_upload_synchronizer(sequence_index);
-		let submitted = self.queues[queue_index].submit_batch(queue_handle, SmallVec::from_iter([command_buffer]));
+		recording.end_region();
 		// The synchronizer owns the upload submission and its retained resources through completion.
-		self.synchronizers.resource_mut(synchronizer).signal(submitted);
+		recording.finish(synchronizer);
+
+		self.pending_buffer_syncs = buffer_syncs;
+		self.pending_image_syncs = image_syncs;
+		let sequence_index = frame_key.map_or(0, |key| key.sequence_index);
 		self.internal_upload_queues[sequence_index as usize] = Some(queue_handle);
 	}
 }

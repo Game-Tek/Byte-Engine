@@ -291,16 +291,6 @@ pub(crate) fn mat4_from_columns(matrix: [[f32; 4]; 4]) -> maths_rs::Mat4f {
 	)
 }
 
-/// Converts an affine maths-rs matrix into the compact column-major resource representation.
-pub(crate) fn affine_matrix4x3_from_matrix4(matrix: maths_rs::Mat4f) -> AffineMatrix4x3Columns {
-	[
-		[matrix[(0, 0)], matrix[(1, 0)], matrix[(2, 0)]],
-		[matrix[(0, 1)], matrix[(1, 1)], matrix[(2, 1)]],
-		[matrix[(0, 2)], matrix[(1, 2)], matrix[(2, 2)]],
-		[matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]],
-	]
-}
-
 /// Rejects non-finite matrix components before they enter serializable skeletal resources.
 pub(crate) fn validate_finite_matrix(matrix: &maths_rs::Mat4f, context: &'static str) -> Result<(), GltfSkeletalImportError> {
 	if matrix.m.iter().all(|component| component.is_finite()) {
@@ -462,10 +452,6 @@ pub(crate) fn is_gltf_animation_fragment(fragment: &str) -> bool {
 	fragment == DEFAULT_ANIMATION_FRAGMENT || fragment.starts_with(ANIMATION_FRAGMENT_PREFIX)
 }
 
-pub(crate) fn generated_gltf_skeleton_id(source: ResourceId<'_>) -> String {
-	format!("{}#{SKELETON_FRAGMENT}", source.get_base().as_ref())
-}
-
 /// Selects the first, indexed, or named clip addressed by a reserved glTF animation fragment.
 pub(crate) fn select_gltf_animation<'a>(
 	gltf: &'a gltf::Gltf,
@@ -598,7 +584,7 @@ pub(crate) fn import_gltf_animation(
 					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Translation))
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_vector3_curve(interpolation, times, values)?;
+				let curve = make_curve(interpolation, times, values, Ok)?;
 
 				if track.translation.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -609,7 +595,7 @@ pub(crate) fn import_gltf_animation(
 					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Scale))
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_vector3_curve(interpolation, times, values)?;
+				let curve = make_curve(interpolation, times, values, Ok)?;
 
 				if track.scale.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -621,7 +607,7 @@ pub(crate) fn import_gltf_animation(
 					.map(convert_gltf_quaternion)
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_quaternion_curve(interpolation, times, values)?;
+				let curve = make_curve(interpolation, times, values, normalize_gltf_quaternion_value)?;
 
 				if track.rotation.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -679,83 +665,26 @@ pub(crate) fn convert_gltf_quaternion(value: [f32; 4]) -> Result<[f32; 4], GltfS
 	Ok([-value[0], -value[1], value[2], value[3]])
 }
 
-/// Splits glTF's interleaved cubic spline triplets into graph-friendly tangent and value arrays.
-pub(crate) fn make_vector3_curve(
+/// Builds one glTF sampler's curve, splitting cubic spline triplets and adjusting each key value with `map_value`.
+///
+/// Translation and scale keep their values; rotations normalize theirs without touching derivative tangents.
+pub(crate) fn make_curve<V: Copy>(
 	interpolation: gltf::animation::Interpolation,
 	times: Vec<f32>,
-	values: Vec<[f32; 3]>,
-) -> Result<Vector3Curve, GltfSkeletalImportError> {
+	values: Vec<V>,
+	map_value: impl FnMut(V) -> Result<V, GltfSkeletalImportError>,
+) -> Result<Curve<V>, GltfSkeletalImportError> {
 	match interpolation {
-		gltf::animation::Interpolation::Step if values.len() == times.len() => Ok(Vector3Curve::Step { times, values }),
-		gltf::animation::Interpolation::Linear if values.len() == times.len() => Ok(Vector3Curve::Linear { times, values }),
-		gltf::animation::Interpolation::CubicSpline if values.len() == times.len().saturating_mul(3) => {
-			let mut in_tangents = Vec::with_capacity(times.len());
-
-			let mut key_values = Vec::with_capacity(times.len());
-
-			let mut out_tangents = Vec::with_capacity(times.len());
-
-			for triplet in values.as_chunks::<3>().0 {
-				in_tangents.push(triplet[0]);
-
-				key_values.push(triplet[1]);
-
-				out_tangents.push(triplet[2]);
-			}
-
-			Ok(Vector3Curve::CubicSpline {
-				times,
-				values: key_values,
-				in_tangents,
-				out_tangents,
-			})
-		}
-		_ => Err(GltfSkeletalImportError::InvalidAnimationOutput),
-	}
-}
-
-/// Splits quaternion cubic spline triplets without normalizing derivative tangents.
-pub(crate) fn make_quaternion_curve(
-	interpolation: gltf::animation::Interpolation,
-	times: Vec<f32>,
-	values: Vec<[f32; 4]>,
-) -> Result<QuaternionCurve, GltfSkeletalImportError> {
-	match interpolation {
-		gltf::animation::Interpolation::Step if values.len() == times.len() => Ok(QuaternionCurve::Step {
+		gltf::animation::Interpolation::Step if values.len() == times.len() => Ok(Curve::Step {
 			times,
-			values: values
-				.into_iter()
-				.map(normalize_gltf_quaternion_value)
-				.collect::<Result<Vec<_>, _>>()?,
+			values: values.into_iter().map(map_value).collect::<Result<_, _>>()?,
 		}),
-		gltf::animation::Interpolation::Linear if values.len() == times.len() => Ok(QuaternionCurve::Linear {
+		gltf::animation::Interpolation::Linear if values.len() == times.len() => Ok(Curve::Linear {
 			times,
-			values: values
-				.into_iter()
-				.map(normalize_gltf_quaternion_value)
-				.collect::<Result<Vec<_>, _>>()?,
+			values: values.into_iter().map(map_value).collect::<Result<_, _>>()?,
 		}),
 		gltf::animation::Interpolation::CubicSpline if values.len() == times.len().saturating_mul(3) => {
-			let mut in_tangents = Vec::with_capacity(times.len());
-
-			let mut key_values = Vec::with_capacity(times.len());
-
-			let mut out_tangents = Vec::with_capacity(times.len());
-
-			for triplet in values.as_chunks::<3>().0 {
-				in_tangents.push(triplet[0]);
-
-				key_values.push(normalize_gltf_quaternion_value(triplet[1])?);
-
-				out_tangents.push(triplet[2]);
-			}
-
-			Ok(QuaternionCurve::CubicSpline {
-				times,
-				values: key_values,
-				in_tangents,
-				out_tangents,
-			})
+			Curve::cubic_spline_from_triplets(times, values.as_chunks::<3>().0, map_value)
 		}
 		_ => Err(GltfSkeletalImportError::InvalidAnimationOutput),
 	}
@@ -873,7 +802,7 @@ pub(crate) fn adjust_gltf_inverse_bind(
 
 	validate_affine_matrix(&adjusted, "matrix after coordinate conversion")?;
 
-	Ok(affine_matrix4x3_from_matrix4(adjusted))
+	Ok(math::AffineShaderMatrix::from(adjusted).into())
 }
 
 /// The `GltfVertexSkinIterator` struct normalizes borrowed glTF influence sets without staging per-primitive vectors.

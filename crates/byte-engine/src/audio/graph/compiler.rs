@@ -82,72 +82,53 @@ impl AudioGraph {
 		}
 		visiting[node_id.0] = true;
 
-		let properties = match &*self.nodes[node_id.0] {
-			AudioNode::Sample { resource_id } => {
-				if resource_id.is_empty() {
-					return Err("Invalid audio sample node. The sample resource ID is empty.".to_string());
-				}
-				NodeProperties::default()
+		let node = &*self.nodes[node_id.0];
+		// Reject invalid node parameters before visiting the node's inputs.
+		match node {
+			AudioNode::Sample { resource_id } if resource_id.is_empty() => {
+				return Err("Invalid audio sample node. The sample resource ID is empty.".to_string());
 			}
-			AudioNode::RoundRobin(node) => {
-				if node.inputs.is_empty() {
-					return Err("Invalid audio round-robin node. No input chains were provided.".to_string());
-				}
-				let mut combined = NodeProperties::default();
-				for input in &node.inputs {
-					combined.include(self.validate_node(*input, cached, visiting)?);
-				}
-				combined
+			AudioNode::RoundRobin(node) if node.inputs.is_empty() => {
+				return Err("Invalid audio round-robin node. No input chains were provided.".to_string());
 			}
-			AudioNode::Random(node) => {
-				if node.inputs.is_empty() {
-					return Err("Invalid audio random node. No input chains were provided.".to_string());
-				}
-				if node.last_index.is_some_and(|index| index >= node.inputs.len()) {
-					return Err("Invalid audio random node state. Its previous selection is outside its inputs.".to_string());
-				}
-				let mut combined = NodeProperties::default();
-				for input in &node.inputs {
-					combined.include(self.validate_node(*input, cached, visiting)?);
-				}
-				combined
+			AudioNode::Random(node) if node.inputs.is_empty() => {
+				return Err("Invalid audio random node. No input chains were provided.".to_string());
 			}
-			AudioNode::Loop { input } => self.validate_node(*input, cached, visiting)?,
-			AudioNode::Gain { input, gain } => {
-				if !gain.is_finite() || *gain < 0.0 {
-					return Err("Invalid audio gain node. Its gain is not finite or is negative.".to_string());
-				}
-				self.validate_node(*input, cached, visiting)?
+			AudioNode::Random(node) if node.last_index.is_some_and(|index| index >= node.inputs.len()) => {
+				return Err("Invalid audio random node state. Its previous selection is outside its inputs.".to_string());
 			}
-			AudioNode::Varispeed { input, rate } => {
-				if !rate.is_finite() || !(0.25..=4.0).contains(rate) {
-					return Err("Invalid audio varispeed node. Its rate is not finite or is outside 0.25..=4.0.".to_string());
-				}
-				let mut inherited = self.validate_node(*input, cached, visiting)?;
-				if inherited.has_varispeed {
-					return Err(
-						"Invalid audio graph. At least one selectable path contains more than one varispeed node.".to_string(),
-					);
-				}
-				inherited.has_varispeed = true;
-				inherited
+			AudioNode::Gain { gain, .. } if !gain.is_finite() || *gain < 0.0 => {
+				return Err("Invalid audio gain node. Its gain is not finite or is negative.".to_string());
 			}
-			AudioNode::PitchShift { input, ratio } => {
-				if !ratio.is_finite() || !(0.5..=2.0).contains(ratio) {
-					return Err("Invalid audio pitch-shift node. Its ratio is not finite or is outside 0.5..=2.0.".to_string());
-				}
-				let mut inherited = self.validate_node(*input, cached, visiting)?;
-				if inherited.has_pitch_shift {
-					return Err(
-						"Invalid audio graph. At least one selectable path contains more than one pitch-shift node."
-							.to_string(),
-					);
-				}
-				inherited.has_pitch_shift = true;
-				inherited
+			AudioNode::Varispeed { rate, .. } if !rate.is_finite() || !(0.25..=4.0).contains(rate) => {
+				return Err("Invalid audio varispeed node. Its rate is not finite or is outside 0.25..=4.0.".to_string());
 			}
-			AudioNode::Custom(input, _) => self.validate_node(*input, cached, visiting)?,
-		};
+			AudioNode::PitchShift { ratio, .. } if !ratio.is_finite() || !(0.5..=2.0).contains(ratio) => {
+				return Err("Invalid audio pitch-shift node. Its ratio is not finite or is outside 0.5..=2.0.".to_string());
+			}
+			_ => {}
+		}
+
+		// A selector can reach every input path, so it inherits the constraints of all of them.
+		let mut properties = NodeProperties::default();
+		for input in node.inputs() {
+			properties.include(self.validate_node(*input, cached, visiting)?);
+		}
+		match node {
+			AudioNode::Varispeed { .. } if properties.has_varispeed => {
+				return Err(
+					"Invalid audio graph. At least one selectable path contains more than one varispeed node.".to_string(),
+				);
+			}
+			AudioNode::Varispeed { .. } => properties.has_varispeed = true,
+			AudioNode::PitchShift { .. } if properties.has_pitch_shift => {
+				return Err(
+					"Invalid audio graph. At least one selectable path contains more than one pitch-shift node.".to_string(),
+				);
+			}
+			AudioNode::PitchShift { .. } => properties.has_pitch_shift = true,
+			_ => {}
+		}
 
 		visiting[node_id.0] = false;
 		cached[node_id.0] = Some(properties);

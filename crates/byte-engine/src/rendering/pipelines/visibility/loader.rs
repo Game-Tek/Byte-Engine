@@ -34,7 +34,7 @@ use crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest;
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
 use crate::rendering::resource_loading::load_texture;
 use crate::rendering::resource_loading::texture::{
-	TextureUploadLayout, load_image_streams, resource_format_to_ghi, texture_mip_extent,
+	TextureUploadLayout, load_image_streams, resource_format_to_ghi,
 };
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 use crate::rendering::{Query, Resource};
@@ -744,7 +744,7 @@ impl VisibilityLoader {
 		let diffuse_upload = layout(diffuse_format, diffuse_extent).ok_or_else(layout_failure)?;
 		let mut specular_uploads: [TextureUploadLayout; IBL_SPECULAR_LEVEL_COUNT] = std::array::from_fn(|_| diffuse_upload);
 		for (level, upload) in specular_uploads.iter_mut().enumerate() {
-			*upload = layout(specular_format, texture_mip_extent(specular_extent, level as u32)).ok_or_else(layout_failure)?;
+			*upload = layout(specular_format, specular_extent.mip(level as u32)).ok_or_else(layout_failure)?;
 		}
 		let mut staging = lane.staging().allocate(byte_count, 256).await.ok_or_else(|| {
 			LoadError(format!(
@@ -872,7 +872,7 @@ fn upward_illuminance(diffuse_cube: &[u8], face_width: u32, face_height: u32) ->
 	for y in center_rows {
 		for x in center_columns {
 			let texel = &face[(y * width + x) * BYTES_PER_TEXEL..][..BYTES_PER_TEXEL];
-			luminance += 0.2126 * channel(texel, 0) + 0.7152 * channel(texel, 1) + 0.0722 * channel(texel, 2);
+			luminance += utils::color::rec709_luminance(channel(texel, 0), channel(texel, 1), channel(texel, 2));
 		}
 	}
 	std::f32::consts::PI * luminance / 4.0

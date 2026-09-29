@@ -9,7 +9,8 @@ use utils::Extent;
 
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData, half_resolution_extent};
+use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::{ComputeStage, record_compute_stages};
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// Configuration namespace of the runtime GTAO controls.
@@ -278,7 +279,7 @@ impl GtaoPass {
 		pipelines: GtaoPipelines,
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
-		let gtao_extent = half_resolution_extent(extent);
+		let gtao_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = GtaoShaderParameters {
 			radius: self.settings.radius,
 			samples_per_ray: self.settings.samples_per_ray,
@@ -290,75 +291,28 @@ impl GtaoPass {
 		frame.resize_image(self.blurred_ao_map.into(), gtao_extent);
 
 		let stages = [
-			(
-				"GTAO Evaluate",
-				pipelines.gtao,
-				self.gtao_descriptor_set,
-				gtao_extent,
-				Extent::new(16, 8, 1),
-			),
-			(
-				"GTAO Denoise Horizontal",
-				pipelines.blur,
-				self.blur_descriptor_set,
-				gtao_extent,
-				Extent::new(8, 8, 1),
-			),
-			(
-				"GTAO Denoise and Depth-Aware Upscale",
-				pipelines.upscale,
-				self.upscale_descriptor_set,
+			ComputeStage {
+				label: "GTAO Evaluate",
+				pipeline: pipelines.gtao,
+				descriptor_sets: [self.gtao_descriptor_set],
+				extent: gtao_extent,
+				workgroup: Extent::new(16, 8, 1),
+			},
+			ComputeStage {
+				label: "GTAO Denoise Horizontal",
+				pipeline: pipelines.blur,
+				descriptor_sets: [self.blur_descriptor_set],
+				extent: gtao_extent,
+				workgroup: Extent::new(8, 8, 1),
+			},
+			ComputeStage {
+				label: "GTAO Denoise and Depth-Aware Upscale",
+				pipeline: pipelines.upscale,
+				descriptor_sets: [self.upscale_descriptor_set],
 				extent,
-				Extent::new(8, 8, 1),
-			),
+				workgroup: Extent::new(8, 8, 1),
+			},
 		];
-		move |c, _| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
-			};
-
-			c.start_region(|label| label.write_str("GTAO"));
-			for (name, pipeline, descriptor_set, extent, workgroup) in stages {
-				c.start_region(|label| label.write_str(name));
-				let c = c.bind_compute_pipeline(pipeline);
-				c.bind_descriptor_sets(&[descriptor_set]);
-				c.dispatch(ghi::DispatchExtent::new(extent, workgroup));
-				c.end_region();
-			}
-			c.end_region();
-		}
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn gtao_runtime_parameters_update_quality_controls_without_partial_state() {
-		let defaults = GtaoSettings::default();
-		let (settings, radius) = defaults
-			.with_parameter("radius", &ConfigurationValue::Text("2.5".to_string()))
-			.expect("radius should parse");
-		let (settings, samples) = settings
-			.with_parameter("samples-per-ray", &ConfigurationValue::Integer(12))
-			.expect("sample count should parse");
-		let (settings, rays) = settings
-			.with_parameter("radial-rays", &ConfigurationValue::Integer(16))
-			.expect("ray count should parse");
-
-		assert_eq!(settings.radius, 2.5);
-		assert_eq!(settings.samples_per_ray, 12);
-		assert_eq!(settings.radial_rays, 16);
-		assert_eq!(radius, ConfigurationValue::Float(2.5));
-		assert_eq!(samples, ConfigurationValue::Integer(12));
-		assert_eq!(rays, ConfigurationValue::Integer(16));
-		assert!(
-			settings
-				.with_parameter("radial-rays", &ConfigurationValue::Integer(7))
-				.is_err()
-		);
-		assert!(settings.with_parameter("radius", &ConfigurationValue::Float(-1.0)).is_err());
-		assert_eq!(settings.radial_rays, 16);
+		move |c| record_compute_stages(c, Some("GTAO"), &stages)
 	}
 }

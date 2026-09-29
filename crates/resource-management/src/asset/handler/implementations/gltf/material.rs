@@ -30,12 +30,10 @@ pub(crate) fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (
 	(unique_materials, material_indices_per_primitive)
 }
 
-/// Bounds concurrent BEAD material override bakes.
-const OVERRIDE_BAKE_CONCURRENCY: usize = 8;
-
 /// Resolves glTF materials into variants, in the order given.
 ///
-/// BEAD overrides bake as dependencies. Every other material is generated through [`store_generated_materials`].
+/// Maps each material to a BEAD override or a generated BRDF graph, then resolves them all through
+/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest.
 pub(crate) async fn resolve_gltf_materials(
 	context: BakeContext<'_>,
 	spec: Option<&serde_json::Value>,
@@ -44,18 +42,14 @@ pub(crate) async fn resolve_gltf_materials(
 	materials: &[gltf::Material<'_>],
 	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
-	let override_ids = materials
+	let sources = materials
 		.iter()
-		.map(|material| material_override(spec, material))
-		.collect::<Vec<_>>();
-
-	let generated = materials
-		.iter()
-		.zip(&override_ids)
-		.filter(|(_, override_id)| override_id.is_none())
-		.map(|(material, _)| GeneratedMaterial {
-			base_id: generated_material_base_id(mesh_url, material),
-			brdf: brdf_material_from_gltf(material),
+		.map(|material| match material_override(spec, material) {
+			Some(override_id) => MaterialSource::Override(override_id),
+			None => MaterialSource::Generated(GeneratedMaterial {
+				base_id: generated_material_base_id(mesh_url, material),
+				brdf: brdf_material_from_gltf(material),
+			}),
 		})
 		.collect::<Vec<_>>();
 
@@ -64,33 +58,12 @@ pub(crate) async fn resolve_gltf_materials(
 		.map(|image| generated_gltf_image_id(mesh_url, image.index() as u32, image.name()))
 		.collect::<Vec<_>>();
 
-	let overrides = override_ids.iter().flatten().cloned().collect::<Vec<_>>();
-
-	let (overridden, generated) = std::future::join!(
-		context.bake_dependencies::<VariantModel>(&overrides, OVERRIDE_BAKE_CONCURRENCY),
-		store_generated_materials(context, generator, mesh_url, &image_ids, generated),
-	)
-	.await;
-
-	let (mut overridden, mut generated) = (overridden?.into_iter(), generated?.into_iter());
-
-	// Put overridden and generated variants back in material order.
-	override_ids
-		.iter()
-		.map(|override_id| match override_id {
-			Some(_) => overridden.next(),
-			None => generated.next(),
-		})
-		.collect::<Option<Vec<_>>>()
-		.ok_or(LoadErrors::FailedToProcess)
+	resolve_container_materials(context, generator, mesh_url, &image_ids, sources).await
 }
 
+/// Reads the BEAD override for a named glTF material. Unnamed materials are always generated.
 pub(crate) fn material_override(spec: Option<&serde_json::Value>, material: &gltf::Material<'_>) -> Option<String> {
-	let material_name = material.name()?;
-
-	let material = &spec?["asset"][material_name];
-
-	material["asset"].as_str().map(ToString::to_string)
+	bead_material_override(spec, material.name()?)
 }
 
 pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {

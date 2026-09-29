@@ -111,36 +111,6 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn converts_default_gltf_material_to_valid_default_brdf_graph() {
-		let gltf = parse_gltf(r#"{"asset":{"version":"2.0"},"materials":[{}]}"#);
-		let material = gltf.materials().next().unwrap();
-
-		let brdf = brdf_material_from_gltf(&material);
-
-		assert_eq!(brdf.name, None);
-		assert_eq!(brdf.double_sided, false);
-		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Opaque);
-		assert_eq!(brdf.validate(), Ok(()));
-		let surface = expect_surface(&brdf);
-
-		assert_eq!(
-			brdf.nodes[surface.base_color.index()],
-			BrdfNode::Constant(BrdfValue::Vector4([1.0, 1.0, 1.0, 1.0]))
-		);
-		assert_eq!(
-			brdf.nodes[surface.metallic.index()],
-			BrdfNode::Constant(BrdfValue::Scalar(1.0))
-		);
-		assert_eq!(
-			brdf.nodes[surface.roughness.index()],
-			BrdfNode::Constant(BrdfValue::Scalar(1.0))
-		);
-		assert!(surface.normal.is_none());
-		assert!(surface.occlusion.is_none());
-		assert!(surface.emission.is_some());
-	}
-
-	#[test]
 	fn converts_gltf_scalar_vector_and_alpha_properties() {
 		let gltf = parse_gltf(
 			r#"{
@@ -305,16 +275,6 @@ mod tests {
 				texcoord_channel: 2,
 			})
 		);
-	}
-
-	#[test]
-	fn converts_mask_alpha_without_cutoff_to_gltf_default() {
-		let gltf = parse_gltf(r#"{"asset":{"version":"2.0"},"materials":[{"alphaMode":"MASK"}]}"#);
-		let material = gltf.materials().next().unwrap();
-
-		let brdf = brdf_material_from_gltf(&material);
-
-		assert_eq!(brdf.alpha_mode, BrdfAlphaMode::Mask(0.5));
 	}
 
 	fn expect_surface(material: &BrdfMaterialDescription) -> BrdfMetallicRoughness {

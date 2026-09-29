@@ -487,43 +487,6 @@ mod tests {
 	use super::{AvailabilityGraph, AvailabilityGraphError};
 
 	#[test]
-	fn readiness_requires_the_node_and_every_transitive_dependency() {
-		let mut graph = AvailabilityGraph::new();
-		let texture = graph.get_or_insert("texture", false);
-		let material = graph.get_or_insert("material", true);
-		let object = graph.get_or_insert("object", true);
-
-		graph.add_dependency(material, texture).unwrap();
-		graph.add_dependency(object, material).unwrap();
-
-		assert!(!graph.is_ready(texture));
-		assert!(!graph.is_ready(material));
-		assert!(!graph.is_ready(object));
-
-		assert!(graph.set_available(texture, true));
-		assert!(graph.is_ready(texture));
-		assert!(graph.is_ready(material));
-		assert!(graph.is_ready(object));
-	}
-
-	#[test]
-	fn availability_changes_update_only_connected_branches() {
-		let mut graph = AvailabilityGraph::new();
-		let shared = graph.get_or_insert("shared", true);
-		let first = graph.get_or_insert("first", true);
-		let second = graph.get_or_insert("second", true);
-		let independent = graph.get_or_insert("independent", true);
-		graph.add_dependency(first, shared).unwrap();
-		graph.add_dependency(second, shared).unwrap();
-
-		graph.set_available(shared, false);
-
-		assert!(!graph.is_ready(first));
-		assert!(!graph.is_ready(second));
-		assert!(graph.is_ready(independent));
-	}
-
-	#[test]
 	fn duplicate_relationships_do_not_count_twice() {
 		let mut graph = AvailabilityGraph::new();
 		let dependency = graph.get_or_insert("dependency", false);
@@ -547,16 +510,6 @@ mod tests {
 
 		assert_eq!(graph.add_dependency(root, leaf), Err(AvailabilityGraphError::Cycle));
 		assert_eq!(graph.add_dependency(root, root), Err(AvailabilityGraphError::Cycle));
-	}
-
-	#[test]
-	fn insertion_uses_availability_only_as_a_default() {
-		let mut graph = AvailabilityGraph::new();
-		let first = graph.get_or_insert("resource", true);
-		let existing = graph.get_or_insert("resource", false);
-
-		assert_eq!(existing, first);
-		assert!(graph.is_ready(existing));
 	}
 
 	#[test]

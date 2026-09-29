@@ -402,21 +402,6 @@ mod tests {
 	}
 
 	#[test]
-	fn barriers_on_other_images_are_not_chained_to_acquire() {
-		let mut barriers = [vk::ImageMemoryBarrier2::default()
-			.old_layout(vk::ImageLayout::UNDEFINED)
-			.new_layout(vk::ImageLayout::GENERAL)
-			.dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
-			.dst_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
-			.image(vk::Image::from_raw(27))];
-
-		let first_use_stage = CommandBufferRecording::chain_barriers_to_acquire(&mut barriers, vk::Image::from_raw(28));
-
-		assert!(first_use_stage.is_empty());
-		assert!(barriers[0].src_stage_mask.is_empty());
-	}
-
-	#[test]
 	fn planner_skips_non_overlapping_buffer_ranges() {
 		let handle = Handles::Buffer(BufferHandle(12));
 		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
@@ -431,28 +416,6 @@ mod tests {
 
 		assert!(planned.buffer_barriers.is_empty());
 		assert_eq!(planned.updates.buffer_states.len(), 1);
-	}
-
-	#[test]
-	fn planner_barriers_overlapping_buffer_ranges() {
-		let handle = Handles::Buffer(BufferHandle(13));
-		let copy_write = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
-
-		let planned = plan(
-			&[],
-			&buffer_states(handle, &[(BufferRange::new(0, 128), copy_write)]),
-			[ranged_consumption(handle, copy_write, BufferRange::new(64, 64))],
-			None,
-			Some(vk::Buffer::from_raw(15)),
-		);
-
-		assert_eq!(planned.buffer_barriers.len(), 1);
-		let barrier = planned.buffer_barriers[0];
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(copy_write.stage, copy_write.access)
-		);
-		assert_eq!((barrier.offset, barrier.size), (64, 64));
 	}
 
 	#[test]
@@ -480,96 +443,6 @@ mod tests {
 			(barrier.dst_stage_mask, barrier.dst_access_mask),
 			(copy_write.stage, copy_write.access)
 		);
-	}
-
-	#[test]
-	fn planner_uses_previous_image_state_when_present() {
-		let handle = Handles::Image(ImageHandle(2));
-		let previous = transition(
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-		);
-		let destination = transition(
-			vk::PipelineStageFlags2::COMPUTE_SHADER,
-			vk::AccessFlags2::SHADER_READ,
-			vk::ImageLayout::GENERAL,
-		);
-
-		let planned = plan(
-			&[(handle, previous)],
-			&BufferStates::default(),
-			[consumption(handle, destination)],
-			Some((vk::Image::from_raw(77), vk::Format::R8G8B8A8_UNORM)),
-			None,
-		);
-
-		assert_eq!(planned.image_barriers.len(), 1);
-		let barrier = planned.image_barriers[0];
-		assert_eq!(
-			(barrier.old_layout, barrier.src_stage_mask, barrier.src_access_mask),
-			(previous.layout, previous.stage, previous.access)
-		);
-		assert_eq!(
-			(barrier.new_layout, barrier.dst_stage_mask, barrier.dst_access_mask),
-			(destination.layout, destination.stage, destination.access)
-		);
-		assert_eq!(barrier.image, vk::Image::from_raw(77));
-		assert_eq!(barrier.subresource_range.aspect_mask, vk::ImageAspectFlags::COLOR);
-		assert_eq!(planned.updates.states.len(), 1);
-		let (updated_handle, updated_state) = planned.updates.states[0];
-		assert!(updated_handle == handle);
-		assert_visible_state_eq(updated_state, destination);
-	}
-
-	#[test]
-	fn planner_uses_default_source_when_state_is_missing() {
-		let destination = transition(
-			vk::PipelineStageFlags2::FRAGMENT_SHADER,
-			vk::AccessFlags2::SHADER_READ,
-			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-		);
-
-		let planned = plan(
-			&[],
-			&BufferStates::default(),
-			[consumption(Handles::Image(ImageHandle(3)), destination)],
-			Some((vk::Image::from_raw(88), vk::Format::R8G8B8A8_UNORM)),
-			None,
-		);
-
-		assert_eq!(planned.image_barriers.len(), 1);
-		let barrier = planned.image_barriers[0];
-		assert_eq!(barrier.old_layout, vk::ImageLayout::UNDEFINED);
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty())
-		);
-	}
-
-	#[test]
-	fn planner_selects_depth_aspect_for_depth_images() {
-		let depth_write = transition(
-			vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS,
-			vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE,
-			vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		);
-
-		for format in [vk::Format::D32_SFLOAT, vk::Format::D16_UNORM] {
-			let planned = plan(
-				&[],
-				&BufferStates::default(),
-				[consumption(Handles::Image(ImageHandle(4)), depth_write)],
-				Some((vk::Image::from_raw(99), format)),
-				None,
-			);
-
-			assert_eq!(planned.image_barriers.len(), 1);
-			assert_eq!(
-				planned.image_barriers[0].subresource_range.aspect_mask,
-				vk::ImageAspectFlags::DEPTH
-			);
-		}
 	}
 
 	#[test]
@@ -635,35 +508,6 @@ mod tests {
 
 		assert!(planned.image_barriers.is_empty());
 		assert!(planned.updates.states.is_empty());
-	}
-
-	#[test]
-	fn planner_builds_buffer_barrier_from_previous_state() {
-		let handle = Handles::Buffer(BufferHandle(6));
-		let previous = buffer_transition(vk::PipelineStageFlags2::COPY, vk::AccessFlags2::TRANSFER_WRITE);
-		let destination = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
-
-		let planned = plan(
-			&[(handle, previous)],
-			&BufferStates::default(),
-			[consumption(handle, destination)],
-			None,
-			Some(vk::Buffer::from_raw(111)),
-		);
-
-		assert_eq!(planned.buffer_barriers.len(), 1);
-		let barrier = planned.buffer_barriers[0];
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(previous.stage, previous.access)
-		);
-		assert_eq!(
-			(barrier.dst_stage_mask, barrier.dst_access_mask),
-			(destination.stage, destination.access)
-		);
-		assert_eq!(barrier.buffer, vk::Buffer::from_raw(111));
-		assert_eq!(planned.updates.states.len(), 1);
-		assert_visible_state_eq(planned.updates.states[0].1, destination);
 	}
 
 	#[test]

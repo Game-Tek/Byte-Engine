@@ -1,6 +1,3 @@
-const SOURCE_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
-const OUTPUT_SLOT: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
-
 /// The `GPUMipError` enum identifies why offline material mip generation could not use the GPU path.
 #[derive(Debug)]
 pub enum GPUMipError {
@@ -37,13 +34,21 @@ impl Error for GPUMipError {}
 
 /// The `MaterialMipGenerator` struct provides GPU generation with a deterministic CPU fallback for imported material textures.
 pub struct MaterialMipGenerator {
-	client: GPUMipClient,
+	/// Requests carry the base level's width, height, and gamma.
+	worker: GpuWorker<(u32, u32, Gamma), Result<OwnedMipChain, GPUMipError>>,
 }
 
 impl MaterialMipGenerator {
 	/// Creates the dedicated offline GPU worker used by material importers.
 	pub fn try_with_default_gpu() -> Result<Self, GPUMipError> {
-		GPUMipClient::spawn(GPUMipProcessor::try_new).map(|client| Self { client })
+		let worker = GpuWorker::spawn("GPU Material Mip Worker", GPUMipProcessor::try_new, GPUMipProcessor::generate).map_err(
+			|error| match error {
+				GpuWorkerSpawnError::Initialization(error) => error,
+				GpuWorkerSpawnError::WorkerCreation(error) => GPUMipError::WorkerCreation(error.to_string()),
+				GpuWorkerSpawnError::WorkerUnavailable => GPUMipError::WorkerUnavailable,
+			},
+		)?;
+		Ok(Self { worker })
 	}
 }
 
@@ -57,7 +62,11 @@ impl MipGenerationBackend for MaterialMipGenerator {
 		base_level: &[u8],
 	) -> Result<OwnedMipChain, MipGenerationError> {
 		if format == Formats::RGBA8 {
-			match self.client.generate(width, height, gamma, base_level) {
+			let generated = self
+				.worker
+				.call((width, height, gamma), base_level)
+				.unwrap_or(Err(GPUMipError::WorkerUnavailable));
+			match generated {
 				Ok(levels) => return Ok(levels),
 				Err(error) => log::warn!(
 					"GPU material mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
@@ -68,108 +77,6 @@ impl MipGenerationBackend for MaterialMipGenerator {
 		// The GPU storage path is RGBA8. Preserve support for uncommon 16-bit imported textures through the existing filter.
 		generate_owned_lower_mip_chain(format, gamma, width, height, base_level)
 	}
-}
-
-struct GPUMipClient {
-	sender: SyncSender<WorkerMessage>,
-	responses: Mutex<mpsc::Receiver<Result<OwnedMipChain, GPUMipError>>>,
-	worker: Option<JoinHandle<()>>,
-}
-
-impl GPUMipClient {
-	fn spawn(initialize: impl FnOnce() -> Result<GPUMipProcessor, GPUMipError> + Send + 'static) -> Result<Self, GPUMipError> {
-		let (sender, receiver) = mpsc::sync_channel(1);
-		let (response_sender, responses) = mpsc::sync_channel(1);
-		let (startup, startup_receiver) = mpsc::sync_channel(1);
-		let worker = std::thread::Builder::new()
-			.name("GPU Material Mip Worker".to_string())
-			.spawn(move || {
-				let mut processor = match initialize() {
-					Ok(processor) => {
-						let _ = startup.send(Ok(()));
-						processor
-					}
-					Err(error) => {
-						let _ = startup.send(Err(error));
-						return;
-					}
-				};
-				while let Ok(message) = receiver.recv() {
-					match message {
-						WorkerMessage::Generate(request) => {
-							// SAFETY: The caller waits synchronously for this response, so the immutable base-level
-							// allocation remains live and unchanged for the reconstructed slice's full use.
-							let source = unsafe { std::slice::from_raw_parts(request.data, request.len) };
-							if response_sender
-								.send(processor.generate(request.width, request.height, request.srgb, source))
-								.is_err()
-							{
-								return;
-							}
-						}
-						WorkerMessage::Shutdown => return,
-					}
-				}
-			})
-			.map_err(|error| GPUMipError::WorkerCreation(error.to_string()))?;
-		match startup_receiver.recv() {
-			Ok(Ok(())) => Ok(Self {
-				sender,
-				responses: Mutex::new(responses),
-				worker: Some(worker),
-			}),
-			Ok(Err(error)) => {
-				let _ = worker.join();
-				Err(error)
-			}
-			Err(_) => {
-				let _ = worker.join();
-				Err(GPUMipError::WorkerUnavailable)
-			}
-		}
-	}
-
-	fn generate(&self, width: u32, height: u32, gamma: Gamma, data: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
-		let responses = self.responses.lock().map_err(|_| GPUMipError::WorkerUnavailable)?;
-		self.sender
-			.send(WorkerMessage::Generate(GPUMipRequest {
-				width,
-				height,
-				srgb: u32::from(gamma == Gamma::SRGB),
-				data: data.as_ptr(),
-				len: data.len(),
-			}))
-			.map_err(|_| GPUMipError::WorkerUnavailable)?;
-		responses.recv().map_err(|_| GPUMipError::WorkerUnavailable)?
-	}
-}
-
-impl Drop for GPUMipClient {
-	fn drop(&mut self) {
-		let _ = self.sender.send(WorkerMessage::Shutdown);
-		if let Some(worker) = self.worker.take() {
-			let _ = worker.join();
-		}
-	}
-}
-
-struct GPUMipRequest {
-	width: u32,
-	height: u32,
-	srgb: u32,
-	data: *const u8,
-	len: usize,
-}
-// SAFETY: the submitting method waits for the worker response before returning, and the source is immutably borrowed.
-unsafe impl Send for GPUMipRequest {}
-enum WorkerMessage {
-	Generate(GPUMipRequest),
-	Shutdown,
-}
-
-struct Construction {
-	context: ghi::implementation::Context,
-	owner: Box<dyn Any>,
 }
 
 /// The `GPUMipProcessor` struct owns the thread-confined compute context used for offline box filtering.
@@ -184,36 +91,15 @@ pub struct GPUMipProcessor {
 
 impl GPUMipProcessor {
 	fn try_new() -> Result<Self, GPUMipError> {
-		let features = ghi::device::Features::new().mesh_shading(false);
-		let mut instance = ghi::implementation::Instance::new(features).map_err(GPUMipError::InstanceCreation)?;
-		let mut queue = None;
-		let device = instance
-			.create_device(
-				features,
-				&mut [(
-					ghi::QueueSelection::new(ghi::WorkloadTypes::COMPUTE | ghi::WorkloadTypes::TRANSFER),
-					&mut queue,
-				)],
-			)
-			.map_err(GPUMipError::DeviceCreation)?;
-		let context = device.create_context().map_err(GPUMipError::ContextCreation)?;
-		Self::from_parts(
-			context,
-			queue.expect("GHI device creation must populate the compute queue."),
-			(device, instance),
-		)
-	}
-
-	fn from_parts<Owner: 'static>(
-		context: ghi::implementation::Context,
-		queue: ghi::QueueHandle,
-		owner: Owner,
-	) -> Result<Self, GPUMipError> {
-		let mut construction = Construction {
-			context,
-			owner: Box::new(owner),
-		};
-		let compiled = ghi::shader::compile(
+		let (context, queue, owner) = create_compute_context().map_err(|error| match error {
+			ComputeContextError::Instance(error) => GPUMipError::InstanceCreation(error),
+			ComputeContextError::Device(error) => GPUMipError::DeviceCreation(error),
+			ComputeContextError::Context(error) => GPUMipError::ContextCreation(error),
+		})?;
+		// Keep native owners alive after the context on every early-return and unwinding path.
+		let mut construction = OwnedContext { context, owner };
+		let pipeline = create_compute_kernel(
+			&mut construction.context,
 			"GPU material mip generation",
 			ghi::shader::ShaderSource::PlatformNative {
 				glsl: GPU_MIP_GLSL,
@@ -222,40 +108,19 @@ impl GPUMipProcessor {
 				hlsl: GPU_MIP_HLSL,
 				hlsl_entry_point: "generate_mip",
 			},
+			std::mem::size_of::<PushConstants>(),
 		)
-		.map_err(GPUMipError::ShaderCompilation)?;
-		let resources = [
-			ghi::ShaderResourceDescriptor::single(
-				SOURCE_SLOT,
-				ghi::ResourceKind::CombinedImageSampler,
-				ghi::AccessPolicies::READ,
-			),
-			ghi::ShaderResourceDescriptor::single(OUTPUT_SLOT, ghi::ResourceKind::StorageImage, ghi::AccessPolicies::WRITE),
-		];
-		let shader = construction
-			.context
-			.create_shader(
-				Some("GPU material mip generation"),
-				compiled.as_source(),
-				ghi::ShaderTypes::Compute,
-				resources,
-			)
-			.map_err(|_| GPUMipError::ShaderCreation)?;
-		let ranges = [ghi::pipelines::PushConstantRange::new(
-			0,
-			std::mem::size_of::<PushConstants>() as u32,
-		)];
-		let pipeline = construction.context.create_compute_pipeline(
-			ghi::pipelines::compute::Builder::new(&ranges, ghi::ShaderParameter::new(&shader, ghi::ShaderTypes::Compute))
-				.name("GPU material mip generation"),
-		);
+		.map_err(|error| match error {
+			ComputeKernelError::Compilation(error) => GPUMipError::ShaderCompilation(error),
+			ComputeKernelError::Creation => GPUMipError::ShaderCreation,
+		})?;
 		let sampler = construction.context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Linear)
 				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
 				.max_lod(0.0),
 		);
-		let Construction { context, owner } = construction;
+		let OwnedContext { context, owner } = construction;
 		Ok(Self {
 			context,
 			pipeline,
@@ -266,7 +131,10 @@ impl GPUMipProcessor {
 		})
 	}
 
-	fn generate(&mut self, width: u32, height: u32, srgb: u32, base: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
+	/// Serves one [`MaterialMipGenerator`] worker request by filtering the RGBA8 base level into its lower mip levels on the GPU.
+	fn generate(&mut self, (width, height, gamma): (u32, u32, Gamma), base: &[u8]) -> Result<OwnedMipChain, GPUMipError> {
+		// The shader filters in linear light when this push constant is non-zero.
+		let srgb = u32::from(gamma == Gamma::SRGB);
 		let expected = width as usize * height as usize * 4;
 		if base.len() != expected {
 			return Err(GPUMipError::UploadSizeMismatch {
@@ -578,16 +446,7 @@ float3 linear_to_srgb(float3 color) { float3 low=color*12.92; float3 high=1.055*
 	destination_image[p]=result;
 }"#;
 
-use std::{
-	any::Any,
-	error::Error,
-	fmt,
-	sync::{
-		Mutex,
-		mpsc::{self, SyncSender},
-	},
-	thread::JoinHandle,
-};
+use std::{any::Any, error::Error, fmt};
 
 use ghi::{
 	command_buffer::{
@@ -601,4 +460,10 @@ use ghi::{
 use utils::Extent;
 
 use super::{MipGenerationBackend, MipGenerationError, OwnedMipChain, generate_owned_lower_mip_chain};
-use crate::types::{Formats, Gamma};
+use crate::{
+	gpu_worker::{
+		ComputeContextError, ComputeKernelError, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
+		create_compute_context, create_compute_kernel,
+	},
+	types::{Formats, Gamma},
+};

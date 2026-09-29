@@ -54,7 +54,7 @@ pub use device::DeviceHandle;
 use math::Quaternion;
 pub use seat::SeatHandle;
 pub use sink::{Capture, InputSink, ResolvedAction};
-pub use trigger::{TriggerHandle, TriggerReference, TriggerRegistry};
+pub use trigger::{TriggerHandle, TriggerReference};
 
 use self::action::InputValue;
 
@@ -252,10 +252,6 @@ impl Types {
 /// reaches an action.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Function {
-	/// Treats the mapped input as an on/off value.
-	Boolean,
-	/// Converts the mapped input to a boolean using a threshold.
-	Threshold,
 	/// Passes the mapped value through without curve-specific remapping.
 	Linear,
 	/// Maps a 2D point to a 3D point on a sphere.

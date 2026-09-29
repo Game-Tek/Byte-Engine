@@ -1,10 +1,7 @@
 //! Task scheduling, event delivery, focus, and retained runtime state.
 
 use std::{
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		mpsc::Receiver,
-	},
+	sync::atomic::{AtomicBool, Ordering},
 	task::ContextBuilder,
 	time::Instant,
 };
@@ -27,13 +24,10 @@ pub(super) struct UiTask {
 	pub(super) owner: ScopeId,
 	/// The path the task was declared at, so removing an element it was declared under ends it.
 	pub(super) path: u64,
-	pub(super) inbox: VecDeque<UiEvent>,
-	pub(super) key_inbox: VecDeque<UiKeyEvent>,
-	pub(super) text_edit_inbox: VecDeque<UiTextEditEvent>,
+	pub(super) events: Channel<UiEvent>,
+	pub(super) keys: Channel<UiKeyEvent>,
+	pub(super) text_edits: Channel<UiTextEditEvent>,
 	pub(super) frame_waits: Vec<FrameWait>,
-	pub(super) event_waits: Vec<Registration<(Id, Events)>>,
-	pub(super) key_waits: Vec<Registration<(Id, Key)>>,
-	pub(super) text_edit_waits: Vec<Registration<Id>>,
 	pub(super) timer_waits: Vec<Registration<Instant>>,
 }
 
@@ -41,13 +35,10 @@ impl UiTask {
 	/// Empties an ended task's storage, keeping its capacity and waker for the next spawned task.
 	fn clear(&mut self) {
 		self.future = None;
-		self.inbox.clear();
-		self.key_inbox.clear();
-		self.text_edit_inbox.clear();
+		self.events.clear();
+		self.keys.clear();
+		self.text_edits.clear();
 		self.frame_waits.clear();
-		self.event_waits.clear();
-		self.key_waits.clear();
-		self.text_edit_waits.clear();
 		self.timer_waits.clear();
 	}
 
@@ -64,9 +55,9 @@ impl UiTask {
 	/// so its wait must not deliver input or keep the engine ticking.
 	fn keep_waits_from(&mut self, poll: u64) {
 		self.frame_waits.retain(|wait| wait.polled == poll);
-		self.event_waits.retain(|wait| wait.polled == poll);
-		self.key_waits.retain(|wait| wait.polled == poll);
-		self.text_edit_waits.retain(|wait| wait.polled == poll);
+		self.events.keep_waits_from(poll);
+		self.keys.keep_waits_from(poll);
+		self.text_edits.keep_waits_from(poll);
 		self.timer_waits.retain(|wait| wait.polled == poll);
 	}
 }
@@ -83,6 +74,146 @@ fn register<K: PartialEq>(waits: &mut Vec<Registration<K>>, key: K, poll: u64) {
 	match waits.iter_mut().find(|wait| wait.key == key) {
 		Some(wait) => wait.polled = poll,
 		None => waits.push(Registration { key, polled: poll }),
+	}
+}
+
+/// The `UiInput` trait describes one kind of input a component waits for on an element, such as a pointer event or
+/// a key.
+///
+/// Wait for one with [`ContainerContext::on`], [`ContainerContext::on_key`], or [`ContainerContext::on_text_edit`];
+/// each returns an [`InputFuture`] that resolves with the next matching input for its element.
+///
+/// [`ContainerContext::on`]: crate::ui::ContainerContext::on
+/// [`ContainerContext::on_key`]: crate::ui::ContainerContext::on_key
+/// [`ContainerContext::on_text_edit`]: crate::ui::ContainerContext::on_text_edit
+pub trait UiInput: Clone + 'static {
+	/// What a wait selects among the inputs for its element, such as the pointer event kind.
+	type Filter: PartialEq + Copy;
+
+	/// Returns the element this input is addressed to.
+	fn target(&self) -> Id;
+
+	/// Reports whether a wait for `filter` receives this input.
+	fn matches(&self, filter: Self::Filter) -> bool;
+}
+
+/// The `Routed` trait finds the [`Channel`] of an input kind in a task, so delivery code is written once.
+///
+/// [`Runtime::push_event`] delivers every kind through it. A new input kind implements [`UiInput`] and `Routed` and
+/// adds one [`Channel`] to [`UiTask`].
+pub(super) trait Routed: UiInput {
+	fn channel(task: &mut UiTask) -> &mut Channel<Self>;
+}
+
+impl UiInput for UiEvent {
+	type Filter = Events;
+
+	fn target(&self) -> Id {
+		self.target
+	}
+
+	fn matches(&self, kind: Events) -> bool {
+		self.kind == kind
+	}
+}
+
+impl Routed for UiEvent {
+	fn channel(task: &mut UiTask) -> &mut Channel<Self> {
+		&mut task.events
+	}
+}
+
+impl UiInput for UiKeyEvent {
+	type Filter = Key;
+
+	fn target(&self) -> Id {
+		self.target
+	}
+
+	fn matches(&self, key: Key) -> bool {
+		self.key == key
+	}
+}
+
+impl Routed for UiKeyEvent {
+	fn channel(task: &mut UiTask) -> &mut Channel<Self> {
+		&mut task.keys
+	}
+}
+
+/// A text-edit wait receives every edit of its element, so it has nothing to select.
+impl UiInput for UiTextEditEvent {
+	type Filter = ();
+
+	fn target(&self) -> Id {
+		self.target
+	}
+
+	fn matches(&self, _: ()) -> bool {
+		true
+	}
+}
+
+impl Routed for UiTextEditEvent {
+	fn channel(task: &mut UiTask) -> &mut Channel<Self> {
+		&mut task.text_edits
+	}
+}
+
+/// The `Channel` struct holds one task's waits for one input kind and the inputs delivered to them.
+///
+/// An input is kept only when the task waits for it; see [`Runtime::push_event`].
+pub(super) struct Channel<E: UiInput> {
+	/// Delivered inputs the task has not taken yet, in delivery order.
+	inbox: VecDeque<E>,
+	waits: Vec<Registration<(Id, E::Filter)>>,
+}
+
+impl<E: UiInput> Default for Channel<E> {
+	fn default() -> Self {
+		Self {
+			inbox: VecDeque::new(),
+			waits: Vec::new(),
+		}
+	}
+}
+
+impl<E: UiInput> Channel<E> {
+	/// Moves `input` into the inbox and ends the waits it satisfies. Returns `false`, keeping nothing, when no wait
+	/// selects it.
+	fn deliver(&mut self, input: &E) -> bool {
+		let waiting = self.waits.len();
+		self.waits
+			.retain(|wait| !(wait.key.0 == input.target() && input.matches(wait.key.1)));
+		let delivered = self.waits.len() != waiting;
+		if delivered {
+			self.inbox.push_back(input.clone());
+		}
+		delivered
+	}
+
+	/// Takes the oldest delivered input for `target` that a wait for `filter` receives.
+	fn take(&mut self, target: Id, filter: E::Filter) -> Option<E> {
+		let index = self
+			.inbox
+			.iter()
+			.position(|input| input.target() == target && input.matches(filter))?;
+		self.inbox.remove(index)
+	}
+
+	fn keep_waits_from(&mut self, poll: u64) {
+		self.waits.retain(|wait| wait.polled == poll);
+	}
+
+	fn clear(&mut self) {
+		self.inbox.clear();
+		self.waits.clear();
+	}
+
+	/// Drops the waits and inputs of removed elements.
+	fn remove_targets(&mut self, targets: &utils::hash::HashSet<Id>) {
+		self.waits.retain(|wait| !targets.contains(&wait.key.0));
+		self.inbox.retain(|input| !targets.contains(&input.target()));
 	}
 }
 
@@ -327,21 +458,10 @@ impl Runtime {
 		}
 	}
 
-	pub(super) fn wait_for_event(&mut self, task: TaskId, target: Id, kind: Events, poll: u64) {
+	/// Registers the current poll of `task` as waiting for `E` inputs to `target` that `filter` selects.
+	pub(super) fn wait_for_event<E: Routed>(&mut self, task: TaskId, target: Id, filter: E::Filter, poll: u64) {
 		if let Some(task) = self.tasks.get_mut(task) {
-			register(&mut task.event_waits, (target, kind), poll);
-		}
-	}
-
-	pub(super) fn wait_for_key(&mut self, task: TaskId, target: Id, key: Key, poll: u64) {
-		if let Some(task) = self.tasks.get_mut(task) {
-			register(&mut task.key_waits, (target, key), poll);
-		}
-	}
-
-	pub(super) fn wait_for_text_edit(&mut self, task: TaskId, target: Id, poll: u64) {
-		if let Some(task) = self.tasks.get_mut(task) {
-			register(&mut task.text_edit_waits, target, poll);
+			register(&mut E::channel(task).waits, (target, filter), poll);
 		}
 	}
 
@@ -351,62 +471,22 @@ impl Runtime {
 		}
 	}
 
-	/// Delivers an event to every task that waits for it.
+	/// Delivers an input to every task that waits for it.
 	///
-	/// Events that fire while nobody awaits them are discarded instead of queuing for a later wait. An event already
-	/// delivered to a task's inbox stays: several events can land in one frame, and a component reads them one wait
+	/// Inputs that fire while nobody awaits them are discarded instead of queuing for a later wait. An input already
+	/// delivered to a task's inbox stays: several inputs can land in one frame, and a component reads them one wait
 	/// at a time.
-	pub(super) fn push_event(&mut self, event: UiEvent) {
+	pub(super) fn push_event<E: Routed>(&mut self, input: E) {
 		for task in self.tasks.iter_mut() {
-			let waiting = task.event_waits.len();
-			task.event_waits
-				.retain(|wait| !(wait.key.0 == event.target && wait.key.1 == event.kind));
-			if task.event_waits.len() != waiting {
-				task.inbox.push_back(event.clone());
+			if E::channel(task).deliver(&input) {
 				task.wake();
 			}
 		}
 	}
 
-	pub(super) fn push_key_event(&mut self, event: UiKeyEvent) {
-		for task in self.tasks.iter_mut() {
-			let waiting = task.key_waits.len();
-			task.key_waits
-				.retain(|wait| !(wait.key.0 == event.target && wait.key.1 == event.key));
-			if task.key_waits.len() != waiting {
-				task.key_inbox.push_back(event);
-				task.wake();
-			}
-		}
-	}
-
-	pub(super) fn push_text_edit_event(&mut self, event: UiTextEditEvent) {
-		for task in self.tasks.iter_mut() {
-			let waiting = task.text_edit_waits.len();
-			task.text_edit_waits.retain(|wait| wait.key != event.target);
-			if task.text_edit_waits.len() != waiting {
-				task.text_edit_inbox.push_back(event);
-				task.wake();
-			}
-		}
-	}
-
-	pub(super) fn take_event(&mut self, task_id: TaskId, target: Id, kind: Events) -> Option<UiEvent> {
-		let inbox = &mut self.tasks.get_mut(task_id)?.inbox;
-		let index = inbox.iter().position(|e| e.target == target && e.kind == kind)?;
-		inbox.remove(index)
-	}
-
-	pub(super) fn take_key_event(&mut self, task_id: TaskId, target: Id, key: Key) -> Option<UiKeyEvent> {
-		let inbox = &mut self.tasks.get_mut(task_id)?.key_inbox;
-		let index = inbox.iter().position(|e| e.target == target && e.key == key)?;
-		inbox.remove(index)
-	}
-
-	pub(super) fn take_text_edit_event(&mut self, task_id: TaskId, target: Id) -> Option<UiTextEditEvent> {
-		let inbox = &mut self.tasks.get_mut(task_id)?.text_edit_inbox;
-		let index = inbox.iter().position(|e| e.target == target)?;
-		inbox.remove(index)
+	/// Takes the oldest input `task` received for `target` that `filter` selects.
+	pub(super) fn take_event<E: Routed>(&mut self, task: TaskId, target: Id, filter: E::Filter) -> Option<E> {
+		E::channel(self.tasks.get_mut(task)?).take(target, filter)
 	}
 
 	pub(super) fn request_focus(&mut self, target: Id) {
@@ -418,8 +498,13 @@ impl Runtime {
 		self.focus_stack.retain(|focused| *focused != target);
 	}
 
-	pub(super) fn focused_target(&mut self, is_valid: impl Fn(Id) -> bool) -> Option<Id> {
-		self.focus_stack.retain(|focused| is_valid(*focused));
+	/// Returns the element key and text input reach: the top of the focus stack among the laid-out elements.
+	///
+	/// Entries for elements the last layout did not place are dropped, so focus falls back to the element focused
+	/// before them.
+	pub(super) fn focused(&mut self) -> Option<Id> {
+		let geometry = &self.geometry;
+		self.focus_stack.retain(|focused| geometry.contains_key(focused));
 		self.focus_stack.last().copied()
 	}
 
@@ -441,12 +526,9 @@ impl Runtime {
 		}
 
 		for task in self.tasks.iter_mut() {
-			task.event_waits.retain(|wait| !targets.contains(&wait.key.0));
-			task.key_waits.retain(|wait| !targets.contains(&wait.key.0));
-			task.text_edit_waits.retain(|wait| !targets.contains(&wait.key));
-			task.inbox.retain(|event| !targets.contains(&event.target));
-			task.key_inbox.retain(|event| !targets.contains(&event.target));
-			task.text_edit_inbox.retain(|event| !targets.contains(&event.target));
+			task.events.remove_targets(targets);
+			task.keys.remove_targets(targets);
+			task.text_edits.remove_targets(targets);
 		}
 	}
 }

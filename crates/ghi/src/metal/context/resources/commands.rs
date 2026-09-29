@@ -26,15 +26,13 @@ impl Context {
 		self.create_command_buffer_recording_with_frame_key_in(command_buffer_handle, None, &std::alloc::Global)
 	}
 
+	/// Creates a recording for one GHI command buffer after submitting the uploads it may depend on.
 	pub(crate) fn create_command_buffer_recording_with_frame_key_in<'a>(
 		&'a mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> super::super::CommandBufferRecording<'a> {
-		// SAFETY: Detached recordings create and drain the pool on their owning thread.
-		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
-		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let (queue_handle, command_buffer_name) = {
 			let command_buffer = &self.command_buffers[command_buffer_handle.0 as usize];
 			let name = self.settings.debug_labels.then(|| command_buffer.name.clone()).flatten();
@@ -42,15 +40,32 @@ impl Context {
 		};
 
 		// Detached recordings have no completion point that could recycle pages, so they start from empty pages.
-		let arena_index = self.upload_arena_index(frame_key);
 		if frame_key.is_none() {
+			let arena_index = self.upload_arena_index(frame_key);
 			self.upload_arenas[arena_index].discard();
 		}
 		// Same-queue uploads stay asynchronous; a queue switch waits because pending writes have no public queue owner.
 		self.synchronize_internal_upload_queue(queue_handle);
-		self.flush_pending_uploads(queue_handle, sequence_index, arena_index);
+		self.flush_pending_uploads(queue_handle, frame_key);
 
-		let mtl_command_buffer = self.create_metal_command_buffer(queue_handle, command_buffer_name.as_deref());
+		self.begin_recording(queue_handle, command_buffer_name.as_deref(), frame_key, allocator)
+	}
+
+	/// Starts a recording on `queue_handle` without submitting pending uploads first.
+	///
+	/// Internal work that is itself part of an upload or a presentation records through this, so it shares the
+	/// hazard tracking and copy code of every other recording.
+	pub(crate) fn begin_recording<'a>(
+		&'a mut self,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+		label: Option<&str>,
+		frame_key: Option<graphics_hardware_interface::FrameKey>,
+		allocator: &'a dyn std::alloc::Allocator,
+	) -> super::super::CommandBufferRecording<'a> {
+		// SAFETY: Detached recordings create and drain the pool on their owning thread.
+		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
+		let arena_index = self.upload_arena_index(frame_key);
+		let mtl_command_buffer = self.create_metal_command_buffer(queue_handle, label);
 
 		let recording_device = super::super::command_buffer::RecordingDevice {
 			metal_device: self.device.as_ref(),
@@ -78,7 +93,6 @@ impl Context {
 		super::super::CommandBufferRecording::new(
 			recording_device,
 			commit,
-			command_buffer_handle,
 			mtl_command_buffer,
 			frame_key,
 			autorelease_pool,

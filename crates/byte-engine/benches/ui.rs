@@ -82,7 +82,7 @@ impl<C: 'static> Window<C> {
 	/// Runs one application tick and returns whether it published a new render.
 	fn tick(&mut self) -> bool {
 		self.frame_allocator.reset();
-		let mut snapshot = self.engine.evaluate(self.size, &self.frame_allocator);
+		let snapshot = self.engine.evaluate(self.size, &self.frame_allocator);
 		snapshot.retain_hit_test(&mut self.hits);
 		let render = self.engine.render();
 		if self.published == Some(render.revision()) {
@@ -1630,7 +1630,7 @@ mod sign_in {
 		loop {
 			let edit = email.on_text_edit().await;
 			edit.edit.apply_to(&mut content);
-			email.update_text_field(|f| f.content(&content)).await;
+			email.update_text(|f| f.content(&content)).await;
 			ctx.with(|c| c.typed.set(content.len())).await;
 		}
 	}

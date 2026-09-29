@@ -2,10 +2,7 @@ use std::net::SocketAddr;
 
 use betp::{self, Client as _};
 
-use crate::{
-	core::Entity,
-	network::{Replicable, client::udp, replicable::Importance},
-};
+use crate::network::client::udp;
 
 /// The `Client` struct provides the application-facing connection for a
 /// replicated client.

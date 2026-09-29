@@ -1,4 +1,6 @@
-use crate::{HandleLike, Next, PrivateHandle, PrivateHandles, Synchronizer};
+use crate::{PrivateHandle, PrivateHandles};
+#[cfg(not(target_os = "macos"))]
+use crate::{HandleLike, Next, Synchronizer};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SynchronizerHandle(pub(crate) u64);
@@ -19,6 +21,8 @@ impl PrivateHandle for SynchronizerHandle {
 	}
 }
 
+// Metal keeps its synchronizer chains in a `ResourceCollection`, so only the other backends link synchronizers themselves.
+#[cfg(not(target_os = "macos"))]
 impl HandleLike for SynchronizerHandle {
 	type Item = Synchronizer;
 
@@ -31,6 +35,7 @@ impl HandleLike for SynchronizerHandle {
 	}
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Next for Synchronizer {
 	type Handle = SynchronizerHandle;
 

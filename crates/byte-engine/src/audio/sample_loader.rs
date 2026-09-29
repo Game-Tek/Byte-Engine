@@ -3,8 +3,7 @@
 mod sample_loading;
 mod sample_pool;
 
-use sample_loading::*;
-pub(crate) use sample_loading::{AudioSampleLoader, AudioSampleLoaderClient};
+pub(crate) use sample_loading::AudioSampleLoader;
 use sample_pool::*;
 pub(crate) use sample_pool::{AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleLease, AudioSampleLeaseId};
 pub use sample_pool::{AudioSamplePoolConfig, DEFAULT_AUDIO_SAMPLE_POOL_BYTE_BUDGET};
@@ -15,10 +14,10 @@ mod tests {
 
 	use resource_management::{resources::audio::Audio, types::BitDepths};
 
+	use super::sample_loading::{AudioLoadCompletion, AudioLoadRequest, AudioSampleLoaderClient};
 	use super::{
-		AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioLoadCompletion, AudioSampleCacheKey, AudioSampleLayout,
-		AudioSampleLease, AudioSampleLeaseId, AudioSampleLoaderClient, AudioSamplePool, AudioSamplePoolConfig,
-		AudioSampleReleaseQueue, decode_into,
+		AUDIO_GRAPH_CAPACITY, AUDIO_SAMPLE_RELEASE_CAPACITY, AudioSampleCacheKey, AudioSampleLayout, AudioSampleLease,
+		AudioSampleLeaseId, AudioSamplePool, AudioSamplePoolConfig, AudioSampleReleaseQueue, decode_into,
 	};
 	use crate::{
 		audio::graph::{
@@ -87,8 +86,8 @@ mod tests {
 		let resident_bytes = layout.decoded_byte_count().unwrap();
 
 		assert!(pool.make_room(resident_bytes));
-		let region = pool.take_region(samples.len()).expect("test arena region");
-		pool.storage[region.offset..region.end()].copy_from_slice(samples);
+		let region = pool.free_scalars.take(samples.len(), 1).expect("test arena region");
+		pool.storage[region.clone()].copy_from_slice(samples);
 		pool.insert(
 			cache_key(resource_id, payload_hash, u32::try_from(samples.len()).unwrap()),
 			layout,
@@ -102,7 +101,7 @@ mod tests {
 	}
 
 	fn loader_client(
-		commands: kanal::Sender<super::AudioLoadRequest>,
+		commands: kanal::Sender<AudioLoadRequest>,
 		completions: kanal::Receiver<AudioLoadCompletion>,
 	) -> AudioSampleLoaderClient {
 		AudioSampleLoaderClient::new(commands, completions, Arc::new(AudioSampleReleaseQueue::new()))
@@ -152,30 +151,6 @@ mod tests {
 	}
 
 	#[test]
-	fn cache_key_covers_payload_hash_and_all_playback_metadata() {
-		let base = metadata(BitDepths::Sixteen, 1, 2);
-		let key = AudioSampleCacheKey::new("tone.wav", 7, base);
-
-		for distinct in [
-			AudioSampleCacheKey::new("other.wav", 7, base),
-			AudioSampleCacheKey::new("tone.wav", 8, base),
-			AudioSampleCacheKey::new("tone.wav", 7, metadata(BitDepths::Eight, 1, 2)),
-			AudioSampleCacheKey::new("tone.wav", 7, metadata(BitDepths::Sixteen, 2, 2)),
-			AudioSampleCacheKey::new(
-				"tone.wav",
-				7,
-				Audio {
-					sample_rate: 44_100,
-					..base
-				},
-			),
-			AudioSampleCacheKey::new("tone.wav", 7, metadata(BitDepths::Sixteen, 1, 3)),
-		] {
-			assert_ne!(key, distinct);
-		}
-	}
-
-	#[test]
 	fn stereo_sources_are_mixed_down_once_while_decoding() {
 		let metadata = metadata(BitDepths::Sixteen, 2, 2);
 		let layout = AudioSampleLayout::new(metadata).unwrap();
@@ -188,14 +163,6 @@ mod tests {
 		assert_eq!((layout.channel_count, layout.scalar_count), (1, 2));
 		assert_eq!(decode_into(metadata, &bytes, &mut samples), Ok(layout));
 		assert_eq!(samples, [0.0, 0.375]);
-	}
-
-	#[test]
-	fn stereo_frames_are_downmixed_to_mono() {
-		let sample = AudioSampleLease::for_test(48_000, 2, Box::from([1.0, -1.0, 0.5, 0.25]));
-
-		assert_eq!(sample.mono_frame(0), 0.0);
-		assert_eq!(sample.mono_frame(1), 0.375);
 	}
 
 	#[test]
@@ -232,30 +199,6 @@ mod tests {
 	}
 
 	#[test]
-	fn returned_arena_regions_coalesce_after_fragmentation() {
-		let mut pool = pool(24);
-		let first = pool.take_region(2).expect("first region");
-		let second = pool.take_region(2).expect("second region");
-		let third = pool.take_region(2).expect("third region");
-
-		assert!(pool.free_regions.is_empty());
-
-		pool.return_region(first);
-		pool.return_region(third);
-
-		assert_eq!(pool.free_regions, [first, third]);
-		pool.return_region(second);
-
-		assert_eq!(
-			pool.free_regions,
-			[super::AudioSampleRegion {
-				offset: 0,
-				scalar_count: 6
-			}]
-		);
-	}
-
-	#[test]
 	fn failed_decode_returns_its_reserved_arena_region() {
 		let mut pool = pool(8);
 		let metadata = metadata(BitDepths::Sixteen, 1, 2);
@@ -269,7 +212,7 @@ mod tests {
 
 		assert!(error.contains("requires 4"));
 		assert_eq!(pool.resident_bytes, 0);
-		assert_eq!(pool.free_regions[0].scalar_count, 2);
+		assert!(pool.free_scalars.fits(2, 1));
 	}
 
 	#[test]
@@ -348,18 +291,6 @@ mod tests {
 		}
 
 		assert!(queue.pop().is_none());
-	}
-
-	#[test]
-	fn decoded_sample_size_is_checked_before_pool_admission() {
-		assert_eq!(
-			AudioSampleLayout::new(metadata(BitDepths::Eight, 1, 4)).and_then(AudioSampleLayout::decoded_byte_count),
-			Ok(16)
-		);
-		let mut pool = pool(8);
-
-		assert!(!pool.make_room(16));
-		assert_eq!(pool.resident_bytes, 0);
 	}
 
 	#[test]

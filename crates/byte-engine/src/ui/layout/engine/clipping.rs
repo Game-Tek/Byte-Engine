@@ -1,6 +1,7 @@
 //! Clipping, clip-mask, and visual-transform preparation.
 
 use super::*;
+use crate::ui::components::container::Sector;
 
 #[derive(Clone, Copy)]
 pub(super) enum EffectiveClip {
@@ -83,9 +84,10 @@ pub(super) fn inherited_visual_state(
 	states: &[VisualState],
 ) -> VisualState {
 	let mut inherited = tree.parents[index].map(|parent| states[parent]).unwrap_or_default();
-	let primitive = &tree.elements[index].element.primitive;
+	let node = &tree.elements[index];
+	let primitive = &node.primitive;
 	// Transforms compose through absolute-depth layers even though clipping restarts there.
-	let scale = composed_scale(inherited.scale, primitive.transform());
+	let scale = composed_scale(inherited.scale, &node.transform);
 	if matches!(primitive, Primitives::Container(container) if matches!(container.depth, Depth::Absolute(_))) {
 		inherited = VisualState::default();
 	}
@@ -103,12 +105,12 @@ pub(super) fn inherited_visual_state(
 		&& container.clip
 	{
 		// Descendants clip to the inside of the border, so they never paint over an inset stroke.
-		let border = border_width(container.style.layers());
+		let border = border_width(node.style.layers());
 		let geometry = geometry_from_layout_element(element).expanded(-border);
 		let corner_radius = (container.corner_radius - border).max(0.0);
 		state.descendant_clip = clip.clip_descendants(geometry);
 		// A rounded container masks its descendants even without a feather; the rectangle clip cannot round.
-		let own_feather = first_layer_feather(container.style.layers());
+		let own_feather = first_layer_feather(node.style.layers());
 		state.descendant_mask = (own_feather.is_some() || corner_radius > 0.0)
 			.then(|| ClipMask {
 				geometry,
@@ -138,21 +140,21 @@ pub(super) fn effective_opacity(index: usize, tree: &RetainedTree, states: &mut 
 	let parent = tree.parents[index]
 		.map(|parent| effective_opacity(parent, tree, states))
 		.unwrap_or(1.0);
-	let local = sanitize_opacity(tree.elements[index].element.primitive.visual().opacity);
+	let local = sanitize_opacity(tree.elements[index].opacity);
 	let opacity = (parent * local).clamp(0.0, 1.0);
 	states[index].opacity = Some(opacity);
 	opacity
 }
 
-pub(super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
+pub(in super::super) fn first_layer_feather(layers: &[crate::ui::style::ConcreteLayer]) -> Option<EdgeFeather> {
 	layers
 		.iter()
 		.map(crate::ui::style::Layer::feather)
 		.find(|feather| !feather.is_none())
 }
 
-/// Widest inset stroke among the layers, in layout units.
-fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
+/// Widest stroke among the layers, in layout units. Containers stroke it inward, curves outward.
+pub(super) fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
 	layers
 		.iter()
 		.filter_map(|layer| match layer.kind() {
@@ -165,12 +167,11 @@ fn border_width(layers: &[crate::ui::style::ConcreteLayer]) -> f32 {
 /// Hit geometry for one frame: clipped bounds, plus the polylines curves are hit along.
 pub(super) struct HitGeometry<'a> {
 	pub(super) elements: Vec<LayoutElement, &'a bumpalo::Bump>,
+	/// The sector each entry of `elements` is shaped as.
+	pub(super) sectors: Vec<Option<Sector>, &'a bumpalo::Bump>,
 	pub(super) curves: Vec<HitCurve, &'a bumpalo::Bump>,
 	pub(super) points: Vec<Location, &'a bumpalo::Bump>,
 }
-
-/// Layout distance a flattened curve may stray from its true shape for hit testing.
-const HIT_CURVE_TOLERANCE: f32 = 0.25;
 
 /// Keeps visible geometry for hit testing while preserving layout depth.
 ///
@@ -186,6 +187,7 @@ pub(super) fn clipped_hit_elements<'a>(
 ) -> HitGeometry<'a> {
 	let mut hit = HitGeometry {
 		elements: Vec::new_in(frame_allocator),
+		sectors: Vec::new_in(frame_allocator),
 		curves: Vec::new_in(frame_allocator),
 		points: Vec::new_in(frame_allocator),
 	};
@@ -207,17 +209,17 @@ pub(super) fn clipped_hit_elements<'a>(
 			hit.points.extend_from_slice(&flattened);
 		}
 		// Placement is reused across sector edits, so the shape is read from the tree as it is now.
-		let sector = index.and_then(|index| match &tree.elements[index].element.primitive {
-			Primitives::Container(container) => container.sector,
-			_ => None,
-		});
+		hit.sectors
+			.push(index.and_then(|index| match &tree.elements[index].primitive {
+				Primitives::Container(container) => container.sector,
+				_ => None,
+			}));
 		hit.elements.push(LayoutElement {
 			id: element.id,
 			index: element.index,
 			position: entry.position,
 			size: entry.size,
 			hit_testable: element.hit_testable,
-			sector,
 		});
 	}
 
@@ -242,16 +244,18 @@ fn hit_entry(
 ) -> HitEntry {
 	flattened.clear();
 	let clip = index.map(|index| states[index].clip).unwrap_or(EffectiveClip::Unbounded);
-	let curve = index.and_then(|index| match &tree.elements[index].element.primitive {
-		Primitives::Curve(curve) => curve.hit_width().map(|width| (curve, width, states[index].scale)),
+	let curve = index.and_then(|index| match &tree.elements[index].primitive {
+		Primitives::Curve(curve) => curve
+			.hit_width()
+			.map(|width| (curve, width, states[index].scale, tree.elements[index].revision)),
 		_ => None,
 	});
 	// A curve is bounded by its flattened points; the half width is in scaled layout units.
 	let (bounds, half_width) = match curve {
-		Some((curve, width, scale)) => {
+		Some((curve, width, scale, revision)) => {
 			let origin = (element.position.x(), element.position.y());
 			let cached = curves.entry(element.id).or_default();
-			cached.update(curve.path().segments(), scale, HIT_CURVE_TOLERANCE);
+			cached.update(revision, curve.path().segments(), scale);
 			flattened.extend(
 				cached
 					.points
@@ -363,10 +367,7 @@ pub(super) fn update_visual_subtree(
 		dirty.push(index);
 		let local = placement[offset];
 		let parent = tree.parents[index].map_or_else(Affine2::identity, |parent| resolved[parent]);
-		let transform = parent.compose(Affine2::from_transform(
-			*tree.elements[index].element.primitive.transform(),
-			&local,
-		));
+		let transform = parent.compose(Affine2::from_transform(tree.elements[index].transform, &local));
 		let (position, size) = transform.transform_rect(&local);
 		elements[offset].position = position;
 		elements[offset].size = size;

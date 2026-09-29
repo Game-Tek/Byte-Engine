@@ -86,27 +86,6 @@ impl Generator {
 		}
 	}
 
-	pub(crate) fn hlsl_buffer_member_type(source: &besl::NodeReference, member_name: &str) -> Option<String> {
-		match source.borrow().node() {
-			besl::Nodes::Binding {
-				r#type: besl::BindingTypes::Buffer { members },
-				..
-			} => members.iter().find_map(|member| {
-				let member = member.borrow();
-				let besl::Nodes::Member { name, r#type, .. } = member.node() else {
-					return None;
-				};
-				(name == member_name)
-					.then(|| r#type.borrow().get_name().map(str::to_string))
-					.flatten()
-			}),
-			besl::Nodes::Expression(besl::Expressions::Member { source, .. }) => {
-				Self::hlsl_buffer_member_type(source, member_name)
-			}
-			_ => None,
-		}
-	}
-
 	pub(crate) fn hlsl_member_name(member: &besl::NodeReference) -> Option<String> {
 		let member = member.borrow();
 		let besl::Nodes::Expression(besl::Expressions::Member { name, .. }) = member.node() else {
@@ -115,163 +94,12 @@ impl Generator {
 		Some(name.to_string())
 	}
 
+	/// Returns the BESL name of the value type `node` produces, or `None` when linking cannot know it.
+	///
+	/// The HLSL emitters use it to pick type-dependent spellings, such as `mul()` for matrix products. It delegates to
+	/// [`besl::infer_expression_type`], so every backend types expressions the same way.
 	pub(crate) fn node_type_name(node: &besl::NodeReference) -> Option<String> {
-		match node.borrow().node() {
-			besl::Nodes::Parameter { r#type, .. }
-			| besl::Nodes::Member { r#type, .. }
-			| besl::Nodes::Input { format: r#type, .. }
-			| besl::Nodes::Output { format: r#type, .. }
-			| besl::Nodes::TaskPayload { format: r#type, .. }
-			| besl::Nodes::Workgroup { format: r#type, .. }
-			| besl::Nodes::Specialization { r#type, .. }
-			| besl::Nodes::Const { r#type, .. }
-			| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { r#type, .. }) => {
-				r#type.borrow().get_name().map(str::to_string)
-			}
-			besl::Nodes::Struct { name, .. } => Some(name.to_string()),
-			besl::Nodes::Function { return_type, .. }
-			| besl::Nodes::Intrinsic {
-				r#return: return_type, ..
-			} => return_type.borrow().get_name().map(str::to_string),
-			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => Self::node_type_name(&function.get()),
-			besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) => Self::node_type_name(intrinsic),
-			besl::Nodes::Expression(besl::Expressions::Literal { value }) => Some(
-				if matches!(value.as_str(), "true" | "false") {
-					"bool"
-				} else if value.contains(['.', 'e', 'E']) {
-					"f32"
-				} else {
-					"u32"
-				}
-				.to_string(),
-			),
-			besl::Nodes::Expression(besl::Expressions::Member { name, source }) => {
-				Self::referenced_member_type_name(name, source)
-			}
-			besl::Nodes::Expression(besl::Expressions::Accessor { left, right }) => {
-				if matches!(
-					right.borrow().node(),
-					besl::Nodes::Expression(besl::Expressions::Member { .. })
-				) {
-					Self::node_type_name(right)
-				} else {
-					Self::accessor_type_name(left)
-				}
-			}
-			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right }) => {
-				Self::operator_result_type_name(operator, left, right)
-			}
-			besl::Nodes::Expression(besl::Expressions::Expression { elements }) if elements.len() == 1 => {
-				Self::node_type_name(&elements[0])
-			}
-			_ => None,
-		}
-	}
-
-	pub(crate) fn referenced_member_type_name(name: &str, source: &besl::NodeReference) -> Option<String> {
-		match source.borrow().node() {
-			besl::Nodes::Parameter { .. }
-			| besl::Nodes::Member { .. }
-			| besl::Nodes::Input { .. }
-			| besl::Nodes::Output { .. }
-			| besl::Nodes::TaskPayload { .. }
-			| besl::Nodes::Workgroup { .. }
-			| besl::Nodes::Specialization { .. }
-			| besl::Nodes::Const { .. }
-			| besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. }) => {
-				return Self::node_type_name(source);
-			}
-			besl::Nodes::Function { params, .. } => {
-				return params
-					.iter()
-					.find(|parameter| parameter.borrow().get_name() == Some(name))
-					.and_then(Self::node_type_name);
-			}
-			_ => {}
-		}
-
-		for child in source.borrow().get_children()? {
-			if child.borrow().get_name() == Some(name) {
-				return Self::node_type_name(&child);
-			}
-			if let Some(type_name) = Self::referenced_member_type_name(name, &child) {
-				return Some(type_name);
-			}
-		}
-		None
-	}
-
-	pub(crate) fn accessor_type_name(left: &besl::NodeReference) -> Option<String> {
-		if let Some(element) = runtime_buffer_element(left) {
-			return element.borrow().get_name().map(str::to_string);
-		}
-		if let Some((name, source)) = Self::hlsl_buffer_member_reference(left)
-			&& Self::hlsl_buffer_binding_source(&source).is_some()
-		{
-			let member_type = Self::hlsl_buffer_member_type(&source, &name)?;
-			// The first index on an array member selects its declared element.
-			// Only a later index into that element selects a matrix column or vector component.
-			return if Self::hlsl_buffer_member_is_array(left) {
-				Some(member_type)
-			} else {
-				Some(Self::indexed_value_type_name(&member_type).to_string())
-			};
-		}
-
-		// Local and parameter references do not carry buffer metadata. Their
-		// resolved value type still determines the result of one index operation.
-		Self::node_type_name(left).map(|type_name| Self::indexed_value_type_name(&type_name).to_string())
-	}
-
-	/// Returns the BESL value type produced by indexing one matrix, vector, or scalar-like value.
-	pub(crate) fn indexed_value_type_name(type_name: &str) -> &str {
-		if let Some((element_type, _)) = Self::hlsl_array_type(type_name) {
-			return element_type;
-		}
-		match type_name {
-			"mat2f" => "vec2f",
-			"mat3f" => "vec3f",
-			"mat4f" => "vec4f",
-			"mat4x3f" => "vec3f",
-			"vec2u16" | "vec4u16" => "u16",
-			"vec2i" => "i32",
-			"vec2u" | "vec3u" | "vec4u" => "u32",
-			"vec2f16" | "vec3f16" | "vec4f16" => "f16",
-			"vec2f" | "vec3f" | "vec4f" | "packed_vec4f" => "f32",
-			_ => type_name,
-		}
-	}
-
-	/// Recovers matrix result types without mistaking matrix-vector products for matrices.
-	pub(crate) fn operator_result_type_name(
-		operator: &besl::Operators,
-		left: &besl::NodeReference,
-		right: &besl::NodeReference,
-	) -> Option<String> {
-		let left_type = Self::node_type_name(left);
-		let right_type = Self::node_type_name(right);
-		match operator {
-			besl::Operators::Plus
-			| besl::Operators::Minus
-			| besl::Operators::Multiply
-			| besl::Operators::Divide
-			| besl::Operators::Modulo => Self::matrix_arithmetic_result_type(left_type.as_deref(), right_type.as_deref()),
-			_ => None,
-		}
-	}
-
-	/// Mirrors the matrix and f32-broadcast result rules used by the BESL VM.
-	pub(crate) fn matrix_arithmetic_result_type(left_type: Option<&str>, right_type: Option<&str>) -> Option<String> {
-		match (left_type, right_type) {
-			(Some(left), Some(right)) if left == right && Self::is_matrix_type(Some(left)) => Some(left.to_string()),
-			(Some(matrix), Some("f32")) if Self::is_matrix_type(Some(matrix)) => Some(matrix.to_string()),
-			(Some("f32"), Some(matrix)) if Self::is_matrix_type(Some(matrix)) => Some(matrix.to_string()),
-			_ => None,
-		}
-	}
-
-	pub(crate) fn is_matrix_type(type_name: Option<&str>) -> bool {
-		type_name.is_some_and(|name| matches!(name, "mat2f" | "mat3f" | "mat4f" | "mat4x3f"))
+		besl::infer_expression_type(node).and_then(|r#type| r#type.borrow().get_name().map(str::to_string))
 	}
 
 	pub(crate) fn hlsl_square_matrix_column_type(type_name: &str) -> Option<(&'static str, usize)> {
@@ -294,15 +122,6 @@ impl Generator {
 				.all(|parameter| Self::node_type_name(parameter).as_deref() == Some(column_type))
 	}
 
-	pub(crate) fn hlsl_name_likely_matrix_operand(name: &str) -> bool {
-		name.contains("projection")
-			|| name.contains("matrix")
-			|| name == "model"
-			|| name.ends_with(".model")
-			|| name == "view"
-			|| name.ends_with(".view")
-	}
-
 	pub(crate) fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
@@ -319,27 +138,14 @@ impl Generator {
 		self.emit_node_string(string, texture_array);
 		string.push_str("_sampler[");
 		self.emit_node_string(string, texture_index);
-		string.push_str("],");
-		if !self.minified {
-			string.push(' ');
-		}
+		string.push(']');
+		self.emit_separator(string);
 		self.emit_node_string(string, uv);
-		string.push(',');
-		if !self.minified {
-			string.push(' ');
-		}
+		self.emit_separator(string);
 		self.emit_node_string(string, uv_derivative_x);
-		string.push(',');
-		if !self.minified {
-			string.push(' ');
-		}
+		self.emit_separator(string);
 		self.emit_node_string(string, uv_derivative_y);
 		string.push(')');
-	}
-
-	pub(crate) fn hlsl_array_type(source: &str) -> Option<(&str, &str)> {
-		let (element_type, count) = source.split_once('[')?;
-		Some((element_type, count.trim_end_matches(']')))
 	}
 
 	pub(crate) fn image_size_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
@@ -391,46 +197,7 @@ impl Generator {
 
 	/// Reports whether an expression tree contains an atomic call that returns a value.
 	pub(crate) fn contains_hlsl_value_atomic(node: &besl::NodeReference) -> bool {
-		if Self::hlsl_atomic_call(node).is_some() {
-			return true;
-		}
-		let children = {
-			let node = node.borrow();
-			match node.node() {
-				besl::Nodes::Function { statements, .. } => statements.clone(),
-				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
-					branch.branch_children().cloned().collect()
-				}
-				besl::Nodes::ForLoop {
-					initializer,
-					condition,
-					update,
-					statements,
-				} => {
-					let mut children = vec![initializer.clone(), condition.clone(), update.clone()];
-					children.extend(statements.iter().cloned());
-					children
-				}
-				besl::Nodes::Expression(expression) => match expression {
-					besl::Expressions::Return { value } => value.iter().cloned().collect(),
-					besl::Expressions::Expression { elements } => elements.clone(),
-					besl::Expressions::FunctionCall { parameters, .. } => parameters.clone(),
-					besl::Expressions::IntrinsicCall { arguments, .. } => arguments.clone(),
-					besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
-						vec![left.clone(), right.clone()]
-					}
-					besl::Expressions::Macro { body, .. } => vec![body.clone()],
-					besl::Expressions::Continue
-					| besl::Expressions::Break
-					| besl::Expressions::Discard
-					| besl::Expressions::Member { .. }
-					| besl::Expressions::VariableDeclaration { .. }
-					| besl::Expressions::Literal { .. } => Vec::new(),
-				},
-				_ => Vec::new(),
-			}
-		};
-		children.iter().any(Self::contains_hlsl_value_atomic)
+		any_code_node(node, false, &mut |node| Self::hlsl_atomic_call(node).is_some())
 	}
 
 	/// Rejects contexts where statement lifting would change when an atomic executes.
@@ -449,9 +216,9 @@ impl Generator {
 			} => {
 				// atomic_store lowers to a statement block, which is invalid in every
 				// for-loop header field and cannot be moved without changing timing.
-				Self::uses_intrinsic(initializer, "atomic_store")
-					|| Self::uses_intrinsic(condition, "atomic_store")
-					|| Self::uses_intrinsic(update, "atomic_store")
+				uses_intrinsic(initializer, "atomic_store")
+					|| uses_intrinsic(condition, "atomic_store")
+					|| uses_intrinsic(update, "atomic_store")
 					|| Self::contains_hlsl_value_atomic(condition)
 					|| Self::contains_hlsl_value_atomic(update)
 					|| Self::has_unsupported_hlsl_atomic_context(initializer)
@@ -676,7 +443,7 @@ impl Generator {
 			Self::identifier(name).push_to(string);
 			string.push_str(" = ");
 			self.emit_node_string(string, value);
-		} else if let Some((element_type, count)) = Self::hlsl_array_type(type_name) {
+		} else if let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name) {
 			Self::type_identifier(element_type).push_to(string);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
@@ -694,8 +461,6 @@ impl Generator {
 			self.emit_node_string(string, value);
 		}
 		string.push(';');
-		if !self.minified {
-			string.push('\n');
-		}
+		string.push_str(ShaderFormatting::new(self.minified).break_str());
 	}
 }

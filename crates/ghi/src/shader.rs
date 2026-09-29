@@ -25,19 +25,8 @@ pub enum Sources<'a> {
 /// Use [`compile`] to select the source for the active backend.
 #[derive(Clone, Copy)]
 pub enum ShaderSource<'a> {
-	/// GLSL source code to be compiled to SPIR-V for Vulkan backends.
-	#[cfg(target_os = "linux")]
-	Glsl(&'a str),
-	/// MSL source code used directly on Metal.
-	Msl { source: &'a str, entry_point: &'a str },
 	/// HLSL source code compiled for DX12.
 	Hlsl { source: &'a str, entry_point: &'a str },
-	/// Paired GLSL and MSL sources; [`compile`] selects the appropriate variant for the current platform.
-	Platform {
-		glsl: &'a str,
-		msl: &'a str,
-		msl_entry_point: &'a str,
-	},
 	/// Paired GLSL, MSL, and HLSL sources; [`compile`] selects the native variant for the active backend.
 	PlatformNative {
 		glsl: &'a str,
@@ -77,32 +66,10 @@ impl CompiledShaderSource {
 /// Compiles a platform-specific shader source into the representation expected by a device.
 pub fn compile(name: &str, source: ShaderSource) -> Result<CompiledShaderSource, String> {
 	match source {
-		#[cfg(target_os = "linux")]
-		ShaderSource::Glsl(source) => compile_glsl(name, source),
 		ShaderSource::Hlsl { source, entry_point } => Ok(CompiledShaderSource::HLSL {
 			source: source.to_string(),
 			entry_point: entry_point.to_string(),
 		}),
-		ShaderSource::Msl { source, entry_point } => Ok(CompiledShaderSource::MTL {
-			source: source.to_string(),
-			entry_point: entry_point.to_string(),
-		}),
-		ShaderSource::Platform {
-			glsl,
-			msl,
-			msl_entry_point,
-		} => {
-			if crate::implementation::USES_METAL {
-				Ok(CompiledShaderSource::MTL {
-					source: msl.to_string(),
-					entry_point: msl_entry_point.to_string(),
-				})
-			} else if crate::implementation::USES_VULKAN {
-				compile_glsl(name, glsl)
-			} else {
-				Err("Platform shader source does not include a native backend for this OS. The most likely cause is using GLSL/MSL-only source on DX12.".to_string())
-			}
-		}
 		ShaderSource::PlatformNative {
 			glsl,
 			msl,

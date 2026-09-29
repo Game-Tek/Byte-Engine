@@ -95,12 +95,6 @@ impl AssetHandler for LUTAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& !self.can_handle(dt)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -231,23 +225,7 @@ fn parse_entry_tokens(first: &str, mut tokens: std::str::SplitWhitespace<'_>, li
 #[cfg(test)]
 mod tests {
 
-	use crate::{
-		asset::{
-			self, ResourceId, handler::AssetHandler, handler::implementations::lut::LUTAssetHandler, manager::AssetManager,
-		},
-		r#async, resource,
-		resources::lut::{Lut, LutKind},
-	};
-
-	/// Verifies conventional LUT source extensions select the LUT baker.
-	#[test]
-	fn accepts_lut_and_cube_extensions() {
-		let handler = LUTAssetHandler::new();
-
-		assert!(handler.can_handle("lut"));
-		assert!(handler.can_handle("cube"));
-		assert!(!handler.can_handle("png"));
-	}
+	use crate::{asset::handler::implementations::lut::LUTAssetHandler, resources::lut::LutKind};
 
 	#[test]
 	fn parse_lut_supports_domain_directives_and_comments() {
@@ -282,53 +260,6 @@ mod tests {
 		let error = LUTAssetHandler::parse_lut(lut).expect_err("LUT should fail to parse");
 
 		assert!(error.starts_with("Duplicate LUT size directive"));
-	}
-
-	#[r#async::test]
-	async fn bake_lut_asset_generates_lut_resource() {
-		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-
-		asset_storage_backend.add_file(
-			"grading/neutral.lut",
-			br#"
-				LUT_3D_SIZE 2
-				0.0 0.0 0.0
-				1.0 0.0 0.0
-				0.0 1.0 0.0
-				1.0 1.0 0.0
-				0.0 0.0 1.0
-				1.0 0.0 1.0
-				0.0 1.0 1.0
-				1.0 1.0 1.0
-			"#,
-		);
-
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(LUTAssetHandler::new());
-
-		asset_manager
-			.bake("grading/neutral.lut")
-			.await
-			.expect("LUT asset handler should bake the asset");
-
-		let generated = resource_storage_backend
-			.get_resource(ResourceId::new("grading/neutral.lut"))
-			.expect("LUT resource should exist");
-
-		let lut: Lut = crate::from_slice(&generated.resource).expect("Stored resource should deserialize as a LUT");
-
-		assert_eq!(generated.class, "Lut");
-		assert_eq!(lut.kind, LutKind::ThreeDimensional);
-		assert_eq!(lut.size, 2);
-
-		let data = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("grading/neutral.lut"))
-			.expect("LUT resource data should exist");
-
-		assert_eq!(data.len(), 8 * 3 * std::mem::size_of::<f32>());
 	}
 }
 

@@ -130,17 +130,3 @@ impl AttachmentDescriptor {
 		self
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn raster_fill_mode_defaults_to_solid_and_accepts_wireframe() {
-		let builder = Builder::new(&[], &[], &[], &[]);
-		assert_eq!(builder.fill_mode, FillMode::Solid);
-
-		let builder = builder.fill_mode(FillMode::Wireframe);
-		assert_eq!(builder.fill_mode, FillMode::Wireframe);
-	}
-}

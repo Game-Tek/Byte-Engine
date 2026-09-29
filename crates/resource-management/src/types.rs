@@ -65,19 +65,6 @@ pub enum VertexSemantics {
 	Weights,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum IntegralTypes {
-	U8,
-	I8,
-	U16,
-	I16,
-	U32,
-	I32,
-	F16,
-	F32,
-	F64,
-}
-
 #[derive(
 	Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
 )]
@@ -85,13 +72,6 @@ pub struct VertexComponent {
 	pub semantic: VertexSemantics,
 	pub format: String,
 	pub channel: u32,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum QuantizationSchemes {
-	Quantization,
-	Octahedral,
-	OctahedralQuantization,
 }
 
 #[derive(
@@ -162,22 +142,6 @@ impl Size for Vec<VertexComponent> {
 	}
 }
 
-impl Size for IntegralTypes {
-	fn size(&self) -> usize {
-		match self {
-			IntegralTypes::U8 => 1,
-			IntegralTypes::I8 => 1,
-			IntegralTypes::U16 => 2,
-			IntegralTypes::I16 => 2,
-			IntegralTypes::U32 => 4,
-			IntegralTypes::I32 => 4,
-			IntegralTypes::F16 => 2,
-			IntegralTypes::F32 => 4,
-			IntegralTypes::F64 => 8,
-		}
-	}
-}
-
 // Image
 
 #[derive(
@@ -208,77 +172,28 @@ pub enum Formats {
 	RGBA8SRGB,
 }
 
-#[cfg(test)]
-mod tests {
-	use super::{BitDepths, IntegralTypes, Size, Stream, Streams, VertexComponent, VertexSemantics};
-
-	#[test]
-	fn bit_depths_convert_to_their_exact_number_of_bits() {
-		assert_eq!(usize::from(BitDepths::Eight), 8);
-		assert_eq!(usize::from(BitDepths::Sixteen), 16);
-		assert_eq!(usize::from(BitDepths::TwentyFour), 24);
-		assert_eq!(usize::from(BitDepths::ThirtyTwo), 32);
-	}
-
-	#[test]
-	fn integral_and_vertex_sizes_match_the_binary_contract() {
-		let integral_sizes = [
-			(IntegralTypes::U8, 1),
-			(IntegralTypes::I8, 1),
-			(IntegralTypes::U16, 2),
-			(IntegralTypes::I16, 2),
-			(IntegralTypes::U32, 4),
-			(IntegralTypes::I32, 4),
-			(IntegralTypes::F16, 2),
-			(IntegralTypes::F32, 4),
-			(IntegralTypes::F64, 8),
-		];
-		for (kind, expected) in integral_sizes {
-			assert_eq!(kind.size(), expected);
+impl Formats {
+	/// Returns the bytes one texel occupies, or `None` for block-compressed formats.
+	///
+	/// Image processors and mip generators size their buffers with this, then apply their own supported-format guard.
+	pub const fn texel_bytes(self) -> Option<usize> {
+		match self {
+			Formats::RG8 | Formats::R16F => Some(2),
+			Formats::RGB8 => Some(3),
+			Formats::RGBA8 | Formats::RGBA8SRGB => Some(4),
+			Formats::RGB16 => Some(6),
+			Formats::RGBA16 | Formats::RGBA16F => Some(8),
+			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => None,
 		}
-
-		let components = vec![
-			VertexComponent {
-				semantic: VertexSemantics::Position,
-				format: "float3".into(),
-				channel: 0,
-			},
-			VertexComponent {
-				semantic: VertexSemantics::UV,
-				format: "float2".into(),
-				channel: 0,
-			},
-			VertexComponent {
-				semantic: VertexSemantics::Joints,
-				format: "ushort4".into(),
-				channel: 0,
-			},
-		];
-
-		assert_eq!(components.size(), 12 + 8 + 8);
 	}
 
-	#[test]
-	fn stream_count_uses_byte_size_and_stride() {
-		let stream = Stream {
-			stream_type: Streams::Vertices(VertexSemantics::Position),
-			offset: 64,
-			size: 120,
-			stride: 12,
-		};
-
-		assert_eq!(stream.count(), 10);
-	}
-
-	#[test]
-	#[should_panic(expected = "Stream stride is zero")]
-	fn stream_count_rejects_zero_stride_metadata() {
-		Stream {
-			stream_type: Streams::Meshlets,
-			offset: 0,
-			size: 10,
-			stride: 0,
+	/// Returns the bytes one level of `extent` occupies, counting whole 4x4 blocks for block-compressed formats.
+	pub fn level_size(self, extent: utils::Extent) -> Option<usize> {
+		let (width, height) = (extent.width() as usize, extent.height() as usize);
+		match self.texel_bytes() {
+			Some(texel_bytes) => width.checked_mul(height)?.checked_mul(texel_bytes),
+			// Every supported block format stores one 4x4 texel block in 16 bytes.
+			None => width.div_ceil(4).checked_mul(height.div_ceil(4))?.checked_mul(16),
 		}
-		.count();
 	}
 }

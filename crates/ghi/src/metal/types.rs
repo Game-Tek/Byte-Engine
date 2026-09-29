@@ -23,7 +23,7 @@ pub(crate) enum Descriptor {
 		handle: crate::swapchain::SwapchainHandle,
 	},
 	AccelerationStructure {
-		handle: TopLevelAccelerationStructureHandle,
+		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
 	},
 }
 
@@ -39,8 +39,3 @@ impl Descriptor {
 		}
 	}
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct TopLevelAccelerationStructureHandle(pub(crate) u64);
-
-pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;

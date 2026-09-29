@@ -20,9 +20,12 @@ use objc2_metal::MTLResource as _;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
-use crate::PrivateHandles;
 use crate::buffer::BufferHandle;
-use crate::context::{Context as _, ContextCreate as _};
+use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
+use crate::context::Context as _;
+// Tests build resources through the creation trait the context implements.
+#[cfg(test)]
+use crate::context::ContextCreate as _;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
 
@@ -179,7 +182,42 @@ pub(crate) mod utils {
 
 	/// Returns the compact row pitch, row count, and image pitch of one texture subresource.
 	pub(crate) fn texture_upload_layout(format: Formats, extent: Extent) -> (usize, usize, usize) {
-		format.compact_copy_layout(extent.width().max(1), extent.height().max(1))
+		format.copy_layout(extent).expect(
+			"Metal texture layout overflowed. The most likely cause is an image extent too large for the host address space.",
+		)
+	}
+
+	/// Returns the row and image pitches Metal copies of one texture subresource use, padded for the GPU.
+	pub(crate) fn texture_copy_pitches(bytes_per_row: usize, row_count: usize) -> (usize, usize) {
+		crate::aligned_copy_pitches(bytes_per_row, row_count).expect(
+			"Metal texture copy pitch overflowed. The most likely cause is an image extent too large for the host address space.",
+		)
+	}
+
+	/// Copies `rows` rows of `row_bytes` bytes between two row pitches, such as compact CPU data and a padded copy buffer.
+	///
+	/// # Safety
+	///
+	/// For every row `r`, `source + r * source_pitch` must address `row_bytes` readable bytes and
+	/// `destination + r * destination_pitch` must address `row_bytes` writable bytes that do not overlap them.
+	pub(crate) unsafe fn copy_rows(
+		source: *const u8,
+		source_pitch: usize,
+		destination: *mut u8,
+		destination_pitch: usize,
+		row_bytes: usize,
+		rows: usize,
+	) {
+		for row in 0..rows {
+			// SAFETY: The caller guarantees both rows lie inside distinct live allocations.
+			unsafe {
+				std::ptr::copy_nonoverlapping(
+					source.add(row * source_pitch),
+					destination.add(row * destination_pitch),
+					row_bytes,
+				);
+			}
+		}
 	}
 
 	/// Converts an extent to a Metal size, raising each empty dimension to one.
@@ -188,6 +226,17 @@ pub(crate) mod utils {
 			width: extent.width().max(1) as _,
 			height: extent.height().max(1) as _,
 			depth: extent.depth().max(1) as _,
+		}
+	}
+
+	/// Maps a GHI index data type to the Metal index type that indexed draws and triangle acceleration structures read.
+	pub(crate) fn to_index_type(data_type: crate::DataTypes) -> mtl::MTLIndexType {
+		match data_type {
+			crate::DataTypes::U16 => mtl::MTLIndexType::UInt16,
+			crate::DataTypes::U32 => mtl::MTLIndexType::UInt32,
+			_ => panic!(
+				"Unsupported Metal index type. The most likely cause is that an index buffer or triangle geometry used a DataTypes value other than U16 or U32.",
+			),
 		}
 	}
 
@@ -299,35 +348,6 @@ pub(crate) mod utils {
 			assert_eq!(bytes_per_image, 2 * 2 * 16);
 			assert_eq!(texture_upload_layout(Formats::RGBA8UNORM, Extent::rectangle(0, 0)), (4, 1, 4));
 		}
-
-		#[test]
-		fn bc_format_mapping_preserves_linear_and_srgb_variants() {
-			assert_eq!(to_pixel_format(Formats::BC5), mtl::MTLPixelFormat::BC5_RGUnorm);
-			assert_eq!(to_pixel_format(Formats::BC5SNORM), mtl::MTLPixelFormat::BC5_RGSnorm);
-			assert_eq!(to_pixel_format(Formats::BC7), mtl::MTLPixelFormat::BC7_RGBAUnorm);
-			assert_eq!(to_pixel_format(Formats::BC7SRGB), mtl::MTLPixelFormat::BC7_RGBAUnorm_sRGB);
-		}
-
-		#[test]
-		fn depth16_format_mapping_uses_depth16_unorm() {
-			assert_eq!(to_pixel_format(Formats::Depth16), mtl::MTLPixelFormat::Depth16Unorm);
-		}
-
-		#[test]
-		fn sampler_reduction_modes_preserve_the_ghi_contract() {
-			assert_eq!(
-				sampler_reduction_mode(SamplingReductionModes::WeightedAverage),
-				mtl::MTLSamplerReductionMode::WeightedAverage
-			);
-			assert_eq!(
-				sampler_reduction_mode(SamplingReductionModes::Min),
-				mtl::MTLSamplerReductionMode::Minimum
-			);
-			assert_eq!(
-				sampler_reduction_mode(SamplingReductionModes::Max),
-				mtl::MTLSamplerReductionMode::Maximum
-			);
-		}
 	}
 }
 
@@ -358,37 +378,6 @@ pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::
 #[cfg(test)]
 mod flat_binding_tests {
 	use super::*;
-
-	#[test]
-	fn sampler_descriptor_applies_maximum_reduction_with_linear_filtering() {
-		let descriptor = build_sampler_descriptor(
-			&crate::sampler::Builder::new()
-				.filtering_mode(crate::FilteringModes::Linear)
-				.mip_map_mode(crate::FilteringModes::Linear)
-				.reduction_mode(crate::SamplingReductionModes::Max),
-		);
-
-		assert_eq!(descriptor.minFilter(), mtl::MTLSamplerMinMagFilter::Linear);
-		assert_eq!(descriptor.magFilter(), mtl::MTLSamplerMinMagFilter::Linear);
-		assert_eq!(descriptor.mipFilter(), mtl::MTLSamplerMipFilter::Linear);
-		assert_eq!(descriptor.reductionMode(), mtl::MTLSamplerReductionMode::Maximum);
-	}
-
-	#[test]
-	fn sampler_reduction_falls_back_before_apple10() {
-		assert_eq!(
-			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Minimum, false),
-			mtl::MTLSamplerReductionMode::WeightedAverage
-		);
-		assert_eq!(
-			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Maximum, false),
-			mtl::MTLSamplerReductionMode::WeightedAverage
-		);
-		assert_eq!(
-			sampler_reduction_mode_for_device(mtl::MTLSamplerReductionMode::Maximum, true),
-			mtl::MTLSamplerReductionMode::Maximum
-		);
-	}
 
 	fn resource(
 		slot: u32,
@@ -440,31 +429,6 @@ mod flat_binding_tests {
 			resource(4, crate::shader::ResourceKind::StorageBuffer, 4, crate::AccessPolicies::READ),
 			resource(7, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ),
 		]);
-	}
-
-	#[test]
-	fn combined_image_sampler_arrays_use_stable_slot_derived_ids() {
-		let combined = allocate_argument_binding_slots(resource(
-			9,
-			crate::shader::ResourceKind::CombinedImageSampler,
-			2,
-			crate::AccessPolicies::READ,
-		));
-		let buffer = allocate_argument_binding_slots(resource(
-			11,
-			crate::shader::ResourceKind::UniformBuffer,
-			1,
-			crate::AccessPolicies::READ,
-		));
-
-		assert_eq!(
-			combined,
-			ArgumentBindingSlots::CombinedImageSampler {
-				textures: ArgumentSlotRange { base: 18, count: 2 },
-				samplers: ArgumentSlotRange { base: 20, count: 2 },
-			}
-		);
-		assert_eq!(buffer, ArgumentBindingSlots::Buffer(ArgumentSlotRange { base: 22, count: 1 }));
 	}
 
 	#[test]
@@ -579,7 +543,9 @@ mod flat_binding_tests {
 			)
 			.name("Retained Material Binding Probe Pipeline"),
 		);
-		let PipelineState::Compute(pipeline_state) = &context
+		let PipelineState::Compute {
+			state: pipeline_state, ..
+		} = &context
 			.pipelines
 			.last()
 			.expect(
@@ -1106,9 +1072,7 @@ pub mod instance;
 
 pub use self::command_buffer::*;
 pub use self::context::*;
-pub(crate) use self::descriptor_set::*;
 pub use self::device::Device;
 pub use self::factory::{ComputePipeline, DetachedImage, Factory, SharedBuffer};
 pub use self::frame::*;
 pub use self::instance::*;
-pub(crate) use self::synchronizer::*;

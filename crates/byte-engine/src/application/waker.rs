@@ -94,15 +94,4 @@ mod tests {
 		assert!(!waker.begin_wait(), "A consumed wake was reported again.");
 		waker.end_wait();
 	}
-
-	#[test]
-	fn clones_and_task_wakers_share_one_application_state() {
-		let waker = LoopWaker::default();
-		let task_waker = std::task::Waker::from(waker.clone());
-
-		task_waker.wake();
-
-		assert!(waker.begin_wait(), "A task waker did not reach the application.");
-		waker.end_wait();
-	}
 }

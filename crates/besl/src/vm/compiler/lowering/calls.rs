@@ -6,7 +6,6 @@ impl<'a> Compiler<'a> {
 		function: &NodeReference,
 		parameters: &[NodeReference],
 		expected_type: &ValueType,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		let function_ref = function.borrow();
 		match function_ref.node() {
@@ -14,14 +13,7 @@ impl<'a> Compiler<'a> {
 				let constructor_type = resolve_value_type(function)?;
 				let fields = fields.clone();
 				drop(function_ref);
-				self.compile_constructor_expression(
-					function,
-					parameters,
-					expected_type,
-					constructor_type,
-					&fields,
-					descriptor_layouts,
-				)
+				self.compile_constructor_expression(function, parameters, expected_type, constructor_type, &fields)
 			}
 			Nodes::Function { .. } => {
 				let signature = extract_function_signature(function)?;
@@ -39,14 +31,10 @@ impl<'a> Compiler<'a> {
 
 				let mut arguments = Vec::with_capacity(parameters.len());
 				for (parameter, signature_parameter) in parameters.iter().zip(&signature.params) {
-					arguments.push(self.compile_value_expression(
-						parameter,
-						&signature_parameter.value_type,
-						descriptor_layouts,
-					)?);
+					arguments.push(self.compile_value_expression(parameter, &signature_parameter.value_type)?);
 				}
 				let register = self.allocate_register();
-				self.instructions.push(Instruction::Call {
+				self.emit(ControlInstruction::Call {
 					register: Some(register),
 					function: *self
 						.function_ids
@@ -71,7 +59,6 @@ impl<'a> Compiler<'a> {
 		expected_type: &ValueType,
 		constructor_type: ValueType,
 		fields: &[NodeReference],
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<usize, VmError> {
 		if &constructor_type != expected_type {
 			return Err(VmError::TypeMismatch {
@@ -104,7 +91,7 @@ impl<'a> Compiler<'a> {
 						});
 					}
 				};
-				components.push(self.compile_value_expression(parameter, &field_type, descriptor_layouts)?);
+				components.push(self.compile_value_expression(parameter, &field_type)?);
 			}
 		} else {
 			let scalar_type = vector_scalar_type(&constructor_type).ok_or_else(|| VmError::UnsupportedExpression {
@@ -122,7 +109,7 @@ impl<'a> Compiler<'a> {
 				} else {
 					scalar_type.clone()
 				};
-				let parameter_type = self.infer_expression_type(parameter, &parameter_hint, descriptor_layouts)?;
+				let parameter_type = self.infer_expression_type(parameter, &parameter_hint)?;
 				let parameter_scalar = vector_scalar_type(&parameter_type).unwrap_or_else(|| parameter_type.clone());
 				let compatible = parameter_scalar == scalar_type
 					|| packed_u16 && parameter_scalar == ValueType::U32
@@ -133,12 +120,12 @@ impl<'a> Compiler<'a> {
 						found: parameter_type.name().to_string(),
 					});
 				}
-				components.push(self.compile_value_expression(parameter, &parameter_type, descriptor_layouts)?);
+				components.push(self.compile_value_expression(parameter, &parameter_type)?);
 			}
 		}
 
 		let register = self.allocate_register();
-		self.instructions.push(Instruction::Construct {
+		self.emit(ValueInstruction::Construct {
 			register,
 			value_type: constructor_type,
 			components,

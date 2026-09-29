@@ -13,32 +13,12 @@ impl Context {
 		queue.acquire_native_command(label, self.settings.debug_labels)
 	}
 
-	pub(crate) fn synchronizer_for_sequence(
-		&self,
-		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-		sequence_index: u8,
-	) -> crate::synchronizer::SynchronizerHandle {
-		self.synchronizers
-			.nth_handle(synchronizer_handle, sequence_index as usize)
-			.expect(
-				"Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.",
-			)
-	}
-
-	/// Returns the frame-local synchronizer that owns internal upload submissions.
-	pub(super) fn internal_upload_synchronizer(&self, sequence_index: u8) -> crate::synchronizer::SynchronizerHandle {
-		let synchronizer = self.internal_upload_synchronizer.expect(
-			"Metal internal upload synchronizer is missing. The most likely cause is that the context was not initialized correctly.",
-		);
-		self.synchronizer_for_sequence(synchronizer, sequence_index)
-	}
-
 	/// Waits for and releases one upload slot during frame retirement or a cross-queue handoff.
 	pub(super) fn retire_internal_uploads(&mut self, sequence_index: u8) {
 		if self.internal_upload_queues[sequence_index as usize].take().is_none() {
 			return;
 		}
-		let synchronizer = self.internal_upload_synchronizer(sequence_index);
+		let synchronizer = synchronizer_for_sequence(&self.synchronizers, self.internal_upload_synchronizer, sequence_index);
 		self.wait_for_private_synchronizer(synchronizer);
 	}
 
@@ -57,28 +37,32 @@ impl Context {
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
 		let compiler = create_metal4_compiler(device.as_ref(), settings.debug_labels)?;
-		let mut context = Context {
+		let frames = MAX_FRAMES_IN_FLIGHT as u8;
+		let mut synchronizers = ResourceCollection::with_capacity(32);
+		// The context does not exist yet, so the internal upload synchronizer is built like `create_synchronizer` does.
+		let internal_upload_synchronizer: graphics_hardware_interface::SynchronizerHandle =
+			synchronizers.add_chain((0..frames).map(|_| synchronizer::Synchronizer::new()));
+		let context = Context {
 			device,
 			compiler,
-			frames: MAX_FRAMES_IN_FLIGHT as u8,
+			frames,
 			queues,
 			buffers: ResourceCollection::with_capacity(1024),
 			images: ResourceCollection::with_capacity(1024),
 			samplers: Vec::new(),
 			allocations: Vec::new(),
-			descriptor_sets: Vec::new(),
+			descriptor_sets: ResourceCollection::default(),
 			meshes: Vec::new(),
 			acceleration_structures: Vec::new(),
 			shaders: Vec::new(),
 			pipelines: Vec::new(),
 			command_buffers: Vec::new(),
-			synchronizers: ResourceCollection::with_capacity(32),
-			internal_upload_synchronizer: None,
+			synchronizers,
+			internal_upload_synchronizer,
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			resource_to_descriptor: HashMap::default(),
-			descriptor_sources: HashMap::default(),
 			settings,
 			pending_buffer_syncs: VecDeque::new(),
 			pending_image_syncs: VecDeque::new(),
@@ -90,8 +74,6 @@ impl Context {
 			image_groups: crate::image_group::ImageGroups::default(),
 			next_group_heap_serial: 0,
 		};
-		context.internal_upload_synchronizer = Some(context.create_synchronizer(Some("Metal Internal Upload Sync"), true));
-
 		Ok(context)
 	}
 
@@ -139,18 +121,18 @@ impl Context {
 		}
 		let gpu_address = buffer.gpuAddress();
 		let staging = staging.map(|staging| {
-			let mut creator = self.buffers.creator();
-
-			creator.add(buffer::Buffer {
-				name: name.as_ref().map(|name| format!("{name}_staging")),
-				staging: None,
-				buffer: staging,
-				size,
-				gpu_address: 0,
-				pointer,
-				uses: resource_uses,
-				access: crate::DeviceAccesses::HostToDevice,
-			})
+			self.buffers
+				.add(buffer::Buffer {
+					name: name.as_ref().map(|name| format!("{name}_staging")),
+					staging: None,
+					buffer: staging,
+					size,
+					gpu_address: 0,
+					pointer,
+					uses: resource_uses,
+					access: crate::DeviceAccesses::HostToDevice,
+				})
+				.1
 		});
 
 		buffer::Buffer {
@@ -165,65 +147,39 @@ impl Context {
 		}
 	}
 
-	/// Returns the typed CPU mapping of a buffer. A device-only buffer maps its staging copy.
-	pub(super) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
+	/// Returns the typed CPU mapping of a buffer's copy for frame sequence `sequence_index`.
+	///
+	/// A buffer with one copy maps it for every sequence. A device-only buffer maps its staging copy.
+	pub(crate) fn typed_buffer_pointer<T: ?Sized + crate::buffer::BufferContents>(
 		&self,
-		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
+		buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>,
+		sequence_index: u8,
 	) -> *mut T {
-		let buffer = self.buffers.get_single(buffer_handle.into()).unwrap();
+		let handle = self
+			.buffers
+			.nth_handle(buffer_handle.into(), sequence_index as usize)
+			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		let buffer = self.buffers.resource(handle);
 		<T as crate::buffer::BufferContents>::from_raw_parts(buffer.pointer, buffer.size).expect(
 			"Failed to map a typed Metal buffer. The most likely cause is that the buffer has no sufficiently large, aligned CPU-visible storage.",
 		)
 	}
 
-	/// Creates a Metal buffer and optionally links it after an existing private frame resource.
-	pub(super) fn create_buffer_internal(
+	/// Queues the staging upload of the copy of `buffer_handle` that frame sequence `sequence_index` uses.
+	///
+	/// Does nothing for a buffer without staging storage. The next recording on a queue submits the upload.
+	pub(crate) fn sync_buffer_copy(
 		&mut self,
-		previous: Option<BufferHandle>,
-		name: Option<&str>,
-		size: usize,
-		resource_uses: crate::Uses,
-		device_accesses: crate::DeviceAccesses,
-	) -> BufferHandle {
-		let buffer = self.create_buffer_resource(name, size, resource_uses, device_accesses);
-		if let Some(previous) = previous {
-			let previous_buffer = self.buffers.resource(previous);
-			let copy_size = previous_buffer.size.min(buffer.size);
-			if copy_size != 0 {
-				assert!(
-					!previous_buffer.pointer.is_null() && !buffer.pointer.is_null(),
-					"Failed to preserve a resized Metal buffer. The most likely cause is that the old or replacement allocation is missing mapped storage.",
-				);
-				// SAFETY: The old and replacement buffers are distinct live allocations, and `copy_size` is bounded by both.
-				unsafe {
-					std::ptr::copy_nonoverlapping(previous_buffer.pointer, buffer.pointer, copy_size);
-				}
-			}
+		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+		sequence_index: u8,
+	) {
+		let handle = self
+			.buffers
+			.nth_handle(buffer_handle, sequence_index as usize)
+			.expect("Missing Metal buffer. The most likely cause is that the buffer handle came from another context.");
+		if self.buffers.resource(handle).staging.is_some() {
+			self.pending_buffer_syncs.push_back(handle);
 		}
-		let (_, handle) = self.buffers.add(buffer);
-
-		if let Some(previous) = previous {
-			self.buffers.set_next(previous, Some(handle));
-		}
-
-		handle
-	}
-
-	/// Creates a Metal image and optionally links it after an existing private frame resource.
-	pub(super) fn create_image_internal(
-		&mut self,
-		previous: Option<ImageHandle>,
-		name: Option<&str>,
-		description: image::ImageDescription,
-	) -> ImageHandle {
-		let image = build_image(&self.device, name, description, self.settings.debug_labels);
-		let (_, handle) = self.images.add(image);
-
-		if let Some(previous) = previous {
-			self.images.set_next(previous, Some(handle));
-		}
-
-		handle
 	}
 
 	/// Stores one resolved retained descriptor and advances the set version used by immutable native snapshots.
@@ -235,7 +191,7 @@ impl Context {
 		frame_index: u8,
 		array_element: u32,
 	) {
-		let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+		let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
 		let previous = descriptor_set
 			.descriptors
 			.entry(slot)
@@ -306,9 +262,9 @@ impl Context {
 			}),
 			crate::descriptors::WriteData::StaticSamplers => None,
 			crate::descriptors::WriteData::CombinedImageSamplerArray => None,
-			crate::descriptors::WriteData::AccelerationStructure { handle } => Some(Descriptor::AccelerationStructure {
-				handle: TopLevelAccelerationStructureHandle(handle.0),
-			}),
+			crate::descriptors::WriteData::AccelerationStructure { handle } => {
+				Some(Descriptor::AccelerationStructure { handle })
+			}
 			crate::descriptors::WriteData::Swapchain(swapchain_handle) => Some(Descriptor::Swapchain {
 				handle: crate::swapchain::SwapchainHandle(swapchain_handle.0),
 			}),
@@ -321,35 +277,9 @@ impl Context {
 			return;
 		};
 
-		for (set_handle, ..) in bindings {
-			let descriptor_set = &mut self.descriptor_sets[set_handle.0 as usize];
+		for &(set_handle, ..) in bindings {
+			let descriptor_set = self.descriptor_sets.resource_mut(set_handle);
 			descriptor_set.version = descriptor_set.version.wrapping_add(1);
-		}
-	}
-
-	/// Re-resolves retained descriptor writes after a deferred frame resource extends its chain.
-	///
-	/// `candidates` are the chain's private handles; a set that resolved to one of them may now resolve to the new one.
-	pub(super) fn rewrite_deferred_descriptors(&mut self, candidates: &[PrivateHandles]) {
-		let descriptor_bindings = candidates
-			.iter()
-			.filter_map(|candidate| self.resource_to_descriptor.get(candidate))
-			.flat_map(|bindings| bindings.iter().copied())
-			.collect::<HashSet<_>>();
-
-		for (set_handle, slot, array_element, frame_index) in descriptor_bindings {
-			let Some((source, frame_offset)) = self
-				.descriptor_sources
-				.get(&(set_handle, slot, array_element, frame_index))
-				.copied()
-			else {
-				continue;
-			};
-			let Some(descriptor) = self.resolve_descriptor_for_frame(source, frame_index, frame_offset) else {
-				continue;
-			};
-
-			self.update_descriptor_slot(set_handle, slot, descriptor, frame_index, array_element);
 		}
 	}
 
@@ -380,51 +310,7 @@ impl Context {
 				continue;
 			}
 
-			let next_frame = sequence_index + 1;
 			match task.task {
-				Tasks::BuildImage { previous, master } => {
-					let previous_image = self.images.resource(previous);
-					let (name, description) = (previous_image.name.clone(), previous_image.description);
-					let handle = self.create_image_internal(Some(previous), name.as_deref(), description);
-
-					let candidates = (0..self.frames as usize)
-						.filter_map(|frame| self.images.nth_handle(master, frame).map(PrivateHandles::Image))
-						.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
-					self.rewrite_deferred_descriptors(&candidates);
-
-					if next_frame < self.frames {
-						self.tasks.push(Task {
-							task: Tasks::BuildImage {
-								previous: handle,
-								master,
-							},
-							frame: next_frame,
-						});
-					}
-				}
-				Tasks::BuildBuffer { previous, master } => {
-					let previous_buffer = self.buffers.resource(previous);
-					let name = previous_buffer.name.clone();
-					let size = previous_buffer.size;
-					let uses = previous_buffer.uses;
-					let access = previous_buffer.access;
-					let handle = self.create_buffer_internal(Some(previous), name.as_deref(), size, uses, access);
-
-					let candidates = (0..self.frames as usize)
-						.filter_map(|frame| self.buffers.nth_handle(master, frame).map(PrivateHandles::Buffer))
-						.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
-					self.rewrite_deferred_descriptors(&candidates);
-
-					if next_frame < self.frames {
-						self.tasks.push(Task {
-							task: Tasks::BuildBuffer {
-								previous: handle,
-								master,
-							},
-							frame: next_frame,
-						});
-					}
-				}
 				Tasks::ResizeImage { handle, extent } => {
 					let handle = self
 						.images
@@ -570,4 +456,22 @@ impl Context {
 			});
 		}
 	}
+}
+
+/// Returns the private synchronizer a frame sequence signals for one public synchronizer.
+///
+/// It takes the synchronizer collection instead of the context, so split borrows such as
+/// [`crate::metal::command_buffer::RecordingCommit`] can call it while other context fields are borrowed.
+pub(crate) fn synchronizer_for_sequence(
+	synchronizers: &ResourceCollection<
+		synchronizer::Synchronizer,
+		graphics_hardware_interface::SynchronizerHandle,
+		crate::synchronizer::SynchronizerHandle,
+	>,
+	synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
+	sequence_index: u8,
+) -> crate::synchronizer::SynchronizerHandle {
+	synchronizers
+		.nth_handle(synchronizer_handle, sequence_index as usize)
+		.expect("Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.")
 }

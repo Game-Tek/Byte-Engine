@@ -186,15 +186,7 @@ pub(crate) fn resolve_gltf_uri(mesh_url: ResourceId<'_>, uri: &str) -> Result<St
 		LoadErrors::FailedToProcess
 	})?;
 
-	let base = mesh_url.get_base();
-
-	let parent = Path::new(base.as_ref()).parent();
-
-	if let Some(parent) = parent {
-		Ok(parent.join(uri.as_ref()).to_string_lossy().replace('\\', "/"))
-	} else {
-		Ok(uri.into_owned())
-	}
+	Ok(mesh_url.resolve_relative(&uri))
 }
 
 pub(crate) fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Data, LoadErrors> {

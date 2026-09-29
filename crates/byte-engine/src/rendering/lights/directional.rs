@@ -71,7 +71,6 @@ use maths_rs::Vec3f;
 
 use super::{LightColor, PhotometricError, PhotometricIntensity};
 use crate::{
-	core::{Entity, EntityHandle},
 	inspector::Inspectable,
 	rendering::lights::{Light, LightClasses},
 };

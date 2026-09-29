@@ -20,12 +20,7 @@ const fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
 	}
 }
 
-#[cfg(test)]
-use packing::MESHLET_STREAM_STRIDE;
-pub use packing::{
-	MeshPrimitiveProcessingError, MeshProcessor, MeshProcessorSession, ProcessedMesh, TriangleFrontFaceWinding,
-	orient_triangle_indices_for_front_face,
-};
+pub use packing::{MeshPrimitiveProcessingError, MeshProcessor, MeshProcessorSession, ProcessedMesh};
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
 
@@ -34,8 +29,7 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, ProcessedMesh,
-		TriangleFrontFaceWinding, VertexSkin,
+		MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, ProcessedMesh, VertexSkin,
 	};
 	use crate::{
 		ReferenceModel,
@@ -46,51 +40,8 @@ mod tests {
 				identity_affine_matrix4x3_columns,
 			},
 		},
-		types::{AlphaMode, Streams, VertexComponent, VertexSemantics},
+		types::{AlphaMode, VertexComponent, VertexSemantics},
 	};
-
-	#[test]
-	fn rewinds_triangle_order_for_clockwise_front_faces() {
-		assert_eq!(
-			super::orient_triangle_indices_for_front_face(vec![0, 1, 2, 3, 4, 5], TriangleFrontFaceWinding::Clockwise),
-			vec![0, 2, 1, 3, 5, 4]
-		);
-	}
-
-	#[test]
-	fn preserves_triangle_order_for_counter_clockwise_front_faces() {
-		assert_eq!(
-			super::orient_triangle_indices_for_front_face(vec![0, 1, 2, 3, 4, 5], TriangleFrontFaceWinding::CounterClockwise,),
-			vec![0, 1, 2, 3, 4, 5]
-		);
-	}
-
-	#[test]
-	fn packs_streams_from_borrowed_iterators() {
-		let primitive = TestPrimitive::triangle().with_normals().with_uvs();
-		let processed = process(
-			vec![
-				component(VertexSemantics::Position),
-				component(VertexSemantics::Normal),
-				component(VertexSemantics::UV),
-			],
-			&[primitive],
-			None,
-			Vec::new(),
-		)
-		.expect("borrowed primitive should process");
-
-		assert_eq!(processed.mesh.primitives.len(), 1);
-		assert_eq!(processed.mesh.streams.len(), 7);
-		let meshlets = processed
-			.mesh
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == Streams::Meshlets)
-			.expect("processed mesh should include meshlets");
-		assert_eq!(meshlets.stride, super::MESHLET_STREAM_STRIDE);
-		assert_eq!(meshlets.size, super::MESHLET_STREAM_STRIDE);
-	}
 
 	#[test]
 	fn finish_into_writes_the_owned_payload_layout_without_a_combined_buffer() {
@@ -123,31 +74,6 @@ mod tests {
 			assert_eq!(actual.size(), expected.size());
 			assert_eq!(actual.offset(), expected.offset());
 		}
-	}
-
-	#[test]
-	fn preserves_skin_metadata_and_streams() {
-		let skeleton = test_skeleton(1);
-		let primitive = TestPrimitive::triangle()
-			.with_skin(0, vec![valid_vertex_skin(); 3])
-			.with_transform_node(0);
-		let processed = process(
-			skinned_layout(),
-			&[primitive],
-			Some(skeleton),
-			vec![test_skin(SkinJoint::Node(0))],
-		)
-		.expect("skinned primitive should process");
-
-		assert_eq!(processed.mesh.skins.len(), 1);
-		assert_eq!(processed.mesh.primitives[0].transform_node, Some(0));
-		assert_eq!(processed.mesh.primitives[0].skin, Some(0));
-		assert!(
-			processed.mesh.primitives[0]
-				.streams
-				.iter()
-				.any(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Joints))
-		);
 	}
 
 	#[test]

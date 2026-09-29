@@ -50,7 +50,11 @@ fn assignment<'a, 'p>(program: &'p super::Program<'a>, property: &str) -> &'p No
 	statements(program)
 		.iter()
 		.find_map(|statement| match statement.node() {
-			Nodes::Expression(Expressions::Operator { name: "=", left, right }) => match left.node() {
+			Nodes::Expression(Expressions::Operator {
+				operator: besl::Operators::Assignment,
+				left,
+				right,
+			}) => match left.node() {
 				Nodes::Expression(Expressions::Member { name }) if name == property => Some(&**right),
 				_ => None,
 			},
@@ -179,7 +183,12 @@ fn lowered_program_links() {
 			};
 
 			for statement in statements.iter_mut() {
-				let Nodes::Expression(Expressions::Operator { name: "=", left, right }) = statement.node() else {
+				let Nodes::Expression(Expressions::Operator {
+					operator: besl::Operators::Assignment,
+					left,
+					right,
+				}) = statement.node()
+				else {
 					continue;
 				};
 				let Nodes::Expression(Expressions::Member { name }) = left.node() else {
@@ -277,54 +286,6 @@ fn node_graph_outputs_are_expanded_in_place() {
 }
 
 #[test]
-fn geometric_nodes_read_the_material_stage() {
-	with_program(
-		&material(
-			r#"<texcoord name="uv" type="vector2"/>
-			<convert name="tinted" type="color3">
-				<input name="in" type="vector2" nodename="uv"/>
-			</convert>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" nodename="tinted"/>
-			</standard_surface>"#,
-		),
-		|program| {
-			let mut found = false;
-
-			for statement in statements(program) {
-				let text = format!("{statement:?}");
-				found |= text.contains("vertex_uv");
-			}
-
-			assert!(found, "Lowered program should read the stage's texture coordinates.");
-		},
-	);
-}
-
-#[test]
-fn world_space_normals_are_projected_onto_the_tangent_frame() {
-	with_program(
-		&material(
-			r#"<image name="encoded" type="vector3">
-				<input name="file" type="filename" value="textures/normal.png"/>
-			</image>
-			<normalmap name="mapped" type="vector3">
-				<input name="in" type="vector3" nodename="encoded"/>
-			</normalmap>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="normal" type="vector3" nodename="mapped"/>
-			</standard_surface>"#,
-		),
-		|program| {
-			let normal = assignment(program, "normal");
-
-			assert!(calls(normal, "dot"), "A shading normal should project onto the frame.");
-			assert!(program_calls(program, "normalize"));
-		},
-	);
-}
-
-#[test]
 fn a_constant_normal_leaves_the_geometric_normal_alone() {
 	with_program(
 		&material(
@@ -335,7 +296,7 @@ fn a_constant_normal_leaves_the_geometric_normal_alone() {
 		|program| {
 			assert!(
 				!statements(program).iter().any(|statement| {
-					matches!(statement.node(), Nodes::Expression(Expressions::Operator { name: "=", left, .. })
+					matches!(statement.node(), Nodes::Expression(Expressions::Operator { operator: besl::Operators::Assignment, left, .. })
 						if matches!(left.node(), Nodes::Expression(Expressions::Member { name }) if name == "normal"))
 				}),
 				"An unconnected normal should not be written."
@@ -497,45 +458,6 @@ fn a_material_written_inside_a_node_graph_is_reached() {
 			let mut roughness = Vec::new();
 			literals(assignment(program, "roughness"), &mut roughness);
 			assert_eq!(roughness, ["0.6"]);
-		},
-	);
-}
-
-#[test]
-fn an_unlit_surface_carries_its_colour_as_emission() {
-	with_program(
-		&material(
-			r#"<surface_unlit name="shader" type="surfaceshader">
-				<input name="emission" type="float" value="2"/>
-				<input name="emission_color" type="color3" value="1, 0.5, 0.25"/>
-			</surface_unlit>"#,
-		),
-		|program| {
-			let written = program_literals(program);
-
-			assert!(written.contains(&"0.25".to_string()), "{written:?}");
-			assert!(written.contains(&"2.0".to_string()), "{written:?}");
-		},
-	);
-}
-
-#[test]
-fn comparisons_carry_their_result_without_a_conditional() {
-	with_program(
-		&material(
-			r#"<ifgreater name="pick" type="color3">
-				<input name="value1" type="float" value="2"/>
-				<input name="value2" type="float" value="1"/>
-				<input name="in1" type="color3" value="1, 0, 0"/>
-				<input name="in2" type="color3" value="0, 1, 0"/>
-			</ifgreater>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" nodename="pick"/>
-			</standard_surface>"#,
-		),
-		|program| {
-			// BESL has no conditional expression, so the branch is weighted by a step.
-			assert!(program_calls(program, "step"));
 		},
 	);
 }

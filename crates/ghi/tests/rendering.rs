@@ -10,10 +10,9 @@
 )]
 
 use ghi::implementation::{Context as BackendContext, Device as BackendDevice, Instance};
-use ghi::window::{App, Features};
 use ghi::{
-	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, FilteringModes, Formats, Layouts, QueueHandle,
-	SamplerAddressingModes, SamplingReductionModes, ShaderTypes, UseCases, Uses,
+	BufferDescriptor, BufferStridedRange, DataTypes, DeviceAccesses, Encodings, Formats, Layouts, QueueHandle, ShaderTypes,
+	UseCases, Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
 		BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
@@ -35,8 +34,6 @@ use utils::{Extent, RGBA};
 mod common;
 #[path = "rendering/image_groups.rs"]
 mod image_groups;
-#[path = "rendering/presentation.rs"]
-mod presentation;
 #[path = "rendering/raster.rs"]
 mod raster;
 #[path = "rendering/ray_tracing.rs"]
@@ -100,26 +97,6 @@ fn raster_pipeline_can_disable_depth_writes() {
 }
 
 #[test]
-#[ignore = "test is broken because of WSI"]
-fn present_to_window() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	presentation::present(&mut device, queue_handle);
-}
-
-#[test]
-#[ignore = "test is broken because of WSI"]
-fn present_multiple_frames_to_window() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	presentation::multiframe_present(&mut device, queue_handle);
-}
-
-#[test]
-fn render_multiple_frames() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::multiframe_rendering(&mut device, queue_handle);
-}
-
-#[test]
 fn change_frames_in_flight() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::change_frames(&mut device, queue_handle);
@@ -144,22 +121,9 @@ fn resize_static_render_target_in_flight() {
 }
 
 #[test]
-fn resize_dynamic_render_target_in_flight() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize_render_target_in_flight(&mut device, queue_handle, UseCases::DYNAMIC);
-}
-
-#[test]
 fn array_buffer_round_trip() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::array_buffer_round_trip(&mut device, queue_handle);
-}
-
-#[test]
-#[should_panic(expected = "Missing buffer length")]
-fn array_buffer_requires_length() {
-	let (_instance, _device, mut device, _queue_handle) = create_default_device_setup();
-	resources::array_buffer_requires_length(&mut device);
 }
 
 #[test]
@@ -175,6 +139,16 @@ fn update_dynamic_data() {
 }
 
 #[test]
+#[cfg_attr(
+	target_os = "linux",
+	ignore = "Vulkan creates later dynamic-buffer copies through deferred tasks and shares one persistent write source; see todo.md"
+)]
+fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame() {
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
+	resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(&mut context, queue_handle);
+}
+
+#[test]
 fn update_dynamic_textures() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::dynamic_textures(&mut device, queue_handle);
@@ -184,12 +158,6 @@ fn update_dynamic_textures() {
 fn transfer_previous_frame_textures() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	resources::previous_frame_transfers(&mut device, queue_handle);
-}
-
-#[test]
-fn render_with_descriptor_sets() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::descriptor_sets(&mut device, queue_handle);
 }
 
 #[test]

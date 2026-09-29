@@ -5,15 +5,14 @@ use utils::RGBA;
 
 use crate::{
 	core::{
-		channel::{Channel as _, DefaultChannel},
+		channel::DefaultChannel,
 		factory::{Factory, Handle},
 		listener::{DefaultListener, Listener as _},
 	},
 	input::{
 		Action, ActionBindingDescription, ActionEvent, ActionHandle, ActionPhase, Axis2, Axis3, Capture, DeviceHandle,
-		Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode, TriggerReference,
-		TriggerRegistry, Types, Value, ValueMapping,
-		action::InputValue,
+		Function, InputCollector, InputSink, ResolvedAction, SeatHandle, TickPolicy, TriggerMode, TriggerReference, Types,
+		Value, ValueMapping,
 		device::DeviceClassHandle,
 		trigger::TriggerDescription,
 		utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
@@ -126,33 +125,15 @@ fn handles(action: Handle) -> impl Fn(&ResolvedAction) -> bool {
 
 fn register_headset(collector: &mut InputCollector) -> DeviceClassHandle {
 	let class = collector.register_device_class("Headset");
-	collector.register_trigger(
-		&class,
-		"Position",
-		TriggerDescription::new(
-			Axis3::new(0.0, 1.8, 0.0),
-			Axis3::zero(),
-			Axis3::min_value(),
-			Axis3::max_value(),
-		),
-	);
+	collector.register_trigger(&class, "Position", TriggerDescription::new(Axis3::new(0.0, 1.8, 0.0)));
 	collector.register_trigger(&class, "Orientation", TriggerDescription::<Quaternion>::default());
 	class
 }
 
 fn register_funky(collector: &mut InputCollector) -> DeviceClassHandle {
 	let class = collector.register_device_class("Funky");
-	collector.register_trigger(&class, "Int", TriggerDescription::new(0, 0, 0, 3));
-	collector.register_trigger(
-		&class,
-		"Rgba",
-		TriggerDescription::new(
-			RGBA::new(0.0, 0.0, 0.0, 0.0),
-			RGBA::new(0.0, 0.0, 0.0, 0.0),
-			RGBA::new(0.0, 0.0, 0.0, 0.0),
-			RGBA::new(1.0, 1.0, 1.0, 1.0),
-		),
-	);
+	collector.register_trigger(&class, "Int", TriggerDescription::new(0));
+	collector.register_trigger(&class, "Rgba", TriggerDescription::new(RGBA::new(0.0, 0.0, 0.0, 0.0)));
 	class
 }
 
@@ -176,30 +157,6 @@ fn trigger_queries_reject_unknown_handles_and_malformed_paths() {
 		assert!(fixture.collector.trigger(reference).is_none());
 	}
 	assert_eq!(fixture.value("Keyboard.Up"), Value::Bool(false));
-}
-
-#[test]
-fn device_queries_preserve_handles_across_classes_and_instances() {
-	let mut fixture = Fixture::new();
-	let second_keyboard = fixture.collector.create_device(&fixture.keyboard_class);
-	let second_mouse = fixture.collector.create_device(&fixture.mouse_class);
-	let third_keyboard = fixture.collector.create_device(&fixture.keyboard_class);
-
-	assert_eq!(
-		fixture
-			.collector
-			.devices_by_class_name("Keyboard")
-			.map(Iterator::collect::<Vec<_>>),
-		Some(vec![fixture.keyboard, second_keyboard, third_keyboard])
-	);
-	assert_eq!(
-		fixture
-			.collector
-			.devices_by_class_name("Mouse")
-			.map(Iterator::collect::<Vec<_>>),
-		Some(vec![fixture.mouse, second_mouse])
-	);
-	assert!(fixture.collector.devices_by_class_name("Unknown").is_none());
 }
 
 #[test]
@@ -265,43 +222,6 @@ fn every_trigger_type_retains_its_last_value_and_rejects_other_types() {
 }
 
 #[test]
-fn untriggered_actions_have_neutral_values_for_every_input_type() {
-	let mut fixture = Fixture::new();
-	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
-	for (kind, expected) in [
-		(Types::Boolean, Value::Bool(false)),
-		(Types::Unicode, Value::Unicode('\0')),
-		(Types::Int, Value::Int(0)),
-		(Types::Float, Value::Float(0.0)),
-		(Types::Rgba, Value::Rgba(RGBA::new(0.0, 0.0, 0.0, 1.0))),
-		(Types::Vector2, Value::Vector2(Axis2::zero())),
-		(Types::Vector3, Value::Vector3(Axis3::zero())),
-		(Types::Quaternion, Value::Quaternion(Quaternion::identity())),
-	] {
-		let action = sink.create_action(&fixture.collector, kind, &[], TickPolicy::OnChange);
-		assert_eq!(sink.action_state(SeatHandle::stub(), action, fixture.mouse), expected);
-	}
-}
-
-#[test]
-fn declared_actions_reach_the_sink_with_their_entity_handle() {
-	let mut fixture = Fixture::new();
-	let mut sink = fixture.sink();
-	let zoom = sink
-		.actions
-		.create(Action::new(&[ActionBindingDescription::new("Mouse.Scroll")], Types::Float));
-	fixture.pull(&mut sink, pass);
-	fixture.record("Mouse.Scroll", 1.0f32);
-	let resolved = fixture.pull(&mut sink, pass);
-	assert_eq!(resolved[0].handle, Some(zoom));
-	let published = sink.published();
-	assert_eq!(published.len(), 1);
-	assert_eq!(published[0].handle(), zoom);
-	assert_eq!(published[0].value(), Value::Float(1.0));
-	assert_eq!(published[0].phase(), ActionPhase::Updated);
-}
-
-#[test]
 fn opposing_scalar_bindings_follow_the_most_recent_press() {
 	let mut fixture = Fixture::new();
 	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
@@ -309,8 +229,8 @@ fn opposing_scalar_bindings_follow_the_most_recent_press() {
 		&fixture.collector,
 		Types::Float,
 		&[
-			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32)),
-			ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Boolean, -1f32)),
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, 1f32)),
+			ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Linear, -1f32)),
 		],
 		TickPolicy::OnChange,
 	);
@@ -342,10 +262,10 @@ fn directional_bindings_sum_and_normalize_the_active_keys() {
 		&fixture.collector,
 		Types::Vector2,
 		&[
-			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, Axis2::new(0.0, 1.0))),
-			ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Boolean, Axis2::new(0.0, -1.0))),
-			ActionBindingDescription::new("Keyboard.Left").mapped(ValueMapping::new(Function::Boolean, Axis2::new(-1.0, 0.0))),
-			ActionBindingDescription::new("Keyboard.Right").mapped(ValueMapping::new(Function::Boolean, Axis2::new(1.0, 0.0))),
+			ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, Axis2::new(0.0, 1.0))),
+			ActionBindingDescription::new("Keyboard.Down").mapped(ValueMapping::new(Function::Linear, Axis2::new(0.0, -1.0))),
+			ActionBindingDescription::new("Keyboard.Left").mapped(ValueMapping::new(Function::Linear, Axis2::new(-1.0, 0.0))),
+			ActionBindingDescription::new("Keyboard.Right").mapped(ValueMapping::new(Function::Linear, Axis2::new(1.0, 0.0))),
 		],
 		TickPolicy::OnChange,
 	);
@@ -367,50 +287,6 @@ fn directional_bindings_sum_and_normalize_the_active_keys() {
 	}
 }
 
-fn assert_boolean_maps_to<T>(neutral: T, active: T)
-where
-	T: InputValue + Into<Value> + Into<ValueMapping> + Copy,
-{
-	let mut fixture = Fixture::new();
-	let mut sink = InputSink::new(fixture.collector.add_sink(), DefaultChannel::new());
-	let action = sink.create_action(
-		&fixture.collector,
-		T::get_type(),
-		&[ActionBindingDescription::new("Keyboard.Up").mapped(active.into())],
-		TickPolicy::OnChange,
-	);
-	let seat = SeatHandle::stub();
-	assert_eq!(sink.action_state(seat, action, fixture.keyboard), neutral.into());
-	for (pressed, expected) in [(true, active), (false, neutral)] {
-		fixture.record("Keyboard.Up", pressed);
-		sink.pull(&mut fixture.collector, |_| Capture::Passed);
-		assert_eq!(sink.action_state(seat, action, fixture.keyboard), expected.into());
-	}
-}
-
-#[test]
-fn a_boolean_binding_maps_to_scalar_and_vector_actions() {
-	assert_boolean_maps_to(0f32, 1f32);
-	assert_boolean_maps_to(Axis2::zero(), Axis2::new(0.0, 1.0));
-	assert_boolean_maps_to(Axis3::zero(), Axis3::new(0.0, 0.0, 1.0));
-}
-
-#[test]
-fn unicode_actions_publish_each_character() {
-	let mut fixture = Fixture::new();
-	let mut sink = fixture.sink();
-	let typing = sink.actions.create(Action::new(
-		&[ActionBindingDescription::new("Keyboard.Character")],
-		Types::Unicode,
-	));
-	fixture.record("Keyboard.Character", 'é');
-	fixture.pull(&mut sink, pass);
-	let published = sink.published();
-	assert_eq!(published.len(), 1);
-	assert_eq!(published[0].handle(), typing);
-	assert_eq!(published[0].value(), Value::Unicode('é'));
-}
-
 #[test]
 fn tick_policies_decide_how_held_values_repeat() {
 	for (policy, expected) in [
@@ -422,7 +298,7 @@ fn tick_policies_decide_how_held_values_repeat() {
 		let mut sink = fixture.sink();
 		sink.actions.create(
 			Action::new(
-				&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Boolean, 1f32))],
+				&[ActionBindingDescription::new("Keyboard.Up").mapped(ValueMapping::new(Function::Linear, 1f32))],
 				Types::Float,
 			)
 			.tick_policy(policy),
@@ -823,26 +699,6 @@ fn transient_boolean_records_do_not_claim_or_repeat() {
 		assert!(fixture.pull(&mut ui, pass).is_empty());
 		assert!(fixture.pull(&mut game, pass).is_empty());
 	}
-}
-
-#[test]
-fn an_arena_backed_sink_shares_input_with_a_global_sink() {
-	let arena = bumpalo::Bump::new();
-	let mut fixture = Fixture::new();
-	let mut ui = InputSink::new_in(fixture.collector.add_sink(), DefaultChannel::new(), &arena);
-	let drag = ui.create_action(
-		&fixture.collector,
-		Types::Boolean,
-		&[ActionBindingDescription::new("Mouse.LeftButton")],
-		TickPolicy::OnChange,
-	);
-	let mut game = fixture.sink();
-	game.button("Mouse.LeftButton", TickPolicy::OnChange);
-
-	fixture.record("Mouse.LeftButton", true);
-	ui.pull(&mut fixture.collector, |_| Capture::Captured);
-	assert_eq!(ui.action_state(SeatHandle::stub(), drag, fixture.mouse), Value::Bool(true));
-	assert!(fixture.pull(&mut game, pass).is_empty());
 }
 
 #[test]

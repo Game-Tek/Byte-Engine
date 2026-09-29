@@ -1,14 +1,12 @@
 // Element ids are already well-mixed hashes, so the fast hasher is enough for every id-keyed map.
 use utils::hash::{HashMap, HashSet};
 
-use super::{ConcreteElement, Id, IdedElement, LayoutElement, engine::properties::Spares};
+use super::{Id, IdedElement, LayoutElement, engine::properties::Spares};
 use crate::ui::{
-	components::{
-		container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings, text_field::TextFieldSettings,
-	},
+	components::{container::ContainerProperties, curve::CurveSegment, path::FillRule, text::TextSettings},
 	flow::{self, FlowOutput},
-	primitive::{Primitive, Primitives},
-	style::{ConcreteLayer, EdgeFeather, Layer},
+	primitive::Primitives,
+	style::{ConcreteLayer, EdgeFeather},
 };
 
 /// The path of the root context. Nothing is declared above it, so it can never be removed.
@@ -34,7 +32,6 @@ enum PlacementInputs {
 		width: super::Sizing,
 		height: super::Sizing,
 	},
-	Shape(crate::ui::primitive::Shapes),
 	Container {
 		width: super::Sizing,
 		height: super::Sizing,
@@ -74,8 +71,9 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 				flow::placement_key(&container.flow).map(|key| key.1),
 			),
 		},
-		Primitives::Text(_) => PlacementInputs::Text { hit_testable: false },
-		Primitives::TextField(_) => PlacementInputs::Text { hit_testable: true },
+		Primitives::Text(text) => PlacementInputs::Text {
+			hit_testable: text.editable,
+		},
 		Primitives::Curve(curve) => PlacementInputs::Curve {
 			width: curve.path.width,
 			height: curve.path.height,
@@ -89,7 +87,6 @@ fn placement_inputs(primitive: &Primitives) -> PlacementInputs {
 			width: path.path.width,
 			height: path.path.height,
 		},
-		Primitives::Shape(shape) => PlacementInputs::Shape(shape.outline()),
 	}
 }
 
@@ -103,7 +100,6 @@ enum PropertyInputs {
 		height: super::Sizing,
 	},
 	Text(TextSettings),
-	TextField(TextFieldSettings),
 	Curve {
 		width: super::Sizing,
 		height: super::Sizing,
@@ -121,14 +117,12 @@ enum PropertyInputs {
 fn property_inputs(primitive: &Primitives) -> Option<PropertyInputs> {
 	Some(match primitive {
 		Primitives::Container(container) => PropertyInputs::Container(container.properties()?),
-		Primitives::Shape(shape) => PropertyInputs::Container(shape.settings.properties()?),
 		Primitives::Image(image) => PropertyInputs::Image {
 			content: image.content_key(),
 			width: image.width,
 			height: image.height,
 		},
 		Primitives::Text(text) => PropertyInputs::Text(*text.settings()),
-		Primitives::TextField(text_field) => PropertyInputs::TextField(*text_field.settings()),
 		Primitives::Curve(curve) => PropertyInputs::Curve {
 			width: curve.path.width,
 			height: curve.path.height,
@@ -155,7 +149,6 @@ fn curve_segments(primitive: &Primitives) -> &[CurveSegment] {
 fn text_measurement_inputs(primitive: &Primitives) -> Option<(&str, f32)> {
 	match primitive {
 		Primitives::Text(text) => Some((text.content(), text.settings().font_size)),
-		Primitives::TextField(text) => Some((text.content(), text.settings().font_size)),
 		_ => None,
 	}
 }
@@ -172,7 +165,7 @@ fn flow_type(primitive: &Primitives) -> Option<std::any::TypeId> {
 /// The inputs whose change rebuilds clipping and hit geometry. A sector belongs here: it reshapes what the
 /// pointer can hit without moving the element.
 fn clip_inputs(
-	primitive: &Primitives,
+	element: &IdedElement,
 ) -> Option<(
 	bool,
 	bool,
@@ -181,7 +174,7 @@ fn clip_inputs(
 	Option<crate::ui::components::container::Sector>,
 	Option<EdgeFeather>,
 )> {
-	let Primitives::Container(container) = primitive else {
+	let Primitives::Container(container) = &element.primitive else {
 		return None;
 	};
 	Some((
@@ -190,13 +183,44 @@ fn clip_inputs(
 		container.corner_radius,
 		container.corner_exponent,
 		container.sector,
-		container
-			.style
-			.layers()
-			.iter()
-			.map(Layer::feather)
-			.find(|feather| !feather.is_none()),
+		super::engine::first_layer_feather(element.style.layers()),
 	))
+}
+
+/// The `TreeRevisions` struct numbers the tree's mutations per invalidation class, so derived state such as the
+/// retained layout and render can tell which of its inputs changed.
+///
+/// Each class holds the number of the last mutation that may have changed it. Consumers keep a copy from when they
+/// were built and compare the classes they depend on. Structural edits change every class; see [`Self::advance`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct TreeRevisions {
+	/// The last mutation of any kind, structural or property.
+	pub(super) any: u64,
+	/// Advances when a mutation may change element positions, sizes, or hit participation.
+	pub(super) placement: u64,
+	/// Custom flows may observe external state after edits other than visual transforms.
+	pub(super) non_transform: u64,
+	/// Advances when the set of flow types may change.
+	pub(super) flow: u64,
+	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
+	pub(super) clip: u64,
+	/// Clipping and inherited opacity can change independently of paint color.
+	pub(super) appearance: u64,
+}
+
+impl TreeRevisions {
+	/// Numbers a new mutation that may change every class, as a structural edit does.
+	pub(super) fn advance(&mut self) {
+		let any = self.any + 1;
+		*self = Self {
+			any,
+			placement: any,
+			non_transform: any,
+			flow: any,
+			clip: any,
+			appearance: any,
+		};
+	}
 }
 
 /// The `RetainedTree` struct owns the live UI elements and the topology layout walks.
@@ -209,7 +233,6 @@ fn clip_inputs(
 pub(super) struct RetainedTree {
 	pub(super) elements: Vec<IdedElement>,
 	pub(super) element_indices: HashMap<Id, usize>,
-	pub(super) relations: Vec<(Id, Id)>,
 	/// Dense links follow `elements`; only external identity lookup needs hashing.
 	/// Spare child lists keep their capacity after a scope closes.
 	pub(super) children: Vec<Vec<usize>>,
@@ -230,14 +253,14 @@ pub(super) struct RetainedTree {
 	removed: HashSet<Id>,
 	/// The heap buffers of removed elements, which new elements take instead of allocating.
 	spares: Spares,
-	/// Advances on every structural or property change so consumers can retain derived state.
-	revision: u64,
-	/// Advances when a mutation may change element positions, sizes, or hit participation.
-	pub(super) placement_revision: u64,
+	/// Advances per invalidation class so consumers can retain derived state.
+	pub(super) revisions: TreeRevisions,
 	/// Roots whose visual transforms changed since the last evaluation.
 	pub(super) transform_changes: Vec<usize>,
-	/// Custom flows may observe external state after edits other than visual transforms.
-	pub(super) non_transform_revision: u64,
+	/// Whether each tree index is listed in `transform_changes`, so membership needs no search.
+	transform_changed: Vec<bool>,
+	/// Maps each index before a scope removal compacted the elements to its index after, or `usize::MAX`.
+	remap: Vec<usize>,
 	/// Text edits need a size comparison before placement can be reused.
 	/// Structural edits invalidate placement before these indices can be read.
 	pub(super) text_changes: Vec<usize>,
@@ -246,12 +269,6 @@ pub(super) struct RetainedTree {
 	/// Reused to compare style layers and curve segments across an edit.
 	style_before: Vec<ConcreteLayer>,
 	segments_before: Vec<CurveSegment>,
-	/// Advances when the set of flow types may change.
-	pub(super) flow_revision: u64,
-	/// Structural edits also invalidate clipping, including remounts that reuse IDs.
-	pub(super) clip_revision: u64,
-	/// Clipping and inherited opacity can change independently of paint color.
-	pub(super) appearance_revision: u64,
 }
 
 impl RetainedTree {
@@ -261,7 +278,6 @@ impl RetainedTree {
 		Self {
 			elements: Vec::with_capacity(ELEMENT_CAPACITY),
 			element_indices: HashMap::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
-			relations: Vec::with_capacity(ELEMENT_CAPACITY),
 			children: Vec::with_capacity(ELEMENT_CAPACITY),
 			parents: Vec::with_capacity(ELEMENT_CAPACITY),
 			declarations: HashMap::with_capacity_and_hasher(ELEMENT_CAPACITY, Default::default()),
@@ -281,7 +297,7 @@ impl RetainedTree {
 	///
 	/// Layout and render data derived from one revision stay valid until it changes.
 	pub(super) fn revision(&self) -> u64 {
-		self.revision
+		self.revisions.any
 	}
 
 	/// Records that the component scope `path` was declared in `declared_in`, so removing an ancestor ends it.
@@ -311,7 +327,7 @@ impl RetainedTree {
 		declared_in: u64,
 		id: Id,
 		create: impl FnOnce(u64, &mut Spares) -> Primitives,
-	) -> Option<(&mut Primitives, &mut Spares)> {
+	) -> Option<(&mut IdedElement, &mut Spares)> {
 		let parent_index = match parent.map(|parent| self.element_indices.get(&parent).copied()) {
 			Some(Some(index)) => Some(index),
 			Some(None) => {
@@ -341,21 +357,11 @@ impl RetainedTree {
 			*next_serial += 1;
 			*next_serial
 		});
-		self.revision += 1;
-		self.non_transform_revision = self.revision;
-		self.placement_revision = self.revision;
-		self.flow_revision = self.revision;
-		self.clip_revision = self.revision;
-		self.appearance_revision = self.revision;
+		self.revisions.advance();
 		self.next_content_id += 1;
-		self.elements.push(IdedElement {
-			id,
-			element: ConcreteElement {
-				primitive: create(self.next_content_id, &mut self.spares),
-			},
-			serial,
-			revision: self.revision,
-		});
+		let primitive = create(self.next_content_id, &mut self.spares);
+		self.elements
+			.push(IdedElement::new(id, serial, self.revisions.any, primitive));
 
 		let index = self.elements.len() - 1;
 		self.parents.push(parent_index);
@@ -364,10 +370,9 @@ impl RetainedTree {
 		}
 		debug_assert!(self.children[index].is_empty());
 		if let Some(parent_index) = parent_index {
-			self.relations.push((self.elements[parent_index].id, id));
 			self.children[parent_index].push(index);
 		}
-		Some((&mut self.elements[index].element.primitive, &mut self.spares))
+		Some((&mut self.elements[index], &mut self.spares))
 	}
 
 	/// Moves an element under another parent as its last child.
@@ -382,114 +387,132 @@ impl RetainedTree {
 			);
 			return;
 		};
-		let mut ancestor = Some(parent_index);
-		while let Some(current) = ancestor {
-			if current == child_index {
-				log::error!(
-					"A UI element could not be moved under itself or one of its descendants. The most likely cause is adopting an ancestor of the adopting element."
-				);
-				return;
-			}
-			ancestor = self.parents[current];
+		if self.lineage(parent_index).any(|ancestor| ancestor == child_index) {
+			log::error!(
+				"A UI element could not be moved under itself or one of its descendants. The most likely cause is adopting an ancestor of the adopting element."
+			);
+			return;
 		}
 		if self.parents[child_index] == Some(parent_index) {
 			return;
 		}
 		if let Some(previous) = self.parents[child_index] {
 			self.children[previous].retain(|&sibling| sibling != child_index);
-			self.relations.retain(|&(_, candidate)| candidate != child);
 		}
 		self.parents[child_index] = Some(parent_index);
 		self.children[parent_index].push(child_index);
-		self.relations.push((parent, child));
-		self.revision += 1;
-		self.non_transform_revision = self.revision;
-		self.placement_revision = self.revision;
-		self.flow_revision = self.revision;
-		self.clip_revision = self.revision;
-		self.appearance_revision = self.revision;
+		self.revisions.advance();
+	}
+
+	/// Walks from the element at `index` up through its visual ancestors, starting with the element itself.
+	pub(super) fn lineage(&self, index: usize) -> impl Iterator<Item = usize> + '_ {
+		std::iter::successors(Some(index), |&index| self.parents[index])
+	}
+
+	/// Walks from `id` up through the ids of its visual ancestors, starting with `id` itself.
+	///
+	/// Events bubble along this chain, and hover changes compare two of them. An id the tree does not hold yields
+	/// only itself.
+	pub(super) fn ancestors(&self, id: Id) -> impl Iterator<Item = Id> + '_ {
+		let parent = self.element_indices.get(&id).and_then(|&index| self.parents[index]);
+		std::iter::once(id).chain(
+			parent
+				.into_iter()
+				.flat_map(|parent| self.lineage(parent))
+				.map(|index| self.elements[index].id),
+		)
+	}
+
+	/// Reports whether the visual transform of the element at `index` changed since the last evaluation.
+	pub(super) fn transform_changed(&self, index: usize) -> bool {
+		self.transform_changed.get(index).copied().unwrap_or(false)
+	}
+
+	/// Forgets the transform changes the last evaluation consumed, keeping the storage.
+	pub(super) fn clear_transform_changes(&mut self) {
+		for &index in &self.transform_changes {
+			self.transform_changed[index] = false;
+		}
+		self.transform_changes.clear();
 	}
 
 	/// Invalidates the changed node's measurement and any affected inherited appearance.
 	///
 	/// `update` writes the element in place with the storage removed elements left. Returns what it returned, or
 	/// `None` when the tree holds no element `id`.
-	pub(super) fn update_element(&mut self, id: Id, update: impl FnOnce(&mut Primitives, &mut Spares) -> bool) -> Option<bool> {
+	pub(super) fn update_element(
+		&mut self,
+		id: Id,
+		update: impl FnOnce(&mut IdedElement, &mut Spares) -> bool,
+	) -> Option<bool> {
 		let index = *self.element_indices.get(&id)?;
 		let element = &mut self.elements[index];
-		let primitive = &mut element.element.primitive;
-		let placement = placement_inputs(primitive);
-		let text_before = text_measurement_inputs(primitive).map(|(content, size)| {
+		// Snapshot every input a revision class depends on, so the classes the edit left alone keep their numbers.
+		let placement = placement_inputs(&element.primitive);
+		let text_before = text_measurement_inputs(&element.primitive).map(|(content, size)| {
 			self.text_before.clear();
 			self.text_before.push_str(content);
 			size
 		});
-		let transform = *primitive.transform();
-		let flow = flow_type(primitive);
-		let clip = clip_inputs(primitive);
-		let opacity = primitive.visual().opacity;
-		let properties = property_inputs(primitive);
+		let transform = element.transform;
+		let flow = flow_type(&element.primitive);
+		let clip = clip_inputs(element);
+		let opacity = element.opacity;
+		let properties = property_inputs(&element.primitive);
 		self.style_before.clear();
-		self.style_before.extend_from_slice(primitive.style().layers());
+		self.style_before.extend_from_slice(element.style.layers());
 		self.segments_before.clear();
-		self.segments_before.extend_from_slice(curve_segments(primitive));
-		let old_revision = self.revision;
+		self.segments_before.extend_from_slice(curve_segments(&element.primitive));
+		let before = self.revisions;
 		let old_element_revision = element.revision;
-		let old_clip_revision = self.clip_revision;
-		let old_appearance_revision = self.appearance_revision;
-		let old_placement_revision = self.placement_revision;
-		let old_non_transform_revision = self.non_transform_revision;
-		let old_flow_revision = self.flow_revision;
 		// Invalidate before application code runs, including when a callback unwinds.
-		self.revision += 1;
-		self.non_transform_revision = self.revision;
-		element.revision = self.revision;
-		self.placement_revision = self.revision;
-		self.flow_revision = self.revision;
-		self.clip_revision = self.revision;
-		self.appearance_revision = self.revision;
-		let updated = update(primitive, &mut self.spares);
+		self.revisions.advance();
+		element.revision = self.revisions.any;
+		let updated = update(element, &mut self.spares);
 		// An edit that wrote the values already present changes nothing, so every revision stays put and consumers
 		// keep their retained renders.
 		if properties.is_some()
-			&& properties == property_inputs(primitive)
-			&& transform == *primitive.transform()
-			&& opacity == primitive.visual().opacity
-			&& text_measurement_inputs(primitive).map_or(true, |(content, size)| {
+			&& properties == property_inputs(&element.primitive)
+			&& transform == element.transform
+			&& opacity == element.opacity
+			&& text_measurement_inputs(&element.primitive).map_or(true, |(content, size)| {
 				text_before == Some(size) && content == self.text_before
-			}) && self.style_before.as_slice() == primitive.style().layers()
-			&& self.segments_before.as_slice() == curve_segments(primitive)
+			}) && self.style_before.as_slice() == element.style.layers()
+			&& self.segments_before.as_slice() == curve_segments(&element.primitive)
 		{
-			self.revision = old_revision;
+			self.revisions = before;
 			element.revision = old_element_revision;
-			self.non_transform_revision = old_non_transform_revision;
-			self.placement_revision = old_placement_revision;
-			self.flow_revision = old_flow_revision;
-			self.clip_revision = old_clip_revision;
-			self.appearance_revision = old_appearance_revision;
 			return Some(updated);
 		}
-		if transform != *primitive.transform() && !self.transform_changes.contains(&index) {
-			self.transform_changes.push(index);
-		}
-		if flow == flow_type(primitive) {
-			self.flow_revision = old_flow_revision;
-		}
-		if placement == placement_inputs(primitive) {
-			self.placement_revision = old_placement_revision;
-			if transform != *primitive.transform() {
-				self.non_transform_revision = old_non_transform_revision;
+		if transform != element.transform {
+			if index >= self.transform_changed.len() {
+				self.transform_changed.resize(index + 1, false);
 			}
-			if text_measurement_inputs(primitive)
+			// Each root is listed once however often it is edited before the next evaluation.
+			if !std::mem::replace(&mut self.transform_changed[index], true) {
+				self.transform_changes.push(index);
+			}
+		}
+		if flow == flow_type(&element.primitive) {
+			self.revisions.flow = before.flow;
+		}
+		if placement == placement_inputs(&element.primitive) {
+			self.revisions.placement = before.placement;
+			if transform != element.transform {
+				self.revisions.non_transform = before.non_transform;
+			}
+			if text_measurement_inputs(&element.primitive)
 				.is_some_and(|(content, size)| text_before != Some(size) || content != self.text_before)
 			{
 				self.text_changes.push(index);
 			}
 		}
-		if clip == clip_inputs(primitive) && !matches!(primitive, Primitives::Curve(curve) if curve.hit_width().is_some()) {
-			self.clip_revision = old_clip_revision;
-			if opacity == primitive.visual().opacity {
-				self.appearance_revision = old_appearance_revision;
+		if clip == clip_inputs(element)
+			&& !matches!(&element.primitive, Primitives::Curve(curve) if curve.hit_width().is_some())
+		{
+			self.revisions.clip = before.clip;
+			if opacity == element.opacity {
+				self.revisions.appearance = before.appearance;
 			}
 		}
 		Some(updated)
@@ -513,8 +536,11 @@ impl RetainedTree {
 			removed,
 			declared,
 			spares,
+			remap,
 			..
 		} = self;
+		remap.clear();
+		let mut kept = 0;
 		elements.retain_mut(|element| {
 			// Scope ownership follows declaration paths, never the current visual parent.
 			let should_remove = is_declared_under(declarations, element.id.get(), scope);
@@ -522,7 +548,11 @@ impl RetainedTree {
 				removed.insert(element.id);
 				// The same key may be declared again in this frame once its element is gone.
 				declared.remove(&element.id);
-				spares.recycle(&mut element.element.primitive);
+				spares.recycle(element);
+				remap.push(usize::MAX);
+			} else {
+				remap.push(kept);
+				kept += 1;
 			}
 			!should_remove
 		});
@@ -530,20 +560,55 @@ impl RetainedTree {
 		if self.removed.is_empty() {
 			return &self.removed;
 		}
-		self.revision += 1;
-		self.non_transform_revision = self.revision;
-		self.placement_revision = self.revision;
-		self.flow_revision = self.revision;
-		self.clip_revision = self.revision;
-		self.appearance_revision = self.revision;
-
-		self.relations
-			.retain(|(parent, child)| !self.removed.contains(parent) && !self.removed.contains(child));
-		self.rebuild_element_indices();
+		self.revisions.advance();
+		// The listed indices are stale now; structural edits replay placement, which recomputes every transform.
+		self.clear_transform_changes();
+		self.remap_links();
 		&self.removed
 	}
 
-	/// Restores index-based links after removal compacts the live elements.
+	/// Rewrites the index links through [`Self::remap`] after a removal compacted the live elements.
+	///
+	/// Parents and child lists keep their order, so siblings stay in declaration order. An element whose visual parent
+	/// was removed without it becomes a root.
+	fn remap_links(&mut self) {
+		let Self {
+			remap,
+			element_indices,
+			parents,
+			children,
+			elements,
+			..
+		} = self;
+		let live = |index: usize| Some(remap[index]).filter(|&index| index != usize::MAX);
+		element_indices.retain(|_, index| match live(*index) {
+			Some(new) => {
+				*index = new;
+				true
+			}
+			None => false,
+		});
+		// Every new index is at most its old one, so walking old indices upward only overwrites entries already read.
+		for old in 0..remap.len() {
+			let Some(new) = live(old) else {
+				// A removed element's list keeps its capacity for later mounts.
+				children[old].clear();
+				continue;
+			};
+			parents[new] = parents[old].and_then(live);
+			children[old].retain_mut(|child| match live(*child) {
+				Some(new) => {
+					*child = new;
+					true
+				}
+				None => false,
+			});
+			// Slots between `new` and `old` hold emptied lists, so the swap moves one of those out of the way.
+			children.swap(new, old);
+		}
+		parents.truncate(elements.len());
+	}
+
 	/// Resolves a laid-out element to its tree index without hashing.
 	///
 	/// A snapshot older than a structural edit can carry a stale index, so the
@@ -552,27 +617,6 @@ impl RetainedTree {
 		match self.elements.get(element.index) {
 			Some(candidate) if candidate.id == element.id => Some(element.index),
 			_ => self.element_indices.get(&element.id).copied(),
-		}
-	}
-
-	pub(super) fn rebuild_element_indices(&mut self) {
-		self.element_indices.clear();
-		for (index, element) in self.elements.iter().enumerate() {
-			self.element_indices.insert(element.id, index);
-		}
-		self.parents.clear();
-		self.parents.resize(self.elements.len(), None);
-		// Keep cleared child lists for later mounts, including indices beyond the live tree.
-		self.children
-			.resize_with(self.children.len().max(self.elements.len()), Vec::new);
-		for children in &mut self.children {
-			children.clear();
-		}
-		for &(parent, child) in &self.relations {
-			let parent = self.element_indices[&parent];
-			let child = self.element_indices[&child];
-			self.parents[child] = Some(parent);
-			self.children[parent].push(child);
 		}
 	}
 }

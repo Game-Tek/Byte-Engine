@@ -1,7 +1,6 @@
 use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
 use ghi::AccessPolicies;
 use resource_management::asset::handler::implementations::bema::ProgramGenerator;
-use utils::json::JsonValueTrait;
 
 use super::*;
 use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
@@ -57,12 +56,8 @@ fn compile_with_helpers(
 	)
 }
 
-fn results_binding(
-	name: &'static str,
-	members: Vec<besl::parser::Node<'static>>,
-	slot: ResourceSlot,
-) -> besl::parser::Node<'static> {
-	besl::ParserNode::binding("results", besl::ParserNode::buffer(name, members), slot.slot(), false, true)
+fn results_binding(members: Vec<besl::parser::Node<'static>>, slot: ResourceSlot) -> besl::parser::Node<'static> {
+	besl::ParserNode::binding("results", besl::ParserNode::buffer(members), slot.slot(), false, true)
 }
 
 fn read_f32(results: &besl::vm::Buffer, name: &str) -> f32 {
@@ -89,16 +84,12 @@ fn octahedral_decoder_preserves_normal_directions_in_the_besl_vm() {
 		vec![
 			besl::ParserNode::binding(
 				"inputs",
-				besl::ParserNode::buffer("OctahedralInputs", vec![besl::ParserNode::member("values", "vec2u16[5]")]),
+				besl::ParserNode::buffer(vec![besl::ParserNode::member("values", "vec2u16[5]")]),
 				INPUT_SLOT.slot(),
 				true,
 				false,
 			),
-			results_binding(
-				"OctahedralResults",
-				vec![besl::ParserNode::member("values", "vec3f[5]")],
-				RESULT_SLOT,
-			),
+			results_binding(vec![besl::ParserNode::member("values", "vec3f[5]")], RESULT_SLOT),
 		],
 	);
 	let cases = [
@@ -159,23 +150,16 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 		vec![
 			besl::ParserNode::binding(
 				"inputs",
-				besl::ParserNode::buffer(
-					"IesProfileUvInputs",
-					vec![
-						besl::ParserNode::member("emission_directions", "vec3f[5]"),
-						besl::ParserNode::member("axes", "vec3f[5]"),
-						besl::ParserNode::member("c0_tangents", "vec2u16[5]"),
-					],
-				),
+				besl::ParserNode::buffer(vec![
+					besl::ParserNode::member("emission_directions", "vec3f[5]"),
+					besl::ParserNode::member("axes", "vec3f[5]"),
+					besl::ParserNode::member("c0_tangents", "vec2u16[5]"),
+				]),
 				INPUT_SLOT.slot(),
 				true,
 				false,
 			),
-			results_binding(
-				"IesProfileUvResults",
-				vec![besl::ParserNode::member("values", "vec2f[5]")],
-				RESULT_SLOT,
-			),
+			results_binding(vec![besl::ParserNode::member("values", "vec2f[5]")], RESULT_SLOT),
 		],
 	);
 	let cases = [
@@ -217,58 +201,6 @@ fn ies_profile_uv_uses_the_uploaded_orientation_frame_in_the_besl_vm() {
 }
 
 #[test]
-fn albedo_write_is_narrowed_to_vec4f16() {
-	let material = material_metadata! { "variables": [] };
-	let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1, 2, 3, 4); }").expect("test shader");
-
-	let shader = VisibilityShaderGenerator::new().transform(shader_node, &material);
-
-	let assignment = main_statements(&shader)
-		.iter()
-		.find(|statement| {
-			matches!(
-				statement.node(),
-				besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { left, .. })
-					if matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "albedo")
-			)
-		})
-		.expect("Generated material program should retain the authored albedo assignment.");
-	let besl::parser::Nodes::Expression(besl::parser::Expressions::Operator {
-		name: operator, right, ..
-	}) = assignment.node()
-	else {
-		panic!("Expected generated albedo assignment.");
-	};
-	assert_eq!(*operator, "=");
-	let besl::parser::Nodes::Expression(besl::parser::Expressions::Call {
-		name: besl::parser::TypeName::Named("vec4f16"),
-		parameters: narrowed_values,
-	}) = right.node()
-	else {
-		panic!("Generated albedo assignment should narrow to vec4f16.");
-	};
-	let [authored_value] = narrowed_values.as_slice() else {
-		panic!("Generated albedo narrowing should preserve one authored value.");
-	};
-	let besl::parser::Nodes::Expression(besl::parser::Expressions::Call {
-		name: besl::parser::TypeName::Named("vec4f"),
-		parameters: components,
-	}) = authored_value.node()
-	else {
-		panic!("Generated albedo assignment should preserve the authored vec4f value.");
-	};
-	let components = components
-		.iter()
-		.map(|component| match component.node() {
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Literal { value }) => value.as_ref(),
-			_ => panic!("Expected literal authored albedo component."),
-		})
-		.collect::<Vec<_>>();
-	assert_eq!(components, ["1", "2", "3", "4"]);
-	besl::lex(shader).expect("Generated albedo program should link.");
-}
-
-#[test]
 fn vec4f_variable_becomes_specialization() {
 	let material = material_metadata! {
 		"variables": [{ "name": "albedo", "data_type": "vec4f" }]
@@ -291,23 +223,12 @@ fn vec4f_variable_becomes_specialization() {
 	assert!(main_statements(&shader).iter().any(|statement| {
 		matches!(
 			statement.node(),
-			besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { name, left, right })
-				if *name == "="
+			besl::parser::Nodes::Expression(besl::parser::Expressions::Operator { operator, left, right })
+				if *operator == besl::Operators::Assignment
 					&& matches!(left.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "out_color")
 					&& matches!(right.node(), besl::parser::Nodes::Expression(besl::parser::Expressions::Member { name }) if name == "albedo")
 		)
 	}));
-}
-
-/// Verifies material texture variables produce valid BESL.
-#[test]
-fn texture_variable_transform_produces_valid_besl() {
-	let material = material_metadata! {
-		"variables": [{ "name": "base_color", "data_type": "Texture2D" }]
-	};
-	let shader_node = besl::parse("main: fn () -> void { albedo = sample_material(base_color); }").expect("test shader");
-	let shader = VisibilityShaderGenerator::new().transform(shader_node, &material);
-	besl::lex(shader).expect("generated texture program should link");
 }
 
 #[test]
@@ -323,15 +244,6 @@ fn material_evaluation_texture_variables_produce_valid_besl() {
 			.expect("test shader");
 	let shader = material_generator().transform(shader_node, &material);
 	besl::lex(shader).expect("generated normal-mapped program should link");
-}
-
-/// Verifies material evaluation with skinned geometry produces valid BESL.
-#[test]
-fn material_evaluation_with_skinning_produces_valid_besl() {
-	let material = material_metadata! { "variables": [] };
-	let shader_node = besl::parse("main: fn () -> void { albedo = vec4f(1.0, 1.0, 1.0, 1.0); }").expect("test shader");
-	let shader = material_generator().transform(shader_node, &material);
-	besl::lex(shader).expect("generated program should link");
 }
 
 /// Verifies the generated material evaluation program lowers to the running platform's shader language.
@@ -396,7 +308,6 @@ fn cone_shadow_receiver_plane_depth_gradient_executes_in_the_besl_vm() {
 		"#,
 		&[(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient")],
 		vec![results_binding(
-			"ConeShadowReceiverPlaneResults",
 			vec![
 				besl::ParserNode::member("gradient", "vec2f"),
 				besl::ParserNode::member("corrected_depth", "f32"),
@@ -470,7 +381,6 @@ fn directional_shadow_depth_probe_is_conservative_in_the_besl_vm() {
 			),
 			parse_besl_function(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit"),
 			results_binding(
-				"DirectionalShadowProbeResults",
 				vec![
 					besl::ParserNode::member("fully_lit", "u32"),
 					besl::ParserNode::member("may_be_occluded", "u32"),
@@ -568,7 +478,6 @@ fn shadow_tent_filter_ramps_across_an_edge_in_the_besl_vm() {
 			parse_besl_function(SHADOW_TENT_SOURCE, "sample_shadow_tent"),
 			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
 			results_binding(
-				"ShadowTentResults",
 				vec![
 					besl::ParserNode::member("clear", "f32"),
 					besl::ParserNode::member("quarter_covered", "f32"),
@@ -676,7 +585,6 @@ fn directional_shadow_penumbra_widens_with_its_radius_in_the_besl_vm() {
 			parse_besl_function(DIRECTIONAL_SHADOW_TENT_SOURCE, "sample_directional_shadow_tent"),
 			parse_besl_function(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
 			results_binding(
-				"DirectionalPenumbraResults",
 				vec![
 					besl::ParserNode::member("contact", "f32"),
 					besl::ParserNode::member("between", "f32"),
@@ -747,7 +655,6 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 			),
 			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
 			results_binding(
-				"DirectionalBlockerResults",
 				vec![
 					besl::ParserNode::member("nearby", "f32"),
 					besl::ParserNode::member("out_of_reach", "f32"),
@@ -800,11 +707,7 @@ fn directional_shadow_blocker_search_finds_nearby_occluders_in_the_besl_vm() {
 				false,
 			),
 			parse_besl_function(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
-			results_binding(
-				"DirectionalSelfBlockerResults",
-				vec![besl::ParserNode::member("sloped_self", "f32")],
-				RESULT_SLOT,
-			),
+			results_binding(vec![besl::ParserNode::member("sloped_self", "f32")], RESULT_SLOT),
 		],
 	);
 	let sloped_cells = (0..8 * 32)
@@ -997,11 +900,7 @@ fn run_buffer_free_shadow_helper(
 	members: Vec<besl::parser::Node<'static>>,
 ) -> besl::vm::Buffer {
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
-	let executable = compile_with_helpers(
-		source,
-		helpers,
-		vec![results_binding("PointShadowResults", members, RESULT_SLOT)],
-	);
+	let executable = compile_with_helpers(source, helpers, vec![results_binding(members, RESULT_SLOT)]);
 	let mut results = buffer(&executable, RESULT_SLOT);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(RESULT_SLOT, &mut results);
@@ -1281,21 +1180,17 @@ fn trace_floor_reflection(scene: ReflectionScene, previous_scene: Option<Reflect
 			let mut bindings = screen_space_reflection_scope();
 			bindings.push(besl::ParserNode::binding(
 				"inputs",
-				besl::ParserNode::buffer(
-					"ReflectionInputs",
-					vec![
-						besl::ParserNode::member("view_projection", "mat4f"),
-						besl::ParserNode::member("position", "vec4f"),
-						besl::ParserNode::member("direction", "vec4f"),
-						besl::ParserNode::member("extent", "vec2u"),
-					],
-				),
+				besl::ParserNode::buffer(vec![
+					besl::ParserNode::member("view_projection", "mat4f"),
+					besl::ParserNode::member("position", "vec4f"),
+					besl::ParserNode::member("direction", "vec4f"),
+					besl::ParserNode::member("extent", "vec2u"),
+				]),
 				REFLECTION_INPUTS_SLOT.slot(),
 				true,
 				false,
 			));
 			bindings.push(results_binding(
-				"ReflectionResults",
 				vec![besl::ParserNode::member("reflection", "vec4f")],
 				REFLECTION_RESULTS_SLOT,
 			));

@@ -10,7 +10,7 @@ use crate::{Reference, Stream, resource::reader::ResourceReaderBacking, stream::
 pub enum ReadTargets<'a> {
 	Box(Box<[u8]>),
 	Buffer(&'a [u8]),
-	/// Selected named ranges from an uncompressed payload.
+	/// Selected named ranges of the decoded payload.
 	Streams(Vec<Stream<'a>>),
 	/// Storage owned by the reader, including mapped files when the backend supports them.
 	Backing(ResourceReaderBacking),
@@ -52,8 +52,8 @@ impl<'a> From<ReadTargetsMut<'a>> for ReadTargets<'a> {
 #[derive(Debug)]
 /// The `ReadTargetsMut` enum lets callers select where a resource reader writes binary data.
 ///
-/// CPU-compressed resources accept only an exact full-size [`Self::Buffer`] or
-/// [`Self::Box`], or [`Self::BackingStorage`] when the reader should allocate.
+/// CPU-compressed resources accept an exact full-size [`Self::Buffer`] or
+/// [`Self::Box`], [`Self::Streams`], or [`Self::BackingStorage`] when the reader should allocate.
 pub enum ReadTargetsMut<'a> {
 	Box {
 		buffer: Box<[u8]>,
@@ -69,7 +69,7 @@ pub enum ReadTargetsMut<'a> {
 		/// Number of bytes to read from the source. Defaults to `buffer.len()` when `None`.
 		size: Option<usize>,
 	},
-	/// Selects named ranges from an uncompressed payload.
+	/// Selects named ranges of the decoded payload.
 	Streams(Vec<StreamMut<'a>>),
 	/// Requests reader-owned storage when the caller does not provide a buffer.
 	BackingStorage,
@@ -90,41 +90,11 @@ impl<'a> ReadTargetsMut<'a> {
 		}
 	}
 
-	/// Sets the byte offset into the source resource data to start reading from.
-	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream offset.
-	/// CPU-compressed resources reject nonzero offsets.
-	pub fn with_offset(mut self, offset: usize) -> Self {
-		match &mut self {
-			ReadTargetsMut::Box { offset: target, .. } | ReadTargetsMut::Buffer { offset: target, .. } => *target = offset,
-			_ => {}
-		}
-		self
-	}
-
-	/// Sets the number of bytes to read from the source.
-	/// Only applies to `Box` and `Buffer` variants; `Streams` carry their own per-stream size.
-	/// CPU-compressed resources require the complete decoded size.
-	pub fn with_size(mut self, size: usize) -> Self {
-		match &mut self {
-			ReadTargetsMut::Box { size: target, .. } | ReadTargetsMut::Buffer { size: target, .. } => *target = Some(size),
-			_ => {}
-		}
-		self
-	}
-
 	/// Returns the buffer for a caller-provided or resource-manager-allocated target.
 	pub fn buffer(&self) -> Option<&[u8]> {
 		match self {
 			ReadTargetsMut::Box { buffer, .. } => Some(buffer),
 			ReadTargetsMut::Buffer { buffer, .. } => Some(buffer),
-			_ => None,
-		}
-	}
-
-	/// Returns a mutable reference to a buffer if the data was read into a buffer.
-	pub fn stream(&self, arg: &str) -> Option<&StreamMut<'_>> {
-		match self {
-			ReadTargetsMut::Streams(streams) => streams.iter().find(|s| s.name() == arg),
 			_ => None,
 		}
 	}
@@ -143,94 +113,5 @@ impl<'a> From<&'a mut [u8]> for ReadTargetsMut<'a> {
 impl<'a> From<Vec<StreamMut<'a>>> for ReadTargetsMut<'a> {
 	fn from(streams: Vec<StreamMut<'a>>) -> Self {
 		ReadTargetsMut::Streams(streams)
-	}
-}
-
-impl<'a, T: Resource + 'a> From<Reference<T>> for ReadTargetsMut<'a> {
-	fn from(_reference: Reference<T>) -> Self {
-		ReadTargetsMut::backing_storage()
-	}
-}
-
-impl<'a, T: Resource + 'a> From<&Reference<T>> for ReadTargetsMut<'a> {
-	fn from(_reference: &Reference<T>) -> Self {
-		ReadTargetsMut::backing_storage()
-	}
-}
-
-impl<'a, T: Resource + 'a> From<&mut Reference<T>> for ReadTargetsMut<'a> {
-	fn from(_reference: &mut Reference<T>) -> Self {
-		ReadTargetsMut::backing_storage()
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{ReadTargets, ReadTargetsMut};
-	use crate::{Stream, resource::reader::ResourceReaderBacking};
-
-	#[test]
-	fn contiguous_targets_expose_bytes_and_stream_targets_do_not() {
-		let boxed = ReadTargets::Box(vec![1, 2, 3].into_boxed_slice());
-		let borrowed_bytes = [4u8, 5, 6];
-		let borrowed = ReadTargets::Buffer(&borrowed_bytes);
-		let backing = ReadTargets::Backing(ResourceReaderBacking::Buffer(vec![7, 8, 9].into_boxed_slice()));
-		let streams = ReadTargets::Streams(vec![Stream::new("vertices", &[10, 11], 0, None)]);
-
-		assert_eq!(boxed.buffer(), Some([1, 2, 3].as_slice()));
-		assert_eq!(borrowed.buffer(), Some([4, 5, 6].as_slice()));
-		assert_eq!(backing.buffer(), Some([7, 8, 9].as_slice()));
-		assert_eq!(streams.buffer(), None);
-		assert_eq!(streams.stream("vertices").map(Stream::buffer), Some([10, 11].as_slice()));
-		assert!(streams.stream("indices").is_none());
-	}
-
-	#[test]
-	fn buffer_range_builders_preserve_storage_and_compose_in_any_order() {
-		let mut first_bytes = [0u8; 8];
-		let first = ReadTargetsMut::from(first_bytes.as_mut_slice()).with_offset(3).with_size(4);
-		match first {
-			ReadTargetsMut::Buffer { buffer, offset, size } => {
-				assert_eq!(buffer.len(), 8);
-				assert_eq!(offset, 3);
-				assert_eq!(size, Some(4));
-			}
-			_ => panic!("Expected a buffer target. The most likely cause is that range builders changed the target variant."),
-		}
-
-		let second = ReadTargetsMut::Box {
-			buffer: vec![0; 6].into_boxed_slice(),
-			offset: 0,
-			size: None,
-		}
-		.with_size(2)
-		.with_offset(1);
-		let immutable = ReadTargets::from(second);
-
-		assert_eq!(immutable.buffer().map(<[u8]>::len), Some(6));
-	}
-
-	#[test]
-	fn stream_targets_are_found_by_name_after_mutable_conversion() {
-		let mut vertices = [1u8, 2, 3];
-		let mut indices = [4u8, 5];
-		let mutable = ReadTargetsMut::from(vec![
-			crate::stream::StreamMut::new("vertices", &mut vertices),
-			crate::stream::StreamMut::new("indices", &mut indices),
-		]);
-
-		assert_eq!(
-			mutable.stream("indices").map(|stream| stream.buffer()),
-			Some([4, 5].as_slice())
-		);
-		let immutable = ReadTargets::from(mutable);
-
-		assert_eq!(immutable.stream("vertices").map(Stream::buffer), Some([1, 2, 3].as_slice()));
-	}
-
-	#[test]
-	#[should_panic(expected = "Backing storage cannot be produced without a resource reader")]
-	fn direct_backing_storage_conversion_is_rejected() {
-		let _ = ReadTargets::from(ReadTargetsMut::backing_storage());
 	}
 }

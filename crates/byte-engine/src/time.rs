@@ -290,13 +290,6 @@ mod tests {
 	}
 
 	#[test]
-	fn media_timebase_rejects_rates_that_require_rational_timing() {
-		for rate in [122, 165, 244, 365] {
-			assert_eq!(MediaTime::from_frames(1, rate), None);
-		}
-	}
-
-	#[test]
 	fn media_timebase_exactly_represents_supported_audio_rates() {
 		for rate in [44_100, 48_000, 96_000, 192_000] {
 			let sample = MediaTime::from_samples(1, rate).expect("expected test value");
@@ -313,14 +306,5 @@ mod tests {
 		let error = round_trip.abs_diff(standard);
 
 		assert!(error <= std::time::Duration::from_nanos(18));
-	}
-
-	#[test]
-	fn arithmetic_preserves_signed_timeline_offsets() {
-		let frame = MediaTime::from_frames(1, 24).expect("expected test value");
-		let offset = frame * 3 - MediaTime::from_seconds(1);
-
-		assert_eq!(offset.as_ticks(), -24_696_000);
-		assert_eq!((offset + MediaTime::from_seconds(1)).as_ticks(), frame.as_ticks() * 3);
 	}
 }

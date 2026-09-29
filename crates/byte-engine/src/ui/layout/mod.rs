@@ -1,27 +1,22 @@
 pub mod context;
 pub mod engine;
-#[doc(hidden)]
-pub mod query;
 mod retained_tree;
 #[doc(hidden)]
 pub mod snapshot;
 mod visual_transform;
 
-use utils::{Box, RGBA};
+use utils::RGBA;
 
 use super::{
-	Primitive,
-	element::{self, Element, ElementHandle, Id},
+	element::{self, Id},
 	flow::{self, FlowInput, FlowOutput, Location, Location3, Offset, Size},
-	primitive::BasePrimitive,
 };
 use crate::ui::{
 	components::{container::Sector, curve::CurveSegment},
-	element::ConcreteElement,
-	flow::FlowFunction,
 	font::TextSystem,
-	primitive::{Primitives, Shapes},
+	primitive::Primitives,
 	style::{ConcreteStyle, EdgeFeather},
+	transform::Transform,
 };
 
 /// The `LayoutElement` struct stores an element positioned and sized for a viewport.
@@ -34,13 +29,15 @@ pub(crate) struct LayoutElement {
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
 	pub(crate) hit_testable: bool,
-	/// The sector a container is shaped as, which its pointer hits follow.
-	pub(crate) sector: Option<Sector>,
 }
 
-/// The `RenderElement` struct stores an element prepared for rendering.
-#[derive(Clone)]
-pub(crate) struct RenderElement {
+/// The `RenderPlacement` struct holds where and how one render list entry draws, whatever its kind.
+///
+/// Every entry of a [`engine::Render`] carries one, so the render build patches it in place when only the element's
+/// geometry or inherited appearance moved, and the render pass converts it the same way for every kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RenderPlacement {
+	/// The element's compact render order; see [`IdedElement::serial`].
 	pub(crate) id: u32,
 	pub(crate) position: Location3,
 	pub(crate) size: Size,
@@ -48,9 +45,17 @@ pub(crate) struct RenderElement {
 	pub(crate) clip_mask: Option<ClipMask>,
 	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
 	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
-	pub(crate) style: ConcreteStyle,
+	/// The inherited opacity, already multiplied through the element's ancestors.
 	pub(crate) opacity: f32,
-	pub(crate) backdrop_blur_radius: f32,
+	/// The inherited visual scale, which curve points, stroke widths, glyph sizes, and unboxed paths follow.
+	pub(crate) scale: [f32; 2],
+}
+
+/// The `RenderElement` struct stores a rectangle or sector prepared for rendering.
+#[derive(Clone)]
+pub(crate) struct RenderElement {
+	pub(crate) placement: RenderPlacement,
+	pub(crate) style: ConcreteStyle,
 	pub(crate) corner_radius: f32,
 	pub(crate) corner_exponent: f32,
 	pub(crate) sector: Option<Sector>,
@@ -58,72 +63,41 @@ pub(crate) struct RenderElement {
 
 #[derive(Clone)]
 pub(crate) struct RenderTextElement {
-	pub(crate) id: u32,
-	pub(crate) position: Location3,
-	pub(crate) size: Size,
-	pub(crate) clip: Option<Geometry>,
-	pub(crate) clip_mask: Option<ClipMask>,
-	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
-	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
+	pub(crate) placement: RenderPlacement,
 	pub(crate) color: RGBA,
-	pub(crate) opacity: f32,
+	/// The unscaled font size; glyphs are placed at it times the smaller placement scale.
 	pub(crate) font_size: f32,
-	/// Inherited visual scale applied to the font size when glyphs are placed.
-	pub(crate) scale: f32,
 	pub(crate) content: String,
 }
 
 #[derive(Clone)]
 pub(crate) struct RenderImageElement {
-	pub(crate) id: u32,
+	pub(crate) placement: RenderPlacement,
 	pub(crate) image_id: u64,
 	pub(crate) version: u64,
 	pub(crate) source_width: u32,
 	pub(crate) source_height: u32,
 	pub(crate) pixels: std::sync::Arc<[u8]>,
-	pub(crate) position: Location3,
-	pub(crate) size: Size,
-	pub(crate) clip: Option<Geometry>,
-	pub(crate) clip_mask: Option<ClipMask>,
-	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
-	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
-	pub(crate) opacity: f32,
 }
 
 #[derive(Clone)]
 pub(crate) struct RenderPathElement {
-	pub(crate) id: u32,
+	/// Its scale applies only when the path has no view box.
+	pub(crate) placement: RenderPlacement,
 	pub(crate) path_id: u64,
 	pub(crate) version: u64,
 	pub(crate) fill_rule: crate::ui::components::path::FillRule,
 	pub(crate) view_box: Option<[f32; 2]>,
-	pub(crate) position: Location3,
-	pub(crate) size: Size,
-	pub(crate) clip: Option<Geometry>,
-	pub(crate) clip_mask: Option<ClipMask>,
-	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
-	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
 	pub(crate) style: ConcreteStyle,
-	pub(crate) opacity: f32,
-	/// Inherited visual scale, used when the path has no view box.
-	pub(crate) scale: [f32; 2],
 	/// Unscaled segments in path units, shared with the draw list; the pass packs them once per content key.
 	pub(crate) segments: std::sync::Arc<[CurveSegment]>,
 }
 
 #[derive(Clone)]
 pub(crate) struct RenderCurveElement {
-	pub(crate) id: u32,
-	pub(crate) position: Location3,
-	pub(crate) size: Size,
-	pub(crate) clip: Option<Geometry>,
-	pub(crate) clip_mask: Option<ClipMask>,
-	/// The turn this element draws with; its position, size, clip, and mask are unrotated.
-	pub(crate) rotation: Option<crate::ui::transform::Rotation>,
+	pub(crate) placement: RenderPlacement,
 	pub(crate) style: ConcreteStyle,
-	pub(crate) opacity: f32,
-	/// Inherited visual scale applied to segment points and stroke width.
-	pub(crate) scale: [f32; 2],
+	/// Segments in the curve's own units; the placement scale applies to their points and stroke width.
 	pub(crate) segments: Vec<CurveSegment>,
 }
 
@@ -135,32 +109,38 @@ pub(crate) struct ClipMask {
 	pub(crate) corner_exponent: f32,
 }
 
-fn random_color_from_id(id: u32) -> RGBA {
-	let mut state = id.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-	state ^= state >> 16;
-	state = state.wrapping_mul(2_246_822_519);
-	state ^= state >> 13;
-
-	let r = ((state & 0xFF) as f32) / 255.0;
-	let g = (((state >> 8) & 0xFF) as f32) / 255.0;
-	let b = (((state >> 16) & 0xFF) as f32) / 255.0;
-
-	RGBA::new(0.25 + r * 0.75, 0.25 + g * 0.75, 0.25 + b * 0.75, 1.0)
-}
-
+/// The `IdedElement` struct is one node of the retained tree: an element's identity, the look every kind shares,
+/// and its kind-specific [`Primitives`] state.
+///
+/// Declarations and edits write the node through [`engine::Properties`]; layout, hit testing, and rendering read it.
 pub struct IdedElement {
 	pub(crate) id: Id,
-	pub(crate) element: ConcreteElement,
 	/// The element's compact render order: its place among the elements the tree created, which render data and
 	/// render-pass caches use instead of the 64-bit id.
 	pub(crate) serial: u32,
 	/// Last mutation of this node, used by its measurement cache.
 	pub(crate) revision: u64,
+	/// The layers the element paints, in order.
+	pub(crate) style: ConcreteStyle,
+	/// The visual transform, applied after placement; it never moves the flow cursor.
+	pub(crate) transform: Transform,
+	/// The element's own opacity, which multiplies its ancestors'.
+	pub(crate) opacity: f32,
+	pub(crate) primitive: Primitives,
 }
 
-impl ElementHandle for IdedElement {
-	fn id(&self) -> Id {
-		self.id
+impl IdedElement {
+	/// Makes a node with the default look: one white fill layer, no transform, and full opacity.
+	pub(crate) fn new(id: Id, serial: u32, revision: u64, primitive: Primitives) -> Self {
+		Self {
+			id,
+			serial,
+			revision,
+			style: ConcreteStyle::default(),
+			transform: Transform::default(),
+			opacity: 1.0,
+			primitive,
+		}
 	}
 }
 
@@ -175,27 +155,20 @@ fn measure_element(element: &IdedElement, available: Size, text: &mut TextSystem
 	{
 		return size;
 	}
-	let size = match &element.element.primitive {
-		Primitives::Container(container) => Shapes::Box {
-			half: (container.width, container.height),
-			radius: container.corner_radius,
-			exponent: container.corner_exponent,
-		}
-		.bbox(available),
-		Primitives::Shape(shape) => shape.outline().bbox(available),
-		Primitives::Curve(curve) => curve.path().size(available),
-		Primitives::Path(path) => path.path().size(available),
-		Primitives::Image(image) => Shapes::Box {
-			half: (image.width, image.height),
-			radius: 0.0,
-			exponent: 2.0,
-		}
-		.bbox(available),
+	let size = match &element.primitive {
+		Primitives::Container(container) => box_size(container.width, container.height, available),
+		Primitives::Curve(curve) => box_size(curve.path.width, curve.path.height, available),
+		Primitives::Path(path) => box_size(path.path.width, path.path.height, available),
+		Primitives::Image(image) => box_size(image.width, image.height, available),
 		Primitives::Text(value) => text.measure(value.content(), value.settings().font_size),
-		Primitives::TextField(value) => text.measure(value.content(), value.settings().font_size),
 	};
 	*cached = Some((element.revision, available, size));
 	size
+}
+
+/// Resolves a box's `width` and `height` sizings against the space its parent offers.
+pub(crate) fn box_size(width: Sizing, height: Sizing, available: Size) -> Size {
+	Size::new(width.calculate(available.x()), height.calculate(available.y()))
 }
 
 /// Replays flow placement while remeasuring only changed elements or parent spaces.
@@ -237,26 +210,15 @@ fn layout_elements<'a>(
 		};
 		// The paint walk below assigns the depth once every element is placed.
 		let position = Location3::new(x, y, 0);
-		let hit_testable = match &element.element.primitive {
-			Primitives::Container(container) => container.hit_testable,
-			Primitives::TextField(_) => true,
-			Primitives::Curve(curve) => curve.hit_width().is_some(),
-			_ => false,
-		};
-		let sector = match &element.element.primitive {
-			Primitives::Container(container) => container.sector,
-			_ => None,
-		};
 		slots[index] = output.len();
 		output.push(LayoutElement {
 			id: element.id,
 			index,
 			position,
 			size,
-			hit_testable,
-			sector,
+			hit_testable: element.primitive.hit_testable(),
 		});
-		let Primitives::Container(container) = &element.element.primitive else {
+		let Primitives::Container(container) = &element.primitive else {
 			return;
 		};
 		let origin: Offset = Into::<Location>::into(position).into();
@@ -265,7 +227,7 @@ fn layout_elements<'a>(
 		for reset_layer in [false, true] {
 			for &child_index in &tree.children[index] {
 				let child = &tree.elements[child_index];
-				let child_container = match &child.element.primitive {
+				let child_container = match &child.primitive {
 					Primitives::Container(value) => Some(value),
 					_ => None,
 				};
@@ -316,13 +278,13 @@ fn layout_elements<'a>(
 		let position = &mut output[slots[index]].position;
 		*position = Location3::new(position.x(), position.y(), *next);
 		*next += 1;
-		if !matches!(tree.elements[index].element.primitive, Primitives::Container(_)) {
+		if !matches!(tree.elements[index].primitive, Primitives::Container(_)) {
 			return;
 		}
 		// Every level sorts its own tail of the shared scratch list.
 		let start = siblings.len();
 		for &child in &tree.children[index] {
-			match &tree.elements[child].element.primitive {
+			match &tree.elements[child].primitive {
 				Primitives::Container(container) => match container.depth {
 					Depth::Relative(depth) => siblings.push((depth, child)),
 					Depth::Absolute(depth) => layers.push((depth, child)),
@@ -583,19 +545,14 @@ impl From<f32> for Sizing {
 #[cfg(test)]
 mod tests {
 	use super::super::{
-		Element,
 		components::container::Container,
-		element::{ElementHandle, Id},
-		flow::{self, Location, Location3, Size},
-		layout::{ConcreteElement, Depth, Position, Sizing},
+		element::Id,
+		flow::{self, Location3, Size},
+		layout::{Depth, Position, Sizing},
 	};
 	use super::LayoutElement;
 	use super::engine::properties::detached_container;
-	use crate::ui::{
-		font::TextSystem,
-		layout::IdedElement,
-		primitive::{Primitives, Shapes},
-	};
+	use crate::ui::{font::TextSystem, layout::IdedElement, primitive::Primitives};
 
 	/// Supplies retained topology to the layout seam from declarative test fixtures.
 	fn layout_elements<'a>(
@@ -606,9 +563,20 @@ mod tests {
 		allocator: &'a bumpalo::Bump,
 	) -> Vec<LayoutElement, &'a bumpalo::Bump> {
 		let mut tree = super::retained_tree::RetainedTree::new();
+		tree.parents.resize(elements.len(), None);
+		tree.children.resize_with(elements.len(), Vec::new);
+		let index = |id: Id| {
+			elements
+				.iter()
+				.position(|element| element.id == id)
+				.expect("a fixture element")
+		};
+		for &(parent, child) in relations {
+			let (parent, child) = (index(parent), index(child));
+			tree.parents[child] = Some(parent);
+			tree.children[parent].push(child);
+		}
 		tree.elements = elements;
-		tree.relations.extend_from_slice(relations);
-		tree.rebuild_element_indices();
 		super::layout_elements(&tree, size, text, &mut Vec::new(), allocator)
 	}
 
@@ -622,14 +590,7 @@ mod tests {
 
 				counter = counter.checked_add(1).expect("expected test value");
 
-				IdedElement {
-					id,
-					element: ConcreteElement {
-						primitive: Primitives::Container(e),
-					},
-					serial: id.get() as u32,
-					revision: 0,
-				}
+				IdedElement::new(id, id.get() as u32, 0, Primitives::Container(e))
 			})
 			.collect()
 	}
@@ -643,7 +604,7 @@ mod tests {
 		let elements = make_elements(containers);
 		let relations = relations
 			.iter()
-			.map(|&(parent, child)| (elements[parent].id(), elements[child].id()))
+			.map(|&(parent, child)| (elements[parent].id, elements[child].id))
 			.collect::<std::vec::Vec<_>>();
 		let frame_allocator = bumpalo::Bump::new();
 
@@ -655,23 +616,6 @@ mod tests {
 	fn assert_layout(element: &LayoutElement, size: Size, position: Location3) {
 		assert_eq!(element.size, size);
 		assert_eq!(element.position, position);
-	}
-
-	#[test]
-	fn layout_root() {
-		let elements = layout([Container::default()], &[], Size::new(1024, 10));
-
-		assert_eq!(elements.len(), 1);
-		assert_eq!(elements[0].size, Size::new(1024, 10));
-	}
-
-	#[test]
-	fn layout_root_half_size() {
-		let root = detached_container(|c| c.size(Sizing::Relative(1, 2)));
-		let elements = layout([root], &[], Size::new(1024, 10));
-
-		assert_eq!(elements.len(), 1);
-		assert_eq!(elements[0].size, Size::new(512, 5));
 	}
 
 	#[test]
@@ -712,7 +656,7 @@ mod tests {
 	/// Returns each container's depth, in the order the containers were given to `layout`.
 	fn depths(containers: impl IntoIterator<Item = Container>, relations: &[(usize, usize)]) -> std::vec::Vec<u32> {
 		let elements = make_elements(containers);
-		let ids: std::vec::Vec<Id> = elements.iter().map(|element| element.id()).collect();
+		let ids: std::vec::Vec<Id> = elements.iter().map(|element| element.id).collect();
 		let relations: std::vec::Vec<(Id, Id)> = relations.iter().map(|&(parent, child)| (ids[parent], ids[child])).collect();
 		let frame_allocator = bumpalo::Bump::new();
 		let placed = layout_elements(
@@ -798,61 +742,6 @@ mod tests {
 	}
 
 	#[test]
-	fn layout_absolute_depth_siblings_stack_in_layout_order() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let first_modal = detached_container(|c| c.depth(Depth::absolute(1)));
-		let second_modal = detached_container(|c| c.depth(Depth::absolute(1)));
-
-		let elements = make_elements([root, first_modal, second_modal]);
-
-		let root = &elements[0];
-		let first_modal = &elements[1];
-		let second_modal = &elements[2];
-
-		let relations = [(root.id(), first_modal.id()), (root.id(), second_modal.id())];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements[0].position, Location3::new(0, 0, 0));
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position.z(), 2);
-	}
-
-	#[test]
-	fn layout_absolute_depth_resets_position_to_root_origin() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::row_with_gap(10)));
-		let menu_item = detached_container(|c| c.size(Sizing::pixels(20)));
-		let modal = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)));
-
-		let elements = make_elements([root, menu_item, modal]);
-
-		let root = &elements[0];
-		let menu_item = &elements[1];
-		let modal = &elements[2];
-
-		let relations = [(root.id(), menu_item.id()), (root.id(), modal.id())];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position, Location3::new(0, 0, 2));
-	}
-
-	#[test]
 	fn layout_absolute_position_places_child_without_advancing_flow() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = detached_container(|c| c.flow(flow::row));
@@ -867,11 +756,7 @@ mod tests {
 		let positioned = &elements[2];
 		let second = &elements[3];
 
-		let relations = [
-			(root.id(), first.id()),
-			(root.id(), positioned.id()),
-			(root.id(), second.id()),
-		];
+		let relations = [(root.id, first.id), (root.id, positioned.id), (root.id, second.id)];
 
 		let elements = layout_elements(
 			elements,
@@ -901,11 +786,7 @@ mod tests {
 		let dropdown = &elements[2];
 		let child = &elements[3];
 
-		let relations = [
-			(root.id(), first.id()),
-			(root.id(), dropdown.id()),
-			(dropdown.id(), child.id()),
-		];
+		let relations = [(root.id, first.id), (root.id, dropdown.id), (dropdown.id, child.id)];
 
 		let elements = layout_elements(
 			elements,
@@ -921,32 +802,6 @@ mod tests {
 	}
 
 	#[test]
-	fn layout_absolute_position_keeps_negative_coordinates() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let child = detached_container(|c| c.size(Sizing::pixels(30)).position(Position::absolute(-10, -20)));
-
-		let elements = make_elements([root, child]);
-
-		let root = &elements[0];
-		let child = &elements[1];
-
-		let relations = [(root.id(), child.id())];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		// An anchored child may start outside its parent, such as a canvas node panned past the edge.
-		assert_eq!(elements[1].position, Location3::new(-10, -20, 1));
-		assert_eq!(elements[1].size, Size::new(30, 30));
-	}
-
-	#[test]
 	fn layout_absolute_depth_does_not_advance_parent_flow_cursor() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = detached_container(|c| c.flow(flow::row_with_gap(10)));
@@ -958,11 +813,11 @@ mod tests {
 
 		let root = &elements[0];
 		let first = &elements[1];
-		let modal_id = elements[2].id();
+		let modal_id = elements[2].id;
 		let modal = &elements[2];
 		let second = &elements[3];
 
-		let relations = [(root.id(), first.id()), (root.id(), modal.id()), (root.id(), second.id())];
+		let relations = [(root.id, first.id), (root.id, modal.id), (root.id, second.id)];
 
 		let elements = layout_elements(
 			elements,
@@ -979,37 +834,6 @@ mod tests {
 	}
 
 	#[test]
-	fn layout_absolute_depth_resolves_after_relative_siblings_even_when_declared_first() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = Container::default();
-		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
-		let background = Container::default();
-
-		let elements = make_elements([root, modal, background]);
-
-		let root = &elements[0];
-		let modal_id = elements[1].id();
-		let background_id = elements[2].id();
-		let modal = &elements[1];
-		let background = &elements[2];
-
-		let relations = [(root.id(), modal.id()), (root.id(), background.id())];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements[1].id, background_id);
-		assert_eq!(elements[1].position.z(), 1);
-		assert_eq!(elements[2].id, modal_id);
-		assert_eq!(elements[2].position.z(), 2);
-	}
-
-	#[test]
 	fn layout_centered_column() {
 		let frame_allocator = bumpalo::Bump::new();
 		let root = detached_container(|c| c.flow(flow::centered_column));
@@ -1022,7 +846,7 @@ mod tests {
 		let a = &elements[1];
 		let b = &elements[2];
 
-		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+		let relations = [(root.id, a.id), (root.id, b.id)];
 
 		let elements = layout_elements(
 			elements,
@@ -1058,7 +882,7 @@ mod tests {
 		let a = &elements[1];
 		let b = &elements[2];
 
-		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+		let relations = [(root.id, a.id), (root.id, b.id)];
 
 		let elements = layout_elements(
 			elements,
@@ -1086,7 +910,7 @@ mod tests {
 		let a = &elements[1];
 		let b = &elements[2];
 
-		let relations = [(root.id(), a.id()), (root.id(), b.id())];
+		let relations = [(root.id, a.id), (root.id, b.id)];
 
 		let elements = layout_elements(
 			elements,

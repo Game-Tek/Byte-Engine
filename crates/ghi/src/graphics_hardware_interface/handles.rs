@@ -72,12 +72,6 @@ impl MasterHandle for BaseImageHandle {
 	}
 }
 
-impl From<BaseImageHandle> for Handles {
-	fn from(value: BaseImageHandle) -> Self {
-		Handles::Image(ImageHandle(value))
-	}
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ImageHandle(pub(crate) BaseImageHandle);
 
@@ -140,6 +134,16 @@ impl MasterHandle for SynchronizerHandle {
 /// The `DescriptorSetHandle` struct identifies a retained group of flat shader resource writes.
 pub struct DescriptorSetHandle(pub(crate) u64);
 
+impl MasterHandle for DescriptorSetHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
+
 /// The `PipelineLayoutHandle` struct identifies a pipeline resource layout.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PipelineLayoutHandle(pub(crate) u64);
@@ -164,24 +168,10 @@ pub struct AllocationHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextureCopyHandle(pub(crate) u64);
 
-impl<T: ?Sized> From<BufferHandle<T>> for BaseBufferHandle {
-	fn from(val: BufferHandle<T>) -> Self {
-		val.0
-	}
-}
-
-impl<T: bytemuck::Pod> From<DynamicBufferHandle<T>> for BaseBufferHandle {
-	fn from(val: DynamicBufferHandle<T>) -> Self {
-		val.0
-	}
-}
-
-impl From<DynamicImageHandle> for Handles {
-	fn from(val: DynamicImageHandle) -> Self {
-		val.0.into()
-	}
-}
-
+/// The `Handles` enum lets the Vulkan backend key debug names by any public resource handle.
+///
+/// Only the Vulkan backend stores debug names this way, so the enum exists only on Linux.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Handles {
 	Buffer(BaseBufferHandle),
@@ -202,21 +192,36 @@ pub enum Handles {
 	BottomLevelAccelerationStructure(BottomLevelAccelerationStructureHandle),
 }
 
+#[cfg(target_os = "linux")]
 impl From<BaseBufferHandle> for Handles {
 	fn from(val: BaseBufferHandle) -> Self {
 		Handles::Buffer(val)
 	}
 }
 
+#[cfg(target_os = "linux")]
 impl From<ImageHandle> for Handles {
 	fn from(val: ImageHandle) -> Self {
 		Handles::Image(val)
 	}
 }
 
+#[cfg(target_os = "linux")]
 impl From<SynchronizerHandle> for Handles {
 	fn from(val: SynchronizerHandle) -> Self {
 		Handles::Synchronizer(val)
+	}
+}
+
+impl<T: ?Sized> From<BufferHandle<T>> for BaseBufferHandle {
+	fn from(val: BufferHandle<T>) -> Self {
+		val.0
+	}
+}
+
+impl<T: bytemuck::Pod> From<DynamicBufferHandle<T>> for BaseBufferHandle {
+	fn from(val: DynamicBufferHandle<T>) -> Self {
+		val.0
 	}
 }
 

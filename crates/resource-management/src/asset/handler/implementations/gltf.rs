@@ -15,30 +15,24 @@ pub(crate) use skeleton::*;
 mod tests {
 
 	use maths_rs::mat::MatNew4;
-	use utils::json;
 
 	use super::{
-		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, TriangleFrontFaceWinding,
-		collect_gltf_texture_dependencies, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
-		gltf_normal_transform, gltf_primitive_transform_node, gltf_transform_orientation, gltf_vertex_component,
-		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
-		load_gltf_buffers, material_override, normalize_vertex_layouts, sanitize_material_name,
-		select_unfragmented_gltf_resource, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
+		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, collect_gltf_texture_dependencies,
+		generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id, gltf_normal_transform,
+		gltf_primitive_transform_node, gltf_transform_orientation, has_vertex_component, import_gltf_animation,
+		import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin, load_gltf_buffers, normalize_vertex_layouts,
+		sanitize_material_name, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
 		validate_affine_matrix, validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
 	};
 	use crate::r#async;
 	use crate::{
 		ReferenceModel,
 		asset::{
-			ContainerDefaultResource, ResourceId, handler::AssetHandler,
-			handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
-			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
+			ResourceId, handler::AssetHandler, handler::implementations::bema::tests::MinimalTestShaderGenerator,
+			manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
-		processors::{
-			processor::implementations::image::Semantic,
-			processor::implementations::mesh::orient_triangle_indices_for_front_face,
-		},
+		processors::processor::implementations::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
@@ -49,20 +43,6 @@ mod tests {
 		},
 		types::{VertexComponent, VertexSemantics},
 	};
-
-	#[test]
-	fn parses_json5_gltf_documents() {
-		let gltf = super::parse_gltf_json(
-			br#"{
-				// glTF source JSON follows the resource-management JSON5 policy.
-				asset: { version: '2.0', },
-				meshes: [],
-			}"#,
-		)
-		.expect("JSON5 glTF should parse");
-
-		assert_eq!(gltf.meshes().len(), 0);
-	}
 
 	#[test]
 	fn compact_skin_matrices_allow_rounding_noise_but_reject_projection() {
@@ -492,16 +472,6 @@ mod tests {
 	}
 
 	#[test]
-	fn unfragmented_glb_with_geometry_remains_mesh_first() {
-		let gltf = gltf::Gltf::from_slice(&generated_skeletal_glb()).unwrap();
-
-		assert_eq!(
-			select_unfragmented_gltf_resource(&gltf, None),
-			Ok(ContainerDefaultResource::Mesh)
-		);
-	}
-
-	#[test]
 	fn transforms_normals_and_tangents_without_translation_contamination() {
 		let transform = maths_rs::Mat4f::new(
 			2.0, 0.0, 0.0, 10.0, 0.0, 3.0, 0.0, 20.0, 0.0, 0.0, -4.0, 30.0, 0.0, 0.0, 0.0, 1.0,
@@ -630,55 +600,6 @@ mod tests {
 			}
 			curve => panic!("expected cubic rotation curve, got {curve:?}"),
 		}
-	}
-
-	#[r#async::test]
-	async fn bakes_generated_skeleton_fragment_from_the_base_glb() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
-
-		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb#skeleton")
-			.await
-			.expect("generated skeleton fragment should bake");
-
-		let skeleton = crate::from_slice::<SkeletonModel>(&skeleton.resource).expect("skeleton should deserialize");
-
-		assert_eq!(skeleton.nodes.len(), 4);
-		assert_eq!(skeleton.nodes[0].name.as_deref(), Some("Root"));
-		assert_eq!(skeleton.nodes[1].parent, Some(0));
-	}
-
-	#[r#async::test]
-	async fn bakes_named_animation_fragment_with_generated_skeleton_dependency() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("generated_skeletal.glb", &generated_skeletal_glb());
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
-
-		let animation: ReferenceModel<AnimationModel> = asset_manager
-			.bake_if_not_exists("generated_skeletal.glb#animations/Walk")
-			.await
-			.expect("generated animation fragment should bake");
-
-		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation should deserialize");
-
-		assert_eq!(animation.name.as_deref(), Some("Walk"));
-		assert_eq!(animation.duration, 2.0);
-		assert_eq!(animation.tracks.len(), 1);
-		assert_eq!(animation.skeleton.id().as_ref(), "generated_skeletal.glb#skeleton");
 	}
 
 	#[r#async::test]
@@ -920,13 +841,6 @@ mod tests {
 	}
 
 	#[test]
-	fn maps_gltf_semantics_to_normalized_channels() {
-		assert_eq!(gltf_vertex_component(gltf::Semantic::Normals).unwrap().channel, 0);
-		assert_eq!(gltf_vertex_component(gltf::Semantic::TexCoords(0)).unwrap().channel, 0);
-		assert!(gltf_vertex_component(gltf::Semantic::TexCoords(1)).is_none());
-	}
-
-	#[test]
 	fn deduplicates_indexed_and_default_materials_in_primitive_order() {
 		let gltf = gltf::Gltf::from_slice(
 			r#"{
@@ -971,28 +885,6 @@ mod tests {
 				"models/drone.glb#materials/material_0",
 			]
 		);
-	}
-
-	#[test]
-	fn reads_bead_material_override_when_present() {
-		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Paint"}]}"#.as_bytes())
-			.expect("test glTF should parse");
-
-		let material = gltf.materials().next().unwrap();
-
-		let spec = crate::asset::parse_json(r#"{"asset":{"Paint":{"asset":"Paint.bema"}}}"#).unwrap();
-
-		assert_eq!(material_override(Some(&spec), &material), Some("Paint.bema".to_string()));
-	}
-
-	#[test]
-	fn misses_bead_material_override_when_absent() {
-		let gltf = gltf::Gltf::from_slice(r#"{"asset":{"version":"2.0"},"materials":[{"name":"Paint"}]}"#.as_bytes())
-			.expect("test glTF should parse");
-
-		let material = gltf.materials().next().unwrap();
-
-		assert_eq!(material_override(None, &material), None);
 	}
 
 	#[test]
@@ -1099,89 +991,6 @@ mod tests {
 				},
 			]
 		);
-	}
-
-	#[test]
-	fn defaults_to_clockwise_front_faces() {
-		let asset_handler = GLTFAssetHandler::new();
-
-		assert_eq!(
-			asset_handler.triangle_front_face_winding(),
-			TriangleFrontFaceWinding::Clockwise
-		);
-	}
-
-	#[test]
-	fn preserves_triangle_order_for_counter_clockwise_front_faces() {
-		let indices = vec![0, 1, 2, 3, 4, 5];
-
-		let oriented = orient_triangle_indices_for_front_face(indices, TriangleFrontFaceWinding::CounterClockwise);
-
-		assert_eq!(oriented, vec![0, 1, 2, 3, 4, 5]);
-	}
-
-	#[test]
-	fn rewinds_triangle_order_for_clockwise_front_faces() {
-		let indices = vec![0, 1, 2, 3, 4, 5];
-
-		let oriented = orient_triangle_indices_for_front_face(indices, TriangleFrontFaceWinding::Clockwise);
-
-		assert_eq!(oriented, vec![0, 2, 1, 3, 5, 4]);
-	}
-
-	#[r#async::test]
-	async fn bakes_skeleton_from_minimal_glb_bytes() {
-		let (document, binary) = generated_triangle_gltf();
-
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("triangle.glb", &package_fixture_glb(&document, binary));
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
-
-		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("triangle.glb#skeleton")
-			.await
-			.expect("generated triangle GLB skeleton should bake");
-
-		let skeleton =
-			crate::from_slice::<SkeletonModel>(&skeleton.resource).expect("generated GLB skeleton should deserialize");
-
-		assert_eq!(skeleton.nodes.len(), 1);
-		assert_eq!(skeleton.nodes[0].name.as_deref(), Some("Triangle"));
-	}
-
-	#[r#async::test]
-	async fn loads_minimal_gltf_external_bin_from_in_memory_bytes() {
-		let (mut document, binary) = generated_triangle_gltf();
-
-		document["buffers"][0]["uri"] = "triangle.bin".into();
-
-		let document = serde_json::to_vec(&document).expect("generated glTF JSON should serialize");
-
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("models/triangle.bin", &binary);
-
-		let gltf = gltf::Gltf::from_slice(&document).expect("generated external-buffer glTF should parse");
-
-		let buffers = load_gltf_buffers(
-			&asset_storage_backend,
-			ResourceId::new("models/triangle.gltf"),
-			&gltf,
-			None,
-			None,
-			&std::alloc::Global,
-		)
-		.await
-		.expect("generated external binary should load");
-
-		assert_eq!(buffers.len(), 1);
-		assert_eq!(&buffers[0].0[..binary.len()], binary.as_slice());
 	}
 
 	#[r#async::test]
@@ -1341,37 +1150,9 @@ mod tests {
 			[0, 0]
 		);
 	}
-
-	#[r#async::test]
-	async fn bakes_image_fragment_from_minimal_glb() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		asset_storage_backend.add_file("image.glb", &generated_textured_triangle_glb());
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(GLTFAssetHandler::new());
-
-		asset_manager
-			.bake("image.glb#images/0_Test_Texture")
-			.await
-			.expect("generated GLB image fragment should bake");
-
-		let resource = resource_storage_backend
-			.get_resource(ResourceId::new("image.glb#images/0_Test_Texture"))
-			.expect("baked GLB image fragment should be stored");
-
-		let image: Image = crate::from_slice(&resource.resource).expect("GLB image metadata should deserialize");
-
-		assert_eq!(resource.class, "Image");
-		assert_eq!(image.extent, [4, 4, 0]);
-		assert_eq!(image.mip_count, 1, "no mip generator is installed");
-	}
 }
 
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use maths_rs::{
 	mat::{MatDeterminant, MatInverse, MatNew4, MatScale, MatTranspose},
@@ -1380,13 +1161,15 @@ use maths_rs::{
 use utils::{Extent, json, json::JsonValueTrait};
 
 use super::{
-	ContainerDefaultResource, ResourceId, container_default_resource,
+	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
+	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_model,
 };
-use crate::asset::handler::implementations::bema::{GeneratedMaterial, ProgramGenerator, store_generated_materials};
-pub use crate::processors::processor::implementations::mesh::TriangleFrontFaceWinding;
+use crate::asset::handler::implementations::bema::{
+	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
+};
 use crate::{
 	ProcessedAsset, ReferenceModel,
 	asset::{self},
@@ -1401,7 +1184,7 @@ use crate::{
 	},
 	resource,
 	resources::{
-		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
+		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerationBackend,

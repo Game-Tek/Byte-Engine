@@ -1,13 +1,11 @@
 //! Plays a sound through the default audio output as an application startup smoke test.
 //!
-//! This example verifies that the complete application can start and run. It
-//! does not verify the generated audio.
-
-#![allow(clippy::no_effect)]
+//! This example verifies that the complete application can start, publish a
+//! procedural [`Generator`], and run. It does not verify the generated audio.
 
 use byte_engine::{
-	application::{Application, Parameter},
-	audio::synthesizer::Synthesizer,
+	application::Parameter,
+	audio::{Generator, PlaybackSettings, PlaybackState},
 };
 
 fn main() {
@@ -19,36 +17,37 @@ fn main() {
 		],
 	);
 
-	TestSynthesizer {}; // TODO: wire to audio system
+	app.generator_factory().create(Box::new(TestTone));
 
 	app.do_loop();
 }
 
-struct TestSynthesizer;
+/// The `TestTone` struct plays a one-second 440 Hz sine tone for the smoke test.
+#[derive(Clone)]
+struct TestTone;
 
-impl Synthesizer for TestSynthesizer {
-	fn render<'a>(&self, current_sample: u64, buffer: &'a mut [f32]) -> &'a [f32] {
-		let pitch = 440f32;
-		let gain = 1f32;
-		let sample_rate = 44100;
+impl TestTone {
+	const PITCH: f64 = 440.0;
+	const GAIN: f32 = 1.0;
+	const DURATION_SECONDS: u64 = 1;
+}
 
+impl Generator for TestTone {
+	fn render<'a>(&self, settings: PlaybackSettings, state: PlaybackState, buffer: &'a mut [f32]) -> Option<&'a [f32]> {
 		let tau = std::f64::consts::TAU;
-		let sample_rate = sample_rate as f64;
-		let phase_step = tau * pitch as f64 / sample_rate;
-		let mut phase = (current_sample as f64 * phase_step).rem_euclid(tau);
+		let phase_step = tau * Self::PITCH / f64::from(settings.sample_rate);
+		let mut phase = (state.current_sample as f64 * phase_step).rem_euclid(tau);
 
-		for b in buffer.iter_mut() {
-			let sample = phase.sin() as f32;
-			*b += sample * gain;
-
-			phase += phase_step;
-			if phase >= tau {
-				phase -= tau;
-			} else if phase < 0.0 {
-				phase += tau;
-			}
+		// Mix into the buffer, because other sources share it.
+		for sample in buffer.iter_mut() {
+			*sample += phase.sin() as f32 * Self::GAIN;
+			phase = (phase + phase_step).rem_euclid(tau);
 		}
 
-		buffer
+		Some(buffer)
+	}
+
+	fn done(&self, settings: PlaybackSettings, state: PlaybackState) -> bool {
+		state.current_sample >= u64::from(settings.sample_rate) * Self::DURATION_SECONDS
 	}
 }

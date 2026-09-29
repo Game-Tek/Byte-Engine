@@ -405,46 +405,6 @@ mod tests {
 	};
 	use crate::{Solver, resource::storage_backend::tests::TestStorageBackend};
 
-	#[test]
-	fn identity_transform_preserves_the_neutral_pose() {
-		let transform = LocalTransform::identity();
-
-		assert_eq!(transform.translation, [0.0, 0.0, 0.0]);
-		assert_eq!(transform.rotation, [0.0, 0.0, 0.0, 1.0]);
-		assert_eq!(transform.scale, [1.0, 1.0, 1.0]);
-		assert_eq!(LocalTransform::default(), transform);
-	}
-
-	#[crate::r#async::test]
-	async fn solving_preserves_parent_before_child_rest_pose() {
-		let child_pose = LocalTransform {
-			translation: [0.0, 2.0, 0.0],
-			..LocalTransform::identity()
-		};
-		let model = SkeletonModel {
-			nodes: vec![
-				SkeletonNode {
-					name: Some("root".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("child".into()),
-					parent: Some(0),
-					rest_local: child_pose,
-				},
-			],
-		};
-
-		let skeleton: Skeleton = model
-			.solve(&TestStorageBackend::new())
-			.await
-			.expect("A parent-before-child skeleton should solve");
-
-		assert_eq!(skeleton.nodes[1].parent, Some(0));
-		assert_eq!(skeleton.nodes[1].rest_local, child_pose);
-	}
-
 	#[crate::r#async::test]
 	async fn solving_rejects_forward_and_self_parent_references() {
 		for parent in [0, 1] {

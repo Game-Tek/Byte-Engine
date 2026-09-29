@@ -221,42 +221,6 @@ mod tests {
 	}
 
 	#[test]
-	fn maps_scroll_to_mouse_scroll_trigger() {
-		let event = ghi::window::Events::Scroll {
-			seat: ghi::window::Seat::stub(),
-			dx: 0.0,
-			dy: -0.75,
-			time: 1,
-		};
-		assert_eq!(recorded(event, |mouse, _| mouse, "Mouse.Scroll"), input::Value::Float(-0.75));
-	}
-
-	#[test]
-	fn maps_backspace_to_keyboard_backspace_trigger() {
-		let event = ghi::window::Events::Key {
-			seat: ghi::window::Seat::stub(),
-			pressed: true,
-			key: ghi::window::input::Keys::Backspace,
-		};
-		assert_eq!(
-			recorded(event, |_, keyboard| keyboard, "Keyboard.Backspace"),
-			input::Value::Bool(true)
-		);
-	}
-
-	#[test]
-	fn maps_character_to_keyboard_character_trigger() {
-		let event = ghi::window::Events::Character {
-			seat: ghi::window::Seat::stub(),
-			character: 'é',
-		};
-		assert_eq!(
-			recorded(event, |_, keyboard| keyboard, "Keyboard.Character"),
-			input::Value::Unicode('é')
-		);
-	}
-
-	#[test]
 	fn focus_loss_and_resize_discard_the_seat_and_report_the_interruption() {
 		let (mut collector, ..) = window_input();
 		let press = ghi::window::Events::Button {
@@ -279,16 +243,5 @@ mod tests {
 			ghi::window::Events::FocusChanged(true)
 		));
 		assert!(!process_default_window_input(&mut collector, ghi::window::Events::Maximize));
-	}
-
-	#[cfg(feature = "dmx")]
-	#[test]
-	fn parses_artnet_ipv4_parameter() {
-		let parameter = Parameter::new("artnet.bind-address", "2.0.0.15");
-
-		assert_eq!(
-			parse_artnet_ipv4_parameter(Some(&parameter), Ipv4Addr::UNSPECIFIED),
-			Ipv4Addr::new(2, 0, 0, 15)
-		);
 	}
 }

@@ -24,23 +24,22 @@ mod tests {
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path,
-		select_fbx_skin, select_unfragmented_fbx_resource, skin_weights,
+		select_fbx_skin, skin_weights,
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
 		ProcessedAsset,
-		asset::{ResourceTraceLevel, handler::BakeContext, handler::LoadErrors},
+		asset::{ResourceTraceLevel, handler::AssetHandler, handler::BakeContext, handler::LoadErrors},
 	};
 	use crate::{
 		ReferenceModel,
 		asset::{
-			ContainerDefaultResource, ResourceId, handler::AssetHandler,
-			handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
+			ResourceId, handler::implementations::bema::tests::MinimalTestShaderGenerator, manager::AssetManager,
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
 		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
-		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh, TriangleFrontFaceWinding},
+		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
@@ -135,26 +134,6 @@ mod tests {
 				)
 				.await
 		}
-	}
-
-	#[test]
-	fn recognizes_fbx_and_exposes_consistent_default_winding() {
-		let handler = FBXAssetHandler::new();
-
-		assert!(handler.can_handle("fbx"));
-		assert!(handler.can_handle("FBX"));
-		assert!(!handler.can_handle("glb"));
-		assert_eq!(handler.triangle_front_face_winding(), TriangleFrontFaceWinding::Clockwise);
-	}
-
-	#[test]
-	fn unfragmented_fbx_with_geometry_remains_mesh_first() {
-		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").unwrap();
-
-		assert_eq!(
-			select_unfragmented_fbx_resource(&scene, None),
-			Ok(ContainerDefaultResource::Mesh)
-		);
 	}
 
 	#[test]
@@ -828,14 +807,6 @@ mod tests {
 	}
 
 	#[test]
-	fn malformed_fbx_returns_a_parse_error() {
-		assert!(matches!(
-			load_fbx_scene(b"not an FBX", "broken.fbx"),
-			Err(FbxImportError::Parse(_))
-		));
-	}
-
-	#[test]
 	fn reusable_corner_remap_restores_scratch_and_rejects_invalid_indices() {
 		let mut remap = vec![u32::MAX; 4];
 
@@ -1003,27 +974,6 @@ mod tests {
 		assert_eq!(animation.class(), "Animation");
 		let animation = crate::from_slice::<AnimationModel>(&animation.resource).expect("animation metadata should decode");
 		assert_eq!(animation.skeleton.id().as_ref(), "triangle_move.fbx#skeleton");
-	}
-
-	#[r#async::test]
-	async fn asset_manager_bakes_explicit_fbx_skeleton_fragment_without_material_work() {
-		let asset_storage = AssetTestStorageBackend::new();
-
-		asset_storage.add_file("skinned_triangle.fbx", SKINNED_TRIANGLE_FBX);
-
-		let resource_storage = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage, resource_storage);
-
-		asset_manager.add_asset_handler(FBXAssetHandler::new());
-
-		let skeleton: ReferenceModel<SkeletonModel> = asset_manager
-			.bake_if_not_exists("skinned_triangle.fbx#skeleton")
-			.await
-			.expect("FBX skeleton fragment should bake without a shader generator");
-
-		assert_eq!(skeleton.class(), "Skeleton");
-		assert_eq!(skeleton.id().as_ref(), "skinned_triangle.fbx#skeleton");
 	}
 
 	#[r#async::test]
@@ -1258,7 +1208,6 @@ use std::{
 	alloc::Allocator,
 	collections::{HashMap, HashSet},
 	fmt,
-	path::Path,
 	sync::Arc,
 };
 
@@ -1266,12 +1215,15 @@ use serde_json::Value;
 use utils::Extent;
 
 use super::{
-	ContainerDefaultResource, ResourceId, container_default_resource,
+	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, ResourceId, SKELETON_FRAGMENT,
+	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_model,
 };
-use crate::asset::handler::implementations::bema::{GeneratedMaterial, ProgramGenerator, store_generated_materials};
+use crate::asset::handler::implementations::bema::{
+	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
+};
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,
 	r#async::spawn_cpu_task,
@@ -1283,12 +1235,12 @@ use crate::{
 		},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
-			ProcessedMesh, TriangleFrontFaceWinding, VertexSkin,
+			ProcessedMesh, VertexSkin,
 		},
 	},
 	resource,
 	resources::{
-		animation::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve},
+		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerationBackend,

@@ -144,18 +144,6 @@ impl std::fmt::Display for RequestError {
 						"The asset manager did not produce a resource.",
 						"Verify the source asset and its dependencies, then bake the application resources with BELD.",
 					),
-					LoadMessages::IO => (
-						"Could not load asset.",
-						id.as_str(),
-						"The asset source could not be read.",
-						"Verify that the asset source is accessible, then bake the application resources with BELD.",
-					),
-					LoadMessages::NoURL => (
-						"Could not load asset.",
-						id.as_str(),
-						"The asset description has no source URL.",
-						"Add the source URL, then bake the application resources with BELD.",
-					),
 					LoadMessages::NoAssetHandler => (
 						"Could not bake asset.",
 						id.as_str(),
@@ -377,73 +365,6 @@ impl ResourceManager {
 
 		Ok((stored, reader))
 	}
-
-	/// Loads independent resources concurrently while preserving the requested order.
-	///
-	/// Use this method when every ID is known before any individual result is
-	/// needed. `max_concurrency` bounds debug baking and storage pressure.
-	pub async fn request_many<T: Resource>(
-		&self,
-		ids: &[String],
-		max_concurrency: usize,
-	) -> Result<Vec<Reference<T>>, RequestError>
-	where
-		T::Model: StoredModel<Resource = T>,
-	{
-		use utils::r#async::StreamExt as _;
-
-		let requests = ids
-			.iter()
-			.enumerate()
-			.map(|(index, id)| async move { self.request(id).await.map(|resource| (index, resource)) });
-
-		let completed = utils::r#async::stream::iter(requests)
-			.buffer_unordered(max_concurrency.max(1))
-			.collect::<Vec<_>>()
-			.await;
-
-		let mut completed = completed.into_iter().collect::<Result<Vec<_>, _>>()?;
-
-		completed.sort_unstable_by_key(|(index, _)| *index);
-
-		Ok(completed.into_iter().map(|(_, resource)| resource).collect())
-	}
-
-	/// Returns one page of typed resources that match indexed metadata.
-	///
-	/// Await this query, then use each
-	/// [`Reference::resource`](crate::Reference::resource) for metadata and await
-	/// [`Reference::load`](crate::Reference::load) only when the binary payload is
-	/// needed.
-	pub async fn query<T: Resource>(&self, query: impl Into<Query>) -> Result<QueryPage<Reference<T>>, QueryError>
-	where
-		T::Model: StoredModel<Resource = T>,
-	{
-		let page = self
-			.get_storage_backend()
-			.query(Query {
-				class: T::Model::get_class().to_string(),
-				..query.into()
-			})
-			.await?;
-
-		let mut items = Vec::with_capacity(page.items.len());
-
-		// Each query item already carries its record and reader, so solving it needs no second read.
-		for (stored, reader) in page.items {
-			// Keep the failing record's ID, because the page may hold many records of the same class.
-			let id = stored.id().to_owned();
-			let item = T::Model::solve_stored(stored, reader, self.get_storage_backend())
-				.await
-				.map_err(|source| QueryError::Solve { id, source })?;
-			items.push(item);
-		}
-
-		Ok(QueryPage {
-			items,
-			cursor: page.cursor,
-		})
-	}
 }
 
 #[cfg(test)]
@@ -501,45 +422,6 @@ mod tests {
 			.expect("deferred payload");
 
 		assert_eq!(loaded.buffer(), Some([1, 2, 3, 4].as_slice()));
-	}
-
-	#[r#async::test]
-	async fn query_reports_the_record_that_cannot_be_solved() {
-		let directory = std::env::temp_dir().join(format!(
-			"byte-engine-resource-manager-query-{}-{}",
-			std::process::id(),
-			std::time::SystemTime::now()
-				.duration_since(std::time::UNIX_EPOCH)
-				.unwrap()
-				.as_nanos()
-		));
-		let storage = ReDBStorageBackend::new_writable_with_mode(directory.clone(), ResourceStorageMode::Files).unwrap();
-
-		storage
-			.store(
-				ProcessedAsset::new_with_serialized("broken.image", "Image", vec![1, 2, 3]),
-				&[],
-			)
-			.await
-			.unwrap();
-
-		let resource_manager = ResourceManager::new(storage);
-
-		let error = resource_manager
-			.query::<Image>(Query::new("Image").eq("name", "broken.image"))
-			.await
-			.unwrap_err();
-
-		assert!(matches!(
-			error,
-			QueryError::Solve {
-				id,
-				source: SolveError::DeserializationFailed(_),
-			} if id == "broken.image"
-		));
-
-		drop(resource_manager);
-		std::fs::remove_dir_all(directory).unwrap();
 	}
 
 	#[r#async::test]
@@ -650,7 +532,6 @@ mod debug_tests {
 								bindings: Vec::new(),
 							},
 							artifact: ShaderArtifact::Spirv,
-							source_hash: 0,
 						},
 					),
 					&source,
@@ -691,7 +572,6 @@ mod debug_tests {
 								bindings: Vec::new(),
 							},
 							artifact: ShaderArtifact::Spirv,
-							source_hash: 0,
 						},
 					),
 					&[],
@@ -720,25 +600,6 @@ mod debug_tests {
 		resource_manager.set_asset_manager(asset_manager);
 
 		resource_manager
-	}
-
-	#[test]
-	fn asset_management_can_be_installed_after_the_resource_manager_is_shared() {
-		let storage = Arc::new(ResourceTestStorageBackend::new());
-
-		let resource_manager = Arc::new(ResourceManager::new_shared(storage.clone()));
-
-		let renderer_reference = Arc::downgrade(&resource_manager);
-
-		resource_manager.set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), storage.clone()));
-
-		assert!(renderer_reference.upgrade().is_some());
-		assert!(resource_manager.resource_trace().is_some());
-		assert!(
-			resource_manager
-				.try_set_asset_manager(AssetManager::new_shared(AssetTestStorageBackend::new(), storage))
-				.is_err()
-		);
 	}
 
 	#[r#async::test]
@@ -885,29 +746,6 @@ mod debug_tests {
 
 		assert_ne!(first.hash(), changed.hash());
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
-	}
-}
-
-#[cfg(all(test, not(debug_assertions)))]
-mod release_tests {
-
-	use super::ResourceManager;
-	use crate::{r#async, resource::storage_backend::tests::TestStorageBackend, resources::material::Shader};
-
-	#[r#async::test]
-	async fn missing_release_resource_fails_without_running_asset_processors() {
-		let resource_manager = ResourceManager::new(TestStorageBackend::new());
-
-		let result = resource_manager.request::<Shader>("missing/render-pass.besl").await;
-
-		assert!(matches!(
-			result,
-			Err(error)
-				if error.to_string() == format!(
-					"Could not load resource.\n\n  Resource: missing/render-pass.besl\n  Cause: The resource is missing from the baked release store.\n  Fix: Bake the application resources with BELD and include the resource store in the application bundle.\n  Guide: {}",
-					super::online_docs_url(super::BAKING_APP_RESOURCES_DOCS_PATH)
-				)
-		));
 	}
 }
 

@@ -28,7 +28,7 @@ pub struct OptimizationReport {
 ///
 /// Next, pass the optimized node to shader reflection or a backend generator.
 pub fn optimize(main_function_node: &NodeReference) -> OptimizationReport {
-	let functions = reachable_functions(main_function_node);
+	let functions = main_function_node.reachable_functions();
 	let mut report = OptimizationReport::default();
 
 	loop {
@@ -56,105 +56,6 @@ pub fn optimize(main_function_node: &NodeReference) -> OptimizationReport {
 	}
 
 	report
-}
-
-/// Finds every user function that a reachable function can call.
-fn reachable_functions(main_function_node: &NodeReference) -> Vec<NodeReference> {
-	let mut functions = Vec::new();
-	let mut visited = HashSet::new();
-	collect_reachable_function(main_function_node, &mut functions, &mut visited);
-	functions
-}
-
-fn collect_reachable_function(function: &NodeReference, functions: &mut Vec<NodeReference>, visited: &mut HashSet<usize>) {
-	if !visited.insert(function.identity()) {
-		return;
-	}
-
-	let Nodes::Function { statements, .. } = cloned_node(function) else {
-		return;
-	};
-	functions.push(function.clone());
-	for statement in statements {
-		collect_called_functions(&statement, functions, visited);
-	}
-}
-
-fn collect_called_functions(node: &NodeReference, functions: &mut Vec<NodeReference>, visited: &mut HashSet<usize>) {
-	match cloned_node(node) {
-		branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => {
-			for child in branch.branch_children() {
-				collect_called_functions(child, functions, visited);
-			}
-		}
-		Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} => {
-			collect_called_functions(&initializer, functions, visited);
-			collect_called_functions(&condition, functions, visited);
-			collect_called_functions(&update, functions, visited);
-			for statement in statements {
-				collect_called_functions(&statement, functions, visited);
-			}
-		}
-		Nodes::Raw { input, output, .. } => {
-			for input in input {
-				collect_called_functions(&input, functions, visited);
-			}
-			for output in output {
-				collect_called_functions(&output, functions, visited);
-			}
-		}
-		Nodes::Expression(expression) => collect_called_functions_in_expression(&expression, functions, visited),
-		_ => {}
-	}
-}
-
-fn collect_called_functions_in_expression(
-	expression: &Expressions,
-	functions: &mut Vec<NodeReference>,
-	visited: &mut HashSet<usize>,
-) {
-	match expression {
-		Expressions::Return { value } => {
-			if let Some(value) = value {
-				collect_called_functions(value, functions, visited);
-			}
-		}
-		Expressions::Expression { elements } => {
-			for element in elements {
-				collect_called_functions(element, functions, visited);
-			}
-		}
-		Expressions::FunctionCall { function, parameters } => {
-			collect_reachable_function(&function.get(), functions, visited);
-			for parameter in parameters {
-				collect_called_functions(parameter, functions, visited);
-			}
-		}
-		Expressions::IntrinsicCall { arguments, elements, .. } => {
-			for argument in arguments {
-				collect_called_functions(argument, functions, visited);
-			}
-			for element in elements {
-				collect_called_functions(element, functions, visited);
-			}
-		}
-		Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
-			collect_called_functions(left, functions, visited);
-			collect_called_functions(right, functions, visited);
-		}
-		Expressions::Macro { body, .. } => collect_called_functions(body, functions, visited),
-		Expressions::Continue
-		| Expressions::Break
-		| Expressions::Discard
-		| Expressions::Literal { .. }
-		| Expressions::Member { .. }
-		| Expressions::VariableDeclaration { .. } => {}
-	}
 }
 
 /// Removes statements that cannot execute after a terminator in the same block.
@@ -191,14 +92,22 @@ fn is_block_terminator(statement: &NodeReference) -> bool {
 
 /// Finds declaration assignments whose values have no remaining reader and no observable initializer effect.
 fn collect_unused_local_declarations(function: &NodeReference, effects: &mut EffectAnalysis, removals: &mut HashSet<usize>) {
-	let Nodes::Function { statements, .. } = cloned_node(function) else {
+	let function_ref = function.borrow();
+	let Nodes::Function { statements, .. } = function_ref.node() else {
 		return;
 	};
 
+	// One walk finds every declaration still read, so each candidate is a set lookup instead of a function walk.
+	let mut used = HashSet::new();
+	let mut visited = HashSet::new();
+	for statement in statements {
+		collect_used_declarations(statement, &mut used, &mut visited);
+	}
+
 	let mut candidates = Vec::new();
-	collect_local_declaration_candidates(&statements, &mut candidates);
+	collect_local_declaration_candidates(statements, &mut candidates);
 	for candidate in candidates {
-		if !declaration_is_used(function, &candidate.declaration) && effects.is_pure(&candidate.initializer) {
+		if !used.contains(&candidate.declaration.identity()) && effects.is_pure(&candidate.initializer) {
 			removals.insert(candidate.statement.identity());
 		}
 	}
@@ -220,23 +129,23 @@ fn collect_local_declaration_candidates(statements: &[NodeReference], candidates
 			});
 		}
 
-		match cloned_node(statement) {
+		match statement.borrow().node() {
 			Nodes::Conditional {
 				statements, else_branch, ..
 			} => {
-				collect_local_declaration_candidates(&statements, candidates);
+				collect_local_declaration_candidates(statements, candidates);
 				if let Some(else_branch) = else_branch {
 					collect_local_declaration_candidates(else_branch.statements(), candidates);
 				}
 			}
 			Nodes::Match { arms, default, .. } => {
-				for arm in &arms {
+				for arm in arms {
 					collect_local_declaration_candidates(&arm.statements, candidates);
 				}
-				collect_local_declaration_candidates(&default, candidates);
+				collect_local_declaration_candidates(default, candidates);
 			}
 			Nodes::ForLoop { statements, .. } => {
-				collect_local_declaration_candidates(&statements, candidates);
+				collect_local_declaration_candidates(statements, candidates);
 			}
 			_ => {}
 		}
@@ -244,89 +153,45 @@ fn collect_local_declaration_candidates(statements: &[NodeReference], candidates
 }
 
 fn local_declaration_assignment(statement: &NodeReference) -> Option<(NodeReference, NodeReference)> {
+	let statement = statement.borrow();
 	let Nodes::Expression(Expressions::Operator {
 		operator: Operators::Assignment,
 		left,
 		right,
-	}) = cloned_node(statement)
+	}) = statement.node()
 	else {
 		return None;
 	};
 
-	if matches!(cloned_node(&left), Nodes::Expression(Expressions::VariableDeclaration { .. })) {
-		Some((left, right))
-	} else {
-		None
-	}
+	matches!(
+		left.borrow().node(),
+		Nodes::Expression(Expressions::VariableDeclaration { .. })
+	)
+	.then(|| (left.clone(), right.clone()))
 }
 
-fn declaration_is_used(function: &NodeReference, declaration: &NodeReference) -> bool {
-	let Nodes::Function { statements, .. } = cloned_node(function) else {
-		return false;
-	};
-	let mut visited = HashSet::new();
-	statements
-		.iter()
-		.any(|statement| node_uses_declaration(statement, declaration, &mut visited))
-}
-
-fn node_uses_declaration(node: &NodeReference, declaration: &NodeReference, visited: &mut HashSet<usize>) -> bool {
+/// Records the identity of every declaration that `node` reads, through member accesses and raw-code inputs.
+///
+/// A declaration's own `VariableDeclaration` is not a read. `visited` skips subtrees shared between an intrinsic
+/// call's arguments and its inlined body.
+fn collect_used_declarations(node: &NodeReference, used: &mut HashSet<usize>, visited: &mut HashSet<usize>) {
 	if !visited.insert(node.identity()) {
-		return false;
+		return;
 	}
 
-	match cloned_node(node) {
-		branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => branch
-			.branch_children()
-			.any(|child| node_uses_declaration(child, declaration, visited)),
-		Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} => {
-			node_uses_declaration(&initializer, declaration, visited)
-				|| node_uses_declaration(&condition, declaration, visited)
-				|| node_uses_declaration(&update, declaration, visited)
-				|| statements
-					.iter()
-					.any(|statement| node_uses_declaration(statement, declaration, visited))
+	let node = node.borrow();
+	match node.node() {
+		Nodes::Expression(Expressions::Member { source, .. }) => {
+			used.insert(source.identity());
 		}
-		Nodes::Raw { input, .. } => input.iter().any(|input| input == declaration),
-		Nodes::Expression(expression) => uses_declaration_in_expression(&expression, declaration, visited),
-		_ => false,
-	}
-}
-
-fn uses_declaration_in_expression(expression: &Expressions, declaration: &NodeReference, visited: &mut HashSet<usize>) -> bool {
-	match expression {
-		Expressions::Member { source, .. } => source == declaration,
-		Expressions::Return { value } => value
-			.as_ref()
-			.is_some_and(|value| node_uses_declaration(value, declaration, visited)),
-		Expressions::Expression { elements } => elements
-			.iter()
-			.any(|element| node_uses_declaration(element, declaration, visited)),
-		Expressions::FunctionCall { parameters, .. } => parameters
-			.iter()
-			.any(|parameter| node_uses_declaration(parameter, declaration, visited)),
-		Expressions::IntrinsicCall { arguments, elements, .. } => {
-			arguments
-				.iter()
-				.any(|argument| node_uses_declaration(argument, declaration, visited))
-				|| elements
-					.iter()
-					.any(|element| node_uses_declaration(element, declaration, visited))
+		Nodes::Raw { input, .. } => used.extend(input.iter().map(NodeReference::identity)),
+		// Constants are declarations read through members, not statements that run in the function.
+		Nodes::Const { .. } => {}
+		other => {
+			for child in other.children() {
+				collect_used_declarations(child, used, visited);
+			}
 		}
-		Expressions::Operator { left, right, .. } | Expressions::Accessor { left, right } => {
-			node_uses_declaration(left, declaration, visited) || node_uses_declaration(right, declaration, visited)
-		}
-		Expressions::Macro { body, .. } => node_uses_declaration(body, declaration, visited),
-		Expressions::Continue
-		| Expressions::Break
-		| Expressions::Discard
-		| Expressions::Literal { .. }
-		| Expressions::VariableDeclaration { .. } => false,
 	}
 }
 
@@ -389,64 +254,33 @@ struct EffectAnalysis {
 
 impl EffectAnalysis {
 	fn is_pure(&mut self, node: &NodeReference) -> bool {
-		match cloned_node(node) {
-			Nodes::Scope { .. }
-			| Nodes::Null
-			| Nodes::Member { .. }
-			| Nodes::Binding { .. }
-			| Nodes::PushConstant { .. }
-			| Nodes::Input { .. }
-			| Nodes::Output { .. }
-			| Nodes::TaskPayload { .. }
-			| Nodes::Workgroup { .. }
-			| Nodes::Parameter { .. }
-			| Nodes::Specialization { .. }
-			| Nodes::Literal { .. } => true,
-			Nodes::Const { value, .. } => self.is_pure(&value),
-			Nodes::Raw { .. } => false,
-			Nodes::Struct { .. } => true,
+		let node_ref = node.borrow();
+		match node_ref.node() {
 			Nodes::Function { .. } => self.is_pure_function(node),
-			branch @ (Nodes::Conditional { .. } | Nodes::Match { .. }) => {
-				branch.branch_children().all(|child| self.is_pure(child))
-			}
-			// A loop can change shader termination even when its body only contains arithmetic.
-			Nodes::ForLoop { .. } => false,
-			Nodes::Intrinsic { .. } => false,
-			Nodes::Expression(expression) => self.is_pure_expression(&expression),
-		}
-	}
-
-	fn is_pure_expression(&mut self, expression: &Expressions) -> bool {
-		match expression {
-			Expressions::Continue | Expressions::Break | Expressions::Discard => false,
-			Expressions::Return { value } => value.as_ref().is_none_or(|value| self.is_pure(value)),
-			Expressions::Member { .. } | Expressions::Literal { .. } | Expressions::VariableDeclaration { .. } => true,
-			Expressions::Expression { elements } => elements.iter().all(|element| self.is_pure(element)),
-			Expressions::FunctionCall { function, parameters } => {
+			// Raw code is opaque, a loop can change shader termination even when its body only contains arithmetic, and
+			// control transfers change which statements run.
+			Nodes::Raw { .. }
+			| Nodes::ForLoop { .. }
+			| Nodes::Intrinsic { .. }
+			| Nodes::Expression(Expressions::Continue | Expressions::Break | Expressions::Discard) => false,
+			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => {
 				parameters.iter().all(|parameter| self.is_pure(parameter)) && self.callable_is_pure(&function.get())
 			}
-			Expressions::IntrinsicCall {
-				intrinsic,
-				arguments,
-				elements,
-			} => {
-				arguments.iter().all(|argument| self.is_pure(argument))
-					&& elements.iter().all(|element| self.is_pure(element))
-					&& self.intrinsic_is_pure(intrinsic)
+			Nodes::Expression(Expressions::IntrinsicCall { intrinsic, .. }) => {
+				node_ref.node().children().all(|child| self.is_pure(child)) && self.intrinsic_is_pure(intrinsic)
 			}
-			Expressions::Operator { operator, left, right } => {
-				if *operator == Operators::Assignment && !assignment_target_is_local(left) {
-					return false;
-				}
-				self.is_pure(left) && self.is_pure(right)
-			}
-			Expressions::Accessor { left, right } => self.is_pure(left) && self.is_pure(right),
-			Expressions::Macro { body, .. } => self.is_pure(body),
+			Nodes::Expression(Expressions::Operator {
+				operator: Operators::Assignment,
+				left,
+				..
+			}) if !assignment_target_is_local(left) => false,
+			// Declarations and value reads have no effect of their own; every other node is as pure as its parts.
+			other => other.children().all(|child| self.is_pure(child)),
 		}
 	}
 
 	fn callable_is_pure(&mut self, callable: &NodeReference) -> bool {
-		match cloned_node(callable) {
+		match callable.borrow().node() {
 			Nodes::Function { .. } => self.is_pure_function(callable),
 			Nodes::Struct { .. } => true,
 			_ => false,
@@ -463,7 +297,7 @@ impl EffectAnalysis {
 			return false;
 		}
 
-		let pure = match cloned_node(function) {
+		let pure = match function.borrow().node() {
 			Nodes::Function { statements, .. } => statements.iter().all(|statement| self.is_pure(statement)),
 			_ => false,
 		};
@@ -473,18 +307,17 @@ impl EffectAnalysis {
 	}
 
 	fn intrinsic_is_pure(&mut self, intrinsic: &NodeReference) -> bool {
-		let Nodes::Intrinsic { name, elements, .. } = cloned_node(intrinsic) else {
+		let intrinsic = intrinsic.borrow();
+		let Nodes::Intrinsic { name, elements, .. } = intrinsic.node() else {
 			return false;
 		};
 
-		let has_body = elements
+		let mut body = elements
 			.iter()
-			.any(|element| !matches!(cloned_node(element), Nodes::Parameter { .. }));
-		if has_body {
-			return elements
-				.iter()
-				.filter(|element| !matches!(cloned_node(element), Nodes::Parameter { .. }))
-				.all(|element| self.is_pure(element));
+			.filter(|element| !matches!(element.borrow().node(), Nodes::Parameter { .. }))
+			.peekable();
+		if body.peek().is_some() {
+			return body.all(|element| self.is_pure(element));
 		}
 
 		matches!(
@@ -529,21 +362,17 @@ impl EffectAnalysis {
 }
 
 fn assignment_target_is_local(node: &NodeReference) -> bool {
-	match cloned_node(node) {
+	match node.borrow().node() {
 		Nodes::Expression(Expressions::VariableDeclaration { .. }) => true,
 		Nodes::Expression(Expressions::Member { source, .. }) => {
 			matches!(
-				cloned_node(&source),
+				source.borrow().node(),
 				Nodes::Expression(Expressions::VariableDeclaration { .. })
 			)
 		}
-		Nodes::Expression(Expressions::Accessor { left, .. }) => assignment_target_is_local(&left),
+		Nodes::Expression(Expressions::Accessor { left, .. }) => assignment_target_is_local(left),
 		_ => false,
 	}
-}
-
-fn cloned_node(node: &NodeReference) -> Nodes {
-	node.borrow().node().clone()
 }
 
 #[cfg(test)]

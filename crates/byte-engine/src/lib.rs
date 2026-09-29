@@ -8,7 +8,7 @@
 //! channels, render passes, and UI layout pieces directly.
 //!
 //! ```no_run
-//! use byte_engine::application::{Application, Parameter};
+//! use byte_engine::application::Parameter;
 //! use byte_engine::application::graphics::{default_setup, GraphicsApplication};
 //!
 //! let mut application = GraphicsApplication::new("example", &[] as &[Parameter]);
@@ -22,10 +22,7 @@
 #![feature(clone_from_ref)]
 #![feature(context_ext, local_waker)]
 #![feature(generic_const_exprs)] // https://github.com/rust-lang/rust/issues/133199
-#![allow(dead_code)]
 #![allow(incomplete_features)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 #![deny(unsafe_code)]
 #![deny(unused_must_use)]
 #![deny(unused_features)]
@@ -83,22 +80,9 @@ pub extern crate ghi;
 extern crate resource_management;
 extern crate utils as engine_utils;
 
+pub(crate) use engine_utils::online_docs_url;
 pub use math;
 pub use time::MediaTime;
-
-pub(crate) const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
-	Some(url) => url,
-	None => "https://byte-engine.0x44491229.dev/docs",
-};
-
-/// Builds a link to one online documentation page.
-pub(crate) fn online_docs_url(path: &str) -> String {
-	format!(
-		"{}/{}",
-		ONLINE_DOCS_BASE_URL.trim_end_matches('/'),
-		path.trim_start_matches('/')
-	)
-}
 
 /// The `utils` module provides engine utility types through the main `byte_engine` crate API.
 pub mod utils {
@@ -164,5 +148,3 @@ pub mod space;
 pub mod time;
 
 pub mod inspector;
-
-use serde::{Deserialize, Serialize};

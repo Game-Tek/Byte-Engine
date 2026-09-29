@@ -8,13 +8,15 @@ use super::*;
 /// are merged by depth and then by element. Every primitive lands in one buffer, and only a
 /// backdrop blur, which reads what was drawn below it, splits the frame into more than one draw.
 ///
-/// `text` holds the glyphs a text renderer prepared for the same draw list and damage.
+/// `text` holds the glyphs a text renderer prepared for the same draw list and damage. `primitives` is the storage
+/// the records are written into; its contents are replaced and its capacity is reused.
 // Keep the merge and every capacity check in one pass so painter order and truncation cannot diverge between kinds.
 #[allow(clippy::too_many_lines)]
 pub(super) fn build_ui_primitives<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	frame_allocator: &'a bumpalo::Bump,
+	mut primitives: Vec<UiPrimitive>,
 	mut caches: Option<&mut UiGeometryCaches>,
 	masks: &mut UiMaskTable,
 	text: Option<&UiTextGeometry<'_>>,
@@ -37,8 +39,18 @@ pub(super) fn build_ui_primitives<'a>(
 	let path_count = paths.map_or(0, |paths| paths.primitives.len());
 	let capacity = (1 + draw_list.elements.len() + draw_list.blurs.len() + draw_list.images.len() + glyph_count + path_count)
 		.min(MAX_UI_PRIMITIVES);
+	// Replace too small storage with a fresh vector instead of calling `reserve` on the one passed in. With `reserve`'s
+	// out-of-line grow call on the passed-in vector, LLVM compiled the merge loop below to run about 12% slower on
+	// blur-heavy frames: the same instruction count, but more stalls (the `blur_regions_and_kernels` benchmark). The old
+	// contents are discarded either way, and the capacity still at least doubles like `reserve`, so a slowly growing
+	// frame does not reallocate every time.
+	primitives.clear();
+	if primitives.capacity() < capacity {
+		let grown = capacity.max(primitives.capacity() * 2);
+		primitives = Vec::with_capacity(grown);
+	}
 	let mut output = UiPrimitives {
-		primitives: Vec::with_capacity_in(capacity, frame_allocator),
+		primitives,
 		steps: Vec::with_capacity_in(draw_list.blurs.len() * 2 + 1, frame_allocator),
 		images: Vec::with_capacity_in(draw_list.images.len(), frame_allocator),
 		truncated: false,
@@ -119,24 +131,22 @@ pub(super) fn build_ui_primitives<'a>(
 					// The filter is planned from a backdrop blur radius, whose sigma is `scale * sqrt(radius)`.
 					let effective_radius = (sigma_pixels / UI_BLUR_SIGMA_SCALE).powi(2).clamp(0.0, 64.0);
 					let resolution_mix = blur_resolution_mix(sigma_pixels);
-					let (full_kernel, half_kernel) = blur_kernels(&mut cached_kernels, effective_radius);
-					output.steps.push(UiStep::Draw {
-						first: draw_first as u32,
-						count: (output.primitives.len() - draw_first) as u32,
-					});
-					let first = output.primitives.len() as u32;
+					let first = output.primitives.len();
 					output.primitives.push(caster);
-					draw_first = output.primitives.len();
-					output.steps.push(UiStep::Blur(UiBlurDispatch {
+					blur_step(
+						&mut output.steps,
+						draw_first..first,
+						bounds,
+						viewport,
+						&mut cached_kernels,
+						effective_radius,
 						resolution_mix,
-						full_kernel,
-						half_kernel,
-						full_regions: blur_full_dispatch_regions(bounds, viewport),
-						half_regions: blur_half_dispatch_regions(bounds, viewport),
-						backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
-							.unwrap_or(UiPixelRegion::full(viewport)),
-						source: UiBlurSource::Shape { first, count: 1 },
-					}));
+						UiBlurSource::Shape {
+							first: first as u32,
+							count: 1,
+						},
+					);
+					draw_first = output.primitives.len();
 					output.primitives.push(UiPrimitive {
 						bounds,
 						color: blur.color,
@@ -163,24 +173,18 @@ pub(super) fn build_ui_primitives<'a>(
 					break;
 				}
 				primitive.mask = masks.index(None, blur.clip_mask, sx, sy);
-				let (full_kernel, half_kernel) = blur_kernels(&mut cached_kernels, effective_radius);
-				let bounds = primitive.bounds;
 				// The blur reads the layer below it, so the primitives so far are drawn first.
-				output.steps.push(UiStep::Draw {
-					first: draw_first as u32,
-					count: (output.primitives.len() - draw_first) as u32,
-				});
-				draw_first = output.primitives.len();
-				output.steps.push(UiStep::Blur(UiBlurDispatch {
+				blur_step(
+					&mut output.steps,
+					draw_first..output.primitives.len(),
+					primitive.bounds,
+					viewport,
+					&mut cached_kernels,
+					effective_radius,
 					resolution_mix,
-					full_kernel,
-					half_kernel,
-					full_regions: blur_full_dispatch_regions(bounds, viewport),
-					half_regions: blur_half_dispatch_regions(bounds, viewport),
-					backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
-						.unwrap_or(UiPixelRegion::full(viewport)),
-					source: UiBlurSource::Backdrop,
-				}));
+					UiBlurSource::Backdrop,
+				);
+				draw_first = output.primitives.len();
 				output.primitives.push(primitive);
 			}
 			1 => {
@@ -374,14 +378,17 @@ pub(super) fn build_ui_primitives<'a>(
 }
 
 /// Builds reference primitives without text and without retaining surface data.
+///
+/// `primitives` is reused like the render pass's retained storage; take it back from the result to reuse it again.
 #[cfg(test)]
 pub(super) fn build_ui_primitives_uncached<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	arena: &'a bumpalo::Bump,
+	primitives: Vec<UiPrimitive>,
 	masks: &mut UiMaskTable,
 ) -> UiPrimitives<'a> {
-	build_ui_primitives(draw_list, viewport, arena, None, masks, None, None, None)
+	build_ui_primitives(draw_list, viewport, arena, primitives, None, masks, None, None, None)
 }
 
 /// Pixel bounds of an element for damage tests: its layout origin scaled, its pixel size, and a margin.
@@ -461,17 +468,57 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 }
 
 /// Returns the full and half resolution kernels for a backdrop blur radius, reusing the last pair when the radius repeats.
-fn blur_kernels(cached: &mut Option<(f32, UiBlurKernel, UiBlurKernel)>, effective_radius: f32) -> (UiBlurKernel, UiBlurKernel) {
-	if cached.as_ref().is_none_or(|(radius, ..)| *radius != effective_radius) {
-		let sigma_pixels = blur_sigma(effective_radius);
-		*cached = Some((
-			effective_radius,
-			UiBlurKernel::gaussian(sigma_pixels),
-			UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)),
-		));
+///
+/// It returns a borrow of the cache so the caller copies the kernels once, straight into their final place.
+fn blur_kernels(
+	cached: &mut Option<(f32, UiBlurKernel, UiBlurKernel)>,
+	effective_radius: f32,
+) -> &(f32, UiBlurKernel, UiBlurKernel) {
+	match cached {
+		Some(kernels) if kernels.0 == effective_radius => kernels,
+		_ => {
+			let sigma_pixels = blur_sigma(effective_radius);
+			cached.insert((
+				effective_radius,
+				UiBlurKernel::gaussian(sigma_pixels),
+				UiBlurKernel::gaussian(blur_half_sigma(sigma_pixels)),
+			))
+		}
 	}
-	let (_, full_kernel, half_kernel) = cached.unwrap();
-	(full_kernel, half_kernel)
+}
+
+/// Ends the draw of the primitives in `draw` and plans the blur whose quad or shadow spans `bounds` in pixels.
+///
+/// A blur reads what was drawn below it, so every blur splits the frame's draws. The blur's own quad starts the next draw.
+/// The kernels for `effective_radius` come from `cached_kernels`, see [`blur_kernels`].
+// Inlined because it runs once per blur inside the merge loop: out of line, the 184 byte kernel pair went through a
+// stack temporary and a call on every blur, which made blur-heavy frames measurably slower.
+#[inline(always)]
+fn blur_step(
+	steps: &mut Vec<UiStep, &bumpalo::Bump>,
+	draw: std::ops::Range<usize>,
+	bounds: [f32; 4],
+	viewport: Extent,
+	cached_kernels: &mut Option<(f32, UiBlurKernel, UiBlurKernel)>,
+	effective_radius: f32,
+	resolution_mix: f32,
+	source: UiBlurSource,
+) {
+	let (_, full_kernel, half_kernel) = blur_kernels(cached_kernels, effective_radius);
+	steps.push(UiStep::Draw {
+		first: draw.start as u32,
+		count: draw.len() as u32,
+	});
+	steps.push(UiStep::Blur(UiBlurDispatch {
+		resolution_mix,
+		full_kernel: *full_kernel,
+		half_kernel: *half_kernel,
+		full_regions: blur_full_dispatch_regions(bounds, viewport),
+		half_regions: blur_half_dispatch_regions(bounds, viewport),
+		backdrop: UiPixelRegion::from_bounds(bounds, UI_BLUR_FOOTPRINT_MARGIN as f32, viewport)
+			.unwrap_or(UiPixelRegion::full(viewport)),
+		source,
+	}));
 }
 
 /// Resolves a sector shadow's caster: the filled sector in white, moved by the offset and unclipped.

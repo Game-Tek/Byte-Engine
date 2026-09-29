@@ -449,6 +449,8 @@ impl AnimationGraphBuilder {
 	}
 
 	/// Adds an internal one-shot state that falls through to `completion` after it finishes.
+	/// Tests use it to author states that [`Self::build`] must reject.
+	#[cfg(test)]
 	fn transition_state(&self, name: impl Into<String>, clip: AnimationClip, completion: AnimationStateId) -> AnimationStateId {
 		let mut data = self.data.borrow_mut();
 		let data = data.as_mut().expect("the animation graph has already been built");
@@ -660,7 +662,6 @@ use std::{
 
 use math::Matrix;
 use resource_management::{
-	Reference,
 	resource::resource_manager::ResourceManager,
 	resources::{
 		animation::Animation,
@@ -677,7 +678,7 @@ pub use runtime::{
 
 use super::{
 	inertialization::PoseInertializer,
-	math::multiply_quaternion,
+	math::{add3, multiply_quaternion, rotate_vector},
 	packed::{PackedAnimation, PackedAnimationData},
 	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,

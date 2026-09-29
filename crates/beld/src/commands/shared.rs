@@ -81,12 +81,12 @@ pub(super) fn print_queryable_value(value: &QueryableValue) {
 /// Encodes an opaque query cursor as shell-safe hexadecimal JSON.
 pub(super) fn encode_query_cursor(cursor: &QueryCursor) -> String {
 	let bytes = serde_json::to_vec(cursor).expect("query cursors should serialize");
-	encode_hex(&bytes)
+	utils::hex::encode(&bytes)
 }
 
 /// Decodes a query cursor produced by [`encode_query_cursor`].
 pub(super) fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
-	let bytes = decode_hex(cursor).ok_or_else(|| {
+	let bytes = utils::hex::decode(cursor).ok_or_else(|| {
 		log::error!(
 			"Invalid query cursor '{}'. The most likely cause is that the cursor was not copied from a previous query result.",
 			cursor
@@ -104,44 +104,6 @@ pub(super) fn decode_query_cursor(cursor: &str) -> Result<QueryCursor, i32> {
 	})
 }
 
-/// Encodes bytes as lowercase hexadecimal text for shell-safe cursor transport.
-pub(super) fn encode_hex(bytes: &[u8]) -> String {
-	const HEX: &[u8; 16] = b"0123456789abcdef";
-	let mut output = String::with_capacity(bytes.len() * 2);
-
-	for byte in bytes {
-		output.push(HEX[(byte >> 4) as usize] as char);
-		output.push(HEX[(byte & 0x0f) as usize] as char);
-	}
-
-	output
-}
-
-/// Decodes lowercase or uppercase hexadecimal text into the original bytes.
-pub(super) fn decode_hex(value: &str) -> Option<Vec<u8>> {
-	if !value.len().is_multiple_of(2) {
-		return None;
-	}
-
-	let mut bytes = Vec::with_capacity(value.len() / 2);
-	for chunk in value.as_bytes().as_chunks::<2>().0 {
-		let high = decode_hex_digit(chunk[0])?;
-		let low = decode_hex_digit(chunk[1])?;
-		bytes.push((high << 4) | low);
-	}
-
-	Some(bytes)
-}
-
-/// Decodes one hexadecimal ASCII digit.
-fn decode_hex_digit(value: u8) -> Option<u8> {
-	match value {
-		b'0'..=b'9' => Some(value - b'0'),
-		b'a'..=b'f' => Some(value - b'a' + 10),
-		b'A'..=b'F' => Some(value - b'A' + 10),
-		_ => None,
-	}
-}
 pub(super) fn print_human_value(value: &Value, indent: usize) {
 	match value {
 		Value::Object(object) => {

@@ -62,11 +62,9 @@ fn atomic_target_root(target: &NodeReference) -> Option<AtomicTargetRoot> {
 /// Rejects atomic calls that cannot preserve portable address-space and access semantics.
 fn validate_atomic_target(name: &str, target: &NodeReference, requirement: AtomicAccessRequirement) -> Result<(), LexError> {
 	let Some(root) = atomic_target_root(target) else {
-		return Err(LexError::Undefined {
-			message: Some(format!(
-				"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
-			)),
-		});
+		return Err(LexError::invalid(format!(
+			"Atomic target must come directly from a buffer or workgroup. The most likely cause is that `{name}` received a local value, function parameter, or function result. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
+		)));
 	};
 
 	let AtomicTargetRoot::Binding { read, write } = root else {
@@ -88,7 +86,7 @@ fn validate_atomic_target(name: &str, target: &NodeReference, requirement: Atomi
 			"Atomic operation requires a read-write buffer. The most likely cause is that the descriptor used by `{name}` does not use `read_write` access. See {ATOMIC_INTRINSICS_DOCUMENTATION}."
 		),
 	};
-	Err(LexError::Undefined { message: Some(message) })
+	Err(LexError::invalid(message))
 }
 
 /// Reports whether `name` is the wrapper member of the lowered fixed-array binding that `left` references.
@@ -106,18 +104,48 @@ fn is_fixed_array_alias(left: &NodeReference, name: &str) -> bool {
 	)
 }
 
+/// Selects the memory class of a binding from its declared `constant` or `device` keyword, the same way for bindings
+/// declared in source and bindings built by engine code. Buffers default to device memory. Other resources have no
+/// buffer memory, so they reject a declared class.
+fn binding_memory_class(
+	name: &str,
+	r#type: &BindingTypes,
+	declared: Option<&str>,
+	write: bool,
+) -> Result<BufferMemoryClass, LexError> {
+	let is_buffer = matches!(r#type, BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. });
+	let memory_class = match (is_buffer, declared) {
+		(true, Some("constant")) => BufferMemoryClass::Constant,
+		(true, Some("device") | None) => BufferMemoryClass::Device,
+		(true, Some(class)) => {
+			return Err(LexError::invalid(format!(
+				"Invalid buffer memory class `{class}` for descriptor {name}. The most likely cause is that the descriptor does not use constant or device memory."
+			)));
+		}
+		(false, None) => BufferMemoryClass::Constant,
+		(false, Some(_)) => {
+			return Err(LexError::invalid(format!(
+				"Descriptor {name} declares a buffer memory class for a non-buffer resource. The most likely cause is that constant or device was attached to an image or texture descriptor."
+			)));
+		}
+	};
+	if write && is_buffer && memory_class == BufferMemoryClass::Constant {
+		return Err(LexError::invalid(format!(
+			"Writable buffer descriptor {name} uses constant memory. The most likely cause is that a writable buffer needs the device memory class."
+		)));
+	}
+	Ok(memory_class)
+}
+
 /// Rejects `break` and `continue` outside a loop, as Rust does. It checks the parsed tree, because lexing drops
 /// match arms that can never run, and those arms must still be valid code.
 fn validate_loop_control(statements: &[parser::Node], in_loop: bool) -> Result<(), LexError> {
 	for statement in statements {
 		match statement.node() {
 			parser::Nodes::Expression(parser::Expressions::Break | parser::Expressions::Continue) if !in_loop => {
-				return Err(LexError::Undefined {
-					message: Some(
-						"`break` or `continue` outside a loop. The most likely cause is a `break` or `continue` in a function body, branch, or match arm without an enclosing `for` loop."
-							.to_string(),
-					),
-				});
+				return Err(LexError::invalid(
+					"`break` or `continue` outside a loop. The most likely cause is a `break` or `continue` in a function body, branch, or match arm without an enclosing `for` loop.",
+				));
 			}
 			parser::Nodes::Conditional {
 				statements, else_branch, ..
@@ -144,645 +172,534 @@ fn validate_loop_control(statements: &[parser::Node], in_loop: bool) -> Result<(
 	Ok(())
 }
 
-/// Lexes the statements of a control-flow block in order. Each statement can see `scope` and the statements before it.
-fn lex_block(
-	mut scope: Vec<NodeReference>,
-	statements: &[parser::Node],
-	next_intrinsic_expansion_id: &mut usize,
-) -> Result<Vec<NodeReference>, LexError> {
-	let mut lexed_statements = Vec::with_capacity(statements.len());
-
-	for statement in statements {
-		let statement = lex_parsed_node(scope.clone(), statement, next_intrinsic_expansion_id)?;
-		scope.push(statement.clone());
-		lexed_statements.push(statement);
-	}
-
-	Ok(lexed_statements)
+/// The `Lexer` struct carries the state that linking one program threads through every parsed node: the lexical
+/// scope chain that name lookups search, and the counter that keeps inlined intrinsic locals unique.
+///
+/// Create it with [`Lexer::new`] over the program root, then call [`Lexer::lex`] for each top-level declaration.
+pub(super) struct Lexer {
+	/// The enclosing declarations and earlier statements visible to the node being lexed, innermost last.
+	scopes: Vec<NodeReference>,
+	next_intrinsic_expansion_id: usize,
 }
 
-// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-pub(super) fn lex_parsed_node(
-	chain: Vec<NodeReference>,
-	parser_node: &parser::Node,
-	next_intrinsic_expansion_id: &mut usize,
-) -> Result<NodeReference, LexError> {
-	let node = match &parser_node.node {
-		parser::Nodes::Null => Node::new(Nodes::Null).into(),
-		parser::Nodes::Scope { name, children } => {
-			assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the program.
+impl Lexer {
+	/// Starts linking declarations whose names resolve against `root`.
+	pub(super) fn new(root: NodeReference) -> Self {
+		Self {
+			scopes: vec![root],
+			next_intrinsic_expansion_id: 0,
+		}
+	}
 
-			let this: NodeReference = Node::scope(name.to_string()).into();
+	/// Runs `f` with `parent` as the innermost scope, then restores the scope chain, even when `f` fails.
+	fn in_scope<R>(&mut self, parent: &NodeReference, f: impl FnOnce(&mut Self) -> R) -> R {
+		let length = self.scopes.len();
+		self.scopes.push(parent.clone());
+		let result = f(self);
+		self.scopes.truncate(length);
+		result
+	}
+
+	/// Lexes the statements of a block in order. Each statement can see the current scope and the statements before
+	/// it, and none of them stays visible after the block.
+	fn lex_block(&mut self, statements: &[parser::Node]) -> Result<Vec<NodeReference>, LexError> {
+		let length = self.scopes.len();
+		let result = statements
+			.iter()
+			.map(|statement| {
+				let statement = self.lex(statement)?;
+				self.scopes.push(statement.clone());
+				Ok(statement)
+			})
+			.collect();
+		self.scopes.truncate(length);
+		result
+	}
+
+	/// Lexes the children of `this` in its scope and appends each one to it as it is linked.
+	fn lex_children(&mut self, this: &NodeReference, children: &[parser::Node]) -> Result<(), LexError> {
+		self.in_scope(this, |lexer| {
 			for child in children {
-				let child = lex_child_with_parent(&chain, &this, child, next_intrinsic_expansion_id)?;
+				let child = lexer.lex(child)?;
 				this.borrow_mut().add_child(child);
 			}
+			Ok(())
+		})
+	}
 
-			this
-		}
-		parser::Nodes::Struct { name, fields } => {
-			if let Some(n) = get_reference(&chain, name) {
-				// If the type already exists, return it.
-				return Ok(n);
+	/// Links one parsed node and its subtree against the current scope chain.
+	// This exhaustive parser-to-lexer boundary keeps each source node variant's lowering beside the others.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+	pub(super) fn lex(&mut self, parser_node: &parser::Node) -> Result<NodeReference, LexError> {
+		let node = match &parser_node.node {
+			parser::Nodes::Scope { name, children } => {
+				assert_ne!(*name, "root"); // The root scope node cannot be an inner part of the program.
+
+				let this: NodeReference = Node::scope(name.to_string()).into();
+				self.lex_children(&this, children)?;
+				this
 			}
-
-			let this: NodeReference = Node::r#struct(name, Vec::new()).into();
-			for field in fields {
-				let field = lex_child_with_parent(&chain, &this, field, next_intrinsic_expansion_id)?;
-				this.borrow_mut().add_child(field);
-			}
-
-			this
-		}
-		parser::Nodes::Specialization { name, r#type } => {
-			let t = resolve_type(&chain, r#type)?;
-
-			let this = Node::new(Nodes::Specialization {
-				name: name.to_string(),
-				r#type: t,
-			});
-
-			this.into()
-		}
-		parser::Nodes::Member { name, r#type } => {
-			let t = if r#type.contains('<') {
-				let mut s = r#type.split(['<', '>']);
-
-				let outer_type_name = s.next().ok_or(LexError::Undefined {
-					message: Some("No outer name".to_string()),
-				})?;
-
-				let outer_type = resolve_type(&chain, outer_type_name)?;
-
-				let inner_type_name = s.next().ok_or(LexError::Undefined {
-					message: Some("No inner name".to_string()),
-				})?;
-
-				let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
-					Node::internal_new(Node {
-						node: Nodes::Struct {
-							name: format!("{}*", stripped),
-							template: Some(outer_type.clone()),
-							fields: Vec::new(),
-							types: Vec::new(),
-						},
-					})
-				} else {
-					resolve_type(&chain, inner_type_name)?
-				};
-
-				if let Some(n) = get_reference(&chain, r#type) {
-					// If the specialized generic type already exists, return it.
+			parser::Nodes::Struct { name, fields } => {
+				if let Some(n) = get_reference(&self.scopes, name) {
+					// If the type already exists, return it.
 					return Ok(n);
 				}
 
-				let children = Vec::new();
+				let this: NodeReference = Node::r#struct(name, Vec::new()).into();
+				self.lex_children(&this, fields)?;
+				this
+			}
+			parser::Nodes::Specialization { name, r#type } => {
+				let t = resolve_type(&self.scopes, r#type)?;
 
-				let this = Node {
-					node: Nodes::Struct {
-						name: r#type.to_string(),
-						template: Some(outer_type),
-						fields: children,
-						types: vec![inner_type],
-					},
+				let this = Node::new(Nodes::Specialization {
+					name: name.to_string(),
+					r#type: t,
+				});
+
+				this.into()
+			}
+			parser::Nodes::Member { name, r#type } => {
+				let t = if r#type.contains('<') {
+					let mut s = r#type.split(['<', '>']);
+
+					let outer_type_name = s.next().ok_or(LexError::invalid("No outer name"))?;
+
+					let outer_type = resolve_type(&self.scopes, outer_type_name)?;
+
+					let inner_type_name = s.next().ok_or(LexError::invalid("No inner name"))?;
+
+					let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
+						NodeReference::from(Node {
+							node: Nodes::Struct {
+								name: format!("{}*", stripped),
+								template: Some(outer_type.clone()),
+								fields: Vec::new(),
+								types: Vec::new(),
+							},
+						})
+					} else {
+						resolve_type(&self.scopes, inner_type_name)?
+					};
+
+					if let Some(n) = get_reference(&self.scopes, r#type) {
+						// If the specialized generic type already exists, return it.
+						return Ok(n);
+					}
+
+					let children = Vec::new();
+
+					let this = Node {
+						node: Nodes::Struct {
+							name: r#type.to_string(),
+							template: Some(outer_type),
+							fields: children,
+							types: vec![inner_type],
+						},
+					};
+
+					let this: NodeReference = this.into();
+
+					return Ok(this);
+				} else if r#type.contains('[') {
+					let mut s = r#type.split(['[', ']']);
+
+					let type_name = s.next().ok_or(LexError::invalid("No type name"))?;
+
+					let member_type = resolve_type(&self.scopes, type_name)?;
+
+					let count = s
+						.next()
+						.ok_or(LexError::invalid("No count"))?
+						.parse()
+						.map_err(|_| LexError::invalid("Invalid count"))?;
+
+					return Ok(Node::array(name, member_type, count));
+				} else {
+					resolve_type(&self.scopes, r#type)?
 				};
 
-				let this: NodeReference = this.into();
+				let this: NodeReference = Node::member(name, t).into();
 
-				return Ok(this);
-			} else if r#type.contains('[') {
-				let mut s = r#type.split(['[', ']']);
+				this
+			}
+			parser::Nodes::Parameter { name, r#type } => {
+				let t = resolve_type_name(&self.scopes, r#type)?;
 
-				let type_name = s.next().ok_or(LexError::Undefined {
-					message: Some("No type name".to_string()),
-				})?;
+				let this = Node::new(Nodes::Parameter {
+					name: name.to_string(),
+					r#type: t,
+				});
 
-				let member_type = resolve_type(&chain, type_name)?;
+				this.into()
+			}
+			parser::Nodes::Input { name, format, location } => {
+				let t = resolve_type(&self.scopes, format)?;
 
-				let count = s
-					.next()
-					.ok_or(LexError::Undefined {
-						message: Some("No count".to_string()),
-					})?
-					.parse()
-					.map_err(|_| LexError::Undefined {
-						message: Some("Invalid count".to_string()),
-					})?;
+				let this = Node::new(Nodes::Input {
+					name: name.to_string(),
+					format: t,
+					location: *location,
+				});
 
-				return Ok(Node::array(name, member_type, count));
-			} else {
-				resolve_type(&chain, r#type)?
-			};
-
-			let this: NodeReference = Node::member(name, t).into();
-
-			this
-		}
-		parser::Nodes::Parameter { name, r#type } => {
-			let t = resolve_type_name(&chain, r#type)?;
-
-			let this = Node::new(Nodes::Parameter {
-				name: name.to_string(),
-				r#type: t,
-			});
-
-			this.into()
-		}
-		parser::Nodes::Input { name, format, location } => {
-			let t = resolve_type(&chain, format)?;
-
-			let this = Node::new(Nodes::Input {
-				name: name.to_string(),
-				format: t,
-				location: *location,
-			});
-
-			this.into()
-		}
-		parser::Nodes::Output {
-			name,
-			format,
-			location,
-			count,
-		} => {
-			let t = resolve_type(&chain, format)?;
-
-			let this = Node::new(Nodes::Output {
-				name: name.to_string(),
-				format: t,
-				location: *location,
-				count: *count,
-			});
-
-			this.into()
-		}
-		parser::Nodes::TaskPayload { name, format, count } => {
-			let format = resolve_type(&chain, format)?;
-			Node::new(Nodes::TaskPayload {
-				name: name.to_string(),
+				this.into()
+			}
+			parser::Nodes::Output {
+				name,
 				format,
-				count: *count,
-			})
-			.into()
-		}
-		parser::Nodes::Workgroup { name, format, count } => {
-			let format = resolve_type(&chain, format)?;
-			Node::new(Nodes::Workgroup {
-				name: name.to_string(),
-				format,
-				count: *count,
-			})
-			.into()
-		}
-		parser::Nodes::Function {
-			name,
-			return_type,
-			statements,
-			params,
-			..
-		} => {
-			validate_loop_control(statements, false)?;
-			let t = resolve_type_name(&chain, return_type)?;
+				location,
+				count,
+			} => {
+				let t = resolve_type(&self.scopes, format)?;
 
-			let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
+				let this = Node::new(Nodes::Output {
+					name: name.to_string(),
+					format: t,
+					location: *location,
+					count: *count,
+				});
 
-			for param in params {
-				let param = lex_child_with_parent(&chain, &this, param, next_intrinsic_expansion_id)?;
-				match this.borrow_mut().node_mut() {
-					Nodes::Function { params, .. } => {
+				this.into()
+			}
+			parser::Nodes::TaskPayload { name, format, count } => {
+				let format = resolve_type(&self.scopes, format)?;
+				Node::new(Nodes::TaskPayload {
+					name: name.to_string(),
+					format,
+					count: *count,
+				})
+				.into()
+			}
+			parser::Nodes::Workgroup { name, format, count } => {
+				let format = resolve_type(&self.scopes, format)?;
+				Node::new(Nodes::Workgroup {
+					name: name.to_string(),
+					format,
+					count: *count,
+				})
+				.into()
+			}
+			parser::Nodes::Function {
+				name,
+				return_type,
+				statements,
+				params,
+				..
+			} => {
+				validate_loop_control(statements, false)?;
+				let t = resolve_type_name(&self.scopes, return_type)?;
+
+				let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
+
+				self.in_scope(&this, |lexer| {
+					for param in params {
+						let param = lexer.lex(param)?;
+						let mut function = this.borrow_mut();
+						let Nodes::Function { params, .. } = function.node_mut() else {
+							unreachable!("The node was built as a function above");
+						};
 						params.push(param);
 					}
-					_ => {
-						panic!("Expected function");
+
+					// Each statement is added to the function as it is linked and also stays in scope for later ones.
+					for statement in statements {
+						let statement = lexer.lex(statement)?;
+						this.borrow_mut().add_child(statement.clone());
+						lexer.scopes.push(statement);
 					}
-				}
+					Ok::<_, LexError>(())
+				})?;
+
+				this
 			}
+			parser::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => {
+				let condition = self.lex(condition)?;
+				// Each branch gets its own scope, so declarations in one branch are not visible in the other.
+				let statements = self.lex_block(statements)?;
+				let else_branch = match else_branch {
+					Some(parser::ElseBranch::Block(statements)) => Some(ElseBranch::Block(self.lex_block(statements)?)),
+					Some(parser::ElseBranch::If(conditional)) => Some(ElseBranch::If(self.lex(conditional)?)),
+					None => None,
+				};
 
-			let mut scoped_chain = extend_chain(&chain, &this);
-
-			for statement in statements {
-				let statement = lex_parsed_node(scoped_chain.clone(), statement, next_intrinsic_expansion_id)?;
-				this.borrow_mut().add_child(statement);
-				scoped_chain.push(
-					this.borrow()
-						.get_children()
-						.and_then(|children| children.last().cloned())
-						.unwrap(),
-				);
+				Node::conditional(condition, statements, else_branch).into()
 			}
+			parser::Nodes::Match { scrutinee, arms } => {
+				let scrutinee = self.lex(scrutinee)?;
+				let r#type = infer_expression_type(&scrutinee);
+				let domain = matching::MatchDomain::of(r#type.as_ref())?;
 
-			this
-		}
-		parser::Nodes::Conditional {
-			condition,
-			statements,
-			else_branch,
-		} => {
-			let condition = lex_parsed_node(chain.clone(), condition, next_intrinsic_expansion_id)?;
-			// Each branch gets its own scope, so declarations in one branch are not visible in the other.
-			let statements = lex_block(chain.clone(), statements, next_intrinsic_expansion_id)?;
-			let else_branch = match else_branch {
-				Some(parser::ElseBranch::Block(statements)) => {
-					Some(ElseBranch::Block(lex_block(chain, statements, next_intrinsic_expansion_id)?))
-				}
-				Some(parser::ElseBranch::If(conditional)) => Some(ElseBranch::If(lex_parsed_node(
-					chain,
-					conditional,
-					next_intrinsic_expansion_id,
-				)?)),
-				None => None,
-			};
-
-			Node::conditional(condition, statements, else_branch).into()
-		}
-		parser::Nodes::Match { scrutinee, arms } => {
-			let scrutinee = lex_parsed_node(chain.clone(), scrutinee, next_intrinsic_expansion_id)?;
-			let r#type = infer_expression_type(&scrutinee);
-			let domain = matching::MatchDomain::of(r#type.as_ref())?;
-
-			// Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
-			// Each arm gets its own scope, so declarations in one arm are not visible in the others.
-			let arms = arms
-				.iter()
-				.map(|arm| {
-					let values = arm.patterns.iter().map(|pattern| domain.pattern_value(pattern));
-					let statements = lex_block(chain.clone(), &arm.statements, next_intrinsic_expansion_id)?;
-					Ok((values.collect::<Result<_, _>>()?, statements))
-				})
-				.collect::<Result<_, LexError>>()?;
-
-			let (arms, default) = matching::normalize_arms(domain, arms)?;
-			let r#type = r#type.expect("A match domain always comes from a known type");
-			Node::r#match(scrutinee, r#type, arms, default).into()
-		}
-		parser::Nodes::ForLoop {
-			initializer,
-			condition,
-			update,
-			statements,
-		} => {
-			let initializer = lex_parsed_node(chain.clone(), initializer, next_intrinsic_expansion_id)?;
-			let mut scoped_chain = chain.clone();
-			scoped_chain.push(initializer.clone());
-			let condition = lex_parsed_node(scoped_chain.clone(), condition, next_intrinsic_expansion_id)?;
-			let update = lex_parsed_node(scoped_chain.clone(), update, next_intrinsic_expansion_id)?;
-			let statements = lex_block(scoped_chain, statements, next_intrinsic_expansion_id)?;
-
-			Node::for_loop(initializer, condition, update, statements).into()
-		}
-		parser::Nodes::PushConstant { members } => {
-			let this: NodeReference = Node::push_constant(vec![]).into();
-
-			for member in members
-				.iter()
-				.filter(|member| matches!(member.node, parser::Nodes::Member { .. }))
-			{
-				let c = lex_child_with_parent(&chain, &this, member, next_intrinsic_expansion_id)?;
-				this.borrow_mut().add_child(c);
-			}
-
-			this
-		}
-		parser::Nodes::Binding {
-			name,
-			r#type,
-			slot,
-			read,
-			write,
-			memory_class,
-			count,
-		} => {
-			let r#type = match &r#type.node {
-				parser::Nodes::Type { members, .. } => BindingTypes::Buffer {
-					members: members
-						.iter()
-						.map(|m| lex_parsed_node(chain.clone(), m, next_intrinsic_expansion_id))
-						.collect::<Result<Vec<NodeReference>, LexError>>()?,
-				},
-				parser::Nodes::Image { format } => BindingTypes::Image {
-					format: format.to_string(),
-				},
-				parser::Nodes::CombinedImageSampler { format } => BindingTypes::CombinedImageSampler {
-					format: format.to_string(),
-				},
-				_ => {
-					return Err(LexError::Undefined {
-						message: Some("Invalid binding type".to_string()),
-					});
-				}
-			};
-
-			let memory_class = match memory_class {
-				Some(BufferMemoryClass::Constant) => BufferMemoryClass::Constant,
-				Some(BufferMemoryClass::Device) => BufferMemoryClass::Device,
-				None => BufferMemoryClass::Device,
-			};
-
-			let this = if let Some(count) = count {
-				Node::binding_array_in_memory(name, r#type, *slot, *read, *write, memory_class, count.get())
-			} else {
-				Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class)
-			};
-
-			this.into()
-		}
-		parser::Nodes::Descriptor {
-			name,
-			resource_type,
-			format,
-			runtime_array,
-			slot,
-			read,
-			write,
-			memory_class,
-			count,
-		} => {
-			let r#type = resolve_descriptor_type(&chain, resource_type, *format, *runtime_array)?;
-			let memory_class = match &r#type {
-				BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. } => match *memory_class {
-					Some("constant") => BufferMemoryClass::Constant,
-					Some("device") => BufferMemoryClass::Device,
-					Some(class) => {
-						return Err(LexError::Undefined {
-							message: Some(format!(
-								"Invalid buffer memory class `{class}` for descriptor {name}. The most likely cause is that the descriptor does not use constant or device memory."
-							)),
-						});
-					}
-					None => BufferMemoryClass::Device,
-				},
-				_ if memory_class.is_some() => {
-					return Err(LexError::Undefined {
-						message: Some(format!(
-							"Descriptor {name} declares a buffer memory class for a non-buffer resource. The most likely cause is that constant or device was attached to an image or texture descriptor."
-						)),
-					});
-				}
-				_ => BufferMemoryClass::Constant,
-			};
-
-			if *write
-				&& matches!(&r#type, BindingTypes::Buffer { .. } | BindingTypes::BufferArray { .. })
-				&& memory_class == BufferMemoryClass::Constant
-			{
-				return Err(LexError::Undefined {
-					message: Some(format!(
-						"Writable buffer descriptor {name} uses constant memory. The most likely cause is that a writable buffer needs the device memory class."
-					)),
-				});
-			}
-
-			Node::binding_with_count(name, r#type, *slot, *read, *write, memory_class, *count).into()
-		}
-		parser::Nodes::Type { name, members } => {
-			let mut this = Node::r#struct(name, Vec::new());
-
-			for member in members {
-				let c = lex_parsed_node(chain.clone(), member, next_intrinsic_expansion_id)?;
-				this.add_child(c);
-			}
-
-			this.into()
-		}
-		parser::Nodes::Image { format } => {
-			let this = Node::binding(
-				"image",
-				BindingTypes::Image {
-					format: format.to_string(),
-				},
-				0,
-				false,
-				false,
-			);
-
-			this.into()
-		}
-		parser::Nodes::CombinedImageSampler { format } => {
-			let this = Node::binding(
-				"combined_image_sampler",
-				BindingTypes::CombinedImageSampler {
-					format: format.to_string(),
-				},
-				0,
-				false,
-				false,
-			);
-
-			this.into()
-		}
-		parser::Nodes::RawCode {
-			glsl,
-			hlsl,
-			msl,
-			input,
-			output,
-			..
-		} => lex_raw_code(&chain, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
-		parser::Nodes::Literal { name, body } => Node::new(Nodes::Literal {
-			name: name.to_string(),
-			value: lex_parsed_node(chain, body, next_intrinsic_expansion_id)?,
-		})
-		.into(),
-		parser::Nodes::Expression(expression) => {
-			let this = match expression {
-				parser::Expressions::Return { value } => Node::expression(Expressions::Return {
-					value: match value {
-						Some(value) => Some(lex_parsed_node(chain.clone(), value, next_intrinsic_expansion_id)?),
-						None => None,
-					},
-				}),
-				parser::Expressions::Continue => Node::expression(Expressions::Continue),
-				parser::Expressions::Break => Node::expression(Expressions::Break),
-				parser::Expressions::Discard => Node::expression(Expressions::Discard),
-				parser::Expressions::Accessor { left, right } => {
-					let left = lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?;
-					// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
-					if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
-						&& is_fixed_array_alias(&left, name)
-					{
-						return Ok(left);
-					}
-
-					// A name after `.` lives in the member namespace of the left side's type, so a local,
-					// binding, or field with the same name elsewhere in scope never shadows it.
-					// An index after `[` is an ordinary expression in the enclosing scope.
-					let right = match &right.node {
-						parser::Nodes::Expression(parser::Expressions::Member { name }) => {
-							Node::expression(Expressions::Member {
-								source: resolve_accessed_member(&left, name)?,
-								name: name.to_string(),
-							})
-							.into()
-						}
-						_ => lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?,
-					};
-					if super::resolution::is_array_texture_reference(&left)
-						&& !super::resolution::infer_expression_type(&right)
-							.is_some_and(|r#type| r#type.borrow().get_name() == Some("u32"))
-					{
-						return Err(LexError::Undefined {
-							message: Some(
-								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type."
-									.to_string(),
-							),
-						});
-					}
-
-					Node::expression(Expressions::Accessor { left, right })
-				}
-				parser::Expressions::Member { name } => {
-					let source = resolve_member(&chain, name)?;
-					// Functions are not values. A function body that names its own function would also hold a strong
-					// reference to its ancestor, which forms an `Rc` cycle that is never freed.
-					if matches!(source.borrow().node(), Nodes::Function { .. }) {
-						return Err(LexError::Undefined {
-							message: Some(format!(
-								"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
-							)),
-						});
-					}
-					Node::expression(Expressions::Member {
-						source,
-						name: name.to_string(),
+				// Every arm is lexed, even an unreachable one, so its errors surface as they do in Rust.
+				// Each arm gets its own scope, so declarations in one arm are not visible in the others.
+				let arms = arms
+					.iter()
+					.map(|arm| {
+						let values = arm.patterns.iter().map(|pattern| domain.pattern_value(pattern));
+						let statements = self.lex_block(&arm.statements)?;
+						Ok((values.collect::<Result<_, _>>()?, statements))
 					})
-				}
-				parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
-					value: value.to_string(),
-				}),
-				parser::Expressions::RecordLiteral { .. } => {
-					return Err(LexError::Undefined {
-						message: Some(
-							"Record literals are valid only as structural main return values. The most likely cause is that a record value escaped entry-point normalization."
-								.to_string(),
-						),
-					});
-				}
-				parser::Expressions::Expression(elements) => Node {
-					node: Nodes::Expression(Expressions::Expression {
-						elements: elements
+					.collect::<Result<_, LexError>>()?;
+
+				let (arms, default) = matching::normalize_arms(domain, arms)?;
+				let r#type = r#type.expect("A match domain always comes from a known type");
+				Node::r#match(scrutinee, r#type, arms, default).into()
+			}
+			parser::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				let initializer = self.lex(initializer)?;
+				// The loop variable is visible to the condition, the update, and the body, but not after the loop.
+				let (condition, update, statements) = self.in_scope(&initializer, |lexer| {
+					Ok::<_, LexError>((lexer.lex(condition)?, lexer.lex(update)?, lexer.lex_block(statements)?))
+				})?;
+
+				Node::for_loop(initializer, condition, update, statements).into()
+			}
+			parser::Nodes::PushConstant { members } => {
+				let this: NodeReference = Node::push_constant(vec![]).into();
+
+				self.in_scope(&this, |lexer| {
+					for member in members
+						.iter()
+						.filter(|member| matches!(member.node, parser::Nodes::Member { .. }))
+					{
+						let member = lexer.lex(member)?;
+						this.borrow_mut().add_child(member);
+					}
+					Ok::<_, LexError>(())
+				})?;
+
+				this
+			}
+			parser::Nodes::Binding {
+				name,
+				r#type,
+				slot,
+				read,
+				write,
+				memory_class,
+				count,
+			} => {
+				let r#type = match r#type {
+					parser::BindingResource::Buffer { members } => BindingTypes::Buffer {
+						members: members
 							.iter()
-							.map(|e| lex_parsed_node(chain.clone(), e, next_intrinsic_expansion_id))
+							.map(|member| self.lex(member))
 							.collect::<Result<Vec<NodeReference>, LexError>>()?,
-					}),
-				},
-				parser::Expressions::Call { name, parameters } => {
-					let parameters = parameters
-						.iter()
-						.map(|e| lex_parsed_node(chain.clone(), e, next_intrinsic_expansion_id))
-						.collect::<Result<Vec<NodeReference>, LexError>>()?;
-					let function = resolve_call_target(&chain, name, &parameters)?;
-					let r = function.clone(); // Clone to be able to borrow it in and return it
+					},
+					parser::BindingResource::Image { format } => BindingTypes::Image {
+						format: format.to_string(),
+					},
+					parser::BindingResource::CombinedImageSampler { format } => BindingTypes::CombinedImageSampler {
+						format: format.to_string(),
+					},
+				};
+				let declared = memory_class.map(|memory_class| match memory_class {
+					BufferMemoryClass::Constant => "constant",
+					BufferMemoryClass::Device => "device",
+				});
+				let memory_class = binding_memory_class(name, &r#type, declared, *write)?;
 
-					{
-						// Validate function call
-						let b = RefCell::borrow(&function.0);
-						match b.node() {
-							Nodes::Function { params, .. } | Nodes::Struct { fields: params, .. } => {
-								if params.len() != parameters.len() {
-									return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
-								}
-								Node::expression(Expressions::FunctionCall {
-									function: r.into(),
-									parameters,
+				match count {
+					Some(count) => Node::binding_array_in_memory(name, r#type, *slot, *read, *write, memory_class, count.get()),
+					None => Node::binding_in_memory(name, r#type, *slot, *read, *write, memory_class),
+				}
+				.into()
+			}
+			parser::Nodes::Descriptor {
+				name,
+				resource_type,
+				format,
+				runtime_array,
+				slot,
+				read,
+				write,
+				memory_class,
+				count,
+			} => {
+				let r#type = resolve_descriptor_type(&self.scopes, resource_type, *format, *runtime_array)?;
+				let memory_class = binding_memory_class(name, &r#type, *memory_class, *write)?;
+
+				Node::binding_with_count(name, r#type, *slot, *read, *write, memory_class, *count).into()
+			}
+			parser::Nodes::RawCode {
+				glsl,
+				hlsl,
+				msl,
+				input,
+				output,
+				..
+			} => lex_raw_code(&self.scopes, glsl.as_deref(), hlsl.as_deref(), msl.as_deref(), input, output)?.into(),
+			parser::Nodes::Expression(expression) => {
+				let this = match expression {
+					parser::Expressions::Return { value } => Node::expression(Expressions::Return {
+						value: match value {
+							Some(value) => Some(self.lex(value)?),
+							None => None,
+						},
+					}),
+					parser::Expressions::Continue => Node::expression(Expressions::Continue),
+					parser::Expressions::Break => Node::expression(Expressions::Break),
+					parser::Expressions::Discard => Node::expression(Expressions::Discard),
+					parser::Expressions::Accessor { left, right } => {
+						let left = self.lex(left)?;
+						// `binding.alias` on a lowered fixed array names the binding's own elements, so drop the hop.
+						if let parser::Nodes::Expression(parser::Expressions::Member { name }) = &right.node
+							&& is_fixed_array_alias(&left, name)
+						{
+							return Ok(left);
+						}
+
+						// A name after `.` lives in the member namespace of the left side's type, so a local,
+						// binding, or field with the same name elsewhere in scope never shadows it.
+						// An index after `[` is an ordinary expression in the enclosing scope.
+						let right = match &right.node {
+							parser::Nodes::Expression(parser::Expressions::Member { name }) => {
+								Node::expression(Expressions::Member {
+									source: resolve_accessed_member(&left, name)?,
+									name: name.to_string(),
 								})
+								.into()
 							}
-							Nodes::Intrinsic { name, elements, .. } => {
-								if let Some(requirement) = atomic_access_requirement(name)
-									&& let Some(target) = parameters.first()
-								{
-									validate_atomic_target(name, target, requirement)?;
+							_ => self.lex(right)?,
+						};
+						if super::resolution::is_array_texture_reference(&left)
+							&& !super::resolution::infer_expression_type(&right)
+								.is_some_and(|r#type| r#type.borrow().get_name() == Some("u32"))
+						{
+							return Err(LexError::invalid(
+								"Texture2DArray layer index must be u32. The most likely cause is that the indexed expression has another numeric type.",
+							));
+						}
+
+						Node::expression(Expressions::Accessor { left, right })
+					}
+					parser::Expressions::Member { name } => {
+						let source = resolve_member(&self.scopes, name)?;
+						// Functions are not values. A function body that names its own function would also hold a strong
+						// reference to its ancestor, which forms an `Rc` cycle that is never freed.
+						if matches!(source.borrow().node(), Nodes::Function { .. }) {
+							return Err(LexError::invalid(format!(
+								"Function `{name}` can't be used as a value. The most likely cause is a missing `()` after the function name."
+							)));
+						}
+						Node::expression(Expressions::Member {
+							source,
+							name: name.to_string(),
+						})
+					}
+					parser::Expressions::Literal { value } => Node::expression(Expressions::Literal {
+						value: value.to_string(),
+					}),
+					parser::Expressions::RecordLiteral { .. } => {
+						return Err(LexError::invalid(
+							"Record literals are valid only as structural main return values. The most likely cause is that a record value escaped entry-point normalization.",
+						));
+					}
+					parser::Expressions::Expression(elements) => Node {
+						node: Nodes::Expression(Expressions::Expression {
+							elements: elements
+								.iter()
+								.map(|element| self.lex(element))
+								.collect::<Result<Vec<NodeReference>, LexError>>()?,
+						}),
+					},
+					parser::Expressions::Call { name, parameters } => {
+						let parameters = parameters
+							.iter()
+							.map(|parameter| self.lex(parameter))
+							.collect::<Result<Vec<NodeReference>, LexError>>()?;
+						let function = resolve_call_target(&self.scopes, name, &parameters)?;
+						let r = function.clone(); // Clone to be able to borrow it in and return it
+
+						{
+							// Validate function call
+							let b = RefCell::borrow(&function.0);
+							match b.node() {
+								Nodes::Function { params, .. } | Nodes::Struct { fields: params, .. } => {
+									if params.len() != parameters.len() {
+										return Err(LexError::FunctionCallParametersDoNotMatchFunctionParameters);
+									}
+									Node::expression(Expressions::FunctionCall {
+										function: r.into(),
+										parameters,
+									})
 								}
-								Node::expression(Expressions::IntrinsicCall {
-									intrinsic: r,
-									arguments: parameters.clone(),
-									elements: {
-										let expansion_id = *next_intrinsic_expansion_id;
-										*next_intrinsic_expansion_id = next_intrinsic_expansion_id.checked_add(1).expect(
-											"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
-										);
-										build_intrinsic(elements, &parameters, expansion_id)?
-									},
-								})
-							}
-							_ => {
-								return Err(LexError::Undefined {
-									message: Some("Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.".to_string()),
-								});
+								Nodes::Intrinsic { name, elements, .. } => {
+									if let Some(requirement) = atomic_access_requirement(name)
+										&& let Some(target) = parameters.first()
+									{
+										validate_atomic_target(name, target, requirement)?;
+									}
+									Node::expression(Expressions::IntrinsicCall {
+										intrinsic: r,
+										arguments: parameters.clone(),
+										elements: {
+											let expansion_id = self.next_intrinsic_expansion_id;
+											self.next_intrinsic_expansion_id = expansion_id.checked_add(1).expect(
+												"Intrinsic expansion count overflowed. The most likely cause is an invalid shader with too many intrinsic calls.",
+											);
+											build_intrinsic(elements, &parameters, expansion_id)?
+										},
+									})
+								}
+								_ => {
+									return Err(LexError::invalid(
+										"Encountered parsing error while evaluating function call. Expected Function | Struct | Intrinsic, but found other.",
+									));
+								}
 							}
 						}
 					}
-				}
-				parser::Expressions::Operator { name, left, right } => Node::expression(Expressions::Operator {
-					operator: match *name {
-						"+" => Operators::Plus,
-						"-" => Operators::Minus,
-						"*" => Operators::Multiply,
-						"/" => Operators::Divide,
-						"%" => Operators::Modulo,
-						"<<" => Operators::ShiftLeft,
-						">>" => Operators::ShiftRight,
-						"&" => Operators::BitwiseAnd,
-						"|" => Operators::BitwiseOr,
-						"=" => Operators::Assignment,
-						"==" => Operators::Equality,
-						"<" => Operators::LessThan,
-						"!=" => Operators::Inequality,
-						">" => Operators::GreaterThan,
-						"<=" => Operators::LessThanOrEqual,
-						">=" => Operators::GreaterThanOrEqual,
-						"&&" => Operators::LogicalAnd,
-						"||" => Operators::LogicalOr,
-						_ => {
-							panic!("Invalid operator")
-						}
-					},
-					left: lex_parsed_node(chain.clone(), left, next_intrinsic_expansion_id)?,
-					right: lex_parsed_node(chain.clone(), right, next_intrinsic_expansion_id)?,
-				}),
-				parser::Expressions::VariableDeclaration { name, r#type } => {
-					Node::expression(Expressions::VariableDeclaration {
-						name: name.to_string(),
-						r#type: resolve_type_name(&chain, r#type)?,
-					})
-				}
-				parser::Expressions::RawCode {
-					glsl,
-					hlsl,
-					msl,
-					input,
-					output,
-				} => lex_raw_code(&chain, *glsl, *hlsl, *msl, input, output)?,
-				parser::Expressions::Macro { name, body } => {
-					Node::r#macro(name, lex_parsed_node(chain, body, next_intrinsic_expansion_id)?)
-				}
-			};
+					parser::Expressions::Operator { operator, left, right } => Node::expression(Expressions::Operator {
+						operator: *operator,
+						left: self.lex(left)?,
+						right: self.lex(right)?,
+					}),
+					parser::Expressions::VariableDeclaration { name, r#type } => {
+						Node::expression(Expressions::VariableDeclaration {
+							name: name.to_string(),
+							r#type: resolve_type_name(&self.scopes, r#type)?,
+						})
+					}
+					parser::Expressions::RawCode {
+						glsl,
+						hlsl,
+						msl,
+						input,
+						output,
+					} => lex_raw_code(&self.scopes, *glsl, *hlsl, *msl, input, output)?,
+					parser::Expressions::Macro { name, body } => Node::r#macro(name, self.lex(body)?),
+				};
 
-			this.into()
-		}
-		parser::Nodes::Intrinsic {
-			name,
-			elements,
-			r#return,
-			..
-		} => {
-			let this: NodeReference = Node::intrinsic(name, Vec::new(), resolve_type(&chain, r#return)?).into();
-
-			for element in elements {
-				let element = lex_child_with_parent(&chain, &this, element, next_intrinsic_expansion_id)?;
-				this.borrow_mut().add_child(element);
+				this.into()
 			}
+			parser::Nodes::Intrinsic {
+				name,
+				elements,
+				r#return,
+				..
+			} => {
+				let this: NodeReference = Node::intrinsic(name, Vec::new(), resolve_type(&self.scopes, r#return)?).into();
+				self.lex_children(&this, elements)?;
+				this
+			}
+			parser::Nodes::Const { name, r#type, value } => {
+				let t = resolve_type_name(&self.scopes, r#type)?;
 
-			this
-		}
-		parser::Nodes::Const { name, r#type, value } => {
-			let t = resolve_type_name(&chain, r#type)?;
+				let v = self.lex(value)?;
 
-			let v = lex_parsed_node(chain.clone(), value, next_intrinsic_expansion_id)?;
+				Node::constant(name, t, v).into()
+			}
+		};
 
-			Node::constant(name, t, v).into()
-		}
-	};
-
-	Ok(node)
+		Ok(node)
+	}
 }

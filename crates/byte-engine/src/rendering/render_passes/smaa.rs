@@ -3,7 +3,6 @@ use std::io::Read as _;
 use ghi::{
 	command_buffer::CommonCommandBufferMode as _,
 	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
 };
 
 use crate::rendering::{
@@ -69,7 +68,6 @@ fn create_lookup_texture(
 pub struct SmaaPass {
 	edge_pass: simple_compute::Pass,
 	resolve_pass: simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 }
 
 impl SmaaPass {
@@ -102,62 +100,39 @@ impl SmaaPass {
 			utils::Extent::rectangle(SEARCH_TEXTURE_WIDTH, SEARCH_TEXTURE_HEIGHT),
 			&search_pixels,
 		);
-		let sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		let edge_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("SMAA Edge Detection", "byte-engine/rendering/smaa/edge-detection.pipeline"),
-		)
-		.expect("Failed to create the SMAA edge shader. The most likely cause is an incompatible shader interface.");
+		);
 		let resolve_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new(
 				"SMAA Blend and Neighborhood",
 				"byte-engine/rendering/smaa/blend-weights.pipeline",
 			),
-		)
-		.expect("Failed to create the SMAA resolve shader. The most likely cause is an incompatible shader interface.");
+		);
 
-		let edge_pass = edge_pipeline
-			.bind(
-				render_pass_builder,
-				"SMAA Edge Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("edges", edges),
-				],
-			)
-			.expect("Failed to bind SMAA edge resources. The most likely cause is a changed BESL binding contract.");
-		let resolve_pass = resolve_pipeline
-			.bind(
-				render_pass_builder,
-				"SMAA Resolve Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler("edges", edges, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler("area_texture", area_texture, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler(
-						"search_texture",
-						search_texture,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::image("result", output),
-				],
-			)
-			.expect("Failed to bind SMAA resolve resources. The most likely cause is a changed BESL binding contract.");
-		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
+		let edge_pass = edge_pipeline.bind(
+			"SMAA Edge Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("edges", edges),
+			],
+		);
+		let resolve_pass = resolve_pipeline.bind(
+			"SMAA Resolve Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("source", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("edges", edges, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("area_texture", area_texture, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("search_texture", search_texture, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result", output),
+			],
+		);
 
-		Self {
-			edge_pass,
-			resolve_pass,
-			bypass_pass,
-		}
+		Self { edge_pass, resolve_pass }
 	}
 }
 
@@ -178,7 +153,7 @@ impl RenderPass for SmaaPass {
 
 		Some(crate::rendering::render_pass::allocate_render_command(
 			frame_allocator,
-			move |command_buffer, _| {
+			move |command_buffer| {
 				command_buffer.region(
 					|label| label.write_str("SMAA"),
 					|command_buffer| {
@@ -189,8 +164,6 @@ impl RenderPass for SmaaPass {
 			},
 		))
 	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 #[cfg(test)]
@@ -202,11 +175,8 @@ mod tests {
 
 	const EDGE_SHADER: &str = include_str!("../../../assets/rendering/smaa/edge-detection.besl");
 	const RESOLVE_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
-	const RESOLVE_SHADER_BEAD: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl.bead");
 	const SMAA_EDGE_WORKGROUP_WIDTH: u32 = 16;
-	const SMAA_EDGE_WORKGROUP_HEIGHT: u32 = 8;
 	const SMAA_RESOLVE_WORKGROUP_WIDTH: u32 = 16;
-	const SMAA_RESOLVE_WORKGROUP_HEIGHT: u32 = 8;
 	const SMAA_WORKGROUP_SIZE: usize = 128;
 	const SMAA_VM_INSTRUCTION_LIMIT: usize = 4_000_000;
 	const SMAA_VM_CALL_DEPTH_LIMIT: usize = 128;

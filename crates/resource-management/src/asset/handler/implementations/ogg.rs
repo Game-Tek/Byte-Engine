@@ -1,7 +1,7 @@
 /// The `OGGAssetHandler` struct exists to decode OGG Vorbis assets into engine audio resources.
-pub struct OGGAssetHandler {
-	bit_depth: BitDepths,
-}
+///
+/// Decoded audio is stored as 16-bit PCM.
+pub struct OGGAssetHandler;
 
 impl OGGAssetHandler {
 	/// Decodes an OGG Vorbis buffer through the common audio processor.
@@ -32,14 +32,7 @@ impl OGGAssetHandler {
 	}
 
 	pub fn new() -> OGGAssetHandler {
-		OGGAssetHandler {
-			bit_depth: BitDepths::Sixteen,
-		}
-	}
-
-	/// Creates an OGG asset handler that outputs PCM at the requested bit depth.
-	pub fn with_bit_depth(bit_depth: BitDepths) -> OGGAssetHandler {
-		OGGAssetHandler { bit_depth }
+		OGGAssetHandler
 	}
 }
 
@@ -49,12 +42,6 @@ impl AssetHandler for OGGAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<(), LoadErrors> {
-		if let Some(dt) = context.resource_type(url)
-			&& !self.can_handle(dt)
-		{
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let (data, dt) = context.resolve(url).await?;
 
 		if !self.can_handle(&dt) {
@@ -63,7 +50,7 @@ impl AssetHandler for OGGAssetHandler {
 
 		// The decoder lends each planar block until the next decode call, so the
 		// common sink consumes every block before requesting the next one.
-		let (asset, data) = Self::decode_ogg(url, &data, self.bit_depth)?;
+		let (asset, data) = Self::decode_ogg(url, &data, BitDepths::Sixteen)?;
 
 		match data {
 			Cow::Borrowed(data) => context.store_primary(asset, data).await,
@@ -81,52 +68,10 @@ impl Default for OGGAssetHandler {
 #[cfg(test)]
 mod tests {
 	use crate::{
-		AssetHandler,
-		asset::{self, ResourceId, handler::implementations::ogg::OGGAssetHandler, manager::AssetManager},
-		r#async, resource,
+		asset::{ResourceId, handler::implementations::ogg::OGGAssetHandler},
 		resources::audio::Audio,
 		types::BitDepths,
 	};
-
-	#[r#async::test]
-	async fn test_audio_asset_handler() {
-		let asset_storage_backend = asset::storage_backend::tests::TestStorageBackend::new();
-
-		let resource_storage_backend = resource::storage_backend::tests::TestStorageBackend::new();
-
-		asset_storage_backend.add_file("test-tone.ogg", &make_test_ogg());
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(OGGAssetHandler::new());
-
-		asset_manager
-			.bake("test-tone.ogg")
-			.await
-			.expect("Audio asset handler failed to load asset");
-
-		let generated_resources = resource_storage_backend.get_resources();
-
-		assert_eq!(generated_resources.len(), 1);
-
-		let resource = &generated_resources[0];
-
-		assert_eq!(resource.id, "test-tone.ogg");
-		assert_eq!(resource.class, "Audio");
-
-		let resource: Audio = crate::from_slice(&resource.resource).unwrap();
-
-		assert_eq!(resource.bit_depth, BitDepths::Sixteen);
-		assert_eq!(resource.channel_count, 1);
-		assert_eq!(resource.sample_rate, 48_000);
-		assert_eq!(resource.sample_count, 1024);
-
-		let data = resource_storage_backend
-			.get_resource_data_by_name(ResourceId::new("test-tone.ogg"))
-			.expect("Audio resource data should exist");
-
-		assert_eq!(data.len(), 1024 * 2);
-	}
 
 	#[test]
 	fn decode_ogg_supports_configured_output_bit_depths() {

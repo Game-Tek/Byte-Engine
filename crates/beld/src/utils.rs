@@ -1,20 +1,9 @@
-#[cfg(not(test))]
-use resource_management::resources::mips::gpu::MaterialMipGenerator;
-use resource_management::{
-	asset::{
-		StorageBackend, handler::implementations::bema::BEMAAssetHandler,
-		handler::implementations::besl::BESLShaderAssetHandler,
-		handler::implementations::environment::EnvironmentMapAssetHandler, handler::implementations::exr::EXRAssetHandler,
-		handler::implementations::fbx::FBXAssetHandler, handler::implementations::flipbook::FlipbookAssetHandler,
-		handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
-		handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
-		handler::implementations::pipeline::PipelineAssetHandler, handler::implementations::png::PNGAssetHandler,
-		handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
-	},
-	ibl::IBLGenerator,
-	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend},
-};
+use resource_management::asset::{StorageBackend, manager::AssetManager};
 
+/// Creates the asset manager BELD bakes with, registering the same handlers as the engine's debug runtime.
+///
+/// Material shaders are generated for the visibility renderer. Tests bake with the CPU texture backends so they do not
+/// depend on a GPU.
 pub fn get_asset_manager<AS, RS>(storage_backend: AS, resource_storage_backend: RS) -> AssetManager
 where
 	AS: StorageBackend + 'static,
@@ -22,81 +11,22 @@ where
 {
 	let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
 
-	asset_manager.add_asset_handler(PNGAssetHandler::new());
-
-	asset_manager.add_asset_handler(IESAssetHandler::new());
-
 	#[cfg(not(test))]
-	let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
-		log::warn!(
-			"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
-		);
-		IBLGenerator::new()
-	});
+	let (material_mips, ibl) = byte_engine::application::graphics::default_offline_backends();
 
 	#[cfg(test)]
-	let ibl_generator = IBLGenerator::new();
+	let (material_mips, ibl) = (
+		std::sync::Arc::new(resource_management::resources::mips::CPUMipGenerationBackend)
+			as std::sync::Arc<dyn resource_management::resources::mips::MipGenerationBackend>,
+		resource_management::ibl::IBLGenerator::new(),
+	);
 
-	asset_manager.add_asset_handler(EXRAssetHandler::new());
-
-	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl_generator));
-
-	asset_manager.add_asset_handler(LUTAssetHandler::new());
-
-	asset_manager.add_asset_handler(WAVAssetHandler::new());
-
-	asset_manager.add_asset_handler(OGGAssetHandler::new());
-
-	asset_manager.add_asset_handler(PipelineAssetHandler);
-
-	asset_manager.add_asset_handler(FlipbookAssetHandler);
-
-	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-
-	besl_shader_asset_handler
-		.set_shader_generator(byte_engine::rendering::common_shader_generator::CommonShaderGenerator::new());
-
-	asset_manager.add_asset_handler(besl_shader_asset_handler);
-
-	{
-		#[cfg(not(test))]
-		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> = MaterialMipGenerator::try_with_default_gpu()
-			.map(|generator| std::sync::Arc::new(generator) as std::sync::Arc<dyn MipGenerationBackend>)
-			.unwrap_or_else(|error| {
-				log::warn!(
-					"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
-				);
-				std::sync::Arc::new(CPUMipGenerationBackend)
-			});
-
-		#[cfg(test)]
-		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> = std::sync::Arc::new(CPUMipGenerationBackend);
-
-		let mut material_asset_handler = BEMAAssetHandler::new();
-
-		// Each handler owns its own generator; building one only assembles a small BESL scope.
-		let shader_generator = byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new();
-
-		material_asset_handler.set_shader_generator(shader_generator.clone());
-
-		asset_manager.add_asset_handler(material_asset_handler);
-
-		let mut fbx_asset_handler = FBXAssetHandler::new();
-
-		fbx_asset_handler.set_shader_generator(shader_generator.clone());
-
-		fbx_asset_handler.set_material_mip_generator(material_mip_generator.clone());
-
-		asset_manager.add_asset_handler(fbx_asset_handler);
-
-		let mut gltf_asset_handler = GLTFAssetHandler::new();
-
-		gltf_asset_handler.set_shader_generator(shader_generator);
-
-		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
-
-		asset_manager.add_asset_handler(gltf_asset_handler);
-	}
+	byte_engine::application::graphics::register_default_asset_handlers(
+		&mut asset_manager,
+		byte_engine::rendering::pipelines::visibility::VisibilityShaderGenerator::new(),
+		material_mips,
+		ibl,
+	);
 
 	asset_manager
 }
@@ -108,7 +38,7 @@ mod tests {
 
 	use resource_management::{
 		ReferenceModel,
-		asset::{ResourceId, StorageBackend, storage_backend::FileStorageBackend},
+		asset::{ResourceId, storage_backend::FileStorageBackend},
 		r#async::Executor,
 		resource::storage_backend::{ReadStorageBackend, redb::ReDBStorageBackend},
 		resources::mesh::MeshModel,
@@ -117,43 +47,6 @@ mod tests {
 	use super::get_asset_manager;
 
 	const TRIANGLE_MOVE_FBX: &[u8] = include_bytes!("../../resource-management/src/asset/test_data/triangle_move_ascii.fbx");
-
-	struct EmptyAssetStorage;
-
-	impl StorageBackend for EmptyAssetStorage {
-		async fn version<'a>(&'a self, _url: ResourceId<'a>) -> Result<resource_management::asset::AssetVersion, ()> {
-			Ok(resource_management::asset::AssetVersion::missing())
-		}
-		async fn resolve<'a>(
-			&'a self,
-			_url: ResourceId<'a>,
-		) -> Result<(resource_management::asset::AssetStorageBytes<'a>, String), ()> {
-			Err(())
-		}
-	}
-
-	#[test]
-	fn default_asset_manager_registers_shader_and_pipeline_handlers() {
-		let resources_path = std::env::temp_dir().join(format!(
-			"beld-registration-test-{}-{}",
-			std::process::id(),
-			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-		));
-
-		let asset_manager = get_asset_manager(EmptyAssetStorage, ReDBStorageBackend::new(resources_path.clone()));
-
-		assert!(asset_manager.supports("byte-engine/render-passes/resolve.besl"));
-		assert!(asset_manager.supports("byte-engine/rendering/visibility/visibility.pipeline"));
-		assert!(asset_manager.supports("lighting/studio.environment.bead"));
-		assert!(asset_manager.supports("lighting/studio.exr"));
-		assert!(asset_manager.supports("lights/office.ies"));
-		assert!(!asset_manager.should_discover("byte-engine/render-passes/resolve.besl", false));
-		assert!(asset_manager.should_discover("byte-engine/render-passes/resolve.besl", true));
-
-		drop(asset_manager);
-
-		std::fs::remove_dir_all(resources_path).unwrap();
-	}
 
 	/// Confirms that the production handlers bake an FBX mesh and its visibility material dependencies.
 	#[test]

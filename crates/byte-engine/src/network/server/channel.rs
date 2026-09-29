@@ -132,7 +132,7 @@ impl Default for ChannelServer {
 }
 
 use std::{
-	sync::mpsc::{Receiver, Sender, TryRecvError},
+	sync::mpsc::{Receiver, Sender},
 	time::Instant,
 };
 

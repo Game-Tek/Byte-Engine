@@ -4,105 +4,138 @@ use crate::{
 	solver::SolveError,
 };
 
-/// The `Vector3Curve` enum provides translation or scale keyframes for CPU pose evaluation.
+/// The `Curve` enum provides the keyframes of one animated local-pose component for CPU pose evaluation.
+///
+/// Translation and scale use [`Vector3Curve`] and rotation uses [`QuaternionCurve`]. Importers build one, and
+/// consumers read it through [`Self::times`] and [`Self::values`] or match its interpolation.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum Vector3Curve {
+pub enum Curve<V> {
 	Step {
 		times: Vec<f32>,
-		values: Vec<[f32; 3]>,
+		values: Vec<V>,
 	},
 	Linear {
 		times: Vec<f32>,
-		values: Vec<[f32; 3]>,
+		values: Vec<V>,
 	},
 	CubicSpline {
 		times: Vec<f32>,
-		values: Vec<[f32; 3]>,
-		in_tangents: Vec<[f32; 3]>,
-		out_tangents: Vec<[f32; 3]>,
+		values: Vec<V>,
+		in_tangents: Vec<V>,
+		out_tangents: Vec<V>,
 	},
 }
 
-impl Vector3Curve {
-	/// Validates key timing, cardinality, and finite tangent data before CPU graph evaluation.
-	fn validate(&self, duration: f32, track: usize, path: &'static str) -> Result<(), SolveError> {
+/// Translation or scale keyframes.
+pub type Vector3Curve = Curve<[f32; 3]>;
+
+/// Rotation keyframes, stored as unit `[x, y, z, w]` quaternions.
+pub type QuaternionCurve = Curve<[f32; 4]>;
+
+impl<V> Curve<V> {
+	/// Returns the key times shared by every interpolation form.
+	pub fn times(&self) -> &[f32] {
 		match self {
-			Self::Step { times, values } | Self::Linear { times, values } => {
-				validate_times_and_values(times, values, duration, track, path)
-			}
+			Self::Step { times, .. } | Self::Linear { times, .. } | Self::CubicSpline { times, .. } => times,
+		}
+	}
+
+	/// Returns the key values shared by every interpolation form.
+	pub fn values(&self) -> &[V] {
+		match self {
+			Self::Step { values, .. } | Self::Linear { values, .. } | Self::CubicSpline { values, .. } => values,
+		}
+	}
+
+	/// Splits glTF-style interleaved `[in_tangent, value, out_tangent]` triplets into a cubic spline curve.
+	///
+	/// `map_value` adjusts each key value, such as normalizing rotations; tangents are kept as authored.
+	pub fn cubic_spline_from_triplets<E>(
+		times: Vec<f32>,
+		triplets: &[[V; 3]],
+		mut map_value: impl FnMut(V) -> Result<V, E>,
+	) -> Result<Self, E>
+	where
+		V: Copy,
+	{
+		let mut in_tangents = Vec::with_capacity(triplets.len());
+		let mut values = Vec::with_capacity(triplets.len());
+		let mut out_tangents = Vec::with_capacity(triplets.len());
+
+		for [incoming, value, outgoing] in triplets {
+			in_tangents.push(*incoming);
+			values.push(map_value(*value)?);
+			out_tangents.push(*outgoing);
+		}
+
+		Ok(Self::CubicSpline {
+			times,
+			values,
+			in_tangents,
+			out_tangents,
+		})
+	}
+
+	/// Counts the heap bytes this curve's key storage owns.
+	fn estimated_bytes(&self) -> usize {
+		let value_bytes = |values: &Vec<V>| values.capacity().saturating_mul(std::mem::size_of::<V>());
+		let (times, key_bytes) = match self {
+			Self::Step { times, values } | Self::Linear { times, values } => (times, value_bytes(values)),
 			Self::CubicSpline {
 				times,
 				values,
 				in_tangents,
 				out_tangents,
-			} => {
-				validate_times_and_values(times, values, duration, track, path)?;
-				if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
-					return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
-				}
-				if !in_tangents
-					.iter()
-					.flatten()
-					.chain(out_tangents.iter().flatten())
-					.all(|value| value.is_finite())
-				{
-					return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
-				}
-				Ok(())
-			}
-		}
+			} => (
+				times,
+				value_bytes(values)
+					.saturating_add(value_bytes(in_tangents))
+					.saturating_add(value_bytes(out_tangents)),
+			),
+		};
+
+		times
+			.capacity()
+			.saturating_mul(std::mem::size_of::<f32>())
+			.saturating_add(key_bytes)
 	}
 }
 
-/// The `QuaternionCurve` enum provides rotation keyframes for CPU pose evaluation.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum QuaternionCurve {
-	Step {
-		times: Vec<f32>,
-		values: Vec<[f32; 4]>,
-	},
-	Linear {
-		times: Vec<f32>,
-		values: Vec<[f32; 4]>,
-	},
-	CubicSpline {
-		times: Vec<f32>,
-		values: Vec<[f32; 4]>,
-		in_tangents: Vec<[f32; 4]>,
-		out_tangents: Vec<[f32; 4]>,
-	},
-}
+impl<V: AsRef<[f32]>> Curve<V> {
+	/// Validates key timing, cardinality, and finite values and tangents before CPU graph evaluation.
+	///
+	/// `validate_values` adds the component's own value rule, such as unit length for rotations.
+	fn validate(
+		&self,
+		duration: f32,
+		track: usize,
+		path: &'static str,
+		validate_values: impl Fn(&[V]) -> Result<(), SolveError>,
+	) -> Result<(), SolveError> {
+		validate_times_and_values(self.times(), self.values(), duration, track, path)?;
+		validate_values(self.values())?;
 
-impl QuaternionCurve {
-	/// Validates rotation keys as unit quaternions while preserving finite cubic derivative magnitudes.
-	fn validate(&self, duration: f32, track: usize) -> Result<(), SolveError> {
-		match self {
-			Self::Step { times, values } | Self::Linear { times, values } => {
-				validate_times_and_values(times, values, duration, track, "rotation")?;
-				validate_quaternion_values(values, track)
+		if let Self::CubicSpline {
+			times,
+			in_tangents,
+			out_tangents,
+			..
+		} = self
+		{
+			if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
+				return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
 			}
-			Self::CubicSpline {
-				times,
-				values,
-				in_tangents,
-				out_tangents,
-			} => {
-				validate_times_and_values(times, values, duration, track, "rotation")?;
-				validate_quaternion_values(values, track)?;
-				if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
-					return invalid_animation(format!("track {track} rotation cubic tangents do not match its key count"));
-				}
-				if !in_tangents
-					.iter()
-					.flatten()
-					.chain(out_tangents.iter().flatten())
-					.all(|value| value.is_finite())
-				{
-					return invalid_animation(format!("track {track} rotation contains a non-finite cubic tangent"));
-				}
-				Ok(())
+			if !in_tangents
+				.iter()
+				.chain(out_tangents)
+				.flat_map(AsRef::as_ref)
+				.all(|value| value.is_finite())
+			{
+				return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
 			}
 		}
+
+		Ok(())
 	}
 }
 
@@ -187,52 +220,9 @@ fn estimated_track_bytes(track: &NodeTrack) -> usize {
 	track
 		.translation
 		.as_ref()
-		.map(estimated_vector3_curve_bytes)
-		.unwrap_or(0)
-		.saturating_add(track.rotation.as_ref().map(estimated_quaternion_curve_bytes).unwrap_or(0))
-		.saturating_add(track.scale.as_ref().map(estimated_vector3_curve_bytes).unwrap_or(0))
-}
-
-/// Counts heap-backed fields of one translation or scale curve.
-fn estimated_vector3_curve_bytes(curve: &Vector3Curve) -> usize {
-	match curve {
-		Vector3Curve::Step { times, values } | Vector3Curve::Linear { times, values } => times
-			.capacity()
-			.saturating_mul(std::mem::size_of::<f32>())
-			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>())),
-		Vector3Curve::CubicSpline {
-			times,
-			values,
-			in_tangents,
-			out_tangents,
-		} => times
-			.capacity()
-			.saturating_mul(std::mem::size_of::<f32>())
-			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>()))
-			.saturating_add(in_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>()))
-			.saturating_add(out_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 3]>())),
-	}
-}
-
-/// Counts heap-backed fields of one rotation curve.
-fn estimated_quaternion_curve_bytes(curve: &QuaternionCurve) -> usize {
-	match curve {
-		QuaternionCurve::Step { times, values } | QuaternionCurve::Linear { times, values } => times
-			.capacity()
-			.saturating_mul(std::mem::size_of::<f32>())
-			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>())),
-		QuaternionCurve::CubicSpline {
-			times,
-			values,
-			in_tangents,
-			out_tangents,
-		} => times
-			.capacity()
-			.saturating_mul(std::mem::size_of::<f32>())
-			.saturating_add(values.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>()))
-			.saturating_add(in_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>()))
-			.saturating_add(out_tangents.capacity().saturating_mul(std::mem::size_of::<[f32; 4]>())),
-	}
+		.map_or(0, Curve::estimated_bytes)
+		.saturating_add(track.rotation.as_ref().map_or(0, Curve::estimated_bytes))
+		.saturating_add(track.scale.as_ref().map_or(0, Curve::estimated_bytes))
 }
 
 /// The `AnimationModel` struct preserves a serializable pose-oriented clip and its skeleton dependency.
@@ -307,14 +297,17 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 			return invalid_animation(format!("track {track_index} contains no pose curves"));
 		}
 
+		let any_value = |_: &[[f32; 3]]| Ok(());
 		if let Some(curve) = &track.translation {
-			curve.validate(duration, track_index, "translation")?;
+			curve.validate(duration, track_index, "translation", any_value)?;
 		}
 		if let Some(curve) = &track.rotation {
-			curve.validate(duration, track_index)?;
+			curve.validate(duration, track_index, "rotation", |values| {
+				validate_quaternion_values(values, track_index)
+			})?;
 		}
 		if let Some(curve) = &track.scale {
-			curve.validate(duration, track_index, "scale")?;
+			curve.validate(duration, track_index, "scale", any_value)?;
 		}
 		previous_node = Some(track.node);
 	}
@@ -323,9 +316,9 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 }
 
 /// Validates a key sequence shared by step, linear, and cubic curve representations.
-fn validate_times_and_values<const N: usize>(
+fn validate_times_and_values<V: AsRef<[f32]>>(
 	times: &[f32],
-	values: &[[f32; N]],
+	values: &[V],
 	duration: f32,
 	track: usize,
 	path: &'static str,
@@ -341,7 +334,7 @@ fn validate_times_and_values<const N: usize>(
 	if times.windows(2).any(|pair| pair[0] >= pair[1]) {
 		return invalid_animation(format!("track {track} {path} times are not strictly increasing"));
 	}
-	if !values.iter().flatten().all(|value| value.is_finite()) {
+	if !values.iter().flat_map(AsRef::as_ref).all(|value| value.is_finite()) {
 		return invalid_animation(format!("track {track} {path} contains a non-finite value"));
 	}
 	Ok(())
@@ -355,7 +348,7 @@ fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
 
 #[cfg(test)]
 mod tests {
-	use super::{Animation, AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve};
+	use super::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve};
 	use crate::{
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
@@ -398,21 +391,6 @@ mod tests {
 				scale: None,
 			}],
 		}
-	}
-
-	#[crate::r#async::test]
-	async fn solving_preserves_pose_tracks_and_resolves_their_skeleton() {
-		let storage = TestStorageBackend::new();
-		let animation: Animation = valid_model(&storage)
-			.await
-			.solve(&storage)
-			.await
-			.expect("Valid animation should solve");
-
-		assert_eq!(animation.name.as_deref(), Some("walk"));
-		assert_eq!(animation.skeleton.resource().nodes.len(), 2);
-		assert_eq!(animation.tracks[0].node, 1);
-		assert!(matches!(animation.tracks[0].translation, Some(Vector3Curve::Linear { .. })));
 	}
 
 	#[crate::r#async::test]

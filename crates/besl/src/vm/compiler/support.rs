@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use super::super::*;
 
 /// The `ResolvedBufferAccess` struct carries a validated packed-memory target into instruction lowering.
@@ -216,127 +214,24 @@ pub(super) fn is_literal_expression(expression: &NodeReference) -> bool {
 	}
 }
 
-pub(super) fn resolve_main_function(program: &NodeReference) -> Result<NodeReference, VmError> {
-	let function = {
-		let node = program.borrow();
-		match node.node() {
-			Nodes::Function { name, .. } if name == "main" => Some(program.clone()),
-			_ => None,
-		}
-	};
-
-	if let Some(function) = function {
-		return Ok(function);
-	}
-
-	program.get_main().ok_or(VmError::MissingMainFunction)
-}
-
-pub(super) fn collect_functions(main: &NodeReference) -> Vec<NodeReference> {
-	let mut functions = Vec::new();
-	let mut seen = HashSet::new();
-	collect_reachable_function(main, &mut seen, &mut functions);
-	functions
-}
-
-/// Adds one function and every function referenced by its executable expressions.
-pub(super) fn collect_reachable_function(
-	function: &NodeReference,
-	seen: &mut HashSet<usize>,
-	functions: &mut Vec<NodeReference>,
-) {
-	if !seen.insert(function.identity()) {
-		return;
-	}
-	functions.push(function.clone());
-	let statements = match function.borrow().node() {
-		Nodes::Function { statements, .. } => statements.clone(),
-		_ => return,
-	};
-	for statement in statements {
-		collect_function_references(&statement, seen, functions);
-	}
-}
-
-pub(super) fn collect_function_references(node: &NodeReference, seen: &mut HashSet<usize>, functions: &mut Vec<NodeReference>) {
-	let (called_function, children) = {
-		let borrowed = node.borrow();
-		match borrowed.node() {
-			Nodes::Conditional { .. } | Nodes::Match { .. } => (None, borrowed.get_children().unwrap_or_default()),
-			Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				let mut children = Vec::with_capacity(statements.len() + 3);
-				children.extend([initializer.clone(), condition.clone(), update.clone()]);
-				children.extend(statements.iter().cloned());
-				(None, children)
-			}
-			Nodes::Expression(Expressions::FunctionCall { function, parameters }) => (Some(function.get()), parameters.clone()),
-			Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => (None, arguments.clone()),
-			Nodes::Expression(Expressions::Operator { left, right, .. })
-			| Nodes::Expression(Expressions::Accessor { left, right }) => (None, vec![left.clone(), right.clone()]),
-			Nodes::Expression(Expressions::Expression { elements }) => (None, elements.clone()),
-			Nodes::Expression(Expressions::Return { value }) => (None, value.iter().cloned().collect()),
-			Nodes::Const { value, .. } | Nodes::Literal { value, .. } => (None, vec![value.clone()]),
-			_ => (None, Vec::new()),
-		}
-	};
-	if let Some(function) = called_function
-		&& matches!(function.borrow().node(), Nodes::Function { .. })
-	{
-		collect_reachable_function(&function, seen, functions);
-	}
-	for child in children {
-		collect_function_references(&child, seen, functions);
-	}
-}
-
+/// Rejects backend-specific raw code anywhere in `node`, because the VM can only run portable BESL.
+///
+/// Raw nodes with empty sources stay valid. The walk skips inlined intrinsic bodies and macro bodies, whose raw code
+/// the VM replaces with its own lowering of the intrinsic.
 pub(super) fn reject_raw_code_nodes(node: &NodeReference) -> Result<(), VmError> {
-	let children = {
-		let borrowed = node.borrow();
-		match borrowed.node() {
-			Nodes::Raw { glsl, hlsl, msl, .. } => {
-				let has_code = [glsl.as_deref(), hlsl.as_deref(), msl.as_deref()]
-					.into_iter()
-					.flatten()
-					.any(|code| !code.trim().is_empty());
-				if has_code {
-					return Err(VmError::UnsupportedRawCode);
-				}
-				Vec::new()
-			}
-			Nodes::Function { statements, .. } => statements.clone(),
-			Nodes::Conditional { .. } | Nodes::Match { .. } => borrowed.get_children().unwrap_or_default(),
-			Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				let mut children = Vec::with_capacity(statements.len() + 3);
-				children.extend([initializer.clone(), condition.clone(), update.clone()]);
-				children.extend(statements.iter().cloned());
-				children
-			}
-			Nodes::Expression(Expressions::FunctionCall { parameters, .. }) => parameters.clone(),
-			Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => arguments.clone(),
-			Nodes::Expression(Expressions::Operator { left, right, .. })
-			| Nodes::Expression(Expressions::Accessor { left, right }) => vec![left.clone(), right.clone()],
-			Nodes::Expression(Expressions::Expression { elements }) => elements.clone(),
-			Nodes::Expression(Expressions::Return { value }) => value.iter().cloned().collect(),
-			Nodes::Const { value, .. } | Nodes::Literal { value, .. } => vec![value.clone()],
-			_ => Vec::new(),
+	let node = node.borrow();
+	match node.node() {
+		Nodes::Raw { glsl, hlsl, msl, .. } => {
+			let has_code = [glsl.as_deref(), hlsl.as_deref(), msl.as_deref()]
+				.into_iter()
+				.flatten()
+				.any(|code| !code.trim().is_empty());
+			if has_code { Err(VmError::UnsupportedRawCode) } else { Ok(()) }
 		}
-	};
-
-	for child in children {
-		reject_raw_code_nodes(&child)?;
+		Nodes::Expression(Expressions::IntrinsicCall { arguments, .. }) => arguments.iter().try_for_each(reject_raw_code_nodes),
+		Nodes::Expression(Expressions::Macro { .. }) => Ok(()),
+		other => other.children().try_for_each(reject_raw_code_nodes),
 	}
-
-	Ok(())
 }
 
 pub(super) fn extract_function_signature(function: &NodeReference) -> Result<FunctionSignature, VmError> {
@@ -410,55 +305,29 @@ pub(super) fn resolve_callable_return_type(callable: &NodeReference) -> Result<V
 }
 
 pub(super) fn resolve_value_type(node: &NodeReference) -> Result<ValueType, VmError> {
-	let type_name = node
-		.borrow()
-		.get_name()
-		.map(str::to_string)
-		.unwrap_or_else(|| "unknown".to_string());
-
-	match type_name.as_str() {
-		"bool" => Ok(ValueType::Bool),
-		"u8" => Ok(ValueType::U8),
-		"u16" => Ok(ValueType::U16),
-		"u32" => Ok(ValueType::U32),
-		"i32" => Ok(ValueType::I32),
-		"f16" => Ok(ValueType::F16),
-		"f32" => Ok(ValueType::F32),
-		"atomicu32" => Ok(ValueType::U32),
-		"atomici32" => Ok(ValueType::I32),
-		"vec2u16" => Ok(ValueType::Vec2U16),
-		"vec4u16" => Ok(ValueType::Vec4U16),
-		"vec2i" => Ok(ValueType::Vec2I),
-		"vec2u" => Ok(ValueType::Vec2U),
-		"vec3u" => Ok(ValueType::Vec3U),
-		"vec4u" => Ok(ValueType::Vec4U),
-		"vec2f16" => Ok(ValueType::Vec2F16),
-		"vec3f16" => Ok(ValueType::Vec3F16),
-		"vec4f16" => Ok(ValueType::Vec4F16),
-		"vec2f" => Ok(ValueType::Vec2F),
-		"vec3f" => Ok(ValueType::Vec3F),
-		"vec4f" => Ok(ValueType::Vec4F),
-		"packed_vec4f" => Ok(ValueType::PackedVec4F),
-		"mat4f" => Ok(ValueType::Mat4F),
-		"mat4x3f" => Ok(ValueType::Mat4x3F),
-		"Texture2D" => Ok(ValueType::Texture2D),
-		"Texture3D" => Ok(ValueType::Texture3D),
-		"TextureCube" => Ok(ValueType::TextureCube),
-		"TextureCubeArray" => Ok(ValueType::TextureCubeArray),
-		"ArrayTexture2D" => Ok(ValueType::ArrayTexture2D),
-		_ => {
-			let fields = match node.borrow().node() {
-				Nodes::Struct { fields, .. } => fields.clone(),
-				_ => return Err(VmError::UnsupportedType { type_name }),
-			};
-			let (fields, size) = compile_member_layouts(&fields, false)?;
-			Ok(ValueType::Struct {
-				name: type_name,
-				fields,
-				size,
-			})
-		}
+	let node_ref = node.borrow();
+	let type_name = node_ref.get_name().unwrap_or("unknown");
+	// Atomic storage types hold plain integers in VM memory.
+	let builtin = match type_name {
+		"atomicu32" => Some(ValueType::U32),
+		"atomici32" => Some(ValueType::I32),
+		name => ValueType::builtin(name),
+	};
+	if let Some(value_type) = builtin {
+		return Ok(value_type);
 	}
+
+	let Nodes::Struct { fields, .. } = node_ref.node() else {
+		return Err(VmError::UnsupportedType {
+			type_name: type_name.to_string(),
+		});
+	};
+	let (fields, size) = compile_member_layouts(fields, false)?;
+	Ok(ValueType::Struct {
+		name: type_name.to_string(),
+		fields,
+		size,
+	})
 }
 
 pub(super) fn is_resource_type(value_type: &ValueType) -> bool {
@@ -492,8 +361,9 @@ pub(super) fn compile_buffer_array_layout(
 	count: Option<std::num::NonZeroUsize>,
 ) -> Result<(BufferLayout, ValueType), VmError> {
 	let unsupported = || VmError::UnsupportedBufferLayout {
-		message: "Unsupported buffer array element. The most likely cause is that its type is empty, boolean, or a resource handle."
-			.to_string(),
+		message:
+			"Unsupported buffer array element. The most likely cause is that its type is empty, boolean, or a resource handle."
+				.to_string(),
 	};
 	let value_type = resolve_value_type(element)?;
 	let mut layout = match element.borrow().node() {
@@ -506,9 +376,11 @@ pub(super) fn compile_buffer_array_layout(
 	}
 	if let Some(count) = count {
 		// Validating the total here lets `Buffer::new` allocate fixed arrays without a fallible size.
-		layout.size().checked_mul(count.get()).ok_or_else(|| VmError::UnsupportedBufferLayout {
+		layout.size().checked_mul(count.get()).ok_or_else(|| {
+			VmError::UnsupportedBufferLayout {
 			message: "Buffer array exceeds addressable CPU memory. The most likely cause is that its fixed element count is too large."
 				.to_string(),
+		}
 		})?;
 		layout.element_count = Some(count.get());
 	}
@@ -852,7 +724,6 @@ pub(super) fn resolve_referenced_value_type(source: &NodeReference) -> Result<Va
 
 pub(super) fn describe_node(node: &Nodes) -> &'static str {
 	match node {
-		Nodes::Null => "null",
 		Nodes::Scope { .. } => "scope",
 		Nodes::Struct { .. } => "struct",
 		Nodes::Member { .. } => "member",
@@ -871,7 +742,6 @@ pub(super) fn describe_node(node: &Nodes) -> &'static str {
 		Nodes::TaskPayload { .. } => "task payload",
 		Nodes::Workgroup { .. } => "workgroup storage",
 		Nodes::Parameter { .. } => "parameter",
-		Nodes::Literal { .. } => "literal",
 		Nodes::Const { .. } => "const",
 	}
 }

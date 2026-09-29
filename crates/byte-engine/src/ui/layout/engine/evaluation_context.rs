@@ -86,19 +86,9 @@ impl<C: 'static> EvaluationContext<C> {
 		update::<C, Container>(self.id, setup)
 	}
 
-	/// Edits this text element. See [`Self::update_container`].
+	/// Edits this text element or text field. See [`Self::update_container`].
 	pub fn update_text(&mut self, setup: impl Setup<Text>) -> impl Future<Output = ()> {
 		update::<C, Text>(self.id, setup)
-	}
-
-	/// Edits this text field. See [`Self::update_container`].
-	pub fn update_text_field(&mut self, setup: impl Setup<TextField>) -> impl Future<Output = ()> {
-		update::<C, TextField>(self.id, setup)
-	}
-
-	/// Edits this shape. See [`Self::update_container`].
-	pub fn update_shape(&mut self, setup: impl Setup<Shape>) -> impl Future<Output = ()> {
-		update::<C, Shape>(self.id, setup)
 	}
 
 	/// Edits a retained curve in place, such as re-routing a wire while its ends move.
@@ -198,21 +188,17 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 	fn text(self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>> {
 		declare(
 			self,
-			move |_, spares| Primitives::Text(Text::new(spares.format(content))),
+			move |_, spares| Primitives::Text(Text::new(spares.format(content), false)),
 			setup,
 		)
 	}
 
-	fn text_field(self, content: impl Display, setup: impl Setup<TextField>) -> impl Future<Output = EvaluationContext<C>> {
+	fn text_field(self, content: impl Display, setup: impl Setup<Text>) -> impl Future<Output = EvaluationContext<C>> {
 		declare(
 			self,
-			move |_, spares| Primitives::TextField(TextField::new(spares.format(content))),
+			move |_, spares| Primitives::Text(Text::new(spares.format(content), true)),
 			setup,
 		)
-	}
-
-	fn shape(self, setup: impl Setup<Shape>) -> impl Future<Output = EvaluationContext<C>> {
-		declare(self, |_, _| Primitives::Shape(Shape::new()), setup)
 	}
 
 	fn curve(self, setup: impl Setup<Curve>) -> impl Future<Output = EvaluationContext<C>> {
@@ -288,28 +274,14 @@ impl<C: 'static> ElementContext<C> for ElementSlot<'_, C> {
 
 impl<C: 'static> super::super::context::ContainerContext<C> for EvaluationContext<C> {
 	fn on(&mut self, event: Events) -> EventFuture<C> {
-		EventFuture {
-			target: self.id,
-			kind: event,
-			complete: false,
-			ctx: PhantomData,
-		}
+		InputFuture::new(self.id, event)
 	}
 
 	fn on_key(&mut self, key: Key) -> KeyFuture<C> {
-		KeyFuture {
-			target: self.id,
-			key,
-			complete: false,
-			ctx: PhantomData,
-		}
+		InputFuture::new(self.id, key)
 	}
 
 	fn on_text_edit(&mut self) -> TextEditFuture<C> {
-		TextEditFuture {
-			target: self.id,
-			complete: false,
-			ctx: PhantomData,
-		}
+		InputFuture::new(self.id, ())
 	}
 }

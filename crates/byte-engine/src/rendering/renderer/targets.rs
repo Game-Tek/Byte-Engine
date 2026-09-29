@@ -39,25 +39,34 @@ pub(crate) struct SinkTargetPlan {
 	pub(crate) first_uses: SmallVec<[FirstUse; 32]>,
 }
 
-/// The `RenderTargets` struct tracks sink-scoped render images and attachment access.
+/// The `Target` struct describes one render-target image a sink's graph created.
+struct Target {
+	image: ghi::BaseImageHandle,
+	format: ghi::Formats,
+	sink: usize,
+	/// Divides the sink extent to size the image. One means full sink resolution.
+	resolution_divisor: u32,
+	/// Whether the image belongs to its sink's image group and so may share memory.
+	member: bool,
+}
+
+/// The `RenderTargets` struct tracks sink-scoped render images, their names, and the graph nodes that use them.
+///
+/// Render passes reach it through [`crate::rendering::RenderPassBuilder`], which registers every target a pass
+/// creates or uses, and the renderer asks it each frame how to size and place those targets.
 pub struct RenderTargets {
-	pub(super) images: Vec<(ghi::BaseImageHandle, ghi::Formats)>,
-	/// Divides the sink extent to size each image in `images`, at the same index. One means full sink resolution.
-	pub(super) resolution_divisors: Vec<u32>,
-	/// Whether each image in `images`, at the same index, belongs to its sink's image group and so may share memory.
-	members: Vec<bool>,
+	/// Every render-target image, indexed by the image index the other lists refer to.
+	targets: Vec<Target>,
 	/// The image group of each sink that has one.
 	groups: Vec<(usize, ghi::ImageGroupHandle)>,
 	/// The images each node of a sink uses, by image index.
 	node_accesses: Vec<(usize, RenderNode, SmallVec<[usize; 8]>)>,
-	/// Maps a sink-scoped name to an image index.
+	/// Maps a sink-scoped name to an image index. Later entries for a name replace earlier ones.
 	pub(super) by_name: Vec<(usize, String, usize)>,
-	/// Maps sink indices to image indices and access policies, making attachments.
-	pub(super) by_sink_index: Vec<(usize, (usize, ghi::AccessPolicies))>,
 	/// Maps a sink-scoped name to a per-frame image that later frames read as history.
 	///
 	/// History targets are never attachments, so no pass can clear them by accident.
-	pub(super) histories: Vec<(usize, String, ghi::DynamicImageHandle, u32)>,
+	histories: Vec<(usize, String, ghi::DynamicImageHandle, u32)>,
 }
 
 impl Default for RenderTargets {
@@ -69,13 +78,10 @@ impl Default for RenderTargets {
 impl RenderTargets {
 	pub fn new() -> Self {
 		Self {
-			images: Vec::with_capacity(32),
-			resolution_divisors: Vec::with_capacity(32),
-			members: Vec::with_capacity(32),
+			targets: Vec::with_capacity(32),
 			groups: Vec::new(),
 			node_accesses: Vec::with_capacity(32),
 			by_name: Vec::with_capacity(32),
-			by_sink_index: Vec::with_capacity(32),
 			histories: Vec::with_capacity(8),
 		}
 	}
@@ -123,18 +129,15 @@ impl RenderTargets {
 			);
 		};
 
-		if self.get_attachment_index(&name, sink_id).is_some() {
-			panic!(
-				"Render target image '{name}' is already registered as an attachment for sink {sink_id}. The most likely cause is that a target was manually added to the attachment list before insertion."
-			);
-		}
-
-		let index = self.images.len();
-		self.images.push((image, format));
-		self.resolution_divisors.push(resolution_divisor);
-		self.members.push(member);
+		let index = self.targets.len();
+		self.targets.push(Target {
+			image,
+			format,
+			sink: sink_id,
+			resolution_divisor,
+			member,
+		});
 		self.by_name.push((sink_id, name, index));
-		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
 
 		index
 	}
@@ -162,106 +165,15 @@ impl RenderTargets {
 			.map(|(_, _, image, _)| *image)
 	}
 
-	pub fn read_from(&mut self, name: &str, sink_id: usize) {
-		if self.get_attachment_index(name, sink_id).is_some() {
-			return;
-		}
-
-		let Some(index) = self.get_image_index(name, sink_id) else {
-			log::warn!(
-				"Render target image '{name}' does not exist for sink {sink_id}; read attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
-			);
-			return;
-		};
-
-		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::READ)));
+	/// Returns the image and format a sink's `name` currently resolves to.
+	pub fn get(&self, name: &str, sink_id: usize) -> Option<(ghi::BaseImageHandle, ghi::Formats)> {
+		self.get_image_index(name, sink_id).map(|index| self.image(index))
 	}
 
-	pub fn write_to(&mut self, name: &str, sink_id: usize) {
-		if self.get_attachment_index(name, sink_id).is_some() {
-			return;
-		}
-
-		let Some(index) = self.get_image_index(name, sink_id) else {
-			log::warn!(
-				"Render target image '{name}' does not exist for sink {sink_id}; write attachment was not registered. The most likely cause is that a render pass was added before the pipeline that creates this target."
-			);
-			return;
-		};
-
-		self.by_sink_index.push((sink_id, (index, ghi::AccessPolicies::WRITE)));
-	}
-
-	pub fn get(&self, name: &str, sink_id: usize) -> Option<&(ghi::BaseImageHandle, ghi::Formats)> {
-		self.get_image_index(name, sink_id).and_then(|index| self.images.get(index))
-	}
-
-	pub fn get_attachment_infos(&self, sink_id: usize) -> SmallVec<[ghi::AttachmentInformation; 8]> {
-		let attachments = self
-			.by_sink_index
-			.iter()
-			.filter_map(|(v, (i, ap))| {
-				if *v == sink_id {
-					let (image, format) = self.images.get(*i)?;
-					Some((image, format, ap))
-				} else {
-					None
-				}
-			})
-			.filter(|(_, _, access)| access.intersects(ghi::AccessPolicies::WRITE))
-			.map(|(image, format, access)| {
-				ghi::AttachmentInformation::new(
-					*image,
-					ghi::Layouts::RenderTarget,
-					attachment_load(*access),
-					ghi::StoreOp::Store,
-				)
-				// TODO: contionally pass format
-			});
-
-		attachments.collect()
-	}
-
-	/// Resolves attachments at pass registration, before later passes can rebind names.
-	pub fn get_attachment_infos_for_resources(
-		&self,
-		sink_id: usize,
-		resources: &[(&str, ghi::AccessPolicies)],
-	) -> SmallVec<[ghi::AttachmentInformation; 8]> {
-		let mut accesses_by_name = SmallVec::<[(&str, ghi::AccessPolicies); 8]>::new();
-		for (name, access) in resources {
-			if let Some((_, existing)) = accesses_by_name.iter_mut().find(|(existing_name, _)| *existing_name == *name) {
-				*existing |= *access;
-			} else {
-				accesses_by_name.push((*name, *access));
-			}
-		}
-
-		accesses_by_name
-			.into_iter()
-			.filter_map(|(name, access)| {
-				if !access.intersects(ghi::AccessPolicies::WRITE) {
-					return None;
-				}
-
-				let (image, _format) = self.get(name, sink_id)?;
-				Some(ghi::AttachmentInformation::new(
-					*image,
-					ghi::Layouts::RenderTarget,
-					attachment_load(access),
-					ghi::StoreOp::Store,
-				))
-			})
-			.collect()
-	}
-
-	fn get_image(&self, name: &str, sink_id: usize) -> &ghi::BaseImageHandle {
-		let index = self.get_attachment_index(name, sink_id).unwrap();
-		&self.images.get(index).unwrap().0
-	}
-
-	pub(crate) fn image(&self, index: usize) -> Option<(ghi::BaseImageHandle, ghi::Formats)> {
-		self.images.get(index).copied()
+	/// Returns the image and format stored at `index`.
+	pub(crate) fn image(&self, index: usize) -> (ghi::BaseImageHandle, ghi::Formats) {
+		let target = &self.targets[index];
+		(target.image, target.format)
 	}
 
 	pub(crate) fn get_image_index(&self, name: &str, sink_id: usize) -> Option<usize> {
@@ -280,7 +192,7 @@ impl RenderTargets {
 			.filter(|(position, (sink, _, index))| {
 				*sink == sink_id && indices.contains(index) && self.is_current_name_mapping(*position)
 			})
-			.filter_map(|(_, (_, name, index))| self.images.get(*index).map(|(image, _)| (name.clone(), *image)))
+			.map(|(_, (_, name, index))| (name.clone(), self.targets[*index].image))
 			.collect()
 	}
 
@@ -301,14 +213,6 @@ impl RenderTargets {
 			})
 			.map(|(_, (_, name, index))| (name.clone(), *index))
 			.collect()
-	}
-
-	fn get_attachment_index(&self, name: &str, sink_id: usize) -> Option<usize> {
-		let image_index = self.get_image_index(name, sink_id)?;
-
-		self.by_sink_index
-			.iter()
-			.find_map(|(v, (i, _))| if *v == sink_id && *i == image_index { Some(*i) } else { None })
 	}
 
 	/// Records the images one node of a sink uses, by image index.
@@ -339,28 +243,22 @@ impl RenderTargets {
 			first_uses: SmallVec::new(),
 		};
 		let sink_members = self
-			.by_name
+			.targets
 			.iter()
-			.filter(|(sink, ..)| *sink == sink_id)
-			.map(|(.., index)| *index)
-			.filter(|&index| self.members[index]);
-		for index in sink_members {
-			// Aliases add names, not images, so each member is planned once.
-			if plan.members.iter().any(|member| member.image == self.images[index].0) {
-				continue;
-			}
-			let (image, format) = self.images[index];
+			.enumerate()
+			.filter(|(_, target)| target.sink == sink_id && target.member);
+		for (index, target) in sink_members {
 			let lifetime = lifetime(&nodes, index);
 			plan.members.push(ghi::ImageGroupMember {
-				image,
-				extent: scaled_extent(sink_extent, self.resolution_divisors[index]),
+				image: target.image,
+				extent: sink_extent.scaled_down(target.resolution_divisor),
 				lifetime: lifetime.clone(),
 			});
 			if let Some((node, _)) = nodes.get(*lifetime.start() as usize) {
 				plan.first_uses.push(FirstUse {
 					node: *node,
-					image,
-					clear: clear_value(format),
+					image: target.image,
+					clear: clear_value(target.format),
 				});
 			}
 		}
@@ -375,7 +273,7 @@ impl RenderTargets {
 		let Some(index) = self.get_image_index(name, sink_id) else {
 			return false;
 		};
-		!self.members[index]
+		!self.targets[index].member
 			|| self.node_accesses.iter().any(|(sink, node, accesses)| {
 				*sink == sink_id && matches!(node, RenderNode::Scene(_)) && accesses.contains(&index)
 			})
@@ -389,19 +287,16 @@ impl RenderTargets {
 		index: usize,
 		sink_extent: Extent,
 	) -> impl Iterator<Item = (ghi::BaseImageHandle, Extent)> {
-		let targets = self.by_sink_index.iter().filter_map(move |(v, (i, _))| {
-			if *v != index || self.members[*i] {
-				return None;
-			}
-
-			let (image, _) = self.images.get(*i)?;
-			Some((*image, scaled_extent(sink_extent, self.resolution_divisors[*i])))
-		});
+		let targets = self
+			.targets
+			.iter()
+			.filter(move |target| target.sink == index && !target.member)
+			.map(move |target| (target.image, sink_extent.scaled_down(target.resolution_divisor)));
 		let histories = self
 			.histories
 			.iter()
 			.filter(move |(sink, ..)| *sink == index)
-			.map(move |(_, _, image, divisor)| ((*image).into(), scaled_extent(sink_extent, *divisor)));
+			.map(move |(_, _, image, divisor)| ((*image).into(), sink_extent.scaled_down(*divisor)));
 		targets.chain(histories)
 	}
 }
@@ -410,21 +305,11 @@ impl RenderTargets {
 ///
 /// An image no node uses gets the first position, so it still has memory.
 fn lifetime(nodes: &[(RenderNode, &[usize])], index: usize) -> RangeInclusive<u32> {
-	let uses = |(position, (_, accesses)): (usize, &(RenderNode, &[usize]))| {
-		accesses.contains(&index).then_some(position as u32)
-	};
+	let uses =
+		|(position, (_, accesses)): (usize, &(RenderNode, &[usize]))| accesses.contains(&index).then_some(position as u32);
 	let first = nodes.iter().enumerate().find_map(uses).unwrap_or(0);
 	let last = nodes.iter().enumerate().rev().find_map(uses).unwrap_or(first);
 	first..=last
-}
-
-/// Loads an attachment a pass also reads, and clears one it only writes.
-fn attachment_load(access: ghi::AccessPolicies) -> ghi::LoadOp {
-	if access.intersects(ghi::AccessPolicies::READ) {
-		ghi::LoadOp::Load
-	} else {
-		ghi::LoadOp::Clear(ghi::ClearValue::Color(RGBA::black()))
-	}
 }
 
 /// Returns the value that clears an image of `format` to empty contents.
@@ -436,14 +321,6 @@ fn clear_value(format: ghi::Formats) -> ghi::ClearValue {
 	} else {
 		ghi::ClearValue::Color(RGBA::black())
 	}
-}
-
-/// Divides a sink extent for a reduced-resolution target, keeping every dimension at least one.
-pub(crate) fn scaled_extent(extent: Extent, resolution_divisor: u32) -> Extent {
-	Extent::rectangle(
-		(extent.width() / resolution_divisor).max(1),
-		(extent.height() / resolution_divisor).max(1),
-	)
 }
 
 #[cfg(test)]
@@ -518,7 +395,7 @@ mod tests {
 	}
 
 	#[test]
-	fn history_targets_follow_the_sink_extent_without_becoming_attachments() {
+	fn history_targets_follow_the_sink_extent() {
 		let history = ghi::debug::Device::new()
 			.build_dynamic_image(ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image).name("History"));
 		let mut targets = RenderTargets::new();
@@ -533,27 +410,6 @@ mod tests {
 				.collect::<Vec<_>>(),
 			[(history.into(), Extent::rectangle(959, 540))]
 		);
-		assert!(targets.get_attachment_infos(0).is_empty());
-	}
-
-	#[test]
-	fn writable_snapshot_excludes_read_only_images() {
-		let mut targets = RenderTargets::new();
-		targets.by_name = vec![(0, "written".into(), 3), (0, "read-only".into(), 4)];
-
-		assert_eq!(targets.name_indices_for_images(0, &[3]), [("written".into(), 3)]);
-	}
-
-	#[test]
-	fn alias_snapshot_is_unchanged_by_a_later_alias() {
-		let mut targets = RenderTargets::new();
-		targets.by_name = vec![(0, "Bloom Output".into(), 3), (0, "main".into(), 3)];
-		let bloom = targets.name_indices_for_images(0, &[3]);
-
-		targets.by_name.push((0, "main".into(), 4));
-
-		assert_eq!(bloom, [("Bloom Output".into(), 3), ("main".into(), 3)]);
-		assert_eq!(targets.get_image_index("main", 0), Some(4));
 	}
 
 	#[test]

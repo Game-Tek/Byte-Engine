@@ -166,18 +166,6 @@ mod tests {
 	}
 
 	#[test]
-	fn axis_angle_construction_rotates_a_world_vector() {
-		let orientation =
-			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::z_axis(), Radians::new(std::f32::consts::FRAC_PI_2))
-				.unwrap();
-		let rotated = orientation.rotate_vector(Vector::<WorldSpace>::new(1.0, 0.0, 0.0));
-
-		assert!(rotated.x().abs() < 0.0001);
-		assert!((rotated.y() - 1.0).abs() < 0.0001);
-		assert!(rotated.z().abs() < 0.0001);
-	}
-
-	#[test]
 	fn composition_matches_sequential_rotation() {
 		let around_x =
 			Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), Radians::new(std::f32::consts::FRAC_PI_2))

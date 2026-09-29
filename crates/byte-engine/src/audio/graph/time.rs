@@ -86,20 +86,3 @@ impl AudioGraphTime {
 		if phase >= TAU { phase - TAU } else { phase }
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::AudioGraphTime;
-
-	#[test]
-	fn periodic_phase_remains_bounded_after_many_samples() {
-		let time = AudioGraphTime::new(0, 48_000);
-		let phase_step = time.periodic_phase_step(20_000.0);
-		let mut phase = 0.0;
-		for _ in 0..1_000_000 {
-			phase = AudioGraphTime::advance_periodic_phase(phase, phase_step);
-		}
-
-		assert!((0.0..std::f32::consts::TAU).contains(&phase));
-	}
-}

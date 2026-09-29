@@ -62,7 +62,7 @@ impl BakeMemoryBudget {
 }
 
 /// The `BakeMemoryScope` struct groups a root bake and its dependencies under one deadlock-free admission charge.
-pub(super) struct BakeMemoryScope {
+pub(crate) struct BakeMemoryScope {
 	budget: Arc<BakeMemoryBudget>,
 	state: Mutex<BakeMemoryScopeState>,
 }

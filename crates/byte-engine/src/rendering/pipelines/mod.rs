@@ -9,5 +9,5 @@ pub mod simple;
 #[doc(hidden)]
 pub mod visibility;
 
-pub use simple::{SimplePipelineManager, SimpleRenderPass};
+pub use simple::SimplePipelineManager;
 pub use visibility::VisibilityPipelineManager;

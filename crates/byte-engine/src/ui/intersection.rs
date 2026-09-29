@@ -3,6 +3,7 @@ use super::{
 	element::Id,
 	flow::Location,
 	layout::{Geometry, LayoutElement},
+	point::normalized_to_layout,
 };
 use crate::ui::{
 	components::container::Sector,
@@ -51,10 +52,7 @@ impl HitTest {
 	/// The layout origin is at the top left. Positions outside the viewport stay
 	/// outside, so a drag captured by [`crate::ui::Engine::press`] can finish beyond its source.
 	pub fn layout_position(&self, position: UiPoint) -> UiPoint {
-		UiPoint::new(
-			(position.x + 1.0) * 0.5 * self.size[0],
-			(1.0 - position.y) * 0.5 * self.size[1],
-		)
+		normalized_to_layout(position, Size::new(self.size[0], self.size[1]))
 	}
 
 	/// Returns a retained surface's visible bounds in layout units.
@@ -127,28 +125,42 @@ impl MouseClickAcceleration {
 
 	/// Reuses the pointer index while clipped hit geometry stays unchanged.
 	///
+	/// `sectors` holds the sector each element of `layout` is shaped as, by position, one entry per element.
 	/// `curves` follow the order of the curve entries in `layout`; each names the
 	/// polyline, in `points`, that its element is hit along within its bounds.
-	pub(crate) fn update(&mut self, layout: &[LayoutElement], curves: &[HitCurve], points: &[Location]) {
+	pub(crate) fn update(
+		&mut self,
+		layout: &[LayoutElement],
+		sectors: &[Option<Sector>],
+		curves: &[HitCurve],
+		points: &[Location],
+	) {
 		let mut next_curve = 0u32;
 		let mut elements = std::mem::take(&mut self.scratch);
 		elements.clear();
-		elements.extend(layout.iter().filter(|element| element.hit_testable).map(|element| {
-			let curve = curves
-				.get(next_curve as usize)
-				.filter(|curve| curve.id == element.id.get())
-				.map(|_| {
-					next_curve += 1;
-					next_curve - 1
-				});
-			QueryElement {
-				id: element.id.get(),
-				position: element.position,
-				size: element.size,
-				curve,
-				sector: element.sector,
-			}
-		}));
+		debug_assert_eq!(sectors.len(), layout.len(), "Every layout element needs a sector entry.");
+		elements.extend(
+			layout
+				.iter()
+				.enumerate()
+				.filter(|(_, element)| element.hit_testable)
+				.map(|(index, element)| {
+					let curve = curves
+						.get(next_curve as usize)
+						.filter(|curve| curve.id == element.id.get())
+						.map(|_| {
+							next_curve += 1;
+							next_curve - 1
+						});
+					QueryElement {
+						id: element.id.get(),
+						position: element.position,
+						size: element.size,
+						curve,
+						sector: sectors[index],
+					}
+				}),
+		);
 		// Patches left uncommitted by an abandoned refresh still need their cells rebuilt.
 		if self.moved.is_empty() && self.elements == elements && self.curves == curves && self.points == points {
 			self.scratch = elements;
@@ -282,11 +294,6 @@ impl MouseClickAcceleration {
 		}
 	}
 
-	/// Returns the ID of the topmost element under the pointer position.
-	pub(crate) fn query(&self, mouse_position: Location) -> Option<u64> {
-		self.query_excluding(mouse_position, None)
-	}
-
 	/// Finds the frontmost surface at a point, skipping one element such as a held drag source.
 	pub(crate) fn query_excluding(&self, mouse_position: Location, excluded: Option<u64>) -> Option<u64> {
 		let (x, y) = mouse_position.into();
@@ -402,13 +409,12 @@ fn polyline_distance(polyline: &[Location], point: Location) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-	use utils::RGBA;
 
 	use super::super::flow::{Location, Location3, Size};
 	use crate::ui::element::Id;
 	use crate::ui::intersection::{MouseClickAcceleration, QueryElement};
 	use crate::ui::layout::LayoutElement;
-	use crate::ui::{Container, Context, ElementContext, Engine, Sector, UiPoint};
+	use crate::ui::{Context, ElementContext, Engine, Sector, UiPoint};
 
 	/// Six petals stacked in one absolute-depth dial, probed at the middle of each petal's ring, while
 	/// the dial is turned and scaled as an opening animation would leave it.
@@ -612,38 +618,9 @@ mod tests {
 		};
 		acceleration.rebuild();
 
-		assert_eq!(acceleration.query(Location::new(50, 50)), Some(3));
-		assert_eq!(acceleration.query(Location::new(30, 30)), Some(2));
-		assert_eq!(acceleration.query(Location::new(10, 10)), Some(1));
-	}
-
-	#[test]
-	fn mouse_click_acceleration_returns_none_when_no_hit() {
-		let layout = vec![
-			QueryElement {
-				id: 10,
-				position: Location3::new(0, 0, 0),
-				size: Size::new(100, 100),
-				curve: None,
-				sector: None,
-			},
-			QueryElement {
-				id: 11,
-				position: Location3::new(150, 150, 0),
-				size: Size::new(50, 50),
-				curve: None,
-				sector: None,
-			},
-		];
-
-		let mut acceleration = MouseClickAcceleration {
-			elements: layout,
-			..Default::default()
-		};
-		acceleration.rebuild();
-
-		assert_eq!(acceleration.query(Location::new(125, 125)), None);
-		assert_eq!(acceleration.query(Location::new(300, 300)), None);
+		assert_eq!(acceleration.query_excluding(Location::new(50, 50), None), Some(3));
+		assert_eq!(acceleration.query_excluding(Location::new(30, 30), None), Some(2));
+		assert_eq!(acceleration.query_excluding(Location::new(10, 10), None), Some(1));
 	}
 
 	#[test]
@@ -671,7 +648,7 @@ mod tests {
 		};
 		acceleration.rebuild();
 
-		assert_eq!(acceleration.query(Location::new(50, 50)), Some(20));
+		assert_eq!(acceleration.query_excluding(Location::new(50, 50), None), Some(20));
 	}
 
 	#[test]
@@ -690,10 +667,10 @@ mod tests {
 		};
 		acceleration.rebuild();
 
-		assert_eq!(acceleration.query(Location::new(10.24, 21.0)), None);
-		assert_eq!(acceleration.query(Location::new(10.25, 20.5)), Some(1));
-		assert_eq!(acceleration.query(Location::new(15.749, 23.749)), Some(1));
-		assert_eq!(acceleration.query(Location::new(15.75, 22.0)), None);
+		assert_eq!(acceleration.query_excluding(Location::new(10.24, 21.0), None), None);
+		assert_eq!(acceleration.query_excluding(Location::new(10.25, 20.5), None), Some(1));
+		assert_eq!(acceleration.query_excluding(Location::new(15.749, 23.749), None), Some(1));
+		assert_eq!(acceleration.query_excluding(Location::new(15.75, 22.0), None), None);
 	}
 
 	/// A target patched past the grid's right or bottom edge is refused before anything is written,
@@ -706,18 +683,17 @@ mod tests {
 			position: Location3::new(x, y, 0),
 			size: Size::new(10.0, 10.0),
 			hit_testable: true,
-			sector: None,
 		};
 		for (x, y) in [(95.0, 0.0), (0.0, 95.0)] {
 			let mut acceleration = MouseClickAcceleration::default();
-			acceleration.update(&[element(0.0, 0.0)], &[], &[]);
-			assert_eq!(acceleration.query(Location::new(5.0, 5.0)), Some(1));
+			acceleration.update(&[element(0.0, 0.0)], &[None], &[], &[]);
+			assert_eq!(acceleration.query_excluding(Location::new(5.0, 5.0), None), Some(1));
 
 			assert!(!acceleration.patch(0, Location3::new(x, y, 0), Size::new(10.0, 10.0), None));
-			acceleration.update(&[element(x, y)], &[], &[]);
+			acceleration.update(&[element(x, y)], &[None], &[], &[]);
 
-			assert_eq!(acceleration.query(Location::new(x + 5.0, y + 5.0)), Some(1));
-			assert_eq!(acceleration.query(Location::new(5.0, 5.0)), None);
+			assert_eq!(acceleration.query_excluding(Location::new(x + 5.0, y + 5.0), None), Some(1));
+			assert_eq!(acceleration.query_excluding(Location::new(5.0, 5.0), None), None);
 		}
 	}
 }

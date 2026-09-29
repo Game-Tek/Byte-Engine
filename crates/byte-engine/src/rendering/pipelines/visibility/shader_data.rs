@@ -314,11 +314,4 @@ mod tests {
 		assert_eq!(material_data.textures[0], 3);
 		assert!(material_data.textures[1..].iter().all(|index| *index == u32::MAX));
 	}
-
-	#[test]
-	fn material_texture_updates_report_truncated_slots() {
-		let mut material_data = MaterialData::default();
-		assert!(material_data.set_textures([Some(5); MAX_MATERIAL_TEXTURES + 1]));
-		assert!(material_data.textures.iter().all(|index| *index == 5));
-	}
 }

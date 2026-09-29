@@ -1,8 +1,5 @@
-use maths_rs::Vec3f;
-
-use super::{IesProfile, LightColor, PhotometricError, PhotometricIntensity};
+use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity};
 use crate::{
-	core::{Entity, EntityHandle},
 	inspector::Inspectable,
 	rendering::lights::{Light, LightClasses},
 };
@@ -12,10 +9,8 @@ use crate::{
 /// Use the associated [`crate::gameplay::Transform`] to place the light and orient an optional IES profile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PointLight {
-	pub color: Vec3f,
-	ies_profile: Option<IesProfile>,
-	shadow_near_override: Option<f32>,
-	shadow_far_override: Option<f32>,
+	/// The color, optional IES profile, and shadow-range overrides every local light shares.
+	pub emission: LocalEmission,
 }
 
 impl PointLight {
@@ -32,12 +27,8 @@ impl PointLight {
 	/// Returns [`PhotometricError`] when the color or intensity contains an invalid physical value.
 	pub fn new(color: LightColor, intensity: PhotometricIntensity) -> Result<Self, PhotometricError> {
 		let chromaticity = color.resolve()?;
-		let candela = intensity.point_candela()?;
 		Ok(Self {
-			color: Vec3f::new(chromaticity.x * candela, chromaticity.y * candela, chromaticity.z * candela),
-			ies_profile: None,
-			shadow_near_override: None,
-			shadow_far_override: None,
+			emission: LocalEmission::uniform(chromaticity, intensity.point_candela()?),
 		})
 	}
 
@@ -67,45 +58,8 @@ impl PointLight {
 		ies_profile_resource_id: impl Into<String>,
 	) -> Result<Self, PhotometricError> {
 		Ok(Self {
-			color: color.resolve()?,
-			ies_profile: Some(IesProfile::new(ies_profile_resource_id, dimmer)),
-			shadow_near_override: None,
-			shadow_far_override: None,
+			emission: LocalEmission::ies(color, dimmer, ies_profile_resource_id)?,
 		})
-	}
-
-	/// Returns the optional IES profile that supplies this point light's intensity distribution.
-	pub fn ies_profile(&self) -> Option<&IesProfile> {
-		self.ies_profile.as_ref()
-	}
-
-	/// Overrides the renderer-derived near clipping distance for this light's cube shadow map.
-	pub fn with_shadow_near(mut self, shadow_near: f32) -> Self {
-		self.shadow_near_override = Some(shadow_near);
-		self
-	}
-
-	/// Overrides the renderer-derived far clipping distance for this light's cube shadow map.
-	pub fn with_shadow_far(mut self, shadow_far: f32) -> Self {
-		self.shadow_far_override = Some(shadow_far);
-		self
-	}
-
-	/// Overrides both renderer-derived clipping distances for this light's cube shadow map.
-	pub fn with_shadow_range(mut self, shadow_near: f32, shadow_far: f32) -> Self {
-		self.shadow_near_override = Some(shadow_near);
-		self.shadow_far_override = Some(shadow_far);
-		self
-	}
-
-	/// Returns the optional near clipping-distance override for the renderer.
-	pub(crate) fn shadow_near_override(&self) -> Option<f32> {
-		self.shadow_near_override
-	}
-
-	/// Returns the optional far clipping-distance override for the renderer.
-	pub(crate) fn shadow_far_override(&self) -> Option<f32> {
-		self.shadow_far_override
 	}
 }
 
@@ -118,41 +72,5 @@ impl Light for PointLight {
 impl Inspectable for PointLight {
 	fn as_string(&self) -> String {
 		format!("{:?}", self)
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::PointLight;
-	use crate::rendering::lights::{IesProfile, LightColor, PhotometricIntensity};
-
-	#[test]
-	fn ies_point_keeps_its_profile() {
-		let light =
-			PointLight::new_ies(LightColor::Kelvin(4_500.0), 0.25, "lights/office.ies").expect("physical IES point light");
-
-		assert_eq!(
-			light.ies_profile().map(|profile| profile.resource_id()),
-			Some("lights/office.ies")
-		);
-		assert_eq!(light.ies_profile().map(IesProfile::dimmer), Some(0.25));
-	}
-
-	#[test]
-	fn point_light_keeps_shadow_range_overrides() {
-		let light = PointLight::new(
-			LightColor::Kelvin(4_500.0),
-			PhotometricIntensity::LuminousIntensity {
-				candela: 100.0,
-				reference_distance_m: 1.0,
-			},
-		)
-		.expect("physical point light")
-		.with_shadow_range(0.2, 75.0)
-		.with_shadow_near(0.4)
-		.with_shadow_far(50.0);
-
-		assert_eq!(light.shadow_near_override(), Some(0.4));
-		assert_eq!(light.shadow_far_override(), Some(50.0));
 	}
 }

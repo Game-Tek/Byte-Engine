@@ -48,14 +48,6 @@ impl<T, MH, PH> Default for ResourceCollection<T, MH, PH> {
 }
 
 impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
-	/// Creates empty storage for master-addressed resources and their private frame representations.
-	pub(crate) fn new() -> Self {
-		Self {
-			resources: Vec::new(),
-			master_handle_type: PhantomData,
-		}
-	}
-
 	/// Creates empty storage with capacity for the requested number of private resources.
 	pub(crate) fn with_capacity(capacity: usize) -> Self {
 		Self {
@@ -78,17 +70,28 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		(master_handle, private_handle)
 	}
 
-	/// Adds another private representation to an existing master handle's resource chain.
-	pub(crate) fn add_with_master(&mut self, resource: T, master_handle: MH) -> PH {
-		let i = master_handle.index();
-		let private_handle = PH::new(i);
-
-		self.resources.push(MasterFrameResource {
-			next: None,
-			resource: Some(resource),
-		});
-
-		private_handle
+	/// Adds one resource chain, with an entry per item of `resources` in frame-sequence order, and returns its public
+	/// handle.
+	///
+	/// Use it for resources that need a private copy per frame in flight, such as synchronizers, descriptor sets, and
+	/// dynamic buffers and images. Every copy exists from the start, so no frame ever shares a copy with another frame
+	/// in flight. Resolve a frame's copy with [`Self::nth_handle`].
+	///
+	/// # Panics
+	///
+	/// Panics when `resources` is empty.
+	pub(crate) fn add_chain(&mut self, resources: impl IntoIterator<Item = T>) -> MH {
+		let mut resources = resources.into_iter();
+		let first = resources.next().expect(
+			"Empty resource chain. The most likely cause is that a per-frame resource was created with zero frames in flight.",
+		);
+		let (master, mut previous) = self.add(first);
+		for resource in resources {
+			let (_, next) = self.add(resource);
+			self.set_next(previous, Some(next));
+			previous = next;
+		}
+		master
 	}
 
 	/// Returns the resource a master handle names when it has a single representation for every frame.
@@ -150,11 +153,6 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		self.resources.get(handle.index() as usize).and_then(|r| r.resource.as_ref())
 	}
 
-	/// Returns the resource for the requested frame offset by walking the master's private chain.
-	pub(crate) fn get_nth(&self, handle: MH, frame_offset: usize) -> Option<&T> {
-		self.nth_handle(handle, frame_offset).map(|handle| self.resource(handle))
-	}
-
 	/// Returns the private handle for the requested frame offset within a master's chain.
 	///
 	/// If the chain is shorter than the requested offset, this method returns its
@@ -177,6 +175,13 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 		Some(current)
 	}
 
+	/// Returns every private handle of a master's chain, in frame order, walking the chain once.
+	///
+	/// The chain must end: chains built with [`Self::add_chain`], or with [`Self::set_next`] onto new entries, always do.
+	pub(crate) fn chain(&self, handle: MH) -> impl Iterator<Item = PH> + '_ {
+		std::iter::successors(Some(PH::new(handle.index())), |&current| self.entry(current).next)
+	}
+
 	/// Iterates over all stored private resources in insertion order, skipping resources that were taken.
 	pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
 		self.resources.iter().filter_map(|r| r.resource.as_ref())
@@ -185,53 +190,6 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	/// Iterates mutably over all stored private resources in insertion order, skipping resources that were taken.
 	pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
 		self.resources.iter_mut().filter_map(|r| r.resource.as_mut())
-	}
-
-	/// Starts building a chained resource sequence that will share one master handle.
-	pub(crate) fn creator<'a>(&'a mut self) -> Creator<'a, T, MH, PH> {
-		let mh = MH::new(self.resources.len() as _);
-		Creator::new(&mut self.resources, mh)
-	}
-
-	/// Returns the master handle that would be assigned to the next created resource chain.
-	pub(crate) fn master(&self) -> MH {
-		MH::new(self.resources.len() as _)
-	}
-}
-
-/// The `Creator` struct incrementally builds one master resource chain from multiple private frame representations.
-pub(crate) struct Creator<'a, T, MH, PH> {
-	resources: &'a mut Vec<MasterFrameResource<T, PH>>,
-	handle: MH,
-}
-
-impl<'a, T, MH: MasterHandle, PH: PrivateHandle> Creator<'a, T, MH, PH> {
-	/// Creates a chain builder for a new master handle.
-	pub(crate) fn new(resources: &'a mut Vec<MasterFrameResource<T, PH>>, handle: MH) -> Self {
-		Self { resources, handle }
-	}
-
-	/// Appends a private resource to the end of the current master handle's chain.
-	pub(crate) fn add(&mut self, resource: T) -> PH {
-		let private_handle = PH::new(self.resources.len() as u64);
-		self.resources.push(MasterFrameResource {
-			next: None,
-			resource: Some(resource),
-		});
-
-		let mut current = PH::new(self.handle.index());
-		while let Some(last) = self.resources.get_mut(current.index() as usize).unwrap().next {
-			current = last;
-		}
-
-		self.resources.get_mut(current.index() as usize).unwrap().next = Some(private_handle);
-
-		private_handle
-	}
-
-	/// Finishes chain creation and returns the shared master handle.
-	pub(crate) fn into(self) -> MH {
-		self.handle
 	}
 }
 
@@ -276,13 +234,30 @@ mod tests {
 
 	#[test]
 	fn nth_handle_follows_the_frame_chain_and_reuses_its_last_resource() {
-		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::new();
+		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::default();
 		let (master, first) = resources.add("frame 0");
 		let (_, second) = resources.add("frame 1");
 		resources.set_next(first, Some(second));
 
-		assert_eq!(resources.get_nth(master, 0), Some(&"frame 0"));
-		assert_eq!(resources.get_nth(master, 1), Some(&"frame 1"));
-		assert_eq!(resources.get_nth(master, 3), Some(&"frame 1"));
+		let nth = |offset| resources.nth_handle(master, offset).map(|handle| *resources.resource(handle));
+		assert_eq!(nth(0), Some("frame 0"));
+		assert_eq!(nth(1), Some("frame 1"));
+		assert_eq!(nth(3), Some("frame 1"));
+	}
+
+	#[test]
+	fn chains_give_every_frame_sequence_its_own_resource() {
+		let mut resources = super::ResourceCollection::<&'static str, TestMasterHandle, TestPrivateHandle>::default();
+		let first = resources.add_chain(["first 0", "first 1", "first 2"]);
+		let second = resources.add_chain(["second 0", "second 1"]);
+
+		let nth = |master, offset| resources.nth_handle(master, offset).map(|handle| *resources.resource(handle));
+		assert_eq!(nth(first, 0), Some("first 0"));
+		assert_eq!(nth(first, 1), Some("first 1"));
+		assert_eq!(nth(first, 2), Some("first 2"));
+		assert_eq!(nth(second, 0), Some("second 0"));
+		assert_eq!(nth(second, 1), Some("second 1"));
+		assert_eq!(resources.chain(first).count(), 3);
+		assert_eq!(resources.chain(second).count(), 2);
 	}
 }

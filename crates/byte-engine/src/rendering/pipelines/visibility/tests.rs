@@ -48,14 +48,18 @@ const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 
 /// Parses and links one checked-in BESL asset that production baking consumes.
+///
+/// Returns the program rather than its `main`, because the program owns every function it calls.
 fn asset_program(source: &str) -> besl::NodeReference {
-	besl::lex(
+	let program = besl::lex(
 		besl::parse(source)
 			.expect("Failed to parse a visibility shader asset. The most likely cause is invalid checked-in BESL source."),
 	)
-	.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.")
-	.get_main()
-	.expect("Missing visibility shader main. The most likely cause is that a checked-in BESL asset is incomplete.")
+	.expect("Failed to link a visibility shader asset. The most likely cause is an invalid shader declaration.");
+	program
+		.get_main()
+		.expect("Missing visibility shader main. The most likely cause is that a checked-in BESL asset is incomplete.");
+	program
 }
 
 /// Compiles one checked-in visibility asset for VM execution.

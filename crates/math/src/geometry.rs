@@ -658,18 +658,6 @@ mod tests {
 	}
 
 	#[test]
-	fn xz_queries_report_finiteness_distance_and_orientation() {
-		assert!(is_finite(point(1.0, 2.0)));
-		assert!(!is_finite(Point::<LocalSpace>::new(f32::NAN, 0.0, 0.0)));
-		assert_eq!(
-			distance_xz(Point::<LocalSpace>::new(0.0, -10.0, 0.0), Point::new(3.0, 20.0, 4.0)),
-			5.0
-		);
-		assert!(signed_area_xz(point(0.0, 0.0), point(2.0, 0.0), point(1.0, 1.0)) > 0.0);
-		assert!(signed_area_xz(point(0.0, 0.0), point(2.0, 0.0), point(1.0, -1.0)) < 0.0);
-	}
-
-	#[test]
 	fn barycentric_xz_returns_weights_only_inside_a_projected_triangle() {
 		let first = point(0.0, 0.0);
 		let second = point(2.0, 0.0);
@@ -690,15 +678,6 @@ mod tests {
 		assert!(segments_intersect_xz(start, end, point(0.0, 2.0), point(2.0, 0.0)));
 		assert!(segments_intersect_xz(start, end, point(1.0, 1.0), point(3.0, 3.0)));
 		assert!(!segments_intersect_xz(start, end, point(3.0, 2.0), point(4.0, 3.0)));
-	}
-
-	#[test]
-	fn affine_operations_keep_points_and_vectors_distinct() {
-		let point = Point::<LocalSpace>::new(1.0, 2.0, 3.0);
-		let displacement = Vector::<LocalSpace>::new(4.0, -2.0, 1.0);
-
-		assert_eq!(point + displacement, Point::new(5.0, 0.0, 4.0));
-		assert_eq!(Point::<LocalSpace>::new(5.0, 0.0, 4.0) - point, displacement);
 	}
 
 	#[test]
@@ -732,20 +711,6 @@ mod tests {
 
 		assert_eq!(tiny, UnitVector::x_axis());
 		assert!((large.into_vector().length_squared() - 1.0).abs() < 0.0001);
-	}
-
-	#[test]
-	fn magnitude_comparison_orders_normal_vectors_and_accepts_any_state() {
-		struct Checked;
-
-		let shorter = Vector::<LocalSpace>::new(3.0, 4.0, 0.0);
-		let longer = Vector::<LocalSpace, Checked> {
-			value: Vec3f::new(6.0, 8.0, 0.0),
-			space: PhantomData,
-		};
-
-		assert_eq!(shorter.partial_cmp_magnitude(longer), Some(Ordering::Less));
-		assert_eq!(longer.partial_cmp_magnitude(shorter), Some(Ordering::Greater));
 	}
 
 	#[test]

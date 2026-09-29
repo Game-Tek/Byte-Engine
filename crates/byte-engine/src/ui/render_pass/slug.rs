@@ -7,68 +7,77 @@
 //! rasterizes a glyph.
 //!
 //! The data layout follows the reference shaders by Eric Lengyel (<https://github.com/EricLengyel/Slug>),
-//! with buffers instead of textures. [`UiGlyphCurves`] owns the packed data and
+//! with buffers instead of textures. [`SlugCurves`] owns the packed data and
 //! [`build_ui_slug_geometry_damaged`] emits the glyph primitives that the UI ubershader draws.
 
 use super::*;
 use crate::ui::font::GlyphOutline;
 
-/// Elements in the GPU curve buffer. A glyph takes about one per curve, so this holds a few thousand glyphs.
-pub(super) const UI_GLYPH_CURVE_CAPACITY: usize = 1 << 16;
-/// Values in the GPU band buffer. A glyph takes a few per curve.
-pub(super) const UI_GLYPH_BAND_CAPACITY: usize = 1 << 18;
+/// Elements in each GPU curve buffer, glyph or path. A glyph takes about one per curve, so one buffer holds a few thousand
+/// glyphs or a few hundred icons.
+pub(super) const UI_SLUG_CURVE_CAPACITY: usize = 1 << 16;
+/// Values in each GPU band buffer. An outline takes a few per curve.
+pub(super) const UI_SLUG_BAND_CAPACITY: usize = 1 << 18;
 
-/// Most bands per axis. Bands thinner than a glyph's curves list the same curves again and only cost memory.
+/// Most bands per axis. Bands thinner than an outline's curves list the same curves again and only cost memory.
 const MAX_BANDS: usize = 16;
-/// Overlap between neighboring bands in em units, so a sample on a band's edge finds its curves in either band.
-const BAND_OVERLAP: f32 = 1.0 / 1024.0;
+/// Overlap between neighboring bands, so a sample on a band's edge finds its curves in either band. Glyphs use it in em
+/// units and paths as a fraction of their extent.
+pub(super) const BAND_OVERLAP: f32 = 1.0 / 1024.0;
 /// The shader's coverage reaches half a pixel past the outline, so every quad grows by this much.
 const DILATION_PIXELS: f32 = 0.5;
 
-/// The `PackedGlyph` struct tells the shader where one glyph's bands are and how to index them.
+/// The `PackedOutline` struct tells the shader where one glyph's or path's bands are and how to index them.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PackedGlyph {
-	/// Index of the glyph's first band header in the band buffer.
+pub(super) struct PackedOutline {
+	/// Index of the outline's first band header in the band buffer.
 	pub(super) location: u32,
 	/// Index of the last horizontal and the last vertical band.
 	pub(super) last_band: [u32; 2],
-	/// Maps an em space position to band indices: scale for x and y, then offset for x and y.
+	/// Maps an outline space position to band indices: scale for x and y, then offset for x and y.
 	pub(super) banding: [f32; 4],
+	/// The outline's bounds as `[min_x, min_y, max_x, max_y]`, with y pointing up.
+	pub(super) bounds: [f32; 4],
 }
 
-/// Placement and bounds of one curve while its glyph is packed.
+/// Placement and bounds of one curve while its outline is packed.
 struct CurveSpan {
 	location: u32,
 	min: [f32; 2],
 	max: [f32; 2],
 }
 
-/// The `UiGlyphCurves` struct packs glyph outlines into the curve and band data that the Slug shader reads.
+/// The `SlugCurves` struct keeps the outlines that the Slug shader reads resident in one pair of GPU buffers.
 ///
-/// Data is only ever appended, so [`Self::upload`] mirrors just the new tail. When a buffer is
-/// full, [`Self::reset`] empties both and advances [`Self::generation`], which invalidates geometry
-/// that referenced the old locations. Build quads with [`build_ui_slug_geometry_damaged`].
-pub(super) struct UiGlyphCurves {
+/// Text uses [`UiGlyphCurves`] and filled paths use [`super::fill::UiPathCurves`]. The two differ only in `K`,
+/// which maps an outline's key to where it was packed. Data is only ever appended, so [`Self::upload`] mirrors just
+/// the tail each frame's buffer copy lacks. When a buffer is full, [`Self::reset`] empties both and advances
+/// [`Self::generation`], which invalidates geometry that referenced the old locations. Place packed outlines with
+/// [`slug_quad`].
+pub(super) struct SlugCurves<K> {
 	curves: Vec<[f32; 4]>,
 	bands: Vec<u32>,
-	/// Packed glyphs by [`crate::ui::font::OutlinePlacement::index`].
-	glyphs: Vec<Option<PackedGlyph>>,
-	/// Curve elements and band values the GPU already holds.
-	uploaded: (usize, usize),
+	/// Packed outlines by key.
+	pub(super) packed: K,
+	/// Curve elements and band values each frame sequence's buffer copies already hold.
+	uploaded: [(usize, usize); ghi::MAX_FRAMES_IN_FLIGHT],
 	/// Most curve elements and band values the GPU buffers hold.
 	capacity: (usize, usize),
 	generation: u64,
 	spans: Vec<CurveSpan>,
 }
 
-impl UiGlyphCurves {
+/// Packed glyphs by [`crate::ui::font::OutlinePlacement::index`]. Build their quads with [`build_ui_slug_geometry_damaged`].
+pub(super) type UiGlyphCurves = SlugCurves<Vec<Option<PackedOutline>>>;
+
+impl<K: Default> SlugCurves<K> {
 	/// Creates an empty packing limited to `curve_capacity` curve elements and `band_capacity` band values.
 	pub(super) fn new(curve_capacity: usize, band_capacity: usize) -> Self {
 		Self {
 			curves: Vec::new(),
 			bands: Vec::new(),
-			glyphs: Vec::new(),
-			uploaded: (0, 0),
+			packed: K::default(),
+			uploaded: [(0, 0); ghi::MAX_FRAMES_IN_FLIGHT],
 			capacity: (curve_capacity, band_capacity),
 			generation: 0,
 			spans: Vec::new(),
@@ -90,36 +99,22 @@ impl UiGlyphCurves {
 		&self.bands
 	}
 
-	/// Returns where the shader finds `outline`, packing it on first use.
-	///
-	/// Returns `None` when the glyph does not fit in the remaining buffer space.
-	pub(super) fn ensure(&mut self, index: usize, outline: &GlyphOutline) -> Option<PackedGlyph> {
-		if let Some(Some(glyph)) = self.glyphs.get(index) {
-			return Some(*glyph);
-		}
-		let glyph = self.pack(outline)?;
-		if self.glyphs.len() <= index {
-			self.glyphs.resize(index + 1, None);
-		}
-		self.glyphs[index] = Some(glyph);
-		Some(glyph)
-	}
-
-	/// Forgets every glyph so that a full buffer can hold the glyphs of the current frame.
+	/// Forgets every outline so that a full buffer can hold the outlines of the current frame.
 	pub(super) fn reset(&mut self) {
 		self.curves.clear();
 		self.bands.clear();
-		self.glyphs.clear();
-		self.uploaded = (0, 0);
+		// Resets only happen when a buffer fills up, so dropping the key map's storage costs nothing per frame.
+		self.packed = K::default();
+		self.uploaded = [(0, 0); ghi::MAX_FRAMES_IN_FLIGHT];
 		self.generation += 1;
 	}
 
-	/// Appends one outline's curves and bands.
+	/// Appends one outline's curves and bands. `bounds` holds every curve, and `overlap` widens each band in outline units.
 	///
 	/// Band data starts with a (curve count, list offset) pair for every horizontal band, then for
 	/// every vertical band. The lists of curve locations follow, and offsets are relative to the
-	/// first header.
-	fn pack(&mut self, outline: &GlyphOutline) -> Option<PackedGlyph> {
+	/// first header. Returns `None` when the outline does not fit in the remaining buffer space.
+	pub(super) fn pack(&mut self, outline: &[[[f32; 2]; 3]], bounds: [f32; 4], overlap: f32) -> Option<PackedOutline> {
 		let Self {
 			curves,
 			bands,
@@ -133,7 +128,7 @@ impl UiGlyphCurves {
 		// one contour share that point, so a contour costs one element per curve plus one to end it.
 		spans.clear();
 		let mut contour_end: Option<[f32; 2]> = None;
-		for [p1, p2, p3] in &outline.curves {
+		for [p1, p2, p3] in outline {
 			if let Some(end) = contour_end.filter(|end| end != p1) {
 				curves.push([end[0], end[1], 0.0, 0.0]);
 			}
@@ -149,11 +144,11 @@ impl UiGlyphCurves {
 			curves.push([end[0], end[1], 0.0, 0.0]);
 		}
 
-		let min = [outline.bounds[0], outline.bounds[1]];
-		let extent = [outline.bounds[2] - min[0], outline.bounds[3] - min[1]];
+		let min = [bounds[0], bounds[1]];
+		let extent = [bounds[2] - min[0], bounds[3] - min[1]];
 		// Every ray crosses a closed contour at least twice, so more bands than half the curves cannot thin a band further.
-		let wanted = (outline.curves.len() / 2).clamp(1, MAX_BANDS);
-		// Horizontal bands slice the glyph along y and hold the curves a horizontal ray can cross;
+		let wanted = (outline.len() / 2).clamp(1, MAX_BANDS);
+		// Horizontal bands slice the outline along y and hold the curves a horizontal ray can cross;
 		// vertical bands slice along x. An axis without extent has nothing to slice.
 		let sliced = [(1, 0), (0, 1)].map(|(across, along)| (across, along, if extent[across] > 0.0 { wanted } else { 1 }));
 		bands.resize(band_start + (sliced[0].2 + sliced[1].2) * 2, 0);
@@ -161,8 +156,8 @@ impl UiGlyphCurves {
 		let mut header = band_start;
 		for (across, along, count) in sliced {
 			for band in 0..count {
-				let low = min[across] + extent[across] * band as f32 / count as f32 - BAND_OVERLAP;
-				let high = min[across] + extent[across] * (band + 1) as f32 / count as f32 + BAND_OVERLAP;
+				let low = min[across] + extent[across] * band as f32 / count as f32 - overlap;
+				let high = min[across] + extent[across] * (band + 1) as f32 / count as f32 + overlap;
 				let list = bands.len();
 				// A line parallel to the ray never crosses it, so it is left out.
 				bands.extend(spans.iter().enumerate().filter_map(|(index, span)| {
@@ -196,31 +191,81 @@ impl UiGlyphCurves {
 			};
 			(scale, -min[across] * scale, count as u32 - 1)
 		});
-		Some(PackedGlyph {
+		Some(PackedOutline {
 			location: band_start as u32,
 			last_band: [horizontal.2, vertical.2],
 			banding: [vertical.0, horizontal.0, vertical.1, horizontal.1],
+			bounds,
 		})
 	}
 
-	/// Mirrors the data appended since the last upload to the GPU; a no-op when nothing was added.
+	/// Mirrors the data this frame's buffer copies lack; a no-op when they already hold everything.
+	///
+	/// Each frame in flight reads its own copy, so a reset rewrites a copy only on the frame that owns it.
 	pub(super) fn upload(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
-		curve_buffer: ghi::BufferHandle<[[f32; 4]; UI_GLYPH_CURVE_CAPACITY]>,
-		band_buffer: ghi::BufferHandle<[u32; UI_GLYPH_BAND_CAPACITY]>,
+		curve_buffer: ghi::DynamicBufferHandle<[[f32; 4]; UI_SLUG_CURVE_CAPACITY]>,
+		band_buffer: ghi::DynamicBufferHandle<[u32; UI_SLUG_BAND_CAPACITY]>,
 	) {
-		let (curves, bands) = self.uploaded;
+		let uploaded = &mut self.uploaded[frame.key().sequence_index() as usize];
+		let (curves, bands) = *uploaded;
 		if curves != self.curves.len() {
-			frame.get_mut_buffer_slice(curve_buffer)[curves..self.curves.len()].copy_from_slice(&self.curves[curves..]);
+			frame.get_mut_dynamic_buffer_slice(curve_buffer)[curves..self.curves.len()].copy_from_slice(&self.curves[curves..]);
 			frame.sync_buffer(curve_buffer);
 		}
 		if bands != self.bands.len() {
-			frame.get_mut_buffer_slice(band_buffer)[bands..self.bands.len()].copy_from_slice(&self.bands[bands..]);
+			frame.get_mut_dynamic_buffer_slice(band_buffer)[bands..self.bands.len()].copy_from_slice(&self.bands[bands..]);
 			frame.sync_buffer(band_buffer);
 		}
-		self.uploaded = (self.curves.len(), self.bands.len());
+		*uploaded = (self.curves.len(), self.bands.len());
 	}
+}
+
+impl UiGlyphCurves {
+	/// Returns where the shader finds `outline`, packing it on first use.
+	///
+	/// Returns `None` when the glyph does not fit in the remaining buffer space.
+	pub(super) fn ensure(&mut self, index: usize, outline: &GlyphOutline) -> Option<PackedOutline> {
+		if let Some(Some(glyph)) = self.packed.get(index) {
+			return Some(*glyph);
+		}
+		// Glyph outlines are about one em across, so the overlap is a fixed em distance.
+		let glyph = self.pack(&outline.curves, outline.bounds, BAND_OVERLAP)?;
+		if self.packed.len() <= index {
+			self.packed.resize(index + 1, None);
+		}
+		self.packed[index] = Some(glyph);
+		Some(glyph)
+	}
+}
+
+/// Returns the clipped quad of a packed outline drawn with its origin at `origin` and `scale` pixels per outline unit,
+/// or `None` when `clip` hides it.
+///
+/// The record holds the quad, the origin and scale in `a`, and the band data. The caller sets the kind, the paint, and
+/// the mask. The shader derives the outline space sample from the pixel, the origin, and the scale, which accounts for
+/// the dilation and the clip at once.
+pub(super) fn slug_quad(packed: &PackedOutline, origin: [f32; 2], scale: [f32; 2], clip: PixelClip) -> Option<UiPrimitive> {
+	let [min_x, min_y, max_x, max_y] = packed.bounds;
+	// The packed bounds point y up, so they flip back around the origin. The shader's coverage reaches half a pixel past
+	// the outline. UI outlines are axis aligned, so growing the quad by that constant replaces the reference shader's
+	// dynamic dilation.
+	let quad = PixelClip {
+		x0: origin[0] + min_x * scale[0] - DILATION_PIXELS,
+		y0: origin[1] - max_y * scale[1] - DILATION_PIXELS,
+		x1: origin[0] + max_x * scale[0] + DILATION_PIXELS,
+		y1: origin[1] - min_y * scale[1] + DILATION_PIXELS,
+	}
+	.intersect(clip);
+	(!quad.is_empty()).then(|| UiPrimitive {
+		bounds: [quad.x0, quad.y0, quad.x1, quad.y1],
+		a: [origin[0], origin[1], scale[0], scale[1]],
+		b: packed.banding,
+		data0: packed.location,
+		data1: packed.last_band[0] | packed.last_band[1] << 16,
+		..UiPrimitive::default()
+	})
 }
 
 /// Builds one primitive per visible glyph of every label.
@@ -302,12 +347,8 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 
 			let size = (text.font_size * font_scale).max(1.0);
 			let origin = [text.position[0] * sx, text.position[1] * sy];
-			let label = UiPrimitive {
-				color: text.color.into(),
-				kind: UI_KIND_SLUG_GLYPH,
-				mask: masks.index(None, text.clip_mask, sx, sy),
-				..UiPrimitive::default()
-			};
+			let color = text.color.into();
+			let mask = masks.index(None, text.clip_mask, sx, sy);
 			text_system.place_outlines(&text.text, size, |placement| {
 				let Some(glyph) = glyphs.ensure(placement.index, placement.outline) else {
 					geometry.dropped_glyphs += 1;
@@ -320,29 +361,14 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 				// A baseline on a whole pixel keeps horizontal strokes crisp. Horizontal positions stay
 				// fractional because the shader resolves them exactly.
 				let pen = [origin[0] + placement.pen[0], (origin[1] + placement.pen[1]).round()];
-				let [min_x, min_y, max_x, max_y] = placement.outline.bounds;
-				// The shader's coverage reaches half a pixel past the outline. UI text is axis aligned,
-				// so growing the quad by that constant replaces the reference shader's dynamic dilation.
-				let quad = PixelClip {
-					x0: pen[0] + min_x * size - DILATION_PIXELS,
-					y0: pen[1] - max_y * size - DILATION_PIXELS,
-					x1: pen[0] + max_x * size + DILATION_PIXELS,
-					y1: pen[1] - min_y * size + DILATION_PIXELS,
+				if let Some(quad) = slug_quad(&glyph, pen, [size, size], clip) {
+					geometry.primitives.push(UiPrimitive {
+						color,
+						kind: UI_KIND_SLUG_GLYPH,
+						mask,
+						..quad
+					});
 				}
-				.intersect(clip);
-				if quad.is_empty() {
-					return;
-				}
-				// The shader derives the em space sample from the pixel, the pen, and the size, which
-				// accounts for the dilation and the clip at once.
-				geometry.primitives.push(UiPrimitive {
-					bounds: [quad.x0, quad.y0, quad.x1, quad.y1],
-					a: [pen[0], pen[1], size, 0.0],
-					b: glyph.banding,
-					data0: glyph.location,
-					data1: glyph.last_band[0] | glyph.last_band[1] << 16,
-					..label
-				});
 			});
 			geometry.labels.last_mut().unwrap().end = geometry.primitives.len();
 		}
@@ -366,7 +392,7 @@ pub(super) fn build_ui_slug_geometry_damaged<'a>(
 mod tests {
 	use utils::{Extent, RGBA};
 
-	use super::{UI_GLYPH_BAND_CAPACITY, UI_GLYPH_CURVE_CAPACITY, UiGlyphCurves, build_ui_slug_geometry};
+	use super::{UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiGlyphCurves, build_ui_slug_geometry};
 	use crate::ui::{
 		font::TextSystem,
 		render_pass::data::{DrawClip, UI_KIND_SLUG_GLYPH, UiDrawList, UiMaskTable, UiPrimitive, UiTextDrawElement},
@@ -395,7 +421,7 @@ mod tests {
 	}
 
 	fn glyph_curves() -> UiGlyphCurves {
-		UiGlyphCurves::new(UI_GLYPH_CURVE_CAPACITY, UI_GLYPH_BAND_CAPACITY)
+		UiGlyphCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY)
 	}
 
 	/// The em space sample the shader derives for a pixel of a glyph primitive.

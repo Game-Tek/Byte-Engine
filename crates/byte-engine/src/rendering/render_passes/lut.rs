@@ -1,33 +1,82 @@
-/// The `LutRenderPass` struct applies an asynchronously prepared 3D LUT through renderer-owned GPU storage.
-pub struct LutRenderPass {
+/// The `LutWorkflow` enum selects what a [`LutPass`] does around its 3D LUT: which shader runs and which pass and
+/// target names it answers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LutWorkflow {
+	/// Applies a creative LUT to scene-linear color and keeps the `main` format, before tone mapping.
+	Creative,
+	/// Converts scene-linear sRGB to ACEScg and ACEScct before applying the output LUT, then writes SDR display color.
+	Aces,
+	/// Converts scene-linear sRGB to DaVinci Wide Gamut and DaVinci Intermediate before applying the output LUT, then
+	/// writes SDR display color.
+	DaVinciWideGamut,
+}
+
+impl LutWorkflow {
+	fn pipeline_id(self) -> &'static str {
+		match self {
+			Self::Creative => "byte-engine/rendering/lut/apply.pipeline",
+			Self::Aces => "byte-engine/rendering/color-grading/aces.pipeline",
+			Self::DaVinciWideGamut => "byte-engine/rendering/color-grading/dwg.pipeline",
+		}
+	}
+
+	/// Returns the stable name that `render.pass.<name>` enables or bypasses.
+	fn pass_name(self) -> &'static str {
+		match self {
+			Self::Creative => "lut",
+			Self::Aces => "aces-color-grading",
+			Self::DaVinciWideGamut => "dwg-color-grading",
+		}
+	}
+
+	/// Returns the render-target name of the replacement `main`, which screenshots can capture.
+	fn output_name(self) -> &'static str {
+		match self {
+			Self::Creative => "LUT Output",
+			Self::Aces => "ACES Color Grading Output",
+			Self::DaVinciWideGamut => "DWG Color Grading Output",
+		}
+	}
+
+	/// Returns the label of the pass's GPU region and descriptor set.
+	fn label(self) -> &'static str {
+		match self {
+			Self::Creative => "LUT",
+			Self::Aces | Self::DaVinciWideGamut => "Color Grading",
+		}
+	}
+}
+
+/// The `LutPass` struct applies an asynchronously prepared 3D LUT through renderer-owned GPU storage.
+///
+/// Install it through [`crate::application::graphics::setup_lut_render_pass`] or a color-grading setup function.
+pub struct LutPass {
+	workflow: LutWorkflow,
 	pass: simple_compute::Pass,
-	bypass_pass: crate::rendering::render_passes::blit::ImageBypassPass,
 	_parameters: ghi::BufferHandle<LutShaderParameters>,
 	lut: Lut,
+	/// The prepared texels, dropped once the first frame uploads them into `lut_image`.
 	lut_bytes: Option<StdBox<[u8]>>,
 	lut_image: ghi::ImageHandle,
-	lut_uploaded: bool,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct LutShaderParameters {
-	pub(super) domain_min: [f32; 4],
-	pub(super) domain_scale: [f32; 4],
-	pub(super) sampling: [f32; 4],
+struct LutShaderParameters {
+	domain_min: [f32; 4],
+	domain_scale: [f32; 4],
+	sampling: [f32; 4],
 }
 
-impl Entity for LutRenderPass {}
+impl Entity for LutPass {}
 
-impl LutRenderPass {
-	/// Creates a LUT grading pass from asynchronously prepared metadata and bytes.
-	pub fn new(render_pass_builder: &mut RenderPassBuilder, lut: PreparedLut) -> Self {
-		Self::with_settings(render_pass_builder, LutRenderPassSettings { lut })
-	}
-
-	/// Creates a LUT grading pass with caller-prepared metadata and immutable bytes.
-	pub fn with_settings(render_pass_builder: &mut RenderPassBuilder, settings: LutRenderPassSettings) -> Self {
-		let LutRenderPassSettings { lut } = settings;
+impl LutPass {
+	/// Creates one sink's LUT pass from asynchronously prepared metadata and bytes.
+	///
+	/// The ACES workflow expects an ACEScct-to-ACEScct LUT. The DaVinci workflow expects a DaVinci Wide
+	/// Gamut/Intermediate-to-Intermediate LUT. Prepare the LUT through [`PreparedLut::load`] on application-owned
+	/// asynchronous work before constructing this render-thread pass.
+	pub fn new(render_pass_builder: &mut RenderPassBuilder, workflow: LutWorkflow, lut: PreparedLut) -> Self {
 		let PreparedLut {
 			metadata: lut_metadata,
 			bytes,
@@ -39,31 +88,24 @@ impl LutRenderPass {
 		);
 
 		let source = render_pass_builder.read_from("main");
-		let main_format = render_pass_builder.format_of("main");
+		// A creative LUT grades scene-linear color for later passes; the grading workflows end in display color.
+		let output_format = match workflow {
+			LutWorkflow::Creative => render_pass_builder.format_of("main"),
+			LutWorkflow::Aces | LutWorkflow::DaVinciWideGamut => crate::rendering::DISPLAY_COLOR_FORMAT,
+		};
 		let output = render_pass_builder.create_main_render_target(
-			ghi::image::Builder::new(main_format, ghi::Uses::Storage | ghi::Uses::Image).name("LUT Output"),
+			ghi::image::Builder::new(output_format, ghi::Uses::Storage | ghi::Uses::Image).name(workflow.output_name()),
 		);
 
 		let pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
-			simple_compute::Descriptor::new("LUT", "byte-engine/rendering/lut/apply.pipeline"),
-		)
-		.expect("Failed to create LUT render shader. The most likely cause is an incompatible shader interface.");
+			simple_compute::Descriptor::new(workflow.label(), workflow.pipeline_id()),
+		);
 
 		let context = render_pass_builder.context();
 
-		let source_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
-		let lut_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
-		);
+		// One linear, clamped sampler reads both the scene color and the LUT.
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 		let lut_image = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image | ghi::Uses::TransferDestination)
 				.name("LUT Texture")
@@ -78,55 +120,39 @@ impl LutRenderPass {
 		);
 		*context.get_mut_buffer_slice(parameters) = lut_shader_parameters(&lut_metadata);
 
-		let pass = pipeline
-			.bind(
-				render_pass_builder,
-				"LUT Render Pass Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler(
-						"source_texture",
-						source,
-						source_sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::combined_image_sampler("lut_texture", lut_image, lut_sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result_texture", output),
-					simple_compute::Resource::buffer("parameters", parameters),
-				],
-			)
-			.expect("Failed to bind LUT render resources. The most likely cause is that the BESL bindings changed.");
-		let bypass_pass = crate::rendering::render_passes::blit::ImageBypassPass::new(render_pass_builder, source, output);
+		let pass = pipeline.bind(
+			workflow.label(),
+			&[
+				simple_compute::Resource::combined_image_sampler("source_texture", source, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler("lut_texture", lut_image, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result_texture", output),
+				simple_compute::Resource::buffer("parameters", parameters),
+			],
+		);
 
 		Self {
+			workflow,
 			pass,
-			bypass_pass,
 			_parameters: parameters,
 			lut: lut_metadata,
 			lut_bytes: Some(bytes),
 			lut_image,
-			lut_uploaded: false,
 		}
 	}
 
 	/// Uploads the baked LUT payload into the cached GPU 3D texture the first time the pass is used.
 	fn ensure_lut_uploaded(&mut self, frame: &mut ghi::implementation::Frame) {
-		if self.lut_uploaded {
+		let Some(lut_bytes) = self.lut_bytes.take() else {
 			return;
-		}
-
-		let lut_bytes = self.lut_bytes.take().expect(
-			"LUT bytes are missing during LUT upload. The most likely cause is that the pass discarded its prepared resource before the first frame.",
-		);
+		};
 		let target = frame.get_texture_slice_mut(self.lut_image.into());
 
 		write_lut_bytes_to_rgba16f_upload_target(&self.lut, &lut_bytes, target);
 		frame.sync_texture(self.lut_image.into());
-
-		self.lut_uploaded = true;
 	}
 }
 
-pub(super) fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
+fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
 	debug_assert!(
 		lut.size > 0,
 		"LUT size is zero. The most likely cause is accepting an empty LUT resource."
@@ -148,9 +174,9 @@ pub(super) fn lut_shader_parameters(lut: &Lut) -> LutShaderParameters {
 	}
 }
 
-impl RenderPass for LutRenderPass {
+impl RenderPass for LutPass {
 	fn name(&self) -> &'static str {
-		"lut"
+		self.workflow.pass_name()
 	}
 
 	fn prepare<'a>(
@@ -163,8 +189,6 @@ impl RenderPass for LutRenderPass {
 
 		self.pass.prepare(frame, sink, frame_allocator)
 	}
-
-	crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
 }
 
 /// Reads the baked LUT payload into owned worker-side bytes.
@@ -193,7 +217,7 @@ async fn load_lut_bytes(reference: &mut Reference<Lut>) -> Result<StdBox<[u8]>, 
 }
 
 /// Converts the baked LUT RGB float payload directly into an RGBA16F 3D texture upload target.
-pub(super) fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
+fn write_lut_bytes_to_rgba16f_upload_target(lut: &Lut, lut_bytes: &[u8], upload_target: &mut [u8]) {
 	assert!(
 		matches!(lut.kind, LutKind::ThreeDimensional),
 		"Unsupported LUT kind for upload. The most likely cause is that a non-3D LUT resource reached the LUT render pass."
@@ -247,16 +271,15 @@ fn expected_lut_payload_size(lut: &Lut) -> usize {
 /// The `PreparedLut` struct keeps asynchronously loaded LUT metadata and bytes independent from GPU placement.
 #[derive(Clone)]
 pub struct PreparedLut {
-	pub(super) metadata: Lut,
-	pub(super) bytes: StdBox<[u8]>,
+	metadata: Lut,
+	bytes: StdBox<[u8]>,
 }
 
 impl PreparedLut {
 	/// Loads one LUT completely on an application-owned asynchronous task.
 	///
-	/// Pass the result to [`LutRenderPass::new`] or a color-grading setup
-	/// function on the render thread. GPU image creation remains owned by the
-	/// selected render pass.
+	/// Pass the result to [`LutPass::new`] or a LUT setup function on the render
+	/// thread. GPU image creation remains owned by the selected render pass.
 	pub async fn load(resource_manager: &resource_management::ResourceManager, id: &str) -> Result<Self, String> {
 		let mut reference: Reference<Lut> = resource_manager
 			.request(id)
@@ -268,22 +291,84 @@ impl PreparedLut {
 	}
 }
 
-/// The `LutRenderPassSettings` struct carries one prepared LUT into renderer-owned GPU storage.
-pub struct LutRenderPassSettings {
-	pub lut: PreparedLut,
-}
-
 #[cfg(test)]
 mod tests {
 	use besl::vm::{DescriptorBindings, ResourceSlot, Texture, Value};
-	use half::f16;
 	use resource_management::resources::lut::{Lut, LutKind};
 
-	use super::{expected_lut_payload_size, lut_shader_parameters, write_lut_bytes_to_rgba16f_upload_target};
+	use super::lut_shader_parameters;
 	use crate::rendering::render_pass::simple_compute;
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
 	const LUT_SHADER: &str = include_str!("../../../assets/rendering/lut/apply.besl");
+
+	const ACES_SHADER: &str = include_str!("../../../assets/rendering/color-grading/aces.besl");
+	const DWG_SHADER: &str = include_str!("../../../assets/rendering/color-grading/dwg.besl");
+
+	/// Executes one complete workflow with a two-point identity LUT in its grading encoding.
+	fn run_workflow(shader: &str, source_color: [f32; 4]) -> [f32; 4] {
+		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(shader));
+		let mut source = texture_2d(1, 1, &[source_color]);
+		let mut lut = Texture::new_3d(2, 2, 2).expect("Expected a valid test LUT extent");
+		for z in 0..2 {
+			for y in 0..2 {
+				for x in 0..2 {
+					lut.write_3d([x, y, z], [x as f32, y as f32, z as f32, 1.0])
+						.expect("Expected a valid test LUT coordinate");
+				}
+			}
+		}
+		let mut result = empty_image(1, 1);
+		let parameter_slot = ResourceSlot::new(3);
+		let mut parameters = buffer(&program, parameter_slot);
+		for (name, value) in [
+			("domain_min", [0.0, 0.0, 0.0, 0.0]),
+			("domain_scale", [1.0, 1.0, 1.0, 0.0]),
+			("sampling", [0.5, 0.25, 0.0, 0.0]),
+		] {
+			parameters
+				.write(name, Value::Vec4F(value))
+				.expect("Expected color-grading parameters to match the shader");
+		}
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_texture(ResourceSlot::new(0), &mut source);
+		descriptors.bind_texture(ResourceSlot::new(1), &mut lut);
+		descriptors.bind_image(ResourceSlot::new(2), &mut result);
+		descriptors.bind_buffer(parameter_slot, &mut parameters);
+		run_at(&program, &mut descriptors, [0, 0]);
+		drop(descriptors);
+		rgba(&result, [0, 0])
+	}
+
+	#[test]
+	fn grading_workflows_preserve_neutral_middle_gray_through_their_sdr_transforms() {
+		assert_rgba_close(
+			run_workflow(ACES_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			[0.3584574, 0.3584574, 0.3584574, 0.4],
+			4e-4,
+		);
+		assert_rgba_close(
+			run_workflow(DWG_SHADER, [0.18, 0.18, 0.18, 0.4]),
+			[0.45925015, 0.45925015, 0.45925015, 0.4],
+			4e-4,
+		);
+	}
+
+	#[test]
+	fn grading_workflows_bound_black_and_hdr_values_for_sdr_output() {
+		for shader in [ACES_SHADER, DWG_SHADER] {
+			for input in [0.0, 1.0, 16.0] {
+				let output = run_workflow(shader, [input, input, input, 0.25]);
+				assert!(
+					output[..3]
+						.iter()
+						.all(|channel| channel.is_finite() && (0.0..=1.0).contains(channel)),
+					"Invalid fitted SDR output. The most likely cause is unstable grading or display-transform arithmetic: {output:?}"
+				);
+				assert!((output[0] - output[1]).abs() <= 4e-4 && (output[1] - output[2]).abs() <= 4e-4);
+			}
+		}
+	}
 
 	/// Verifies identity trilinear interpolation, domain clamping, and alpha preservation through the VM.
 	#[test]
@@ -338,7 +423,8 @@ mod tests {
 
 	#[test]
 	fn lut_besl_reflects_3d_texture_and_parameter_bindings() {
-		let main_node = simple_compute::compile_test_program(LUT_SHADER);
+		let program = simple_compute::compile_test_program(LUT_SHADER);
+		let main_node = program.get_main().expect("Canonical LUT shader should define main");
 		let bindings = resource_management::shader::besl::evaluation::ProgramEvaluation::from_main(&main_node)
 			.expect("Failed to evaluate the LUT descriptor schema")
 			.into_bindings();
@@ -364,87 +450,6 @@ mod tests {
 			resource_management::shader::besl::evaluation::BindingKind::StorageBuffer
 		);
 	}
-
-	#[test]
-	fn converts_rgb_float_payload_into_rgba16f_upload() {
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-		let mut lut_bytes = Vec::new();
-
-		for [r, g, b] in [
-			[0.0_f32, 0.0, 0.0],
-			[1.0, 0.0, 0.0],
-			[0.0, 1.0, 0.0],
-			[1.0, 1.0, 0.0],
-			[0.0, 0.0, 1.0],
-			[1.0, 0.0, 1.0],
-			[0.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0],
-		] {
-			lut_bytes.extend_from_slice(&r.to_le_bytes());
-			lut_bytes.extend_from_slice(&g.to_le_bytes());
-			lut_bytes.extend_from_slice(&b.to_le_bytes());
-		}
-
-		let mut upload = [0_u8; 8 * 4 * std::mem::size_of::<u16>()];
-
-		write_lut_bytes_to_rgba16f_upload_target(&lut, &lut_bytes, &mut upload);
-
-		assert_eq!(
-			u16::from_le_bytes(upload[0..2].try_into().expect("expected test value")),
-			f16::from_f32(0.0).to_bits()
-		);
-		assert_eq!(
-			u16::from_le_bytes(upload[6..8].try_into().expect("expected test value")),
-			f16::from_f32(1.0).to_bits()
-		);
-		assert_eq!(
-			u16::from_le_bytes(
-				upload[upload.len() - 8..upload.len() - 6]
-					.try_into()
-					.expect("expected test value")
-			),
-			f16::from_f32(1.0).to_bits()
-		);
-		assert_eq!(
-			u16::from_le_bytes(upload[upload.len() - 2..].try_into().expect("expected test value")),
-			f16::from_f32(1.0).to_bits()
-		);
-	}
-
-	#[test]
-	#[should_panic(expected = "Invalid LUT payload size")]
-	fn rejects_invalid_lut_payload_size() {
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 2,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-
-		let mut upload = [0_u8; 8 * 4 * std::mem::size_of::<u16>()];
-
-		write_lut_bytes_to_rgba16f_upload_target(&lut, &[0_u8; 8], &mut upload);
-	}
-
-	#[test]
-	fn computes_expected_lut_payload_size() {
-		let lut = Lut {
-			kind: LutKind::ThreeDimensional,
-			size: 4,
-			domain_min: [0.0, 0.0, 0.0],
-			domain_max: [1.0, 1.0, 1.0],
-		};
-
-		assert_eq!(
-			expected_lut_payload_size(&lut),
-			4_usize.pow(3) * 3 * std::mem::size_of::<f32>()
-		);
-	}
 }
 
 use std::boxed::Box as StdBox;
@@ -452,7 +457,6 @@ use std::boxed::Box as StdBox;
 use ghi::{
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
-	types::Size as _,
 };
 use half::f16;
 use resource_management::{
@@ -460,7 +464,7 @@ use resource_management::{
 	resource::ReadTargetsMut,
 	resources::lut::{Lut, LutKind},
 };
-use utils::{Box, Extent};
+use utils::Extent;
 
 use crate::{
 	core::Entity,

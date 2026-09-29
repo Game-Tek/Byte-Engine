@@ -305,7 +305,7 @@ fn rewrite_node<'a>(node: &mut parser::Node<'a>, context: &EntryContext<'_, 'a>)
 			Ok(())
 		}
 		parser::Nodes::Expression(expression) => rewrite_expression(expression, context),
-		parser::Nodes::Const { value, .. } | parser::Nodes::Literal { body: value, .. } => rewrite_node(value, context),
+		parser::Nodes::Const { value, .. } => rewrite_node(value, context),
 		_ => Ok(()),
 	}
 }
@@ -392,9 +392,7 @@ fn output_symbol(role: parser::RecordRole, field_name: &str) -> String {
 }
 
 fn entry_error(message: &str) -> LexError {
-	LexError::Undefined {
-		message: Some(format!(
-			"Invalid structural entry point: {message}. The most likely cause is that main's declared record shape and its parameter or return value do not match."
-		)),
-	}
+	LexError::invalid(format!(
+		"Invalid structural entry point: {message}. The most likely cause is that main's declared record shape and its parameter or return value do not match."
+	))
 }

@@ -10,12 +10,18 @@
 
 pub mod simple_compute;
 
+use std::{
+	cell::{Cell, RefCell},
+	rc::Rc,
+};
+
 use ghi::context::ContextCreate as _;
-use utils::Box;
+use smallvec::SmallVec;
+use utils::{Box, hash::HashMap};
 
-use crate::rendering::{Sink, renderer::RenderTargets};
+use crate::rendering::{Sink, render_passes::blit::ImageBypassPass, renderer::RenderTargets};
 
-pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording, &[ghi::AttachmentInformation]);
+pub trait RenderPassFunction = Fn(&mut ghi::implementation::CommandBufferRecording);
 
 /// A frame-allocated command that records one render pass.
 pub type RenderPassReturn<'a> = &'a (dyn RenderPassFunction + Send + Sync + 'a);
@@ -45,16 +51,21 @@ pub trait RenderPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>>;
 
-	/// Preserves downstream frame flow and required maintenance work without applying the pass's effect.
+	/// Prepares the maintenance work this pass still needs while it is bypassed.
 	///
-	/// Return a forwarding command when later passes depend on this pass's output. A pass that writes in place may
-	/// return `None`, while a pass fed by channels should still drain or adopt pending messages before returning.
+	/// The renderer keeps `main` flowing on its own: a bypassed pass that called
+	/// [`RenderPassBuilder::create_main_render_target`] gets the incoming `main` copied into its replacement after this
+	/// command. Override this only for work that must not stop, such as draining or adopting pending messages, or to
+	/// forward `main` yourself after taking that copy from the builder, as passes that also forward on frames with
+	/// nothing to draw do.
 	fn bypass<'a>(
 		&mut self,
-		frame: &mut ghi::implementation::Frame,
-		sink: &Sink,
-		frame_allocator: &'a bumpalo::Bump,
-	) -> Option<RenderPassReturn<'a>>;
+		_frame: &mut ghi::implementation::Frame,
+		_sink: &Sink,
+		_frame_allocator: &'a bumpalo::Bump,
+	) -> Option<RenderPassReturn<'a>> {
+		None
+	}
 
 	/// Reports whether this pass has output that the last presented frame does not show yet.
 	///
@@ -65,50 +76,11 @@ pub trait RenderPass {
 	}
 }
 
-/// Implements a [`RenderPass`] method that only hands the frame to an inner pass.
-///
-/// Composite passes keep their real work in a field: an effect pass forwards `prepare` to the compute
-/// pass it wraps, and bypasses by forwarding to an
-/// [`ImageBypassPass`](crate::rendering::render_passes::blit::ImageBypassPass) so later passes still see
-/// an image. Name the field once instead of repeating the signature:
-///
-/// ```ignore
-/// impl RenderPass for AgxToneMapPass {
-///     fn name(&self) -> &'static str { "agx" }
-///     crate::rendering::render_pass::forward_to_inner_pass!(prepare = render_pass);
-///     crate::rendering::render_pass::forward_to_inner_pass!(bypass = bypass_pass);
-/// }
-/// ```
-///
-/// A pass that must also do maintenance work on one of these paths writes that method out itself.
-macro_rules! forward_to_inner_pass {
-	(prepare = $field:ident) => {
-		fn prepare<'a>(
-			&mut self,
-			frame: &mut ::ghi::implementation::Frame,
-			sink: &$crate::rendering::Sink,
-			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<$crate::rendering::render_pass::RenderPassReturn<'a>> {
-			self.$field.prepare(frame, sink, frame_allocator)
-		}
-	};
-	(bypass = $field:ident) => {
-		fn bypass<'a>(
-			&mut self,
-			frame: &mut ::ghi::implementation::Frame,
-			sink: &$crate::rendering::Sink,
-			frame_allocator: &'a bumpalo::Bump,
-		) -> Option<$crate::rendering::render_pass::RenderPassReturn<'a>> {
-			self.$field.prepare(frame, sink, frame_allocator)
-		}
-	};
-}
-
-pub(crate) use forward_to_inner_pass;
-
-/// The `RenderPassState` enum identifies which preparation path a [`RenderPassHarness`] uses.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The `RenderPassState` enum identifies which preparation path a render pass uses: [`RenderPass::prepare`] or
+/// [`RenderPass::bypass`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RenderPassState {
+	#[default]
 	Enabled,
 	Bypassed,
 }
@@ -123,54 +95,53 @@ impl RenderPassState {
 	}
 }
 
+/// The state every pass instance with one [`RenderPass::name`] shares, keyed by that name.
+///
+/// Each harness holds a clone of its name's cell, so changing the cell changes every sink's instance at once.
+pub(crate) type RenderPassStates = HashMap<String, Rc<Cell<RenderPassState>>>;
+
 /// The `RenderPassHarness` struct owns one render pass and keeps its execution state outside the implementation.
 ///
-/// Construct a harness with [`Self::new`], then change its state with [`Self::set_state`]. Call [`Self::prepare`]
+/// The renderer creates one per sink-local pass. Its state is shared by every instance with the same name, so
+/// [`crate::rendering::renderer::Renderer::set_render_pass_state`] controls them together. Call [`Self::prepare`]
 /// once per eligible sink and frame so the harness can select the active or bypass preparation path.
-pub struct RenderPassHarness {
+pub(crate) struct RenderPassHarness {
 	render_pass: Box<dyn RenderPass>,
-	state: RenderPassState,
+	state: Rc<Cell<RenderPassState>>,
 }
 
 impl RenderPassHarness {
-	/// Creates an enabled harness for a render pass.
-	pub fn new(render_pass: Box<dyn RenderPass>) -> Self {
-		Self {
-			render_pass,
-			state: RenderPassState::Enabled,
-		}
+	/// Creates a harness that follows the state shared by every pass with the same name, adding it when it is new.
+	pub(crate) fn new(render_pass: Box<dyn RenderPass>, states: &mut RenderPassStates) -> Self {
+		let state = states.entry(render_pass.name().to_string()).or_default().clone();
+		Self { render_pass, state }
 	}
 
 	/// Reports whether the wrapped pass asks for a new frame; see [`RenderPass::needs_frame`].
-	pub fn needs_frame(&mut self) -> bool {
+	pub(crate) fn needs_frame(&mut self) -> bool {
 		self.render_pass.needs_frame()
 	}
 
 	/// Returns the pass state used for the next frame preparation.
-	pub fn state(&self) -> RenderPassState {
-		self.state
+	pub(crate) fn state(&self) -> RenderPassState {
+		self.state.get()
 	}
 
 	/// Returns the stable name supplied by the render pass implementation.
-	pub fn name(&self) -> &'static str {
+	pub(crate) fn name(&self) -> &'static str {
 		self.render_pass.name()
 	}
 
-	/// Selects whether future frame preparation applies or bypasses the pass.
-	pub fn set_state(&mut self, state: RenderPassState) {
-		self.state = state;
-	}
-
 	/// Prepares the active or bypass path selected by [`Self::state`].
-	pub fn prepare<'a>(
+	pub(crate) fn prepare<'a>(
 		&mut self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
-		match execution_path(self.state) {
-			RenderPassExecutionPath::Prepare => self.render_pass.prepare(frame, sink, frame_allocator),
-			RenderPassExecutionPath::Bypass => self.render_pass.bypass(frame, sink, frame_allocator),
+		match self.state.get() {
+			RenderPassState::Enabled => self.render_pass.prepare(frame, sink, frame_allocator),
+			RenderPassState::Bypassed => self.render_pass.bypass(frame, sink, frame_allocator),
 		}
 	}
 }
@@ -194,18 +165,15 @@ pub struct SceneBackgroundTargets {
 }
 
 /// The `SceneBackground` struct shares one sink's background pass between the scene pipeline that records it and
-/// the renderer that controls its [`RenderPassState`] by name.
+/// the renderer that asks it for frames.
 ///
 /// A scene pipeline records it after opaque surfaces and before transparent ones, so transparent surfaces composite
-/// over the background inside the scene color and the scene color needs no coverage channel.
+/// over the background inside the scene color and the scene color needs no coverage channel. Its
+/// [`RenderPassState`] is shared by name like any other pass.
 #[derive(Clone)]
-pub struct SceneBackground(std::rc::Rc<std::cell::RefCell<RenderPassHarness>>);
+pub struct SceneBackground(Rc<RefCell<RenderPassHarness>>);
 
 impl SceneBackground {
-	fn new(render_pass: Box<dyn RenderPass>) -> Self {
-		Self(std::rc::Rc::new(std::cell::RefCell::new(RenderPassHarness::new(render_pass))))
-	}
-
 	/// Prepares the active or bypass path selected by the background's state.
 	pub fn prepare<'a>(
 		&self,
@@ -216,22 +184,9 @@ impl SceneBackground {
 		self.0.borrow_mut().prepare(frame, sink, frame_allocator)
 	}
 
-	pub(crate) fn harness(&self) -> std::cell::RefMut<'_, RenderPassHarness> {
-		self.0.borrow_mut()
-	}
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RenderPassExecutionPath {
-	Prepare,
-	Bypass,
-}
-
-/// Converts public pass state into the one method the harness must invoke.
-fn execution_path(state: RenderPassState) -> RenderPassExecutionPath {
-	match state {
-		RenderPassState::Enabled => RenderPassExecutionPath::Prepare,
-		RenderPassState::Bypassed => RenderPassExecutionPath::Bypass,
+	/// Reports whether the background asks for a new frame; see [`RenderPass::needs_frame`].
+	pub(crate) fn needs_frame(&self) -> bool {
+		self.0.borrow_mut().needs_frame()
 	}
 }
 
@@ -247,48 +202,56 @@ pub struct RenderPassBuilder<'a> {
 	context: &'a mut ghi::implementation::Context,
 	sink_id: usize,
 	swapchain: ghi::SwapchainHandle,
+	/// The step of the sink's frame this builder's pass records as.
+	node: crate::rendering::renderer::RenderNode,
 	final_output: bool,
 	final_output_written: bool,
-	pub(crate) consumed_resources: Vec<(&'a str, ghi::AccessPolicies)>,
 	/// Every render-target image this pass reads or writes, by index, so the renderer knows when each one is used.
-	pub(crate) accessed_image_indices: Vec<usize>,
-	written_image_indices: Vec<usize>,
+	accesses: Vec<(usize, ghi::AccessPolicies)>,
 	external_writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
-	pub(crate) images: &'a mut RenderTargets,
+	images: &'a mut RenderTargets,
+	render_pass_states: &'a mut RenderPassStates,
 	pipeline_manager: crate::rendering::PipelineManagerClient,
 	scene_background_factory: Option<&'a SceneBackgroundFactory>,
 	created_scene_backgrounds: Vec<SceneBackground>,
+	/// The copy that forwards the incoming `main` into this pass's replacement while the pass is bypassed.
+	main_copy: Option<ImageBypassPass>,
 }
 
 impl<'a> RenderPassBuilder<'a> {
-	pub fn new(
+	/// Creates the builder for one node of a sink's graph.
+	///
+	/// `node` is the step of the sink's frame the pass records as. `final_output` marks the terminal post-scene pass,
+	/// whose replacement `main` is the sink swapchain. `scene_background_factory` is what
+	/// [`Self::create_scene_background`] builds from; pass it only for scene nodes.
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) fn new(
 		context: &'a mut ghi::implementation::Context,
 		images: &'a mut RenderTargets,
+		render_pass_states: &'a mut RenderPassStates,
 		sink_id: usize,
 		swapchain: ghi::SwapchainHandle,
 		pipeline_manager: crate::rendering::PipelineManagerClient,
+		scene_background_factory: Option<&'a SceneBackgroundFactory>,
+		node: crate::rendering::renderer::RenderNode,
+		final_output: bool,
 	) -> Self {
 		RenderPassBuilder {
 			context,
 			sink_id,
 			swapchain,
-			final_output: false,
+			node,
+			final_output,
 			final_output_written: false,
-			consumed_resources: Vec::new(),
-			accessed_image_indices: Vec::new(),
-			written_image_indices: Vec::new(),
+			accesses: Vec::new(),
 			external_writable_targets: Vec::new(),
 			images,
+			render_pass_states,
 			pipeline_manager,
-			scene_background_factory: None,
+			scene_background_factory,
 			created_scene_backgrounds: Vec::new(),
+			main_copy: None,
 		}
-	}
-
-	/// Lets a scene pipeline built with this builder create the registered scene background.
-	pub(crate) fn with_scene_background(mut self, factory: Option<&'a SceneBackgroundFactory>) -> Self {
-		self.scene_background_factory = factory;
-		self
 	}
 
 	/// Creates this sink's scene background, or returns `None` when the application registered none.
@@ -297,27 +260,26 @@ impl<'a> RenderPassBuilder<'a> {
 	/// before transparent ones.
 	pub fn create_scene_background(&mut self, targets: SceneBackgroundTargets) -> Option<SceneBackground> {
 		let factory = self.scene_background_factory?;
-		let background = SceneBackground::new(factory(self, targets));
+		let render_pass = factory(self, targets);
+		let background = SceneBackground(Rc::new(RefCell::new(RenderPassHarness::new(
+			render_pass,
+			self.render_pass_states,
+		))));
 		self.created_scene_backgrounds.push(background.clone());
 		Some(background)
 	}
 
-	/// Hands the renderer every background created through this builder so it can control their states.
+	/// Hands the renderer every background created through this builder so it can ask them for frames.
 	pub(crate) fn take_scene_backgrounds(&mut self) -> Vec<SceneBackground> {
 		std::mem::take(&mut self.created_scene_backgrounds)
 	}
 
-	/// Creates the builder used for the terminal pass in one sink-local graph.
-	pub(crate) fn new_for_final_pass(
-		context: &'a mut ghi::implementation::Context,
-		images: &'a mut RenderTargets,
-		sink_id: usize,
-		swapchain: ghi::SwapchainHandle,
-		pipeline_manager: crate::rendering::PipelineManagerClient,
-	) -> Self {
-		let mut builder = Self::new(context, images, sink_id, swapchain, pipeline_manager);
-		builder.final_output = true;
-		builder
+	/// Hands over the copy that forwards `main` while this builder's pass is bypassed.
+	///
+	/// The renderer takes it after the pass is built. A pass that also forwards `main` on frames with nothing to
+	/// draw takes it first, so it keeps one copy, and then forwards `main` from [`RenderPass::bypass`] too.
+	pub(crate) fn take_main_copy(&mut self) -> Option<ImageBypassPass> {
+		self.main_copy.take()
 	}
 
 	pub fn alias(&mut self, orig: &'a str, alias: &'a str) {
@@ -325,18 +287,24 @@ impl<'a> RenderPassBuilder<'a> {
 	}
 
 	pub fn format_of(&self, name: &str) -> ghi::Formats {
-		self.images.get(name, self.sink_id).expect("Image not found").1
+		self.images.image(self.target_index(name)).1
+	}
+
+	/// Returns the index of the sink's render target named `name`.
+	fn target_index(&self, name: &str) -> usize {
+		self.images.get_image_index(name, self.sink_id).unwrap_or_else(|| {
+			panic!(
+				"Render target image '{name}' does not exist for sink {}. The most likely cause is that a render pass was added before the pipeline that creates this target.",
+				self.sink_id
+			)
+		})
 	}
 
 	/// Returns an existing image for writing by this render pass.
 	pub fn render_to(&mut self, name: &'a str) -> RenderToResult {
-		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
-		self.images.write_to(name, self.sink_id);
-
-		let image_index = self.images.get_image_index(name, self.sink_id).expect("Image not found");
-		self.written_image_indices.push(image_index);
-		self.accessed_image_indices.push(image_index);
-		let (image, format) = self.images.image(image_index).expect("Image not found");
+		let image_index = self.target_index(name);
+		self.accesses.push((image_index, ghi::AccessPolicies::WRITE));
+		let (image, format) = self.images.image(image_index);
 
 		RenderToResult { image, format }
 	}
@@ -384,7 +352,6 @@ impl<'a> RenderPassBuilder<'a> {
 			"Render target name is missing. The most likely cause is that the image builder was not given a name before creating the target.",
 		);
 		let format = builder.get_format();
-		self.consumed_resources.push((name, ghi::AccessPolicies::WRITE));
 
 		let image = self.context.build_image(builder.additional_uses(ghi::Uses::TransferSource));
 
@@ -396,8 +363,7 @@ impl<'a> RenderPassBuilder<'a> {
 			resolution_divisor,
 			member,
 		);
-		self.written_image_indices.push(image_index);
-		self.accessed_image_indices.push(image_index);
+		self.accesses.push((image_index, ghi::AccessPolicies::WRITE));
 
 		RenderToResult {
 			image: image.into(),
@@ -439,40 +405,43 @@ impl<'a> RenderPassBuilder<'a> {
 	/// swapchain format can differ from the intermediate format. Raster passes
 	/// should derive their attachment descriptor from the returned target. Next,
 	/// bind a compute output with [`simple_compute::Resource::image`].
+	///
+	/// While the pass is bypassed, the renderer copies the incoming `main` into the replacement, so later passes read
+	/// the image this pass would have transformed.
 	pub fn create_main_render_target(&mut self, builder: ghi::image::Builder<'a>) -> MainRenderTarget {
 		let name = builder.get_name().expect(
 			"Main render target name is missing. The most likely cause is that the image builder was not given a name before replacing `main`.",
 		);
-		if self.final_output {
+		// Resolve the incoming `main` before the replacement takes its name.
+		let source = self.read_from("main");
+		let main = if self.final_output {
 			self.final_output_written = true;
 			let target = ghi::ImageOrSwapchain::Swapchain(self.swapchain);
-			self.consumed_resources.push(("main", ghi::AccessPolicies::WRITE));
 			self.external_writable_targets.push((name.to_string(), target));
 			self.external_writable_targets.push(("main".to_string(), target));
-			return MainRenderTarget {
+			MainRenderTarget {
 				target,
 				format: ghi::Formats::BGRAsRGB,
-			};
-		}
-
-		let output = self.create_render_target(builder);
-		self.alias(name, "main");
-		MainRenderTarget {
-			target: output.image.into(),
-			format: output.format,
-		}
+			}
+		} else {
+			let output = self.create_render_target(builder);
+			self.alias(name, "main");
+			MainRenderTarget {
+				target: output.image.into(),
+				format: output.format,
+			}
+		};
+		self.main_copy = Some(ImageBypassPass::new(self, source, main));
+		main
 	}
 
 	pub fn read_from(&mut self, name: &'a str) -> ReadFromResult {
-		self.consumed_resources.push((name, ghi::AccessPolicies::READ));
-		self.images.read_from(name, self.sink_id);
-		if let Some(index) = self.images.get_image_index(name, self.sink_id) {
-			self.accessed_image_indices.push(index);
+		let index = self.target_index(name);
+		self.accesses.push((index, ghi::AccessPolicies::READ));
+
+		ReadFromResult {
+			image: self.images.image(index).0,
 		}
-
-		let (image, _) = *self.images.get(name, self.sink_id).expect("Image not found");
-
-		ReadFromResult { image }
 	}
 
 	pub fn context(&mut self) -> &'_ mut ghi::implementation::Context {
@@ -489,10 +458,22 @@ impl<'a> RenderPassBuilder<'a> {
 		self.final_output_written
 	}
 
+	/// Records the images this builder's pass uses as one node of the sink's frame.
+	pub(crate) fn record_node(&mut self) {
+		self.images
+			.record_node(self.sink_id, self.node, self.accesses.iter().map(|(index, _)| *index));
+	}
+
 	/// Snapshots every current name and alias that resolves to a target written by this pass.
 	pub(crate) fn writable_targets(&self) -> Vec<(String, ghi::ImageOrSwapchain)> {
+		let written = self
+			.accesses
+			.iter()
+			.filter(|(_, access)| access.intersects(ghi::AccessPolicies::WRITE))
+			.map(|(index, _)| *index)
+			.collect::<SmallVec<[usize; 8]>>();
 		self.images
-			.names_for_images(self.sink_id, &self.written_image_indices)
+			.names_for_images(self.sink_id, &written)
 			.into_iter()
 			.map(|(name, image)| (name, image.into()))
 			.chain(self.external_writable_targets.iter().cloned())
@@ -560,35 +541,5 @@ impl From<MainRenderTarget> for ghi::ImageOrSwapchain {
 impl From<MainRenderTarget> for ghi::pipelines::raster::AttachmentDescriptor {
 	fn from(value: MainRenderTarget) -> Self {
 		ghi::pipelines::raster::AttachmentDescriptor::new(value.format)
-	}
-}
-
-#[derive(Hash)]
-pub struct FramePrepare {}
-
-impl Default for FramePrepare {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl FramePrepare {
-	pub fn new() -> Self {
-		FramePrepare {}
-	}
-
-	pub fn sinks(&self) -> &[Sink] {
-		&[]
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{RenderPassExecutionPath, RenderPassState, execution_path};
-
-	#[test]
-	fn render_pass_state_selects_the_expected_execution_path() {
-		assert_eq!(execution_path(RenderPassState::Enabled), RenderPassExecutionPath::Prepare);
-		assert_eq!(execution_path(RenderPassState::Bypassed), RenderPassExecutionPath::Bypass);
 	}
 }

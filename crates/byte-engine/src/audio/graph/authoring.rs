@@ -34,48 +34,37 @@ impl AudioGraph {
 
 	/// Combines independent input graphs under one stateful selector node.
 	pub(super) fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
-		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "round-robin");
-		if input_ids.len() == 1 {
-			let mut graph = Self {
-				nodes,
-				output: input_ids[0],
-			};
-			graph.optimize();
-			return graph;
-		}
-
-		assert!(
-			nodes.len() < MAX_AUDIO_GRAPH_NODES,
-			"Audio graph is too large. Combining the round-robin inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
-		);
-		let output = AudioNodeId(nodes.len());
-		nodes.push(SmallBox::new(AudioNode::RoundRobin(Box::new(RoundRobinNode {
-			inputs: input_ids,
-			next_index: 0,
-		}))));
-		let mut graph = Self { nodes, output };
-		graph.optimize();
-		graph
+		Self::selector(inputs, "round-robin", |inputs| {
+			AudioNode::RoundRobin(Box::new(RoundRobinNode { inputs, next_index: 0 }))
+		})
 	}
 
 	/// Combines independent input graphs under one non-repeating random selector.
 	pub(super) fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
-		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, "random");
-		if input_ids.len() == 1 {
-			let mut graph = Self {
-				nodes,
-				output: input_ids[0],
-			};
-			graph.optimize();
-			return graph;
-		}
+		Self::selector(inputs, "random", |inputs| {
+			AudioNode::Random(Box::new(RandomNode::new(inputs)))
+		})
+	}
 
-		assert!(
-			nodes.len() < MAX_AUDIO_GRAPH_NODES,
-			"Audio graph is too large. Combining the random inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
-		);
-		let output = AudioNodeId(nodes.len());
-		nodes.push(SmallBox::new(AudioNode::Random(Box::new(RandomNode::new(input_ids)))));
+	/// Combines independent input graphs under the selector node that `node` builds from their outputs.
+	///
+	/// A single input is returned directly without a selector node.
+	fn selector(
+		inputs: impl IntoIterator<Item = AudioGraph>,
+		selector_name: &str,
+		node: impl FnOnce(SelectorInputs) -> AudioNode,
+	) -> Self {
+		let (mut nodes, input_ids) = Self::combine_selector_inputs(inputs, selector_name);
+		let output = if input_ids.len() == 1 {
+			input_ids[0]
+		} else {
+			assert!(
+				nodes.len() < MAX_AUDIO_GRAPH_NODES,
+				"Audio graph is too large. Combining the {selector_name} inputs would exceed {MAX_AUDIO_GRAPH_NODES} nodes."
+			);
+			nodes.push(SmallBox::new(node(input_ids)));
+			AudioNodeId(nodes.len() - 1)
+		};
 		let mut graph = Self { nodes, output };
 		graph.optimize();
 		graph
@@ -100,7 +89,10 @@ impl AudioGraph {
 			let offset = nodes.len();
 			input_ids.push(AudioNodeId(input.output.0 + offset));
 			for mut node in input.nodes {
-				node.remap_inputs(offset);
+				// Inputs now live after the nodes of the earlier input graphs.
+				for input in node.inputs_mut() {
+					input.0 += offset;
+				}
 				nodes.push(node);
 			}
 		}
@@ -247,9 +239,8 @@ impl AudioGraphFactory {
 	/// Pass the returned handle to
 	/// [`crate::gameplay::world::DefaultWorld::delete`] to stop the graph.
 	pub fn create(&self, graph: &mut AudioGraph) -> Handle {
-		let (compiled, selector_commits) = compile_for_factory(graph);
-		let handle = self.compiled_graphs.create(compiled);
-		graph.commit_selectors(&selector_commits);
+		let handle = Handle::new();
+		self.derive(handle, graph);
 		handle
 	}
 
@@ -277,33 +268,4 @@ fn compile_for_factory(graph: &mut AudioGraph) -> (CompiledAudioGraph, SelectorC
 	graph
 		.compile_selection()
 		.unwrap_or_else(|error| panic!("Audio graph was not created. The authored graph is invalid: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-	use super::AudioGraphFactory;
-	use crate::{
-		audio::graph::fns,
-		core::{
-			listener::Listener,
-			message_bus::{MessageBus, MessageBusConfig},
-		},
-	};
-
-	/// Verifies that scoped audio factories share one lazily registered creation route.
-	#[test]
-	fn scoped_factories_share_compiled_graph_creations() {
-		let bus = MessageBus::new(MessageBusConfig::new(1, 8, 1024)).expect("valid audio test bus");
-		let scope = bus.new_scope("audio-test");
-		let producer = AudioGraphFactory::in_scope(&scope);
-		let observer = AudioGraphFactory::in_scope(&scope);
-		let mut listener = observer.listener();
-		let mut graph = fns::sample("audio/test.wav");
-
-		let handle = producer.create(&mut graph);
-		let message = listener.read().expect("scoped audio graph creation");
-
-		assert_eq!(message.handle(), handle);
-		assert_eq!(scope.topics().len(), 1);
-	}
 }

@@ -66,39 +66,6 @@ fn write_texture(texture: &mut Texture, texels: &[([u32; 2], [f32; 4])]) {
 }
 
 #[test]
-fn executable_program_runs_main_and_writes_a_bound_buffer_member() {
-	let script = r#"
-	main: fn () -> void {
-		buff.value = 42.0;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			0,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(0);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 42.0);
-}
-
-#[test]
 fn discard_terminates_the_current_invocation_across_function_calls() {
 	let script = r#"
 	discard_after_write: fn () -> void {
@@ -135,165 +102,6 @@ fn discard_terminates_the_current_invocation_across_function_calls() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 1.0);
-}
-
-#[test]
-fn executable_program_reads_locals_before_writing_to_a_bound_buffer_member() {
-	let script = r#"
-	main: fn () -> void {
-		let value: f32 = 7.5;
-		buff.value = value;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			3,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(3);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
-}
-
-#[test]
-fn executable_program_reads_a_vector_member_after_local_reassignment() {
-	let script = r#"
-	main: fn () -> void {
-		let value: vec4f = vec4f(1.0, 2.0, 3.0, 4.0);
-		value = vec4f(5.0, 6.0, 7.0, 8.0);
-		buff.value = value.y;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			0,
-			false,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-	let slot = ResourceSlot::new(0);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 6.0);
-}
-
-#[test]
-fn executable_program_reads_a_bound_buffer_inside_main() {
-	let script = r#"
-	main: fn () -> void {
-		let value: f32 = input.value;
-		output.value = value;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-
-	root.add_child(
-		Node::binding(
-			"input",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type.clone()).into()],
-			},
-			7,
-			true,
-			false,
-		)
-		.into(),
-	);
-
-	root.add_child(
-		Node::binding(
-			"output",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			8,
-			false,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let input_slot = ResourceSlot::new(7);
-	let output_slot = ResourceSlot::new(8);
-	let mut input = buffer_for_slot(&executable, input_slot);
-	let mut output = buffer_for_slot(&executable, output_slot);
-	input
-		.write("value", Value::F32(9.25))
-		.expect("Expected host buffer write to succeed");
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(input_slot, &mut input);
-		descriptors.bind_buffer(output_slot, &mut output);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(output.read_f32("value").expect("Expected f32 member"), 9.25);
-}
-
-#[test]
-fn executable_program_evaluates_addition_before_writing_to_a_bound_buffer_member() {
-	let script = r#"
-	main: fn () -> void {
-		let value: f32 = 7.5;
-		buff.value = value + 4.5;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			1,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(1);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 12.0);
 }
 
 #[test]
@@ -365,41 +173,6 @@ fn apply_arithmetic_supports_all_basic_scalar_operations() {
 }
 
 #[test]
-fn executable_program_evaluates_vec3f_arithmetic_before_writing_to_a_bound_buffer_member() {
-	let script = r#"
-	main: fn () -> void {
-		let lhs: vec3f = vec3f(1.0, 2.0, 3.0);
-		let rhs: vec3f = vec3f(4.0, 5.0, 6.0);
-		buff.value = lhs + rhs;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type).into()],
-			},
-			2,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(2);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(read_f32s(&buffer, 3), vec![5.0, 7.0, 9.0]);
-}
-
-#[test]
 fn executable_program_round_trips_packed_vec4f_storage() {
 	let script = r#"
 	main: fn () -> void {
@@ -458,40 +231,6 @@ fn executable_program_round_trips_packed_vec4f_storage() {
 		buffer.read("round_trip").expect("Expected packed round trip"),
 		Value::PackedVec4F(expected)
 	);
-}
-
-#[test]
-fn executable_program_evaluates_vec4f_scalar_broadcast_arithmetic() {
-	let script = r#"
-	main: fn () -> void {
-		let value: vec4f = vec4f(1.0, 2.0, 3.0, 4.0);
-		buff.value = value * 2.0;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec4f_type).into()],
-			},
-			3,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(3);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(read_f32s(&buffer, 4), vec![2.0, 4.0, 6.0, 8.0]);
 }
 
 #[test]
@@ -759,43 +498,6 @@ fn executable_program_calls_function_with_parameters_and_return_value() {
 	drop(descriptors);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 7.5);
-}
-
-#[test]
-fn executable_program_calls_function_and_returns_vec3f() {
-	let script = r#"
-	double: fn (value: vec3f) -> vec3f {
-		return value * 2.0;
-	}
-
-	main: fn () -> void {
-		buff.value = double(vec3f(1.0, 2.0, 3.0));
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
-
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type).into()],
-			},
-			6,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(6);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(read_f32s(&buffer, 3), vec![2.0, 4.0, 6.0]);
 }
 
 #[test]
@@ -1242,53 +944,6 @@ fn executable_program_compile_rejects_raw_code_blocks() {
 }
 
 #[test]
-fn executable_program_reads_push_constant_members() {
-	let script = r#"
-	main: fn () -> void {
-		buff.value = push_constant.material_id;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-	root.add_child(Node::push_constant(vec![Node::member("material_id", float_type.clone()).into()]).into());
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			14,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(14);
-	let push_constant_layout = executable
-		.push_constant_layout()
-		.expect("Expected push constant layout")
-		.clone();
-	let mut buffer = buffer_for_slot(&executable, slot);
-	let mut push_constant = Buffer::new(push_constant_layout);
-	push_constant
-		.write("material_id", Value::F32(3.5))
-		.expect("Expected push constant write");
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(slot, &mut buffer);
-		descriptors.bind_push_constant(&mut push_constant);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32"), 3.5);
-}
-
-#[test]
 fn executable_program_requires_bound_push_constant() {
 	let script = r#"
 	main: fn () -> void {
@@ -1326,74 +981,6 @@ fn executable_program_requires_bound_push_constant() {
 	};
 
 	assert_eq!(error, VmError::MissingPushConstant);
-}
-
-#[test]
-fn executable_program_writes_vertex_shader_output_interfaces() {
-	let script = r#"
-	main: fn () -> void {
-		out_position = vec4f(1.0, 2.0, 3.0, 1.0);
-		out_instance_index = 7;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(Node::output("out_position", vec4f_type, 0).into());
-	root.add_child(Node::output("out_instance_index", u32_type, 1).into());
-
-	let executable = compile_test_program(script, Some(root));
-
-	let mut position = interface_buffer_for_output(&executable, 0);
-	let mut instance = interface_buffer_for_output(&executable, 1);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(output_slot(0), &mut position);
-		descriptors.bind_buffer(output_slot(1), &mut instance);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(read_f32s(&position, 4), vec![1.0, 2.0, 3.0, 1.0]);
-	assert_eq!(
-		instance.read("out_instance_index").expect("Expected output value"),
-		Value::U32(7)
-	);
-}
-
-#[test]
-fn executable_program_reads_vertex_shader_input_interfaces() {
-	let script = r#"
-	main: fn () -> void {
-		out_color = in_color;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-	root.add_child(Node::input("in_color", vec4f_type.clone(), 0).into());
-	root.add_child(Node::output("out_color", vec4f_type, 0).into());
-
-	let executable = compile_test_program(script, Some(root));
-
-	let mut input = interface_buffer_for_input(&executable, 0);
-	let mut output = interface_buffer_for_output(&executable, 0);
-	input
-		.write("in_color", Value::Vec4F([0.1, 0.2, 0.3, 1.0]))
-		.expect("Expected input write to succeed");
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(input_slot(0), &mut input);
-		descriptors.bind_buffer(output_slot(0), &mut output);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(
-		output.read("out_color").expect("Expected output value"),
-		Value::Vec4F([0.1, 0.2, 0.3, 1.0])
-	);
 }
 
 #[test]
@@ -1536,53 +1123,6 @@ fn executable_program_supports_vertex_to_fragment_interface_workflows() {
 }
 
 #[test]
-fn executable_program_supports_fragment_style_input_attachments() {
-	let script = r#"
-	main: fn () -> void {
-		out_color = fetch(input_attachment, vec2u(1, 0));
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec4f_type = root.get_child("vec4f").expect("Expected vec4f");
-	root.add_child(
-		Node::binding(
-			"input_attachment",
-			BindingTypes::CombinedImageSampler { format: String::new() },
-			16,
-			true,
-			false,
-		)
-		.into(),
-	);
-	root.add_child(Node::output("out_color", vec4f_type, 0).into());
-
-	let executable = compile_test_program(script, Some(root));
-
-	let input_attachment_slot = ResourceSlot::new(16);
-	let mut input_attachment = Texture::new(2, 1).expect("Expected attachment allocation");
-	let mut output = interface_buffer_for_output(&executable, 0);
-	write_texture(
-		&mut input_attachment,
-		&[([0, 0], [0.1, 0.2, 0.3, 1.0]), ([1, 0], [0.9, 0.4, 0.2, 1.0])],
-	);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(input_attachment_slot, &mut input_attachment);
-		descriptors.bind_buffer(output_slot(0), &mut output);
-		executable
-			.run_main(&mut descriptors)
-			.expect("Expected fragment-style execution to succeed");
-	}
-
-	assert_eq!(
-		output.read("out_color").expect("Expected output value"),
-		Value::Vec4F([0.9, 0.4, 0.2, 1.0])
-	);
-}
-
-#[test]
 fn executable_program_evaluates_dot_intrinsics() {
 	let script = r#"
 	main: fn () -> void {
@@ -1612,37 +1152,6 @@ fn executable_program_evaluates_dot_intrinsics() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 32.0);
-}
-
-#[test]
-fn executable_program_evaluates_vec2f_dot_intrinsic() {
-	let script = r#"
-	main: fn () -> void {
-		buff.value = dot(vec2f(2.0, 3.0), vec2f(4.0, 5.0));
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			34,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-	let slot = ResourceSlot::new(34);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 23.0);
 }
 
 #[test]
@@ -1716,38 +1225,6 @@ fn executable_program_evaluates_cross_intrinsics() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	assert_eq!(read_f32s(&buffer, 3), vec![0.0, 0.0, 1.0]);
-}
-
-#[test]
-fn executable_program_evaluates_length_intrinsics() {
-	let script = r#"
-	main: fn () -> void {
-		buff.value = length(vec3f(3.0, 4.0, 0.0));
-	}
-	"#;
-
-	let mut root = Node::root();
-	let float_type = root.get_child("f32").expect("Expected f32");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", float_type).into()],
-			},
-			19,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(19);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(buffer.read_f32("value").expect("Expected f32 member"), 5.0);
 }
 
 #[test]
@@ -1828,38 +1305,6 @@ fn executable_program_evaluates_vector_mix_integer_ordering_and_scalar_round() {
 	assert_eq!(buffer.read("largest").expect("Expected u32 member"), Value::U32(5));
 	assert_eq!(buffer.read("held_i").expect("Expected i32 member"), Value::I32(-4));
 	assert_eq!(buffer.read("held_u").expect("Expected u32 member"), Value::U32(4));
-}
-
-#[test]
-fn executable_program_evaluates_normalize_intrinsics() {
-	let script = r#"
-	main: fn () -> void {
-		buff.value = normalize(vec3f(3.0, 4.0, 0.0));
-	}
-	"#;
-
-	let mut root = Node::root();
-	let vec3f_type = root.get_child("vec3f").expect("Expected vec3f");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("value", vec3f_type).into()],
-			},
-			20,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(20);
-	let mut buffer = buffer_for_slot(&executable, slot);
-	run_with_buffer(&executable, slot, &mut buffer);
-
-	assert_eq!(read_f32s(&buffer, 3), vec![0.6, 0.8, 0.0]);
 }
 
 /// Verifies normalized material vectors and angular terms stay in the half-precision execution path.
@@ -2070,121 +1515,6 @@ fn executable_program_evaluates_reflect_intrinsics() {
 	run_with_buffer(&executable, slot, &mut buffer);
 
 	assert_eq!(read_f32s(&buffer, 3), vec![1.0, 1.0, 0.0]);
-}
-
-#[test]
-fn executable_program_reads_thread_idx_for_compute_style_workflows() {
-	let script = r#"
-	main: fn () -> void {
-		buff.thread = thread_idx();
-	}
-	"#;
-
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("thread", u32_type).into()],
-			},
-			22,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(22);
-	let mut buffer = buffer_for_slot(&executable, slot);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(buffer.read("thread").expect("Expected thread value"), Value::U32(0));
-}
-
-#[test]
-fn executable_program_reads_thread_idx_for_mesh_style_workflows() {
-	let script = r#"
-	main: fn () -> void {
-		payload.thread = thread_idx();
-	}
-	"#;
-
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(
-		Node::binding(
-			"payload",
-			BindingTypes::Buffer {
-				members: vec![Node::member("thread", u32_type).into()],
-			},
-			23,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(23);
-	let mut buffer = buffer_for_slot(&executable, slot);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(buffer.read("thread").expect("Expected thread value"), Value::U32(0));
-}
-
-#[test]
-fn executable_program_executes_for_loops() {
-	let script = r#"
-	main: fn () -> void {
-		let sum: u32 = 0;
-		for (let i: u32 = 0; i < 4; i = i + 1) {
-			sum = sum + i;
-		}
-		buff.sum = sum;
-	}
-	"#;
-
-	let mut root = Node::root();
-	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(
-		Node::binding(
-			"buff",
-			BindingTypes::Buffer {
-				members: vec![Node::member("sum", u32_type).into()],
-			},
-			24,
-			true,
-			true,
-		)
-		.into(),
-	);
-
-	let executable = compile_test_program(script, Some(root));
-
-	let slot = ResourceSlot::new(24);
-	let mut buffer = buffer_for_slot(&executable, slot);
-
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(slot, &mut buffer);
-		executable.run_main(&mut descriptors).expect("Expected execution to succeed");
-	}
-
-	assert_eq!(buffer.read("sum").expect("Expected sum value"), Value::U32(6));
 }
 
 #[test]

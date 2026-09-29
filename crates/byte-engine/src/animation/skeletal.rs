@@ -1,10 +1,10 @@
 use math::Matrix;
 use resource_management::resources::{
-	animation::{Animation, QuaternionCurve, Vector3Curve},
+	animation::{Animation, Curve},
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
-use super::math::{hermite, nlerp_quaternion, normalize_quaternion};
+use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 /// Samples one clip into a complete source-skeleton local pose.
 ///
@@ -21,13 +21,13 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 		let Some(local) = output.get_mut(track.node as usize) else {
 			continue;
 		};
-		if let Some(value) = track.translation.as_ref().map(|curve| sample_vector3(curve, time)) {
+		if let Some(value) = track.translation.as_ref().map(|curve| sample_resource_curve(curve, time)) {
 			local.translation = value;
 		}
-		if let Some(value) = track.rotation.as_ref().map(|curve| sample_rotation(curve, time)) {
+		if let Some(value) = track.rotation.as_ref().map(|curve| sample_resource_curve(curve, time)) {
 			local.rotation = value;
 		}
-		if let Some(value) = track.scale.as_ref().map(|curve| sample_vector3(curve, time)) {
+		if let Some(value) = track.scale.as_ref().map(|curve| sample_resource_curve(curve, time)) {
 			local.scale = value;
 		}
 	}
@@ -232,75 +232,37 @@ fn local_matrix(local: LocalTransform) -> Matrix {
 	))
 }
 
-/// Samples every validated translation or scale interpolation form.
-fn sample_vector3(curve: &Vector3Curve, time: f32) -> [f32; 3] {
-	match curve {
-		Vector3Curve::Step { times, values } => values[step_key(times, time)],
-		Vector3Curve::Linear { times, values } => {
-			let (lower, upper, factor, _) = interpolation_segment(times, time);
-			std::array::from_fn(|component| {
-				values[lower][component] + (values[upper][component] - values[lower][component]) * factor
-			})
-		}
-		Vector3Curve::CubicSpline {
+/// Samples one validated resource curve at `time`.
+fn sample_resource_curve<const N: usize>(curve: &Curve<[f32; N]>, time: f32) -> [f32; N]
+where
+	[f32; N]: CurveValue,
+{
+	let (interpolation, times, values, tangents) = match curve {
+		Curve::Step { times, values } => (CurveInterpolation::Step, times, values, None),
+		Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values, None),
+		Curve::CubicSpline {
 			times,
 			values,
 			in_tangents,
 			out_tangents,
-		} => {
-			let (lower, upper, factor, span) = interpolation_segment(times, time);
-			hermite(
-				values[lower],
-				out_tangents[lower],
-				values[upper],
-				in_tangents[upper],
-				factor,
-				span,
-			)
-		}
-	}
-}
-
-/// Samples every validated rotation interpolation form and returns a unit quaternion.
-fn sample_rotation(curve: &QuaternionCurve, time: f32) -> [f32; 4] {
-	match curve {
-		QuaternionCurve::Step { times, values } => values[step_key(times, time)],
-		QuaternionCurve::Linear { times, values } => {
-			let (lower, upper, factor, _) = interpolation_segment(times, time);
-			nlerp_quaternion(values[lower], values[upper], factor)
-		}
-		QuaternionCurve::CubicSpline {
+		} => (
+			CurveInterpolation::CubicSpline,
 			times,
 			values,
-			in_tangents,
-			out_tangents,
-		} => {
-			let (lower, upper, factor, span) = interpolation_segment(times, time);
-			let value = hermite(
-				values[lower],
-				out_tangents[lower],
-				values[upper],
-				in_tangents[upper],
-				factor,
-				span,
-			);
-			normalize_quaternion(value)
-		}
-	}
-}
-
-fn step_key(times: &[f32], time: f32) -> usize {
-	times.partition_point(|key_time| *key_time <= time).saturating_sub(1)
-}
-
-fn interpolation_segment(times: &[f32], time: f32) -> (usize, usize, f32, f32) {
-	let upper = times
-		.partition_point(|key_time| *key_time <= time)
-		.min(times.len().saturating_sub(1));
-	let lower = upper.saturating_sub(1);
-	let span = times[upper] - times[lower];
-	let factor = if span > 0.0 { (time - times[lower]) / span } else { 0.0 }.clamp(0.0, 1.0);
-	(lower, upper, factor, span)
+			Some((in_tangents, out_tangents)),
+		),
+	};
+	sample_curve(
+		interpolation,
+		times.len(),
+		time,
+		|key| times[key],
+		|key| values[key],
+		|key| {
+			let (in_tangents, out_tangents) = tangents.expect("Only cubic curves read tangents.");
+			(in_tangents[key], out_tangents[key])
+		},
+	)
 }
 
 /// The `PoseError` enum identifies local poses that cannot be converted to global matrices.
@@ -378,7 +340,7 @@ mod tests {
 		},
 	};
 
-	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_rotation, sample_vector3};
+	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_resource_curve};
 
 	fn comparison_skeleton(child_name: &str) -> Skeleton {
 		Skeleton {
@@ -421,9 +383,9 @@ mod tests {
 			values: vec![[2.0, 4.0, 6.0], [6.0, 8.0, 10.0]],
 		};
 
-		assert_eq!(sample_vector3(&curve, 0.0), [2.0, 4.0, 6.0]);
-		assert_eq!(sample_vector3(&curve, 2.0), [4.0, 6.0, 8.0]);
-		assert_eq!(sample_vector3(&curve, 4.0), [6.0, 8.0, 10.0]);
+		assert_eq!(sample_resource_curve(&curve, 0.0), [2.0, 4.0, 6.0]);
+		assert_eq!(sample_resource_curve(&curve, 2.0), [4.0, 6.0, 8.0]);
+		assert_eq!(sample_resource_curve(&curve, 4.0), [6.0, 8.0, 10.0]);
 	}
 
 	#[test]
@@ -433,7 +395,7 @@ mod tests {
 			values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, -1.0]],
 		};
 
-		assert_eq!(sample_rotation(&curve, 0.5), [0.0, 0.0, 0.0, 1.0]);
+		assert_eq!(sample_resource_curve(&curve, 0.5), [0.0, 0.0, 0.0, 1.0]);
 	}
 
 	#[test]
@@ -445,17 +407,7 @@ mod tests {
 			out_tangents: vec![[1.0, 0.0, 0.0], [0.0; 3]],
 		};
 
-		assert_eq!(sample_vector3(&curve, 1.0), [1.0, 0.0, 0.0]);
-	}
-
-	#[test]
-	fn step_sampling_clamps_before_the_first_key() {
-		let curve = Vector3Curve::Step {
-			times: vec![1.0, 2.0],
-			values: vec![[3.0; 3], [4.0; 3]],
-		};
-
-		assert_eq!(sample_vector3(&curve, 0.0), [3.0; 3]);
+		assert_eq!(sample_resource_curve(&curve, 1.0), [1.0, 0.0, 0.0]);
 	}
 
 	#[test]

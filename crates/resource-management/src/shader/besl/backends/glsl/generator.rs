@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 
 use super::{
-	super::{ResourceAccessorKind, is_two, resource_accessor, resource_reference_kind},
+	super::{ResourceAccessorKind, is_two, resource_accessor, resource_reference_kind, uses_subgroup_intrinsics},
 	analysis::Generator,
 	header,
 };
-use crate::shader::generator::{NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, ordered_shader_nodes};
+use crate::shader::generator::{
+	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, is_integer_besl_type, ordered_shader_nodes,
+};
 impl Generator {
 	/// Generates a GLSL shader from a BESL AST.
 	///
@@ -35,7 +37,7 @@ impl Generator {
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
-		let uses_subgroup_intrinsics = Self::uses_subgroup_intrinsics(&order);
+		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
 		let uses_f16_types = Self::uses_f16_types(&order);
 		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
 			return Err(());
@@ -95,22 +97,6 @@ impl Generator {
 		}
 	}
 
-	/// Reports whether a backend type needs non-interpolated raster-stage I/O.
-	fn is_integer_type(type_name: &str) -> bool {
-		matches!(
-			type_name,
-			"int8_t"
-				| "uint8_t" | "int16_t"
-				| "uint16_t" | "int"
-				| "int32_t" | "uint"
-				| "uint32_t" | "int64_t"
-				| "uint64_t" | "ivec2"
-				| "uvec2" | "uvec3"
-				| "uvec4" | "u16vec2"
-				| "u16vec4"
-		)
-	}
-
 	fn emit_texture_2d_array_grad_sample(
 		&mut self,
 		string: &mut String,
@@ -124,20 +110,12 @@ impl Generator {
 		self.emit_node_string(string, texture_array);
 		string.push_str("[nonuniformEXT(");
 		self.emit_node_string(string, texture_index);
-		string.push_str(")],");
-		if !self.minified {
-			string.push(' ');
-		}
+		string.push_str(")]");
+		self.emit_separator(string);
 		self.emit_node_string(string, uv);
-		string.push(',');
-		if !self.minified {
-			string.push(' ');
-		}
+		self.emit_separator(string);
 		self.emit_node_string(string, uv_derivative_x);
-		string.push(',');
-		if !self.minified {
-			string.push(' ');
-		}
+		self.emit_separator(string);
 		self.emit_node_string(string, uv_derivative_y);
 		string.push(')');
 	}
@@ -151,11 +129,12 @@ impl Generator {
 		} else {
 			self.emit_node_string(string, &arguments[0]);
 		}
-		string.push_str(if self.minified { "," } else { ", " });
+		self.emit_separator(string);
 		if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, layer)) = accessor {
 			string.push_str("vec3(");
 			self.emit_node_string(string, &arguments[1]);
-			string.push_str(if self.minified { ",float(" } else { ", float(" });
+			self.emit_separator(string);
+			string.push_str("float(");
 			self.emit_node_string(string, &layer);
 			string.push_str("))");
 		} else {
@@ -187,30 +166,18 @@ impl Generator {
 			"texture_lod" | "downsample_min" | "downsample_max" => {
 				string.push_str("textureLod(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				if arguments.len() == 4 {
 					string.push_str("vec3(");
 					self.emit_node_string(string, &arguments[1]);
-					if self.minified {
-						string.push(',');
-					} else {
-						string.push_str(", ");
-					}
+					self.emit_separator(string);
 					string.push_str("float(");
 					self.emit_node_string(string, &arguments[2]);
 					string.push_str("))");
 				} else {
 					self.emit_node_string(string, &arguments[1]);
 				}
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				if let Some(lod) = arguments.get(if arguments.len() == 4 { 3 } else { 2 }) {
 					self.emit_node_string(string, lod);
 				} else {
@@ -224,22 +191,21 @@ impl Generator {
 			"texture_cube_array_lod" => {
 				string.push_str("textureLod(");
 				self.emit_node_string(string, &arguments[0]);
-				string.push_str(if self.minified { ",vec4(" } else { ", vec4(" });
+				self.emit_separator(string);
+				string.push_str("vec4(");
 				self.emit_node_string(string, &arguments[1]);
-				string.push_str(if self.minified { ",float(" } else { ", float(" });
+				self.emit_separator(string);
+				string.push_str("float(");
 				self.emit_node_string(string, &arguments[2]);
-				string.push_str(if self.minified { "))," } else { ")), " });
+				string.push_str("))");
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[3]);
 				string.push(')');
 			}
 			"fetch_u32" if !has_body => {
 				string.push_str("texelFetch(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("),0).x");
@@ -247,11 +213,7 @@ impl Generator {
 			"fetch" if !has_body => {
 				string.push_str("texelFetch(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				if arguments.len() == 3 {
 					string.push_str("ivec3(ivec2(");
 				} else {
@@ -282,11 +244,7 @@ impl Generator {
 			"image_load" => {
 				string.push_str("imageLoad(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str("))");
@@ -294,11 +252,7 @@ impl Generator {
 			"image_load_u32" => {
 				string.push_str("imageLoad(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push_str(")).x");
@@ -311,38 +265,22 @@ impl Generator {
 			"write" => {
 				string.push_str("imageStore(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[2]);
 				string.push(')');
 			}
 			"image_atomic_or" => {
 				string.push_str("imageAtomicOr(");
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				string.push_str("ivec2(");
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[2]);
 				string.push(')');
 			}
@@ -470,11 +408,7 @@ impl Generator {
 					_ => unreachable!("Expected an atomic binary intrinsic"),
 				});
 				self.emit_node_string(string, &arguments[0]);
-				if self.minified {
-					string.push(',');
-				} else {
-					string.push_str(", ");
-				}
+				self.emit_separator(string);
 				self.emit_node_string(string, &arguments[1]);
 				string.push(')');
 			}
@@ -490,11 +424,7 @@ impl Generator {
 				string.push_str("atomicCompSwap(");
 				self.emit_node_string(string, &arguments[0]);
 				for argument in &arguments[1..] {
-					if self.minified {
-						string.push(',');
-					} else {
-						string.push_str(", ");
-					}
+					self.emit_separator(string);
 					self.emit_node_string(string, argument);
 				}
 				string.push(')');
@@ -644,7 +574,6 @@ impl Generator {
 		let space_char = formatting.space_str();
 
 		match node.node() {
-			besl::Nodes::Null => {}
 			besl::Nodes::Scope { .. } => {}
 			besl::Nodes::Function {
 				name,
@@ -663,9 +592,7 @@ impl Generator {
 					string.push_str("layout(push_constant) uniform PushConstant {");
 				}
 
-				if !self.minified {
-					string.push('\n');
-				}
+				string.push_str(ShaderFormatting::new(self.minified).break_str());
 
 				for member in members {
 					formatting.push_indentation(string, 1);
@@ -679,48 +606,9 @@ impl Generator {
 					string.push_str("} push_constant;");
 				}
 
-				if !self.minified {
-					string.push('\n');
-				}
+				string.push_str(ShaderFormatting::new(self.minified).break_str());
 			}
-			besl::Nodes::Specialization { name, r#type } => {
-				let mut members = Vec::new();
-
-				let r#type = r#type.borrow();
-
-				let t = r#type.get_name().unwrap();
-				let type_name = Self::type_identifier(t);
-
-				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
-					for (i, field) in fields.iter().enumerate() {
-						if let besl::Nodes::Member {
-							name: member_name,
-							r#type,
-							..
-						} = field.borrow().node()
-						{
-							let member_name = format!("{}_{}", name, { member_name });
-							string.push_str(&format!(
-								"layout(constant_id={})const {} {}={};{}",
-								i,
-								Self::translate_type(r#type.borrow().get_name().unwrap()),
-								member_name,
-								"1.0f",
-								if !self.minified { "\n" } else { "" }
-							));
-							members.push(member_name);
-						}
-					}
-				}
-
-				string.push_str(&format!(
-					"const {} {}={};{}",
-					type_name,
-					Self::identifier(name),
-					format!("{}({})", &type_name, members.join(",")),
-					if !self.minified { "\n" } else { "" }
-				));
-			}
+			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					// A member may be a user struct, which is declared under its escaped name.
@@ -745,11 +633,12 @@ impl Generator {
 					return;
 				}
 				let format = format.borrow();
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let besl_type = format.get_name().unwrap();
+				let type_name = Self::translate_type(besl_type);
 				string.push_str(&format!(
 					"layout(location={}){space_char}{}in {} {};{break_char}",
 					location,
-					if self.current_stage_interpolates_inputs && Self::is_integer_type(type_name) {
+					if self.current_stage_interpolates_inputs && is_integer_besl_type(besl_type) {
 						"flat "
 					} else {
 						""
@@ -768,7 +657,8 @@ impl Generator {
 					return;
 				}
 				let format = format.borrow();
-				let type_name = Self::translate_type(format.get_name().unwrap());
+				let besl_type = format.get_name().unwrap();
+				let type_name = Self::translate_type(besl_type);
 				if let Some(count) = count {
 					string.push_str(&format!(
 						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
@@ -778,7 +668,7 @@ impl Generator {
 						count
 					));
 				} else {
-					let qualifier = if self.current_stage_interpolates_outputs && Self::is_integer_type(type_name) {
+					let qualifier = if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
 						"flat "
 					} else {
 						""
@@ -802,9 +692,7 @@ impl Generator {
 					string.push(']');
 				}
 				string.push(';');
-				if !self.minified {
-					string.push('\n');
-				}
+				string.push_str(ShaderFormatting::new(self.minified).break_str());
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {
 				panic!(
@@ -932,9 +820,6 @@ impl Generator {
 					self.emit_node_string(string, element);
 				}
 			}
-			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, value);
-			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("const ");
 				Self::emit_type_name(string, r#type.borrow().get_name().unwrap());
@@ -951,6 +836,11 @@ impl Generator {
 impl crate::shader::generator::NodeEmitter for Generator {
 	fn type_from_besl(source: &str) -> &str {
 		Generator::translate_type(source)
+	}
+	const SPECIALIZATION_QUALIFIER: &'static str = "const";
+	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
+		use std::fmt::Write as _;
+		let _ = write!(string, "layout(constant_id={index})const {type_name} {name}=1.0f;");
 	}
 	fn minified(&self) -> bool {
 		self.minified

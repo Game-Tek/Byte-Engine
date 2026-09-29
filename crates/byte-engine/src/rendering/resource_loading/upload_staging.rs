@@ -35,7 +35,9 @@ pub struct UploadStagingArena {
 /// public allocation API. The worker exits after every arena client and lease
 /// return channel has been dropped.
 pub(crate) struct UploadStagingWorker {
-	available_regions: Vec<StagingRegion>,
+	/// The mapped address of arena offset zero.
+	base_address: usize,
+	free_bytes: utils::RangeAllocator,
 	pending_allocations: VecDeque<StagingAllocationRequest>,
 	commands: kanal::AsyncReceiver<StagingCommand>,
 	exhausted: Arc<AtomicBool>,
@@ -90,15 +92,10 @@ impl UploadStagingArena {
 	/// mapped buffer handle in the renderer that records copies.
 	fn new(mapping: ghi::buffer::Mapping) -> (Arc<Self>, UploadStagingWorker) {
 		let (address, byte_count) = mapping.into_raw_parts();
-		Self::from_region(StagingRegion {
-			offset: 0,
-			address,
-			byte_count,
-		})
+		Self::from_mapped_bytes(address, byte_count)
 	}
 
-	fn from_region(region: StagingRegion) -> (Arc<Self>, UploadStagingWorker) {
-		let byte_count = region.byte_count;
+	fn from_mapped_bytes(base_address: usize, byte_count: usize) -> (Arc<Self>, UploadStagingWorker) {
 		let (commands, command_receiver) = kanal::unbounded_async();
 		let exhausted = Arc::new(AtomicBool::new(false));
 		(
@@ -109,7 +106,8 @@ impl UploadStagingArena {
 				exhausted: exhausted.clone(),
 			}),
 			UploadStagingWorker {
-				available_regions: vec![region],
+				base_address,
+				free_bytes: utils::RangeAllocator::new(byte_count, 1),
 				pending_allocations: VecDeque::new(),
 				commands: command_receiver,
 				exhausted,
@@ -131,11 +129,7 @@ impl UploadStagingArena {
 	/// `bytes` alive until the arena, its worker, and every lease have been dropped.
 	#[cfg(test)]
 	pub(crate) fn new_for_test(bytes: &mut [u8]) -> (Arc<Self>, UploadStagingWorker) {
-		Self::from_region(StagingRegion {
-			offset: 0,
-			address: bytes.as_mut_ptr() as usize,
-			byte_count: bytes.len(),
-		})
+		Self::from_mapped_bytes(bytes.as_mut_ptr() as usize, bytes.len())
 	}
 
 	/// Waits for one aligned exclusive region or rejects a request larger than the complete arena.
@@ -205,61 +199,18 @@ impl UploadStagingWorker {
 		}
 	}
 
-	/// Splits one available mapped slice for an exclusive lease.
+	/// Leases one aligned slice of the mapped arena.
 	fn try_take_region(&mut self, byte_count: usize, alignment: usize) -> Option<StagingRegion> {
-		let index = self.available_regions.iter().position(|region| {
-			let aligned_offset = region.offset.next_multiple_of(alignment);
-			aligned_offset
-				.checked_add(byte_count)
-				.is_some_and(|end| end <= region.offset + region.byte_count)
-		})?;
-		let region = self.available_regions.remove(index);
-		let aligned_offset = region.offset.next_multiple_of(alignment);
-		let prefix_len = aligned_offset - region.offset;
-		let suffix_len = region.byte_count - prefix_len - byte_count;
-		let aligned_address = region
-			.address
-			.checked_add(prefix_len)
-			.expect("Upload staging address overflowed. The most likely cause is a corrupted mapped region.");
-
-		if prefix_len != 0 {
-			self.available_regions.push(StagingRegion {
-				offset: region.offset,
-				address: region.address,
-				byte_count: prefix_len,
-			});
-		}
-		if suffix_len != 0 {
-			self.available_regions.push(StagingRegion {
-				offset: aligned_offset + byte_count,
-				address: aligned_address + byte_count,
-				byte_count: suffix_len,
-			});
-		}
-
+		let range = self.free_bytes.take(byte_count, alignment)?;
 		Some(StagingRegion {
-			offset: aligned_offset,
-			address: aligned_address,
+			offset: range.start,
+			address: self.base_address + range.start,
 			byte_count,
 		})
 	}
 
 	fn return_region(&mut self, region: StagingRegion) {
-		self.available_regions.push(region);
-		self.available_regions.sort_unstable_by_key(|region| region.offset);
-		self.available_regions.dedup_by(|right, left| {
-			if left.offset + left.byte_count != right.offset {
-				return false;
-			}
-			// Reconstruct one ownership token after both adjacent exclusive regions return to the arena.
-			assert_eq!(
-				left.address + left.byte_count,
-				right.address,
-				"Adjacent staging offsets must map adjacent memory."
-			);
-			left.byte_count += right.byte_count;
-			true
-		});
+		self.free_bytes.give_back(region.offset..region.offset + region.byte_count);
 	}
 }
 

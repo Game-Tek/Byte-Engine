@@ -9,8 +9,8 @@ pub use Generator as MSLTranspiler;
 
 use super::*;
 use crate::shader::generator::{
-	MatrixLayouts, NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages,
-	emit_comma_separated_nodes, emit_statement_block, ordered_shader_nodes_in,
+	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, emit_comma_separated_nodes,
+	emit_statement_block, ordered_shader_nodes_in,
 };
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
@@ -170,69 +170,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		&self.allocator
 	}
 
-	/// Reports whether one reachable AST branch uses the requested intrinsic.
-	pub(crate) fn uses_intrinsic(node: &besl::NodeReference, intrinsic_name: &str) -> bool {
-		match node.borrow().node() {
-			besl::Nodes::Function { statements, .. } => statements
-				.iter()
-				.any(|statement| Self::uses_intrinsic(statement, intrinsic_name)),
-			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
-				.branch_children()
-				.any(|child| Self::uses_intrinsic(child, intrinsic_name)),
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => {
-				Self::uses_intrinsic(initializer, intrinsic_name)
-					|| Self::uses_intrinsic(condition, intrinsic_name)
-					|| Self::uses_intrinsic(update, intrinsic_name)
-					|| statements
-						.iter()
-						.any(|statement| Self::uses_intrinsic(statement, intrinsic_name))
-			}
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::IntrinsicCall {
-					intrinsic, arguments, ..
-				} => {
-					intrinsic.borrow().get_name() == Some(intrinsic_name)
-						|| arguments
-							.iter()
-							.any(|argument| Self::uses_intrinsic(argument, intrinsic_name))
-				}
-				besl::Expressions::Operator { left, right, .. } => {
-					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
-				}
-				besl::Expressions::FunctionCall {
-					function, parameters, ..
-				} => {
-					Self::uses_intrinsic(&function.get(), intrinsic_name)
-						|| parameters
-							.iter()
-							.any(|parameter| Self::uses_intrinsic(parameter, intrinsic_name))
-				}
-				besl::Expressions::Expression { elements } => {
-					elements.iter().any(|element| Self::uses_intrinsic(element, intrinsic_name))
-				}
-				besl::Expressions::Macro { body, .. } => Self::uses_intrinsic(body, intrinsic_name),
-				besl::Expressions::Member { source, .. } => Self::uses_intrinsic(source, intrinsic_name),
-				besl::Expressions::Return { value } => value
-					.as_ref()
-					.is_some_and(|value| Self::uses_intrinsic(value, intrinsic_name)),
-				besl::Expressions::Accessor { left, right } => {
-					Self::uses_intrinsic(left, intrinsic_name) || Self::uses_intrinsic(right, intrinsic_name)
-				}
-				besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. }
-				| besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard => false,
-			},
-			_ => false,
-		}
-	}
-
 	/// Collects source requirements while walking emitted function bodies once instead of rescanning them for each helper.
 	pub(crate) fn collect_intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
 		pub(crate) fn record(requirements: &mut IntrinsicRequirements, name: &str) {
@@ -244,13 +181,7 @@ impl<A: Allocator + Clone> Generator<A> {
 					requirements.uses_subgroup_intrinsics = true;
 					requirements.uses_simd_lane_id = true;
 				}
-				"subgroup_ballot"
-				| "subgroup_ballot_any"
-				| "subgroup_ballot_find_lsb"
-				| "subgroup_ballot_count"
-				| "subgroup_ballot_and_not"
-				| "subgroup_broadcast_u32"
-				| "subgroup_broadcast_f32" => requirements.uses_subgroup_intrinsics = true,
+				name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
 				"downsample_min" => requirements.uses_downsample_min = true,
 				"downsample_max" => requirements.uses_downsample_max = true,
 				"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
@@ -258,90 +189,25 @@ impl<A: Allocator + Clone> Generator<A> {
 			}
 		}
 
-		pub(crate) fn visit(node: &besl::NodeReference, requirements: &mut IntrinsicRequirements) {
-			match node.borrow().node() {
-				besl::Nodes::Function { statements, .. } => {
-					for statement in statements {
-						visit(statement, requirements);
-					}
-				}
-				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => {
-					for child in branch.branch_children() {
-						visit(child, requirements);
-					}
-				}
-				besl::Nodes::ForLoop {
-					initializer,
-					condition,
-					update,
-					statements,
-				} => {
-					visit(initializer, requirements);
-					visit(condition, requirements);
-					visit(update, requirements);
-					for statement in statements {
-						visit(statement, requirements);
-					}
-				}
-				besl::Nodes::Expression(expression) => match expression {
-					besl::Expressions::IntrinsicCall {
-						intrinsic, arguments, ..
-					} => {
-						if let Some(name) = intrinsic.borrow().get_name() {
-							record(requirements, name);
-						}
-						for argument in arguments {
-							visit(argument, requirements);
-						}
-					}
-					besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
-						visit(left, requirements);
-						visit(right, requirements);
-					}
-					besl::Expressions::FunctionCall { parameters, .. } => {
-						for parameter in parameters {
-							visit(parameter, requirements);
-						}
-					}
-					besl::Expressions::Expression { elements } => {
-						for element in elements {
-							visit(element, requirements);
-						}
-					}
-					besl::Expressions::Macro { body, .. } => visit(body, requirements),
-					besl::Expressions::Member { source, .. } => visit(source, requirements),
-					besl::Expressions::Return { value } => {
-						if let Some(value) = value {
-							visit(value, requirements);
-						}
-					}
-					besl::Expressions::VariableDeclaration { .. }
-					| besl::Expressions::Literal { .. }
-					| besl::Expressions::Continue
-					| besl::Expressions::Break
-					| besl::Expressions::Discard => {}
-				},
-				_ => {}
-			}
-		}
-
 		let mut requirements = IntrinsicRequirements::default();
 		for node in order {
-			visit(node, &mut requirements);
+			any_code_node(node, false, &mut |node| {
+				if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
+					&& let Some(name) = intrinsic.borrow().get_name()
+				{
+					record(&mut requirements, name);
+				}
+				false
+			});
 		}
 		requirements
 	}
 
 	/// Detects whether a function's reachable AST needs backend resource parameters.
-	pub(crate) fn function_requires_resource_context(
-		&self,
-		function_node: &besl::NodeReference,
-		include_push_constant: bool,
-	) -> bool {
+	pub(crate) fn function_requires_resource_context(&self, function_node: &besl::NodeReference) -> bool {
 		pub(crate) fn node_requires_resource_context<A: Allocator + Clone>(
 			node: &besl::NodeReference,
 			visited: &mut Vec<besl::NodeReference, A>,
-			include_push_constant: bool,
 		) -> bool {
 			if visited.iter().any(|visited_node| visited_node == node) {
 				return false;
@@ -353,95 +219,79 @@ impl<A: Allocator + Clone> Generator<A> {
 				besl::Nodes::Binding { .. } => true,
 				besl::Nodes::TaskPayload { .. } => true,
 				besl::Nodes::Workgroup { .. } => true,
-				besl::Nodes::PushConstant { .. } => include_push_constant,
-				besl::Nodes::Scope { children, .. } => children
-					.iter()
-					.any(|child| node_requires_resource_context(child, visited, include_push_constant)),
+				besl::Nodes::PushConstant { .. } => true,
+				besl::Nodes::Scope { children, .. } => {
+					children.iter().any(|child| node_requires_resource_context(child, visited))
+				}
 				besl::Nodes::Function {
 					params,
 					return_type,
 					statements,
 					..
 				} => {
-					params
-						.iter()
-						.any(|param| node_requires_resource_context(param, visited, include_push_constant))
-						|| node_requires_resource_context(return_type, visited, include_push_constant)
+					params.iter().any(|param| node_requires_resource_context(param, visited))
+						|| node_requires_resource_context(return_type, visited)
 						|| statements
 							.iter()
-							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
+							.any(|statement| node_requires_resource_context(statement, visited))
 				}
 				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
 					.branch_children()
-					.any(|child| node_requires_resource_context(child, visited, include_push_constant)),
+					.any(|child| node_requires_resource_context(child, visited)),
 				besl::Nodes::ForLoop {
 					initializer,
 					condition,
 					update,
 					statements,
 				} => {
-					node_requires_resource_context(initializer, visited, include_push_constant)
-						|| node_requires_resource_context(condition, visited, include_push_constant)
-						|| node_requires_resource_context(update, visited, include_push_constant)
+					node_requires_resource_context(initializer, visited)
+						|| node_requires_resource_context(condition, visited)
+						|| node_requires_resource_context(update, visited)
 						|| statements
 							.iter()
-							.any(|statement| node_requires_resource_context(statement, visited, include_push_constant))
+							.any(|statement| node_requires_resource_context(statement, visited))
 				}
-				besl::Nodes::Struct { fields, .. } => fields
-					.iter()
-					.any(|field| node_requires_resource_context(field, visited, include_push_constant)),
+				besl::Nodes::Struct { fields, .. } => fields.iter().any(|field| node_requires_resource_context(field, visited)),
 				besl::Nodes::Raw { input, output, .. } => {
-					input
-						.iter()
-						.any(|input| node_requires_resource_context(input, visited, include_push_constant))
-						|| output
-							.iter()
-							.any(|output| node_requires_resource_context(output, visited, include_push_constant))
+					input.iter().any(|input| node_requires_resource_context(input, visited))
+						|| output.iter().any(|output| node_requires_resource_context(output, visited))
 				}
 				besl::Nodes::Parameter { r#type, .. }
 				| besl::Nodes::Member { r#type, .. }
 				| besl::Nodes::Specialization { r#type, .. }
 				| besl::Nodes::Input { format: r#type, .. }
-				| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited, include_push_constant),
+				| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited),
 				besl::Nodes::Expression(expression) => match expression {
 					besl::Expressions::Operator { left, right, .. } => {
-						node_requires_resource_context(left, visited, include_push_constant)
-							|| node_requires_resource_context(right, visited, include_push_constant)
+						node_requires_resource_context(left, visited) || node_requires_resource_context(right, visited)
 					}
 					besl::Expressions::FunctionCall {
 						function, parameters, ..
 					} => {
-						node_requires_resource_context(&function.get(), visited, include_push_constant)
+						node_requires_resource_context(&function.get(), visited)
 							|| parameters
 								.iter()
-								.any(|parameter| node_requires_resource_context(parameter, visited, include_push_constant))
+								.any(|parameter| node_requires_resource_context(parameter, visited))
 					}
 					besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
 						arguments
 							.iter()
-							.any(|argument| node_requires_resource_context(argument, visited, include_push_constant))
+							.any(|argument| node_requires_resource_context(argument, visited))
 							|| elements
 								.iter()
-								.any(|element| node_requires_resource_context(element, visited, include_push_constant))
+								.any(|element| node_requires_resource_context(element, visited))
 					}
 					besl::Expressions::Expression { elements } => elements
 						.iter()
-						.any(|element| node_requires_resource_context(element, visited, include_push_constant)),
-					besl::Expressions::Macro { body, .. } => {
-						node_requires_resource_context(body, visited, include_push_constant)
-					}
-					besl::Expressions::Member { source, .. } => {
-						node_requires_resource_context(source, visited, include_push_constant)
-					}
-					besl::Expressions::VariableDeclaration { r#type, .. } => {
-						node_requires_resource_context(r#type, visited, include_push_constant)
-					}
+						.any(|element| node_requires_resource_context(element, visited)),
+					besl::Expressions::Macro { body, .. } => node_requires_resource_context(body, visited),
+					besl::Expressions::Member { source, .. } => node_requires_resource_context(source, visited),
+					besl::Expressions::VariableDeclaration { r#type, .. } => node_requires_resource_context(r#type, visited),
 					besl::Expressions::Return { value } => value
 						.as_ref()
-						.is_some_and(|value| node_requires_resource_context(value, visited, include_push_constant)),
+						.is_some_and(|value| node_requires_resource_context(value, visited)),
 					besl::Expressions::Accessor { left, right } => {
-						node_requires_resource_context(left, visited, include_push_constant)
-							|| node_requires_resource_context(right, visited, include_push_constant)
+						node_requires_resource_context(left, visited) || node_requires_resource_context(right, visited)
 					}
 					besl::Expressions::Literal { .. }
 					| besl::Expressions::Continue
@@ -455,6 +305,6 @@ impl<A: Allocator + Clone> Generator<A> {
 			result
 		}
 
-		node_requires_resource_context(function_node, &mut Vec::new_in(self.allocator.clone()), include_push_constant)
+		node_requires_resource_context(function_node, &mut Vec::new_in(self.allocator.clone()))
 	}
 }

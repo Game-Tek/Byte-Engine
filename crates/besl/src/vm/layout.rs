@@ -114,6 +114,38 @@ pub enum ValueType {
 	},
 }
 
+/// Pairs each fieldless [`ValueType`] with its BESL type name. [`ValueType::name`] and [`ValueType::builtin`] both
+/// read it, so the two directions cannot drift apart. Add new built-in value types here.
+static BUILTIN_VALUE_TYPES: [(&str, ValueType); 27] = [
+	("bool", ValueType::Bool),
+	("u8", ValueType::U8),
+	("u16", ValueType::U16),
+	("u32", ValueType::U32),
+	("i32", ValueType::I32),
+	("f16", ValueType::F16),
+	("f32", ValueType::F32),
+	("vec2u16", ValueType::Vec2U16),
+	("vec4u16", ValueType::Vec4U16),
+	("vec2i", ValueType::Vec2I),
+	("vec3u", ValueType::Vec3U),
+	("vec2u", ValueType::Vec2U),
+	("vec4u", ValueType::Vec4U),
+	("vec2f16", ValueType::Vec2F16),
+	("vec3f16", ValueType::Vec3F16),
+	("vec4f16", ValueType::Vec4F16),
+	("vec2f", ValueType::Vec2F),
+	("vec3f", ValueType::Vec3F),
+	("vec4f", ValueType::Vec4F),
+	("packed_vec4f", ValueType::PackedVec4F),
+	("mat4f", ValueType::Mat4F),
+	("mat4x3f", ValueType::Mat4x3F),
+	("Texture2D", ValueType::Texture2D),
+	("Texture3D", ValueType::Texture3D),
+	("TextureCube", ValueType::TextureCube),
+	("TextureCubeArray", ValueType::TextureCubeArray),
+	("ArrayTexture2D", ValueType::ArrayTexture2D),
+];
+
 impl ValueType {
 	pub const fn size(&self) -> usize {
 		match self {
@@ -143,37 +175,26 @@ impl ValueType {
 		}
 	}
 
+	/// Names this type the way BESL source spells it.
 	pub(super) fn name(&self) -> &str {
 		match self {
-			ValueType::Bool => "bool",
-			ValueType::U8 => "u8",
-			ValueType::U16 => "u16",
-			ValueType::U32 => "u32",
-			ValueType::I32 => "i32",
-			ValueType::F16 => "f16",
-			ValueType::F32 => "f32",
-			ValueType::Vec2U16 => "vec2u16",
-			ValueType::Vec4U16 => "vec4u16",
-			ValueType::Vec2I => "vec2i",
-			ValueType::Vec3U => "vec3u",
-			ValueType::Vec2U => "vec2u",
-			ValueType::Vec4U => "vec4u",
-			ValueType::Vec2F16 => "vec2f16",
-			ValueType::Vec3F16 => "vec3f16",
-			ValueType::Vec4F16 => "vec4f16",
-			ValueType::Vec2F => "vec2f",
-			ValueType::Vec3F => "vec3f",
-			ValueType::Vec4F => "vec4f",
-			ValueType::PackedVec4F => "packed_vec4f",
-			ValueType::Mat4F => "mat4f",
-			ValueType::Mat4x3F => "mat4x3f",
-			ValueType::Texture2D => "Texture2D",
-			ValueType::Texture3D => "Texture3D",
-			ValueType::TextureCube => "TextureCube",
-			ValueType::TextureCubeArray => "TextureCubeArray",
-			ValueType::ArrayTexture2D => "ArrayTexture2D",
 			ValueType::Struct { name, .. } => name,
+			builtin => {
+				BUILTIN_VALUE_TYPES
+					.iter()
+					.find(|(_, value_type)| value_type == builtin)
+					.expect("Every fieldless ValueType has a BUILTIN_VALUE_TYPES entry")
+					.0
+			}
 		}
+	}
+
+	/// Resolves a built-in BESL type name, or returns `None` for struct and unknown names.
+	pub(super) fn builtin(name: &str) -> Option<Self> {
+		BUILTIN_VALUE_TYPES
+			.iter()
+			.find(|(builtin_name, _)| *builtin_name == name)
+			.map(|(_, value_type)| value_type.clone())
 	}
 
 	pub(super) fn field(&self, name: &str) -> Option<&BufferMemberLayout> {

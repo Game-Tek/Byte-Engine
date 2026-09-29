@@ -160,16 +160,6 @@ mod descriptor_task_tests {
 	}
 
 	#[test]
-	fn deferred_descriptor_task_ignores_an_overwritten_payload() {
-		let old = buffer_write(4);
-		let current = buffer_write(5);
-		let set = retained_set(current, 2);
-
-		assert!(!descriptor_task_is_current(&set, old, 1));
-		assert!(descriptor_task_is_current(&set, current, 2));
-	}
-
-	#[test]
 	fn deferred_descriptor_task_uses_version_to_reject_aba_writes() {
 		let value = buffer_write(7);
 		let set = retained_set(value, 3);

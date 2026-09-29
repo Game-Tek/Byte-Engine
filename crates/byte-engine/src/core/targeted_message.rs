@@ -59,57 +59,6 @@ where
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use std::cell::Cell;
-
-	use super::*;
-	use crate::core::{factory::Factory, message::Message};
-
-	/// The `TestMessage` struct captures one targeted payload for API verification.
-	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-	struct TestMessage {
-		handle: Handle,
-		payload: u32,
-	}
-
-	impl Message for TestMessage {}
-
-	impl TargetedMessage for TestMessage {
-		type Payload = u32;
-
-		fn from_handle_and_payload(handle: Handle, payload: Self::Payload) -> Self {
-			Self { handle, payload }
-		}
-	}
-
-	/// The `TestPublisher` struct records the most recently published test message.
-	#[derive(Default)]
-	struct TestPublisher {
-		published: Cell<Option<TestMessage>>,
-	}
-
-	impl Publisher<TestMessage> for TestPublisher {
-		fn publish(&self, message: TestMessage) {
-			self.published.set(Some(message));
-		}
-	}
-
-	impl TargetedMessagePublisher<u32> for TestPublisher {
-		type Message = TestMessage;
-	}
-
-	#[test]
-	fn targeted_payload_is_published_to_the_selected_handle() {
-		let handle = Factory::new().create(());
-		let publisher = TestPublisher::default();
-
-		publisher.set(42).on(handle);
-
-		assert_eq!(publisher.published.get(), Some(TestMessage { handle, payload: 42 }));
-	}
-}
-
 use std::marker::PhantomData;
 
 use crate::core::{factory::Handle, message::Message, publisher::Publisher};

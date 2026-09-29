@@ -124,9 +124,11 @@ pub(super) fn material_reconstruction_features(main: &mut Node<'_>) -> MaterialR
 			features.uses_tangent_frame |= *name != "sample_material";
 		}
 		// Assigning anything but the canonical no-normal-map value needs the tangent frame.
-		Expressions::Operator { name: "=", left, right }
-			if member_name(left) == Some("normal") && !is_default_tangent_normal(right) =>
-		{
+		Expressions::Operator {
+			operator: besl::Operators::Assignment,
+			left,
+			right,
+		} if member_name(left) == Some("normal") && !is_default_tangent_normal(right) => {
 			features.uses_uv = true;
 			features.uses_tangent_frame = true;
 		}
@@ -205,7 +207,12 @@ pub(super) fn material_evaluation_suffix_statements(features: MaterialReconstruc
 /// Narrows material property assignments so every material graph uses the compact evaluation ABI.
 pub(super) fn narrow_material_property_assignments(main: &mut Node<'_>) {
 	walk_expressions(main, &mut |expression| {
-		let Expressions::Operator { name: "=", left, right } = expression else {
+		let Expressions::Operator {
+			operator: besl::Operators::Assignment,
+			left,
+			right,
+		} = expression
+		else {
 			return;
 		};
 		let target_type = match member_name(left) {

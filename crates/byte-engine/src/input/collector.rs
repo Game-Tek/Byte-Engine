@@ -12,9 +12,9 @@ use log::warn;
 
 use super::device::DeviceClassHandle;
 use super::gesture::TriggerMapping;
-use super::queue::{Queue, Record};
+use super::queue::Queue;
 use super::registry::Registry;
-use super::trigger::{TriggerDescription, TriggerReference, TriggerRegistry};
+use super::trigger::{TriggerDescription, TriggerReference};
 use super::{ActionBindingDescription, DeviceHandle, InputValue, SeatHandle, TriggerHandle, Value};
 
 /// The `SinkHandle` struct identifies one sink pulling from a collector.
@@ -59,7 +59,7 @@ pub struct SourceEvent {
 
 /// The `InputCollector` struct is where every source event ends up before sinks act on it.
 ///
-/// Register controls through [`TriggerRegistry`], create devices with
+/// Register controls with [`Self::register_trigger`], create devices with
 /// [`Self::create_device`], and queue their values with [`Self::record`]. Take
 /// one [`SinkHandle`] per sink with [`Self::add_sink`]. Each tick, let the sinks
 /// pull in priority order. Every sink must keep pulling: records stay queued
@@ -76,7 +76,7 @@ impl<A: Allocator + Clone + Default> Default for InputCollector<A> {
 }
 
 impl InputCollector {
-	/// Creates an empty collector. Next, register controls through [`TriggerRegistry`].
+	/// Creates an empty collector. Next, register controls with [`Self::register_trigger`].
 	pub fn new() -> Self {
 		Self::new_in(Global)
 	}
@@ -87,7 +87,7 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	///
 	/// Retain the allocator for the collector's lifetime; the queue reuses its
 	/// storage and preserves held controls. Next, register controls through
-	/// [`TriggerRegistry`] and create a device with [`Self::create_device`].
+	/// [`Self::register_trigger`] and create a device with [`Self::create_device`].
 	///
 	/// ```
 	/// use byte_engine::{
@@ -112,6 +112,31 @@ impl<A: Allocator + Clone> InputCollector<A> {
 			registry: Registry::new_in(allocator.clone()),
 			queue: Queue::new_in(allocator),
 		}
+	}
+
+	/// Registers a named device class, such as `Keyboard`.
+	///
+	/// Use PascalCase for `name` so trigger paths stay consistent. The helpers in
+	/// [`utils`](super::utils) register the standard classes. Next, register the class's
+	/// controls with [`Self::register_trigger`].
+	pub fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
+		self.registry.register_device_class(name)
+	}
+
+	/// Registers a named trigger on a device class.
+	///
+	/// `description` defines the trigger's initial value, its valid Rust type,
+	/// and whether records are impulses. Use the returned [`TriggerHandle`] to
+	/// bind actions or record values.
+	pub fn register_trigger<T: InputValue + Into<Value>>(
+		&mut self,
+		device_class: &DeviceClassHandle,
+		name: &str,
+		description: TriggerDescription<T>,
+	) -> TriggerHandle {
+		let trigger = self.registry.register_trigger(device_class, name, description);
+		self.queue.layout(self.registry.device_count(), self.registry.trigger_count());
+		trigger
 	}
 
 	/// Registers one sink. Pass its handle to [`InputSink::new`](super::InputSink::new).
@@ -202,27 +227,5 @@ impl<A: Allocator + Clone> InputCollector<A> {
 	/// Exposes the queue to a pulling sink.
 	pub(super) fn queue_mut(&mut self) -> &mut Queue<A> {
 		&mut self.queue
-	}
-
-	/// Returns a control's latest record, for sinks that read state outside a pull.
-	pub(super) fn latest(&self, seat: SeatHandle, device: DeviceHandle, trigger: TriggerHandle) -> Option<Record> {
-		self.queue.latest(&(seat, device, trigger))
-	}
-}
-
-impl<A: Allocator + Clone> TriggerRegistry for InputCollector<A> {
-	fn register_device_class(&mut self, name: &str) -> DeviceClassHandle {
-		self.registry.register_device_class(name)
-	}
-
-	fn register_trigger<T: InputValue + Into<Value>>(
-		&mut self,
-		device_class: &DeviceClassHandle,
-		name: &str,
-		description: TriggerDescription<T>,
-	) -> TriggerHandle {
-		let trigger = self.registry.register_trigger(device_class, name, description);
-		self.queue.layout(self.registry.device_count(), self.registry.trigger_count());
-		trigger
 	}
 }

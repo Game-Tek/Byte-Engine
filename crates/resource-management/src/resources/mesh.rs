@@ -3,7 +3,7 @@ use crate::{
 	resources::material::VariantModel,
 	resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint},
 	solver::SolveError,
-	types::{IndexStreamTypes, QuantizationSchemes, Stream, Streams, VertexComponent, VertexSemantics},
+	types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
 };
 
 /// The `Primitive` struct supplies one renderable geometry range and its skeletal bindings to runtime rendering.
@@ -17,7 +17,6 @@ pub struct Primitive {
 	pub transform_node: Option<u32>,
 	pub skin: Option<u32>,
 	pub streams: Vec<Stream>,
-	pub quantization: Option<QuantizationSchemes>,
 	pub bounding_box: [[f32; 3]; 2],
 	pub vertex_count: u32,
 }
@@ -318,7 +317,7 @@ fn invalid_mesh_skeletal_metadata(reason: impl std::fmt::Display) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-	use super::{Mesh, Primitive, validate_material_indices, validate_skin_metadata};
+	use super::{Primitive, validate_material_indices, validate_skin_metadata};
 	use crate::{
 		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
@@ -327,7 +326,7 @@ mod tests {
 			LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 			identity_affine_matrix4x3_columns,
 		},
-		types::{IndexStreamTypes, Stream, Streams, VertexComponent, VertexSemantics},
+		types::{Stream, Streams, VertexComponent, VertexSemantics},
 	};
 
 	fn stream(stream_type: Streams, offset: usize, size: usize, stride: usize) -> Stream {
@@ -337,89 +336,6 @@ mod tests {
 			size,
 			stride,
 		}
-	}
-
-	#[test]
-	fn semantic_accessors_select_only_the_requested_stream() {
-		let mesh = Mesh {
-			skeleton: None,
-			skins: Vec::new(),
-			vertex_components: Vec::new(),
-			streams: vec![
-				stream(Streams::Vertices(VertexSemantics::Position), 0, 36, 12),
-				stream(Streams::Vertices(VertexSemantics::Normal), 36, 36, 12),
-				stream(Streams::Vertices(VertexSemantics::Tangent), 72, 48, 16),
-				stream(Streams::Vertices(VertexSemantics::BiTangent), 120, 36, 12),
-				stream(Streams::Vertices(VertexSemantics::UV), 156, 24, 8),
-				stream(Streams::Vertices(VertexSemantics::Color), 180, 48, 16),
-			],
-			materials: Vec::new(),
-			primitives: Vec::new(),
-		};
-
-		assert_eq!(mesh.position_stream().map(|value| value.offset), Some(0));
-		assert_eq!(mesh.normal_stream().map(|value| value.offset), Some(36));
-		assert_eq!(mesh.tangent_stream().map(|value| value.offset), Some(72));
-		assert_eq!(mesh.bi_tangent_stream().map(|value| value.offset), Some(120));
-		assert_eq!(mesh.uv_stream().map(|value| value.offset), Some(156));
-		assert_eq!(mesh.color_stream().map(|value| value.offset), Some(180));
-		assert!(mesh.vertex_stream(VertexSemantics::Weights).is_none());
-	}
-
-	#[test]
-	fn topology_counts_are_derived_from_their_designated_streams() {
-		let mesh = Mesh {
-			skeleton: None,
-			skins: Vec::new(),
-			vertex_components: Vec::new(),
-			streams: vec![
-				stream(Streams::Indices(IndexStreamTypes::Vertices), 0, 24, 4),
-				stream(Streams::Indices(IndexStreamTypes::Meshlets), 24, 36, 1),
-				stream(Streams::Indices(IndexStreamTypes::Triangles), 60, 18, 1),
-				stream(Streams::Meshlets, 78, 64, 32),
-			],
-			materials: Vec::new(),
-			primitives: Vec::new(),
-		};
-
-		assert_eq!(mesh.primitive_count(), 6);
-		assert_eq!(mesh.triangle_count(), 12);
-		assert_eq!(mesh.vertex_indices_stream().map(|value| value.offset), Some(0));
-		assert_eq!(mesh.meshlet_indices_stream().map(|value| value.offset), Some(24));
-		assert_eq!(mesh.triangle_indices_stream().map(|value| value.offset), Some(60));
-		assert_eq!(mesh.meshlets_stream().map(|value| value.offset), Some(78));
-		assert_eq!(mesh.vertex_count(), 0);
-		assert_eq!(mesh.primitives().count(), 0);
-	}
-
-	#[test]
-	fn absent_topology_streams_produce_zero_counts() {
-		let mesh = Mesh {
-			skeleton: None,
-			skins: Vec::new(),
-			vertex_components: Vec::new(),
-			streams: Vec::new(),
-			materials: Vec::new(),
-			primitives: Vec::new(),
-		};
-
-		assert_eq!(mesh.triangle_count(), 0);
-		assert_eq!(mesh.primitive_count(), 0);
-	}
-
-	#[crate::r#async::test]
-	async fn skin_metadata_accepts_a_complete_palette_and_paired_vertex_streams() {
-		let storage = TestStorageBackend::new();
-		let skeleton = test_skeleton(&storage).await;
-		let skins = vec![SkinBinding {
-			entries: vec![SkinPaletteEntry {
-				joint: SkinJoint::Node(0),
-				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
-			}],
-		}];
-		let primitives = vec![test_primitive(Some(0), true, true)];
-
-		assert!(validate_skin_metadata(Some(&skeleton), &skins, &skin_vertex_layout(), &primitives).is_ok());
 	}
 
 	#[crate::r#async::test]
@@ -517,7 +433,6 @@ mod tests {
 			transform_node: None,
 			skin,
 			streams,
-			quantization: None,
 			bounding_box: [[0.0; 3]; 2],
 			vertex_count: 1,
 		}

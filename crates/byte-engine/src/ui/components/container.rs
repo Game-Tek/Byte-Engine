@@ -2,11 +2,7 @@ use super::super::{
 	flow,
 	layout::{Depth, Position, Sizing},
 };
-use crate::ui::{
-	Transform, Visual,
-	flow::{FlowInput, FlowOutput},
-	style::ConcreteStyle,
-};
+use crate::ui::flow::{FlowInput, FlowOutput};
 
 /// An annular sector a container is shaped as instead of a rounded rectangle.
 ///
@@ -73,37 +69,26 @@ impl Sector {
 /// The engine owns every container. Declare one with [`crate::ui::ElementContext::container`] and edit it with
 /// [`crate::ui::EvaluationContext::update_container`]; both hand you [`crate::ui::Properties`] setters.
 pub struct Container {
-	pub(crate) min_width: Option<Sizing>,
-	pub(crate) min_height: Option<Sizing>,
 	pub width: Sizing,
 	pub height: Sizing,
 	pub corner_radius: f32,
 	pub corner_exponent: f32,
 	pub sector: Option<Sector>,
-	pub(crate) max_width: Option<Sizing>,
-	pub(crate) max_height: Option<Sizing>,
 	pub depth: Depth,
 	pub position: Position,
 	pub clip: bool,
 	pub(crate) hit_testable: bool,
-	pub flow: utils::InlineCopyFn<fn(FlowInput) -> FlowOutput>,
-	pub(crate) style: ConcreteStyle,
-	pub(crate) transform: Transform,
-	pub(crate) visual: Visual,
+	pub flow: utils::InlineCopyFn<FlowInput, FlowOutput>,
 }
 
 /// Every fixed-size container property, compared to prove an edit changed nothing.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct ContainerProperties {
-	min_width: Option<Sizing>,
-	min_height: Option<Sizing>,
 	width: Sizing,
 	height: Sizing,
 	corner_radius: f32,
 	corner_exponent: f32,
 	sector: Option<Sector>,
-	max_width: Option<Sizing>,
-	max_height: Option<Sizing>,
 	depth: Depth,
 	position: Position,
 	clip: bool,
@@ -115,33 +100,17 @@ impl Container {
 	/// Returns the fixed-size properties, or `None` when a custom flow keeps them from being compared.
 	pub(crate) fn properties(&self) -> Option<ContainerProperties> {
 		Some(ContainerProperties {
-			min_width: self.min_width,
-			min_height: self.min_height,
 			width: self.width,
 			height: self.height,
 			corner_radius: self.corner_radius,
 			corner_exponent: self.corner_exponent,
 			sector: self.sector,
-			max_width: self.max_width,
-			max_height: self.max_height,
 			depth: self.depth,
 			position: self.position,
 			clip: self.clip,
 			hit_testable: self.hit_testable,
 			flow: flow::placement_key(&self.flow)?,
 		})
-	}
-
-	pub fn style_ref(&self) -> &ConcreteStyle {
-		&self.style
-	}
-
-	pub fn transform_ref(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn visual_ref(&self) -> &Visual {
-		&self.visual
 	}
 }
 
@@ -153,18 +122,11 @@ impl Default for Container {
 			corner_radius: 0.0,
 			corner_exponent: 2.0,
 			sector: None,
-			min_width: None,
-			min_height: None,
-			max_width: None,
-			max_height: None,
 			depth: Depth::default(),
 			position: Position::default(),
 			clip: true,
 			hit_testable: true,
-			flow: utils::InlineCopyFn::<fn(FlowInput) -> FlowOutput>::new(flow::grid),
-			style: ConcreteStyle::default(),
-			transform: Transform::default(),
-			visual: Visual::default(),
+			flow: utils::InlineCopyFn::<FlowInput, FlowOutput>::new(flow::grid),
 		}
 	}
 }

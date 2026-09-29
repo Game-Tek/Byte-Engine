@@ -30,9 +30,9 @@ Pass components as async closures or async functions that take
 
 - `layout::engine::Engine` evaluates retained UI and produces render data.
 - `Context` and `ContainerContext` are the component-facing construction and event APIs.
-- `Container`, `Text`, `TextField`, `Image`, `Curve`, and `Shape` are the current built-in primitives.
+- `Container`, `Text`, `Image`, `Curve`, and `Path` are the current built-in primitives. Declare a text field with `text_field`: it is a `Text` that receives text edits while focused.
 - `UiRenderPass` turns evaluated UI render data into GPU draw work.
-- `ConcreteStyle`, `ConcreteLayer`, `Transform`, and `Visual` hold styling, animation-oriented transforms, and opacity.
+- `ConcreteStyle`, `ConcreteLayer`, and `Transform` hold styling and animation-oriented transforms; set opacity with the `opacity` property.
 
 The layout layer stays small by design.
 Containers own sizing, positioning, flow, clipping, style, and visual data.
@@ -46,7 +46,7 @@ font sizes together, so one transform on a content layer zooms a canvas.
 
 UI events are futures that your component can await.
 A component can wait for pointer-style events, keys, text edits, timers, or render ticks.
-Text input is app-owned: `TextField` emits edit deltas such as inserted and deleted characters, and application state decides how to apply them.
+Text input is app-owned: a text field emits edit deltas such as inserted and deleted characters, and application state decides how to apply them. Write the result back with `update_text`.
 
 Components request and release focus explicitly. Send key and text-edit events to
 the focused element.

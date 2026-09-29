@@ -1,4 +1,14 @@
 use super::*;
+
+/// Reports whether Metal stores a member declared directly in a buffer binding as a packed type.
+///
+/// The MSL emitter and storage-layout reflection both call it, so reflected buffer strides always match the emitted
+/// Metal struct layout. Array members, and 16-bit vectors in mixed structs, are packed; other members keep their
+/// natural Metal alignment.
+pub(crate) fn msl_packs_direct_binding_member(type_name: &str, is_array: bool) -> bool {
+	is_array || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16")
+}
+
 impl<A: Allocator + Clone> Generator<A> {
 	pub(crate) fn emit_push_constant_struct(&mut self, string: &mut String, push_constant: &besl::NodeReference) {
 		let node = push_constant.borrow();
@@ -234,9 +244,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, param);
 		}
 
-		if let Some(push_constant) = push_constant {
+		if push_constant.is_some() {
 			self.emit_separator(string);
-			self.emit_compute_push_constant_parameter(string, push_constant);
+			self.emit_push_constant_parameter(string);
 		}
 
 		match self.compute_binding_mode {
@@ -321,11 +331,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		if let Some(push_constant) = push_constant {
+		if push_constant.is_some() {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			self.emit_mesh_push_constant_parameter(string, push_constant);
+			self.emit_push_constant_parameter(string);
 			has_previous_parameter = true;
 		}
 		if has_resources {
@@ -409,11 +419,11 @@ impl<A: Allocator + Clone> Generator<A> {
 			has_previous_parameter = true;
 		}
 
-		if let Some(push_constant) = push_constant {
+		if push_constant.is_some() {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			self.emit_mesh_push_constant_parameter(string, push_constant);
+			self.emit_push_constant_parameter(string);
 			has_previous_parameter = true;
 		}
 
@@ -448,18 +458,12 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_block_end(string);
 	}
 
-	pub(crate) fn emit_mesh_push_constant_parameter(&self, string: &mut String, _push_constant: &besl::NodeReference) {
-		string.push_str(&format!(
-			"constant PushConstant& push_constant [[buffer({})]]",
-			PUSH_CONSTANT_BINDING_INDEX
-		));
-	}
-
-	pub(crate) fn emit_compute_push_constant_parameter(&self, string: &mut String, _push_constant: &besl::NodeReference) {
-		string.push_str(&format!(
-			"constant PushConstant& push_constant [[buffer({})]]",
-			PUSH_CONSTANT_BINDING_INDEX
-		));
+	/// Writes the entry-point parameter that binds the push-constant block at its fixed Metal buffer slot.
+	pub(crate) fn emit_push_constant_parameter(&self, string: &mut String) {
+		let _ = write!(
+			string,
+			"constant PushConstant& push_constant [[buffer({PUSH_CONSTANT_BINDING_INDEX})]]"
+		);
 	}
 
 	pub(crate) fn emit_compute_binding_parameter(&self, string: &mut String, binding_node: &besl::NodeReference) {
@@ -556,357 +560,130 @@ impl<A: Allocator + Clone> Generator<A> {
 		Self::identifier(name).push_to(string);
 	}
 
-	pub(crate) fn emit_task_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(task_stage_context) = &self.task_stage_context else {
-			return;
-		};
-
-		let mut has_previous_parameter = has_previous_parameter;
-		if task_stage_context.has_push_constant {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("constant PushConstant& push_constant");
-			has_previous_parameter = true;
-		}
-		if task_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("constant _resources& resources");
-			has_previous_parameter = true;
-		}
-		if task_stage_context.has_task_payload {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("object_data ObjectPayload& payload");
-			has_previous_parameter = true;
-		}
-		for parameter in ["uint thread_position", "uint thread_index"] {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str(parameter);
-			has_previous_parameter = true;
-		}
-		for workgroup in &task_stage_context.workgroups {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("threadgroup ");
-			string.push_str(&workgroup.msl_type);
-			if workgroup.count.is_some() {
-				string.push_str("* ");
-			} else {
-				string.push_str("& ");
-			}
-			Self::identifier(&workgroup.name).push_to(string);
-			has_previous_parameter = true;
-		}
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("thread mesh_grid_properties& mesh_grid");
-	}
-
-	pub(crate) fn emit_task_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(task_stage_context) = &self.task_stage_context else {
-			return;
-		};
-
-		let mut has_previous_parameter = has_previous_parameter;
-		if task_stage_context.has_push_constant {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("push_constant");
-			has_previous_parameter = true;
-		}
-		if task_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("resources");
-			has_previous_parameter = true;
-		}
-		if task_stage_context.has_task_payload {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("payload");
-			has_previous_parameter = true;
-		}
-		for argument in ["thread_position", "thread_index"] {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str(argument);
-			has_previous_parameter = true;
-		}
-		for workgroup in &task_stage_context.workgroups {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			Self::identifier(&workgroup.name).push_to(string);
-			has_previous_parameter = true;
-		}
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("mesh_grid");
-	}
-
-	pub(crate) fn emit_mesh_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(mesh_stage_context) = &self.mesh_stage_context else {
-			return;
-		};
-
-		let mut has_previous_parameter = has_previous_parameter;
-
-		if mesh_stage_context.has_push_constant {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("constant PushConstant& push_constant");
-			has_previous_parameter = true;
-		}
-
-		if mesh_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("constant _resources& resources");
-			has_previous_parameter = true;
-		}
-
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("uint threadgroup_position");
-		self.emit_separator(string);
-		string.push_str("uint thread_index");
-		if mesh_stage_context.has_task_payload {
-			self.emit_separator(string);
-			string.push_str("const object_data ObjectPayload& payload");
-		}
-		self.emit_separator(string);
-		string.push_str(&format!(
-			"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> out_mesh",
-			mesh_stage_context.maximum_vertices, mesh_stage_context.maximum_primitives
-		));
-	}
-
-	pub(crate) fn emit_mesh_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(mesh_stage_context) = &self.mesh_stage_context else {
-			return;
-		};
-
-		let mut has_previous_parameter = has_previous_parameter;
-
-		if mesh_stage_context.has_push_constant {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("push_constant");
-			has_previous_parameter = true;
-		}
-
-		if mesh_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("resources");
-			has_previous_parameter = true;
-		}
-
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("threadgroup_position");
-		self.emit_separator(string);
-		string.push_str("thread_index");
-		if mesh_stage_context.has_task_payload {
-			self.emit_separator(string);
-			string.push_str("payload");
-		}
-		self.emit_separator(string);
-		string.push_str("out_mesh");
-	}
-
-	pub(crate) fn emit_compute_hidden_parameters(
+	/// Writes the implicit stage context of a BESL function: its declaration after the function's own parameters when
+	/// `declare` is true, or the matching forwarded arguments at a call to it otherwise.
+	///
+	/// Metal has no module-level resources, push constants, workgroup storage, or stage builtins, so every helper that
+	/// reaches them receives them as extra parameters. Declarations and calls walk the same list, so they always agree.
+	/// Stage entry points write their own parameter lists, so `main` receives a context here only in a mesh stage.
+	/// Call it from [`crate::shader::generator::NodeEmitter::emit_function_extra_parameters`], from
+	/// [`Self::emit_function_prototype`], and from
+	/// [`crate::shader::generator::NodeEmitter::emit_function_call_extra_arguments`].
+	pub(crate) fn emit_hidden_context(
 		&self,
 		string: &mut String,
+		function: &besl::NodeReference,
 		has_previous_parameter: bool,
-		uses_simd_lane_id: bool,
+		declare: bool,
 	) {
-		if self.mesh_stage_context.is_some() {
-			self.emit_mesh_hidden_parameters(string, has_previous_parameter);
-			return;
-		}
-
-		let Some(compute_stage_context) = &self.compute_stage_context else {
-			return;
+		let is_main = match function.borrow().node() {
+			besl::Nodes::Function { name, .. } => name == "main",
+			// Struct constructors and intrinsics take no hidden context.
+			_ => return,
 		};
 
-		if !self.in_compute_body {
-			return;
-		}
-
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("uint2 gid");
-		self.emit_separator(string);
-		string.push_str("uint thread_index");
-		self.emit_separator(string);
-		string.push_str("uint2 threadgroup_position");
-		if uses_simd_lane_id {
-			self.emit_separator(string);
-			string.push_str("uint simd_lane_id");
-		}
-
-		if compute_stage_context.has_push_constant {
-			self.emit_separator(string);
-			string.push_str("constant PushConstant& push_constant");
-		}
-
-		if compute_stage_context.has_resources {
-			self.emit_separator(string);
-			string.push_str("constant _resources& resources");
-		}
-
-		for workgroup in &compute_stage_context.workgroups {
-			self.emit_separator(string);
-			string.push_str("threadgroup ");
-			string.push_str(&workgroup.msl_type);
-			if workgroup.count.is_some() {
-				string.push_str("* ");
-			} else {
-				string.push_str("& ");
-			}
-			Self::identifier(&workgroup.name).push_to(string);
-		}
-	}
-
-	/// Adds argument-buffer parameters to raster helpers that access BESL bindings.
-	pub(crate) fn emit_raster_hidden_parameters(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(raster_stage_context) = &self.raster_stage_context else {
-			return;
-		};
-
+		// Writes one entry. Declarations get the type prefix; forwarded arguments are the parameter name alone.
 		let mut has_previous_parameter = has_previous_parameter;
-		if raster_stage_context.has_push_constant {
+		let mut push = |string: &mut String, declaration: std::fmt::Arguments<'_>, name: &dyn std::fmt::Display| {
 			if has_previous_parameter {
 				self.emit_separator(string);
 			}
-			string.push_str("constant PushConstant& push_constant");
 			has_previous_parameter = true;
-		}
-		if raster_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
+			if declare {
+				let _ = string.write_fmt(declaration);
 			}
-			string.push_str("constant _resources& resources");
-			has_previous_parameter = true;
-		}
-		for (used, name) in [
-			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
-			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
-		] {
-			if !used {
-				continue;
-			}
-			if has_previous_parameter {
-				self.emit_separator(string);
-			}
-			string.push_str("uint ");
-			string.push_str(name);
-			has_previous_parameter = true;
-		}
-	}
-
-	pub(crate) fn emit_compute_hidden_call_arguments(
-		&self,
-		string: &mut String,
-		has_previous_parameter: bool,
-		uses_simd_lane_id: bool,
-	) {
-		if self.mesh_stage_context.is_some() {
-			self.emit_mesh_hidden_call_arguments(string, has_previous_parameter);
-			return;
-		}
-
-		let Some(compute_stage_context) = &self.compute_stage_context else {
-			return;
+			let _ = write!(string, "{name}");
 		};
 
-		if !self.in_compute_body {
-			return;
-		}
-
-		if has_previous_parameter {
-			self.emit_separator(string);
-		}
-		string.push_str("gid");
-		self.emit_separator(string);
-		string.push_str("thread_index");
-		self.emit_separator(string);
-		string.push_str("threadgroup_position");
-		if uses_simd_lane_id {
-			self.emit_separator(string);
-			string.push_str("simd_lane_id");
-		}
-
-		if compute_stage_context.has_push_constant {
-			self.emit_separator(string);
-			string.push_str("push_constant");
-		}
-
-		if compute_stage_context.has_resources {
-			self.emit_separator(string);
-			string.push_str("resources");
-		}
-
-		for workgroup in &compute_stage_context.workgroups {
-			self.emit_separator(string);
-			Self::identifier(&workgroup.name).push_to(string);
-		}
-	}
-
-	/// Forwards entry-point argument buffers to binding-dependent raster helpers.
-	pub(crate) fn emit_raster_hidden_call_arguments(&self, string: &mut String, has_previous_parameter: bool) {
-		let Some(raster_stage_context) = &self.raster_stage_context else {
-			return;
-		};
-
-		let mut has_previous_parameter = has_previous_parameter;
-		if raster_stage_context.has_push_constant {
-			if has_previous_parameter {
-				self.emit_separator(string);
+		if is_main {
+			let Some(mesh) = &self.mesh_stage_context else {
+				return;
+			};
+			if mesh.has_push_constant {
+				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
-			string.push_str("push_constant");
-			has_previous_parameter = true;
-		}
-		if raster_stage_context.has_resources {
-			if has_previous_parameter {
-				self.emit_separator(string);
+			if mesh.has_resources {
+				push(string, format_args!("constant _resources& "), &"resources");
 			}
-			string.push_str("resources");
-			has_previous_parameter = true;
-		}
-		for (used, name) in [
-			(raster_stage_context.has_vertex_index, besl::VERTEX_INDEX_BUILTIN),
-			(raster_stage_context.has_instance_index, besl::INSTANCE_INDEX_BUILTIN),
-		] {
-			if !used {
-				continue;
+			push(string, format_args!("uint "), &"threadgroup_position");
+			push(string, format_args!("uint "), &"thread_index");
+			if mesh.has_task_payload {
+				push(string, format_args!("const object_data ObjectPayload& "), &"payload");
 			}
-			if has_previous_parameter {
-				self.emit_separator(string);
+			push(
+				string,
+				format_args!(
+					"metal::mesh<VertexOutput, PrimitiveOutput, {}, {}, topology::triangle> ",
+					mesh.maximum_vertices, mesh.maximum_primitives
+				),
+				&"out_mesh",
+			);
+		} else if let Some(task) = &self.task_stage_context {
+			if task.has_push_constant {
+				push(string, format_args!("constant PushConstant& "), &"push_constant");
 			}
-			string.push_str(name);
-			has_previous_parameter = true;
+			if task.has_resources {
+				push(string, format_args!("constant _resources& "), &"resources");
+			}
+			if task.has_task_payload {
+				push(string, format_args!("object_data ObjectPayload& "), &"payload");
+			}
+			push(string, format_args!("uint "), &"thread_position");
+			push(string, format_args!("uint "), &"thread_index");
+			for workgroup in &task.workgroups {
+				let pointer = if workgroup.count.is_some() { "*" } else { "&" };
+				push(
+					string,
+					format_args!("threadgroup {}{pointer} ", workgroup.msl_type),
+					&Self::identifier(&workgroup.name),
+				);
+			}
+			push(string, format_args!("thread mesh_grid_properties& "), &"mesh_grid");
+		} else if self.in_compute_body {
+			let Some(compute) = &self.compute_stage_context else {
+				return;
+			};
+			// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
+			let uses_simd_lane_id = any_code_node(function, true, &mut |node| is_intrinsic_call(node, "subgroup_lane_index"));
+			if !uses_simd_lane_id && !self.function_requires_resource_context(function) {
+				return;
+			}
+			push(string, format_args!("uint2 "), &"gid");
+			push(string, format_args!("uint "), &"thread_index");
+			push(string, format_args!("uint2 "), &"threadgroup_position");
+			if uses_simd_lane_id {
+				push(string, format_args!("uint "), &"simd_lane_id");
+			}
+			if compute.has_push_constant {
+				push(string, format_args!("constant PushConstant& "), &"push_constant");
+			}
+			if compute.has_resources {
+				push(string, format_args!("constant _resources& "), &"resources");
+			}
+			for workgroup in &compute.workgroups {
+				let pointer = if workgroup.count.is_some() { "*" } else { "&" };
+				push(
+					string,
+					format_args!("threadgroup {}{pointer} ", workgroup.msl_type),
+					&Self::identifier(&workgroup.name),
+				);
+			}
+		} else if let Some(raster) = &self.raster_stage_context {
+			if !raster.has_hidden_inputs() && !self.function_requires_resource_context(function) {
+				return;
+			}
+			if raster.has_push_constant {
+				push(string, format_args!("constant PushConstant& "), &"push_constant");
+			}
+			if raster.has_resources {
+				push(string, format_args!("constant _resources& "), &"resources");
+			}
+			if raster.has_vertex_index {
+				push(string, format_args!("uint "), &besl::VERTEX_INDEX_BUILTIN);
+			}
+			if raster.has_instance_index {
+				push(string, format_args!("uint "), &besl::INSTANCE_INDEX_BUILTIN);
+			}
 		}
 	}
 }

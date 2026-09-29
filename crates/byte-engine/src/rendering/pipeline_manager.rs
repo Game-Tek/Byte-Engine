@@ -1,5 +1,4 @@
 use smallvec::SmallVec;
-use utils::{Box, Extent, hash::HashMap, sync::RwLock};
 
 use crate::{
 	rendering::{
@@ -42,6 +41,9 @@ pub trait PipelineManager {
 	///
 	/// Drain loader completions before publishing newly resident resources to
 	/// waiting scene instances and building draws.
+	///
+	/// Return one command per sink that renders this frame, paired with that sink's [`Sink::index`]. A sink without
+	/// an entry records nothing, so the renderer clears the targets this manager would have written first.
 	fn prepare<'a>(
 		&'a mut self,
 		frame: &mut ghi::implementation::Frame,
@@ -49,7 +51,7 @@ pub trait PipelineManager {
 		frame_allocator: &'a bumpalo::Bump,
 		alpha: f32,
 		time: MediaTime,
-	) -> Option<SmallVec<[RenderPassReturn<'a>; 16]>>;
+	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]>;
 
 	/// Creates the persistent pass state needed by one new render sink.
 	fn create_sink(&mut self, sink_id: usize, render_pass_builder: &mut RenderPassBuilder);

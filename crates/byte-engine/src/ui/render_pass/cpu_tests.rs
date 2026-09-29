@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::ui::{
-	ConcreteLayer, ConcreteStyle, Container, ContainerContext, Context, Curve, CurvePath, CurveSegment, ElementContext, Engine,
-	Size, Text, Transform, UiPoint, flow,
+	ConcreteLayer, ConcreteStyle, ContainerContext, Context, CurvePath, CurveSegment, ElementContext, Engine, Size, Transform,
+	UiPoint, flow,
 };
 
 /// Varies content, visibility, and stroke layers between snapshots.
@@ -35,13 +35,13 @@ fn changing_render(count: usize, phase: usize) -> engine::Render {
 		}
 	});
 	let arena = bumpalo::Bump::new();
-	let snapshot = engine.evaluate(Size::new(800, 800), &arena);
+	engine.evaluate(Size::new(800, 800), &arena);
 	engine.render().clone()
 }
 
 /// Builds a frame's primitives without caches or text.
 fn primitives<'a>(data: &UiDrawList, viewport: Extent, arena: &'a bumpalo::Bump) -> UiPrimitives<'a> {
-	build_ui_primitives_uncached(data, viewport, arena, &mut UiMaskTable::default())
+	build_ui_primitives_uncached(data, viewport, arena, Vec::new(), &mut UiMaskTable::default())
 }
 
 /// Repeated adoption must produce the same text and curve output as a fresh draw list.
@@ -229,7 +229,7 @@ fn adoption_applies_inherited_scale_to_curve_points_stroke_and_font_size() {
 		canvas.element("label").text("node", |t| t.font_size(10.0)).await;
 	});
 	let arena = bumpalo::Bump::new();
-	let snapshot = engine.evaluate(Size::new(400, 400), &arena);
+	engine.evaluate(Size::new(400, 400), &arena);
 	let render = engine.render().clone();
 	let mut draw_list = UiDrawList::default();
 	update_from_render(&render, &mut draw_list);
@@ -320,7 +320,7 @@ fn a_wire_routed_after_its_first_frame_reaches_the_draw_list() {
 	let arena = bumpalo::Bump::new();
 	let mut draw_list = UiDrawList::default();
 	for _ in 0..3 {
-		let snapshot = engine.evaluate(Size::new(800, 600), &arena);
+		engine.evaluate(Size::new(800, 600), &arena);
 		let render = engine.render().clone();
 		update_from_render(&render, &mut draw_list);
 	}
@@ -346,6 +346,7 @@ fn cached_surface_primitives_follow_content_and_layer_edits() {
 			&data,
 			Extent::square(800),
 			&arena,
+			Vec::new(),
 			Some(&mut caches),
 			&mut UiMaskTable::default(),
 			None,
@@ -373,7 +374,7 @@ fn root_transform_preserves_viewport_units() {
 		root.element("child").container(|c| c.size(10.into())).await;
 	});
 	let arena = bumpalo::Bump::new();
-	let snapshot = engine.evaluate(Size::new(100, 100), &arena);
+	engine.evaluate(Size::new(100, 100), &arena);
 	let mut data = UiDrawList::default();
 	update_from_render(engine.render(), &mut data);
 	let output = primitives(&data, Extent::square(100), &arena);
@@ -381,12 +382,29 @@ fn root_transform_preserves_viewport_units() {
 	assert_eq!(output.primitives[1].bounds, [10., 20., 30., 40.]);
 }
 
+/// Glyphs must not stretch, so an anisotropically scaled label is sized by the smaller axis of its inherited scale.
+#[test]
+fn anisotropic_scale_sizes_text_by_its_smaller_axis() {
+	let mut engine = Engine::new();
+	engine.mount(async move |ctx| {
+		let mut root = ctx
+			.element("root")
+			.container(|c| c.transform(Transform::identity().origin(UiPoint::zero()).scale_xy(2.0, 3.0)))
+			.await;
+		root.element("label").text("node", |t| t.font_size(10.0)).await;
+	});
+	let arena = bumpalo::Bump::new();
+	engine.evaluate(Size::new(100, 100), &arena);
+	let mut data = UiDrawList::default();
+	update_from_render(engine.render(), &mut data);
+	assert_eq!(data.texts.len(), 1);
+	assert_eq!(data.texts[0].font_size, 20.0);
+}
+
 /// A glass icon is three stacked paths; the glass blurs its backdrop under its outline.
 /// The blur must merge before the glass fill and the highlight after both, as the tree orders them.
 #[test]
 fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() {
-	use crate::ui::Path;
-
 	let frame_allocator = bumpalo::Bump::new();
 	let mut engine = Engine::new();
 	engine.mount(async move |ctx| {
@@ -395,10 +413,11 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 			.container(|c| c.size(40.into()).clip(false).flow(crate::ui::flow::center))
 			.await;
 		let square = || {
-			CurvePath::new(40.into(), 40.into())
-				.line((0.0, 0.0), (20.0, 0.0))
-				.line((20.0, 0.0), (20.0, 20.0))
-				.line((20.0, 20.0), (0.0, 20.0))
+			let mut square = CurvePath::new(40.into(), 40.into());
+			square.push_line((0.0, 0.0), (20.0, 0.0));
+			square.push_line((20.0, 0.0), (20.0, 20.0));
+			square.push_line((20.0, 20.0), (0.0, 20.0));
+			square
 		};
 		frame.element("body").path(|p| p.outline(square())).await;
 		frame
@@ -418,7 +437,7 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 			.container(|c| c.size(10.into()).style(ConcreteLayer::default().backdrop_blur(4.0)))
 			.await;
 	});
-	let snapshot = engine.evaluate(Size::new(100, 100), &frame_allocator);
+	engine.evaluate(Size::new(100, 100), &frame_allocator);
 	let render = engine.render();
 	let mut data = UiDrawList::default();
 	update_from_render(&render, &mut data);
@@ -438,12 +457,13 @@ fn path_blur_from_a_real_tree_merges_under_its_fill_and_before_later_siblings() 
 	assert!(keys[0] < keys[1] && keys[1] < keys[2], "paths keep tree order: {keys:?}");
 
 	let mut masks = UiMaskTable::default();
-	let mut curves = UiPathCurves::new(UI_PATH_CURVE_CAPACITY, UI_PATH_BAND_CAPACITY);
+	let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 	let paths = build_ui_path_geometry_damaged(&data, Extent::square(100), &mut curves, &mut masks, &frame_allocator, None);
 	let output = build_ui_primitives(
 		&data,
 		Extent::square(100),
 		&frame_allocator,
+		Vec::new(),
 		None,
 		&mut masks,
 		None,
@@ -535,6 +555,7 @@ fn damage_outside_the_element_redraws_its_shadow_tail() {
 		&data,
 		Extent::square(100),
 		&arena,
+		Vec::new(),
 		None,
 		&mut masks,
 		None,
@@ -615,6 +636,7 @@ fn undamaged_sector_shadow_is_not_redrawn() {
 		&data,
 		Extent::square(100),
 		&arena,
+		Vec::new(),
 		None,
 		&mut masks,
 		None,
@@ -626,20 +648,4 @@ fn undamaged_sector_shadow_is_not_redrawn() {
 	let mut footprints = Vec::new();
 	blur_footprints(&data, Extent::square(100), &mut footprints);
 	assert!(footprints.is_empty());
-}
-
-/// Shadow sigmas past the blur filter's reach are clamped to it.
-#[test]
-fn sector_shadow_sigma_is_clamped_to_the_filter_reach() {
-	let arena = bumpalo::Bump::new();
-	let data = UiDrawList {
-		layout_size: [100.0, 100.0],
-		blurs: vec![sector_shadow(100.0)],
-		..UiDrawList::default()
-	};
-	let output = primitives(&data, Extent::square(100), &arena);
-	let UiStep::Blur(blur) = output.steps[1] else {
-		panic!("Expected a blur step");
-	};
-	assert_eq!(blur.resolution_mix, blur_resolution_mix(UI_MAX_SAMPLED_SHADOW_SIGMA));
 }

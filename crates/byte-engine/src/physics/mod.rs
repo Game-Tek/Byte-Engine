@@ -15,8 +15,6 @@ pub mod collider;
 pub mod dynabit;
 #[doc(hidden)]
 pub mod intersection;
-#[doc(hidden)]
-pub mod world;
 
 /// The `LocalSpace` struct brands coordinates stored relative to a collider's origin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -24,9 +22,8 @@ pub struct LocalSpace;
 
 pub use body::{Body, BodyTypes};
 pub use bounds::Bounds;
-pub use collider::{Collider, Shapes};
+pub use collider::Shapes;
 pub use dynabit::World as DynabitWorld;
 pub use dynabit::body::PhysicsBody;
 pub use dynabit::contact::{Contact, Pair, Side};
-pub use intersection::{Intersection, PseudoBody};
-pub use world::World;
+pub use intersection::PseudoBody;

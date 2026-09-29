@@ -5,7 +5,6 @@ use math::{
 use maths_rs::{
 	Mat3f,
 	mat::{MatScale as _, MatTranspose as _},
-	vec::Magnitude as _,
 };
 
 use crate::{
@@ -22,7 +21,6 @@ pub struct PhysicsBody {
 	pub(crate) position: Point,
 	pub(crate) orientation: Orientation,
 	pub(crate) scale: Scale,
-	pub(crate) acceleration: Vector,
 	pub(crate) linear_velocity: Vector,
 	pub(crate) angular_velocity: Vector,
 	/// Reciprocal mass in kilograms.
@@ -153,7 +151,6 @@ pub fn intersect((a, i): (&PhysicsBody, usize), (b, j): (&PhysicsBody, usize), d
 			sphere_vs_aabb(&Sphere::new(b.position, *radius), &a.bounds())?.swap(),
 			0.0,
 		),
-		(Shapes::ConvexHull { .. }, _) | (_, Shapes::ConvexHull { .. }) => return None,
 	};
 	Some(contact)
 }
@@ -170,7 +167,6 @@ mod tests {
 			position: Point::origin(),
 			orientation: Orientation::identity(),
 			scale: Scale::identity(),
-			acceleration: Vector::zero(),
 			linear_velocity: Vector::zero(),
 			angular_velocity: Vector::new(0.0, 1.0, 0.0),
 			inv_mass: 1.0,

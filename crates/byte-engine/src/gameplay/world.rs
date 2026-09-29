@@ -5,7 +5,7 @@
 //! application updates this world and attaches its listeners to render
 //! pipelines.
 
-/// The `DefaultWorld` struct owns the standard entity routes and coordinates transform, physics, anchoring, and deletion updates.
+/// The `DefaultWorld` struct owns the standard entity routes and coordinates transform, physics, and deletion updates.
 pub struct DefaultWorld {
 	messages: MessageScope,
 	transforms: DefaultChannel<TransformationUpdate>,
@@ -13,7 +13,6 @@ pub struct DefaultWorld {
 	poses: DefaultChannel<UpdatePose>,
 	audio_graph_factory: AudioGraphFactory,
 
-	anchor_system: AnchorSystem,
 	physics_system: dynabit::World,
 
 	scene_graph: SceneGraph,
@@ -49,7 +48,6 @@ impl DefaultWorld {
 		let poses = messages.channel();
 		let audio_graph_factory = AudioGraphFactory::in_scope(&messages);
 
-		let anchor_system = AnchorSystem::new();
 		let physics_system = dynabit::World::new(body_factory.listener(), deletes.listener());
 		let scenes = messages.factory::<Scene>().listener();
 		let scene_nodes = messages.factory::<SceneNode>().listener();
@@ -62,7 +60,6 @@ impl DefaultWorld {
 			poses,
 			audio_graph_factory,
 
-			anchor_system,
 			physics_system,
 
 			scene_graph: SceneGraph::default(),
@@ -95,7 +92,6 @@ impl DefaultWorld {
 		allocator: &mut bumpalo::Bump,
 	) {
 		self.cascade_posted_deletions();
-		self.anchor_system.update();
 		self.physics_system.update(time, transforms_rx, &self.transforms, allocator);
 	}
 
@@ -191,29 +187,16 @@ impl<T> Creator<T> for DefaultWorld
 where
 	T: Clone + Send + Sync + 'static,
 {
-	fn publish(&self, handle: Option<Handle>, value: T) -> Handle {
-		let factory = self.factory::<T>();
-		if let Some(handle) = handle {
-			factory.derive(handle, value);
-			handle
-		} else {
-			factory.create(value)
-		}
+	fn publish(&self, handle: Handle, value: T) {
+		self.factory::<T>().derive(handle, value);
 	}
 }
 
 impl Creator<&mut AudioGraph> for DefaultWorld {
-	fn publish(&self, handle: Option<Handle>, graph: &mut AudioGraph) -> Handle {
-		if let Some(handle) = handle {
-			self.audio_graph_factory.derive(handle, graph);
-			handle
-		} else {
-			self.audio_graph_factory.create(graph)
-		}
+	fn publish(&self, handle: Handle, graph: &mut AudioGraph) {
+		self.audio_graph_factory.derive(handle, graph);
 	}
 }
-
-use std::alloc::Allocator;
 
 use crate::{
 	application::Time,
@@ -228,137 +211,19 @@ use crate::{
 		targeted_message::TargetedMessagePublisher,
 	},
 	gameplay::{
-		Name, Transform,
-		anchor::AnchorSystem,
+		Transform,
 		scene::{Scene, SceneGraph, SceneNode},
 		transform::TransformationUpdate,
 	},
-	physics::{self, dynabit},
+	physics::dynabit,
 	rendering::{Camera, UpdatePose},
 };
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::core::{listener::Listener, targeted_message::MessageTargeter};
-	use crate::gameplay::{Scene, SceneNode};
-	use crate::rendering::{PointLight, RenderableMesh};
-
-	#[test]
-	fn renderable_body_and_transform_creation_share_a_handle() {
-		let world = DefaultWorld::new();
-		let mut renderables = world.factory::<RenderableMesh>().listener();
-		let mut bodies = world.factory::<physics::Body>().listener();
-		let mut names = world.factory::<Name>().listener();
-		let mut transforms = world.transforms_channel().listener();
-
-		let handle: Handle = world
-			.create(RenderableMesh::sphere(1.0))
-			.with(physics::Body::new(
-				physics::BodyTypes::Dynamic,
-				physics::Shapes::Sphere { radius: 1.0 },
-			))
-			.with(Name::new("ball"))
-			.with(Transform::from_position(math::Point::new(1.0, 2.0, 3.0)))
-			.into();
-
-		assert_eq!(renderables.read().expect("renderable creation").handle(), handle);
-		assert_eq!(bodies.read().expect("body creation").handle(), handle);
-		let name = names.read().expect("name creation");
-		assert_eq!(name.handle(), handle);
-		assert_eq!(name.data().as_str(), "ball");
-		assert_eq!(transforms.read().expect("transform creation").handle(), handle);
-	}
-
-	#[test]
-	fn camera_and_transform_creation_share_a_handle() {
-		let world = DefaultWorld::new();
-		let mut cameras = world.factory::<Camera>().listener();
-		let mut transforms = world.transforms_channel().listener();
-
-		let handle: Handle = world.create(Camera::new()).with(Transform::identity()).into();
-
-		let camera = cameras.read().expect("camera creation");
-		let transform = transforms.read().expect("transform creation");
-		assert_eq!(camera.handle(), handle);
-		assert_eq!(transform.handle(), handle);
-	}
-
-	#[test]
-	fn light_and_transform_creation_share_a_handle() {
-		let world = DefaultWorld::new();
-		let mut lights = world.factory::<PointLight>().listener();
-		let mut transforms = world.transforms_channel().listener();
-		let light = PointLight::new(
-			crate::rendering::LightColor::LinearSrgb(maths_rs::Vec3f::new(1.0, 1.0, 1.0)),
-			crate::rendering::PhotometricIntensity::LuminousIntensity {
-				candela: 100.0,
-				reference_distance_m: 1.0,
-			},
-		)
-		.expect("physical point light");
-
-		let handle: Handle = world
-			.create(light)
-			.with(Transform::from_position(math::Point::new(1.0, 2.0, 3.0)))
-			.into();
-
-		let light = lights.read().expect("light creation");
-		let transform = transforms.read().expect("transform creation");
-		assert_eq!(light.handle(), handle);
-		assert_eq!(transform.handle(), handle);
-	}
-
-	#[test]
-	fn camera_set_publishes_an_upsert_under_the_existing_handle() {
-		let world = DefaultWorld::new();
-		let mut cameras = world.factory::<Camera>().listener();
-		let handle: Handle = world.create(Camera::new()).into();
-		let _ = cameras.read().expect("camera creation");
-
-		world.set(Camera::new().with_fov(math::Degrees::new(72.0))).on(handle);
-
-		let update = cameras.read().expect("camera update");
-
-		assert_eq!(update.handle(), handle);
-		assert_eq!(update.data().vertical_fov(), math::Degrees::new(72.0));
-	}
-
-	#[test]
-	fn application_defined_creation_type_is_registered_on_first_use() {
-		#[derive(Clone, Debug, PartialEq, Eq)]
-		struct Sprite(&'static str);
-
-		let world = DefaultWorld::new();
-		let mut sprites = world.factory::<Sprite>().listener();
-		let mut transforms = world.transforms_channel().listener();
-
-		let handle: Handle = world
-			.create(Sprite("floor.png"))
-			.with(Transform::from_position(math::Point::new(1.0, 0.0, 2.0)))
-			.into();
-
-		let sprite = sprites.read().expect("application-defined creation");
-		let transform = transforms.read().expect("shared transform creation");
-		assert_eq!(sprite.handle(), handle);
-		assert_eq!(sprite.data(), &Sprite("floor.png"));
-		assert_eq!(transform.handle(), handle);
-	}
-
-	#[test]
-	fn world_deletion_retires_the_factory_handle_from_inspection() {
-		let message_bus = MessageBus::default();
-		let observer = message_bus.observe().expect("attach observer");
-		let world = DefaultWorld::with_messages(message_bus.new_scope("observed-world"));
-		let mut deletions = world.deletions_listener();
-		let handle = world.factory::<String>().create("temporary".to_string());
-
-		assert_eq!(observer.entities()[0].handle(), handle);
-		world.delete(handle);
-
-		assert_eq!(deletions.read().expect("world deletion").into_handle(), handle);
-		assert!(observer.entities().is_empty());
-	}
+	use crate::core::listener::Listener;
+	use crate::gameplay::{Name, Scene, SceneNode};
 
 	/// Reads every pending deletion handle in publication order.
 	fn deleted(deletions: &mut DefaultListener<DeleteMessage>) -> Vec<Handle> {
@@ -429,18 +294,6 @@ mod tests {
 		cascade(&mut world);
 
 		assert_eq!(deleted(&mut deletions), [scene, member]);
-	}
-
-	#[test]
-	#[cfg(debug_assertions)]
-	#[should_panic(expected = "stale scene handle")]
-	fn attaching_under_a_deleted_scene_panics() {
-		let mut world = DefaultWorld::new();
-		let scene: Handle = world.create(Scene).into();
-		world.delete(scene);
-		cascade(&mut world);
-		world.create(Name::new("late")).with(SceneNode::under(scene));
-		cascade(&mut world);
 	}
 
 	#[test]

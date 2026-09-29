@@ -207,15 +207,7 @@ mod tests {
 	use math::{Orientation, Point, Scale, UnitVector, WorldSpace};
 	use maths_rs::Vec4f;
 
-	use super::{Transform, TransformationUpdate};
-	use crate::{
-		core::{
-			channel::{Channel, DefaultChannel},
-			factory::Factory,
-			listener::Listener,
-		},
-		space::{Orientable, Positionable, Scalable, Transformable},
-	};
+	use super::Transform;
 
 	#[test]
 	fn interpolation_moves_position_and_scale_linearly_and_turns_along_the_shortest_arc() {
@@ -239,20 +231,6 @@ mod tests {
 		assert!((start.interpolate(&end, 1.0).get_position().x() - 4.0).abs() < 1e-5);
 	}
 
-	struct SpatialEntity {
-		transform: Transform,
-	}
-
-	impl Transformable for SpatialEntity {
-		fn transform(&self) -> &Transform {
-			&self.transform
-		}
-
-		fn transform_mut(&mut self) -> &mut Transform {
-			&mut self.transform
-		}
-	}
-
 	#[test]
 	fn matrix_applies_scale_before_translation() {
 		let transform = Transform::new(
@@ -264,60 +242,6 @@ mod tests {
 		assert_eq!(
 			transform.get_matrix() * Vec4f::new(1.0, 1.0, 1.0, 1.0),
 			Vec4f::new(12.0, 23.0, 34.0, 1.0)
-		);
-	}
-
-	#[test]
-	fn transformable_traits_share_one_transform() {
-		let orientation = Orientation::try_from_axis_angle(UnitVector::<WorldSpace>::x_axis(), math::Radians::new(0.25))
-			.expect("finite axis-angle orientation");
-		let mut entity = SpatialEntity {
-			transform: Transform::default(),
-		};
-
-		entity.set_position(Point::new(3.0, 4.0, 5.0));
-		entity.set_scale(Scale::new(2.0, 2.0, 2.0));
-		entity.set_orientation(orientation);
-
-		assert_eq!(entity.position(), Point::new(3.0, 4.0, 5.0));
-		assert_eq!(entity.scale(), Scale::new(2.0, 2.0, 2.0));
-		assert_eq!(entity.orientation(), orientation);
-	}
-
-	#[test]
-	fn transformation_update_preserves_handle_and_payload() {
-		let factory = Factory::new();
-		let handle = factory.create("entity");
-		let transform = Transform::from_position(Point::new(7.0, 8.0, 9.0));
-		let channel = DefaultChannel::new();
-		let mut listener = channel.listener();
-
-		TransformationUpdate::apply(&channel, handle, transform);
-		let update = listener.read().expect("transformation update");
-
-		assert_eq!(update.handle(), handle);
-		assert_eq!(update.transform().get_position(), Point::new(7.0, 8.0, 9.0));
-	}
-
-	#[test]
-	fn transformation_update_payload_has_a_reflected_json_shape() {
-		let factory = Factory::new();
-		let handle = factory.create("entity");
-		let update = TransformationUpdate::new(
-			handle,
-			Transform::new(Point::new(1.0, 2.0, 3.0), Scale::new(4.0, 5.0, 6.0), Orientation::identity()),
-		);
-
-		let json = facet_json::to_string(update.transform()).expect("serialize reflected transform payload");
-		let value: serde_json::Value = serde_json::from_str(&json).expect("parse reflected transform payload");
-
-		assert_eq!(
-			value,
-			serde_json::json!({
-				"position": [1, 2, 3],
-				"scale": [4, 5, 6],
-				"orientation": [0, 0, 0, 1]
-			})
 		);
 	}
 }

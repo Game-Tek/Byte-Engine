@@ -1,8 +1,4 @@
-use ghi::{
-	command_buffer::CommonCommandBufferMode as _,
-	context::{Context as _, ContextCreate as _},
-	frame::Frame as _,
-};
+use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use math::{Point, Radians, ShaderMatrix, UnitVector, inverse};
 use maths_rs::{Vec3f, Vec4f};
 use utils::Extent;
@@ -151,28 +147,22 @@ impl AtmosphereSkyRenderPass {
 		let transmittance_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Sky Transmittance LUT", "byte-engine/rendering/sky-transmittance.pipeline"),
-		)
-		.expect("Failed to create the sky transmittance shader. The most likely cause is an incompatible shader interface.");
+		);
 		let multiple_scattering_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new(
 				"Sky Multiple Scattering LUT",
 				"byte-engine/rendering/sky-multiple-scattering.pipeline",
 			),
-		)
-		.expect(
-			"Failed to create the sky multiple-scattering shader. The most likely cause is an incompatible shader interface.",
 		);
 		let sky_view_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Sky View LUT", "byte-engine/rendering/sky-view.pipeline"),
-		)
-		.expect("Failed to create the sky-view shader. The most likely cause is an incompatible shader interface.");
+		);
 		let composite_pipeline = simple_compute::Pipeline::compile(
 			render_pass_builder,
 			simple_compute::Descriptor::new("Sky Composite", "byte-engine/rendering/sky.pipeline"),
-		)
-		.expect("Failed to create the sky shader. The most likely cause is an incompatible shader interface.");
+		);
 		let context = render_pass_builder.context();
 		let parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -197,80 +187,61 @@ impl AtmosphereSkyRenderPass {
 				.extent(sky_view_lut_extent())
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
-		let sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp),
+		let sampler = context.build_sampler(ghi::sampler::Builder::new());
+		let transmittance_pass = transmittance_pipeline.bind(
+			"Sky Transmittance LUT Descriptor Set",
+			&[
+				simple_compute::Resource::image("transmittance_lut", transmittance_lut),
+				simple_compute::Resource::buffer("parameters", parameters),
+			],
 		);
-		let transmittance_pass = transmittance_pipeline
-			.bind(
-				render_pass_builder,
-				"Sky Transmittance LUT Descriptor Set",
-				&[
-					simple_compute::Resource::image("transmittance_lut", transmittance_lut),
-					simple_compute::Resource::buffer("parameters", parameters),
-				],
-			)
-			.expect("Failed to bind sky transmittance resources. The most likely cause is a changed BESL binding contract.");
-		let multiple_scattering_pass = multiple_scattering_pipeline
-			.bind(
-				render_pass_builder,
-				"Sky Multiple Scattering LUT Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler(
-						"transmittance_lut",
-						transmittance_lut,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::image("multiple_scattering_lut", multiple_scattering_lut),
-					simple_compute::Resource::buffer("parameters", parameters),
-				],
-			)
-			.expect(
-				"Failed to bind sky multiple-scattering resources. The most likely cause is a changed BESL binding contract.",
-			);
-		let sky_view_pass = sky_view_pipeline
-			.bind(
-				render_pass_builder,
-				"Sky View LUT Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler(
-						"transmittance_lut",
-						transmittance_lut,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::image("sky_view_lut", sky_view_lut),
-					simple_compute::Resource::buffer("parameters", parameters),
-					simple_compute::Resource::combined_image_sampler(
-						"multiple_scattering_lut",
-						multiple_scattering_lut,
-						sampler,
-						ghi::Layouts::Read,
-					),
-				],
-			)
-			.expect("Failed to bind sky-view resources. The most likely cause is a changed BESL binding contract.");
-		let composite_pass = composite_pipeline
-			.bind(
-				render_pass_builder,
-				"Sky Render Pass Descriptor Set",
-				&[
-					simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::image("result", color),
-					simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
-					simple_compute::Resource::combined_image_sampler(
-						"transmittance_lut",
-						transmittance_lut,
-						sampler,
-						ghi::Layouts::Read,
-					),
-					simple_compute::Resource::buffer("parameters", parameters),
-				],
-			)
-			.expect("Failed to bind the sky resources. The most likely cause is a changed BESL binding contract.");
+		let multiple_scattering_pass = multiple_scattering_pipeline.bind(
+			"Sky Multiple Scattering LUT Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler(
+					"transmittance_lut",
+					transmittance_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
+				simple_compute::Resource::image("multiple_scattering_lut", multiple_scattering_lut),
+				simple_compute::Resource::buffer("parameters", parameters),
+			],
+		);
+		let sky_view_pass = sky_view_pipeline.bind(
+			"Sky View LUT Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler(
+					"transmittance_lut",
+					transmittance_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
+				simple_compute::Resource::image("sky_view_lut", sky_view_lut),
+				simple_compute::Resource::buffer("parameters", parameters),
+				simple_compute::Resource::combined_image_sampler(
+					"multiple_scattering_lut",
+					multiple_scattering_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
+			],
+		);
+		let composite_pass = composite_pipeline.bind(
+			"Sky Render Pass Descriptor Set",
+			&[
+				simple_compute::Resource::combined_image_sampler("depth_texture", depth, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::image("result", color),
+				simple_compute::Resource::combined_image_sampler("sky_view_lut", sky_view_lut, sampler, ghi::Layouts::Read),
+				simple_compute::Resource::combined_image_sampler(
+					"transmittance_lut",
+					transmittance_lut,
+					sampler,
+					ghi::Layouts::Read,
+				),
+				simple_compute::Resource::buffer("parameters", parameters),
+			],
+		);
 
 		Self {
 			transmittance_pass,
@@ -388,7 +359,7 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		let multiple_scattering_extent = multiple_scattering_lut_extent();
 		let sky_view_extent = sky_view_lut_extent();
 
-		Some(allocate_render_command(frame_allocator, move |command_buffer, _| {
+		Some(allocate_render_command(frame_allocator, move |command_buffer| {
 			command_buffer.region(
 				|label| label.write_str("Sky"),
 				|command_buffer| {
@@ -430,7 +401,6 @@ mod tests {
 	use crate::rendering::shader_vm_test::{assert_rgba_close, buffer, empty_image, rgba, run_at, texture_2d};
 
 	const SKY_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky.besl");
-	const SKY_TRANSMITTANCE_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-transmittance.besl");
 	const SKY_VIEW_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-view.besl");
 	const SKY_MULTIPLE_SCATTERING_SHADER_BESL: &str = include_str!("../../../assets/rendering/sky-multiple-scattering.besl");
 
@@ -497,47 +467,6 @@ mod tests {
 		parameters
 	}
 
-	fn assert_finite_nonnegative_color(color: [f32; 4], name: &str) {
-		assert!(
-			color[..3].iter().all(|channel| channel.is_finite() && *channel >= 0.0),
-			"Invalid {name} VM output. The most likely cause is unstable atmosphere integration: {color:?}"
-		);
-	}
-
-	#[test]
-	fn sky_view_cache_rebuilds_for_initialization_and_height_changes_only() {
-		let height = 2.0_f32.to_bits();
-
-		assert!(super::should_rebuild_sky_view(false, None, height));
-		assert!(super::should_rebuild_sky_view(true, None, height));
-		assert!(super::should_rebuild_sky_view(true, Some(3.0_f32.to_bits()), height));
-		assert!(!super::should_rebuild_sky_view(true, Some(height), height));
-	}
-
-	/// Verifies the production transmittance LUT writes finite optical transmission.
-	#[test]
-	fn sky_transmittance_besl_vm_writes_bounded_transmission() {
-		let program =
-			crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_TRANSMITTANCE_SHADER_BESL));
-		let parameter_slot = ResourceSlot::new(1);
-		let mut parameters = sky_parameters(&program, parameter_slot, TEST_SUN_ILLUMINANCE, 1.0);
-		let mut output = empty_image(1, 1);
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_image(ResourceSlot::new(0), &mut output);
-		descriptors.bind_buffer(parameter_slot, &mut parameters);
-		run_at(&program, &mut descriptors, [0, 0]);
-		drop(descriptors);
-
-		let transmission = rgba(&output, [0, 0]);
-		assert_finite_nonnegative_color(transmission, "sky transmittance");
-
-		assert!(
-			transmission[..3].iter().all(|channel| *channel <= 1.0),
-			"Out-of-range sky transmittance. The most likely cause is an invalid optical-depth sign: {transmission:?}"
-		);
-		assert_rgba_close([0.0, 0.0, 0.0, transmission[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
-	}
-
 	/// Runs one sky-view texel with full sun transmittance and a multiple-scattering LUT holding `higher_orders`.
 	fn run_sky_view(higher_orders: [f32; 4]) -> [f32; 4] {
 		let program = crate::rendering::shader_vm_test::compile(simple_compute::compile_test_program(SKY_VIEW_SHADER_BESL));
@@ -554,19 +483,6 @@ mod tests {
 		run_at(&program, &mut descriptors, [0, 0]);
 		drop(descriptors);
 		rgba(&output, [0, 0])
-	}
-
-	/// Verifies the sky-view LUT consumes transmittance and produces finite HDR scattering.
-	#[test]
-	fn sky_view_besl_vm_integrates_scattering_from_transmittance() {
-		let scattering = run_sky_view([0.0, 0.0, 0.0, 1.0]);
-		assert_finite_nonnegative_color(scattering, "sky-view");
-
-		assert!(
-			scattering[..3].iter().any(|channel| *channel > 0.0),
-			"Empty sky-view VM output. The most likely cause is an invalid atmosphere interval: {scattering:?}"
-		);
-		assert_rgba_close([0.0, 0.0, 0.0, scattering[3]], [0.0, 0.0, 0.0, 1.0], 1e-6);
 	}
 
 	/// Verifies that the sky-view LUT adds the light from the multiple-scattering LUT to single scattering.

@@ -2,10 +2,9 @@ use super::*;
 
 impl<'a> Compiler<'a> {
 	pub(super) fn resolve_memory_access(
-		&self,
+		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResolvedBufferAccess, VmError> {
 		let (binding, selectors) = extract_access_chain(expression)?;
 
@@ -60,7 +59,7 @@ impl<'a> Compiler<'a> {
 			DescriptorLayout::Buffer(layout.clone())
 		};
 
-		match descriptor_layouts.get(&slot) {
+		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &descriptor_layout => {
 				return Err(VmError::UnsupportedDescriptor {
 					slot,
@@ -69,7 +68,7 @@ impl<'a> Compiler<'a> {
 			}
 			Some(_) => {}
 			None => {
-				descriptor_layouts.insert(slot, descriptor_layout);
+				self.descriptor_layouts.insert(slot, descriptor_layout);
 			}
 		}
 
@@ -80,12 +79,11 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResourceSlot, VmError> {
 		let binding = match extract_binding_reference(expression) {
 			Ok(binding) => binding,
 			Err(_) => {
-				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
+				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
 				if !matches!(
 					value_type,
 					ValueType::Texture2D
@@ -99,7 +97,7 @@ impl<'a> Compiler<'a> {
 						found: value_type.name().to_string(),
 					});
 				}
-				let register = self.compile_value_expression(expression, &value_type, descriptor_layouts)?;
+				let register = self.compile_value_expression(expression, &value_type)?;
 				return Ok(dynamic_resource_slot(register));
 			}
 		};
@@ -133,14 +131,14 @@ impl<'a> Compiler<'a> {
 		};
 		drop(binding_ref);
 
-		match descriptor_layouts.get(&slot) {
+		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &DescriptorLayout::Texture => Err(VmError::UnsupportedDescriptor {
 				slot,
 				message: "Descriptor slot was reused with a different layout".to_string(),
 			}),
 			Some(_) => Ok(slot),
 			None => {
-				descriptor_layouts.insert(slot, DescriptorLayout::Texture);
+				self.descriptor_layouts.insert(slot, DescriptorLayout::Texture);
 				Ok(slot)
 			}
 		}
@@ -151,7 +149,6 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<Option<(ResourceSlot, NodeReference)>, VmError> {
 		let (texture, layer) = {
 			let borrowed = expression.borrow();
@@ -175,7 +172,7 @@ impl<'a> Compiler<'a> {
 			return Ok(None);
 		}
 
-		let slot = self.resolve_texture_slot(&texture, access, descriptor_layouts)?;
+		let slot = self.resolve_texture_slot(&texture, access)?;
 		Ok(Some((slot, layer)))
 	}
 
@@ -183,19 +180,18 @@ impl<'a> Compiler<'a> {
 		&mut self,
 		expression: &NodeReference,
 		access: RequiredAccess,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
 	) -> Result<ResourceSlot, VmError> {
 		let binding = match extract_binding_reference(expression) {
 			Ok(binding) => binding,
 			Err(_) => {
-				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D, descriptor_layouts)?;
+				let value_type = self.infer_expression_type(expression, &ValueType::Texture2D)?;
 				if value_type != ValueType::Texture2D {
 					return Err(VmError::TypeMismatch {
 						expected: ValueType::Texture2D.name().to_string(),
 						found: value_type.name().to_string(),
 					});
 				}
-				let register = self.compile_value_expression(expression, &value_type, descriptor_layouts)?;
+				let register = self.compile_value_expression(expression, &value_type)?;
 				return Ok(dynamic_resource_slot(register));
 			}
 		};
@@ -229,24 +225,20 @@ impl<'a> Compiler<'a> {
 		};
 		drop(binding_ref);
 
-		match descriptor_layouts.get(&slot) {
+		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &DescriptorLayout::Image => Err(VmError::UnsupportedDescriptor {
 				slot,
 				message: "Descriptor slot was reused with a different layout".to_string(),
 			}),
 			Some(_) => Ok(slot),
 			None => {
-				descriptor_layouts.insert(slot, DescriptorLayout::Image);
+				self.descriptor_layouts.insert(slot, DescriptorLayout::Image);
 				Ok(slot)
 			}
 		}
 	}
 
-	pub(super) fn resolve_output_access(
-		&self,
-		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<ResolvedBufferAccess, VmError> {
+	pub(super) fn resolve_output_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
 		let borrowed = expression.borrow();
 		let (source, output_name) = match borrowed.node() {
 			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
@@ -301,7 +293,7 @@ impl<'a> Compiler<'a> {
 		};
 		drop(source_ref);
 
-		match descriptor_layouts.get(&slot) {
+		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
 				return Err(VmError::UnsupportedDescriptor {
 					slot,
@@ -310,7 +302,7 @@ impl<'a> Compiler<'a> {
 			}
 			Some(_) => {}
 			None => {
-				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+				self.descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
 			}
 		}
 
@@ -325,11 +317,7 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Resolves one dynamically indexed mesh output-array write.
-	pub(super) fn resolve_output_array_access(
-		&self,
-		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<ResolvedBufferAccess, VmError> {
+	pub(super) fn resolve_output_array_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
 		let (left, index_expression) = {
 			let borrowed = expression.borrow();
 			let Nodes::Expression(Expressions::Accessor { left, right }) = borrowed.node() else {
@@ -339,16 +327,12 @@ impl<'a> Compiler<'a> {
 			};
 			(left.clone(), right.clone())
 		};
-		let mut target = self.resolve_output_access(&left, descriptor_layouts)?;
+		let mut target = self.resolve_output_access(&left)?;
 		target.index_expression = Some(index_expression);
 		Ok(target)
 	}
 
-	pub(super) fn resolve_input_access(
-		&self,
-		expression: &NodeReference,
-		descriptor_layouts: &mut HashMap<ResourceSlot, DescriptorLayout>,
-	) -> Result<ResolvedBufferAccess, VmError> {
+	pub(super) fn resolve_input_access(&mut self, expression: &NodeReference) -> Result<ResolvedBufferAccess, VmError> {
 		let borrowed = expression.borrow();
 		let (source, input_name) = match borrowed.node() {
 			Nodes::Expression(Expressions::Member { source, name }) => (source.clone(), name.clone()),
@@ -398,7 +382,7 @@ impl<'a> Compiler<'a> {
 		};
 		drop(source_ref);
 
-		match descriptor_layouts.get(&slot) {
+		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if existing != &DescriptorLayout::Buffer(layout.clone()) => {
 				return Err(VmError::UnsupportedDescriptor {
 					slot,
@@ -407,7 +391,7 @@ impl<'a> Compiler<'a> {
 			}
 			Some(_) => {}
 			None => {
-				descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
+				self.descriptor_layouts.insert(slot, DescriptorLayout::Buffer(layout.clone()));
 			}
 		}
 

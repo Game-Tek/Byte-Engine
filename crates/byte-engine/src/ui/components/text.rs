@@ -1,25 +1,21 @@
-use crate::ui::{Transform, Visual, style::ConcreteStyle};
-
 /// The `Text` struct is the retained state of styled UI copy that participates in layout and rendering.
 ///
-/// The engine owns every text element. Declare one with [`crate::ui::ElementContext::text`] and edit it with
+/// The engine owns every text element. Declare a label with [`crate::ui::ElementContext::text`], or a single-line
+/// field whose content the application owns with [`crate::ui::ElementContext::text_field`]. Edit either one with
 /// [`crate::ui::EvaluationContext::update_text`].
 pub struct Text {
 	pub(crate) content: String,
 	pub(crate) settings: TextSettings,
-	pub(crate) style: ConcreteStyle,
-	pub(crate) transform: Transform,
-	pub(crate) visual: Visual,
+	/// Set for a text field: the pointer can hit it and backward deletes are routed to it while it is focused.
+	pub(crate) editable: bool,
 }
 
 impl Text {
-	pub(crate) fn new(content: String) -> Self {
+	pub(crate) fn new(content: String, editable: bool) -> Self {
 		Self {
 			content,
 			settings: TextSettings::default(),
-			style: ConcreteStyle::default(),
-			transform: Transform::default(),
-			visual: Visual::default(),
+			editable,
 		}
 	}
 
@@ -29,18 +25,6 @@ impl Text {
 
 	pub fn settings(&self) -> &TextSettings {
 		&self.settings
-	}
-
-	pub fn style_ref(&self) -> &ConcreteStyle {
-		&self.style
-	}
-
-	pub fn transform_ref(&self) -> &Transform {
-		&self.transform
-	}
-
-	pub fn visual_ref(&self) -> &Visual {
-		&self.visual
 	}
 }
 

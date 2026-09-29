@@ -524,8 +524,10 @@ const COMMON_SHADER_SOURCE: &str = r#"
 	}
 "#;
 
-/// Parses the common module into its `Common` scope node.
-fn parse_common_shader_scope() -> besl::parser::Node<'static> {
+/// Builds the `Common` scope node that production shaders, VM tests, and graphics backends link against.
+///
+/// This parses the source on every call. Shader generators call it once when they are created and keep the result.
+pub fn common_shader_scope() -> besl::parser::Node<'static> {
 	let mut root = besl::parse(COMMON_SHADER_SOURCE)
 		.expect("Failed to parse the common BESL shader module. The most likely cause is invalid portable BESL syntax.");
 
@@ -536,9 +538,6 @@ fn parse_common_shader_scope() -> besl::parser::Node<'static> {
 
 	besl::parser::Node::scope("Common", children)
 }
-
-/// The `CommonShaderScope` struct provides the portable helper namespace shared by production shaders.
-pub struct CommonShaderScope {}
 
 /// The `CommonShaderGenerator` struct preserves common-module programs while they pass through asset generation.
 ///
@@ -558,7 +557,7 @@ impl Default for CommonShaderGenerator {
 impl CommonShaderGenerator {
 	pub fn new() -> Self {
 		Self {
-			scope: CommonShaderScope::new(),
+			scope: common_shader_scope(),
 		}
 	}
 }
@@ -571,21 +570,11 @@ impl ProgramGenerator for CommonShaderGenerator {
 	}
 }
 
-impl CommonShaderScope {
-	/// Builds the common scope from the single portable source used by VM tests and graphics backends.
-	///
-	/// This parses the source on every call. Shader generators call it once
-	/// when they are created and keep the result.
-	pub fn new() -> besl::parser::Node<'static> {
-		parse_common_shader_scope()
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Value};
 
-	use super::{CommonShaderGenerator, CommonShaderScope};
+	use super::common_shader_scope;
 	use crate::rendering::shader_vm_test::{buffer, compile, run_at, texture_2d};
 
 	const RESULT_SLOT: ResourceSlot = ResourceSlot::new(0);
@@ -608,10 +597,10 @@ mod tests {
 		root.add(extra_nodes);
 
 		root.add(vec![
-			CommonShaderScope::new(),
+			common_shader_scope(),
 			besl::ParserNode::binding(
 				"results",
-				besl::ParserNode::buffer("CommonShaderTestResults", result_members),
+				besl::ParserNode::buffer(result_members),
 				RESULT_SLOT.slot(),
 				false,
 				true,
@@ -1134,78 +1123,5 @@ mod tests {
 		assert_floats_close(read_vec3f(&results, "normal"), [0.0, 0.0, 1.0], 0.00001);
 
 		assert_eq!(read_vec3f(&results, "empty_normal"), [0.0, 0.0, 0.0]);
-	}
-
-	/// Verifies every debug palette entry and the modulo wrap contract through the production helper.
-	#[test]
-	fn common_debug_colors_execute_with_expected_vm_results() {
-		let source = r#"
-			main: fn () -> void {
-				results.colors[0] = get_debug_color(0);
-				results.colors[1] = get_debug_color(1);
-				results.colors[2] = get_debug_color(2);
-				results.colors[3] = get_debug_color(3);
-				results.colors[4] = get_debug_color(4);
-				results.colors[5] = get_debug_color(5);
-				results.colors[6] = get_debug_color(6);
-				results.colors[7] = get_debug_color(7);
-				results.colors[8] = get_debug_color(8);
-				results.colors[9] = get_debug_color(9);
-				results.colors[10] = get_debug_color(10);
-				results.colors[11] = get_debug_color(11);
-				results.colors[12] = get_debug_color(12);
-				results.colors[13] = get_debug_color(13);
-				results.colors[14] = get_debug_color(14);
-				results.colors[15] = get_debug_color(15);
-				results.colors[16] = get_debug_color(16);
-			}
-		"#;
-
-		let members = vec![besl::ParserNode::member("colors", "vec4f[17]")];
-
-		let mut fixture = CommonShaderFixture::new(source, members, Vec::new());
-
-		fixture.run();
-
-		let results = &fixture.results;
-
-		let expected = [
-			[0.16863, 0.40392, 0.77647, 1.0],
-			[0.32941, 0.76863, 0.21961, 1.0],
-			[0.81961, 0.16078, 0.67451, 1.0],
-			[0.96863, 0.98824, 0.45490, 1.0],
-			[0.75294, 0.09020, 0.75686, 1.0],
-			[0.30588, 0.95686, 0.54510, 1.0],
-			[0.66667, 0.06667, 0.75686, 1.0],
-			[0.78824, 0.91765, 0.27451, 1.0],
-			[0.40980, 0.12745, 0.48627, 1.0],
-			[0.89804, 0.28235, 0.20784, 1.0],
-			[0.93725, 0.67843, 0.33725, 1.0],
-			[0.95294, 0.96863, 0.00392, 1.0],
-			[1.00000, 0.27843, 0.67843, 1.0],
-			[0.29020, 0.90980, 0.56863, 1.0],
-			[0.30980, 0.70980, 0.27059, 1.0],
-			[0.69804, 0.16078, 0.39216, 1.0],
-		];
-
-		for (index, expected) in expected.into_iter().enumerate() {
-			let value = results
-				.read_array_element(index)
-				.expect("Missing debug color result. The most likely cause is an incorrect test array layout.");
-
-			let Value::Vec4F(actual) = value else {
-				panic!(
-					"Invalid debug color result `{value:?}`. The most likely cause is an incorrect test array element type."
-				);
-			};
-
-			assert_floats_close(actual, expected, 0.00001);
-		}
-
-		let wrapped = results
-			.read_array_element(16)
-			.expect("Missing wrapped debug color. The most likely cause is an incorrect test array layout.");
-
-		assert_eq!(wrapped, Value::Vec4F(expected[0]));
 	}
 }

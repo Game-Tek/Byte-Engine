@@ -13,8 +13,6 @@
 //! See the [GUI guide](/docs/develop/gui)
 //! for component, layout, event, focus, and rendering guidance.
 
-use crate::core::Entity;
-
 #[doc(hidden)]
 pub mod animation;
 #[doc(hidden)]
@@ -41,8 +39,6 @@ pub mod style;
 pub mod timer;
 #[doc(hidden)]
 pub mod transform;
-#[doc(hidden)]
-pub mod visual;
 pub mod watch;
 
 pub use animation::{
@@ -55,10 +51,9 @@ pub use components::{
 	image::Image,
 	path::{FillRule, Path},
 	text::Text,
-	text_field::TextField,
 };
 pub use drag::{DragCapture, DragDrop};
-pub use element::{ConcreteElement, Element, ElementHandle, Id};
+pub use element::Id;
 pub use flow::{FlowFunction, FlowInput, FlowOutput, Location, Location3, Offset, Size};
 pub use layout::{
 	Depth, Geometry, Position, Sizing,
@@ -69,10 +64,9 @@ pub use layout::{
 	},
 };
 pub use point::{UiPoint, UiVector};
-pub use primitive::{BasePrimitive, CustomShape, Events, Key, Primitive, Primitives, Shapes, TextEdit};
+pub use primitive::{Events, Key, Primitives, TextEdit};
 pub use render_pass::UiRenderPass;
 pub use style::{Color, ConcreteLayer, ConcreteStyle, EdgeFeather, Layer, LayerKind, LinearGradient, MixModes, Shadow};
 pub use timer::WaitFuture;
 pub use transform::Transform;
-pub use visual::Visual;
 pub use watch::{Subscriber, Watch};

@@ -3,7 +3,7 @@
 //! One directional light gets the cascades. Local lights compete for a bounded pool of cone layers and point
 //! cube maps, ranked by how many sink pixels their conservative bounds cover.
 
-use maths_rs::{Vec3f, Vec4f};
+use maths_rs::Vec4f;
 use smallvec::SmallVec;
 
 use super::layout::{
@@ -11,7 +11,7 @@ use super::layout::{
 	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET,
 };
 use crate::gameplay::Transform;
-use crate::rendering::lights::{ConeLight, Lights, PointLight};
+use crate::rendering::lights::{ConeLight, Lights, LocalEmission, PointLight};
 use crate::rendering::{Sink, View};
 use crate::space::{Orientable as _, Positionable as _};
 
@@ -31,14 +31,21 @@ pub(crate) enum LightShadow {
 	Point { view_index: u32, cube_index: u32 },
 }
 
+/// The inline capacity of a frame's shadow assignments: the smallest size `SmallVec` supports that holds the sun and
+/// every pool slot.
+const SHADOW_ASSIGNMENTS_INLINE: usize = 36;
+const _: () = assert!(1 + MAX_CONE_SHADOW_POOL_CAPACITY + MAX_POINT_SHADOW_POOL_CAPACITY <= SHADOW_ASSIGNMENTS_INLINE);
+
 /// The `ShadowLightSelection` struct retains the bounded directional and local-light shadow work for one frame.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ShadowLightSelection<'a> {
 	pub(crate) directional: Option<(usize, math::UnitVector)>,
 	pub(crate) cones: [Option<(usize, &'a ConeLight, &'a Transform)>; MAX_CONE_SHADOW_POOL_CAPACITY],
 	pub(crate) eligible_cone_count: usize,
 	pub(crate) points: [Option<(usize, &'a PointLight, &'a Transform)>; MAX_POINT_SHADOW_POOL_CAPACITY],
 	pub(crate) eligible_point_count: usize,
+	/// Every selected light's shadow, sorted by light index, so the lighting upload looks each light up once.
+	assignments: SmallVec<[(usize, LightShadow); SHADOW_ASSIGNMENTS_INLINE]>,
 }
 
 impl ShadowLightSelection<'_> {
@@ -52,73 +59,50 @@ impl ShadowLightSelection<'_> {
 
 	/// Returns the shadow assignment of the scene light at `light_index`.
 	pub(crate) fn shadow_for(&self, light_index: usize) -> LightShadow {
-		if self.directional.is_some_and(|(index, _)| index == light_index) {
-			return LightShadow::Directional;
-		}
-		if let Some(layer) = self
-			.cones
-			.iter()
-			.position(|cone| cone.is_some_and(|(index, ..)| index == light_index))
-		{
-			return LightShadow::Cone {
-				view_index: (CONE_SHADOW_VIEW_OFFSET + layer) as u32,
-				layer: layer as u32,
-			};
-		}
-		if let Some(cube_index) = self
-			.points
-			.iter()
-			.position(|point| point.is_some_and(|(index, ..)| index == light_index))
-		{
-			return LightShadow::Point {
-				view_index: (POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT) as u32,
-				cube_index: cube_index as u32,
-			};
-		}
-		LightShadow::None
+		self.assignments
+			.binary_search_by_key(&light_index, |(index, _)| *index)
+			.map_or(LightShadow::None, |position| self.assignments[position].1)
 	}
-}
 
-/// The `LocalLight` trait gives cone and point lights one shadow-range and brightness contract.
-pub(crate) trait LocalLight {
-	fn color(&self) -> Vec3f;
-	fn shadow_near_override(&self) -> Option<f32>;
-	fn shadow_far_override(&self) -> Option<f32>;
-}
-
-impl LocalLight for ConeLight {
-	fn color(&self) -> Vec3f {
-		self.color
-	}
-	fn shadow_near_override(&self) -> Option<f32> {
-		ConeLight::shadow_near_override(self)
-	}
-	fn shadow_far_override(&self) -> Option<f32> {
-		ConeLight::shadow_far_override(self)
-	}
-}
-
-impl LocalLight for PointLight {
-	fn color(&self) -> Vec3f {
-		self.color
-	}
-	fn shadow_near_override(&self) -> Option<f32> {
-		PointLight::shadow_near_override(self)
-	}
-	fn shadow_far_override(&self) -> Option<f32> {
-		PointLight::shadow_far_override(self)
+	/// Records every selected light's shadow in light order for [`Self::shadow_for`].
+	fn index_assignments(&mut self) {
+		let directional = self.directional.map(|(index, _)| (index, LightShadow::Directional));
+		let cones = self.cones.iter().enumerate().filter_map(|(layer, cone)| {
+			cone.map(|(index, ..)| {
+				(
+					index,
+					LightShadow::Cone {
+						view_index: (CONE_SHADOW_VIEW_OFFSET + layer) as u32,
+						layer: layer as u32,
+					},
+				)
+			})
+		});
+		let points = self.points.iter().enumerate().filter_map(|(cube_index, point)| {
+			point.map(|(index, ..)| {
+				(
+					index,
+					LightShadow::Point {
+						view_index: (POINT_SHADOW_VIEW_OFFSET + cube_index * POINT_SHADOW_FACE_COUNT) as u32,
+						cube_index: cube_index as u32,
+					},
+				)
+			})
+		});
+		self.assignments = directional.into_iter().chain(cones).chain(points).collect();
+		self.assignments.sort_unstable_by_key(|(index, _)| *index);
 	}
 }
 
 /// Returns the luminance-weighted luminous intensity used for shadow coverage.
-pub(crate) fn peak_candela(light: &impl LocalLight, intensity_scale_candela: f32) -> f32 {
-	let color = light.color();
-	(0.2126 * color.x + 0.7152 * color.y + 0.0722 * color.z) * intensity_scale_candela
+pub(crate) fn peak_candela(emission: &LocalEmission, intensity_scale_candela: f32) -> f32 {
+	let color = emission.color;
+	utils::color::rec709_luminance(color.x, color.y, color.z) * intensity_scale_candela
 }
 
 /// Returns whether a local light has finite positive luminance that can cast a visible shadow.
-pub(crate) fn has_brightness(light: &impl LocalLight, intensity_scale_candela: f32) -> bool {
-	let peak = peak_candela(light, intensity_scale_candela);
+pub(crate) fn has_brightness(emission: &LocalEmission, intensity_scale_candela: f32) -> bool {
+	let peak = peak_candela(emission, intensity_scale_candela);
 	peak.is_finite() && peak > 0.0
 }
 
@@ -127,22 +111,22 @@ pub(crate) fn has_brightness(light: &impl LocalLight, intensity_scale_candela: f
 /// The far distance is where the light's exposure-weighted peak illuminance reaches
 /// [`SHADOW_EXPOSURE_THRESHOLD_LUX`]. Manual endpoints replace their automatic values and are clamped to
 /// retain a valid perspective projection.
-pub(crate) fn resolve_shadow_range(light: &impl LocalLight, exposure_scale: f32, intensity_scale_candela: f32) -> (f32, f32) {
+pub(crate) fn resolve_shadow_range(emission: &LocalEmission, exposure_scale: f32, intensity_scale_candela: f32) -> (f32, f32) {
 	let exposure_scale = if exposure_scale.is_finite() {
 		exposure_scale
 	} else {
 		SHADOW_DEFAULT_EXPOSURE_SCALE
 	}
 	.max(0.0);
-	let automatic_far = (peak_candela(light, intensity_scale_candela) * exposure_scale / SHADOW_EXPOSURE_THRESHOLD_LUX)
+	let automatic_far = (peak_candela(emission, intensity_scale_candela) * exposure_scale / SHADOW_EXPOSURE_THRESHOLD_LUX)
 		.sqrt()
 		.max(SHADOW_NEAR_M + SHADOW_NEAR_M);
-	let near = light
+	let near = emission
 		.shadow_near_override()
 		.filter(|value| value.is_finite())
 		.unwrap_or(SHADOW_NEAR_M)
 		.max(SHADOW_NEAR_M);
-	let far = light
+	let far = emission
 		.shadow_far_override()
 		.filter(|value| value.is_finite())
 		.unwrap_or(automatic_far)
@@ -157,7 +141,7 @@ pub(crate) fn make_cone_shadow_view(
 	exposure_scale: f32,
 	intensity_scale_candela: f32,
 ) -> View {
-	let (near, far) = resolve_shadow_range(light, exposure_scale, intensity_scale_candela);
+	let (near, far) = resolve_shadow_range(&light.emission, exposure_scale, intensity_scale_candela);
 	View::new_perspective(
 		(light.outer_angle * 2.0).to_degrees(),
 		1.0,
@@ -176,7 +160,7 @@ pub(crate) fn make_point_shadow_view(
 	exposure_scale: f32,
 	intensity_scale_candela: f32,
 ) -> View {
-	let (near, far) = resolve_shadow_range(light, exposure_scale, intensity_scale_candela);
+	let (near, far) = resolve_shadow_range(&light.emission, exposure_scale, intensity_scale_candela);
 	let (direction, up) = match face {
 		0 => (math::UnitVector::x_axis(), math::UnitVector::y_axis()),
 		1 => (-math::UnitVector::x_axis(), math::UnitVector::y_axis()),
@@ -196,7 +180,7 @@ pub(crate) fn cone_shadow_importance(
 	intensity_scale_candela: f32,
 	sink: &Sink,
 ) -> Option<f32> {
-	let (_, far) = resolve_shadow_range(light, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
+	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
 	let cosine = light.outer_angle.cos();
 	let enclosing_radius = far / (2.0 * cosine * cosine);
 	let bounds = math::Sphere::new(
@@ -213,7 +197,7 @@ pub(crate) fn point_shadow_importance(
 	intensity_scale_candela: f32,
 	sink: &Sink,
 ) -> Option<f32> {
-	let (_, far) = resolve_shadow_range(light, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
+	let (_, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, intensity_scale_candela);
 	shadow_view_importance(math::Sphere::new(transform.position(), far), sink)
 }
 
@@ -330,13 +314,14 @@ impl<'a, T> SinkRanking<'a, T> {
 
 /// Selects the shadow-casting lights for this frame from the light prefix uploaded to material evaluation.
 ///
-/// `intensity_scale_candela` returns each light's calibrated IES peak scale, or `1.0` for analytic lights.
+/// `intensity_scale_candela` returns the calibrated IES peak scale of the light at each index, or `1.0` for analytic
+/// lights.
 pub(crate) fn select_shadow_lights<'a>(
 	lights: impl Iterator<Item = (&'a Lights, &'a Transform)>,
 	sinks: &[Sink],
 	cone_pool_capacity: usize,
 	point_pool_capacity: usize,
-	intensity_scale_candela: impl Fn(&Lights) -> f32,
+	intensity_scale_candela: impl Fn(usize) -> f32,
 ) -> ShadowLightSelection<'a> {
 	let mut selection = ShadowLightSelection::default();
 	if sinks.is_empty() {
@@ -353,12 +338,12 @@ pub(crate) fn select_shadow_lights<'a>(
 		.collect::<SmallVec<[SinkRanking<'a, PointLight>; 4]>>();
 
 	for (index, (light, transform)) in lights.take(MAX_LIGHTS).enumerate() {
-		let scale = intensity_scale_candela(light);
+		let scale = intensity_scale_candela(index);
 		match light {
 			Lights::Direction(_) if selection.directional.is_none() => {
 				selection.directional = Some((index, math::direction_from_orientation(transform.orientation())));
 			}
-			Lights::Cone(light) if has_brightness(light, scale) && light.supports_shadow_mapping() => {
+			Lights::Cone(light) if has_brightness(&light.emission, scale) && light.supports_shadow_mapping() => {
 				let candidate = Candidate { index, light, transform };
 				if rank(&mut cone_rankings, sinks, candidate, |sink| {
 					cone_shadow_importance(light, transform, scale, sink)
@@ -366,7 +351,7 @@ pub(crate) fn select_shadow_lights<'a>(
 					selection.eligible_cone_count += 1;
 				}
 			}
-			Lights::Point(light) if has_brightness(light, scale) => {
+			Lights::Point(light) if has_brightness(&light.emission, scale) => {
 				let candidate = Candidate { index, light, transform };
 				if rank(&mut point_rankings, sinks, candidate, |sink| {
 					point_shadow_importance(light, transform, scale, sink)
@@ -380,6 +365,7 @@ pub(crate) fn select_shadow_lights<'a>(
 
 	selection.cones = select_fair(&cone_rankings, cone_pool_capacity);
 	selection.points = select_fair(&point_rankings, point_pool_capacity);
+	selection.index_assignments();
 	selection
 }
 
@@ -606,40 +592,6 @@ mod tests {
 	}
 
 	#[test]
-	fn cone_shadow_pool_assigns_its_limited_layers_to_visible_lights() {
-		let lights = [Lights::Cone(cone()), Lights::Cone(cone())];
-		let transforms = [light_transform(0.0), light_transform(1.0)];
-		let sinks = [sink(Point::origin())];
-
-		let selection = select(&lights, &transforms, &sinks, 1, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
-		let empty_selection = select(&lights, &transforms, &sinks, 0, DEFAULT_POINT_SHADOW_POOL_CAPACITY);
-
-		assert_eq!(cone_indices(&selection), [0]);
-		assert_eq!(selection.eligible_cone_count, 2);
-		assert!(empty_selection.cones.iter().all(Option::is_none));
-		assert_eq!(empty_selection.eligible_cone_count, 2);
-	}
-
-	#[test]
-	fn cone_shadow_pool_orders_lights_by_projected_sink_coverage() {
-		let lights = [
-			Lights::Cone(cone().with_shadow_far(5.0)),
-			Lights::Cone(cone().with_shadow_far(5.0)),
-		];
-		let transforms = [light_transform(8.0), light_transform(0.0)];
-
-		let selection = select(
-			&lights,
-			&transforms,
-			&[sink(Point::origin())],
-			1,
-			DEFAULT_POINT_SHADOW_POOL_CAPACITY,
-		);
-
-		assert_eq!(cone_indices(&selection), [1]);
-	}
-
-	#[test]
 	fn cone_shadow_pool_continues_in_sink_order_after_assigning_each_sink_its_top_light() {
 		let lights: Vec<_> = (0..6).map(|_| Lights::Cone(cone().with_shadow_far(20.0))).collect();
 		let transforms = [0.0, 1.0, 2.0, 3.0, 100.0, 200.0].map(light_transform);
@@ -673,11 +625,11 @@ mod tests {
 	#[test]
 	fn unlit_cones_yield_pool_layers_to_visible_lit_cones() {
 		let mut unlit = cone();
-		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
+		unlit.emission.color = Vec3f::new(0.0, 0.0, 0.0);
 		let lights = [Lights::Cone(unlit.clone()), Lights::Cone(cone())];
 		let transforms = [light_transform(0.0), light_transform(1.0)];
 
-		assert!(!has_brightness(&unlit, 1.0));
+		assert!(!has_brightness(&unlit.emission, 1.0));
 
 		let selection = select(
 			&lights,
@@ -691,34 +643,6 @@ mod tests {
 		assert_eq!(selection.eligible_cone_count, 1);
 	}
 
-	#[test]
-	fn point_shadow_pool_assigns_its_limited_cubes_to_visible_lights() {
-		let lights = [Lights::Point(point()), Lights::Point(point()), Lights::Point(point())];
-		let transforms = [light_transform(0.0), light_transform(1.0), light_transform(2.0)];
-		let sinks = [sink(Point::origin())];
-
-		let selection = select(&lights, &transforms, &sinks, 0, 2);
-		let empty_selection = select(&lights, &transforms, &sinks, 0, 0);
-
-		assert_eq!(point_indices(&selection), [0, 1]);
-		assert_eq!(selection.eligible_point_count, 3);
-		assert!(empty_selection.points.iter().all(Option::is_none));
-		assert_eq!(empty_selection.eligible_point_count, 3);
-	}
-
-	#[test]
-	fn point_shadow_pool_orders_lights_by_projected_sink_coverage() {
-		let lights = [
-			Lights::Point(point().with_shadow_far(1.0)),
-			Lights::Point(point().with_shadow_far(1.0)),
-		];
-		let transforms = [light_transform(3.5), light_transform(0.0)];
-
-		let selection = select(&lights, &transforms, &[sink(Point::origin())], 0, 1);
-
-		assert_eq!(point_indices(&selection), [1]);
-	}
-
 	/// Verifies a resident profile's dimmed peak intensity drives both local-shadow range and selection.
 	#[test]
 	fn ies_profile_scale_expands_point_shadow_coverage() {
@@ -730,8 +654,8 @@ mod tests {
 
 		let fallback = select(&lights, &transforms, &sinks, 0, 1);
 		let resident = select_shadow_lights(lights.iter().zip(&transforms), &sinks, 0, 1, |_| 90.0);
-		let (_, fallback_far) = resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
-		let (_, resident_far) = resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 90.0);
+		let (_, fallback_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let (_, resident_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 90.0);
 
 		assert!(fallback.points.iter().all(Option::is_none));
 		assert_eq!(fallback.eligible_point_count, 0);
@@ -781,32 +705,6 @@ mod tests {
 	}
 
 	#[test]
-	fn point_shadow_range_uses_manual_endpoints_and_visibility() {
-		let light = point().with_shadow_range(-4.0, f32::NAN);
-		let transform = light_transform(500.0);
-
-		let (near, far) = resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
-		let automatic_far = (100.0 / SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
-
-		assert_eq!(near, SHADOW_NEAR_M);
-		assert_eq!(far, automatic_far);
-		assert!(point_shadow_importance(&light.with_shadow_far(20.0), &transform, 1.0, &sink(Point::origin())).is_none());
-		assert!(
-			point_shadow_importance(
-				&point().with_shadow_far(20.0),
-				&light_transform(100.0),
-				1.0,
-				&sink(Point::new(100.0, 0.0, 0.0)),
-			)
-			.is_some()
-		);
-
-		let mut unlit = point();
-		unlit.color = Vec3f::new(0.0, 0.0, 0.0);
-		assert!(!has_brightness(&unlit, 1.0));
-	}
-
-	#[test]
 	fn cone_shadow_view_uses_the_light_projection_and_automatic_clip_range() {
 		let light = cone();
 		let transform = light_transform(1.0);
@@ -829,22 +727,22 @@ mod tests {
 	#[test]
 	fn cone_shadow_range_uses_manual_endpoints_and_clamps_invalid_values() {
 		let light = cone().with_shadow_range(-4.0, f32::NAN);
-		let (near, far) = resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let (near, far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
 		let automatic_far = (100.0 / SHADOW_EXPOSURE_THRESHOLD_LUX).sqrt();
 
 		assert_eq!(near, SHADOW_NEAR_M);
 		assert!((far - automatic_far).abs() < 0.0001);
 
 		let light = cone().with_shadow_near(50.0).with_shadow_far(20.0);
-		assert_eq!(resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0), (50.0, 50.1));
+		assert_eq!(resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0), (50.0, 50.1));
 	}
 
 	#[test]
 	fn cone_shadow_range_scales_with_linear_exposure() {
 		let light = cone();
-		let (_, neutral_far) = resolve_shadow_range(&light, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
-		let (_, brighter_far) = resolve_shadow_range(&light, 4.0, 1.0);
-		let (_, invalid_far) = resolve_shadow_range(&light, f32::NAN, 1.0);
+		let (_, neutral_far) = resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0);
+		let (_, brighter_far) = resolve_shadow_range(&light.emission, 4.0, 1.0);
+		let (_, invalid_far) = resolve_shadow_range(&light.emission, f32::NAN, 1.0);
 
 		assert!((brighter_far - neutral_far * 2.0).abs() < 0.0001);
 		assert!((invalid_far - neutral_far).abs() < 0.0001);

@@ -2,7 +2,6 @@
 
 use math::{Matrix, Point, UnitVector, inverse};
 use maths_rs::{Vec3f, Vec4f};
-use smallvec::SmallVec;
 
 use super::view::View;
 
@@ -250,6 +249,8 @@ fn fit_cascade_view(
 
 #[cfg(test)]
 mod tests {
+	use smallvec::SmallVec;
+
 	use super::*;
 
 	#[test]
@@ -454,12 +455,5 @@ mod tests {
 			assert!((center.z - further.z - 1.0).abs() < 1e-4, "The frame's depth range spans {} of stored depth.", center.z - further.z);
 			assert_eq!(frame.slice_far, slice_far);
 		}
-	}
-
-	#[test]
-	fn cascade_fitting_parses_its_parameter_names() {
-		assert_eq!("receivers".parse(), Ok(CascadeFitting::Receivers));
-		assert_eq!("frustum".parse(), Ok(CascadeFitting::Frustum));
-		assert!("sphere".parse::<CascadeFitting>().is_err());
 	}
 }

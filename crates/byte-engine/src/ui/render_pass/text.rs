@@ -9,7 +9,7 @@
 //! This is the CPU renderer that `UiTextMode::Atlas` selects. The default renderer draws
 //! glyph outlines on the GPU instead; see the `slug` module next to this one.
 
-use std::collections::HashMap;
+use utils::hash::HashMap;
 
 use super::*;
 use crate::ui::font::{Glyph, GlyphKey};
@@ -77,13 +77,13 @@ impl UiGlyphAtlas {
 		let size = size.clamp(1, UI_GLYPH_ATLAS_MAX_SIZE);
 		Self {
 			runs: Vec::new(),
-			run_indices: HashMap::new(),
+			run_indices: HashMap::default(),
 			prepared: false,
 			size,
 			pixels: vec![0; (size * size) as usize],
 			shelves: Vec::new(),
 			next_shelf_y: 0,
-			regions: HashMap::new(),
+			regions: HashMap::default(),
 			generation: 0,
 			dirty: false,
 			full_upload: true,
@@ -119,10 +119,12 @@ impl UiGlyphAtlas {
 		self.generation
 	}
 
+	#[cfg(test)]
 	pub(super) fn len(&self) -> usize {
 		self.regions.len()
 	}
 
+	#[cfg(test)]
 	pub(super) fn region(&self, key: GlyphKey) -> Option<AtlasRegion> {
 		self.regions.get(&key).copied()
 	}
@@ -999,23 +1001,6 @@ mod tests {
 	}
 
 	#[test]
-	fn reset_clears_regions_and_advances_generation() {
-		let mut atlas = UiGlyphAtlas::new(16);
-		atlas.insert(GlyphKey::new('a', 8.0), &glyph(2, 2, 255)).unwrap();
-		let generation = atlas.generation();
-
-		atlas.reset(32);
-
-		assert_eq!(atlas.len(), 0);
-		assert_eq!(atlas.size(), 32);
-		assert_eq!(atlas.extent(), Extent::square(32));
-		assert_eq!(atlas.generation(), generation + 1);
-		assert!(atlas.pixels().iter().all(|value| *value == 0));
-		assert!(atlas.is_dirty());
-		assert!(atlas.resized);
-	}
-
-	#[test]
 	fn ensure_grows_and_repacks_when_the_atlas_is_full() {
 		let mut text_system = TextSystem::new();
 		if !text_system.has_font() {
@@ -1243,41 +1228,5 @@ mod tests {
 			bytemuck::cast_slice::<_, u8>(&again.primitives),
 		);
 		assert_eq!(first.labels, again.labels);
-	}
-
-	#[test]
-	fn unchanged_text_reuses_resident_glyphs_without_dirtying_the_atlas() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-		let frame_allocator = bumpalo::Bump::new();
-		let mut atlas = UiGlyphAtlas::new(256);
-		let list = draw_list(vec![text("Idle", 0, 0, [5.0, 5.0], None)]);
-
-		build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
-		assert!(atlas.is_dirty());
-		atlas.dirty = false;
-		let generation = atlas.generation();
-
-		let again = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
-
-		assert!(!atlas.is_dirty());
-		assert_eq!(atlas.generation(), generation);
-		assert_eq!(again.primitives.len(), 4);
 	}
 }

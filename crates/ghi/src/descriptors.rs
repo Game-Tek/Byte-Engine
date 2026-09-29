@@ -233,30 +233,21 @@ impl DescriptorWrite {
 	}
 }
 
-#[derive(Clone, Copy)]
-/// Legacy descriptor categories retained internally for the pending Vulkan and DX12 migrations.
-pub(crate) enum DescriptorType {
-	/// A uniform buffer.
-	UniformBuffer,
-	/// A storage buffer.
-	StorageBuffer,
-	/// An image.
-	SampledImage,
-	/// A combined image sampler.
-	CombinedImageSampler,
-	/// A storage image.
-	StorageImage,
-	/// An input attachment.
-	InputAttachment,
-	/// A sampler.
-	Sampler,
-	/// An acceleration structure.
-	AccelerationStructure,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DescriptorSetHandle(pub(crate) u64);
 
+impl crate::PrivateHandle for DescriptorSetHandle {
+	fn new(i: u64) -> Self {
+		Self(i)
+	}
+
+	fn index(&self) -> u64 {
+		self.0
+	}
+}
+
+// Metal keeps its frame-local set chains in a `ResourceCollection`, so only the other backends link sets themselves.
+#[cfg(not(target_os = "macos"))]
 impl Next for DescriptorSet {
 	type Handle = DescriptorSetHandle;
 
@@ -265,6 +256,7 @@ impl Next for DescriptorSet {
 	}
 }
 
+#[cfg(not(target_os = "macos"))]
 impl HandleLike for DescriptorSetHandle {
 	type Item = DescriptorSet;
 
@@ -277,8 +269,9 @@ impl HandleLike for DescriptorSetHandle {
 	}
 }
 
+#[cfg(not(target_os = "macos"))]
+use crate::{DescriptorSet, HandleLike, Next};
 use crate::{
-	BaseBufferHandle, BaseImageHandle, DescriptorSet, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle,
-	HandleLike, Layouts, Next, Ranges, SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle,
-	shader::ResourceSlot,
+	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle, Layouts, Ranges,
+	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle, shader::ResourceSlot,
 };

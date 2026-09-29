@@ -20,6 +20,47 @@ use std::num::NonZeroU32;
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
+/// The `ComputeStage` struct is one dispatch of a visibility compute subpass, so every subpass records the same way
+/// through [`record_compute_stages`].
+///
+/// `N` is how many descriptor sets the stage binds, in binding order.
+#[derive(Clone, Copy)]
+pub(super) struct ComputeStage<const N: usize = 1> {
+	pub(super) label: &'static str,
+	pub(super) pipeline: ghi::PipelineHandle,
+	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; N],
+	pub(super) extent: Extent,
+	pub(super) workgroup: Extent,
+}
+
+/// Records each stage in its own debug region, nested inside `region` when one is given.
+///
+/// Nothing is recorded for an empty stage list, not even `region`.
+pub(super) fn record_compute_stages<const N: usize>(
+	c: &mut ghi::implementation::CommandBufferRecording,
+	region: Option<&'static str>,
+	stages: &[ComputeStage<N>],
+) {
+	use ghi::command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _};
+
+	if stages.is_empty() {
+		return;
+	}
+	if let Some(region) = region {
+		c.start_region(|label| label.write_str(region));
+	}
+	for stage in stages {
+		c.start_region(|label| label.write_str(stage.label));
+		let c = c.bind_compute_pipeline(stage.pipeline);
+		c.bind_descriptor_sets(&stage.descriptor_sets);
+		c.dispatch(ghi::DispatchExtent::new(stage.extent, stage.workgroup));
+		c.end_region();
+	}
+	if region.is_some() {
+		c.end_region();
+	}
+}
+
 use self::contact_shadows::ContactShadowPass;
 pub use self::contact_shadows::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
 pub(crate) use self::contact_shadows::{ContactShadowSettings, ContactShadowTargets, create_contact_shadow_targets};
@@ -404,7 +445,7 @@ impl VisibilityRenderPass {
 		let material_prepasses = &self.material_prepasses;
 
 		Some(
-			move |c: &mut ghi::implementation::CommandBufferRecording, t: &[ghi::AttachmentInformation]| {
+			move |c: &mut ghi::implementation::CommandBufferRecording| {
 				use ghi::command_buffer::CommonCommandBufferMode as _;
 
 				c.start_region(|label| label.write_str("Visibility Render Model"));
@@ -413,10 +454,10 @@ impl VisibilityRenderPass {
 				}
 				// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists.
 				if !fits_receivers {
-					shadows(c, t);
+					shadows(c);
 				}
 				// Both material evaluation layers read the clusters, and nothing before them does.
-				light_clusters(c, t);
+				light_clusters(c);
 
 				// The opaque layer establishes the depth and color retained by every later transparent primitive.
 				visibility.record(
@@ -429,19 +470,19 @@ impl VisibilityRenderPass {
 					visibility_pipelines,
 				);
 				material_prepasses.record(c, extent, prepass_pipelines);
-				cascade_fit(c, t);
+				cascade_fit(c);
 				if fits_receivers {
-					shadows(c, t);
+					shadows(c);
 				}
 				// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
-				depth_pyramid(c, t);
-				contact_shadows(c, t);
-				gtao(c, t);
-				ssgi(c, t);
-				opaque_materials(c, t);
+				depth_pyramid(c);
+				contact_shadows(c);
+				gtao(c);
+				ssgi(c);
+				opaque_materials(c);
 				// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 				if let Some(background) = background {
-					background(c, t);
+					background(c);
 				}
 
 				// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
@@ -457,7 +498,7 @@ impl VisibilityRenderPass {
 						visibility_pipelines,
 					);
 					material_prepasses.record(c, extent, prepass_pipelines);
-					transparent_materials(c, t);
+					transparent_materials(c);
 				}
 				c.end_region();
 			},

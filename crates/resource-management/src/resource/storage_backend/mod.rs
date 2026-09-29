@@ -28,17 +28,6 @@ pub trait ReadStorageBackend: Sync + Send {
 	fn read_trace<'a>(&'a self, _: ResourceId<'a>) -> impl Future<Output = Result<Vec<crate::ResourceTraceItem>, String>> + 'a {
 		async { Ok(Vec::new()) }
 	}
-
-	/// Returns the asset type from its URL when the backend can determine it.
-	///
-	/// Asset handlers use this value to skip unsupported sources before loading them.
-	fn get_type<'a>(&'a self, url: ResourceId<'a>) -> Option<&'a str> {
-		Some(url.get_asset_type())
-	}
-
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> impl Future<Output = bool> + 'a {
-		async move { self.read(id).await.is_some() }
-	}
 }
 
 /// The `DynReadStorageBackend` trait provides object-safe resource lookup for runtime-selected storage.
@@ -53,10 +42,6 @@ pub trait DynReadStorageBackend: Send + Sync {
 	fn read_trace<'a>(&'a self, _id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(async { Ok(Vec::new()) })
 	}
-
-	fn get_type<'a>(&'a self, id: ResourceId<'a>) -> Option<&'a str>;
-
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool>;
 }
 
 /// The `WriteStorageBackend` trait provides complete and incremental resource-authoring paths.
@@ -99,31 +84,6 @@ pub trait WriteStorageBackend: Sync + Send {
 		self.store_in(resource, data, &std::alloc::Global)
 	}
 
-	/// Stores an owned payload without copying large buffers through the file staging buffer.
-	fn store_owned<'a, T: compio::buf::IoBuf>(
-		&'a self,
-		resource: ProcessedAsset,
-		data: T,
-	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
-		self.store_owned_in(resource, data, &std::alloc::Global)
-	}
-
-	/// Stores an owned payload while using `allocator` for serialized resource metadata.
-	fn store_owned_in<'a, T: compio::buf::IoBuf>(
-		&'a self,
-		resource: ProcessedAsset,
-		data: T,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> impl Future<Output = Result<SerializableResource, ()>> + 'a {
-		async move {
-			let id = ResourceId::new(resource.id());
-			let compression_policy = self.cpu_compression_policy(&resource);
-			let transaction =
-				write_complete_owned_resource(data, compression_policy, |size| self.begin_resource(id, size)).await?;
-			transaction.commit(resource, allocator).await
-		}
-	}
-
 	fn store_in<'a>(
 		&'a self,
 		resource: ProcessedAsset,
@@ -136,7 +96,7 @@ pub trait WriteStorageBackend: Sync + Send {
 				let mut transaction = self
 					.begin_resource(ResourceId::new(resource.id()), prepared.bytes.len())
 					.await?
-					.with_compressed_payload(prepared.decoded_size, prepared.decoded_hash, prepared.encoding);
+					.with_compressed_payload(prepared.decoded_size, prepared.decoded_hash);
 				let compio::buf::BufResult(result, _) =
 					compio::io::AsyncWriteExt::write_all(&mut transaction, prepared.bytes).await;
 				result.map_err(|_| ())?;
@@ -150,15 +110,11 @@ pub trait WriteStorageBackend: Sync + Send {
 		}
 	}
 
-	fn sync<T: ReadStorageBackend>(&self, _: &T) {}
-
 	/// Replaces development-time bake messages without creating a resource entry.
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		Ok(())
 	}
-
-	fn start(&self, _: ResourceId<'_>) {}
 
 	/// Makes every resource committed so far survive a crash or power loss.
 	///
@@ -186,7 +142,6 @@ pub trait DynWriteStorageBackend: Send + Sync {
 	fn replace_trace(&self, _: ResourceId<'_>, _: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		Ok(())
 	}
-	fn start(&self, _: ResourceId<'_>) {}
 	fn persist(&self) -> Result<(), String> {
 		Ok(())
 	}
@@ -249,18 +204,6 @@ impl Query {
 		self
 	}
 
-	pub fn matches(&self, resource: &SerializableResource, properties: &[crate::QueryableProperty]) -> bool {
-		if resource.class != self.class {
-			return false;
-		}
-
-		self.predicates.iter().all(|predicate| match predicate {
-			QueryPredicate::Eq { property, value } => properties
-				.iter()
-				.any(|candidate| candidate.name == *property && &candidate.value == value),
-		})
-	}
-
 	/// Returns whether archived metadata matches this query without deserializing it.
 	pub fn matches_archived(&self, resource: &ArchivedSerializableResource) -> bool {
 		if resource.class.as_str() != self.class {
@@ -293,20 +236,11 @@ pub struct QueryPage<T> {
 	pub cursor: Option<QueryCursor>,
 }
 
-/// The `QueryError` enum reports why a metadata query produced no page.
-///
-/// Storage backends return [`Self::InvalidCursor`] and [`Self::StorageFailure`].
-/// [`ResourceManager::query`](crate::ResourceManager::query) adds [`Self::Solve`] when a matching record cannot become
-/// a typed resource.
+/// The `QueryError` enum reports why a storage backend produced no metadata query page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
 	InvalidCursor,
 	StorageFailure,
-	/// The record `id` matched the query but could not be solved into its typed resource.
-	Solve {
-		id: String,
-		source: crate::solver::SolveError,
-	},
 }
 
 impl std::fmt::Display for QueryError {
@@ -318,19 +252,11 @@ impl std::fmt::Display for QueryError {
 			QueryError::StorageFailure => f.write_str(
 				"Failed to query resources. The most likely cause is that the resources database could not be read.",
 			),
-			QueryError::Solve { id, source } => write!(f, "Failed to solve queried resource '{id}'. {source}"),
 		}
 	}
 }
 
-impl std::error::Error for QueryError {
-	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-		match self {
-			QueryError::Solve { source, .. } => Some(source),
-			QueryError::InvalidCursor | QueryError::StorageFailure => None,
-		}
-	}
-}
+impl std::error::Error for QueryError {}
 
 impl<T: ReadStorageBackend> DynReadStorageBackend for T {
 	fn list(&self) -> BoxedFuture<'_, Result<Vec<String>, String>> {
@@ -351,14 +277,6 @@ impl<T: ReadStorageBackend> DynReadStorageBackend for T {
 	#[cfg(debug_assertions)]
 	fn read_trace<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, Result<Vec<crate::ResourceTraceItem>, String>> {
 		Box::pin(self.read_trace(id))
-	}
-
-	fn get_type<'a>(&'a self, id: ResourceId<'a>) -> Option<&'a str> {
-		self.get_type(id)
-	}
-
-	fn exists<'a>(&'a self, id: ResourceId<'a>) -> BoxedFuture<'a, bool> {
-		Box::pin(self.exists(id))
 	}
 }
 
@@ -395,10 +313,6 @@ impl<T: WriteStorageBackend> DynWriteStorageBackend for T {
 	#[cfg(debug_assertions)]
 	fn replace_trace(&self, id: ResourceId<'_>, items: &[crate::ResourceTraceItem]) -> Result<(), String> {
 		self.replace_trace(id, items)
-	}
-
-	fn start(&self, id: ResourceId<'_>) {
-		self.start(id)
 	}
 
 	fn persist(&self) -> Result<(), String> {
@@ -576,10 +490,6 @@ pub mod tests {
 				traces.insert(id.to_string(), items.to_vec());
 			}
 			Ok(())
-		}
-
-		fn sync<'s, 'a, T: ReadStorageBackend>(&'s self, _: &'a T) -> () {
-			{}
 		}
 	}
 

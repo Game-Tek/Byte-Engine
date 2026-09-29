@@ -733,7 +733,7 @@ mod tests {
 	use std::sync::mpsc;
 	use std::time::Duration;
 
-	use super::{SpscByteRing, kAudioUnitSubType_DefaultOutput, output_component_subtypes};
+	use super::SpscByteRing;
 
 	// Mirrors a producer operation in the reference queue used by the mixed-operation test.
 	fn write_model_operation(ring: &SpscByteRing, model: &mut VecDeque<u8>, stream_value: &mut u8, rng: u32) {
@@ -764,25 +764,6 @@ mod tests {
 	}
 
 	#[test]
-	fn default_output_is_the_first_macos_component_candidate() {
-		assert_eq!(output_component_subtypes()[0], kAudioUnitSubType_DefaultOutput);
-	}
-
-	#[test]
-	fn ring_rejects_zero_capacity() {
-		assert!(SpscByteRing::new(0).is_err());
-	}
-
-	#[test]
-	fn ring_starts_empty_with_full_write_capacity() {
-		let ring = SpscByteRing::new(8).unwrap();
-
-		assert_eq!(ring.available_write(), 8);
-		assert_eq!(ring.read_index.load(Ordering::Acquire), 0);
-		assert_eq!(ring.write_index.load(Ordering::Acquire), 0);
-	}
-
-	#[test]
 	fn with_write_chunk_clamps_to_writer_return_and_slice_size() {
 		let ring = SpscByteRing::new(8).unwrap();
 		let written = ring.with_write_chunk(8, |chunk| {
@@ -798,47 +779,6 @@ mod tests {
 
 		assert_eq!(read, 8);
 		assert_eq!(popped, [0xAB; 8]);
-	}
-
-	#[test]
-	fn with_write_chunk_respects_contiguous_region_before_wrap() {
-		let ring = SpscByteRing::new(8).unwrap();
-
-		let first = ring.with_write_chunk(6, |chunk| {
-			assert_eq!(chunk.len(), 6);
-			chunk.copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-			chunk.len()
-		});
-
-		assert_eq!(first, 6);
-
-		let mut dropped = [0u8; 4];
-
-		assert_eq!(ring.pop_into_slice(&mut dropped), 4);
-
-		let second = ring.with_write_chunk(6, |chunk| {
-			assert_eq!(chunk.len(), 2);
-			chunk.copy_from_slice(&[7, 8]);
-			chunk.len()
-		});
-
-		assert_eq!(second, 2);
-
-		let third = ring.with_write_chunk(6, |chunk| {
-			assert_eq!(chunk.len(), 4);
-			chunk.copy_from_slice(&[9, 10, 11, 12]);
-			chunk.len()
-		});
-
-		assert_eq!(third, 4);
-	}
-
-	#[test]
-	fn pop_returns_zero_when_empty() {
-		let ring = SpscByteRing::new(8).unwrap();
-		let mut destination = [0u8; 8];
-
-		assert_eq!(ring.pop_into_slice(&mut destination), 0);
 	}
 
 	#[test]

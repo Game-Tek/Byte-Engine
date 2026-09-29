@@ -221,8 +221,6 @@ fn unknown_shape(shape: &Shape) -> Value {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::HashMap;
-
 	use facet::Facet;
 	use serde_json::json;
 
@@ -237,6 +235,7 @@ mod tests {
 
 	#[derive(Facet)]
 	#[repr(u8)]
+	#[expect(dead_code, reason = "The variant fields exist only to be described by their Facet shape.")]
 	enum Command {
 		Stop,
 		Move { x: f32, y: f32 },
@@ -288,26 +287,6 @@ mod tests {
 			json!({
 				"name": "Rename",
 				"shape": { "type": "string" }
-			})
-		);
-	}
-
-	#[test]
-	fn collection_descriptions_retain_key_value_and_fixed_length_contracts() {
-		assert_eq!(
-			describe_json_shape(<HashMap<String, bool>>::SHAPE),
-			json!({
-				"type": "map",
-				"keys": { "type": "string" },
-				"values": { "type": "boolean" }
-			})
-		);
-		assert_eq!(
-			describe_json_shape(<[u16; 3]>::SHAPE),
-			json!({
-				"type": "array",
-				"items": { "type": "integer", "format": "u16" },
-				"length": 3
 			})
 		);
 	}

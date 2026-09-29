@@ -199,7 +199,7 @@ fn held_directions_in<A: Allocator + Clone>(bencher: divan::Bencher, action_coun
 /// Measures a gameplay sink with many actions bound to distinct keys, two of which change per tick.
 #[divan::bench(sample_count = 100, sample_size = 1000)]
 fn bound_keys(bencher: divan::Bencher) {
-	use byte_engine::input::{TriggerRegistry as _, trigger::TriggerDescription};
+	use byte_engine::input::trigger::TriggerDescription;
 
 	let mut collector = InputCollector::new();
 	let class = collector.register_device_class("Deck");

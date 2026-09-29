@@ -20,8 +20,7 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 		_ => e,
 	})?;
 
-	let parsers = vec![parse_function_call, parse_literal, parse_variable];
-	let (expressions, new_iterator) = execute_expression_parsers(&parsers, iterator, Vec::new())?;
+	let (value, new_iterator) = parse_expression_node(&[parse_function_call, parse_literal, parse_variable], iterator)?;
 	iterator = new_iterator;
 
 	iterator.next_str(";").map_err(|e| match e {
@@ -30,8 +29,6 @@ pub(crate) fn parse_const<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a str
 		},
 		_ => e,
 	})?;
-
-	let value = expression_atoms_to_node(&expressions);
 
 	Ok((Node::constant_with_type(name, r#type, value), iterator))
 }

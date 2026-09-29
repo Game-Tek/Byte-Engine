@@ -20,6 +20,25 @@ pub(crate) fn normalized_linear_axis(uv: f32, size: u32) -> (u32, u32, f32) {
 	)
 }
 
+/// Selects the scalar instruction that converts `source` to `target`, or `None` when the VM has no such conversion.
+pub(crate) fn conversion_operator(source: &ValueType, target: &ValueType) -> Option<ScalarUnaryOperator> {
+	Some(match (source, target) {
+		(ValueType::F16, ValueType::F32) => ScalarUnaryOperator::FromF16ToF32,
+		(ValueType::U32, ValueType::F32) => ScalarUnaryOperator::FromU32ToF32,
+		(ValueType::I32, ValueType::F32) => ScalarUnaryOperator::FromI32ToF32,
+		(ValueType::F32, ValueType::F16) => ScalarUnaryOperator::FromF32ToF16,
+		(ValueType::U32, ValueType::F16) => ScalarUnaryOperator::FromU32ToF16,
+		(ValueType::I32, ValueType::F16) => ScalarUnaryOperator::FromI32ToF16,
+		(ValueType::U8, ValueType::U32) => ScalarUnaryOperator::FromU8ToU32,
+		(ValueType::U16, ValueType::U32) => ScalarUnaryOperator::FromU16ToU32,
+		(ValueType::I32, ValueType::U32) => ScalarUnaryOperator::FromI32ToU32,
+		(ValueType::F16, ValueType::U32) => ScalarUnaryOperator::FromF16ToU32,
+		(ValueType::F32, ValueType::U32) => ScalarUnaryOperator::FromF32ToU32,
+		(ValueType::U32, ValueType::U16) => ScalarUnaryOperator::FromU32ToU16,
+		_ => return None,
+	})
+}
+
 pub(crate) fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOperator> {
 	match operator {
 		Operators::Plus => Some(ArithmeticOperator::Add),
@@ -1096,8 +1115,8 @@ pub(crate) fn multiply_mat4x3_vec4(matrix: [f32; 12], vector: [f32; 4]) -> [f32;
 	std::array::from_fn(|row| (0..4).map(|column| matrix[column * 3 + row] * vector[column]).sum())
 }
 
-pub(crate) fn expect_vec2u(value: Value) -> Result<[u32; 2], VmError> {
-	let Value::Vec2U(value) = value else {
+pub(crate) fn expect_vec2u(value: &Value) -> Result<[u32; 2], VmError> {
+	let &Value::Vec2U(value) = value else {
 		return Err(VmError::TypeMismatch {
 			expected: ValueType::Vec2U.name().to_string(),
 			found: value.value_type().name().to_string(),
@@ -1106,8 +1125,8 @@ pub(crate) fn expect_vec2u(value: Value) -> Result<[u32; 2], VmError> {
 	Ok(value)
 }
 
-pub(crate) fn expect_vec4u(value: Value) -> Result<[u32; 4], VmError> {
-	let Value::Vec4U(value) = value else {
+pub(crate) fn expect_vec4u(value: &Value) -> Result<[u32; 4], VmError> {
+	let &Value::Vec4U(value) = value else {
 		return Err(VmError::TypeMismatch {
 			expected: ValueType::Vec4U.name().to_string(),
 			found: value.value_type().name().to_string(),
@@ -1116,8 +1135,8 @@ pub(crate) fn expect_vec4u(value: Value) -> Result<[u32; 4], VmError> {
 	Ok(value)
 }
 
-pub(crate) fn expect_bool(value: Value) -> Result<bool, VmError> {
-	let Value::Bool(value) = value else {
+pub(crate) fn expect_bool(value: &Value) -> Result<bool, VmError> {
+	let &Value::Bool(value) = value else {
 		return Err(VmError::TypeMismatch {
 			expected: ValueType::Bool.name().to_string(),
 			found: value.value_type().name().to_string(),
@@ -1126,8 +1145,8 @@ pub(crate) fn expect_bool(value: Value) -> Result<bool, VmError> {
 	Ok(value)
 }
 
-pub(crate) fn expect_u32(value: Value) -> Result<u32, VmError> {
-	let Value::U32(value) = value else {
+pub(crate) fn expect_u32(value: &Value) -> Result<u32, VmError> {
+	let &Value::U32(value) = value else {
 		return Err(VmError::TypeMismatch {
 			expected: ValueType::U32.name().to_string(),
 			found: value.value_type().name().to_string(),

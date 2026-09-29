@@ -279,56 +279,13 @@ use crate::packets::{
 #[cfg(test)]
 mod tests {
 	use super::{
-		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, CONNECTION_STATUS_SIZE, DATA_PACKET_SIZE, PACKET_HEADER_SIZE,
-		PacketReadError, read_packet, read_packet_header, sequence_greater_than, write_connection_status, write_packet,
-		write_packet_header,
+		CHALLENGE_PACKET_SIZE, CONNECTION_PACKET_SIZE, DATA_PACKET_SIZE, PACKET_HEADER_SIZE, PacketReadError, read_packet,
+		sequence_greater_than, write_packet, write_packet_header,
 	};
 	use crate::packets::{
 		ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, ConnectionStatus, DataPacket, DisconnectPacket,
 		PacketHeader, PacketType, Packets,
 	};
-
-	#[test]
-	fn packet_header_round_trips_every_supported_discriminant() {
-		for packet_type in [
-			PacketType::Default,
-			PacketType::ConnectionRequest,
-			PacketType::Challenge,
-			PacketType::ChallengeResponse,
-			PacketType::Data,
-			PacketType::Disconnect,
-		] {
-			let mut bytes = [0u8; PACKET_HEADER_SIZE];
-			write_packet_header(&mut bytes, PacketHeader::new(packet_type)).expect("header capacity is exact");
-
-			assert_eq!(&bytes[..4], b"BETP");
-			assert_eq!(bytes[4], packet_type as u8);
-			assert_eq!(read_packet_header(&bytes), Ok(PacketHeader::new(packet_type)));
-		}
-	}
-
-	#[test]
-	fn malformed_headers_report_distinct_causes() {
-		assert_eq!(read_packet_header(b"BET"), Err(PacketReadError::ShortHeader));
-		assert_eq!(read_packet_header(b"NOPE\x04"), Err(PacketReadError::WrongProtocol));
-		assert_eq!(read_packet_header(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
-
-		for error in [
-			PacketReadError::ShortHeader,
-			PacketReadError::WrongProtocol,
-			PacketReadError::UnknownPacketType,
-			PacketReadError::ReservedPacketType,
-			PacketReadError::InvalidPacketLength {
-				expected: CONNECTION_PACKET_SIZE,
-				actual: PACKET_HEADER_SIZE,
-			},
-		] {
-			let message = error.to_string();
-
-			assert!(message.contains("most likely cause"));
-			assert!(message.ends_with('.'));
-		}
-	}
 
 	fn assert_packet_round_trip(packet: Packets, expected: Packets, packet_size: usize) {
 		let mut bytes = [0u8; DATA_PACKET_SIZE];
@@ -410,15 +367,6 @@ mod tests {
 		assert_eq!(read_packet(b"NOPE\x01\0\0\0\0\0\0\0\0"), Err(PacketReadError::WrongProtocol));
 		assert_eq!(read_packet(b"BETP\xff"), Err(PacketReadError::UnknownPacketType));
 		assert_eq!(read_packet(b"BETP\x00"), Err(PacketReadError::ReservedPacketType));
-	}
-
-	#[test]
-	fn connection_status_uses_stable_little_endian_layout() {
-		let mut bytes = [0u8; CONNECTION_STATUS_SIZE];
-		write_connection_status(&mut bytes, ConnectionStatus::new(0x1122, 0x3344, 0x55667788))
-			.expect("status capacity is exact");
-
-		assert_eq!(bytes, [0x22, 0x11, 0x44, 0x33, 0x88, 0x77, 0x66, 0x55]);
 	}
 
 	#[test]

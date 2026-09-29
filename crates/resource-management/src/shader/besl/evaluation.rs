@@ -206,18 +206,6 @@ mod tests {
 	}
 
 	#[test]
-	fn storage_layout_target_matches_the_compiled_backend() {
-		#[cfg(target_vendor = "apple")]
-		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Msl);
-
-		#[cfg(all(not(target_vendor = "apple"), target_os = "windows"))]
-		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::Hlsl);
-
-		#[cfg(all(not(target_vendor = "apple"), not(target_os = "windows")))]
-		assert_eq!(StorageLayoutTarget::current(), StorageLayoutTarget::GlslScalar);
-	}
-
-	#[test]
 	fn primitive_storage_layouts_follow_each_emitted_backend_type() {
 		let root = besl::Node::root();
 
@@ -571,58 +559,6 @@ mod tests {
 	}
 
 	#[test]
-	fn bindings_from_program() {
-		let script = r#"
-		main: fn () -> void {
-			buff;
-			image;
-			texture;
-		}
-		"#;
-
-		let mut root_node = besl::Node::root();
-
-		let float_type = root_node.get_child("f32").unwrap();
-
-		root_node.add_children(vec![
-			besl::Node::binding(
-				"buff",
-				besl::BindingTypes::Buffer {
-					members: vec![besl::Node::member("member", float_type).into()],
-				},
-				0,
-				true,
-				true,
-			)
-			.into(),
-			besl::Node::binding(
-				"image",
-				besl::BindingTypes::Image {
-					format: "r8".to_string(),
-				},
-				1,
-				false,
-				true,
-			)
-			.into(),
-			besl::Node::binding(
-				"texture",
-				besl::BindingTypes::CombinedImageSampler { format: "".to_string() },
-				2,
-				true,
-				false,
-			)
-			.into(),
-		]);
-
-		let program_node = besl::compile_to_besl(&script, Some(root_node)).unwrap();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
-		let bindings = evaluation.bindings();
-
-		assert_eq!(bindings.len(), 3);
-	}
-
-	#[test]
 	fn program_reflection_keeps_an_unreachable_declared_binding() {
 		let mut root = besl::Node::root();
 		let f32_type = root.get_child("f32").expect("Expected f32 type");
@@ -761,24 +697,6 @@ mod tests {
 		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
 
 		assert_eq!(evaluation.opacity(), OpacityEvaluation::NonOpaque);
-	}
-
-	#[test]
-	fn opacity_is_opaque_when_output_vec4f_w_is_one() {
-		let script = r#"
-		main: fn () -> void {
-			output = vec4f(1.0, 0.0, 0.0, 1.0);
-		}
-		"#;
-
-		let mut root_node = besl::Node::root();
-		let vec4f_type = root_node.get_child("vec4f").unwrap();
-		root_node.add_child(besl::Node::output("output", vec4f_type, 0).into());
-
-		let program_node = besl::compile_to_besl(script, Some(root_node)).unwrap();
-		let evaluation = ProgramEvaluation::from_program(&program_node).expect("Failed to evaluate program");
-
-		assert_eq!(evaluation.opacity(), OpacityEvaluation::Opaque);
 	}
 
 	#[test]

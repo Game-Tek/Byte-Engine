@@ -37,12 +37,5 @@ pub trait Resource: Send + Sync {
 		<Self::Model as Model>::get_class()
 	}
 
-	fn queryable_properties(&self, id: &str) -> Vec<crate::QueryableProperty> {
-		vec![crate::QueryableProperty {
-			name: "name".to_string(),
-			value: crate::QueryableValue::String(id.to_string()),
-		}]
-	}
-
 	type Model: Model;
 }

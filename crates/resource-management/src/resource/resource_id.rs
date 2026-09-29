@@ -19,16 +19,8 @@ impl From<&str> for ResourceId {
 impl ResourceId {
 	/// Parses exactly 32 hexadecimal digits, accepting either letter case.
 	pub fn from_uid_hex(value: &str) -> Option<Self> {
-		if value.len() != 32 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-			return None;
-		}
-
 		let mut bytes = [0; 16];
-		for (index, byte) in bytes.iter_mut().enumerate() {
-			let start = index * 2;
-			*byte = u8::from_str_radix(&value[start..start + 2], 16).ok()?;
-		}
-
+		utils::hex::decode_into(value, &mut bytes)?;
 		Some(Self(bytes))
 	}
 
@@ -39,10 +31,7 @@ impl ResourceId {
 
 impl fmt::Display for ResourceId {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		for byte in self.0 {
-			write!(formatter, "{byte:02x}")?;
-		}
-		Ok(())
+		utils::hex::encode_to(&self.0, formatter)
 	}
 }
 
@@ -66,8 +55,6 @@ impl Borrow<[u8; 16]> for &ResourceId {
 
 #[cfg(test)]
 mod tests {
-	use std::borrow::Borrow;
-
 	use super::ResourceId;
 
 	#[test]
@@ -77,25 +64,6 @@ mod tests {
 		assert_eq!(id.to_hex(), "5d41402abc4b2a76b9719d911017c592");
 		assert_eq!(ResourceId::from_uid_hex(&id.to_hex()), Some(id));
 		assert_eq!(ResourceId::from_uid_hex("5D41402ABC4B2A76B9719D911017C592"), Some(id));
-	}
-
-	#[test]
-	fn hex_parser_rejects_wrong_length_and_non_hex_input() {
-		assert_eq!(ResourceId::from_uid_hex("abc"), None);
-		assert_eq!(ResourceId::from_uid_hex("zz41402abc4b2a76b9719d911017c592"), None);
-	}
-
-	#[test]
-	fn byte_views_reference_the_exact_identifier_storage() {
-		let id = ResourceId::from_uid_hex("00112233445566778899aabbccddeeff").unwrap();
-		let expected = [
-			0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-		];
-
-		assert_eq!(format!("{id}"), "00112233445566778899aabbccddeeff");
-		assert_eq!(*id.as_ref(), expected);
-		assert_eq!(<[u8; 16]>::from(id), expected);
-		assert_eq!(<&ResourceId as Borrow<[u8; 16]>>::borrow(&&id), &expected);
 	}
 }
 

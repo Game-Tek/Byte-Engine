@@ -5,14 +5,11 @@ pub mod pipeline_manager;
 #[doc(hidden)]
 pub mod render_pass;
 pub(crate) mod resource_manager;
-#[doc(hidden)]
-pub mod shader_generator;
 
 use math::ShaderMatrix;
 pub use pipeline_manager::PipelineManager;
 pub use pipeline_manager::PipelineManager as SimplePipelineManager;
 pub use render_pass::RenderPass;
-pub use render_pass::RenderPass as SimpleRenderPass;
 
 #[repr(C)]
 /// The `CameraShaderData` struct shares simple-pipeline camera data

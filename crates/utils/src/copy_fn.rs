@@ -1,7 +1,6 @@
 use std::{
 	any::TypeId,
 	fmt,
-	marker::PhantomData,
 	mem::{MaybeUninit, align_of, size_of},
 	ptr,
 };
@@ -47,7 +46,7 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 	where
 		T: Copy,
 	{
-		// SAFETY: `validate` rejects values larger or more aligned than this storage before `write` is called.
+		// SAFETY: `InlineCopyFn::try_new` rejects values larger or more aligned than this storage before `write` is called.
 		unsafe {
 			ptr::write(self.bytes.as_mut_ptr().cast::<T>(), value);
 		}
@@ -57,28 +56,62 @@ impl<const STORAGE_SIZE: usize> InlineStorage<STORAGE_SIZE> {
 	where
 		T: Copy,
 	{
-		// SAFETY: Each call shim requests the same `T` that `store` initialized in this storage.
+		// SAFETY: Each call shim requests the same `T` that `InlineCopyFn::try_new` initialized in this storage.
 		unsafe { ptr::read(self.bytes.as_ptr().cast::<T>()) }
 	}
 }
 
-/// The `InlineCopyFn` struct provides allocation-free type erasure for small, copyable callables.
-#[derive(Debug, Clone, Copy)]
-pub struct InlineCopyFn<Signature, const STORAGE_SIZE: usize = 16> {
+/// The `InlineCopyFn` struct provides allocation-free type erasure for small, copyable one-argument callables.
+///
+/// Use it where a copyable value must hold a closure, such as a UI flow function, without boxing it.
+pub struct InlineCopyFn<A0, Output, const STORAGE_SIZE: usize = 16> {
 	storage: InlineStorage<STORAGE_SIZE>,
-	call: *const (),
+	/// The [`call_stored`] shim monomorphized for the stored callable's concrete type.
+	call: fn(&InlineStorage<STORAGE_SIZE>, A0) -> Output,
 	type_id: fn() -> TypeId,
-	_signature: PhantomData<Signature>,
 }
 
-impl<Signature, const STORAGE_SIZE: usize> InlineCopyFn<Signature, STORAGE_SIZE> {
-	/// Returns the concrete callable's type, independently of its captured values.
-	pub fn callable_type_id(&self) -> TypeId {
-		(self.type_id)()
+// Manual impls avoid the `A0: Clone` and `Output: Clone` bounds a derive would add; only function pointers
+// and plain bytes are copied.
+impl<A0, Output, const STORAGE_SIZE: usize> Clone for InlineCopyFn<A0, Output, STORAGE_SIZE> {
+	fn clone(&self) -> Self {
+		*self
+	}
+}
+
+impl<A0, Output, const STORAGE_SIZE: usize> Copy for InlineCopyFn<A0, Output, STORAGE_SIZE> {}
+
+impl<A0, Output, const STORAGE_SIZE: usize> fmt::Debug for InlineCopyFn<A0, Output, STORAGE_SIZE> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("InlineCopyFn")
+			.field("callable_type_id", &self.callable_type_id())
+			.finish_non_exhaustive()
+	}
+}
+
+/// Calls the `F` stored in `storage`; [`InlineCopyFn::try_new`] stores this shim for its concrete `F`.
+fn call_stored<F, A0, Output, const STORAGE_SIZE: usize>(storage: &InlineStorage<STORAGE_SIZE>, arg0: A0) -> Output
+where
+	F: Fn(A0) -> Output + Copy + 'static,
+{
+	let function = storage.read::<F>();
+	function(arg0)
+}
+
+impl<A0, Output, const STORAGE_SIZE: usize> InlineCopyFn<A0, Output, STORAGE_SIZE> {
+	/// Stores `value` inline, panicking when it does not fit. Use [`Self::try_new`] to handle that case.
+	pub fn new<F>(value: F) -> Self
+	where
+		F: Fn(A0) -> Output + Copy + 'static,
+	{
+		Self::try_new(value).unwrap_or_else(|error| panic!("{error}"))
 	}
 
-	/// Checks whether `F` fits in the inline storage.
-	fn validate<F>() -> Result<(), InlineCopyFnError> {
+	/// Stores `value` inline, or reports why its captures do not fit the storage.
+	pub fn try_new<F>(value: F) -> Result<Self, InlineCopyFnError>
+	where
+		F: Fn(A0) -> Output + Copy + 'static,
+	{
 		if size_of::<F>() > STORAGE_SIZE {
 			return Err(InlineCopyFnError::CaptureTooLarge {
 				size: size_of::<F>(),
@@ -94,197 +127,37 @@ impl<Signature, const STORAGE_SIZE: usize> InlineCopyFn<Signature, STORAGE_SIZE>
 			});
 		}
 
-		Ok(())
-	}
-
-	fn store<F>(value: F, call: *const ()) -> Result<Self, InlineCopyFnError>
-	where
-		F: Copy + 'static,
-	{
-		Self::validate::<F>()?;
-
 		let mut storage = InlineStorage::uninit();
 		storage.write(value);
 
 		Ok(Self {
 			storage,
-			call,
+			call: call_stored::<F, A0, Output, STORAGE_SIZE>,
 			type_id: TypeId::of::<F>,
-			_signature: PhantomData,
 		})
 	}
+
+	/// Returns the concrete callable's type, independently of its captured values.
+	pub fn callable_type_id(&self) -> TypeId {
+		(self.type_id)()
+	}
+
+	/// Calls the stored callable with `arg0`.
+	pub fn call(&self, arg0: A0) -> Output {
+		(self.call)(&self.storage, arg0)
+	}
 }
-
-macro_rules! impl_inline_copy_fn {
-	($call_impl:ident, (), ()) => {
-		fn $call_impl<F, Output, const STORAGE_SIZE: usize>(storage: &InlineStorage<STORAGE_SIZE>) -> Output
-		where
-			F: Fn() -> Output + Copy + 'static,
-		{
-			let function = storage.read::<F>();
-			function()
-		}
-
-		impl<Output, const STORAGE_SIZE: usize> InlineCopyFn<fn() -> Output, STORAGE_SIZE> {
-			pub fn new<F>(value: F) -> Self
-			where
-				F: Fn() -> Output + Copy + 'static,
-			{
-				Self::try_new(value).unwrap_or_else(|error| panic!("{error}"))
-			}
-
-			pub fn try_new<F>(value: F) -> Result<Self, InlineCopyFnError>
-			where
-				F: Fn() -> Output + Copy + 'static,
-			{
-				Self::store(value, $call_impl::<F, Output, STORAGE_SIZE> as *const ())
-			}
-
-			pub fn call(&self) -> Output {
-				// SAFETY: `try_new` stores the matching zero-argument call shim in `self.call`.
-				let call = unsafe {
-					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>) -> Output>(self.call)
-				};
-				call(&self.storage)
-			}
-		}
-	};
-	($call_impl:ident, ($($arg:ident),+), ($($value:ident),+)) => {
-		fn $call_impl<F, $($arg,)+ Output, const STORAGE_SIZE: usize>(
-			storage: &InlineStorage<STORAGE_SIZE>,
-			$($value: $arg),+
-		) -> Output
-		where
-			F: Fn($($arg),+) -> Output + Copy + 'static,
-		{
-			let function = storage.read::<F>();
-			function($($value),+)
-		}
-
-		impl<$($arg,)+ Output, const STORAGE_SIZE: usize> InlineCopyFn<fn($($arg),+) -> Output, STORAGE_SIZE> {
-			pub fn new<F>(value: F) -> Self
-			where
-				F: Fn($($arg),+) -> Output + Copy + 'static,
-			{
-				Self::try_new(value).unwrap_or_else(|error| panic!("{error}"))
-			}
-
-			pub fn try_new<F>(value: F) -> Result<Self, InlineCopyFnError>
-			where
-				F: Fn($($arg),+) -> Output + Copy + 'static,
-			{
-				Self::store(value, $call_impl::<F, $($arg,)+ Output, STORAGE_SIZE> as *const ())
-			}
-
-			pub fn call(&self, $($value: $arg),+) -> Output {
-				// SAFETY: `try_new` stores the call shim with this exact generated signature in `self.call`.
-				let call = unsafe {
-					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>, $($arg),+) -> Output>(self.call)
-				};
-				call(&self.storage, $($value),+)
-			}
-		}
-	};
-}
-
-impl_inline_copy_fn!(call0, (), ());
-impl_inline_copy_fn!(call1, (A0), (arg0));
-impl_inline_copy_fn!(call2, (A0, A1), (arg0, arg1));
-impl_inline_copy_fn!(call3, (A0, A1, A2), (arg0, arg1, arg2));
-
-/// The `RefCall1` trait provides a shared call interface for inline callables that borrow one argument.
-pub trait RefCall1<A0: ?Sized> {
-	type Output;
-
-	fn call(&self, arg0: &A0) -> Self::Output;
-}
-
-/// The `RefCall2` trait provides a shared call interface for inline callables that borrow two arguments.
-pub trait RefCall2<A0: ?Sized, A1: ?Sized> {
-	type Output;
-
-	fn call(&self, arg0: &A0, arg1: &A1) -> Self::Output;
-}
-
-/// The `RefCall3` trait provides a shared call interface for inline callables that borrow three arguments.
-pub trait RefCall3<A0: ?Sized, A1: ?Sized, A2: ?Sized> {
-	type Output;
-
-	fn call(&self, arg0: &A0, arg1: &A1, arg2: &A2) -> Self::Output;
-}
-
-macro_rules! impl_inline_copy_fn_ref {
-	($call_impl:ident, $trait_name:ident, ($(($lt:lifetime, $arg:ident, $value:ident)),+)) => {
-		fn $call_impl<F, $($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize>(
-			storage: &InlineStorage<STORAGE_SIZE>,
-			$($value: &$arg),+
-		) -> Output
-		where
-			F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
-		{
-			let function = storage.read::<F>();
-			function($($value),+)
-		}
-
-		impl<$($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize> InlineCopyFn<for<$($lt),+> fn($(&$lt $arg),+) -> Output, STORAGE_SIZE> {
-			pub fn new_ref<F>(value: F) -> Self
-			where
-				F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
-			{
-				Self::try_new_ref(value).unwrap_or_else(|error| panic!("{error}"))
-			}
-
-			pub fn try_new_ref<F>(value: F) -> Result<Self, InlineCopyFnError>
-			where
-				F: for<$($lt),+> Fn($(&$lt $arg),+) -> Output + Copy + 'static,
-			{
-				Self::store(value, $call_impl::<F, $($arg,)+ Output, STORAGE_SIZE> as *const ())
-			}
-		}
-
-		impl<$($arg: ?Sized,)+ Output, const STORAGE_SIZE: usize> $trait_name<$($arg),+>
-			for InlineCopyFn<for<$($lt),+> fn($(&$lt $arg),+) -> Output, STORAGE_SIZE>
-		{
-			type Output = Output;
-
-			fn call(&self, $($value: &$arg),+) -> Output {
-				// SAFETY: `try_new_ref` stores the call shim with this exact generated reference signature in `self.call`.
-				let call = unsafe {
-					std::mem::transmute::<*const (), fn(&InlineStorage<STORAGE_SIZE>, $(&$arg),+) -> Output>(self.call)
-				};
-				call(&self.storage, $($value),+)
-			}
-		}
-	};
-}
-
-impl_inline_copy_fn_ref!(call_ref1, RefCall1, (('a, A0, arg0)));
-impl_inline_copy_fn_ref!(call_ref2, RefCall2, (('a, A0, arg0), ('b, A1, arg1)));
-impl_inline_copy_fn_ref!(call_ref3, RefCall3, (('a, A0, arg0), ('b, A1, arg1), ('c, A2, arg2)));
 
 #[cfg(test)]
 mod tests {
 	use super::{InlineCopyFn, InlineCopyFnError};
 
 	#[test]
-	fn stores_function_items_inline() {
-		fn add(a: u32, b: u32) -> u32 {
-			a + b
-		}
-
-		let function = InlineCopyFn::<fn(u32, u32) -> u32>::new(add);
-
-		assert_eq!(function.call(2, 3), 5);
-		assert_eq!(function.callable_type_id(), std::any::Any::type_id(&add));
-		assert_ne!(function.callable_type_id(), std::any::TypeId::of::<fn(u32, u32) -> u32>());
-	}
-
-	#[test]
 	fn stores_small_capturing_closures_and_supports_copying() {
 		let a = 3u64;
 		let b = 7u64;
 		let closure = move |value| value + a + b;
-		let function = InlineCopyFn::<fn(u64) -> u64>::new(closure);
+		let function = InlineCopyFn::<u64, u64>::new(closure);
 		let copied = function;
 		let cloned = function;
 
@@ -294,17 +167,9 @@ mod tests {
 	}
 
 	#[test]
-	fn stores_callables_with_shared_reference_parameters() {
-		let function = InlineCopyFn::<for<'a> fn(&'a u32) -> u32>::new_ref(|value| *value + 1);
-		let value = 41;
-
-		assert_eq!(function.call(&value), 42);
-	}
-
-	#[test]
 	fn rejects_large_closure_captures() {
 		let data = [1u64, 2, 3];
-		let error = InlineCopyFn::<fn() -> u64>::try_new(move || data.into_iter().sum::<u64>()).unwrap_err();
+		let error = InlineCopyFn::<u64, u64>::try_new(move |value| value + data.into_iter().sum::<u64>()).unwrap_err();
 
 		assert_eq!(
 			error,
@@ -321,12 +186,12 @@ mod tests {
 		#[derive(Clone, Copy)]
 		struct Aligned(u8);
 
-		fn read(aligned: Aligned) -> u8 {
-			aligned.0
+		fn read(aligned: Aligned, offset: u8) -> u8 {
+			aligned.0 + offset
 		}
 
 		let aligned = Aligned(1);
-		let error = InlineCopyFn::<fn() -> u8, 64>::try_new(move || read(aligned)).unwrap_err();
+		let error = InlineCopyFn::<u8, u8, 64>::try_new(move |offset| read(aligned, offset)).unwrap_err();
 
 		assert_eq!(
 			error,

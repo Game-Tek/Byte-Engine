@@ -2,15 +2,15 @@
 
 use resource_management::resources::skeleton::LocalTransform;
 
-use super::math::{dot_quaternion, nlerp_quaternion, normalize_quaternion};
+use super::math::{dot_quaternion, lerp3, nlerp_quaternion, normalize_quaternion};
 
 /// Blends two local transforms while preserving the shortest quaternion path.
 pub fn blend_local_transform(left: LocalTransform, right: LocalTransform, factor: f32) -> LocalTransform {
 	let factor = factor.clamp(0.0, 1.0);
 	LocalTransform {
-		translation: lerp_vector3(left.translation, right.translation, factor),
+		translation: lerp3(left.translation, right.translation, factor),
 		rotation: nlerp_quaternion(left.rotation, right.rotation, factor),
-		scale: lerp_vector3(left.scale, right.scale, factor),
+		scale: lerp3(left.scale, right.scale, factor),
 	}
 }
 
@@ -391,10 +391,6 @@ fn validate_pose_lengths(poses: &[&[LocalTransform]], output_len: usize) -> Resu
 	Ok(())
 }
 
-fn lerp_vector3(left: [f32; 3], right: [f32; 3], factor: f32) -> [f32; 3] {
-	std::array::from_fn(|component| left[component] + (right[component] - left[component]) * factor)
-}
-
 fn barycentric_coordinates(a: [f32; 2], b: [f32; 2], c: [f32; 2], point: [f32; 2]) -> Option<[f32; 3]> {
 	let ab = subtract2(b, a);
 	let ac = subtract2(c, a);
@@ -460,7 +456,7 @@ fn distance_squared2(left: [f32; 2], right: [f32; 2]) -> f32 {
 mod tests {
 	use resource_management::resources::skeleton::LocalTransform;
 
-	use super::{BlendSpace1D, BlendSpace2D, BlendSpaceError, BlendTriangle, blend_local_pose, blend_local_poses};
+	use super::{BlendSpace1D, BlendSpace2D, BlendTriangle, blend_local_pose, blend_local_poses};
 
 	fn transform(translation: f32, rotation: [f32; 4]) -> LocalTransform {
 		LocalTransform {
@@ -505,14 +501,6 @@ mod tests {
 		space.write_weights(8.0, &mut weights).expect("expected test value");
 
 		assert_eq!(weights, [0.0, 0.0, 1.0]);
-	}
-
-	#[test]
-	fn one_dimensional_samples_must_be_strictly_ascending() {
-		assert_eq!(
-			BlendSpace1D::new(vec![0.0, 1.0, 1.0]),
-			Err(BlendSpaceError::SamplesNotStrictlyAscending)
-		);
 	}
 
 	#[test]

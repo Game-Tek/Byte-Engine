@@ -1,4 +1,4 @@
-use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_index_type, to_vertex_format};
+use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_vertex_format};
 use super::*;
 
 impl crate::context::Context for Context {
@@ -42,7 +42,7 @@ impl crate::context::Context for Context {
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &T {
 		// SAFETY: Typed handles preserve the allocation's type and the buffer remains mapped while the context lives.
-		unsafe { &*self.typed_buffer_pointer(buffer_handle) }
+		unsafe { &*self.typed_buffer_pointer(buffer_handle, 0) }
 	}
 
 	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
@@ -50,7 +50,7 @@ impl crate::context::Context for Context {
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &mut T {
 		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
-		unsafe { &mut *self.typed_buffer_pointer(buffer_handle) }
+		unsafe { &mut *self.typed_buffer_pointer(buffer_handle, 0) }
 	}
 
 	/// Transfers the mapped range to a higher-level owner without manufacturing an unbounded reference.
@@ -62,17 +62,13 @@ impl crate::context::Context for Context {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> crate::buffer::Mapping {
-		let pointer = self.typed_buffer_pointer(buffer_handle);
+		let pointer = self.typed_buffer_pointer::<T>(buffer_handle, 0);
 		// SAFETY: The caller accepts the lifetime and exclusivity requirements documented by this method.
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let handle = self.buffers.nth_handle(buffer_handle.into(), 0).unwrap();
-		let buffer = self.buffers.resource(handle);
-		if buffer.staging.is_some() {
-			self.pending_buffer_syncs.push_back(handle);
-		}
+		self.sync_buffer_copy(buffer_handle.into(), 0);
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
@@ -105,18 +101,18 @@ impl crate::context::Context for Context {
 
 	/// Applies retained descriptor writes to every frame-local logical set they target.
 	///
-	/// Each write is remembered per frame sequence, so a frame resource created later can still be bound.
+	/// Each sequence's set resolves the write to that sequence's copy of a per-frame resource. Every copy exists
+	/// from creation, so the write resolves completely here.
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for write in descriptor_set_writes {
 			let frame_offset = write.frame_offset.unwrap_or(0);
 			// A public handle names the first set of its frame-local chain.
-			let set_handles = DescriptorSetHandle(write.descriptor_set.0).get_all(&self.descriptor_sets);
+			let set_handles = self
+				.descriptor_sets
+				.chain(write.descriptor_set)
+				.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
 			for (sequence_index, set_handle) in set_handles.into_iter().enumerate() {
 				let sequence_index = sequence_index as u8;
-				self.descriptor_sources.insert(
-					(set_handle, write.slot, write.array_element, sequence_index),
-					(write.descriptor, frame_offset),
-				);
 				if let Some(descriptor) = self.resolve_descriptor_for_frame(write.descriptor, sequence_index, frame_offset) {
 					self.update_descriptor_slot(set_handle, write.slot, descriptor, sequence_index, write.array_element);
 				}
@@ -277,8 +273,8 @@ impl crate::context::Context for Context {
 		frame: crate::queue::FrameRequest<'_>,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
-		let synchronizer_handle = self.synchronizer_for_sequence(frame.synchronizer, sequence_index);
+		let sequence_index = graphics_hardware_interface::FrameKey::new(frame.index, self.frames).sequence_index;
+		let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, frame.synchronizer, sequence_index);
 		self.wait_for_private_synchronizer(synchronizer_handle);
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
@@ -300,17 +296,21 @@ impl crate::context::Context for Context {
 		self.wait();
 		let mut readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
 		let pointer = readback.buffer.contents().as_ptr().cast::<u8>();
+		let layout = &readback.layout;
+		let native_bytes_per_image = readback.native_bytes_per_row * layout.row_count;
 		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact authoritative layout.
-		for image in 0..readback.image_count {
-			for row in 0..readback.row_count {
-				let source_offset = image * readback.native_bytes_per_image + row * readback.native_bytes_per_row;
-				let destination_offset = image * readback.bytes_per_image + row * readback.bytes_per_row;
-				// SAFETY: Native readback layout calculations bound this row within the mapped Metal buffer.
-				let source = unsafe { pointer.add(source_offset) };
-				// SAFETY: Compact layout calculations bound this row within the owned destination vector.
-				let destination = unsafe { readback.bytes.as_mut_ptr().add(destination_offset) };
-				// SAFETY: The mapped native buffer and owned destination vector are distinct and cover one compact row.
-				unsafe { std::ptr::copy_nonoverlapping(source, destination, readback.bytes_per_row) };
+		for image in 0..layout.depth_slices {
+			// SAFETY: The transfer sized the mapped buffer for every padded row and the owned vector for every compact
+			// row of each image, and the two allocations are distinct.
+			unsafe {
+				utils::copy_rows(
+					pointer.add(image * native_bytes_per_image),
+					readback.native_bytes_per_row,
+					readback.bytes.as_mut_ptr().add(image * layout.bytes_per_image),
+					layout.bytes_per_row,
+					layout.bytes_per_row,
+					layout.row_count,
+				);
 			}
 		}
 
@@ -318,8 +318,8 @@ impl crate::context::Context for Context {
 			bytes: readback.bytes,
 			extent: readback.extent,
 			format: readback.format,
-			bytes_per_row: readback.bytes_per_row,
-			bytes_per_image: readback.bytes_per_image,
+			bytes_per_row: layout.bytes_per_row,
+			bytes_per_image: layout.bytes_per_image,
 		})
 	}
 
@@ -360,7 +360,7 @@ impl crate::context::Context for Context {
 
 	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		for frame_index in 0..self.frames as usize {
-			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
 			self.wait_for_private_synchronizer(synchronizer_handle);
 		}
 	}
@@ -368,7 +368,7 @@ impl crate::context::Context for Context {
 	fn poll_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
 		let mut complete = true;
 		for frame_index in 0..self.frames as usize {
-			let synchronizer_handle = self.synchronizer_for_sequence(synchronizer_handle, frame_index as u8);
+			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
 			let (finished, error) = self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
 			if let Some(error) = error {
 				panic!("{error}");
@@ -533,40 +533,25 @@ impl crate::context::ContextCreate for Context {
 		stage: crate::ShaderTypes,
 		shader_resource_descriptors: impl IntoIterator<Item = crate::shader::ShaderResourceDescriptor>,
 	) -> Result<graphics_hardware_interface::ShaderHandle, ()> {
-		let shader = build_shader(
+		add_shader(
+			&mut self.shaders,
 			&self.device,
 			name,
 			shader_source_type,
 			stage,
 			shader_resource_descriptors,
 			self.settings.debug_labels,
-		)?;
-		self.shaders.push(shader);
-		Ok(graphics_hardware_interface::ShaderHandle((self.shaders.len() - 1) as u64))
+		)
 	}
 
 	/// Creates one retained logical descriptor set per in-flight frame without allocating a native layout.
 	fn create_descriptor_set(&mut self, _name: Option<&str>) -> graphics_hardware_interface::DescriptorSetHandle {
-		let handle = graphics_hardware_interface::DescriptorSetHandle(self.descriptor_sets.len() as u64);
-		let mut previous_handle: Option<DescriptorSetHandle> = None;
-
-		for _ in 0..self.frames {
-			let descriptor_set_handle = DescriptorSetHandle(self.descriptor_sets.len() as u64);
-			self.descriptor_sets.push(descriptor_set::DescriptorSet {
-				next: None,
+		self.descriptor_sets
+			.add_chain((0..self.frames).map(|_| descriptor_set::DescriptorSet {
 				version: 0,
 				descriptors: HashMap::default(),
 				argument_buffers: Vec::new(),
-			});
-
-			if let Some(previous_handle) = previous_handle {
-				self.descriptor_sets[previous_handle.0 as usize].next = Some(descriptor_set_handle);
-			}
-
-			previous_handle = Some(descriptor_set_handle);
-		}
-
-		handle
+			}))
 	}
 
 	fn create_raster_pipeline(&mut self, builder: raster_pipeline::Builder) -> graphics_hardware_interface::PipelineHandle {
@@ -613,12 +598,10 @@ impl crate::context::ContextCreate for Context {
 		builder: buffer_builder::Builder,
 	) -> graphics_hardware_interface::BufferHandle<T> {
 		let size = T::layout(builder.length).size();
-		let handle = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
+		let buffer = self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses);
+		let (handle, _) = self.buffers.add(buffer);
 
-		graphics_hardware_interface::BufferHandle::<T>(
-			graphics_hardware_interface::BaseBufferHandle::new(handle.0),
-			std::marker::PhantomData,
-		)
+		graphics_hardware_interface::BufferHandle::<T>(handle, std::marker::PhantomData)
 	}
 
 	fn build_dynamic_buffer<T: crate::Pod>(
@@ -627,32 +610,23 @@ impl crate::context::ContextCreate for Context {
 	) -> graphics_hardware_interface::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
 
-		let root = self.create_buffer_internal(None, builder.name, size, builder.resource_uses, builder.device_accesses);
-		let master = graphics_hardware_interface::BaseBufferHandle::new(root.0);
-
-		if self.frames > 1 {
-			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
-			self.tasks.push(Task {
-				task: Tasks::BuildBuffer { previous: root, master },
-				frame: 1,
-			});
-		}
+		// Create every frame sequence's copy up front, so a buffer created mid-frame never shares a copy with another
+		// frame in flight, which the CPU could rewrite while that frame still reads it.
+		let buffers = (0..self.frames)
+			.map(|_| self.create_buffer_resource(builder.name, size, builder.resource_uses, builder.device_accesses))
+			.collect::<SmallVec<[_; MAX_FRAMES_IN_FLIGHT]>>();
+		let master = self.buffers.add_chain(buffers);
 
 		graphics_hardware_interface::DynamicBufferHandle::<T>(master, std::marker::PhantomData)
 	}
 
 	fn build_dynamic_image(&mut self, builder: image_builder::Builder) -> graphics_hardware_interface::DynamicImageHandle {
 		crate::image_group::ImageGroups::reject_dynamic_member(&builder);
-		let root = self.create_image_internal(None, builder.get_name(), image::ImageDescription::new(&builder));
-		let master = graphics_hardware_interface::BaseImageHandle::new(root.0);
-
-		if self.frames > 1 {
-			// Defer frame-local resources until the frame is first processed so startup only pays for frame 0.
-			self.tasks.push(Task {
-				task: Tasks::BuildImage { previous: root, master },
-				frame: 1,
-			});
-		}
+		let description = image::ImageDescription::new(&builder);
+		// Create every frame sequence's image up front, like dynamic buffers, so frames in flight never share one.
+		let master = self.images.add_chain(
+			(0..self.frames).map(|_| build_image(&self.device, builder.get_name(), description, self.settings.debug_labels)),
+		);
 
 		graphics_hardware_interface::DynamicImageHandle(master)
 	}
@@ -663,8 +637,13 @@ impl crate::context::ContextCreate for Context {
 		}
 		// A member starts with its own texture at the builder's extent, so descriptors can reference it before the
 		// group is placed. Placement replaces the texture with one in the group heap.
-		let image_handle = self.create_image_internal(None, builder.get_name(), image::ImageDescription::new(&builder));
-		let handle = graphics_hardware_interface::BaseImageHandle::new(image_handle.0);
+		let image = build_image(
+			&self.device,
+			builder.get_name(),
+			image::ImageDescription::new(&builder),
+			self.settings.debug_labels,
+		);
+		let (handle, _) = self.images.add(image);
 		if let Some(group) = builder.group {
 			self.image_groups.add_member(group, handle);
 		}
@@ -695,23 +674,19 @@ impl crate::context::ContextCreate for Context {
 			crate::Uses::AccelerationStructureBuild,
 			crate::DeviceAccesses::HostToDevice,
 		);
-		let mut creator = self.buffers.creator();
-
-		creator.add(buffer);
-
-		creator.into()
+		self.buffers.add(buffer).0
 	}
 
 	fn create_top_level_acceleration_structure(
 		&mut self,
 		name: Option<&str>,
 		max_instance_count: u32,
-	) -> graphics_hardware_interface::TopLevelAccelerationStructureHandle {
+	) -> crate::TopLevelAccelerationStructureHandle {
 		let sizing = mtl::MTLInstanceAccelerationStructureDescriptor::descriptor();
 		sizing.setInstanceCount(max_instance_count as usize);
 		sizing.setInstanceDescriptorType(mtl::MTLAccelerationStructureInstanceDescriptorType::Indirect);
 
-		graphics_hardware_interface::TopLevelAccelerationStructureHandle(self.create_acceleration_structure(name, &sizing))
+		crate::TopLevelAccelerationStructureHandle(self.create_acceleration_structure(name, &sizing))
 	}
 
 	fn create_bottom_level_acceleration_structure(
@@ -727,7 +702,7 @@ impl crate::context::ContextCreate for Context {
 			} => {
 				let geometry = mtl::MTLAccelerationStructureTriangleGeometryDescriptor::descriptor();
 				geometry.setVertexFormat(to_vertex_format(vertex_position_encoding));
-				geometry.setIndexType(to_index_type(index_format));
+				geometry.setIndexType(utils::to_index_type(index_format));
 				geometry.setTriangleCount(triangle_count as usize);
 				Retained::into_super(geometry)
 			}
@@ -743,16 +718,11 @@ impl crate::context::ContextCreate for Context {
 		graphics_hardware_interface::BottomLevelAccelerationStructureHandle(self.create_acceleration_structure(None, &sizing))
 	}
 
+	/// Creates one synchronizer per frame sequence, so each frame waits only for the frame that last used its sequence.
+	///
+	/// Metal synchronizers are signaled whenever they have no pending work, so the initial state needs no storage.
 	fn create_synchronizer(&mut self, _name: Option<&str>, _signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
-		// Metal synchronizers are signaled whenever they have no pending work, so the initial state needs no storage.
-		let (master, mut previous) = self.synchronizers.add(synchronizer::Synchronizer::new());
-
-		for _ in 1..self.frames {
-			let handle = self.synchronizers.add_with_master(synchronizer::Synchronizer::new(), master);
-			self.synchronizers.set_next(previous, Some(handle));
-			previous = handle;
-		}
-
-		master
+		self.synchronizers
+			.add_chain((0..self.frames).map(|_| synchronizer::Synchronizer::new()))
 	}
 }

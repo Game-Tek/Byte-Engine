@@ -26,53 +26,23 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 	setup_default_input(application);
 
-	setup_default_pipeline_compilation(application);
+	setup_default_audio(application);
 
-	let mut loading_tasks = build_deferred_tasks_queue();
-
-	setup_default_audio(application, |task| {
-		loading_tasks.push(task);
-	});
-
-	setup_pbr_visibility_shading_render_pipeline(application, |task| {
-		loading_tasks.push(task);
-	});
+	setup_pbr_visibility_shading_render_pipeline(application);
 
 	setup_default_window(application);
 
-	launch_deferred_tasks_thread(application, loading_tasks);
+	launch_deferred_tasks_thread(application);
 }
 
-/// Starts the renderer's pending pipeline compiler servers on application-owned threads.
-///
-/// This setup is idempotent. Call it when composing a graphics application
-/// without [`default_setup`] before registering pipeline managers or render
-/// passes that request asynchronous pipelines.
-pub fn setup_default_pipeline_compilation(application: &mut GraphicsApplication) {
-	let servers = application.renderer.take_pipeline_compilation_servers();
-
-	for server in servers {
-		application
-			.threads
-			.push(Thread::new(application.application_events.0.listener(), move |mut events| {
-				let runtime = build_single_threaded_async_runtime();
-
-				runtime.enter(|| {
-					runtime.spawn(server.run()).detach();
-					drive_runtime(&runtime, || matches!(events.read(), Some(Events::Close)));
-				});
-			}));
-	}
-}
-
-/// Runs deferred loading tasks and the application's [`Loader`](crate::rendering::loading::Loader) on one
+/// Runs the application's deferred loading tasks and its [`Loader`](crate::rendering::loading::Loader) on one
 /// application-owned loading thread.
 ///
-/// Build `tasks` with [`build_deferred_tasks_queue`], then launch the thread
-/// after every subsystem has registered its loading work. Pipelines set up
-/// afterwards cannot add loader lanes.
-pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication, tasks: DeferredTasks) {
-	let loader = application.take_loader();
+/// Launch the thread after every subsystem has registered its loading work with
+/// [`GraphicsApplication::add_deferred_task`]. Tasks run in registration order,
+/// after the loader starts. Pipelines set up afterwards cannot add loader lanes.
+pub fn launch_deferred_tasks_thread(application: &mut GraphicsApplication) {
+	let (loader, tasks) = application.take_loading_work();
 	application
 		.threads
 		.push(Thread::new(application.application_events.0.listener(), move |mut events| {
@@ -115,18 +85,7 @@ pub fn build_single_threaded_async_runtime() -> compio::runtime::Runtime {
 }
 
 /// A loading operation that spawns its work on the provided runtime.
-pub type DeferredTask = Box<dyn FnOnce(&compio::runtime::Runtime) + Send>;
-
-/// The loading operations collected while default subsystems are configured.
-pub type DeferredTasks = Vec<DeferredTask>;
-
-/// Creates a deferred-task queue sized for the default graphics setup.
-///
-/// Add subsystem loading tasks, then pass the queue to
-/// [`launch_deferred_tasks_thread`].
-pub fn build_deferred_tasks_queue() -> DeferredTasks {
-	Vec::with_capacity(8)
-}
+pub(crate) type DeferredTask = Box<dyn FnOnce(&compio::runtime::Runtime) + Send>;
 
 /// Creates the 1920x1080 window used by the default headed setup.
 pub fn setup_default_window(application: &mut GraphicsApplication) {
@@ -160,77 +119,76 @@ pub fn setup_default_resource_and_asset_management(
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
-		let material_mip_generator: std::sync::Arc<dyn MipGenerationBackend> =
-			MaterialMipGenerator::try_with_default_gpu()
-				.map(|generator| std::sync::Arc::new(generator) as std::sync::Arc<dyn MipGenerationBackend>)
-				.unwrap_or_else(|error| {
-					log::warn!(
-						"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
-					);
-					std::sync::Arc::new(CPUMipGenerationBackend)
-				});
+		let (material_mips, ibl) = default_offline_backends();
 
-		let mut material_asset_handler = BEMAAssetHandler::new();
-
-		material_asset_handler.set_shader_generator(generator.clone());
-
-		asset_manager.add_asset_handler(material_asset_handler);
-
-		let mut fbx_asset_handler = FBXAssetHandler::new();
-
-		fbx_asset_handler.set_shader_generator(generator.clone());
-
-		fbx_asset_handler.set_material_mip_generator(material_mip_generator.clone());
-
-		asset_manager.add_asset_handler(fbx_asset_handler);
-
-		let mut gltf_asset_handler = GLTFAssetHandler::new();
-
-		gltf_asset_handler.set_shader_generator(generator);
-
-		gltf_asset_handler.set_material_mip_generator(material_mip_generator);
-
-		asset_manager.add_asset_handler(gltf_asset_handler);
-
-		register_default_image_asset_handlers(&mut asset_manager);
-
-		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::pipeline::PipelineAssetHandler);
-
-		asset_manager.add_asset_handler(resource_management::asset::handler::implementations::flipbook::FlipbookAssetHandler);
-
-		let ibl_generator = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
-			log::warn!(
-				"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
-			);
-			IBLGenerator::new()
-		});
-
-		asset_manager.add_asset_handler(EXRAssetHandler::new());
-
-		asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl_generator));
-
-		asset_manager.add_asset_handler(LUTAssetHandler::new());
-
-		asset_manager.add_asset_handler(WAVAssetHandler::new());
-
-		asset_manager.add_asset_handler(OGGAssetHandler::new());
-
-		let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
-
-		besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
-
-		asset_manager.add_asset_handler(besl_shader_asset_handler);
+		register_default_asset_handlers(&mut asset_manager, generator, material_mips, ibl);
 
 		application.resource_manager.set_asset_manager(asset_manager);
 	}
 }
 
-/// Registers source image formats loaded lazily by the default debug application.
-#[cfg(debug_assertions)]
-fn register_default_image_asset_handlers(asset_manager: &mut AssetManager) {
-	asset_manager.add_asset_handler(PNGAssetHandler::new());
+/// Registers the standard material, model, image, audio, and standalone-shader handlers on `asset_manager`.
+///
+/// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
+/// assets. `generator` adapts generated material shaders to the renderer, and `material_mips` and `ibl` select the
+/// offline texture backends; [`default_offline_backends`] returns the usual ones.
+pub fn register_default_asset_handlers(
+	asset_manager: &mut AssetManager,
+	generator: impl ProgramGenerator + Clone + 'static,
+	material_mips: Arc<dyn MipGenerationBackend>,
+	ibl: IBLGenerator,
+) {
+	let mut material_asset_handler = BEMAAssetHandler::new();
+	material_asset_handler.set_shader_generator(generator.clone());
+	asset_manager.add_asset_handler(material_asset_handler);
 
+	let mut fbx_asset_handler = FBXAssetHandler::new();
+	fbx_asset_handler.set_shader_generator(generator.clone());
+	fbx_asset_handler.set_material_mip_generator(material_mips.clone());
+	asset_manager.add_asset_handler(fbx_asset_handler);
+
+	let mut gltf_asset_handler = GLTFAssetHandler::new();
+	gltf_asset_handler.set_shader_generator(generator);
+	gltf_asset_handler.set_material_mip_generator(material_mips);
+	asset_manager.add_asset_handler(gltf_asset_handler);
+
+	// PNG and EXR both handle `Image` sources and the asset manager picks the first match, so PNG must come first.
+	asset_manager.add_asset_handler(PNGAssetHandler::new());
 	asset_manager.add_asset_handler(IESAssetHandler::new());
+	asset_manager.add_asset_handler(PipelineAssetHandler);
+	asset_manager.add_asset_handler(FlipbookAssetHandler);
+	asset_manager.add_asset_handler(EXRAssetHandler::new());
+	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl));
+	asset_manager.add_asset_handler(LUTAssetHandler::new());
+	asset_manager.add_asset_handler(WAVAssetHandler::new());
+	asset_manager.add_asset_handler(OGGAssetHandler::new());
+
+	let mut besl_shader_asset_handler = BESLShaderAssetHandler::new();
+	besl_shader_asset_handler.set_shader_generator(CommonShaderGenerator::new());
+	asset_manager.add_asset_handler(besl_shader_asset_handler);
+}
+
+/// Returns the GPU material mip and environment-map backends, falling back to CPU generation when GPU setup fails.
+///
+/// Pass the result to [`register_default_asset_handlers`].
+pub fn default_offline_backends() -> (Arc<dyn MipGenerationBackend>, IBLGenerator) {
+	let material_mips = MaterialMipGenerator::try_with_default_gpu()
+		.map(|generator| Arc::new(generator) as Arc<dyn MipGenerationBackend>)
+		.unwrap_or_else(|error| {
+			log::warn!(
+				"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+			);
+			Arc::new(CPUMipGenerationBackend)
+		});
+
+	let ibl = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
+		log::warn!(
+			"GPU environment-map setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
+		);
+		IBLGenerator::new()
+	});
+
+	(material_mips, ibl)
 }
 
 /// Installs the device classes expected by [`super::process_default_window_input`].
@@ -256,10 +214,7 @@ pub fn setup_default_input(application: &mut GraphicsApplication) {
 /// [`GraphicsApplication::generator_factory`] to make it available to the audio
 /// worker, or create an [`crate::audio::graph::AudioGraph`] through
 /// [`crate::gameplay::world::DefaultWorld::audio_graph_factory`].
-pub fn setup_default_audio(
-	application: &mut GraphicsApplication,
-	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
-) {
+pub fn setup_default_audio(application: &mut GraphicsApplication) {
 	let mut audio_graphs_listener = application.world.audio_graph_factory().listener();
 
 	let mut deletions_listener = application.world.deletions_listener();
@@ -267,9 +222,9 @@ pub fn setup_default_audio(
 	let (mut sample_loader_client, sample_loader) =
 		AudioSampleLoader::new(application.resource_manager.clone(), AudioSamplePoolConfig::default());
 
-	spawn_loading_task(Box::new(move |runtime| {
+	application.add_deferred_task(move |runtime| {
 		runtime.spawn(sample_loader.run()).detach();
-	}));
+	});
 
 	application
 		.threads
@@ -277,11 +232,12 @@ pub fn setup_default_audio(
 			let mut generators_listener = application.generator_factory.listener();
 
 			move |mut receiver| {
-				let Ok(mut audio_system) = DefaultAudioSystem::try_new()
-					.map_err(|error| format!("Failed to spawn audio system. No audio will play. Reason: {error}"))
-					.warn()
-				else {
-					return;
+				let mut audio_system = match DefaultAudioSystem::try_new() {
+					Ok(audio_system) => audio_system,
+					Err(error) => {
+						log::warn!("Failed to spawn audio system. No audio will play. Reason: {error}");
+						return;
+					}
 				};
 
 				let span = debug_span!("Render audio");
@@ -332,55 +288,46 @@ pub fn setup_default_audio(
 }
 
 /// Creates an [`AnimationPool`] with the given decoded-clip byte budget and
-/// spawns its load worker on the application's async runtime.
+/// queues its load worker on the application's loading thread.
 ///
 /// Next, call [`AnimationPool::update`] once per tick before advancing graph
 /// players that share the pool, then create animation graphs through
 /// [`crate::animation::graph::AnimationGraphPlayer`].
-pub fn setup_animation_pool(
-	application: &mut GraphicsApplication,
-	byte_budget: NonZeroUsize,
-	spawn_loading_task: impl FnOnce(Box<dyn FnOnce(&compio::runtime::Runtime) + Send>),
-) -> AnimationPool {
+pub fn setup_animation_pool(application: &mut GraphicsApplication, byte_budget: NonZeroUsize) -> AnimationPool {
 	// The pool owns pose evaluation state on the application thread while its
 	// worker resolves animation resources asynchronously.
 	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), AnimationPoolConfig::new(byte_budget));
 
-	spawn_loading_task(Box::new(move |runtime| {
+	application.add_deferred_task(move |runtime| {
 		runtime.spawn(worker.run()).detach();
-	}));
+	});
 
 	pool
 }
 
-trait LogResult {
-	fn warn(self) -> Self;
-}
+use std::{num::NonZeroUsize, sync::Arc};
 
-impl<T, E: std::fmt::Display> LogResult for Result<T, E> {
-	fn warn(self) -> Self {
-		if let Err(error) = &self {
-			log::warn!("{error}");
-		}
-
-		self
-	}
-}
-
-use std::num::{NonZero, NonZeroUsize};
-
-use resource_management::asset::handler::implementations::bema::ProgramGenerator;
 #[cfg(debug_assertions)]
-use resource_management::asset::{
-	FileStorageBackend, handler::implementations::bema::BEMAAssetHandler,
-	handler::implementations::besl::BESLShaderAssetHandler, handler::implementations::environment::EnvironmentMapAssetHandler,
-	handler::implementations::exr::EXRAssetHandler, handler::implementations::fbx::FBXAssetHandler,
-	handler::implementations::gltf::GLTFAssetHandler, handler::implementations::ies::IESAssetHandler,
-	handler::implementations::lut::LUTAssetHandler, handler::implementations::ogg::OGGAssetHandler,
-	handler::implementations::png::PNGAssetHandler, handler::implementations::wav::WAVAssetHandler, manager::AssetManager,
-};
-#[cfg(debug_assertions)]
+use resource_management::asset::FileStorageBackend;
 use resource_management::{
+	asset::{
+		handler::implementations::{
+			bema::{BEMAAssetHandler, ProgramGenerator},
+			besl::BESLShaderAssetHandler,
+			environment::EnvironmentMapAssetHandler,
+			exr::EXRAssetHandler,
+			fbx::FBXAssetHandler,
+			flipbook::FlipbookAssetHandler,
+			gltf::GLTFAssetHandler,
+			ies::IESAssetHandler,
+			lut::LUTAssetHandler,
+			ogg::OGGAssetHandler,
+			pipeline::PipelineAssetHandler,
+			png::PNGAssetHandler,
+			wav::WAVAssetHandler,
+		},
+		manager::AssetManager,
+	},
 	ibl::IBLGenerator,
 	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend, gpu::MaterialMipGenerator},
 };
@@ -388,48 +335,17 @@ use tracing::debug_span;
 use utils::Extent;
 
 use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline};
-#[cfg(debug_assertions)]
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 use crate::{
 	animation::graph::{AnimationPool, AnimationPoolConfig},
-	application::{Events, application::Application, parameters::Parameters as _, thread::Thread},
+	application::{Events, parameters::Parameters as _, thread::Thread},
 	audio::{
-		audio_system::{AudioSystem, DefaultAudioSystem},
+		audio_system::DefaultAudioSystem,
 		sample_loader::{AudioSampleLoader, AudioSamplePoolConfig},
 	},
 	core::listener::Listener as _,
 	input::utils::{register_gamepad_device_class, register_keyboard_device_class, register_mouse_device_class},
 	rendering::window::Window,
 };
-
-#[cfg(all(test, debug_assertions))]
-mod tests {
-	use resource_management::{
-		asset::{FileStorageBackend, manager::AssetManager},
-		resource::storage_backend::redb::ReDBStorageBackend,
-	};
-
-	use super::register_default_image_asset_handlers;
-
-	#[test]
-	fn default_image_handlers_support_ies_profiles() {
-		// This test runs once per process, so the process ID keeps its directory unique.
-		let root = std::env::temp_dir().join(format!("byte-engine-default-image-handlers-{}", std::process::id()));
-
-		let assets = root.join("assets");
-
-		let resources = root.join("resources");
-
-		let mut asset_manager = AssetManager::new(FileStorageBackend::new(assets), ReDBStorageBackend::new(resources));
-
-		register_default_image_asset_handlers(&mut asset_manager);
-
-		assert!(asset_manager.supports("lights/profile.ies"));
-
-		drop(asset_manager);
-
-		std::fs::remove_dir_all(root).expect("the default image-handler test directory must be removable");
-	}
-}

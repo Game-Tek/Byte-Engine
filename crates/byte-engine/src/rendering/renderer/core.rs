@@ -10,22 +10,49 @@ type SinkId = usize;
 type RenderPassId = usize;
 type PipelineManagerId = usize;
 
+/// The `SinkPass` struct keeps one sink-local post-scene pass with what the renderer needs to record and capture it.
+struct SinkPass {
+	harness: RenderPassHarness,
+	sink: SinkId,
+	/// Every name and alias the pass wrote when it was built, so screenshots can find its outputs.
+	writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
+	/// The copy that keeps `main` flowing while the pass is bypassed, when the pass replaced `main`.
+	main_copy: Option<ImageBypassPass>,
+}
+
+impl SinkPass {
+	/// Prepares the pass's command and, while it is bypassed, the copy that forwards `main` after it.
+	fn prepare<'a>(
+		&mut self,
+		frame: &mut ghi::implementation::Frame,
+		sink: &Sink,
+		frame_allocator: &'a bumpalo::Bump,
+	) -> [Option<RenderPassReturn<'a>>; 2] {
+		let command = self.harness.prepare(frame, sink, frame_allocator);
+		let forward = match self.harness.state() {
+			RenderPassState::Enabled => None,
+			RenderPassState::Bypassed => self
+				.main_copy
+				.as_mut()
+				.and_then(|copy| copy.prepare(frame, sink, frame_allocator)),
+		};
+		[command, forward]
+	}
+}
+
 /// The [`Renderer`] struct owns graphics queues, render targets, scene pipelines,
 /// and per-sink render passes.
 ///
-/// Prefer the setup helpers in [`crate::application::graphics`] unless building
-/// a custom headed runtime.
-/// For custom composition, create the renderer, call [`Self::set_resource_manager`],
-/// add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
-/// windows and cameras before handing frame preparation to the graphics application.
+/// [`crate::application::graphics::GraphicsApplication::new`] creates the renderer, connects its resource manager,
+/// and starts its pipeline compilation servers. Prefer the setup helpers in [`crate::application::graphics`] to
+/// compose it. For custom composition, add a [`PipelineManager`] and sink-local [`RenderPass`] values, then register
+/// windows and cameras.
 pub struct Renderer {
 	/// The monotonically increasing identity of the next graphics submission frame.
 	started_frame_count: u64,
 
-	frame_queue_depth: usize,
-
-	/// Display windows and their swapchains.
-	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle); 16]>,
+	/// Display windows, their swapchains, and whether the latest acquisition warned that the window cannot render.
+	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
 	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
 	app: Option<ghi::window::App>,
 	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
@@ -38,25 +65,22 @@ pub struct Renderer {
 	cameras: SmallVec<[(Handle, Camera, Transform); 16]>,
 
 	render_targets: RenderTargets,
-	resource_manager: Option<crate::core::entity::handle::WeakHandle<ResourceManager>>,
 	#[cfg(debug_assertions)]
 	resource_updates: Option<resource_management::resource::ResourceUpdateListener>,
 
-	render_passes: SmallVec<[RenderPassHarness; 64]>,
-	render_passes_by_sink: SmallVec<[(RenderPassId, SinkId); 32]>,
-	render_pass_writable_targets: SmallVec<[Vec<(String, ghi::ImageOrSwapchain)>; 64]>,
+	/// Every sink's post-scene passes, in the order each sink records them. A pass's index is its [`RenderPassId`].
+	render_passes: SmallVec<[SinkPass; 64]>,
 	post_scene_render_pass_factories: SmallVec<[Box<RenderPassFactory>; 16]>,
 	scene_background_factory: Option<Box<crate::rendering::render_pass::SceneBackgroundFactory>>,
 	scene_backgrounds: SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
-	scene_presentation_copies: SmallVec<[(SinkId, crate::rendering::render_passes::blit::ImageBypassPass); 16]>,
+	scene_presentation_copies: SmallVec<[(SinkId, ImageBypassPass); 16]>,
 	pending_sink_initializations: SmallVec<[SinkId; 16]>,
 	configuration: ConfigurationPort,
 	pending_configuration: VecDeque<PendingRenderPassConfiguration>,
-	render_pass_states: HashMap<String, RenderPassState>,
+	/// The state every pass with one name shares, including scene backgrounds and passes created later.
+	render_pass_states: RenderPassStates,
 
 	pipeline_managers: SmallVec<[Box<dyn PipelineManager>; 16]>,
-	pipeline_manager_attachments_by_sink:
-		SmallVec<[(PipelineManagerId, SinkId, SmallVec<[ghi::AttachmentInformation; 8]>); 64]>,
 	pipeline_compilation_client: crate::rendering::PipelineManagerClient,
 	pipeline_compilation_manager: crate::rendering::pipeline_compilation::PipelineManager,
 	pipeline_compilation_servers: Vec<crate::rendering::PipelineManagerServer>,
@@ -84,8 +108,7 @@ impl Renderer {
 	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
 	///
-	/// Next, call [`Self::set_resource_manager`] before adding pipeline managers or
-	/// render passes that load resources.
+	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
 	pub fn new(device: &crate::rendering::GraphicsDevice, parameters: &dyn Parameters, configuration: &Configuration) -> Self {
 		let defer_first_frame_sink_setup = parameters
 			.get_parameter("render.startup.defer-sink-setup")
@@ -97,7 +120,7 @@ impl Renderer {
 		context.set_frames_in_flight(frame_queue_depth);
 		let pipeline_compilation_server_count = parameters
 			.get_parameter("render.pipeline-compilation.threads")
-			.and_then(|parameter| parameter.value().parse::<usize>().ok())
+			.and_then(|parameter| parameter.parse::<usize>().ok())
 			.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| (count.get() / 2).clamp(1, 4)));
 		let (pipeline_compilation_client, pipeline_compilation_manager, pipeline_compilation_servers) =
 			crate::rendering::pipeline_compilation::PipelineManager::new(&mut context, pipeline_compilation_server_count);
@@ -112,8 +135,6 @@ impl Renderer {
 
 			started_frame_count: 0,
 
-			frame_queue_depth: frame_queue_depth as usize,
-
 			windows: SmallVec::with_capacity(16),
 			app: None,
 			acquisitions: (0, SmallVec::with_capacity(16)),
@@ -122,13 +143,10 @@ impl Renderer {
 			cameras: SmallVec::with_capacity(16),
 
 			render_targets: RenderTargets::new(),
-			resource_manager: None,
 			#[cfg(debug_assertions)]
 			resource_updates: None,
 
 			render_passes: SmallVec::with_capacity(64),
-			render_passes_by_sink: SmallVec::with_capacity(32),
-			render_pass_writable_targets: SmallVec::with_capacity(64),
 			post_scene_render_pass_factories: SmallVec::with_capacity(16),
 			scene_background_factory: None,
 			scene_backgrounds: SmallVec::new(),
@@ -136,10 +154,9 @@ impl Renderer {
 			pending_sink_initializations: SmallVec::with_capacity(16),
 			configuration: configuration.register(RENDER_PASS_PARAMETER_PREFIX),
 			pending_configuration: VecDeque::new(),
-			render_pass_states: HashMap::default(),
+			render_pass_states: RenderPassStates::default(),
 
 			pipeline_managers: SmallVec::with_capacity(8),
-			pipeline_manager_attachments_by_sink: SmallVec::with_capacity(64),
 			pipeline_compilation_client,
 			pipeline_compilation_manager,
 			pipeline_compilation_servers,
@@ -153,23 +170,16 @@ impl Renderer {
 		}
 	}
 
-	/// Supplies the externally owned resource manager used by render passes to resolve baked shaders.
+	/// Connects the renderer to the resource manager whose development rebakes rebuild its pipelines.
 	///
-	/// The renderer retains a weak reference so it does not extend application-owned resource lifetimes.
-	/// Debug asset management is installed through the resource manager's one-time initialization seam.
-	/// The owner must keep `resource_manager` alive for as long as render passes may load resources.
-	/// Connects the renderer to the resource manager used by pipelines and passes.
-	///
-	/// Next, call [`Self::add_pipeline_manager`] and register sink-local render
-	/// passes before creating windows.
+	/// In debug builds the renderer listens for replaced resources and recompiles the pipelines built from them.
+	/// Release builds keep no connection. Call it in any order relative to adding pipeline managers and render
+	/// passes. [`crate::application::graphics::GraphicsApplication::new`] calls it for you.
+	#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 	pub fn set_resource_manager(&mut self, resource_manager: &EntityHandle<ResourceManager>) {
-		self.resource_manager = Some(resource_manager.weak());
 		#[cfg(debug_assertions)]
 		{
 			self.resource_updates = Some(resource_manager.resource_updates());
-		}
-		for server in &mut self.pipeline_compilation_servers {
-			server.set_resource_manager(resource_manager.clone());
 		}
 	}
 
@@ -184,87 +194,63 @@ impl Renderer {
 	/// [`Self::create_window`].
 	pub fn add_pipeline_manager(&mut self, mut pipeline_manager: impl PipelineManager + 'static) {
 		let pipeline_manager_id = self.pipeline_managers.len();
-		{
-			let sink_swapchains: SmallVec<[(SinkId, ghi::SwapchainHandle); 16]> = self
-				.sink_cameras
-				.iter()
-				.map(|(sink_id, _)| (*sink_id, self.windows[*sink_id].1))
-				.collect();
-			for (sink_id, swapchain) in sink_swapchains {
-				if self.pending_sink_initializations.contains(&sink_id) {
-					continue;
-				}
-
-				let mut rpb = RenderPassBuilder::new(
-					&mut self.context,
-					&mut self.render_targets,
-					sink_id,
-					swapchain,
-					self.pipeline_compilation_client.clone(),
-				)
-				.with_scene_background(self.scene_background_factory.as_deref());
-				pipeline_manager.create_sink(sink_id, &mut rpb);
-				adopt_scene_backgrounds(&mut self.scene_backgrounds, rpb.take_scene_backgrounds(), &self.render_pass_states);
-				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
-				rpb.images
-					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
-				// Resolve attachment identity now: later post-processing may rebind `main`.
-				let consumed_resources = rpb
-					.images
-					.get_attachment_infos_for_resources(sink_id, &rpb.consumed_resources);
-				self.pipeline_manager_attachments_by_sink
-					.push((pipeline_manager_id, sink_id, consumed_resources));
-
-				if rpb.consumed_resources.is_empty() {
-					log::debug!("No resources consumed by scene manager");
-				}
-			}
+		// Sinks that already exist get the manager's state now; deferred sinks get it when they initialize.
+		let sinks: SmallVec<[SinkId; 16]> = self
+			.sink_cameras
+			.iter()
+			.map(|(sink_id, _)| *sink_id)
+			.filter(|sink_id| !self.pending_sink_initializations.contains(sink_id))
+			.collect();
+		for sink_id in sinks {
+			self.create_manager_sink(&mut pipeline_manager, pipeline_manager_id, sink_id);
 		}
 
 		self.pipeline_managers.push(Box::new(pipeline_manager));
 	}
 
+	/// Starts the builder for one node of a sink's graph; `final_output` marks the sink's terminal post-scene pass.
+	///
+	/// Only scene nodes get the scene background factory, because only their backgrounds reach
+	/// `self.scene_backgrounds`, where the renderer asks them for frames.
+	fn sink_builder(&mut self, sink_id: SinkId, node: RenderNode, final_output: bool) -> RenderPassBuilder<'_> {
+		let scene_background_factory = match node {
+			RenderNode::Scene(_) => self.scene_background_factory.as_deref(),
+			RenderNode::Pass(_) | RenderNode::Presentation => None,
+		};
+		RenderPassBuilder::new(
+			&mut self.context,
+			&mut self.render_targets,
+			&mut self.render_pass_states,
+			sink_id,
+			self.windows[sink_id].1,
+			self.pipeline_compilation_client.clone(),
+			scene_background_factory,
+			node,
+			final_output,
+		)
+	}
+
+	/// Lets one scene pipeline manager create its persistent state for a sink and records the targets it uses.
+	fn create_manager_sink(
+		&mut self,
+		pipeline_manager: &mut dyn PipelineManager,
+		pipeline_manager_id: PipelineManagerId,
+		sink_id: SinkId,
+	) {
+		let mut builder = self.sink_builder(sink_id, RenderNode::Scene(pipeline_manager_id), false);
+		pipeline_manager.create_sink(sink_id, &mut builder);
+		builder.record_node();
+		let backgrounds = builder.take_scene_backgrounds();
+		self.scene_backgrounds.extend(backgrounds);
+	}
+
 	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
-		let swapchain = self.windows[sink_id].1;
-
-		{
-			let Renderer {
-				context,
-				render_targets,
-				pipeline_managers,
-				pipeline_manager_attachments_by_sink,
-				pipeline_compilation_client,
-				scene_background_factory,
-				scene_backgrounds,
-				render_pass_states,
-				..
-			} = self;
-
-			for (pipeline_manager_id, sm) in pipeline_managers.iter_mut().enumerate() {
-				let mut rpb = RenderPassBuilder::new(
-					context,
-					render_targets,
-					sink_id,
-					swapchain,
-					pipeline_compilation_client.clone(),
-				)
-				.with_scene_background(scene_background_factory.as_deref());
-				sm.create_sink(sink_id, &mut rpb);
-				adopt_scene_backgrounds(scene_backgrounds, rpb.take_scene_backgrounds(), render_pass_states);
-				let accesses = std::mem::take(&mut rpb.accessed_image_indices);
-				rpb.images
-					.record_node(sink_id, RenderNode::Scene(pipeline_manager_id), accesses);
-				// Resolve attachment identity now: later post-processing may rebind `main`.
-				let consumed_resources = rpb
-					.images
-					.get_attachment_infos_for_resources(sink_id, &rpb.consumed_resources);
-				pipeline_manager_attachments_by_sink.push((pipeline_manager_id, sink_id, consumed_resources));
-
-				if rpb.consumed_resources.is_empty() {
-					log::debug!("No resources consumed by scene manager");
-				}
-			}
+		// Every manager builds through `self`, so the list steps aside while they do.
+		let mut pipeline_managers = std::mem::take(&mut self.pipeline_managers);
+		for (pipeline_manager_id, pipeline_manager) in pipeline_managers.iter_mut().enumerate() {
+			self.create_manager_sink(&mut **pipeline_manager, pipeline_manager_id, sink_id);
 		}
+		self.pipeline_managers = pipeline_managers;
 
 		self.add_post_scene_render_passes_for_sink(sink_id);
 	}
@@ -276,49 +262,18 @@ impl Renderer {
 		}
 	}
 
-	fn add_render_pass(
-		&mut self,
-		render_pass: Box<dyn RenderPass>,
-		sink_id: SinkId,
-		writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
-	) {
-		let render_pass_id = self.render_passes.len();
-		self.render_passes
-			.push(render_pass_harness_with_state(render_pass, &self.render_pass_states));
-		self.render_passes_by_sink.push((render_pass_id, sink_id));
-		self.render_pass_writable_targets.push(writable_targets);
-	}
-
 	/// Changes the state of every sink-local render pass with the requested stable name.
 	///
 	/// Returns the number of updated instances. A return value of `0` means that no registered render pass uses
 	/// `name`. Pass names come from [`RenderPass::name`].
 	pub fn set_render_pass_state(&mut self, name: &str, state: RenderPassState) -> usize {
-		self.render_pass_states.insert(name.to_string(), state);
 		self.redraw_requested = true;
-		set_render_pass_state_by_name(&mut self.render_passes, name, state)
-			+ set_scene_background_state_by_name(&self.scene_backgrounds, name, state)
+		set_render_pass_state(&mut self.render_pass_states, name, state)
 	}
 
 	/// Applies queued render-pass configuration after passes exist and before they prepare frame work.
 	fn apply_configuration(&mut self) {
-		let Self {
-			render_passes,
-			scene_backgrounds,
-			configuration,
-			pending_configuration,
-			render_pass_states,
-			..
-		} = self;
-		apply_render_pass_configuration(
-			configuration,
-			pending_configuration,
-			render_pass_states,
-			|name, state| {
-				set_render_pass_state_by_name(render_passes, name, state)
-					+ set_scene_background_state_by_name(scene_backgrounds, name, state)
-			},
-		);
+		apply_render_pass_configuration(&self.configuration, &mut self.pending_configuration, &self.render_pass_states);
 	}
 
 	/// Registers the scene background that every future sink's scene pipeline records between opaque and
@@ -358,74 +313,39 @@ impl Renderer {
 
 	/// Instantiates all registered post-scene render pass factories for a given sink.
 	fn add_post_scene_render_passes_for_sink(&mut self, sink_id: SinkId) {
-		let mut render_passes_for_sink: SmallVec<[(Box<dyn RenderPass>, Vec<(String, ghi::ImageOrSwapchain)>); 16]> =
-			SmallVec::new();
-
-		let swapchain = self.windows[sink_id].1;
-
-		let final_factory_index = self.post_scene_render_pass_factories.len().checked_sub(1);
-		// `add_render_pass` numbers passes in the order this loop creates them.
-		let first_render_pass_id = self.render_passes.len();
-		let mut final_output_written = false;
-		for (factory_index, render_pass_factory) in self.post_scene_render_pass_factories.iter().enumerate() {
-			let render_pass = {
-				let mut render_pass_builder = if Some(factory_index) == final_factory_index {
-					RenderPassBuilder::new_for_final_pass(
-						&mut self.context,
-						&mut self.render_targets,
-						sink_id,
-						swapchain,
-						self.pipeline_compilation_client.clone(),
-					)
-				} else {
-					RenderPassBuilder::new(
-						&mut self.context,
-						&mut self.render_targets,
-						sink_id,
-						swapchain,
-						self.pipeline_compilation_client.clone(),
-					)
-				};
-				let render_pass = render_pass_factory(&mut render_pass_builder);
-				final_output_written = render_pass_builder.writes_final_output();
-				let accesses = std::mem::take(&mut render_pass_builder.accessed_image_indices);
-				render_pass_builder.images.record_node(
-					sink_id,
-					RenderNode::Pass(first_render_pass_id + factory_index),
-					accesses,
-				);
-				(render_pass, render_pass_builder.writable_targets())
-			};
-
-			render_passes_for_sink.push(render_pass);
-		}
-
-		if final_factory_index.is_some() {
+		// Every pass builds through `self`, so the factories step aside while they run.
+		let factories = std::mem::take(&mut self.post_scene_render_pass_factories);
+		let final_factory_index = factories.len().checked_sub(1);
+		for (factory_index, factory) in factories.iter().enumerate() {
+			let final_output = Some(factory_index) == final_factory_index;
+			let render_pass_id = self.render_passes.len();
+			let mut builder = self.sink_builder(sink_id, RenderNode::Pass(render_pass_id), final_output);
+			let render_pass = factory(&mut builder);
 			assert!(
-				final_output_written,
+				!final_output || builder.writes_final_output(),
 				"Final render pass has no presentation output. The most likely cause is that it created or aliased an ordinary image instead of calling `RenderPassBuilder::create_main_render_target`."
 			);
-		} else {
-			// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
-			// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
-			if self.render_targets.get("main", sink_id).is_some() {
-				let mut builder = RenderPassBuilder::new(
-					&mut self.context,
-					&mut self.render_targets,
-					sink_id,
-					swapchain,
-					self.pipeline_compilation_client.clone(),
-				);
-				let source = builder.read_from("main");
-				let copy = crate::rendering::render_passes::blit::ImageBypassPass::new(&mut builder, source, swapchain);
-				let accesses = std::mem::take(&mut builder.accessed_image_indices);
-				builder.images.record_node(sink_id, RenderNode::Presentation, accesses);
-				self.scene_presentation_copies.push((sink_id, copy));
-			}
+			builder.record_node();
+			let writable_targets = builder.writable_targets();
+			let main_copy = builder.take_main_copy();
+			self.render_passes.push(SinkPass {
+				harness: RenderPassHarness::new(render_pass, &mut self.render_pass_states),
+				sink: sink_id,
+				writable_targets,
+				main_copy,
+			});
 		}
+		self.post_scene_render_pass_factories = factories;
 
-		for (render_pass, writable_targets) in render_passes_for_sink {
-			self.add_render_pass(render_pass, sink_id, writable_targets);
+		// A scene-only graph has no terminal pass that can receive the swapchain directly. An empty graph also has
+		// no scene color to copy, so presenting the acquired swapchain is the complete frame operation in that case.
+		if final_factory_index.is_none() && self.render_targets.get("main", sink_id).is_some() {
+			let swapchain = self.windows[sink_id].1;
+			let mut builder = self.sink_builder(sink_id, RenderNode::Presentation, false);
+			let source = builder.read_from("main");
+			let copy = ImageBypassPass::new(&mut builder, source, swapchain);
+			builder.record_node();
+			self.scene_presentation_copies.push((sink_id, copy));
 		}
 	}
 
@@ -447,7 +367,7 @@ impl Renderer {
 	/// including windows created later. `None` removes the cap so frames present on every refresh.
 	pub fn set_present_interval(&mut self, interval: Option<std::time::Duration>) {
 		self.present_interval = interval;
-		for (_window, swapchain) in &self.windows {
+		for (_window, swapchain, _) in &self.windows {
 			self.context.set_present_interval(*swapchain, interval);
 		}
 	}
@@ -456,7 +376,7 @@ impl Renderer {
 	///
 	/// The fastest display decides so that no window handles its events later than its display could show them.
 	pub fn refresh_interval(&self) -> Option<std::time::Duration> {
-		self.windows.iter().filter_map(|(window, _)| window.refresh_interval()).min()
+		self.windows.iter().filter_map(|(window, ..)| window.refresh_interval()).min()
 	}
 
 	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
@@ -483,38 +403,34 @@ impl Renderer {
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
-		for (_window, swapchain) in self.windows.iter().skip(self.acquisitions.1.len()) {
-			let Some(acquisition) = self.context.acquire_swapchain_image(frame, *swapchain) else {
-				log::warn!(
-					"No swapchain image was available for window {:?}. Rendering will be skipped.",
-					swapchain
-				);
-				self.acquisitions.1.push(None);
-				continue;
+		for (index, (_window, swapchain, warned)) in self.windows.iter_mut().enumerate().skip(self.acquisitions.1.len()) {
+			let acquisition = self.context.acquire_swapchain_image(frame, *swapchain);
+			if index == 0 {
+				present_time = acquisition.as_ref().and_then(|acquisition| acquisition.present_time());
+			}
+
+			// A window without a usable image skips the frame. Say so once, and again only after it recovers.
+			let extent = acquisition.as_ref().map(|acquisition| acquisition.extent());
+			let problem = match extent {
+				None => Some("No swapchain image was available"),
+				Some(extent) if extent.width() == 0 || extent.height() == 0 => Some("The swapchain extent is too small"),
+				Some(extent) if extent.width() >= 65535 || extent.height() >= 65535 => {
+					Some("The swapchain extent is too large, since the renderer only supports 16-bit dimensions")
+				}
+				Some(_) => None,
 			};
-			let extent = acquisition.extent();
-			if self.acquisitions.1.is_empty() {
-				present_time = acquisition.present_time();
-			}
+			crate::rendering::warn_once(warned, problem.is_some(), || {
+				format!(
+					"{} for window {swapchain:?} ({extent:?}). Rendering will be skipped.",
+					problem.unwrap_or_default()
+				)
+			});
 
-			if extent.width() == 0 || extent.height() == 0 {
-				log::warn!("The extent is too small: {:?}. Rendering will be skipped.", extent);
-				self.acquisitions.1.push(None);
-				continue;
-			}
-
-			if extent.width() >= 65535 || extent.height() >= 65535 {
-				log::warn!(
-					"The extent is too large: {:?}. The renderer only supports dimensions as big as 16 bits. Rendering will be skipped.",
-					extent
-				);
-				self.acquisitions.1.push(None);
-				continue;
-			}
-
-			self.acquisitions
-				.1
-				.push(Some((acquisition.present_key(), extent, *swapchain)));
+			self.acquisitions.1.push(
+				acquisition
+					.filter(|_| problem.is_none())
+					.map(|acquisition| (acquisition.present_key(), acquisition.extent(), *swapchain)),
+			);
 		}
 
 		present_time
@@ -536,10 +452,10 @@ impl Renderer {
 		let mut needs_frame = self.redraw_requested || !self.pending_sink_initializations.is_empty();
 		// Ask every pass so each adopts its inputs this tick, even when an earlier one already answered.
 		for render_pass in &mut self.render_passes {
-			needs_frame |= render_pass.needs_frame();
+			needs_frame |= render_pass.harness.needs_frame();
 		}
 		for background in &self.scene_backgrounds {
-			needs_frame |= background.harness().needs_frame();
+			needs_frame |= background.needs_frame();
 		}
 		needs_frame
 	}
@@ -618,7 +534,6 @@ impl Renderer {
 			.map(|(sink, capture)| self.resolve_screenshot_capture(*sink, capture))
 			.collect::<Vec<_>>();
 
-
 		self.context.start_frame_capture();
 
 		{
@@ -627,10 +542,10 @@ impl Renderer {
 			while let Some(message) = transforms_listener.read() {
 				let handle = message.handle();
 
-				if let Some((camera, transform)) = self
+				if let Some(transform) = self
 					.cameras
 					.iter_mut()
-					.find_map(|(h, camera, transform)| if handle == *h { Some((camera, transform)) } else { None })
+					.find_map(|(h, _, transform)| if handle == *h { Some(transform) } else { None })
 				{
 					transform.set_position(message.transform().get_position());
 					transform.set_orientation(message.transform().get_orientation());
@@ -652,14 +567,11 @@ impl Renderer {
 		let cameras = &self.cameras;
 		let render_targets = &self.render_targets;
 		let pipeline_managers = &mut self.pipeline_managers;
-		let pipeline_manager_count = pipeline_managers.len();
 		let pipeline_compilation_client = &self.pipeline_compilation_client;
 		let pipeline_compilation_manager = &mut self.pipeline_compilation_manager;
 		#[cfg(debug_assertions)]
 		let resource_updates = &self.resource_updates;
-		let pipeline_manager_attachments_by_sink = &self.pipeline_manager_attachments_by_sink;
 		let render_passes = &mut self.render_passes;
-		let render_passes_by_sink = &self.render_passes_by_sink;
 		let scene_presentation_copies = &mut self.scene_presentation_copies;
 		let frame_allocator = frame_allocator;
 		let submitted_frame = self.started_frame_count - 1;
@@ -732,29 +644,26 @@ impl Renderer {
 						}
 					}
 
-					let pipeline_managers = pipeline_managers.iter_mut().enumerate();
-
-					let pipeline_manager_commands: SmallVec<[(PipelineManagerId, SmallVec<[RenderPassReturn<'_>; 16]>); 16]> = {
+					// Each manager's commands, indexed by manager, with the sink every command records for.
+					let pipeline_manager_commands: SmallVec<[SmallVec<[(SinkId, RenderPassReturn<'_>); 16]>; 16]> = {
 						let span = debug_span!("Renderer::prepare_pipeline_managers");
 						let _enter = span.enter();
 						pipeline_managers
-							.filter_map(|(pipeline_manager_id, sm)| {
-								sm.prepare(frame, &sinks, frame_allocator, alpha, time)
-									.map(|commands| (pipeline_manager_id, commands))
-							})
+							.iter_mut()
+							.map(|pipeline_manager| pipeline_manager.prepare(frame, &sinks, frame_allocator, alpha, time))
 							.collect()
 					};
 
 					// A list of render pass commands and their corresponding pass/sink indices.
-					let render_pass_commands: SmallVec<[(Option<RenderPassReturn>, RenderPassId, SinkId); 64]> = {
+					let render_pass_commands: SmallVec<[([Option<RenderPassReturn>; 2], RenderPassId, SinkId); 64]> = {
 						let span = debug_span!("Renderer::prepare_render_passes");
 						let _enter = span.enter();
-						render_passes_by_sink
-							.iter()
-							.filter_map(|(render_pass_id, sink_id)| {
-								let render_pass = render_passes.get_mut(*render_pass_id)?;
-								let sink = sinks.iter().find(|sink| sink.index() == *sink_id)?;
-								Some((render_pass.prepare(frame, sink, frame_allocator), *render_pass_id, sink.index()))
+						render_passes
+							.iter_mut()
+							.enumerate()
+							.filter_map(|(render_pass_id, render_pass)| {
+								let sink = sinks.iter().find(|sink| sink.index() == render_pass.sink)?;
+								Some((render_pass.prepare(frame, sink, frame_allocator), render_pass_id, sink.index()))
 							})
 							.collect()
 					};
@@ -788,13 +697,11 @@ impl Renderer {
 					{
 						let span = debug_span!("Renderer::record_pipeline_manager_commands");
 						let _enter = span.enter();
-						for pipeline_manager_id in 0..pipeline_manager_count {
-							let mut commands = pipeline_manager_commands
-								.iter()
-								.find(|(id, _)| *id == pipeline_manager_id)
-								.map(|(_, commands)| commands.iter());
+						for (pipeline_manager_id, commands) in pipeline_manager_commands.iter().enumerate() {
 							for sink in &sinks {
-								let command = commands.as_mut().and_then(Iterator::next);
+								let command = commands
+									.iter()
+									.find_map(|(sink_id, command)| (*sink_id == sink.index()).then_some(command));
 								initialize_first_uses(
 									&mut *command_buffer_recording,
 									&first_uses,
@@ -802,17 +709,9 @@ impl Renderer {
 									RenderNode::Scene(pipeline_manager_id),
 									command.is_some(),
 								);
-								let Some(command) = command else {
-									continue;
-								};
-								let attachment_infos = pipeline_manager_attachments_by_sink
-									.iter()
-									.find_map(|(id, sink_id, attachments)| {
-										(*id == pipeline_manager_id && *sink_id == sink.index()).then_some(attachments.as_slice())
-									})
-									.unwrap_or(&[]);
-
-								command(&mut *command_buffer_recording, attachment_infos);
+								if let Some(command) = command {
+									command(&mut *command_buffer_recording);
+								}
 							}
 						}
 					}
@@ -834,17 +733,16 @@ impl Renderer {
 					{
 						let span = debug_span!("Renderer::record_render_pass_commands");
 						let _enter = span.enter();
-						for (command, render_pass_id, sink) in render_pass_commands {
+						for (commands, render_pass_id, sink) in render_pass_commands {
 							initialize_first_uses(
 								&mut *command_buffer_recording,
 								&first_uses,
 								sink,
 								RenderNode::Pass(render_pass_id),
-								command.is_some(),
+								commands.iter().any(Option::is_some),
 							);
-							if let Some(command) = command {
-								let attachment_infos = render_targets.get_attachment_infos(sink);
-								command(&mut *command_buffer_recording, &attachment_infos);
+							for command in commands.into_iter().flatten() {
+								command(&mut *command_buffer_recording);
 							}
 							for request_index in captures_after_pass(&screenshot_captures, render_pass_id) {
 								let Ok(ResolvedScreenshotCapture::AfterPass { target, .. }) = screenshot_captures[request_index]
@@ -869,7 +767,7 @@ impl Renderer {
 							command.is_some(),
 						);
 						if let Some(command) = command {
-							command(&mut *command_buffer_recording, &[]);
+							command(&mut *command_buffer_recording);
 						}
 					}
 
@@ -932,7 +830,7 @@ impl Renderer {
 					.render_targets
 					.get(target, sink)
 					.filter(|_| self.render_targets.holds_scene_output(target, sink))
-					.map(|(image, _)| *image)
+					.map(|(image, _)| image)
 					.or_else(|| self.render_targets.history(target, sink).map(Into::into))
 					.ok_or(RendererScreenshotError::TargetNotWritten)?;
 				return Ok(ResolvedScreenshotCapture::AfterScene { target: image.into() });
@@ -947,21 +845,23 @@ impl Renderer {
 			ScreenshotCapture::AfterPass { pass, target } => (pass, target),
 		};
 		let mut matches = self
-			.render_passes_by_sink
+			.render_passes
 			.iter()
-			.filter(|(id, pass_sink)| *pass_sink == sink && self.render_passes[*id].name() == pass);
-		let Some((pass_id, _)) = matches.next() else {
+			.enumerate()
+			.filter(|(_, render_pass)| render_pass.sink == sink && render_pass.harness.name() == pass);
+		let Some((pass_id, render_pass)) = matches.next() else {
 			return Err(RendererScreenshotError::PassNotFound);
 		};
 		if matches.next().is_some() {
 			return Err(RendererScreenshotError::PassAmbiguous);
 		}
-		let target = self.render_pass_writable_targets[*pass_id]
+		let target = render_pass
+			.writable_targets
 			.iter()
 			.rev()
 			.find_map(|(name, image)| (name == target).then_some(*image))
 			.ok_or(RendererScreenshotError::TargetNotWritten)?;
-		Ok(ResolvedScreenshotCapture::AfterPass { pass: *pass_id, target })
+		Ok(ResolvedScreenshotCapture::AfterPass { pass: pass_id, target })
 	}
 
 	/// Borrows the render thread's GHI context for setup work that must run before the first frame.
@@ -974,7 +874,7 @@ impl Renderer {
 		self.pipeline_compilation_client.clone()
 	}
 
-	/// Takes pending compiler servers so an application setup function can start them on owned threads.
+	/// Takes pending compiler servers so the application can start them on owned threads with its resource manager.
 	pub(crate) fn take_pipeline_compilation_servers(&mut self) -> Vec<crate::rendering::PipelineManagerServer> {
 		std::mem::take(&mut self.pipeline_compilation_servers)
 	}
@@ -1031,7 +931,7 @@ impl Renderer {
 					false
 				};
 
-				self.windows.push((window, swapchain_handle));
+				self.windows.push((window, swapchain_handle, false));
 				self.redraw_requested = true;
 
 				if sink_has_camera {
@@ -1066,45 +966,10 @@ impl Renderer {
 		self.redraw_requested = true;
 	}
 }
-/// Returns request slots transferred immediately after one prepared pass entry.
 /// Gives the render targets a node uses first new contents before the node records.
 ///
 /// A node that records commands writes its targets itself, so they are only discarded. A node that records nothing,
 /// for example while its pipeline compiles, leaves them cleared, so later nodes never read another target's memory.
-/// Keeps the scene backgrounds a scene pipeline created, starting each in the state last selected for its name.
-fn adopt_scene_backgrounds(
-	scene_backgrounds: &mut SmallVec<[crate::rendering::render_pass::SceneBackground; 16]>,
-	created: Vec<crate::rendering::render_pass::SceneBackground>,
-	render_pass_states: &HashMap<String, RenderPassState>,
-) {
-	for background in created {
-		{
-			let mut harness = background.harness();
-			if let Some(state) = render_pass_states.get(harness.name()) {
-				harness.set_state(*state);
-			}
-		}
-		scene_backgrounds.push(background);
-	}
-}
-
-/// Updates every sink's scene background with the requested stable name.
-fn set_scene_background_state_by_name(
-	scene_backgrounds: &[crate::rendering::render_pass::SceneBackground],
-	name: &str,
-	state: RenderPassState,
-) -> usize {
-	let mut updated = 0;
-	for background in scene_backgrounds {
-		let mut harness = background.harness();
-		if harness.name() == name {
-			harness.set_state(state);
-			updated += 1;
-		}
-	}
-	updated
-}
-
 fn initialize_first_uses(
 	recording: &mut ghi::implementation::CommandBufferRecording,
 	first_uses: &[(SinkId, FirstUse)],
@@ -1131,6 +996,7 @@ fn initialize_first_uses(
 	}
 }
 
+/// Returns request slots transferred immediately after one prepared pass entry.
 pub(super) fn captures_after_pass(
 	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
 	pass: RenderPassId,
@@ -1171,19 +1037,10 @@ pub(crate) enum RendererScreenshotError {
 	Transfer(ghi::TextureTransferError),
 }
 
-
-
-use std::{
-	collections::VecDeque,
-	io::Write,
-	ops::{Deref, DerefMut},
-};
+use std::collections::VecDeque;
 
 use ghi::{
-	command_buffer::{
-		BoundComputePipelineMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording,
-		RasterizationRenderPassMode as _,
-	},
+	command_buffer::CommandBufferRecording,
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
@@ -1191,35 +1048,30 @@ use ghi::{
 use resource_management::resource::resource_manager::ResourceManager;
 use smallvec::SmallVec;
 use tracing::debug_span;
-use utils::Box;
-use utils::{Extent, RGBA, hash::HashMap, sync::RwLock};
+use utils::{Box, Extent};
 
 use super::{
 	configuration::{
-		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration,
-		render_pass_harness_with_state, set_render_pass_state_by_name,
+		PendingRenderPassConfiguration, RENDER_PASS_PARAMETER_PREFIX, apply_render_pass_configuration, set_render_pass_state,
 	},
 	targets::{FirstUse, RenderNode, RenderTargets},
 };
 use crate::{
 	application::parameters::Parameters,
 	configuration::{Configuration, ConfigurationPort},
-	core::{
-		Entity, EntityHandle,
-		channel::{Channel, DefaultChannel},
-		factory::Handle,
-		listener::Listener,
-	},
+	core::{EntityHandle, factory::Handle, listener::Listener},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
-		Camera, Sink, View, make_perspective_view_from_camera,
+		Camera, Sink, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,
-		render_pass::{FramePrepare, RenderPassReturn},
+		render_pass::RenderPassReturn,
 		window::{self, Window},
 	},
-	space::Orientable as _,
 };
 use crate::{
 	gameplay::Transform,
-	rendering::render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState},
+	rendering::{
+		render_pass::{RenderPass, RenderPassBuilder, RenderPassHarness, RenderPassState, RenderPassStates},
+		render_passes::blit::ImageBypassPass,
+	},
 };

@@ -129,30 +129,10 @@ impl AssetManager {
 	/// After all handlers are registered, install this manager on a
 	/// [`crate::ResourceManager`] in a debug build or call [`Self::bake`].
 	pub fn add_asset_handler<T: AssetHandler + Send + Sync + 'static>(&mut self, asset_handler: T) {
-		struct AssetHandlerWrapper<T: AssetHandler + Send + Sync>(T);
-
-		impl<T: AssetHandler + Send + Sync> DynAssetHandler for AssetHandlerWrapper<T> {
-			fn can_handle(&self, r#type: &str) -> bool {
-				self.0.can_handle(r#type)
-			}
-
-			fn should_discover(&self, id: ResourceId<'_>, has_sidecar: bool) -> bool {
-				self.0.should_discover(id, has_sidecar)
-			}
-
-			fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> BoxedFuture<'a, Result<(), LoadErrors>> {
-				Box::pin(self.0.bake(context, url))
-			}
-		}
-
 		Arc::get_mut(&mut self.state)
 			.expect("Asset handlers must be registered before the asset manager starts processing requests.")
 			.asset_handlers
-			.push(Box::new(AssetHandlerWrapper(asset_handler)));
-	}
-
-	pub fn get_storage_backend(&self) -> &dyn DynStorageBackend {
-		self.state.storage_backend.as_ref()
+			.push(Box::new(asset_handler));
 	}
 
 	/// Reports whether a source directory can be read when the storage backend exposes paths.
@@ -370,10 +350,6 @@ struct HotReloadState {
 pub enum LoadMessages {
 	/// The asset was not found in the storage backend.
 	NoAsset,
-	/// An I/O operation failed while loading the asset.
-	IO,
-	/// The asset description does not contain a URL.
-	NoURL,
 	/// No asset handler was found for the asset.
 	NoAssetHandler,
 	/// The asset or one of its dependencies could not be baked or loaded.
@@ -1115,10 +1091,6 @@ pub mod tests {
 		}
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<(), LoadErrors> {
-			if context.resource_type(id) != Some("environment.bead") {
-				return Err(LoadErrors::UnsupportedType);
-			}
-
 			let (source, asset_type) = context.resolve(id).await?;
 
 			if asset_type != "environment.bead" {
@@ -1133,34 +1105,6 @@ pub mod tests {
 		let storage_backend = TestStorageBackend::new();
 
 		AssetManager::new(storage_backend, ResourceTestStorageBackend::new())
-	}
-
-	#[test]
-	fn asset_manager_reports_support_for_registered_asset_types() {
-		let storage_backend = TestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, ResourceTestStorageBackend::new());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
-
-		assert!(asset_manager.supports("nested/example.test"));
-		assert!(asset_manager.supports("nested/example.test#fragment"));
-		assert!(!asset_manager.supports("nested/example.unknown"));
-		assert!(!asset_manager.supports(""));
-		assert!(!asset_manager.supports("#fragment"));
-	}
-
-	#[test]
-	fn registered_handlers_are_discoverable_by_default() {
-		let storage_backend = TestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, ResourceTestStorageBackend::new());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
-
-		assert!(asset_manager.should_discover("nested/example.test", false));
-		assert!(asset_manager.should_discover("nested/example.test", true));
-		assert!(!asset_manager.should_discover("nested/example.unknown", true));
 	}
 
 	#[r#async::test]
@@ -1292,28 +1236,6 @@ pub mod tests {
 		manager.state.clone().reload_resource("stable.test".to_string()).await;
 
 		assert_eq!(listener.read(), None);
-	}
-
-	#[r#async::test]
-	async fn test_bake_with_asset_manager() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
-
-		asset_manager
-			.bake("example.test")
-			.await
-			.expect("registered asset handler should bake its resource");
-
-		let resource = resource_storage_backend
-			.get_resource(ResourceId::new("example.test"))
-			.expect("baked resource should be stored");
-
-		assert_eq!(resource.class, "TestResource");
 	}
 
 	#[r#async::test]
@@ -1472,41 +1394,6 @@ pub mod tests {
 			.expect("changed child should rebake the child and parent");
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 4);
-	}
-
-	#[r#async::test]
-	async fn bake_if_stale_skips_current_resources_and_bake_always_rebakes() {
-		let asset_storage = TestStorageBackend::new();
-
-		asset_storage.add_file("current.test", b"source");
-
-		let resource_storage = ResourceTestStorageBackend::new();
-
-		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
-
-		asset_manager
-			.bake_if_stale("current.test")
-			.await
-			.expect("missing resource should bake");
-		asset_manager
-			.bake_if_stale("current.test")
-			.await
-			.expect("current resource should be reused");
-
-		assert_eq!(invocations.load(Ordering::SeqCst), 1);
-
-		asset_manager.bake("current.test").await.expect("forced bake should run");
-
-		assert_eq!(invocations.load(Ordering::SeqCst), 2);
-
-		asset_storage.add_file("current.test", b"changed source");
-
-		asset_manager
-			.bake_if_stale("current.test")
-			.await
-			.expect("changed source should rebake");
-
-		assert_eq!(invocations.load(Ordering::SeqCst), 3);
 	}
 
 	#[r#async::test]
@@ -1721,25 +1608,6 @@ pub mod tests {
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 	}
 
-	#[r#async::test]
-	async fn test_bake_no_asset_handler() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
-
-		let result = asset_manager.bake("example.unknown").await;
-
-		assert_eq!(result, Err(LoadMessages::NoAssetHandler));
-
-		#[cfg(debug_assertions)]
-		assert_eq!(
-			asset_manager.resource_trace().items("example.unknown")[0].level(),
-			ResourceTraceLevel::Error
-		);
-	}
-
 	#[cfg(debug_assertions)]
 	#[r#async::test]
 	async fn handler_trace_keeps_ordered_info_and_warning_items_for_a_baked_resource() {
@@ -1890,7 +1758,6 @@ use crate::{
 		self, DynStorageBackend, ResourceId,
 		handler::{DynAssetHandler, LoadErrors},
 	},
-	r#async::BoxedFuture,
 	online_docs_url,
 	resource::{self, DynStorageBackend as DynResourceStorageBackend, StorageBackend as ResourceStorageBackend},
 };

@@ -110,365 +110,180 @@ pub(crate) fn construct_value(value_type: &ValueType, components: &[Value]) -> R
 	}
 }
 
-pub(crate) fn extract_f32_components<const N: usize>(components: &[Value]) -> Result<[f32; N], VmError> {
-	let mut values = [0.0; N];
+/// The `Lane` trait lets one generic reader, writer, and constructor handle every scalar lane type a VM vector stores.
+/// Implement it for a scalar type before adding a vector value built from that scalar.
+pub(crate) trait Lane: Copy + Default {
+	/// The number of bytes one lane occupies in packed VM memory.
+	const SIZE: usize;
+	/// The BESL type name that constructor errors report.
+	const NAME: &'static str;
+
+	/// Decodes one lane from exactly [`Self::SIZE`] native-endian bytes.
+	fn from_ne(bytes: &[u8]) -> Self;
+	/// Encodes one lane into exactly [`Self::SIZE`] native-endian bytes.
+	fn to_ne(self, bytes: &mut [u8]);
+}
+
+/// Implements [`Lane`] for primitive types whose byte conversion is `from_ne_bytes`/`to_ne_bytes`.
+macro_rules! primitive_lane {
+	($($type:ty),*) => {$(
+		impl Lane for $type {
+			const SIZE: usize = size_of::<$type>();
+			const NAME: &'static str = stringify!($type);
+
+			fn from_ne(bytes: &[u8]) -> Self {
+				<$type>::from_ne_bytes(bytes.try_into().expect("Invalid lane byte count"))
+			}
+
+			fn to_ne(self, bytes: &mut [u8]) {
+				bytes.copy_from_slice(&self.to_ne_bytes());
+			}
+		}
+	)*};
+}
+
+primitive_lane!(u8, u16, u32, i32, f32);
+
+impl Lane for f16 {
+	const SIZE: usize = 2;
+	const NAME: &'static str = "f16";
+
+	fn from_ne(bytes: &[u8]) -> Self {
+		f16::from_bits(u16::from_ne(bytes))
+	}
+
+	fn to_ne(self, bytes: &mut [u8]) {
+		self.to_bits().to_ne(bytes);
+	}
+}
+
+/// Decodes `N` packed lanes. Callers slice exactly `N * T::SIZE` bytes from a buffer, as [`Buffer`] reads do.
+pub(crate) fn read_lanes<T: Lane, const N: usize>(bytes: &[u8]) -> [T; N] {
+	debug_assert_eq!(bytes.len(), N * T::SIZE, "Lane reads must receive exactly one value's bytes");
+	std::array::from_fn(|index| T::from_ne(&bytes[index * T::SIZE..(index + 1) * T::SIZE]))
+}
+
+/// Encodes packed lanes at `offset` after checking the whole destination range once.
+pub(crate) fn write_lanes<T: Lane>(buffer: &mut Buffer, offset: usize, values: &[T]) -> Result<(), VmError> {
+	let bytes = buffer.bytes_mut(offset, values.len() * T::SIZE)?;
+	for (chunk, value) in bytes.chunks_exact_mut(T::SIZE).zip(values) {
+		value.to_ne(chunk);
+	}
+	Ok(())
+}
+
+/// Copies `source` lanes into the front of `lanes` through `convert` and returns how many it wrote.
+fn fill_lanes<S: Copy, T>(lanes: &mut [T; MAX_COMPONENT_LANES], source: &[S], convert: impl Fn(S) -> T) -> usize {
+	for (destination, source) in lanes.iter_mut().zip(source) {
+		*destination = convert(*source);
+	}
+	source.len()
+}
+
+/// The widest constructor component, a `mat4f`, spans this many lanes.
+const MAX_COMPONENT_LANES: usize = 16;
+
+/// Flattens constructor components into exactly `N` lanes.
+///
+/// `lanes` writes one accepted component's lanes into scratch storage and returns their count. It returns `None` to
+/// reject the component's type, which reports `expected` as the accepted types.
+fn extract_components<T: Lane, const N: usize>(
+	components: &[Value],
+	expected: &str,
+	lanes: impl Fn(&Value, &mut [T; MAX_COMPONENT_LANES]) -> Option<usize>,
+) -> Result<[T; N], VmError> {
+	let mut values = [T::default(); N];
 	let mut index = 0;
 	for component in components {
-		let component_count = match component {
-			Value::F16(_) | Value::F32(_) => 1,
-			Value::Vec2F16(value) => value.len(),
-			Value::Vec3F16(value) => value.len(),
-			Value::Vec4F16(value) => value.len(),
-			Value::Vec2F(value) => value.len(),
-			Value::Vec3F(value) => value.len(),
-			Value::Vec4F(value) => value.len(),
-			Value::PackedVec4F(value) => value.len(),
-			Value::Mat4F(value) => value.len(),
-			Value::Mat4x3F(value) => value.len(),
-			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: "f16 or f32".to_string(),
-					found: component.value_type().name().to_string(),
-				});
-			}
-		};
-		if index + component_count > N {
+		let mut scratch = [T::default(); MAX_COMPONENT_LANES];
+		let count = lanes(component, &mut scratch).ok_or_else(|| VmError::TypeMismatch {
+			expected: expected.to_string(),
+			found: component.value_type().name().to_string(),
+		})?;
+		if index + count > N {
 			return Err(VmError::UnsupportedExpression {
-				message: format!("Constructor provides more than {} f32 components", N),
+				message: format!("Constructor provides more than {} {} components", N, T::NAME),
 			});
 		}
-		match component {
-			Value::F16(value) => values[index] = value.to_f32(),
-			Value::F32(value) => values[index] = *value,
-			Value::Vec2F16(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = source.to_f32();
-				}
-			}
-			Value::Vec3F16(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = source.to_f32();
-				}
-			}
-			Value::Vec4F16(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = source.to_f32();
-				}
-			}
-			Value::Vec2F(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Vec3F(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Vec4F(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::PackedVec4F(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Mat4F(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Mat4x3F(value) => values[index..index + value.len()].copy_from_slice(value),
-			_ => unreachable!("Float constructor components are validated before conversion"),
-		}
-		index += component_count;
+		values[index..index + count].copy_from_slice(&scratch[..count]);
+		index += count;
 	}
 	if index != N {
 		return Err(VmError::UnsupportedExpression {
-			message: format!("Constructor expected {} f32 components, but found {}", N, index),
+			message: format!("Constructor expected {} {} components, but found {}", N, T::NAME, index),
 		});
 	}
-
 	Ok(values)
+}
+
+pub(crate) fn extract_f32_components<const N: usize>(components: &[Value]) -> Result<[f32; N], VmError> {
+	extract_components(components, "f16 or f32", |component, lanes| {
+		Some(match component {
+			Value::F16(value) => fill_lanes(lanes, std::slice::from_ref(value), f16::to_f32),
+			Value::F32(value) => fill_lanes(lanes, std::slice::from_ref(value), f32::from),
+			Value::Vec2F16(value) => fill_lanes(lanes, value, f16::to_f32),
+			Value::Vec3F16(value) => fill_lanes(lanes, value, f16::to_f32),
+			Value::Vec4F16(value) => fill_lanes(lanes, value, f16::to_f32),
+			Value::Vec2F(value) => fill_lanes(lanes, value, f32::from),
+			Value::Vec3F(value) => fill_lanes(lanes, value, f32::from),
+			Value::Vec4F(value) | Value::PackedVec4F(value) => fill_lanes(lanes, value, f32::from),
+			Value::Mat4F(value) => fill_lanes(lanes, value, f32::from),
+			Value::Mat4x3F(value) => fill_lanes(lanes, value, f32::from),
+			_ => return None,
+		})
+	})
 }
 
 pub(crate) fn extract_f16_components<const N: usize>(components: &[Value]) -> Result<[f16; N], VmError> {
-	let mut values = [f16::from_f32(0.0); N];
-	let mut index = 0;
-	for component in components {
-		let component_count = match component {
-			Value::F16(_) | Value::F32(_) => 1,
-			Value::Vec2F16(value) => value.len(),
-			Value::Vec3F16(value) => value.len(),
-			Value::Vec4F16(value) => value.len(),
-			Value::Vec2F(value) => value.len(),
-			Value::Vec3F(value) => value.len(),
-			Value::Vec4F(value) => value.len(),
-			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: "f16 or f32".to_string(),
-					found: component.value_type().name().to_string(),
-				});
-			}
-		};
-		if index + component_count > N {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Constructor provides more than {} f16 components", N),
-			});
-		}
-		match component {
-			Value::F16(value) => values[index] = *value,
-			Value::F32(value) => values[index] = f16::from_f32(*value),
-			Value::Vec2F16(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Vec3F16(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Vec4F16(value) => values[index..index + value.len()].copy_from_slice(value),
-			Value::Vec2F(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = f16::from_f32(*source);
-				}
-			}
-			Value::Vec3F(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = f16::from_f32(*source);
-				}
-			}
-			Value::Vec4F(value) => {
-				for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-					*destination = f16::from_f32(*source);
-				}
-			}
-			_ => unreachable!("Float constructor components are validated before conversion"),
-		}
-		index += component_count;
-	}
-	if index != N {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Constructor expected {} f16 components, but found {}", N, index),
-		});
-	}
-
-	Ok(values)
+	extract_components(components, "f16 or f32", |component, lanes| {
+		Some(match component {
+			Value::F16(value) => fill_lanes(lanes, std::slice::from_ref(value), f16::from),
+			Value::F32(value) => fill_lanes(lanes, std::slice::from_ref(value), f16::from_f32),
+			Value::Vec2F16(value) => fill_lanes(lanes, value, f16::from),
+			Value::Vec3F16(value) => fill_lanes(lanes, value, f16::from),
+			Value::Vec4F16(value) => fill_lanes(lanes, value, f16::from),
+			Value::Vec2F(value) => fill_lanes(lanes, value, f16::from_f32),
+			Value::Vec3F(value) => fill_lanes(lanes, value, f16::from_f32),
+			Value::Vec4F(value) => fill_lanes(lanes, value, f16::from_f32),
+			_ => return None,
+		})
+	})
 }
 
 pub(crate) fn extract_u32_components<const N: usize>(components: &[Value]) -> Result<[u32; N], VmError> {
-	let mut values = [0; N];
-	let mut index = 0;
-	for component in components {
-		let slice: &[u32] = match component {
-			Value::U32(value) => std::slice::from_ref(value),
-			Value::Vec2U(value) => value,
-			Value::Vec3U(value) => value,
-			Value::Vec4U(value) => value,
-			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::U32.name().to_string(),
-					found: component.value_type().name().to_string(),
-				});
-			}
-		};
-		if index + slice.len() > N {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Constructor provides more than {} u32 components", N),
-			});
-		}
-		values[index..index + slice.len()].copy_from_slice(slice);
-		index += slice.len();
-	}
-	if index != N {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Constructor expected {} u32 components, but found {}", N, index),
-		});
-	}
-
-	Ok(values)
+	extract_components(components, ValueType::U32.name(), |component, lanes| {
+		Some(match component {
+			Value::U32(value) => fill_lanes(lanes, std::slice::from_ref(value), u32::from),
+			Value::Vec2U(value) => fill_lanes(lanes, value, u32::from),
+			Value::Vec3U(value) => fill_lanes(lanes, value, u32::from),
+			Value::Vec4U(value) => fill_lanes(lanes, value, u32::from),
+			_ => return None,
+		})
+	})
 }
 
 pub(crate) fn extract_u16_components<const N: usize>(components: &[Value]) -> Result<[u16; N], VmError> {
-	let mut values = [0; N];
-	let mut index = 0;
-	for component in components {
-		let component_count = match component {
-			Value::U16(value) => {
-				if index < N {
-					values[index] = *value;
-				}
-				1
-			}
-			Value::U32(value) => {
-				if index < N {
-					values[index] = *value as u16;
-				}
-				1
-			}
-			Value::Vec2U16(value) => {
-				if index + value.len() <= N {
-					values[index..index + value.len()].copy_from_slice(value);
-				}
-				value.len()
-			}
-			Value::Vec4U16(value) => {
-				if index + value.len() <= N {
-					values[index..index + value.len()].copy_from_slice(value);
-				}
-				value.len()
-			}
-			Value::Vec2U(value) => {
-				if index + value.len() <= N {
-					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-						*destination = *source as u16;
-					}
-				}
-				value.len()
-			}
-			Value::Vec3U(value) => {
-				if index + value.len() <= N {
-					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-						*destination = *source as u16;
-					}
-				}
-				value.len()
-			}
-			Value::Vec4U(value) => {
-				if index + value.len() <= N {
-					for (destination, source) in values[index..index + value.len()].iter_mut().zip(value) {
-						*destination = *source as u16;
-					}
-				}
-				value.len()
-			}
-			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: "u16 or u32".to_string(),
-					found: component.value_type().name().to_string(),
-				});
-			}
-		};
-		if index + component_count > N {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Constructor provides more than {} u16 components", N),
-			});
-		}
-		index += component_count;
-	}
-	if index != N {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Constructor expected {} u16 components, but found {}", N, index),
-		});
-	}
-	Ok(values)
+	// `u32` components narrow to their low 16 bits, matching an `as u16` cast.
+	extract_components(components, "u16 or u32", |component, lanes| {
+		Some(match component {
+			Value::U16(value) => fill_lanes(lanes, std::slice::from_ref(value), u16::from),
+			Value::U32(value) => fill_lanes(lanes, std::slice::from_ref(value), |value| value as u16),
+			Value::Vec2U16(value) => fill_lanes(lanes, value, u16::from),
+			Value::Vec4U16(value) => fill_lanes(lanes, value, u16::from),
+			Value::Vec2U(value) => fill_lanes(lanes, value, |value| value as u16),
+			Value::Vec3U(value) => fill_lanes(lanes, value, |value| value as u16),
+			Value::Vec4U(value) => fill_lanes(lanes, value, |value| value as u16),
+			_ => return None,
+		})
+	})
 }
 
 pub(crate) fn extract_i32_components<const N: usize>(components: &[Value]) -> Result<[i32; N], VmError> {
-	let mut values = [0; N];
-	let mut index = 0;
-	for component in components {
-		let slice: &[i32] = match component {
-			Value::I32(value) => std::slice::from_ref(value),
-			Value::Vec2I(value) => value,
-			_ => {
-				return Err(VmError::TypeMismatch {
-					expected: ValueType::I32.name().to_string(),
-					found: component.value_type().name().to_string(),
-				});
-			}
-		};
-		if index + slice.len() > N {
-			return Err(VmError::UnsupportedExpression {
-				message: format!("Constructor provides more than {} i32 components", N),
-			});
-		}
-		values[index..index + slice.len()].copy_from_slice(slice);
-		index += slice.len();
-	}
-	if index != N {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Constructor expected {} i32 components, but found {}", N, index),
-		});
-	}
-	Ok(values)
-}
-
-pub(crate) fn read_f16_array<const N: usize>(bytes: &[u8]) -> Result<[f16; N], VmError> {
-	if bytes.len() != N * 2 {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} bytes for {} f16 values, but found {}", N * 2, N, bytes.len()),
-		});
-	}
-
-	let mut values = [f16::from_f32(0.0); N];
-	for (index, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
-		values[index] = f16::from_bits(u16::from_ne_bytes(*chunk));
-	}
-	Ok(values)
-}
-
-pub(crate) fn read_f32_array<const N: usize>(bytes: &[u8]) -> Result<[f32; N], VmError> {
-	if bytes.len() != N * 4 {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} bytes for {} f32 values, but found {}", N * 4, N, bytes.len()),
-		});
-	}
-
-	let mut values = [0.0; N];
-	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-		values[index] = f32::from_ne_bytes(*chunk);
-	}
-	Ok(values)
-}
-
-pub(crate) fn read_u32_array<const N: usize>(bytes: &[u8]) -> Result<[u32; N], VmError> {
-	if bytes.len() != N * 4 {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} bytes for {} u32 values, but found {}", N * 4, N, bytes.len()),
-		});
-	}
-
-	let mut values = [0; N];
-	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-		values[index] = u32::from_ne_bytes(*chunk);
-	}
-	Ok(values)
-}
-
-pub(crate) fn read_u16_array<const N: usize>(bytes: &[u8]) -> Result<[u16; N], VmError> {
-	if bytes.len() != N * 2 {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} bytes for {} u16 values, but found {}", N * 2, N, bytes.len()),
-		});
-	}
-	let mut values = [0; N];
-	for (index, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
-		values[index] = u16::from_ne_bytes(*chunk);
-	}
-	Ok(values)
-}
-
-pub(crate) fn read_i32_array<const N: usize>(bytes: &[u8]) -> Result<[i32; N], VmError> {
-	if bytes.len() != N * 4 {
-		return Err(VmError::UnsupportedExpression {
-			message: format!("Expected {} bytes for {} i32 values, but found {}", N * 4, N, bytes.len()),
-		});
-	}
-	let mut values = [0; N];
-	for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-		values[index] = i32::from_ne_bytes(*chunk);
-	}
-	Ok(values)
-}
-
-pub(crate) fn write_f16_slice(buffer: &mut Buffer, offset: usize, values: &[f16]) -> Result<(), VmError> {
-	for (index, value) in values.iter().enumerate() {
-		buffer.write_bytes(offset + index * 2, &value.to_bits().to_ne_bytes())?;
-	}
-	Ok(())
-}
-
-pub(crate) fn write_f32_slice(buffer: &mut Buffer, offset: usize, values: &[f32]) -> Result<(), VmError> {
-	for (index, value) in values.iter().enumerate() {
-		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
-	}
-	Ok(())
-}
-
-pub(crate) fn write_u32_slice(buffer: &mut Buffer, offset: usize, values: &[u32]) -> Result<(), VmError> {
-	for (index, value) in values.iter().enumerate() {
-		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
-	}
-	Ok(())
-}
-
-pub(crate) fn write_u16_slice(buffer: &mut Buffer, offset: usize, values: &[u16]) -> Result<(), VmError> {
-	for (index, value) in values.iter().enumerate() {
-		buffer.write_bytes(offset + index * 2, &value.to_ne_bytes())?;
-	}
-	Ok(())
-}
-
-pub(crate) fn write_i32_slice(buffer: &mut Buffer, offset: usize, values: &[i32]) -> Result<(), VmError> {
-	for (index, value) in values.iter().enumerate() {
-		buffer.write_bytes(offset + index * 4, &value.to_ne_bytes())?;
-	}
-	Ok(())
+	extract_components(components, ValueType::I32.name(), |component, lanes| {
+		Some(match component {
+			Value::I32(value) => fill_lanes(lanes, std::slice::from_ref(value), i32::from),
+			Value::Vec2I(value) => fill_lanes(lanes, value, i32::from),
+			_ => return None,
+		})
+	})
 }

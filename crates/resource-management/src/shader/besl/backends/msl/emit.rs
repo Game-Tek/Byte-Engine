@@ -24,21 +24,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			self.emit_node_string(string, param)
 		});
 
-		if self.task_stage_context.is_some() {
-			self.emit_task_hidden_parameters(string, !params.is_empty());
-		} else if self.in_compute_body {
-			let uses_simd_lane_id = Self::uses_intrinsic(function_node, "subgroup_lane_index");
-			if uses_simd_lane_id || self.function_requires_resource_context(function_node, true) {
-				self.emit_compute_hidden_parameters(string, !params.is_empty(), uses_simd_lane_id);
-			}
-		} else if self
-			.raster_stage_context
-			.as_ref()
-			.is_some_and(|context| context.has_hidden_inputs())
-			|| self.raster_stage_context.is_some() && self.function_requires_resource_context(function_node, true)
-		{
-			self.emit_raster_hidden_parameters(string, !params.is_empty());
-		}
+		self.emit_hidden_context(string, function_node, !params.is_empty(), true);
 
 		string.push(')');
 		self.emit_statement_end(string);
@@ -216,7 +202,6 @@ impl<A: Allocator + Clone> Generator<A> {
 		let break_char = formatting.break_str();
 
 		match node.node() {
-			besl::Nodes::Null => {}
 			besl::Nodes::Scope { .. } => {}
 			besl::Nodes::Function {
 				name,
@@ -240,63 +225,19 @@ impl<A: Allocator + Clone> Generator<A> {
 				self.emit_struct_declaration_end(string);
 
 				// TODO: Confirm push constant mapping for Metal argument buffers.
-				if self.minified {
-					string.push_str(&format!(
-						"constant PushConstant& push_constant [[buffer({})]];",
-						PUSH_CONSTANT_BINDING_INDEX
-					));
-				} else {
-					string.push_str(&format!(
-						"constant PushConstant& push_constant [[buffer({})]];\n",
-						PUSH_CONSTANT_BINDING_INDEX
-					));
-				}
+				let _ = write!(
+					string,
+					"constant PushConstant& push_constant [[buffer({PUSH_CONSTANT_BINDING_INDEX})]]"
+				);
+				self.emit_statement_end(string);
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
-			besl::Nodes::Specialization { name, r#type } => {
-				let mut members = Vec::new();
-
-				let r#type = r#type.borrow();
-
-				let t = r#type.get_name().unwrap();
-				let type_name = Self::type_identifier(t);
-
-				if let besl::Nodes::Struct { fields, .. } = r#type.node() {
-					for (i, field) in fields.iter().enumerate() {
-						if let besl::Nodes::Member {
-							name: member_name,
-							r#type,
-							..
-						} = field.borrow().node()
-						{
-							let member_name = format!("{}_{}", name, { member_name });
-							string.push_str(&format!(
-								"constant {} {} [[function_constant({})]];{}",
-								Self::translate_type(r#type.borrow().get_name().unwrap()),
-								member_name,
-								i,
-								if !self.minified { "\n" } else { "" }
-							));
-							members.push(member_name);
-						}
-					}
-				}
-
-				string.push_str(&format!(
-					"constant {} {}={};{}",
-					type_name,
-					Self::identifier(name),
-					format!("{}({})", &type_name, members.join(",")),
-					if !self.minified { "\n" } else { "" }
-				));
-			}
+			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
 					if self.is_packed_mat4x3_member(this_node) {
 						Self::emit_buffer_member_type(string, type_name);
-					} else if self.in_buffer_binding_struct
-						&& (count.is_some() || matches!(type_name, "vec2f16" | "vec3f16" | "vec4f16" | "vec2u16" | "vec4u16"))
-					{
+					} else if self.in_buffer_binding_struct && msl_packs_direct_binding_member(type_name, count.is_some()) {
 						Self::emit_buffer_member_type(string, type_name);
 					} else {
 						Self::emit_type_name(string, type_name);
@@ -404,9 +345,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						}
 
 						string.push_str(&format!(" [[buffer({})]];", index));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
 						let address_space = buffer_address_space(*memory_class, *write);
@@ -416,9 +355,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						string.push_str("* ");
 						Self::identifier(name).push_to(string);
 						let _ = write!(string, " [[buffer({index})]];");
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::Image { format } => {
 						let element_type = match format.as_str() {
@@ -443,9 +380,7 @@ impl<A: Allocator + Clone> Generator<A> {
 						}
 
 						string.push_str(&format!(" [[texture({})]];", index));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						let texture_type = match format.as_str() {
@@ -467,14 +402,10 @@ impl<A: Allocator + Clone> Generator<A> {
 						}
 
 						string.push_str(&format!(" [[texture({})]];", index));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 
 						let _ = write!(string, "sampler {}_sampler [[sampler({index})]];", Self::identifier(name));
-						if !self.minified {
-							string.push('\n');
-						}
+						string.push_str(ShaderFormatting::new(self.minified).break_str());
 					}
 				}
 			}
@@ -482,9 +413,6 @@ impl<A: Allocator + Clone> Generator<A> {
 				for element in elements {
 					self.emit_node_string(string, element);
 				}
-			}
-			besl::Nodes::Literal { value, .. } => {
-				self.emit_node_string(string, value);
 			}
 			besl::Nodes::Const { name, r#type, value } => {
 				string.push_str("constant ");
@@ -664,15 +592,10 @@ impl<A: Allocator + Clone> Generator<A> {
 			_ => {}
 		}
 
-		match compilation_settings.matrix_layout {
-			MatrixLayouts::RowMajor => msl_block.push_str("// Matrix layout: row major\n"),
-			MatrixLayouts::ColumnMajor => msl_block.push_str("// Matrix layout: column major\n"),
-		}
+		msl_block.push_str("// Matrix layout: row major\n");
 
 		msl_block.push_str("constant float PI = 3.14159265359;");
 
-		if !self.minified {
-			msl_block.push('\n');
-		}
+		msl_block.push_str(ShaderFormatting::new(self.minified).break_str());
 	}
 }

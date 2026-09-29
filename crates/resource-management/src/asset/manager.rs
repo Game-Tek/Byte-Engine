@@ -797,11 +797,16 @@ impl AssetManagerState {
 			.map(|()| BakeOutcome::Baked)
 	}
 
+	/// Returns whether a forced rebuild requested through [`AssetManager::rebuild_resources_baked_before`] covers `resource`.
+	pub(crate) fn precedes_rebuild_cutoff(&self, resource: &crate::SerializableResource) -> bool {
+		self.rebuild_cutoff.is_some_and(|cutoff| resource.baked_at() < cutoff)
+	}
+
 	/// Returns whether any source version recorded by a stored resource differs from the current asset backend.
 	async fn resource_is_stale(&self, resource: &crate::SerializableResource) -> bool {
 		use utils::r#async::StreamExt as _;
 
-		if self.rebuild_cutoff.is_some_and(|cutoff| resource.baked_at() < cutoff) {
+		if self.precedes_rebuild_cutoff(resource) {
 			return true;
 		}
 

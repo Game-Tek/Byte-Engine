@@ -1,5 +1,43 @@
 use crate::types::ShaderTypes;
 
+/// Lists the DXC flags every baked shader uses, after its entry point and target profile.
+#[cfg(target_os = "windows")]
+const DXC_SHARED_ARGUMENTS: [&str; 5] = [
+	"-O3",
+	// Baked DXIL follows the same fully-bound descriptor contract as runtime DX12 compilation.
+	"-all_resources_bound",
+	// Pin the same modern HLSL and exact-width 16-bit policy used by runtime compilation.
+	"-HV",
+	"2021",
+	"-enable-16bit-types",
+];
+
+/// Describes the loaded DXC runtime and the flags [`compile_hlsl_source_to_dxil`] passes.
+///
+/// Baked shader reuse hashes this text, so stored DXIL is only reused by the compiler that produced it. The runtime
+/// query runs once per process.
+#[cfg(target_os = "windows")]
+pub(crate) fn dxc_compiler_identity() -> Result<String, String> {
+	use windows::Win32::Graphics::Direct3D::Dxc::{CLSID_DxcCompiler, DxcCreateInstance, IDxcCompiler3};
+
+	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+	if let Some(identity) = IDENTITY.get() {
+		return Ok(identity.clone());
+	}
+
+	// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
+	let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
+		format!(
+			"Failed to create DXC while reading its version. The most likely cause is that the DirectX Shader Compiler runtime is unavailable. Error: {error:?}"
+		)
+	})?;
+	let version = require_shader_model_6_9_dxc(&compiler)?;
+	let identity = format!("{version}; arguments={DXC_SHARED_ARGUMENTS:?}");
+
+	Ok(IDENTITY.get_or_init(|| identity).clone())
+}
+
 /// Compiles generated HLSL into the native DXIL payload consumed by DX12.
 #[cfg(target_os = "windows")]
 pub(crate) fn compile_hlsl_source_to_dxil(
@@ -28,19 +66,11 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 		Encoding: DXC_CP_UTF8.0,
 	};
 
-	let argument_storage = vec![
-		wide_argument("-E"),
-		wide_argument(entry_point),
-		wide_argument("-T"),
-		wide_argument(target),
-		wide_argument("-O3"),
-		// Baked DXIL follows the same fully-bound descriptor contract as runtime DX12 compilation.
-		wide_argument("-all_resources_bound"),
-		// Pin the same modern HLSL and exact-width 16-bit policy used by runtime compilation.
-		wide_argument("-HV"),
-		wide_argument("2021"),
-		wide_argument("-enable-16bit-types"),
-	];
+	let argument_storage = ["-E", entry_point, "-T", target]
+		.into_iter()
+		.chain(DXC_SHARED_ARGUMENTS)
+		.map(wide_argument)
+		.collect::<Vec<_>>();
 	let arguments = argument_storage
 		.iter()
 		.map(|argument| PCWSTR(argument.as_ptr()))
@@ -94,9 +124,9 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 	Ok(bytecode.to_vec().into_boxed_slice())
 }
 
-/// Verifies that the loaded compiler is the retail DXC generation used for Shader Model 6.9.
+/// Verifies that the loaded compiler is the retail DXC generation used for Shader Model 6.9 and returns its version.
 #[cfg(target_os = "windows")]
-fn require_shader_model_6_9_dxc(compiler: &windows::Win32::Graphics::Direct3D::Dxc::IDxcCompiler3) -> Result<(), String> {
+fn require_shader_model_6_9_dxc(compiler: &windows::Win32::Graphics::Direct3D::Dxc::IDxcCompiler3) -> Result<String, String> {
 	use windows::Win32::Graphics::Direct3D::Dxc::IDxcVersionInfo2;
 	use windows::core::Interface;
 
@@ -135,7 +165,7 @@ fn require_shader_model_6_9_dxc(compiler: &windows::Win32::Graphics::Direct3D::D
 		));
 	}
 
-	Ok(())
+	Ok(format!("DXC {major}.{minor} commit {commit_count} ({commit_hash})"))
 }
 
 /// Checks the reported DXC version against the first retail compiler with Shader Model 6.9 support.

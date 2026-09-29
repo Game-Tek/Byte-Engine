@@ -69,6 +69,27 @@ impl<A: Allocator + Clone> Compiler<A> {
 			.await
 	}
 
+	/// Lowers `program` to the MSL source that [`compile_msl_source_to_metallib`] compiles.
+	pub fn transpile(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+	) -> Result<String, String> {
+		self.transpile_in(shader_compilation_settings, program, self.allocator.clone())
+	}
+
+	/// Lowers `program` to MSL source using `allocator` for one-call source-generation scratch.
+	fn transpile_in(
+		&mut self,
+		shader_compilation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+		allocator: A,
+	) -> Result<String, String> {
+		self.msl_transpiler
+			.generate_program_in(shader_compilation_settings, program, allocator)
+			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))
+	}
+
 	/// Generates a compiled Metal shader using `allocator` for one-call source-generation scratch.
 	pub async fn generate_in(
 		&mut self,
@@ -76,10 +97,7 @@ impl<A: Allocator + Clone> Compiler<A> {
 		program: &besl::NodeReference,
 		allocator: A,
 	) -> Result<GeneratedShader, String> {
-		let msl_shader = self
-			.msl_transpiler
-			.generate_program_in(shader_compilation_settings, program, allocator)
-			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))?;
+		let msl_shader = self.transpile_in(shader_compilation_settings, program, allocator)?;
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 
@@ -137,9 +155,70 @@ impl Drop for TempShaderDir {
 	}
 }
 
-/// Returns Metal compiler flags that keep generated shader source available to Xcode GPU captures.
-fn metal_debug_info_arguments() -> [&'static str; 2] {
-	["-gline-tables-only", "-frecord-sources=yes"]
+/// Returns the build-dependent Metal compiler flags that [`compile_msl_source_to_metallib`] passes.
+fn metal_build_arguments() -> &'static [&'static str] {
+	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
+	// Omit in release builds to keep the compiled library smaller.
+	if cfg!(debug_assertions) {
+		&["-gline-tables-only", "-frecord-sources=yes"]
+	} else {
+		&[]
+	}
+}
+
+/// Describes the installed Metal compiler and the flags [`compile_msl_source_to_metallib`] passes.
+///
+/// Baked shader reuse hashes this text, so a stored Metal library is only reused by the toolchain that produced it.
+/// The version query runs once per process.
+pub async fn metal_compiler_identity() -> Result<String, String> {
+	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+	if let Some(identity) = IDENTITY.get() {
+		return Ok(identity.clone());
+	}
+
+	let mut version_cmd = crate::r#async::Command::new("xcrun");
+	version_cmd.args(["-sdk", "macosx", "metal", "--version"]);
+	version_cmd
+		.stdout(std::process::Stdio::piped())
+		.map_err(|_| error("Failed to configure Metal compiler stdout", "Stdio pipe failed"))?;
+	version_cmd
+		.stderr(std::process::Stdio::piped())
+		.map_err(|_| error("Failed to configure Metal compiler stderr", "Stdio pipe failed"))?;
+
+	let output = version_cmd.output().await.map_err(|_| {
+		error(
+			"Failed to invoke the Metal compiler",
+			"The Xcode command line tools may be missing",
+		)
+	})?;
+
+	if !output.status.success() {
+		let exit_status = output
+			.status
+			.code()
+			.map_or_else(|| output.status.to_string(), |code| code.to_string());
+		let cause = if metal_toolchain_missing(&output.stderr) {
+			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`"
+		} else {
+			"The Metal compiler could not report its version"
+		};
+		return Err(format_tool_failure(
+			"Failed to query the Metal compiler version",
+			cause,
+			&exit_status,
+			&output.stdout,
+			&output.stderr,
+		));
+	}
+
+	let identity = format!(
+		"{}; arguments={:?}",
+		String::from_utf8_lossy(&output.stdout).trim(),
+		metal_build_arguments()
+	);
+
+	Ok(IDENTITY.get_or_init(|| identity).clone())
 }
 
 /// Compiles Metal Shading Language source into a Metal library binary.
@@ -150,14 +229,6 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 			"The Metal toolchain is not available on this platform",
 		));
 	}
-
-	// Preserve line tables and source in debug builds so Xcode GPU captures can resolve generated BESL back to MSL.
-	// Omit in release builds to keep the compiled library smaller.
-	let debug_args = if cfg!(debug_assertions) {
-		metal_debug_info_arguments().to_vec()
-	} else {
-		Vec::new()
-	};
 
 	// The Metal driver compiles and links in one process when it writes a library, so no AIR intermediate is written
 	// and `metallib` is not started separately. Source is piped through stdin to avoid writing it to disk.
@@ -171,7 +242,7 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 	let mut metal_cmd = crate::r#async::Command::new("xcrun");
 	metal_cmd
 		.args(["-sdk", "macosx", "metal", "-x", "metal"])
-		.args(debug_args.iter())
+		.args(metal_build_arguments())
 		.args(["-", "-o", metallib_path_argument]);
 	metal_cmd
 		.stdin(std::process::Stdio::piped())

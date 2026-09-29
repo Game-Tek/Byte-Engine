@@ -13,6 +13,10 @@ Asset IDs are written as resource-style paths.
 The file extension is part of the ID when selecting an asset handler, and a fragment can identify a sub-asset when a container format exposes many resources.
 For example, a glTF asset can produce mesh, skeleton, animation, material, image, and generated shader resources.
 
+When you edit a glTF or FBX file and rebake it, unchanged generated shaders are reused instead of compiled again.
+A generated shader compiles again only when its material graph, the render pipeline's shader generator, the shader backend, or the installed shader compiler changes.
+To force every stored shader to compile again, call `AssetManager::rebuild_resources_baked_before` and then `AssetManager::bake_if_stale`.
+
 ## Asset handlers
 
 An `AssetHandler` bakes one family of source files. The asset manager selects a

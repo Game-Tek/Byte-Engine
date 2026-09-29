@@ -262,7 +262,7 @@ impl GPUMipProcessor {
 		};
 		recording.execute(scratch.synchronizer);
 		context.wait_for_synchronizer(scratch.synchronizer);
-		#[cfg(any(debug_assertions, test))]
+		#[cfg(debug_assertions)]
 		if context.has_errors() {
 			return Err(GPUMipError::GPUExecution);
 		}

@@ -288,6 +288,22 @@ mod tests {
 		assert!(!shader.contains("resources.unused"));
 	}
 
+	#[test]
+	fn generating_the_same_program_twice_produces_identical_output() {
+		// Fresh node graphs get fresh addresses, which used to reorder independent declarations.
+		let generate = || {
+			let program = besl::compile_to_besl(crate::resources::mips::bc7::BC7_ENCODER, None)
+				.expect("Expected the BC7 kernel to parse and link");
+			Generator::new()
+				.generate_program(&ShaderGenerationSettings::compute(utils::Extent::square(8)), &program)
+				.expect("Expected BC7 MSL generation")
+		};
+		let first = generate();
+		for _ in 0..4 {
+			assert_eq!(first, generate());
+		}
+	}
+
 	fn main_with(statements: Vec<besl::NodeReference>) -> besl::NodeReference {
 		let root = besl::Node::root();
 		let void = root.get_child("void").expect("Expected the built-in void type");

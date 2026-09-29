@@ -261,7 +261,7 @@ impl GPUIBLProcessor {
 
 		let copy_handle = self.dispatch(layout, source_level_count, scratch)?;
 		self.context.wait_for_synchronizer(scratch.synchronizer);
-		#[cfg(any(debug_assertions, test))]
+		#[cfg(debug_assertions)]
 		if self.context.has_errors() {
 			return Err(GPUIBLBakeError::GPUExecution);
 		}

@@ -10,6 +10,8 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Graph<A: Allocator + Clone = Global> {
 	pub set: HashMap<besl::NodeReference, AllocVec<besl::NodeReference, A>, RandomState, A>,
+	/// Keys of `set` in first-insertion order. `set` hashes nodes by address, so iterating it would make emission order change between runs.
+	order: AllocVec<besl::NodeReference, A>,
 	allocator: A,
 }
 
@@ -29,14 +31,19 @@ impl<A: Allocator + Clone> Graph<A> {
 	pub fn new_in(allocator: A) -> Self {
 		Graph {
 			set: HashMap::with_capacity_and_hasher_in(1024, RandomState::new(), allocator.clone()),
+			order: AllocVec::new_in(allocator.clone()),
 			allocator,
 		}
 	}
 
 	pub fn add(&mut self, from: besl::NodeReference, to: besl::NodeReference) {
+		let order = &mut self.order;
 		self.set
 			.entry(from)
-			.or_insert_with(|| AllocVec::new_in(self.allocator.clone()))
+			.or_insert_with_key(|key| {
+				order.push(key.clone());
+				AllocVec::new_in(self.allocator.clone())
+			})
 			.push(to);
 	}
 }
@@ -51,7 +58,8 @@ pub fn topological_sort_in<A: Allocator + Clone>(graph: &Graph<A>, allocator: A)
 	let mut visited = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
 	let mut stack = AllocVec::new_in(allocator.clone());
 
-	for node in graph.set.keys() {
+	// Walk roots in insertion order so independent nodes keep a stable, run-to-run identical order.
+	for node in &graph.order {
 		if !visited.contains(node) {
 			topological_sort_impl(node.clone(), graph, &mut visited, &mut stack, allocator.clone());
 		}

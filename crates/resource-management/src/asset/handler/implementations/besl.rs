@@ -419,11 +419,11 @@ fn prepare_shader(
 
 /// Compiles one parsed BESL shader for the active platform and returns its resource model and binary payload.
 ///
-/// Standalone BESL shaders, BEMA material shaders, and generated material shaders all bake through it. Pass the
-/// renderer's program generator with the material context it adapts the program for. The compiled resource
-/// interface and workgroup must match semantic reflection and `settings`, so a backend that drifts from BESL fails
-/// the bake instead of producing a shader the renderer binds wrongly. Next, store the result with the handler's
-/// [`BakeContext`].
+/// Standalone BESL shaders and BEMA material shaders bake through it. Pass the renderer's program generator with the
+/// material context it adapts the program for. Next, store the result with the handler's [`BakeContext`].
+///
+/// To skip compilation when an equivalent binary is already stored, call [`prepare_besl_shader`] and
+/// [`PreparedBeslShader::compile`] separately.
 pub(crate) async fn compile_besl_shader(
 	id: &str,
 	parsed: besl::parser::Node<'_>,
@@ -431,6 +431,28 @@ pub(crate) async fn compile_besl_shader(
 	stage: ShaderTypes,
 	settings: ShaderGenerationSettings,
 ) -> Result<(Shader, Box<[u8]>), String> {
+	prepare_besl_shader(parsed, generator, stage, &settings)?.compile(id).await
+}
+
+/// The `PreparedBeslShader` struct holds a linked and lowered BESL shader whose platform compilation has not run yet.
+///
+/// Generated material shaders use it to reuse a stored binary when [`Self::cache_key`] matches. Create it with
+/// [`prepare_besl_shader`], then call [`Self::compile`] when no stored binary matches.
+pub(crate) struct PreparedBeslShader {
+	stage: ShaderTypes,
+	interface: ShaderInterface,
+	lowered: LoweredPlatformShader,
+}
+
+/// Links a parsed shader, reflects its resource interface, and lowers it to platform source without compiling it.
+///
+/// Next, call [`PreparedBeslShader::compile`].
+pub(crate) fn prepare_besl_shader(
+	parsed: besl::parser::Node<'_>,
+	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
+	stage: ShaderTypes,
+	settings: &ShaderGenerationSettings,
+) -> Result<PreparedBeslShader, String> {
 	let workgroup_size = match settings.stage {
 		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
 			Some((local_size.width(), local_size.height(), local_size.depth()))
@@ -438,62 +460,108 @@ pub(crate) async fn compile_besl_shader(
 		Stages::Vertex | Stages::Fragment => None,
 	};
 	let (program, interface) = prepare_shader(parsed, workgroup_size, generator)?;
+	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
-	let compiled = PlatformShaderCompiler::new().generate(&settings, &program).await?;
+	Ok(PreparedBeslShader {
+		stage,
+		interface,
+		lowered,
+	})
+}
 
-	// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
-	let semantic_bindings = interface.bindings.iter().map(|binding| {
-		(
-			binding.slot,
-			binding.kind,
-			binding.count,
-			binding.buffer_stride,
-			binding.read,
-			binding.write,
+impl PreparedBeslShader {
+	/// Returns a key that changes whenever compiling this shader could produce a different binary.
+	///
+	/// The key covers the lowered platform source, which already reflects the program generator, the BESL backend,
+	/// and the generation settings, together with the stage, the compiler diagnostic name, and `compiler_identity`
+	/// from [`PlatformShaderCompiler::compiler_identity`].
+	pub(crate) fn cache_key(&self, compiler_identity: &str) -> u64 {
+		let mut context = md5::Context::new();
+
+		// Separators keep adjacent fields from running together into an identical byte stream.
+		for field in [
+			format!("{:?}", PlatformShaderLanguage::current_platform()).as_bytes(),
+			format!("{:?}", self.stage).as_bytes(),
+			compiler_identity.as_bytes(),
+			self.lowered.name().as_bytes(),
+			self.lowered.source().as_bytes(),
+		] {
+			context.consume(field);
+			context.consume([0]);
+		}
+
+		u64::from_le_bytes(
+			context.finalize().0[..8]
+				.try_into()
+				.expect("MD5 digest should contain eight bytes"),
 		)
-	});
-
-	let compiled_bindings = compiled.bindings().iter().map(|binding| {
-		(
-			binding.slot,
-			binding.kind,
-			binding.count,
-			binding.buffer_stride,
-			binding.read,
-			binding.write,
-		)
-	});
-
-	if !compiled_bindings.eq(semantic_bindings) {
-		return Err(
-			"BESL shader reflection mismatch. The most likely cause is that the active platform compiler emitted a different resource interface than semantic evaluation."
-				.to_string(),
-		);
 	}
 
-	let compiled_workgroup = compiled
-		.extent()
-		.map(|extent| (extent.width(), extent.height(), extent.depth()));
+	/// Compiles this shader with the platform toolchain and returns its resource model and binary payload.
+	///
+	/// The compiled resource interface and workgroup must match semantic reflection, so a backend that drifts from
+	/// BESL fails the bake instead of producing a shader the renderer binds wrongly.
+	pub(crate) async fn compile(self, id: &str) -> Result<(Shader, Box<[u8]>), String> {
+		let compiled = PlatformShaderCompiler::new().compile(self.lowered).await?;
 
-	if compiled_workgroup != interface.workgroup_size {
-		return Err(
-			"BESL shader workgroup mismatch. The most likely cause is that the active platform compiler did not preserve the configured compute, task, or mesh workgroup."
-				.to_string(),
-		);
+		// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
+		let semantic_bindings = self.interface.bindings.iter().map(|binding| {
+			(
+				binding.slot,
+				binding.kind,
+				binding.count,
+				binding.buffer_stride,
+				binding.read,
+				binding.write,
+			)
+		});
+
+		let compiled_bindings = compiled.bindings().iter().map(|binding| {
+			(
+				binding.slot,
+				binding.kind,
+				binding.count,
+				binding.buffer_stride,
+				binding.read,
+				binding.write,
+			)
+		});
+
+		if !compiled_bindings.eq(semantic_bindings) {
+			return Err(
+				"BESL shader reflection mismatch. The most likely cause is that the active platform compiler emitted a different resource interface than semantic evaluation."
+					.to_string(),
+			);
+		}
+
+		let compiled_workgroup = compiled
+			.extent()
+			.map(|extent| (extent.width(), extent.height(), extent.depth()));
+
+		if compiled_workgroup != self.interface.workgroup_size {
+			return Err(
+				"BESL shader workgroup mismatch. The most likely cause is that the active platform compiler did not preserve the configured compute, task, or mesh workgroup."
+					.to_string(),
+			);
+		}
+
+		let (artifact, bytes) = finalize_platform_shader_artifact(
+			PlatformShaderLanguage::current_platform(),
+			self.stage,
+			id,
+			compiled.into_binary(),
+		)?;
+
+		Ok((
+			Shader {
+				id: id.to_string(),
+				stage: self.stage,
+				interface: self.interface,
+				artifact,
+			},
+			bytes,
+		))
 	}
-
-	let (artifact, bytes) =
-		finalize_platform_shader_artifact(PlatformShaderLanguage::current_platform(), stage, id, compiled.into_binary())?;
-
-	Ok((
-		Shader {
-			id: id.to_string(),
-			stage,
-			interface,
-			artifact,
-		},
-		bytes,
-	))
 }
 
 const BESL_DOCS_PATH: &str = "reference/besl";
@@ -542,8 +610,8 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 mod tests {
 	use super::{
 		BESL_DOCS_PATH, BESLShaderAssetHandler, BESLShaderSettings, MACOS_SETUP_DOCS_PATH, ShaderCompiler,
-		WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_workgroup_size, prepare_shader, shader_compilation_docs_path,
-		shader_compilation_error_message,
+		WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader,
+		shader_compilation_docs_path, shader_compilation_error_message,
 	};
 	use crate::{
 		asset::{
@@ -869,6 +937,35 @@ mod tests {
 	}
 
 	#[test]
+	fn cache_key_follows_lowered_source_and_compiler_identity() {
+		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("cache_key".to_string());
+
+		let key = |value: u32, compiler_identity: &str| {
+			let source = format!(
+				"Data: struct {{ value: u32, }}
+				data: descriptor<{{ type: Data, binding: 0, access: read_write }}>;
+				main: fn () -> void {{ data.value = {value}; }}"
+			);
+
+			prepare_besl_shader(besl::parse(&source).unwrap(), None, ShaderTypes::Compute, &settings)
+				.expect("Failed to prepare the cache key fixture. The most likely cause is invalid BESL test syntax.")
+				.cache_key(compiler_identity)
+		};
+
+		assert_eq!(key(1, "compiler 1.0"), key(1, "compiler 1.0"));
+		assert_ne!(
+			key(1, "compiler 1.0"),
+			key(1, "compiler 1.1"),
+			"a toolchain change should compile again"
+		);
+		assert_ne!(
+			key(1, "compiler 1.0"),
+			key(2, "compiler 1.0"),
+			"a program change should compile again"
+		);
+	}
+
+	#[test]
 	fn shader_interface_reflection_preserves_descriptor_names_and_shapes() {
 		let source = r#"
 			Data: struct { value: u32, }
@@ -955,7 +1052,7 @@ use crate::{
 	shader::{
 		artifact::finalize_platform_shader_artifact,
 		besl::{
-			backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage},
+			backends::platform::{LoweredPlatformShader, PlatformShaderCompiler, PlatformShaderLanguage},
 			evaluation::ProgramEvaluation,
 		},
 		generator::{ShaderGenerationSettings, Stages},

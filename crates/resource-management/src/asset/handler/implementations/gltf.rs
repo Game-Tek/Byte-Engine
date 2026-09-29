@@ -172,7 +172,14 @@ mod tests {
 
 	/// Builds a triangle GLB with one material and one PNG stored in its binary chunk.
 	fn generated_textured_triangle_glb() -> Vec<u8> {
+		generated_textured_triangle_glb_named("Triangle")
+	}
+
+	/// Builds the textured triangle GLB with a custom node name, so tests can edit the file without touching its material.
+	fn generated_textured_triangle_glb_named(node_name: &str) -> Vec<u8> {
 		let (mut document, mut binary) = generated_triangle_gltf();
+
+		document["nodes"][0]["name"] = node_name.into();
 
 		let image = append_fixture_bytes(&mut binary, &generated_rgba8_png());
 
@@ -1102,6 +1109,125 @@ mod tests {
 				"two_materials.glb#materials/First_Material.variant",
 				"two_materials.glb#materials/Second_Material.variant"
 			]
+		);
+	}
+
+	/// Bakes the textured triangle, then replaces its stored generated shader payload with `marker`.
+	///
+	/// A later bake that keeps the marker reused the stored shader; one that replaces it compiled again.
+	async fn bake_textured_triangle_and_mark_its_shader(
+		asset_storage_backend: &AssetTestStorageBackend,
+		resource_storage_backend: &ResourceTestStorageBackend,
+		marker: &[u8],
+	) -> String {
+		use crate::resource::WriteStorageBackend as _;
+
+		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Triangle"));
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend.clone(), resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake_if_stale("iterated.glb")
+			.await
+			.expect("textured GLB should bake");
+
+		let shader = resource_storage_backend
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Shader")
+			.expect("the generated shader should be stored");
+
+		let model: crate::resources::material::Shader =
+			crate::from_slice(&shader.resource).expect("shader metadata should deserialize");
+
+		resource_storage_backend
+			.store(crate::ProcessedAsset::new(ResourceId::new(&shader.id), model), marker)
+			.await
+			.expect("the marked shader should replace the stored one");
+
+		shader.id
+	}
+
+	#[r#async::test]
+	async fn rebaking_an_edited_mesh_reuses_its_stored_generated_shader() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let shader_id =
+			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"reused").await;
+
+		// Editing the node leaves the material graph, program generator, and compiler unchanged.
+		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Edited Triangle"));
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake_if_stale("iterated.glb")
+			.await
+			.expect("the edited GLB should rebake");
+
+		let variant = resource_storage_backend
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Variant")
+			.expect("the generated variant should be stored");
+		let variant: VariantModel = crate::from_slice(&variant.resource).expect("variant should deserialize");
+		let material: crate::resources::material::MaterialModel =
+			crate::from_slice(&variant.material.resource).expect("material should deserialize");
+
+		assert_eq!(material.shaders[0].id().as_ref(), shader_id);
+		assert_eq!(
+			resource_storage_backend
+				.get_resource_data_by_name(ResourceId::new(&shader_id))
+				.as_deref(),
+			Some(&b"reused"[..]),
+			"an unchanged generated shader should not compile again"
+		);
+	}
+
+	#[r#async::test]
+	async fn forced_rebuilds_compile_stored_generated_shaders_again() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let shader_id =
+			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
+
+		asset_manager
+			.bake_if_stale("iterated.glb")
+			.await
+			.expect("the forced rebuild should rebake");
+
+		let payload = resource_storage_backend
+			.get_resource_data_by_name(ResourceId::new(&shader_id))
+			.expect("the rebuilt shader should be stored");
+
+		assert_ne!(
+			&payload[..],
+			b"stale",
+			"a forced rebuild should compile generated shaders again"
 		);
 	}
 

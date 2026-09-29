@@ -343,6 +343,20 @@ impl<'a> BakeContext<'a> {
 		}
 	}
 
+	/// Returns a stored resource that the handler may reference instead of producing it again.
+	///
+	/// Use it only for content-addressed IDs, where the ID changes whenever anything that affects the content
+	/// changes. Generated material shaders use it with
+	/// [`PreparedBeslShader::cache_key`](crate::asset::handler::implementations::besl::PreparedBeslShader::cache_key).
+	/// Resources baked before the cutoff set by
+	/// [`AssetManager::rebuild_resources_baked_before`](crate::asset::manager::AssetManager::rebuild_resources_baked_before)
+	/// are not returned, so a forced rebuild regenerates them.
+	pub(crate) async fn reusable_resource(&self, id: ResourceId<'_>) -> Option<SerializableResource> {
+		let (resource, _) = self.resource_storage_backend.read(id).await?;
+
+		(!self.asset_manager.precedes_rebuild_cutoff(&resource)).then_some(resource)
+	}
+
 	/// Reserves exact resource storage before a processor starts writing its payload.
 	///
 	/// This incremental authoring path always stores bytes uncompressed. Use

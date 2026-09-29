@@ -426,9 +426,13 @@ fn generated_material_coverage(material: &BrdfMaterialDescription) -> MaterialCo
 	coverage
 }
 
-/// Compiles each distinct generated BRDF graph once and stores it under an ID derived from the graph.
+/// Compiles each distinct generated BRDF shader once and stores it under an ID derived from its compile inputs.
 ///
 /// Texture nodes must already use slot indices. Returns one shader reference per entry in `materials`, in order.
+///
+/// The ID hashes the lowered platform source and the compiler identity, so a later bake of the same container reuses
+/// the stored binary while a change to the graph, program generator, BESL backend, settings, or toolchain compiles
+/// again.
 async fn store_generated_brdf_shaders(
 	context: BakeContext<'_>,
 	generator: &dyn ProgramGenerator,
@@ -437,31 +441,56 @@ async fn store_generated_brdf_shaders(
 ) -> Result<Vec<ReferenceModel<Shader>>, LoadErrors> {
 	use utils::r#async::StreamExt as _;
 
-	// Only the node graph reaches the program; names, sidedness, and alpha mode stay in the material resource.
-	let mut unique_by_hash: HashMap<u64, usize> = HashMap::new();
+	// Every generated shader of a container shares one compiler name, so the name never depends on the key it feeds.
+	let compiler_name = format!("{}#shaders", container_id.as_ref());
+
+	let compile_error = |error: String| {
+		context.error(shader_compilation_error_message(&compiler_name, &error));
+		LoadErrors::FailedToProcess
+	};
+
+	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
+
+	// Graph hashes skip lowering repeated graphs; cache keys also merge distinct graphs that lower to the same source.
+	let mut unique_by_graph: HashMap<u64, usize> = HashMap::new();
+	let mut unique_by_key: HashMap<u64, usize> = HashMap::new();
 	let mut unique = Vec::new();
 	let mut unique_index_per_material = Vec::with_capacity(materials.len());
 
 	for &material in materials {
-		let key = serde_json::to_vec(&(&material.nodes, material.surface)).map_err(|_| LoadErrors::FailedToProcess)?;
-		let hash = crate::resource::compression::payload_hash(&key);
-		let index = *unique_by_hash.entry(hash).or_insert_with(|| {
-			unique.push((hash, material));
-			unique.len() - 1
-		});
+		// Only the node graph reaches the program; names, sidedness, and alpha mode stay in the material resource.
+		let graph = serde_json::to_vec(&(&material.nodes, material.surface)).map_err(|_| LoadErrors::FailedToProcess)?;
+		let graph_hash = crate::resource::compression::payload_hash(&graph);
+
+		let index = match unique_by_graph.get(&graph_hash) {
+			Some(&index) => index,
+			None => {
+				let prepared = prepare_generated_brdf_shader(generator, &compiler_name, material).map_err(compile_error)?;
+				let key = prepared.cache_key(&compiler_identity);
+				let index = *unique_by_key.entry(key).or_insert_with(|| {
+					unique.push((key, prepared));
+					unique.len() - 1
+				});
+
+				unique_by_graph.insert(graph_hash, index);
+
+				index
+			}
+		};
+
 		unique_index_per_material.push(index);
 	}
 
-	let requests = unique.into_iter().map(|(hash, material)| async move {
-		let shader_id = format!("{}#shaders/{hash:016x}", container_id.as_ref());
+	let requests = unique.into_iter().map(|(key, prepared)| async move {
+		let shader_id = format!("{}#shaders/{key:016x}", container_id.as_ref());
 
-		let program = generate_textured_brdf_program(material).map_err(|_| LoadErrors::FailedToProcess)?;
-		let material_json = generated_brdf_material_json(material);
+		// A stored shader under this key came from the same platform source and compiler, so compiling again cannot
+		// change it. This is what keeps iterating on a mesh from waiting on the platform compiler.
+		if let Some(stored) = context.reusable_resource(ResourceId::new(&shader_id)).await {
+			return Ok(stored.into());
+		}
 
-		// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
-		let (stage, settings) = compute_material_stage(&shader_id);
-		let compiled = compile_besl_shader(&shader_id, program, Some((generator, &material_json)), stage, settings).await;
-		let (shader, shader_bytes) = compiled.map_err(|error| {
+		let (shader, shader_bytes) = prepared.compile(&shader_id).await.map_err(|error| {
 			context.error(shader_compilation_error_message(&shader_id, &error));
 			LoadErrors::FailedToProcess
 		})?;
@@ -481,6 +510,25 @@ async fn store_generated_brdf_shaders(
 		.into_iter()
 		.map(|index| unique_shaders[index].clone())
 		.collect())
+}
+
+/// Generates the BESL program for one slot-numbered BRDF graph and lowers it for the platform compiler.
+fn prepare_generated_brdf_shader(
+	generator: &dyn ProgramGenerator,
+	compiler_name: &str,
+	material: &BrdfMaterialDescription,
+) -> Result<PreparedBeslShader, String> {
+	let program = generate_textured_brdf_program(material).map_err(|error| {
+		format!(
+			"Failed to generate the BRDF material program ({error:?}). The most likely cause is an unsupported node in the imported material graph."
+		)
+	})?;
+	let material_json = generated_brdf_material_json(material);
+
+	// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
+	let (stage, settings) = compute_material_stage(compiler_name);
+
+	prepare_besl_shader(program, Some((generator, &material_json)), stage, &settings)
 }
 
 /// Declares one `Texture2D` material variable per texture slot used by a generated BRDF graph.
@@ -834,7 +882,7 @@ use super::{
 	store_model, store_model_owned,
 };
 use crate::asset::handler::implementations::besl::{
-	PlatformShaderCompilerAdapter, ShaderCompiler, compile_besl_shader, shader_compilation_error_message,
+	PlatformShaderCompilerAdapter, PreparedBeslShader, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
 };
 use crate::pbr::{
 	BrdfMaterialDescription, BrdfNode, BrdfNodeId, BrdfValue, generate_textured_brdf_program, material_texture_variable_name,
@@ -848,6 +896,6 @@ use crate::{
 	resources::material::{
 		MaterialCoverage, MaterialModel, ParameterModel, RenderModel, Shader, ValueModel, VariantModel, VariantVariableModel,
 	},
-	shader::generator::ShaderGenerationSettings,
+	shader::{besl::backends::platform::PlatformShaderCompiler, generator::ShaderGenerationSettings},
 	types::{AlphaMode, ShaderTypes},
 };

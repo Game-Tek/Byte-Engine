@@ -222,7 +222,7 @@ impl Generator {
 	pub async fn compiler_identity() -> Result<String, String> {
 		let identity = match PlatformShaderLanguage::current_platform() {
 			#[cfg(target_os = "linux")]
-			PlatformShaderLanguage::Glsl => crate::shader::besl::backends::spirv::spirv_compiler_identity(),
+			PlatformShaderLanguage::Glsl => crate::shader::besl::backends::spirv::spirv_compiler_identity()?,
 			#[cfg(target_vendor = "apple")]
 			PlatformShaderLanguage::Msl => crate::shader::msl_shader_compiler::metal_compiler_identity().await?,
 			#[cfg(target_os = "windows")]

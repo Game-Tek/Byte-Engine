@@ -33,9 +33,7 @@ use crate::rendering::loading::{
 use crate::rendering::pipeline_compilation::SpecializedComputePipelineRequest;
 use crate::rendering::renderable::mesh::{MeshKey, MeshSource};
 use crate::rendering::resource_loading::load_texture;
-use crate::rendering::resource_loading::texture::{
-	TextureUploadLayout, load_image_streams, resource_format_to_ghi,
-};
+use crate::rendering::resource_loading::texture::{TextureUploadLayout, load_image_streams, resource_format_to_ghi};
 use crate::rendering::{PipelineManagerClient, PipelineRef, PipelineState};
 use crate::rendering::{Query, Resource};
 

@@ -227,7 +227,10 @@ fn blur_regions_and_kernels(bencher: Bencher, count: usize) {
 	let mut storage = Vec::new();
 	storage = {
 		let output = primitives(&data, &mut masks, &arena, &mut storage);
-		assert_eq!(output.steps.iter().filter(|step| matches!(step, UiStep::Blur(_))).count(), count);
+		assert_eq!(
+			output.steps.iter().filter(|step| matches!(step, UiStep::Blur(_))).count(),
+			count
+		);
 		// EXPERIMENT
 		if std::env::var_os("UI_DIAG").is_some() {
 			eprintln!(
@@ -410,7 +413,17 @@ fn merge_mixed_frame(bencher: Bencher, count: usize) {
 	let text_arena = bumpalo::Bump::new();
 	let text = build_ui_slug_geometry(&data, viewport(), &mut system, &mut glyphs, &mut masks, &text_arena);
 	let mut storage = {
-		let output = build_ui_primitives(&data, viewport(), &arena, Vec::new(), None, &mut masks, Some(&text), None, None);
+		let output = build_ui_primitives(
+			&data,
+			viewport(),
+			&arena,
+			Vec::new(),
+			None,
+			&mut masks,
+			Some(&text),
+			None,
+			None,
+		);
 		report_primitives("mixed", count, &arena, output.primitives.len(), output.steps.len());
 		output.primitives
 	};
@@ -440,7 +453,17 @@ fn cpu_buffer_copy(bencher: Bencher, count: usize) {
 	let mut system = TextSystem::new();
 	let mut atlas = UiGlyphAtlas::new(UI_GLYPH_ATLAS_INITIAL_SIZE);
 	let text = build_ui_text_geometry(&data, viewport(), &mut system, &mut atlas, &mut masks, &arena);
-	let output = build_ui_primitives(&data, viewport(), &arena, Vec::new(), None, &mut masks, Some(&text), None, None);
+	let output = build_ui_primitives(
+		&data,
+		viewport(),
+		&arena,
+		Vec::new(),
+		None,
+		&mut masks,
+		Some(&text),
+		None,
+		None,
+	);
 	let source: &[u8] = bytemuck::cast_slice(&output.primitives);
 	let mut destination = vec![0; source.len()];
 	bencher.bench_local(|| {

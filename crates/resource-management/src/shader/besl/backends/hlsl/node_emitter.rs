@@ -189,7 +189,34 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		Self::identifier(name).push_to(string);
 		true
 	}
+	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
+		// HLSL declares arrays in C position, so the count follows the variable name.
+		if let Some((element_type, count)) = crate::shader::generator::value_array_parts(type_name) {
+			Self::type_identifier(element_type).push_to(string);
+			string.push(' ');
+			Self::identifier(name).push_to(string);
+			let _ = write!(string, "[{count}]");
+			return;
+		}
+		Self::emit_type_name(string, type_name);
+		string.push(' ');
+		Self::identifier(name).push_to(string);
+	}
+	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
+		self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap());
+	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
+		if let Some((declaration, initializer)) = Self::declaration_with_initializer(expression)
+			&& let Some(elements) = crate::shader::generator::array_constructor_elements(initializer)
+		{
+			// HLSL has no array expressions, so the constructor becomes the declaration's brace initializer.
+			// Validation rejects array constructors anywhere else.
+			self.emit_node_string(string, declaration);
+			string.push_str(if self.minified { "={" } else { " = {" });
+			self.emit_call_arguments(string, &elements);
+			string.push('}');
+			return true;
+		}
 		if let besl::Expressions::Operator { operator, left, right } = expression {
 			if *operator == besl::Operators::Assignment {
 				let indexed_target = {
@@ -326,7 +353,7 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		);
 		if right_is_member
-			&& let Some((binding_name, field_name, _, _)) = Self::hlsl_buffer_member_target(left)
+			&& let Some((binding_name, field_name, ..)) = Self::hlsl_buffer_member_target(left)
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.

@@ -1093,8 +1093,8 @@ mod tests {
 		UI_KIND_SHADOW, UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UI_TEXTURES_SLOT, UiBlurDrawElement, UiBlurFilterPush,
 		UiBlurKernel, UiClipMaskEntry, UiCurveDrawElement, UiDrawElement, UiDrawList, UiGlyphCurves, UiImageDrawElement,
 		UiMaskTable, UiPaint, UiPixelRegion, UiPreparedFrame, UiPrimitive, UiPrimitives, UiStep, UiTextDrawElement,
-		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_resolution_mix,
-		blur_sigma, blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry,
+		blur_half_dispatch_regions, blur_half_extent, blur_half_sigma, blur_resolution_mix, blur_sigma,
+		blur_uses_full_resolution, blur_uses_half_resolution, build_ui_primitives_uncached, build_ui_slug_geometry,
 		clear_primitive, curve_piece_count, encode_shadow_offset, update_from_render,
 	};
 	use crate::rendering::{

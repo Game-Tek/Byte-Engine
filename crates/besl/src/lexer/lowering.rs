@@ -6,6 +6,7 @@ use crate::parser;
 
 const ATOMIC_INTRINSICS_DOCUMENTATION: &str =
 	"https://byte-engine.0x44491229.dev/docs/reference/besl/intrinsics#buffer-and-workgroup-atomics";
+const ARRAY_DOCUMENTATION: &str = "https://byte-engine.0x44491229.dev/docs/reference/besl/language#pass-and-return-arrays";
 
 #[derive(Clone, Copy)]
 enum AtomicAccessRequirement {
@@ -387,6 +388,7 @@ impl Lexer {
 				..
 			} => {
 				validate_loop_control(statements, false)?;
+				validate_return_type(name, return_type)?;
 				let t = resolve_type_name(&self.scopes, return_type)?;
 
 				let this: NodeReference = Node::function(name, Vec::new(), t, Vec::new()).into();
@@ -702,4 +704,20 @@ impl Lexer {
 
 		Ok(node)
 	}
+}
+
+/// Rejects a function that returns an array of more than four elements or of non-scalar elements.
+///
+/// HLSL can't return arrays, so backends return only short `f32`, `u16`, and `u32` arrays, which they carry as vectors.
+fn validate_return_type(name: &str, return_type: &parser::TypeName) -> Result<(), LexError> {
+	let parser::TypeName::Array { element, count } = return_type else {
+		return Ok(());
+	};
+	let compact = (2..=4).contains(count) && matches!(**element, parser::TypeName::Named("f32" | "u16" | "u32"));
+	if compact {
+		return Ok(());
+	}
+	Err(LexError::invalid(format!(
+		"Function `{name}` can't return an array of {count} elements. The most likely cause is a function that returns a larger array; only arrays of two to four `f32`, `u16`, or `u32` values can be returned, so return a vector or struct with the values the caller needs instead. See {ARRAY_DOCUMENTATION}."
+	)))
 }

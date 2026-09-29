@@ -51,6 +51,9 @@ impl Generator {
 		if order.iter().any(Self::has_unsupported_hlsl_atomic_context) {
 			return Err(());
 		}
+		if order.iter().any(Self::has_misplaced_array_constructor) {
+			return Err(());
+		}
 		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
 		let uses_fma = order.iter().any(|node| uses_intrinsic(node, "fma"));
 		if uses_subgroup_intrinsics && self.current_stage != HlslStage::Compute {

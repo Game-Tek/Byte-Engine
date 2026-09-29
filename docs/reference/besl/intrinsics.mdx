@@ -18,9 +18,9 @@ you use it.
 
 | Name | Signature | Explanation |
 | --- | --- | --- |
-| `min` | `min(f16, f16) -> f16`; `min(f32, f32) -> f32` | Returns the smaller argument. |
-| `max` | `max(f16, f16) -> f16`; `max(f32, f32) -> f32`; `max(vec2f, vec2f) -> vec2f`; `max(vec3f, vec3f) -> vec3f` | Returns the component-wise larger argument. |
-| `clamp` | `clamp(f16, f16, f16) -> f16`; `clamp(f32, f32, f32) -> f32`; `clamp(vec3f, vec3f, vec3f) -> vec3f` | Limits the first argument to the inclusive minimum and maximum. |
+| `min` | `min(f16, f16) -> f16`; `min(f32, f32) -> f32`; `min(i32, i32) -> i32`; `min(u32, u32) -> u32` | Returns the smaller argument. |
+| `max` | `max(f16, f16) -> f16`; `max(f32, f32) -> f32`; `max(i32, i32) -> i32`; `max(u32, u32) -> u32`; `max(vec2f, vec2f) -> vec2f`; `max(vec3f, vec3f) -> vec3f` | Returns the component-wise larger argument. |
+| `clamp` | `clamp(f16, f16, f16) -> f16`; `clamp(f32, f32, f32) -> f32`; `clamp(i32, i32, i32) -> i32`; `clamp(u32, u32, u32) -> u32`; `clamp(vec3f, vec3f, vec3f) -> vec3f` | Limits the first argument to the inclusive minimum and maximum. |
 | `log2` | `log2(f32) -> f32`; `log2(vec3f) -> vec3f` | Returns the component-wise base-2 logarithm. |
 | `pow` | `pow(f16, f16) -> f16`; `pow(f32, f32) -> f32`; `pow(vec3f, vec3f) -> vec3f` | Raises each value to its matching exponent. |
 | `abs` | `abs(f16) -> f16`; `abs(f32) -> f32`; `abs(vec2f16) -> vec2f16`; `abs(vec2f) -> vec2f` | Returns the absolute value. |

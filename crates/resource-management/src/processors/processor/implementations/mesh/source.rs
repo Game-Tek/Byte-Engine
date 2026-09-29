@@ -13,7 +13,12 @@ pub struct VertexSkin {
 pub trait MeshPrimitiveSource {
 	type Error;
 
-	fn material(&self) -> &crate::ReferenceModel<crate::resources::material::VariantModel>;
+	/// Returns the index of this primitive's material in the list the importer passes when it finishes the mesh.
+	///
+	/// Geometry doesn't depend on material contents, so an importer can process primitives while their materials
+	/// still bake and resolve the slots only at [`MeshProcessorSession::finish_into`](super::MeshProcessorSession::finish_into).
+	/// Finishing the mesh panics when a slot is outside that list.
+	fn material_slot(&self) -> usize;
 
 	fn transform_node(&self) -> Option<u32> {
 		None

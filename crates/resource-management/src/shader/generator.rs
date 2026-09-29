@@ -427,6 +427,30 @@ pub(crate) fn array_type_parts(source: &str) -> Option<(&str, &str)> {
 	Some((element_type, count.trim_end_matches(']')))
 }
 
+/// Splits an array type that stays an array in generated code into its element type and element count.
+///
+/// Returns `None` for types that aren't arrays and for short scalar arrays, which lower to vectors through
+/// [`scalar_array_vector_type`]. Backends use it to spell local, parameter, and constructed arrays.
+pub(crate) fn value_array_parts(source: &str) -> Option<(&str, &str)> {
+	if scalar_array_vector_type(source).is_some() {
+		return None;
+	}
+	array_type_parts(source)
+}
+
+/// Returns the element expressions of a call that constructs an array kept as an array, or `None` for any other node.
+pub(crate) fn array_constructor_elements(node: &besl::NodeReference) -> Option<std::cell::Ref<'_, [besl::NodeReference]>> {
+	std::cell::Ref::filter_map(node.borrow(), |node| match node.node() {
+		besl::Nodes::Expression(besl::Expressions::FunctionCall { function, parameters })
+			if function.get().borrow().get_name().and_then(value_array_parts).is_some() =>
+		{
+			Some(parameters.as_slice())
+		}
+		_ => None,
+	})
+	.ok()
+}
+
 /// Returns the vector that carries a short scalar array through backends that cannot return native arrays.
 pub(crate) fn scalar_array_vector_type(source: &str) -> Option<&'static str> {
 	match source {

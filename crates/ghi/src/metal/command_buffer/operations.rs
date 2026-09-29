@@ -1140,10 +1140,9 @@ impl BoundRayTracingPipelineMode for CommandBufferRecording<'_> {
 		if x == 0 || y == 0 || z == 0 {
 			return;
 		}
-		let threadgroups = graphics_hardware_interface::DispatchExtent::new(Extent::new(x, y, z), threadgroup_extent).get_extent();
-		self.ensure_compute_encoder().dispatchThreadgroups_threadsPerThreadgroup(
-			utils::mtl_size(threadgroups),
-			utils::mtl_size(threadgroup_extent),
-		);
+		let threadgroups =
+			graphics_hardware_interface::DispatchExtent::new(Extent::new(x, y, z), threadgroup_extent).get_extent();
+		self.ensure_compute_encoder()
+			.dispatchThreadgroups_threadsPerThreadgroup(utils::mtl_size(threadgroups), utils::mtl_size(threadgroup_extent));
 	}
 }

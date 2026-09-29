@@ -257,7 +257,9 @@ fn scalar_and_vector_runtime_buffers_read_and_write_whole_elements() {
 		descriptors.bind_buffer(ResourceSlot::new(0), &mut indices);
 		descriptors.bind_buffer(ResourceSlot::new(1), &mut positions);
 		descriptors.bind_buffer(ResourceSlot::new(2), &mut results);
-		executable.run_main(&mut descriptors).expect("Expected scalar runtime buffer execution");
+		executable
+			.run_main(&mut descriptors)
+			.expect("Expected scalar runtime buffer execution");
 	}
 
 	assert_eq!(results.read_array_element(1), Ok(Value::U32(9)));
@@ -314,7 +316,10 @@ fn non_indexed_field_access_rejects_array_members() {
 			"items",
 			// A second member keeps this a struct buffer; a lone array member is lowered to an array buffer.
 			BindingTypes::Buffer {
-				members: vec![Node::array("items", item_type, 2), Node::member("count", u32_type.clone()).into()],
+				members: vec![
+					Node::array("items", item_type, 2),
+					Node::member("count", u32_type.clone()).into(),
+				],
 			},
 			0,
 			true,

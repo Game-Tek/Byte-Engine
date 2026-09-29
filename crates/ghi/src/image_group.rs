@@ -272,7 +272,13 @@ impl ImageGroups {
 			return None;
 		}
 
-		Some(image_group.members.iter().map(|&member| request_for(member).clone()).collect())
+		Some(
+			image_group
+				.members
+				.iter()
+				.map(|&member| request_for(member).clone())
+				.collect(),
+		)
 	}
 
 	/// Records a new placement. Every member starts without valid contents.

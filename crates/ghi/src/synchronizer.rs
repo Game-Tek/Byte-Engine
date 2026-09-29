@@ -1,6 +1,6 @@
-use crate::{PrivateHandle, PrivateHandles};
 #[cfg(not(target_os = "macos"))]
 use crate::{HandleLike, Next, Synchronizer};
+use crate::{PrivateHandle, PrivateHandles};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SynchronizerHandle(pub(crate) u64);

@@ -535,7 +535,9 @@ fn edge_shadow_map(size: u32, edge: u32) -> Texture {
 	for y in 0..size {
 		for x in 0..size {
 			let depth = if x >= edge { 0.9 } else { 0.2 };
-			shadow_map.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0]).expect("edge shadow fixture");
+			shadow_map
+				.write_3d([x, y, 0], [depth, 0.0, 0.0, 1.0])
+				.expect("edge shadow fixture");
 		}
 	}
 	shadow_map
@@ -750,8 +752,14 @@ fn directional_shadow_cascade_scales_follow_the_projection_in_the_besl_vm() {
 		}
 		"#,
 		&[
-			(DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE, "directional_shadow_texels_per_meter"),
-			(DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE, "directional_shadow_depth_per_meter"),
+			(
+				DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE,
+				"directional_shadow_texels_per_meter",
+			),
+			(
+				DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE,
+				"directional_shadow_depth_per_meter",
+			),
 		],
 		vec![
 			besl::ParserNode::member("texels_per_meter", "f32"),
@@ -784,7 +792,10 @@ fn directional_shadow_fitting_cascade_picks_the_finest_that_fits_in_the_besl_vm(
 		"#,
 		&[
 			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
-			(DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE, "directional_shadow_fitting_cascade"),
+			(
+				DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE,
+				"directional_shadow_fitting_cascade",
+			),
 		],
 		vec![
 			besl::ParserNode::member("fits_own", "u32"),

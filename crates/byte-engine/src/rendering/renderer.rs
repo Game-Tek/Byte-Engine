@@ -2,8 +2,8 @@ mod configuration;
 mod core;
 mod targets;
 
-pub(crate) use core::RendererScreenshotError;
 pub use core::Renderer;
+pub(crate) use core::RendererScreenshotError;
 #[cfg(test)]
 use std::collections::VecDeque;
 

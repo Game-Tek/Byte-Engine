@@ -308,25 +308,25 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Returns the active encoder's local state.
 	pub(super) fn encoder_state(&self) -> &EncoderState {
-		self.encoder.as_ref().expect(
-			"No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.",
-		)
+		self.encoder
+			.as_ref()
+			.expect("No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.")
 	}
 
 	/// Returns the active encoder's local state for updates.
 	pub(super) fn encoder_state_mut(&mut self) -> &mut EncoderState {
-		self.encoder.as_mut().expect(
-			"No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.",
-		)
+		self.encoder
+			.as_mut()
+			.expect("No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.")
 	}
 
 	/// Returns the active render encoder, or panics naming `operation` when no render pass is open.
 	pub(super) fn render_encoder(&self, operation: &str) -> &Retained<ProtocolObject<dyn mtl::MTL4RenderCommandEncoder>> {
 		match self.encoder.as_ref().map(|state| &state.encoder) {
 			Some(ActiveEncoder::Render(encoder)) => encoder,
-			_ => panic!(
-				"No active render pass. The most likely cause is that {operation} was called outside start_render_pass."
-			),
+			_ => {
+				panic!("No active render pass. The most likely cause is that {operation} was called outside start_render_pass.")
+			}
 		}
 	}
 
@@ -358,7 +358,10 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	pub(super) fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
-		if !matches!(self.encoder.as_ref().map(|state| &state.encoder), Some(ActiveEncoder::Compute(_))) {
+		if !matches!(
+			self.encoder.as_ref().map(|state| &state.encoder),
+			Some(ActiveEncoder::Compute(_))
+		) {
 			self.end_encoder();
 			// One serial MTL4 compute encoder records both copy and dispatch commands. Phase transitions add explicit visibility.
 			let encoder = self.command_buffer.computeCommandEncoder().expect(
@@ -627,7 +630,9 @@ impl<'a> CommandBufferRecording<'a> {
 			let owner_count = self
 				.bound_descriptor_set_handles()
 				.filter(|set_handle| {
-					self.commit.descriptor_sets.resource(*set_handle)
+					self.commit
+						.descriptor_sets
+						.resource(*set_handle)
 						.descriptors
 						.keys()
 						.any(|slot| (range_start..range_end).contains(&slot.index()))
@@ -739,9 +744,9 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		}
 
-		let pipeline_handle = self.bound_pipeline.expect(
-			"No pipeline bound. The most likely cause is that push constants were flushed before binding a pipeline.",
-		);
+		let pipeline_handle = self
+			.bound_pipeline
+			.expect("No pipeline bound. The most likely cause is that push constants were flushed before binding a pipeline.");
 		// Compute work reads one table. Draws read the fragment table and either the vertex table or the mesh tables.
 		let mut stages = SmallVec::<[ArgumentTableStage; 3]>::new();
 		match state.encoder {

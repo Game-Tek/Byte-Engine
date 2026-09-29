@@ -141,17 +141,19 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		Self::validate_reachable_binding_layout(order, self.allocator.clone())?;
 		self.collect_packed_mat4x3_members(order);
+		self.hidden_contexts = analyze_hidden_contexts(order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment)
 			&& let Some(source) = Self::find_full_source_passthrough(main_function_node)
 		{
 			return Ok(source);
 		}
 
-		let downsample_helper_capacity = if intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max {
-			4096
-		} else {
-			0
-		};
+		let downsample_helper_capacity =
+			if intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max {
+				4096
+			} else {
+				0
+			};
 		let mut string = String::with_capacity(2048 + downsample_helper_capacity);
 
 		self.generate_msl_header_block(&mut string, shader_compilation_settings, &intrinsic_requirements);

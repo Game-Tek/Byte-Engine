@@ -2152,7 +2152,12 @@ mod tests {
 			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
 		}
 
-		let mut ids = query_all_pages(&backend, Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"), 2).await;
+		let mut ids = query_all_pages(
+			&backend,
+			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"),
+			2,
+		)
+		.await;
 		ids.sort();
 
 		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
@@ -2205,14 +2210,7 @@ mod tests {
 
 		let backend = backend();
 		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(
-			&backend,
-			"extras/a",
-			MockMaterialExtraModel {
-				group: "opaque".into(),
-			},
-		)
-		.await;
+		store_mock(&backend, "extras/a", MockMaterialExtraModel { group: "opaque".into() }).await;
 
 		let (by_class, _) = query_ids(&backend, Query::new("MockMaterial")).await;
 		let (by_property, _) = query_ids(&backend, Query::new("MockMaterial").eq("group", "opaque")).await;

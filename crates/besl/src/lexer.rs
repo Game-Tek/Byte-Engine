@@ -324,6 +324,31 @@ mod tests {
 	}
 
 	#[test]
+	fn functions_return_only_short_scalar_arrays() {
+		for return_type in ["vec4f[16]", "u32[5]", "vec2u[2]"] {
+			let source =
+				format!("make: fn (values: {return_type}) -> {return_type} {{ return values; }} main: fn () -> void {{}}");
+			let message = match crate::compile_to_besl(&source, None).expect_err("a large array return should fail to link") {
+				crate::CompilationError::Lex(LexError::Invalid { message }) => message,
+				error => panic!("Expected a detailed return-type error, found {error:?}"),
+			};
+
+			assert!(
+				message.contains("can't return an array"),
+				"Unexpected `{return_type}` error: {message}"
+			);
+			assert!(message.contains("/docs/reference/besl/language#pass-and-return-arrays"));
+		}
+
+		// Short scalar arrays lower to vectors, so they stay valid return types, and any array stays a valid parameter.
+		crate::compile_to_besl(
+			"pass: fn (values: vec4f[16]) -> u32[4] { return u32[4](1, 2, 3, 4); } main: fn () -> void {}",
+			None,
+		)
+		.expect("a large array parameter with a short array return should link");
+	}
+
+	#[test]
 	fn value_returning_atomics_require_read_write_buffers() {
 		for operation in [
 			"atomic_load",

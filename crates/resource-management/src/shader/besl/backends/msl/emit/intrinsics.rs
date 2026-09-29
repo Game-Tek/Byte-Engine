@@ -82,7 +82,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		let besl::Nodes::Intrinsic {
 			name,
 			elements: definition,
-			..
+			r#return: return_type,
 		} = intrinsic.node()
 		else {
 			for element in elements {
@@ -199,6 +199,21 @@ impl<A: Allocator + Clone> Generator<A> {
 			"pow" if arguments.len() == 2 && super::super::super::is_two(&arguments[0]) => {
 				string.push_str("exp2(");
 				self.emit_node_string(string, &arguments[1]);
+				string.push(')');
+			}
+			// BESL integer literals are unsigned, but C++ spells them as `int`, so `min(uint, 3)` matches no Metal
+			// overload exactly. Casting every argument selects the unsigned overload the lexer resolved.
+			"min" | "max" | "clamp" if return_type.borrow().get_name() == Some("u32") => {
+				string.push_str(name);
+				string.push('(');
+				for (index, argument) in arguments.iter().enumerate() {
+					if index > 0 {
+						self.emit_separator(string);
+					}
+					string.push_str("uint(");
+					self.emit_node_string(string, argument);
+					string.push(')');
+				}
 				string.push(')');
 			}
 			"min" | "max" | "clamp" | "log2" | "pow" | "abs" | "sqrt" | "exp" | "sin" | "cos" | "tan" | "asin" | "atan2"

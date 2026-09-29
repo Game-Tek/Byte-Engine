@@ -81,10 +81,22 @@ mod tests {
 			)
 			.expect("Expected scalar runtime-array GLSL generation");
 
-		assert_string_contains!(shader, "layout(set=0,binding=0,scalar) readonly buffer _positions{vec3 positions[];};");
-		assert_string_contains!(shader, "layout(set=0,binding=1,scalar) readonly buffer _indices{uint16_t indices[];};");
-		assert_string_contains!(shader, "layout(set=0,binding=2,scalar) readonly buffer _corners{uint8_t corners[];};");
-		assert_string_contains!(shader, "layout(set=0,binding=3,scalar) writeonly buffer _results{uint32_t results[];};");
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=0,scalar) readonly buffer _positions{vec3 positions[];};"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=1,scalar) readonly buffer _indices{uint16_t indices[];};"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=2,scalar) readonly buffer _corners{uint8_t corners[];};"
+		);
+		assert_string_contains!(
+			shader,
+			"layout(set=0,binding=3,scalar) writeonly buffer _results{uint32_t results[];};"
+		);
 		#[cfg(target_os = "linux")]
 		crate::shader::glsl_compile::compile(&shader, "besl-scalar-runtime-array")
 			.expect("Expected scalar runtime-array GLSL to compile to SPIR-V");
@@ -727,7 +739,9 @@ mod tests {
 			.minified(true)
 			.generate(
 				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-				&root.get_main().expect("Expected formatted storage image shader main function"),
+				&root
+					.get_main()
+					.expect("Expected formatted storage image shader main function"),
 			)
 			.expect("Expected formatted storage image GLSL generation");
 		assert_string_contains!(shader, "layout(set=0,binding=4,rgba16f) writeonly uniform image2D image;");

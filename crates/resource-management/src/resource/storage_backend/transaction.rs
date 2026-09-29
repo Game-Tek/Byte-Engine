@@ -200,21 +200,26 @@ pub(super) struct ResourceWriter {
 }
 
 /// The `ResourceHash` enum either computes stored-byte identity or carries a known decoded identity.
+///
+/// Streaming produces the same value as [`crate::resource::compression::payload_hash`] over the whole payload, so a
+/// compressed resource and an uncompressed one with the same bytes share an identity.
+// Keep the hasher inline: each resource write owns one, and boxing it would add an allocation to every write.
+#[allow(clippy::large_enum_variant)]
 enum ResourceHash {
-	Compute(md5::Context),
+	Compute(rapidhash::v3::RapidStreamHasherV3<'static>),
 	Known(u64),
 }
 
 impl ResourceHash {
 	fn consume(&mut self, data: &[u8]) {
 		if let Self::Compute(hasher) = self {
-			hasher.consume(data);
+			hasher.write(data);
 		}
 	}
 
 	fn finish(self) -> u64 {
 		match self {
-			Self::Compute(hasher) => digest_hash(hasher.finalize()),
+			Self::Compute(hasher) => hasher.finish(),
 			Self::Known(hash) => hash,
 		}
 	}
@@ -250,7 +255,7 @@ impl ResourceWriter {
 			target,
 			expected_size,
 			written_size: 0,
-			hash: ResourceHash::Compute(md5::Context::new()),
+			hash: ResourceHash::Compute(rapidhash::v3::RapidStreamHasherV3::new(&rapidhash::v3::DEFAULT_RAPID_SECRETS)),
 		}
 	}
 
@@ -535,10 +540,6 @@ impl AsyncResourceFile {
 		self.file.close().await?;
 		Ok(())
 	}
-}
-
-fn digest_hash(digest: md5::Digest) -> u64 {
-	u64::from_le_bytes(digest.0[..8].try_into().expect("MD5 digest should contain eight bytes"))
 }
 
 /// The `StagedResourceFile` struct keeps an unpublished file removable until metadata publication succeeds.

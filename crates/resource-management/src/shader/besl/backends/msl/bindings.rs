@@ -643,9 +643,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			let Some(compute) = &self.compute_stage_context else {
 				return;
 			};
-			// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
-			let uses_simd_lane_id = any_code_node(function, true, &mut |node| is_intrinsic_call(node, "subgroup_lane_index"));
-			if !uses_simd_lane_id && !self.function_requires_resource_context(function) {
+			let context = self.hidden_context(function);
+			let uses_simd_lane_id = context.uses_simd_lane_id;
+			if !uses_simd_lane_id && !context.requires_resources {
 				return;
 			}
 			push(string, format_args!("uint2 "), &"gid");
@@ -669,7 +669,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				);
 			}
 		} else if let Some(raster) = &self.raster_stage_context {
-			if !raster.has_hidden_inputs() && !self.function_requires_resource_context(function) {
+			if !raster.has_hidden_inputs() && !self.hidden_context(function).requires_resources {
 				return;
 			}
 			if raster.has_push_constant {

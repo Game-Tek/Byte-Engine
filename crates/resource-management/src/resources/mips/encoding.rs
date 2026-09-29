@@ -1,0 +1,202 @@
+//! Encode one mip level into its stored format on the CPU.
+//!
+//! [`super::CPUMipGenerationBackend`] encodes every level with [`encode_level_in`], and the image processor uses it for
+//! textures stored without mips. The GPU backend uses it for formats it doesn't encode itself.
+
+use std::alloc::Allocator;
+
+use utils::Extent;
+
+use crate::types::Formats;
+
+/// Writes one level of `width` by `height` texels into `output`, encoded as `output_format`.
+///
+/// Block-compressed formats take RGBA8 texels and repeat the last row and column into partial edge blocks; other
+/// formats take texels already in `output_format` and copy them. `output` must hold exactly the level's stored size,
+/// which [`super::encoded_mip_level_size`] returns. `allocator` provides scratch for padded surfaces.
+pub(crate) fn encode_level_in<A: Allocator + Clone>(
+	output_format: Formats,
+	extent: Extent,
+	data: &[u8],
+	output: &mut [u8],
+	allocator: A,
+) {
+	match output_format {
+		Formats::BC5 | Formats::BC5SNORM => {
+			// RgSurface expects tightly packed RG pairs, not interleaved RGBA, so B and A can't leak into the
+			// second texel's channels.
+			let (rg_data, width, height) = rg_surface_in(data, extent, allocator);
+			let surface = intel_tex_2::RgSurface {
+				data: &rg_data,
+				width,
+				height,
+				stride: width * 2,
+			};
+			intel_tex_2::bc5::compress_blocks_into(&surface, output);
+		}
+		Formats::BC7 | Formats::BC7SRGB => {
+			let (padded, width, height) = padded_rgba8_surface_in(extent, data, allocator);
+			let data = padded.as_deref().unwrap_or(data);
+			let surface = intel_tex_2::RgbaSurface {
+				data,
+				width,
+				height,
+				stride: width * 4,
+			};
+			intel_tex_2::bc7::compress_blocks_into(&bc7_settings(data), &surface, output);
+		}
+		Formats::RG8
+		| Formats::RGB8
+		| Formats::RGBA8
+		| Formats::RGBA8SRGB
+		| Formats::RGB16
+		| Formats::RGBA16
+		| Formats::R16F
+		| Formats::RGBA16F => {
+			output.copy_from_slice(data);
+		}
+	}
+}
+
+/// Selects the `fast` BC7 profile, with alpha modes only when a texel is not fully opaque.
+///
+/// The GPU encoder in [`super::bc7`] implements the same search, so both backends produce comparable quality.
+fn bc7_settings(data: &[u8]) -> intel_tex_2::bc7::EncodeSettings {
+	if data.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0xFF) {
+		intel_tex_2::bc7::alpha_fast_settings()
+	} else {
+		intel_tex_2::bc7::opaque_fast_settings()
+	}
+}
+
+/// Returns a copy of an RGBA8 level padded to whole blocks, or `None` when the level already fills them.
+fn padded_rgba8_surface_in<A: Allocator + Clone>(
+	extent: Extent,
+	data: &[u8],
+	allocator: A,
+) -> (Option<Box<[u8], A>>, u32, u32) {
+	let width = extent.width().max(1);
+	let height = extent.height().max(1);
+
+	let expected_source_bytes = width as usize * height as usize * 4;
+	assert_eq!(
+		data.len(),
+		expected_source_bytes,
+		"BC compression source size mismatch. The most likely cause is that image format conversion did not produce one RGBA8 texel per source pixel. extent={extent:?}, width={width}, height={height}, data_len={}, expected={expected_source_bytes}",
+		data.len()
+	);
+
+	let padded_width = width.next_multiple_of(4);
+	let padded_height = height.next_multiple_of(4);
+	if padded_width == width && padded_height == height {
+		return (None, width, height);
+	}
+
+	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 4, allocator);
+	for y in 0..padded_height {
+		let source_y = y.min(height - 1);
+		for x in 0..padded_width {
+			let source_x = x.min(width - 1);
+			let source_offset = ((source_y * width + source_x) * 4) as usize;
+			let destination_offset = ((y * padded_width + x) * 4) as usize;
+			padded[destination_offset..destination_offset + 4].copy_from_slice(&data[source_offset..source_offset + 4]);
+		}
+	}
+
+	(Some(padded), padded_width, padded_height)
+}
+
+/// Produces a tightly packed RG surface (2 bytes per texel) from RGBA8 data, padded to whole blocks.
+fn rg_surface_in<A: Allocator + Clone>(data: &[u8], extent: Extent, allocator: A) -> (Box<[u8], A>, u32, u32) {
+	let width = extent.width().max(1);
+	let height = extent.height().max(1);
+	let padded_width = width.next_multiple_of(4);
+	let padded_height = height.next_multiple_of(4);
+
+	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 2, allocator);
+	for y in 0..padded_height {
+		let source_y = y.min(height - 1);
+		for x in 0..padded_width {
+			let source_x = x.min(width - 1);
+			let source_offset = ((source_y * width + source_x) * 4) as usize;
+			let destination_offset = ((y * padded_width + x) * 2) as usize;
+			// Copy only the R and G channels from the RGBA source.
+			padded[destination_offset..destination_offset + 2].copy_from_slice(&data[source_offset..source_offset + 2]);
+		}
+	}
+
+	(padded, padded_width, padded_height)
+}
+
+fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<[u8], A> {
+	let mut buffer = Vec::with_capacity_in(len, allocator);
+	buffer.resize(len, 0_u8);
+	buffer.into_boxed_slice()
+}
+
+#[cfg(test)]
+mod tests {
+	use std::alloc::Global;
+
+	use utils::Extent;
+
+	use super::encode_level_in;
+	use crate::{resources::mips::bc7::tests::decode_image, types::Formats};
+
+	fn encode(format: Formats, extent: Extent, data: &[u8]) -> Vec<u8> {
+		let mut output = vec![0; format.level_size(extent).expect("BC levels have a stored size")];
+		encode_level_in(format, extent, data, &mut output, Global);
+		output
+	}
+
+	#[test]
+	fn bc5_ignores_blue_and_alpha() {
+		// If the compressor read RGBA as 2-byte texels, B and A would become the next texel's R and G and change the
+		// output, so two surfaces that differ only in B and A must compress identically.
+		let extent = Extent::rectangle(4, 4);
+		let opaque = [0, 1, 0xFF, 0xFF].repeat(16);
+		let transparent = [0, 1, 0x00, 0x00].repeat(16);
+
+		assert_eq!(
+			encode(Formats::BC5, extent, &opaque),
+			encode(Formats::BC5, extent, &transparent),
+			"BC5 should ignore B and A channels"
+		);
+	}
+
+	#[test]
+	fn partial_edge_blocks_repeat_the_last_row_and_column() {
+		let (width, height) = (5_u32, 7_u32);
+		let texels = (0..width * height * 4)
+			.map(|value| (value * 37 % 251) as u8)
+			.collect::<Vec<_>>();
+		// The same level with its last column and row repeated out to whole blocks.
+		let padded = (0..8 * 8)
+			.flat_map(|index: u32| {
+				let (x, y) = ((index % 8).min(width - 1), (index / 8).min(height - 1));
+				let offset = ((y * width + x) * 4) as usize;
+				texels[offset..offset + 4].to_vec()
+			})
+			.collect::<Vec<_>>();
+
+		for format in [Formats::BC5, Formats::BC7] {
+			assert_eq!(
+				encode(format, Extent::rectangle(width, height), &texels),
+				encode(format, Extent::rectangle(8, 8), &padded),
+				"{format:?} edge blocks should repeat the level's last row and column"
+			);
+		}
+	}
+
+	#[test]
+	fn bc7_keeps_translucent_alpha_and_exact_opacity() {
+		let extent = Extent::rectangle(4, 4);
+		let decode_alpha = |texel: [u8; 4]| {
+			let decoded = decode_image(4, 4, encode(Formats::BC7, extent, &texel.repeat(16)).as_chunks().0);
+			decoded.as_chunks::<4>().0.iter().map(|texel| texel[3]).collect::<Vec<_>>()
+		};
+
+		assert!(decode_alpha([200, 100, 50, 255]).iter().all(|alpha| *alpha == 255));
+		assert!(decode_alpha([200, 100, 50, 128]).iter().all(|alpha| alpha.abs_diff(128) <= 1));
+	}
+}

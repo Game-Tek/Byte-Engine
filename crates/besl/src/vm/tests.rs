@@ -457,6 +457,67 @@ fn executable_program_indexes_mat4f_and_mat4x3f_columns() {
 }
 
 #[test]
+fn executable_program_reads_and_writes_vector_components_by_runtime_index() {
+	let script = r#"
+	main: fn () -> void {
+		let words: vec4u = vec4u(1, 2, 3, 4);
+		let index: u32 = result.index;
+		words[index] = words[index] | 16;
+		words[index + 1] = 7;
+		result.words = words;
+		result.selected = words[index];
+	}
+	"#;
+	let mut root = Node::root();
+	let u32_type = root
+		.get_child("u32")
+		.expect("Missing u32 type. The most likely cause is an incomplete VM test root scope.");
+	let vec4u_type = root
+		.get_child("vec4u")
+		.expect("Missing vec4u type. The most likely cause is an incomplete VM test root scope.");
+	root.add_child(
+		Node::binding(
+			"result",
+			BindingTypes::Buffer {
+				members: vec![
+					Node::member("index", u32_type.clone()).into(),
+					Node::member("words", vec4u_type).into(),
+					Node::member("selected", u32_type).into(),
+				],
+			},
+			42,
+			true,
+			true,
+		)
+		.into(),
+	);
+	let executable = compile_test_program(script, Some(root));
+	let slot = ResourceSlot::new(42);
+	let mut result = buffer_for_slot(&executable, slot);
+	result
+		.write("index", Value::U32(1))
+		.expect("Failed to write the component index. The most likely cause is a mismatched result layout.");
+	run_with_buffer(&executable, slot, &mut result);
+
+	assert_eq!(
+		result.read("words").expect("Missing vector result"),
+		Value::Vec4U([1, 18, 7, 4])
+	);
+	assert_eq!(result.read("selected").expect("Missing component result"), Value::U32(18));
+
+	// The last component has no successor, so `words[index + 1]` must fail instead of writing past the vector.
+	result
+		.write("index", Value::U32(3))
+		.expect("Failed to write the component index. The most likely cause is a mismatched result layout.");
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(slot, &mut result);
+	assert!(matches!(
+		executable.run_main(&mut descriptors),
+		Err(VmError::BufferArrayIndexOutOfBounds { index: 4, count: 4 })
+	));
+}
+
+#[test]
 fn executable_program_calls_function_with_parameters_and_return_value() {
 	let script = r#"
 	add: fn (lhs: f32, rhs: f32) -> f32 {

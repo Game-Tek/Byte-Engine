@@ -635,10 +635,19 @@ pub(super) fn aggregate_member(value_type: &ValueType, member_name: &str) -> Res
 }
 
 pub(super) fn array_element_type(value_type: &ValueType) -> Result<(ValueType, usize), VmError> {
-	match value_type {
+	// An index selects one component of an arithmetic vector, as `words[i]` does in every shading language.
+	let vector_width = match value_type {
 		ValueType::Mat4F => return Ok((ValueType::Vec4F, 4)),
 		ValueType::Mat4x3F => return Ok((ValueType::Vec3F, 4)),
-		_ => {}
+		ValueType::Vec2U16 | ValueType::Vec2I | ValueType::Vec2U | ValueType::Vec2F16 | ValueType::Vec2F => Some(2),
+		ValueType::Vec3U | ValueType::Vec3F16 | ValueType::Vec3F => Some(3),
+		ValueType::Vec4U16 | ValueType::Vec4U | ValueType::Vec4F16 | ValueType::Vec4F => Some(4),
+		_ => None,
+	};
+	if let Some(width) = vector_width
+		&& let Some(scalar) = vector_scalar_type(value_type)
+	{
+		return Ok((scalar, width));
 	}
 	let ValueType::Struct { fields, .. } = value_type else {
 		return Err(VmError::UnsupportedExpression {

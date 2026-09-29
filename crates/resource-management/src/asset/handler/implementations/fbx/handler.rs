@@ -278,19 +278,32 @@ impl AssetHandler for FBXAssetHandler {
 			(None, Vec::new())
 		};
 
-		let materials = resolve_fbx_materials(context, spec.as_ref(), source_id, &scene, self.generator.as_deref()).await?;
-
+		// Geometry doesn't depend on material contents, so it is processed while the material textures and shaders
+		// bake on the worker pool, and the resolved materials are attached when the mesh is committed.
+		let material_keys = used_material_keys(&scene, allocator);
 		let mut culled_polygons = FbxCulledPolygonCounts::default();
-
-		let mesh = import_fbx_mesh_session(
-			&scene,
-			&materials,
-			skeleton,
-			&source_to_skeleton,
-			MeshProcessor::new(),
-			allocator,
-			&mut culled_polygons,
-		);
+		let (materials, mesh) = std::future::join!(
+			resolve_fbx_materials(
+				context,
+				spec.as_ref(),
+				source_id,
+				&scene,
+				&material_keys,
+				self.generator.as_deref()
+			),
+			async {
+				import_fbx_mesh_session(
+					&scene,
+					&material_keys,
+					skeleton,
+					&source_to_skeleton,
+					MeshProcessor::new(),
+					allocator,
+					&mut culled_polygons,
+				)
+			},
+		)
+		.await;
 
 		culled_polygons.trace(context);
 
@@ -298,7 +311,8 @@ impl AssetHandler for FBXAssetHandler {
 			context.error(format_args!("Failed to process FBX mesh '{}': {error}", url.as_ref()));
 			LoadErrors::FailedToProcess
 		})?;
+		let materials = materials?;
 
-		commit_mesh(context, url, mesh).await
+		commit_mesh(context, url, mesh, &materials).await
 	}
 }

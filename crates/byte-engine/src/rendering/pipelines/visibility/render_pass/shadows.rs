@@ -357,106 +357,103 @@ impl ShadowPass {
 			c.end_region();
 		};
 
-		Some((
-			fit,
-			move |c: &mut ghi::implementation::CommandBufferRecording| {
-				use ghi::command_buffer::{
-					BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-					CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-				};
+		Some((fit, move |c: &mut ghi::implementation::CommandBufferRecording| {
+			use ghi::command_buffer::{
+				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
+				CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+			};
 
-				// Draws every solid, masked, and double-sided work range into `view_count` layers: layer `n` shows packed
-				// view `view_base + n`.
-				let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
-				                   name: &str,
-				                   target: ghi::BaseImageHandle,
-				                   extent: Extent,
-				                   layers: usize,
-				                   solid_pipeline: ghi::PipelineHandle,
-				                   masked_pipeline: ghi::PipelineHandle,
-				                   double_sided_pipeline: ghi::PipelineHandle,
-				                   view_base: usize,
-				                   view_count: usize| {
-					c.start_region(|label| label.write_str(name));
-					let attachments = [ghi::AttachmentInformation::new(
-						target,
-						ghi::Layouts::RenderTarget,
-						ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
-						ghi::StoreOp::Store,
-					)
-					.layers(layers as u32)];
-					let c = c.start_render_pass(extent, &attachments);
-					for (dispatch, pipeline) in [
-						(dispatches.opaque, solid_pipeline),
-						(dispatches.masked, masked_pipeline),
-						(dispatches.double_sided, double_sided_pipeline),
-					] {
-						if dispatch.is_empty() {
-							continue;
-						}
-						let c = c.bind_raster_pipeline(pipeline);
-						c.bind_descriptor_sets(&[descriptor_set]);
-						for layer in 0..view_count as u32 {
-							c.write_push_constant(0, dispatch.work_item_base());
-							c.write_push_constant(4, view_base as u32 + layer);
-							c.write_push_constant(8, layer);
-							c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
-						}
+			// Draws every solid, masked, and double-sided work range into `view_count` layers: layer `n` shows packed
+			// view `view_base + n`.
+			let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
+			                   name: &str,
+			                   target: ghi::BaseImageHandle,
+			                   extent: Extent,
+			                   layers: usize,
+			                   solid_pipeline: ghi::PipelineHandle,
+			                   masked_pipeline: ghi::PipelineHandle,
+			                   double_sided_pipeline: ghi::PipelineHandle,
+			                   view_base: usize,
+			                   view_count: usize| {
+				c.start_region(|label| label.write_str(name));
+				let attachments = [ghi::AttachmentInformation::new(
+					target,
+					ghi::Layouts::RenderTarget,
+					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
+					ghi::StoreOp::Store,
+				)
+				.layers(layers as u32)];
+				let c = c.start_render_pass(extent, &attachments);
+				for (dispatch, pipeline) in [
+					(dispatches.opaque, solid_pipeline),
+					(dispatches.masked, masked_pipeline),
+					(dispatches.double_sided, double_sided_pipeline),
+				] {
+					if dispatch.is_empty() {
+						continue;
 					}
-					c.end_render_pass();
-					c.end_region();
-				};
+					let c = c.bind_raster_pipeline(pipeline);
+					c.bind_descriptor_sets(&[descriptor_set]);
+					for layer in 0..view_count as u32 {
+						c.write_push_constant(0, dispatch.work_item_base());
+						c.write_push_constant(4, view_base as u32 + layer);
+						c.write_push_constant(8, layer);
+						c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
+					}
+				}
+				c.end_render_pass();
+				c.end_region();
+			};
 
-				if work.directional.is_some() {
-					record_maps(
-						c,
-						"Directional Shadow Map",
-						directional_shadow_map,
-						directional_extent,
-						SHADOW_CASCADE_COUNT,
-						pipelines.directional,
-						pipelines.masked_directional,
-						pipelines.double_sided_directional,
-						// View zero is the camera, so the cascades follow it.
-						1,
-						SHADOW_CASCADE_COUNT,
-					);
-					// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
-					c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
-					let c = c.bind_compute_pipeline(pipelines.depth_pyramid);
-					c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);
-					c.dispatch(ghi::DispatchExtent::new(depth_pyramid_extent, Extent::new(8, 4, 1)));
-					c.end_region();
-				}
-				if work.cone_count > 0 {
-					record_maps(
-						c,
-						"Cone Shadow Map",
-						cone_shadow_map,
-						cone_extent,
-						work.cone_count,
-						pipelines.local,
-						pipelines.masked_local,
-						pipelines.double_sided_local,
-						CONE_SHADOW_VIEW_OFFSET,
-						work.cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY),
-					);
-				}
-				if work.point_count > 0 {
-					record_maps(
-						c,
-						"Point Shadow Map",
-						point_shadow_map,
-						point_extent,
-						work.point_count * POINT_SHADOW_FACE_COUNT,
-						pipelines.local,
-						pipelines.masked_local,
-						pipelines.double_sided_local,
-						POINT_SHADOW_VIEW_OFFSET,
-						work.point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY) * POINT_SHADOW_FACE_COUNT,
-					);
-				}
-			},
-		))
+			if work.directional.is_some() {
+				record_maps(
+					c,
+					"Directional Shadow Map",
+					directional_shadow_map,
+					directional_extent,
+					SHADOW_CASCADE_COUNT,
+					pipelines.directional,
+					pipelines.masked_directional,
+					pipelines.double_sided_directional,
+					// View zero is the camera, so the cascades follow it.
+					1,
+					SHADOW_CASCADE_COUNT,
+				);
+				// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
+				c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
+				let c = c.bind_compute_pipeline(pipelines.depth_pyramid);
+				c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(depth_pyramid_extent, Extent::new(8, 4, 1)));
+				c.end_region();
+			}
+			if work.cone_count > 0 {
+				record_maps(
+					c,
+					"Cone Shadow Map",
+					cone_shadow_map,
+					cone_extent,
+					work.cone_count,
+					pipelines.local,
+					pipelines.masked_local,
+					pipelines.double_sided_local,
+					CONE_SHADOW_VIEW_OFFSET,
+					work.cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY),
+				);
+			}
+			if work.point_count > 0 {
+				record_maps(
+					c,
+					"Point Shadow Map",
+					point_shadow_map,
+					point_extent,
+					work.point_count * POINT_SHADOW_FACE_COUNT,
+					pipelines.local,
+					pipelines.masked_local,
+					pipelines.double_sided_local,
+					POINT_SHADOW_VIEW_OFFSET,
+					work.point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY) * POINT_SHADOW_FACE_COUNT,
+				);
+			}
+		}))
 	}
 }

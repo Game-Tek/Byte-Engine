@@ -441,7 +441,11 @@ fn unpack_r11g11b10f(bits: u32) -> [f32; 3] {
 			_ => (1.0 + mantissa) * 2f32.powi(exponent as i32 - 15),
 		}
 	};
-	[unpack(bits & 0x7ff, 6), unpack((bits >> 11) & 0x7ff, 6), unpack(bits >> 22, 5)]
+	[
+		unpack(bits & 0x7ff, 6),
+		unpack((bits >> 11) & 0x7ff, 6),
+		unpack(bits >> 22, 5),
+	]
 }
 
 #[cfg(test)]
@@ -574,7 +578,11 @@ mod tests {
 			.unwrap();
 		assert_eq!(
 			decode_exr(&exr),
-			[("B".to_string(), vec![1.5]), ("G".to_string(), vec![2.0]), ("R".to_string(), vec![0.5])]
+			[
+				("B".to_string(), vec![1.5]),
+				("G".to_string(), vec![2.0]),
+				("R".to_string(), vec![0.5])
+			]
 		);
 		let png = encode_png(&readback(u32::to_ne_bytes(mixed).to_vec(), ghi::Formats::RGBu11u11u10, 4)).unwrap();
 		assert!(!png.is_empty());

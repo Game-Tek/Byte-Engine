@@ -90,14 +90,17 @@ pub(crate) fn select_unfragmented_resource(
 }
 
 /// Writes a processed container mesh into resource storage and commits it as the requested primary resource.
+///
+/// `materials` holds the resolved material of each slot the mesh's primitives reference.
 pub(crate) async fn commit_mesh(
 	context: handler::BakeContext<'_>,
 	url: ResourceId<'_>,
 	mesh: crate::processors::processor::implementations::mesh::MeshProcessorSession,
+	materials: &[crate::ReferenceModel<crate::resources::material::VariantModel>],
 ) -> Result<(), handler::LoadErrors> {
 	let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
 	let (mesh, stream_descriptions) = mesh
-		.finish_into_resource(&mut transaction)
+		.finish_into_resource(materials, &mut transaction)
 		.await
 		.map_err(|_| handler::LoadErrors::FailedToStore)?;
 

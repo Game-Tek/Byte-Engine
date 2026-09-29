@@ -213,8 +213,11 @@ mod tests {
 		let mut storage = [0u32; 2];
 		assert!(<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast(), std::mem::size_of::<u16>()).is_none());
 		assert!(
-			<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast::<u8>().wrapping_add(1), std::mem::size_of::<u32>(),)
-				.is_none()
+			<u32 as BufferContents>::from_raw_parts(
+				storage.as_mut_ptr().cast::<u8>().wrapping_add(1),
+				std::mem::size_of::<u32>(),
+			)
+			.is_none()
 		);
 		assert_eq!(
 			<u32 as BufferContents>::from_raw_parts(storage.as_mut_ptr().cast(), std::mem::size_of::<u32>()),

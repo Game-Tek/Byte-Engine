@@ -740,7 +740,10 @@ impl crate::context::ContextCreate for Context {
 		))
 	}
 
-	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, builder: crate::buffer::Builder) -> graphics_hardware_interface::BufferHandle<T> {
+	fn build_buffer<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		builder: crate::buffer::Builder,
+	) -> graphics_hardware_interface::BufferHandle<T> {
 		let buffer_handle = self.create_buffer_internal(
 			None,
 			None,

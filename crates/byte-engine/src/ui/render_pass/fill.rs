@@ -434,7 +434,17 @@ mod tests {
 		assert_eq!(paths.blurs[0].map(|primitive| primitive.kind), Some(UI_KIND_PATH_BLUR));
 		assert_eq!(paths.ranges.len(), 2);
 
-		let output = build_ui_primitives(&draw_list, viewport, &arena, Vec::new(), None, &mut masks, None, Some(&paths), None);
+		let output = build_ui_primitives(
+			&draw_list,
+			viewport,
+			&arena,
+			Vec::new(),
+			None,
+			&mut masks,
+			None,
+			Some(&paths),
+			None,
+		);
 		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
 		assert_eq!(kinds, [UI_KIND_PATH_BLUR, UI_KIND_PATH, UI_KIND_PATH]);
 		assert!(matches!(
@@ -490,7 +500,17 @@ mod tests {
 			]
 		);
 
-		let output = build_ui_primitives(&draw_list, viewport, &arena, Vec::new(), None, &mut masks, None, Some(&paths), None);
+		let output = build_ui_primitives(
+			&draw_list,
+			viewport,
+			&arena,
+			Vec::new(),
+			None,
+			&mut masks,
+			None,
+			Some(&paths),
+			None,
+		);
 		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind).collect();
 		assert_eq!(kinds, [UI_KIND_PATH, UI_KIND_SAMPLED_SHADOW, UI_KIND_PATH]);
 		let [

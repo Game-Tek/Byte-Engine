@@ -107,21 +107,26 @@ impl GPUIBLClient {
 	pub fn from_processor_factory(
 		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, GPUIBLBakeError> {
-		let worker =
-			GpuWorker::spawn("GPU Environment Map Worker", initialize, GPUIBLProcessor::bake_image_ibl).map_err(|error| {
-				match error {
-					GpuWorkerSpawnError::Initialization(error) => error,
-					GpuWorkerSpawnError::WorkerCreation(error) => GPUIBLBakeError::WorkerCreation(error.to_string()),
-					GpuWorkerSpawnError::WorkerUnavailable => GPUIBLBakeError::WorkerUnavailable,
-				}
-			})?;
+		// The baked maps are returned, so requests lend the worker no output bytes.
+		let worker = GpuWorker::spawn(
+			"GPU Environment Map Worker",
+			initialize,
+			|processor: &mut GPUIBLProcessor, source_extent, source_rgba16f, _| {
+				processor.bake_image_ibl(source_extent, source_rgba16f)
+			},
+		)
+		.map_err(|error| match error {
+			GpuWorkerSpawnError::Initialization(error) => error,
+			GpuWorkerSpawnError::WorkerCreation(error) => GPUIBLBakeError::WorkerCreation(error.to_string()),
+			GpuWorkerSpawnError::WorkerUnavailable => GPUIBLBakeError::WorkerUnavailable,
+		})?;
 		Ok(Self { worker })
 	}
 
 	/// Submits one borrowed source image and waits until the GPU result is safe to consume.
 	pub fn bake_image_ibl(&self, source_extent: Extent, source_rgba16f: &[u8]) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
 		self.worker
-			.call(source_extent, source_rgba16f)
+			.call(source_extent, source_rgba16f, &mut [])
 			.ok_or(GPUIBLBakeError::WorkerUnavailable)?
 	}
 

@@ -11,7 +11,8 @@ impl MeshProcessor {
 	///
 	/// Call [`MeshProcessorSession::push_primitive`] for each imported primitive, then call
 	/// [`MeshProcessorSession::finish_into`] to write the payload directly, or
-	/// [`MeshProcessorSession::finish`] when the caller needs an owned payload.
+	/// [`MeshProcessorSession::finish`] when the caller needs an owned payload. Each primitive names its material by its
+	/// slot in the list the finish call receives.
 	pub fn begin(
 		self,
 		vertex_layout: Vec<VertexComponent>,
@@ -45,7 +46,6 @@ impl MeshProcessor {
 			skeleton_nodes,
 			skins,
 			blocks: stream_order.into_iter().map(PackedStreamBlock::new).collect(),
-			materials: Vec::new(),
 			primitives: Vec::new(),
 			scratch: MeshProcessingScratch::default(),
 		})
@@ -66,8 +66,7 @@ pub struct MeshProcessorSession {
 	skeleton_nodes: Option<usize>,
 	skins: Vec<SkinBinding>,
 	blocks: Vec<PackedStreamBlock>,
-	/// Distinct material variants in first-use order; primitives store an index into this list.
-	materials: Vec<ReferenceModel<VariantModel>>,
+	/// Processed primitives. Until the mesh finishes, each one's material holds its material slot.
 	primitives: Vec<Primitive>,
 	scratch: MeshProcessingScratch,
 }
@@ -189,10 +188,8 @@ impl MeshProcessorSession {
 			}
 		}));
 
-		let material = self.material_index(primitive.material());
-
 		self.primitives.push(Primitive {
-			material,
+			material: primitive.material_slot() as u32,
 			transform_node: primitive.transform_node(),
 			skin: primitive.skin(),
 			streams: primitive_streams,
@@ -283,10 +280,14 @@ impl MeshProcessorSession {
 
 	/// Finishes stream offsets and writes each completed stream directly to `writer`.
 	///
-	/// `W` remains generic so stream writes do not use dynamic dispatch. Reserve
-	/// [`Self::payload_size`] bytes before calling this method.
-	pub fn finish_into<W: std::io::Write>(self, writer: &mut W) -> std::io::Result<(MeshModel, Vec<StreamDescription>)> {
-		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+	/// `materials` holds the material of each slot primitives referenced. `W` remains generic so stream writes do not
+	/// use dynamic dispatch. Reserve [`Self::payload_size`] bytes before calling this method.
+	pub fn finish_into<W: std::io::Write>(
+		self,
+		materials: &[ReferenceModel<VariantModel>],
+		writer: &mut W,
+	) -> std::io::Result<(MeshModel, Vec<StreamDescription>)> {
+		let (mesh, stream_descriptions, blocks) = self.finish_parts(materials);
 		for block in blocks {
 			std::io::Write::write_all(writer, &block.bytes)?;
 		}
@@ -295,13 +296,14 @@ impl MeshProcessorSession {
 
 	/// Finishes stream offsets and asynchronously writes each completed stream into resource storage.
 	///
-	/// Reserve [`Self::payload_size`] bytes before calling this method. Use
-	/// [`Self::finish_into`] for a synchronous non-resource sink.
+	/// `materials` holds the material of each slot primitives referenced. Reserve [`Self::payload_size`] bytes before
+	/// calling this method. Use [`Self::finish_into`] for a synchronous non-resource sink.
 	pub async fn finish_into_resource(
 		self,
+		materials: &[ReferenceModel<VariantModel>],
 		writer: &mut crate::resource::ResourceTransaction<'_>,
 	) -> std::io::Result<(MeshModel, Vec<StreamDescription>)> {
-		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+		let (mesh, stream_descriptions, blocks) = self.finish_parts(materials);
 		for block in blocks {
 			let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut *writer, block.bytes).await;
 			result?;
@@ -311,10 +313,11 @@ impl MeshProcessorSession {
 
 	/// Finishes aggregate stream offsets and moves final metadata into the stored mesh resource.
 	///
-	/// Use [`Self::finish_into`] when the payload can go directly to resource storage.
-	pub fn finish(self) -> ProcessedMesh {
+	/// `materials` holds the material of each slot primitives referenced. Use [`Self::finish_into`] when the payload
+	/// can go directly to resource storage.
+	pub fn finish(self, materials: &[ReferenceModel<VariantModel>]) -> ProcessedMesh {
 		let mut buffer = Vec::with_capacity(self.payload_size());
-		let (mesh, stream_descriptions, blocks) = self.finish_parts();
+		let (mesh, stream_descriptions, blocks) = self.finish_parts(materials);
 		for block in blocks {
 			buffer.extend_from_slice(&block.bytes);
 		}
@@ -326,26 +329,34 @@ impl MeshProcessorSession {
 		}
 	}
 
-	/// Returns the index of `material` in the mesh's material list, adding it the first time a primitive uses it.
-	fn material_index(&mut self, material: &ReferenceModel<VariantModel>) -> u32 {
-		// Meshes use few distinct materials, so a linear search beats hashing each variant ID.
-		let index = match self
-			.materials
-			.iter()
-			.position(|existing| existing.id().as_ref() == material.id().as_ref())
-		{
-			Some(index) => index,
-			None => {
-				self.materials.push(material.clone());
-				self.materials.len() - 1
-			}
-		};
-
-		index as u32
-	}
-
 	/// Builds final stream metadata once before a caller moves each completed block to its selected sink.
-	fn finish_parts(mut self) -> (MeshModel, Vec<StreamDescription>, Vec<PackedStreamBlock>) {
+	fn finish_parts(
+		mut self,
+		slot_materials: &[ReferenceModel<VariantModel>],
+	) -> (MeshModel, Vec<StreamDescription>, Vec<PackedStreamBlock>) {
+		// The stored mesh lists each distinct variant once, in first-use order, and primitives index that list.
+		// Meshes use few distinct materials, so a linear search beats hashing each variant ID.
+		let mut materials: Vec<ReferenceModel<VariantModel>> = Vec::with_capacity(slot_materials.len());
+		for primitive in &mut self.primitives {
+			let slot = primitive.material as usize;
+			let material = slot_materials.get(slot).unwrap_or_else(|| {
+				panic!(
+					"Mesh material slot {slot} is out of range for {} materials. The most likely cause is an importer that numbered its primitives' materials differently from the list it passed to finish the mesh.",
+					slot_materials.len()
+				)
+			});
+			primitive.material = match materials
+				.iter()
+				.position(|existing| existing.id().as_ref() == material.id().as_ref())
+			{
+				Some(index) => index as u32,
+				None => {
+					materials.push(material.clone());
+					(materials.len() - 1) as u32
+				}
+			};
+		}
+
 		let active_vertex_components = self
 			.vertex_layout
 			.into_iter()
@@ -377,7 +388,7 @@ impl MeshProcessorSession {
 				skins: self.skins,
 				vertex_components: active_vertex_components,
 				streams,
-				materials: self.materials,
+				materials,
 				primitives: self.primitives,
 			},
 			stream_descriptions,

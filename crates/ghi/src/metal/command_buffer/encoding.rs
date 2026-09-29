@@ -173,7 +173,9 @@ impl CommandBufferRecording<'_> {
 					.commit
 					.descriptor_sets
 					.nth_handle(descriptor_set_handle, self.sequence_index as usize)
-					.expect("Missing frame-local Metal descriptor set. The most likely cause is that the set handle came from another context.");
+					.expect(
+						"Missing frame-local Metal descriptor set. The most likely cause is that the set handle came from another context.",
+					);
 				// The version is read before each command, since writes can follow the bind.
 				self.bound_descriptor_sets.push((resolved, 0));
 			}
@@ -425,7 +427,12 @@ impl CommandBufferRecording<'_> {
 		}
 
 		match (&state.encoder, &device.pipelines[pipeline_handle.0 as usize].pipeline) {
-			(ActiveEncoder::Compute(encoder), PipelineState::Compute { state: pipeline_state, .. }) => {
+			(
+				ActiveEncoder::Compute(encoder),
+				PipelineState::Compute {
+					state: pipeline_state, ..
+				},
+			) => {
 				command_buffer.retain_allocation(&**pipeline_state);
 				encoder.setComputePipelineState(pipeline_state);
 			}

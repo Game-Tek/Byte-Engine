@@ -9,9 +9,8 @@ pub use reflection::{BindingKind, BindingUsage, ProgramEvaluation, TextureView};
 pub(crate) use reflection::{BindingRecord, collect_bindings};
 #[cfg(test)]
 use reflection::{
-	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout,
-	reflected_array_buffer_stride_for_target, reflected_storage_buffer_stride_for_target,
-	reflected_storage_type_layout,
+	StorageLayout, StorageLayoutTarget, checked_align_up, primitive_storage_layout, reflected_array_buffer_stride_for_target,
+	reflected_storage_buffer_stride_for_target, reflected_storage_type_layout,
 };
 
 #[cfg(test)]

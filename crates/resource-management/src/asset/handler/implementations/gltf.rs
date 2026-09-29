@@ -1180,7 +1180,9 @@ use crate::{
 			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
 			guess_semantic_from_name, process_image_with_mip_backend_in,
 		},
-		processor::implementations::mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, VertexSkin},
+		processor::implementations::mesh::{
+			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,
+		},
 	},
 	resource,
 	resources::{

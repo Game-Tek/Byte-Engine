@@ -63,7 +63,7 @@ mod tests {
 			.unwrap();
 		let payload_size = session.payload_size();
 		let mut payload = Vec::new();
-		let (mesh, stream_descriptions) = session.finish_into(&mut payload).unwrap();
+		let (mesh, stream_descriptions) = session.finish_into(&[test_material()], &mut payload).unwrap();
 
 		assert_eq!(payload_size, expected.buffer.len());
 		assert_eq!(payload, expected.buffer.as_ref());
@@ -74,6 +74,41 @@ mod tests {
 			assert_eq!(actual.size(), expected.size());
 			assert_eq!(actual.offset(), expected.offset());
 		}
+	}
+
+	#[test]
+	fn stores_each_distinct_material_once_in_first_use_order() {
+		// Slots 0 and 2 resolve to the same variant, and no primitive uses slot 3.
+		let materials = [
+			variant("materials/a.variant"),
+			variant("materials/b.variant"),
+			variant("materials/a.variant"),
+			variant("materials/c.variant"),
+		];
+		let mut session = MeshProcessor::new()
+			.begin(vec![component(VertexSemantics::Position)], None, Vec::new())
+			.unwrap();
+		for slot in [2, 1, 0] {
+			session
+				.push_primitive(&TestPrimitive::triangle().with_material_slot(slot))
+				.unwrap();
+		}
+		let processed = session.finish(&materials);
+
+		let material_ids = processed
+			.mesh
+			.materials
+			.iter()
+			.map(|material| material.id().as_ref().to_owned())
+			.collect::<Vec<_>>();
+		let primitive_materials = processed
+			.mesh
+			.primitives
+			.iter()
+			.map(|primitive| primitive.material)
+			.collect::<Vec<_>>();
+		assert_eq!(material_ids, ["materials/a.variant", "materials/b.variant"]);
+		assert_eq!(primitive_materials, [0, 1, 0]);
 	}
 
 	#[test]
@@ -297,7 +332,7 @@ mod tests {
 				MeshPrimitiveProcessingError::Processing(error) => error,
 			})?;
 		}
-		Ok(processor.finish())
+		Ok(processor.finish(&[test_material()]))
 	}
 
 	fn component(semantic: VertexSemantics) -> VertexComponent {
@@ -357,8 +392,12 @@ mod tests {
 	}
 
 	fn test_material() -> ReferenceModel<VariantModel> {
+		variant("materials/test.variant")
+	}
+
+	fn variant(id: &str) -> ReferenceModel<VariantModel> {
 		ReferenceModel::new_serialized(
-			"materials/test.variant",
+			id,
 			0,
 			0,
 			crate::to_vec(&VariantModel {
@@ -372,12 +411,12 @@ mod tests {
 	}
 
 	struct TestPrimitive {
-		material: ReferenceModel<VariantModel>,
 		indices: Vec<u32>,
 		positions: Vec<[f32; 3]>,
 		normals: Option<Vec<[f32; 3]>>,
 		uvs: Option<Vec<[f32; 2]>>,
 		vertex_skin: Option<Vec<VertexSkin>>,
+		material_slot: usize,
 		transform_node: Option<u32>,
 		skin: Option<u32>,
 	}
@@ -385,15 +424,20 @@ mod tests {
 	impl TestPrimitive {
 		fn triangle() -> Self {
 			Self {
-				material: test_material(),
 				indices: vec![0, 1, 2],
 				positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
 				normals: None,
 				uvs: None,
 				vertex_skin: None,
+				material_slot: 0,
 				transform_node: None,
 				skin: None,
 			}
+		}
+
+		fn with_material_slot(mut self, material_slot: usize) -> Self {
+			self.material_slot = material_slot;
+			self
 		}
 
 		fn with_normals(mut self) -> Self {
@@ -431,8 +475,8 @@ mod tests {
 	impl MeshPrimitiveSource for TestPrimitive {
 		type Error = Infallible;
 
-		fn material(&self) -> &ReferenceModel<VariantModel> {
-			&self.material
+		fn material_slot(&self) -> usize {
+			self.material_slot
 		}
 
 		fn transform_node(&self) -> Option<u32> {

@@ -281,10 +281,7 @@ mod tests {
 	}
 
 	fn read_vec4(buffer: &Buffer, index: usize, field: &str) -> [f32; 4] {
-		match buffer
-			.read_array_member(index, field)
-			.expect("Missing skinned output.")
-		{
+		match buffer.read_array_member(index, field).expect("Missing skinned output.") {
 			Value::Vec4F(value) => value,
 			_ => panic!("Skinning wrote a non-vector {field}."),
 		}
@@ -472,9 +469,7 @@ mod tests {
 	fn write_translation_matrix(palette: &mut Buffer, index: usize, translation: [f32; 3]) {
 		let [x, y, z] = translation;
 		palette
-			.write_array_element(index,
-				Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, x, y, z]),
-			)
+			.write_array_element(index, Value::Mat4x3F([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, x, y, z]))
 			.expect("Failed to write skinning matrix.");
 	}
 

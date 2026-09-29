@@ -703,8 +703,14 @@ impl<C: 'static> Engine<C> {
 		}
 		let runtime = &mut self.core.runtime;
 		let target = runtime.focused();
-		route_focused(&mut self.key_presses, runtime, target, |target, key| UiKeyEvent { target, key });
-		route_focused(&mut self.text_edits, runtime, target, |target, edit| UiTextEditEvent { target, edit });
+		route_focused(&mut self.key_presses, runtime, target, |target, key| UiKeyEvent {
+			target,
+			key,
+		});
+		route_focused(&mut self.text_edits, runtime, target, |target, edit| UiTextEditEvent {
+			target,
+			edit,
+		});
 	}
 
 	/// Builds render data from the layout the last [`Self::evaluate`] produced.

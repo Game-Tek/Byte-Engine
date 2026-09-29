@@ -125,7 +125,7 @@ impl GltfPrimitiveAttributes {
 pub(crate) struct GltfPrimitiveSource<'a> {
 	primitive: &'a gltf::Primitive<'a>,
 	buffers: &'a [gltf::buffer::Data],
-	material: &'a ReferenceModel<VariantModel>,
+	material_slot: usize,
 	transform: maths_rs::Mat4f,
 	transform_node: Option<u32>,
 	skin: Option<u32>,
@@ -138,7 +138,7 @@ impl<'a> GltfPrimitiveSource<'a> {
 	pub(crate) fn new(
 		primitive: &'a gltf::Primitive<'a>,
 		buffers: &'a [gltf::buffer::Data],
-		material: &'a ReferenceModel<VariantModel>,
+		material_slot: usize,
 		transform: maths_rs::Mat4f,
 		transform_node: Option<u32>,
 		skin: Option<u32>,
@@ -148,7 +148,7 @@ impl<'a> GltfPrimitiveSource<'a> {
 		Self {
 			primitive,
 			buffers,
-			material,
+			material_slot,
 			transform,
 			transform_node,
 			skin,
@@ -166,8 +166,8 @@ impl<'a> GltfPrimitiveSource<'a> {
 impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 	type Error = GltfMeshSourceError;
 
-	fn material(&self) -> &ReferenceModel<VariantModel> {
-		self.material
+	fn material_slot(&self) -> usize {
+		self.material_slot
 	}
 
 	fn transform_node(&self) -> Option<u32> {

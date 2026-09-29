@@ -60,36 +60,19 @@ impl GLTFAssetHandler {
 		context.store_primary(ProcessedAsset::new(url, animation), &[]).await
 	}
 
-	/// Resolves each distinct glTF material once and preserves its per-primitive index mapping.
-	async fn resolve_materials<'a>(
-		&self,
-		context: BakeContext<'_>,
-		url: ResourceId<'_>,
-		spec: Option<&serde_json::Value>,
-		gltf: &gltf::Gltf,
-		primitives: &[gltf::Primitive<'a>],
-	) -> Result<(Vec<ReferenceModel<VariantModel>>, Vec<usize>), LoadErrors> {
-		let (unique_materials, material_indices) = unique_gltf_materials(primitives);
-
-		let resolved_materials =
-			resolve_gltf_materials(context, spec, url, gltf, &unique_materials, self.generator.as_deref()).await?;
-
-		Ok((resolved_materials, material_indices))
-	}
-
-	/// Packs prepared glTF primitives through the shared mesh processor and commits their payload.
-	async fn store_mesh<'a>(
-		&self,
-		context: BakeContext<'_>,
+	/// Packs glTF primitives through the shared mesh processor, naming each primitive's material by its slot.
+	///
+	/// The work is synchronous, so it yields between primitives to let futures joined with it, such as the material
+	/// bakes, keep dispatching and collecting their work.
+	async fn process_geometry<'a>(
 		url: ResourceId<'_>,
 		buffers: &[gltf::buffer::Data],
 		vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skin_bindings: Vec<SkinBinding>,
 		primitives: &[(gltf::Primitive<'a>, maths_rs::Mat4f, Option<u32>, Option<u32>)],
-		material_indices: &[usize],
-		materials: &[ReferenceModel<VariantModel>],
-	) -> Result<(), LoadErrors> {
+		material_slots: &[usize],
+	) -> Result<MeshProcessorSession, LoadErrors> {
 		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
 		let mut mesh_processor = MeshProcessor::new()
@@ -99,7 +82,7 @@ impl GLTFAssetHandler {
 				LoadErrors::FailedToProcess
 			})?;
 
-		for ((primitive, transform, transform_node, skin), material_index) in primitives.iter().zip(material_indices) {
+		for ((primitive, transform, transform_node, skin), material_slot) in primitives.iter().zip(material_slots) {
 			validate_gltf_flattened_animation_transform(*transform, *transform_node).map_err(|error| {
 				log::error!("Failed to import glTF animated mesh transform '{}': {error}", url.as_ref());
 				LoadErrors::FailedToProcess
@@ -112,7 +95,7 @@ impl GLTFAssetHandler {
 			let source = GltfPrimitiveSource::new(
 				primitive,
 				buffers,
-				&materials[*material_index],
+				*material_slot,
 				*transform,
 				*transform_node,
 				*skin,
@@ -130,9 +113,10 @@ impl GLTFAssetHandler {
 				}
 				LoadErrors::FailedToProcess
 			})?;
+			crate::r#async::yield_now().await;
 		}
 
-		commit_mesh(context, url, mesh_processor).await
+		Ok(mesh_processor)
 	}
 
 	/// Imports the mesh hierarchy, skins, materials, and primitives selected by an unfragmented glTF request.
@@ -221,20 +205,25 @@ impl GLTFAssetHandler {
 		} else {
 			None
 		};
-		let (materials, material_indices) = self.resolve_materials(context, url, spec, gltf, &primitives).await?;
-
-		self.store_mesh(
-			context,
-			url,
-			buffers,
-			vertex_layout,
-			skeleton,
-			skin_bindings,
-			&primitives_and_transform,
-			&material_indices,
-			&materials,
+		// Geometry doesn't depend on material contents, so it is packed while the material textures and shaders bake on
+		// the worker pool, and the resolved materials are attached when the mesh is committed.
+		let (unique_materials, material_slots) = unique_gltf_materials(&primitives);
+		let (materials, mesh) = std::future::join!(
+			resolve_gltf_materials(context, spec, url, gltf, &unique_materials, self.generator.as_deref()),
+			Self::process_geometry(
+				url,
+				buffers,
+				vertex_layout,
+				skeleton,
+				skin_bindings,
+				&primitives_and_transform,
+				&material_slots,
+			),
 		)
-		.await
+		.await;
+
+		let (materials, mesh) = (materials?, mesh?);
+		commit_mesh(context, url, mesh, &materials).await
 	}
 }
 

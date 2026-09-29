@@ -93,7 +93,9 @@ Image processing decodes pixels, infers semantics from names such as albedo, nor
 Standalone PNG data textures, such as normal or roughness maps, stay linear even when an image editor added sRGB metadata.
 For color textures, supported sRGB or linear PNG metadata overrides the filename default; an unsupported transfer function falls back to the inferred semantic.
 EXR images keep their linear HDR values in an `RGBA16F` image and don't generate lighting maps by default.
+Material textures from glTF and FBX models get a full mip chain. Byte Engine filters the levels on the GPU and also compresses color textures to BC7 there, with a BESL kernel that uses the same search as the CPU encoder's `fast` profile. Without a compatible GPU, the CPU filters and compresses the chain instead, at comparable quality.
 Mesh processing normalizes vertex layout, packs streams, creates meshlets, records bounding boxes, associates primitives with material variants, and preserves primitive skin bindings.
+When you write a mesh importer, have each `MeshPrimitiveSource` return a material slot, an index into a material list you resolve separately. Geometry doesn't depend on material contents, so you can process primitives while their materials and textures bake, as the glTF and FBX handlers do. Pass the resolved materials, in slot order, to the session's finish call.
 Material and standalone shader processing compile BESL to platform-native shader artifacts and store reflected interface metadata such as descriptor names, slots, access, and workgroup size.
 
 ## Environment maps

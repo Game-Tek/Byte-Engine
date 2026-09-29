@@ -200,6 +200,45 @@ impl Generator {
 		any_code_node(node, false, &mut |node| Self::hlsl_atomic_call(node).is_some())
 	}
 
+	/// Splits a `let` with an initializer into its declaration and its initializer, or returns `None` for any other
+	/// expression.
+	pub(crate) fn declaration_with_initializer(
+		expression: &besl::Expressions,
+	) -> Option<(&besl::NodeReference, &besl::NodeReference)> {
+		let besl::Expressions::Operator {
+			operator: besl::Operators::Assignment,
+			left,
+			right,
+		} = expression
+		else {
+			return None;
+		};
+		matches!(
+			left.borrow().node(),
+			besl::Nodes::Expression(besl::Expressions::VariableDeclaration { .. })
+		)
+		.then_some((left, right))
+	}
+
+	/// Reports whether an array constructor appears anywhere except as the initializer of a `let` or a constant.
+	///
+	/// HLSL has no array expressions, only brace initializers in declarations, so other uses can't be lowered.
+	pub(crate) fn has_misplaced_array_constructor(node: &besl::NodeReference) -> bool {
+		let borrowed = node.borrow();
+		let initializer = match borrowed.node() {
+			besl::Nodes::Expression(expression) => {
+				Self::declaration_with_initializer(expression).map(|(_, initializer)| initializer)
+			}
+			besl::Nodes::Const { value, .. } => Some(value),
+			_ => None,
+		};
+		if let Some(elements) = initializer.and_then(crate::shader::generator::array_constructor_elements) {
+			return elements.iter().any(Self::has_misplaced_array_constructor);
+		}
+		crate::shader::generator::array_constructor_elements(node).is_some()
+			|| borrowed.node().children().any(Self::has_misplaced_array_constructor)
+	}
+
 	/// Rejects contexts where statement lifting would change when an atomic executes.
 	pub(crate) fn has_unsupported_hlsl_atomic_context(node: &besl::NodeReference) -> bool {
 		let node = node.borrow();

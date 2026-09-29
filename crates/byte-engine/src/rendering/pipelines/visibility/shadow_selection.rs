@@ -734,7 +734,10 @@ mod tests {
 		assert!((far - automatic_far).abs() < 0.0001);
 
 		let light = cone().with_shadow_near(50.0).with_shadow_far(20.0);
-		assert_eq!(resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0), (50.0, 50.1));
+		assert_eq!(
+			resolve_shadow_range(&light.emission, SHADOW_DEFAULT_EXPOSURE_SCALE, 1.0),
+			(50.0, 50.1)
+		);
 	}
 
 	#[test]

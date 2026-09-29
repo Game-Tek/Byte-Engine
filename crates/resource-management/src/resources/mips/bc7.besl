@@ -1,0 +1,802 @@
+// Encodes RGBA8 texels into BC7 blocks, one 4x4 block per invocation.
+//
+// The search follows the "fast" profile of Intel's ISPC texture compressor. Opaque blocks try mode 6 and the
+// best-ranked partitions of modes 1 and 3. Blocks with transparency try modes 6, 5, and 4 and the best-ranked
+// partitions of mode 7. Every candidate places its endpoints on the principal axis of its texels, then refines them
+// with least squares, and the block keeps the candidate with the smallest squared error.
+
+source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+blocks: descriptor<{ type: vec4u[], binding: 1, access: write }>;
+
+push_constant: push_constant {
+	// Size of the source level in texels. Blocks that cross its edges repeat the last row and column.
+	width: u32,
+	height: u32,
+	// Size of the level in blocks. Invocations outside it do nothing.
+	blocks_x: u32,
+	blocks_y: u32,
+	// Index in `blocks` of the level's first block, so one buffer can hold a whole mip chain.
+	first_block: u32,
+}
+
+// Bit `i` marks texel `i` as part of the second subset, for each of the 64 two-subset partitions.
+PARTITIONS: const u32[64] = u32[64](52428, 34952, 61166, 60616, 51328, 65260, 65224, 60544, 51200, 65516, 65152, 59392, 65512, 65280, 65520, 61440, 63248, 142, 28928, 2254, 140, 29456, 12544, 36046, 2188, 12560, 26214, 13932, 6120, 4080, 29070, 14748, 43690, 61680, 23130, 13260, 15420, 21930, 38550, 42330, 29646, 5064, 12876, 15324, 27030, 49980, 39270, 1632, 626, 1252, 20032, 10016, 51510, 37740, 14790, 25500, 37686, 40134, 33150, 59160, 52464, 4044, 30532, 60962);
+
+// The texel of the second subset whose index drops its most significant bit, for each partition.
+ANCHORS: const u32[64] = u32[64](15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 2, 8, 2, 2, 8, 8, 15, 2, 8, 2, 2, 8, 8, 2, 2, 15, 15, 6, 8, 2, 8, 15, 15, 2, 8, 2, 2, 2, 15, 15, 6, 6, 2, 6, 8, 15, 15, 2, 2, 15, 15, 15, 15, 15, 2, 2, 15);
+
+// Interpolation weights out of 64 for 2-, 3-, and 4-bit indices. They start at offsets 0, 4, and 12, which is the
+// palette size minus 4.
+WEIGHTS: const u32[28] = u32[28](0, 21, 43, 64, 0, 9, 18, 27, 37, 46, 55, 64, 0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64);
+
+// How many of the best-ranked partitions each two-subset mode encodes in full.
+MODE1_CANDIDATES: const u32 = 12;
+MODE3_CANDIDATES: const u32 = 4;
+MODE7_CANDIDATES: const u32 = 8;
+
+// Larger than any squared block error, which stays below 16 * 4 * 255 * 255.
+NO_ERROR_YET: const f32 = 100000000.0;
+
+// Describes how one subset stores its endpoints and indices.
+Format: struct {
+	index_bits: u32,
+	// Bits of each stored endpoint channel, including the p-bit when the format has one.
+	endpoint_bits: u32,
+	// 0 without p-bits, 1 when both endpoints of a subset share one, and 2 when each endpoint has its own.
+	pbits: u32,
+	// 1.0 for each channel the subset encodes. The other channels don't count toward its error.
+	channels: vec4f,
+	// How many least-squares passes follow the principal-axis guess.
+	refinements: u32,
+	// 1 forces every p-bit to 1 so that mode 6 keeps the alpha of an opaque block at exactly 255.
+	opaque: u32,
+}
+
+// Endpoints in the 0 to 255 range before quantization.
+Endpoints: struct {
+	low: vec4f,
+	high: vec4f,
+}
+
+// Stored endpoint values for one subset. The p-bit, when the format has one, is each value's lowest bit.
+Codes: struct {
+	low: vec4u,
+	high: vec4u,
+}
+
+// Palette indices for one subset, 4 bits per texel with texels 0 to 7 in `x`, and their total squared error.
+Fit: struct {
+	indices: vec2u,
+	error: f32,
+}
+
+// One encoded subset. Texels outside the subset keep index 0 so that subsets combine with a bitwise or.
+Subset: struct {
+	low: vec4u,
+	high: vec4u,
+	indices: vec2u,
+	error: f32,
+}
+
+// One complete block and its squared error.
+Candidate: struct {
+	error: f32,
+	bits: vec4u,
+}
+
+// A 128-bit block under construction and the position of its next free bit.
+Bits: struct {
+	words: vec4u,
+	position: u32,
+}
+
+// Appends the low `count` bits of `value` to the block, least significant bit first.
+put: fn (bits: Bits, value: u32, count: u32) -> Bits {
+	let result: Bits = bits;
+	let word: u32 = bits.position >> 5;
+	let shift: u32 = bits.position & 31;
+	result.words[word] = result.words[word] | (value << shift);
+	// A field that crosses a word boundary continues in the next word.
+	if (shift + count > 32) {
+		result.words[word + 1] = result.words[word + 1] | (value >> (32 - shift));
+	}
+	result.position = bits.position + count;
+	return result;
+}
+
+index_at: fn (indices: vec2u, texel: u32) -> u32 {
+	if (texel < 8) {
+		return (indices.x >> (texel * 4)) & 15;
+	}
+	return (indices.y >> ((texel - 8) * 4)) & 15;
+}
+
+// Sets the index of `texel`, which must still be 0.
+with_index: fn (indices: vec2u, texel: u32, index: u32) -> vec2u {
+	let result: vec2u = indices;
+	if (texel < 8) {
+		result.x = result.x | (index << (texel * 4));
+	} else {
+		result.y = result.y | (index << ((texel - 8) * 4));
+	}
+	return result;
+}
+
+in_subset: fn (mask: u32, texel: u32) -> bool {
+	return ((mask >> texel) & 1) != 0;
+}
+
+clamp_color: fn (value: vec4f) -> vec4f {
+	return vec4f(clamp(value.x, 0.0, 255.0), clamp(value.y, 0.0, 255.0), clamp(value.z, 0.0, 255.0), clamp(value.w, 0.0, 255.0));
+}
+
+// Widens a stored endpoint value to 8 bits by repeating its top bits, as BC7 decoders do.
+expand: fn (value: u32, bits: u32) -> u32 {
+	return (value << (8 - bits)) | (value >> (2 * bits - 8));
+}
+
+expand_codes: fn (codes: vec4u, bits: u32) -> vec4f {
+	return vec4f(f32(expand(codes.x, bits)), f32(expand(codes.y, bits)), f32(expand(codes.z, bits)), f32(expand(codes.w, bits)));
+}
+
+// Returns the stored value whose expansion is closest to `value`. With p-bits, only values whose lowest bit equals
+// `pbit` are candidates.
+quantize_channel: fn (value: f32, format: Format, pbit: u32) -> u32 {
+	let bits: u32 = format.endpoint_bits;
+	let scaled: f32 = value * f32((1 << bits) - 1) / 255.0;
+	let step: u32 = 1;
+	let first: u32 = 0;
+	if (format.pbits != 0) {
+		step = 2;
+		first = pbit;
+	}
+	let steps: u32 = ((1 << bits) - 1 - first) / step;
+	let guess: u32 = u32(clamp(floor((scaled - f32(first)) / f32(step) + 0.5), 0.0, f32(steps)));
+
+	// Rounding in the stored domain can miss the nearest expansion by one step, so compare the neighbors too.
+	let rounded: u32 = first + guess * step;
+	let best: u32 = rounded;
+	let best_error: f32 = abs(f32(expand(rounded, bits)) - value);
+	if (guess > 0) {
+		let lower_error: f32 = abs(f32(expand(rounded - step, bits)) - value);
+		if (lower_error < best_error) {
+			best = rounded - step;
+			best_error = lower_error;
+		}
+	}
+	if (guess < steps) {
+		let upper_error: f32 = abs(f32(expand(rounded + step, bits)) - value);
+		if (upper_error < best_error) {
+			best = rounded + step;
+		}
+	}
+	return best;
+}
+
+// Returns the stored value whose expansion is closest to `value` from below, or from above when `upward` is set. When
+// nothing is stored on that side, returns the nearest value.
+quantize_toward: fn (value: f32, format: Format, pbit: u32, upward: bool) -> u32 {
+	let nearest: u32 = quantize_channel(value, format, pbit);
+	let expanded: f32 = f32(expand(nearest, format.endpoint_bits));
+	// Stepping by 2 keeps the p-bit, which is the stored value's lowest bit.
+	let step: u32 = 1;
+	if (format.pbits != 0) {
+		step = 2;
+	}
+	if (upward) {
+		if (expanded < value && nearest + step < (1 << format.endpoint_bits)) {
+			return nearest + step;
+		}
+	} else {
+		if (expanded > value && nearest >= step) {
+			return nearest - step;
+		}
+	}
+	return nearest;
+}
+
+quantize_endpoint: fn (value: vec4f, format: Format, pbit: u32) -> vec4u {
+	return vec4u(quantize_channel(value.x, format, pbit), quantize_channel(value.y, format, pbit), quantize_channel(value.z, format, pbit), quantize_channel(value.w, format, pbit));
+}
+
+endpoint_error: fn (value: vec4f, codes: vec4u, format: Format) -> f32 {
+	let difference: vec4f = (expand_codes(codes, format.endpoint_bits) - value) * format.channels;
+	return dot(difference, difference);
+}
+
+// Quantizes one endpoint and picks the p-bit that represents it best when each endpoint has its own. Formats
+// without p-bits ignore the p-bit argument.
+quantize_single: fn (value: vec4f, format: Format) -> vec4u {
+	let odd: vec4u = quantize_endpoint(value, format, 1);
+	if (format.pbits == 0 || format.opaque != 0) {
+		return odd;
+	}
+	let even: vec4u = quantize_endpoint(value, format, 0);
+	if (endpoint_error(value, even, format) < endpoint_error(value, odd, format)) {
+		return even;
+	}
+	return odd;
+}
+
+// Quantizes both endpoints of a subset. A shared p-bit is chosen for the pair.
+quantize_pair: fn (endpoints: Endpoints, format: Format) -> Codes {
+	if (format.pbits != 1) {
+		return Codes(quantize_single(endpoints.low, format), quantize_single(endpoints.high, format));
+	}
+	let even: Codes = Codes(quantize_endpoint(endpoints.low, format, 0), quantize_endpoint(endpoints.high, format, 0));
+	let odd: Codes = Codes(quantize_endpoint(endpoints.low, format, 1), quantize_endpoint(endpoints.high, format, 1));
+	let even_error: f32 = endpoint_error(endpoints.low, even.low, format) + endpoint_error(endpoints.high, even.high, format);
+	let odd_error: f32 = endpoint_error(endpoints.low, odd.low, format) + endpoint_error(endpoints.high, odd.high, format);
+	if (even_error < odd_error) {
+		return even;
+	}
+	return odd;
+}
+
+// Interpolates between two expanded endpoints with a weight out of 64, rounding as BC7 decoders do.
+interpolate: fn (low: vec4f, high: vec4f, weight: u32) -> vec4f {
+	let w: f32 = f32(weight);
+	let value: vec4f = (low * (64.0 - w) + high * w + vec4f(32.0, 32.0, 32.0, 32.0)) / 64.0;
+	return vec4f(floor(value.x), floor(value.y), floor(value.z), floor(value.w));
+}
+
+palette_error: fn (pixel: vec4f, low: vec4f, high: vec4f, weight: u32, channels: vec4f) -> f32 {
+	let difference: vec4f = (interpolate(low, high, weight) - pixel) * channels;
+	return dot(difference, difference);
+}
+
+// Picks the nearest palette entry for every texel of a subset. The projection onto the endpoint line guesses the
+// entry, and its two neighbors are checked because the palette weights are not evenly spaced.
+fit_indices: fn (pixels: vec4f[16], mask: u32, low: vec4f, high: vec4f, format: Format) -> Fit {
+	let entries: u32 = 1 << format.index_bits;
+	let offset: u32 = entries - 4;
+	let direction: vec4f = (high - low) * format.channels;
+	let length: f32 = dot(direction, direction);
+	let scale: f32 = 0.0;
+	if (length > 0.0) {
+		scale = f32(entries - 1) / length;
+	}
+
+	let result: Fit = Fit(vec2u(0, 0), 0.0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			let pixel: vec4f = pixels[texel];
+			let projected: f32 = dot(pixel - low, direction) * scale;
+			let guess: u32 = u32(clamp(floor(projected + 0.5), 0.0, f32(entries - 1)));
+			let best: u32 = guess;
+			let best_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess], format.channels);
+			if (guess > 0) {
+				let lower_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess - 1], format.channels);
+				if (lower_error < best_error) {
+					best = guess - 1;
+					best_error = lower_error;
+				}
+			}
+			if (guess + 1 < entries) {
+				let upper_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess + 1], format.channels);
+				if (upper_error < best_error) {
+					best = guess + 1;
+					best_error = upper_error;
+				}
+			}
+			result.indices = with_index(result.indices, texel, best);
+			result.error = result.error + best_error;
+		}
+	}
+	return result;
+}
+
+// Returns a unit vector along the direction of greatest variance of a symmetric 4x4 matrix, given by its rows, or
+// zero when every row is zero. A few power iterations from the row with the largest diagonal are enough to rank
+// directions for block compression.
+principal_axis: fn (row0: vec4f, row1: vec4f, row2: vec4f, row3: vec4f) -> vec4f {
+	let axis: vec4f = row0;
+	let largest: f32 = row0.x;
+	if (row1.y > largest) {
+		axis = row1;
+		largest = row1.y;
+	}
+	if (row2.z > largest) {
+		axis = row2;
+		largest = row2.z;
+	}
+	if (row3.w > largest) {
+		axis = row3;
+	}
+	for (let iteration: u32 = 0; iteration < 4; iteration = iteration + 1) {
+		axis = vec4f(dot(row0, axis), dot(row1, axis), dot(row2, axis), dot(row3, axis));
+		// Rescaling keeps the iteration away from overflow; only the direction matters.
+		let size: f32 = max(max(abs(axis.x), abs(axis.y)), max(abs(axis.z), abs(axis.w)));
+		if (size > 0.0) {
+			axis = axis / size;
+		}
+	}
+	let length: f32 = dot(axis, axis);
+	if (length > 0.0) {
+		return axis * inversesqrt(length);
+	}
+	return vec4f(0.0, 0.0, 0.0, 0.0);
+}
+
+// Places a subset's endpoints at the extremes of its texels along their principal axis.
+principal_endpoints: fn (pixels: vec4f[16], mask: u32, channels: vec4f) -> Endpoints {
+	let count: f32 = 0.0;
+	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			count = count + 1.0;
+			sum = sum + pixels[texel] * channels;
+		}
+	}
+	let mean: vec4f = sum / max(count, 1.0);
+
+	let row0: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let row1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let row2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let row3: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			let offset: vec4f = pixels[texel] * channels - mean;
+			row0 = row0 + offset * offset.x;
+			row1 = row1 + offset * offset.y;
+			row2 = row2 + offset * offset.z;
+			row3 = row3 + offset * offset.w;
+		}
+	}
+	let axis: vec4f = principal_axis(row0, row1, row2, row3);
+
+	let lowest: f32 = NO_ERROR_YET;
+	let highest: f32 = 0.0 - NO_ERROR_YET;
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			let position: f32 = dot(pixels[texel] * channels - mean, axis);
+			lowest = min(lowest, position);
+			highest = max(highest, position);
+		}
+	}
+	return Endpoints(clamp_color(mean + axis * lowest), clamp_color(mean + axis * highest));
+}
+
+// Solves for the endpoints that minimize a subset's squared error with its current indices. Keeps the previous
+// endpoints when every texel uses the same weight, which leaves the system without a unique solution.
+refine_endpoints: fn (pixels: vec4f[16], mask: u32, indices: vec2u, previous: Endpoints, format: Format) -> Endpoints {
+	let offset: u32 = (1 << format.index_bits) - 4;
+	let low_low: f32 = 0.0;
+	let low_high: f32 = 0.0;
+	let high_high: f32 = 0.0;
+	let toward_low: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let toward_high: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			let weight: f32 = f32(WEIGHTS[offset + index_at(indices, texel)]) / 64.0;
+			let inverse: f32 = 1.0 - weight;
+			low_low = low_low + inverse * inverse;
+			low_high = low_high + inverse * weight;
+			high_high = high_high + weight * weight;
+			toward_low = toward_low + pixels[texel] * inverse;
+			toward_high = toward_high + pixels[texel] * weight;
+		}
+	}
+	let determinant: f32 = low_low * high_high - low_high * low_high;
+	if (determinant < 0.0001) {
+		return previous;
+	}
+	let low: vec4f = (toward_low * high_high - toward_high * low_high) / determinant;
+	let high: vec4f = (toward_high * low_low - toward_low * low_high) / determinant;
+	return Endpoints(clamp_color(low), clamp_color(high));
+}
+
+// Encodes a subset whose texels all hold `color`, repeated `count` times.
+//
+// Least squares can't spread identical texels over the palette, and both endpoints would round to the same stored
+// value. Instead, the endpoints bracket the color from below and above, and every texel uses the palette entry that
+// lands closest to it. Every allowed p-bit pair is tried.
+encode_uniform_subset: fn (color: vec4f, count: f32, mask: u32, format: Format) -> Subset {
+	let entries: u32 = 1 << format.index_bits;
+	let offset: u32 = entries - 4;
+	let best: Subset = Subset(vec4u(0, 0, 0, 0), vec4u(0, 0, 0, 0), vec2u(0, 0), NO_ERROR_YET);
+	let best_entry: u32 = 0;
+	for (let pbits: u32 = 0; pbits < 4; pbits = pbits + 1) {
+		let low_pbit: u32 = pbits & 1;
+		let high_pbit: u32 = pbits >> 1;
+		// Formats without p-bits, with one p-bit per subset, or with opaque mode 6 allow only some pairs.
+		let allowed: bool = true;
+		if (format.pbits == 0 && pbits != 0) {
+			allowed = false;
+		}
+		if (format.pbits == 1 && low_pbit != high_pbit) {
+			allowed = false;
+		}
+		if (format.opaque != 0 && pbits != 3) {
+			allowed = false;
+		}
+		if (allowed) {
+			let low: vec4u = vec4u(quantize_toward(color.x, format, low_pbit, false), quantize_toward(color.y, format, low_pbit, false), quantize_toward(color.z, format, low_pbit, false), quantize_toward(color.w, format, low_pbit, false));
+			let high: vec4u = vec4u(quantize_toward(color.x, format, high_pbit, true), quantize_toward(color.y, format, high_pbit, true), quantize_toward(color.z, format, high_pbit, true), quantize_toward(color.w, format, high_pbit, true));
+			let low_expanded: vec4f = expand_codes(low, format.endpoint_bits);
+			let high_expanded: vec4f = expand_codes(high, format.endpoint_bits);
+			for (let entry: u32 = 0; entry < entries; entry = entry + 1) {
+				let error: f32 = palette_error(color, low_expanded, high_expanded, WEIGHTS[offset + entry], format.channels);
+				if (error < best.error) {
+					best = Subset(low, high, vec2u(0, 0), error);
+					best_entry = entry;
+				}
+			}
+		}
+	}
+
+	// Every texel shares the entry, so it can't be an anchor with its top bit set; swapping the endpoints mirrors it.
+	let low: vec4u = best.low;
+	let high: vec4u = best.high;
+	if (best_entry >= entries / 2) {
+		low = best.high;
+		high = best.low;
+		best_entry = entries - 1 - best_entry;
+	}
+	let indices: vec2u = vec2u(0, 0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			indices = with_index(indices, texel, best_entry);
+		}
+	}
+	return Subset(low, high, indices, best.error * count);
+}
+
+// Encodes the texels in `mask` as one subset. `anchor` is the texel whose index must keep its top bit clear, so the
+// endpoints swap when the best fit sets it.
+encode_subset: fn (pixels: vec4f[16], mask: u32, anchor: u32, format: Format) -> Subset {
+	// A subset of identical texels takes the exact single-color path.
+	let first: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let count: f32 = 0.0;
+	let spread: f32 = 0.0;
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			if (count == 0.0) {
+				first = pixels[texel];
+			}
+			let difference: vec4f = (pixels[texel] - first) * format.channels;
+			spread = spread + dot(difference, difference);
+			count = count + 1.0;
+		}
+	}
+	if (spread == 0.0) {
+		return encode_uniform_subset(first, count, mask, format);
+	}
+
+	let endpoints: Endpoints = principal_endpoints(pixels, mask, format.channels);
+	let best: Subset = Subset(vec4u(0, 0, 0, 0), vec4u(0, 0, 0, 0), vec2u(0, 0), NO_ERROR_YET);
+	for (let pass: u32 = 0; pass <= format.refinements; pass = pass + 1) {
+		let codes: Codes = quantize_pair(endpoints, format);
+		let low: vec4f = expand_codes(codes.low, format.endpoint_bits);
+		let high: vec4f = expand_codes(codes.high, format.endpoint_bits);
+		let fit: Fit = fit_indices(pixels, mask, low, high, format);
+		if (fit.error < best.error) {
+			best = Subset(codes.low, codes.high, fit.indices, fit.error);
+		}
+		if (pass < format.refinements) {
+			endpoints = refine_endpoints(pixels, mask, fit.indices, endpoints, format);
+		}
+	}
+
+	let entries: u32 = 1 << format.index_bits;
+	if (index_at(best.indices, anchor) < entries / 2) {
+		return best;
+	}
+	let flipped: vec2u = vec2u(0, 0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		if (in_subset(mask, texel)) {
+			flipped = with_index(flipped, texel, entries - 1 - index_at(best.indices, texel));
+		}
+	}
+	return Subset(best.high, best.low, flipped, best.error);
+}
+
+// Returns the subset format of modes 1, 3, 6, and 7.
+subset_format: fn (mode: u32, opaque: u32) -> Format {
+	let color: vec4f = vec4f(1.0, 1.0, 1.0, 0.0);
+	let color_alpha: vec4f = vec4f(1.0, 1.0, 1.0, 1.0);
+	if (mode == 1) {
+		return Format(3, 7, 1, color, 2, 0);
+	}
+	if (mode == 3) {
+		return Format(2, 8, 2, color, 1, 0);
+	}
+	if (mode == 6) {
+		return Format(4, 8, 2, color_alpha, 2, opaque);
+	}
+	return Format(2, 6, 2, color_alpha, 2, 0);
+}
+
+// Packs a mode 6 block: one subset, 7-bit RGBA endpoints with a p-bit each, and 4-bit indices.
+pack_mode6: fn (subset: Subset) -> vec4u {
+	let bits: Bits = Bits(vec4u(0, 0, 0, 0), 0);
+	bits = put(bits, 64, 7);
+	for (let channel: u32 = 0; channel < 4; channel = channel + 1) {
+		bits = put(bits, subset.low[channel] >> 1, 7);
+		bits = put(bits, subset.high[channel] >> 1, 7);
+	}
+	bits = put(bits, subset.low.x & 1, 1);
+	bits = put(bits, subset.high.x & 1, 1);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let width: u32 = 4;
+		if (texel == 0) {
+			width = 3;
+		}
+		bits = put(bits, index_at(subset.indices, texel), width);
+	}
+	return bits.words;
+}
+
+// Packs a mode 1, 3, or 7 block from its two subsets.
+pack_two_subsets: fn (mode: u32, partition: u32, first: Subset, second: Subset) -> vec4u {
+	let format: Format = subset_format(mode, 0);
+	let channels: u32 = 3;
+	if (mode == 7) {
+		channels = 4;
+	}
+	let bits: Bits = Bits(vec4u(0, 0, 0, 0), 0);
+	bits = put(bits, 1 << mode, mode + 1);
+	bits = put(bits, partition, 6);
+	// Every channel lists the four endpoints before the next channel starts. The p-bit isn't part of these fields.
+	let code_bits: u32 = format.endpoint_bits - 1;
+	for (let channel: u32 = 0; channel < channels; channel = channel + 1) {
+		bits = put(bits, first.low[channel] >> 1, code_bits);
+		bits = put(bits, first.high[channel] >> 1, code_bits);
+		bits = put(bits, second.low[channel] >> 1, code_bits);
+		bits = put(bits, second.high[channel] >> 1, code_bits);
+	}
+	if (mode == 1) {
+		bits = put(bits, first.low.x & 1, 1);
+		bits = put(bits, second.low.x & 1, 1);
+	} else {
+		bits = put(bits, first.low.x & 1, 1);
+		bits = put(bits, first.high.x & 1, 1);
+		bits = put(bits, second.low.x & 1, 1);
+		bits = put(bits, second.high.x & 1, 1);
+	}
+	let indices: vec2u = vec2u(first.indices.x | second.indices.x, first.indices.y | second.indices.y);
+	let anchor: u32 = ANCHORS[partition];
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let width: u32 = format.index_bits;
+		if (texel == 0 || texel == anchor) {
+			width = width - 1;
+		}
+		bits = put(bits, index_at(indices, texel), width);
+	}
+	return bits.words;
+}
+
+// Encodes one partition of mode 1, 3, or 7.
+encode_partition: fn (pixels: vec4f[16], mode: u32, partition: u32) -> Candidate {
+	let format: Format = subset_format(mode, 0);
+	let second_mask: u32 = PARTITIONS[partition];
+	let first: Subset = encode_subset(pixels, 65535 - second_mask, 0, format);
+	let second: Subset = encode_subset(pixels, second_mask, ANCHORS[partition], format);
+	return Candidate(first.error + second.error, pack_two_subsets(mode, partition, first, second));
+}
+
+// Estimates the squared error of fitting a subset with a line: the variance that its principal axis leaves out.
+// `sum` and the second moments `moment0` to `moment3` accumulate the subset's texels and their products.
+line_error: fn (count: f32, sum: vec4f, moment0: vec4f, moment1: vec4f, moment2: vec4f, moment3: vec4f) -> f32 {
+	if (count < 1.0) {
+		return 0.0;
+	}
+	let mean: vec4f = sum / count;
+	let row0: vec4f = moment0 - sum * mean.x;
+	let row1: vec4f = moment1 - sum * mean.y;
+	let row2: vec4f = moment2 - sum * mean.z;
+	let row3: vec4f = moment3 - sum * mean.w;
+	let axis: vec4f = principal_axis(row0, row1, row2, row3);
+	let spread: f32 = dot(axis, vec4f(dot(row0, axis), dot(row1, axis), dot(row2, axis), dot(row3, axis)));
+	return max(row0.x + row1.y + row2.z + row3.w - spread, 0.0);
+}
+
+// Returns the partitions with the smallest estimated error, best first, packed 6 bits apiece in `vec4u` fields that
+// hold 5 partitions each. Only the first `count` entries, at most 15, are meaningful.
+rank_partitions: fn (pixels: vec4f[16], count: u32) -> vec4u {
+	let total: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total0: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	let total3: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let pixel: vec4f = pixels[texel];
+		total = total + pixel;
+		total0 = total0 + pixel * pixel.x;
+		total1 = total1 + pixel * pixel.y;
+		total2 = total2 + pixel * pixel.z;
+		total3 = total3 + pixel * pixel.w;
+	}
+
+	// Keys hold the estimated error above the partition number, so a sorted list of keys ranks partitions.
+	let keys: u32[15] = u32[15](4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295);
+	for (let partition: u32 = 0; partition < 64; partition = partition + 1) {
+		let mask: u32 = PARTITIONS[partition];
+		let count1: f32 = 0.0;
+		let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let moment0: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let moment1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let moment2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		let moment3: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+			if (in_subset(mask, texel)) {
+				let pixel: vec4f = pixels[texel];
+				count1 = count1 + 1.0;
+				sum = sum + pixel;
+				moment0 = moment0 + pixel * pixel.x;
+				moment1 = moment1 + pixel * pixel.y;
+				moment2 = moment2 + pixel * pixel.z;
+				moment3 = moment3 + pixel * pixel.w;
+			}
+		}
+		let error: f32 = line_error(count1, sum, moment0, moment1, moment2, moment3) + line_error(16.0 - count1, total - sum, total0 - moment0, total1 - moment1, total2 - moment2, total3 - moment3);
+
+		// Insert the key: each position keeps the smaller key and passes the larger one down the list.
+		let key: u32 = (u32(min(error, 67108863.0)) << 6) | partition;
+		for (let position: u32 = 0; position < count; position = position + 1) {
+			let current: u32 = keys[position];
+			if (key < current) {
+				keys[position] = key;
+				key = current;
+			}
+		}
+	}
+
+	let ranked: vec4u = vec4u(0, 0, 0, 0);
+	for (let position: u32 = 0; position < count; position = position + 1) {
+		let field: u32 = position / 5;
+		ranked[field] = ranked[field] | ((keys[position] & 63) << ((position % 5) * 6));
+	}
+	return ranked;
+}
+
+// Returns entry `position` of a list from `rank_partitions`.
+ranked_partition: fn (ranked: vec4u, position: u32) -> u32 {
+	return (ranked[position / 5] >> ((position % 5) * 6)) & 63;
+}
+
+encode_mode6: fn (pixels: vec4f[16], opaque: u32) -> Candidate {
+	let subset: Subset = encode_subset(pixels, 65535, 0, subset_format(6, opaque));
+	return Candidate(subset.error, pack_mode6(subset));
+}
+
+// Encodes mode 4 or 5, which store alpha with its own endpoints and indices. In mode 4, `index_selection` 1 swaps
+// which of the two index sets holds color and which holds alpha.
+encode_separate_alpha: fn (pixels: vec4f[16], mode: u32, index_selection: u32) -> Candidate {
+	let color_bits: u32 = 7;
+	let alpha_bits: u32 = 8;
+	let color_indices: u32 = 2;
+	let alpha_indices: u32 = 2;
+	if (mode == 4) {
+		color_bits = 5;
+		alpha_bits = 6;
+		color_indices = 2 + index_selection;
+		alpha_indices = 3 - index_selection;
+	}
+	let color: Subset = encode_subset(pixels, 65535, 0, Format(color_indices, color_bits, 0, vec4f(1.0, 1.0, 1.0, 0.0), 2, 0));
+	let alpha: Subset = encode_subset(pixels, 65535, 0, Format(alpha_indices, alpha_bits, 0, vec4f(0.0, 0.0, 0.0, 1.0), 2, 0));
+
+	let bits: Bits = Bits(vec4u(0, 0, 0, 0), 0);
+	bits = put(bits, 1 << mode, mode + 1);
+	// Rotation 0 keeps alpha in the alpha channel.
+	bits = put(bits, 0, 2);
+	if (mode == 4) {
+		bits = put(bits, index_selection, 1);
+	}
+	for (let channel: u32 = 0; channel < 3; channel = channel + 1) {
+		bits = put(bits, color.low[channel], color_bits);
+		bits = put(bits, color.high[channel], color_bits);
+	}
+	bits = put(bits, alpha.low.w, alpha_bits);
+	bits = put(bits, alpha.high.w, alpha_bits);
+
+	// The 2-bit index set comes first. It holds color unless mode 4 selects the swap.
+	let first: Subset = color;
+	let second: Subset = alpha;
+	if (index_selection == 1) {
+		first = alpha;
+		second = color;
+	}
+	let second_bits: u32 = 2;
+	if (mode == 4) {
+		second_bits = 3;
+	}
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let width: u32 = 2;
+		if (texel == 0) {
+			width = 1;
+		}
+		bits = put(bits, index_at(first.indices, texel), width);
+	}
+	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
+		let width: u32 = second_bits;
+		if (texel == 0) {
+			width = second_bits - 1;
+		}
+		bits = put(bits, index_at(second.indices, texel), width);
+	}
+	return Candidate(color.error + alpha.error, bits.words);
+}
+
+better: fn (current: Candidate, candidate: Candidate) -> Candidate {
+	if (candidate.error < current.error) {
+		return candidate;
+	}
+	return current;
+}
+
+// Candidates only replace a strictly better one, so the search stops as soon as a block is encoded without error.
+encode_opaque: fn (pixels: vec4f[16]) -> Candidate {
+	let best: Candidate = encode_mode6(pixels, 1);
+	if (best.error == 0.0) {
+		return best;
+	}
+	let ranked: vec4u = rank_partitions(pixels, MODE1_CANDIDATES);
+	for (let position: u32 = 0; position < MODE1_CANDIDATES; position = position + 1) {
+		best = better(best, encode_partition(pixels, 1, ranked_partition(ranked, position)));
+		if (best.error == 0.0) {
+			return best;
+		}
+	}
+	for (let position: u32 = 0; position < MODE3_CANDIDATES; position = position + 1) {
+		best = better(best, encode_partition(pixels, 3, ranked_partition(ranked, position)));
+		if (best.error == 0.0) {
+			return best;
+		}
+	}
+	return best;
+}
+
+encode_transparent: fn (pixels: vec4f[16]) -> Candidate {
+	let best: Candidate = encode_mode6(pixels, 0);
+	if (best.error == 0.0) {
+		return best;
+	}
+	best = better(best, encode_separate_alpha(pixels, 5, 0));
+	if (best.error == 0.0) {
+		return best;
+	}
+	best = better(best, encode_separate_alpha(pixels, 4, 0));
+	best = better(best, encode_separate_alpha(pixels, 4, 1));
+	if (best.error == 0.0) {
+		return best;
+	}
+	let ranked: vec4u = rank_partitions(pixels, MODE7_CANDIDATES);
+	for (let position: u32 = 0; position < MODE7_CANDIDATES; position = position + 1) {
+		best = better(best, encode_partition(pixels, 7, ranked_partition(ranked, position)));
+		if (best.error == 0.0) {
+			return best;
+		}
+	}
+	return best;
+}
+
+// Reads texel `index` of a block in 0 to 255 units, repeating the level's last row and column past its edges.
+texel: fn (block: vec2u, index: u32) -> vec4f {
+	let x: u32 = min(block.x * 4 + (index & 3), push_constant.width - 1);
+	let y: u32 = min(block.y * 4 + (index >> 2), push_constant.height - 1);
+	let value: vec4f = fetch(source, vec2u(x, y)) * 255.0;
+	return vec4f(floor(value.x + 0.5), floor(value.y + 0.5), floor(value.z + 0.5), floor(value.w + 0.5));
+}
+
+main: fn (input: StageInput) -> void {
+	let block: vec2u = input.thread_id;
+	if (block.x >= push_constant.blocks_x || block.y >= push_constant.blocks_y) {
+		return;
+	}
+	let pixels: vec4f[16] = vec4f[16](texel(block, 0), texel(block, 1), texel(block, 2), texel(block, 3), texel(block, 4), texel(block, 5), texel(block, 6), texel(block, 7), texel(block, 8), texel(block, 9), texel(block, 10), texel(block, 11), texel(block, 12), texel(block, 13), texel(block, 14), texel(block, 15));
+
+	let opaque: bool = true;
+	for (let index: u32 = 0; index < 16; index = index + 1) {
+		if (pixels[index].w < 255.0) {
+			opaque = false;
+		}
+	}
+	let best: Candidate = Candidate(0.0, vec4u(0, 0, 0, 0));
+	if (opaque) {
+		best = encode_opaque(pixels);
+	} else {
+		best = encode_transparent(pixels);
+	}
+	blocks[push_constant.first_block + block.y * push_constant.blocks_x + block.x] = best.bits;
+}

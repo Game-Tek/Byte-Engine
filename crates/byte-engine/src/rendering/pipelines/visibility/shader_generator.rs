@@ -18,7 +18,8 @@ use resource_management::asset::handler::implementations::bema::ProgramGenerator
 use self::ast::*;
 use self::sources::*;
 use super::layout::{
-	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
+	LIGHT_CLUSTER_COLUMNS, LIGHT_CLUSTER_MASK_WORD_COUNT, LIGHT_CLUSTER_ROWS, LIGHT_CLUSTER_SLICES, MAX_BINDLESS_TEXTURES,
+	MAX_LIGHTS, MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_PIXEL_MAPPING_ENTRIES,
 };
 use crate::rendering::common_shader_generator::common_shader_scope;
 
@@ -353,15 +354,30 @@ impl VisibilityShaderScope {
 			(DIRECTIONAL_SHADOW_DEPTH_PROBE_SOURCE, "directional_shadow_area_is_fully_lit"),
 			(DIRECTIONAL_SHADOW_BLOCKER_SOURCE, "directional_shadow_blocker_depth"),
 			(DIRECTIONAL_SHADOW_PENUMBRA_SOURCE, "sample_directional_shadow_penumbra"),
-			(DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE, "directional_shadow_texels_per_meter"),
-			(DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE, "directional_shadow_depth_per_meter"),
+			(
+				DIRECTIONAL_SHADOW_TEXELS_PER_METER_SOURCE,
+				"directional_shadow_texels_per_meter",
+			),
+			(
+				DIRECTIONAL_SHADOW_DEPTH_PER_METER_SOURCE,
+				"directional_shadow_depth_per_meter",
+			),
 			(DIRECTIONAL_SHADOW_CASCADE_VIEW_SOURCE, "directional_shadow_cascade_view"),
 			(DIRECTIONAL_SHADOW_CASCADE_SCALE_SOURCE, "directional_shadow_cascade_scale"),
-			(DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE, "directional_shadow_fitting_cascade"),
+			(
+				DIRECTIONAL_SHADOW_FITTING_CASCADE_SOURCE,
+				"directional_shadow_fitting_cascade",
+			),
 			(DIRECTIONAL_SHADOW_CASCADE_HOLDS_SOURCE, "directional_shadow_cascade_holds"),
 			(DIRECTIONAL_SHADOW_RECEIVER_SOURCE, "directional_shadow_receiver"),
-			(DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE, "directional_shadow_receiver_gradient"),
-			(DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE, "directional_shadow_occluder_distance"),
+			(
+				DIRECTIONAL_SHADOW_RECEIVER_GRADIENT_SOURCE,
+				"directional_shadow_receiver_gradient",
+			),
+			(
+				DIRECTIONAL_SHADOW_OCCLUDER_DISTANCE_SOURCE,
+				"directional_shadow_occluder_distance",
+			),
 			(DIRECTIONAL_SHADOW_CASCADE_SOURCE, "sample_directional_shadow_cascade"),
 			(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation"),
 			(CONE_SHADOW_SOURCE, "sample_cone_shadow"),

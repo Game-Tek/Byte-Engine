@@ -4,30 +4,19 @@ pub(crate) enum MaterialKey {
 	Material(u32),
 }
 
-/// The `ResolvedFbxMaterials` struct keeps the resource references used while imported material parts are assembled.
-pub(crate) struct ResolvedFbxMaterials {
-	pub(crate) materials: HashMap<MaterialKey, ReferenceModel<VariantModel>>,
-}
-
-impl ResolvedFbxMaterials {
-	pub(crate) fn get(&self, key: MaterialKey) -> Result<&ReferenceModel<VariantModel>, FbxImportError> {
-		self.materials.get(&key).ok_or(FbxImportError::MissingMaterial)
-	}
-}
-
 /// Resolves each used FBX material exactly once, honoring `.fbx.bead` overrides before generating a fallback.
 ///
 /// Maps each material to a BEAD override or a generated BRDF graph, then resolves them all through
-/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest.
+/// [`resolve_container_materials`], which bakes overrides as dependencies and generates the rest. Returns the variants
+/// in the order of `keys`, which [`used_material_keys`] returns.
 pub(crate) async fn resolve_fbx_materials(
 	context: BakeContext<'_>,
 	spec: Option<&Value>,
 	url: ResourceId<'_>,
 	scene: &ufbx::Scene,
+	keys: &[MaterialKey],
 	generator: Option<&dyn ProgramGenerator>,
-) -> Result<ResolvedFbxMaterials, LoadErrors> {
-	let keys = used_material_keys(scene, context.allocator());
-
+) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
 	let sources = keys
 		.iter()
 		.map(|&key| {
@@ -53,11 +42,7 @@ pub(crate) async fn resolve_fbx_materials(
 		.map(|texture| generated_fbx_image_id(url, texture))
 		.collect::<Vec<_>>();
 
-	let variants = resolve_container_materials(context, generator, url, &image_ids, sources).await?;
-
-	let materials = keys.iter().copied().zip(variants).collect();
-
-	Ok(ResolvedFbxMaterials { materials })
+	resolve_container_materials(context, generator, url, &image_ids, sources).await
 }
 
 /// Collects material identities in deterministic first-use order across FBX mesh instances.

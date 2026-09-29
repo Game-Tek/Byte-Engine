@@ -149,7 +149,8 @@ impl From<MeshProcessingError> for FbxMeshProcessingError {
 /// The `FbxPrimitiveSource` struct lends remapped FBX corners to the common processor without materializing attributes.
 pub(crate) struct FbxPrimitiveSource<'context, 'scene, 'batch> {
 	context: &'context FbxMeshImportContext<'scene>,
-	material: &'batch ReferenceModel<VariantModel>,
+	/// The index of the primitive's material in the mesh's list of used materials.
+	material_slot: usize,
 	source_corners: &'batch [u32],
 	indices: &'batch [u32],
 }
@@ -157,7 +158,7 @@ pub(crate) struct FbxPrimitiveSource<'context, 'scene, 'batch> {
 impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 	pub(crate) fn new(
 		context: &'context FbxMeshImportContext<'scene>,
-		material: &'batch ReferenceModel<VariantModel>,
+		material_slot: usize,
 		batch: &'batch RemappedCorners<'_>,
 	) -> Result<Self, FbxImportError> {
 		if batch.source_corners.is_empty() {
@@ -165,7 +166,7 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 		}
 		Ok(Self {
 			context,
-			material,
+			material_slot,
 			source_corners: &batch.source_corners,
 			indices: &batch.indices,
 		})
@@ -218,8 +219,8 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 	type Error = FbxImportError;
 
-	fn material(&self) -> &ReferenceModel<VariantModel> {
-		self.material
+	fn material_slot(&self) -> usize {
+		self.material_slot
 	}
 
 	fn transform_node(&self) -> Option<u32> {
@@ -584,33 +585,13 @@ pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
 	.collect()
 }
 
-/// Streams every mesh instance and material part through the common processor while reusing FBX topology scratch.
-#[allow(dead_code)] // Buffer-owning callers still use this utility outside the direct storage path.
-pub(crate) fn import_fbx_meshes<'a>(
-	scene: &ufbx::Scene,
-	materials: &ResolvedFbxMaterials,
-	skeleton: Option<ReferenceModel<SkeletonModel>>,
-	source_to_skeleton: &[u32],
-	mesh_processor: MeshProcessor,
-	allocator: &'a dyn Allocator,
-	culled_polygons: &mut FbxCulledPolygonCounts,
-) -> Result<ProcessedMesh, FbxMeshProcessingError> {
-	Ok(import_fbx_mesh_session(
-		scene,
-		materials,
-		skeleton,
-		source_to_skeleton,
-		mesh_processor,
-		allocator,
-		culled_polygons,
-	)?
-	.finish())
-}
-
 /// Streams FBX primitives into a session that can write its final blocks directly to resource storage.
+///
+/// Each primitive names its material by its key's position in `material_keys`, the list [`used_material_keys`]
+/// returns, so the geometry can be processed while those materials still bake.
 pub(crate) fn import_fbx_mesh_session<'a>(
 	scene: &ufbx::Scene,
-	materials: &ResolvedFbxMaterials,
+	material_keys: &[MaterialKey],
 	skeleton: Option<ReferenceModel<SkeletonModel>>,
 	source_to_skeleton: &[u32],
 	mesh_processor: MeshProcessor,
@@ -682,7 +663,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 				}
 			}
 
-			import_fbx_material_corners(&context, 0, &corners, &mut remap, materials, &mut processor, allocator)
+			import_fbx_material_corners(&context, 0, &corners, &mut remap, material_keys, &mut processor, allocator)
 				.map(|count| primitive_count += count)?;
 		} else {
 			for part in &mesh.material_parts {
@@ -717,7 +698,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 					part.index as usize,
 					&corners,
 					&mut remap,
-					materials,
+					material_keys,
 					&mut processor,
 					allocator,
 				)
@@ -733,12 +714,15 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 }
 
 /// Processes one triangulated material part immediately so source-corner storage can be reused by the next part.
+///
+/// `part` is the part's material index within its FBX mesh, and `material_keys` lists the materials the whole mesh
+/// uses, in the order the finished mesh receives them.
 pub(crate) fn import_fbx_material_corners<'a>(
 	context: &FbxMeshImportContext<'_>,
-	material_slot: usize,
+	part: usize,
 	corners: &[u32],
 	remap: &mut [u32],
-	materials: &ResolvedFbxMaterials,
+	material_keys: &[MaterialKey],
 	processor: &mut MeshProcessorSession,
 	allocator: &'a dyn Allocator,
 ) -> Result<usize, FbxMeshProcessingError> {
@@ -746,10 +730,14 @@ pub(crate) fn import_fbx_material_corners<'a>(
 		return Ok(0);
 	}
 
-	let material = materials.get(material_key_for_slot(context.material_node, context.mesh, material_slot))?;
+	let key = material_key_for_slot(context.material_node, context.mesh, part);
+	let material_slot = material_keys
+		.iter()
+		.position(|used| *used == key)
+		.ok_or(FbxImportError::MissingMaterial)?;
 	let mut processed = 0;
 	for batch in remap_triangle_corners(context.mesh.num_indices, corners, remap, allocator)? {
-		let source = FbxPrimitiveSource::new(context, material, &batch)?;
+		let source = FbxPrimitiveSource::new(context, material_slot, &batch)?;
 		processor.push_primitive(&source).map_err(|error| match error {
 			MeshPrimitiveProcessingError::Source(error) => FbxMeshProcessingError::Import(error),
 			MeshPrimitiveProcessingError::Processing(error) => FbxMeshProcessingError::Processing(error),

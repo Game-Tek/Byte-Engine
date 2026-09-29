@@ -1206,7 +1206,10 @@ impl crate::context::Context for Device {
 		Device::get_mut_buffer_slice(self, buffer_handle)
 	}
 
-	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: BufferHandle<T>,
+	) -> crate::buffer::Mapping {
 		unsafe { Device::transfer_buffer_mapping(self, buffer_handle) }
 	}
 

@@ -229,6 +229,45 @@ mod tests {
 			.await
 			.expect("Expected find_lsb and scalar log2 to compile for the platform shader language");
 	}
+
+	/// Verifies value arrays, array parameters, vector components selected at runtime, and unsigned `min`, `max`, and
+	/// `clamp` with literal arguments compile with the real platform shader compiler.
+	#[compio::test]
+	async fn value_arrays_and_unsigned_extrema_compile_for_the_platform() {
+		let root = besl::compile_to_besl(
+			r#"
+			Result: struct {
+				values: u32[4],
+			}
+			result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+			sum: fn (values: u32[8], count: u32) -> u32 {
+				let copy: u32[8] = values;
+				let total: u32 = 0;
+				for (let i: u32 = 0; i < min(count, 8); i = i + 1) {
+					total = total + copy[i];
+				}
+				return total;
+			}
+
+			main: fn () -> void {
+				let values: u32[8] = u32[8](1, 2, 3, 4, 5, 6, 7, 8);
+				values[result.values[0] % 8] = max(result.values[1], 3);
+				let words: vec4u = vec4u(0, 0, 0, 0);
+				words[result.values[2] & 3] = clamp(sum(values, result.values[3]), 1, 100);
+				result.values[0] = words.x;
+			}
+			"#,
+			None,
+		)
+		.expect("Expected the array fixture to link");
+		let settings = ShaderGenerationSettings::compute(utils::Extent::line(1)).name("value_arrays".to_string());
+
+		Generator::new()
+			.generate(&settings, &root)
+			.await
+			.expect("Expected arrays and unsigned extrema to compile for the platform shader language");
+	}
 }
 
 pub use Generator as PlatformShaderCompiler;

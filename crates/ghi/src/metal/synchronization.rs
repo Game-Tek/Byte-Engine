@@ -568,7 +568,11 @@ impl MetalResourceTracker {
 		}
 		self.completed_ahead.push(recording);
 		let before = self.completed_below;
-		while let Some(index) = self.completed_ahead.iter().position(|&completed| completed == self.completed_below) {
+		while let Some(index) = self
+			.completed_ahead
+			.iter()
+			.position(|&completed| completed == self.completed_below)
+		{
 			self.completed_ahead.swap_remove(index);
 			self.completed_below += 1;
 		}

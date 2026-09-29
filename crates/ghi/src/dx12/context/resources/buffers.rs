@@ -51,7 +51,10 @@ impl Device {
 		unsafe { &*pointer }
 	}
 
-	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: BufferHandle<T>,
+	) -> &mut T {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");
@@ -73,7 +76,10 @@ impl Device {
 	/// # Safety
 	///
 	/// The caller must keep the buffer alive and prevent concurrent access for the lifetime of the returned mapping.
-	pub unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> crate::buffer::Mapping {
+	pub unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: BufferHandle<T>,
+	) -> crate::buffer::Mapping {
 		let buffer = self
 			.buffer_mut(buffer_handle.into())
 			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another device.");

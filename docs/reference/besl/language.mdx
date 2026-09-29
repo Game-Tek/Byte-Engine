@@ -94,8 +94,25 @@ for (let i: u32 = 0; i < 3; i = i + 1) {
 
 ### Write an array element
 
-Assign through an indexed buffer member, workgroup array, task payload, or mesh
-output array. The resource must allow writes.
+Assign to one element of a local array, or to one component of a vector, with
+an index:
+
+```rust
+main: fn () -> void {
+	let weights: f32[8] = f32[8](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+	let index: u32 = 2;
+	weights[index] = 0.5;
+
+	let words: vec4u = vec4u(0, 0, 0, 0);
+	words[index] = words[index] | 1;
+}
+```
+
+Keep the index inside the array or vector. The GPU result of an index past the
+end is undefined, and the VM reports it as an error.
+
+You can also assign through an indexed buffer member, workgroup array, task
+payload, or mesh output array. The resource must allow writes.
 
 ```rust
 Counters: struct {
@@ -117,9 +134,24 @@ main: fn () -> void {
 
 ### Pass and return arrays
 
-Function parameters and return values support compact scalar arrays with two
-through four `f32`, `u16`, or `u32` elements. The array type, including its
-count, must match at the call boundary.
+Function parameters accept arrays of any fixed size. Arrays pass by value, so
+the function receives a copy. The array type, including its count, must match
+at the call boundary.
+
+```rust
+sum: fn (values: f32[16], count: u32) -> f32 {
+	let total: f32 = 0.0;
+	for (let i: u32 = 0; i < count; i = i + 1) {
+		total = total + values[i];
+	}
+	return total;
+}
+```
+
+Return values support only compact scalar arrays with two through four `f32`,
+`u16`, or `u32` elements, because HLSL can't return arrays. BESL rejects a
+function that returns a larger array; return a vector or a struct with the
+values the caller needs instead.
 
 ```rust
 copy_indices: fn (indices: u32[3]) -> u32[3] {
@@ -133,7 +165,9 @@ main: fn () -> void {
 ```
 
 BESL lowers these compact arrays to native vectors on backends that can't pass
-or return arrays directly.
+or return arrays directly. HLSL also can't build a larger array inside an
+expression, so use a constructor for a larger array only to initialize a `let`
+or a constant.
 
 Value arrays such as `u32[3]`, arrays of resource descriptors, and layered
 textures such as `Texture2DArray` are separate concepts. See

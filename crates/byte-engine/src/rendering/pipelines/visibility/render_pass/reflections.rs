@@ -34,7 +34,10 @@ pub(crate) fn create_radiance_history_target(
 ) -> ghi::DynamicImageHandle {
 	// Material evaluation clears and writes this image, so it also needs clear use.
 	render_pass_builder.create_history_target(
-		ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::Clear)
+		ghi::image::Builder::new(
+			ghi::Formats::RGBA16F,
+			ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::Clear,
+		)
 		.name(RADIANCE_HISTORY_TARGET)
 		.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		1,

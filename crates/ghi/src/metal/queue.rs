@@ -66,7 +66,10 @@ impl NativeCommand {
 		let allocation: &ProtocolObject<dyn mtl::MTLAllocation> = ProtocolObject::from_ref(allocation);
 		// Commands reach the same buffers and textures once per command; the set keeps repeats to one probe and
 		// takes the reference count only once.
-		if self.retained_addresses.insert(std::ptr::from_ref(allocation).cast::<()>() as usize) {
+		if self
+			.retained_addresses
+			.insert(std::ptr::from_ref(allocation).cast::<()>() as usize)
+		{
 			self.retained_allocations.push(allocation.retain());
 		}
 	}
@@ -77,7 +80,10 @@ impl NativeCommand {
 		dyn NSObjectProtocol: ImplementedBy<T>,
 	{
 		let object: &ProtocolObject<dyn NSObjectProtocol> = ProtocolObject::from_ref(object);
-		if self.retained_addresses.insert(std::ptr::from_ref(object).cast::<()>() as usize) {
+		if self
+			.retained_addresses
+			.insert(std::ptr::from_ref(object).cast::<()>() as usize)
+		{
 			self.retained_objects.push(object.retain());
 		}
 	}

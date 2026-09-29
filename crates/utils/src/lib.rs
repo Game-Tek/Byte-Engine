@@ -15,7 +15,6 @@ pub mod range_allocator;
 pub mod smoothed_value;
 pub mod stable_vec;
 
-
 /// The base of every link to the online documentation. Set `BYTE_ENGINE_DOCS_BASE_URL` at build time to link elsewhere.
 const ONLINE_DOCS_BASE_URL: &str = match option_env!("BYTE_ENGINE_DOCS_BASE_URL") {
 	Some(url) => url,

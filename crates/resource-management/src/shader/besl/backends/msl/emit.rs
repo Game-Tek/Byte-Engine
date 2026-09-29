@@ -149,6 +149,22 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 	}
 
+	/// Writes the MSL type of a local, parameter, or constructed value.
+	///
+	/// BESL arrays copy, assign, and pass by value. C arrays do none of these, so value arrays become `metal::array`.
+	/// Struct fields and module constants keep C arrays, which don't change buffer layouts.
+	pub(crate) fn emit_value_type(string: &mut String, type_name: &str) {
+		if let Some((element_type, count)) = crate::shader::generator::value_array_parts(type_name) {
+			string.push_str("metal::array<");
+			Self::type_identifier(element_type).push_to(string);
+			string.push_str(", ");
+			string.push_str(count);
+			string.push('>');
+		} else {
+			Self::emit_type_name(string, type_name);
+		}
+	}
+
 	/// Translates BESL intrinsic type names to MSL type names, such as `vec2f` to `float2`.
 	pub(crate) fn translate_type(source: &str) -> &str {
 		match source {

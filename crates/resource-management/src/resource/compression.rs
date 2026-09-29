@@ -4,6 +4,11 @@
 pub(crate) const MINIMUM_COMPRESSION_SIZE: usize = 1024;
 const MINIMUM_SAVINGS_DIVISOR: usize = 8;
 
+/// Bytes in each window the compressibility probe compresses.
+const PROBE_WINDOW_SIZE: usize = 16 * 1024;
+/// Windows the probe spreads over a payload, from its first byte to its last.
+const PROBE_WINDOWS: usize = 4;
+
 /// Selects the explicit storage and delivery encoding for one resource payload.
 ///
 /// Read [`SerializableResource::encoding`](crate::SerializableResource::encoding)
@@ -77,6 +82,9 @@ pub(crate) fn prepare(data: &[u8], policy: ResourceCompressionPolicy) -> Option<
 	if policy == ResourceCompressionPolicy::Disabled || data.len() < MINIMUM_COMPRESSION_SIZE {
 		return None;
 	}
+	if !probe_suggests_savings(data) {
+		return None;
+	}
 
 	let Some(maximum_size) = maximum_compressed_size(data.len()) else {
 		log::warn!(
@@ -125,12 +133,77 @@ fn is_worthwhile(decoded_size: usize, compressed_size: usize) -> bool {
 	compressed_size < decoded_size - decoded_size / MINIMUM_SAVINGS_DIVISOR
 }
 
+/// Predicts from a few spread-out windows whether compressing all of `data` can save enough to keep the result.
+///
+/// Block-compressed textures and other dense payloads rarely compress, and trying costs a full pass over them.
+/// Each window sees fewer earlier matches than the whole payload does, so it compresses slightly worse, and the probe
+/// rejects only payloads whose windows save less than half the required amount. Payloads too small for the windows to
+/// be much cheaper than a full attempt always get one.
+fn probe_suggests_savings(data: &[u8]) -> bool {
+	if data.len() < PROBE_WINDOW_SIZE * PROBE_WINDOWS * 2 {
+		return true;
+	}
+
+	// The encoder's output bound for one window, so the probe needs no heap allocation.
+	let mut scratch = [0_u8; lz4_flex::block::get_maximum_output_size(PROBE_WINDOW_SIZE)];
+	let last_start = data.len() - PROBE_WINDOW_SIZE;
+	let mut compressed = 0;
+	for window in 0..PROBE_WINDOWS {
+		let start = last_start * window / (PROBE_WINDOWS - 1);
+		let Ok(size) = lz4_flex::block::compress_into(&data[start..start + PROBE_WINDOW_SIZE], &mut scratch) else {
+			return true;
+		};
+		compressed += size;
+	}
+	let sampled = PROBE_WINDOW_SIZE * PROBE_WINDOWS;
+	compressed < sampled - sampled / (MINIMUM_SAVINGS_DIVISOR * 2)
+}
+
 /// Computes the encoder's 110% plus 20-byte output bound without integer overflow.
 fn maximum_compressed_size(input_size: usize) -> Option<usize> {
 	input_size.checked_mul(110)?.checked_div(100)?.checked_add(20)
 }
 
+/// Returns the identity hash of a complete payload, the same value the resource writer computes while streaming it.
+///
+/// It's rapidhash V3 with the reference secrets, whose output stays the same across crate versions and platforms.
 pub(crate) fn payload_hash(data: &[u8]) -> u64 {
-	let digest = md5::compute(data);
-	u64::from_le_bytes(digest.0[..8].try_into().expect("MD5 digest should contain eight bytes"))
+	rapidhash::v3::rapidhash_v3(data)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ResourceCompressionPolicy, payload_hash, prepare};
+
+	/// Returns deterministic bytes that no general-purpose compressor can shrink.
+	fn noise(len: usize) -> Vec<u8> {
+		let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+		(0..len)
+			.map(|_| {
+				state ^= state << 13;
+				state ^= state >> 7;
+				state ^= state << 17;
+				(state >> 32) as u8
+			})
+			.collect()
+	}
+
+	#[test]
+	fn incompressible_payloads_are_stored_raw() {
+		assert!(prepare(&noise(512 * 1024), ResourceCompressionPolicy::Enabled).is_none());
+	}
+
+	#[test]
+	fn payloads_that_compress_are_compressed_even_when_their_start_does_not() {
+		// A noisy header followed by a long repetitive body must still compress, because the probe samples the
+		// whole payload rather than only its first bytes.
+		let mut data = noise(64 * 1024);
+		data.extend(std::iter::repeat_n([12_u8, 34, 56, 255], 256 * 1024).flatten());
+
+		let prepared = prepare(&data, ResourceCompressionPolicy::Enabled).expect("a mostly repetitive payload should compress");
+
+		assert!(prepared.bytes.len() < data.len() / 2);
+		assert_eq!(prepared.decoded_size, data.len());
+		assert_eq!(prepared.decoded_hash, payload_hash(&data));
+	}
 }

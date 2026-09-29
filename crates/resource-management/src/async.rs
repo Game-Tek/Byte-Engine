@@ -18,3 +18,20 @@ where
 }
 
 pub type BoxedFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
+/// Returns control to the executor once, so futures joined with the caller make progress.
+///
+/// Await it between chunks of synchronous work inside a joined future, such as between the primitives of a mesh
+/// while its materials bake, so the other futures can keep dispatching and collecting their work.
+pub(crate) async fn yield_now() {
+	let mut yielded = false;
+	std::future::poll_fn(|context| {
+		if yielded {
+			return std::task::Poll::Ready(());
+		}
+		yielded = true;
+		context.waker().wake_by_ref();
+		std::task::Poll::Pending
+	})
+	.await
+}

@@ -86,7 +86,6 @@ impl<A: Allocator> crate::device::Device for Device<A> {
 			"Metal device compute pipeline creation moved to Factory. The most likely cause is that resource construction is using Device instead of Context or Factory."
 		);
 	}
-
 }
 
 /// Checks that one Metal 4 command queue can run every requested workload type.

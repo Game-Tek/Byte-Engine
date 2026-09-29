@@ -802,7 +802,10 @@ mod tests {
 			shader,
 			"return transpose(transpose(float4x4(transpose(besl_matrix)[0],transpose(besl_matrix)[1],transpose(besl_matrix)[2],transpose(besl_matrix)[3])))[2];"
 		);
-		assert_string_contains!(shader, "results[3]=transpose(copy_matrix_columns(wrapped[0].besl_matrix))[2];");
+		assert_string_contains!(
+			shader,
+			"results[3]=transpose(copy_matrix_columns(wrapped[0].besl_matrix))[2];"
+		);
 		assert_string_contains!(shader, "results[4]=direct_constructed_column(matrices[1]);");
 		assert_string_contains!(shader, "float4 multiplied=transpose(mul(besl_matrix, 2.0))[0];");
 		assert_string_contains!(shader, "float4 added=transpose(besl_matrix+scale)[1];");
@@ -1574,6 +1577,73 @@ mod tests {
 		assert_string_contains!(shader, "float3 floats=scalar_f32();");
 		assert_string_contains!(shader, "uint16_t3 shorts=scalar_u16();");
 		assert_string_contains!(shader, "uint3 indices=mirror_indices(scalar_u32());");
+	}
+
+	/// Verifies value arrays declare their count after the name, including parameters, and initialize from braces.
+	#[test]
+	fn local_arrays_declare_in_c_position_and_initialize_from_braces() {
+		let root = besl::compile_to_besl(
+			r#"
+			first: fn (values: vec4f[3], count: u32) -> vec4f {
+				let copy: vec4f[3] = values;
+				copy[0] = copy[min(count, 2)];
+				return copy[0];
+			}
+			main: fn () -> void {
+				let positions: vec4f[3] = vec4f[3](
+					vec4f(0.0, 0.0, 0.0, 1.0),
+					vec4f(1.0, 0.0, 0.0, 1.0),
+					vec4f(0.0, 1.0, 0.0, 1.0)
+				);
+				positions[0] = positions[1];
+				first(positions, thread_idx());
+			}
+			"#,
+			None,
+		)
+		.expect("Expected local array source to link.");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(
+				&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+				&root.get_main().expect("Expected main."),
+			)
+			.expect("Expected HLSL local array lowering.");
+
+		assert_string_contains!(shader, "float4 positions[3]={float4(");
+		assert_string_contains!(shader, "float4 first(float4 values[3],");
+		assert_string_contains!(shader, "float4 copy[3]=values;");
+		assert_string_does_not_contain!(shader, "float4[3]");
+
+		#[cfg(target_os = "windows")]
+		compile_compute(&shader, "local arrays");
+	}
+
+	/// Verifies HLSL generation rejects an array constructor outside a declaration, which HLSL can't express.
+	#[test]
+	fn array_constructors_outside_declarations_are_rejected() {
+		let root = besl::compile_to_besl(
+			r#"
+			sum: fn (values: u32[5]) -> u32 {
+				return values[0] + values[4];
+			}
+			main: fn () -> void {
+				sum(u32[5](1, 2, 3, 4, 5));
+			}
+			"#,
+			None,
+		)
+		.expect("Expected array argument source to link.");
+
+		let result = Generator::new().generate(
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+			&root.get_main().expect("Expected main."),
+		);
+
+		assert!(
+			result.is_err(),
+			"HLSL generation must reject an array constructor passed as an argument"
+		);
 	}
 
 	/// Compiles generated compute HLSL with DXC on Windows so a lowering that DXC rejects fails the test.

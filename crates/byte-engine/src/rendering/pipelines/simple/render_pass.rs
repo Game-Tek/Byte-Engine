@@ -14,9 +14,9 @@ use crate::{
 	core::Entity,
 	rendering::{
 		Sink,
+		pipelines::simple::pipeline_manager::InstanceBatch,
 		pipelines::simple::{CameraShaderData, PipelineManager},
 		render_pass::RenderPassFunction,
-		pipelines::simple::pipeline_manager::InstanceBatch,
 	},
 };
 

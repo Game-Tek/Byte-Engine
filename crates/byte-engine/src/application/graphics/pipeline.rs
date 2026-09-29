@@ -192,7 +192,8 @@ fn visibility_pipeline_settings(application: &GraphicsApplication) -> Visibility
 	// Directional shadow coverage: each parameter overrides one part of the default splits.
 	let default_splits = settings.cascade_splits();
 	let shadow_distance = parse(application, DIRECTIONAL_SHADOW_DISTANCE_PARAMETER).unwrap_or(default_splits.distance());
-	let split_blend = parse(application, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
+	let split_blend =
+		parse(application, DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER).unwrap_or(default_splits.logarithmic_share());
 	settings = settings.with_cascade_splits(
 		crate::rendering::csm::CascadeSplits::new(shadow_distance, split_blend).unwrap_or_else(|reason| panic!("{reason}")),
 	);

@@ -7,10 +7,10 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use crate::configuration::ConfigurationValue;
-use crate::rendering::render_pass::RenderPassFunction;
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, record_compute_stages};
+use crate::configuration::ConfigurationValue;
+use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
 /// Configuration namespace of the runtime GTAO controls.

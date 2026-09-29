@@ -21,13 +21,13 @@ use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use smallvec::SmallVec;
 
 use crate::buffer::BufferHandle;
-use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 use crate::context::Context as _;
 // Tests build resources through the creation trait the context implements.
 #[cfg(test)]
 use crate::context::ContextCreate as _;
 use crate::graphics_hardware_interface;
 use crate::image::ImageHandle;
+use crate::{MAX_FRAMES_IN_FLIGHT, PrivateHandles};
 
 mod io;
 mod pipeline;

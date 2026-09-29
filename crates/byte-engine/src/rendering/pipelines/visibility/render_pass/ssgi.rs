@@ -55,7 +55,9 @@ pub(crate) struct SsgiTargets {
 /// Creates the SSGI render-graph targets for the sink that `render_pass_builder` sets up.
 ///
 /// Next, pass them to the visibility render pass, which hands them to [`SsgiPass::new`].
-pub(crate) fn create_ssgi_targets(render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>) -> SsgiTargets {
+pub(crate) fn create_ssgi_targets(
+	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
+) -> SsgiTargets {
 	let radiance_image = |name| {
 		ghi::image::Builder::new(RADIANCE_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
 			.name(name)
@@ -223,10 +225,30 @@ impl SsgiPass {
 			sampled(temporal_descriptor_set, DEPTH_BINDING, depth_pyramid.into(), point_sampler),
 			sampled(temporal_descriptor_set, TEMPORAL_RAW_BINDING, raw, point_sampler),
 			storage(temporal_descriptor_set, TEMPORAL_OUTPUT_BINDING, history.into()),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_HISTORY_BINDING, history, point_sampler),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_DEPTH_BINDING, depth_pyramid, point_sampler),
-			sampled(temporal_descriptor_set, TEMPORAL_NORMALS_BINDING, normals.into(), point_sampler),
-			previous(temporal_descriptor_set, TEMPORAL_PREVIOUS_NORMALS_BINDING, normals, point_sampler),
+			previous(
+				temporal_descriptor_set,
+				TEMPORAL_PREVIOUS_HISTORY_BINDING,
+				history,
+				point_sampler,
+			),
+			previous(
+				temporal_descriptor_set,
+				TEMPORAL_PREVIOUS_DEPTH_BINDING,
+				depth_pyramid,
+				point_sampler,
+			),
+			sampled(
+				temporal_descriptor_set,
+				TEMPORAL_NORMALS_BINDING,
+				normals.into(),
+				point_sampler,
+			),
+			previous(
+				temporal_descriptor_set,
+				TEMPORAL_PREVIOUS_NORMALS_BINDING,
+				normals,
+				point_sampler,
+			),
 			ghi::DescriptorWrite::buffer(upscale_descriptor_set, VIEW_BINDING.slot(), view_data.into()),
 			sampled(upscale_descriptor_set, DEPTH_BINDING, depth, point_sampler),
 			sampled(upscale_descriptor_set, UPSCALE_SOURCE_BINDING, history.into(), point_sampler),

@@ -232,10 +232,7 @@ fn run_meshlet_task_workgroup(
 	}
 	let mut meshes = buffer(program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX,
-			"model",
-			Value::Mat4x3F(identity_affine_matrix()),
-		)
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
 		.expect("task mesh transform");
 	for (field, value) in [
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
@@ -454,10 +451,7 @@ fn assert_triangle_mesh_program(
 		.expect("mesh view");
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX,
-			"model",
-			Value::Mat4x3F(identity_affine_matrix()),
-		)
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
 		.expect("mesh model matrix");
 	for (field, value) in [
 		("base_vertex_index", 0),
@@ -506,7 +500,8 @@ fn assert_triangle_mesh_program(
 	if let Some(skinned_positions) = skinned_positions {
 		const SKINNED_BASE_VERTEX: usize = 7;
 		meshes
-			.write_array_member(FIXTURE_INSTANCE_INDEX,
+			.write_array_member(
+				FIXTURE_INSTANCE_INDEX,
 				"skinned_base_vertex_index",
 				Value::U32(SKINNED_BASE_VERTEX as u32),
 			)
@@ -728,18 +723,9 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	// The offset pass does not clear material_count; evaluation reads it directly for bounds.
 	assert_eq!(read_u32(&material_counts, 2), 2);
 	assert_eq!(read_u32(&material_counts, 5), 1);
-	assert_eq!(
-		read_vec3u(&material_dispatches, 0),
-		[0, 1, 1]
-	);
-	assert_eq!(
-		read_vec3u(&material_dispatches, 2),
-		[1, 1, 1]
-	);
-	assert_eq!(
-		read_vec3u(&material_dispatches, 5),
-		[1, 1, 1]
-	);
+	assert_eq!(read_vec3u(&material_dispatches, 0), [0, 1, 1]);
+	assert_eq!(read_vec3u(&material_dispatches, 2), [1, 1, 1]);
+	assert_eq!(read_vec3u(&material_dispatches, 5), [1, 1, 1]);
 
 	// Mapping reuses the scratch offsets as atomic cursors and stores one-based coordinates for later zero-sentinel checks.
 	let pixel_mapping = run_pixel_mapping(
@@ -866,10 +852,7 @@ fn material_count_subgroup_aggregation_counts_a_coherent_tile_once_per_partition
 
 	let material_counts = run_material_count(&program, &mut mesh_data, &mut instance_indices);
 
-	assert_eq!(
-		read_u32(&material_counts, 7),
-		MATERIAL_COUNT_WORKGROUP_SIZE as u32
-	);
+	assert_eq!(read_u32(&material_counts, 7), MATERIAL_COUNT_WORKGROUP_SIZE as u32);
 }
 
 /* GTAO */
@@ -1487,7 +1470,13 @@ fn ssgi_floor_scene(extent: u32, wall_z: Option<f32>) -> (Vec<[f32; 4]>, Vec<[f3
 }
 
 /// Runs the SSGI trace at one pixel of the floor and optional wall scene and returns the raw radiance it writes.
-fn run_ssgi_trace(program: &ExecutableProgram, wall_z: Option<f32>, history: bool, frame_index: u32, pixel: [u32; 2]) -> [f32; 4] {
+fn run_ssgi_trace(
+	program: &ExecutableProgram,
+	wall_z: Option<f32>,
+	history: bool,
+	frame_index: u32,
+	pixel: [u32; 2],
+) -> [f32; 4] {
 	let (depth, radiance) = ssgi_floor_scene(SSGI_EXTENT, wall_z);
 	run_ssgi_trace_with_radiance(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, pixel)
 }
@@ -1696,7 +1685,14 @@ fn ssgi_temporal_filter_keeps_light_on_its_own_surface() {
 /// [`ssgi_floor_depth`], at pixel `(x, y)` of an `extent` square image.
 fn ssgi_contact_surface(x: u32, y: u32, extent: u32, wall_z: f32) -> (f32, [f32; 4]) {
 	let depth = ssgi_floor_depth(ssgi_ray_at(x as f32, y as f32, extent), Some(wall_z));
-	(depth, if depth == wall_z { SSGI_WALL_NORMAL } else { SSGI_FLOOR_NORMAL })
+	(
+		depth,
+		if depth == wall_z {
+			SSGI_WALL_NORMAL
+		} else {
+			SSGI_FLOOR_NORMAL
+		},
+	)
 }
 
 /// Verifies the spatial filter keeps light off a surface that touches the center's surface at the same depth, as a
@@ -1731,7 +1727,10 @@ fn ssgi_temporal_filter_keeps_light_off_a_touching_surface() {
 
 	let floor = fixture.run([column, floor_row]);
 	let wall = fixture.run([column, floor_row - 1]);
-	assert!(floor[0] < 0.01, "Expected no wall light on the floor next to it, found {floor:?}.");
+	assert!(
+		floor[0] < 0.01,
+		"Expected no wall light on the floor next to it, found {floor:?}."
+	);
 	assert!(wall[0] > 0.99, "Expected the wall to keep its light, found {wall:?}.");
 }
 
@@ -1790,7 +1789,13 @@ fn ssgi_upscale_keeps_light_on_its_own_side_of_a_depth_edge() {
 		.map(|index| [if index % LOW < LOW / 2 { 2.0 } else { 10.0 }, 0.0, 0.0, 1.0])
 		.collect();
 	let radiance: Vec<[f32; 4]> = (0..LOW * LOW)
-		.map(|index| if index % LOW < LOW / 2 { [1.0, 0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] })
+		.map(|index| {
+			if index % LOW < LOW / 2 {
+				[1.0, 0.0, 0.0, 1.0]
+			} else {
+				[0.0, 1.0, 0.0, 1.0]
+			}
+		})
 		.collect();
 	// Both walls face the camera.
 	let normals = vec![SSGI_WALL_NORMAL; (LOW * LOW) as usize];
@@ -1814,7 +1819,11 @@ fn ssgi_upscale_keeps_light_off_a_touching_surface() {
 	let device_depth: Vec<[f32; 4]> = (0..FULL * FULL)
 		.map(|index| {
 			let (z, _) = ssgi_contact_surface(index % FULL, index / FULL, FULL, WALL_Z);
-			let depth = if z == 0.0 { 0.0 } else { (GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range };
+			let depth = if z == 0.0 {
+				0.0
+			} else {
+				(GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range
+			};
 			[depth, 0.0, 0.0, 1.0]
 		})
 		.collect();
@@ -1833,10 +1842,23 @@ fn ssgi_upscale_keeps_light_off_a_touching_surface() {
 		.find(|&row| ssgi_contact_surface(column, row, FULL, WALL_Z).0 != WALL_Z)
 		.expect("the wall stands on the floor");
 
-	let wall = run_ssgi_upscale(FULL, &device_depth, &low_depth, &low_normals, &radiance, [column, floor_row - 1]);
+	let wall = run_ssgi_upscale(
+		FULL,
+		&device_depth,
+		&low_depth,
+		&low_normals,
+		&radiance,
+		[column, floor_row - 1],
+	);
 	let floor = run_ssgi_upscale(FULL, &device_depth, &low_depth, &low_normals, &radiance, [column, floor_row]);
-	assert!(wall[0] > 0.99, "Expected the wall next to the floor to keep its light, found {wall:?}.");
-	assert!(floor[0] < 0.01, "Expected no wall light on the floor next to it, found {floor:?}.");
+	assert!(
+		wall[0] > 0.99,
+		"Expected the wall next to the floor to keep its light, found {wall:?}."
+	);
+	assert!(
+		floor[0] < 0.01,
+		"Expected no wall light on the floor next to it, found {floor:?}."
+	);
 }
 
 /// Verifies rays from a wall find the floor in front of it, a surface seen at a grazing angle that one march step
@@ -1857,7 +1879,10 @@ fn ssgi_trace_finds_a_grazing_floor_that_rays_cross_between_steps() {
 			hits += 1;
 		}
 	}
-	assert!(hits >= 24, "Expected about half the rays to hit the floor, found {hits} hits in 64 frames.");
+	assert!(
+		hits >= 24,
+		"Expected about half the rays to hit the floor, found {hits} hits in 64 frames."
+	);
 }
 
 /// Verifies rays from a surface that faces the camera reach the floor between it and the camera.
@@ -1883,7 +1908,10 @@ fn ssgi_trace_rays_toward_the_camera_reach_the_floor_in_front_of_a_wall() {
 		}
 	}
 	// About a third of cosine-weighted rays point down steeply enough to land on the floor within reach.
-	assert!(hits >= 16, "Expected about a third of the rays to hit the floor, found {hits} hits in 64 frames.");
+	assert!(
+		hits >= 16,
+		"Expected about a third of the rays to hit the floor, found {hits} hits in 64 frames."
+	);
 }
 
 /// Returns the view-space depth that a ray through `ray` sees in a scene with a floor one unit below the camera
@@ -1909,22 +1937,25 @@ fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
 		(z, if pillar { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] })
 	});
 	// Floor pixels just in front of the pillar's base and beside it, where rays that lean forward reach its face.
-	let pillar_columns: Vec<u32> = (0..SSGI_EXTENT).filter(|&column| depth[(20 * SSGI_EXTENT + column) as usize][0] == 3.0).collect();
+	let pillar_columns: Vec<u32> = (0..SSGI_EXTENT)
+		.filter(|&column| depth[(20 * SSGI_EXTENT + column) as usize][0] == 3.0)
+		.collect();
 	let first_floor_row = (0..SSGI_EXTENT)
 		.find(|&row| row > 20 && depth[(row * SSGI_EXTENT + pillar_columns[0]) as usize][0] != 3.0)
 		.expect("the pillar stands on the floor");
 	let pixels: Vec<[u32; 2]> = (first_floor_row..first_floor_row + 3)
-		.flat_map(|row| {
-			(pillar_columns[0] - 2..=pillar_columns[pillar_columns.len() - 1] + 2).map(move |column| [column, row])
-		})
+		.flat_map(|row| (pillar_columns[0] - 2..=pillar_columns[pillar_columns.len() - 1] + 2).map(move |column| [column, row]))
 		.collect();
-	assert!(pixels.iter().all(|pixel| depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0] < 3.0));
+	assert!(
+		pixels
+			.iter()
+			.all(|pixel| depth[(pixel[1] * SSGI_EXTENT + pixel[0]) as usize][0] < 3.0)
+	);
 
 	let mut hits = 0;
 	for pixel in pixels {
 		for frame_index in 0..32 {
-			let radiance =
-				run_ssgi_trace_with_radiance(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, pixel);
+			let radiance = run_ssgi_trace_with_radiance(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, pixel);
 			if radiance[3] != 0.0 {
 				hits += 1;
 				assert!(
@@ -1951,7 +1982,11 @@ fn contact_shadow_scene_depth(ray: [f32; 2], wall: bool) -> f32 {
 	if wall && (0.0..=CONTACT_SHADOW_WALL_HEIGHT).contains(&wall_height) {
 		return CONTACT_SHADOW_WALL_Z;
 	}
-	if ray[1] < 0.0 { -CONTACT_SHADOW_CAMERA_HEIGHT / ray[1] } else { 0.0 }
+	if ray[1] < 0.0 {
+		-CONTACT_SHADOW_CAMERA_HEIGHT / ray[1]
+	} else {
+		0.0
+	}
 }
 
 /// Returns the reversed device depth of every pixel of the floor scene, with or without the low wall.
@@ -1961,7 +1996,11 @@ fn contact_shadow_device_depth(wall: bool) -> Vec<[f32; 4]> {
 	(0..extent * extent)
 		.map(|index| {
 			let z = contact_shadow_scene_depth(ssgi_ray_at((index % extent) as f32, (index / extent) as f32, extent), wall);
-			let depth = if z == 0.0 { 0.0 } else { (GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range };
+			let depth = if z == 0.0 {
+				0.0
+			} else {
+				(GTAO_NEAR * GTAO_FAR / range) / z - GTAO_NEAR / range
+			};
 			[depth, 0.0, 0.0, 1.0]
 		})
 		.collect()
@@ -2047,7 +2086,12 @@ fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 
 	for row in shadowed_rows {
 		let value = run_contact_shadows(true, direction_to_light, [column, row]);
-		assert_eq!(value, 0.0, "Expected floor row {row} at z={} to be shadowed.", contact_shadow_floor_z(row));
+		assert_eq!(
+			value,
+			0.0,
+			"Expected floor row {row} at z={} to be shadowed.",
+			contact_shadow_floor_z(row)
+		);
 	}
 	for row in fading_rows {
 		let value = run_contact_shadows(true, direction_to_light, [column, row]);
@@ -2059,7 +2103,12 @@ fn contact_shadows_darken_the_floor_just_in_front_of_a_low_wall() {
 	}
 	for row in lit_rows {
 		let value = run_contact_shadows(true, direction_to_light, [column, row]);
-		assert_eq!(value, 1.0, "Expected floor row {row} at z={} to be lit.", contact_shadow_floor_z(row));
+		assert_eq!(
+			value,
+			1.0,
+			"Expected floor row {row} at z={} to be lit.",
+			contact_shadow_floor_z(row)
+		);
 	}
 }
 
@@ -2081,10 +2130,14 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 
 	// The wall's top row borders the floor far behind it. Only the floor is shadowed.
 	let wall_top_row = (0..CONTACT_SHADOW_EXTENT)
-		.find(|&row| contact_shadow_scene_depth(ssgi_ray_at(column as f32, row as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z)
+		.find(|&row| {
+			contact_shadow_scene_depth(ssgi_ray_at(column as f32, row as f32, CONTACT_SHADOW_EXTENT), true)
+				== CONTACT_SHADOW_WALL_Z
+		})
 		.expect("a wall row");
 	let shadowed_floor = |x: u32, y: u32| {
-		let on_wall = contact_shadow_scene_depth(ssgi_ray_at(x as f32, y as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z;
+		let on_wall =
+			contact_shadow_scene_depth(ssgi_ray_at(x as f32, y as f32, CONTACT_SHADOW_EXTENT), true) == CONTACT_SHADOW_WALL_Z;
 		if on_wall { 1.0 } else { 0.0 }
 	};
 	let wall_edge = run_contact_shadow_filter(shadowed_floor, [column, wall_top_row]);
@@ -2101,7 +2154,10 @@ async fn contact_shadows_lower_to_the_platform_shader_language() {
 	for (name, source) in [
 		(
 			"contact_shadows",
-			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/visibility/contact-shadows.besl")),
+			include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/assets/rendering/visibility/contact-shadows.besl"
+			)),
 		),
 		(
 			"contact_shadow_filter",
@@ -2129,7 +2185,10 @@ fn contact_shadows_leave_an_open_floor_lit() {
 	for direction_to_light in [[0.0, 1.0, 0.0], [0.0, 0.1, 1.0], [0.0, 0.1, -1.0], [1.0, 0.1, 0.0]] {
 		for row in (CONTACT_SHADOW_EXTENT / 2 + 4..CONTACT_SHADOW_EXTENT).step_by(5) {
 			let value = run_contact_shadows(false, direction_to_light, [column, row]);
-			assert_eq!(value, 1.0, "Expected open floor row {row} to be lit toward {direction_to_light:?}.");
+			assert_eq!(
+				value, 1.0,
+				"Expected open floor row {row} to be lit toward {direction_to_light:?}."
+			);
 		}
 	}
 }
@@ -2206,7 +2265,9 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 			("type", Value::U32(light.light_type)),
 			("reach", Value::F32(light.reach)),
 		] {
-			lighting.write_indexed_field("lights", index, field, value).expect("light field");
+			lighting
+				.write_indexed_field("lights", index, field, value)
+				.expect("light field");
 		}
 	}
 	let mut masks = buffer(&program, ResourceSlot::new(1033));
@@ -2238,8 +2299,9 @@ fn light_cluster_index(column: u32, row: u32, slice: u32) -> u32 {
 /// Verifies each cluster holds exactly the lights whose reach touches it, with one bit per light-table entry.
 #[test]
 fn light_clusters_hold_the_lights_whose_reach_touches_them() {
-	use crate::rendering::lights::{DirectionalLight, LightColor, Lights, PhotometricIntensity};
 	use math::{Point, UnitVector};
+
+	use crate::rendering::lights::{DirectionalLight, LightColor, Lights, PhotometricIntensity};
 
 	let forward = UnitVector::z_axis();
 	let sun = Lights::Direction(
@@ -2264,7 +2326,11 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 	];
 	// Lights without reach fill the rest of the first mask word, so the last light lands in the second word.
 	lights.resize(40, super::shader_data::LightData::default());
-	lights.push(uploaded_light(light_cluster_fixture_light(false), Point::new(0.0, 0.0, 20.0), forward));
+	lights.push(uploaded_light(
+		light_cluster_fixture_light(false),
+		Point::new(0.0, 0.0, 20.0),
+		forward,
+	));
 
 	// Slice 18 spans about 17 m to 21 m of view depth, and slice 8 spans 1 m to 1.33 m. Column 8 and row 4 sit just
 	// right of and below the center of the image.
@@ -2417,12 +2483,13 @@ fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl:
 		for (field, value) in [
 			("view", Value::Mat4x3F(math::AffineShaderMatrix::from(view).0)),
 			("view_projection", Value::Mat4F(column_major(frame.view.view_projection()))),
-			("inverse_view", Value::Mat4x3F(math::AffineShaderMatrix::from(math::inverse(view)).0)),
+			(
+				"inverse_view",
+				Value::Mat4x3F(math::AffineShaderMatrix::from(math::inverse(view)).0),
+			),
 			("far", Value::F32(frame.slice_far)),
 		] {
-			views
-				.write_array_member(1 + cascade, field, value)
-				.expect("cascade view");
+			views.write_array_member(1 + cascade, field, value).expect("cascade view");
 		}
 	}
 	views
@@ -2611,9 +2678,7 @@ fn box_bounds(program: &ExecutableProgram, half_size: f32) -> besl::vm::Buffer {
 	.into_iter()
 	.enumerate()
 	{
-		bounds
-			.write_array_element(index, Value::U32(code))
-			.expect("receiver bounds");
+		bounds.write_array_element(index, Value::U32(code)).expect("receiver bounds");
 	}
 	bounds
 }
@@ -2631,10 +2696,16 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 	};
 
 	let fitted = fit(0.5);
-	assert!(fitted < scene.cascades[0].half_extent, "The box should shrink the first cascade.");
+	assert!(
+		fitted < scene.cascades[0].half_extent,
+		"The box should shrink the first cascade."
+	);
 	assert_eq!(fit(0.5 * 0.95), fitted, "A box one step smaller should keep the size.");
 	let shrunk = fit(0.5 * 0.75);
-	assert!(shrunk < fitted * 0.85, "A box three steps smaller should shrink the cascade, found {shrunk} of {fitted}.");
+	assert!(
+		shrunk < fitted * 0.85,
+		"A box three steps smaller should shrink the cascade, found {shrunk} of {fitted}."
+	);
 	assert_eq!(fit(0.5), fitted, "The original box should grow the cascade back at once.");
 }
 
@@ -2663,11 +2734,11 @@ async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
 			utils::Extent::line(4),
 		),
 	] {
-		let root = besl::lex(besl::parse(source).expect("cascade-fit shader should parse")).expect("cascade-fit shader should link");
+		let root =
+			besl::lex(besl::parse(source).expect("cascade-fit shader should parse")).expect("cascade-fit shader should link");
 		PlatformShaderCompiler::new()
 			.generate(&ShaderGenerationSettings::compute(workgroup).name(name.to_string()), &root)
 			.await
 			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
 }
-

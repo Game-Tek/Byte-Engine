@@ -3,9 +3,10 @@ use utils::Extent;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
-	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
-	buffer::BufferContents, descriptors, image,
+	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle,
+	SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	buffer::BufferContents,
+	descriptors, image,
 	pipelines::VertexElement,
 	sampler,
 	shader::{self, Sources},

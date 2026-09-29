@@ -61,11 +61,11 @@ pub(super) fn record_compute_stages<const N: usize>(
 	}
 }
 
-use self::contact_shadows::ContactShadowPass;
 pub use self::contact_shadows::CONTACT_SHADOWS_CONFIGURATION_PREFIX;
+use self::contact_shadows::ContactShadowPass;
 pub(crate) use self::contact_shadows::{ContactShadowSettings, ContactShadowTargets, create_contact_shadow_targets};
-pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::depth_pyramid::DepthPyramidPass;
+pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
@@ -74,17 +74,18 @@ use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::ShadowPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowWork};
+use self::ssgi::SsgiPass;
+pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
+use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
 	depth_pyramid::screen_view_data,
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
-use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
-use self::visibility::{VisibilityPass, VisibilityPhase};
 use super::layout::{
-	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, CONTACT_SHADOW_MAP_BINDING, CONE_SHADOW_MAP_FORMAT, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING,
-	DIFFUSE_RADIANCE_HISTORY_BINDING, DIRECTIONAL_SHADOW_MAP_FORMAT, INDIRECT_DIFFUSE_MAP_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING,
+	AO_MAP_BINDING, CONE_SHADOW_MAP_BINDING, CONE_SHADOW_MAP_FORMAT, CONTACT_SHADOW_MAP_BINDING,
+	DIFFUSE_RADIANCE_HISTORY_BINDING, DIRECTIONAL_SHADOW_DEPTH_PYRAMID_BINDING, DIRECTIONAL_SHADOW_MAP_FORMAT,
+	INDIRECT_DIFFUSE_MAP_BINDING, INSTANCE_ID_BINDING, LIGHTING_DATA_BINDING, LIT_BINDING, MATERIAL_COUNT_BINDING,
 	MATERIAL_EVALUATION_DISPATCHES_BINDING, MATERIAL_OFFSET_BINDING, MATERIAL_OFFSET_SCRATCH_BINDING, MATERIAL_XY_BINDING,
 	POINT_SHADOW_MAP_BINDING, POINT_SHADOW_MAP_FORMAT, SHADOW_CASCADE_COUNT, SHADOW_MAP_BINDING, SHADOW_MAP_RESOLUTION,
 	TRIANGLE_INDEX_BINDING,
@@ -278,11 +279,7 @@ impl VisibilityRenderPass {
 				lighting_buffer.into(),
 			),
 			sampled(AO_MAP_BINDING, ao_map.into(), linear_sampler),
-			sampled(
-				INDIRECT_DIFFUSE_MAP_BINDING,
-				targets.ssgi.indirect_diffuse,
-				linear_sampler,
-			),
+			sampled(INDIRECT_DIFFUSE_MAP_BINDING, targets.ssgi.indirect_diffuse, linear_sampler),
 			// Point sampling keeps a shadow edge from bleeding one pixel onto the lit surface beside it.
 			sampled(CONTACT_SHADOW_MAP_BINDING, targets.contact_shadows.filtered, depth_sampler),
 			sampled(SHADOW_MAP_BINDING, directional_shadow_map.into(), depth_sampler),
@@ -444,64 +441,62 @@ impl VisibilityRenderPass {
 		let visibility = &self.visibility;
 		let material_prepasses = &self.material_prepasses;
 
-		Some(
-			move |c: &mut ghi::implementation::CommandBufferRecording| {
-				use ghi::command_buffer::CommonCommandBufferMode as _;
+		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
+			use ghi::command_buffer::CommonCommandBufferMode as _;
 
-				c.start_region(|label| label.write_str("Visibility Render Model"));
-				if let Some((pass, pipeline)) = skinning {
-					pass.record(c, &render_info.skinning_dispatches, pipeline);
-				}
-				// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists.
-				if !fits_receivers {
-					shadows(c);
-				}
-				// Both material evaluation layers read the clusters, and nothing before them does.
-				light_clusters(c);
+			c.start_region(|label| label.write_str("Visibility Render Model"));
+			if let Some((pass, pipeline)) = skinning {
+				pass.record(c, &render_info.skinning_dispatches, pipeline);
+			}
+			// Cascades fitted to the camera's surfaces are drawn once the opaque layer's depth exists.
+			if !fits_receivers {
+				shadows(c);
+			}
+			// Both material evaluation layers read the clusters, and nothing before them does.
+			light_clusters(c);
 
-				// The opaque layer establishes the depth and color retained by every later transparent primitive.
+			// The opaque layer establishes the depth and color retained by every later transparent primitive.
+			visibility.record(
+				c,
+				extent,
+				VisibilityPhase::Opaque,
+				dispatches.opaque,
+				dispatches.masked,
+				dispatches.double_sided,
+				visibility_pipelines,
+			);
+			material_prepasses.record(c, extent, prepass_pipelines);
+			cascade_fit(c);
+			if fits_receivers {
+				shadows(c);
+			}
+			// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
+			depth_pyramid(c);
+			contact_shadows(c);
+			gtao(c);
+			ssgi(c);
+			opaque_materials(c);
+			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
+			if let Some(background) = background {
+				background(c);
+			}
+
+			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
+			// normal depth testing select the nearest surface before source-over evaluation.
+			if !dispatches.transparent.is_empty() {
 				visibility.record(
 					c,
 					extent,
-					VisibilityPhase::Opaque,
-					dispatches.opaque,
-					dispatches.masked,
-					dispatches.double_sided,
+					VisibilityPhase::Transparent,
+					dispatches.transparent,
+					Default::default(),
+					Default::default(),
 					visibility_pipelines,
 				);
 				material_prepasses.record(c, extent, prepass_pipelines);
-				cascade_fit(c);
-				if fits_receivers {
-					shadows(c);
-				}
-				// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
-				depth_pyramid(c);
-				contact_shadows(c);
-				gtao(c);
-				ssgi(c);
-				opaque_materials(c);
-				// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
-				if let Some(background) = background {
-					background(c);
-				}
-
-				// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
-				// normal depth testing select the nearest surface before source-over evaluation.
-				if !dispatches.transparent.is_empty() {
-					visibility.record(
-						c,
-						extent,
-						VisibilityPhase::Transparent,
-						dispatches.transparent,
-						Default::default(),
-						Default::default(),
-						visibility_pipelines,
-					);
-					material_prepasses.record(c, extent, prepass_pipelines);
-					transparent_materials(c);
-				}
-				c.end_region();
-			},
-		)
+				transparent_materials(c);
+			}
+			c.end_region();
+		})
 	}
 }

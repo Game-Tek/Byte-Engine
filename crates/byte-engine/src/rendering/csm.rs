@@ -192,7 +192,9 @@ pub(crate) fn make_cascade_frames(
 	let light_rotation = View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.0, 1.0, Point::origin(), light_direction).view();
 
 	make_cascade_split_ranges(camera_view, num_cascades, splits).map(move |(cascade_near, cascade_far)| {
-		let corners = camera_view.from_from_z_planes(cascade_near, cascade_far).get_frustum_corners();
+		let corners = camera_view
+			.from_from_z_planes(cascade_near, cascade_far)
+			.get_frustum_corners();
 		fit_cascade_view(&corners, cascade_far, light_rotation, light_direction, shadow_map_resolution)
 	})
 }
@@ -207,7 +209,10 @@ fn fit_cascade_view(
 	shadow_map_resolution: u32,
 ) -> CascadeFrame {
 	let (minimum, maximum) = corners.iter().fold(
-		(Vec3f::new(f32::MAX, f32::MAX, f32::MAX), Vec3f::new(f32::MIN, f32::MIN, f32::MIN)),
+		(
+			Vec3f::new(f32::MAX, f32::MAX, f32::MAX),
+			Vec3f::new(f32::MIN, f32::MIN, f32::MIN),
+		),
 		|(minimum, maximum), corner| {
 			let light_corner = light_rotation * Vec4f::from((corner.into_maths(), 1.0));
 			let light_corner = Vec3f::new(light_corner.x, light_corner.y, light_corner.z);
@@ -281,7 +286,11 @@ mod tests {
 			Point::origin(),
 			UnitVector::z_axis(),
 		);
-		let far_of = |splits| make_cascade_split_ranges(camera_view, 4, splits).map(|(_, far)| far).collect::<SmallVec<[f32; 4]>>();
+		let far_of = |splits| {
+			make_cascade_split_ranges(camera_view, 4, splits)
+				.map(|(_, far)| far)
+				.collect::<SmallVec<[f32; 4]>>()
+		};
 
 		let short = far_of(CascadeSplits::new(50.0, 0.8).expect("valid splits"));
 		assert!((short[3] - 50.0).abs() < 0.0001, "{short:?}");
@@ -291,7 +300,10 @@ mod tests {
 		let logarithmic = far_of(CascadeSplits::new(100.0, 1.0).expect("valid splits"));
 		let blended = far_of(CascadeSplits::new(100.0, 0.8).expect("valid splits"));
 		assert!(
-			blended[..3].iter().zip(&logarithmic[..3]).all(|(blended, logarithmic)| blended > logarithmic),
+			blended[..3]
+				.iter()
+				.zip(&logarithmic[..3])
+				.all(|(blended, logarithmic)| blended > logarithmic),
 			"{blended:?} {logarithmic:?}"
 		);
 		assert!(CascadeSplits::new(0.0, 0.8).is_err());
@@ -307,12 +319,16 @@ mod tests {
 			0.1,
 			100.0,
 			position,
-			math::Vector::new(yaw.sin(), -0.2, yaw.cos()).normalized().expect("nonzero camera direction"),
+			math::Vector::new(yaw.sin(), -0.2, yaw.cos())
+				.normalized()
+				.expect("nonzero camera direction"),
 		)
 	}
 
 	fn diagonal_light() -> UnitVector {
-		math::Vector::new(0.5, -1.0, 0.3).normalized().expect("nonzero light direction")
+		math::Vector::new(0.5, -1.0, 0.3)
+			.normalized()
+			.expect("nonzero light direction")
 	}
 
 	/// Returns a world point's shadow-map texel coordinates and light-space depth in one cascade view.
@@ -320,7 +336,11 @@ mod tests {
 		let point = Vec4f::from((point.into_maths(), 1.0));
 		let clip = view.view_projection() * point;
 		let half = resolution as f32 / 2.0;
-		((clip.x / clip.w + 1.0) * half, (clip.y / clip.w + 1.0) * half, (view.view() * point).z)
+		(
+			(clip.x / clip.w + 1.0) * half,
+			(clip.y / clip.w + 1.0) * half,
+			(view.view() * point).z,
+		)
 	}
 
 	#[test]
@@ -335,7 +355,11 @@ mod tests {
 				let (x, y, depth) = shadow_texel(view, corner, resolution);
 				let inner = (EDGE_TEXELS - 1.0)..=(resolution as f32 - EDGE_TEXELS + 1.0);
 				assert!(inner.contains(&x) && inner.contains(&y), "corner at texel ({x}, {y})");
-				assert!((CASTER_REACH - 0.001..=view.far() + 0.001).contains(&depth), "corner at depth {depth}, far {}", view.far());
+				assert!(
+					(CASTER_REACH - 0.001..=view.far() + 0.001).contains(&depth),
+					"corner at depth {depth}, far {}",
+					view.far()
+				);
 			}
 		}
 	}
@@ -344,9 +368,18 @@ mod tests {
 	fn cascade_texel_grid_stays_fixed_in_the_world_as_the_camera_moves() {
 		let resolution = 1024;
 		for position in [Point::new(0.37, 1.7, 2.83), Point::new(0.52, 1.7, 3.61)] {
-			for view in make_csm_views(turned_camera(position, 20.0), diagonal_light(), 4, resolution, CascadeSplits::default()) {
+			for view in make_csm_views(
+				turned_camera(position, 20.0),
+				diagonal_light(),
+				4,
+				resolution,
+				CascadeSplits::default(),
+			) {
 				let (x, y, _) = shadow_texel(view, Point::origin(), resolution);
-				assert!((x - x.round()).abs() < 0.01 && (y - y.round()).abs() < 0.01, "origin at texel ({x}, {y})");
+				assert!(
+					(x - x.round()).abs() < 0.01 && (y - y.round()).abs() < 0.01,
+					"origin at texel ({x}, {y})"
+				);
 			}
 		}
 	}
@@ -450,9 +483,19 @@ mod tests {
 			let center = view_projection * world(center_x, center_y, 0.0);
 			let corner = view_projection * world(center_x + frame.half_extent, center_y - frame.half_extent, 0.0);
 			let further = view_projection * world(center_x, center_y, frame.depth);
-			assert!(center.x.abs() < 1e-4 && center.y.abs() < 1e-4, "The frame's center maps to {center:?}.");
-			assert!((corner.x - 1.0).abs() < 1e-4 && (corner.y + 1.0).abs() < 1e-4, "The frame's corner maps to {corner:?}.");
-			assert!((center.z - further.z - 1.0).abs() < 1e-4, "The frame's depth range spans {} of stored depth.", center.z - further.z);
+			assert!(
+				center.x.abs() < 1e-4 && center.y.abs() < 1e-4,
+				"The frame's center maps to {center:?}."
+			);
+			assert!(
+				(corner.x - 1.0).abs() < 1e-4 && (corner.y + 1.0).abs() < 1e-4,
+				"The frame's corner maps to {corner:?}."
+			);
+			assert!(
+				(center.z - further.z - 1.0).abs() < 1e-4,
+				"The frame's depth range spans {} of stored depth.",
+				center.z - further.z
+			);
 			assert_eq!(frame.slice_far, slice_far);
 		}
 	}

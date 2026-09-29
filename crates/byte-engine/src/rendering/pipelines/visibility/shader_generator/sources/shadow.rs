@@ -192,7 +192,6 @@ sample_directional_shadow_tent: fn (
 }
 "#;
 
-
 // Proves every texel the directional blocker search and penumbra filter can read is no closer to the light than the
 // receiver's center, so the receiver is fully lit. It covers the 4x4 block of eight-texel max-depth cells that
 // `directional_shadow_blocker_depth` searches with four maximum-reduction samples, each on the corner shared by four

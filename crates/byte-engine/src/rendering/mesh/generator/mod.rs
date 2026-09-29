@@ -111,7 +111,10 @@ mod tests {
 		assert_eq!(validate_triangle_indices(&[0, 1], 3), Err(GeneratedIndexError::NotTriangles));
 		assert_eq!(
 			validate_triangle_indices(&[0, 1, 3], 3),
-			Err(GeneratedIndexError::OutOfRange { index: 3, vertex_count: 3 })
+			Err(GeneratedIndexError::OutOfRange {
+				index: 3,
+				vertex_count: 3
+			})
 		);
 		let beyond_u16 = u16::MAX as u32 + 1;
 		assert_eq!(

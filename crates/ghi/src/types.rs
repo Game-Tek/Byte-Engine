@@ -293,7 +293,10 @@ impl Formats {
 					.checked_mul(bytes_per_block as usize)?,
 				usize::try_from(height.max(1).div_ceil(4)).ok()?,
 			),
-			None => (usize::try_from(width).ok()?.checked_mul(self.size())?, usize::try_from(height).ok()?),
+			None => (
+				usize::try_from(width).ok()?.checked_mul(self.size())?,
+				usize::try_from(height).ok()?,
+			),
 		};
 		Some((bytes_per_row, row_count, bytes_per_row.checked_mul(row_count)?))
 	}

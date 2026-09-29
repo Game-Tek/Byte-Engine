@@ -20,11 +20,11 @@ mod tests {
 	};
 
 	use super::{
-		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, ResolvedFbxMaterials,
+		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
-		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_meshes, import_fbx_skeleton,
+		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path,
-		select_fbx_skin, skin_weights,
+		select_fbx_skin, skin_weights, used_material_keys,
 	};
 	#[cfg(debug_assertions)]
 	use crate::{
@@ -82,25 +82,41 @@ mod tests {
 		png
 	}
 
-	/// Imports a fixture while discarding diagnostic counts that are not relevant to the focused assertion.
+	/// Imports a fixture with a test variant for each material it uses, named after the FBX material or `default`, and
+	/// discards diagnostic counts that are not relevant to the focused assertion.
 	fn import_test_fbx_meshes<'a>(
 		scene: &ufbx::Scene,
-		materials: &ResolvedFbxMaterials,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		source_to_skeleton: &[u32],
 		allocator: &'a dyn Allocator,
 	) -> Result<ProcessedMesh, FbxMeshProcessingError> {
-		let mut culled_polygons = FbxCulledPolygonCounts::default();
-
-		import_fbx_meshes(
+		let keys = used_material_keys(scene, allocator);
+		let materials = keys
+			.iter()
+			.map(|key| match key {
+				MaterialKey::Default => test_material("default"),
+				MaterialKey::Material(id) => {
+					let material = scene.materials.iter().find(|material| material.element.typed_id == *id);
+					test_material(
+						material
+							.expect("A used material should belong to the scene")
+							.element
+							.name
+							.as_ref(),
+					)
+				}
+			})
+			.collect::<Vec<_>>();
+		let session = import_fbx_mesh_session(
 			scene,
-			materials,
+			&keys,
 			skeleton,
 			source_to_skeleton,
 			MeshProcessor::new(),
 			allocator,
-			&mut culled_polygons,
-		)
+			&mut FbxCulledPolygonCounts::default(),
+		)?;
+		Ok(session.finish(&materials))
 	}
 
 	/// The `TestVariantAssetHandler` struct supplies a material override without invoking a platform shader compiler.
@@ -140,11 +156,7 @@ mod tests {
 	fn imports_triangulated_mesh_attributes_and_meter_scaled_bounds() {
 		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").expect("fixture FBX should parse");
 
-		let materials = ResolvedFbxMaterials {
-			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
-		};
-
-		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
+		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("fixture mesh should import");
 
 		assert!(processed.mesh.skeleton.is_none());
 		assert!(processed.mesh.skins.is_empty());
@@ -184,11 +196,7 @@ mod tests {
 	fn converts_fbx_uvs_to_top_left_texture_coordinates() {
 		let scene = load_fbx_scene(TRIANGLE_MOVE_FBX, "triangle_move.fbx").expect("fixture FBX should parse");
 
-		let materials = ResolvedFbxMaterials {
-			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
-		};
-
-		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("fixture mesh should import");
+		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("fixture mesh should import");
 		let uvs = primitive_f32_values::<2>(&processed, 0, VertexSemantics::UV);
 		assert_eq!(uvs, [[0.0, 1.0], [1.0, 0.75], [0.25, 0.0]]);
 	}
@@ -197,11 +205,7 @@ mod tests {
 	fn discards_degenerate_polygons_without_rejecting_valid_mesh_geometry() {
 		let scene = load_fbx_scene(DEGENERATE_QUAD_FBX, "degenerate_quad.fbx").expect("fixture FBX should parse");
 
-		let materials = ResolvedFbxMaterials {
-			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
-		};
-
-		let processed = import_test_fbx_meshes(&scene, &materials, None, &[], &Global)
+		let processed = import_test_fbx_meshes(&scene, None, &[], &Global)
 			.expect("degenerate polygons should be discarded without rejecting valid geometry");
 		assert_eq!(processed.mesh.primitives[0].vertex_count, 3);
 		assert_eq!(
@@ -362,18 +366,8 @@ mod tests {
 
 		let skeleton = test_skeleton(&imported_skeleton.model);
 
-		let materials = ResolvedFbxMaterials {
-			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
-		};
-
 		assert!(matches!(
-			import_test_fbx_meshes(
-				&scene,
-				&materials,
-				Some(skeleton),
-				&imported_skeleton.source_to_skeleton,
-				&Global,
-			),
+			import_test_fbx_meshes(&scene, Some(skeleton), &imported_skeleton.source_to_skeleton, &Global,),
 			Err(FbxMeshProcessingError::Import(
 				FbxImportError::NonInvertibleAnimatedMeshTransform
 			))
@@ -463,18 +457,8 @@ mod tests {
 
 		let skeleton = test_skeleton(&imported_skeleton.model);
 
-		let materials = ResolvedFbxMaterials {
-			materials: HashMap::from([(MaterialKey::Default, test_material("default"))]),
-		};
-
-		let processed = import_test_fbx_meshes(
-			&scene,
-			&materials,
-			Some(skeleton.clone()),
-			&imported_skeleton.source_to_skeleton,
-			&Global,
-		)
-		.expect("skinned fixture mesh should import");
+		let processed = import_test_fbx_meshes(&scene, Some(skeleton.clone()), &imported_skeleton.source_to_skeleton, &Global)
+			.expect("skinned fixture mesh should import");
 
 		assert_eq!(processed.mesh.skeleton.as_ref().map(|value| value.id()), Some(skeleton.id()));
 		assert_eq!(processed.mesh.skins.len(), 1);
@@ -687,10 +671,7 @@ mod tests {
 
 		assert_vec3_close(emission, [0.05, 0.1, 0.15]);
 
-		let materials = fixture_materials(&scene);
-
-		let processed =
-			import_test_fbx_meshes(&scene, &materials, None, &[], &Global).expect("material-part mesh should import");
+		let processed = import_test_fbx_meshes(&scene, None, &[], &Global).expect("material-part mesh should import");
 
 		let material_ids = processed
 			.mesh
@@ -1039,26 +1020,9 @@ mod tests {
 		)
 	}
 
-	/// Creates material references for every authored material in a parsed fixture scene.
-	fn fixture_materials(scene: &ufbx::Scene) -> ResolvedFbxMaterials {
-		ResolvedFbxMaterials {
-			materials: scene
-				.materials
-				.iter()
-				.map(|material| {
-					(
-						MaterialKey::Material(material.element.typed_id),
-						test_material(material.element.name.as_ref()),
-					)
-				})
-				.collect(),
-		}
-	}
-
 	/// Computes the first triangle's signed XY area after applying MeshProcessor's clockwise index convention.
 	fn first_clockwise_triangle_area(scene: &ufbx::Scene) -> f32 {
-		let processed =
-			import_test_fbx_meshes(scene, &fixture_materials(scene), None, &[], &Global).expect("fixture mesh should import");
+		let processed = import_test_fbx_meshes(scene, None, &[], &Global).expect("fixture mesh should import");
 		let positions = primitive_f32_values::<3>(&processed, 0, VertexSemantics::Position);
 		let indices = primitive_triangle_indices(&processed, 0);
 		let first = positions[indices[0] as usize];

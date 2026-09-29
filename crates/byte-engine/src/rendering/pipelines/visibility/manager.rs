@@ -20,17 +20,18 @@ use utils::{AvailabilityGraph, Extent, StableVec};
 use super::geometry::{GeometryCapacity, GeometryHandles, MeshData};
 use super::layout::{
 	CONE_SHADOW_VIEW_OFFSET, DEFAULT_CONE_SHADOW_POOL_CAPACITY, DEFAULT_POINT_SHADOW_POOL_CAPACITY, ENVIRONMENT_BINDING,
-	MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_MATERIAL_TEXTURES,
-	MAX_LIGHTS, MAX_MATERIALS, MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING, POINT_SHADOW_FACE_COUNT,
-	POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION, SKINNED_VERTICES_BINDING,
-	SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING, VERTEX_POSITIONS_BINDING,
-	VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
+	MATERIALS_DATA_BINDING, MAX_BINDLESS_TEXTURES, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_INSTANCES, MAX_LIGHTS,
+	MAX_MATERIAL_TEXTURES, MAX_MATERIALS, MAX_POINT_SHADOW_POOL_CAPACITY, MESH_DATA_BINDING, MESHLET_DATA_BINDING,
+	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_VIEW_OFFSET, PRIMITIVE_INDICES_BINDING, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
+	SKINNED_VERTICES_BINDING, SPECULAR_ENVIRONMENT_BINDING, TEXTURES_BINDING, VERTEX_INDICES_BINDING, VERTEX_NORMALS_BINDING,
+	VERTEX_POSITIONS_BINDING, VERTEX_UV_BINDING, VIEWS_DATA_BINDING,
 };
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass,
-	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
+	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork,
+	SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets, create_radiance_history_target,
+	create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
@@ -47,11 +48,11 @@ use crate::core::message::DeleteMessage;
 use crate::gameplay::Transform;
 use crate::gameplay::transform::TransformationUpdate;
 use crate::gameplay::world::DefaultWorld;
+use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::lights::{ConeLight, DirectionalLight, Lights, LocalEmission, PointLight};
 use crate::rendering::pipeline_manager::PipelineManager;
 use crate::rendering::render_pass::{RenderPassBuilder, RenderPassReturn, allocate_render_command};
 use crate::rendering::renderable::mesh::MeshKey;
-use crate::rendering::csm::{self, CascadeFitting, CascadeSplits};
 use crate::rendering::{Environment, PipelineManagerClient, RenderableMesh, Resource, Sink, UpdatePose, View};
 
 /// The startup parameters that set the local-light shadow pool capacities.
@@ -353,7 +354,11 @@ fn drain_settings<S: Copy>(
 	prefix: &str,
 	namespace_error: &'static str,
 	settings: &mut S,
-	with_parameter: impl Fn(S, &str, &crate::configuration::ConfigurationValue) -> Result<(S, crate::configuration::ConfigurationValue), String>,
+	with_parameter: impl Fn(
+		S,
+		&str,
+		&crate::configuration::ConfigurationValue,
+	) -> Result<(S, crate::configuration::ConfigurationValue), String>,
 ) -> bool {
 	let mut changed = false;
 	while let Some(update) = port.read() {
@@ -811,16 +816,12 @@ impl VisibilityPipelineManager {
 					},
 				);
 			}
-			_ if self
-				.scene
-				.lights
-				.iter()
-				.any(|(_, light, _)| {
-					light
-						.local()
-						.and_then(LocalEmission::ies_profile)
-						.is_some_and(|profile| profile.resource_id() == id.as_str())
-				}) =>
+			_ if self.scene.lights.iter().any(|(_, light, _)| {
+				light
+					.local()
+					.and_then(LocalEmission::ies_profile)
+					.is_some_and(|profile| profile.resource_id() == id.as_str())
+			}) =>
 			{
 				warn!(
 					"Visibility IES profile is invalid: {id}. The most likely cause is that the image was not baked from a usable .ies file or has an invalid candela scale. See {}",
@@ -996,7 +997,9 @@ impl VisibilityPipelineManager {
 			ContactShadowSettings::with_parameter,
 		) {
 			for sink_state in &mut self.scene.sink_states {
-				sink_state.render_pass.set_contact_shadow_settings(self.contact_shadow_settings);
+				sink_state
+					.render_pass
+					.set_contact_shadow_settings(self.contact_shadow_settings);
 			}
 		}
 	}
@@ -1185,7 +1188,13 @@ impl PipelineManager for VisibilityPipelineManager {
 		);
 		for (reported, kind, lowercase_kind, eligible, capacity) in [
 			(1, "Cone", "cone", shadows.eligible_cone_count, self.cone_shadow_pool_capacity),
-			(2, "Point", "point", shadows.eligible_point_count, self.point_shadow_pool_capacity),
+			(
+				2,
+				"Point",
+				"point",
+				shadows.eligible_point_count,
+				self.point_shadow_pool_capacity,
+			),
 		] {
 			crate::rendering::warn_once(&mut self.reported_limits[reported], eligible > capacity, || {
 				format!(
@@ -1199,7 +1208,9 @@ impl PipelineManager for VisibilityPipelineManager {
 		// Like the views above, exposure comes from the first sink; every sink shares one lighting upload.
 		let exposure = sinks.first().map_or(1.0, Sink::exposure_scale);
 		self.scene
-			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), |index| ies_scales[index].1);
+			.write_lighting(frame, &shadows, exposure, self.environment.intensity(), |index| {
+				ies_scales[index].1
+			});
 		let shadow_work = ShadowWork {
 			directional: shadows.directional.map(|(_, direction)| direction),
 			receiver_fit: cascades.filter(|_| self.cascade_fitting == CascadeFitting::Receivers),
@@ -1327,7 +1338,6 @@ mod tests {
 	use maths_rs::Vec3f;
 
 	use super::*;
-	
 	use crate::rendering::lights::{LightColor, PhotometricIntensity, PointLight};
 
 	fn at(x: f32) -> Transform {

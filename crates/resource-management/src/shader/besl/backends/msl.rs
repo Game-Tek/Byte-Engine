@@ -570,10 +570,15 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn local_array_variables_declare_and_initialize_in_metal_syntax() {
-		// Metal has neither GLSL's `float4[3] name` declaration nor its `float4[3](..)` constructor, so a local
-		// array declares its count after the name and initializes from braces.
+	async fn local_arrays_copy_and_pass_by_value_in_metal_syntax() {
+		// Metal has neither GLSL's `float4[3]` type spelling nor its array constructor, and C arrays can't be copied or
+		// passed by value, so value arrays become `metal::array`.
 		let source = r#"
+		first: fn (values: vec4f[3], count: u32) -> vec4f {
+			let copy: vec4f[3] = values;
+			copy[0] = copy[min(count, 2)];
+			return copy[0];
+		}
 		main: fn () -> void {
 			let positions: vec4f[3] = vec4f[3](
 				vec4f(0.0, 0.0, 0.0, 1.0),
@@ -581,6 +586,8 @@ mod tests {
 				vec4f(0.0, 1.0, 0.0, 1.0)
 			);
 			positions[0] = positions[1];
+			let index: u32 = clamp(max(thread_idx(), 1), 0, 2);
+			first(positions, index);
 		}
 		"#;
 
@@ -593,7 +600,11 @@ mod tests {
 			.generate(&ShaderGenerationSettings::compute(utils::Extent::square(1)), &main)
 			.expect("Expected local array MSL generation");
 
-		assert_string_contains!(shader, "float4 positions[3]={");
+		assert_string_contains!(shader, "metal::array<float4, 3> positions=metal::array<float4, 3>{");
+		assert_string_contains!(shader, "float4 first(metal::array<float4, 3> values,");
+		assert_string_contains!(shader, "metal::array<float4, 3> copy=values;");
+		// Unsigned overloads cast their arguments, because C++ spells BESL's unsigned literals as `int`.
+		assert_string_contains!(shader, "min(uint(count),uint(2))");
 		assert!(
 			!shader.contains("float4[3]"),
 			"Expected no GLSL array type spelling in MSL output, got: {shader}"
@@ -1117,10 +1128,7 @@ struct PrimitiveOutput {
 		let main = besl::parser::Node::main_function(vec![besl::parser::Node::raw_code(
 			Some("".into()),
 			None,
-			Some(
-				"position = resources.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;"
-					.into(),
-			),
+			Some("position = resources.cameras[0].view_projection * float4(in_position, 1.0); out_instance_index = 0u;".into()),
 			&["cameras", "in_position", "out_instance_index"],
 			&[],
 		)]);
@@ -1511,10 +1519,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
 		assert_string_contains!(shader, ".read(coord).x");
 		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
-		assert_string_contains!(
-			shader,
-			"_besl_atomic_compare_exchange(resources.counters[index],old,7)"
-		);
+		assert_string_contains!(shader, "_besl_atomic_compare_exchange(resources.counters[index],old,7)");
 		assert_string_contains!(shader, "_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)");
 		assert_string_contains!(
 			shader,
@@ -1780,7 +1785,6 @@ struct PrimitiveOutput {
 			.await
 			.expect("Expected sample intrinsic MSL to compile natively");
 	}
-
 
 	/// Verifies a fragment entry that returns an authored output struct returns that struct from the Metal entry point.
 	#[compio::test]

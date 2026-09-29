@@ -269,9 +269,9 @@ impl HandleLike for DescriptorSetHandle {
 	}
 }
 
-#[cfg(not(target_os = "macos"))]
-use crate::{DescriptorSet, HandleLike, Next};
 use crate::{
 	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, DynamicImageHandle, Layouts, Ranges,
 	SamplerHandle, SwapchainHandle, TopLevelAccelerationStructureHandle, shader::ResourceSlot,
 };
+#[cfg(not(target_os = "macos"))]
+use crate::{DescriptorSet, HandleLike, Next};

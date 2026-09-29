@@ -101,7 +101,10 @@ impl Frame<'_> {
 			.collect()
 	}
 
-	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
+	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
+		&mut self,
+		buffer_handle: BufferHandle<T>,
+	) -> &mut T {
 		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 

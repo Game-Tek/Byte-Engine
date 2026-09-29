@@ -1,6 +1,7 @@
 use std::{
 	alloc::{Allocator, Global},
 	cell::RefCell,
+	collections::HashMap,
 	fmt::Write as _,
 	vec::Vec,
 };
@@ -38,6 +39,18 @@ pub struct Generator<A: Allocator + Clone = Global> {
 	pub(crate) in_buffer_binding_struct: bool,
 	pub(crate) packed_mat4x3_members: Vec<besl::NodeReference>,
 	pub(crate) match_break_depth: Option<usize>,
+	/// The hidden kernel values each emitted function needs, analyzed once per shader before emission.
+	pub(crate) hidden_contexts: HashMap<besl::NodeReference, HiddenContext>,
+}
+
+/// The `HiddenContext` struct records which hidden kernel values one function forwards, so that emitting its
+/// declaration and every call to it doesn't walk its body and callees again.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HiddenContext {
+	/// The function reads a binding, push constant, workgroup value, or task payload, directly or through a callee.
+	pub(crate) requires_resources: bool,
+	/// The function reads the subgroup lane index, directly or through a callee.
+	pub(crate) uses_simd_lane_id: bool,
 }
 
 pub(crate) const PUSH_CONSTANT_BINDING_INDEX: u32 = 15;
@@ -153,6 +166,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
+			hidden_contexts: HashMap::new(),
 		}
 	}
 
@@ -203,108 +217,176 @@ impl<A: Allocator + Clone> Generator<A> {
 		requirements
 	}
 
-	/// Detects whether a function's reachable AST needs backend resource parameters.
-	pub(crate) fn function_requires_resource_context(&self, function_node: &besl::NodeReference) -> bool {
-		pub(crate) fn node_requires_resource_context<A: Allocator + Clone>(
-			node: &besl::NodeReference,
-			visited: &mut Vec<besl::NodeReference, A>,
-		) -> bool {
-			if visited.iter().any(|visited_node| visited_node == node) {
-				return false;
-			}
+	/// Returns the hidden kernel values a function forwards, as analyzed for the shader being generated.
+	pub(crate) fn hidden_context(&self, function: &besl::NodeReference) -> HiddenContext {
+		self.hidden_contexts
+			.get(function)
+			.copied()
+			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::new()))
+	}
+}
 
-			visited.push(node.clone());
+/// Analyzes every function in `order` once, so emitting each declaration and call site is a lookup.
+pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<besl::NodeReference, HiddenContext> {
+	let mut contexts = HashMap::with_capacity(order.len());
+	for node in order {
+		if matches!(node.borrow().node(), besl::Nodes::Function { .. }) {
+			analyze_hidden_context(node, &mut contexts);
+		}
+	}
+	contexts
+}
 
-			let result = match node.borrow().node() {
-				besl::Nodes::Binding { .. } => true,
-				besl::Nodes::TaskPayload { .. } => true,
-				besl::Nodes::Workgroup { .. } => true,
-				besl::Nodes::PushConstant { .. } => true,
-				besl::Nodes::Scope { children, .. } => {
-					children.iter().any(|child| node_requires_resource_context(child, visited))
-				}
-				besl::Nodes::Function {
-					params,
-					return_type,
-					statements,
-					..
-				} => {
-					params.iter().any(|param| node_requires_resource_context(param, visited))
-						|| node_requires_resource_context(return_type, visited)
-						|| statements
-							.iter()
-							.any(|statement| node_requires_resource_context(statement, visited))
-				}
-				branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
-					.branch_children()
-					.any(|child| node_requires_resource_context(child, visited)),
-				besl::Nodes::ForLoop {
-					initializer,
-					condition,
-					update,
-					statements,
-				} => {
-					node_requires_resource_context(initializer, visited)
-						|| node_requires_resource_context(condition, visited)
-						|| node_requires_resource_context(update, visited)
-						|| statements
-							.iter()
-							.any(|statement| node_requires_resource_context(statement, visited))
-				}
-				besl::Nodes::Struct { fields, .. } => fields.iter().any(|field| node_requires_resource_context(field, visited)),
-				besl::Nodes::Raw { input, output, .. } => {
-					input.iter().any(|input| node_requires_resource_context(input, visited))
-						|| output.iter().any(|output| node_requires_resource_context(output, visited))
-				}
-				besl::Nodes::Parameter { r#type, .. }
-				| besl::Nodes::Member { r#type, .. }
-				| besl::Nodes::Specialization { r#type, .. }
-				| besl::Nodes::Input { format: r#type, .. }
-				| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited),
-				besl::Nodes::Expression(expression) => match expression {
-					besl::Expressions::Operator { left, right, .. } => {
-						node_requires_resource_context(left, visited) || node_requires_resource_context(right, visited)
-					}
-					besl::Expressions::FunctionCall {
-						function, parameters, ..
-					} => {
-						node_requires_resource_context(&function.get(), visited)
-							|| parameters
-								.iter()
-								.any(|parameter| node_requires_resource_context(parameter, visited))
-					}
-					besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
-						arguments
-							.iter()
-							.any(|argument| node_requires_resource_context(argument, visited))
-							|| elements
-								.iter()
-								.any(|element| node_requires_resource_context(element, visited))
-					}
-					besl::Expressions::Expression { elements } => elements
-						.iter()
-						.any(|element| node_requires_resource_context(element, visited)),
-					besl::Expressions::Macro { body, .. } => node_requires_resource_context(body, visited),
-					besl::Expressions::Member { source, .. } => node_requires_resource_context(source, visited),
-					besl::Expressions::VariableDeclaration { r#type, .. } => node_requires_resource_context(r#type, visited),
-					besl::Expressions::Return { value } => value
-						.as_ref()
-						.is_some_and(|value| node_requires_resource_context(value, visited)),
-					besl::Expressions::Accessor { left, right } => {
-						node_requires_resource_context(left, visited) || node_requires_resource_context(right, visited)
-					}
-					besl::Expressions::Literal { .. }
-					| besl::Expressions::Continue
-					| besl::Expressions::Break
-					| besl::Expressions::Discard => false,
-				},
-				_ => false,
-			};
+/// Detects whether a function's reachable AST needs backend resource parameters or the subgroup lane index.
+///
+/// Callees are analyzed once and their results reused through `contexts`, so a call graph costs one walk per
+/// function instead of one walk per call site.
+fn analyze_hidden_context(
+	function: &besl::NodeReference,
+	contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
+) -> HiddenContext {
+	if let Some(context) = contexts.get(function) {
+		return *context;
+	}
+	// Shaders can't recurse, but a placeholder keeps a malformed call graph from looping.
+	contexts.insert(function.clone(), HiddenContext::default());
 
-			visited.pop();
-			result
+	fn node_requires_resource_context(
+		node: &besl::NodeReference,
+		visited: &mut Vec<besl::NodeReference>,
+		contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
+	) -> bool {
+		if visited.iter().any(|visited_node| visited_node == node) {
+			return false;
 		}
 
-		node_requires_resource_context(function_node, &mut Vec::new_in(self.allocator.clone()))
+		visited.push(node.clone());
+
+		let result = match node.borrow().node() {
+			besl::Nodes::Binding { .. } => true,
+			besl::Nodes::TaskPayload { .. } => true,
+			besl::Nodes::Workgroup { .. } => true,
+			besl::Nodes::PushConstant { .. } => true,
+			besl::Nodes::Scope { children, .. } => children
+				.iter()
+				.any(|child| node_requires_resource_context(child, visited, contexts)),
+			besl::Nodes::Function {
+				params,
+				return_type,
+				statements,
+				..
+			} => {
+				params
+					.iter()
+					.any(|param| node_requires_resource_context(param, visited, contexts))
+					|| node_requires_resource_context(return_type, visited, contexts)
+					|| statements
+						.iter()
+						.any(|statement| node_requires_resource_context(statement, visited, contexts))
+			}
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
+				.branch_children()
+				.any(|child| node_requires_resource_context(child, visited, contexts)),
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => {
+				node_requires_resource_context(initializer, visited, contexts)
+					|| node_requires_resource_context(condition, visited, contexts)
+					|| node_requires_resource_context(update, visited, contexts)
+					|| statements
+						.iter()
+						.any(|statement| node_requires_resource_context(statement, visited, contexts))
+			}
+			besl::Nodes::Struct { fields, .. } => fields
+				.iter()
+				.any(|field| node_requires_resource_context(field, visited, contexts)),
+			besl::Nodes::Raw { input, output, .. } => {
+				input
+					.iter()
+					.any(|input| node_requires_resource_context(input, visited, contexts))
+					|| output
+						.iter()
+						.any(|output| node_requires_resource_context(output, visited, contexts))
+			}
+			besl::Nodes::Parameter { r#type, .. }
+			| besl::Nodes::Member { r#type, .. }
+			| besl::Nodes::Specialization { r#type, .. }
+			| besl::Nodes::Input { format: r#type, .. }
+			| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited, contexts),
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::Operator { left, right, .. } => {
+					node_requires_resource_context(left, visited, contexts)
+						|| node_requires_resource_context(right, visited, contexts)
+				}
+				besl::Expressions::FunctionCall {
+					function, parameters, ..
+				} => {
+					let callee = function.get();
+					let callee_requires = if matches!(callee.borrow().node(), besl::Nodes::Function { .. }) {
+						analyze_hidden_context(&callee, contexts).requires_resources
+					} else {
+						node_requires_resource_context(&callee, visited, contexts)
+					};
+					callee_requires
+						|| parameters
+							.iter()
+							.any(|parameter| node_requires_resource_context(parameter, visited, contexts))
+				}
+				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
+					arguments
+						.iter()
+						.any(|argument| node_requires_resource_context(argument, visited, contexts))
+						|| elements
+							.iter()
+							.any(|element| node_requires_resource_context(element, visited, contexts))
+				}
+				besl::Expressions::Expression { elements } => elements
+					.iter()
+					.any(|element| node_requires_resource_context(element, visited, contexts)),
+				besl::Expressions::Macro { body, .. } => node_requires_resource_context(body, visited, contexts),
+				besl::Expressions::Member { source, .. } => node_requires_resource_context(source, visited, contexts),
+				besl::Expressions::VariableDeclaration { r#type, .. } => {
+					node_requires_resource_context(r#type, visited, contexts)
+				}
+				besl::Expressions::Return { value } => value
+					.as_ref()
+					.is_some_and(|value| node_requires_resource_context(value, visited, contexts)),
+				besl::Expressions::Accessor { left, right } => {
+					node_requires_resource_context(left, visited, contexts)
+						|| node_requires_resource_context(right, visited, contexts)
+				}
+				besl::Expressions::Literal { .. }
+				| besl::Expressions::Continue
+				| besl::Expressions::Break
+				| besl::Expressions::Discard => false,
+			},
+			_ => false,
+		};
+
+		visited.pop();
+		result
 	}
+
+	let requires_resources = node_requires_resource_context(function, &mut Vec::new(), contexts);
+	// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
+	let uses_simd_lane_id = any_code_node(function, false, &mut |node| {
+		if is_intrinsic_call(node, "subgroup_lane_index") {
+			return true;
+		}
+		let callee = match node.borrow().node() {
+			besl::Nodes::Expression(besl::Expressions::FunctionCall { function, .. }) => function.get(),
+			_ => return false,
+		};
+		matches!(callee.borrow().node(), besl::Nodes::Function { .. })
+			&& analyze_hidden_context(&callee, contexts).uses_simd_lane_id
+	});
+	let context = HiddenContext {
+		requires_resources,
+		uses_simd_lane_id,
+	};
+	contexts.insert(function.clone(), context);
+	context
 }

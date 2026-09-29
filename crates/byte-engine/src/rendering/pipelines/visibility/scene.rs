@@ -268,7 +268,12 @@ pub(super) fn light_data(
 			1,
 			ShaderVec3::from(light.emission.color),
 		),
-		Lights::Point(light) => (light.emission.ies_profile(), [0.0; 2], 0, ShaderVec3::from(light.emission.color)),
+		Lights::Point(light) => (
+			light.emission.ies_profile(),
+			[0.0; 2],
+			0,
+			ShaderVec3::from(light.emission.color),
+		),
 	};
 	let (color, ies_profile_texture, ies_c0_tangent) = match (profile, ies_texture) {
 		(None, _) => (color, NO_IES_PROFILE_TEXTURE, NEUTRAL_UNIT_VECTOR),

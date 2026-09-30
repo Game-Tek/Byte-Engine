@@ -210,7 +210,7 @@ pub(crate) async fn store_gltf_image(
 	id: ResourceId<'_>,
 	image: gltf::image::Data,
 	semantic: Semantic,
-	mip_backend: Option<&dyn MipGenerationBackend>,
+	mip_generator: Option<&MipGenerator>,
 ) -> Result<crate::SerializableResource, LoadErrors> {
 	let (channels, encoding) = gltf_image_source_layout(image.format)?;
 	let extent = Extent::rectangle(image.width, image.height);
@@ -218,11 +218,18 @@ pub(crate) async fn store_gltf_image(
 	let image_description = ImageDescription {
 		semantic,
 		gamma: gamma_from_semantic(semantic),
-		generate_mipmaps: mip_backend.is_some(),
+		generate_mipmaps: mip_generator.is_some(),
 	};
 	let source = ImageSource::new(extent, channels, encoding, &image.pixels);
 
-	let (resource, data) = process_image_with_mip_backend_in(id, image_description, source, context.allocator(), mip_backend)?;
+	let (resource, data) = process_image_with_mips_in(
+		id,
+		image_description,
+		source,
+		context.allocator(),
+		mip_generator.unwrap_or(&MipGenerator::Cpu),
+	)
+	.await?;
 
 	context.store_resource(resource, &data).await
 }
@@ -289,8 +296,17 @@ pub(crate) fn collect_texture_dependencies_from_node(
 
 			collect_texture_dependencies_from_node(material, *right, semantic, dependencies)?;
 		}
-		BrdfNode::ExtractChannel { source, .. } => {
-			collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?;
+		BrdfNode::ExtractChannel { source, channel } => {
+			// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
+			// other read of the image outranks it in `merge_texture_semantics`, so only fully packable images pack.
+			let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
+				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some();
+			match material.node(*source)? {
+				BrdfNode::Texture(texture) if packable => {
+					push_gltf_texture_dependency(dependencies, texture.image_index, Semantic::MetallicRoughness)
+				}
+				_ => collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?,
+			}
 		}
 		BrdfNode::NormalMap { source, .. } => {
 			collect_texture_dependencies_from_node(material, *source, Semantic::Normal, dependencies)?;
@@ -338,21 +354,32 @@ pub(crate) fn merge_texture_semantics(left: Semantic, right: Semantic) -> Semant
 		(Semantic::AO, _) | (_, Semantic::AO) => Semantic::AO,
 		(Semantic::Metallic, _) | (_, Semantic::Metallic) => Semantic::Metallic,
 		(Semantic::Roughness, _) | (_, Semantic::Roughness) => Semantic::Roughness,
+		// A packed map drops channels, so any other use of the image keeps all of them.
+		(Semantic::MetallicRoughness, other) | (other, Semantic::MetallicRoughness) => other,
 		_ => left,
 	}
 }
 
-/// Returns how the glTF's materials sample one image, merged across every material that references it.
+/// Returns how the glTF's materials sample each image, by image index, merged across every material that references
+/// it.
 ///
-/// Image fragments bake with this semantic so a texture decodes the same way whether a material or a direct request
-/// bakes it. Returns `None` when no material samples the image.
-pub(crate) fn gltf_image_semantic(gltf: &gltf::Gltf, image_index: u32) -> Option<Semantic> {
-	gltf.materials()
+/// Image fragments bake with these semantics and generated materials remap their channel reads with them, so a
+/// texture decodes the same way whether a material or a direct request bakes it, and is sampled where it was stored.
+/// An image no material samples is `None`.
+pub(crate) fn gltf_image_semantics(gltf: &gltf::Gltf) -> Vec<Option<Semantic>> {
+	let mut semantics = vec![None; gltf.images().count()];
+	let dependencies = gltf
+		.materials()
 		.filter_map(|material| collect_gltf_texture_dependencies(&brdf_material_from_gltf(&material)).ok())
-		.flatten()
-		.filter(|dependency| dependency.image_index == image_index)
-		.map(|dependency| dependency.semantic)
-		.reduce(merge_texture_semantics)
+		.flatten();
+	for dependency in dependencies {
+		if let Some(semantic) = semantics.get_mut(dependency.image_index as usize) {
+			*semantic = Some(semantic.map_or(dependency.semantic, |merged| {
+				merge_texture_semantics(merged, dependency.semantic)
+			}));
+		}
+	}
+	semantics
 }
 
 /// Loads one glTF image, reading only the bytes of the buffer view that holds it.

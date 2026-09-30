@@ -8,8 +8,17 @@ pub enum GPUMipError {
 	ShaderCreation,
 	WorkerCreation(String),
 	WorkerUnavailable,
-	UploadSizeMismatch { expected: usize, got: usize },
-	ReadbackSizeMismatch { expected: usize, got: usize },
+	/// The request is outside what the GPU path serves, such as a 16-bit format or BC7 without its kernel; the CPU path
+	/// serves it.
+	UnsupportedRequest,
+	UploadSizeMismatch {
+		expected: usize,
+		got: usize,
+	},
+	ReadbackSizeMismatch {
+		expected: usize,
+		got: usize,
+	},
 	GPUExecution,
 }
 
@@ -23,6 +32,7 @@ impl fmt::Display for GPUMipError {
 			Self::ShaderCreation => formatter.write_str("GPU mip shader creation failed. The most likely cause is that the selected backend rejected the compute shader."),
 			Self::WorkerCreation(error) => write!(formatter, "GPU mip worker creation failed. The most likely cause is that the process cannot create another thread. Error: {error}"),
 			Self::WorkerUnavailable => formatter.write_str("GPU mip worker is unavailable. The most likely cause is that GPU initialization or command execution terminated the worker."),
+			Self::UnsupportedRequest => formatter.write_str("GPU mip request is unsupported. The most likely cause is a 16-bit filtering format, buffers that don't match the request's extent, or a BC7 request after the BC7 kernel failed to compile."),
 			Self::UploadSizeMismatch { expected, got } => write!(formatter, "GPU mip upload has the wrong size: expected {expected}, got {got}. The most likely cause is a staging allocation that does not match the base image."),
 			Self::ReadbackSizeMismatch { expected, got } => write!(formatter, "GPU mip readback has the wrong size: expected {expected}, got {got}. The most likely cause is incomplete texture readback."),
 			Self::GPUExecution => formatter.write_str("GPU mip generation failed. The most likely cause is a graphics backend validation or command-execution error."),
@@ -34,29 +44,40 @@ impl Error for GPUMipError {}
 
 /// The `MaterialMipGenerator` struct moves material texture mip filtering and BC7 compression onto the GPU.
 ///
-/// Install it on material importers through [`crate::resources::mips::MipGenerationBackend`]. Requests it can't serve,
-/// and requests whose GPU work fails, fall back to [`CPUMipGenerationBackend`].
+/// Install it on material importers as [`crate::resources::mips::MipGenerator::Gpu`]. Requests it can't serve report
+/// [`GPUMipError::UnsupportedRequest`], and the generator's caller falls back to the CPU path for those and for failed
+/// GPU work.
 pub struct MaterialMipGenerator {
-	/// Requests carry the base level's width, height, and gamma, and the format the chain is stored in.
-	worker: GpuWorker<(u32, u32, Gamma, Formats), Result<(), GPUMipError>>,
+	worker: GpuWorker<MipRequest, Result<(), GPUMipError>>,
+}
+
+/// The `MipRequest` struct carries one texture's dimensions, gamma, and stored format to the GPU worker.
+#[derive(Clone, Copy)]
+pub(crate) struct MipRequest {
+	width: u32,
+	height: u32,
+	gamma: Gamma,
+	format: Formats,
 }
 
 impl MaterialMipGenerator {
 	/// Creates the dedicated offline GPU worker used by material importers.
 	pub fn try_with_default_gpu() -> Result<Self, GPUMipError> {
-		let worker = GpuWorker::spawn("GPU Material Mip Worker", GPUMipProcessor::try_new, GPUMipProcessor::encode).map_err(
-			|error| match error {
-				GpuWorkerSpawnError::Initialization(error) => error,
-				GpuWorkerSpawnError::WorkerCreation(error) => GPUMipError::WorkerCreation(error.to_string()),
-				GpuWorkerSpawnError::WorkerUnavailable => GPUMipError::WorkerUnavailable,
-			},
-		)?;
+		let worker = GpuWorker::spawn("GPU Material Mip Worker", GPUMipProcessor::try_new).map_err(|error| match error {
+			GpuWorkerSpawnError::Initialization(error) => error,
+			GpuWorkerSpawnError::WorkerCreation(error) => GPUMipError::WorkerCreation(error.to_string()),
+			GpuWorkerSpawnError::WorkerUnavailable => GPUMipError::WorkerUnavailable,
+		})?;
 		Ok(Self { worker })
 	}
-}
 
-impl MipGenerationBackend for MaterialMipGenerator {
-	fn encode_mip_chain(
+	/// Filters `base_level` on the GPU and writes the chain, encoded as `output_format`, into `output`.
+	///
+	/// The contract is that of [`crate::resources::mips::MipGenerator::encode_mip_chain`]. The GPU filters RGBA8
+	/// levels, so 16-bit filtering formats and mismatched buffer sizes return [`GPUMipError::UnsupportedRequest`] at
+	/// once. BC7 chains come back encoded; other formats come back as filtered levels that are encoded here. The call
+	/// suspends while the worker serves the request instead of blocking the runtime thread.
+	pub(super) async fn encode_mip_chain(
 		&self,
 		output_format: Formats,
 		gamma: Gamma,
@@ -64,26 +85,56 @@ impl MipGenerationBackend for MaterialMipGenerator {
 		height: u32,
 		base_level: &[u8],
 		output: &mut [u8],
-	) -> Result<(), MipGenerationError> {
-		// The GPU filters RGBA8 levels, and uncommon 16-bit textures keep the CPU filter. The CPU backend also reports
-		// buffers whose sizes don't match the request.
+	) -> Result<(), GPUMipError> {
+		let extent = Extent::rectangle(width, height);
 		let sizes_match = base_level.len() == width as usize * height as usize * 4
-			&& Some(output.len()) == encoded_mip_chain_size(output_format, Extent::rectangle(width, height));
-		if filtering_format(output_format) == Formats::RGBA8 && sizes_match {
-			let encoded = self
-				.worker
-				.call((width, height, gamma, output_format), base_level, output)
-				.unwrap_or(Err(GPUMipError::WorkerUnavailable));
-			match encoded {
-				Ok(()) => return Ok(()),
-				Err(error) => log::warn!(
-					"GPU material mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
-				),
-			}
+			&& Some(output.len()) == encoded_mip_chain_size(output_format, extent);
+		if filtering_format(output_format) != Formats::RGBA8 || !sizes_match {
+			return Err(GPUMipError::UnsupportedRequest);
+		}
+		let base = MipLevel {
+			width,
+			height,
+			data: base_level,
+		};
+		let gpu_encodes = encodes_on_gpu(output_format);
+		let lower_levels_size = packed_lower_levels_size(width, height, 4);
+		// Without GPU compression a lone texel has no lower levels, so there is nothing to submit.
+		if !gpu_encodes && lower_levels_size == 0 {
+			encode_levels(output_format, std::iter::once(base), output);
+			return Ok(());
 		}
 
-		CPUMipGenerationBackend.encode_mip_chain(output_format, gamma, width, height, base_level, output)
+		// The worker owns its bytes while the request is in flight, so the base level is copied in and the result is
+		// copied out. Both copies run on the calling pool thread, which has many siblings, rather than on the single
+		// worker thread.
+		let request = MipRequest {
+			width,
+			height,
+			gamma,
+			format: output_format,
+		};
+		let buffer = vec![0; if gpu_encodes { output.len() } else { lower_levels_size }];
+		let (result, buffer) = self
+			.worker
+			.submit(request, base_level.to_vec(), buffer)
+			.await
+			.map_err(|_| GPUMipError::WorkerUnavailable)?;
+		result?;
+		if gpu_encodes {
+			output.copy_from_slice(&buffer);
+		} else {
+			// The base level never left the caller, so it's encoded from the caller's copy; the rest from the readback.
+			let lower_levels = packed_lower_levels(width, height, 4, &buffer);
+			encode_levels(output_format, std::iter::once(base).chain(lower_levels), output);
+		}
+		Ok(())
 	}
+}
+
+/// Returns whether the GPU encodes chains of `format` itself, instead of reading filtered levels back for the CPU.
+fn encodes_on_gpu(format: Formats) -> bool {
+	matches!(format, Formats::BC7 | Formats::BC7SRGB)
 }
 
 /// The `GPUMipProcessor` struct owns the thread-confined compute context used for offline filtering and compression.
@@ -91,12 +142,23 @@ pub struct GPUMipProcessor {
 	context: ghi::implementation::Context,
 	mip_pipeline: ghi::PipelineHandle,
 	/// The BC7 pipeline, compiled on the first BC7 request. `Some(None)` records a failed compilation, after which BC7
-	/// chains compress their GPU-filtered levels on the CPU.
+	/// requests are unsupported and take the CPU path.
 	block_pipeline: Option<Option<ghi::PipelineHandle>>,
 	queue: ghi::QueueHandle,
 	sampler: ghi::SamplerHandle,
+	/// Pyramids, each idle or bound to one in-flight request. An extent gains another pyramid only while all of its
+	/// existing ones are busy, so it holds at most [`GpuProcessor::MAX_IN_FLIGHT`] of them. The GHI can't destroy
+	/// images or buffers yet, so pyramids are never freed.
 	scratch: Vec<GPUMipScratch>,
 	_owner: Box<dyn Any>,
+}
+
+/// The `InFlight` enum records where a running request's result lands so [`GpuProcessor::poll`] can collect it.
+enum InFlight {
+	/// The BC7 block buffer holds the encoded chain.
+	Blocks,
+	/// The readbacks hold the filtered levels, one per level below the base.
+	Levels(Vec<ghi::TextureCopyHandle>),
 }
 
 impl GPUMipProcessor {
@@ -166,54 +228,67 @@ impl GPUMipProcessor {
 			)
 			.map_err(kernel_error)
 			.inspect_err(|error| {
-				log::warn!("GPU BC7 encoder is unavailable; BC7 textures compress on the CPU after GPU filtering. {error}")
+				log::warn!("GPU BC7 encoder is unavailable; BC7 textures filter and compress on the CPU. {error}")
 			})
 			.ok()
 		})
 	}
 
-	/// Serves one [`MaterialMipGenerator`] request: filters the RGBA8 base level on the GPU and writes the chain, encoded
-	/// as the request's format, into `output`.
-	///
-	/// `base` and `output` have the sizes the request's extent and format need. BC7 levels are compressed on the GPU and
-	/// read back as blocks. Other formats read back the filtered levels and encode them on the CPU.
-	fn encode(
-		&mut self,
-		(width, height, gamma, format): (u32, u32, Gamma, Formats),
-		base: &[u8],
-		output: &mut [u8],
-	) -> Result<(), GPUMipError> {
-		let block_pipeline = if matches!(format, Formats::BC7 | Formats::BC7SRGB) {
-			self.block_pipeline()
+	/// Returns an idle pyramid for the extent, creating one when every existing one is busy.
+	fn acquire_scratch(&mut self, width: u32, height: u32) -> usize {
+		let idle = self
+			.scratch
+			.iter()
+			.position(|scratch| scratch.in_flight.is_none() && scratch.width == width && scratch.height == height);
+		idle.unwrap_or_else(|| {
+			self.scratch
+				.push(create_scratch(&mut self.context, self.queue, self.sampler, width, height));
+			self.scratch.len() - 1
+		})
+	}
+}
+
+impl GpuProcessor for GPUMipProcessor {
+	type Request = MipRequest;
+	type Result = Result<(), GPUMipError>;
+	type Ticket = usize;
+
+	/// Enough to overlap one texture's upload and readback with other textures' dispatches, while bounding how many
+	/// pyramids one extent can accumulate.
+	const MAX_IN_FLIGHT: usize = 4;
+
+	/// Uploads the RGBA8 base level and records the filter dispatches, then either the BC7 dispatches into the block
+	/// buffer or one readback per filtered level, on an idle pyramid of the request's extent.
+	fn submit(&mut self, request: &MipRequest, base: &[u8]) -> Submission<usize, Self::Result> {
+		let MipRequest {
+			width,
+			height,
+			gamma,
+			format,
+		} = *request;
+		let block_pipeline = if encodes_on_gpu(format) {
+			match self.block_pipeline() {
+				Some(pipeline) => Some(pipeline),
+				// The kernel's failure was logged once when it was compiled; the caller takes the CPU path quietly.
+				None => return Submission::Complete(Err(GPUMipError::UnsupportedRequest)),
+			}
 		} else {
 			None
 		};
-		// A lone texel has no lower levels, so without GPU compression there is no GPU work to do.
-		if block_pipeline.is_none() && width <= 1 && height <= 1 {
-			encode_level_in(format, Extent::rectangle(width, height), base, output, Global);
-			return Ok(());
-		}
+		let scratch_index = self.acquire_scratch(width, height);
 
-		let (context, scratch_cache) = (&mut self.context, &mut self.scratch);
-		let scratch_index = scratch_cache
-			.iter()
-			.position(|scratch| scratch.width == width && scratch.height == height)
-			.unwrap_or_else(|| {
-				scratch_cache.push(create_scratch(context, self.queue, self.sampler, width, height));
-				scratch_cache.len() - 1
-			});
-		let scratch = &mut scratch_cache[scratch_index];
+		let context = &mut self.context;
+		let scratch = &mut self.scratch[scratch_index];
 		if block_pipeline.is_some() && scratch.blocks.is_none() {
 			scratch.blocks = Some(create_block_scratch(context, self.sampler, scratch));
 		}
-		let scratch = &scratch_cache[scratch_index];
 
 		let upload = context.get_texture_slice_mut(scratch.base_image);
 		if upload.len() != base.len() {
-			return Err(GPUMipError::UploadSizeMismatch {
+			return Submission::Complete(Err(GPUMipError::UploadSizeMismatch {
 				expected: base.len(),
 				got: upload.len(),
-			});
+			}));
 		}
 		upload.copy_from_slice(base);
 		context.sync_texture(scratch.base_image);
@@ -240,8 +315,7 @@ impl GPUMipProcessor {
 				Extent::rectangle(8, 8),
 			));
 		}
-		let block_encoding = block_pipeline.zip(scratch.blocks.as_ref());
-		let readbacks = if let Some((pipeline, blocks)) = block_encoding {
+		let in_flight = if let Some((pipeline, blocks)) = block_pipeline.zip(scratch.blocks.as_ref()) {
 			for level in &blocks.levels {
 				let command = recording.bind_compute_pipeline(pipeline);
 				command.bind_descriptor_sets(&[level.descriptor_set]);
@@ -251,56 +325,65 @@ impl GPUMipProcessor {
 					Extent::square(BC7_WORKGROUP_SIZE),
 				));
 			}
-			Vec::new()
+			InFlight::Blocks
 		} else {
-			scratch
+			let readbacks = scratch
 				.levels
 				.iter()
 				.map(|level| recording.transfer_texture(level.image.into()))
-				.collect::<Result<Vec<_>, _>>()
-				.map_err(|_| GPUMipError::GPUExecution)?
+				.collect::<Result<Vec<_>, _>>();
+			match readbacks {
+				Ok(readbacks) => InFlight::Levels(readbacks),
+				// Dropping the recording abandons the readbacks it already registered.
+				Err(_) => return Submission::Complete(Err(GPUMipError::GPUExecution)),
+			}
 		};
 		recording.execute(scratch.synchronizer);
-		context.wait_for_synchronizer(scratch.synchronizer);
+		scratch.in_flight = Some(in_flight);
+		Submission::InFlight(scratch_index)
+	}
+
+	/// Copies the result of a completed request out of its pyramid into `output`, which the caller sized for it.
+	fn poll(&mut self, scratch_index: usize, output: &mut [u8]) -> Option<Self::Result> {
+		let Self { context, scratch, .. } = self;
+		let scratch = &mut scratch[scratch_index];
+		if !context.poll_synchronizer(scratch.synchronizer) {
+			return None;
+		}
+		let in_flight = scratch.in_flight.take().expect("A polled pyramid has an in-flight request");
 		#[cfg(debug_assertions)]
 		if context.has_errors() {
-			return Err(GPUMipError::GPUExecution);
+			return Some(Err(GPUMipError::GPUExecution));
 		}
-
-		if let Some((_, blocks)) = block_encoding {
-			// The buffer holds every level's blocks back to back, which is the stored chain layout.
-			let encoded = bytemuck::cast_slice::<[u32; 4], u8>(context.get_buffer_slice(blocks.buffer));
-			if encoded.len() != output.len() {
-				return Err(GPUMipError::ReadbackSizeMismatch {
-					expected: output.len(),
-					got: encoded.len(),
-				});
+		match in_flight {
+			InFlight::Blocks => {
+				let blocks = scratch
+					.blocks
+					.as_ref()
+					.expect("A block request runs on a pyramid with a block buffer");
+				// The buffer holds every level's blocks back to back, which is the stored chain layout.
+				output.copy_from_slice(bytemuck::cast_slice::<[u32; 4], u8>(context.get_buffer_slice(blocks.buffer)));
 			}
-			output.copy_from_slice(encoded);
-			return Ok(());
-		}
-
-		// Without GPU compression, encode the uploaded base level and each filtered level on the CPU.
-		let mut remaining = output;
-		let mut encode_next = |extent: Extent, texels: &[u8]| {
-			let size = encoded_mip_level_size(format, extent).expect("A storable chain has a stored size for every level");
-			let (destination, rest) = std::mem::take(&mut remaining).split_at_mut(size);
-			encode_level_in(format, extent, texels, destination, Global);
-			remaining = rest;
-		};
-		encode_next(Extent::rectangle(width, height), base);
-		for (level, handle) in scratch.levels.iter().zip(readbacks) {
-			let size = level.width as usize * level.height as usize * 4;
-			let readback = context.get_image_data(handle).map_err(|_| GPUMipError::GPUExecution)?;
-			if readback.bytes.len() < size {
-				return Err(GPUMipError::ReadbackSizeMismatch {
-					expected: size,
-					got: readback.bytes.len(),
-				});
+			InFlight::Levels(readbacks) => {
+				let mut offset = 0;
+				for (level, handle) in scratch.levels.iter().zip(readbacks) {
+					let size = level.width as usize * level.height as usize * 4;
+					let readback = match context.get_image_data(handle) {
+						Ok(readback) => readback,
+						Err(_) => return Some(Err(GPUMipError::GPUExecution)),
+					};
+					let Some(source) = readback.bytes.get(..size) else {
+						return Some(Err(GPUMipError::ReadbackSizeMismatch {
+							expected: size,
+							got: readback.bytes.len(),
+						}));
+					};
+					output[offset..offset + size].copy_from_slice(source);
+					offset += size;
+				}
 			}
-			encode_next(Extent::rectangle(level.width, level.height), &readback.bytes[..size]);
 		}
-		Ok(())
+		Some(Ok(()))
 	}
 }
 
@@ -322,6 +405,8 @@ struct GPUMipScratch {
 	blocks: Option<BlockScratch>,
 	command_buffer: ghi::CommandBufferHandle,
 	synchronizer: ghi::SynchronizerHandle,
+	/// The request running on this pyramid, until [`GpuProcessor::poll`] collects it.
+	in_flight: Option<InFlight>,
 }
 
 #[derive(Clone, Copy)]
@@ -404,6 +489,7 @@ fn create_scratch(
 		blocks: None,
 		command_buffer,
 		synchronizer,
+		in_flight: None,
 	}
 }
 
@@ -526,7 +612,7 @@ mod tests {
 	use super::*;
 	use crate::resources::mips::{
 		bc7::tests::{decode_image, encode_on_cpu, psnr, test_image},
-		generate_owned_lower_mip_chain,
+		encode_mip_chain_on_cpu, encoded_mip_level_size, generate_owned_lower_mip_chain,
 	};
 
 	fn generator() -> MaterialMipGenerator {
@@ -534,8 +620,8 @@ mod tests {
 			.expect("A compatible GPU is required for the offline GPU mip integration test")
 	}
 
-	/// Encodes a whole chain with the GPU backend and returns it with its size checked.
-	fn encode_chain(
+	/// Encodes a whole chain with the GPU generator and returns it with its size checked.
+	async fn encode_chain(
 		generator: &MaterialMipGenerator,
 		format: Formats,
 		gamma: Gamma,
@@ -547,34 +633,35 @@ mod tests {
 		let mut output = vec![0; size];
 		generator
 			.encode_mip_chain(format, gamma, width, height, base, &mut output)
+			.await
 			.expect("GPU mip chain encoding should succeed");
 		output
 	}
 
-	#[test]
-	fn gpu_worker_generates_complete_uniform_mip_chain() {
+	#[crate::r#async::test]
+	async fn gpu_worker_generates_complete_uniform_mip_chain() {
 		let generator = generator();
 		let base = [64_u8, 128, 192, 255].repeat(8 * 4);
 
-		let chain = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 8, 4, &base);
+		let chain = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 8, 4, &base).await;
 
 		// Levels 8x4, 4x2, 2x1, and 1x1 follow each other.
 		assert_eq!(chain.len(), (32 + 8 + 2 + 1) * 4);
 		assert!(chain.as_chunks::<4>().0.iter().all(|pixel| *pixel == [64, 128, 192, 255]));
 
-		let reused = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 8, 4, &base);
+		let reused = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 8, 4, &base).await;
 
 		assert_eq!(reused, chain, "the cached GPU pyramid should serve another bake");
 	}
 
-	#[test]
-	fn gpu_sampler_filters_at_each_two_by_two_block_center() {
+	#[crate::r#async::test]
+	async fn gpu_sampler_filters_at_each_two_by_two_block_center() {
 		let generator = generator();
 		let base = (0_u8..16)
 			.flat_map(|value| [value * 4, value * 4, value * 4, 255])
 			.collect::<Vec<_>>();
 
-		let chain = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 4, 4, &base);
+		let chain = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, 4, 4, &base).await;
 
 		let lower_levels = &chain[16 * 4..];
 		assert_eq!(
@@ -585,31 +672,54 @@ mod tests {
 		);
 	}
 
-	#[test]
-	fn gpu_worker_filters_srgb_in_linear_light() {
+	#[crate::r#async::test]
+	async fn gpu_worker_filters_srgb_in_linear_light() {
 		let generator = generator();
 		let base = [0, 0, 0, 0, 255, 255, 255, 64, 0, 0, 0, 128, 255, 255, 255, 255];
 
-		let chain = encode_chain(&generator, Formats::RGBA8SRGB, Gamma::SRGB, 2, 2, &base);
+		let chain = encode_chain(&generator, Formats::RGBA8SRGB, Gamma::SRGB, 2, 2, &base).await;
 
 		assert_eq!(&chain[16..], [188, 188, 188, 112]);
 	}
 
-	#[test]
-	fn gpu_bc7_chain_matches_the_cpu_fast_profile_on_every_level() {
+	#[crate::r#async::test]
+	async fn gpu_packed_rg8_chain_matches_the_rgba8_chain_prefix_on_every_level() {
+		let generator = generator();
+		let (width, height) = (8_u32, 8_u32);
+		let base = (0..width * height)
+			.flat_map(|index| [(index * 7 % 251) as u8, (index * 13 % 241) as u8, index as u8, 255])
+			.collect::<Vec<_>>();
+
+		let packed = encode_chain(&generator, Formats::RG8, Gamma::Linear, width, height, &base).await;
+		let unpacked = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, width, height, &base).await;
+
+		assert_eq!(packed.len(), (64 + 16 + 4 + 1) * 2);
+		let expected = unpacked
+			.as_chunks::<4>()
+			.0
+			.iter()
+			.flat_map(|texel| [texel[0], texel[1]])
+			.collect::<Vec<_>>();
+		assert_eq!(
+			packed, expected,
+			"RG8 levels should be the GPU-filtered RGBA8 levels without B and A"
+		);
+	}
+
+	#[crate::r#async::test]
+	async fn gpu_bc7_chain_matches_the_cpu_fast_profile_on_every_level() {
 		let generator = generator();
 		let (width, height) = (32, 24);
 		let base = test_image(width, height, false);
 
-		let chain = encode_chain(&generator, Formats::BC7, Gamma::Linear, width, height, &base);
+		let chain = encode_chain(&generator, Formats::BC7, Gamma::Linear, width, height, &base).await;
 		let mut reference = vec![0; chain.len()];
-		CPUMipGenerationBackend
-			.encode_mip_chain(Formats::BC7, Gamma::Linear, width, height, &base, &mut reference)
+		encode_mip_chain_on_cpu(Formats::BC7, Gamma::Linear, width, height, &base, &mut reference)
 			.expect("CPU mip chain encoding should succeed");
 
-		// Each encoder is measured against the levels its own backend filtered. The GPU filter can round a texel
+		// Each encoder is measured against the levels its own path filtered. The GPU filter can round a texel
 		// differently from the CPU filter, and that difference isn't compression error.
-		let gpu_levels = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, width, height, &base);
+		let gpu_levels = encode_chain(&generator, Formats::RGBA8, Gamma::Linear, width, height, &base).await;
 		let cpu_levels = generate_owned_lower_mip_chain(Formats::RGBA8, Gamma::Linear, width, height, &base)
 			.expect("CPU mip filtering should succeed");
 		let cpu_sources = std::iter::once(base.as_slice()).chain(cpu_levels.levels().map(|level| level.data));
@@ -639,18 +749,97 @@ mod tests {
 		assert_eq!(offset, chain.len());
 	}
 
-	#[test]
-	fn gpu_bc7_encodes_transparent_texels_and_one_texel_levels() {
+	#[crate::r#async::test]
+	async fn gpu_bc7_encodes_transparent_texels_and_one_texel_levels() {
 		let generator = generator();
 		let base = test_image(4, 4, true);
 
-		let chain = encode_chain(&generator, Formats::BC7SRGB, Gamma::SRGB, 4, 4, &base);
+		let chain = encode_chain(&generator, Formats::BC7SRGB, Gamma::SRGB, 4, 4, &base).await;
 
 		// 4x4, 2x2, and 1x1 each take one block.
 		assert_eq!(chain.len(), 3 * 16);
 		let gpu = psnr(&base, &decode_image(4, 4, chain[..16].as_chunks().0), 4);
 		let cpu = psnr(&base, &decode_image(4, 4, &encode_on_cpu(4, 4, &base)), 4);
 		assert!(gpu > cpu - 0.5, "GPU {gpu:.2} dB, CPU {cpu:.2} dB");
+	}
+
+	/// The mixed-size batch the concurrency tests submit: same-extent requests must share and reuse pyramids, and
+	/// different extents must run side by side.
+	fn batch() -> Vec<(Formats, Gamma, u32, u32, Vec<u8>)> {
+		(0..12_u32)
+			.map(|index| match index % 4 {
+				0 => (Formats::BC7, Gamma::Linear, 64, 64),
+				1 => (Formats::RG8, Gamma::Linear, 32, 32),
+				2 => (Formats::BC7SRGB, Gamma::SRGB, 32, 32),
+				_ => (Formats::BC5, Gamma::Linear, 64, 64),
+			})
+			.map(|(format, gamma, width, height)| (format, gamma, width, height, test_image(width, height, false)))
+			.collect()
+	}
+
+	#[crate::r#async::test]
+	async fn concurrent_chains_match_sequential_chains() {
+		let generator = generator();
+		let batch = batch();
+
+		let mut sequential = Vec::new();
+		for (format, gamma, width, height, base) in &batch {
+			sequential.push(encode_chain(&generator, *format, *gamma, *width, *height, base).await);
+		}
+		// Every request is submitted before any completes, so the worker must overlap them and hand each its own slot.
+		let concurrent = utils::r#async::join_all(
+			batch
+				.iter()
+				.map(|(format, gamma, width, height, base)| encode_chain(&generator, *format, *gamma, *width, *height, base)),
+		)
+		.await;
+
+		assert_eq!(concurrent, sequential);
+	}
+
+	/// Times a bake-sized batch submitted from eight runtime threads. Run it by hand to compare worker changes:
+	/// `cargo nextest run -p byte-engine-resource-management --features gpu-mips concurrent_material_bakes --run-ignored all --no-capture`.
+	#[test]
+	#[ignore]
+	fn concurrent_material_bakes_timing() {
+		let generator = std::sync::Arc::new(generator());
+		let jobs = (0..32_u32)
+			.map(|index| match index % 4 {
+				0 => (Formats::BC7, 1024, 1024),
+				1 => (Formats::RG8, 512, 512),
+				2 => (Formats::BC7SRGB, 512, 512),
+				_ => (Formats::BC5, 1024, 1024),
+			})
+			.map(|(format, width, height)| (format, width, height, test_image(width, height, false)))
+			.collect::<Vec<_>>();
+		let run = |jobs: &[(Formats, u32, u32, Vec<u8>)]| {
+			crate::r#async::Executor::new().unwrap().block_on(async {
+				for (format, width, height, base) in jobs {
+					encode_chain(&generator, *format, Gamma::Linear, *width, *height, base).await;
+				}
+			});
+		};
+		// Warm the pyramids so the measurement excludes scratch creation.
+		run(&jobs[..4]);
+		let start = std::time::Instant::now();
+		run(&jobs);
+		eprintln!("32 textures from one thread took {:?}", start.elapsed());
+		let start = std::time::Instant::now();
+		std::thread::scope(|scope| {
+			for chunk in jobs.chunks(4) {
+				scope.spawn(|| run(chunk));
+			}
+		});
+		eprintln!("32 textures across 8 threads took {:?}", start.elapsed());
+		// Retained uploads and staging show up as resident memory, so the harness reports it next to the time.
+		let resident = std::process::Command::new("ps")
+			.args(["-o", "rss=", "-p", &std::process::id().to_string()])
+			.output()
+			.ok()
+			.and_then(|output| String::from_utf8(output.stdout).ok())
+			.and_then(|rss| rss.trim().parse::<u64>().ok())
+			.unwrap_or(0);
+		eprintln!("resident memory after the batch: {} MB", resident / 1024);
 	}
 }
 
@@ -671,7 +860,7 @@ float3 linear_to_srgb(float3 color) { float3 low=color*12.92; float3 high=1.055*
 	destination_image[p]=result;
 }"#;
 
-use std::{alloc::Global, any::Any, error::Error, fmt};
+use std::{any::Any, error::Error, fmt};
 
 use ghi::{
 	command_buffer::{
@@ -685,13 +874,13 @@ use ghi::{
 use utils::Extent;
 
 use super::{
-	CPUMipGenerationBackend, MipGenerationBackend, MipGenerationError, bc7::BC7_ENCODER, encode_level_in,
-	encoded_mip_chain_size, encoded_mip_level_size, filtering_format, mip_extents,
+	MipLevel, bc7::BC7_ENCODER, encode_levels, encoded_mip_chain_size, filtering_format, mip_extents, packed_lower_levels,
+	packed_lower_levels_size,
 };
 use crate::{
 	gpu_worker::{
-		ComputeContextError, ComputeKernelError, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
-		create_besl_compute_kernel, create_compute_context, create_compute_kernel,
+		ComputeContextError, ComputeKernelError, GpuProcessor, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext,
+		SOURCE_SLOT, Submission, create_besl_compute_kernel, create_compute_context, create_compute_kernel,
 	},
 	types::{Formats, Gamma},
 };

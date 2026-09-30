@@ -292,6 +292,10 @@ impl crate::context::Context for Context {
 		Context::wait_for_synchronizer(self, synchronizer);
 	}
 
+	fn poll_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) -> bool {
+		Context::poll_synchronizer(self, synchronizer)
+	}
+
 	fn wait(&mut self) {
 		self.device.wait();
 	}

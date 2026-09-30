@@ -1195,7 +1195,7 @@ use crate::{
 	processors::{
 		processor::implementations::image::{
 			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
-			process_image_with_mip_backend_in,
+			process_image_with_mips_in,
 		},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
@@ -1207,7 +1207,7 @@ use crate::{
 		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
-		mips::MipGenerationBackend,
+		mips::MipGenerator,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},

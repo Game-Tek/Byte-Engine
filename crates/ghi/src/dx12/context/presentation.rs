@@ -148,7 +148,7 @@ impl Device {
 		texture_copy_handle: TextureCopyHandle,
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
 		// Keep native storage alive while submitted work is unresolved; only completed or failed mappings are consumed.
-		if self.texture_readbacks.submitted(texture_copy_handle)?.resource.is_some() {
+		if self.texture_readbacks.submitted(texture_copy_handle)?.0.resource.is_some() {
 			return Err(crate::TextureTransferError::MappingFailed);
 		}
 		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
@@ -514,6 +514,13 @@ impl Device {
 		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
 	}
 
+	/// Returns whether one concrete fence reached its captured submission value.
+	fn private_synchronizer_complete(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) -> bool {
+		self.synchronizers
+			.get(synchronizer_handle.0 as usize)
+			.is_none_or(|synchronizer| unsafe { synchronizer.fence.GetCompletedValue() } >= synchronizer.value)
+	}
+
 	/// Blocks without polling until one concrete fence reaches the captured submission value.
 	pub(crate) fn wait_for_private_synchronizer_value(
 		&self,
@@ -537,6 +544,20 @@ impl Device {
 			self.wait_for_private_synchronizer(handle);
 		}
 		self.refresh_readback_texture_copies(None);
+	}
+
+	/// Returns whether every fence of the synchronizer reached its captured submission value, without blocking.
+	///
+	/// A complete synchronizer refreshes readbacks the same way a wait does, so mapping them afterwards is valid.
+	pub(crate) fn poll_synchronizer(&mut self, synchronizer_handle: SynchronizerHandle) -> bool {
+		let complete = self
+			.synchronizer_handles(synchronizer_handle)
+			.into_iter()
+			.all(|handle| self.private_synchronizer_complete(handle));
+		if complete {
+			self.refresh_readback_texture_copies(None);
+		}
+		complete
 	}
 
 	pub(crate) fn wait_for_synchronizer_sequence(&mut self, synchronizer_handle: SynchronizerHandle, sequence_index: u8) {

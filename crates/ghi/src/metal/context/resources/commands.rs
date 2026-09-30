@@ -39,10 +39,12 @@ impl Context {
 			(command_buffer.queue_handle, name)
 		};
 
-		// Detached recordings have no completion point that could recycle pages, so they start from empty pages.
+		// Detached recordings have no completion point that could recycle pages, so they start from empty pages and
+		// release the upload submissions that finished since the last one.
 		if frame_key.is_none() {
 			let arena_index = self.upload_arena_index(frame_key);
 			self.upload_arenas[arena_index].discard();
+			self.retire_completed_internal_uploads();
 		}
 		// Same-queue uploads stay asynchronous; a queue switch waits because pending writes have no public queue owner.
 		self.synchronize_internal_upload_queue(queue_handle);

@@ -158,7 +158,10 @@ pub enum Gamma {
 pub enum Formats {
 	BC5,
 	BC5SNORM,
+	/// Two eight-bit channels, used for packed metallic-roughness maps.
 	RG8,
+	/// Two sixteen-bit channels, used for packed metallic-roughness maps from sixteen-bit sources.
+	RG16,
 	/// 16-bit floating-point luminous intensity per texel.
 	R16F,
 	RGB8,
@@ -180,7 +183,7 @@ impl Formats {
 		match self {
 			Formats::RG8 | Formats::R16F => Some(2),
 			Formats::RGB8 => Some(3),
-			Formats::RGBA8 | Formats::RGBA8SRGB => Some(4),
+			Formats::RGBA8 | Formats::RGBA8SRGB | Formats::RG16 => Some(4),
 			Formats::RGB16 => Some(6),
 			Formats::RGBA16 | Formats::RGBA16F => Some(8),
 			Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => None,

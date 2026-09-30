@@ -521,6 +521,7 @@ async fn load_texture_bytes(
 pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
 	match format {
 		ResourceFormat::RG8 => ghi::Formats::RG8UNORM,
+		ResourceFormat::RG16 => ghi::Formats::RG16UNORM,
 		ResourceFormat::R16F => ghi::Formats::R16F,
 		ResourceFormat::RGB8 => ghi::Formats::RGB8UNORM,
 		ResourceFormat::RGB16 => ghi::Formats::RGB16UNORM,

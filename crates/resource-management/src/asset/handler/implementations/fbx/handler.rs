@@ -108,7 +108,7 @@ pub(crate) fn select_unfragmented_fbx_resource(
 #[derive(Default)]
 pub struct FBXAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
-	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
+	material_mip_generator: Option<Arc<MipGenerator>>,
 }
 
 impl FBXAssetHandler {
@@ -122,8 +122,8 @@ impl FBXAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Selects the offline backend that generates mips for the texture resources an FBX contains.
-	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
+	/// Selects the generator that produces mips for the texture resources an FBX contains.
+	pub fn set_material_mip_generator(&mut self, generator: Arc<MipGenerator>) {
 		self.material_mip_generator = Some(generator);
 	}
 

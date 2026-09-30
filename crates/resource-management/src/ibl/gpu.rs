@@ -86,10 +86,10 @@ pub struct OwnedBakedImageIBL {
 	pub data: Box<[u8]>,
 }
 
-/// The `GPUIBLClient` struct serializes environment-map requests onto a dedicated GHI context thread.
+/// The `GPUIBLClient` struct queues environment-map requests onto a dedicated GHI context thread.
 ///
 /// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
-/// without moving or concurrently accessing the backend context.
+/// without moving or concurrently accessing the backend context, and it awaits each bake instead of blocking a pool thread.
 pub struct GPUIBLClient {
 	worker: GpuWorker<Extent, Result<OwnedBakedImageIBL, GPUIBLBakeError>>,
 }
@@ -107,15 +107,7 @@ impl GPUIBLClient {
 	pub fn from_processor_factory(
 		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, GPUIBLBakeError> {
-		// The baked maps are returned, so requests lend the worker no output bytes.
-		let worker = GpuWorker::spawn(
-			"GPU Environment Map Worker",
-			initialize,
-			|processor: &mut GPUIBLProcessor, source_extent, source_rgba16f, _| {
-				processor.bake_image_ibl(source_extent, source_rgba16f)
-			},
-		)
-		.map_err(|error| match error {
+		let worker = GpuWorker::spawn("GPU Environment Map Worker", initialize).map_err(|error| match error {
 			GpuWorkerSpawnError::Initialization(error) => error,
 			GpuWorkerSpawnError::WorkerCreation(error) => GPUIBLBakeError::WorkerCreation(error.to_string()),
 			GpuWorkerSpawnError::WorkerUnavailable => GPUIBLBakeError::WorkerUnavailable,
@@ -123,11 +115,20 @@ impl GPUIBLClient {
 		Ok(Self { worker })
 	}
 
-	/// Submits one borrowed source image and waits until the GPU result is safe to consume.
-	pub fn bake_image_ibl(&self, source_extent: Extent, source_rgba16f: &[u8]) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
+	/// Submits one source image and resolves once the GPU result is safe to consume.
+	///
+	/// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result, so the
+	/// request lends the worker no output bytes.
+	pub async fn bake_image_ibl(
+		&self,
+		source_extent: Extent,
+		source_rgba16f: &[u8],
+	) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
 		self.worker
-			.call(source_extent, source_rgba16f, &mut [])
-			.ok_or(GPUIBLBakeError::WorkerUnavailable)?
+			.submit(source_extent, source_rgba16f.to_vec(), Vec::new())
+			.await
+			.map_err(|_| GPUIBLBakeError::WorkerUnavailable)?
+			.0
 	}
 
 	/// Creates a client whose worker already stopped, so every bake reports it as unavailable.
@@ -140,6 +141,9 @@ impl GPUIBLClient {
 }
 
 /// The `GPUIBLProcessor` struct provides thread-confined environment-map generation with CPU-compatible output.
+///
+/// It serves the worker one bake at a time: [`GpuProcessor::submit`] runs the whole bake and completes inline.
+/// Environment maps are rare next to material textures, so they don't pipeline yet.
 ///
 /// Create and use this processor on one thread. To use it from an asset handler, construct it inside the factory passed to
 /// [`crate::ibl::IBLGenerator::with_gpu_processor_factory`].
@@ -401,6 +405,23 @@ impl GPUIBLProcessor {
 			.map_err(|_| GPUIBLBakeError::GPUExecution)?;
 		recording.execute(scratch.synchronizer);
 		Ok(copy_handle)
+	}
+}
+
+impl GpuProcessor for GPUIBLProcessor {
+	type Request = Extent;
+	type Result = Result<OwnedBakedImageIBL, GPUIBLBakeError>;
+	/// No request is ever in flight, which the type states so `poll` needs no body.
+	type Ticket = std::convert::Infallible;
+
+	const MAX_IN_FLIGHT: usize = 1;
+
+	fn submit(&mut self, source_extent: &Extent, source_rgba16f: &[u8]) -> Submission<Self::Ticket, Self::Result> {
+		Submission::Complete(self.bake_image_ibl(*source_extent, source_rgba16f))
+	}
+
+	fn poll(&mut self, ticket: Self::Ticket, _output: &mut [u8]) -> Option<Self::Result> {
+		match ticket {}
 	}
 }
 
@@ -733,8 +754,8 @@ mod tests {
 		assert_eq!(f16::from_le_bytes([atlas[6], atlas[7]]).to_f32(), 1.0);
 	}
 
-	#[test]
-	fn gpu_base_cubemap_matches_cpu_projection_for_nonconstant_radiance() {
+	#[crate::r#async::test]
+	async fn gpu_base_cubemap_matches_cpu_projection_for_nonconstant_radiance() {
 		let client = GPUIBLClient::try_new().expect(
 			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
 		);
@@ -751,7 +772,10 @@ mod tests {
 			}
 		}
 
-		let gpu = client.bake_image_ibl(Extent::rectangle(width, height), &source).unwrap();
+		let gpu = client
+			.bake_image_ibl(Extent::rectangle(width, height), &source)
+			.await
+			.unwrap();
 		let cpu = bake_image_ibl_in(Extent::rectangle(width, height), &source, &Global).unwrap();
 		let gpu_stream = &gpu.streams[1];
 		let cpu_stream = &cpu.streams[1];
@@ -776,8 +800,8 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn gpu_bake_keeps_a_constant_environment_constant() {
+	#[crate::r#async::test]
+	async fn gpu_bake_keeps_a_constant_environment_constant() {
 		let client = GPUIBLClient::try_new().expect(
 			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
 		);
@@ -790,7 +814,7 @@ mod tests {
 			pixel[6..8].copy_from_slice(&f16::from_f32(0.25).to_le_bytes());
 		}
 
-		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
+		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).await.unwrap();
 
 		assert_eq!(&baked.data[..source.len()], source.as_slice());
 		for (pixel_index, pixel) in baked.data[source.len()..]
@@ -847,8 +871,8 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		ComputeContextError, ComputeKernelError, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT,
-		create_compute_context, create_compute_kernel,
+		ComputeContextError, ComputeKernelError, GpuProcessor, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext,
+		SOURCE_SLOT, Submission, create_compute_context, create_compute_kernel,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},
 };

@@ -89,8 +89,10 @@ impl<'a> Frame<'a> {
 				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
+		let readback_synchronizer = synchronizer
+			.map(|synchronizer| self.device.get_syncronizer_handles(synchronizer)[self.frame_key.sequence_index as usize]);
 		for handle in texture_readbacks {
-			self.device.texture_readbacks.mark_submitted(handle);
+			self.device.texture_readbacks.mark_submitted(handle, readback_synchronizer);
 		}
 
 		// Binary semaphores are consumed by one wait, so each present waits only on its own image's render semaphore.

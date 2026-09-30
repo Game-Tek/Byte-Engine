@@ -18,11 +18,12 @@ mod tests {
 
 	use super::{
 		GLTFAssetHandler, GltfSkeletalImportError, GltfTextureDependency, collect_gltf_texture_dependencies,
-		generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id, gltf_normal_transform,
-		gltf_primitive_transform_node, gltf_transform_orientation, has_vertex_component, import_gltf_animation,
-		import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin, load_gltf_buffers, normalize_vertex_layouts,
-		sanitize_material_name, transform_gltf_tangent, transform_gltf_unit_direction, unique_gltf_materials,
-		validate_affine_matrix, validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
+		generated_gltf_brdf, generated_gltf_image_id, generated_image_fragment_index, generated_material_base_id,
+		gltf_image_semantics, gltf_normal_transform, gltf_primitive_transform_node, gltf_transform_orientation,
+		has_vertex_component, import_gltf_animation, import_gltf_node_graph, import_gltf_skin_binding, import_gltf_vertex_skin,
+		load_gltf_buffers, normalize_vertex_layouts, sanitize_material_name, transform_gltf_tangent,
+		transform_gltf_unit_direction, unique_gltf_materials, validate_affine_matrix,
+		validate_gltf_flattened_animation_transform, validate_gltf_skin_attribute_sets,
 	};
 	use crate::r#async;
 	use crate::{
@@ -31,7 +32,10 @@ mod tests {
 			ResourceId, handler::AssetHandler, handler::implementations::bema::tests::MinimalTestShaderGenerator,
 			manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
-		pbr::{BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
+		pbr::{
+			BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode,
+			BrdfNodeId, BrdfTexture, BrdfValue,
+		},
 		processors::processor::implementations::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
@@ -41,7 +45,7 @@ mod tests {
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
-		types::{VertexComponent, VertexSemantics},
+		types::{Formats, VertexComponent, VertexSemantics},
 	};
 
 	#[test]
@@ -986,7 +990,7 @@ mod tests {
 				},
 				GltfTextureDependency {
 					image_index: 5,
-					semantic: Semantic::Metallic,
+					semantic: Semantic::MetallicRoughness,
 				},
 				GltfTextureDependency {
 					image_index: 8,
@@ -998,6 +1002,181 @@ mod tests {
 				},
 			]
 		);
+	}
+
+	/// Parses a glTF document with three images and the given materials.
+	fn gltf_with_materials(materials: &str) -> gltf::Gltf {
+		gltf::Gltf::from_slice(
+			format!(
+				r#"{{
+					"asset":{{"version":"2.0"}},
+					"images":[{{"uri":"a.png"}},{{"uri":"b.png"}},{{"uri":"c.png"}}],
+					"textures":[{{"source":0}},{{"source":1}},{{"source":2}}],
+					"materials":[{materials}]
+				}}"#
+			)
+			.as_bytes(),
+		)
+		.expect("test glTF should parse")
+	}
+
+	/// Returns the channels the generated material reads metallic and roughness from.
+	fn metallic_and_roughness_channels(brdf: &BrdfMaterialDescription) -> (BrdfChannel, BrdfChannel) {
+		let BrdfNode::MetallicRoughness(surface) = brdf.node(brdf.surface).unwrap() else {
+			panic!("generated material should have a metallic-roughness surface");
+		};
+		let channel = |factor: BrdfNodeId| {
+			let BrdfNode::Multiply { right, .. } = brdf.node(factor).unwrap() else {
+				panic!("textured metallic and roughness should multiply a factor by a channel");
+			};
+			let BrdfNode::ExtractChannel { channel, .. } = brdf.node(*right).unwrap() else {
+				panic!("textured metallic and roughness should extract one channel");
+			};
+			*channel
+		};
+		(channel(surface.metallic), channel(surface.roughness))
+	}
+
+	#[test]
+	fn metallic_roughness_only_images_pack_and_their_reads_move_to_red_and_green() {
+		let gltf = gltf_with_materials(
+			r#"{"pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicRoughnessTexture":{"index":1}}},
+			{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":1}}}"#,
+		);
+
+		let semantics = gltf_image_semantics(&gltf);
+
+		assert_eq!(
+			semantics,
+			[Some(Semantic::Albedo), Some(Semantic::MetallicRoughness), None],
+			"an image every material reads only through green and blue packs; an unused image has no semantic"
+		);
+
+		for material in gltf.materials() {
+			let brdf = generated_gltf_brdf(&material, &semantics).expect("generated material should build");
+
+			assert_eq!(brdf.validate(), Ok(()));
+			assert_eq!(
+				metallic_and_roughness_channels(&brdf),
+				(BrdfChannel::Green, BrdfChannel::Red),
+				"metallic moves from blue to green and roughness from green to red"
+			);
+		}
+	}
+
+	#[test]
+	fn an_image_also_read_as_occlusion_stays_unpacked_in_every_material() {
+		// An occlusion-roughness-metallic texture is read through red by one material, so the image keeps all of its
+		// channels and every material samples glTF's original green and blue.
+		let gltf = gltf_with_materials(
+			r#"{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":1}},"occlusionTexture":{"index":1}},
+			{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":1}}}"#,
+		);
+
+		let semantics = gltf_image_semantics(&gltf);
+
+		assert_eq!(semantics, [None, Some(Semantic::AO), None]);
+
+		for material in gltf.materials() {
+			let brdf = generated_gltf_brdf(&material, &semantics).expect("generated material should build");
+
+			assert_eq!(
+				metallic_and_roughness_channels(&brdf),
+				(BrdfChannel::Blue, BrdfChannel::Green)
+			);
+		}
+	}
+
+	/// Builds a triangle GLB whose material reads a metallic-roughness PNG with distinct values in every channel.
+	fn generated_metallic_roughness_triangle_glb() -> Vec<u8> {
+		let (mut document, mut binary) = generated_triangle_gltf();
+
+		let mut png = Vec::new();
+		{
+			let mut encoder = png::Encoder::new(&mut png, 2, 2);
+			encoder.set_color(png::ColorType::Rgba);
+			encoder.set_depth(png::BitDepth::Eight);
+			let mut writer = encoder.write_header().expect("generated PNG header should encode");
+			writer
+				.write_image_data(&[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255])
+				.expect("generated PNG pixels should encode");
+		}
+
+		let image = append_fixture_bytes(&mut binary, &png);
+
+		document["buffers"][0]["byteLength"] = binary.len().into();
+
+		document["bufferViews"]
+			.as_array_mut()
+			.expect("fixture buffer views should be an array")
+			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
+
+		document["images"] = serde_json::json!([{ "name": "Metallic Roughness", "bufferView": 2, "mimeType": "image/png" }]);
+
+		document["textures"] = serde_json::json!([{ "source": 0 }]);
+
+		document["materials"] = serde_json::json!([{
+			"name": "Packed Material",
+			"pbrMetallicRoughness": { "metallicRoughnessTexture": { "index": 0 } }
+		}]);
+
+		document["meshes"][0]["primitives"][0]["material"] = 0.into();
+
+		package_fixture_glb(&document, binary)
+	}
+
+	#[r#async::test]
+	async fn baked_metallic_roughness_images_store_green_and_blue_as_rg8() {
+		let asset_storage_backend = AssetTestStorageBackend::new();
+
+		asset_storage_backend.add_file("packed.glb", &generated_metallic_roughness_triangle_glb());
+
+		let resource_storage_backend = ResourceTestStorageBackend::new();
+
+		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+			.bake("packed.glb")
+			.await
+			.expect("GLB with a metallic-roughness texture should bake");
+
+		let image_id = ResourceId::new("packed.glb#images/0_Metallic_Roughness");
+
+		let resource = resource_storage_backend
+			.get_resource(image_id)
+			.expect("the material's image should be baked as a dependency");
+
+		let image: Image = crate::from_slice(&resource.resource).expect("image metadata should deserialize");
+
+		assert_eq!(image.format, Formats::RG8);
+		assert_eq!(image.extent, [2, 2, 0]);
+		assert_eq!(
+			&*resource_storage_backend
+				.get_resource_data_by_name(image_id)
+				.expect("the image payload should be stored"),
+			&[20, 30, 50, 60, 80, 90, 110, 120],
+			"the payload should hold glTF's green and blue channels as red and green"
+		);
+
+		let variant = resource_storage_backend
+			.get_resources()
+			.into_iter()
+			.find(|resource| resource.class == "Variant")
+			.expect("the generated variant should be stored");
+
+		let variant: VariantModel = crate::from_slice(&variant.resource).expect("variant should deserialize");
+
+		let ValueModel::Image(bound) = &variant.variables[0].value else {
+			panic!("the metallic-roughness texture should become an image variable");
+		};
+
+		assert_eq!(bound.id(), image_id, "the material should bind the packed image");
 	}
 
 	#[r#async::test]
@@ -1303,8 +1482,8 @@ use crate::{
 	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
 	processors::{
 		processor::implementations::image::{
-			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
-			guess_semantic_from_name, process_image_with_mip_backend_in,
+			ImageDescription, ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding,
+			channel_packing_for_semantic, gamma_from_semantic, guess_semantic_from_name, process_image_with_mips_in,
 		},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,
@@ -1315,7 +1494,7 @@ use crate::{
 		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
-		mips::MipGenerationBackend,
+		mips::MipGenerator,
 		skeleton::{
 			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
 		},

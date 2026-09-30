@@ -154,8 +154,12 @@ impl<'a> Frame<'a> {
 			}
 
 			let submitted = stored_queue.submit_batch(self.queue_handle, native_commands);
+			let sequence_synchronizer =
+				context::synchronizer_for_sequence(&self.device.synchronizers, synchronizer, self.frame_key.sequence_index);
 			for handle in &submitted_readbacks {
-				self.device.texture_readbacks.mark_submitted(*handle);
+				self.device
+					.texture_readbacks
+					.mark_submitted(*handle, Some(sequence_synchronizer));
 			}
 
 			for (present_key, drawable) in &present_drawables {

@@ -6,18 +6,72 @@ pub(crate) use source::{CanonicalImageData, canonicalize_rgba16f_in};
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
 use source::{append_canonical_image_in, canonicalize_image_in};
 
+/// The `Semantic` enum tells the image processor how a texture is sampled, so it can pick gamma, format, and packing.
+///
+/// Importers infer it from material usage, or from the file name through [`guess_semantic_from_name`].
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Semantic {
 	Albedo,
 	Normal,
+	/// A map whose metallic value is read from one channel; stored with all of its channels.
 	Metallic,
+	/// A map whose roughness value is read from one channel; stored with all of its channels.
 	Roughness,
+	/// A glTF metallic-roughness map read only through its green and blue channels.
+	///
+	/// The processor stores it as two channels through [`METALLIC_ROUGHNESS_PACKING`], and material generators remap
+	/// their channel reads with the same table. See [`crate::pbr::BrdfMaterialDescription::pack_texture_channels`].
+	MetallicRoughness,
 	Emissive,
 	Height,
 	Opacity,
 	Displacement,
 	AO,
 	Other,
+}
+
+/// The `ChannelPacking` struct selects which two source channels a packed image keeps, in stored order.
+///
+/// The image processor moves the selected channels into the first two channels of its filtering surface and stores
+/// the result as `RG8` or `RG16`. Material generators remap their channel reads through
+/// [`Self::stored_channel`], so a packed image is sampled where it was stored.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct ChannelPacking {
+	/// Source channel index stored in each of the two output channels.
+	pub source_channels: [usize; 2],
+}
+
+impl ChannelPacking {
+	/// Returns the stored channel index that holds `source_channel`, or `None` when the packing drops it.
+	pub fn stored_channel(self, source_channel: usize) -> Option<usize> {
+		self.source_channels.iter().position(|&kept| kept == source_channel)
+	}
+
+	/// Moves the selected channels of every `CHANNELS`-channel texel to the front, in place.
+	///
+	/// `SAMPLE` is the byte size of one channel. The remaining channels keep stale values; the level encoder drops
+	/// them.
+	fn pack_in_place<const CHANNELS: usize, const SAMPLE: usize>(self, data: &mut [u8]) {
+		let [first, second] = self.source_channels;
+		for texel in data.chunks_exact_mut(CHANNELS * SAMPLE) {
+			let mut kept = [[0_u8; SAMPLE]; 2];
+			kept[0].copy_from_slice(&texel[first * SAMPLE..(first + 1) * SAMPLE]);
+			kept[1].copy_from_slice(&texel[second * SAMPLE..(second + 1) * SAMPLE]);
+			texel[..SAMPLE].copy_from_slice(&kept[0]);
+			texel[SAMPLE..2 * SAMPLE].copy_from_slice(&kept[1]);
+		}
+	}
+}
+
+/// glTF stores roughness in green and metallic in blue; packed maps keep them as red and green.
+pub const METALLIC_ROUGHNESS_PACKING: ChannelPacking = ChannelPacking { source_channels: [1, 2] };
+
+/// Returns the packing an image with `semantic` is stored with, or `None` when it keeps all of its channels.
+pub fn channel_packing_for_semantic(semantic: Semantic) -> Option<ChannelPacking> {
+	match semantic {
+		Semantic::MetallicRoughness => Some(METALLIC_ROUGHNESS_PACKING),
+		_ => None,
+	}
 }
 
 /// The `ImageDescription` struct selects semantic processing, gamma, and mip generation for one decoded image.
@@ -29,36 +83,37 @@ pub struct ImageDescription {
 	pub generate_mipmaps: bool,
 }
 
-pub fn process_image<'a>(
+pub async fn process_image<'a>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
 	source: ImageSource<'_>,
 ) -> Result<(ProcessedAsset, Box<[u8]>), LoadErrors> {
-	process_image_in(id, description, source, Global)
+	process_image_in(id, description, source, Global).await
 }
 
 /// Processes image pixels using the provided allocator for transient and output buffers.
-pub fn process_image_in<'a, A: Allocator + Clone>(
+pub async fn process_image_in<'a, A: Allocator + Clone>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
 	source: ImageSource<'_>,
 	allocator: A,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	process_image_with_mip_backend_in(id, description, source, allocator, None)
+	process_image_with_mips_in(id, description, source, allocator, &MipGenerator::Cpu).await
 }
 
-/// Processes image pixels and delegates requested lower mip levels to an optional offline backend.
+/// Processes image pixels and delegates requested lower mip levels to the given mip generator.
 ///
-/// Material importers pass their GPU backend here. Standalone image handlers should call [`process_image_in`] so their
-/// authored texture payload remains unchanged.
-pub fn process_image_with_mip_backend_in<'a, A: Allocator + Clone>(
+/// Material importers pass their shared generator here, and the call suspends while a GPU generator serves the
+/// request. Standalone image handlers should call [`process_image_in`] so their authored texture payload remains
+/// unchanged.
+pub async fn process_image_with_mips_in<'a, A: Allocator + Clone>(
 	id: ResourceId<'a>,
 	description: ImageDescription,
 	source: ImageSource<'_>,
 	allocator: A,
-	mip_backend: Option<&dyn MipGenerationBackend>,
+	mip_generator: &MipGenerator,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	let (resource, buffer, streams) = produce_image_in(&description, source, allocator, mip_backend)?;
+	let (resource, buffer, streams) = produce_image_in(&description, source, allocator, mip_generator).await?;
 
 	let asset = ProcessedAsset::new(id, resource);
 
@@ -121,6 +176,7 @@ pub fn gamma_from_semantic(semantic: Semantic) -> Gamma {
 		Semantic::Normal
 		| Semantic::Metallic
 		| Semantic::Roughness
+		| Semantic::MetallicRoughness
 		| Semantic::Height
 		| Semantic::Opacity
 		| Semantic::Displacement
@@ -132,81 +188,45 @@ pub fn should_compress_for_semantic(semantic: Semantic) -> bool {
 	matches!(semantic, Semantic::Albedo | Semantic::Normal)
 }
 
+/// Selects the stored format for a source format, given whether the image is block compressed and how it is sampled.
+///
+/// Eight- and sixteen-bit integer sources keep their depth. Packed semantics store two channels, normal maps compress
+/// to BC5, other compressed images to BC7, and everything else stays RGBA.
 pub fn determine_image_format(source_format: Formats, compress: bool, semantic: Semantic, gamma: Gamma) -> Formats {
-	match source_format {
-		Formats::RGB8 => {
-			if compress {
-				if semantic == Semantic::Normal {
-					Formats::BC5
-				} else if gamma == Gamma::SRGB {
-					Formats::BC7SRGB
-				} else {
-					Formats::BC7
-				}
-			} else if gamma == Gamma::SRGB {
-				Formats::RGBA8SRGB
+	let sixteen_bit = match source_format {
+		Formats::RGB8 | Formats::RGBA8 => false,
+		Formats::RGB16 | Formats::RGBA16 => true,
+		Formats::R16F => return Formats::R16F,
+		Formats::RGBA16F => return Formats::RGBA16F,
+		_ => panic!("Unsupported format: {:#?}", source_format),
+	};
+	match semantic {
+		_ if channel_packing_for_semantic(semantic).is_some() => {
+			if sixteen_bit {
+				Formats::RG16
 			} else {
-				Formats::RGBA8
+				Formats::RG8
 			}
 		}
-		Formats::RGBA8 => {
-			if compress {
-				if semantic == Semantic::Normal {
-					Formats::BC5
-				} else if gamma == Gamma::SRGB {
-					Formats::BC7SRGB
-				} else {
-					Formats::BC7
-				}
-			} else if gamma == Gamma::SRGB {
-				Formats::RGBA8SRGB
-			} else {
-				Formats::RGBA8
-			}
-		}
-		Formats::RGB16 => {
-			if compress {
-				if semantic == Semantic::Normal {
-					Formats::BC5
-				} else if gamma == Gamma::SRGB {
-					Formats::BC7SRGB
-				} else {
-					Formats::BC7
-				}
-			} else {
-				Formats::RGBA16
-			}
-		}
-		Formats::RGBA16 => {
-			if compress {
-				if semantic == Semantic::Normal {
-					Formats::BC5
-				} else if gamma == Gamma::SRGB {
-					Formats::BC7SRGB
-				} else {
-					Formats::BC7
-				}
-			} else {
-				Formats::RGBA16
-			}
-		}
-		Formats::R16F => Formats::R16F,
-		Formats::RGBA16F => Formats::RGBA16F,
-		_ => {
-			panic!("Unsupported format: {:#?}", source_format);
-		}
+		Semantic::Normal if compress => Formats::BC5,
+		_ if compress && gamma == Gamma::SRGB => Formats::BC7SRGB,
+		_ if compress => Formats::BC7,
+		_ if sixteen_bit => Formats::RGBA16,
+		_ if gamma == Gamma::SRGB => Formats::RGBA8SRGB,
+		_ => Formats::RGBA8,
 	}
 }
 
 /// Produces one final image payload while retaining intermediate storage only when later stages require random access.
 ///
-/// Mip chains go to `mip_backend`, or to the CPU backend when there is none. A single block-compressed level is encoded
-/// on the CPU.
-fn produce_image_in<A: Allocator + Clone>(
+/// Mip chains go to `mip_generator`. A single block-compressed or packed level
+/// is encoded on the CPU. Packed semantics move their kept channels to the front of the filtering surface first, so
+/// every level filters and stores the same texels the unpacked image would.
+async fn produce_image_in<A: Allocator + Clone>(
 	description: &ImageDescription,
 	source: ImageSource<'_>,
 	allocator: A,
-	mip_backend: Option<&dyn MipGenerationBackend>,
+	mip_generator: &MipGenerator,
 ) -> Result<(Image, Box<[u8], A>, Option<Vec<StreamDescription>>), LoadErrors> {
 	let ImageDescription {
 		semantic,
@@ -217,13 +237,14 @@ fn produce_image_in<A: Allocator + Clone>(
 	let extent = source.extent;
 
 	let compress = should_compress_for_semantic(*semantic);
+	let packing = channel_packing_for_semantic(*semantic);
 
 	let output_format = determine_image_format(source_format, compress, *semantic, *gamma);
 	let block_compressed = matches!(
 		output_format,
 		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB
 	);
-	if !*generate_mipmaps && !block_compressed {
+	if !*generate_mipmaps && !block_compressed && packing.is_none() {
 		let encoded_size = encoded_mip_level_size(output_format, extent).ok_or(LoadErrors::FailedToProcess)?;
 		let mut data = Vec::with_capacity_in(encoded_size, allocator);
 		append_canonical_image_in(source, output_format, &mut data).ok_or(LoadErrors::FailedToProcess)?;
@@ -242,9 +263,18 @@ fn produce_image_in<A: Allocator + Clone>(
 		));
 	}
 
-	// Filtering and block compression both read a canonical copy of the source.
-	let intermediate =
-		canonicalize_image_in(source, filtering_format(output_format), allocator.clone()).ok_or(LoadErrors::FailedToProcess)?;
+	// Filtering, block compression, and packing all read a canonical copy of the source.
+	let filtering_format = filtering_format(output_format);
+	let mut intermediate =
+		canonicalize_image_in(source, filtering_format, allocator.clone()).ok_or(LoadErrors::FailedToProcess)?;
+	if let Some(packing) = packing {
+		let intermediate = intermediate.to_mut(allocator.clone());
+		match filtering_format {
+			Formats::RGBA8 => packing.pack_in_place::<4, 1>(intermediate),
+			Formats::RGBA16 => packing.pack_in_place::<4, 2>(intermediate),
+			_ => return Err(LoadErrors::FailedToProcess),
+		}
+	}
 	let intermediate = intermediate.as_slice();
 
 	// Every level is one stream, and the levels follow each other without padding.
@@ -261,8 +291,7 @@ fn produce_image_in<A: Allocator + Clone>(
 	let mut data = Vec::with_capacity_in(size, allocator.clone());
 	data.resize(size, 0);
 	if *generate_mipmaps {
-		mip_backend
-			.unwrap_or(&CPUMipGenerationBackend)
+		mip_generator
 			.encode_mip_chain(
 				output_format,
 				*gamma,
@@ -271,6 +300,7 @@ fn produce_image_in<A: Allocator + Clone>(
 				intermediate,
 				&mut data,
 			)
+			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 	} else {
 		encode_level_in(output_format, extent, intermediate, &mut data, allocator);
@@ -338,8 +368,8 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn process_image_expands_rgb8_into_rgba8_without_compression() {
+	#[crate::r#async::test]
+	async fn process_image_expands_rgb8_into_rgba8_without_compression() {
 		let extent = Extent::rectangle(2, 1);
 		let description = ImageDescription {
 			gamma: Gamma::SRGB,
@@ -353,6 +383,7 @@ mod tests {
 			description,
 			image_source(extent, Formats::RGB8, &source),
 		)
+		.await
 		.expect("Image processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
@@ -365,8 +396,88 @@ mod tests {
 		assert_eq!(&*data, &[1, 2, 3, 0xFF, 4, 5, 6, 0xFF]);
 	}
 
-	#[test]
-	fn process_image_compresses_rgb16_albedo_to_bc7() {
+	/// Processes `source` as a metallic-roughness map and as an unpacked metallic map, and returns both payloads.
+	async fn packed_and_unpacked(
+		extent: Extent,
+		format: Formats,
+		source: &[u8],
+		generate_mipmaps: bool,
+	) -> (Image, Box<[u8]>, Box<[u8]>) {
+		let process = async |semantic| {
+			let description = ImageDescription {
+				gamma: Gamma::Linear,
+				semantic,
+				generate_mipmaps,
+			};
+			let (asset, data) = process_image(
+				ResourceId::new("textures/metallic_roughness.png"),
+				description,
+				image_source(extent, format, source),
+			)
+			.await
+			.expect("metallic-roughness processing should succeed");
+			let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+			(image, data)
+		};
+		let (packed, packed_data) = process(Semantic::MetallicRoughness).await;
+		let (_, unpacked_data) = process(Semantic::Metallic).await;
+		(packed, packed_data, unpacked_data)
+	}
+
+	#[crate::r#async::test]
+	async fn process_image_packs_metallic_roughness_green_and_blue_into_rg8() {
+		let extent = Extent::rectangle(2, 2);
+		let source = [10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 0, 100, 110, 120, 128];
+
+		let (image, data, _) = packed_and_unpacked(extent, Formats::RGBA8, &source, false).await;
+
+		assert_eq!(image.format, Formats::RG8);
+		assert_eq!(image.gamma, Gamma::Linear);
+		assert_eq!(image.mip_count, 1);
+		assert_eq!(&*data, &[20, 30, 50, 60, 80, 90, 110, 120]);
+	}
+
+	#[crate::r#async::test]
+	async fn packed_metallic_roughness_mip_chain_matches_the_unpacked_green_and_blue_channels() {
+		// Filtering is per channel, so packing before filtering must store exactly the G and B texels the RGBA8 chain
+		// stores, on every level.
+		let (width, height) = (8_u32, 4_u32);
+		let source = (0..width * height)
+			.flat_map(|index| [index as u8, (index * 7 % 251) as u8, (index * 13 % 241) as u8, 255])
+			.collect::<Vec<_>>();
+
+		let (image, packed, unpacked) =
+			packed_and_unpacked(Extent::rectangle(width, height), Formats::RGBA8, &source, true).await;
+
+		assert_eq!(image.format, Formats::RG8);
+		assert_eq!(image.mip_count, 4);
+		assert_eq!(packed.len(), (32 + 8 + 2 + 1) * 2);
+		let expected = unpacked
+			.as_chunks::<4>()
+			.0
+			.iter()
+			.flat_map(|texel| [texel[1], texel[2]])
+			.collect::<Vec<_>>();
+		assert_eq!(&*packed, &*expected);
+	}
+
+	#[crate::r#async::test]
+	async fn process_image_packs_sixteen_bit_metallic_roughness_into_rg16() {
+		let extent = Extent::rectangle(2, 1);
+		// RGB16 little-endian texels: (1, 2, 3) and (4, 5, 6).
+		let source = [1_u16, 2, 3, 4, 5, 6]
+			.iter()
+			.flat_map(|value| value.to_le_bytes())
+			.collect::<Vec<_>>();
+
+		let (image, data, _) = packed_and_unpacked(extent, Formats::RGB16, &source, false).await;
+
+		assert_eq!(image.format, Formats::RG16);
+		assert_eq!(&*data, &[2, 0, 3, 0, 5, 0, 6, 0]);
+	}
+
+	#[crate::r#async::test]
+	async fn process_image_compresses_rgb16_albedo_to_bc7() {
 		// Regression: the old code built an RGBA16 intermediate (8 bytes/pixel) but passed it to
 		// the BC7 compressor with stride = width * 4 (an RGBA8 stride), halving the effective row
 		// width and producing horizontal stripes. The correct path converts RGB16 → RGBA8 first.
@@ -385,6 +496,7 @@ mod tests {
 			description,
 			image_source(extent, Formats::RGB16, &source),
 		)
+		.await
 		.expect("RGB16 albedo processing should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
@@ -396,8 +508,8 @@ mod tests {
 		assert_eq!(data.len(), 16);
 	}
 
-	#[test]
-	fn process_image_with_mipmaps_produces_correct_mip_count_for_bc5_normal_map() {
+	#[crate::r#async::test]
+	async fn process_image_with_mipmaps_produces_correct_mip_count_for_bc5_normal_map() {
 		// BC5 compresses RGBA8 intermediate in 4×4 blocks.
 		let width = 8_u32;
 
@@ -418,6 +530,7 @@ mod tests {
 			description,
 			image_source(extent, Formats::RGBA8, &source),
 		)
+		.await
 		.expect("BC5 mip generation should succeed");
 
 		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
@@ -447,10 +560,7 @@ use crate::{
 	asset::{ResourceId, handler::LoadErrors, resource_id::ResourceIdBase},
 	resources::{
 		image::Image,
-		mips::{
-			CPUMipGenerationBackend, MipGenerationBackend, encode_level_in, encoded_mip_level_size, filtering_format,
-			mip_extents,
-		},
+		mips::{MipGenerator, encode_level_in, encoded_mip_level_size, filtering_format, mip_extents},
 	},
 	types::{Formats, Gamma},
 };

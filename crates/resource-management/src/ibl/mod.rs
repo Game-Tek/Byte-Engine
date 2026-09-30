@@ -78,7 +78,7 @@ impl IBLGenerator {
 	) -> Result<(), LoadErrors> {
 		#[cfg(feature = "gpu-ibl")]
 		if let Some(client) = &self.gpu_client {
-			match client.bake_image_ibl(extent, rgba16f) {
+			match client.bake_image_ibl(extent, rgba16f).await {
 				Ok(baked) => {
 					context.info("Generated environment maps on the GPU.");
 					return store_baked_image(

@@ -1,5 +1,6 @@
 use utils::Extent;
 
+use crate::synchronizer::SynchronizerHandle as PrivateSynchronizerHandle;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
 	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
@@ -140,7 +141,9 @@ pub(crate) fn texture_transfer_layout(
 
 enum TextureReadbackState<T> {
 	Recorded(T),
-	Submitted(T),
+	/// Submitted with the private synchronizer its submission signals, when it signaled one. Mapping waits for that
+	/// synchronizer alone, so other submissions in flight on the context keep running.
+	Submitted(T, Option<PrivateSynchronizerHandle>),
 	MappingFailed,
 	Vacant,
 }
@@ -148,23 +151,23 @@ enum TextureReadbackState<T> {
 impl<T> TextureReadbackState<T> {
 	fn value(&self) -> Option<&T> {
 		match self {
-			Self::Recorded(value) | Self::Submitted(value) => Some(value),
+			Self::Recorded(value) | Self::Submitted(value, _) => Some(value),
 			Self::MappingFailed | Self::Vacant => None,
 		}
 	}
 
 	fn value_mut(&mut self) -> Option<&mut T> {
 		match self {
-			Self::Recorded(value) | Self::Submitted(value) => Some(value),
+			Self::Recorded(value) | Self::Submitted(value, _) => Some(value),
 			Self::MappingFailed | Self::Vacant => None,
 		}
 	}
 
-	fn submit(&mut self) -> bool {
+	fn submit(&mut self, synchronizer: Option<PrivateSynchronizerHandle>) -> bool {
 		let Self::Recorded(value) = std::mem::replace(self, Self::Vacant) else {
 			return false;
 		};
-		*self = Self::Submitted(value);
+		*self = Self::Submitted(value, synchronizer);
 		true
 	}
 }
@@ -210,8 +213,13 @@ impl<T> TextureReadbackRegistry<T> {
 		Self::handle(index, generation)
 	}
 
-	pub(crate) fn mark_submitted(&mut self, handle: TextureCopyHandle) -> bool {
-		self.slot_mut(handle).is_some_and(|slot| slot.state.submit())
+	/// Records that the readback's command was submitted, signaling `synchronizer` when it completes.
+	pub(crate) fn mark_submitted(
+		&mut self,
+		handle: TextureCopyHandle,
+		synchronizer: Option<PrivateSynchronizerHandle>,
+	) -> bool {
+		self.slot_mut(handle).is_some_and(|slot| slot.state.submit(synchronizer))
 	}
 
 	pub(crate) fn get(&self, handle: TextureCopyHandle) -> Option<&T> {
@@ -222,9 +230,13 @@ impl<T> TextureReadbackRegistry<T> {
 		self.slot_mut(handle)?.state.value_mut()
 	}
 
-	pub(crate) fn submitted(&self, handle: TextureCopyHandle) -> Result<&T, TextureTransferError> {
+	/// Returns a submitted readback and the synchronizer to wait for before mapping it, if its submission signaled one.
+	pub(crate) fn submitted(
+		&self,
+		handle: TextureCopyHandle,
+	) -> Result<(&T, Option<PrivateSynchronizerHandle>), TextureTransferError> {
 		match self.slot(handle).map(|slot| &slot.state) {
-			Some(TextureReadbackState::Submitted(value)) => Ok(value),
+			Some(TextureReadbackState::Submitted(value, synchronizer)) => Ok((value, *synchronizer)),
 			Some(TextureReadbackState::Recorded(_) | TextureReadbackState::MappingFailed) => {
 				Err(TextureTransferError::MappingFailed)
 			}
@@ -238,7 +250,7 @@ impl<T> TextureReadbackRegistry<T> {
 		let slot = self
 			.slot_mut(handle)
 			.expect("A validated texture readback slot must remain available.");
-		let TextureReadbackState::Submitted(value) = std::mem::replace(&mut slot.state, TextureReadbackState::Vacant) else {
+		let TextureReadbackState::Submitted(value, _) = std::mem::replace(&mut slot.state, TextureReadbackState::Vacant) else {
 			unreachable!();
 		};
 		if slot.generation != u32::MAX {
@@ -425,7 +437,7 @@ pub trait Context: ContextCreate {
 	/// two refresh periods shows every other refresh. Backends without a timed present pace the acquisition instead.
 	fn set_present_interval(&mut self, swapchain: SwapchainHandle, interval: Option<std::time::Duration>);
 
-	/// Waits for queued GPU work, consumes one transfer handle, and returns its owned result.
+	/// Waits for the submission that recorded one transfer, consumes its handle, and returns its owned result.
 	///
 	/// A transfer handle is local to the context that created it. Handle values can overlap across contexts,
 	/// so pass the handle only to that same context. Record the transfer with
@@ -766,7 +778,7 @@ mod texture_transfer_tests {
 	fn consumed_handle_is_stale_after_slot_reuse() {
 		let mut registry = TextureReadbackRegistry::new();
 		let stale = registry.insert(1_u32);
-		assert!(registry.mark_submitted(stale));
+		assert!(registry.mark_submitted(stale, None));
 		assert_eq!(registry.take_submitted(stale), Ok(1));
 
 		let current = registry.insert(2_u32);

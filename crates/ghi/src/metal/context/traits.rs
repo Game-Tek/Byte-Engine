@@ -292,8 +292,12 @@ impl crate::context::Context for Context {
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
-		self.texture_readbacks.submitted(texture_copy_handle)?;
-		self.wait();
+		// Only the transfer's own submission has to finish; other work in flight on this context keeps running.
+		let (_, synchronizer) = self.texture_readbacks.submitted(texture_copy_handle)?;
+		match synchronizer {
+			Some(synchronizer) => self.wait_for_private_synchronizer(synchronizer),
+			None => self.wait(),
+		}
 		let mut readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
 		let pointer = readback.buffer.contents().as_ptr().cast::<u8>();
 		let layout = &readback.layout;
@@ -366,6 +370,8 @@ impl crate::context::Context for Context {
 	}
 
 	fn poll_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
+		// Pollers never start frames, so this is where their finished uploads get released.
+		self.retire_completed_internal_uploads();
 		let mut complete = true;
 		for frame_index in 0..self.frames as usize {
 			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);

@@ -1,7 +1,7 @@
 //! Encode one mip level into its stored format on the CPU.
 //!
-//! [`super::CPUMipGenerationBackend`] encodes every level with [`encode_level_in`], and the image processor uses it for
-//! textures stored without mips. The GPU backend uses it for formats it doesn't encode itself.
+//! [`super::encode_mip_chain_on_cpu`] encodes every level with [`encode_level_in`], and the image processor uses it for
+//! textures stored without mips. The GPU path uses it for formats it doesn't encode itself.
 
 use std::alloc::Allocator;
 
@@ -11,9 +11,10 @@ use crate::types::Formats;
 
 /// Writes one level of `width` by `height` texels into `output`, encoded as `output_format`.
 ///
-/// Block-compressed formats take RGBA8 texels and repeat the last row and column into partial edge blocks; other
-/// formats take texels already in `output_format` and copy them. `output` must hold exactly the level's stored size,
-/// which [`super::encoded_mip_level_size`] returns. `allocator` provides scratch for padded surfaces.
+/// Block-compressed formats take RGBA8 texels and repeat the last row and column into partial edge blocks. Packed
+/// `RG8` and `RG16` take RGBA8 and RGBA16 texels and keep the first two channels of each. Other formats take texels
+/// already in `output_format` and copy them. `output` must hold exactly the level's stored size, which
+/// [`super::encoded_mip_level_size`] returns. `allocator` provides scratch for padded surfaces.
 pub(crate) fn encode_level_in<A: Allocator + Clone>(
 	output_format: Formats,
 	extent: Extent,
@@ -45,8 +46,9 @@ pub(crate) fn encode_level_in<A: Allocator + Clone>(
 			};
 			intel_tex_2::bc7::compress_blocks_into(&bc7_settings(data), &surface, output);
 		}
-		Formats::RG8
-		| Formats::RGB8
+		Formats::RG8 => truncate_texels::<4, 2>(data, output),
+		Formats::RG16 => truncate_texels::<8, 4>(data, output),
+		Formats::RGB8
 		| Formats::RGBA8
 		| Formats::RGBA8SRGB
 		| Formats::RGB16
@@ -128,6 +130,21 @@ fn rg_surface_in<A: Allocator + Clone>(data: &[u8], extent: Extent, allocator: A
 	(padded, padded_width, padded_height)
 }
 
+/// Keeps the first `OUTPUT` bytes of every `SOURCE`-byte texel, so a filtered RGBA surface stores as its RG prefix.
+fn truncate_texels<const SOURCE: usize, const OUTPUT: usize>(data: &[u8], output: &mut [u8]) {
+	let (source, source_rest) = data.as_chunks::<SOURCE>();
+	let (destination, destination_rest) = output.as_chunks_mut::<OUTPUT>();
+	assert!(
+		source_rest.is_empty() && destination_rest.is_empty() && source.len() == destination.len(),
+		"Packed level size mismatch. The most likely cause is a filtering surface that is not one RGBA texel per stored texel: source={}, output={}",
+		data.len(),
+		output.len()
+	);
+	for (texel, stored) in source.iter().zip(destination) {
+		stored.copy_from_slice(&texel[..OUTPUT]);
+	}
+}
+
 fn zeroed_boxed_slice_in<A: Allocator + Clone>(len: usize, allocator: A) -> Box<[u8], A> {
 	let mut buffer = Vec::with_capacity_in(len, allocator);
 	buffer.resize(len, 0_u8);
@@ -161,6 +178,26 @@ mod tests {
 			encode(Formats::BC5, extent, &opaque),
 			encode(Formats::BC5, extent, &transparent),
 			"BC5 should ignore B and A channels"
+		);
+	}
+
+	#[test]
+	fn packed_rg_levels_keep_the_first_two_channels_of_each_texel() {
+		let extent = Extent::rectangle(2, 1);
+
+		assert_eq!(
+			encode(Formats::RG8, extent, &[1, 2, 3, 4, 5, 6, 7, 8]),
+			[1, 2, 5, 6],
+			"RG8 should keep R and G of each RGBA8 texel"
+		);
+		assert_eq!(
+			encode(
+				Formats::RG16,
+				extent,
+				&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+			),
+			[1, 2, 3, 4, 9, 10, 11, 12],
+			"RG16 should keep R and G of each RGBA16 texel"
 		);
 	}
 

@@ -115,6 +115,19 @@ impl<A: Allocator> CanonicalImageData<'_, A> {
 			Self::Owned(data) => data,
 		}
 	}
+
+	/// Returns the texels for in-place editing, copying borrowed decoder output into `allocator` first.
+	pub(crate) fn to_mut(&mut self, allocator: A) -> &mut [u8] {
+		if let Self::Borrowed(data) = *self {
+			let mut owned = Vec::with_capacity_in(data.len(), allocator);
+			owned.extend_from_slice(data);
+			*self = Self::Owned(owned.into_boxed_slice());
+		}
+		match self {
+			Self::Owned(data) => data,
+			Self::Borrowed(_) => unreachable!("borrowed texels were copied above"),
+		}
+	}
 }
 
 /// Converts a high-precision source into the linear RGBA16F surface required by environment processing.

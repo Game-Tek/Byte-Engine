@@ -12,12 +12,11 @@ where
 	let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
 
 	#[cfg(not(test))]
-	let (material_mips, ibl) = byte_engine::application::graphics::default_offline_backends();
+	let (material_mips, ibl) = byte_engine::application::graphics::default_offline_generators();
 
 	#[cfg(test)]
 	let (material_mips, ibl) = (
-		std::sync::Arc::new(resource_management::resources::mips::CPUMipGenerationBackend)
-			as std::sync::Arc<dyn resource_management::resources::mips::MipGenerationBackend>,
+		std::sync::Arc::new(resource_management::resources::mips::MipGenerator::Cpu),
 		resource_management::ibl::IBLGenerator::new(),
 	);
 

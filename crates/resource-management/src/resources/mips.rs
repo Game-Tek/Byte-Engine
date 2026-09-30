@@ -17,10 +17,10 @@ pub(crate) use encoding::encode_level_in;
 
 /// The `MipLevel` struct borrows one generated level so the encoder can read it in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MipLevel<'a> {
-	width: u32,
-	height: u32,
-	data: &'a [u8],
+pub(crate) struct MipLevel<'a> {
+	pub(crate) width: u32,
+	pub(crate) height: u32,
+	pub(crate) data: &'a [u8],
 }
 
 const MAX_MIP_LEVELS: usize = u32::BITS as usize;
@@ -42,7 +42,7 @@ impl OwnedMipRange {
 	};
 }
 
-/// The `OwnedMipChain` struct holds the filtered levels below a base level until the CPU backend encodes them.
+/// The `OwnedMipChain` struct holds the filtered levels below a base level until the CPU path encodes them.
 ///
 /// The chain uses one allocation for all texels and keeps its bounded level metadata inline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,37 +63,32 @@ impl OwnedMipChain {
 	}
 }
 
-/// The `MipGenerationBackend` trait lets material importers move mip filtering and block compression to an accelerator.
+/// The `MipGenerator` enum selects where material importers filter and block-compress texture mip chains.
 ///
-/// [`crate::processors::processor::implementations::image::process_image_with_mip_backend_in`] allocates the stored
-/// chain and calls [`Self::encode_mip_chain`] once per material texture. [`CPUMipGenerationBackend`] does this work on
-/// the CPU; the `gpu` module's `MaterialMipGenerator` does it on the GPU.
-pub trait MipGenerationBackend: Send + Sync {
+/// Material importers share one generator and call [`Self::encode_mip_chain`] once per material texture, after
+/// [`crate::processors::processor::implementations::image::process_image_with_mips_in`] sized the stored chain.
+/// `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
+/// path for requests it can't serve or whose GPU work fails.
+pub enum MipGenerator {
+	/// Filters and encodes every level on the CPU.
+	///
+	/// Keep this path even though material importers normally use the GPU: it bakes wherever GPU setup or a GPU request
+	/// fails, it's what bakes and tests use on machines without a compatible GPU, and its `intel_tex_2` encoder is the
+	/// reference the GPU BC7 encoder's quality is measured against.
+	Cpu,
+	/// Filters and BC7-compresses on the offline GPU worker.
+	#[cfg(feature = "gpu-mips")]
+	Gpu(gpu::MaterialMipGenerator),
+}
+
+impl MipGenerator {
 	/// Filters `base_level` down to one texel and writes every level, base level first, into `output` encoded as
 	/// `output_format`.
 	///
 	/// `base_level` holds `width` by `height` texels in the [`filtering_format`] of `output_format`. `output` holds
-	/// exactly [`encoded_mip_chain_size`] bytes, and each level directly follows the one before it.
-	fn encode_mip_chain(
-		&self,
-		output_format: Formats,
-		gamma: Gamma,
-		width: u32,
-		height: u32,
-		base_level: &[u8],
-		output: &mut [u8],
-	) -> Result<(), MipGenerationError>;
-}
-
-/// The `CPUMipGenerationBackend` struct keeps material textures bakeable where the GPU backend can't run.
-///
-/// Keep it even though material importers normally use the GPU backend: it filters and encodes the chain on the CPU
-/// whenever GPU setup or a GPU request fails, it's the backend that bakes and tests use on machines without a
-/// compatible GPU, and its `intel_tex_2` encoder is the reference the GPU BC7 encoder's quality is measured against.
-pub struct CPUMipGenerationBackend;
-
-impl MipGenerationBackend for CPUMipGenerationBackend {
-	fn encode_mip_chain(
+	/// exactly [`encoded_mip_chain_size`] bytes, and each level directly follows the one before it. The GPU path awaits
+	/// its worker without blocking the calling runtime thread.
+	pub async fn encode_mip_chain(
 		&self,
 		output_format: Formats,
 		gamma: Gamma,
@@ -102,31 +97,99 @@ impl MipGenerationBackend for CPUMipGenerationBackend {
 		base_level: &[u8],
 		output: &mut [u8],
 	) -> Result<(), MipGenerationError> {
-		let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
-			.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
-		if output.len() != expected {
-			return Err(MipGenerationError::BufferSizeMismatch {
-				expected,
-				got: output.len(),
-			});
+		#[cfg(feature = "gpu-mips")]
+		if let Self::Gpu(generator) = self {
+			match generator
+				.encode_mip_chain(output_format, gamma, width, height, base_level, output)
+				.await
+			{
+				Ok(()) => return Ok(()),
+				// Requests outside the GPU path's formats are expected and take the CPU path quietly.
+				Err(gpu::GPUMipError::UnsupportedRequest) => {}
+				Err(error) => log::warn!(
+					"GPU material mip generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
+				),
+			}
 		}
 
-		let lower_levels = generate_owned_lower_mip_chain(filtering_format(output_format), gamma, width, height, base_level)?;
-		let base_level = MipLevel {
+		encode_mip_chain_on_cpu(output_format, gamma, width, height, base_level, output)
+	}
+}
+
+/// Filters and encodes a whole mip chain on the calling thread; see [`MipGenerator::encode_mip_chain`] for the contract.
+pub(crate) fn encode_mip_chain_on_cpu(
+	output_format: Formats,
+	gamma: Gamma,
+	width: u32,
+	height: u32,
+	base_level: &[u8],
+	output: &mut [u8],
+) -> Result<(), MipGenerationError> {
+	let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
+		.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
+	if output.len() != expected {
+		return Err(MipGenerationError::BufferSizeMismatch {
+			expected,
+			got: output.len(),
+		});
+	}
+
+	let lower_levels = generate_owned_lower_mip_chain(filtering_format(output_format), gamma, width, height, base_level)?;
+	encode_levels(
+		output_format,
+		std::iter::once(MipLevel {
 			width,
 			height,
 			data: base_level,
-		};
-		let mut remaining = output;
-		for level in std::iter::once(base_level).chain(lower_levels.levels()) {
-			let extent = Extent::rectangle(level.width, level.height);
-			let size =
-				encoded_mip_level_size(output_format, extent).expect("A storable chain has a stored size for every level");
-			let (destination, rest) = remaining.split_at_mut(size);
-			encode_level_in(output_format, extent, level.data, destination, Global);
-			remaining = rest;
-		}
-		Ok(())
+		})
+		.chain(lower_levels.levels()),
+		output,
+	);
+	Ok(())
+}
+
+/// Returns the levels below a `width` by `height` base level as stored back to back in `data`.
+///
+/// This is the layout the GPU path reads filtered levels back in, with `bytes_per_pixel` per texel.
+pub(crate) fn packed_lower_levels(
+	width: u32,
+	height: u32,
+	bytes_per_pixel: usize,
+	data: &[u8],
+) -> impl Iterator<Item = MipLevel<'_>> {
+	mip_extents(width, height)
+		.skip(1)
+		.scan(0usize, move |offset, (width, height)| {
+			let size = width as usize * height as usize * bytes_per_pixel;
+			let level = MipLevel {
+				width,
+				height,
+				data: &data[*offset..*offset + size],
+			};
+			*offset += size;
+			Some(level)
+		})
+}
+
+/// Returns the bytes the levels of [`packed_lower_levels`] take together.
+pub(crate) fn packed_lower_levels_size(width: u32, height: u32, bytes_per_pixel: usize) -> usize {
+	mip_extents(width, height)
+		.skip(1)
+		.map(|(width, height)| width as usize * height as usize * bytes_per_pixel)
+		.sum()
+}
+
+/// Encodes already filtered `levels`, base level first, back to back into `output` as `output_format`.
+///
+/// `output` holds at least the levels' encoded sizes; the GPU path shares this step for the levels it filtered.
+pub(crate) fn encode_levels<'a>(output_format: Formats, levels: impl Iterator<Item = MipLevel<'a>>, output: &mut [u8]) {
+	let mut remaining = output;
+	for level in levels {
+		let extent = Extent::rectangle(level.width, level.height);
+		let size = encoded_mip_level_size(output_format, extent).expect("A storable chain has a stored size for every level");
+		let (destination, rest) = std::mem::take(&mut remaining).split_at_mut(size);
+		encode_level_in(output_format, extent, level.data, destination, Global);
+		remaining = rest;
 	}
 }
 
@@ -184,11 +247,15 @@ pub(crate) fn mip_extents(width: u32, height: u32) -> impl Iterator<Item = (u32,
 
 /// Returns the format mip levels are filtered in before they are encoded as `output_format`.
 ///
-/// Block-compressed outputs and sRGB RGBA8 filter as RGBA8 texels. Every other format filters in place. Convert the
-/// base level to this format before passing it to [`MipGenerationBackend::encode_mip_chain`].
+/// Block-compressed outputs, sRGB RGBA8, and packed RG8 filter as RGBA8 texels, so the GPU path can filter them.
+/// Packed RG16 filters as RGBA16. Every other format filters in place. Convert the base level to this format before
+/// passing it to [`MipGenerator::encode_mip_chain`].
 pub fn filtering_format(output_format: Formats) -> Formats {
 	match output_format {
-		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB | Formats::RGBA8SRGB => Formats::RGBA8,
+		Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB | Formats::RGBA8SRGB | Formats::RG8 => {
+			Formats::RGBA8
+		}
+		Formats::RG16 => Formats::RGBA16,
 		format => format,
 	}
 }
@@ -196,7 +263,7 @@ pub fn filtering_format(output_format: Formats) -> Formats {
 /// Returns the exact stored size of a complete mip chain encoded as `format`, or `None` for formats images can't be
 /// stored in.
 ///
-/// Size the output of [`MipGenerationBackend::encode_mip_chain`] with it.
+/// Size the output of [`MipGenerator::encode_mip_chain`] with it.
 pub fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> {
 	mip_extents(extent.width(), extent.height()).try_fold(0usize, |total, (width, height)| {
 		total.checked_add(encoded_mip_level_size(format, Extent::rectangle(width, height))?)
@@ -210,12 +277,14 @@ pub(crate) fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<
 		| Formats::BC5SNORM
 		| Formats::BC7
 		| Formats::BC7SRGB
+		| Formats::RG8
+		| Formats::RG16
 		| Formats::RGBA8
 		| Formats::RGBA8SRGB
 		| Formats::R16F
 		| Formats::RGBA16
 		| Formats::RGBA16F => format.level_size(extent),
-		_ => None,
+		Formats::RGB8 | Formats::RGB16 => None,
 	}
 }
 
@@ -313,7 +382,6 @@ fn downsample_level(
 	destination: &mut [u8],
 ) -> Result<(), MipGenerationError> {
 	match format {
-		Formats::RG8 => downsample_u8::<2>(source_width, source_height, source, destination),
 		Formats::RGB8 => downsample_u8::<3>(source_width, source_height, source, destination),
 		Formats::RGBA8 | Formats::RGBA8SRGB if gamma == Gamma::SRGB => {
 			downsample_rgba8_srgb(source_width, source_height, source, destination)
@@ -321,7 +389,15 @@ fn downsample_level(
 		Formats::RGBA8 | Formats::RGBA8SRGB => downsample_u8::<4>(source_width, source_height, source, destination),
 		Formats::RGB16 => downsample_u16::<3>(source_width, source_height, source, destination),
 		Formats::RGBA16 => downsample_u16::<4>(source_width, source_height, source, destination),
-		Formats::R16F | Formats::RGBA16F | Formats::BC5 | Formats::BC5SNORM | Formats::BC7 | Formats::BC7SRGB => {
+		// Packed RG formats filter as their RGBA filtering format and are truncated when each level is encoded.
+		Formats::RG8
+		| Formats::RG16
+		| Formats::R16F
+		| Formats::RGBA16F
+		| Formats::BC5
+		| Formats::BC5SNORM
+		| Formats::BC7
+		| Formats::BC7SRGB => {
 			return Err(MipGenerationError::UnsupportedFormat(format));
 		}
 	}

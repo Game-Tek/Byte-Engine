@@ -1,4 +1,4 @@
-use crate::types::AlphaMode;
+use crate::{processors::processor::implementations::image::ChannelPacking, types::AlphaMode};
 
 pub mod gltf;
 pub mod shader;
@@ -32,6 +32,38 @@ impl BrdfMaterialDescription {
 				texture.image_index = slot_for(texture.image_index);
 			}
 		}
+	}
+
+	/// Moves channel reads of packed textures to where the image processor stored them.
+	///
+	/// Importers call this after building a graph and before [`Self::assign_texture_slots`]. `packing_for` receives an
+	/// imported image index and returns the [`ChannelPacking`] that image bakes with, or `None` when it keeps all of
+	/// its channels. A read of a channel the packing drops is an error, because the shader would sample data that is
+	/// not there.
+	pub(crate) fn pack_texture_channels(
+		&mut self,
+		mut packing_for: impl FnMut(u32) -> Option<ChannelPacking>,
+	) -> Result<(), BrdfMaterialValidationError> {
+		for index in 0..self.nodes.len() {
+			let BrdfNode::ExtractChannel { source, channel } = self.nodes[index] else {
+				continue;
+			};
+			let BrdfNode::Texture(texture) = self.node(source)? else {
+				continue;
+			};
+			let Some(packing) = packing_for(texture.image_index) else {
+				continue;
+			};
+			let stored = packing
+				.stored_channel(channel.index())
+				.and_then(BrdfChannel::from_index)
+				.ok_or(BrdfMaterialValidationError::ChannelNotStored {
+					node: BrdfNodeId::new(index as u32),
+					channel,
+				})?;
+			self.nodes[index] = BrdfNode::ExtractChannel { source, channel: stored };
+		}
+		Ok(())
 	}
 
 	/// Validates that all node references point to existing nodes and that the graph root is a surface node.
@@ -115,9 +147,19 @@ impl BrdfMaterialDescription {
 /// The `BrdfMaterialValidationError` enum identifies invalid references in a material graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrdfMaterialValidationError {
-	MissingNode { id: BrdfNodeId },
-	MissingChildNode { node: BrdfNodeId, child: BrdfNodeId },
+	MissingNode {
+		id: BrdfNodeId,
+	},
+	MissingChildNode {
+		node: BrdfNodeId,
+		child: BrdfNodeId,
+	},
 	SurfaceNodeMustBeBrdf,
+	/// A channel read of a packed texture names a channel the packing does not store.
+	ChannelNotStored {
+		node: BrdfNodeId,
+		channel: BrdfChannel,
+	},
 }
 
 /// The `BrdfNodeId` struct identifies a node inside a material graph arena.
@@ -197,6 +239,23 @@ pub enum BrdfChannel {
 	Green,
 	Blue,
 	Alpha,
+}
+
+impl BrdfChannel {
+	/// Returns the channel's position in an RGBA texel.
+	pub fn index(self) -> usize {
+		match self {
+			Self::Red => 0,
+			Self::Green => 1,
+			Self::Blue => 2,
+			Self::Alpha => 3,
+		}
+	}
+
+	/// Returns the channel at `index` in an RGBA texel.
+	pub fn from_index(index: usize) -> Option<Self> {
+		[Self::Red, Self::Green, Self::Blue, Self::Alpha].get(index).copied()
+	}
 }
 
 /// The `BrdfMetallicRoughness` struct provides the metallic-roughness root for a surface BRDF graph.
@@ -300,6 +359,62 @@ impl BrdfMaterialBuilder {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn packing_moves_kept_channel_reads_and_rejects_dropped_ones() {
+		let packing = ChannelPacking { source_channels: [1, 2] };
+		let mut builder = BrdfMaterialBuilder::new();
+		let packed = builder.texture(BrdfTexture {
+			image_index: 0,
+			texcoord_channel: 0,
+		});
+		let unpacked = builder.texture(BrdfTexture {
+			image_index: 1,
+			texcoord_channel: 0,
+		});
+		let metallic = builder.extract_channel(packed, BrdfChannel::Blue);
+		let roughness = builder.extract_channel(unpacked, BrdfChannel::Red);
+		let base_color = builder.constant(BrdfValue::Vector4([1.0; 4]));
+		let surface = builder.add(BrdfNode::MetallicRoughness(BrdfMetallicRoughness {
+			base_color,
+			metallic,
+			roughness,
+			normal: None,
+			occlusion: None,
+			emission: None,
+		}));
+		let mut material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+
+		material
+			.pack_texture_channels(|image| (image == 0).then_some(packing))
+			.expect("reads of kept channels should remap");
+
+		assert_eq!(
+			material.nodes[metallic.index()],
+			BrdfNode::ExtractChannel {
+				source: packed,
+				channel: BrdfChannel::Green
+			},
+			"blue moves to the second stored channel"
+		);
+		assert_eq!(
+			material.nodes[roughness.index()],
+			BrdfNode::ExtractChannel {
+				source: unpacked,
+				channel: BrdfChannel::Red
+			},
+			"reads of unpacked images stay"
+		);
+
+		assert_eq!(
+			material.pack_texture_channels(|_| Some(packing)),
+			Err(BrdfMaterialValidationError::ChannelNotStored {
+				node: roughness,
+				channel: BrdfChannel::Red
+			}),
+			"reads of a packed image's dropped channels are rejected"
+		);
+	}
 
 	#[test]
 	fn validation_rejects_missing_surface_node() {

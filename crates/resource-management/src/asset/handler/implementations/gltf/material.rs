@@ -42,16 +42,23 @@ pub(crate) async fn resolve_gltf_materials(
 	materials: &[gltf::Material<'_>],
 	generator: Option<&dyn ProgramGenerator>,
 ) -> Result<Vec<ReferenceModel<VariantModel>>, LoadErrors> {
+	let image_semantics = gltf_image_semantics(gltf);
 	let sources = materials
 		.iter()
 		.map(|material| match material_override(spec, material) {
-			Some(override_id) => MaterialSource::Override(override_id),
-			None => MaterialSource::Generated(GeneratedMaterial {
+			Some(override_id) => Ok(MaterialSource::Override(override_id)),
+			None => Ok(MaterialSource::Generated(GeneratedMaterial {
 				base_id: generated_material_base_id(mesh_url, material),
-				brdf: brdf_material_from_gltf(material),
-			}),
+				brdf: generated_gltf_brdf(material, &image_semantics).map_err(|error| {
+					log::error!(
+						"Failed to generate the glTF material '{}': {error:?}. The most likely cause is a texture read of a channel its packed image does not store.",
+						generated_material_base_id(mesh_url, material)
+					);
+					LoadErrors::FailedToProcess
+				})?,
+			})),
 		})
-		.collect::<Vec<_>>();
+		.collect::<Result<Vec<_>, LoadErrors>>()?;
 
 	let image_ids = gltf
 		.images()
@@ -59,6 +66,24 @@ pub(crate) async fn resolve_gltf_materials(
 		.collect::<Vec<_>>();
 
 	resolve_container_materials(context, generator, mesh_url, &image_ids, sources).await
+}
+
+/// Builds the BRDF graph of a generated glTF material, with channel reads moved to where its packed images store them.
+///
+/// `image_semantics` comes from [`gltf_image_semantics`], the same table image fragments bake with.
+pub(crate) fn generated_gltf_brdf(
+	material: &gltf::Material<'_>,
+	image_semantics: &[Option<Semantic>],
+) -> Result<BrdfMaterialDescription, BrdfMaterialValidationError> {
+	let mut brdf = brdf_material_from_gltf(material);
+	brdf.pack_texture_channels(|image_index| {
+		image_semantics
+			.get(image_index as usize)
+			.copied()
+			.flatten()
+			.and_then(channel_packing_for_semantic)
+	})?;
+	Ok(brdf)
 }
 
 /// Reads the BEAD override for a named glTF material. Unnamed materials are always generated.

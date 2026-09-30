@@ -775,11 +775,11 @@ impl<'a> CommandBufferRecording<'a> {
 	pub(crate) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
 		self.end_encoder();
 		self.publish_resource_states();
+		let synchronizer = context::synchronizer_for_sequence(self.commit.synchronizers, synchronizer, self.sequence_index);
 		for handle in self.texture_readbacks.drain(..) {
-			self.commit.texture_readbacks.mark_submitted(handle);
+			self.commit.texture_readbacks.mark_submitted(handle, Some(synchronizer));
 		}
 
-		let synchronizer = context::synchronizer_for_sequence(self.commit.synchronizers, synchronizer, self.sequence_index);
 		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
 		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
 		// The synchronizer owns the submitted batch until its completion message arrives.

@@ -20,7 +20,7 @@ pub(crate) fn select_unfragmented_gltf_resource(
 #[derive(Default)]
 pub struct GLTFAssetHandler {
 	generator: Option<Box<dyn ProgramGenerator>>,
-	material_mip_generator: Option<Arc<dyn MipGenerationBackend>>,
+	material_mip_generator: Option<Arc<MipGenerator>>,
 }
 
 impl GLTFAssetHandler {
@@ -32,8 +32,8 @@ impl GLTFAssetHandler {
 		self.generator = Some(Box::new(generator));
 	}
 
-	/// Selects the offline backend that generates mips for the image resources a glTF contains.
-	pub fn set_material_mip_generator(&mut self, generator: Arc<dyn MipGenerationBackend>) {
+	/// Selects the generator that produces mips for the image resources a glTF contains.
+	pub fn set_material_mip_generator(&mut self, generator: Arc<MipGenerator>) {
 		self.material_mip_generator = Some(generator);
 	}
 
@@ -274,8 +274,11 @@ impl AssetHandler for GLTFAssetHandler {
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
 
 			// Materials decide how an image is sampled; a standalone image falls back to its file name.
-			let semantic =
-				gltf_image_semantic(&gltf, image.index() as u32).unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
+			let semantic = gltf_image_semantics(&gltf)
+				.get(image.index())
+				.copied()
+				.flatten()
+				.unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
 
 			let image = load_gltf_fragment_image(context, source_id, image, binary_blob.as_deref()).await?;
 

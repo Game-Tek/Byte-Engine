@@ -561,13 +561,22 @@ impl Context {
 		}
 	}
 
-	/// Waits for Vulkan work, copies one mapped transfer result, and releases its dedicated staging resources.
+	/// Waits for the transfer's submission, copies one mapped transfer result, and releases its dedicated staging resources.
 	pub(crate) fn get_image_data(
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
-		self.texture_readbacks.submitted(texture_copy_handle)?;
-		self.device.wait();
+		// Only the transfer's own submission has to finish; other work in flight on this context keeps running.
+		let (_, synchronizer) = self.texture_readbacks.submitted(texture_copy_handle)?;
+		match synchronizer.map(|handle| &self.synchronizers[handle.0 as usize]) {
+			Some(synchronizer) if synchronizer.armed => unsafe {
+				self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
+					"Failed to wait for a Vulkan readback. The most likely cause is that the fence is invalid or the device was lost.",
+				);
+			},
+			Some(_) => {}
+			None => self.device.wait(),
+		}
 		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
 		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.0.is_null() {
 			Err(crate::TextureTransferError::MappingFailed)
@@ -1005,6 +1014,18 @@ impl Context {
 		synchroizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) -> SmallVec<[SynchronizerHandle; MAX_FRAMES_IN_FLIGHT]> {
 		SynchronizerHandle(synchroizer_handle.0).get_all(&self.synchronizers)
+	}
+
+	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
+	pub(crate) fn poll_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
+		self.get_syncronizer_handles(synchronizer_handle).into_iter().all(|handle| {
+			let synchronizer = &self.synchronizers[handle.0 as usize];
+			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
+			!synchronizer.armed
+				|| unsafe { self.device.device.get_fence_status(synchronizer.fence) }.expect(
+					"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
+				)
+		})
 	}
 
 	pub(crate) fn wait_for_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {

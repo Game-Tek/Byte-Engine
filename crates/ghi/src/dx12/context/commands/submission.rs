@@ -114,7 +114,8 @@ impl Device {
 			}
 			self.native_command_list_execute_count = self.native_command_list_execute_count.saturating_add(native_lists.len());
 			for handle in readback_candidates {
-				if self.texture_readbacks.mark_submitted(handle) {
+				// DX12 tracks readback completion through `completion`, so the shared state carries no synchronizer.
+				if self.texture_readbacks.mark_submitted(handle, None) {
 					submitted_readbacks.push(handle);
 				}
 			}

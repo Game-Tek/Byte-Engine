@@ -22,6 +22,28 @@ impl Context {
 		self.wait_for_private_synchronizer(synchronizer);
 	}
 
+	/// Releases the internal upload submissions that already completed, without waiting.
+	///
+	/// A frame retires its uploads when its sequence is reused, but detached recordings have no such point. They
+	/// call this before submitting more uploads, and completion polls call it too, so retained staging pages and
+	/// native commands stay bounded by the uploads still running instead of growing for the life of the context.
+	pub(super) fn retire_completed_internal_uploads(&mut self) {
+		for sequence_index in 0..self.internal_upload_queues.len() {
+			if self.internal_upload_queues[sequence_index].is_none() {
+				continue;
+			}
+			let synchronizer =
+				synchronizer_for_sequence(&self.synchronizers, self.internal_upload_synchronizer, sequence_index as u8);
+			let (finished, error) = self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues);
+			if let Some(error) = error {
+				panic!("{error}");
+			}
+			if finished {
+				self.internal_upload_queues[sequence_index] = None;
+			}
+		}
+	}
+
 	/// Waits only for outstanding internal uploads submitted to another Metal queue.
 	pub(super) fn synchronize_internal_upload_queue(&mut self, queue_handle: graphics_hardware_interface::QueueHandle) {
 		for sequence_index in 0..self.internal_upload_queues.len() {

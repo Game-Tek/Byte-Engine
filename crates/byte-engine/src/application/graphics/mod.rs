@@ -1322,7 +1322,7 @@ pub mod defaults;
 mod integrations;
 
 pub use defaults::{
-	default_offline_backends, default_setup, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
+	default_offline_generators, default_setup, register_default_asset_handlers, setup_animation_pool, setup_default_audio,
 	setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;

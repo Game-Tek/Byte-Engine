@@ -675,7 +675,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		self.device.synchronizers[synchronizer_handle.0 as usize].armed = true;
 
 		for handle in &self.texture_readbacks {
-			self.device.texture_readbacks.mark_submitted(*handle);
+			self.device
+				.texture_readbacks
+				.mark_submitted(*handle, Some(synchronizer_handle));
 		}
 		self.readbacks_finalized = true;
 		self.device.states.extend(std::mem::take(&mut self.states));

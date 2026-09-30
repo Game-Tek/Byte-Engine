@@ -1312,6 +1312,10 @@ impl crate::context::Context for Device {
 		Device::wait_for_synchronizer(self, synchronizer);
 	}
 
+	fn poll_synchronizer(&mut self, synchronizer: SynchronizerHandle) -> bool {
+		Device::poll_synchronizer(self, synchronizer)
+	}
+
 	fn wait(&mut self) {
 		Device::wait(self);
 	}

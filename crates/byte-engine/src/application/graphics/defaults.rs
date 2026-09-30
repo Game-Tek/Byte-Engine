@@ -119,7 +119,7 @@ pub fn setup_default_resource_and_asset_management(
 
 		let mut asset_manager = AssetManager::new_shared(storage_backend, application.resource_manager.storage_backend());
 
-		let (material_mips, ibl) = default_offline_backends();
+		let (material_mips, ibl) = default_offline_generators();
 
 		register_default_asset_handlers(&mut asset_manager, generator, material_mips, ibl);
 
@@ -131,11 +131,11 @@ pub fn setup_default_resource_and_asset_management(
 ///
 /// The debug runtime and BELD both call this, so a baked store and a debug run produce the same resources from the same
 /// assets. `generator` adapts generated material shaders to the renderer, and `material_mips` and `ibl` select the
-/// offline texture backends; [`default_offline_backends`] returns the usual ones.
+/// offline texture backends; [`default_offline_generators`] returns the usual ones.
 pub fn register_default_asset_handlers(
 	asset_manager: &mut AssetManager,
 	generator: impl ProgramGenerator + Clone + 'static,
-	material_mips: Arc<dyn MipGenerationBackend>,
+	material_mips: Arc<MipGenerator>,
 	ibl: IBLGenerator,
 ) {
 	let mut material_asset_handler = BEMAAssetHandler::new();
@@ -168,17 +168,17 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(besl_shader_asset_handler);
 }
 
-/// Returns the GPU material mip and environment-map backends, falling back to CPU generation when GPU setup fails.
+/// Returns the GPU material mip and environment-map generators, falling back to CPU generation when GPU setup fails.
 ///
 /// Pass the result to [`register_default_asset_handlers`].
-pub fn default_offline_backends() -> (Arc<dyn MipGenerationBackend>, IBLGenerator) {
+pub fn default_offline_generators() -> (Arc<MipGenerator>, IBLGenerator) {
 	let material_mips = MaterialMipGenerator::try_with_default_gpu()
-		.map(|generator| Arc::new(generator) as Arc<dyn MipGenerationBackend>)
+		.map(|generator| Arc::new(MipGenerator::Gpu(generator)))
 		.unwrap_or_else(|error| {
 			log::warn!(
 				"GPU material mip setup failed; using CPU generation. The most likely cause is that no compatible compute device is available. Error: {error}"
 			);
-			Arc::new(CPUMipGenerationBackend)
+			Arc::new(MipGenerator::Cpu)
 		});
 
 	let ibl = IBLGenerator::try_with_default_gpu().unwrap_or_else(|error| {
@@ -329,7 +329,7 @@ use resource_management::{
 		manager::AssetManager,
 	},
 	ibl::IBLGenerator,
-	resources::mips::{CPUMipGenerationBackend, MipGenerationBackend, gpu::MaterialMipGenerator},
+	resources::mips::{MipGenerator, gpu::MaterialMipGenerator},
 };
 use tracing::debug_span;
 use utils::Extent;

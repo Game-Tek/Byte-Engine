@@ -109,25 +109,33 @@ fn padded_rgba8_surface_in<A: Allocator + Clone>(
 }
 
 /// Produces a tightly packed RG surface (2 bytes per texel) from RGBA8 data, padded to whole blocks.
+///
+/// Every row is repacked as one pass over texel chunks, which is what keeps a 2K normal map's repack to a few
+/// milliseconds instead of the hundred a per-texel copy costs. Edge padding repeats the last row and column.
 fn rg_surface_in<A: Allocator + Clone>(data: &[u8], extent: Extent, allocator: A) -> (Box<[u8], A>, u32, u32) {
-	let width = extent.width().max(1);
-	let height = extent.height().max(1);
+	let width = extent.width().max(1) as usize;
+	let height = extent.height().max(1) as usize;
 	let padded_width = width.next_multiple_of(4);
 	let padded_height = height.next_multiple_of(4);
 
-	let mut padded = zeroed_boxed_slice_in(padded_width as usize * padded_height as usize * 2, allocator);
-	for y in 0..padded_height {
-		let source_y = y.min(height - 1);
-		for x in 0..padded_width {
-			let source_x = x.min(width - 1);
-			let source_offset = ((source_y * width + source_x) * 4) as usize;
-			let destination_offset = ((y * padded_width + x) * 2) as usize;
-			// Copy only the R and G channels from the RGBA source.
-			padded[destination_offset..destination_offset + 2].copy_from_slice(&data[source_offset..source_offset + 2]);
+	let mut padded = zeroed_boxed_slice_in(padded_width * padded_height * 2, allocator);
+	let source_rows = data.as_chunks::<4>().0.chunks_exact(width);
+	let mut destination_rows = padded.as_chunks_mut::<2>().0.chunks_exact_mut(padded_width);
+	for (source_row, destination_row) in source_rows.zip(&mut destination_rows) {
+		let (texels, pad) = destination_row.split_at_mut(width);
+		for (texel, source) in texels.iter_mut().zip(source_row) {
+			*texel = [source[0], source[1]];
 		}
+		pad.fill(texels[width - 1]);
+	}
+	// Rows past the image repeat the last image row.
+	let (filled, pad_rows) = padded.split_at_mut(height * padded_width * 2);
+	let last_row = &filled[(height - 1) * padded_width * 2..];
+	for pad_row in pad_rows.chunks_exact_mut(padded_width * 2) {
+		pad_row.copy_from_slice(last_row);
 	}
 
-	(padded, padded_width, padded_height)
+	(padded, padded_width as u32, padded_height as u32)
 }
 
 /// Keeps the first `OUTPUT` bytes of every `SOURCE`-byte texel, so a filtered RGBA surface stores as its RG prefix.

@@ -81,7 +81,7 @@ BELD continues baking after an individual asset fails, but the command exits wit
 
 ## Control bake memory
 
-BELD limits how much memory concurrent bake work can reserve. By default, the soft memory budget is half of the system memory available when `beld bake` starts. For example, BELD uses a 6 GiB budget when 12 GiB is available at startup.
+BELD limits how much memory concurrent bake work can reserve. By default, the soft memory budget is half of the system memory available when `beld bake` starts, and never less than a quarter of the installed memory. For example, BELD uses a 6 GiB budget when 12 GiB is available at startup, and a 4 GiB budget on a 16 GiB machine under memory pressure.
 
 Set an explicit budget in MiB when you need predictable behavior in CI, on a shared workstation, or on a dedicated bake machine:
 

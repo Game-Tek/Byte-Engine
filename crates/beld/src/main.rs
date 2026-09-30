@@ -70,7 +70,12 @@ fn parse_memory_budget_mib(value: &str) -> Result<NonZeroUsize, String> {
 		.ok_or_else(invalid)
 }
 
-/// Returns the configured bake budget or preserves half of currently available system memory as headroom.
+/// Returns the configured bake budget, or half of the available system memory, and never less than a quarter of the
+/// installed memory.
+///
+/// The floor matters on macOS, where the available figure subtracts compressed pages and reaches zero under memory
+/// pressure. A zero budget pauses every independent bake while any other bake retains memory, which serializes the
+/// whole run. The budget is soft, so the floor only bounds how much work starts at once.
 fn bake_memory_budget(configured: Option<NonZeroUsize>) -> NonZeroUsize {
 	if let Some(configured) = configured {
 		return configured;
@@ -78,8 +83,9 @@ fn bake_memory_budget(configured: Option<NonZeroUsize>) -> NonZeroUsize {
 
 	let mut system = sysinfo::System::new();
 	system.refresh_memory();
-	let available_bytes = usize::try_from(system.available_memory()).unwrap_or(usize::MAX);
-	NonZeroUsize::new(available_bytes / 2).unwrap_or(NonZeroUsize::MIN)
+	let available_bytes = system.available_memory().max(system.total_memory() / 2);
+	let budget_bytes = usize::try_from(available_bytes / 2).unwrap_or(usize::MAX);
+	NonZeroUsize::new(budget_bytes).unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Reads `--color` before the full parse so help and parser errors use the selected color mode.

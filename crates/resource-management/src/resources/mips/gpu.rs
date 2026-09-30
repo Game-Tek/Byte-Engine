@@ -739,6 +739,7 @@ mod tests {
 				&decode_image(level_width, level_height, reference[offset..offset + size].as_chunks().0),
 				3,
 			);
+			eprintln!("level {level_width}x{level_height}: GPU {gpu:.2} dB, CPU {cpu:.2} dB");
 			assert!(
 				gpu > cpu - 0.5,
 				"level {level_width}x{level_height}: GPU {gpu:.2} dB, CPU {cpu:.2} dB"
@@ -840,6 +841,101 @@ mod tests {
 			.and_then(|rss| rss.trim().parse::<u64>().ok())
 			.unwrap_or(0);
 		eprintln!("resident memory after the batch: {} MB", resident / 1024);
+	}
+
+	/// Splits one 2K texture's bake into its CPU and GPU phases. Run it by hand to decide where to optimize:
+	/// `cargo nextest run -p byte-engine-resource-management --features gpu-mips single_texture_phase_timing --run-ignored all --no-capture`.
+	#[test]
+	#[ignore]
+	fn single_texture_phase_timing() {
+		use std::time::Instant;
+
+		let mut processor = GPUMipProcessor::try_new().expect("A compatible GPU is required");
+		let (width, height) = (2048, 2048);
+		// A smooth gradient stands in for the flat regions of real textures, where the search can stop early.
+		let smooth = (0..width * height)
+			.flat_map(|index| {
+				let (x, y) = (index % width, index / width);
+				[
+					(x * 255 / width) as u8,
+					(y * 255 / height) as u8,
+					((x + y) * 127 / (width + height)) as u8,
+					255,
+				]
+			})
+			.collect::<Vec<u8>>();
+		let noisy = test_image(width, height, false);
+		for (format, base) in [
+			(Formats::BC7, &noisy),
+			(Formats::BC7, &smooth),
+			(Formats::BC5, &noisy),
+			(Formats::RGBA8, &noisy),
+		] {
+			let request = MipRequest {
+				width,
+				height,
+				gamma: Gamma::Linear,
+				format,
+			};
+			let chain_size = encoded_mip_chain_size(format, Extent::rectangle(width, height)).unwrap();
+			let gpu_encodes = encodes_on_gpu(format);
+			let mut readback = vec![
+				0;
+				if gpu_encodes {
+					chain_size
+				} else {
+					packed_lower_levels_size(width, height, 4)
+				}
+			];
+			let mut output = vec![0; chain_size];
+			// The first request creates the pyramid, so time the second one.
+			for pass in 0..2 {
+				let start = Instant::now();
+				let copy = base.to_vec();
+				let copy_in = start.elapsed();
+				let start = Instant::now();
+				let Submission::InFlight(ticket) = processor.submit(&request, &copy) else {
+					panic!("expected in flight")
+				};
+				let submit = start.elapsed();
+				let start = Instant::now();
+				while !processor.context.poll_synchronizer(processor.scratch[ticket].synchronizer) {
+					std::hint::spin_loop();
+				}
+				let gpu = start.elapsed();
+				let start = Instant::now();
+				processor.poll(ticket, &mut readback).expect("finished").expect("ok");
+				let copy_out = start.elapsed();
+				let start = Instant::now();
+				if gpu_encodes {
+					output.copy_from_slice(&readback);
+				} else {
+					let level = MipLevel {
+						width,
+						height,
+						data: &base,
+					};
+					encode_levels(
+						format,
+						std::iter::once(level).chain(packed_lower_levels(width, height, 4, &readback)),
+						&mut output,
+					);
+				}
+				let cpu_encode = start.elapsed();
+				if pass == 1 && format == Formats::BC7 {
+					let level_size = encoded_mip_level_size(Formats::BC7, Extent::rectangle(width, height)).unwrap();
+					let gpu = psnr(&base, &decode_image(width, height, output[..level_size].as_chunks().0), 3);
+					let cpu = psnr(&base, &decode_image(width, height, &encode_on_cpu(width, height, &base)), 3);
+					eprintln!("BC7 base level quality: GPU {gpu:.2} dB, CPU {cpu:.2} dB");
+				}
+				if pass == 1 {
+					let image = if std::ptr::eq(base, &noisy) { "noisy" } else { "smooth" };
+					eprintln!(
+						"{format:?} {width}x{height} {image}: copy in {copy_in:?}, submit (staging copy + upload + record) {submit:?}, GPU {gpu:?}, copy out {copy_out:?}, CPU encode/copy {cpu_encode:?}"
+					);
+				}
+			}
+		}
 	}
 }
 

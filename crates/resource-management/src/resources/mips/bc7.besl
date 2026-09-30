@@ -245,8 +245,9 @@ palette_error: fn (pixel: vec4f, low: vec4f, high: vec4f, weight: u32, channels:
 	return dot(difference, difference);
 }
 
-// Picks the nearest palette entry for every texel of a subset. The projection onto the endpoint line guesses the
-// entry, and its two neighbors are checked because the palette weights are not evenly spaced.
+// Picks the palette entry for every texel of a subset by rounding its projection onto the endpoint line. The palette
+// weights are within one part in 64 of evenly spaced, so the rounded entry is the nearest one for all but texels
+// that sit almost exactly between two entries, and checking the neighbors costs more than it recovers.
 fit_indices: fn (pixels: vec4f[16], mask: u32, low: vec4f, high: vec4f, format: Format) -> Fit {
 	let entries: u32 = 1 << format.index_bits;
 	let offset: u32 = entries - 4;
@@ -262,25 +263,9 @@ fit_indices: fn (pixels: vec4f[16], mask: u32, low: vec4f, high: vec4f, format: 
 		if (in_subset(mask, texel)) {
 			let pixel: vec4f = pixels[texel];
 			let projected: f32 = dot(pixel - low, direction) * scale;
-			let guess: u32 = u32(clamp(floor(projected + 0.5), 0.0, f32(entries - 1)));
-			let best: u32 = guess;
-			let best_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess], format.channels);
-			if (guess > 0) {
-				let lower_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess - 1], format.channels);
-				if (lower_error < best_error) {
-					best = guess - 1;
-					best_error = lower_error;
-				}
-			}
-			if (guess + 1 < entries) {
-				let upper_error: f32 = palette_error(pixel, low, high, WEIGHTS[offset + guess + 1], format.channels);
-				if (upper_error < best_error) {
-					best = guess + 1;
-					best_error = upper_error;
-				}
-			}
-			result.indices = with_index(result.indices, texel, best);
-			result.error = result.error + best_error;
+			let entry: u32 = u32(clamp(floor(projected + 0.5), 0.0, f32(entries - 1)));
+			result.indices = with_index(result.indices, texel, entry);
+			result.error = result.error + palette_error(pixel, low, high, WEIGHTS[offset + entry], format.channels);
 		}
 	}
 	return result;
@@ -592,15 +577,16 @@ line_error: fn (count: f32, sum: vec4f, moment0: vec4f, moment1: vec4f, moment2:
 }
 
 // Returns the partitions with the smallest estimated error, best first, packed 6 bits apiece in `vec4u` fields that
-// hold 5 partitions each. Only the first `count` entries, at most 15, are meaningful.
-rank_partitions: fn (pixels: vec4f[16], count: u32) -> vec4u {
+// hold 5 partitions each. Only the first `count` entries, at most 15, are meaningful. `channels` is 1.0 for each
+// channel the estimate counts; passing a constant lets the compiler drop the alpha arithmetic for opaque blocks.
+rank_partitions: fn (pixels: vec4f[16], count: u32, channels: vec4f) -> vec4u {
 	let total: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total0: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total3: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-		let pixel: vec4f = pixels[texel];
+		let pixel: vec4f = pixels[texel] * channels;
 		total = total + pixel;
 		total0 = total0 + pixel * pixel.x;
 		total1 = total1 + pixel * pixel.y;
@@ -618,16 +604,17 @@ rank_partitions: fn (pixels: vec4f[16], count: u32) -> vec4u {
 		let moment1: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		let moment2: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 		let moment3: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		// Texels outside the subset contribute zero through a zero weight, which keeps every step one fused
+		// multiply-add instead of an add and a select per channel.
 		for (let texel: u32 = 0; texel < 16; texel = texel + 1) {
-			if (in_subset(mask, texel)) {
-				let pixel: vec4f = pixels[texel];
-				count1 = count1 + 1.0;
-				sum = sum + pixel;
-				moment0 = moment0 + pixel * pixel.x;
-				moment1 = moment1 + pixel * pixel.y;
-				moment2 = moment2 + pixel * pixel.z;
-				moment3 = moment3 + pixel * pixel.w;
-			}
+			let weight: f32 = f32((mask >> texel) & 1);
+			let pixel: vec4f = pixels[texel] * (channels * weight);
+			count1 = count1 + weight;
+			sum = sum + pixel;
+			moment0 = moment0 + pixel * pixel.x;
+			moment1 = moment1 + pixel * pixel.y;
+			moment2 = moment2 + pixel * pixel.z;
+			moment3 = moment3 + pixel * pixel.w;
 		}
 		let error: f32 = line_error(count1, sum, moment0, moment1, moment2, moment3) + line_error(16.0 - count1, total - sum, total0 - moment0, total1 - moment1, total2 - moment2, total3 - moment3);
 
@@ -731,7 +718,7 @@ encode_opaque: fn (pixels: vec4f[16]) -> Candidate {
 	if (best.error == 0.0) {
 		return best;
 	}
-	let ranked: vec4u = rank_partitions(pixels, MODE1_CANDIDATES);
+	let ranked: vec4u = rank_partitions(pixels, MODE1_CANDIDATES, vec4f(1.0, 1.0, 1.0, 0.0));
 	for (let position: u32 = 0; position < MODE1_CANDIDATES; position = position + 1) {
 		best = better(best, encode_partition(pixels, 1, ranked_partition(ranked, position)));
 		if (best.error == 0.0) {
@@ -761,7 +748,7 @@ encode_transparent: fn (pixels: vec4f[16]) -> Candidate {
 	if (best.error == 0.0) {
 		return best;
 	}
-	let ranked: vec4u = rank_partitions(pixels, MODE7_CANDIDATES);
+	let ranked: vec4u = rank_partitions(pixels, MODE7_CANDIDATES, vec4f(1.0, 1.0, 1.0, 1.0));
 	for (let position: u32 = 0; position < MODE7_CANDIDATES; position = position + 1) {
 		best = better(best, encode_partition(pixels, 7, ranked_partition(ranked, position)));
 		if (best.error == 0.0) {

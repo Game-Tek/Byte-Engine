@@ -25,6 +25,7 @@
 	clippy::unnecessary_literal_unwrap
 )]
 #![feature(allocator_api)]
+#![feature(f16)]
 #![cfg_attr(target_os = "linux", feature(pointer_is_aligned_to))]
 
 pub mod window;
@@ -93,6 +94,7 @@ pub mod frame;
 pub mod image;
 pub mod image_group;
 pub mod pipelines;
+pub mod pod;
 pub mod queue;
 pub mod rt;
 pub mod sampler;

@@ -39,7 +39,7 @@ mod tests {
 		processors::processor::implementations::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
-			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
+			animation::{AnimationModel, RotationCurve, TranslationCurve},
 			image::Image,
 			material::{ValueModel, VariantModel},
 			mesh::MeshModel,
@@ -50,13 +50,13 @@ mod tests {
 
 	#[test]
 	fn compact_skin_matrices_allow_rounding_noise_but_reject_projection() {
-		let almost_affine = maths_rs::Mat4f::new(
+		let almost_affine = math::Matrix::new(
 			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.000001, 0.0, 0.0, 1.0,
 		);
 
 		assert_eq!(validate_affine_matrix(&almost_affine, "fixture"), Ok(()));
 
-		let projective = maths_rs::Mat4f::new(
+		let projective = math::Matrix::new(
 			1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.01, 0.0, 0.0, 1.0,
 		);
 
@@ -478,13 +478,13 @@ mod tests {
 				(Some("RigidMesh"), Some(0))
 			]
 		);
-		assert_eq!(graph.skeleton.nodes[0].rest_local.translation, [0.0, 0.0, -1.0]);
-		assert_eq!(graph.skeleton.nodes[1].rest_local.translation, [0.0, 0.0, -2.0]);
+		assert_eq!(graph.skeleton.nodes[0].rest_local.translation.to_array(), [0.0, 0.0, -1.0]);
+		assert_eq!(graph.skeleton.nodes[1].rest_local.translation.to_array(), [0.0, 0.0, -2.0]);
 	}
 
 	#[test]
 	fn transforms_normals_and_tangents_without_translation_contamination() {
-		let transform = maths_rs::Mat4f::new(
+		let transform = math::Matrix::new(
 			2.0, 0.0, 0.0, 10.0, 0.0, 3.0, 0.0, 20.0, 0.0, 0.0, -4.0, 30.0, 0.0, 0.0, 0.0, 1.0,
 		);
 
@@ -496,11 +496,11 @@ mod tests {
 
 		let tangent = transform_gltf_tangent(&transform, orientation, [1.0, 1.0, 0.0, 1.0]).unwrap();
 
-		assert_near(normal[0], 0.8320503);
+		assert_near(normal.x(), 0.8320503);
 
-		assert_near(normal[1], 0.5547002);
+		assert_near(normal.y(), 0.5547002);
 
-		assert_near(normal[2], 0.0);
+		assert_near(normal.z(), 0.0);
 
 		assert_near(tangent[0], 0.5547002);
 
@@ -513,7 +513,7 @@ mod tests {
 
 	#[test]
 	fn rejects_singular_bind_transforms_only_when_geometry_retains_an_animation_node() {
-		let singular = maths_rs::Mat4f::new(
+		let singular = math::Matrix::new(
 			0.0, 0.0, 0.0, 3.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, 1.0,
 		);
 
@@ -542,7 +542,7 @@ mod tests {
 		);
 
 		for entry in &binding.entries {
-			let inverse_bind = &entry.adjusted_inverse_bind_matrix;
+			let inverse_bind = entry.adjusted_inverse_bind_matrix.columns();
 
 			assert_near(inverse_bind[3][0], -3.0);
 
@@ -590,22 +590,25 @@ mod tests {
 		assert_eq!(animation.tracks[0].node, 1);
 
 		match animation.tracks[0].translation.as_ref().unwrap() {
-			Vector3Curve::Linear { times, values } => {
+			TranslationCurve::Linear { times, values } => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values, &[[0.0, 0.0, -2.0], [1.0, 2.0, -3.0]]);
+				assert_eq!(values, &[math::Vector::new(0.0, 0.0, -2.0), math::Vector::new(1.0, 2.0, -3.0)]);
 			}
 			curve => panic!("expected linear translation curve, got {curve:?}"),
 		}
 
 		match animation.tracks[0].rotation.as_ref().unwrap() {
-			QuaternionCurve::CubicSpline {
+			RotationCurve::CubicSpline {
 				times,
 				values,
 				in_tangents,
 				out_tangents,
 			} => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values, &[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]);
+				assert_eq!(values.iter().map(|value| value.to_array()).collect::<Vec<_>>(), [
+					[0.0, 0.0, 0.0, 1.0],
+					[0.0, 0.0, 1.0, 0.0]
+				]);
 				assert_eq!(in_tangents, &[[-2.0, 0.0, 0.0, 0.0], [-6.0, 0.0, 0.0, 0.0]]);
 				assert_eq!(out_tangents, &[[-4.0, 0.0, 0.0, 0.0], [-8.0, 0.0, 0.0, 0.0]]);
 			}
@@ -1459,6 +1462,7 @@ mod tests {
 
 use std::{collections::HashMap, sync::Arc};
 
+use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use maths_rs::{
 	mat::{MatDeterminant, MatInverse, MatNew4, MatScale, MatTranspose},
 	vec::Vec3,
@@ -1495,9 +1499,8 @@ use crate::{
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
-		skeleton::{
-			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-		},
+		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
+		ModelSpace,
 	},
 	types::{Formats, VertexComponent, VertexSemantics},
 };

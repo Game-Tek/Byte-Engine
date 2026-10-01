@@ -660,10 +660,11 @@ use std::{
 	sync::Arc,
 };
 
-use math::Matrix;
+use math::{Matrix, Vector};
 use resource_management::{
 	resource::resource_manager::ResourceManager,
 	resources::{
+		ParentSpace,
 		animation::Animation,
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
@@ -678,7 +679,6 @@ pub use runtime::{
 
 use super::{
 	inertialization::PoseInertializer,
-	math::{add3, multiply_quaternion, rotate_vector},
 	packed::{PackedAnimation, PackedAnimationData},
 	root_motion::RootMotionDelta,
 	skeletal::write_global_pose,

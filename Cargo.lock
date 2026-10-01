@@ -304,6 +304,7 @@ dependencies = [
  "ash",
  "bitflags 2.13.0",
  "block2",
+ "byte-engine-math",
  "byte-engine-utils",
  "bytemuck",
  "direct-storage",
@@ -330,8 +331,9 @@ dependencies = [
 name = "byte-engine-math"
 version = "0.2.0"
 dependencies = [
- "bytemuck",
  "maths-rs",
+ "rkyv",
+ "serde",
 ]
 
 [[package]]

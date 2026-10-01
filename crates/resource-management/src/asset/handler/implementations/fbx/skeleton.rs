@@ -100,9 +100,9 @@ pub(crate) fn append_fbx_skeleton_node(
 /// Converts ufbx's adjusted local TRS into the shared CPU-pose representation.
 pub(crate) fn local_transform_to_model(transform: ufbx::Transform) -> Result<LocalTransform, FbxImportError> {
 	Ok(LocalTransform {
-		translation: vec3_to_f32(transform.translation, "skeleton translation")?,
-		rotation: quat_to_f32(transform.rotation, "skeleton rotation")?,
-		scale: vec3_to_f32(transform.scale, "skeleton scale")?,
+		translation: Vector::from_array(vec3_to_f32(transform.translation, "skeleton translation")?),
+		rotation: quat_to_orientation(transform.rotation, "skeleton rotation")?,
+		scale: Scale::from_array(vec3_to_f32(transform.scale, "skeleton scale")?),
 	})
 }
 
@@ -133,21 +133,21 @@ pub(crate) fn import_fbx_animation(
 		let translation = import_linear_curve(&node.translation_keys, |key| {
 			Ok((
 				finite_f32(key.time, "animation key time")?,
-				vec3_to_f32(key.value, "animation translation")?,
+				Vector::from_array(vec3_to_f32(key.value, "animation translation")?),
 			))
 		})?;
 
 		let rotation = import_linear_curve(&node.rotation_keys, |key| {
 			Ok((
 				finite_f32(key.time, "animation key time")?,
-				quat_to_f32(key.value, "animation quaternion")?,
+				quat_to_orientation(key.value, "animation quaternion")?,
 			))
 		})?;
 
 		let scale = import_linear_curve(&node.scale_keys, |key| {
 			Ok((
 				finite_f32(key.time, "animation key time")?,
-				vec3_to_f32(key.value, "animation scale")?,
+				Scale::from_array(vec3_to_f32(key.value, "animation scale")?),
 			))
 		})?;
 
@@ -230,10 +230,10 @@ pub(crate) fn remap_skeleton_node(source_to_skeleton: &[u32], source_node: u32) 
 ///
 /// `key` returns one key's checked time and converted value, so translation, rotation, and scale share this path.
 /// Check the time before converting the value, so a key with both defects reports its time first.
-pub(crate) fn import_linear_curve<K, V>(
+pub(crate) fn import_linear_curve<K, V, T>(
 	keys: &[K],
 	mut key: impl FnMut(&K) -> Result<(f32, V), FbxImportError>,
-) -> Result<Option<Curve<V>>, FbxImportError> {
+) -> Result<Option<Curve<V, T>>, FbxImportError> {
 	if keys.is_empty() {
 		return Ok(None);
 	}

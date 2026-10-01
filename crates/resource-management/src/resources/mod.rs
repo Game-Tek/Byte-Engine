@@ -67,6 +67,18 @@ where
 		.await
 }
 
+/// The `ModelSpace` struct brands geometry in the coordinates its asset was authored in.
+///
+/// Mesh vertices and bounds use it until an instance transform places them in the world.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ModelSpace;
+
+/// The `ParentSpace` struct brands a skeleton node's local transform, which is relative to its parent node.
+///
+/// A root node's parent space is its skeleton's [`ModelSpace`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ParentSpace;
+
 pub mod animation;
 pub mod audio;
 pub mod flipbook;

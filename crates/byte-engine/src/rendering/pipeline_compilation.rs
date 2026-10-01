@@ -677,7 +677,7 @@ mod tests {
 	fn specialized(shader_id: &str, factor: f32) -> SpecializedComputePipelineRequest {
 		SpecializedComputePipelineRequest::new(
 			shader_id,
-			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), factor)],
+			vec![ghi::pipelines::SpecializationMapEntry::new(0, factor)],
 			vec![ghi::pipelines::PushConstantRange::new(0, 16)],
 		)
 	}
@@ -716,7 +716,7 @@ mod tests {
 		let other_shader = client.request_specialized_compute_pipeline(specialized("shader/other", 1.0));
 		let other_push_constants = client.request_specialized_compute_pipeline(SpecializedComputePipelineRequest::new(
 			"shader/test",
-			vec![ghi::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 1.0f32)],
+			vec![ghi::pipelines::SpecializationMapEntry::new(0, 1.0f32)],
 			vec![ghi::pipelines::PushConstantRange::new(0, 32)],
 		));
 

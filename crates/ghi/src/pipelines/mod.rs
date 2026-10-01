@@ -1,4 +1,4 @@
-use crate::{DataTypes, ShaderHandle, ShaderTypes};
+use crate::{DataTypes, ShaderHandle, ShaderTypes, pod};
 
 pub mod compute;
 
@@ -52,21 +52,41 @@ impl PushConstantRange {
 	}
 }
 
+/// A value a shader can take as a specialization constant, named by its shader type.
+pub trait SpecializationConstant: bytemuck::NoUninit {
+	const TYPE: &'static str;
+}
+
+macro_rules! specialization_constant {
+	($($value:ty => $name:literal),+ $(,)?) => {
+		$(impl SpecializationConstant for $value {
+			const TYPE: &'static str = $name;
+		})+
+	};
+}
+
+// Specialization constants are passed by value rather than read from a buffer, so `bool` travels as Rust's one-byte bool.
+specialization_constant!(
+	bool => "bool",
+	pod::I32 => "i32",
+	pod::U32 => "u32",
+	pod::F32 => "f32",
+	pod::Vec2f => "vec2f",
+	pod::Vec3f => "vec3f",
+	pod::Vec4f => "vec4f",
+);
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SpecializationMapEntry {
-	pub(crate) r#type: String,
+	pub(crate) r#type: &'static str,
 	pub(crate) constant_id: u32,
 	pub(crate) value: Box<[u8]>,
 }
 
 impl SpecializationMapEntry {
-	pub fn new<T: bytemuck::NoUninit + 'static>(constant_id: u32, r#type: String, value: T) -> Self {
-		if r#type == "vec4f" {
-			assert_eq!(std::mem::size_of::<T>(), 16);
-		}
-
+	pub fn new<T: SpecializationConstant>(constant_id: u32, value: T) -> Self {
 		Self {
-			r#type,
+			r#type: T::TYPE,
 			constant_id,
 			value: bytemuck::bytes_of(&value).into(),
 		}
@@ -77,7 +97,7 @@ impl SpecializationMapEntry {
 	}
 
 	pub fn get_type(&self) -> String {
-		self.r#type.clone()
+		self.r#type.to_string()
 	}
 
 	/// Returns the byte size of the constant's value.

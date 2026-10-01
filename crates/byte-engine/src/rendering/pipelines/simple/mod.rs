@@ -6,7 +6,6 @@ pub mod pipeline_manager;
 pub mod render_pass;
 pub(crate) mod resource_manager;
 
-use math::ShaderMatrix;
 pub use pipeline_manager::PipelineManager;
 pub use pipeline_manager::PipelineManager as SimplePipelineManager;
 pub use render_pass::RenderPass;
@@ -16,5 +15,5 @@ pub use render_pass::RenderPass;
 /// with generated shader code.
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraShaderData {
-	vp: ShaderMatrix,
+	vp: ghi::pod::Mat4f,
 }

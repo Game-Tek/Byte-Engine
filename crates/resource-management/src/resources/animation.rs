@@ -1,15 +1,19 @@
+use math::{Orientation, Scale, Vector};
+
 use crate::{
 	Reference, ReferenceModel, Solver, resource,
+	resources::ParentSpace,
 	resources::skeleton::{Skeleton, SkeletonModel},
 	solver::SolveError,
 };
 
 /// The `Curve` enum provides the keyframes of one animated local-pose component for CPU pose evaluation.
 ///
-/// Translation and scale use [`Vector3Curve`] and rotation uses [`QuaternionCurve`]. Importers build one, and
-/// consumers read it through [`Self::times`] and [`Self::values`] or match its interpolation.
+/// Values have type `V` and cubic spline tangents have type `T`. Translation uses [`TranslationCurve`], scale uses
+/// [`ScaleCurve`], and rotation uses [`RotationCurve`]. Importers build one, and consumers read it through
+/// [`Self::times`] and [`Self::values`] or match its interpolation.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum Curve<V> {
+pub enum Curve<V, T = V> {
 	Step {
 		times: Vec<f32>,
 		values: Vec<V>,
@@ -21,18 +25,22 @@ pub enum Curve<V> {
 	CubicSpline {
 		times: Vec<f32>,
 		values: Vec<V>,
-		in_tangents: Vec<V>,
-		out_tangents: Vec<V>,
+		in_tangents: Vec<T>,
+		out_tangents: Vec<T>,
 	},
 }
 
-/// Translation or scale keyframes.
-pub type Vector3Curve = Curve<[f32; 3]>;
+/// Translation keyframes.
+pub type TranslationCurve = Curve<Vector<ParentSpace>>;
 
-/// Rotation keyframes, stored as unit `[x, y, z, w]` quaternions.
-pub type QuaternionCurve = Curve<[f32; 4]>;
+/// Scale keyframes.
+pub type ScaleCurve = Curve<Scale>;
 
-impl<V> Curve<V> {
+/// Rotation keyframes. Cubic spline tangents are quaternion derivatives, so they are raw `[x, y, z, w]` components
+/// rather than rotations.
+pub type RotationCurve = Curve<Orientation, [f32; 4]>;
+
+impl<V, T> Curve<V, T> {
 	/// Returns the key times shared by every interpolation form.
 	pub fn times(&self) -> &[f32] {
 		match self {
@@ -49,23 +57,22 @@ impl<V> Curve<V> {
 
 	/// Splits glTF-style interleaved `[in_tangent, value, out_tangent]` triplets into a cubic spline curve.
 	///
-	/// `map_value` adjusts each key value, such as normalizing rotations; tangents are kept as authored.
-	pub fn cubic_spline_from_triplets<E>(
+	/// `map_value` converts each key value, such as normalizing rotations, and `map_tangent` converts each tangent
+	/// without changing its magnitude.
+	pub fn cubic_spline_from_triplets<R: Copy, E>(
 		times: Vec<f32>,
-		triplets: &[[V; 3]],
-		mut map_value: impl FnMut(V) -> Result<V, E>,
-	) -> Result<Self, E>
-	where
-		V: Copy,
-	{
+		triplets: &[[R; 3]],
+		mut map_value: impl FnMut(R) -> Result<V, E>,
+		mut map_tangent: impl FnMut(R) -> T,
+	) -> Result<Self, E> {
 		let mut in_tangents = Vec::with_capacity(triplets.len());
 		let mut values = Vec::with_capacity(triplets.len());
 		let mut out_tangents = Vec::with_capacity(triplets.len());
 
 		for [incoming, value, outgoing] in triplets {
-			in_tangents.push(*incoming);
+			in_tangents.push(map_tangent(*incoming));
 			values.push(map_value(*value)?);
-			out_tangents.push(*outgoing);
+			out_tangents.push(map_tangent(*outgoing));
 		}
 
 		Ok(Self::CubicSpline {
@@ -79,6 +86,7 @@ impl<V> Curve<V> {
 	/// Counts the heap bytes this curve's key storage owns.
 	fn estimated_bytes(&self) -> usize {
 		let value_bytes = |values: &Vec<V>| values.capacity().saturating_mul(std::mem::size_of::<V>());
+		let tangent_bytes = |tangents: &Vec<T>| tangents.capacity().saturating_mul(std::mem::size_of::<T>());
 		let (times, key_bytes) = match self {
 			Self::Step { times, values } | Self::Linear { times, values } => (times, value_bytes(values)),
 			Self::CubicSpline {
@@ -89,8 +97,8 @@ impl<V> Curve<V> {
 			} => (
 				times,
 				value_bytes(values)
-					.saturating_add(value_bytes(in_tangents))
-					.saturating_add(value_bytes(out_tangents)),
+					.saturating_add(tangent_bytes(in_tangents))
+					.saturating_add(tangent_bytes(out_tangents)),
 			),
 		};
 
@@ -101,54 +109,60 @@ impl<V> Curve<V> {
 	}
 }
 
-impl<V: AsRef<[f32]>> Curve<V> {
-	/// Validates key timing, cardinality, and finite values and tangents before CPU graph evaluation.
-	///
-	/// `validate_values` adds the component's own value rule, such as unit length for rotations.
-	fn validate(
-		&self,
-		duration: f32,
-		track: usize,
-		path: &'static str,
-		validate_values: impl Fn(&[V]) -> Result<(), SolveError>,
-	) -> Result<(), SolveError> {
-		validate_times_and_values(self.times(), self.values(), duration, track, path)?;
-		validate_values(self.values())?;
+/// The `CurveComponents` trait exposes the components of a curve value or tangent for finiteness checks.
+trait CurveComponents {
+	fn is_finite(&self) -> bool;
+}
 
-		if let Self::CubicSpline {
-			times,
-			in_tangents,
-			out_tangents,
-			..
-		} = self
-		{
-			if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
-				return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
-			}
-			if !in_tangents
-				.iter()
-				.chain(out_tangents)
-				.flat_map(AsRef::as_ref)
-				.all(|value| value.is_finite())
-			{
-				return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
-			}
-		}
-
-		Ok(())
+impl CurveComponents for Vector<ParentSpace> {
+	fn is_finite(&self) -> bool {
+		self.to_array().iter().all(|component| component.is_finite())
 	}
 }
 
-/// Validates rotation values while leaving cubic derivative tangents free to use arbitrary finite magnitudes.
-fn validate_quaternion_values(values: &[[f32; 4]], track: usize) -> Result<(), SolveError> {
-	if values.iter().any(|value| {
-		let length_squared = value.iter().map(|component| component * component).sum::<f32>();
-		(length_squared - 1.0).abs() > 1.0e-3
-	}) {
-		return invalid_animation(format!(
-			"track {track} rotation contains a zero-length or non-unit quaternion value"
-		));
+impl CurveComponents for Scale {
+	fn is_finite(&self) -> bool {
+		self.to_array().iter().all(|component| component.is_finite())
 	}
+}
+
+/// An orientation is finite by construction.
+impl CurveComponents for Orientation {
+	fn is_finite(&self) -> bool {
+		true
+	}
+}
+
+impl CurveComponents for [f32; 4] {
+	fn is_finite(&self) -> bool {
+		self.iter().all(|component| component.is_finite())
+	}
+}
+
+/// Validates key timing, cardinality, and finite values and tangents before CPU graph evaluation.
+fn validate_curve<V: CurveComponents, T: CurveComponents>(
+	curve: &Curve<V, T>,
+	duration: f32,
+	track: usize,
+	path: &'static str,
+) -> Result<(), SolveError> {
+	validate_times_and_values(curve.times(), curve.values(), duration, track, path)?;
+
+	if let Curve::CubicSpline {
+		times,
+		in_tangents,
+		out_tangents,
+		..
+	} = curve
+	{
+		if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
+			return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
+		}
+		if !in_tangents.iter().chain(out_tangents).all(CurveComponents::is_finite) {
+			return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
+		}
+	}
+
 	Ok(())
 }
 
@@ -156,9 +170,9 @@ fn validate_quaternion_values(values: &[[f32; 4]], track: usize) -> Result<(), S
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct NodeTrack {
 	pub node: u32,
-	pub translation: Option<Vector3Curve>,
-	pub rotation: Option<QuaternionCurve>,
-	pub scale: Option<Vector3Curve>,
+	pub translation: Option<TranslationCurve>,
+	pub rotation: Option<RotationCurve>,
+	pub scale: Option<ScaleCurve>,
 }
 
 /// The `Animation` struct supplies a validated clip and target skeleton to a CPU animation graph.
@@ -297,17 +311,14 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 			return invalid_animation(format!("track {track_index} contains no pose curves"));
 		}
 
-		let any_value = |_: &[[f32; 3]]| Ok(());
 		if let Some(curve) = &track.translation {
-			curve.validate(duration, track_index, "translation", any_value)?;
+			validate_curve(curve, duration, track_index, "translation")?;
 		}
 		if let Some(curve) = &track.rotation {
-			curve.validate(duration, track_index, "rotation", |values| {
-				validate_quaternion_values(values, track_index)
-			})?;
+			validate_curve(curve, duration, track_index, "rotation")?;
 		}
 		if let Some(curve) = &track.scale {
-			curve.validate(duration, track_index, "scale", any_value)?;
+			validate_curve(curve, duration, track_index, "scale")?;
 		}
 		previous_node = Some(track.node);
 	}
@@ -316,7 +327,7 @@ fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize
 }
 
 /// Validates a key sequence shared by step, linear, and cubic curve representations.
-fn validate_times_and_values<V: AsRef<[f32]>>(
+fn validate_times_and_values<V: CurveComponents>(
 	times: &[f32],
 	values: &[V],
 	duration: f32,
@@ -334,7 +345,7 @@ fn validate_times_and_values<V: AsRef<[f32]>>(
 	if times.windows(2).any(|pair| pair[0] >= pair[1]) {
 		return invalid_animation(format!("track {track} {path} times are not strictly increasing"));
 	}
-	if !values.iter().flat_map(AsRef::as_ref).all(|value| value.is_finite()) {
+	if !values.iter().all(CurveComponents::is_finite) {
 		return invalid_animation(format!("track {track} {path} contains a non-finite value"));
 	}
 	Ok(())
@@ -348,7 +359,9 @@ fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
 
 #[cfg(test)]
 mod tests {
-	use super::{AnimationModel, NodeTrack, QuaternionCurve, Vector3Curve};
+	use math::{Orientation, Scale, Vector};
+
+	use super::{AnimationModel, NodeTrack, RotationCurve, ScaleCurve, TranslationCurve};
 	use crate::{
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
@@ -380,13 +393,13 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 1,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
+					values: vec![Vector::zero(), Vector::new(1.0, 2.0, 3.0)],
 				}),
-				rotation: Some(QuaternionCurve::Step {
+				rotation: Some(RotationCurve::Step {
 					times: vec![0.0],
-					values: vec![[0.0, 0.0, 0.0, 1.0]],
+					values: vec![Orientation::identity()],
 				}),
 				scale: None,
 			}],
@@ -403,9 +416,9 @@ mod tests {
 				node: 1,
 				translation: None,
 				rotation: None,
-				scale: Some(Vector3Curve::Step {
+				scale: Some(ScaleCurve::Step {
 					times: vec![0.0],
-					values: vec![[1.0; 3]],
+					values: vec![Scale::identity()],
 				}),
 			},
 		);
@@ -422,11 +435,11 @@ mod tests {
 	async fn solving_rejects_invalid_curve_cardinality_timing_and_numbers() {
 		let storage = TestStorageBackend::new();
 		let mut model = valid_model(&storage).await;
-		model.tracks[0].translation = Some(Vector3Curve::CubicSpline {
+		model.tracks[0].translation = Some(TranslationCurve::CubicSpline {
 			times: vec![0.0, 0.0],
-			values: vec![[0.0; 3], [1.0; 3]],
-			in_tangents: vec![[0.0; 3]],
-			out_tangents: vec![[0.0; 3], [f32::NAN; 3]],
+			values: vec![Vector::zero(), Vector::new(1.0, 1.0, 1.0)],
+			in_tangents: vec![Vector::zero()],
+			out_tangents: vec![Vector::zero(), Vector::new(f32::NAN, f32::NAN, f32::NAN)],
 		});
 
 		assert!(model.solve(&storage).await.is_err());
@@ -438,20 +451,15 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn solving_rejects_non_unit_rotation_values_but_accepts_arbitrary_finite_cubic_tangents() {
+	async fn solving_accepts_arbitrary_finite_rotation_cubic_tangents() {
 		let storage = TestStorageBackend::new();
 		let mut model = valid_model(&storage).await;
-		model.tracks[0].rotation = Some(QuaternionCurve::Linear {
-			times: vec![0.0],
-			values: vec![[0.0; 4]],
-		});
-
-		assert!(model.solve(&storage).await.is_err());
-
-		let mut model = valid_model(&storage).await;
-		model.tracks[0].rotation = Some(QuaternionCurve::CubicSpline {
+		model.tracks[0].rotation = Some(RotationCurve::CubicSpline {
 			times: vec![0.0, 1.0],
-			values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]],
+			values: vec![
+				Orientation::identity(),
+				Orientation::try_from_array([0.0, 0.0, 1.0, 0.0]).unwrap(),
+			],
 			in_tangents: vec![[50.0, -20.0, 4.0, 0.5], [-2.0, 3.0, 7.0, 11.0]],
 			out_tangents: vec![[-8.0, 9.0, 10.0, 12.0], [4.0, 3.0, 2.0, 1.0]],
 		});

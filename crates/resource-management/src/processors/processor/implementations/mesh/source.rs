@@ -1,3 +1,7 @@
+use math::{Point, Vector};
+
+use crate::resources::ModelSpace;
+
 /// The `VertexSkin` struct keeps one vertex's fixed-width joint and weight values together while they are imported.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VertexSkin {
@@ -30,18 +34,23 @@ pub trait MeshPrimitiveSource {
 
 	fn indices(&self) -> Result<impl ExactSizeIterator<Item = Result<u32, Self::Error>> + '_, Self::Error>;
 
-	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_, Self::Error>;
+	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<Point<ModelSpace>, Self::Error>> + '_, Self::Error>;
 
-	fn normals(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
-		Ok(None::<std::iter::Empty<Result<[f32; 3], Self::Error>>>)
+	fn normals(
+		&self,
+	) -> Result<Option<impl ExactSizeIterator<Item = Result<Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
+		Ok(None::<std::iter::Empty<Result<Vector<ModelSpace>, Self::Error>>>)
 	}
 
+	/// Returns each vertex's tangent direction in `[x, y, z]` and the handedness of its bitangent in `w`.
 	fn tangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 4], Self::Error>> + '_>, Self::Error> {
 		Ok(None::<std::iter::Empty<Result<[f32; 4], Self::Error>>>)
 	}
 
-	fn bitangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
-		Ok(None::<std::iter::Empty<Result<[f32; 3], Self::Error>>>)
+	fn bitangents(
+		&self,
+	) -> Result<Option<impl ExactSizeIterator<Item = Result<Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
+		Ok(None::<std::iter::Empty<Result<Vector<ModelSpace>, Self::Error>>>)
 	}
 
 	fn uvs(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 2], Self::Error>> + '_>, Self::Error> {

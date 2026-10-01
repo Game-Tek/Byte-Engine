@@ -2243,7 +2243,7 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 	let parameters = super::shader_data::LightClusterParameters::from(view);
 	let mut cluster_parameters = buffer(&program, ResourceSlot::new(1));
 	for (field, value) in [
-		("view", Value::Mat4x3F(parameters.view.0)),
+		("view", Value::Mat4x3F(bytemuck::cast(parameters.view))),
 		("edge_slopes", Value::Vec2F(parameters.edge_slopes)),
 		("near", Value::F32(parameters.near)),
 		("depth_slice_scale", Value::F32(parameters.depth_slice_scale)),
@@ -2481,11 +2481,11 @@ fn cascade_views(program: &ExecutableProgram, scene: &ReceiverFitScene) -> besl:
 	for (cascade, frame) in scene.cascades.iter().enumerate() {
 		let view = frame.view.view();
 		for (field, value) in [
-			("view", Value::Mat4x3F(math::AffineShaderMatrix::from(view).0)),
+			("view", Value::Mat4x3F(bytemuck::cast(ghi::pod::Mat4x3f::from(view)))),
 			("view_projection", Value::Mat4F(column_major(frame.view.view_projection()))),
 			(
 				"inverse_view",
-				Value::Mat4x3F(math::AffineShaderMatrix::from(math::inverse(view)).0),
+				Value::Mat4x3F(bytemuck::cast(ghi::pod::Mat4x3f::from(math::inverse(view)))),
 			),
 			("far", Value::F32(frame.slice_far)),
 		] {

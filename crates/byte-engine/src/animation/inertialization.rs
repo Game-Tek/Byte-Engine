@@ -1,8 +1,10 @@
 //! Retained local-pose inertialization for discontinuity-free transitions.
 
-use resource_management::resources::skeleton::LocalTransform;
+use std::ops::{Add, Div, Mul, Sub};
 
-use super::math::{add3, conjugate_quaternion, multiply_quaternion, quaternion_exp, quaternion_log, sub3};
+use math::{Orientation, Scale, Vector};
+use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
+
 use crate::MediaTime;
 
 const DECAY_TO_ONE_THOUSANDTH: f32 = 6.907_755_4;
@@ -79,27 +81,19 @@ impl PoseInertializer {
 			.zip(destination)
 			.zip(&mut self.nodes)
 		{
-			state.translation_offset = sub3(source.translation, destination.translation);
-			state.translation_velocity = sub3(
-				velocity3(source_previous.translation, source.translation, sample_delta_seconds),
-				velocity3(
+			state.translation_offset = source.translation - destination.translation;
+			state.translation_velocity = velocity(source_previous.translation, source.translation, sample_delta_seconds)
+				- velocity(
 					destination_previous.translation,
 					destination.translation,
 					sample_delta_seconds,
-				),
-			);
-			state.scale_offset = sub3(source.scale, destination.scale);
-			state.scale_velocity = sub3(
-				velocity3(source_previous.scale, source.scale, sample_delta_seconds),
-				velocity3(destination_previous.scale, destination.scale, sample_delta_seconds),
-			);
-
-			let rotation_offset = multiply_quaternion(source.rotation, conjugate_quaternion(destination.rotation));
-			state.rotation_offset = quaternion_log(rotation_offset);
-			state.rotation_velocity = sub3(
-				angular_velocity(source_previous.rotation, source.rotation, sample_delta_seconds),
-				angular_velocity(destination_previous.rotation, destination.rotation, sample_delta_seconds),
-			);
+				);
+			state.scale_offset = source.scale - destination.scale;
+			state.scale_velocity = velocity(source_previous.scale, source.scale, sample_delta_seconds)
+				- velocity(destination_previous.scale, destination.scale, sample_delta_seconds);
+			state.rotation_offset = source.rotation.compose(destination.rotation.inverse()).to_rotation_vector();
+			state.rotation_velocity = angular_velocity(source_previous.rotation, source.rotation, sample_delta_seconds)
+				- angular_velocity(destination_previous.rotation, destination.rotation, sample_delta_seconds);
 		}
 		Ok(())
 	}
@@ -133,23 +127,25 @@ impl PoseInertializer {
 
 		let decay_rate = DECAY_TO_ONE_THOUSANDTH / self.duration_seconds;
 		for ((destination, state), output) in destination.iter().zip(&self.nodes).zip(output) {
-			let translation_offset = decay_vector(
+			let translation_offset = decay(
 				state.translation_offset,
 				state.translation_velocity,
 				decay_rate,
 				self.elapsed_seconds,
 			);
-			let scale_offset = decay_vector(state.scale_offset, state.scale_velocity, decay_rate, self.elapsed_seconds);
-			let rotation_offset = decay_vector(
+			let scale_offset = decay(state.scale_offset, state.scale_velocity, decay_rate, self.elapsed_seconds);
+			let rotation_offset = decay(
 				state.rotation_offset,
 				state.rotation_velocity,
 				decay_rate,
 				self.elapsed_seconds,
 			);
 			*output = LocalTransform {
-				translation: add3(destination.translation, translation_offset),
-				rotation: multiply_quaternion(quaternion_exp(rotation_offset), destination.rotation),
-				scale: add3(destination.scale, scale_offset),
+				translation: destination.translation + translation_offset,
+				rotation: Orientation::try_from_rotation_vector(rotation_offset)
+					.expect("decayed rotation offsets stay finite")
+					.compose(destination.rotation),
+				scale: destination.scale + scale_offset,
 			};
 		}
 		Ok(())
@@ -176,14 +172,31 @@ impl PoseInertializer {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// The `InertializedTransform` struct holds one node's decaying offsets from its destination pose.
+///
+/// Rotation offsets and velocities are rotation vectors, which decay linearly unlike quaternions.
+#[derive(Clone, Copy, Debug)]
 struct InertializedTransform {
-	translation_offset: [f32; 3],
-	translation_velocity: [f32; 3],
-	rotation_offset: [f32; 3],
-	rotation_velocity: [f32; 3],
-	scale_offset: [f32; 3],
-	scale_velocity: [f32; 3],
+	translation_offset: Vector<ParentSpace>,
+	translation_velocity: Vector<ParentSpace>,
+	rotation_offset: Vector<ParentSpace>,
+	rotation_velocity: Vector<ParentSpace>,
+	scale_offset: Scale,
+	scale_velocity: Scale,
+}
+
+impl Default for InertializedTransform {
+	fn default() -> Self {
+		let no_scale_change = Scale::new(0.0, 0.0, 0.0);
+		Self {
+			translation_offset: Vector::zero(),
+			translation_velocity: Vector::zero(),
+			rotation_offset: Vector::zero(),
+			rotation_velocity: Vector::zero(),
+			scale_offset: no_scale_change,
+			scale_velocity: no_scale_change,
+		}
+	}
 }
 
 /// Errors returned when a pose transition cannot be initialized or advanced.
@@ -230,31 +243,29 @@ impl std::fmt::Display for InertializationError {
 impl std::error::Error for InertializationError {}
 
 /// Evaluates an exact critically damped offset with the supplied initial velocity.
-fn decay_vector(offset: [f32; 3], velocity: [f32; 3], rate: f32, time: f32) -> [f32; 3] {
+fn decay<T: Copy + Add<Output = T> + Mul<f32, Output = T>>(offset: T, velocity: T, rate: f32, time: f32) -> T {
 	debug_assert!(
 		rate.is_finite() && rate >= 0.0 && time.is_finite() && time >= 0.0,
 		"Inertial decay inputs are invalid. The most likely cause is bypassing transition time validation."
 	);
 	let decay = (-rate * time).exp();
-	std::array::from_fn(|component| (offset[component] + (velocity[component] + rate * offset[component]) * time) * decay)
+	(offset + (velocity + offset * rate) * time) * decay
 }
 
-fn velocity3(previous: [f32; 3], current: [f32; 3], delta: f32) -> [f32; 3] {
+fn velocity<T: Sub<Output = T> + Div<f32, Output = T>>(previous: T, current: T, delta: f32) -> T {
 	debug_assert!(
 		delta.is_finite() && delta > 0.0,
 		"Velocity delta is invalid. The most likely cause is bypassing sample interval validation."
 	);
-	std::array::from_fn(|component| (current[component] - previous[component]) / delta)
+	(current - previous) / delta
 }
 
-fn angular_velocity(previous: [f32; 4], current: [f32; 4], delta: f32) -> [f32; 3] {
+fn angular_velocity(previous: Orientation, current: Orientation, delta: f32) -> Vector<ParentSpace> {
 	debug_assert!(
 		delta.is_finite() && delta > 0.0,
 		"Angular velocity delta is invalid. The most likely cause is bypassing sample interval validation."
 	);
-	let delta_rotation = multiply_quaternion(current, conjugate_quaternion(previous));
-	let rotation_vector = quaternion_log(delta_rotation);
-	std::array::from_fn(|component| rotation_vector[component] / delta)
+	current.compose(previous.inverse()).to_rotation_vector() / delta
 }
 
 #[cfg(test)]
@@ -265,13 +276,15 @@ mod tests {
 
 	use super::PoseInertializer;
 	use crate::MediaTime;
-	use crate::animation::math::quaternion_exp;
 
 	fn transform(position: f32, angle: f32) -> LocalTransform {
 		LocalTransform {
-			translation: [position, 0.0, 0.0],
-			rotation: quaternion_exp([0.0, angle, 0.0]),
-			scale: [1.0; 3],
+			translation: math::Vector::new(position, 0.0, 0.0),
+			rotation: math::Orientation::try_from_rotation_vector(
+				math::Vector::<resource_management::resources::ParentSpace>::new(0.0, angle, 0.0),
+			)
+			.unwrap(),
+			scale: math::Scale::identity(),
 		}
 	}
 
@@ -298,8 +311,8 @@ mod tests {
 			.apply(&destination, MediaTime::ZERO, &mut output)
 			.expect("expected test value");
 
-		assert!((output[0].translation[0] - 1.0).abs() < 1.0e-4);
-		assert!((output[0].rotation[1] - source[0].rotation[1]).abs() < 1.0e-4);
+		assert!((output[0].translation.x() - 1.0).abs() < 1.0e-4);
+		assert!((output[0].rotation.to_array()[1] - source[0].rotation.to_array()[1]).abs() < 1.0e-4);
 
 		inertializer
 			.apply(&destination, MediaTime::from_millis(200), &mut output)

@@ -26,10 +26,12 @@
 //! [`Orientation`], [`UnitVector`], or axis and angle if you will need it after building a matrix.
 //! The crate also does not extract an axis and angle from an [`Orientation`].
 
+mod affine;
 mod angle;
 mod geometry;
 mod orientation;
 mod scale;
+mod serialization;
 
 pub mod aabb;
 pub mod collision;
@@ -38,6 +40,7 @@ pub mod ray;
 pub mod sphere;
 
 pub use aabb::AABB;
+pub use affine::AffineMatrix;
 pub use angle::{Degrees, Radians};
 pub use geometry::{
 	NormalizationError, Point, UnitVector, Unnormalized, Vector, WorldSpace, barycentric_xz, distance_xz, is_finite,
@@ -59,11 +62,12 @@ pub use maths_rs::Mat4f as Matrix;
 /// orientation back with [`Orientation::into_maths`]. If you only have a facing [`UnitVector`], use
 /// [`orientation_from_direction`] instead of constructing quaternion components directly.
 pub use maths_rs::Quatf as Quaternion;
-use maths_rs::mat::{MatNew4, MatTranspose as _};
+use maths_rs::mat::MatNew4;
 pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;
 pub use scale::Scale;
+pub use serialization::ArchivedFloats;
 pub use sphere::Sphere;
 
 /// Asserts that two floating-point values differ by no more than an explicit epsilon.
@@ -135,45 +139,6 @@ macro_rules! assert_geometry_near {
 			}
 		}
 	};
-}
-
-/// The `ShaderMatrix` struct provides the aligned matrix layout graphics backends use for GPU uploads.
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ShaderMatrix(pub [f32; 16]);
-
-/// The `AffineShaderMatrix` struct provides the compact affine matrix layout for GPU transform uploads.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct AffineShaderMatrix(pub [f32; 12]);
-
-impl From<Matrix> for ShaderMatrix {
-	fn from(value: Matrix) -> Self {
-		#[cfg(target_os = "macos")]
-		let value = value.transpose();
-
-		Self([
-			value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7], value[8], value[9], value[10],
-			value[11], value[12], value[13], value[14], value[15],
-		])
-	}
-}
-
-impl From<Matrix> for AffineShaderMatrix {
-	fn from(mut value: Matrix) -> Self {
-		value = value.transpose();
-		Self([
-			value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9], value[10], value[12], value[13],
-			value[14],
-		])
-	}
-}
-
-/// Splits the compact affine layout into its four columns of three, the shape skin palettes store.
-impl From<AffineShaderMatrix> for [[f32; 3]; 4] {
-	fn from(value: AffineShaderMatrix) -> Self {
-		bytemuck::cast(value.0)
-	}
 }
 
 /// Converts a camera-relative movement command into a horizontal world-space displacement.
@@ -358,16 +323,5 @@ mod tests {
 		let resolved = direction_from_orientation(orientation_from_direction(direction));
 
 		crate::assert_geometry_near!(resolved, direction, "near-forward rotations must retain small input changes");
-	}
-
-	#[test]
-	fn shader_matrix_layouts_are_stable() {
-		let matrix = Matrix::new(
-			1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
-		);
-		let affine = AffineShaderMatrix::from(matrix);
-
-		assert_eq!(affine.0, [1.0, 5.0, 9.0, 2.0, 6.0, 10.0, 3.0, 7.0, 11.0, 4.0, 8.0, 12.0]);
-		assert_eq!(std::mem::size_of::<AffineShaderMatrix>(), 48);
 	}
 }

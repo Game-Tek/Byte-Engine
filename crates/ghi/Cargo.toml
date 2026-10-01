@@ -29,9 +29,10 @@ rustdoc-args = ["-C", "target-feature=+aes,+sse2"]
 
 [dependencies]
 utils = { package = "byte-engine-utils", path = "../utils", version = "0.2.0" }
+math = { package = "byte-engine-math", path = "../math", version = "0.2.0" }
 
 bitflags = "2.9.0"
-bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
+bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics", "nightly_float"] }
 smallvec = "1.15.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]

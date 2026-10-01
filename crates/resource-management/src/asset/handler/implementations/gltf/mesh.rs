@@ -126,7 +126,7 @@ pub(crate) struct GltfPrimitiveSource<'a> {
 	primitive: &'a gltf::Primitive<'a>,
 	buffers: &'a [gltf::buffer::Data],
 	material_slot: usize,
-	transform: maths_rs::Mat4f,
+	transform: math::Matrix,
 	transform_node: Option<u32>,
 	skin: Option<u32>,
 	skin_joint_count: Option<usize>,
@@ -139,7 +139,7 @@ impl<'a> GltfPrimitiveSource<'a> {
 		primitive: &'a gltf::Primitive<'a>,
 		buffers: &'a [gltf::buffer::Data],
 		material_slot: usize,
-		transform: maths_rs::Mat4f,
+		transform: math::Matrix,
 		transform_node: Option<u32>,
 		skin: Option<u32>,
 		skin_joint_count: Option<usize>,
@@ -187,19 +187,22 @@ impl MeshPrimitiveSource for GltfPrimitiveSource<'_> {
 			.map(Ok))
 	}
 
-	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_, Self::Error> {
+	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<Point<ModelSpace>, Self::Error>> + '_, Self::Error> {
 		let transform = self.transform;
 		Ok(self
 			.reader()
 			.read_positions()
 			.ok_or(GltfMeshSourceError::MissingPositions)?
 			.map(move |position| {
-				let transformed = transform * maths_rs::Vec3f::new(position[0], position[1], position[2]);
-				Ok([transformed[0], transformed[1], transformed[2]])
+				Ok(Point::from_maths(
+					transform * Point::<ModelSpace>::from_array(position).into_maths(),
+				))
 			}))
 	}
 
-	fn normals(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
+	fn normals(
+		&self,
+	) -> Result<Option<impl ExactSizeIterator<Item = Result<Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
 		if !self.attributes.normals {
 			return Ok(None);
 		}

@@ -111,7 +111,7 @@ pub(super) fn build_specialization_entries(
 		let offset = data.len() as u32;
 		let constant_type = specialization_map_entry.get_type();
 		let scalar_count = match constant_type.as_str() {
-			"bool" | "u32" | "f32" => 1,
+			"bool" | "i32" | "u32" | "f32" => 1,
 			"vec2f" => 2,
 			"vec3f" => 3,
 			"vec4f" => 4,
@@ -538,9 +538,9 @@ mod tests {
 	#[test]
 	fn specialization_constants_use_four_byte_scalars() {
 		let entries = [
-			crate::pipelines::SpecializationMapEntry::new(0, "bool".to_string(), true),
-			crate::pipelines::SpecializationMapEntry::new(1, "vec2f".to_string(), [1.0f32, 2.0f32]),
-			crate::pipelines::SpecializationMapEntry::new(3, "u32".to_string(), 7u32),
+			crate::pipelines::SpecializationMapEntry::new(0, true),
+			crate::pipelines::SpecializationMapEntry::new(1, crate::pod::Vec2f::new(1.0, 2.0)),
+			crate::pipelines::SpecializationMapEntry::new(3, 7u32),
 		];
 
 		let (data, map_entries) = build_specialization_entries(&entries);

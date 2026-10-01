@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 use resource_management::{
 	Reference,
 	resources::{
-		animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+		animation::{Animation, NodeTrack, RotationCurve, ScaleCurve, TranslationCurve},
 		skeleton::{LocalTransform, Skeleton, SkeletonNode},
 	},
 };
@@ -161,17 +161,24 @@ fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Anim
 			let node_phase = node as f32 / node_count as f32;
 			NodeTrack {
 				node: node as u32,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, CLIP_DURATION_SECONDS],
-					values: vec![[0.0; 3], [motion_scale + node_phase * 0.1, 0.05, 0.0]],
+					values: vec![
+						math::Vector::zero(),
+						math::Vector::new(motion_scale + node_phase * 0.1, 0.05, 0.0),
+					],
 				}),
-				rotation: Some(QuaternionCurve::Linear {
+				rotation: Some(RotationCurve::Linear {
 					times: vec![0.0, CLIP_DURATION_SECONDS],
-					values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.099_833_42, 0.0, 0.995_004_2]],
+					values: vec![
+						math::Orientation::identity(),
+						math::Orientation::try_from_array([0.0, 0.099_833_42, 0.0, 0.995_004_2])
+							.expect("benchmark rotation is a unit quaternion"),
+					],
 				}),
-				scale: Some(Vector3Curve::Linear {
+				scale: Some(ScaleCurve::Linear {
 					times: vec![0.0, CLIP_DURATION_SECONDS],
-					values: vec![[1.0; 3], [1.0 + node_phase * 0.01; 3]],
+					values: vec![math::Scale::identity(), math::Scale::from_array([1.0 + node_phase * 0.01; 3])],
 				}),
 			}
 		})

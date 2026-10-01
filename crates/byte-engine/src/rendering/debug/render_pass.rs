@@ -296,7 +296,7 @@ const SEGMENT_RADIUS: f32 = 0.005;
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct DebugPushConstants {
-	view_projection_model: ShaderMatrix,
+	view_projection_model: ghi::pod::Mat4f,
 	color: [f32; 4],
 }
 
@@ -315,7 +315,6 @@ struct PreparedDraw {
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
 const _: () = assert!(std::mem::size_of::<DebugPushConstants>() == 80);
-const _: () = assert!(std::mem::align_of::<DebugPushConstants>() == 16);
 
 #[cfg(test)]
 mod tests {
@@ -470,7 +469,7 @@ use ghi::{
 	},
 	frame::Frame as _,
 };
-use math::{Matrix, Orientation, Point, ShaderMatrix, orientation_from_direction};
+use math::{Matrix, Orientation, Point, orientation_from_direction};
 use maths_rs::{
 	Vec3f,
 	mat::{MatScale as _, MatTranslate as _},

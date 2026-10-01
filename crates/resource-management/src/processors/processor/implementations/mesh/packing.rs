@@ -114,7 +114,7 @@ impl MeshProcessorSession {
 		for position in positions {
 			self.scratch
 				.positions
-				.push(position.map_err(MeshPrimitiveProcessingError::Source)?);
+				.push(position.map_err(MeshPrimitiveProcessingError::Source)?.to_array());
 		}
 		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshPrimitiveProcessingError::Processing(
 			MeshProcessingError::InvalidPositionData,
@@ -229,7 +229,10 @@ impl MeshProcessorSession {
 			&mut self.blocks,
 			VertexSemantics::Normal,
 			position_count,
-			primitive.normals().map_err(MeshPrimitiveProcessingError::Source)?,
+			primitive
+				.normals()
+				.map_err(MeshPrimitiveProcessingError::Source)?
+				.map(|normals| normals.map(|normal| normal.map(Vector::to_array))),
 		)?;
 		append_optional_f32(
 			&mut streams,
@@ -243,7 +246,10 @@ impl MeshProcessorSession {
 			&mut self.blocks,
 			VertexSemantics::BiTangent,
 			position_count,
-			primitive.bitangents().map_err(MeshPrimitiveProcessingError::Source)?,
+			primitive
+				.bitangents()
+				.map_err(MeshPrimitiveProcessingError::Source)?
+				.map(|bitangents| bitangents.map(|bitangent| bitangent.map(Vector::to_array))),
 		)?;
 		append_optional_f32(
 			&mut streams,
@@ -552,7 +558,7 @@ fn write_f32_components<const N: usize>(bytes: &mut Vec<u8>, value: &[f32; N]) {
 	}
 }
 
-fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> {
+fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<AABB<ModelSpace>> {
 	let first = *positions.first()?;
 	if first.iter().any(|component| !component.is_finite()) {
 		return None;
@@ -568,7 +574,7 @@ fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<[[f32; 3]; 2]> 
 			maximum[axis] = maximum[axis].max(position[axis]);
 		}
 	}
-	Some([minimum, maximum])
+	Some(AABB::new(Point::from_array(minimum), Point::from_array(maximum)))
 }
 
 /// Rewinds counter-clockwise source triangles so processed meshes always use clockwise front faces.
@@ -630,6 +636,8 @@ const MESHLET_MAX_TRIANGLES: usize = 124;
 const MESHLET_CONE_WEIGHT: f32 = 0.25;
 pub(super) const MESHLET_STREAM_STRIDE: usize = 52;
 
+use math::{AABB, Point, Vector};
+
 use super::{
 	source::{MeshPrimitiveSource, VertexSkin},
 	validation::{
@@ -640,6 +648,7 @@ use super::{
 use crate::{
 	ReferenceModel, StreamDescription,
 	resources::{
+		ModelSpace,
 		material::VariantModel,
 		mesh::{MeshModel, Primitive},
 		skeleton::{SkeletonModel, SkinBinding},

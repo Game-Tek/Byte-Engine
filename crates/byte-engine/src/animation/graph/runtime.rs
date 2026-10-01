@@ -497,7 +497,7 @@ mod tests {
 	use resource_management::{
 		Reference,
 		resources::{
-			animation::{Animation, NodeTrack, Vector3Curve},
+			animation::{Animation, NodeTrack, TranslationCurve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
 	};
@@ -521,9 +521,9 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 0,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0; 3], [end_translation, 0.0, 0.0]],
+					values: vec![math::Vector::from_array([0.0; 3]), math::Vector::from_array([end_translation, 0.0, 0.0])],
 				}),
 				rotation: None,
 				scale: None,

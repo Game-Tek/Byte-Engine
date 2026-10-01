@@ -2,11 +2,11 @@
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
-use resource_management::resources::skeleton::AffineMatrix4x3Columns;
+use math::{AffineMatrix, Orientation, Quaternion, Vector};
+use resource_management::resources::ModelSpace;
 use utils::Extent;
 
 use super::geometry::GeometryHandles;
-use crate::animation::math::{cross3, dot_quaternion, dot3, quaternion_product};
 use crate::rendering::PipelineManagerClient;
 
 const WORKGROUP_SIZE: u32 = 64;
@@ -66,7 +66,7 @@ pub(crate) struct SkinningDispatch {
 pub(crate) struct SkinningPass {
 	pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
-	matrix_palette_buffer: ghi::DynamicBufferHandle<[AffineMatrix4x3Columns; MAX_SKINNING_MATRICES]>,
+	matrix_palette_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
 	dual_quaternion_palette_buffer: ghi::DynamicBufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
 	skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
@@ -127,11 +127,14 @@ impl SkinningPass {
 	pub(crate) fn write_palettes(
 		&self,
 		frame: &mut ghi::implementation::Frame,
-		matrices: &[AffineMatrix4x3Columns],
+		matrices: &[AffineMatrix],
 		dual_quaternions: &[DualQuaternion],
 	) {
 		if !matrices.is_empty() {
-			frame.get_mut_dynamic_buffer_slice(self.matrix_palette_buffer)[..matrices.len()].copy_from_slice(matrices);
+			let palette = frame.get_mut_dynamic_buffer_slice(self.matrix_palette_buffer);
+			for (destination, matrix) in palette.iter_mut().zip(matrices) {
+				*destination = (*matrix).into();
+			}
 			frame.sync_buffer(self.matrix_palette_buffer);
 		}
 		if !dual_quaternions.is_empty() {
@@ -173,7 +176,7 @@ impl SkinningPass {
 const RIGID_TRANSFORM_EPSILON: f32 = 1.0e-4;
 
 /// Appends a dual-quaternion palette when every matrix is a finite proper rigid transform; otherwise appends nothing.
-pub(crate) fn append_dual_quaternion_palette(matrices: &[AffineMatrix4x3Columns], output: &mut Vec<DualQuaternion>) -> bool {
+pub(crate) fn append_dual_quaternion_palette(matrices: &[AffineMatrix], output: &mut Vec<DualQuaternion>) -> bool {
 	if !matrices.iter().all(is_rigid_transform) {
 		return false;
 	}
@@ -182,34 +185,35 @@ pub(crate) fn append_dual_quaternion_palette(matrices: &[AffineMatrix4x3Columns]
 }
 
 /// Checks the orthonormal basis and positive determinant required by a dual quaternion.
-fn is_rigid_transform(matrix: &AffineMatrix4x3Columns) -> bool {
-	if !matrix.iter().flatten().all(|value| value.is_finite()) {
+fn is_rigid_transform(matrix: &AffineMatrix) -> bool {
+	if !matrix.is_finite() {
 		return false;
 	}
-	let [x, y, z, _] = matrix;
-	let unit = |axis: &[f32; 3]| (dot3(*axis, *axis) - 1.0).abs() <= RIGID_TRANSFORM_EPSILON;
-	let orthogonal = |left: &[f32; 3], right: &[f32; 3]| dot3(*left, *right).abs() <= RIGID_TRANSFORM_EPSILON;
+	let [x, y, z, _] = matrix.columns().map(Vector::<ModelSpace>::from_array);
+	let unit = |axis: Vector<ModelSpace>| (axis.length_squared() - 1.0).abs() <= RIGID_TRANSFORM_EPSILON;
+	let orthogonal = |left: Vector<ModelSpace>, right: Vector<ModelSpace>| left.dot(right).abs() <= RIGID_TRANSFORM_EPSILON;
 	unit(x)
 		&& unit(y)
 		&& unit(z)
 		&& orthogonal(x, y)
 		&& orthogonal(x, z)
 		&& orthogonal(y, z)
-		&& (dot3(*x, cross3(*y, *z)) - 1.0).abs() <= RIGID_TRANSFORM_EPSILON
+		&& (x.dot(y.cross(z)) - 1.0).abs() <= RIGID_TRANSFORM_EPSILON
 }
 
 /// Converts one validated rigid matrix into the engine's xyzw dual-quaternion convention.
-fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix4x3Columns) -> DualQuaternion {
-	let real = quaternion_from_rotation_columns(matrix[0], matrix[1], matrix[2]);
-	let translation = [matrix[3][0], matrix[3][1], matrix[3][2], 0.0];
+fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix) -> DualQuaternion {
+	let [x, y, z, [translation_x, translation_y, translation_z]] = matrix.columns();
+	let real = rotation_from_columns(x, y, z);
+	let dual = Quaternion::new(translation_x, translation_y, translation_z, 0.0) * real.into_maths() * 0.5;
 	DualQuaternion {
-		real,
-		dual: quaternion_product(translation, real).map(|component| component * 0.5),
+		real: real.to_array(),
+		dual: [dual.x, dual.y, dual.z, dual.w],
 	}
 }
 
-/// Extracts a normalized xyzw quaternion from orthonormal rotation columns.
-fn quaternion_from_rotation_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]) -> [f32; 4] {
+/// Extracts the rotation of orthonormal rotation columns.
+fn rotation_from_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]) -> Orientation {
 	let [m00, m10, m20] = column0;
 	let [m01, m11, m21] = column1;
 	let [m02, m12, m22] = column2;
@@ -227,8 +231,9 @@ fn quaternion_from_rotation_columns(column0: [f32; 3], column1: [f32; 3], column
 		let scale = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
 		[(m02 + m20) / scale, (m12 + m21) / scale, scale * 0.25, (m10 - m01) / scale]
 	};
-	let inverse_length = dot_quaternion(quaternion, quaternion).sqrt().recip();
-	quaternion.map(|component| component * inverse_length)
+	Orientation::try_from_array(quaternion).expect(
+		"Rigid rotation columns always give a finite nonzero quaternion. The most likely cause is skipping is_rigid_transform.",
+	)
 }
 
 #[cfg(test)]
@@ -290,7 +295,7 @@ mod tests {
 	#[test]
 	fn skinning_host_types_match_besl_buffer_layouts() {
 		assert_eq!(std::mem::size_of::<[u16; 4]>(), 8);
-		assert_eq!(std::mem::size_of::<AffineMatrix4x3Columns>(), 48);
+		assert_eq!(std::mem::size_of::<ghi::pod::Mat4x3f>(), 48);
 		assert_eq!(MATRIX_PALETTE_BINDING.buffer_element_stride(), 48);
 		assert_eq!(std::mem::size_of::<DualQuaternion>(), 32);
 		assert_eq!(std::mem::align_of::<DualQuaternion>(), 16);
@@ -303,7 +308,8 @@ mod tests {
 	#[test]
 	fn rigid_palette_conversion_preserves_rotation_and_translation() {
 		let half_sqrt = std::f32::consts::FRAC_1_SQRT_2;
-		let matrix = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [2.0, 4.0, 6.0]];
+		let columns = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [2.0, 4.0, 6.0]];
+		let matrix = AffineMatrix::from_columns(columns);
 		let mut output = Vec::new();
 
 		assert!(append_dual_quaternion_palette(&[matrix], &mut output));
@@ -311,26 +317,30 @@ mod tests {
 		for (actual, expected) in output[0].real.into_iter().zip([0.0, 0.0, half_sqrt, half_sqrt]) {
 			math::assert_float_eq!(actual, expected);
 		}
-		let recovered_translation = quaternion_product(
-			output[0].dual.map(|component| component * 2.0),
-			[-output[0].real[0], -output[0].real[1], -output[0].real[2], output[0].real[3]],
-		);
-		for (actual, expected) in recovered_translation[..3].iter().zip(matrix[3]) {
-			math::assert_float_eq!(*actual, expected);
+		let [dual_x, dual_y, dual_z, dual_w] = output[0].dual;
+		let [real_x, real_y, real_z, real_w] = output[0].real;
+		let recovered_translation =
+			Quaternion::new(dual_x, dual_y, dual_z, dual_w) * 2.0 * Quaternion::new(-real_x, -real_y, -real_z, real_w);
+		for (actual, expected) in [recovered_translation.x, recovered_translation.y, recovered_translation.z]
+			.into_iter()
+			.zip(columns[3])
+		{
+			math::assert_float_eq!(actual, expected);
 		}
 	}
 
 	#[test]
 	fn dual_quaternion_palette_rejects_every_non_rigid_affine_form_without_partial_output() {
-		let identity = resource_management::resources::skeleton::identity_affine_matrix4x3_columns();
-		let mut scaled = identity;
-		scaled[0][0] = 2.0;
-		let mut sheared = identity;
-		sheared[1][0] = 0.25;
-		let mut reflected = identity;
-		reflected[0][0] = -1.0;
-		let mut non_finite = identity;
-		non_finite[3][0] = f32::NAN;
+		let identity = AffineMatrix::identity();
+		let with = |column: usize, row: usize, value: f32| {
+			let mut columns = identity.columns();
+			columns[column][row] = value;
+			AffineMatrix::from_columns(columns)
+		};
+		let scaled = with(0, 0, 2.0);
+		let sheared = with(1, 0, 0.25);
+		let reflected = with(0, 0, -1.0);
+		let non_finite = with(3, 0, f32::NAN);
 
 		for matrix in [scaled, sheared, reflected, non_finite] {
 			let mut output = vec![DualQuaternion::default()];
@@ -423,20 +433,20 @@ mod tests {
 			.expect("twist weights");
 		let sine = 3.0_f32.sqrt() * 0.5;
 		let cosine = 0.5;
-		let positive = dual_quaternion_from_rigid_transform(&[
+		let positive = dual_quaternion_from_rigid_transform(&AffineMatrix::from_columns([
 			[1.0, 0.0, 0.0],
 			[0.0, cosine, sine],
 			[0.0, -sine, cosine],
 			[2.0, 0.0, 0.0],
-		]);
+		]));
 		write_dual_quaternion(dual_quaternion_palette, 0, positive.real, positive.dual);
 		// Negate the equivalent -60-degree transform to exercise per-vertex antipodality correction too.
-		let negative = dual_quaternion_from_rigid_transform(&[
+		let negative = dual_quaternion_from_rigid_transform(&AffineMatrix::from_columns([
 			[1.0, 0.0, 0.0],
 			[0.0, cosine, -sine],
 			[0.0, sine, cosine],
 			[2.0, 0.0, 0.0],
-		]);
+		]));
 		write_dual_quaternion(
 			dual_quaternion_palette,
 			1,

@@ -841,12 +841,12 @@ fn specialization_entries(
 		.iter()
 		.enumerate()
 		.filter_map(|(index, variable)| match &variable.value {
-			Value::Scalar(value) => ghi::pipelines::SpecializationMapEntry::new(index as u32, "f32".to_string(), *value).into(),
+			Value::Scalar(value) => ghi::pipelines::SpecializationMapEntry::new(index as u32, *value).into(),
 			Value::Vector3(value) => {
-				ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec3f".to_string(), *value).into()
+				ghi::pipelines::SpecializationMapEntry::new(index as u32, ghi::pod::Vec3f::from(*value)).into()
 			}
 			Value::Vector4(value) => {
-				ghi::pipelines::SpecializationMapEntry::new(index as u32, "vec4f".to_string(), *value).into()
+				ghi::pipelines::SpecializationMapEntry::new(index as u32, ghi::pod::Vec4f::from(*value)).into()
 			}
 			Value::Image(_) => None,
 		})

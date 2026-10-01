@@ -180,7 +180,7 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 		Ok(corner)
 	}
 
-	fn normal(&self, corner: usize) -> Result<Option<[f32; 3]>, FbxImportError> {
+	fn normal(&self, corner: usize) -> Result<Option<Vector<ModelSpace>>, FbxImportError> {
 		self.context
 			.normal_matrix
 			.as_ref()
@@ -188,7 +188,18 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 			.transpose()
 	}
 
-	fn tangent_frame(&self, corner: usize) -> Result<(Option<[f32; 3]>, Option<[f32; 3]>, Option<[f32; 3]>), FbxImportError> {
+	#[allow(clippy::type_complexity)]
+	fn tangent_frame(
+		&self,
+		corner: usize,
+	) -> Result<
+		(
+			Option<Vector<ModelSpace>>,
+			Option<Vector<ModelSpace>>,
+			Option<Vector<ModelSpace>>,
+		),
+		FbxImportError,
+	> {
 		let normal = self.normal(corner)?;
 		let transformed_bitangent = self
 			.context
@@ -249,18 +260,20 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 		}))
 	}
 
-	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_, Self::Error> {
+	fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<Point<ModelSpace>, Self::Error>> + '_, Self::Error> {
 		Ok(self.source_corners.iter().map(|&source_corner| {
 			let corner = self.corner(source_corner)?;
 			let position = ufbx::transform_position(
 				&self.context.node.geometry_to_world,
 				self.context.mesh.vertex_position[corner],
 			);
-			vec3_to_f32(position, "mesh position")
+			vec3_to_f32(position, "mesh position").map(Point::from_array)
 		}))
 	}
 
-	fn normals(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
+	fn normals(
+		&self,
+	) -> Result<Option<impl ExactSizeIterator<Item = Result<Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
 		if self.context.normal_matrix.is_none() {
 			return Ok(None);
 		}
@@ -282,11 +295,13 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 				(Some(normal), Some(bitangent)) => tangent_handedness(normal, tangent, bitangent),
 				_ => 1.0,
 			};
-			Ok([tangent[0], tangent[1], tangent[2], handedness])
+			Ok([tangent.x(), tangent.y(), tangent.z(), handedness])
 		})))
 	}
 
-	fn bitangents(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
+	fn bitangents(
+		&self,
+	) -> Result<Option<impl ExactSizeIterator<Item = Result<Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
 		if !self.context.source_attributes.contains(VertexSemantics::BiTangent) {
 			return Ok(None);
 		}
@@ -296,7 +311,7 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 			match (normal, tangent, transformed_bitangent) {
 				(Some(normal), Some(tangent), Some(bitangent)) => {
 					let handedness = tangent_handedness(normal, tangent, bitangent);
-					Ok(scale_vec3(cross_vec3(normal, tangent), handedness))
+					Ok(normal.cross(tangent) * handedness)
 				}
 				(Some(normal), None, Some(bitangent)) => orthogonalized_direction(bitangent, normal),
 				(_, _, Some(bitangent)) => Ok(bitangent),
@@ -416,7 +431,7 @@ pub(crate) fn import_fbx_skin_binding(
 
 		entries.push(SkinPaletteEntry {
 			joint: SkinJoint::Node(remap_skeleton_node(source_to_skeleton, bone.element.typed_id)?),
-			adjusted_inverse_bind_matrix: matrix_to_columns(&adjusted)?,
+			adjusted_inverse_bind_matrix: matrix_to_affine(&adjusted)?,
 		});
 	}
 
@@ -427,7 +442,7 @@ pub(crate) fn import_fbx_skin_binding(
 		// fallback entry to that node preserves the behavior when the mesh or an ancestor animates.
 		entries.push(SkinPaletteEntry {
 			joint: SkinJoint::Node(remap_skeleton_node(source_to_skeleton, node.element.typed_id)?),
-			adjusted_inverse_bind_matrix: matrix_to_columns(&geometry_world_inverse)?,
+			adjusted_inverse_bind_matrix: matrix_to_affine(&geometry_world_inverse)?,
 		});
 
 		Some(index)
@@ -468,9 +483,9 @@ pub(crate) fn skin_influences(skin: &ufbx::SkinDeformer, logical_vertex: usize) 
 	skin.weights.get(begin..end).ok_or(FbxImportError::InvalidSkinVertex)
 }
 
-/// Converts ufbx's affine column vectors into the serialized four-column matrix representation.
-pub(crate) fn matrix_to_columns(matrix: &ufbx::Matrix) -> Result<AffineMatrix4x3Columns, FbxImportError> {
-	Ok([
+/// Converts ufbx's affine column vectors into an engine affine matrix.
+pub(crate) fn matrix_to_affine(matrix: &ufbx::Matrix) -> Result<AffineMatrix, FbxImportError> {
+	Ok(AffineMatrix::from_columns([
 		[
 			finite_f32(matrix.m00, "skin matrix")?,
 			finite_f32(matrix.m10, "skin matrix")?,
@@ -491,7 +506,7 @@ pub(crate) fn matrix_to_columns(matrix: &ufbx::Matrix) -> Result<AffineMatrix4x3
 			finite_f32(matrix.m13, "skin matrix")?,
 			finite_f32(matrix.m23, "skin matrix")?,
 		],
-	])
+	]))
 }
 
 /// The `FbxMeshAllocationEstimates` struct carries scene-derived capacities for reusable importer buffers.
@@ -991,64 +1006,39 @@ pub(crate) fn skin_weights(
 }
 
 /// Transforms and normalizes a direction while rejecting degenerate authored values.
-pub(crate) fn normalized_direction(matrix: &ufbx::Matrix, direction: ufbx::Vec3) -> Result<[f32; 3], FbxImportError> {
+pub(crate) fn normalized_direction(matrix: &ufbx::Matrix, direction: ufbx::Vec3) -> Result<Vector<ModelSpace>, FbxImportError> {
 	let direction = ufbx::transform_direction(matrix, direction);
 
-	normalize_vec3(vec3_to_f32(direction, "mesh direction")?)
+	normalize_direction(Vector::from_array(vec3_to_f32(direction, "mesh direction")?))
 }
 
 /// Removes the normal component from a transformed tangent-space direction and normalizes the result.
-pub(crate) fn orthogonalized_direction(direction: [f32; 3], normal: [f32; 3]) -> Result<[f32; 3], FbxImportError> {
-	let alignment = dot_vec3(direction, normal);
-
-	normalize_vec3([
-		direction[0] - normal[0] * alignment,
-		direction[1] - normal[1] * alignment,
-		direction[2] - normal[2] * alignment,
-	])
+pub(crate) fn orthogonalized_direction(
+	direction: Vector<ModelSpace>,
+	normal: Vector<ModelSpace>,
+) -> Result<Vector<ModelSpace>, FbxImportError> {
+	normalize_direction(direction - normal * direction.dot(normal))
 }
 
 /// Normalizes an imported vector without allowing zero-length or non-finite shading data.
-pub(crate) fn normalize_vec3(mut direction: [f32; 3]) -> Result<[f32; 3], FbxImportError> {
-	let length_squared = direction.iter().map(|component| component * component).sum::<f32>();
-
-	if !length_squared.is_finite() || length_squared <= f32::MIN_POSITIVE {
-		return Err(FbxImportError::ZeroDirection);
-	}
-
-	let inverse_length = length_squared.sqrt().recip();
-
-	for component in &mut direction {
-		*component *= inverse_length;
-	}
-
-	Ok(direction)
+fn normalize_direction(direction: Vector<ModelSpace>) -> Result<Vector<ModelSpace>, FbxImportError> {
+	direction
+		.normalized()
+		.map(UnitVector::into_vector)
+		.map_err(|_| FbxImportError::ZeroDirection)
 }
 
 /// Computes tangent-space orientation after the node's geometry transform has been applied.
-pub(crate) fn tangent_handedness(normal: [f32; 3], tangent: [f32; 3], bitangent: [f32; 3]) -> f32 {
-	let alignment = dot_vec3(cross_vec3(normal, tangent), bitangent);
-
-	if alignment < 0.0 { -1.0 } else { 1.0 }
-}
-
-/// Computes the dot product used by tangent-frame orthonormalization.
-pub(crate) fn dot_vec3(left: [f32; 3], right: [f32; 3]) -> f32 {
-	left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-}
-
-/// Computes the cross product used to reconstruct an orthonormal bitangent.
-pub(crate) fn cross_vec3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
-	[
-		left[1] * right[2] - left[2] * right[1],
-		left[2] * right[0] - left[0] * right[2],
-		left[0] * right[1] - left[1] * right[0],
-	]
-}
-
-/// Applies tangent-space handedness without allocating an intermediate vector.
-pub(crate) fn scale_vec3(value: [f32; 3], scale: f32) -> [f32; 3] {
-	[value[0] * scale, value[1] * scale, value[2] * scale]
+pub(crate) fn tangent_handedness(
+	normal: Vector<ModelSpace>,
+	tangent: Vector<ModelSpace>,
+	bitangent: Vector<ModelSpace>,
+) -> f32 {
+	if normal.cross(tangent).dot(bitangent) < 0.0 {
+		-1.0
+	} else {
+		1.0
+	}
 }
 
 /// Converts ufbx's double-precision vectors to the engine's finite single-precision representation.
@@ -1060,14 +1050,15 @@ pub(crate) fn vec3_to_f32(value: ufbx::Vec3, context: &'static str) -> Result<[f
 	])
 }
 
-/// Converts ufbx's x/y/z/w quaternion layout to finite single-precision components.
-pub(crate) fn quat_to_f32(value: ufbx::Quat, context: &'static str) -> Result<[f32; 4], FbxImportError> {
-	Ok([
+/// Converts ufbx's x/y/z/w quaternion layout to a normalized orientation.
+pub(crate) fn quat_to_orientation(value: ufbx::Quat, context: &'static str) -> Result<Orientation, FbxImportError> {
+	Orientation::try_from_array([
 		finite_f32(value.x, context)?,
 		finite_f32(value.y, context)?,
 		finite_f32(value.z, context)?,
 		finite_f32(value.w, context)?,
 	])
+	.map_err(|_| FbxImportError::ZeroRotation(context))
 }
 
 /// Converts imported numeric data to f32 while retaining an error context for malformed files.

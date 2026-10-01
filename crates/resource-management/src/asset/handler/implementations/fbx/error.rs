@@ -28,6 +28,7 @@ pub(crate) enum FbxImportError {
 	IncompleteSkeleton,
 	TooManySkeletonNodes,
 	ZeroDirection,
+	ZeroRotation(&'static str),
 	NonFinite(&'static str),
 }
 
@@ -133,6 +134,10 @@ impl fmt::Display for FbxImportError {
 			Self::ZeroDirection => write!(
 				formatter,
 				"FBX direction vector is zero. The most likely cause is malformed normal or tangent data."
+			),
+			Self::ZeroRotation(context) => write!(
+				formatter,
+				"FBX rotation is zero. The most likely cause is a malformed {context} whose quaternion has no length."
 			),
 			Self::NonFinite(context) => write!(
 				formatter,

@@ -70,7 +70,7 @@ impl GLTFAssetHandler {
 		vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skin_bindings: Vec<SkinBinding>,
-		primitives: &[(gltf::Primitive<'a>, maths_rs::Mat4f, Option<u32>, Option<u32>)],
+		primitives: &[(gltf::Primitive<'a>, math::Matrix, Option<u32>, Option<u32>)],
 		material_slots: &[usize],
 	) -> Result<MeshProcessorSession, LoadErrors> {
 		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();

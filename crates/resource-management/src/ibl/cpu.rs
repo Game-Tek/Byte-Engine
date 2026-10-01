@@ -9,7 +9,8 @@ pub(super) const CUBE_FACE_COUNT: usize = 6;
 const DIFFUSE_SAMPLE_COUNT: usize = 1024;
 const SPECULAR_SAMPLE_COUNT: usize = 1024;
 
-type Vector3 = [f32; 3];
+use math::{UnitVector, Vector};
+
 pub(super) type Radiance = [f32; 3];
 
 /// The `SourceMIP` struct provides one transient, solid-angle-filtered source level to an IBL integrator.
@@ -562,7 +563,7 @@ fn convolve_diffuse_irradiance(
 
 			for &local_direction in &samples {
 				let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
-				let pdf = local_direction[2] / PI;
+				let pdf = local_direction.z() / PI;
 				let radiance = sample_filtered_direction(source_mips, direction, pdf, DIFFUSE_SAMPLE_COUNT);
 				for channel in 0..3 {
 					sum[channel] += radiance[channel] as f64;
@@ -588,7 +589,7 @@ fn convolve_diffuse_irradiance_cubemap(source_mips: &[SourceMIP<'_>], face_size:
 				for &local_direction in &samples {
 					let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
 					let radiance =
-						sample_filtered_direction(source_mips, direction, local_direction[2] / PI, DIFFUSE_SAMPLE_COUNT);
+						sample_filtered_direction(source_mips, direction, local_direction.z() / PI, DIFFUSE_SAMPLE_COUNT);
 					for channel in 0..3 {
 						sum[channel] += radiance[channel] as f64;
 					}
@@ -623,14 +624,14 @@ fn prefilter_specular_level(
 
 			for &local_half_vector in &samples {
 				let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
-				let view_dot_half = dot(view, half_vector).max(0.0);
-				let light = normalize(sub(scale(half_vector, 2.0 * view_dot_half), view));
-				let normal_dot_light = dot(normal, light).max(0.0);
+				let view_dot_half = view.dot(half_vector).max(0.0);
+				let light = normalize(half_vector * (2.0 * view_dot_half) - view);
+				let normal_dot_light = normal.dot(light).max(0.0);
 				if normal_dot_light <= 0.0 {
 					continue;
 				}
 
-				let normal_dot_half = dot(normal, half_vector).max(0.0);
+				let normal_dot_half = normal.dot(half_vector).max(0.0);
 				let pdf = ggx_light_pdf(normal_dot_half, view_dot_half, roughness);
 				let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
 				let weight = normal_dot_light as f64;
@@ -666,13 +667,13 @@ fn prefilter_specular_cubemap(source_mips: &[SourceMIP<'_>], face_size: u32, rou
 				let mut total_weight = 0.0_f64;
 				for &local_half_vector in &samples {
 					let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
-					let view_dot_half = dot(normal, half_vector).max(0.0);
-					let light = normalize(sub(scale(half_vector, 2.0 * view_dot_half), normal));
-					let normal_dot_light = dot(normal, light).max(0.0);
+					let view_dot_half = normal.dot(half_vector).max(0.0);
+					let light = normalize(half_vector * (2.0 * view_dot_half) - normal);
+					let normal_dot_light = normal.dot(light).max(0.0);
 					if normal_dot_light <= 0.0 {
 						continue;
 					}
-					let pdf = ggx_light_pdf(dot(normal, half_vector).max(0.0), view_dot_half, roughness);
+					let pdf = ggx_light_pdf(normal.dot(half_vector).max(0.0), view_dot_half, roughness);
 					let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
 					for channel in 0..3 {
 						sum[channel] += radiance[channel] as f64 * normal_dot_light as f64;
@@ -705,7 +706,7 @@ fn ggx_light_pdf(normal_dot_half: f32, view_dot_half: f32, roughness: f32) -> f3
 }
 
 /// Filters a directional sample according to the solid angle represented by its Monte Carlo PDF.
-fn sample_filtered_direction(source_mips: &[SourceMIP<'_>], direction: Vector3, pdf: f32, sample_count: usize) -> Radiance {
+fn sample_filtered_direction(source_mips: &[SourceMIP<'_>], direction: Vector, pdf: f32, sample_count: usize) -> Radiance {
 	let base = &source_mips[0];
 	let sample_solid_angle = 1.0 / (sample_count as f32 * pdf.max(f32::MIN_POSITIVE));
 	let texel_solid_angle = direction_texel_solid_angle(base.width, base.height, direction);
@@ -718,14 +719,14 @@ fn sample_filtered_direction(source_mips: &[SourceMIP<'_>], direction: Vector3, 
 	lerp_radiance(lower, upper, blend)
 }
 
-fn sample_mip_direction(mip: &SourceMIP<'_>, direction: Vector3) -> Radiance {
+fn sample_mip_direction(mip: &SourceMIP<'_>, direction: Vector) -> Radiance {
 	sample_direction(&mip.pixels, mip.width, mip.height, direction)
 }
 
 /// Returns the exact spherical area of the base lat-long texel containing a direction.
-fn direction_texel_solid_angle(width: u32, height: u32, direction: Vector3) -> f32 {
+fn direction_texel_solid_angle(width: u32, height: u32, direction: Vector) -> f32 {
 	let direction = normalize(direction);
-	let v = 0.5 - direction[1].clamp(-1.0, 1.0).asin() / PI;
+	let v = 0.5 - direction.y().clamp(-1.0, 1.0).asin() / PI;
 	let row = (v * height as f32).floor().clamp(0.0, height.saturating_sub(1) as f32) as u32;
 	lat_long_row_solid_angle(width, height, row)
 }
@@ -737,20 +738,20 @@ pub(super) fn lat_long_row_solid_angle(width: u32, height: u32, row: u32) -> f32
 	(TAU / width as f32) * (latitude_top.sin() - latitude_bottom.sin())
 }
 
-fn cosine_hemisphere_samples() -> [Vector3; DIFFUSE_SAMPLE_COUNT] {
-	let mut samples = [[0.0; 3]; DIFFUSE_SAMPLE_COUNT];
+fn cosine_hemisphere_samples() -> [Vector; DIFFUSE_SAMPLE_COUNT] {
+	let mut samples = [Vector::zero(); DIFFUSE_SAMPLE_COUNT];
 	for (index, sample) in samples.iter_mut().enumerate() {
 		let [radial_sample, angular_sample] = hammersley(index, DIFFUSE_SAMPLE_COUNT);
 		let radius = radial_sample.sqrt();
 		let angle = TAU * angular_sample;
 		let (sin_angle, cos_angle) = angle.sin_cos();
-		*sample = [radius * cos_angle, radius * sin_angle, (1.0 - radial_sample).max(0.0).sqrt()];
+		*sample = Vector::new(radius * cos_angle, radius * sin_angle, (1.0 - radial_sample).max(0.0).sqrt());
 	}
 	samples
 }
 
-fn ggx_half_vector_samples(roughness: f32) -> [Vector3; SPECULAR_SAMPLE_COUNT] {
-	let mut samples = [[0.0; 3]; SPECULAR_SAMPLE_COUNT];
+fn ggx_half_vector_samples(roughness: f32) -> [Vector; SPECULAR_SAMPLE_COUNT] {
+	let mut samples = [Vector::zero(); SPECULAR_SAMPLE_COUNT];
 	let alpha = roughness * roughness;
 	let alpha_squared = alpha * alpha;
 
@@ -762,7 +763,7 @@ fn ggx_half_vector_samples(roughness: f32) -> [Vector3; SPECULAR_SAMPLE_COUNT] {
 			.sqrt();
 		let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 		let (sin_angle, cos_angle) = angle.sin_cos();
-		*sample = [sin_theta * cos_angle, sin_theta * sin_angle, cos_theta];
+		*sample = Vector::new(sin_theta * cos_angle, sin_theta * sin_angle, cos_theta);
 	}
 
 	samples
@@ -775,35 +776,35 @@ fn hammersley(index: usize, sample_count: usize) -> [f32; 2] {
 	]
 }
 
-fn texel_direction(x: u32, y: u32, width: u32, height: u32) -> Vector3 {
+fn texel_direction(x: u32, y: u32, width: u32, height: u32) -> Vector {
 	let u = (x as f32 + 0.5) / width as f32;
 	let v = (y as f32 + 0.5) / height as f32;
 	let longitude = (u - 0.5) * TAU;
 	let latitude = (0.5 - v) * PI;
 	let (sin_longitude, cos_longitude) = longitude.sin_cos();
 	let (sin_latitude, cos_latitude) = latitude.sin_cos();
-	[cos_latitude * cos_longitude, sin_latitude, cos_latitude * sin_longitude]
+	Vector::new(cos_latitude * cos_longitude, sin_latitude, cos_latitude * sin_longitude)
 }
 
 /// Maps the API-standard +X, -X, +Y, -Y, +Z, -Z face order to a world direction.
-fn cubemap_texel_direction(face: u32, x: u32, y: u32, face_size: u32) -> Vector3 {
+fn cubemap_texel_direction(face: u32, x: u32, y: u32, face_size: u32) -> Vector {
 	let u = 2.0 * (x as f32 + 0.5) / face_size as f32 - 1.0;
 	let v = 2.0 * (y as f32 + 0.5) / face_size as f32 - 1.0;
 	normalize(match face {
-		0 => [1.0, -v, -u],
-		1 => [-1.0, -v, u],
-		2 => [u, 1.0, v],
-		3 => [u, -1.0, -v],
-		4 => [u, -v, 1.0],
-		5 => [-u, -v, -1.0],
+		0 => Vector::new(1.0, -v, -u),
+		1 => Vector::new(-1.0, -v, u),
+		2 => Vector::new(u, 1.0, v),
+		3 => Vector::new(u, -1.0, -v),
+		4 => Vector::new(u, -v, 1.0),
+		5 => Vector::new(-u, -v, -1.0),
 		_ => unreachable!("cubemap face index is always below six"),
 	})
 }
 
-fn sample_direction(source: &[Radiance], width: u32, height: u32, direction: Vector3) -> Radiance {
+fn sample_direction(source: &[Radiance], width: u32, height: u32, direction: Vector) -> Radiance {
 	let direction = normalize(direction);
-	let u = direction[2].atan2(direction[0]) / TAU + 0.5;
-	let v = 0.5 - direction[1].clamp(-1.0, 1.0).asin() / PI;
+	let u = direction.z().atan2(direction.x()) / TAU + 0.5;
+	let v = 0.5 - direction.y().clamp(-1.0, 1.0).asin() / PI;
 	sample_lat_long_uv(source, width, height, u, v)
 }
 
@@ -833,43 +834,25 @@ fn lerp_radiance(a: Radiance, b: Radiance, amount: f32) -> Radiance {
 }
 
 /// Builds a stable tangent frame without choosing a different helper axis near the lat-long poles.
-fn orthonormal_basis(normal: Vector3) -> (Vector3, Vector3) {
-	let sign = if normal[2] >= 0.0 { 1.0 } else { -1.0 };
-	let a = -1.0 / (sign + normal[2]);
-	let b = normal[0] * normal[1] * a;
+fn orthonormal_basis(normal: Vector) -> (Vector, Vector) {
+	let sign = if normal.z() >= 0.0 { 1.0 } else { -1.0 };
+	let a = -1.0 / (sign + normal.z());
+	let b = normal.x() * normal.y() * a;
 	(
-		[1.0 + sign * normal[0] * normal[0] * a, sign * b, -sign * normal[0]],
-		[b, sign + normal[1] * normal[1] * a, -normal[1]],
+		Vector::new(1.0 + sign * normal.x() * normal.x() * a, sign * b, -sign * normal.x()),
+		Vector::new(b, sign + normal.y() * normal.y() * a, -normal.y()),
 	)
 }
 
-fn tangent_to_world(local: Vector3, tangent: Vector3, bitangent: Vector3, normal: Vector3) -> Vector3 {
-	[
-		tangent[0] * local[0] + bitangent[0] * local[1] + normal[0] * local[2],
-		tangent[1] * local[0] + bitangent[1] * local[1] + normal[1] * local[2],
-		tangent[2] * local[0] + bitangent[2] * local[1] + normal[2] * local[2],
-	]
+fn tangent_to_world(local: Vector, tangent: Vector, bitangent: Vector, normal: Vector) -> Vector {
+	tangent * local.x() + bitangent * local.y() + normal * local.z()
 }
 
-fn dot(a: Vector3, b: Vector3) -> f32 {
-	a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn scale(vector: Vector3, scale: f32) -> Vector3 {
-	[vector[0] * scale, vector[1] * scale, vector[2] * scale]
-}
-
-fn sub(a: Vector3, b: Vector3) -> Vector3 {
-	[a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn normalize(vector: Vector3) -> Vector3 {
-	let length_squared = dot(vector, vector);
-	if length_squared > 0.0 && length_squared.is_finite() {
-		scale(vector, length_squared.sqrt().recip())
-	} else {
-		[1.0, 0.0, 0.0]
-	}
+/// Normalizes a direction, falling back to +X for a zero or non-finite one.
+fn normalize(vector: Vector) -> Vector {
+	vector
+		.normalized()
+		.map_or(Vector::new(1.0, 0.0, 0.0), UnitVector::into_vector)
 }
 
 pub(super) fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
@@ -913,7 +896,7 @@ mod tests {
 	#[allow(clippy::cognitive_complexity)]
 	fn estimate_specular(
 		source_mips: &[super::SourceMIP<'_>],
-		normal: [f32; 3],
+		normal: math::Vector,
 		roughness: f32,
 		sample_count: usize,
 		filtered: bool,
@@ -933,17 +916,17 @@ mod tests {
 				.sqrt();
 			let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 			let (sin_angle, cos_angle) = angle.sin_cos();
-			let local_half = [sin_theta * cos_angle, sin_theta * sin_angle, cos_theta];
+			let local_half = math::Vector::new(sin_theta * cos_angle, sin_theta * sin_angle, cos_theta);
 			let half = normalize(tangent_to_world(local_half, tangent, bitangent, normal));
-			let view_dot_half = dot(view, half).max(0.0);
-			let light = normalize(sub(scale(half, 2.0 * view_dot_half), view));
-			let normal_dot_light = dot(normal, light).max(0.0);
+			let view_dot_half = view.dot(half).max(0.0);
+			let light = normalize(half * (2.0 * view_dot_half) - view);
+			let normal_dot_light = normal.dot(light).max(0.0);
 			if normal_dot_light <= 0.0 {
 				continue;
 			}
 
 			let radiance = if filtered {
-				let pdf = ggx_light_pdf(dot(normal, half).max(0.0), view_dot_half, roughness);
+				let pdf = ggx_light_pdf(normal.dot(half).max(0.0), view_dot_half, roughness);
 				sample_filtered_direction(source_mips, light, pdf, sample_count)
 			} else {
 				sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, light)
@@ -1071,7 +1054,7 @@ mod tests {
 			[0.0, 0.0, -1.0],
 		];
 		for (face, expected) in expected.into_iter().enumerate() {
-			assert_eq!(super::cubemap_texel_direction(face as u32, 0, 0, 1), expected);
+			assert_eq!(super::cubemap_texel_direction(face as u32, 0, 0, 1).to_array(), expected);
 		}
 	}
 
@@ -1109,7 +1092,7 @@ mod tests {
 			})
 			.collect::<Vec<_>>();
 		let mips = build_source_mips(width, height, allocator_pixels(pixels), &Global).unwrap();
-		let normal = [1.0, 0.0, 0.0];
+		let normal = math::Vector::new(1.0, 0.0, 0.0);
 		let roughness = 0.45;
 		let reference = estimate_specular(&mips, normal, roughness, 65_536, false)[0];
 		let old = estimate_specular(&mips, normal, roughness, 128, false)[0];
@@ -1144,9 +1127,8 @@ mod tests {
 
 	use super::{
 		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, DIFFUSE_CUBE_FACE_SIZE, DIFFUSE_HEIGHT, DIFFUSE_WIDTH, IBLBakeError,
-		Radiance, bake_image_ibl_in, build_source_mips, dot, ggx_light_pdf, hammersley, image_byte_size,
-		lat_long_row_solid_angle, normalize, orthonormal_basis, sample_direction, sample_filtered_direction,
-		sample_lat_long_uv, scale, sub, tangent_to_world,
+		Radiance, bake_image_ibl_in, build_source_mips, ggx_light_pdf, hammersley, image_byte_size, lat_long_row_solid_angle,
+		normalize, orthonormal_basis, sample_direction, sample_filtered_direction, sample_lat_long_uv, tangent_to_world,
 	};
 	use crate::resources::image::{
 		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME, IBL_PREFILTERED_SPECULAR_MIP_COUNT, IMAGE_BASE_MIP_STREAM_NAME,

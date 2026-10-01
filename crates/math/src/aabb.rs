@@ -1,3 +1,6 @@
+use std::convert::Infallible;
+
+use crate::serialization::{ArrayForm, serialize_as_array};
 use crate::{Point, Vector, WorldSpace};
 
 /// The `AABB` struct represents an axis-aligned volume in one coordinate space for broad-phase and contact queries.
@@ -92,3 +95,18 @@ mod tests {
 		assert!(!aabb.contains_point(Point::new(0.0, 0.0, 6.01)));
 	}
 }
+
+impl<Space> ArrayForm<6> for AABB<Space> {
+	type Array = [[f32; 3]; 2];
+	type Error = Infallible;
+
+	fn to_array(&self) -> Self::Array {
+		[self.min.to_array(), self.max.to_array()]
+	}
+
+	fn try_from_array([first, second]: Self::Array) -> Result<Self, Self::Error> {
+		Ok(Self::new(Point::from_array(first), Point::from_array(second)))
+	}
+}
+
+serialize_as_array!(AABB<Space>, 6, Space);

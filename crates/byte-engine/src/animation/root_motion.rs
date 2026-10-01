@@ -1,30 +1,29 @@
 //! Root-motion deltas that the animation graph player reports to gameplay.
 
-use resource_management::resources::skeleton::LocalTransform;
-
-use super::math::{add3, conjugate_quaternion, lerp3, multiply_quaternion, nlerp_quaternion, sub3};
+use math::{Orientation, Vector};
+use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
 
 /// The `RootMotionDelta` struct carries one frame's local translation and rotation change to gameplay.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RootMotionDelta {
 	/// Translation to apply in the skeleton root's parent space.
-	pub translation: [f32; 3],
+	pub translation: Vector<ParentSpace>,
 	/// Rotation to apply after the previous root rotation.
-	pub rotation: [f32; 4],
+	pub rotation: Orientation,
 }
 
 impl RootMotionDelta {
 	/// The delta that preserves the current gameplay transform.
 	pub const IDENTITY: Self = Self {
-		translation: [0.0; 3],
-		rotation: [0.0, 0.0, 0.0, 1.0],
+		translation: Vector::zero(),
+		rotation: Orientation::identity(),
 	};
 
 	/// Calculates the shortest local transform delta between two sampled root poses.
 	pub fn between(previous: LocalTransform, current: LocalTransform) -> Self {
 		Self {
-			translation: sub3(current.translation, previous.translation),
-			rotation: multiply_quaternion(current.rotation, conjugate_quaternion(previous.rotation)),
+			translation: current.translation - previous.translation,
+			rotation: current.rotation.compose(previous.rotation.inverse()),
 		}
 	}
 
@@ -35,8 +34,8 @@ impl RootMotionDelta {
 	/// a looping clip boundary.
 	pub fn then(self, next: Self) -> Self {
 		Self {
-			translation: add3(self.translation, next.translation),
-			rotation: multiply_quaternion(next.rotation, self.rotation),
+			translation: self.translation + next.translation,
+			rotation: next.rotation.compose(self.rotation),
 		}
 	}
 
@@ -44,8 +43,8 @@ impl RootMotionDelta {
 	pub fn blend(self, other: Self, factor: f32) -> Self {
 		let factor = factor.clamp(0.0, 1.0);
 		Self {
-			translation: lerp3(self.translation, other.translation, factor),
-			rotation: nlerp_quaternion(self.rotation, other.rotation, factor),
+			translation: self.translation.lerp(other.translation, factor),
+			rotation: self.rotation.nlerp(other.rotation, factor),
 		}
 	}
 }
@@ -58,16 +57,19 @@ impl Default for RootMotionDelta {
 
 #[cfg(test)]
 mod tests {
+	use math::{Orientation, Scale, Vector};
 	use resource_management::resources::skeleton::LocalTransform;
 
 	use super::RootMotionDelta;
-	use crate::animation::math::quaternion_exp;
 
 	fn root(translation: [f32; 3], yaw: f32) -> LocalTransform {
 		LocalTransform {
-			translation,
-			rotation: quaternion_exp([0.0, yaw, 0.0]),
-			scale: [2.0; 3],
+			translation: Vector::from_array(translation),
+			rotation: Orientation::try_from_rotation_vector(Vector::<resource_management::resources::ParentSpace>::new(
+				0.0, yaw, 0.0,
+			))
+			.unwrap(),
+			scale: Scale::new(2.0, 2.0, 2.0),
 		}
 	}
 
@@ -81,8 +83,8 @@ mod tests {
 		assert_eq!(
 			delta,
 			RootMotionDelta {
-				translation: [3.0, 0.0, 0.0],
-				rotation: [0.0, 0.0, 0.0, 1.0],
+				translation: Vector::new(3.0, 0.0, 0.0),
+				rotation: Orientation::identity(),
 			}
 		);
 	}

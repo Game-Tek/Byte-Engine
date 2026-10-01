@@ -934,9 +934,9 @@ void main() {
 			)
 			.expect("Failed to compile default DX12 HLSL compute shader.");
 		let specialization = [
-			crate::pipelines::SpecializationMapEntry::new(0, "bool".to_string(), true),
-			crate::pipelines::SpecializationMapEntry::new(1, "u32".to_string(), 8u32),
-			crate::pipelines::SpecializationMapEntry::new(2, "i32".to_string(), -3i32),
+			crate::pipelines::SpecializationMapEntry::new(0, true),
+			crate::pipelines::SpecializationMapEntry::new(1, 8u32),
+			crate::pipelines::SpecializationMapEntry::new(2, -3i32),
 		];
 		let shader_parameter = crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)
 			.with_specialization_map(&specialization);
@@ -974,7 +974,7 @@ void main() {
 				[],
 			)
 			.expect("Failed to create detached DX12 HLSL shader.");
-		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, "f32".to_string(), 8.0f32)];
+		let specialization = [crate::pipelines::SpecializationMapEntry::new(0, 8.0f32)];
 		let detached_compute = factory.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)

@@ -23,7 +23,7 @@ mod tests {
 		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
-		import_fbx_skin_binding, load_fbx_scene, matrix_to_columns, remap_triangle_corners, resolve_fbx_texture_path,
+		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
 		select_fbx_skin, skin_weights, used_material_keys,
 	};
 	#[cfg(debug_assertions)]
@@ -42,7 +42,7 @@ mod tests {
 		processors::processor::implementations::mesh::{MeshProcessor, ProcessedMesh},
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
-			animation::{AnimationModel, QuaternionCurve, Vector3Curve},
+			animation::{AnimationModel, RotationCurve, TranslationCurve},
 			image::Image,
 			material::{MaterialModel, ValueModel, VariantModel},
 			mesh::MeshModel,
@@ -186,10 +186,10 @@ mod tests {
 
 		let bounds = processed.mesh.primitives[0].bounding_box;
 
-		assert_eq!(bounds[0], [0.0, 0.0, 0.0]);
-		assert!((bounds[1][0] - 0.01).abs() < 1.0e-6);
-		assert!((bounds[1][1] - 0.01).abs() < 1.0e-6);
-		assert_eq!(bounds[1][2], 0.0);
+		assert_eq!(bounds.min().to_array(), [0.0, 0.0, 0.0]);
+		assert!((bounds.max().x() - 0.01).abs() < 1.0e-6);
+		assert!((bounds.max().y() - 0.01).abs() < 1.0e-6);
+		assert_eq!(bounds.max().z(), 0.0);
 	}
 
 	#[test]
@@ -335,13 +335,13 @@ mod tests {
 			.find(|track| track.translation.is_some())
 			.expect("animated node should have a translation track");
 
-		let Some(Vector3Curve::Linear { times, values }) = &translation_track.translation else {
+		let Some(TranslationCurve::Linear { times, values }) = &translation_track.translation else {
 			panic!("FBX translation track has the wrong curve type. The most likely cause is a track conversion regression.");
 		};
 
 		assert_eq!(times.first().copied(), Some(0.0));
 		assert_eq!(times.last().copied(), Some(1.0));
-		assert!((values.last().unwrap()[0] - 0.02).abs() < 1.0e-6);
+		assert!((values.last().unwrap().x() - 0.02).abs() < 1.0e-6);
 		assert!(matches!(
 			import_fbx_animation(&scene, "mesh", skeleton, &imported_skeleton.source_to_skeleton,),
 			Err(FbxImportError::UnsupportedFragment(_))
@@ -424,15 +424,15 @@ mod tests {
 		// The palette must match ufbx's evaluated clusters after expressing them in
 		// the flattened vertex basis used by the imported mesh.
 		let mut globals =
-			vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); imported_skeleton.model.nodes.len()];
+			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
 
-			globals[mapped] = matrix_to_columns(&node.node_to_world).expect("fixture global matrix should be finite");
+			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
@@ -444,8 +444,10 @@ mod tests {
 			let expected = ufbx::matrix_mul(&cluster.geometry_to_world, &flattened_inverse);
 
 			assert_matrix_close(
-				matrix,
-				matrix_to_columns(&expected).expect("expected fixture palette matrix should be finite"),
+				matrix.columns(),
+				matrix_to_affine(&expected)
+					.expect("expected fixture palette matrix should be finite")
+					.columns(),
 			);
 		}
 
@@ -474,7 +476,7 @@ mod tests {
 			.find(|track| track.node == child_index)
 			.expect("child rotation should target the remapped skeleton node");
 
-		let Some(QuaternionCurve::Linear { times, values }) = &track.rotation else {
+		let Some(RotationCurve::Linear { times, values }) = &track.rotation else {
 			panic!("FBX child rotation should import as a linear quaternion curve");
 		};
 
@@ -522,33 +524,35 @@ mod tests {
 		);
 
 		let mut globals =
-			vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); imported_skeleton.model.nodes.len()];
+			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
 
-			globals[mapped] = matrix_to_columns(&node.node_to_world).expect("fixture global matrix should be finite");
+			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![crate::resources::skeleton::identity_affine_matrix4x3_columns(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("fallback palette should be complete");
 
 		assert_matrix_close(
-			palette[fallback_joint as usize],
-			crate::resources::skeleton::identity_affine_matrix4x3_columns(),
+			palette[fallback_joint as usize].columns(),
+			math::AffineMatrix::identity().columns(),
 		);
 
 		// Moving the mesh node after bind must move the fallback palette entry instead of freezing the vertex.
-		globals[mesh_node_index as usize][3][0] += 1.0;
+		let mut moved = globals[mesh_node_index as usize].columns();
+		moved[3][0] += 1.0;
+		globals[mesh_node_index as usize] = math::AffineMatrix::from_columns(moved);
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("animated fallback palette should remain complete");
 
-		assert!((palette[fallback_joint as usize][3][0] - 1.0).abs() < 1.0e-6);
+		assert!((palette[fallback_joint as usize].columns()[3][0] - 1.0).abs() < 1.0e-6);
 
 		let (joints, weights) = skin_weights(skin, 2, Some(fallback_joint)).expect("unweighted vertex should import");
 
@@ -1175,6 +1179,7 @@ use std::{
 	sync::Arc,
 };
 
+use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use serde_json::Value;
 use utils::Extent;
 
@@ -1208,9 +1213,8 @@ use crate::{
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
-		skeleton::{
-			AffineMatrix4x3Columns, LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-		},
+		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
+		ModelSpace,
 	},
 	types::{Formats, VertexComponent, VertexSemantics},
 };

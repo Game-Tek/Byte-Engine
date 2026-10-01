@@ -17,7 +17,7 @@ pub struct Primitive {
 	pub transform_node: Option<u32>,
 	pub skin: Option<u32>,
 	pub streams: Vec<Stream>,
-	pub bounding_box: [[f32; 3]; 2],
+	pub bounding_box: math::AABB<crate::resources::ModelSpace>,
 	pub vertex_count: u32,
 }
 
@@ -211,12 +211,7 @@ fn validate_skin_metadata(
 					"skin {skin_index} joint {joint_index} targets node {node} outside a {skeleton_nodes}-node skeleton"
 				));
 			}
-			if !entry
-				.adjusted_inverse_bind_matrix
-				.iter()
-				.flatten()
-				.all(|value| value.is_finite())
-			{
+			if !entry.adjusted_inverse_bind_matrix.is_finite() {
 				return invalid_mesh_skeletal_metadata(format!(
 					"skin {skin_index} joint {joint_index} contains a non-finite adjusted inverse bind"
 				));
@@ -324,7 +319,6 @@ mod tests {
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
 		resources::skeleton::{
 			LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-			identity_affine_matrix4x3_columns,
 		},
 		types::{Stream, Streams, VertexComponent, VertexSemantics},
 	};
@@ -343,7 +337,7 @@ mod tests {
 		let skin = SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Identity,
-				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
+				adjusted_inverse_bind_matrix: math::AffineMatrix::identity(),
 			}],
 		};
 
@@ -433,7 +427,7 @@ mod tests {
 			transform_node: None,
 			skin,
 			streams,
-			bounding_box: [[0.0; 3]; 2],
+			bounding_box: math::AABB::new(math::Point::origin(), math::Point::origin()),
 			vertex_count: 1,
 		}
 	}

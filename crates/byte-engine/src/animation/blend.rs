@@ -1,16 +1,15 @@
 //! Allocation-free local-pose and blend-space utilities.
 
+use math::{Orientation, Quaternion, Scale, Vector};
 use resource_management::resources::skeleton::LocalTransform;
-
-use super::math::{dot_quaternion, lerp3, nlerp_quaternion, normalize_quaternion};
 
 /// Blends two local transforms while preserving the shortest quaternion path.
 pub fn blend_local_transform(left: LocalTransform, right: LocalTransform, factor: f32) -> LocalTransform {
 	let factor = factor.clamp(0.0, 1.0);
 	LocalTransform {
-		translation: lerp3(left.translation, right.translation, factor),
-		rotation: nlerp_quaternion(left.rotation, right.rotation, factor),
-		scale: lerp3(left.scale, right.scale, factor),
+		translation: left.translation.lerp(right.translation, factor),
+		rotation: left.rotation.nlerp(right.rotation, factor),
+		scale: left.scale.lerp(right.scale, factor),
 	}
 }
 
@@ -59,28 +58,25 @@ pub fn blend_local_poses(
 			.find(|(_, weight)| **weight > 0.0)
 			.map(|(pose, _)| pose[node].rotation)
 			.expect("a positive total weight guarantees one reference rotation");
-		let mut translation = [0.0; 3];
-		let mut rotation = [0.0; 4];
-		let mut scale = [0.0; 3];
+		let mut translation = Vector::zero();
+		let mut rotation = Quaternion::new(0.0, 0.0, 0.0, 0.0);
+		let mut scale = Scale::new(0.0, 0.0, 0.0);
 		for (pose, weight) in poses.iter().zip(weights) {
 			let normalized_weight = *weight / weight_sum;
 			let transform = pose[node];
-			for component in 0..3 {
-				translation[component] += transform.translation[component] * normalized_weight;
-				scale[component] += transform.scale[component] * normalized_weight;
-			}
-			let sign = if dot_quaternion(reference_rotation, transform.rotation) < 0.0 {
+			translation += transform.translation * normalized_weight;
+			scale = scale + transform.scale * normalized_weight;
+			let sign = if reference_rotation.dot(transform.rotation) < 0.0 {
 				-1.0
 			} else {
 				1.0
 			};
-			for (sum, component) in rotation.iter_mut().zip(transform.rotation) {
-				*sum += component * sign * normalized_weight;
-			}
+			rotation += transform.rotation.into_maths() * (sign * normalized_weight);
 		}
 		output[node] = LocalTransform {
 			translation,
-			rotation: normalize_quaternion(rotation),
+			// Weights are positive in the reference hemisphere, so only rounding could leave a zero sum.
+			rotation: Orientation::try_from_maths(rotation).unwrap_or_default(),
 			scale,
 		};
 	}
@@ -460,9 +456,9 @@ mod tests {
 
 	fn transform(translation: f32, rotation: [f32; 4]) -> LocalTransform {
 		LocalTransform {
-			translation: [translation, 0.0, 0.0],
-			rotation,
-			scale: [1.0 + translation, 1.0, 1.0],
+			translation: math::Vector::new(translation, 0.0, 0.0),
+			rotation: math::Orientation::try_from_array(rotation).expect("test rotations are unit quaternions"),
+			scale: math::Scale::new(1.0 + translation, 1.0, 1.0),
 		}
 	}
 
@@ -473,9 +469,9 @@ mod tests {
 		let mut output = [LocalTransform::identity()];
 		blend_local_pose(&left, &right, 0.5, &mut output).expect("expected test value");
 
-		assert_eq!(output[0].translation, [1.0, 0.0, 0.0]);
-		assert_eq!(output[0].rotation, [0.0, 0.0, 0.0, 1.0]);
-		assert_eq!(output[0].scale, [2.0, 1.0, 1.0]);
+		assert_eq!(output[0].translation, math::Vector::new(1.0, 0.0, 0.0));
+		assert_eq!(output[0].rotation, math::Orientation::identity());
+		assert_eq!(output[0].scale, math::Scale::new(2.0, 1.0, 1.0));
 	}
 
 	#[test]
@@ -485,7 +481,7 @@ mod tests {
 		let mut output = [LocalTransform::identity()];
 		blend_local_poses(&[&first, &second], &[3.0, 1.0], &mut output).expect("expected test value");
 
-		assert_eq!(output[0].translation, [1.0, 0.0, 0.0]);
+		assert_eq!(output[0].translation, math::Vector::new(1.0, 0.0, 0.0));
 	}
 
 	#[test]

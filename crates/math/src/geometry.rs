@@ -1,11 +1,14 @@
 use std::{
 	cmp::Ordering,
+	convert::Infallible,
 	fmt,
 	marker::PhantomData,
 	ops::{Add, AddAssign, Div, Mul, Neg, Sub},
 };
 
 use maths_rs::Vec3f;
+
+use crate::serialization::{ArrayForm, serialize_as_array};
 
 /// The `WorldSpace` struct brands positions and directions that use the engine's world coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -66,6 +69,16 @@ impl<Space> Point<Space> {
 	/// Creates a point from its coordinates in `Space`.
 	pub fn new(x: f32, y: f32, z: f32) -> Self {
 		Self::from_maths(Vec3f::new(x, y, z))
+	}
+
+	/// Creates a point from its `[x, y, z]` coordinates in `Space`.
+	pub fn from_array([x, y, z]: [f32; 3]) -> Self {
+		Self::new(x, y, z)
+	}
+
+	/// Returns the `[x, y, z]` coordinates of this point.
+	pub fn to_array(self) -> [f32; 3] {
+		[self.x(), self.y(), self.z()]
 	}
 
 	/// Creates the coordinate-space origin.
@@ -230,9 +243,22 @@ impl<Space> Vector<Space, Unnormalized> {
 		Self::from_maths(Vec3f::new(x, y, z))
 	}
 
+	/// Creates an unnormalized vector from its `[x, y, z]` coordinates in `Space`.
+	pub fn from_array([x, y, z]: [f32; 3]) -> Self {
+		Self::new(x, y, z)
+	}
+
 	/// Creates the zero displacement.
-	pub fn zero() -> Self {
-		Self::new(0.0, 0.0, 0.0)
+	pub const fn zero() -> Self {
+		Self {
+			value: Vec3f { x: 0.0, y: 0.0, z: 0.0 },
+			space: PhantomData,
+		}
+	}
+
+	/// Moves `factor` of the way from this vector to `other`.
+	pub fn lerp(self, other: Self, factor: f32) -> Self {
+		self + (other - self) * factor
 	}
 
 	/// Creates a branded vector from an explicit `maths-rs` value.
@@ -285,6 +311,11 @@ impl<Space> Vector<Space, Unnormalized> {
 }
 
 impl<Space, State> Vector<Space, State> {
+	/// Returns the `[x, y, z]` coordinates of this vector.
+	pub fn to_array(self) -> [f32; 3] {
+		[self.x(), self.y(), self.z()]
+	}
+
 	/// Returns this vector as an explicit `maths-rs` value for boundary integrations.
 	pub fn into_maths(self) -> Vec3f {
 		self.value
@@ -749,3 +780,33 @@ mod tests {
 		assert_eq!(Vector::new(0.0, f32::NEG_INFINITY, 0.0).partial_cmp_magnitude(finite), None);
 	}
 }
+
+impl<Space> ArrayForm<3> for Point<Space> {
+	type Array = [f32; 3];
+	type Error = Infallible;
+
+	fn to_array(&self) -> Self::Array {
+		Point::to_array(*self)
+	}
+
+	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
+		Ok(Self::from_array(array))
+	}
+}
+
+serialize_as_array!(Point<Space>, 3, Space);
+
+impl<Space> ArrayForm<3> for Vector<Space> {
+	type Array = [f32; 3];
+	type Error = Infallible;
+
+	fn to_array(&self) -> Self::Array {
+		Vector::to_array(*self)
+	}
+
+	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
+		Ok(Self::from_array(array))
+	}
+}
+
+serialize_as_array!(Vector<Space>, 3, Space);

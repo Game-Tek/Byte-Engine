@@ -6,7 +6,7 @@ use resource_management::{
 	},
 };
 
-use super::math::{CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveComponents, CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
@@ -49,9 +49,9 @@ impl PackedAnimationData {
 			.sum::<usize>();
 		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
 			total
-				+ track.translation.as_ref().map_or(0, curve_words)
-				+ track.rotation.as_ref().map_or(0, curve_words)
-				+ track.scale.as_ref().map_or(0, curve_words)
+				+ track.translation.as_ref().map_or(0, curve_words::<3, _, _>)
+				+ track.rotation.as_ref().map_or(0, curve_words::<4, _, _>)
+				+ track.scale.as_ref().map_or(0, curve_words::<3, _, _>)
 		});
 		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
 			* std::mem::size_of::<u32>()
@@ -175,10 +175,12 @@ impl<'a> PackedAnimation<'a> {
 	/// Samples one packed curve whose values `read` decodes from the value array.
 	///
 	/// Cubic curves store each key as `[value, in_tangent, out_tangent]`; other curves store one value per key.
-	fn sample<const N: usize>(self, curve: PackedCurve, time: f32, read: impl Fn(Self, usize) -> [f32; N]) -> [f32; N]
-	where
-		[f32; N]: CurveValue,
-	{
+	fn sample<V: CurveValue<N>, const N: usize>(
+		self,
+		curve: PackedCurve,
+		time: f32,
+		read: impl Fn(Self, usize) -> [f32; N],
+	) -> V {
 		let stride = if curve.interpolation == CurveInterpolation::CubicSpline {
 			3
 		} else {
@@ -190,7 +192,7 @@ impl<'a> PackedAnimation<'a> {
 			curve.key_count,
 			time,
 			|key| self.time(curve, key),
-			|key| read(self, value_index(key)),
+			|key| V::from_components(read(self, value_index(key))),
 			|key| (read(self, value_index(key) + 1), read(self, value_index(key) + 2)),
 		)
 	}
@@ -277,7 +279,7 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 }
 
 /// Counts the packed words one curve adds: a time plus every value of each key, where cubic keys also carry two tangents.
-fn curve_words<const N: usize>(curve: &Curve<[f32; N]>) -> usize {
+fn curve_words<const N: usize, V, T>(curve: &Curve<V, T>) -> usize {
 	match curve {
 		Curve::Step { times, .. } | Curve::Linear { times, .. } => times.len() * (1 + N),
 		Curve::CubicSpline { times, .. } => times.len() * (1 + 3 * N),
@@ -286,11 +288,25 @@ fn curve_words<const N: usize>(curve: &Curve<[f32; N]>) -> usize {
 
 /// Appends one curve to the packed tables and returns its descriptor index.
 ///
-/// Cubic keys are stored as consecutive `[value, in_tangent, out_tangent]` triples.
-fn pack_curve<V>(curve: Curve<V>, descriptors: &mut Vec<CurveDescriptor>, times: &mut Vec<f32>, values: &mut Vec<V>) -> u32 {
+/// Values and tangents are stored as their components. Cubic keys are stored as consecutive
+/// `[value, in_tangent, out_tangent]` triples.
+fn pack_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
+	curve: Curve<V, T>,
+	descriptors: &mut Vec<CurveDescriptor>,
+	times: &mut Vec<f32>,
+	values: &mut Vec<[f32; N]>,
+) -> u32 {
 	let (interpolation, curve_times, curve_values) = match curve {
-		Curve::Step { times, values } => (CurveInterpolation::Step, times, values),
-		Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values),
+		Curve::Step { times, values } => (
+			CurveInterpolation::Step,
+			times,
+			values.into_iter().map(CurveComponents::components).collect(),
+		),
+		Curve::Linear { times, values } => (
+			CurveInterpolation::Linear,
+			times,
+			values.into_iter().map(CurveComponents::components).collect(),
+		),
 		Curve::CubicSpline {
 			times,
 			values,
@@ -298,8 +314,8 @@ fn pack_curve<V>(curve: Curve<V>, descriptors: &mut Vec<CurveDescriptor>, times:
 			out_tangents,
 		} => {
 			let mut packed = Vec::with_capacity(values.len() * 3);
-			for ((value, incoming), outgoing) in values.into_iter().zip(in_tangents).zip(out_tangents) {
-				packed.extend([value, incoming, outgoing]);
+			for ((key, incoming), outgoing) in values.into_iter().zip(in_tangents).zip(out_tangents) {
+				packed.extend([key.components(), incoming.components(), outgoing.components()]);
 			}
 			(CurveInterpolation::CubicSpline, times, packed)
 		}
@@ -332,7 +348,7 @@ mod tests {
 	use resource_management::{
 		Reference,
 		resources::{
-			animation::{Animation, NodeTrack, Vector3Curve},
+			animation::{Animation, NodeTrack, TranslationCurve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode, SkeletonPoseMap},
 		},
 	};
@@ -347,7 +363,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: None,
 					rest_local: LocalTransform {
-						translation: [1.0, 0.0, 0.0],
+						translation: math::Vector::from_array([1.0, 0.0, 0.0]),
 						..LocalTransform::identity()
 					},
 				},
@@ -355,7 +371,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: None,
 					rest_local: LocalTransform {
-						translation: [2.0, 0.0, 0.0],
+						translation: math::Vector::from_array([2.0, 0.0, 0.0]),
 						..LocalTransform::identity()
 					},
 				},
@@ -374,9 +390,9 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 0,
-				translation: Some(Vector3Curve::Step {
+				translation: Some(TranslationCurve::Step {
 					times: vec![0.0],
-					values: vec![[3.0, 0.0, 0.0]],
+					values: vec![math::Vector::from_array([3.0, 0.0, 0.0])],
 				}),
 				rotation: None,
 				scale: None,
@@ -388,6 +404,6 @@ mod tests {
 
 		PackedAnimation::from_words(&packed.data).sample_target_local_pose(&map, 0.0, &mut output);
 
-		assert_eq!(output[0].translation, [2.0, 0.0, 0.0]);
+		assert_eq!(output[0].translation, math::Vector::new(2.0, 0.0, 0.0));
 	}
 }

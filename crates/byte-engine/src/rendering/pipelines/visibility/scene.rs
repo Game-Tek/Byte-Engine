@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use ghi::frame::Frame as _;
-use math::{AffineShaderMatrix, Matrix};
-use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding};
+use math::Matrix;
+use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
 use utils::hash::HashMap;
@@ -126,7 +126,7 @@ pub struct SinkState {
 pub struct VisibilityScene {
 	pub(crate) render_entities: StableVec<RenderEntity>,
 	/// Retained global poses keyed by renderable handle.
-	pub(crate) skinning_poses: HashMap<Handle, Vec<AffineMatrix4x3Columns>>,
+	pub(crate) skinning_poses: HashMap<Handle, Vec<math::AffineMatrix>>,
 	/// Scene-instance slots grouped by renderable handle.
 	pub(crate) render_entity_handles: HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
 	pub(crate) lights: StableVec<(Handle, Lights, Transform)>,
@@ -154,7 +154,7 @@ impl VisibilityScene {
 
 	/// Applies the latest transform update to every primitive and light owned by `handle`.
 	pub(crate) fn update_transform(&mut self, handle: Handle, transform: &Transform) {
-		let model: AffineShaderMatrix = transform.get_matrix().into();
+		let model: ghi::pod::Mat4x3f = transform.get_matrix().into();
 		update_renderable_instances(&self.render_entity_handles, &mut self.render_entities, handle, |entity| {
 			entity.shader_mesh.model = model;
 		});
@@ -177,7 +177,7 @@ impl VisibilityScene {
 		pose.clear();
 		pose.extend(global_matrices.iter().map(|matrix| {
 			assert_affine_matrix(matrix);
-			AffineMatrix4x3Columns::from(AffineShaderMatrix::from(*matrix))
+			math::AffineMatrix::from_matrix(*matrix)
 		}));
 	}
 

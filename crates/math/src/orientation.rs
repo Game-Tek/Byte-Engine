@@ -2,7 +2,11 @@ use std::fmt;
 
 use maths_rs::Quatf;
 
+use crate::serialization::{ArrayForm, serialize_as_array};
 use crate::{Matrix, Radians, UnitVector, Vector, orientation_from_direction};
+
+/// Rotation vectors shorter than this are treated as no rotation, where the axis is undefined.
+const ROTATION_VECTOR_EPSILON: f32 = 1.0e-8;
 
 /// The `Orientation` struct provides a normalized, finite rotation for engine transforms.
 ///
@@ -49,9 +53,14 @@ impl std::error::Error for OrientationError {}
 
 impl Orientation {
 	/// Creates the orientation that preserves every vector.
-	pub fn identity() -> Self {
+	pub const fn identity() -> Self {
 		Self {
-			value: Quatf::identity(),
+			value: Quatf {
+				x: 0.0,
+				y: 0.0,
+				z: 0.0,
+				w: 1.0,
+			},
 		}
 	}
 
@@ -63,6 +72,16 @@ impl Orientation {
 		Ok(Self {
 			value: normalize(value)?,
 		})
+	}
+
+	/// Validates and normalizes `[x, y, z, w]` quaternion components.
+	pub fn try_from_array([x, y, z, w]: [f32; 4]) -> Result<Self, OrientationError> {
+		Self::try_from_maths(Quatf::new(x, y, z, w))
+	}
+
+	/// Returns the `[x, y, z, w]` components of this orientation's unit quaternion.
+	pub fn to_array(self) -> [f32; 4] {
+		[self.value.x, self.value.y, self.value.z, self.value.w]
 	}
 
 	/// Creates a rotation around a checked axis by a finite [`Radians`] value.
@@ -100,6 +119,67 @@ impl Orientation {
 		Self {
 			value: normalize(self.value * other.value).expect("normalized finite quaternion products remain valid"),
 		}
+	}
+
+	/// Returns the rotation that undoes this one.
+	pub fn inverse(self) -> Self {
+		let Quatf { x, y, z, w } = self.value;
+		Self {
+			value: Quatf::new(-x, -y, -z, w),
+		}
+	}
+
+	/// Returns the four-dimensional dot product of both unit quaternions.
+	///
+	/// A negative result means the quaternions lie in opposite hemispheres, so blending them directly would take the
+	/// longer way around.
+	pub fn dot(self, other: Self) -> f32 {
+		let (left, right) = (self.value, other.value);
+		left.x * right.x + left.y * right.y + left.z * right.z + left.w * right.w
+	}
+
+	/// Moves `factor` of the way to `other` along the shorter arc by normalizing a linear quaternion blend.
+	///
+	/// A non-finite `factor` returns this orientation unchanged.
+	pub fn nlerp(self, other: Self, factor: f32) -> Self {
+		let left = self.value;
+		let right = if self.dot(other) < 0.0 { -other.value } else { other.value };
+		let blended = Quatf::new(
+			left.x + (right.x - left.x) * factor,
+			left.y + (right.y - left.y) * factor,
+			left.z + (right.z - left.z) * factor,
+			left.w + (right.w - left.w) * factor,
+		);
+		Self::try_from_maths(blended).unwrap_or(self)
+	}
+
+	/// Returns this rotation as the shortest rotation vector: its axis scaled by its angle in radians.
+	///
+	/// Use [`Self::try_from_rotation_vector`] for the reverse conversion. Rotation vectors add and scale linearly, which
+	/// suits decaying or differentiating rotations.
+	pub fn to_rotation_vector<Space>(self) -> Vector<Space> {
+		let value = if self.value.w < 0.0 { -self.value } else { self.value };
+		let vector_length = (value.x * value.x + value.y * value.y + value.z * value.z).sqrt();
+		if vector_length <= ROTATION_VECTOR_EPSILON {
+			return Vector::zero();
+		}
+		let angle = 2.0 * vector_length.atan2(value.w.clamp(-1.0, 1.0));
+		Vector::new(value.x, value.y, value.z) * (angle / vector_length)
+	}
+
+	/// Creates the rotation around a rotation vector's axis by its length in radians.
+	pub fn try_from_rotation_vector<Space>(vector: Vector<Space>) -> Result<Self, OrientationError> {
+		let angle = vector.length();
+		if !angle.is_finite() {
+			return Err(OrientationError::NonFiniteAngle);
+		}
+		let [x, y, z] = vector.to_array();
+		if angle <= ROTATION_VECTOR_EPSILON {
+			return Self::try_from_maths(Quatf::new(x * 0.5, y * 0.5, z * 0.5, 1.0));
+		}
+		let half_angle = angle * 0.5;
+		let scale = half_angle.sin() / angle;
+		Self::try_from_maths(Quatf::new(x * scale, y * scale, z * scale, half_angle.cos()))
 	}
 
 	/// Rotates a displacement while preserving its coordinate-space brand.
@@ -182,4 +262,38 @@ mod tests {
 		assert!((composed.y() - sequential.y()).abs() < 0.0001);
 		assert!((composed.z() - sequential.z()).abs() < 0.0001);
 	}
+
+	#[test]
+	fn rotation_vectors_round_trip_through_the_shorter_arc() {
+		let vector = Vector::<WorldSpace>::new(0.0, 1.25, 0.0);
+		let orientation = Orientation::try_from_rotation_vector(vector).unwrap();
+
+		crate::assert_geometry_near!(
+			orientation.to_rotation_vector::<WorldSpace>(),
+			vector,
+			"rotation vectors must round trip"
+		);
+		// The antipodal quaternion is the same rotation, so it must give the same rotation vector.
+		let antipodal = Orientation::try_from_array(orientation.to_array().map(|component| -component)).unwrap();
+		crate::assert_geometry_near!(
+			antipodal.to_rotation_vector::<WorldSpace>(),
+			vector,
+			"antipodes must give the shorter arc"
+		);
+	}
 }
+
+impl ArrayForm<4> for Orientation {
+	type Array = [f32; 4];
+	type Error = OrientationError;
+
+	fn to_array(&self) -> Self::Array {
+		Orientation::to_array(*self)
+	}
+
+	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
+		Self::try_from_array(array)
+	}
+}
+
+serialize_as_array!(Orientation, 4);

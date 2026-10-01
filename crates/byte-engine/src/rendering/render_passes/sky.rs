@@ -1,5 +1,5 @@
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
-use math::{Point, Radians, ShaderMatrix, UnitVector, inverse};
+use math::{Point, Radians, UnitVector, inverse};
 use maths_rs::{Vec3f, Vec4f};
 use utils::Extent;
 
@@ -95,7 +95,7 @@ impl Default for AtmosphereSkyRenderPassSettings {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SkyShaderData {
-	inverse_view_projection: ShaderMatrix,
+	inverse_view_projection: ghi::pod::Mat4f,
 	camera_position: [f32; 4],
 	sun_direction: [f32; 4],
 	planet_center: [f32; 4],
@@ -462,7 +462,10 @@ mod tests {
 				.expect("Failed to initialize sky parameters. The most likely cause is a changed production buffer layout.");
 		}
 		parameters
-			.write("inverse_view_projection", Value::Mat4F(data.inverse_view_projection.0))
+			.write(
+				"inverse_view_projection",
+				Value::Mat4F(bytemuck::cast(data.inverse_view_projection)),
+			)
 			.expect("Failed to initialize the sky matrix. The most likely cause is a changed production buffer layout.");
 		parameters
 	}

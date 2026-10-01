@@ -266,12 +266,7 @@ pub(super) fn validate_skin_binding(
 				nodes: node_count,
 			});
 		}
-		if !entry
-			.adjusted_inverse_bind_matrix
-			.iter()
-			.flatten()
-			.all(|value| value.is_finite())
-		{
+		if !entry.adjusted_inverse_bind_matrix.is_finite() {
 			return Err(MeshProcessingError::NonFiniteInverseBind { skin: skin_index });
 		}
 	}

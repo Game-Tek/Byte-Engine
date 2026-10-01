@@ -24,7 +24,7 @@ use byte_engine::{
 	gameplay::{Transform, TransformationUpdate},
 	rendering::{Camera, RenderableMesh, UpdatePose, window::Window},
 };
-use math::{Orientation, Point, Quaternion, Scale, Vector};
+use math::{Orientation, Point, Scale, Vector};
 use utils::Extent;
 
 // These assets are intentionally explicit. Replace them before running the example.
@@ -148,15 +148,9 @@ fn main() {
 			// Compose object-space root motion into the owning transform before
 			// submitting the in-place visual pose.
 			let root_motion = pose.root_motion();
-			root_position += Vector::new(
-				root_motion.translation[0],
-				root_motion.translation[1],
-				root_motion.translation[2],
-			);
-			let [x, y, z, w] = root_motion.rotation;
-			let delta_orientation = Orientation::try_from_maths(Quaternion::new(x, y, z, w))
-				.expect("animation root motion always returns a normalized finite rotation");
-			root_orientation = delta_orientation.compose(root_orientation);
+			// The skeleton root's parent space is the owning object's space, which this example keeps in world space.
+			root_position += Vector::from_maths(root_motion.translation.into_maths());
+			root_orientation = root_motion.rotation.compose(root_orientation);
 
 			let world = app.world();
 			world.transforms_channel().send(TransformationUpdate::new(

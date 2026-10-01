@@ -11,7 +11,7 @@
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
-use math::{Matrix, ShaderMatrix};
+use math::Matrix;
 use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
@@ -126,7 +126,7 @@ const UPSCALE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = sampled(1037);
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct SsgiShaderParameters {
 	/// Maps a current-frame view-space position to the previous frame's clip space.
-	current_view_to_previous_clip: ShaderMatrix,
+	current_view_to_previous_clip: ghi::pod::Mat4f,
 	/// Animates the interleaved gradient noise so each frame traces different directions.
 	frame_index: u32,
 	/// Nonzero when the previous frame's radiance, SSGI history, and depth pyramid hold this sink's data.

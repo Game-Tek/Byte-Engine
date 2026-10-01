@@ -11,7 +11,7 @@ use std::sync::Arc;
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use log::{error, warn};
-use resource_management::resources::skeleton::{AffineMatrix4x3Columns, SkinBinding, identity_affine_matrix4x3_columns};
+use resource_management::resources::skeleton::SkinBinding;
 use resource_management::types::AlphaMode;
 use smallvec::SmallVec;
 use utils::hash::HashMap;
@@ -258,7 +258,7 @@ fn environment_intensity(requested: Option<f32>, upward_illuminance: f32) -> f32
 /// The `SkinningFrame` struct accumulates this frame's palettes without allocating after the scene's high-water mark.
 #[derive(Default)]
 struct SkinningFrame {
-	matrices: Vec<AffineMatrix4x3Columns>,
+	matrices: Vec<math::AffineMatrix>,
 	dual_quaternions: Vec<DualQuaternion>,
 	/// The palette uploaded this frame for each renderable and skin binding, shared by every primitive that uses it.
 	cache: HashMap<(Handle, *const SkinBinding), (u32, SkinningPaletteKind)>,
@@ -279,7 +279,7 @@ impl SkinningFrame {
 		&mut self,
 		handle: Handle,
 		binding: &Arc<SkinBinding>,
-		pose: &[AffineMatrix4x3Columns],
+		pose: &[math::AffineMatrix],
 	) -> Option<(u32, SkinningPaletteKind)> {
 		let binding_ptr = Arc::as_ptr(binding);
 		if let Some(palette) = self.cache.get(&(handle, binding_ptr)) {
@@ -287,7 +287,7 @@ impl SkinningFrame {
 		}
 		let matrix_base = self.matrices.len();
 		let matrix_end = matrix_base + binding.len();
-		self.matrices.resize(matrix_end, identity_affine_matrix4x3_columns());
+		self.matrices.resize(matrix_end, math::AffineMatrix::identity());
 		if let Err(error) = binding.write_matrix_palette(pose, &mut self.matrices[matrix_base..matrix_end]) {
 			self.matrices.truncate(matrix_base);
 			error!("Visibility skin palette could not be written: {error}");

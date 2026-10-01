@@ -3,7 +3,7 @@
 //! Every type here is `repr(C)` and matches a struct declared in [`super::shader_generator::VisibilityShaderScope`].
 //! The layout tests at the bottom pin the offsets the shaders depend on.
 
-use math::{AffineShaderMatrix, ShaderMatrix};
+use ghi::pod::{Mat4f, Mat4x3f};
 
 use super::layout::{LIGHT_CLUSTER_SLICES, MAX_LIGHTS, MAX_MATERIAL_TEXTURES, RuntimeUnitVector};
 use crate::rendering::View;
@@ -12,7 +12,7 @@ use crate::rendering::View;
 #[repr(C, align(16))]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShaderMesh {
-	pub(crate) model: AffineShaderMatrix,
+	pub(crate) model: Mat4x3f,
 	pub(crate) material_index: u32,
 	/// Base position in the vertex attribute buffers.
 	pub(crate) base_vertex_index: u32,
@@ -36,9 +36,9 @@ pub(crate) const MESH_FLAG_DOUBLE_SIDED: u32 = 1;
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ShaderViewData {
-	pub(crate) view: AffineShaderMatrix,
-	pub(crate) view_projection: ShaderMatrix,
-	pub(crate) inverse_view: AffineShaderMatrix,
+	pub(crate) view: Mat4x3f,
+	pub(crate) view_projection: Mat4f,
+	pub(crate) inverse_view: Mat4x3f,
 	pub(crate) fov: [f32; 2],
 	pub(crate) near: f32,
 	pub(crate) far: f32,
@@ -165,7 +165,7 @@ pub struct LightingData {
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct LightClusterParameters {
 	/// Maps world space to the view space the clusters are laid out in, where depth grows along +Z.
-	pub(crate) view: AffineShaderMatrix,
+	pub(crate) view: Mat4x3f,
 	/// The view-space X/Z and Y/Z slopes at the right and top edges of the image.
 	pub(crate) edge_slopes: [f32; 2],
 	pub(crate) near: f32,
@@ -230,7 +230,7 @@ impl MaterialData {
 #[derive(Copy, Clone, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ReflectionShaderParameters {
 	/// Maps a world-space position to the previous frame's clip space, to find where the previous camera saw a hit.
-	pub(crate) world_to_previous_clip: ShaderMatrix,
+	pub(crate) world_to_previous_clip: Mat4f,
 	/// The exposure the previous frame's radiance history was multiplied by.
 	pub(crate) previous_exposure: f32,
 	/// Nonzero when the previous frame's radiance history holds this sink's light.

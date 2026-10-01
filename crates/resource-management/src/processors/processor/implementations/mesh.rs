@@ -37,8 +37,8 @@ mod tests {
 			material::VariantModel,
 			skeleton::{
 				LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-				identity_affine_matrix4x3_columns,
 			},
+			ModelSpace,
 		},
 		types::{AlphaMode, VertexComponent, VertexSemantics},
 	};
@@ -386,7 +386,7 @@ mod tests {
 		SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint,
-				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
+				adjusted_inverse_bind_matrix: math::AffineMatrix::identity(),
 			}],
 		}
 	}
@@ -491,12 +491,19 @@ mod tests {
 			Ok(self.indices.iter().copied().map(Ok))
 		}
 
-		fn positions(&self) -> Result<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_, Self::Error> {
-			Ok(self.positions.iter().copied().map(Ok))
+		fn positions(
+			&self,
+		) -> Result<impl ExactSizeIterator<Item = Result<math::Point<ModelSpace>, Self::Error>> + '_, Self::Error> {
+			Ok(self.positions.iter().copied().map(|position| Ok(math::Point::from_array(position))))
 		}
 
-		fn normals(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 3], Self::Error>> + '_>, Self::Error> {
-			Ok(self.normals.as_deref().map(|values| values.iter().copied().map(Ok)))
+		fn normals(
+			&self,
+		) -> Result<Option<impl ExactSizeIterator<Item = Result<math::Vector<ModelSpace>, Self::Error>> + '_>, Self::Error> {
+			Ok(self
+				.normals
+				.as_deref()
+				.map(|values| values.iter().copied().map(|normal| Ok(math::Vector::from_array(normal)))))
 		}
 
 		fn uvs(&self) -> Result<Option<impl ExactSizeIterator<Item = Result<[f32; 2], Self::Error>> + '_>, Self::Error> {

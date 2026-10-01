@@ -96,8 +96,18 @@ impl RootMotionTranslation {
 		Self(self.0 | other.0)
 	}
 
-	const fn contains(self, component: usize) -> bool {
-		self.0 & (1 << component) != 0
+	const fn contains(self, axis: Self) -> bool {
+		self.0 & axis.0 != 0
+	}
+
+	/// Takes `selected` along the axes this selection contains and `unselected` along the others.
+	fn select(self, selected: Vector<ParentSpace>, unselected: Vector<ParentSpace>) -> Vector<ParentSpace> {
+		let axis = |axis, selected: f32, unselected: f32| if self.contains(axis) { selected } else { unselected };
+		Vector::new(
+			axis(Self::X, selected.x(), unselected.x()),
+			axis(Self::Y, selected.y(), unselected.y()),
+			axis(Self::Z, selected.z(), unselected.z()),
+		)
 	}
 }
 
@@ -620,13 +630,12 @@ impl PlayerPose {
 		let Some(root_motion) = self.root_motion else {
 			return;
 		};
-		for component in 0..3 {
-			if root_motion.translation.contains(component) {
-				self.local_pose[root_motion.node].translation[component] = root_motion.reference.translation[component];
-			}
-		}
+		let local = &mut self.local_pose[root_motion.node];
+		local.translation = root_motion
+			.translation
+			.select(root_motion.reference.translation, local.translation);
 		if root_motion.rotation == RootMotionRotation::Full {
-			self.local_pose[root_motion.node].rotation = root_motion.reference.rotation;
+			local.rotation = root_motion.reference.rotation;
 		}
 	}
 
@@ -771,11 +780,9 @@ fn object_space_root_delta(
 
 /// Keeps selected root-motion channels and restores all other channels to the reference pose.
 fn extracted_root_transform(root_motion: RootMotionTarget, mut transform: LocalTransform) -> LocalTransform {
-	for component in 0..3 {
-		if !root_motion.translation.contains(component) {
-			transform.translation[component] = root_motion.reference.translation[component];
-		}
-	}
+	transform.translation = root_motion
+		.translation
+		.select(transform.translation, root_motion.reference.translation);
 	if root_motion.rotation == RootMotionRotation::None {
 		transform.rotation = root_motion.reference.rotation;
 	}
@@ -800,12 +807,10 @@ fn object_space_transform_with_node(
 
 /// Prepends `parent` to `child`, preserving the hierarchy's scale-rotate-translate order.
 fn compose_local_transform(parent: LocalTransform, child: LocalTransform) -> LocalTransform {
-	let scaled_translation = std::array::from_fn(|component| child.translation[component] * parent.scale[component]);
-	let rotated_translation = rotate_vector(parent.rotation, scaled_translation);
 	LocalTransform {
-		translation: add3(parent.translation, rotated_translation),
-		rotation: multiply_quaternion(parent.rotation, child.rotation),
-		scale: std::array::from_fn(|component| parent.scale[component] * child.scale[component]),
+		translation: parent.translation + parent.rotation.rotate_vector(parent.scale * child.translation),
+		rotation: parent.rotation.compose(child.rotation),
+		scale: parent.scale * child.scale,
 	}
 }
 
@@ -815,7 +820,7 @@ mod tests {
 	use resource_management::{
 		Reference,
 		resources::{
-			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
 	};
@@ -844,9 +849,12 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 0,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0; 3], [end_translation, 0.0, 0.0]],
+					values: vec![
+						math::Vector::from_array([0.0; 3]),
+						math::Vector::from_array([end_translation, 0.0, 0.0]),
+					],
 				}),
 				rotation: None,
 				scale: None,
@@ -931,27 +939,27 @@ mod tests {
 		assert_eq!(initial.local_pose()[0], LocalTransform::identity());
 		let root_motion = ready(player.advance(MediaTime::from_millis(500), idle.id(), &mut pool)).root_motion();
 
-		assert_eq!(root_motion.translation, [0.5, 0.0, 0.0]);
+		assert_eq!(root_motion.translation, math::Vector::new(0.5, 0.0, 0.0));
 		assert_eq!(
 			ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool)).local_pose()[0].translation,
-			[0.0; 3]
+			math::Vector::zero()
 		);
 
 		let switched = ready(player.advance(MediaTime::ZERO, run.id(), &mut pool));
 
-		assert_eq!(switched.root_motion().translation, [0.0; 3]);
+		assert_eq!(switched.root_motion().translation, math::Vector::zero());
 		assert_eq!(player.state(), Some(run.id()));
 		assert_eq!(
 			ready(player.advance(MediaTime::from_millis(500), run.id(), &mut pool))
 				.root_motion()
 				.translation,
-			[1.5, 0.0, 0.0]
+			math::Vector::new(1.5, 0.0, 0.0)
 		);
 		assert_eq!(
 			ready(player.advance(MediaTime::from_millis(750), run.id(), &mut pool))
 				.root_motion()
 				.translation,
-			[2.25, 0.0, 0.0]
+			math::Vector::new(2.25, 0.0, 0.0)
 		);
 	}
 
@@ -1083,7 +1091,9 @@ mod tests {
 
 	#[test]
 	fn player_selectively_extracts_object_space_root_motion_across_a_remapped_scaled_loop() {
-		let root_rotation = crate::animation::math::quaternion_exp([0.0, std::f32::consts::FRAC_PI_2, 0.0]);
+		let root_rotation =
+			math::Orientation::try_from_rotation_vector(Vector::<ParentSpace>::new(0.0, std::f32::consts::FRAC_PI_2, 0.0))
+				.unwrap();
 		let source = Skeleton {
 			nodes: vec![
 				SkeletonNode {
@@ -1091,7 +1101,7 @@ mod tests {
 					parent: None,
 					rest_local: LocalTransform {
 						rotation: root_rotation,
-						scale: [0.01; 3],
+						scale: math::Scale::from_array([0.01; 3]),
 						..LocalTransform::identity()
 					},
 				},
@@ -1099,7 +1109,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: Some(0),
 					rest_local: LocalTransform {
-						translation: [0.0, 100.0, 0.0],
+						translation: math::Vector::from_array([0.0, 100.0, 0.0]),
 						..LocalTransform::identity()
 					},
 				},
@@ -1119,7 +1129,7 @@ mod tests {
 					parent: Some(0),
 					rest_local: LocalTransform {
 						rotation: root_rotation,
-						scale: [0.01; 3],
+						scale: math::Scale::from_array([0.01; 3]),
 						..LocalTransform::identity()
 					},
 				},
@@ -1132,7 +1142,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: Some(1),
 					rest_local: LocalTransform {
-						translation: [0.0, 100.0, 0.0],
+						translation: math::Vector::from_array([0.0, 100.0, 0.0]),
 						..LocalTransform::identity()
 					},
 				},
@@ -1144,13 +1154,19 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 1,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0, 100.0, 0.0], [20.0, 110.0, -100.0]],
+					values: vec![
+						math::Vector::from_array([0.0, 100.0, 0.0]),
+						math::Vector::from_array([20.0, 110.0, -100.0]),
+					],
 				}),
-				rotation: Some(QuaternionCurve::Linear {
+				rotation: Some(RotationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.382_683_43, 0.0, 0.923_879_5]],
+					values: vec![
+						math::Orientation::try_from_array([0.0, 0.0, 0.0, 1.0]).unwrap(),
+						math::Orientation::try_from_array([0.0, 0.382_683_43, 0.0, 0.923_879_5]).unwrap(),
+					],
 				}),
 				scale: None,
 			}],
@@ -1180,23 +1196,23 @@ mod tests {
 		);
 
 		let initial = ready(player.advance(MediaTime::ZERO, idle.id(), &mut pool));
-		assert_eq!(initial.root_motion().translation, [0.0; 3]);
+		assert_eq!(initial.root_motion().translation, math::Vector::zero());
 		let switched = ready(player.advance(MediaTime::ZERO, walk.id(), &mut pool));
-		assert_eq!(switched.root_motion().translation, [0.0; 3]);
+		assert_eq!(switched.root_motion().translation, math::Vector::zero());
 		let first = ready(player.advance(MediaTime::from_millis(750), walk.id(), &mut pool));
-		math::assert_float_eq!(first.root_motion().translation[0], -0.75);
-		math::assert_float_eq!(first.root_motion().translation[1], 0.0);
-		math::assert_float_eq!(first.root_motion().translation[2], 0.0);
+		math::assert_float_eq!(first.root_motion().translation.x(), -0.75);
+		math::assert_float_eq!(first.root_motion().translation.y(), 0.0);
+		math::assert_float_eq!(first.root_motion().translation.z(), 0.0);
 
-		assert_eq!(first.local_pose()[3].translation, [15.0, 107.5, 0.0]);
+		assert_eq!(first.local_pose()[3].translation, math::Vector::new(15.0, 107.5, 0.0));
 		assert_ne!(first.local_pose()[3].rotation, LocalTransform::identity().rotation);
 
 		let wrapped = ready(player.advance(MediaTime::from_millis(500), walk.id(), &mut pool));
-		math::assert_float_eq!(wrapped.root_motion().translation[0], -0.5);
-		math::assert_float_eq!(wrapped.root_motion().translation[1], 0.0);
-		math::assert_float_eq!(wrapped.root_motion().translation[2], 0.0);
+		math::assert_float_eq!(wrapped.root_motion().translation.x(), -0.5);
+		math::assert_float_eq!(wrapped.root_motion().translation.y(), 0.0);
+		math::assert_float_eq!(wrapped.root_motion().translation.z(), 0.0);
 
-		assert_eq!(wrapped.local_pose()[3].translation, [5.0, 102.5, 0.0]);
+		assert_eq!(wrapped.local_pose()[3].translation, math::Vector::new(5.0, 102.5, 0.0));
 		assert_ne!(wrapped.local_pose()[3].rotation, LocalTransform::identity().rotation);
 	}
 }

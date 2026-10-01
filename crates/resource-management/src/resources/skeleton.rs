@@ -1,34 +1,24 @@
-use crate::{Reference, ReferenceModel, Solver, resource, solver::SolveError};
+use math::{AffineMatrix, Orientation, Scale, Vector};
 
-/// Stores an affine four-by-three matrix as four column vectors.
-///
-/// The omitted fourth row is always `[0.0, 0.0, 0.0, 1.0]`. Skeleton poses
-/// and inverse-bind transforms are affine, so retaining it would only expand
-/// serialized resources and GPU palettes without changing a result.
-pub type AffineMatrix4x3Columns = [[f32; 3]; 4];
-
-/// Returns the identity matrix in the compact resource matrix column layout.
-pub const fn identity_affine_matrix4x3_columns() -> AffineMatrix4x3Columns {
-	[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]]
-}
+use crate::{Reference, ReferenceModel, Solver, resource, resources::ParentSpace, solver::SolveError};
 
 /// The `LocalTransform` struct preserves the blendable local pose used by skeleton nodes and animation tracks.
 #[derive(
 	Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
 pub struct LocalTransform {
-	pub translation: [f32; 3],
-	pub rotation: [f32; 4],
-	pub scale: [f32; 3],
+	pub translation: Vector<ParentSpace>,
+	pub rotation: Orientation,
+	pub scale: Scale,
 }
 
 impl LocalTransform {
 	/// Creates the neutral local pose used for nodes without an authored transform.
 	pub const fn identity() -> Self {
 		Self {
-			translation: [0.0, 0.0, 0.0],
-			rotation: [0.0, 0.0, 0.0, 1.0],
-			scale: [1.0, 1.0, 1.0],
+			translation: Vector::zero(),
+			rotation: Orientation::identity(),
+			scale: Scale::identity(),
 		}
 	}
 }
@@ -62,7 +52,7 @@ pub enum SkinJoint {
 )]
 pub struct SkinPaletteEntry {
 	pub joint: SkinJoint,
-	pub adjusted_inverse_bind_matrix: AffineMatrix4x3Columns,
+	pub adjusted_inverse_bind_matrix: AffineMatrix,
 }
 
 /// The `SkinBinding` struct supplies palette-local vertex joint mappings to CPU pose and GPU upload workflows.
@@ -85,8 +75,8 @@ impl SkinBinding {
 	/// Writes the final skin matrices into caller-owned storage without allocating intermediate palette data.
 	pub fn write_matrix_palette(
 		&self,
-		global_pose: &[AffineMatrix4x3Columns],
-		output: &mut [AffineMatrix4x3Columns],
+		global_pose: &[AffineMatrix],
+		output: &mut [AffineMatrix],
 	) -> Result<(), SkinPaletteError> {
 		if output.len() != self.entries.len() {
 			return Err(SkinPaletteError::OutputLength {
@@ -109,10 +99,8 @@ impl SkinBinding {
 
 		for (entry, destination) in self.entries.iter().zip(output) {
 			*destination = match entry.joint {
-				SkinJoint::Node(node) => {
-					multiply_affine_matrix4x3_columns(&global_pose[node as usize], &entry.adjusted_inverse_bind_matrix)
-				}
-				SkinJoint::Identity => identity_affine_matrix4x3_columns(),
+				SkinJoint::Node(node) => global_pose[node as usize] * entry.adjusted_inverse_bind_matrix,
+				SkinJoint::Identity => AffineMatrix::identity(),
 			};
 		}
 
@@ -154,20 +142,6 @@ impl std::fmt::Display for SkinPaletteError {
 }
 
 impl std::error::Error for SkinPaletteError {}
-
-/// Multiplies compact affine matrices using the column-major resource convention.
-fn multiply_affine_matrix4x3_columns(left: &AffineMatrix4x3Columns, right: &AffineMatrix4x3Columns) -> AffineMatrix4x3Columns {
-	let mut product = [[0.0; 3]; 4];
-	for column in 0..3 {
-		for row in 0..3 {
-			product[column][row] = (0..3).map(|index| left[index][row] * right[column][index]).sum();
-		}
-	}
-	for row in 0..3 {
-		product[3][row] = (0..3).map(|index| left[index][row] * right[3][index]).sum::<f32>() + left[3][row];
-	}
-	product
-}
 
 /// The `Skeleton` struct supplies the ordered rest hierarchy consumed by CPU animation evaluation.
 #[derive(Debug, serde::Serialize)]
@@ -341,9 +315,9 @@ pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
 		validate_node(
 			index,
 			node.parent,
-			&node.rest_local.translation,
-			&node.rest_local.rotation,
-			&node.rest_local.scale,
+			&node.rest_local.translation.to_array(),
+			&node.rest_local.rotation.to_array(),
+			&node.rest_local.scale.to_array(),
 		)?;
 	}
 
@@ -353,9 +327,9 @@ pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
 /// Validates a skeleton directly in its archived representation without allocating an owned node tree.
 pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<(), SolveError> {
 	for (index, node) in nodes.iter().enumerate() {
-		let translation = node.rest_local.translation.map(|value| value.to_native());
-		let rotation = node.rest_local.rotation.map(|value| value.to_native());
-		let scale = node.rest_local.scale.map(|value| value.to_native());
+		let translation = node.rest_local.translation.get();
+		let rotation = node.rest_local.rotation.get();
+		let scale = node.rest_local.scale.get();
 		validate_node(
 			index,
 			node.parent.as_ref().map(|parent| parent.to_native()),
@@ -399,9 +373,11 @@ fn validate_node(
 
 #[cfg(test)]
 mod tests {
+	use math::{AffineMatrix, Vector};
+
 	use super::{
 		LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkeletonPoseMap, SkinBinding, SkinJoint, SkinPaletteEntry,
-		SkinPaletteError, identity_affine_matrix4x3_columns,
+		SkinPaletteError,
 	};
 	use crate::{Solver, resource::storage_backend::tests::TestStorageBackend};
 
@@ -422,20 +398,10 @@ mod tests {
 
 	#[crate::r#async::test]
 	async fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
-		for rest_local in [
-			LocalTransform {
-				translation: [f32::NAN, 0.0, 0.0],
-				..LocalTransform::identity()
-			},
-			LocalTransform {
-				rotation: [0.0; 4],
-				..LocalTransform::identity()
-			},
-			LocalTransform {
-				rotation: [0.0, 0.0, 0.0, 2.0],
-				..LocalTransform::identity()
-			},
-		] {
+		for rest_local in [LocalTransform {
+			translation: Vector::new(f32::NAN, 0.0, 0.0),
+			..LocalTransform::identity()
+		}] {
 			let model = SkeletonModel {
 				nodes: vec![SkeletonNode {
 					name: None,
@@ -465,7 +431,7 @@ mod tests {
 			],
 		};
 		let helper_rest = LocalTransform {
-			translation: [3.0, 0.0, 0.0],
+			translation: Vector::new(3.0, 0.0, 0.0),
 			..LocalTransform::identity()
 		};
 		let target = Skeleton {
@@ -488,7 +454,7 @@ mod tests {
 			],
 		};
 		let animated_hips = LocalTransform {
-			translation: [0.0, 4.0, 0.0],
+			translation: Vector::new(0.0, 4.0, 0.0),
 			..LocalTransform::identity()
 		};
 		let map = SkeletonPoseMap::by_name(&source, &target);
@@ -511,7 +477,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: None,
 					rest_local: LocalTransform {
-						translation: [1.0, 0.0, 0.0],
+						translation: Vector::new(1.0, 0.0, 0.0),
 						..LocalTransform::identity()
 					},
 				},
@@ -519,7 +485,7 @@ mod tests {
 					name: Some("Hips".into()),
 					parent: None,
 					rest_local: LocalTransform {
-						translation: [2.0, 0.0, 0.0],
+						translation: Vector::new(2.0, 0.0, 0.0),
 						..LocalTransform::identity()
 					},
 				},
@@ -539,17 +505,13 @@ mod tests {
 		assert_eq!(map.target_node(1), Some(0));
 		assert_eq!(map.direct_target_node(0), None);
 		assert_eq!(map.direct_target_node(1), Some(0));
-		assert_eq!(map.target_rest_pose()[0].translation, [2.0, 0.0, 0.0]);
+		assert_eq!(map.target_rest_pose()[0].translation, Vector::new(2.0, 0.0, 0.0));
 	}
 
 	#[test]
 	fn matrix_palette_multiplies_pose_and_inverse_bind_without_allocating_output() {
-		let mut translated = identity_affine_matrix4x3_columns();
-		translated[3] = [5.0, 6.0, 7.0];
-		let mut inverse_bind = identity_affine_matrix4x3_columns();
-		inverse_bind[0][0] = 2.0;
-		inverse_bind[1][1] = 3.0;
-		inverse_bind[2][2] = 4.0;
+		let translated = AffineMatrix::from_columns([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [5.0, 6.0, 7.0]]);
+		let inverse_bind = AffineMatrix::from_columns([[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0], [0.0, 0.0, 0.0]]);
 		let binding = SkinBinding {
 			entries: vec![
 				SkinPaletteEntry {
@@ -558,21 +520,21 @@ mod tests {
 				},
 				SkinPaletteEntry {
 					joint: SkinJoint::Identity,
-					adjusted_inverse_bind_matrix: [[9.0; 3]; 4],
+					adjusted_inverse_bind_matrix: AffineMatrix::from_columns([[9.0; 3]; 4]),
 				},
 			],
 		};
-		let mut output = [[[0.0; 3]; 4]; 2];
+		let mut output = [AffineMatrix::from_columns([[0.0; 3]; 4]); 2];
 
 		binding
 			.write_matrix_palette(&[translated], &mut output)
 			.expect("A complete skin binding should write its palette");
 
-		assert_eq!(output[0][0][0], 2.0);
-		assert_eq!(output[0][1][1], 3.0);
-		assert_eq!(output[0][2][2], 4.0);
-		assert_eq!(output[0][3], [5.0, 6.0, 7.0]);
-		assert_eq!(output[1], identity_affine_matrix4x3_columns());
+		assert_eq!(
+			output[0].columns(),
+			[[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0], [5.0, 6.0, 7.0]]
+		);
+		assert_eq!(output[1], AffineMatrix::identity());
 	}
 
 	#[test]
@@ -580,7 +542,7 @@ mod tests {
 		let binding = SkinBinding {
 			entries: vec![SkinPaletteEntry {
 				joint: SkinJoint::Node(1),
-				adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
+				adjusted_inverse_bind_matrix: AffineMatrix::identity(),
 			}],
 		};
 		let mut no_output = [];
@@ -590,10 +552,10 @@ mod tests {
 			Err(SkinPaletteError::OutputLength { expected: 1, actual: 0 })
 		);
 
-		let mut output = [identity_affine_matrix4x3_columns()];
+		let mut output = [AffineMatrix::identity()];
 
 		assert_eq!(
-			binding.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output),
+			binding.write_matrix_palette(&[AffineMatrix::identity()], &mut output),
 			Err(SkinPaletteError::NodeOutOfRange {
 				palette_index: 0,
 				node: 1,
@@ -605,20 +567,20 @@ mod tests {
 			entries: vec![
 				SkinPaletteEntry {
 					joint: SkinJoint::Node(0),
-					adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
+					adjusted_inverse_bind_matrix: AffineMatrix::identity(),
 				},
 				SkinPaletteEntry {
 					joint: SkinJoint::Node(2),
-					adjusted_inverse_bind_matrix: identity_affine_matrix4x3_columns(),
+					adjusted_inverse_bind_matrix: AffineMatrix::identity(),
 				},
 			],
 		};
-		let sentinel = [[[-1.0; 3]; 4]; 2];
+		let sentinel = [AffineMatrix::from_columns([[-1.0; 3]; 4]); 2];
 		let mut output = sentinel;
 
 		assert!(
 			binding
-				.write_matrix_palette(&[identity_affine_matrix4x3_columns()], &mut output)
+				.write_matrix_palette(&[AffineMatrix::identity()], &mut output)
 				.is_err()
 		);
 		assert_eq!(output, sentinel);

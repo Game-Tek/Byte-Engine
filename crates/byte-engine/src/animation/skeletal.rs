@@ -1,10 +1,12 @@
-use math::Matrix;
+use math::{Matrix, Point};
+use maths_rs::mat::{MatScale as _, MatTranslate as _};
 use resource_management::resources::{
+	ModelSpace,
 	animation::{Animation, Curve},
 	skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 };
 
-use super::math::{CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveComponents, CurveInterpolation, CurveValue, sample_curve};
 
 /// Samples one clip into a complete source-skeleton local pose.
 ///
@@ -21,14 +23,14 @@ pub fn sample_local_pose(animation: &Animation, time: f32, output: &mut Vec<Loca
 		let Some(local) = output.get_mut(track.node as usize) else {
 			continue;
 		};
-		if let Some(value) = track.translation.as_ref().map(|curve| sample_resource_curve(curve, time)) {
-			local.translation = value;
+		if let Some(curve) = &track.translation {
+			local.translation = sample_resource_curve(curve, time);
 		}
-		if let Some(value) = track.rotation.as_ref().map(|curve| sample_resource_curve(curve, time)) {
-			local.rotation = value;
+		if let Some(curve) = &track.rotation {
+			local.rotation = sample_resource_curve(curve, time);
 		}
-		if let Some(value) = track.scale.as_ref().map(|curve| sample_resource_curve(curve, time)) {
-			local.scale = value;
+		if let Some(curve) = &track.scale {
+			local.scale = sample_resource_curve(curve, time);
 		}
 	}
 }
@@ -88,9 +90,9 @@ pub struct BonePositionDifference {
 	/// Identifies the bone in the shared skeleton node order.
 	pub node: usize,
 	/// Stores the first animation's global bone position.
-	pub first: [f32; 3],
+	pub first: Point<ModelSpace>,
 	/// Stores the second animation's global bone position.
-	pub second: [f32; 3],
+	pub second: Point<ModelSpace>,
 	/// Stores the Euclidean distance between [`Self::first`] and [`Self::second`].
 	pub distance: f32,
 }
@@ -152,12 +154,11 @@ pub fn compare_animation_bone_positions(
 		.map(|(node, (first, second))| {
 			let first = matrix_translation(first);
 			let second = matrix_translation(second);
-			let delta = [first[0] - second[0], first[1] - second[1], first[2] - second[2]];
 			BonePositionDifference {
 				node,
 				first,
 				second,
-				distance: (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt(),
+				distance: first.distance_to(second),
 			}
 		})
 		.collect();
@@ -181,62 +182,22 @@ fn validate_skeleton_layout(first: &Skeleton, second: &Skeleton) -> Result<(), A
 	Ok(())
 }
 
-/// Extracts translation from the row-major matrix slots used by [`local_matrix`].
-fn matrix_translation(matrix: &Matrix) -> [f32; 3] {
-	[matrix[3], matrix[7], matrix[11]]
+/// Returns where a global bone matrix from [`local_matrix`] places the bone's origin.
+fn matrix_translation(matrix: &Matrix) -> Point<ModelSpace> {
+	Point::new(matrix[3], matrix[7], matrix[11])
 }
 
 /// Converts a blendable local transform into the matrix convention used by render pose updates.
+///
+/// Scale applies first, then rotation, then translation, matching [`crate::gameplay::Transform::get_matrix`].
 fn local_matrix(local: LocalTransform) -> Matrix {
-	let [x, y, z, w] = local.rotation;
-	let [sx, sy, sz] = local.scale;
-	let [tx, ty, tz] = local.translation;
-	let columns = [
-		[
-			(1.0 - 2.0 * (y * y + z * z)) * sx,
-			(2.0 * (x * y + z * w)) * sx,
-			(2.0 * (x * z - y * w)) * sx,
-			0.0,
-		],
-		[
-			(2.0 * (x * y - z * w)) * sy,
-			(1.0 - 2.0 * (x * x + z * z)) * sy,
-			(2.0 * (y * z + x * w)) * sy,
-			0.0,
-		],
-		[
-			(2.0 * (x * z + y * w)) * sz,
-			(2.0 * (y * z - x * w)) * sz,
-			(1.0 - 2.0 * (x * x + y * y)) * sz,
-			0.0,
-		],
-		[tx, ty, tz, 1.0],
-	];
-	Matrix::from((
-		columns[0][0],
-		columns[1][0],
-		columns[2][0],
-		columns[3][0],
-		columns[0][1],
-		columns[1][1],
-		columns[2][1],
-		columns[3][1],
-		columns[0][2],
-		columns[1][2],
-		columns[2][2],
-		columns[3][2],
-		columns[0][3],
-		columns[1][3],
-		columns[2][3],
-		columns[3][3],
-	))
+	Matrix::from_translation(local.translation.into_maths())
+		* local.rotation.into_matrix()
+		* Matrix::from_scale(local.scale.into_maths())
 }
 
 /// Samples one validated resource curve at `time`.
-fn sample_resource_curve<const N: usize>(curve: &Curve<[f32; N]>, time: f32) -> [f32; N]
-where
-	[f32; N]: CurveValue,
-{
+fn sample_resource_curve<V: CurveValue<N>, T: CurveComponents<N>, const N: usize>(curve: &Curve<V, T>, time: f32) -> V {
 	let (interpolation, times, values, tangents) = match curve {
 		Curve::Step { times, values } => (CurveInterpolation::Step, times, values, None),
 		Curve::Linear { times, values } => (CurveInterpolation::Linear, times, values, None),
@@ -260,7 +221,7 @@ where
 		|key| values[key],
 		|key| {
 			let (in_tangents, out_tangents) = tangents.expect("Only cubic curves read tangents.");
-			(in_tangents[key], out_tangents[key])
+			(in_tangents[key].components(), out_tangents[key].components())
 		},
 	)
 }
@@ -335,7 +296,7 @@ mod tests {
 	use resource_management::{
 		Reference,
 		resources::{
-			animation::{Animation, NodeTrack, QuaternionCurve, Vector3Curve},
+			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
 			skeleton::{LocalTransform, Skeleton, SkeletonNode},
 		},
 	};
@@ -366,9 +327,9 @@ mod tests {
 			duration: 1.0,
 			tracks: vec![NodeTrack {
 				node: 1,
-				translation: Some(Vector3Curve::Linear {
+				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![[0.0; 3], [child_end_x, 0.0, 0.0]],
+					values: vec![math::Vector::zero(), math::Vector::new(child_end_x, 0.0, 0.0)],
 				}),
 				rotation: None,
 				scale: None,
@@ -378,36 +339,39 @@ mod tests {
 
 	#[test]
 	fn linear_vector_sampling_clamps_and_interpolates() {
-		let curve = Vector3Curve::Linear {
+		let curve = TranslationCurve::Linear {
 			times: vec![1.0, 3.0],
-			values: vec![[2.0, 4.0, 6.0], [6.0, 8.0, 10.0]],
+			values: vec![math::Vector::new(2.0, 4.0, 6.0), math::Vector::new(6.0, 8.0, 10.0)],
 		};
 
-		assert_eq!(sample_resource_curve(&curve, 0.0), [2.0, 4.0, 6.0]);
-		assert_eq!(sample_resource_curve(&curve, 2.0), [4.0, 6.0, 8.0]);
-		assert_eq!(sample_resource_curve(&curve, 4.0), [6.0, 8.0, 10.0]);
+		assert_eq!(sample_resource_curve(&curve, 0.0), math::Vector::new(2.0, 4.0, 6.0));
+		assert_eq!(sample_resource_curve(&curve, 2.0), math::Vector::new(4.0, 6.0, 8.0));
+		assert_eq!(sample_resource_curve(&curve, 4.0), math::Vector::new(6.0, 8.0, 10.0));
 	}
 
 	#[test]
 	fn rotation_sampling_uses_the_shortest_quaternion_path() {
-		let curve = QuaternionCurve::Linear {
+		let curve = RotationCurve::Linear {
 			times: vec![0.0, 1.0],
-			values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, -1.0]],
+			values: vec![
+				math::Orientation::identity(),
+				math::Orientation::try_from_array([0.0, 0.0, 0.0, -1.0]).unwrap(),
+			],
 		};
 
-		assert_eq!(sample_resource_curve(&curve, 0.5), [0.0, 0.0, 0.0, 1.0]);
+		assert_eq!(sample_resource_curve(&curve, 0.5), math::Orientation::identity());
 	}
 
 	#[test]
 	fn cubic_vector_sampling_applies_time_scaled_tangents() {
-		let curve = Vector3Curve::CubicSpline {
+		let curve = TranslationCurve::CubicSpline {
 			times: vec![0.0, 2.0],
-			values: vec![[0.0; 3], [2.0, 0.0, 0.0]],
-			in_tangents: vec![[0.0; 3], [1.0, 0.0, 0.0]],
-			out_tangents: vec![[1.0, 0.0, 0.0], [0.0; 3]],
+			values: vec![math::Vector::zero(), math::Vector::new(2.0, 0.0, 0.0)],
+			in_tangents: vec![math::Vector::zero(), math::Vector::new(1.0, 0.0, 0.0)],
+			out_tangents: vec![math::Vector::new(1.0, 0.0, 0.0), math::Vector::zero()],
 		};
 
-		assert_eq!(sample_resource_curve(&curve, 1.0), [1.0, 0.0, 0.0]);
+		assert_eq!(sample_resource_curve(&curve, 1.0), math::Vector::new(1.0, 0.0, 0.0));
 	}
 
 	#[test]
@@ -419,8 +383,8 @@ mod tests {
 		let child = comparison.largest_difference().expect("the child should differ");
 
 		assert_eq!(child.node, 1);
-		assert_eq!(child.first, [1.0, 0.0, 0.0]);
-		assert_eq!(child.second, [0.0, 0.0, 0.0]);
+		assert_eq!(child.first, math::Point::new(1.0, 0.0, 0.0));
+		assert_eq!(child.second, math::Point::new(0.0, 0.0, 0.0));
 		assert_eq!(child.distance, 1.0);
 	}
 

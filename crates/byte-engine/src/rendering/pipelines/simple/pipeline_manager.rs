@@ -14,7 +14,7 @@
 /// It owns the world listeners, pending scene instances, resident lookup, instance bookkeeping, and
 /// sink-local passes. Loader lanes own mesh preparation, placement, and transfer.
 pub struct PipelineManager {
-	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[AffineShaderMatrix; MAX_INSTANCES]>,
+	pub(super) instance_data_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_INSTANCES]>,
 	pub(super) camera_data_buffer: ghi::DynamicBufferHandle<[CameraShaderData; 8]>,
 	pub(super) vertex_positions_buffer: ghi::BufferHandle<[[f32; 3]; super::resource_manager::SIMPLE_VERTEX_CAPACITY]>,
 	pub(super) indices_buffer: ghi::BufferHandle<[u16; super::resource_manager::SIMPLE_INDEX_CAPACITY]>,
@@ -326,7 +326,6 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 }
 
 use ghi::{context::ContextCreate as _, frame::Frame as _};
-use math::AffineShaderMatrix;
 use smallvec::SmallVec;
 use utils::{StableVec, StableVecHandle, hash::HashMap};
 

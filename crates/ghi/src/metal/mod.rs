@@ -673,7 +673,7 @@ mod flat_binding_tests {
 				[output_resource],
 			)
 			.expect("Metal 4 specialization shader creation failed. The most likely cause is invalid Metal test source.");
-		let specialization_map = [crate::pipelines::SpecializationMapEntry::new(0, "u32".to_string(), 73u32)];
+		let specialization_map = [crate::pipelines::SpecializationMapEntry::new(0, 73u32)];
 		let pipeline = context.create_compute_pipeline(crate::pipelines::compute::Builder::new(
 			&[],
 			crate::pipelines::ShaderParameter::new(&shader, crate::ShaderTypes::Compute)

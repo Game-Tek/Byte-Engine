@@ -879,6 +879,57 @@ mod tests {
 		let _ = mesh;
 	}
 
+	/// Verifies per-vertex mesh outputs become interpolated `VertexOutput` attributes written with the vertex position,
+	/// while per-primitive outputs stay flat `PrimitiveOutput` attributes.
+	#[compio::test]
+	async fn vertex_mesh_outputs_interpolate_with_the_vertex_position() {
+		let mesh = lower_fixture(
+			r#"
+			out_primitive_index: output<u32, 1, 126>;
+			out_uv: vertex_output<vec2f, 2, 64>;
+
+			main: fn () -> void {
+				let index: u32 = thread_idx();
+				set_mesh_output_counts(3, 1);
+				set_mesh_vertex_position(index, vec4f(f32(index), 0.0, 0.0, 1.0));
+				out_uv[index] = vec2f(f32(index), 1.0);
+				out_primitive_index[index] = index;
+				set_mesh_triangle(index, vec3u(0, 1, 2));
+			}
+			"#,
+			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		);
+		assert_string_contains!(mesh, "struct VertexOutput{float4 position [[position]];float2 uv [[user(locn2)]];};");
+		assert_string_contains!(mesh, "struct PrimitiveOutput{uint primitive_index [[flat]] [[user(locn1)]];};");
+		assert_string_contains!(
+			mesh,
+			"out_mesh.set_vertex(index, VertexOutput{.position = float4(float(index),0.0,0.0,1.0), .uv = float2(float(index),1.0)})"
+		);
+		assert_string_contains!(mesh, "out_mesh.set_primitive(index, PrimitiveOutput{.primitive_index = index})");
+
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-vertex-output-fixture")
+			.await
+			.expect("Expected generated per-vertex mesh output MSL to compile natively");
+	}
+
+	/// Verifies Metal rejects a per-vertex output written apart from its vertex position, which `set_vertex` would erase.
+	#[test]
+	#[should_panic(expected = "Metal mesh vertex outputs must be written next to `set_mesh_vertex_position`")]
+	fn vertex_mesh_output_without_its_position_is_rejected() {
+		lower_fixture(
+			r#"
+			out_uv: vertex_output<vec2f, 2, 64>;
+
+			main: fn () -> void {
+				let index: u32 = thread_idx();
+				out_uv[index] = vec2f(0.0, 1.0);
+			}
+			"#,
+			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		);
+	}
+
 	/// Verifies workgroup storage stays in threadgroup memory, reaches helpers by pointer, and keeps its barrier.
 	/// A dropped barrier or a per-thread copy of the storage still compiles, so the lowering is asserted as well as compiled.
 	#[compio::test]

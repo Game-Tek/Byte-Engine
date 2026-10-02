@@ -317,7 +317,7 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	let declaration = iterator.next().copied().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
-	if !matches!(declaration, "input" | "output" | "task_payload" | "workgroup") {
+	if !matches!(declaration, "input" | "output" | "vertex_output" | "task_payload" | "workgroup") {
 		return Err(ParsingFailReasons::NotMine);
 	}
 
@@ -334,7 +334,7 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 	})?;
 
 	let node = match declaration {
-		"input" | "output" => {
+		"input" | "output" | "vertex_output" => {
 			iterator.next_str(",").map_err(|_| {
 				syntax_error(format!(
 					"Expected , after the type in {declaration} {name}. The most likely cause is that the location is missing."
@@ -356,8 +356,13 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 
 			if declaration == "input" {
 				Node::input(name, format, location)
-			} else if iterator.clone().next().copied() == Some(",") {
-				iterator.next();
+			} else if declaration == "vertex_output" || iterator.clone().next().copied() == Some(",") {
+				// Vertex outputs only exist as mesh output arrays, so their element count is required.
+				iterator.next_str(",").map_err(|_| {
+					syntax_error(format!(
+						"Expected , after the location in {declaration} {name}. The most likely cause is that the element count is missing."
+					))
+				})?;
 				let count = iterator
 					.next()
 					.ok_or_else(|| {
@@ -376,7 +381,11 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 						"Invalid element count in output {name}. The most likely cause is that an output array was declared with zero elements."
 					)));
 				}
-				Node::output_array(name, format, location, count)
+				if declaration == "vertex_output" {
+					Node::vertex_output_array(name, format, location, count)
+				} else {
+					Node::output_array(name, format, location, count)
+				}
 			} else {
 				Node::output(name, format, location)
 			}

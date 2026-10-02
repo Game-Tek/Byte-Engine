@@ -30,23 +30,27 @@ impl<A: Allocator + Clone> Generator<A> {
 		self.emit_statement_end(string);
 	}
 
-	/// Extracts one primitive field write so adjacent writes can become one native primitive value.
-	pub(crate) fn mesh_primitive_write_parts(
-		&mut self,
-		statement: &besl::NodeReference,
-	) -> Option<(String, besl::NodeReference, besl::NodeReference)> {
+	/// Extracts one vertex or primitive field write so adjacent writes can become one native vertex or primitive value.
+	pub(crate) fn mesh_write_parts(&mut self, statement: &besl::NodeReference) -> Option<MeshWrite> {
 		let node = statement.borrow();
 		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
 		}) = node.node()
 		{
-			let [index, array_index] = arguments.as_slice() else {
+			let [index, value] = arguments.as_slice() else {
 				return None;
 			};
-			if intrinsic.borrow().get_name() == Some("set_mesh_primitive_render_target_array_index") {
-				return Some(("render_target_array_index".to_string(), index.clone(), array_index.clone()));
-			}
-			return None;
+			let (rate, field) = match intrinsic.borrow().get_name() {
+				Some("set_mesh_primitive_render_target_array_index") => (MeshWriteRate::Primitive, "render_target_array_index"),
+				Some("set_mesh_vertex_position") => (MeshWriteRate::Vertex, "position"),
+				_ => return None,
+			};
+			return Some(MeshWrite {
+				rate,
+				field: field.to_string(),
+				index: index.clone(),
+				value: value.clone(),
+			});
 		}
 
 		let besl::Nodes::Expression(besl::Expressions::Operator {
@@ -73,7 +77,13 @@ impl<A: Allocator + Clone> Generator<A> {
 		};
 
 		let source = source.borrow();
-		let besl::Nodes::Output { name, count, .. } = source.node() else {
+		let besl::Nodes::Output {
+			name,
+			count,
+			per_vertex,
+			..
+		} = source.node()
+		else {
 			return None;
 		};
 
@@ -81,17 +91,32 @@ impl<A: Allocator + Clone> Generator<A> {
 			return None;
 		}
 
-		Some((Self::mesh_output_field_name(name).to_string(), index.clone(), right.clone()))
+		Some(MeshWrite {
+			rate: if *per_vertex {
+				MeshWriteRate::Vertex
+			} else {
+				MeshWriteRate::Primitive
+			},
+			field: Self::mesh_output_field_name(name).to_string(),
+			index: index.clone(),
+			value: right.clone(),
+		})
 	}
 
-	/// Returns one primitive field's native declaration position for Metal aggregate initialization.
-	pub(crate) fn mesh_primitive_field_order(&self, field: &str) -> usize {
-		if field == "render_target_array_index" {
+	/// Returns one vertex or primitive field's native declaration position for Metal aggregate initialization.
+	pub(crate) fn mesh_field_order(&self, rate: MeshWriteRate, field: &str) -> usize {
+		let (builtin, fields) = match rate {
+			MeshWriteRate::Vertex => ("position", self.mesh_stage_context.as_ref().map(|context| &context.vertex_output_fields)),
+			MeshWriteRate::Primitive => (
+				"render_target_array_index",
+				self.mesh_stage_context.as_ref().map(|context| &context.primitive_output_fields),
+			),
+		};
+		if field == builtin {
 			return 0;
 		}
-		self.mesh_stage_context
-			.as_ref()
-			.and_then(|context| context.primitive_output_fields.iter().position(|declared| declared == field))
+		fields
+			.and_then(|fields| fields.iter().position(|declared| declared == field))
 			.map_or(usize::MAX, |index| index + 1)
 	}
 
@@ -101,7 +126,12 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		while i < statements.len() {
 			if self.mesh_stage_context.is_some()
-				&& let Some((field, index, value)) = self.mesh_primitive_write_parts(&statements[i])
+				&& let Some(MeshWrite {
+					rate,
+					field,
+					index,
+					value,
+				}) = self.mesh_write_parts(&statements[i])
 			{
 				let mut index_string = String::new();
 				self.emit_node_string(&mut index_string, &index);
@@ -109,24 +139,36 @@ impl<A: Allocator + Clone> Generator<A> {
 				let mut next = i + 1;
 
 				while next < statements.len() {
-					let Some((field, next_index, value)) = self.mesh_primitive_write_parts(&statements[next]) else {
+					let Some(write) = self.mesh_write_parts(&statements[next]) else {
 						break;
 					};
 					let mut next_index_string = String::new();
-					self.emit_node_string(&mut next_index_string, &next_index);
-					if next_index_string != index_string || writes.iter().any(|(written, _)| written == &field) {
+					self.emit_node_string(&mut next_index_string, &write.index);
+					if write.rate != rate
+						|| next_index_string != index_string
+						|| writes.iter().any(|(written, _)| written == &write.field)
+					{
 						break;
 					}
-					writes.push((field, value));
+					writes.push((write.field, write.value));
 					next += 1;
 				}
-				// Metal requires designated initializers to follow the PrimitiveOutput declaration order.
-				writes.sort_by_key(|(field, _)| self.mesh_primitive_field_order(field));
+				// Metal sets a whole vertex at once, so a vertex written without its position would lose it.
+				assert!(
+					rate == MeshWriteRate::Primitive || writes.iter().any(|(field, _)| field == "position"),
+					"Metal mesh vertex outputs must be written next to `set_mesh_vertex_position` with the same index. The most likely cause is that a `vertex_output` write is separated from the vertex position write by another statement."
+				);
+				// Metal requires designated initializers to follow the output struct's declaration order.
+				writes.sort_by_key(|(field, _)| self.mesh_field_order(rate, field));
 
 				formatting.push_indentation(string, indent);
-				string.push_str("out_mesh.set_primitive(");
+				let (setter, structure) = match rate {
+					MeshWriteRate::Vertex => ("out_mesh.set_vertex(", ", VertexOutput{"),
+					MeshWriteRate::Primitive => ("out_mesh.set_primitive(", ", PrimitiveOutput{"),
+				};
+				string.push_str(setter);
 				self.emit_node_string(string, &index);
-				string.push_str(", PrimitiveOutput{");
+				string.push_str(structure);
 				for (write_index, (field, value)) in writes.iter().enumerate() {
 					if write_index > 0 {
 						string.push_str(", ");
@@ -288,6 +330,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				location,
 				format,
 				count,
+				..
 			} => {
 				if count.is_some() {
 					return;

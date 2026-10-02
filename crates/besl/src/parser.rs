@@ -33,6 +33,7 @@ mod tests {
 				instance_index: input<u32, 0>;
 				primitive_index: output<u32, 1>;
 				meshlet_indices: output<u32, 2, 126>;
+				uvs: vertex_output<vec2f, 3, 64>;
 				visible_meshlets: task_payload<u32, 32>;
 				visible_count: workgroup<atomicu32>;
 				scratch: workgroup<f32, 64>;
@@ -64,8 +65,19 @@ mod tests {
 				format: "u32",
 				location: 2,
 				count: Some(count),
+				per_vertex: false,
 				..
 			} if count.get() == 126
+		));
+		assert!(matches!(
+			root["uvs"].node(),
+			Nodes::Output {
+				format: "vec2f",
+				location: 3,
+				count: Some(count),
+				per_vertex: true,
+				..
+			} if count.get() == 64
 		));
 		assert!(matches!(
 			root["visible_meshlets"].node(),
@@ -100,6 +112,8 @@ mod tests {
 		for source in [
 			"value: input<u32, 256>;",
 			"value: output<u32, 0, 0>;",
+			"value: vertex_output<u32, 0, 0>;",
+			"value: vertex_output<u32, 0>;",
 			"value: task_payload<u32, 0>;",
 			"value: workgroup<u32>",
 		] {

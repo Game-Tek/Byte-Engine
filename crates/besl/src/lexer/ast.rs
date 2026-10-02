@@ -902,20 +902,33 @@ impl Node {
 	}
 
 	pub fn output(name: &str, format: NodeReference, location: u8) -> Node {
-		Self::output_with_count(name, format, location, None)
+		Self::output_with_count(name, format, location, None, false)
 	}
 
+	/// Declares a mesh output array with one flat element per primitive.
 	pub fn output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), false)
 	}
 
-	fn output_with_count(name: &str, format: NodeReference, location: u8, count: Option<NonZeroUsize>) -> Node {
+	/// Declares a mesh output array with one element per vertex, which rasterization interpolates.
+	pub fn vertex_output_array(name: &str, format: NodeReference, location: u8, count: u32) -> Node {
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), true)
+	}
+
+	fn output_with_count(
+		name: &str,
+		format: NodeReference,
+		location: u8,
+		count: Option<NonZeroUsize>,
+		per_vertex: bool,
+	) -> Node {
 		Node {
 			node: Nodes::Output {
 				name: name.to_string(),
 				format,
 				location,
 				count,
+				per_vertex,
 			},
 		}
 	}
@@ -1211,6 +1224,9 @@ pub enum Nodes {
 		format: NodeReference,
 		location: u8,
 		count: Option<NonZeroUsize>,
+		/// Whether a mesh output array holds one element per vertex, interpolated across each triangle, instead of
+		/// one flat element per primitive.
+		per_vertex: bool,
 	},
 	TaskPayload {
 		name: String,
@@ -1537,14 +1553,16 @@ impl std::fmt::Debug for Node {
 				format,
 				location,
 				count,
+				per_vertex,
 			} => {
 				write!(
 					f,
-					"Output {{ name: {}, format: {:?}, location: {}, count: {:?} }}",
+					"Output {{ name: {}, format: {:?}, location: {}, count: {:?}, per_vertex: {} }}",
 					name,
 					format.0.borrow().get_name().map(|e| e.to_string()),
 					location,
-					count
+					count,
+					per_vertex
 				)
 			}
 			Nodes::TaskPayload { name, format, count } => {

@@ -252,11 +252,13 @@ impl<'a> Compiler<'a> {
 
 		let source_ref = source.borrow();
 		let (slot, layout) = match source_ref.node() {
+			// The VM stores per-vertex and per-primitive mesh outputs alike, as plain arrays tests read back.
 			Nodes::Output {
 				name,
 				format,
 				location,
 				count,
+				per_vertex: _,
 			} => {
 				if name != &output_name {
 					return Err(VmError::UnsupportedExpression {

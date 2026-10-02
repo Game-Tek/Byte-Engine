@@ -158,6 +158,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				location,
 				format,
 				count,
+				..
 			} = output.node()
 			else {
 				continue;
@@ -200,6 +201,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				location,
 				format,
 				count,
+				..
 			} = output.node()
 			else {
 				continue;
@@ -659,26 +661,34 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		let primitive_output_fields = nodes
-			.outputs
-			.iter()
-			.filter_map(|output| {
-				let output = output.borrow();
-				let besl::Nodes::Output {
-					name, count: Some(_), ..
-				} = output.node()
-				else {
-					return None;
-				};
-				Some(Self::mesh_output_field_name(&name).to_string())
-			})
-			.collect();
+		let mesh_output_fields = |vertex_rate: bool| {
+			nodes
+				.outputs
+				.iter()
+				.filter_map(|output| {
+					let output = output.borrow();
+					let besl::Nodes::Output {
+						name,
+						count: Some(_),
+						per_vertex,
+						..
+					} = output.node()
+					else {
+						return None;
+					};
+					(*per_vertex == vertex_rate).then(|| Self::mesh_output_field_name(name).to_string())
+				})
+				.collect()
+		};
+		let primitive_output_fields = mesh_output_fields(false);
+		let vertex_output_fields = mesh_output_fields(true);
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
 			uses_render_target_array_index,
 			primitive_output_fields,
+			vertex_output_fields,
 			maximum_vertices,
 			maximum_primitives,
 		});
@@ -736,6 +746,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		formatting.push_indentation(string, 1);
 		string.push_str("float4 position [[position]]");
 		formatting.push_statement_end(string);
+		self.emit_mesh_output_fields(string, outputs, true);
 		self.emit_struct_declaration_end(string);
 
 		self.emit_named_struct_start(string, "PrimitiveOutput");
@@ -748,18 +759,26 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str("uint render_target_array_index [[render_target_array_index]]");
 			formatting.push_statement_end(string);
 		}
+		self.emit_mesh_output_fields(string, outputs, false);
+		self.emit_struct_declaration_end(string);
+	}
+
+	/// Emits the mesh output arrays of one rate as user attributes of their native vertex or primitive struct.
+	fn emit_mesh_output_fields(&self, string: &mut String, outputs: &[&besl::NodeReference], vertex_rate: bool) {
+		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
 				name,
 				location,
 				format,
-				count,
+				count: Some(_),
+				per_vertex,
 			} = output.node()
 			else {
 				continue;
 			};
-			if count.is_none() {
+			if *per_vertex != vertex_rate {
 				continue;
 			}
 
@@ -768,7 +787,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			let type_name = format.get_name().unwrap();
 			string.push_str(Self::translate_type(type_name));
 			string.push(' ');
-			Self::identifier(Self::mesh_output_field_name(&name)).push_to(string);
+			Self::identifier(Self::mesh_output_field_name(name)).push_to(string);
 			if is_integer_besl_type(type_name) {
 				string.push_str(" [[flat]]");
 			}
@@ -777,7 +796,6 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(")]]");
 			formatting.push_statement_end(string);
 		}
-		self.emit_struct_declaration_end(string);
 	}
 
 	/// Returns resources in logical-slot order so generated MSL remains deterministic.

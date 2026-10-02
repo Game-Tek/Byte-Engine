@@ -652,6 +652,7 @@ impl Generator {
 				location,
 				format,
 				count,
+				per_vertex,
 			} => {
 				if count.is_none() && self.current_stage_interpolates_outputs && besl::is_position_output(name) {
 					return;
@@ -660,8 +661,14 @@ impl Generator {
 				let besl_type = format.get_name().unwrap();
 				let type_name = Self::translate_type(besl_type);
 				if let Some(count) = count {
+					// Per-vertex mesh outputs interpolate like vertex-shader outputs, so integers stay flat.
+					let qualifier = match (*per_vertex, is_integer_besl_type(besl_type)) {
+						(false, _) => "perprimitiveEXT ",
+						(true, true) => "flat ",
+						(true, false) => "",
+					};
 					string.push_str(&format!(
-						"layout(location={}){space_char}perprimitiveEXT out {} {}[{}];{break_char}",
+						"layout(location={}){space_char}{qualifier}out {} {}[{}];{break_char}",
 						location,
 						type_name,
 						Self::identifier(name),

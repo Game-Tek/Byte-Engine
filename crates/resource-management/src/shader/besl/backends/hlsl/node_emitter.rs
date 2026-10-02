@@ -365,9 +365,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some(field_name) = Self::hlsl_mesh_output_target(left) {
-			// Mesh primitive attributes live in the native per-primitive output array rather than module globals.
-			string.push_str("besl_primitives[");
+		if let Some((field_name, per_vertex)) = Self::hlsl_mesh_output_target(left) {
+			// Mesh attributes live in the native per-vertex or per-primitive output array rather than module globals.
+			string.push_str(if per_vertex { "besl_vertices[" } else { "besl_primitives[" });
 			self.emit_node_string(string, right);
 			string.push_str("].");
 			Self::identifier(&field_name).push_to(string);

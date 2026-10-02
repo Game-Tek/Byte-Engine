@@ -59,7 +59,8 @@ meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device
 meshlet_instances: task_payload<u32, 192>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
-out_uv: output<vec2f16, 2, 64>;
+// One UV per meshlet vertex, interpolated across each triangle for the alpha test.
+out_uv: vertex_output<vec2f16, 2, 64>;
 
 // The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
 push_constant: push_constant {

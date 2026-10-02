@@ -49,7 +49,7 @@ main: fn (
 		let texture_index: u32 = material.textures[material.coverage_texture_slot];
 		coverage = coverage * sample(material_textures[texture_index], vec2f(pipeline_input.uv)).w;
 	}
-	if (coverage < material.alpha_cutoff - 10.0) {
+	if (coverage < material.alpha_cutoff) {
 		discard;
 	}
 	return {

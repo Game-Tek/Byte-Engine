@@ -381,6 +381,7 @@ impl Generator {
 				location,
 				format,
 				count,
+				..
 			} => {
 				if count.is_some() {
 					return;

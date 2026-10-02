@@ -515,22 +515,35 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn output(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
-		Self::output_with_count(name, format, location, None)
+		Self::output_with_count(name, format, location, None, false)
 	}
 
-	fn output_with_count(name: &'a str, format: &'a str, location: u8, count: Option<NonZeroUsize>) -> Node<'a> {
+	fn output_with_count(
+		name: &'a str,
+		format: &'a str,
+		location: u8,
+		count: Option<NonZeroUsize>,
+		per_vertex: bool,
+	) -> Node<'a> {
 		Node {
 			node: Nodes::Output {
 				name,
 				format,
 				location,
 				count,
+				per_vertex,
 			},
 		}
 	}
 
+	/// Declares a mesh output array with one flat element per primitive.
 	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize))
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), false)
+	}
+
+	/// Declares a mesh output array with one element per vertex, which rasterization interpolates.
+	pub fn vertex_output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), true)
 	}
 
 	pub fn task_payload(name: &'a str, format: &'a str, count: u32) -> Node<'a> {
@@ -768,6 +781,9 @@ pub enum Nodes<'a> {
 		format: &'a str,
 		location: u8,
 		count: Option<NonZeroUsize>,
+		/// Whether a mesh output array holds one element per vertex, interpolated across each triangle, instead of
+		/// one flat element per primitive.
+		per_vertex: bool,
 	},
 	/// An array carried from a task shader invocation group to the mesh work it emits.
 	TaskPayload {

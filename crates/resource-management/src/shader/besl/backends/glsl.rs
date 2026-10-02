@@ -478,6 +478,42 @@ mod tests {
 		assert_string_contains!(shader, "uvec3 indices=mirror_indices(scalar_u32());");
 	}
 
+	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
+	#[test]
+	fn vertex_mesh_outputs_join_the_vertex_struct() {
+		let root = besl::compile_to_besl(
+			r#"
+			out_primitive_index: output<u32, 1, 1>;
+			out_uv: vertex_output<vec2f, 2, 3>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				if (lane == 0) {
+					set_mesh_output_counts(3, 1);
+				}
+				if (lane < 3) {
+					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+					out_uv[lane] = vec2f(f32(lane), 1.0);
+				}
+				if (lane < 1) {
+					set_mesh_triangle(0, vec3u(0, 1, 2));
+					out_primitive_index[0] = lane;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected mesh shader source to compile");
+		let main = root.get_main().expect("Expected mesh shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
+			.expect("Expected mesh shader source to generate GLSL");
+		assert_string_contains!(shader, "layout(location=2)out vec2 out_uv[3];");
+		assert_string_contains!(shader, "layout(location=1)perprimitiveEXT out uint32_t out_primitive_index[1];");
+		assert_string_contains!(shader, "out_uv[lane]=vec2(float(lane),1.0);");
+	}
+
 	#[test]
 	fn mesh_intrinsics_emit_glsl_mesh_commands() {
 		let script = r#"

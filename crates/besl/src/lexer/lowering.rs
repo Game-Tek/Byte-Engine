@@ -350,6 +350,7 @@ impl Lexer {
 				format,
 				location,
 				count,
+				per_vertex,
 			} => {
 				let t = resolve_type(&self.scopes, format)?;
 
@@ -358,6 +359,7 @@ impl Lexer {
 					format: t,
 					location: *location,
 					count: *count,
+					per_vertex: *per_vertex,
 				});
 
 				this.into()

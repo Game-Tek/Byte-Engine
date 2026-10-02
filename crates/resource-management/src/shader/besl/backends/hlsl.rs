@@ -872,6 +872,49 @@ mod tests {
 		.expect("Expected task HLSL to compile to amplification DXIL");
 	}
 
+	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
+	#[test]
+	fn vertex_mesh_outputs_join_the_vertex_struct() {
+		let root = besl::compile_to_besl(
+			r#"
+			out_primitive_index: output<u32, 1, 1>;
+			out_uv: vertex_output<vec2f, 2, 3>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				if (lane == 0) {
+					set_mesh_output_counts(3, 1);
+				}
+				if (lane < 3) {
+					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+					out_uv[lane] = vec2f(f32(lane), 1.0);
+				}
+				if (lane < 1) {
+					set_mesh_triangle(0, vec3u(0, 1, 2));
+					out_primitive_index[0] = lane;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected mesh shader source to compile");
+		let main = root.get_main().expect("Expected mesh shader source to contain main");
+		let shader = Generator::new()
+			.minified(true)
+			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
+			.expect("Expected mesh shader source to generate HLSL");
+		assert_string_contains!(
+			shader,
+			"struct VertexOutput{float4 position : SV_Position;float2 out_uv : TEXCOORD2;};"
+		);
+		assert_string_contains!(
+			shader,
+			"struct PrimitiveOutput{nointerpolation uint32_t out_primitive_index : TEXCOORD1;};"
+		);
+		assert_string_contains!(shader, "besl_vertices[lane].out_uv=float2(float(lane),1.0)");
+		assert_string_contains!(shader, "besl_primitives[0].out_primitive_index=lane");
+	}
+
 	#[test]
 	fn mesh_payload_and_primitive_outputs_compile_as_dxil_mesh_shader() {
 		let root = besl::compile_to_besl(

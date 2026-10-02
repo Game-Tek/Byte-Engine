@@ -25,13 +25,14 @@ impl Generator {
 		self.emit_struct_declaration_end(string);
 	}
 
-	/// Emits the fixed vertex output and the authored per-primitive mesh outputs.
+	/// Emits the fixed vertex output and the authored per-vertex and per-primitive mesh outputs.
 	pub(crate) fn emit_mesh_output_structs(&self, string: &mut String) {
 		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "VertexOutput");
 		formatting.push_indentation(string, 1);
 		string.push_str("float4 position : SV_Position");
 		formatting.push_statement_end(string);
+		self.emit_mesh_output_fields(string, true);
 		self.emit_struct_declaration_end(string);
 
 		self.emit_named_struct_start(string, "PrimitiveOutput");
@@ -40,6 +41,13 @@ impl Generator {
 			string.push_str("uint32_t render_target_array_index : SV_RenderTargetArrayIndex");
 			formatting.push_statement_end(string);
 		}
+		self.emit_mesh_output_fields(string, false);
+		self.emit_struct_declaration_end(string);
+	}
+
+	/// Emits the mesh output arrays of one rate as fields of their native vertex or primitive struct.
+	fn emit_mesh_output_fields(&self, string: &mut String, vertex_rate: bool) {
+		let formatting = ShaderFormatting::new(self.minified);
 		for output in &self.mesh_outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
@@ -47,10 +55,14 @@ impl Generator {
 				location,
 				format,
 				count: Some(_),
+				per_vertex,
 			} = output.node()
 			else {
 				continue;
 			};
+			if *per_vertex != vertex_rate {
+				continue;
+			}
 
 			formatting.push_indentation(string, 1);
 			let format = format.borrow();
@@ -66,23 +78,27 @@ impl Generator {
 			string.push_str(&location.to_string());
 			formatting.push_statement_end(string);
 		}
-		self.emit_struct_declaration_end(string);
 	}
 
-	/// Recovers an indexed mesh-output declaration so HLSL can address its primitive structure field.
-	pub(crate) fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<String> {
+	/// Recovers an indexed mesh-output declaration so HLSL can address its vertex or primitive structure field.
+	///
+	/// Returns the field name and whether the output is per-vertex.
+	pub(crate) fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<(String, bool)> {
 		let left = left.borrow();
 		let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = left.node() else {
 			return None;
 		};
 		let source = source.borrow();
 		let besl::Nodes::Output {
-			name, count: Some(_), ..
+			name,
+			count: Some(_),
+			per_vertex,
+			..
 		} = source.node()
 		else {
 			return None;
 		};
-		Some(name.clone())
+		Some((name.clone(), *per_vertex))
 	}
 
 	/// Finds a lane-guarded BESL mesh-count statement that HLSL must execute uniformly.
@@ -153,6 +169,7 @@ impl Generator {
 				location,
 				format,
 				count: None,
+				..
 			} = output.node()
 			else {
 				continue;

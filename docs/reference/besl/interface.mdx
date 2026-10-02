@@ -49,7 +49,16 @@ dedicated declarations:
 
 ```rust
 out_instance_index: output<u32, 0, 126>;
+out_uv: vertex_output<vec2f16, 2, 64>;
 ```
+
+A mesh `output` array holds one flat value per primitive, so every fragment of a
+triangle reads the same element. A `vertex_output` array holds one value per
+vertex, which rasterization interpolates across each triangle, like a vertex
+shader output. Size it to the stage's maximum vertex count, and index it by
+vertex. On Metal a vertex is written as one value, so write each
+`vertex_output` element in the statements right next to the
+`set_mesh_vertex_position` call with the same index.
 
 Locations range from `0` through `255`. Don't repeat a location within one
 explicit input or output list.

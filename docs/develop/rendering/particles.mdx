@@ -73,6 +73,7 @@ code for modules it doesn't list. For editor completion, point `"$schema"` at th
 | Module | Section | Fields |
 | --- | --- | --- |
 | `sphere` | `initialize` | `radius`: starts particles at a random point inside a sphere, in meters. |
+| `box` | `initialize` | `size`: starts particles at a random point inside a box centered on the emitter, given as width, height, and depth in meters along the emitter's local axes. Set a side to 0 to spawn on a plane, such as rain falling from a ceiling. |
 | `cone` | `initialize` | `angle`: the half angle around local +Z, in radians. `speed`: the slowest and fastest launch speed, in meters per second. |
 | `acceleration` | `update` | `value`: a world-space acceleration in meters per second squared, such as gravity or wind. |
 | `drag` | `update` | `coefficient`: the fraction of speed lost per second at low speed. |

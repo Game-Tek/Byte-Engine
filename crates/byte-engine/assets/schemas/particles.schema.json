@@ -22,7 +22,7 @@
     "initialize": {
       "description": "Steps that place and launch new particles in the emitter's space, in order. Their results add up.",
       "type": "array",
-      "items": { "oneOf": [{ "$ref": "#/$defs/sphere" }, { "$ref": "#/$defs/cone" }] }
+      "items": { "oneOf": [{ "$ref": "#/$defs/sphere" }, { "$ref": "#/$defs/box" }, { "$ref": "#/$defs/cone" }] }
     },
     "update": {
       "description": "Steps that change every live particle each frame, in order.",
@@ -60,6 +60,16 @@
       "required": ["type", "radius"],
       "additionalProperties": false,
       "properties": { "type": { "const": "sphere" }, "radius": { "description": "Meters.", "type": "number", "minimum": 0 } }
+    },
+    "box": {
+      "description": "Starts particles at a random point inside a box centered on the emitter, such as a rain cloud.",
+      "type": "object",
+      "required": ["type", "size"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "box" },
+        "size": { "description": "The width, height, and depth along the emitter's local axes, in meters.", "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 3, "maxItems": 3 }
+      }
     },
     "cone": {
       "description": "Launches particles in a random direction inside a cone around the emitter's local +Z axis.",

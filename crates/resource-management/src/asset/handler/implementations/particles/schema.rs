@@ -50,6 +50,11 @@ pub(crate) struct SpawnSource {
 pub(crate) enum InitializeModule {
 	/// Starts particles at a uniformly random point inside a sphere around the emitter.
 	Sphere { radius: f32 },
+	/// Starts particles at a uniformly random point inside a box centered on the emitter, such as a rain cloud.
+	Box {
+		/// The box's width, height, and depth along the emitter's local axes, in meters.
+		size: [f32; 3],
+	},
 	/// Launches particles in a uniformly random direction inside a cone around the emitter's local `+Z` axis.
 	Cone {
 		/// The cone's half angle, in radians.
@@ -124,6 +129,11 @@ impl ParticleSystemSource {
 		for module in &self.initialize {
 			match module {
 				InitializeModule::Sphere { radius } => non_negative("sphere `radius`", *radius)?,
+				InitializeModule::Box { size } => {
+					for side in size {
+						non_negative("box `size`", *side)?;
+					}
+				}
 				InitializeModule::Cone { angle, speed } => {
 					if !(0.0..=std::f32::consts::PI).contains(angle) {
 						return Err("cone `angle` must be between 0 and π radians.".to_string());

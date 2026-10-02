@@ -103,6 +103,16 @@ fn simulate_program(system: &ParticleSystemSource) -> String {
 				literal(*radius),
 				random(),
 			),
+			InitializeModule::Box { size: [width, height, depth] } => writeln!(
+				initialize,
+				"		offset = offset + vec3f(({} - 0.5) * {}, ({} - 0.5) * {}, ({} - 0.5) * {});",
+				random(),
+				literal(*width),
+				random(),
+				literal(*height),
+				random(),
+				literal(*depth),
+			),
 			InitializeModule::Cone { angle, speed } => write!(
 				initialize,
 				"		let m{index}_cos: f32 = mix(1.0, {}, {});

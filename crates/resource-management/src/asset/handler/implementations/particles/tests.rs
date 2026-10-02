@@ -32,7 +32,7 @@ const SPARKS: &str = r#"{
 const SMOKE: &str = r#"{
 	"capacity": 1024,
 	"lifetime": [2.0, 4.0],
-	"initialize": [{ "type": "sphere", "radius": 0.5 }, { "type": "cone", "angle": 3.14159, "speed": [0.0, 0.2] }],
+	"initialize": [{ "type": "sphere", "radius": 0.5 }, { "type": "box", "size": [1.0, 0.0, 2.0] }, { "type": "cone", "angle": 3.14159, "speed": [0.0, 0.2] }],
 	"update": [{ "type": "acceleration", "value": [0.5, 1.0, 0.0] }, { "type": "drag", "coefficient": 1.5 }],
 	"render": {
 		"shape": { "type": "billboard", "size": 0.4 },
@@ -312,6 +312,35 @@ fn new_particles_leave_the_emitter_inside_its_cone() {
 			velocity[2] / speed >= 0.9 - 1e-5,
 			"particle {index} left the cone: {velocity:?}"
 		);
+	}
+}
+
+/// Verifies new particles start spread across their emitter's box and never outside it.
+#[test]
+fn new_particles_start_inside_their_box() {
+	let simulate = simulation(&SPARKS.replace(
+		r#"[{ "type": "cone", "angle": 0.45102681, "speed": [2.0, 4.0] }]"#,
+		r#"[{ "type": "box", "size": [4.0, 0.0, 2.0] }]"#,
+	));
+	let mut buffers = FrameBuffers::new(&simulate, 0);
+	buffers.frame.write("reset", Value::U32(1)).expect("reset");
+	buffers.spawn(64);
+
+	buffers.simulate(&simulate);
+
+	let mut lowest = [f32::INFINITY; 3];
+	let mut highest = [f32::NEG_INFINITY; 3];
+	for index in 0..64 {
+		let (position, ..) = buffers.particle(0, index);
+		for axis in 0..3 {
+			lowest[axis] = lowest[axis].min(position[axis] - EMITTER_POSITION[axis]);
+			highest[axis] = highest[axis].max(position[axis] - EMITTER_POSITION[axis]);
+		}
+	}
+	// 64 uniform draws reach well past half of each half-extent, and a zero-sized side stays flat.
+	for (axis, half_size) in [2.0f32, 0.0, 1.0].into_iter().enumerate() {
+		assert!(lowest[axis] >= -half_size && highest[axis] <= half_size, "particles left the box on axis {axis}");
+		assert!(highest[axis] - lowest[axis] >= half_size, "particles bunched up on axis {axis}");
 	}
 }
 

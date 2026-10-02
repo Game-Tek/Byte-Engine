@@ -490,6 +490,7 @@ pub(super) enum ArithmeticOperator {
 	ShiftRight,
 	BitwiseAnd,
 	BitwiseOr,
+	BitwiseXor,
 	LogicalAnd,
 	LogicalOr,
 }

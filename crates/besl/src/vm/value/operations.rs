@@ -50,6 +50,7 @@ pub(crate) fn arithmetic_operator(operator: &Operators) -> Option<ArithmeticOper
 		Operators::ShiftRight => Some(ArithmeticOperator::ShiftRight),
 		Operators::BitwiseAnd => Some(ArithmeticOperator::BitwiseAnd),
 		Operators::BitwiseOr => Some(ArithmeticOperator::BitwiseOr),
+		Operators::BitwiseXor => Some(ArithmeticOperator::BitwiseXor),
 		Operators::LogicalAnd => Some(ArithmeticOperator::LogicalAnd),
 		Operators::LogicalOr => Some(ArithmeticOperator::LogicalOr),
 		Operators::Assignment
@@ -382,6 +383,7 @@ trait VmInteger: Copy + PartialEq + Default {
 	fn wrapping_shr(self, right: Self) -> Self;
 	fn bitand(self, right: Self) -> Self;
 	fn bitor(self, right: Self) -> Self;
+	fn bitxor(self, right: Self) -> Self;
 }
 
 macro_rules! impl_vm_integer {
@@ -396,6 +398,7 @@ macro_rules! impl_vm_integer {
 			fn wrapping_shr(self, right: Self) -> Self { self.wrapping_shr(right as u32) }
 			fn bitand(self, right: Self) -> Self { self & right }
 			fn bitor(self, right: Self) -> Self { self | right }
+			fn bitxor(self, right: Self) -> Self { self ^ right }
 		})+
 	};
 }
@@ -428,6 +431,7 @@ fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: Arithmeti
 		ArithmeticOperator::ShiftRight => Ok(left.wrapping_shr(right)),
 		ArithmeticOperator::BitwiseAnd => Ok(left.bitand(right)),
 		ArithmeticOperator::BitwiseOr => Ok(left.bitor(right)),
+		ArithmeticOperator::BitwiseXor => Ok(left.bitxor(right)),
 		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
 			unreachable!("Logical operations are evaluated before integer arithmetic")
 		}
@@ -457,6 +461,7 @@ fn apply_f16_arithmetic(left: f16, right: f16, operator: ArithmeticOperator) -> 
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
+		| ArithmeticOperator::BitwiseXor
 		| ArithmeticOperator::LogicalAnd
 		| ArithmeticOperator::LogicalOr => {
 			return Err(VmError::TypeMismatch {
@@ -515,6 +520,7 @@ pub(crate) fn apply_float_arithmetic(left: f32, right: f32, operator: Arithmetic
 		| ArithmeticOperator::ShiftRight
 		| ArithmeticOperator::BitwiseAnd
 		| ArithmeticOperator::BitwiseOr
+		| ArithmeticOperator::BitwiseXor
 		| ArithmeticOperator::LogicalAnd
 		| ArithmeticOperator::LogicalOr => Err(VmError::TypeMismatch {
 			expected: "integer operands".to_string(),

@@ -364,6 +364,7 @@ pub(crate) fn operator_token(operator: &besl::Operators) -> &'static str {
 		besl::Operators::ShiftRight => ">>",
 		besl::Operators::BitwiseAnd => "&",
 		besl::Operators::BitwiseOr => "|",
+		besl::Operators::BitwiseXor => "^",
 		besl::Operators::Assignment => "=",
 		besl::Operators::Equality => "==",
 		besl::Operators::LessThan => "<",

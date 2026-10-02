@@ -2395,6 +2395,29 @@ fn task_workgroup_rejects_different_static_barriers_in_one_phase() {
 }
 
 #[test]
+fn bitwise_xor_flips_shared_bits() {
+	let executable = compile_test_program(
+		r#"
+		Result: struct {
+			values: u32[2],
+		}
+		result: descriptor<{ type: Result, binding: 43, access: read_write }>;
+
+		main: fn () -> void {
+			let mask: u32 = 12;
+			result.values[0] = mask ^ 10;
+			result.values[1] = 1 | mask ^ 6 & 3;
+		}
+		"#,
+		None,
+	);
+	let mut result = buffer_for_slot(&executable, ResourceSlot::new(43));
+	run_with_buffer(&executable, ResourceSlot::new(43), &mut result);
+
+	assert_eq!(read_u32s(&result, 2), [6, 1 | (12 ^ (6 & 3))]);
+}
+
+#[test]
 fn find_lsb_returns_the_lowest_set_bit_or_all_ones_for_zero() {
 	let executable = compile_test_program(
 		r#"

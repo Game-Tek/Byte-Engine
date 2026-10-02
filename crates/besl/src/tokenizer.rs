@@ -133,13 +133,13 @@ mod tests {
 
 	#[test]
 	fn test_bitwise_operators() {
-		let source = "fn main() -> void { value = 1 << 8 | 2 & 255; }";
+		let source = "fn main() -> void { value = 1 << 8 | 2 ^ 3 & 255; }";
 		let tokens = tokenize(source).unwrap();
 
 		assert_eq!(
 			tokens.tokens,
 			vec![
-				"fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "&", "255", ";", "}"
+				"fn", "main", "(", ")", "->", "void", "{", "value", "=", "1", "<<", "8", "|", "2", "^", "3", "&", "255", ";", "}"
 			]
 		);
 	}

@@ -1592,6 +1592,7 @@ pub enum Operators {
 	ShiftRight,
 	BitwiseAnd,
 	BitwiseOr,
+	BitwiseXor,
 	Assignment,
 	Equality,
 	LessThan,
@@ -1604,10 +1605,12 @@ pub enum Operators {
 }
 
 /// Pairs each operator with its source token and binding precedence. A lower precedence binds tighter.
-const OPERATOR_TOKENS: [(&str, Operators, u8); 18] = [
-	("=", Operators::Assignment, 8),
-	("||", Operators::LogicalOr, 7),
-	("|", Operators::BitwiseOr, 7),
+const OPERATOR_TOKENS: [(&str, Operators, u8); 19] = [
+	("=", Operators::Assignment, 9),
+	("||", Operators::LogicalOr, 8),
+	("|", Operators::BitwiseOr, 8),
+	// XOR binds tighter than OR and looser than AND, matching C-family shading languages.
+	("^", Operators::BitwiseXor, 7),
 	("&&", Operators::LogicalAnd, 6),
 	("&", Operators::BitwiseAnd, 6),
 	("==", Operators::Equality, 5),

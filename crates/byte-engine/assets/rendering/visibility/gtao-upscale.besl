@@ -73,13 +73,13 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 	return clamp_add(origin, tile_coordinate - halo, extent);
 }
 
-// The AO source has the same extent as physical mip one of the depth pyramid.
+// The AO source has the same extent as mip zero of the depth pyramid.
 fetch_low_resolution_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	let uv: vec2f = vec2f(
 		(f32(coordinate.x) + 0.5) / f32(extent.x),
 		(f32(coordinate.y) + 0.5) / f32(extent.y)
 	);
-	return texture_lod(low_resolution_depth, uv, 1.0).x;
+	return texture_lod(low_resolution_depth, uv, 0.0).x;
 }
 
 shared_depth_at: fn (coordinate: vec2u) -> f32 {

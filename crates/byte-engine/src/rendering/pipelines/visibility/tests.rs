@@ -48,8 +48,8 @@ const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
 const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
-/// The 8x8 workgroup of the filters that share a tile of their neighborhood: the contact-shadow filter and the SSGI
-/// temporal pass.
+/// The 8x8 workgroup of the passes that share a tile of their neighborhood: the contact-shadow filter and the SSGI
+/// trace, temporal, and upscale passes.
 const TILE_WORKGROUP_WIDTH: u32 = 8;
 const TILE_WORKGROUP_SIZE: usize = 64;
 
@@ -774,6 +774,72 @@ fn instance_texture(width: u32, instance: impl Fn(usize) -> u32) -> Texture {
 	texture
 }
 
+/// The `MaterialOffsets` struct holds the buffers the material-offset pass writes.
+struct MaterialOffsets {
+	offsets: besl::vm::Buffer,
+	scratch: besl::vm::Buffer,
+	dispatches: besl::vm::Buffer,
+}
+
+/// Runs the material-offset pass's one 256-thread workgroup over `material_counts`.
+fn run_material_offset(program: &ExecutableProgram, material_counts: &mut besl::vm::Buffer) -> MaterialOffsets {
+	let mut offsets = buffer(program, MATERIAL_OFFSET_SLOT);
+	let mut scratch = buffer(program, MATERIAL_OFFSET_SCRATCH_SLOT);
+	let mut dispatches = buffer(program, MATERIAL_DISPATCH_SLOT);
+	let mut workgroup = WorkgroupState::new();
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(MATERIAL_COUNT_SLOT, material_counts);
+	descriptors.bind_buffer(MATERIAL_OFFSET_SLOT, &mut offsets);
+	descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut scratch);
+	descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut dispatches);
+	descriptors.bind_workgroup_state(&mut workgroup);
+	program
+		.run_workgroup(&mut descriptors, &tile_configs::<256>(256, [0, 0]))
+		.expect("material-offset workgroup execution");
+	drop(descriptors);
+	MaterialOffsets {
+		offsets,
+		scratch,
+		dispatches,
+	}
+}
+
+/// Verifies the offset scan gives every material the exclusive sum of the counts before it, across every thread of its
+/// workgroup.
+#[test]
+fn material_offset_scans_every_material_count() {
+	let program = asset!("material-offset.besl");
+	let count = |material: usize| (material * 37 % 300) as u32;
+	let mut material_counts = buffer(&program, MATERIAL_COUNT_SLOT);
+	for material in 0..super::layout::MAX_MATERIALS {
+		material_counts
+			.write_array_element(material, Value::U32(count(material)))
+			.expect("material count");
+	}
+
+	let MaterialOffsets {
+		offsets,
+		scratch,
+		dispatches,
+	} = run_material_offset(&program, &mut material_counts);
+
+	let mut expected_offset = 0;
+	for material in 0..super::layout::MAX_MATERIALS {
+		assert_eq!(
+			read_u32(&offsets, material),
+			expected_offset,
+			"Material {material} has the wrong offset."
+		);
+		assert_eq!(
+			read_u32(&scratch, material),
+			expected_offset,
+			"Material {material} has the wrong cursor."
+		);
+		assert_eq!(read_vec3u(&dispatches, material), [count(material).div_ceil(128), 1, 1]);
+		expected_offset += count(material);
+	}
+}
+
 /// Exercises the production material prepasses as one stateful VM pipeline.
 #[test]
 fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
@@ -801,17 +867,11 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	assert_eq!(read_u32(&material_counts, 0), 0);
 
 	// The offset pass converts sparse counts into exclusive offsets and one indirect dispatch tuple per material.
-	let mut material_offsets = buffer(&material_offset_program, MATERIAL_OFFSET_SLOT);
-	let mut material_offset_scratch = buffer(&material_offset_program, MATERIAL_OFFSET_SCRATCH_SLOT);
-	let mut material_dispatches = buffer(&material_offset_program, MATERIAL_DISPATCH_SLOT);
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(MATERIAL_COUNT_SLOT, &mut material_counts);
-		descriptors.bind_buffer(MATERIAL_OFFSET_SLOT, &mut material_offsets);
-		descriptors.bind_buffer(MATERIAL_OFFSET_SCRATCH_SLOT, &mut material_offset_scratch);
-		descriptors.bind_buffer(MATERIAL_DISPATCH_SLOT, &mut material_dispatches);
-		run_at(&material_offset_program, &mut descriptors, [0, 0]);
-	}
+	let MaterialOffsets {
+		offsets: material_offsets,
+		scratch: mut material_offset_scratch,
+		dispatches: material_dispatches,
+	} = run_material_offset(&material_offset_program, &mut material_counts);
 	assert_eq!(read_u32(&material_offsets, 2), 0);
 	assert_eq!(read_u32(&material_offsets, 5), 2);
 	assert_eq!(read_u32(&material_offsets, 6), 3);
@@ -1080,14 +1140,9 @@ fn reduce_nearest_nonzero_depth(source: &[[f32; 4]], width: u32, height: u32) ->
 	(reduced, reduced_width, reduced_height)
 }
 
-/// Builds a GTAO depth pyramid whose mip zero is a placeholder at twice the fixture extent.
+/// Builds a GTAO depth pyramid whose mip zero is `levels[0]` at the fixture extent.
 fn gtao_depth_pyramid(width: u32, height: u32, levels: [&[[f32; 4]]; 3], extents: [(u32, u32); 2]) -> Texture {
-	let mut pyramid = texture_2d(
-		width * 2,
-		height * 2,
-		&vec![[0.0, 0.0, 0.0, 1.0]; (width * 2 * height * 2) as usize],
-	);
-	pyramid.add_mip(texture_2d(width, height, levels[0]));
+	let mut pyramid = texture_2d(width, height, levels[0]);
 	pyramid.add_mip(texture_2d(extents[0].0, extents[0].1, levels[1]));
 	pyramid.add_mip(texture_2d(extents[1].0, extents[1].1, levels[2]));
 	pyramid
@@ -1566,15 +1621,9 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 	parameters
 }
 
-/// Builds a linear depth pyramid whose physical mip one holds `linear_depth` at `width` x `height`.
+/// Builds a linear depth pyramid whose mip zero holds `linear_depth` at `width` x `height`.
 fn ssgi_depth_pyramid(width: u32, height: u32, linear_depth: &[[f32; 4]]) -> Texture {
-	let mut pyramid = texture_2d(
-		width * 2,
-		height * 2,
-		&vec![[0.0, 0.0, 0.0, 1.0]; (width * 2 * height * 2) as usize],
-	);
-	pyramid.add_mip(texture_2d(width, height, linear_depth));
-	pyramid
+	texture_2d(width, height, linear_depth)
 }
 
 /// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image.
@@ -1635,11 +1684,13 @@ fn run_ssgi_trace_with_radiance(
 	frame_index: u32,
 	pixel: [u32; 2],
 ) -> [f32; 4] {
-	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, pixel).0
+	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, &[pixel])[0].0
 }
 
 /// Runs the SSGI trace like [`run_ssgi_trace_with_radiance`] and returns the raw radiance and the stored normal it
-/// writes.
+/// writes at each of `pixels`.
+///
+/// The trace shares a depth tile across its workgroup, so this runs each 8x8 workgroup that holds one of `pixels` once.
 fn run_ssgi_trace_outputs(
 	program: &ExecutableProgram,
 	extent: u32,
@@ -1647,8 +1698,8 @@ fn run_ssgi_trace_outputs(
 	radiance: &[[f32; 4]],
 	history: bool,
 	frame_index: u32,
-	pixel: [u32; 2],
-) -> ([f32; 4], [f32; 4]) {
+	pixels: &[[u32; 2]],
+) -> Vec<([f32; 4], [f32; 4])> {
 	let mut view = gtao_view_data(program, extent, extent);
 	// A static camera reprojects through the unchanged projection.
 	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
@@ -1656,16 +1707,28 @@ fn run_ssgi_trace_outputs(
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
-	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
-	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
-	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-	descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
-	descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
-	run_at(program, &mut descriptors, pixel);
-	drop(descriptors);
-	(rgba(&output, pixel), rgba(&normals, pixel))
+	let mut workgroups: Vec<[u32; 2]> = pixels
+		.iter()
+		.map(|pixel| pixel.map(|coordinate| coordinate - coordinate % TILE_WORKGROUP_WIDTH))
+		.collect();
+	workgroups.sort_unstable();
+	workgroups.dedup();
+	for workgroup_base in workgroups {
+		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
+		descriptors.bind_buffer(SSGI_PARAMETERS_SLOT, &mut parameters);
+		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth_pyramid);
+		descriptors.bind_image(ResourceSlot::new(1034), &mut output);
+		descriptors.bind_texture(ResourceSlot::new(1035), &mut previous_lit);
+		descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
+		let mut workgroup = WorkgroupState::new();
+		descriptors.bind_workgroup_state(&mut workgroup);
+		run_tile_workgroup_containing(program, &mut descriptors, workgroup_base);
+	}
+	pixels
+		.iter()
+		.map(|&pixel| (rgba(&output, pixel), rgba(&normals, pixel)))
+		.collect()
 }
 
 /// Verifies rays that hit visible geometry return last frame's light there, and that some rays do hit a nearby wall.
@@ -1729,7 +1792,7 @@ fn ssgi_trace_stores_octahedral_normals() {
 	let wall_row = (0..SSGI_EXTENT)
 		.find(|&row| depth[(row * SSGI_EXTENT + column) as usize][0] == 4.0 && row > 2)
 		.expect("a wall row away from the image edge");
-	let stored = |depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, pixel).1;
+	let stored = |depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, &[pixel])[0].1;
 
 	assert_rgba_close(stored(&depth, [column, wall_row]), SSGI_WALL_NORMAL, 0.0001);
 	depth[(wall_row * SSGI_EXTENT + column) as usize] = [0.0; 4];
@@ -1912,7 +1975,8 @@ fn ssgi_temporal_filter_keeps_light_off_a_touching_surface() {
 	assert!(wall[0] > 0.99, "Expected the wall to keep its light, found {wall:?}.");
 }
 
-/// Runs the SSGI upscale at one full-resolution pixel. Low-resolution inputs are half the full extent.
+/// Runs the SSGI upscale over the 8x8 workgroup that holds `pixel` and returns that full-resolution pixel. Low-resolution
+/// inputs are half the full extent.
 fn run_ssgi_upscale(
 	full_extent: u32,
 	device_depth: &[[f32; 4]],
@@ -1936,7 +2000,9 @@ fn run_ssgi_upscale(
 	descriptors.bind_image(ResourceSlot::new(1035), &mut output);
 	descriptors.bind_texture(ResourceSlot::new(1036), &mut depth_pyramid);
 	descriptors.bind_texture(ResourceSlot::new(1037), &mut normals);
-	run_at(&program, &mut descriptors, pixel);
+	let mut workgroup = WorkgroupState::new();
+	descriptors.bind_workgroup_state(&mut workgroup);
+	run_tile_workgroup_containing(&program, &mut descriptors, pixel);
 	drop(descriptors);
 	rgba(&output, pixel)
 }
@@ -2131,9 +2197,9 @@ fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
 	);
 
 	let mut hits = 0;
-	for pixel in pixels {
-		for frame_index in 0..32 {
-			let radiance = run_ssgi_trace_with_radiance(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, pixel);
+	for frame_index in 0..32 {
+		let outputs = run_ssgi_trace_outputs(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, &pixels);
+		for (&pixel, &(radiance, _)) in pixels.iter().zip(&outputs) {
 			if radiance[3] != 0.0 {
 				hits += 1;
 				assert!(
@@ -2343,8 +2409,8 @@ async fn contact_shadows_lower_to_the_platform_shader_language() {
 	}
 }
 
-/// Verifies the meshlet culling and rasterization stages, and the pixel mapping that follows them, compile with the
-/// platform shader compiler, past BESL linking.
+/// Verifies the meshlet culling and rasterization stages, and the material offset and pixel mapping that follow them,
+/// compile with the platform shader compiler, past BESL linking.
 #[cfg(target_os = "macos")]
 #[compio::test]
 async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
@@ -2380,6 +2446,11 @@ async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
 			"masked_depth_fragment",
 			asset_source!("masked-depth-fragment.besl"),
 			ShaderGenerationSettings::fragment(),
+		),
+		(
+			"material_offset",
+			asset_source!("material-offset.besl"),
+			ShaderGenerationSettings::compute(utils::Extent::line(256)),
 		),
 		(
 			"pixel_mapping",

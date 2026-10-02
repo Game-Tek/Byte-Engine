@@ -1136,14 +1136,8 @@ fn reflection_depth_pyramid(scene: ReflectionScene) -> Texture {
 			]
 		})
 		.collect();
-	// Physical mip zero is unused; mip one holds half-resolution depth.
-	let mut pyramid = texture_2d(
-		REFLECTION_EXTENT,
-		REFLECTION_EXTENT,
-		&vec![[0.0; 4]; (REFLECTION_EXTENT * REFLECTION_EXTENT) as usize],
-	);
-	pyramid.add_mip(texture_2d(half, half, &depth));
-	pyramid
+	// Mip zero holds half-resolution depth.
+	texture_2d(half, half, &depth)
 }
 
 /// Renders `scene` into a full-resolution radiance history: light multiplied by `exposure` in RGB, depth in alpha.

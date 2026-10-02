@@ -59,13 +59,13 @@ SSGI_HISTORY_WEIGHT: const f32 = 0.9;
 // point's depth.
 SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
 
-// Reads the positive linear depth stored in physical mip one, which matches the SSGI resolution.
+// Reads the positive linear depth stored in mip zero, which matches the SSGI resolution.
 fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	let uv: vec2f = vec2f(
 		(f32(coordinate.x) + 0.5) / f32(extent.x),
 		(f32(coordinate.y) + 0.5) / f32(extent.y)
 	);
-	return texture_lod(depth_pyramid, uv, 1.0).x;
+	return texture_lod(depth_pyramid, uv, 0.0).x;
 }
 
 // Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
@@ -79,7 +79,7 @@ fetch_previous_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 		(f32(coordinate.x) + 0.5) / f32(extent.x),
 		(f32(coordinate.y) + 0.5) / f32(extent.y)
 	);
-	return texture_lod(previous_depth_pyramid, uv, 1.0).x;
+	return texture_lod(previous_depth_pyramid, uv, 0.0).x;
 }
 
 // Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a

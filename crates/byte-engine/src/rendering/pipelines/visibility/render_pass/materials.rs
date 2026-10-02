@@ -9,6 +9,14 @@ use super::visibility::VisibilityPhase;
 use crate::rendering::PipelineManagerClient;
 use crate::rendering::render_pass::RenderPassFunction;
 
+/// Threads of the one workgroup that scans every material's count into offsets. `material-offset.besl` and its `.bead`
+/// file assume this size and four materials per thread.
+const MATERIAL_OFFSET_WORKGROUP_SIZE: u32 = 256;
+const _: () = assert!(
+	MAX_MATERIALS == MATERIAL_OFFSET_WORKGROUP_SIZE as usize * 4,
+	"Update the material offset scan in `material-offset.besl` when the material limit changes."
+);
+
 /// Returns whether this frame contains geometry that uses one material in the requested visibility phase.
 pub(super) fn material_is_active(active_materials: &ActiveMaterialMask, material_index: u32) -> bool {
 	let material_index = material_index as usize;
@@ -109,7 +117,12 @@ impl MaterialPrepasses {
 			None,
 			&[
 				stage("Material Count", pipelines.count, extent, Extent::square(8)),
-				stage("Material Offset", pipelines.offset, Extent::line(1), Extent::line(1)),
+				stage(
+					"Material Offset",
+					pipelines.offset,
+					Extent::line(MATERIAL_OFFSET_WORKGROUP_SIZE),
+					Extent::line(MATERIAL_OFFSET_WORKGROUP_SIZE),
+				),
 				stage("Pixel Mapping", pipelines.pixel_mapping, extent, Extent::square(16)),
 			],
 		);

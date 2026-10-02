@@ -8,13 +8,13 @@
 // centers. Returns zero where no opaque surface was drawn.
 pub(crate) const REFLECTION_SCENE_DEPTH_SOURCE: &str = r#"
 reflection_scene_depth: fn (pixel: vec2f, depth_extent: vec2u) -> f32 {
-	// Physical mip one of the pyramid holds half-resolution depth.
+	// Mip zero of the pyramid holds half-resolution depth.
 	let texel: vec2f = vec2f(
 		clamp(round(pixel.x), 0.0, f32(depth_extent.x - 1)),
 		clamp(round(pixel.y), 0.0, f32(depth_extent.y - 1))
 	);
 	let uv: vec2f = vec2f((texel.x + 0.5) / f32(depth_extent.x), (texel.y + 0.5) / f32(depth_extent.y));
-	return texture_lod(reflection_depth_pyramid, uv, 1.0).x;
+	return texture_lod(reflection_depth_pyramid, uv, 0.0).x;
 }
 "#;
 

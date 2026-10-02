@@ -1,6 +1,6 @@
 // Convert reversed visibility depth into positive linear distance before every
 // conservative nearest-nonzero reduction. Each SIMD group builds two adjacent
-// 8x8 source tiles and emits physical mips one through three.
+// 8x8 source tiles and emits the pyramid's half-, quarter-, and eighth-resolution mips.
 FastGTAOView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,

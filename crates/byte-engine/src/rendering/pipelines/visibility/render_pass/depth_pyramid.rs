@@ -10,8 +10,9 @@ use utils::Extent;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
-/// Mip zero retains full sink resolution so levels one through three match the depth reductions.
-pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 4;
+/// Mips zero through two hold half, quarter, and eighth sink resolution. Nothing reads full-resolution linear depth, so
+/// the pyramid starts at half resolution.
+pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 
 const VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
 	ghi::ResourceSlot::new(0),
@@ -142,7 +143,7 @@ impl DepthPyramidPass {
 				binding.slot(),
 				depth_pyramid,
 				ghi::Layouts::General,
-				index as u32 + 1,
+				index as u32,
 			)
 		}));
 		context.write(&writes);
@@ -155,12 +156,12 @@ impl DepthPyramidPass {
 		}
 	}
 
-	/// Returns the pyramid whose physical mips one through three hold nearest positive linear depth.
+	/// Returns the pyramid whose mips zero through two hold nearest positive linear depth from half resolution down.
 	pub(super) fn depth_pyramid(&self) -> ghi::DynamicImageHandle {
 		self.depth_pyramid
 	}
 
-	/// Returns the half-resolution camera constants that match the pyramid's first reduced mip.
+	/// Returns the half-resolution camera constants that match the pyramid's mip zero.
 	pub(super) fn view_data(&self) -> ghi::DynamicBufferHandle<ScreenViewData> {
 		self.view_data
 	}
@@ -180,7 +181,7 @@ impl DepthPyramidPass {
 		let half_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
 		frame.sync_buffer(self.view_data);
-		frame.resize_image(self.depth_pyramid.into(), extent);
+		frame.resize_image(self.depth_pyramid.into(), half_extent);
 		let stage = super::ComputeStage {
 			label: "Linear Depth Pyramid",
 			pipeline,

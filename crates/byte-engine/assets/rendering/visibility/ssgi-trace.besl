@@ -3,6 +3,8 @@
 // and one in alpha for a hit, so later averaging turns alpha into the fraction of rays that hit.
 // It also stores the view-space normal it rebuilt from depth, which the denoiser and upscaler use to keep light on
 // the surface it was gathered for.
+// Each 8x8 workgroup first loads the depth of its texels and a two-texel border into workgroup memory, so every
+// texel rebuilds its normal from shared values instead of fetching eight neighbors again.
 ScreenView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -35,6 +37,9 @@ raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: wri
 previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
 normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;
 
+// Per tile texel: the positive linear depth, or zero where no surface was drawn or outside the image.
+tile_depth: workgroup<f32, 144>;
+
 SSGI_PI: const f32 = 3.14159265359;
 SSGI_STEP_COUNT: const u32 = 16;
 // World-space reach of one ray. Bounce light further away than this comes from the environment instead.
@@ -50,6 +55,10 @@ SSGI_SILHOUETTE_STEP_RATIO: const f32 = 3.0;
 // A hit surface must face the ray at least this much, as the cosine of the angle to its normal. Rays that only
 // graze a surface are quantization self-hits, not light arriving from it.
 SSGI_MINIMUM_HIT_FACING: const f32 = 0.2;
+// A hit texel's axis counts as planar when the second difference of 1/z across it is below this fraction of its 1/z.
+// Rounding in 32-bit depth leaves a true plane near 1e-7. A floor meeting a wall close to the camera still reaches
+// about 1e-3 at 4K, whose trace is 1080 rows tall. A crease shallow enough to pass only tilts the facing test.
+SSGI_HIT_PLANE_TOLERANCE: const f32 = 0.0001;
 // A full-resolution radiance pixel belongs to a hit only when its stored depth is this close to the hit's depth.
 SSGI_RADIANCE_DEPTH_TOLERANCE: const f32 = 0.05;
 // Bisection steps that locate where a ray crossed behind the depth buffer between two march steps.
@@ -60,19 +69,26 @@ SSGI_ORIGIN_BIAS_SCALE: const f32 = 0.002;
 SSGI_MAX_RADIANCE: const f32 = 64.0;
 // Matches the finite-difference degeneracy test that GTAO uses for reconstructed normals.
 SSGI_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
+// Normal reconstruction reads two texels on each side of the center.
+SSGI_TRACE_TILE_RADIUS: const u32 = 2;
+SSGI_TRACE_WORKGROUP_WIDTH: const u32 = 8;
+SSGI_TRACE_WORKGROUP_SIZE: const u32 = 64;
+// The workgroup's texels plus the reconstruction radius on every side.
+SSGI_TRACE_TILE_WIDTH: const u32 = 12;
+SSGI_TRACE_TILE_SIZE: const u32 = 144;
 
 // Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly.
 interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }
 
-// Reads the positive linear depth stored in physical mip one, which matches the trace resolution.
+// Reads the positive linear depth stored in mip zero, which matches the trace resolution.
 fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	let uv: vec2f = vec2f(
 		(f32(coordinate.x) + 0.5) / f32(extent.x),
 		(f32(coordinate.y) + 0.5) / f32(extent.y)
 	);
-	return texture_lod(depth_pyramid, uv, 1.0).x;
+	return texture_lod(depth_pyramid, uv, 0.0).x;
 }
 
 // Reports whether four consecutive depths along one screen axis lie on one connected surface. Across a plane,
@@ -194,33 +210,73 @@ side_error: fn (center_z: f32, near_z: f32, far_z: f32) -> f32 {
 }
 
 // Returns the view-space tangent along one screen axis, oriented toward the positive axis, or zero without one.
-// It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal Reconstruction from
+// `positive_z` and `positive_far_z` are the depths one and two texels along `axis`, and the negative pair lies the other
+// way. It uses the side whose neighbors best extend the center's surface (atyuwen, "Accurate Normal Reconstruction from
 // Depth Buffer", 2020). Taking the nearer neighbor instead fails at creases, where a touching object can be closer
 // in depth than the center's own surface.
-axis_tangent: fn (pixel: vec2u, axis: vec2f, center_position: vec3f, extent: vec2u) -> vec3f {
-	let center_z: f32 = center_position.z;
-	let positive_z: f32 = neighbor_depth(pixel, axis.x, axis.y, extent);
-	let negative_z: f32 = neighbor_depth(pixel, 0.0 - axis.x, 0.0 - axis.y, extent);
-	let positive_error: f32 = side_error(center_z, positive_z, neighbor_depth(pixel, 2.0 * axis.x, 2.0 * axis.y, extent));
-	let negative_error: f32 = side_error(
-		center_z,
-		negative_z,
-		neighbor_depth(pixel, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
-	);
-	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+axis_tangent: fn (
+	pixel: vec2f,
+	axis: vec2f,
+	center_position: vec3f,
+	positive_z: f32,
+	negative_z: f32,
+	positive_far_z: f32,
+	negative_far_z: f32
+) -> vec3f {
+	let positive_error: f32 = side_error(center_position.z, positive_z, positive_far_z);
+	let negative_error: f32 = side_error(center_position.z, negative_z, negative_far_z);
 	if (positive_z != 0.0 && (positive_error <= negative_error || negative_z == 0.0)) {
-		return view_position(pixel_f + axis, positive_z) - center_position;
+		return view_position(pixel + axis, positive_z) - center_position;
 	}
 	if (negative_z != 0.0) {
-		return center_position - view_position(pixel_f - axis, negative_z);
+		return center_position - view_position(pixel - axis, negative_z);
 	}
 	return vec3f(0.0, 0.0, 0.0);
 }
 
-// Rebuilds a camera-facing view-space normal from depth, or returns zero when the neighborhood is degenerate.
-reconstruct_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
-	let dx: vec3f = axis_tangent(pixel, vec2f(1.0, 0.0), center_position, extent);
-	let dy: vec3f = axis_tangent(pixel, vec2f(0.0, 1.0), center_position, extent);
+// Returns `axis_tangent` for a hit texel, which can land anywhere on screen, outside the workgroup's tile. Most hit
+// texels lie inside a plane, where 1/z changes by the same step on both sides and the two adjacent texels give the
+// tangent. Only at a crease or silhouette does it fetch the texels two away to pick the center's own side.
+hit_axis_tangent: fn (pixel: vec2u, axis: vec2f, center_position: vec3f, extent: vec2u) -> vec3f {
+	let positive_z: f32 = neighbor_depth(pixel, axis.x, axis.y, extent);
+	let negative_z: f32 = neighbor_depth(pixel, 0.0 - axis.x, 0.0 - axis.y, extent);
+	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
+	let inverse_center_z: f32 = 1.0 / center_position.z;
+	if (
+		positive_z != 0.0
+		&& negative_z != 0.0
+		&& abs(1.0 / positive_z + 1.0 / negative_z - 2.0 * inverse_center_z)
+			<= SSGI_HIT_PLANE_TOLERANCE * inverse_center_z
+	) {
+		return view_position(pixel_f + axis, positive_z) - center_position;
+	}
+	return axis_tangent(
+		pixel_f,
+		axis,
+		center_position,
+		positive_z,
+		negative_z,
+		neighbor_depth(pixel, 2.0 * axis.x, 2.0 * axis.y, extent),
+		neighbor_depth(pixel, 0.0 - 2.0 * axis.x, 0.0 - 2.0 * axis.y, extent)
+	);
+}
+
+// Returns `axis_tangent` with neighbor depths read from the workgroup's tile. `stride` steps one texel along `axis`
+// in the tile.
+tile_axis_tangent: fn (center_index: u32, stride: u32, pixel: vec2f, axis: vec2f, center_position: vec3f) -> vec3f {
+	return axis_tangent(
+		pixel,
+		axis,
+		center_position,
+		tile_depth[center_index + stride],
+		tile_depth[center_index - stride],
+		tile_depth[center_index + 2 * stride],
+		tile_depth[center_index - 2 * stride]
+	);
+}
+
+// Turns two screen-axis tangents into a camera-facing view-space normal, or zero when they are degenerate.
+tangent_normal: fn (dx: vec3f, dy: vec3f, center_position: vec3f) -> vec3f {
 	let unnormalized: vec3f = cross(dx, dy);
 	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
 	let tangent_product: f32 = dot(dx, dx) * dot(dy, dy);
@@ -233,6 +289,25 @@ reconstruct_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> 
 		return vec3f(0.0, 0.0, 0.0) - normal;
 	}
 	return normal;
+}
+
+// Rebuilds the view-space normal of a hit texel from fetched depth, or returns zero when the neighborhood is degenerate.
+hit_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
+	return tangent_normal(
+		hit_axis_tangent(pixel, vec2f(1.0, 0.0), center_position, extent),
+		hit_axis_tangent(pixel, vec2f(0.0, 1.0), center_position, extent),
+		center_position
+	);
+}
+
+// Rebuilds the view-space normal of one of the workgroup's own texels from its tile, or returns zero when the
+// neighborhood is degenerate.
+reconstruct_tile_normal: fn (center_index: u32, pixel: vec2f, center_position: vec3f) -> vec3f {
+	return tangent_normal(
+		tile_axis_tangent(center_index, 1, pixel, vec2f(1.0, 0.0), center_position),
+		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel, vec2f(0.0, 1.0), center_position),
+		center_position
+	);
 }
 
 // Maps two uniform numbers to a cosine-weighted direction around `normal` (Duff et al. 2017 orthonormal basis).
@@ -319,9 +394,30 @@ encode_stored_normal: fn (normal: vec3f) -> vec4f {
 
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
-	guard_image_bounds(raw_output, pixel);
 	let extent: vec2u = image_size(raw_output);
-	let center_z: f32 = fetch_linear_depth(pixel, extent);
+	let local: vec2u = vec2u(
+		input.thread_idx % SSGI_TRACE_WORKGROUP_WIDTH,
+		input.thread_idx / SSGI_TRACE_WORKGROUP_WIDTH
+	);
+	let workgroup_origin: vec2u = pixel - local;
+	// Every invocation helps load the tile, including those past the image edge, before any of them returns.
+	for (
+		let tile_index: u32 = input.thread_idx;
+		tile_index < SSGI_TRACE_TILE_SIZE;
+		tile_index = tile_index + SSGI_TRACE_WORKGROUP_SIZE
+	) {
+		tile_depth[tile_index] = neighbor_depth(
+			workgroup_origin,
+			f32(tile_index % SSGI_TRACE_TILE_WIDTH) - f32(SSGI_TRACE_TILE_RADIUS),
+			f32(tile_index / SSGI_TRACE_TILE_WIDTH) - f32(SSGI_TRACE_TILE_RADIUS),
+			extent
+		);
+	}
+	workgroup_barrier();
+
+	guard_image_bounds(raw_output, pixel);
+	let center_index: u32 = (local.y + SSGI_TRACE_TILE_RADIUS) * SSGI_TRACE_TILE_WIDTH + local.x + SSGI_TRACE_TILE_RADIUS;
+	let center_z: f32 = tile_depth[center_index];
 	if (center_z == 0.0) {
 		write(raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		write(normal_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
@@ -330,7 +426,7 @@ main: fn (input: StageInput) -> void {
 
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let center_position: vec3f = view_position(pixel_f, center_z);
-	let normal: vec3f = reconstruct_normal(pixel, extent, center_position);
+	let normal: vec3f = reconstruct_tile_normal(center_index, pixel_f, center_position);
 	// A zero normal marks a degenerate neighborhood; the denoiser then compares depth only.
 	write(normal_output, pixel, encode_stored_normal(normal));
 	// Without history there is no light to gather, so every ray reports a miss and the environment lights the pixel.
@@ -408,7 +504,7 @@ main: fn (input: StageInput) -> void {
 		// Rays only hit surfaces that face them. This rejects a surface occluding itself: a ray that leaves a floor
 		// almost parallel to it can land behind the next floor texel, whose depth is quantized.
 		let faces_ray: bool = surface.z != 0.0
-			&& dot(reconstruct_normal(vec2u(u32(surface.x), u32(surface.y)), extent, surface_position), direction)
+			&& dot(hit_normal(vec2u(u32(surface.x), u32(surface.y)), extent, surface_position), direction)
 				<= 0.0 - SSGI_MINIMUM_HIT_FACING;
 		if (faces_ray) {
 			let radiance: vec4f = previous_radiance(surface_position);

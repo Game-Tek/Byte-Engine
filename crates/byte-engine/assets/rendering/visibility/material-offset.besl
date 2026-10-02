@@ -19,19 +19,44 @@ material_offset_buffer: descriptor<{ type: MaterialOffset, binding: 1034, access
 material_offset_scratch_buffer: descriptor<{ type: MaterialOffsetScratch, binding: 1035, access: read_write }>;
 material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 1036, access: read_write }>;
 
+// Each thread's running total while the workgroup scans them.
+thread_totals: workgroup<u32, 256>;
+
+// One workgroup scans every material: each thread owns four consecutive materials.
+MATERIAL_OFFSET_WORKGROUP_SIZE: const u32 = 256;
+MATERIALS_PER_THREAD: const u32 = 4;
+
 main: fn (input: StageInput) -> void {
-	let coord: vec2u = input.thread_id;
+	let thread: u32 = input.thread_idx;
+	let first_material: u32 = thread * MATERIALS_PER_THREAD;
+	let thread_total: u32 = 0;
+	for (let i: u32 = 0; i < MATERIALS_PER_THREAD; i = i + 1) {
+		thread_total = thread_total + atomic_load(material_count_buffer.material_count[first_material + i]);
+	}
+	thread_totals[thread] = thread_total;
+	workgroup_barrier();
 
-	if (coord.x == 0 && coord.y == 0) {
-		let sum: u32 = 0;
-
-		for (let i: u32 = 0; i < 1024; i = i + 1) {
-			let count: u32 = atomic_load(material_count_buffer.material_count[i]);
-			material_offset_buffer.material_offset[i] = sum;
-			atomic_store(material_offset_scratch_buffer.material_offset_scratch[i], sum);
-			// The indirect dispatch consumes all three components for group counts.
-			material_evaluation_dispatches.material_evaluation_dispatches[i] = vec3u((count + 127) / 128, 1, 1);
-			sum = sum + count;
+	// An inclusive scan of the thread totals: after the step of distance d, each total covers the 2d threads ending at
+	// it. Every thread reads before any thread writes, so each step needs two barriers.
+	for (let distance: u32 = 1; distance < MATERIAL_OFFSET_WORKGROUP_SIZE; distance = distance * 2) {
+		let earlier: u32 = 0;
+		if (thread >= distance) {
+			earlier = thread_totals[thread - distance];
 		}
+		workgroup_barrier();
+		thread_totals[thread] = thread_totals[thread] + earlier;
+		workgroup_barrier();
+	}
+
+	// The materials before this thread's first one hold every pixel the inclusive total does not count from this thread.
+	let offset: u32 = thread_totals[thread] - thread_total;
+	for (let i: u32 = 0; i < MATERIALS_PER_THREAD; i = i + 1) {
+		let material: u32 = first_material + i;
+		let count: u32 = atomic_load(material_count_buffer.material_count[material]);
+		material_offset_buffer.material_offset[material] = offset;
+		atomic_store(material_offset_scratch_buffer.material_offset_scratch[material], offset);
+		// The indirect dispatch consumes all three components for group counts.
+		material_evaluation_dispatches.material_evaluation_dispatches[material] = vec3u((count + 127) / 128, 1, 1);
+		offset = offset + count;
 	}
 }

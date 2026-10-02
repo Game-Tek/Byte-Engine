@@ -89,6 +89,12 @@ fn render_triangle_pixels() {
 	raster::render_triangle(&mut device, queue_handle);
 }
 
+#[test]
+fn render_triangle_with_indirect_draw() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	raster::render_triangle_indirect(&mut device, queue_handle);
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn raster_pipeline_can_disable_depth_writes() {

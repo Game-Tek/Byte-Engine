@@ -158,6 +158,64 @@ impl Device {
 		self.draw_encode_count += 1;
 	}
 
+	/// Encodes a native DX12 non-indexed draw whose counts come from one record of a GPU buffer.
+	pub(crate) fn draw_indirect_native<const N: usize>(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		base_buffer_handle: BaseBufferHandle,
+		entry_index: usize,
+		sequence_index: u8,
+	) {
+		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
+		let Some(command_list) = self
+			.command_buffers
+			.get(command_buffer_handle.0 as usize)
+			.and_then(|command_buffer| command_buffer.command_list.clone())
+		else {
+			return;
+		};
+		let Some(buffer_size) = self.buffer(base_buffer_handle).map(|buffer| buffer.size) else {
+			return;
+		};
+		assert!(
+			entry.end <= buffer_size,
+			"DX12 indirect draw entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
+		);
+		let Some(resource) = self.buffer_resource_for_sequence(base_buffer_handle, sequence_index) else {
+			return;
+		};
+		let Some(command_signature) = self.indirect_draw_command_signature() else {
+			return;
+		};
+
+		// A 16-byte draw record keeps every selected offset on DX12's required four-byte boundary.
+		unsafe {
+			self.transition_tracked_buffer(
+				&command_list,
+				base_buffer_handle,
+				&resource,
+				BufferBarrierState::INDIRECT_ARGUMENT,
+			);
+			command_list.ExecuteIndirect(&command_signature, 1, &resource, entry.start as u64, None, 0);
+		}
+		self.mark_command_buffer_work(command_buffer_handle);
+		self.draw_encode_count += 1;
+	}
+
+	fn indirect_draw_command_signature(&mut self) -> Option<ID3D12CommandSignature> {
+		if let Some(command_signature) = self.indirect_draw_signature.clone() {
+			return Some(command_signature);
+		}
+
+		let command_signature = self.create_indirect_command_signature(
+			D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
+			crate::command_buffer::INDIRECT_DRAW_RECORD_SIZE,
+		)?;
+		self.indirect_draw_signature = Some(command_signature.clone());
+		Some(command_signature)
+	}
+
 	/// Encodes a native DX12 indexed draw command.
 	pub(crate) fn draw_indexed_native(
 		&mut self,

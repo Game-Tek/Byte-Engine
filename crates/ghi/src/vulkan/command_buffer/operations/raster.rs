@@ -160,6 +160,40 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		}
 	}
 
+	fn draw_indirect<const N: usize>(
+		&mut self,
+		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
+		entry_index: usize,
+	) {
+		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
+		let buffer_handle = buffer_handle.into().handle();
+		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_handle));
+		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
+		assert!(
+			entry.end <= buffer_size,
+			"Vulkan indirect draw entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
+		);
+
+		// The draw record must be visible to the indirect stage before the deferred render pass begins.
+		self.vulkan_consume_resources([vulkan_consumption(
+			self.buffer_resource(buffer_handle),
+			vk::PipelineStageFlags2::DRAW_INDIRECT,
+			vk::AccessFlags2::INDIRECT_COMMAND_READ,
+		)])
+		.apply(self);
+		let command_buffer = self.prepare_draw();
+		unsafe {
+			self.device.device.cmd_draw_indirect(
+				command_buffer,
+				vk_buffer,
+				entry.start as vk::DeviceSize,
+				1,
+				crate::command_buffer::INDIRECT_DRAW_RECORD_SIZE as u32,
+			);
+		}
+	}
+
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
 		let command_buffer = self.prepare_draw();
 		unsafe {

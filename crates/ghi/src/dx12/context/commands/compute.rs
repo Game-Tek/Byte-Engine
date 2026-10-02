@@ -97,12 +97,24 @@ impl Device {
 			return Some(command_signature);
 		}
 
+		let command_signature =
+			self.create_indirect_command_signature(D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, std::mem::size_of::<[u32; 3]>())?;
+		self.indirect_dispatch_signature = Some(command_signature.clone());
+		Some(command_signature)
+	}
+
+	/// Creates a command signature that executes one native argument record of `argument_type` per stride.
+	pub(crate) fn create_indirect_command_signature(
+		&self,
+		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
+		byte_stride: usize,
+	) -> Option<ID3D12CommandSignature> {
 		let argument = D3D12_INDIRECT_ARGUMENT_DESC {
-			Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
+			Type: argument_type,
 			Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
 		};
 		let description = D3D12_COMMAND_SIGNATURE_DESC {
-			ByteStride: std::mem::size_of::<[u32; 3]>() as u32,
+			ByteStride: byte_stride as u32,
 			NumArgumentDescs: 1,
 			pArgumentDescs: &argument,
 			NodeMask: 0,
@@ -113,8 +125,6 @@ impl Device {
 				.CreateCommandSignature(&description, None, &mut command_signature)
 				.ok()?;
 		}
-		let command_signature = command_signature?;
-		self.indirect_dispatch_signature = Some(command_signature.clone());
-		Some(command_signature)
+		command_signature
 	}
 }

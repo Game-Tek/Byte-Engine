@@ -1,0 +1,49 @@
+// Sizes one particle system's simulation before it runs. One thread reads how many particles the previous frame kept,
+// clamps the requested spawns to the free capacity, writes the simulation's indirect dispatch, and resets the draw
+// record the simulation fills.
+
+// Only the header of the frame data; the spawn runs and emitter table that follow it are not read here. Generated
+// particle kernels declare the same header.
+ParticleFrame: struct {
+	delta_time: f32,
+	seed: u32,
+	spawn_total: u32,
+	spawn_count: u32,
+	side: u32,
+	reset: u32,
+	capacity: u32,
+	padding: u32,
+}
+
+// Two draw records of [vertex_count, instance_count, first_vertex, first_instance], one per buffer half.
+ParticleDraws: struct {
+	values: atomicu32[8],
+}
+
+ParticleDispatch: struct {
+	group_count: vec3u,
+}
+
+frame: descriptor<{ type: ParticleFrame, binding: 0, access: read }>;
+draws: descriptor<{ type: ParticleDraws, binding: 2, access: read_write }>;
+dispatch: descriptor<{ type: ParticleDispatch, binding: 3, access: write }>;
+
+WORKGROUP_SIZE: const u32 = 64;
+
+main: fn () -> void {
+	let previous: u32 = (frame.side + 1) % 2;
+	// A reset frame ignores the previous half, which holds no particles yet.
+	let alive: u32 = 0;
+	if (frame.reset == 0) {
+		alive = atomic_load(draws.values[previous * 4]) / 6;
+	}
+	let emitted: u32 = min(frame.spawn_total, frame.capacity - alive);
+	dispatch.group_count = vec3u((alive + emitted + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE, 1, 1);
+
+	// The simulation adds six vertices for every particle it keeps.
+	let record: u32 = frame.side * 4;
+	atomic_store(draws.values[record], 0);
+	atomic_store(draws.values[record + 1], 1);
+	atomic_store(draws.values[record + 2], 0);
+	atomic_store(draws.values[record + 3], 0);
+}

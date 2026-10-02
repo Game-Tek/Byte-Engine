@@ -30,6 +30,8 @@ pub fn default_setup(application: &mut GraphicsApplication) {
 
 	setup_pbr_visibility_shading_render_pipeline(application);
 
+	setup_particles(application);
+
 	setup_default_window(application);
 
 	launch_deferred_tasks_thread(application);
@@ -157,6 +159,7 @@ pub fn register_default_asset_handlers(
 	asset_manager.add_asset_handler(IESAssetHandler::new());
 	asset_manager.add_asset_handler(PipelineAssetHandler);
 	asset_manager.add_asset_handler(FlipbookAssetHandler);
+	asset_manager.add_asset_handler(ParticleSystemAssetHandler::new());
 	asset_manager.add_asset_handler(EXRAssetHandler::new());
 	asset_manager.add_asset_handler(EnvironmentMapAssetHandler::new(ibl));
 	asset_manager.add_asset_handler(LUTAssetHandler::new());
@@ -322,6 +325,7 @@ use resource_management::{
 			ies::IESAssetHandler,
 			lut::LUTAssetHandler,
 			ogg::OGGAssetHandler,
+			particles::ParticleSystemAssetHandler,
 			pipeline::PipelineAssetHandler,
 			png::PNGAssetHandler,
 			wav::WAVAssetHandler,
@@ -334,7 +338,7 @@ use resource_management::{
 use tracing::debug_span;
 use utils::Extent;
 
-use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline};
+use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline, setup_particles};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};

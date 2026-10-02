@@ -423,11 +423,11 @@ impl Device {
 	}
 
 	pub(crate) fn render_target_blend_desc(blend: pipelines::raster::BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
-		let blend_enable = matches!(blend, pipelines::raster::BlendMode::Alpha);
+		let blend_enable = !matches!(blend, pipelines::raster::BlendMode::None);
 		D3D12_RENDER_TARGET_BLEND_DESC {
 			BlendEnable: BOOL(blend_enable as i32),
 			LogicOpEnable: BOOL(0),
-			SrcBlend: if blend_enable {
+			SrcBlend: if matches!(blend, pipelines::raster::BlendMode::Alpha) {
 				D3D12_BLEND_SRC_ALPHA
 			} else {
 				D3D12_BLEND_ONE

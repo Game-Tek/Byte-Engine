@@ -87,5 +87,6 @@ pub mod lut;
 pub mod material;
 pub mod mesh;
 pub mod mips;
+pub mod particle_system;
 pub mod pipeline;
 pub mod skeleton;

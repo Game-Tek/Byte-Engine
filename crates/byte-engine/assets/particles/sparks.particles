@@ -1,0 +1,20 @@
+{
+	"$schema": "../schemas/particles.schema.json",
+	"capacity": 65536,
+	"lifetime": [0.4, 1.2],
+	"spawn": { "rate": 200 },
+	"initialize": [{ "type": "cone", "angle": 0.5, "speed": [2.0, 6.0] }],
+	"update": [
+		{ "type": "acceleration", "value": [0.0, -9.81, 0.0] },
+		{ "type": "drag", "coefficient": 0.5 }
+	],
+	"render": {
+		"shape": { "type": "streak", "width": 0.008, "stretch": 0.02 },
+		"color": [
+			{ "age": 0.0, "radiance": [50000.0, 40000.0, 30000.0] },
+			{ "age": 0.3, "radiance": [30000.0, 12000.0, 2500.0] },
+			{ "age": 0.65, "radiance": [8000.0, 1500.0, 100.0] },
+			{ "age": 1.0, "radiance": [0.0, 0.0, 0.0] }
+		]
+	}
+}

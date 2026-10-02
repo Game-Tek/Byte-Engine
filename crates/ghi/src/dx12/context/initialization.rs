@@ -307,6 +307,7 @@ impl Device {
 			pipeline_layout_indices: HashMap::default(),
 			pipelines: Vec::new(),
 			indirect_dispatch_signature: None,
+			indirect_draw_signature: None,
 			shaders: Vec::new(),
 			meshes: Vec::new(),
 			swapchains: Vec::new(),

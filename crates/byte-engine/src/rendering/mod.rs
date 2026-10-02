@@ -27,6 +27,7 @@ pub mod device;
 #[doc(hidden)]
 pub mod lights;
 pub mod loading;
+pub mod particles;
 #[doc(hidden)]
 pub mod window;
 
@@ -75,6 +76,7 @@ pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
 	PhotometricIntensity, PointLight,
 };
+pub use particles::ParticleEmitter;
 pub use pipeline_compilation::{PipelineKey, PipelineManagerClient, PipelineManagerServer, PipelineRef, PipelineState};
 pub use pipeline_manager::PipelineManager;
 pub use pipelines::{SimplePipelineManager, VisibilityPipelineManager};

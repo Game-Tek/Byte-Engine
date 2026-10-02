@@ -1,5 +1,8 @@
 {
 	"title": "Rendering",
 	"icon": "Computer",
-	"pages": ["loading"]
+	"pages": [
+		"loading",
+		"particles"
+	]
 }

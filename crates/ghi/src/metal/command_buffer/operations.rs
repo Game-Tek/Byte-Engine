@@ -1052,6 +1052,43 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 			);
 		self.record_render_attachment_writes();
 	}
+
+	fn draw_indirect<const N: usize>(
+		&mut self,
+		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
+		entry_index: usize,
+	) {
+		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
+		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into().handle());
+		let (buffer_size, buffer_gpu_address) = {
+			let buffer = self.device.buffers.resource(internal_buffer);
+			(buffer.size, buffer.gpu_address)
+		};
+		assert!(
+			entry.end <= buffer_size,
+			"Metal indirect draw entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
+		);
+		let indirect_buffer_address = buffer_gpu_address.checked_add(entry.start as u64).expect(
+			"Metal indirect draw GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
+		);
+
+		// The vertex stage consumes the draw record, so it must wait for whichever GPU work wrote the counts.
+		let mut resource_uses = self.bound_vertex_resource_uses();
+		resource_uses.push(synchronization::MetalResourceUse::buffer(
+			internal_buffer,
+			entry.start,
+			entry.len(),
+			mtl::MTLStages::Vertex,
+			crate::AccessPolicies::READ,
+		));
+		self.prepare_draw("draw_indirect", resource_uses);
+		self.apply_bound_vertex_buffers();
+
+		self.render_encoder("draw_indirect")
+			.drawPrimitives_indirectBuffer(mtl::MTLPrimitiveType::Triangle, indirect_buffer_address);
+		self.record_render_attachment_writes();
+	}
 }
 
 impl BoundComputePipelineMode for CommandBufferRecording<'_> {

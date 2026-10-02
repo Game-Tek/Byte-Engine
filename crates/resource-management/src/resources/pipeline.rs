@@ -81,6 +81,8 @@ pub enum BlendMode {
 	#[default]
 	None,
 	Alpha,
+	/// Source-over blending for color the shader already multiplied by its alpha.
+	Premultiplied,
 }
 
 #[derive(

@@ -151,6 +151,32 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	application.renderer.add_pipeline_manager(visibility_pipeline_manager);
 }
 
+/// Installs the GPU particle runtime on top of the scene pipeline registered before it.
+///
+/// Call this after the scene pipeline setup, such as [`setup_pbr_visibility_shading_render_pipeline`], and before
+/// [`defaults::launch_deferred_tasks_thread`], which runs the lane that loads particle systems. Particles add their
+/// light to the scene's `main` color before post-processing, so bloom and tone mapping treat them like any other
+/// emitter. A system costs nothing on frames without live particles.
+///
+/// Next, create a [`rendering::ParticleEmitter`] naming a `.particles` asset, with a [`crate::gameplay::Transform`],
+/// through [`DefaultWorld::create`].
+pub fn setup_particles(application: &mut GraphicsApplication) {
+	let resources = application.resource_manager_handle();
+	let (loader, renderer) = application.loader_and_renderer_mut();
+	let pipeline_manager = renderer.pipeline_manager_client();
+	// Systems are small records read once each, so one lane keeps up.
+	let (systems_loader, lanes) =
+		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 16);
+	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
+	application.renderer.add_pipeline_manager(particle_manager);
+
+	application.add_deferred_task(move |runtime| {
+		for lane in lanes {
+			runtime.spawn(lane.run()).detach();
+		}
+	});
+}
+
 /// Resolves the visibility pipeline's startup parameters, panicking on any value it cannot use.
 fn visibility_pipeline_settings(application: &GraphicsApplication) -> VisibilityPipelineSettings {
 	// Every setting below rejects a value it cannot parse instead of silently keeping its default.

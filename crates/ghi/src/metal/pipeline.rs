@@ -308,18 +308,21 @@ fn configure_metal4_color_attachment(
 	attachment: &crate::pipelines::raster::AttachmentDescriptor,
 ) {
 	color_attachment.setPixelFormat(utils::to_pixel_format(attachment.format));
-	match attachment.blend {
-		crate::pipelines::raster::BlendMode::None => color_attachment.setBlendingState(mtl::MTL4BlendState::Disabled),
-		crate::pipelines::raster::BlendMode::Alpha => {
-			color_attachment.setBlendingState(mtl::MTL4BlendState::Enabled);
-			color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
-			color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
-			color_attachment.setSourceRGBBlendFactor(mtl::MTLBlendFactor::SourceAlpha);
-			color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
-			color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
-			color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+	let source_color_factor = match attachment.blend {
+		crate::pipelines::raster::BlendMode::None => {
+			color_attachment.setBlendingState(mtl::MTL4BlendState::Disabled);
+			return;
 		}
-	}
+		crate::pipelines::raster::BlendMode::Alpha => mtl::MTLBlendFactor::SourceAlpha,
+		crate::pipelines::raster::BlendMode::Premultiplied => mtl::MTLBlendFactor::One,
+	};
+	color_attachment.setBlendingState(mtl::MTL4BlendState::Enabled);
+	color_attachment.setRgbBlendOperation(mtl::MTLBlendOperation::Add);
+	color_attachment.setAlphaBlendOperation(mtl::MTLBlendOperation::Add);
+	color_attachment.setSourceRGBBlendFactor(source_color_factor);
+	color_attachment.setDestinationRGBBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
+	color_attachment.setSourceAlphaBlendFactor(mtl::MTLBlendFactor::One);
+	color_attachment.setDestinationAlphaBlendFactor(mtl::MTLBlendFactor::OneMinusSourceAlpha);
 }
 
 /// Configures the packed color outputs shared by Metal 4 vertex and mesh render descriptors.

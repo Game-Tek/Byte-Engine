@@ -1,0 +1,1 @@
+{"name":"Particle Prepare","kind":{"type":"compute","shader":"byte-engine/rendering/particles/prepare.besl"}}

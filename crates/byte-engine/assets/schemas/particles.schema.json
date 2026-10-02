@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://byte-engine.dev/schemas/particles.schema.json",
+  "title": "Byte Engine particle system",
+  "description": "A GPU particle system built from data modules, consumed by the .particles asset handler.",
+  "type": "object",
+  "required": ["capacity", "lifetime", "render"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "capacity": { "description": "How many particles can be alive at once.", "type": "integer", "minimum": 1, "maximum": 1048576 },
+    "lifetime": { "description": "The shortest and longest life of a particle, in seconds.", "$ref": "#/$defs/range", "items": { "minimum": 0.016, "maximum": 1024 } },
+    "spawn": {
+      "description": "How much an emitter spawns when it does not choose for itself.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rate": { "description": "Particles per second.", "type": "number", "minimum": 0 },
+        "burst": { "description": "Particles spawned once, when an emitter is published.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "initialize": {
+      "description": "Steps that place and launch new particles in the emitter's space, in order. Their results add up.",
+      "type": "array",
+      "items": { "oneOf": [{ "$ref": "#/$defs/sphere" }, { "$ref": "#/$defs/cone" }] }
+    },
+    "update": {
+      "description": "Steps that change every live particle each frame, in order.",
+      "type": "array",
+      "items": { "oneOf": [{ "$ref": "#/$defs/acceleration" }, { "$ref": "#/$defs/drag" }] }
+    },
+    "render": {
+      "type": "object",
+      "required": ["shape", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "shape": { "oneOf": [{ "$ref": "#/$defs/streak" }, { "$ref": "#/$defs/billboard" }] },
+        "color": {
+          "description": "The light a particle emits over its life. Stop ages increase strictly from 0 to 1.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["age", "radiance"],
+            "additionalProperties": false,
+            "properties": {
+              "age": { "description": "The fraction of its life the particle has lived.", "type": "number", "minimum": 0, "maximum": 1 },
+              "radiance": { "description": "Linear sRGB luminance in nits.", "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 3, "maxItems": 3 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "range": { "type": "array", "items": { "type": "number", "minimum": 0 }, "minItems": 2, "maxItems": 2 },
+    "sphere": {
+      "description": "Starts particles at a random point inside a sphere around the emitter.",
+      "type": "object",
+      "required": ["type", "radius"],
+      "additionalProperties": false,
+      "properties": { "type": { "const": "sphere" }, "radius": { "description": "Meters.", "type": "number", "minimum": 0 } }
+    },
+    "cone": {
+      "description": "Launches particles in a random direction inside a cone around the emitter's local +Z axis.",
+      "type": "object",
+      "required": ["type", "angle", "speed"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "cone" },
+        "angle": { "description": "The cone's half angle, in radians.", "type": "number", "minimum": 0, "maximum": 3.1415927 },
+        "speed": { "description": "The slowest and fastest launch speed, in meters per second.", "$ref": "#/$defs/range" }
+      }
+    },
+    "acceleration": {
+      "description": "Accelerates particles by a world-space vector, such as gravity or wind.",
+      "type": "object",
+      "required": ["type", "value"],
+      "additionalProperties": false,
+      "properties": { "type": { "const": "acceleration" }, "value": { "description": "Meters per second squared.", "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 } }
+    },
+    "drag": {
+      "description": "Slows particles; the coefficient is the fraction of speed lost per second at low speed.",
+      "type": "object",
+      "required": ["type", "coefficient"],
+      "additionalProperties": false,
+      "properties": { "type": { "const": "drag" }, "coefficient": { "type": "number", "minimum": 0 } }
+    },
+    "streak": {
+      "description": "A camera-facing streak along the particle's velocity.",
+      "type": "object",
+      "required": ["type", "width", "stretch"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "streak" },
+        "width": { "description": "Meters.", "type": "number", "exclusiveMinimum": 0 },
+        "stretch": { "description": "Seconds of travel the streak shows behind the particle.", "type": "number", "minimum": 0 }
+      }
+    },
+    "billboard": {
+      "description": "A round camera-facing sprite.",
+      "type": "object",
+      "required": ["type", "size"],
+      "additionalProperties": false,
+      "properties": { "type": { "const": "billboard" }, "size": { "description": "Meters across.", "type": "number", "exclusiveMinimum": 0 } }
+    }
+  }
+}

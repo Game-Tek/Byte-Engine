@@ -622,6 +622,7 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 	let mut descriptor = ghi::pipelines::raster::AttachmentDescriptor::new(format).blend(match value.blend {
 		BlendMode::None => ghi::pipelines::raster::BlendMode::None,
 		BlendMode::Alpha => ghi::pipelines::raster::BlendMode::Alpha,
+		BlendMode::Premultiplied => ghi::pipelines::raster::BlendMode::Premultiplied,
 	});
 	if let Some(layer) = value.layer {
 		descriptor = descriptor.layer(layer);

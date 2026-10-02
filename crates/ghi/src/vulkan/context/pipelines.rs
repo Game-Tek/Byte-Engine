@@ -163,6 +163,9 @@ pub(crate) fn build_raster_pipeline(
 				crate::pipelines::raster::BlendMode::Alpha => {
 					(true, vk::BlendFactor::SRC_ALPHA, vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
 				}
+				crate::pipelines::raster::BlendMode::Premultiplied => {
+					(true, vk::BlendFactor::ONE, vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+				}
 			};
 			vk::PipelineColorBlendAttachmentState::default()
 				.color_write_mask(vk::ColorComponentFlags::RGBA)

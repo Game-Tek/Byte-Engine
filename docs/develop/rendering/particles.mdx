@@ -1,0 +1,98 @@
+---
+title: Particles
+description: Author GPU particle systems as .particles files and place them in the world.
+icon: Sparkles
+---
+
+Use a `.particles` file to describe an effect such as sparks, embers, or smoke, and a `ParticleEmitter` to place it
+in the world. Particles live and move entirely on the GPU, and a system costs nothing on frames without live particles.
+
+## Set up particles
+
+The default graphics setup installs particles. With a custom setup, call `setup_particles` after the scene pipeline
+and before `launch_deferred_tasks_thread`:
+
+```rust
+setup_pbr_visibility_shading_render_pipeline(&mut app);
+setup_particles(&mut app);
+```
+
+## Place an emitter
+
+Create a `ParticleEmitter` that names a `.particles` asset, together with a `Transform`:
+
+```rust
+app.world()
+	.create(ParticleEmitter::new("byte-engine/particles/sparks.particles"))
+	.with(Transform::from_position(Point::new(0.0, 1.0, 0.0)));
+```
+
+The transform moves, turns, and scales the system's spawn modules, so a cone fires along the transform's local +Z
+axis. Set `rate` or `burst` on the emitter to override the system's `spawn` values; a burst spawns each time you
+publish the emitter. To change an emitter, publish a new value on the same handle with `Factory::derive`. To stop it,
+delete the handle. Particles already in flight finish their lives.
+
+## Write a .particles file
+
+A system lists data modules. Baking turns them into one simulation kernel and one draw pipeline, so a system runs no
+code for modules it doesn't list. For editor completion, point `"$schema"` at the engine's
+`schemas/particles.schema.json`, relative to your file.
+
+```json
+{
+	"capacity": 65536,
+	"lifetime": [0.4, 1.2],
+	"spawn": { "rate": 200 },
+	"initialize": [{ "type": "cone", "angle": 0.5, "speed": [2.0, 6.0] }],
+	"update": [
+		{ "type": "acceleration", "value": [0.0, -9.81, 0.0] },
+		{ "type": "drag", "coefficient": 0.5 }
+	],
+	"render": {
+		"shape": { "type": "streak", "width": 0.008, "stretch": 0.02 },
+		"color": [
+			{ "age": 0.0, "radiance": [50000.0, 40000.0, 30000.0] },
+			{ "age": 1.0, "radiance": [0.0, 0.0, 0.0] }
+		]
+	}
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `capacity` | How many particles can be alive at once, up to 1,048,576. GPU memory is 64 bytes per particle. |
+| `lifetime` | The shortest and longest life of a particle, in seconds, from 0.016 to 1024. |
+| `spawn` | `rate` in particles per second and `burst` per publish, for emitters that don't set their own. |
+| `initialize` | Modules that place and launch new particles in the emitter's space. Their results add up. |
+| `update` | Modules that change every live particle each frame, in order. |
+| `render.shape` | The camera-facing quad each particle draws as. |
+| `render.color` | The light a particle emits over its life, in nits, as stops interpolated by age from 0 to 1. |
+
+### Modules
+
+| Module | Section | Fields |
+| --- | --- | --- |
+| `sphere` | `initialize` | `radius`: starts particles at a random point inside a sphere, in meters. |
+| `cone` | `initialize` | `angle`: the half angle around local +Z, in radians. `speed`: the slowest and fastest launch speed, in meters per second. |
+| `acceleration` | `update` | `value`: a world-space acceleration in meters per second squared, such as gravity or wind. |
+| `drag` | `update` | `coefficient`: the fraction of speed lost per second at low speed. |
+
+### Shapes
+
+| Shape | Fields |
+| --- | --- |
+| `streak` | `width` in meters, and `stretch`: how many seconds of travel the streak shows behind the particle. |
+| `billboard` | `size`: a round sprite's diameter in meters. |
+
+Particles add their light to the scene, so they don't need sorting and never hide each other. They hide behind scene
+geometry.
+
+## What baking produces
+
+Baking `effects/sparks.particles` stores:
+
+- the `ParticleSystem` resource under `effects/sparks.particles`
+- the `effects/sparks.particles#simulate` and `effects/sparks.particles#draw` pipelines
+- their generated shaders under `effects/sparks.particles#shaders/`
+
+Requesting any of them bakes them all. An invalid file fails to bake with a message that names the field.

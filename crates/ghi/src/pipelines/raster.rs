@@ -98,6 +98,11 @@ pub enum BlendMode {
 	None,
 	/// Applies straight-alpha source-over blending to both color and alpha.
 	Alpha,
+	/// Applies source-over blending to color that the shader already multiplied by its alpha.
+	///
+	/// An alpha of `0` adds the color, which suits emissive effects such as sparks, and an alpha of `1` covers what is
+	/// behind it. Both kinds can share one draw without sorting against each other only when they are additive.
+	Premultiplied,
 }
 
 #[derive(Clone, Copy)]

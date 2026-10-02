@@ -26,6 +26,9 @@ pub struct ShaderMesh {
 	pub(crate) skinned_base_vertex_index: u32,
 	/// Material bits such as [`MESH_FLAG_DOUBLE_SIDED`].
 	pub(crate) flags: u32,
+	/// Object-space sphere around the primitive's meshlets, as xyz center and w radius. Task shaders place it with
+	/// `model` and skip instances no view reaches.
+	pub(crate) bounding_sphere: [f32; 4],
 }
 
 /// [`ShaderMesh::flags`] bit for a material with both faces visible. Task shaders keep its back-facing meshlets and
@@ -246,7 +249,7 @@ pub(crate) struct ReflectionShaderParameters {
 ///
 /// These are compile-time checks so a layout change fails the build at the definition rather than later
 /// in a shader that silently reads the wrong bytes.
-const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 80);
+const _: () = assert!(std::mem::size_of::<ShaderMesh>() == 96);
 const _: () = assert!(
 	std::mem::size_of::<ShaderMesh>() as u32 == crate::rendering::pipelines::visibility::layout::MESH_DATA_BUFFER_STRIDE
 );
@@ -254,6 +257,7 @@ const _: () = assert!(std::mem::align_of::<ShaderMesh>() == 16);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, material_index) == 48);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, skinned_base_vertex_index) == 72);
 const _: () = assert!(std::mem::offset_of!(ShaderMesh, flags) == 76);
+const _: () = assert!(std::mem::offset_of!(ShaderMesh, bounding_sphere) == 80);
 
 const _: () = assert!(std::mem::size_of::<ShaderViewData>() == 176);
 const _: () = assert!(

@@ -8,6 +8,7 @@ Mesh: struct {
 	meshlet_count: u32,
 	skinned_base_vertex_index: u32,
 	flags: u32,
+	bounding_sphere: vec4f,
 }
 
 MeshData: struct {
@@ -35,15 +36,47 @@ PIXEL_MAPPING_TILE_CAPACITY: const u32 = 32;
 INVALID_INDEX: const u32 = 4294967295;
 PIXEL_MAPPING_CAPACITY: const u32 = 8294400;
 
+// Returns the 32 bits of a subgroup ballot word, starting at lane `first_lane`, that belong to `lane` or a later lane.
+ballot_word_from_lane: fn (lane: u32, first_lane: u32) -> u32 {
+	if (lane <= first_lane) {
+		return INVALID_INDEX;
+	}
+	if (lane >= first_lane + 32) {
+		return 0;
+	}
+	return INVALID_INDEX << (lane - first_lane);
+}
+
+// Returns the ballot mask of `lane` and every later lane. Removing it from a ballot leaves the earlier lanes.
+ballot_from_lane: fn (lane: u32) -> vec4u {
+	return vec4u(
+		ballot_word_from_lane(lane, 0),
+		ballot_word_from_lane(lane, 32),
+		ballot_word_from_lane(lane, 64),
+		ballot_word_from_lane(lane, 96)
+	);
+}
+
 main: fn (input: StageInput) -> void {
-	let initial_coord: vec2u = input.thread_id;
+	// Each 32-thread group covers an 8x4 block of the 16x16 tile instead of two 16-pixel rows. The pixels one subgroup
+	// maps for a material then sit close together, and material evaluation shades neighbors in the same subgroup, which
+	// share triangles and texture cache lines.
+	let local_index: u32 = input.thread_idx;
+	let block: u32 = local_index / 32;
+	let block_lane: u32 = local_index % 32;
+	let tile_origin: vec2u = input.thread_id - vec2u(local_index % 16, local_index / 16);
+	let coord: vec2u = tile_origin + vec2u((block % 2) * 8 + block_lane % 8, (block / 2) * 4 + block_lane / 8);
 	let extent: vec2u = image_size(instance_index_render_target);
 	let material_index: u32 = INVALID_INDEX;
+	// The pixel's rank among its tile's pixels of the same material in the upper bits, and its histogram slot in the low
+	// five. Packing them keeps one value live across barriers.
 	let packed_tile_mapping: u32 = INVALID_INDEX;
+	// The pixel's mapping index when the tile histogram had no slot left for its material.
+	let fallback_mapping_index: u32 = INVALID_INDEX;
 
-	if (initial_coord.x < extent.x) {
-		if (initial_coord.y < extent.y) {
-			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, initial_coord);
+	if (coord.x < extent.x) {
+		if (coord.y < extent.y) {
+			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
 
 			if (pixel_instance_index < INVALID_INDEX && pixel_instance_index < 1024) {
 				material_index = mesh_data.meshes[pixel_instance_index].material_index;
@@ -57,33 +90,69 @@ main: fn (input: StageInput) -> void {
 	}
 	workgroup_barrier();
 
-	// Pack the slot and rank so only one tile-mapping value remains live across barriers.
-	if (material_index < 1024) {
-		for (
-			let probe: u32 = 0;
-			probe < PIXEL_MAPPING_TILE_CAPACITY && packed_tile_mapping == INVALID_INDEX;
-			probe = probe + 1
-		) {
-			let slot: u32 = (material_index + probe) & 31;
-			let key: u32 = atomic_load(tile_histogram_keys[slot]);
+	// A subgroup elects one leader per material. The leader reserves a run of ranks for every matching pixel with one
+	// atomic, and each pixel takes the run's base plus the number of matching lanes before it.
+	let lane: u32 = subgroup_lane_index();
+	let earlier_lanes_excluded: vec4u = ballot_from_lane(lane);
+	let remaining: vec4u = subgroup_ballot(material_index < 1024);
+	for (
+		let has_remaining: bool = subgroup_ballot_any(remaining);
+		has_remaining;
+		has_remaining = subgroup_ballot_any(remaining)
+	) {
+		let leader_lane: u32 = subgroup_ballot_find_lsb(remaining);
+		let leader_material_index: u32 = subgroup_broadcast_u32(material_index, leader_lane);
+		let matching: vec4u = subgroup_ballot(material_index == leader_material_index);
+		let matching_count: u32 = subgroup_ballot_count(matching);
+		let leader_run: u32 = INVALID_INDEX;
+		let leader_fallback_base: u32 = INVALID_INDEX;
 
-			// Most later pixels find an established key and avoid a contended compare-exchange.
-			if (key == material_index) {
-				let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
-				packed_tile_mapping = (tile_rank << 5) | slot;
-			} else if (key == INVALID_INDEX) {
-				let previous_key: u32 = atomic_compare_exchange(
-					tile_histogram_keys[slot],
-					INVALID_INDEX,
-					material_index
-				);
+		if (lane == leader_lane) {
+			for (
+				let probe: u32 = 0;
+				probe < PIXEL_MAPPING_TILE_CAPACITY && leader_run == INVALID_INDEX;
+				probe = probe + 1
+			) {
+				let slot: u32 = (leader_material_index + probe) & 31;
+				let key: u32 = atomic_load(tile_histogram_keys[slot]);
 
-				if (previous_key == INVALID_INDEX || previous_key == material_index) {
-					let tile_rank: u32 = atomic_add(tile_histogram_counts[slot], 1);
-					packed_tile_mapping = (tile_rank << 5) | slot;
+				// Most later leaders find an established key and avoid a contended compare-exchange.
+				if (key == leader_material_index) {
+					leader_run = (atomic_add(tile_histogram_counts[slot], matching_count) << 5) | slot;
+				} else if (key == INVALID_INDEX) {
+					let previous_key: u32 = atomic_compare_exchange(
+						tile_histogram_keys[slot],
+						INVALID_INDEX,
+						leader_material_index
+					);
+
+					if (previous_key == INVALID_INDEX || previous_key == leader_material_index) {
+						leader_run = (atomic_add(tile_histogram_counts[slot], matching_count) << 5) | slot;
+					}
 				}
 			}
+
+			if (leader_run == INVALID_INDEX) {
+				// A tile with more distinct materials than local slots reserves global indices once per subgroup material.
+				leader_fallback_base = atomic_add(
+					material_offset_scratch_buffer.material_offset_scratch[leader_material_index],
+					matching_count
+				);
+			}
 		}
+
+		let run: u32 = subgroup_broadcast_u32(leader_run, leader_lane);
+		let fallback_base: u32 = subgroup_broadcast_u32(leader_fallback_base, leader_lane);
+		if (material_index == leader_material_index) {
+			let earlier_matching: u32 = subgroup_ballot_count(subgroup_ballot_and_not(matching, earlier_lanes_excluded));
+			if (run == INVALID_INDEX) {
+				fallback_mapping_index = fallback_base + earlier_matching;
+			} else {
+				packed_tile_mapping = run + (earlier_matching << 5);
+			}
+		}
+
+		remaining = subgroup_ballot_and_not(remaining, matching);
 	}
 	workgroup_barrier();
 
@@ -102,19 +171,15 @@ main: fn (input: StageInput) -> void {
 	workgroup_barrier();
 
 	if (material_index < 1024) {
-		let pixel_mapping_index: u32 = INVALID_INDEX;
+		let pixel_mapping_index: u32 = fallback_mapping_index;
 
 		if (packed_tile_mapping < INVALID_INDEX) {
 			let tile_slot: u32 = packed_tile_mapping & 31;
 			let tile_rank: u32 = packed_tile_mapping >> 5;
 			pixel_mapping_index = tile_mapping_bases[tile_slot] + tile_rank;
-		} else {
-			// A tile with more distinct materials than local slots retains the per-pixel fallback.
-			pixel_mapping_index = atomic_add(material_offset_scratch_buffer.material_offset_scratch[material_index], 1);
 		}
 
 		if (pixel_mapping_index < PIXEL_MAPPING_CAPACITY) {
-			let coord: vec2u = input.thread_id;
 			pixel_mapping_buffer.pixel_mapping[pixel_mapping_index] = vec2u16(coord.x + 1, coord.y + 1);
 		}
 	}

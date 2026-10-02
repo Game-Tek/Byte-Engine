@@ -29,9 +29,9 @@ use super::layout::{
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowWork,
-	SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets, create_radiance_history_target,
-	create_ssgi_targets,
+	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, FrameWork, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
+	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets,
+	create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
@@ -486,6 +486,8 @@ pub struct VisibilityPipelineManager {
 	cascade_fitting: CascadeFitting,
 	cone_shadow_pool_capacity: usize,
 	point_shadow_pool_capacity: usize,
+	/// The shadow maps every sink samples. The first recorded sink renders them each frame.
+	shadow_maps: ShadowMaps,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
 	contact_shadow_configuration: crate::configuration::ConfigurationPort,
@@ -532,6 +534,13 @@ impl VisibilityPipelineManager {
 			context.build_dynamic_buffer(host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination));
 		let descriptor_set = context.create_descriptor_set(Some("Base Descriptor Set"));
 		let mesh_dispatch_work = MeshDispatchWorkBuffer::new(context, descriptor_set);
+		let shadow_maps = ShadowMaps::new(
+			context,
+			&pipeline_manager,
+			descriptor_set,
+			settings.cone_shadow_map_pool_capacity,
+			settings.point_shadow_map_pool_capacity,
+		);
 		let write = |binding: ghi::ShaderResourceDescriptor, buffer| {
 			ghi::DescriptorWrite::buffer(descriptor_set, binding.slot(), buffer)
 		};
@@ -587,6 +596,7 @@ impl VisibilityPipelineManager {
 			cascade_fitting: settings.cascade_fitting,
 			cone_shadow_pool_capacity: settings.cone_shadow_map_pool_capacity,
 			point_shadow_pool_capacity: settings.point_shadow_map_pool_capacity,
+			shadow_maps,
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
 			contact_shadow_configuration,
@@ -961,6 +971,7 @@ impl VisibilityPipelineManager {
 					meshlet_count: primitive.meshlet_count,
 					skinned_base_vertex_index: u32::MAX,
 					flags: 0,
+					bounding_sphere: primitive.bounding_sphere,
 				},
 				skinning: primitive.skin.as_ref().map(|binding| RenderSkin {
 					binding: binding.clone(),
@@ -1218,7 +1229,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			point_count: shadows.point_count(),
 		};
 
-		let skinning_pass = &self.skinning_pass;
+		let frame_work = FrameWork {
+			skinning: &self.skinning_pass,
+			shadow_maps: &self.shadow_maps,
+		};
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
 		let recorded_exposure = self.recorded_exposure;
@@ -1231,8 +1245,9 @@ impl PipelineManager for VisibilityPipelineManager {
 			})
 			.enumerate()
 			.filter_map(|(command_index, (sink, render_pass, background))| {
-				// Skinning runs once per frame, with the first sink.
-				let skinning = (command_index == 0).then_some(skinning_pass);
+				// Frame-wide work runs once per frame, with the first sink, whose camera the views were made for. Later sinks
+				// record after it in the same command buffer, so they sample the maps it rendered.
+				let frame_work = (command_index == 0).then_some(frame_work);
 				// A sink that did not record last frame, or was resized since, has no usable history.
 				let history = previously_recorded_sinks
 					.iter()
@@ -1241,19 +1256,10 @@ impl PipelineManager for VisibilityPipelineManager {
 						view: previous.view(),
 						exposure: recorded_exposure,
 					});
-				// The cascades were made for the first sink's camera, so only its surfaces can fit them.
-				let shadow_work = if command_index == 0 {
-					shadow_work
-				} else {
-					ShadowWork {
-						receiver_fit: None,
-						..shadow_work
-					}
-				};
 				let command = render_pass.prepare(
 					frame,
 					sink,
-					skinning,
+					frame_work,
 					dispatches,
 					render_info,
 					shadow_work,
@@ -1314,8 +1320,7 @@ impl PipelineManager for VisibilityPipelineManager {
 				contact_shadows,
 				radiance_history,
 			},
-			self.cone_shadow_pool_capacity,
-			self.point_shadow_pool_capacity,
+			&self.shadow_maps,
 			self.gtao_settings,
 			self.contact_shadow_settings,
 		);

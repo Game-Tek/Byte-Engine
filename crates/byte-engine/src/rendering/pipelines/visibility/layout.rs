@@ -34,6 +34,10 @@ pub(crate) const VERTEX_COUNT: u32 = 64;
 pub(crate) const TRIANGLE_COUNT: u32 = 126;
 /// Meshlets culled by one task workgroup.
 pub(crate) const MESHLET_CULLING_TASK_GROUP_SIZE: u32 = 32;
+/// Views one task workgroup culls its meshlets against, such as one point light's cube faces or all the cascades.
+/// `meshlet-task.besl` and the mesh shaders size their payload for this many views of every meshlet and spell the limit
+/// as a literal.
+pub(crate) const MAX_TASK_VIEWS: usize = 6;
 
 /* Shadow views */
 
@@ -56,7 +60,12 @@ pub(crate) const DIRECTIONAL_SHADOW_MAP_FORMAT: ghi::Formats = ghi::Formats::Dep
 pub(crate) const CONE_SHADOW_VIEW_OFFSET: usize = 1 + SHADOW_CASCADE_COUNT;
 pub(crate) const POINT_SHADOW_FACE_COUNT: usize = 6;
 pub(crate) const POINT_SHADOW_VIEW_OFFSET: usize = CONE_SHADOW_VIEW_OFFSET + MAX_CONE_SHADOW_POOL_CAPACITY;
+/// The shaders declare the `views` buffer with this many entries.
 pub(crate) const SHADOW_VIEW_COUNT: usize = POINT_SHADOW_VIEW_OFFSET + MAX_POINT_SHADOW_POOL_CAPACITY * POINT_SHADOW_FACE_COUNT;
+const _: () = assert!(
+	SHADOW_VIEW_COUNT == 117 && MAX_TASK_VIEWS == 6 && SHADOW_CASCADE_COUNT <= MAX_TASK_VIEWS,
+	"Update the `View[117]` declarations in the visibility shaders and the material shader generator, and the task payload, when shadow view limits change."
+);
 
 /* Light clusters */
 
@@ -81,7 +90,7 @@ pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVerte
 // Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
 pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = 176;
 // ShaderMesh retains an explicit 16-byte record alignment while its affine matrix occupies 48 bytes.
-pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = 80;
+pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = 96;
 // HLSL reads packed narrow indices through 32-bit structured words. Metal and Vulkan expose native widths.
 pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
 pub(crate) const PRIMITIVE_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 1 };

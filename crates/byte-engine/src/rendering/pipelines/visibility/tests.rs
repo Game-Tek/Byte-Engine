@@ -30,6 +30,8 @@ const MESHLETS_SLOT: ResourceSlot = ResourceSlot::new(8);
 const FIXTURE_INSTANCE_INDEX: usize = 3;
 const FIXTURE_MESHLET_INDEX: usize = 5;
 const MESHLET_INSTANCE_BITS: u32 = 12;
+/// Task payload words keep the view's offset into its batch above the meshlet and the 10-bit instance indices.
+const VIEW_OFFSET_SHIFT: u32 = MESHLET_INSTANCE_BITS + super::layout::MAX_INSTANCES.ilog2();
 const TASK_WORKGROUP_SIZE: u32 = 32;
 const INSTRUCTION_LIMIT: usize = 4_000_000;
 const GTAO_WORKGROUP_WIDTH: u32 = 16;
@@ -46,6 +48,10 @@ const MATERIAL_COUNT_WORKGROUP_WIDTH: u32 = 8;
 const MATERIAL_COUNT_WORKGROUP_SIZE: usize = 64;
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
+/// The 8x8 workgroup of the filters that share a tile of their neighborhood: the contact-shadow filter and the SSGI
+/// temporal pass.
+const TILE_WORKGROUP_WIDTH: u32 = 8;
+const TILE_WORKGROUP_SIZE: usize = 64;
 
 /// Parses and links one checked-in BESL asset that production baking consumes.
 ///
@@ -62,15 +68,41 @@ fn asset_program(source: &str) -> besl::NodeReference {
 	program
 }
 
-/// Compiles one checked-in visibility asset for VM execution.
-macro_rules! asset {
+/// Reads one checked-in visibility asset's source.
+macro_rules! asset_source {
 	($name:literal) => {
-		compile(asset_program(include_str!(concat!(
+		include_str!(concat!(
 			env!("CARGO_MANIFEST_DIR"),
 			"/assets/rendering/visibility/",
 			$name
-		))))
+		))
 	};
+}
+
+/// Compiles one checked-in visibility asset for VM execution.
+macro_rules! asset {
+	($name:literal) => {
+		compile(asset_program(asset_source!($name)))
+	};
+}
+
+/// Verifies one checked-in visibility asset compiles with the platform shader compiler, past BESL linking.
+///
+/// `settings` mirror the asset's `.bead` file.
+#[cfg(target_os = "macos")]
+async fn assert_lowers_to_the_platform_shader_language(
+	name: &str,
+	source: &str,
+	settings: resource_management::shader::ShaderGenerationSettings,
+) {
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+
+	let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
+		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+	PlatformShaderCompiler::new()
+		.generate(&settings.name(name.to_string()), &root)
+		.await
+		.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 }
 
 /// Builds one workgroup of lane configurations over a 2D tile at `base`.
@@ -82,6 +114,18 @@ fn tile_configs<const N: usize>(width: u32, base: [u32; 2]) -> [ExecutionConfig;
 			.with_thread_idx(lane)
 			.with_thread_id([base[0] + lane % width, base[1] + lane / width])
 	})
+}
+
+/// Runs the whole 8x8 workgroup that holds `pixel`, which shaders sharing a tile across their workgroup need to compute
+/// any one pixel. The caller binds the workgroup state.
+fn run_tile_workgroup_containing(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>, pixel: [u32; 2]) {
+	let configs = tile_configs::<TILE_WORKGROUP_SIZE>(
+		TILE_WORKGROUP_WIDTH,
+		pixel.map(|coordinate| coordinate - coordinate % TILE_WORKGROUP_WIDTH),
+	);
+	program
+		.run_workgroup(descriptors, &configs)
+		.expect("tile workgroup execution");
 }
 
 fn read_u32(buffer: &besl::vm::Buffer, index: usize) -> u32 {
@@ -167,10 +211,8 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 	);
 }
 
-/// Returns a column-major identity matrix in the BESL VM representation.
-fn identity_matrix() -> [f32; 16] {
-	[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
-}
+/// A column-major identity matrix in the BESL VM representation.
+const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 /// Returns a column-major affine identity matrix in the BESL VM representation.
 fn identity_affine_matrix() -> [f32; 12] {
@@ -179,7 +221,7 @@ fn identity_affine_matrix() -> [f32; 12] {
 
 /// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
 fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
-	let mut matrix = identity_matrix();
+	let mut matrix = IDENTITY_MATRIX;
 	matrix[12] = translation;
 	matrix
 }
@@ -197,7 +239,7 @@ fn fixture_meshlet_instance() -> Value {
 }
 
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct TaskMeshFixture {
 	skinned: bool,
 	/// The instance's `ShaderMesh::flags` word.
@@ -205,23 +247,38 @@ struct TaskMeshFixture {
 	/// Gives every meshlet a narrow normal cone facing straight away from the camera at the origin. Otherwise the
 	/// cone test is disabled, so the fixture isolates frustum and skinning behavior.
 	back_facing: bool,
+	/// The instance's bounding sphere, which task shaders test before any meshlet. The fixture's model is the identity.
+	bounding_sphere: [f32; 4],
 }
 
-/// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets.
+impl Default for TaskMeshFixture {
+	fn default() -> Self {
+		Self {
+			skinned: false,
+			flags: 0,
+			back_facing: false,
+			// Wide enough to reach every fixture meshlet, so the instance test passes unless a test moves it.
+			bounding_sphere: [0.0, 0.0, 0.5, 8.0],
+		}
+	}
+}
+
+/// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets, culling
+/// against `view_count` views from `view_base`.
 fn run_meshlet_task_workgroup(
-	program: &ExecutableProgram,
 	view_projections: &[(usize, [f32; 16])],
-	selected_view_index: Option<u32>,
+	[view_base, view_count]: [u32; 2],
 	center_radii: &[[f32; 4]],
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
 ) -> TaskOutputs {
+	let program = asset!("meshlet-task.besl");
 	let meshlet_count = center_radii.len() as u32;
 	assert!(
 		(1..=TASK_WORKGROUP_SIZE).contains(&meshlet_count),
 		"Task meshlet fixture must hold between one meshlet and one workgroup of meshlets."
 	);
-	let mut views = buffer(program, VIEWS_SLOT);
+	let mut views = buffer(&program, VIEWS_SLOT);
 	for (view_index, view_projection) in view_projections.iter().copied() {
 		views
 			.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
@@ -230,10 +287,13 @@ fn run_meshlet_task_workgroup(
 			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
 			.expect("task inverse view");
 	}
-	let mut meshes = buffer(program, MESH_DATA_SLOT);
+	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
 		.expect("task mesh transform");
+	meshes
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "bounding_sphere", Value::Vec4F(mesh.bounding_sphere))
+		.expect("task mesh bounds");
 	for (field, value) in [
 		("base_meshlet_index", FIXTURE_MESHLET_INDEX as u32),
 		("meshlet_count", meshlet_count),
@@ -244,7 +304,7 @@ fn run_meshlet_task_workgroup(
 			.write_array_member(FIXTURE_INSTANCE_INDEX, field, Value::U32(value))
 			.expect("task mesh field");
 	}
-	let mut meshlets = array_buffer(program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + center_radii.len());
+	let mut meshlets = array_buffer(&program, MESHLETS_SLOT, FIXTURE_MESHLET_INDEX + center_radii.len());
 	for (meshlet_offset, center_radius) in center_radii.iter().copied().enumerate() {
 		let meshlet_index = FIXTURE_MESHLET_INDEX + meshlet_offset;
 		meshlets
@@ -268,11 +328,15 @@ fn run_meshlet_task_workgroup(
 			.expect("task cone axis");
 	}
 	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("task push constants").clone());
-	push_constant.write("work_item_base", Value::U32(0)).expect("task work base");
-	push_constant
-		.write("view_index", Value::U32(selected_view_index.unwrap_or(0)))
-		.expect("task view index");
-	let mut mesh_dispatch_work = buffer(program, MESH_DISPATCH_WORK_SLOT);
+	for (member, value) in [
+		("work_item_base", 0),
+		("view_base", view_base),
+		("layer_base", 0),
+		("view_count", view_count),
+	] {
+		push_constant.write(member, Value::U32(value)).expect("task push constant");
+	}
+	let mut mesh_dispatch_work = buffer(&program, MESH_DISPATCH_WORK_SLOT);
 	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
@@ -304,151 +368,176 @@ fn run_meshlet_task_workgroup(
 	task_outputs
 }
 
-/// Executes one lane of an exact production task main with one meshlet.
-fn run_single_meshlet_task(
-	program: &ExecutableProgram,
-	view_projections: &[(usize, [f32; 16])],
-	selected_view_index: Option<u32>,
-	center_radius: [f32; 4],
-	skinned: bool,
-) -> (Option<u32>, Option<Value>) {
-	let mesh = TaskMeshFixture {
-		skinned,
-		..Default::default()
-	};
-	let outputs = run_meshlet_task_workgroup(program, view_projections, selected_view_index, &[center_radius], mesh, 0);
-	(
-		outputs.mesh_output_count(),
-		outputs.payload_value("meshlet_instances", 0).cloned(),
-	)
+/// Runs one task workgroup against the camera, view zero, and returns every payload word it emitted.
+fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgroup_index: u32) -> Vec<Value> {
+	task_payload(&run_meshlet_task_workgroup(
+		&[(0, IDENTITY_MATRIX)],
+		[0, 1],
+		center_radii,
+		mesh,
+		workgroup_index,
+	))
 }
 
-/// Verifies view-zero culling retains an intersecting meshlet and rejects one outside the frustum.
-#[test]
-fn visibility_task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
-	let program = asset!("visibility-task.besl");
-	let visible = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [0.0, 0.0, 0.5, 0.1], false);
-	assert_eq!(visible, (Some(1), Some(fixture_meshlet_instance())));
+/// Reads every payload word a task workgroup emitted, in emission order.
+fn task_payload(outputs: &TaskOutputs) -> Vec<Value> {
+	(0..outputs.mesh_output_count().expect("task mesh output count") as usize)
+		.map(|index| {
+			outputs
+				.payload_value("meshlet_instances", index)
+				.expect("emitted task payload word")
+				.clone()
+		})
+		.collect()
+}
 
-	let culled = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], false);
-	assert_eq!(culled, (Some(0), None));
+/// The payload a task emits for a fixture meshlet seen by the view `view_offset` steps into its batch.
+fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Value {
+	Value::U32(meshlet_instance(relative_meshlet_index, FIXTURE_INSTANCE_INDEX as u32) | (view_offset << VIEW_OFFSET_SHIFT))
+}
+
+/// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
+#[test]
+fn task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
+	let payload = |center_radius| camera_task_payload(&[center_radius], TaskMeshFixture::default(), 0);
+
+	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [fixture_meshlet_instance()]);
+	assert_eq!(payload([4.0, 0.0, 0.5, 0.1]), []);
+}
+
+/// Verifies the task emits nothing for an instance whose bounds no view reaches, even where its meshlet bounds would
+/// pass on their own.
+#[test]
+fn task_main_culls_instances_outside_every_view() {
+	let outside = TaskMeshFixture {
+		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
+		..Default::default()
+	};
+	let output = run_meshlet_task_workgroup(
+		&[(0, IDENTITY_MATRIX), (1, IDENTITY_MATRIX)],
+		[0, 2],
+		&[[0.0, 0.0, 0.5, 0.1]],
+		outside,
+		0,
+	);
+	assert_eq!(task_payload(&output), []);
 }
 
 /// Verifies workgroup barriers and atomics compact visible meshlets in lane order before publishing the final count.
 #[test]
-fn visibility_task_workgroup_compacts_mixed_meshlets_in_lane_order() {
-	let program = asset!("visibility-task.besl");
-	let output = run_meshlet_task_workgroup(
-		&program,
-		&[(0, identity_matrix())],
-		None,
+fn task_workgroup_compacts_mixed_meshlets_in_lane_order() {
+	let payload = camera_task_payload(
 		&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
 		0,
 	);
 
-	assert_eq!(output.mesh_output_count(), Some(2));
 	assert_eq!(
-		output.payload_value("meshlet_instances", 0),
-		Some(&fixture_meshlet_instance())
+		payload,
+		[
+			fixture_meshlet_instance(),
+			Value::U32(meshlet_instance(2, FIXTURE_INSTANCE_INDEX as u32))
+		]
 	);
-	assert_eq!(
-		output.payload_value("meshlet_instances", 1),
-		Some(&Value::U32(meshlet_instance(2, FIXTURE_INSTANCE_INDEX as u32)))
-	);
-	assert_eq!(output.payload_value("meshlet_instances", 2), None);
 }
 
-/// Verifies visibility culling reads the work item selected by the global dispatch position.
+/// Verifies culling reads the work item selected by the global dispatch position.
 #[test]
-fn visibility_task_main_selects_later_batched_workgroup() {
-	let program = asset!("visibility-task.besl");
+fn task_main_selects_later_batched_workgroup() {
+	let payload = camera_task_payload(&[[0.0, 0.0, 0.5, 0.1]], TaskMeshFixture::default(), 1);
+	assert_eq!(payload, [fixture_meshlet_instance()]);
+}
+
+/// Verifies posed geometry reaches every view of the batch, whatever its bind-pose bounds.
+#[test]
+fn task_main_keeps_skinned_meshlets_in_every_view() {
+	let skinned = TaskMeshFixture {
+		skinned: true,
+		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
+		..Default::default()
+	};
 	let output = run_meshlet_task_workgroup(
-		&program,
-		&[(0, identity_matrix())],
-		None,
-		&[[0.0, 0.0, 0.5, 0.1]],
-		TaskMeshFixture::default(),
-		1,
+		&[(0, IDENTITY_MATRIX), (1, IDENTITY_MATRIX)],
+		[0, 2],
+		&[[4.0, 0.0, 0.5, 0.1]],
+		skinned,
+		0,
 	);
 
-	assert_eq!(output.mesh_output_count(), Some(1));
 	assert_eq!(
-		output.payload_value("meshlet_instances", 0),
-		Some(&fixture_meshlet_instance())
+		task_payload(&output),
+		[batched_meshlet_instance(0, 0), batched_meshlet_instance(0, 1)]
 	);
 }
 
-/// Verifies deformed geometry reaches the mesh stage even when its static meshlet bound is outside the frustum.
+/// Verifies the task rejects a meshlet facing away from the view unless its material is double-sided.
 #[test]
-fn visibility_task_main_bypasses_static_culling_for_skinned_meshes() {
-	let program = asset!("visibility-task.besl");
-	let output = run_single_meshlet_task(&program, &[(0, identity_matrix())], None, [4.0, 0.0, 0.5, 0.1], true);
-	assert_eq!(output, (Some(1), Some(fixture_meshlet_instance())));
-}
-
-/// Verifies both task shaders reject a meshlet facing away from the view unless its material is double-sided.
-#[test]
-fn task_mains_keep_back_facing_meshlets_only_for_double_sided_meshes() {
-	for program in [asset!("visibility-task.besl"), asset!("shadow-task.besl")] {
-		let visible_meshlets = |flags| {
-			let mesh = TaskMeshFixture {
-				flags,
-				back_facing: true,
-				..Default::default()
-			};
-			run_meshlet_task_workgroup(&program, &[(0, identity_matrix())], None, &[[0.0, 0.0, 0.5, 0.1]], mesh, 0)
-				.mesh_output_count()
+fn task_main_keeps_back_facing_meshlets_only_for_double_sided_meshes() {
+	let visible_meshlets = |flags| {
+		let mesh = TaskMeshFixture {
+			flags,
+			back_facing: true,
+			..Default::default()
 		};
+		camera_task_payload(&[[0.0, 0.0, 0.5, 0.1]], mesh, 0).len()
+	};
 
-		assert_eq!(visible_meshlets(0), Some(0));
-		assert_eq!(visible_meshlets(MESH_FLAG_DOUBLE_SIDED), Some(1));
-	}
+	assert_eq!(visible_meshlets(0), 0);
+	assert_eq!(visible_meshlets(MESH_FLAG_DOUBLE_SIDED), 1);
 }
 
-/// Verifies shadow culling selects the cascade view named by the second push constant.
+/// Verifies a task culls each meshlet against every view of its batch and tags each emitted copy with the view that
+/// kept it.
 #[test]
-fn shadow_task_main_uses_selected_view_index() {
-	let program = asset!("shadow-task.besl");
+fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 	let mut view_projections: [(usize, [f32; 16]); 8] =
 		std::array::from_fn(|view_index| (view_index, horizontally_translated_matrix(4.0)));
-	view_projections[3].1 = identity_matrix();
-	let output = run_single_meshlet_task(&program, &view_projections, Some(3), [0.0, 0.0, 0.5, 0.1], false);
-	assert_eq!(output, (Some(1), Some(fixture_meshlet_instance())));
-}
-
-/// Verifies later object workgroups select their own compact work item from global thread positions.
-#[test]
-fn shadow_task_main_selects_later_batched_workgroup() {
-	let program = asset!("shadow-task.besl");
+	view_projections[3].1 = IDENTITY_MATRIX;
+	view_projections[5].1 = IDENTITY_MATRIX;
+	// Views 2 through 5: only the second and fourth see the meshlet.
 	let output = run_meshlet_task_workgroup(
-		&program,
-		&[(3, identity_matrix())],
-		Some(3),
+		&view_projections,
+		[2, 4],
 		&[[0.0, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
-		1,
+		0,
 	);
 
-	assert_eq!(output.mesh_output_count(), Some(1));
 	assert_eq!(
-		output.payload_value("meshlet_instances", 0),
-		Some(&fixture_meshlet_instance())
+		task_payload(&output),
+		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
 	);
+}
+
+/// The `MeshView` struct selects the view a mesh-shader test draws: the batch its push constants name and the view's
+/// offset into it, which the task payload carries.
+#[derive(Clone, Copy)]
+struct MeshView {
+	view_base: u32,
+	layer_base: u32,
+	view_offset: u32,
+	view_projection: [f32; 16],
+}
+
+impl MeshView {
+	/// The camera's view zero, drawn as a batch of one.
+	const CAMERA: Self = Self {
+		view_base: 0,
+		layer_base: 0,
+		view_offset: 0,
+		view_projection: IDENTITY_MATRIX,
+	};
 }
 
 /// Executes one production mesh main over one identity triangle meshlet and verifies its complete output contract.
 fn assert_triangle_mesh_program(
 	program: ExecutableProgram,
-	selected_view: Option<(usize, [f32; 16], u32)>,
+	view: MeshView,
 	skinned_positions: Option<[[f32; 4]; 3]>,
 	expected_clip_positions: [[f32; 4]; 3],
 	expected_render_target_array_index: Option<u32>,
 ) {
 	let mut views = buffer(&program, VIEWS_SLOT);
-	views
-		.write_array_member(0, "view_projection", Value::Mat4F(identity_matrix()))
-		.expect("mesh view");
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
@@ -513,22 +602,22 @@ fn assert_triangle_mesh_program(
 		}
 	}
 	let mut push_constant = besl::vm::Buffer::new(program.push_constant_layout().expect("mesh push constant layout").clone());
-	let (view_index, render_target_array_index) = match selected_view {
-		Some((view_index, view_projection, render_target_array_index)) => {
-			views
-				.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
-				.expect("selected mesh view");
-			(view_index as u32, render_target_array_index)
-		}
-		None => (0, 0),
-	};
 	push_constant.write("work_item_base", Value::U32(0)).expect("mesh work base");
-	push_constant
-		.write("view_index", Value::U32(view_index))
-		.expect("mesh view index");
-	push_constant
-		.write("render_target_array_index", Value::U32(render_target_array_index))
-		.expect("mesh target layer");
+	views
+		.write_array_member(
+			(view.view_base + view.view_offset) as usize,
+			"view_projection",
+			Value::Mat4F(view.view_projection),
+		)
+		.expect("selected mesh view");
+	for (member, value) in [
+		("view_base", view.view_base),
+		("layer_base", view.layer_base),
+		("view_count", view.view_offset + 1),
+	] {
+		push_constant.write(member, Value::U32(value)).expect("mesh view batch");
+	}
+	let payload = batched_meshlet_instance(0, view.view_offset);
 
 	let mut out_instance_indices = buffer(&program, output_slot(0));
 	let mut out_primitive_indices = buffer(&program, output_slot(1));
@@ -536,7 +625,7 @@ fn assert_triangle_mesh_program(
 	let mut mesh_outputs = MeshOutputs::new();
 	{
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", [fixture_meshlet_instance()]);
+		descriptors.bind_task_payload("meshlet_instances", [payload]);
 		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 		descriptors.bind_buffer(VERTEX_POSITIONS_SLOT, &mut positions);
@@ -590,7 +679,7 @@ fn assert_triangle_mesh_program(
 fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
-		None,
+		MeshView::CAMERA,
 		None,
 		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
 		None,
@@ -603,22 +692,28 @@ fn visibility_mesh_main_reads_skinned_positions() {
 	let skinned_positions = [[2.0, 3.0, 4.0, 1.0], [5.0, 6.0, 7.0, 1.0], [8.0, 9.0, 10.0, 1.0]];
 	assert_triangle_mesh_program(
 		asset!("visibility-mesh.besl"),
-		None,
+		MeshView::CAMERA,
 		Some(skinned_positions),
 		skinned_positions,
 		None,
 	);
 }
 
-/// Verifies shadow mesh output keeps the selected view independent from the target texture-array layer.
+/// Verifies shadow mesh output draws the view its payload names and its layer, offset from the batch's first view
+/// and layer.
 #[test]
 fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
 	assert_triangle_mesh_program(
 		asset!("shadow-mesh.besl"),
-		Some((7, horizontally_translated_matrix(2.0), 2)),
+		MeshView {
+			view_base: 5,
+			layer_base: 1,
+			view_offset: 2,
+			view_projection: horizontally_translated_matrix(2.0),
+		},
 		None,
 		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
-		Some(2),
+		Some(3),
 	);
 }
 
@@ -812,6 +907,54 @@ fn pixel_mapping_tile_reservation_preserves_overflowed_materials() {
 			read_u32(&material_offset_scratch, material_index),
 			material_index as u32 + 1,
 			"Unexpected cursor for material {material_index}. The most likely cause is a duplicated tile reservation."
+		);
+	}
+}
+
+/// Verifies every pixel of a tile maps exactly once into its own material's range when subgroups hold several pixels of
+/// one material and the tile holds more materials than histogram slots.
+#[test]
+fn pixel_mapping_maps_shared_and_overflowed_materials_exactly_once() {
+	const MATERIALS: usize = 40;
+	// Each material's pixels land in their own range of this many entries, which is more than any material covers.
+	const RANGE: usize = 16;
+	let program = asset!("pixel-mapping.besl");
+	let mut mesh_data = buffer(&program, MESH_DATA_SLOT);
+	let mut material_offset_scratch = buffer(&program, MATERIAL_OFFSET_SCRATCH_SLOT);
+	for material_index in 0..MATERIALS {
+		mesh_data
+			.write_array_member(material_index, "material_index", Value::U32(material_index as u32))
+			.expect("VM mesh");
+		material_offset_scratch
+			.write_array_element(material_index, Value::U32((material_index * RANGE) as u32))
+			.expect("material mapping offset");
+	}
+	// Horizontal pairs of texels share a material, so one subgroup ranks several pixels of most materials.
+	let material_of = |texel: usize| (texel / 2) % MATERIALS;
+	let width = PIXEL_MAPPING_WORKGROUP_WIDTH as usize;
+	let mut instance_indices = instance_texture(PIXEL_MAPPING_WORKGROUP_WIDTH, |texel| material_of(texel) as u32);
+
+	let pixel_mapping = run_pixel_mapping(&program, &mut mesh_data, &mut material_offset_scratch, &mut instance_indices);
+
+	for material_index in 0..MATERIALS {
+		let mut expected = (0..width * width)
+			.filter(|&texel| material_of(texel) == material_index)
+			.map(|texel| [(texel % width) as u16 + 1, (texel / width) as u16 + 1])
+			.collect::<Vec<_>>();
+		let base = material_index * RANGE;
+		assert_eq!(
+			read_u32(&material_offset_scratch, material_index) as usize,
+			base + expected.len(),
+			"Unexpected cursor for material {material_index}. The most likely cause is a dropped or duplicated reservation."
+		);
+		let mut mapped = (base..base + expected.len())
+			.map(|index| read_vec2u16(&pixel_mapping, index))
+			.collect::<Vec<_>>();
+		expected.sort_unstable();
+		mapped.sort_unstable();
+		assert_eq!(
+			mapped, expected,
+			"Material {material_index} mapped the wrong pixels. The most likely cause is two pixels taking the same rank."
 		);
 	}
 }
@@ -1482,7 +1625,7 @@ fn run_ssgi_trace(
 }
 
 /// Runs the SSGI trace at `extent` pixels square with a full-resolution previous radiance image, twice the trace
-/// extent on each axis.
+/// extent on each axis, and returns the raw radiance it writes.
 fn run_ssgi_trace_with_radiance(
 	program: &ExecutableProgram,
 	extent: u32,
@@ -1492,6 +1635,20 @@ fn run_ssgi_trace_with_radiance(
 	frame_index: u32,
 	pixel: [u32; 2],
 ) -> [f32; 4] {
+	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, pixel).0
+}
+
+/// Runs the SSGI trace like [`run_ssgi_trace_with_radiance`] and returns the raw radiance and the stored normal it
+/// writes.
+fn run_ssgi_trace_outputs(
+	program: &ExecutableProgram,
+	extent: u32,
+	depth: &[[f32; 4]],
+	radiance: &[[f32; 4]],
+	history: bool,
+	frame_index: u32,
+	pixel: [u32; 2],
+) -> ([f32; 4], [f32; 4]) {
 	let mut view = gtao_view_data(program, extent, extent);
 	// A static camera reprojects through the unchanged projection.
 	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
@@ -1508,7 +1665,7 @@ fn run_ssgi_trace_with_radiance(
 	descriptors.bind_image(ResourceSlot::new(1036), &mut normals);
 	run_at(program, &mut descriptors, pixel);
 	drop(descriptors);
-	rgba(&output, pixel)
+	(rgba(&output, pixel), rgba(&normals, pixel))
 }
 
 /// Verifies rays that hit visible geometry return last frame's light there, and that some rays do hit a nearby wall.
@@ -1562,10 +1719,29 @@ fn ssgi_trace_reports_misses_without_history() {
 	}
 }
 
+/// Verifies the trace stores the camera-facing normal it rebuilds as the octahedral pair the denoiser and upscale
+/// decode, and marks a pixel without a surface with the zero pair.
+#[test]
+fn ssgi_trace_stores_octahedral_normals() {
+	let program = asset!("ssgi-trace.besl");
+	let (mut depth, radiance) = ssgi_floor_scene(SSGI_EXTENT, Some(4.0));
+	let column = SSGI_EXTENT / 2;
+	let wall_row = (0..SSGI_EXTENT)
+		.find(|&row| depth[(row * SSGI_EXTENT + column) as usize][0] == 4.0 && row > 2)
+		.expect("a wall row away from the image edge");
+	let stored = |depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, pixel).1;
+
+	assert_rgba_close(stored(&depth, [column, wall_row]), SSGI_WALL_NORMAL, 0.0001);
+	depth[(wall_row * SSGI_EXTENT + column) as usize] = [0.0; 4];
+	assert_rgba_close(stored(&depth, [column, wall_row]), [0.0; 4], 0.0);
+}
+
 const SSGI_TEMPORAL_EXTENT: u32 = 8;
-/// The view-space normal of a wall that faces the camera. View space is y-up and the camera looks down positive z.
-const SSGI_WALL_NORMAL: [f32; 4] = [0.0, 0.0, -1.0, 0.0];
-/// The view-space normal of the floor below the camera.
+/// The stored view-space normal of a wall that faces the camera, (0, 0, -1). View space is y-up and the camera looks
+/// down positive z. The trace stores normals as an octahedral pair in RG, which folds the lower z hemisphere into the
+/// corners.
+const SSGI_WALL_NORMAL: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
+/// The stored view-space normal of the floor below the camera, (0, 1, 0).
 const SSGI_FLOOR_NORMAL: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 
 /// The inputs of one SSGI temporal fixture. Every image is `extent` pixels square.
@@ -1619,7 +1795,9 @@ impl SsgiTemporalFixture {
 		descriptors.bind_texture(ResourceSlot::new(1037), &mut previous_depth_pyramid);
 		descriptors.bind_texture(ResourceSlot::new(1038), &mut normals);
 		descriptors.bind_texture(ResourceSlot::new(1039), &mut previous_normals);
-		run_at(&program, &mut descriptors, pixel);
+		let mut workgroup = WorkgroupState::new();
+		descriptors.bind_workgroup_state(&mut workgroup);
+		run_tile_workgroup_containing(&program, &mut descriptors, pixel);
 		drop(descriptors);
 		rgba(&output, pixel)
 	}
@@ -2048,12 +2226,14 @@ fn run_contact_shadow_filter(trace: impl Fn(u32, u32) -> f32, pixel: [u32; 2]) -
 	let mut depth = texture_2d(extent, extent, &contact_shadow_device_depth(true));
 	let mut trace = texture_2d(extent, extent, &trace);
 	let mut output = empty_image(extent, extent);
+	let mut workgroup = WorkgroupState::new();
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_texture(ResourceSlot::new(1035), &mut trace);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut output);
-	run_at(&program, &mut descriptors, pixel);
+	descriptors.bind_workgroup_state(&mut workgroup);
+	run_tile_workgroup_containing(&program, &mut descriptors, pixel);
 	drop(descriptors);
 	rgba(&output, pixel)[0]
 }
@@ -2149,32 +2329,85 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 #[compio::test]
 async fn contact_shadows_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	for (name, source) in [
+		("contact_shadows", asset_source!("contact-shadows.besl")),
+		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl")),
+	] {
+		assert_lowers_to_the_platform_shader_language(
+			name,
+			source,
+			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		)
+		.await;
+	}
+}
+
+/// Verifies the meshlet culling and rasterization stages, and the pixel mapping that follows them, compile with the
+/// platform shader compiler, past BESL linking.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+
+	for (name, source, settings) in [
 		(
-			"contact_shadows",
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/contact-shadows.besl"
-			)),
+			"meshlet_task",
+			asset_source!("meshlet-task.besl"),
+			ShaderGenerationSettings::task(utils::Extent::line(32), 192),
 		),
 		(
-			"contact_shadow_filter",
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/contact-shadows-filter.besl"
-			)),
+			"visibility_mesh",
+			asset_source!("visibility-mesh.besl"),
+			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		),
+		(
+			"shadow_mesh",
+			asset_source!("shadow-mesh.besl"),
+			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
+		),
+		(
+			"visibility_fragment",
+			asset_source!("visibility-fragment.besl"),
+			ShaderGenerationSettings::fragment(),
+		),
+		(
+			"masked_fragment",
+			asset_source!("masked-fragment.besl"),
+			ShaderGenerationSettings::fragment(),
+		),
+		(
+			"masked_depth_fragment",
+			asset_source!("masked-depth-fragment.besl"),
+			ShaderGenerationSettings::fragment(),
+		),
+		(
+			"pixel_mapping",
+			asset_source!("pixel-mapping.besl"),
+			ShaderGenerationSettings::compute(utils::Extent::square(16)),
 		),
 	] {
-		let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
-			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
-		let settings = ShaderGenerationSettings::compute(utils::Extent::rectangle(8, 8)).name(name.to_string());
+		assert_lowers_to_the_platform_shader_language(name, source, settings).await;
+	}
+}
 
-		PlatformShaderCompiler::new()
-			.generate(&settings, &root)
-			.await
-			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
+/// Verifies the SSGI trace, denoiser, and upscale compile with the platform shader compiler, past BESL linking.
+#[cfg(target_os = "macos")]
+#[compio::test]
+async fn ssgi_passes_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings;
+
+	for (name, source) in [
+		("ssgi_trace", asset_source!("ssgi-trace.besl")),
+		("ssgi_temporal", asset_source!("ssgi-temporal.besl")),
+		("ssgi_upscale", asset_source!("ssgi-upscale.besl")),
+	] {
+		assert_lowers_to_the_platform_shader_language(
+			name,
+			source,
+			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		)
+		.await;
 	}
 }
 
@@ -2349,24 +2582,13 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 #[cfg(target_os = "macos")]
 #[compio::test]
 async fn light_clusters_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
-
-	let root = besl::lex(
-		besl::parse(include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/light-clusters.besl"
-		)))
-		.expect("light-clusters.besl should parse"),
+	let workgroup = utils::Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32);
+	assert_lowers_to_the_platform_shader_language(
+		"light_clusters",
+		asset_source!("light-clusters.besl"),
+		resource_management::shader::ShaderGenerationSettings::compute(workgroup),
 	)
-	.expect("light-clusters.besl should link");
-	let settings = ShaderGenerationSettings::compute(utils::Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32))
-		.name("light_clusters".to_string());
-
-	PlatformShaderCompiler::new()
-		.generate(&settings, &root)
-		.await
-		.expect("light-clusters.besl should compile for the platform shader language");
+	.await;
 }
 
 /* Directional shadow cascade fit */
@@ -2714,31 +2936,19 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 #[compio::test]
 async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
 	use resource_management::shader::ShaderGenerationSettings;
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
 
 	for (name, source, workgroup) in [
 		(
 			"directional_shadow_receiver_bounds",
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/directional-shadow-receiver-bounds.besl"
-			)),
+			asset_source!("directional-shadow-receiver-bounds.besl"),
 			utils::Extent::square(RECEIVER_BOUNDS_WORKGROUP_WIDTH),
 		),
 		(
 			"directional_shadow_cascade_fit",
-			include_str!(concat!(
-				env!("CARGO_MANIFEST_DIR"),
-				"/assets/rendering/visibility/directional-shadow-cascade-fit.besl"
-			)),
+			asset_source!("directional-shadow-cascade-fit.besl"),
 			utils::Extent::line(4),
 		),
 	] {
-		let root =
-			besl::lex(besl::parse(source).expect("cascade-fit shader should parse")).expect("cascade-fit shader should link");
-		PlatformShaderCompiler::new()
-			.generate(&ShaderGenerationSettings::compute(workgroup).name(name.to_string()), &root)
-			.await
-			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
+		assert_lowers_to_the_platform_shader_language(name, source, ShaderGenerationSettings::compute(workgroup)).await;
 	}
 }

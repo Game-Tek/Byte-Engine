@@ -150,7 +150,14 @@ impl VisibilityShaderScope {
 					Node::member("far", "f32"),
 				],
 			),
-			Node::constant_buffer_binding("views", Node::buffer(vec![Node::member("views", "View[9]")]), 0, true, false),
+			// Holds every entry of `views`, `SHADOW_VIEW_COUNT`: shadow sampling reads cone and point views past the cascades.
+			Node::constant_buffer_binding(
+				"views",
+				Node::buffer(vec![Node::member("views", "View[117]")]),
+				0,
+				true,
+				false,
+			),
 			Node::r#struct(
 				"Mesh",
 				vec![
@@ -163,6 +170,7 @@ impl VisibilityShaderScope {
 					Node::member("meshlet_count", "u32"),
 					Node::member("skinned_base_vertex_index", "u32"),
 					Node::member("flags", "u32"),
+					Node::member("bounding_sphere", "vec4f"),
 				],
 			),
 			Node::r#struct(

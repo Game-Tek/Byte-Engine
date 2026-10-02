@@ -17,6 +17,7 @@ Mesh: struct {
 	meshlet_count: u32,
 	skinned_base_vertex_index: u32,
 	flags: u32,
+	bounding_sphere: vec4f,
 }
 
 Meshlet: struct {
@@ -30,7 +31,7 @@ Meshlet: struct {
 }
 
 Views: struct {
-	views: View[9],
+	views: View[117],
 }
 
 Meshes: struct {
@@ -46,14 +47,20 @@ meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
 meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
 
-meshlet_instances: task_payload<u32, 32>;
+// Up to six views of each of the workgroup's 32 meshlets.
+meshlet_instances: task_payload<u32, 192>;
 visible_count: workgroup<atomicu32>;
 
+// One dispatch draws `view_count` consecutive views, from `view_base`, into layers from `layer_base`. The camera's
+// visibility pass is a batch of one view.
 push_constant: push_constant {
 	work_item_base: u32,
-	view_index: u32,
-	render_target_array_index: u32,
+	view_base: u32,
+	layer_base: u32,
+	view_count: u32,
 }
+
+MAX_TASK_VIEWS: const u32 = 6;
 
 decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
 	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0 * 2.0 - vec2f(1.0, 1.0);
@@ -64,19 +71,6 @@ decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
 		octahedral.x - (step(0.0, octahedral.x) * 2.0 - 1.0) * fold,
 		octahedral.y - (step(0.0, octahedral.y) * 2.0 - 1.0) * fold,
 		normal_z
-	);
-}
-
-extend_vec3f: fn(value: vec3f, w: f32) -> vec4f {
-	return vec4f(value.x, value.y, value.z, w);
-}
-
-model_matrix: fn(model: mat4x3f) -> mat4f {
-	return mat4f(
-		extend_vec3f(model[0], 0.0),
-		extend_vec3f(model[1], 0.0),
-		extend_vec3f(model[2], 0.0),
-		extend_vec3f(model[3], 1.0)
 	);
 }
 
@@ -152,10 +146,11 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 	) < meshlet.cone_apex_cutoff.w;
 }
 
-meshlet_is_visible: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
-	let center: vec3f = vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z);
-	return sphere_intersects_frustum(view.view_projection * model_matrix(mesh.model), center, meshlet.center_radius.w)
-		&& cone_allows_rendering(mesh, meshlet, view);
+// Returns whether an object-space sphere, placed in the world by `model`, may show in a view. The radius grows by the
+// model's largest axis scale.
+sphere_is_visible: fn(view: View, model: mat4x3f, center: vec3f, radius: f32) -> bool {
+	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
+	return sphere_intersects_frustum(view.view_projection, model * vec4f(center.x, center.y, center.z, 1.0), radius * scale);
 }
 
 main: fn() -> void {
@@ -163,9 +158,30 @@ main: fn() -> void {
 	let work: u32 = mesh_dispatch_work.items[push_constant.work_item_base + workgroup_index];
 	let instance_index: u32 = work & 1023;
 	let chunk_index: u32 = (work >> 10) & 127;
-	let mesh: Mesh = meshes.meshes[instance_index];
-	let view: View = views.views[push_constant.view_index];
 	let lane: u32 = thread_idx();
+	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
+
+	let mesh: Mesh = meshes.meshes[instance_index];
+	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
+	let skinned: bool = mesh.skinned_base_vertex_index != 4294967295;
+	let sphere: vec4f = mesh.bounding_sphere;
+
+	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
+	// workgroup whose instance no view sees returns before it reads a single meshlet.
+	let instance_views: u32 = 0;
+	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
+		let view: View = views.views[push_constant.view_base + view_offset];
+		if (skinned || sphere_is_visible(view, mesh.model, vec3f(sphere.x, sphere.y, sphere.z), sphere.w)) {
+			instance_views = instance_views | (1 << view_offset);
+		}
+	}
+	if (instance_views == 0) {
+		if (lane == 0) {
+			set_task_mesh_output_count(0);
+		}
+		return;
+	}
+
 	let first_meshlet: u32 = chunk_index * 32;
 	let chunk_meshlet_count: u32 = mesh.meshlet_count - first_meshlet;
 	if (chunk_meshlet_count > 32) {
@@ -180,12 +196,20 @@ main: fn() -> void {
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
 		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
-		if (mesh.skinned_base_vertex_index != 4294967295 || meshlet_is_visible(mesh, meshlet, view)) {
-			let payload_index: u32 = atomic_add(visible_count, 1);
-			// One payload word keeps the meshlet and its owning instance indivisible across emitted mesh grids. The
-			// meshlet index is relative to the instance's first meshlet, so scene-wide meshlet capacity is not limited
-			// by its 12 bits.
-			meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12);
+		let center: vec3f = vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z);
+		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
+			if ((instance_views & (1 << view_offset)) != 0) {
+				let view: View = views.views[push_constant.view_base + view_offset];
+				if (skinned
+					|| (sphere_is_visible(view, mesh.model, center, meshlet.center_radius.w)
+						&& cone_allows_rendering(mesh, meshlet, view))) {
+					let payload_index: u32 = atomic_add(visible_count, 1);
+					// One payload word keeps the meshlet, its owning instance, and its view indivisible across emitted
+					// mesh grids. The meshlet index is relative to the instance's first meshlet, so scene-wide meshlet
+					// capacity is not limited by its 12 bits.
+					meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12) | (view_offset << 22);
+				}
+			}
 		}
 	}
 

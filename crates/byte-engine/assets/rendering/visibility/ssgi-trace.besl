@@ -33,7 +33,7 @@ ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
 previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
-normal_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1036, access: write }>;
+normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 1036, access: write }>;
 
 SSGI_PI: const f32 = 3.14159265359;
 SSGI_STEP_COUNT: const u32 = 16;
@@ -299,6 +299,24 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	return vec4f(radiance.x, radiance.y, radiance.z, 1.0);
 }
 
+// Encodes a unit normal as an octahedral pair for the two-channel normal image, or zero for a zero normal. Readers decode
+// it with the same convention; see `decode_stored_normal` in `ssgi-temporal.besl` and `ssgi-upscale.besl`.
+encode_stored_normal: fn (normal: vec3f) -> vec4f {
+	let length: f32 = abs(normal.x) + abs(normal.y) + abs(normal.z);
+	if (length == 0.0) {
+		return vec4f(0.0, 0.0, 0.0, 0.0);
+	}
+	let projected: vec2f = vec2f(normal.x, normal.y) * (1.0 / length);
+	if (normal.z < 0.0) {
+		// The lower hemisphere folds into the corners. `step` picks the positive direction at zero.
+		projected = vec2f(
+			(1.0 - abs(projected.y)) * (step(0.0, projected.x) * 2.0 - 1.0),
+			(1.0 - abs(projected.x)) * (step(0.0, projected.y) * 2.0 - 1.0)
+		);
+	}
+	return vec4f(projected.x, projected.y, 0.0, 0.0);
+}
+
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
 	guard_image_bounds(raw_output, pixel);
@@ -314,7 +332,7 @@ main: fn (input: StageInput) -> void {
 	let center_position: vec3f = view_position(pixel_f, center_z);
 	let normal: vec3f = reconstruct_normal(pixel, extent, center_position);
 	// A zero normal marks a degenerate neighborhood; the denoiser then compares depth only.
-	write(normal_output, pixel, vec4f(normal.x, normal.y, normal.z, 0.0));
+	write(normal_output, pixel, encode_stored_normal(normal));
 	// Without history there is no light to gather, so every ray reports a miss and the environment lights the pixel.
 	if (ssgi_parameters.history_valid == 0 || dot(normal, normal) == 0.0) {
 		write(raw_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));

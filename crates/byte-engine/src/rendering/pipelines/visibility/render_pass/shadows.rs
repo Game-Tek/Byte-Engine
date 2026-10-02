@@ -1,16 +1,22 @@
 //! Depth-only rendering of the directional cascades, cone layers, and point cube faces selected this frame, and the
 //! passes that fit the cascades to the surfaces the camera sees.
+//!
+//! [`ShadowMaps`] renders the maps once per frame for every sink. [`CascadeFitPass`] runs per sink, because it reads
+//! that sink's depth.
+
+use std::num::NonZeroU32;
 
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
 use super::super::layout::{
-	CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY,
-	POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT,
-	SHADOW_MAP_RESOLUTION,
+	CONE_SHADOW_MAP_FORMAT, CONE_SHADOW_MAP_RESOLUTION, CONE_SHADOW_VIEW_OFFSET, DIRECTIONAL_SHADOW_MAP_FORMAT,
+	MAX_CONE_SHADOW_POOL_CAPACITY, MAX_POINT_SHADOW_POOL_CAPACITY, POINT_SHADOW_FACE_COUNT, POINT_SHADOW_MAP_FORMAT,
+	POINT_SHADOW_MAP_RESOLUTION, POINT_SHADOW_VIEW_OFFSET, SHADOW_CASCADE_COUNT, SHADOW_MAP_RESOLUTION,
 };
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::{PhasePipelines, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -125,55 +131,86 @@ pub(crate) fn receiver_fit_shader_data(
 	data
 }
 
-/// The `ShadowPass` struct owns the pipelines and depth targets used by directional, cone, and point shadow rendering.
-pub(super) struct ShadowPass {
+/// The images the shadow maps are rendered into. Every sink's material evaluation samples the same images.
+#[derive(Clone, Copy)]
+pub(crate) struct ShadowMapImages {
+	pub(crate) directional: ghi::BaseImageHandle,
+	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade.
+	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
+	pub(crate) cone: ghi::BaseImageHandle,
+	pub(crate) point: ghi::BaseImageHandle,
+}
+
+/// The `ShadowMaps` struct holds the frame's shadow maps for every sink at once.
+///
+/// The shadow views come from the first sink, so each sink would render the same maps. The visibility pipeline manager
+/// owns one `ShadowMaps` and records it with the first sink only; every sink's material evaluation samples its
+/// [`ShadowMaps::images`]. Each frame renders its maps before it reads them, and the graphics queue orders one frame's
+/// reads before the next frame's writes, so frames in flight share the images too.
+pub(crate) struct ShadowMaps {
 	descriptor_set: ghi::DescriptorSetHandle,
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
-	receiver_fit_descriptor_set: ghi::DescriptorSetHandle,
-	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
-	/// The box each cascade's receivers fill, rebuilt every frame the cascades fit receivers.
-	receiver_bounds: ghi::BufferHandle<[u32; RECEIVER_BOUNDS_PER_CASCADE * SHADOW_CASCADE_COUNT]>,
-	directional_pipeline: crate::rendering::PipelineRef,
+	directional_pipelines: PhasePipelines,
+	/// Cone and point maps share one perspective depth format, so they share these pipelines.
+	local_pipelines: PhasePipelines,
 	depth_pyramid_pipeline: crate::rendering::PipelineRef,
-	receiver_bounds_pipeline: crate::rendering::PipelineRef,
-	cascade_fit_pipeline: crate::rendering::PipelineRef,
-	local_pipeline: crate::rendering::PipelineRef,
-	masked_directional_pipeline: crate::rendering::PipelineRef,
-	masked_local_pipeline: crate::rendering::PipelineRef,
-	double_sided_directional_pipeline: crate::rendering::PipelineRef,
-	double_sided_local_pipeline: crate::rendering::PipelineRef,
-	pub(super) directional_shadow_map: ghi::BaseImageHandle,
-	pub(super) cone_shadow_map: ghi::BaseImageHandle,
-	pub(super) point_shadow_map: ghi::BaseImageHandle,
+	/// The images every sink's material evaluation samples.
+	pub(crate) images: ShadowMapImages,
 }
 
-#[derive(Clone, Copy)]
-struct ShadowPipelines {
-	directional: ghi::PipelineHandle,
-	masked_directional: ghi::PipelineHandle,
-	depth_pyramid: ghi::PipelineHandle,
-	receiver_bounds: ghi::PipelineHandle,
-	cascade_fit: ghi::PipelineHandle,
-	/// Cone and point maps share one perspective depth pipeline.
-	local: ghi::PipelineHandle,
-	masked_local: ghi::PipelineHandle,
-	double_sided_directional: ghi::PipelineHandle,
-	double_sided_local: ghi::PipelineHandle,
-}
-
-impl ShadowPass {
-	/// Creates shadow targets and requests the depth pipelines matching their formats. `depth` is the sink's opaque
-	/// depth, which the cascade fit reads.
-	pub(super) fn new(
+impl ShadowMaps {
+	/// Creates the shadow maps and requests their depth pipelines. `descriptor_set` is the base visibility set.
+	///
+	/// Next, write [`Self::images`] into each sink's material-evaluation descriptor set, and record
+	/// [`Self::prepare`] with the first sink each frame.
+	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		descriptor_set: ghi::DescriptorSetHandle,
-		depth: ghi::BaseImageHandle,
-		directional_shadow_map: ghi::BaseImageHandle,
-		depth_pyramid: ghi::BaseImageHandle,
-		cone_shadow_map: ghi::BaseImageHandle,
-		point_shadow_map: ghi::BaseImageHandle,
+		cone_shadow_pool_capacity: usize,
+		point_shadow_pool_capacity: usize,
 	) -> Self {
+		fn depth_map(format: ghi::Formats, name: &str) -> ghi::image::Builder<'_> {
+			ghi::image::Builder::new(format, ghi::Uses::DepthStencil | ghi::Uses::Image)
+				.name(name)
+				.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+				.optimized_clear_value(ghi::ClearValue::Depth(0.0))
+		}
+		let directional: ghi::BaseImageHandle = context
+			.build_image(
+				depth_map(DIRECTIONAL_SHADOW_MAP_FORMAT, "Directional Shadow Map")
+					.array_layers(NonZeroU32::new(SHADOW_CASCADE_COUNT as u32)),
+			)
+			.into();
+		let directional_depth_pyramid: ghi::BaseImageHandle = context
+			.build_image(
+				ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
+					.name("Directional Shadow Depth Pyramid")
+					.extent(Extent::rectangle(
+						SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE,
+						SHADOW_MAP_RESOLUTION / DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE * SHADOW_CASCADE_COUNT as u32,
+					))
+					.device_accesses(ghi::DeviceAccesses::DeviceOnly)
+					.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT),
+			)
+			.into();
+		// Images start at zero extent, so these pools have no backing maps until a visible light uses them.
+		// Metal requires two layers to create the array texture that material evaluation always binds.
+		let cone: ghi::BaseImageHandle = context
+			.build_image(
+				depth_map(CONE_SHADOW_MAP_FORMAT, "Cone Shadow Map")
+					.array_layers(NonZeroU32::new(cone_shadow_pool_capacity.max(2) as u32)),
+			)
+			.into();
+		let point: ghi::BaseImageHandle = context
+			.build_image(
+				depth_map(POINT_SHADOW_MAP_FORMAT, "Point Shadow Map").cube_array_compatible(
+					NonZeroU32::new(point_shadow_pool_capacity.max(1) as u32)
+						.expect("Point shadow map pool has a nonzero fallback cube."),
+				),
+			)
+			.into();
+
 		let depth_pyramid_descriptor_set =
 			context.create_descriptor_set(Some("Directional Shadow Depth Pyramid Descriptor Set"));
 		let max_sampler = context.build_sampler(
@@ -189,18 +226,189 @@ impl ShadowPass {
 			ghi::DescriptorWrite::combined_image_sampler(
 				depth_pyramid_descriptor_set,
 				DEPTH_PYRAMID_SOURCE_BINDING.slot(),
-				directional_shadow_map,
+				directional,
 				max_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
 				DEPTH_PYRAMID_OUTPUT_BINDING.slot(),
-				depth_pyramid,
+				directional_depth_pyramid,
 				ghi::Layouts::General,
 				0,
 			),
 		]);
+		Self {
+			descriptor_set,
+			depth_pyramid_descriptor_set,
+			directional_pipelines: PhasePipelines::request(
+				pipeline_manager,
+				[
+					"byte-engine/rendering/visibility/directional-shadow.pipeline",
+					"byte-engine/rendering/visibility/masked-directional-shadow.pipeline",
+					"byte-engine/rendering/visibility/double-sided-directional-shadow.pipeline",
+					"byte-engine/rendering/visibility/double-sided-masked-directional-shadow.pipeline",
+				],
+			),
+			local_pipelines: PhasePipelines::request(
+				pipeline_manager,
+				[
+					"byte-engine/rendering/visibility/cone-shadow.pipeline",
+					"byte-engine/rendering/visibility/masked-cone-shadow.pipeline",
+					"byte-engine/rendering/visibility/double-sided-cone-shadow.pipeline",
+					"byte-engine/rendering/visibility/double-sided-masked-cone-shadow.pipeline",
+				],
+			),
+			depth_pyramid_pipeline: pipeline_manager
+				.request_pipeline("byte-engine/rendering/visibility/directional-shadow-depth-pyramid.pipeline"),
+			images: ShadowMapImages {
+				directional,
+				directional_depth_pyramid,
+				cone,
+				point,
+			},
+		}
+	}
+
+	/// Prepares this frame's shadow maps, or `None` while a pipeline is still compiling.
+	///
+	/// Record the result after the cascade fit of the sink the views were made for, see [`CascadeFitPass::prepare`].
+	/// Blend materials have no alpha-aware shadow shader, so only opaque and masked geometry casts shadows.
+	pub(super) fn prepare(
+		&self,
+		frame: &mut ghi::implementation::Frame,
+		pipeline_manager: &PipelineManagerClient,
+		dispatches: PhaseDispatches,
+		work: ShadowWork,
+	) -> Option<impl RenderPassFunction + use<>> {
+		use ghi::frame::Frame as _;
+
+		let directional_pipelines = self.directional_pipelines.resolve(pipeline_manager)?;
+		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
+		let depth_pyramid_pipeline = pipeline_manager.pipeline(self.depth_pyramid_pipeline)?;
+		let descriptor_set = self.descriptor_set;
+		let depth_pyramid_descriptor_set = self.depth_pyramid_descriptor_set;
+		let images = self.images;
+		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
+		let depth_pyramid_extent = Extent::rectangle(
+			SHADOW_MAP_RESOLUTION / 2,
+			SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32,
+		);
+		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
+		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
+
+		if work.directional.is_some() {
+			frame.resize_image(images.directional, directional_extent);
+		}
+		if work.cone_count > 0 {
+			frame.resize_image(images.cone, cone_extent);
+		}
+		if work.point_count > 0 {
+			frame.resize_image(images.point, point_extent);
+		}
+
+		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
+			use ghi::command_buffer::{
+				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
+				CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+			};
+
+			// Draws every work range into `view_count` layers: layer `n` shows packed view `view_base + n`. One task
+			// workgroup culls its meshlets against a batch of views, so each instance's data is read once per batch
+			// instead of once per view.
+			let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
+			                   name: &str,
+			                   target: ghi::BaseImageHandle,
+			                   extent: Extent,
+			                   layers: usize,
+			                   pipelines: [ghi::PipelineHandle; 4],
+			                   view_base: usize,
+			                   view_count: usize| {
+				c.start_region(|label| label.write_str(name));
+				let attachments = [ghi::AttachmentInformation::new(
+					target,
+					ghi::Layouts::RenderTarget,
+					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
+					ghi::StoreOp::Store,
+				)
+				.layers(layers as u32)];
+				let c = c.start_render_pass(extent, &attachments);
+				let ranges = dispatches.opaque_layer().into_iter().zip(pipelines);
+				record_meshlet_dispatches(c, descriptor_set, ranges, view_base, view_count);
+				c.end_render_pass();
+				c.end_region();
+			};
+
+			if work.directional.is_some() {
+				record_maps(
+					c,
+					"Directional Shadow Map",
+					images.directional,
+					directional_extent,
+					SHADOW_CASCADE_COUNT,
+					directional_pipelines,
+					// View zero is the camera, so the cascades follow it.
+					1,
+					SHADOW_CASCADE_COUNT,
+				);
+				// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
+				c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
+				let c = c.bind_compute_pipeline(depth_pyramid_pipeline);
+				c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);
+				c.dispatch(ghi::DispatchExtent::new(depth_pyramid_extent, Extent::new(8, 4, 1)));
+				c.end_region();
+			}
+			if work.cone_count > 0 {
+				record_maps(
+					c,
+					"Cone Shadow Map",
+					images.cone,
+					cone_extent,
+					work.cone_count,
+					local_pipelines,
+					CONE_SHADOW_VIEW_OFFSET,
+					work.cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY),
+				);
+			}
+			if work.point_count > 0 {
+				record_maps(
+					c,
+					"Point Shadow Map",
+					images.point,
+					point_extent,
+					work.point_count * POINT_SHADOW_FACE_COUNT,
+					local_pipelines,
+					POINT_SHADOW_VIEW_OFFSET,
+					work.point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY) * POINT_SHADOW_FACE_COUNT,
+				);
+			}
+		})
+	}
+}
+
+/// The `CascadeFitPass` struct shrinks the sun's cascades to the surfaces one sink's camera sees.
+///
+/// Each sink owns one, because the fit reads that sink's depth. Only the sink the views were made for fits them; see
+/// [`ShadowWork::receiver_fit`].
+pub(super) struct CascadeFitPass {
+	descriptor_set: ghi::DescriptorSetHandle,
+	receiver_fit_descriptor_set: ghi::DescriptorSetHandle,
+	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
+	/// The box each cascade's receivers fill, rebuilt every frame the cascades fit receivers.
+	receiver_bounds: ghi::BufferHandle<[u32; RECEIVER_BOUNDS_PER_CASCADE * SHADOW_CASCADE_COUNT]>,
+	receiver_bounds_pipeline: crate::rendering::PipelineRef,
+	cascade_fit_pipeline: crate::rendering::PipelineRef,
+}
+
+impl CascadeFitPass {
+	/// Creates the fit's buffers and requests its pipelines. `descriptor_set` is the base visibility set, whose views
+	/// the fit rewrites, and `depth` is the sink's opaque depth, which it reads.
+	pub(super) fn new(
+		context: &mut ghi::implementation::Context,
+		pipeline_manager: &PipelineManagerClient,
+		descriptor_set: ghi::DescriptorSetHandle,
+		depth: ghi::BaseImageHandle,
+	) -> Self {
 		let receiver_fit_descriptor_set = context.create_descriptor_set(Some("Directional Shadow Receiver Fit Descriptor Set"));
 		let receiver_fit_parameters = context.build_dynamic_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -245,57 +453,29 @@ impl ShadowPass {
 		let request = |name| pipeline_manager.request_pipeline(name);
 		Self {
 			descriptor_set,
-			depth_pyramid_descriptor_set,
 			receiver_fit_descriptor_set,
 			receiver_fit_parameters,
 			receiver_bounds,
-			directional_pipeline: request("byte-engine/rendering/visibility/directional-shadow.pipeline"),
-			depth_pyramid_pipeline: request("byte-engine/rendering/visibility/directional-shadow-depth-pyramid.pipeline"),
 			receiver_bounds_pipeline: request("byte-engine/rendering/visibility/directional-shadow-receiver-bounds.pipeline"),
 			cascade_fit_pipeline: request("byte-engine/rendering/visibility/directional-shadow-cascade-fit.pipeline"),
-			local_pipeline: request("byte-engine/rendering/visibility/cone-shadow.pipeline"),
-			masked_directional_pipeline: request("byte-engine/rendering/visibility/masked-directional-shadow.pipeline"),
-			masked_local_pipeline: request("byte-engine/rendering/visibility/masked-cone-shadow.pipeline"),
-			double_sided_directional_pipeline: request(
-				"byte-engine/rendering/visibility/double-sided-directional-shadow.pipeline",
-			),
-			double_sided_local_pipeline: request("byte-engine/rendering/visibility/double-sided-cone-shadow.pipeline"),
-			directional_shadow_map,
-			cone_shadow_map,
-			point_shadow_map,
 		}
 	}
 
-	fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<ShadowPipelines> {
-		Some(ShadowPipelines {
-			directional: pipeline_manager.pipeline(self.directional_pipeline)?,
-			masked_directional: pipeline_manager.pipeline(self.masked_directional_pipeline)?,
-			depth_pyramid: pipeline_manager.pipeline(self.depth_pyramid_pipeline)?,
-			receiver_bounds: pipeline_manager.pipeline(self.receiver_bounds_pipeline)?,
-			cascade_fit: pipeline_manager.pipeline(self.cascade_fit_pipeline)?,
-			local: pipeline_manager.pipeline(self.local_pipeline)?,
-			masked_local: pipeline_manager.pipeline(self.masked_local_pipeline)?,
-			double_sided_directional: pipeline_manager.pipeline(self.double_sided_directional_pipeline)?,
-			double_sided_local: pipeline_manager.pipeline(self.double_sided_local_pipeline)?,
-		})
-	}
-
-	/// Prepares this frame's cascade fit and shadow maps, or `None` while a pipeline is still compiling.
+	/// Prepares this frame's cascade fit, or `None` while a pipeline is still compiling.
 	///
-	/// Returns two recordings. The first fits the cascades to `sink`'s opaque surfaces when `work` asks for it, and
-	/// records nothing otherwise; record it after the opaque visibility layer. The second draws the maps; record it
-	/// after the first. Blend materials have no alpha-aware shadow shader, so only opaque and masked geometry casts shadows.
+	/// The result fits the cascades to `sink`'s opaque surfaces when `work` asks for it, and records nothing otherwise.
+	/// Record it after the opaque visibility layer, and the shadow maps after it.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		pipeline_manager: &PipelineManagerClient,
-		dispatches: PhaseDispatches,
 		work: ShadowWork,
 		sink: &Sink,
-	) -> Option<(impl RenderPassFunction + use<>, impl RenderPassFunction + use<>)> {
+	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
 
-		let pipelines = self.pipelines(pipeline_manager)?;
+		let receiver_bounds_pipeline = pipeline_manager.pipeline(self.receiver_bounds_pipeline)?;
+		let cascade_fit_pipeline = pipeline_manager.pipeline(self.cascade_fit_pipeline)?;
 		let receiver_fit_extent = work.receiver_fit.map(|cascades| {
 			let extent = sink.extent();
 			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) =
@@ -306,29 +486,8 @@ impl ShadowPass {
 		let receiver_fit_descriptor_set = self.receiver_fit_descriptor_set;
 		let receiver_bounds = self.receiver_bounds;
 		let descriptor_set = self.descriptor_set;
-		let depth_pyramid_descriptor_set = self.depth_pyramid_descriptor_set;
-		let directional_shadow_map = self.directional_shadow_map;
-		let cone_shadow_map = self.cone_shadow_map;
-		let point_shadow_map = self.point_shadow_map;
-		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
-		let depth_pyramid_extent = Extent::rectangle(
-			SHADOW_MAP_RESOLUTION / 2,
-			SHADOW_MAP_RESOLUTION / 2 * SHADOW_CASCADE_COUNT as u32,
-		);
-		let cone_extent = Extent::square(CONE_SHADOW_MAP_RESOLUTION);
-		let point_extent = Extent::square(POINT_SHADOW_MAP_RESOLUTION);
 
-		if work.directional.is_some() {
-			frame.resize_image(directional_shadow_map, directional_extent);
-		}
-		if work.cone_count > 0 {
-			frame.resize_image(cone_shadow_map, cone_extent);
-		}
-		if work.point_count > 0 {
-			frame.resize_image(point_shadow_map, point_extent);
-		}
-
-		let fit = move |c: &mut ghi::implementation::CommandBufferRecording| {
+		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
 			use ghi::command_buffer::{
 				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _,
 				CommonCommandBufferMode as _,
@@ -344,116 +503,17 @@ impl ShadowPass {
 				extent.width().div_ceil(RECEIVER_BOUNDS_PIXELS_PER_THREAD),
 				extent.height().div_ceil(RECEIVER_BOUNDS_PIXELS_PER_THREAD),
 			);
-			let bounds = c.bind_compute_pipeline(pipelines.receiver_bounds);
+			let bounds = c.bind_compute_pipeline(receiver_bounds_pipeline);
 			bounds.bind_descriptor_sets(&[receiver_fit_descriptor_set]);
 			bounds.dispatch(ghi::DispatchExtent::new(threads, Extent::square(8)));
 			// One thread per cascade rewrites its view in the base set's views buffer.
-			let fit = c.bind_compute_pipeline(pipelines.cascade_fit);
+			let fit = c.bind_compute_pipeline(cascade_fit_pipeline);
 			fit.bind_descriptor_sets(&[descriptor_set, receiver_fit_descriptor_set]);
 			fit.dispatch(ghi::DispatchExtent::new(
 				Extent::line(SHADOW_CASCADE_COUNT as u32),
 				Extent::line(SHADOW_CASCADE_COUNT as u32),
 			));
 			c.end_region();
-		};
-
-		Some((fit, move |c: &mut ghi::implementation::CommandBufferRecording| {
-			use ghi::command_buffer::{
-				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-				CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
-			};
-
-			// Draws every solid, masked, and double-sided work range into `view_count` layers: layer `n` shows packed
-			// view `view_base + n`.
-			let record_maps = |c: &mut ghi::implementation::CommandBufferRecording,
-			                   name: &str,
-			                   target: ghi::BaseImageHandle,
-			                   extent: Extent,
-			                   layers: usize,
-			                   solid_pipeline: ghi::PipelineHandle,
-			                   masked_pipeline: ghi::PipelineHandle,
-			                   double_sided_pipeline: ghi::PipelineHandle,
-			                   view_base: usize,
-			                   view_count: usize| {
-				c.start_region(|label| label.write_str(name));
-				let attachments = [ghi::AttachmentInformation::new(
-					target,
-					ghi::Layouts::RenderTarget,
-					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0)),
-					ghi::StoreOp::Store,
-				)
-				.layers(layers as u32)];
-				let c = c.start_render_pass(extent, &attachments);
-				for (dispatch, pipeline) in [
-					(dispatches.opaque, solid_pipeline),
-					(dispatches.masked, masked_pipeline),
-					(dispatches.double_sided, double_sided_pipeline),
-				] {
-					if dispatch.is_empty() {
-						continue;
-					}
-					let c = c.bind_raster_pipeline(pipeline);
-					c.bind_descriptor_sets(&[descriptor_set]);
-					for layer in 0..view_count as u32 {
-						c.write_push_constant(0, dispatch.work_item_base());
-						c.write_push_constant(4, view_base as u32 + layer);
-						c.write_push_constant(8, layer);
-						c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
-					}
-				}
-				c.end_render_pass();
-				c.end_region();
-			};
-
-			if work.directional.is_some() {
-				record_maps(
-					c,
-					"Directional Shadow Map",
-					directional_shadow_map,
-					directional_extent,
-					SHADOW_CASCADE_COUNT,
-					pipelines.directional,
-					pipelines.masked_directional,
-					pipelines.double_sided_directional,
-					// View zero is the camera, so the cascades follow it.
-					1,
-					SHADOW_CASCADE_COUNT,
-				);
-				// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
-				c.start_region(|label| label.write_str("Directional Shadow Depth Pyramid"));
-				let c = c.bind_compute_pipeline(pipelines.depth_pyramid);
-				c.bind_descriptor_sets(&[depth_pyramid_descriptor_set]);
-				c.dispatch(ghi::DispatchExtent::new(depth_pyramid_extent, Extent::new(8, 4, 1)));
-				c.end_region();
-			}
-			if work.cone_count > 0 {
-				record_maps(
-					c,
-					"Cone Shadow Map",
-					cone_shadow_map,
-					cone_extent,
-					work.cone_count,
-					pipelines.local,
-					pipelines.masked_local,
-					pipelines.double_sided_local,
-					CONE_SHADOW_VIEW_OFFSET,
-					work.cone_count.min(MAX_CONE_SHADOW_POOL_CAPACITY),
-				);
-			}
-			if work.point_count > 0 {
-				record_maps(
-					c,
-					"Point Shadow Map",
-					point_shadow_map,
-					point_extent,
-					work.point_count * POINT_SHADOW_FACE_COUNT,
-					pipelines.local,
-					pipelines.masked_local,
-					pipelines.double_sided_local,
-					POINT_SHADOW_VIEW_OFFSET,
-					work.point_count.min(MAX_POINT_SHADOW_POOL_CAPACITY) * POINT_SHADOW_FACE_COUNT,
-				);
-			}
-		}))
+		})
 	}
 }

@@ -29,7 +29,8 @@ pub(crate) const DIFFUSE_RADIANCE_HISTORY_TARGET: &str = "Diffuse Radiance Histo
 pub(crate) const SSGI_RAW_TARGET: &str = "SSGI Raw";
 /// The render-graph name of the half-resolution view-space normals the trace rebuilds from depth.
 ///
-/// RGB holds the normal, or zero where the depth neighborhood was degenerate or empty. The next frame's denoiser reads
+/// RG holds the normal's octahedral encoding, or zero where the depth neighborhood was degenerate or empty. Zero would
+/// otherwise encode a normal facing away from the camera, which the trace never stores. The next frame's denoiser reads
 /// it to tell whether its history belongs to the same surface.
 pub(crate) const SSGI_NORMALS_TARGET: &str = "SSGI Normals";
 /// The render-graph name of the half-resolution accumulated result that the next frame blends with.
@@ -58,16 +59,17 @@ pub(crate) struct SsgiTargets {
 pub(crate) fn create_ssgi_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> SsgiTargets {
-	let radiance_image = |name| {
-		ghi::image::Builder::new(RADIANCE_FORMAT, ghi::Uses::Storage | ghi::Uses::Image)
+	let image = |name, format| {
+		ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image)
 			.name(name)
 			.device_accesses(ghi::DeviceAccesses::DeviceOnly)
 	};
+	let radiance_image = |name| image(name, RADIANCE_FORMAT);
 	SsgiTargets {
 		raw: render_pass_builder
 			.create_scaled_render_target(radiance_image(SSGI_RAW_TARGET), SSGI_RESOLUTION_DIVISOR)
 			.into(),
-		normals: render_pass_builder.create_history_target(radiance_image(SSGI_NORMALS_TARGET), SSGI_RESOLUTION_DIVISOR),
+		normals: render_pass_builder.create_history_target(image(SSGI_NORMALS_TARGET, NORMAL_FORMAT), SSGI_RESOLUTION_DIVISOR),
 		history: render_pass_builder.create_history_target(radiance_image(SSGI_HISTORY_TARGET), SSGI_RESOLUTION_DIVISOR),
 		indirect_diffuse: render_pass_builder
 			.create_render_target(radiance_image(SSGI_INDIRECT_DIFFUSE_TARGET))
@@ -79,8 +81,11 @@ pub(crate) fn create_ssgi_targets(
 		),
 	}
 }
-/// The format of every SSGI image: HDR radiance in RGB and the ray hit fraction in alpha, or a normal in RGB.
+/// The format of the SSGI radiance images: HDR radiance in RGB and the ray hit fraction in alpha.
 const RADIANCE_FORMAT: ghi::Formats = ghi::Formats::RGBA16F;
+/// The format of the SSGI normals: an octahedral pair, at half the bandwidth of a three-component normal in
+/// [`RADIANCE_FORMAT`]. The temporal and upscale passes read each normal many times.
+const NORMAL_FORMAT: ghi::Formats = ghi::Formats::RG16SNORM;
 
 const fn buffer(slot: u32) -> ghi::ShaderResourceDescriptor {
 	ghi::ShaderResourceDescriptor::single(

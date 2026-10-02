@@ -56,8 +56,11 @@ pub(crate) type MaterialEntry = (String, u32, ghi::PipelineHandle);
 pub struct RenderInfo {
 	pub(crate) opaque_instances: Vec<Instance>,
 	pub(crate) masked_instances: Vec<Instance>,
-	/// Opaque and masked instances whose material shows both faces, drawn without back-face culling.
+	/// Opaque instances whose material shows both faces, drawn without back-face culling.
 	pub(crate) double_sided_instances: Vec<Instance>,
+	/// Masked instances whose material shows both faces. They are kept apart from the opaque ones so only they pay for
+	/// the alpha test, which also stops the GPU from discarding hidden surfaces early.
+	pub(crate) double_sided_masked_instances: Vec<Instance>,
 	pub(crate) transparent_instances: Vec<Instance>,
 	pub(crate) skinning_dispatches: Vec<SkinningDispatch>,
 	pub(crate) opaque_materials: Vec<MaterialEntry>,
@@ -72,6 +75,7 @@ impl RenderInfo {
 		self.opaque_instances.clear();
 		self.masked_instances.clear();
 		self.double_sided_instances.clear();
+		self.double_sided_masked_instances.clear();
 		self.transparent_instances.clear();
 		self.skinning_dispatches.clear();
 		self.opaque_material_mask.fill(0);
@@ -97,10 +101,9 @@ impl RenderInfo {
 		let material_word = material_index / u64::BITS as usize;
 		let (instances, mask) = match alpha_mode {
 			AlphaMode::Blend => (&mut self.transparent_instances, &mut self.transparent_material_mask),
-			AlphaMode::Opaque | AlphaMode::Mask(_) if double_sided => {
-				(&mut self.double_sided_instances, &mut self.opaque_material_mask)
-			}
+			AlphaMode::Mask(_) if double_sided => (&mut self.double_sided_masked_instances, &mut self.opaque_material_mask),
 			AlphaMode::Mask(_) => (&mut self.masked_instances, &mut self.opaque_material_mask),
+			AlphaMode::Opaque if double_sided => (&mut self.double_sided_instances, &mut self.opaque_material_mask),
 			AlphaMode::Opaque => (&mut self.opaque_instances, &mut self.opaque_material_mask),
 		};
 		instances.push(instance);
@@ -111,6 +114,7 @@ impl RenderInfo {
 		self.opaque_instances.len()
 			+ self.masked_instances.len()
 			+ self.double_sided_instances.len()
+			+ self.double_sided_masked_instances.len()
 			+ self.transparent_instances.len()
 	}
 }

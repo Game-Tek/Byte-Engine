@@ -8,6 +8,7 @@ Mesh: struct {
 	meshlet_count: u32,
 	skinned_base_vertex_index: u32,
 	flags: u32,
+	bounding_sphere: vec4f,
 }
 
 MeshData: struct {

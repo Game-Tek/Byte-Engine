@@ -2,6 +2,8 @@
 // neighbors on the same surface. An exponential moving average then blends that estimate with the reprojected
 // history of earlier frames, unless the previous frame saw a different surface at that point.
 // Both steps compare the view-space normals the trace rebuilt from depth, this frame's and last frame's.
+// Each 8x8 workgroup first loads the position, normal, and rays of its texels and a two-texel border into workgroup
+// memory, so the 25 filter taps of every texel read shared values instead of fetching them again.
 ScreenView: struct {
 	pixel_to_ray_mul: vec2f,
 	pixel_to_ray_add: vec2f,
@@ -29,7 +31,18 @@ previous_depth_pyramid: descriptor<{ type: Texture2D, binding: 1037, access: rea
 surface_normals: descriptor<{ type: Texture2D, binding: 1038, access: read }>;
 previous_surface_normals: descriptor<{ type: Texture2D, binding: 1039, access: read }>;
 
+// Per tile texel: the view-space position in xyz, whose z is zero where no surface was drawn; the decoded normal in
+// xyz; and this frame's ray.
+tile_positions: workgroup<vec4f, 144>;
+tile_normals: workgroup<vec4f, 144>;
+tile_radiance: workgroup<vec4f, 144>;
+
 SSGI_FILTER_RADIUS: const u32 = 2;
+SSGI_TEMPORAL_WORKGROUP_WIDTH: const u32 = 8;
+SSGI_TEMPORAL_WORKGROUP_SIZE: const u32 = 64;
+// The workgroup's texels plus the filter radius on every side.
+SSGI_TEMPORAL_TILE_WIDTH: const u32 = 12;
+SSGI_TEMPORAL_TILE_SIZE: const u32 = 144;
 // Gaussian weights for offsets zero, one, and two. The product of two gives the 5x5 kernel.
 SSGI_FILTER_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
 // A 5% relative-depth sigma keeps neighbors on the same surface where no normal is known.
@@ -55,12 +68,6 @@ fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	return texture_lod(depth_pyramid, uv, 1.0).x;
 }
 
-// Returns `value + offset - radius` clamped to the image, for a filter tap `offset` steps along one axis.
-// Offsets are unsigned, so the lower clamp happens before subtracting the radius.
-tap_coordinate: fn (value: u32, offset: u32, extent: u32) -> u32 {
-	return min(max(value + offset, SSGI_FILTER_RADIUS) - SSGI_FILTER_RADIUS, extent - 1);
-}
-
 // Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
 filter_weight: fn (offset: u32) -> f32 {
 	return SSGI_FILTER_WEIGHTS[max(offset, SSGI_FILTER_RADIUS) - min(offset, SSGI_FILTER_RADIUS)];
@@ -75,16 +82,27 @@ fetch_previous_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	return texture_lod(previous_depth_pyramid, uv, 1.0).x;
 }
 
-// Reads the view-space normal the trace rebuilt for a texel, or zero where it had none.
-fetch_normal: fn (coordinate: vec2u) -> vec3f {
-	let stored: vec4f = fetch(surface_normals, coordinate);
-	return vec3f(stored.x, stored.y, stored.z);
+// Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
+// texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
+// `ssgi-upscale.besl` holds the same decoder; keep both in sync with `encode_stored_normal` in `ssgi-trace.besl`.
+decode_stored_normal: fn (stored: vec4f) -> vec3f {
+	if (stored.x == 0.0 && stored.y == 0.0) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+	let z: f32 = 1.0 - abs(stored.x) - abs(stored.y);
+	let fold: f32 = max(0.0 - z, 0.0);
+	// `step` returns the positive direction at zero, matching the trace's encoder.
+	let normal: vec3f = vec3f(
+		stored.x - (step(0.0, stored.x) * 2.0 - 1.0) * fold,
+		stored.y - (step(0.0, stored.y) * 2.0 - 1.0) * fold,
+		z
+	);
+	return normal * inversesqrt(dot(normal, normal));
 }
 
 // Reads the view-space normal the trace rebuilt for a texel last frame, or zero where it had none.
 fetch_previous_normal: fn (coordinate: vec2u) -> vec3f {
-	let stored: vec4f = fetch(previous_surface_normals, coordinate);
-	return vec3f(stored.x, stored.y, stored.z);
+	return decode_stored_normal(fetch(previous_surface_normals, coordinate));
 }
 
 // Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing
@@ -120,28 +138,34 @@ surface_weight: fn (center_normal: vec3f, center_position: vec3f, tap_normal: ve
 		* exp(0.0 - plane_distance * plane_distance * SSGI_FILTER_INVERSE_PLANE_VARIANCE);
 }
 
-// Averages this frame's rays over the 5x5 neighbors on the center's surface.
-spatial_estimate: fn (pixel: vec2u, extent: vec2u, center_position: vec3f, center_normal: vec3f) -> vec4f {
+// Returns `value + offset - radius` clamped to the image, for a tile texel `offset` steps along one axis from the
+// workgroup's first texel at `value`. Offsets are unsigned, so the lower clamp happens before subtracting the radius.
+tap_coordinate: fn (value: u32, offset: u32, extent: u32) -> u32 {
+	return min(max(value + offset, SSGI_FILTER_RADIUS) - SSGI_FILTER_RADIUS, extent - 1);
+}
+
+// Averages this frame's rays over the 5x5 neighbors on the center's surface, read from the workgroup's tile.
+// `local` is the texel's position in its workgroup.
+spatial_estimate: fn (local: vec2u, center_position: vec3f, center_normal: vec3f) -> vec4f {
 	let sum: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
 	let total_weight: f32 = 0.0;
 	for (let y_offset: u32 = 0; y_offset <= SSGI_FILTER_RADIUS * 2; y_offset = y_offset + 1) {
 		for (let x_offset: u32 = 0; x_offset <= SSGI_FILTER_RADIUS * 2; x_offset = x_offset + 1) {
-			let coordinate: vec2u = vec2u(
-				tap_coordinate(pixel.x, x_offset, extent.x),
-				tap_coordinate(pixel.y, y_offset, extent.y)
-			);
-			let sample_z: f32 = fetch_linear_depth(coordinate, extent);
-			if (sample_z == 0.0) {
+			// Tap (0, 0) is two texels above and left of the center. Taps past the image edge repeat the edge texel.
+			let tap_index: u32 = (local.y + y_offset) * SSGI_TEMPORAL_TILE_WIDTH + local.x + x_offset;
+			let tap_position: vec4f = tile_positions[tap_index];
+			if (tap_position.z == 0.0) {
 				continue;
 			}
+			let tap_normal: vec4f = tile_normals[tap_index];
 			let weight: f32 = filter_weight(x_offset) * filter_weight(y_offset)
 				* surface_weight(
 					center_normal,
 					center_position,
-					fetch_normal(coordinate),
-					view_position(coordinate, sample_z)
+					vec3f(tap_normal.x, tap_normal.y, tap_normal.z),
+					vec3f(tap_position.x, tap_position.y, tap_position.z)
 				);
-			sum = sum + fetch(raw_radiance, coordinate) * weight;
+			sum = sum + tile_radiance[tap_index] * weight;
 			total_weight = total_weight + weight;
 		}
 	}
@@ -151,17 +175,49 @@ spatial_estimate: fn (pixel: vec2u, extent: vec2u, center_position: vec3f, cente
 
 main: fn (input: StageInput) -> void {
 	let pixel: vec2u = input.thread_id;
-	guard_image_bounds(history_output, pixel);
 	let extent: vec2u = image_size(history_output);
-	let center_z: f32 = fetch_linear_depth(pixel, extent);
-	if (center_z == 0.0) {
+	let local: vec2u = vec2u(
+		input.thread_idx % SSGI_TEMPORAL_WORKGROUP_WIDTH,
+		input.thread_idx / SSGI_TEMPORAL_WORKGROUP_WIDTH
+	);
+	let workgroup_origin: vec2u = pixel - local;
+	for (
+		let tile_index: u32 = input.thread_idx;
+		tile_index < SSGI_TEMPORAL_TILE_SIZE;
+		tile_index = tile_index + SSGI_TEMPORAL_WORKGROUP_SIZE
+	) {
+		let coordinate: vec2u = vec2u(
+			tap_coordinate(workgroup_origin.x, tile_index % SSGI_TEMPORAL_TILE_WIDTH, extent.x),
+			tap_coordinate(workgroup_origin.y, tile_index / SSGI_TEMPORAL_TILE_WIDTH, extent.y)
+		);
+		let z: f32 = fetch_linear_depth(coordinate, extent);
+		let position: vec3f = vec3f(0.0, 0.0, 0.0);
+		let normal: vec3f = vec3f(0.0, 0.0, 0.0);
+		let radiance: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
+		// A texel without a surface keeps zero depth and never counts as a tap.
+		if (z != 0.0) {
+			position = view_position(coordinate, z);
+			normal = decode_stored_normal(fetch(surface_normals, coordinate));
+			radiance = fetch(raw_radiance, coordinate);
+		}
+		tile_positions[tile_index] = vec4f(position.x, position.y, position.z, 0.0);
+		tile_normals[tile_index] = vec4f(normal.x, normal.y, normal.z, 0.0);
+		tile_radiance[tile_index] = radiance;
+	}
+	workgroup_barrier();
+
+	guard_image_bounds(history_output, pixel);
+	let center_index: u32 = (local.y + SSGI_FILTER_RADIUS) * SSGI_TEMPORAL_TILE_WIDTH + local.x + SSGI_FILTER_RADIUS;
+	let center: vec4f = tile_positions[center_index];
+	if (center.z == 0.0) {
 		write(history_output, pixel, vec4f(0.0, 0.0, 0.0, 0.0));
 		return;
 	}
 
-	let center_position: vec3f = view_position(pixel, center_z);
-	let center_normal: vec3f = fetch_normal(pixel);
-	let estimate: vec4f = spatial_estimate(pixel, extent, center_position, center_normal);
+	let center_position: vec3f = vec3f(center.x, center.y, center.z);
+	let stored_center_normal: vec4f = tile_normals[center_index];
+	let center_normal: vec3f = vec3f(stored_center_normal.x, stored_center_normal.y, stored_center_normal.z);
+	let estimate: vec4f = spatial_estimate(local, center_position, center_normal);
 	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip
 		* vec4f(center_position.x, center_position.y, center_position.z, 1.0);
 	// History is selected with a branch, not weighted by zero, because an unwritten history texel may hold NaN.

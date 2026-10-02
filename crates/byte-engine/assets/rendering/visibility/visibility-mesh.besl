@@ -17,6 +17,7 @@ Mesh: struct {
 	meshlet_count: u32,
 	skinned_base_vertex_index: u32,
 	flags: u32,
+	bounding_sphere: vec4f,
 }
 
 Meshlet: struct {
@@ -35,7 +36,7 @@ SkinnedVertex: struct {
 }
 
 Views: struct {
-	views: View[9],
+	views: View[117],
 }
 
 Meshes: struct {
@@ -55,26 +56,29 @@ vertex_indices: descriptor<{ type: u16[], binding: 6, access: read, memory: devi
 primitive_indices: descriptor<{ type: u8[], binding: 7, access: read, memory: device }>;
 meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 
-meshlet_instances: task_payload<u32, 32>;
+meshlet_instances: task_payload<u32, 192>;
 out_instance_index: output<u32, 0, 126>;
 out_primitive_index: output<u32, 1, 126>;
 out_uv: output<vec2f16, 2, 64>;
 
+// The task stage's batch layout. The camera's visibility pass draws one view into an unlayered target.
 push_constant: push_constant {
 	work_item_base: u32,
-	view_index: u32,
-	render_target_array_index: u32,
+	view_base: u32,
+	layer_base: u32,
+	view_count: u32,
 }
 
 main: fn() -> void {
 	let payload_index: u32 = threadgroup_position();
-	// Decode both indices from the same payload read so a meshlet cannot be paired with another grid's instance.
+	// Decode every index from the same payload read so a meshlet cannot be paired with another grid's instance or view.
 	let meshlet_instance: u32 = meshlet_instances[payload_index];
 	let instance_index: u32 = (meshlet_instance >> 12) & 1023;
+	let view_offset: u32 = (meshlet_instance >> 22) & 7;
 	let mesh: Mesh = meshes.meshes[instance_index];
 	// Task shaders pack the meshlet relative to its instance's first meshlet.
 	let meshlet_index: u32 = mesh.base_meshlet_index + (meshlet_instance & 4095);
-	let view: View = views.views[push_constant.view_index];
+	let view: View = views.views[push_constant.view_base + view_offset];
 	let meshlet: Meshlet = meshlets[meshlet_index];
 	let primitive_index: u32 = thread_idx();
 

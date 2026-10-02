@@ -149,6 +149,7 @@ impl PreparedMesh {
 				primitive: MeshPrimitive {
 					material_index: 0,
 					meshlet_count: meshlets.len() as u32,
+					bounding_sphere: enclosing_sphere(&meshlets),
 					meshlet_offset: 0,
 					vertex_offset: 0,
 					primitive_offset: 0,
@@ -598,6 +599,7 @@ fn build_resource_primitives(
 			primitive: MeshPrimitive {
 				material_index: 0,
 				meshlet_count: (source.len() / RESOURCE_MESHLET_STRIDE) as u32,
+				bounding_sphere: enclosing_sphere(&meshlets[meshlet_offset as usize..]),
 				meshlet_offset,
 				vertex_offset: counts.vertices,
 				primitive_offset: counts.primitive_indices,
@@ -712,25 +714,42 @@ fn build_generated_meshlets(
 
 /// Computes a conservative object-space bounding sphere for one generated meshlet.
 fn bounding_sphere(meshlet_vertices: &[u16], positions: &[(f32, f32, f32)]) -> [f32; 4] {
+	sphere_around(meshlet_vertices.iter().map(|&index| {
+		let (x, y, z) = positions[index as usize];
+		[x, y, z, 0.0]
+	}))
+}
+
+/// Returns a sphere that contains every meshlet's bounding sphere, as xyz center and w radius.
+pub(crate) fn enclosing_sphere(meshlets: &[ShaderMeshletData]) -> [f32; 4] {
+	sphere_around(meshlets.iter().map(|meshlet| meshlet.center_radius))
+}
+
+/// Returns a sphere, as xyz center and w radius, that contains every sphere in `spheres`. Points are spheres of radius
+/// zero.
+///
+/// It centers on the box around the spheres, which keeps it close to the smallest one for the elongated shapes meshes
+/// usually have. No spheres give a zero sphere.
+fn sphere_around(spheres: impl Iterator<Item = [f32; 4]> + Clone) -> [f32; 4] {
 	let mut min = [f32::INFINITY; 3];
 	let mut max = [f32::NEG_INFINITY; 3];
-	for &index in meshlet_vertices {
-		let (x, y, z) = positions[index as usize];
+	for [x, y, z, radius] in spheres.clone() {
 		for (axis, value) in [x, y, z].into_iter().enumerate() {
-			min[axis] = min[axis].min(value);
-			max[axis] = max[axis].max(value);
+			min[axis] = min[axis].min(value - radius);
+			max[axis] = max[axis].max(value + radius);
 		}
 	}
-	let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5];
-	let radius_squared = meshlet_vertices
-		.iter()
-		.map(|&index| {
-			let (x, y, z) = positions[index as usize];
+	if min[0] > max[0] {
+		return [0.0; 4];
+	}
+	let center: [f32; 3] = std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5);
+	let radius = spheres
+		.map(|[x, y, z, radius]| {
 			let delta = [x - center[0], y - center[1], z - center[2]];
-			delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]
+			(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt() + radius
 		})
 		.fold(0.0f32, f32::max);
-	[center[0], center[1], center[2], radius_squared.sqrt()]
+	[center[0], center[1], center[2], radius]
 }
 
 /* Attribute packing */
@@ -842,5 +861,33 @@ mod tests {
 		assert_eq!(encode_octahedral_unit_vector((0.0, -1.0, 0.0)), [32768, 0]);
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, -1.0)), [65535, 65535]);
 		assert_eq!(encode_octahedral_unit_vector((0.0, 0.0, 0.0)), [32768, 32768]);
+	}
+
+	/// Verifies a primitive's sphere contains every meshlet's sphere, so culling the instance never hides a meshlet.
+	#[test]
+	fn enclosing_sphere_contains_every_meshlet_sphere() {
+		let meshlet = |center_radius| ShaderMeshletData {
+			center_radius,
+			..bytemuck::Zeroable::zeroed()
+		};
+		let meshlets = [
+			meshlet([0.0, 0.0, 0.0, 1.0]),
+			meshlet([10.0, 0.0, 0.0, 0.5]),
+			meshlet([3.0, -4.0, 2.0, 2.0]),
+		];
+
+		let [x, y, z, radius] = enclosing_sphere(&meshlets);
+
+		for meshlet in &meshlets {
+			let [mx, my, mz, meshlet_radius] = meshlet.center_radius;
+			let distance = ((mx - x).powi(2) + (my - y).powi(2) + (mz - z).powi(2)).sqrt();
+			assert!(
+				distance + meshlet_radius <= radius + 1e-5,
+				"Meshlet sphere {:?} leaves the primitive sphere {:?}.",
+				meshlet.center_radius,
+				[x, y, z, radius]
+			);
+		}
+		assert_eq!(enclosing_sphere(&[]), [0.0; 4]);
 	}
 }

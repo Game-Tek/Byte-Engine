@@ -42,10 +42,27 @@ fetch_low_resolution_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
 	return texture_lod(low_resolution_depth, uv, 1.0).x;
 }
 
+// Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
+// texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
+// `ssgi-temporal.besl` holds the same decoder; keep both in sync with `encode_stored_normal` in `ssgi-trace.besl`.
+decode_stored_normal: fn (stored: vec4f) -> vec3f {
+	if (stored.x == 0.0 && stored.y == 0.0) {
+		return vec3f(0.0, 0.0, 0.0);
+	}
+	let z: f32 = 1.0 - abs(stored.x) - abs(stored.y);
+	let fold: f32 = max(0.0 - z, 0.0);
+	// `step` returns the positive direction at zero, matching the trace's encoder.
+	let normal: vec3f = vec3f(
+		stored.x - (step(0.0, stored.x) * 2.0 - 1.0) * fold,
+		stored.y - (step(0.0, stored.y) * 2.0 - 1.0) * fold,
+		z
+	);
+	return normal * inversesqrt(dot(normal, normal));
+}
+
 // Reads the view-space normal the trace rebuilt for a half-resolution texel, or zero where it had none.
 fetch_low_resolution_normal: fn (coordinate: vec2u) -> vec3f {
-	let stored: vec4f = fetch(low_resolution_normals, coordinate);
-	return vec3f(stored.x, stored.y, stored.z);
+	return decode_stored_normal(fetch(low_resolution_normals, coordinate));
 }
 
 // Returns the view-space position at continuous half-resolution coordinates, where integers are texel centers.

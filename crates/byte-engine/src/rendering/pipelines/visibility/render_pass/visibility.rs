@@ -2,7 +2,8 @@
 
 use utils::Extent;
 
-use super::super::mesh_dispatch::MeshDispatch;
+use super::super::mesh_dispatch::PhaseDispatches;
+use super::{PhasePipelines, record_meshlet_dispatches};
 use crate::rendering::PipelineManagerClient;
 
 /// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
@@ -31,20 +32,11 @@ impl VisibilityPhase {
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
 pub(super) struct VisibilityPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	pub(super) pipeline: crate::rendering::PipelineRef,
-	pub(super) masked_pipeline: crate::rendering::PipelineRef,
-	/// Runs the masked shaders without back-face culling, so opaque double-sided surfaces also pay for alpha testing.
-	pub(super) double_sided_pipeline: crate::rendering::PipelineRef,
+	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
+	pipelines: PhasePipelines,
 	primitive_index: ghi::BaseImageHandle,
 	instance_id: ghi::BaseImageHandle,
 	depth: ghi::BaseImageHandle,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct VisibilityPipelines {
-	pub(super) opaque: ghi::PipelineHandle,
-	pub(super) masked: ghi::PipelineHandle,
-	pub(super) double_sided: ghi::PipelineHandle,
 }
 
 impl VisibilityPass {
@@ -57,25 +49,27 @@ impl VisibilityPass {
 	) -> Self {
 		Self {
 			descriptor_set,
-			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/visibility.pipeline"),
-			masked_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/masked-visibility.pipeline"),
-			double_sided_pipeline: pipeline_manager
-				.request_pipeline("byte-engine/rendering/visibility/double-sided-visibility.pipeline"),
+			pipelines: PhasePipelines::request(
+				pipeline_manager,
+				[
+					"byte-engine/rendering/visibility/visibility.pipeline",
+					"byte-engine/rendering/visibility/masked-visibility.pipeline",
+					"byte-engine/rendering/visibility/double-sided-visibility.pipeline",
+					"byte-engine/rendering/visibility/double-sided-masked-visibility.pipeline",
+				],
+			),
 			primitive_index,
 			instance_id,
 			depth,
 		}
 	}
 
-	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<VisibilityPipelines> {
-		Some(VisibilityPipelines {
-			opaque: pipeline_manager.pipeline(self.pipeline)?,
-			masked: pipeline_manager.pipeline(self.masked_pipeline)?,
-			double_sided: pipeline_manager.pipeline(self.double_sided_pipeline)?,
-		})
+	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; 4]> {
+		self.pipelines.resolve(pipeline_manager)
 	}
 
-	/// Records the solid, masked, and double-sided dispatches of one phase into the visibility buffers.
+	/// Records the work ranges of one phase into the visibility buffers: the solid, masked, and both double-sided
+	/// ranges for the opaque phase, or the transparent range.
 	///
 	/// The transparent phase loads opaque depth, then writes the nearest transparent surface into it. This
 	/// preserves opaque occlusion while resolving overlapping triangles within the single transparent layer.
@@ -84,14 +78,11 @@ impl VisibilityPass {
 		c: &mut ghi::implementation::CommandBufferRecording,
 		extent: Extent,
 		phase: VisibilityPhase,
-		solid: MeshDispatch,
-		masked: MeshDispatch,
-		double_sided: MeshDispatch,
-		pipelines: VisibilityPipelines,
+		dispatches: PhaseDispatches,
+		pipelines: [ghi::PipelineHandle; 4],
 	) {
 		use ghi::command_buffer::{
-			BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _, CommandBufferRecording as _,
-			CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
+			CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 		};
 
 		let identifier = |image| {
@@ -122,20 +113,18 @@ impl VisibilityPass {
 			label.write_str(" Visibility Buffer")
 		});
 		let c = c.start_render_pass(extent, &attachments);
-		for (dispatch, pipeline) in [
-			(solid, pipelines.opaque),
-			(masked, pipelines.masked),
-			(double_sided, pipelines.double_sided),
-		] {
-			if dispatch.is_empty() {
-				continue;
+		// The camera is view zero. Blend materials have no alpha test and keep back-face culling.
+		match phase {
+			VisibilityPhase::Opaque => record_meshlet_dispatches(
+				c,
+				self.descriptor_set,
+				dispatches.opaque_layer().into_iter().zip(pipelines),
+				0,
+				1,
+			),
+			VisibilityPhase::Transparent => {
+				record_meshlet_dispatches(c, self.descriptor_set, [(dispatches.transparent, pipelines[0])], 0, 1)
 			}
-			let c = c.bind_raster_pipeline(pipeline);
-			c.bind_descriptor_sets(&[self.descriptor_set]);
-			c.write_push_constant(0, dispatch.work_item_base());
-			c.write_push_constant(4, 0u32);
-			c.write_push_constant(8, 0u32);
-			c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
 		}
 		c.end_render_pass();
 		c.end_region();

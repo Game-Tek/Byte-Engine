@@ -143,6 +143,8 @@ pub(crate) struct MeshData {
 pub(crate) struct MeshPrimitive {
 	pub(crate) material_index: u32,
 	pub(crate) meshlet_count: u32,
+	/// Object-space sphere around every meshlet, as xyz center and w radius. Task shaders cull whole instances with it.
+	pub(crate) bounding_sphere: [f32; 4],
 	/// Offsets relative to the owning mesh.
 	pub(crate) meshlet_offset: u32,
 	pub(crate) vertex_offset: u32,

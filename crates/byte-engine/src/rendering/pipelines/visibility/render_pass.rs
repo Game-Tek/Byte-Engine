@@ -1,6 +1,6 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! linear depth pyramid, contact shadows, GTAO, SSGI, and material evaluation, which also traces screen-space
-//! reflections.
+//! occlusion and linear depth pyramids, contact shadows, GTAO, SSGI, and material evaluation, which also traces
+//! screen-space reflections.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
@@ -10,6 +10,7 @@ mod depth_pyramid;
 mod gtao;
 mod light_clusters;
 mod materials;
+mod occlusion;
 mod reflections;
 mod shadows;
 mod ssgi;
@@ -84,10 +85,13 @@ impl PhasePipelines {
 /// Records one mesh dispatch per non-empty work range and batch of up to [`MAX_TASK_VIEWS`] views. The batches draw
 /// `view_count` packed views from `view_base` into consecutive layers from zero.
 ///
-/// Call it inside a render pass whose attachments hold `view_count` layers, or one unlayered target for one view.
+/// `descriptor_sets` are the base set and a sink's [`OcclusionCulling::descriptor_set`]. The shared task shader declares
+/// the occlusion resources, so every pass binds them, but only `occlusion` other than [`OcclusionPhase::Disabled`] uses
+/// them. Call it inside a render pass whose attachments hold `view_count` layers, or one unlayered target for one view.
 pub(super) fn record_meshlet_dispatches(
 	c: &mut impl ghi::command_buffer::RasterizationRenderPassMode,
-	descriptor_set: ghi::DescriptorSetHandle,
+	descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	occlusion: OcclusionPhase,
 	ranges: impl IntoIterator<Item = (MeshDispatch, ghi::PipelineHandle)>,
 	view_base: usize,
 	view_count: usize,
@@ -99,7 +103,7 @@ pub(super) fn record_meshlet_dispatches(
 			continue;
 		}
 		let c = c.bind_raster_pipeline(pipeline);
-		c.bind_descriptor_sets(&[descriptor_set]);
+		c.bind_descriptor_sets(&descriptor_sets);
 		for first_layer in (0..view_count).step_by(MAX_TASK_VIEWS) {
 			let batch_views = (view_count - first_layer).min(MAX_TASK_VIEWS);
 			c.write_push_constant(
@@ -109,6 +113,7 @@ pub(super) fn record_meshlet_dispatches(
 					(view_base + first_layer) as u32,
 					first_layer as u32,
 					batch_views as u32,
+					occlusion as u32,
 				],
 			);
 			c.dispatch_meshes(dispatch.workgroup_count(), 1, 1);
@@ -125,6 +130,8 @@ use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
 use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses};
+use self::occlusion::OcclusionCulling;
+pub(crate) use self::occlusion::OcclusionPhase;
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
@@ -195,6 +202,7 @@ pub(crate) struct VisibilityRenderPass {
 	cascade_fit: CascadeFitPass,
 	light_clusters: LightClusterPass,
 	visibility: VisibilityPass,
+	occlusion: OcclusionCulling,
 	material_prepasses: MaterialPrepasses,
 	depth_pyramid: DepthPyramidPass,
 	contact_shadows: ContactShadowPass,
@@ -269,6 +277,7 @@ impl VisibilityRenderPass {
 			)
 		};
 		let depth_pyramid = DepthPyramidPass::new(context, &pipeline_manager, targets.depth);
+		let occlusion = OcclusionCulling::new(context, &pipeline_manager, targets.depth);
 		let ssgi = SsgiPass::new(
 			context,
 			&pipeline_manager,
@@ -349,11 +358,12 @@ impl VisibilityRenderPass {
 			light_clusters,
 			visibility: VisibilityPass::new(
 				&pipeline_manager,
-				base_descriptor_set,
+				[base_descriptor_set, occlusion.descriptor_set()],
 				targets.primitive_index,
 				targets.instance_id,
 				targets.depth,
 			),
+			occlusion,
 			material_prepasses: MaterialPrepasses::new(
 				&pipeline_manager,
 				base_descriptor_set,
@@ -435,7 +445,13 @@ impl VisibilityRenderPass {
 		let (skinning, shadows) = match frame_work {
 			Some(work) => (
 				Some((work.skinning, pipeline_manager.pipeline(work.skinning.pipeline())?)),
-				Some(work.shadow_maps.prepare(frame, pipeline_manager, dispatches, shadow_work)?),
+				Some(work.shadow_maps.prepare(
+					frame,
+					pipeline_manager,
+					dispatches,
+					shadow_work,
+					self.occlusion.descriptor_set(),
+				)?),
 			),
 			None => (None, None),
 		};
@@ -445,10 +461,12 @@ impl VisibilityRenderPass {
 		let fits_receivers = shadow_work.receiver_fit.is_some();
 		let light_cluster_pipeline = self.light_clusters.pipeline(pipeline_manager)?;
 		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
+		let occlusion_pipelines = self.occlusion.pipelines(pipeline_manager)?;
 		let contact_shadow_pipelines = self.contact_shadows.pipelines(pipeline_manager)?;
 		let gtao_pipelines = self.gtao.pipelines(pipeline_manager)?;
 		let ssgi_pipelines = self.ssgi.pipelines(pipeline_manager)?;
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
+		let occlusion_pyramid = self.occlusion.prepare(occlusion_pipelines);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
 		let contact_shadows = self
 			.contact_shadows
@@ -490,8 +508,14 @@ impl VisibilityRenderPass {
 			// Both material evaluation layers read the clusters, and nothing before them does.
 			light_clusters(c);
 
-			// The opaque layer establishes the depth and color retained by every later transparent primitive.
-			visibility.record(c, extent, VisibilityPhase::Opaque, dispatches, visibility_pipelines);
+			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
+			// pass draws what was unoccluded last frame, and the late pass draws what that depth does not hide.
+			let opaque = |c: &mut ghi::implementation::CommandBufferRecording, occlusion| {
+				visibility.record(c, extent, VisibilityPhase::Opaque, dispatches, visibility_pipelines, occlusion);
+			};
+			opaque(c, OcclusionPhase::Early);
+			occlusion_pyramid(c);
+			opaque(c, OcclusionPhase::Late);
 			material_prepasses.record(c, extent, prepass_pipelines);
 			cascade_fit(c);
 			if fits_receivers && let Some(shadows) = &shadows {
@@ -511,7 +535,14 @@ impl VisibilityRenderPass {
 			// The visibility buffer holds one transparent layer. Resolving every blend primitive together lets
 			// normal depth testing select the nearest surface before source-over evaluation.
 			if !dispatches.transparent.is_empty() {
-				visibility.record(c, extent, VisibilityPhase::Transparent, dispatches, visibility_pipelines);
+				visibility.record(
+					c,
+					extent,
+					VisibilityPhase::Transparent,
+					dispatches,
+					visibility_pipelines,
+					OcclusionPhase::Test,
+				);
 				material_prepasses.record(c, extent, prepass_pipelines);
 				transparent_materials(c);
 			}

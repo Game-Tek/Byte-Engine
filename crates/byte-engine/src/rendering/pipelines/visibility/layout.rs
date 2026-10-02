@@ -157,6 +157,13 @@ pub(crate) const MATERIALS_DATA_BINDING: ShaderResourceDescriptor =
 	buffer(1046, AccessPolicies::READ, std::mem::size_of::<MaterialData>() as u32);
 pub(crate) const MESH_DISPATCH_WORK_BINDING: ShaderResourceDescriptor = buffer(1063, AccessPolicies::READ, 4);
 
+/* Occlusion descriptor set */
+
+/// The farthest-depth pyramid of the camera's early pass, which later camera passes test bounds against.
+pub(crate) const OCCLUSION_PYRAMID_BINDING: ShaderResourceDescriptor = sampled_image(1069);
+/// One word per packed mesh dispatch work item: which of its meshlets the camera's late pass found unoccluded.
+pub(crate) const OCCLUSION_VISIBILITY_BINDING: ShaderResourceDescriptor = buffer(1070, AccessPolicies::READ_WRITE, 4);
+
 /* Visibility descriptor set */
 
 pub(crate) const MATERIAL_COUNT_BINDING: ShaderResourceDescriptor = buffer(1033, AccessPolicies::READ_WRITE, 4);

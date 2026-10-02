@@ -3,7 +3,7 @@
 use utils::Extent;
 
 use super::super::mesh_dispatch::PhaseDispatches;
-use super::{PhasePipelines, record_meshlet_dispatches};
+use super::{OcclusionPhase, PhasePipelines, record_meshlet_dispatches};
 use crate::rendering::PipelineManagerClient;
 
 /// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
@@ -31,7 +31,8 @@ impl VisibilityPhase {
 
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
 pub(super) struct VisibilityPass {
-	descriptor_set: ghi::DescriptorSetHandle,
+	/// The base set and the sink's occlusion culling set.
+	descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
 	pipelines: PhasePipelines,
 	primitive_index: ghi::BaseImageHandle,
@@ -42,13 +43,13 @@ pub(super) struct VisibilityPass {
 impl VisibilityPass {
 	pub(super) fn new(
 		pipeline_manager: &PipelineManagerClient,
-		descriptor_set: ghi::DescriptorSetHandle,
+		descriptor_sets: [ghi::DescriptorSetHandle; 2],
 		primitive_index: ghi::BaseImageHandle,
 		instance_id: ghi::BaseImageHandle,
 		depth: ghi::BaseImageHandle,
 	) -> Self {
 		Self {
-			descriptor_set,
+			descriptor_sets,
 			pipelines: PhasePipelines::request(
 				pipeline_manager,
 				[
@@ -73,6 +74,9 @@ impl VisibilityPass {
 	///
 	/// The transparent phase loads opaque depth, then writes the nearest transparent surface into it. This
 	/// preserves opaque occlusion while resolving overlapping triangles within the single transparent layer.
+	///
+	/// `occlusion` selects how the pass culls by occlusion; see [`record_meshlet_dispatches`]. The
+	/// [`OcclusionPhase::Late`] opaque pass loads the early pass's identifiers and depth and draws over them.
 	pub(super) fn record(
 		&self,
 		c: &mut ghi::implementation::CommandBufferRecording,
@@ -80,16 +84,22 @@ impl VisibilityPass {
 		phase: VisibilityPhase,
 		dispatches: PhaseDispatches,
 		pipelines: [ghi::PipelineHandle; 4],
+		occlusion: OcclusionPhase,
 	) {
 		use ghi::command_buffer::{
 			CommandBufferRecording as _, CommonCommandBufferMode as _, RasterizationRenderPassMode as _,
 		};
 
+		let continues_early_pass = occlusion == OcclusionPhase::Late;
 		let identifier = |image| {
 			ghi::AttachmentInformation::new(
 				image,
 				ghi::Layouts::RenderTarget,
-				ghi::LoadOp::Clear(ghi::ClearValue::Integer(u32::MAX, 0, 0, 0)),
+				if continues_early_pass {
+					ghi::LoadOp::Load
+				} else {
+					ghi::LoadOp::Clear(ghi::ClearValue::Integer(u32::MAX, 0, 0, 0))
+				},
 				ghi::StoreOp::Store,
 			)
 		};
@@ -99,7 +109,7 @@ impl VisibilityPass {
 			ghi::AttachmentInformation::new(
 				self.depth,
 				ghi::Layouts::RenderTarget,
-				if phase == VisibilityPhase::Transparent {
+				if phase == VisibilityPhase::Transparent || continues_early_pass {
 					ghi::LoadOp::Load
 				} else {
 					ghi::LoadOp::Clear(ghi::ClearValue::Depth(0.0))
@@ -110,21 +120,28 @@ impl VisibilityPass {
 
 		c.start_region(|label| {
 			label.write_str(phase.label())?;
-			label.write_str(" Visibility Buffer")
+			label.write_str(" Visibility Buffer")?;
+			label.write_str(occlusion.label())
 		});
 		let c = c.start_render_pass(extent, &attachments);
 		// The camera is view zero. Blend materials have no alpha test and keep back-face culling.
 		match phase {
 			VisibilityPhase::Opaque => record_meshlet_dispatches(
 				c,
-				self.descriptor_set,
+				self.descriptor_sets,
+				occlusion,
 				dispatches.opaque_layer().into_iter().zip(pipelines),
 				0,
 				1,
 			),
-			VisibilityPhase::Transparent => {
-				record_meshlet_dispatches(c, self.descriptor_set, [(dispatches.transparent, pipelines[0])], 0, 1)
-			}
+			VisibilityPhase::Transparent => record_meshlet_dispatches(
+				c,
+				self.descriptor_sets,
+				occlusion,
+				[(dispatches.transparent, pipelines[0])],
+				0,
+				1,
+			),
 		}
 		c.end_render_pass();
 		c.end_region();

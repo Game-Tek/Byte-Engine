@@ -42,25 +42,48 @@ MeshDispatchWork: struct {
 	items: u32[131072],
 }
 
+// One word per packed work item: bit `m` marks meshlet `m` of the item's chunk as unoccluded when the camera's late pass
+// last culled it.
+OcclusionVisibility: struct {
+	words: u32[131072],
+}
+
 views: descriptor<{ type: Views, binding: 0, access: read, memory: constant }>;
 meshes: descriptor<{ type: Meshes, binding: 1, access: read, memory: device }>;
 meshlets: descriptor<{ type: Meshlet[], binding: 8, access: read, memory: device }>;
 mesh_dispatch_work: descriptor<{ type: MeshDispatchWork, binding: 1063, access: read, memory: device }>;
+// Every meshlet pass binds these, but only the camera's passes set `push_constant.occlusion_phase`, which uses them.
+occlusion_pyramid: descriptor<{ type: Texture2D, binding: 1069, access: read }>;
+occlusion_visibility: descriptor<{ type: OcclusionVisibility, binding: 1070, access: read_write, memory: device }>;
 
 // Up to six views of each of the workgroup's 32 meshlets.
 meshlet_instances: task_payload<u32, 192>;
 visible_count: workgroup<atomicu32>;
+// The late pass's unoccluded meshlets, one bit per lane.
+unoccluded_meshlets: workgroup<atomicu32>;
 
 // One dispatch draws `view_count` consecutive views, from `view_base`, into layers from `layer_base`. The camera's
-// visibility pass is a batch of one view.
+// visibility pass is a batch of one view. `occlusion_phase` selects one of the `OCCLUSION_*` culling phases, or zero to
+// cull by frustum and normal cone only, as the shadow views do.
 push_constant: push_constant {
 	work_item_base: u32,
 	view_base: u32,
 	layer_base: u32,
 	view_count: u32,
+	occlusion_phase: u32,
 }
 
+// Draws the meshlets the previous late pass found unoccluded. Their depth builds this frame's occlusion pyramid.
+OCCLUSION_EARLY: const u32 = 1;
+// Tests every meshlet against this frame's occlusion pyramid, draws the unoccluded ones the early pass skipped, and
+// records which were unoccluded for the next frame's early pass.
+OCCLUSION_LATE: const u32 = 2;
+// Tests every meshlet against this frame's occlusion pyramid, as transparent geometry does.
+OCCLUSION_TEST: const u32 = 3;
+
 MAX_TASK_VIEWS: const u32 = 6;
+// The coarsest occlusion pyramid level. Keep it one below `OCCLUSION_PYRAMID_MIP_COUNT`.
+OCCLUSION_PYRAMID_LAST_LEVEL: const f32 = 8.0;
 
 decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
 	let octahedral: vec2f = vec2f(f32(u32(encoded.x)), f32(u32(encoded.y))) / 65535.0 * 2.0 - vec2f(1.0, 1.0);
@@ -146,11 +169,67 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 	) < meshlet.cone_apex_cutoff.w;
 }
 
-// Returns whether an object-space sphere, placed in the world by `model`, may show in a view. The radius grows by the
-// model's largest axis scale.
-sphere_is_visible: fn(view: View, model: mat4x3f, center: vec3f, radius: f32) -> bool {
+// Places an object-space sphere in the world with `model`. The radius grows by the model's largest axis scale.
+world_sphere: fn(model: mat4x3f, center: vec3f, radius: f32) -> vec4f {
 	let scale: f32 = sqrt(max(dot(model[0], model[0]), max(dot(model[1], model[1]), dot(model[2], model[2]))));
-	return sphere_intersects_frustum(view.view_projection, model * vec4f(center.x, center.y, center.z, 1.0), radius * scale);
+	let world_center: vec3f = model * vec4f(center.x, center.y, center.z, 1.0);
+	return vec4f(world_center.x, world_center.y, world_center.z, radius * scale);
+}
+
+// Returns whether a world-space sphere may show in a view.
+sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
+	return sphere_intersects_frustum(view.view_projection, vec3f(sphere.x, sphere.y, sphere.z), sphere.w);
+}
+
+// Returns the smaller and the larger tangent slope, lateral over depth, from the eye to a view-space circle. The circle
+// must lie past `radius` in depth.
+circle_tangent_slopes: fn(lateral: f32, depth: f32, radius: f32) -> vec2f {
+	let tangent_length: f32 = sqrt(lateral * lateral + depth * depth - radius * radius);
+	let first: f32 = (tangent_length * lateral - radius * depth) / (tangent_length * depth + radius * lateral);
+	let second: f32 = (tangent_length * lateral + radius * depth) / (tangent_length * depth - radius * lateral);
+	return vec2f(min(first, second), max(first, second));
+}
+
+// Returns whether the occlusion pyramid proves a world-space sphere hidden from the perspective `view` that drew it:
+// the sphere's nearest point lies behind the farthest surface anywhere across its screen rectangle.
+//
+// A sphere that crosses the near plane, or reaches past the screen edge, is never hidden. The pyramid holds nothing
+// outside the screen.
+sphere_is_occluded: fn(view: View, sphere: vec4f) -> bool {
+	let center: vec3f = view.view * vec4f(sphere.x, sphere.y, sphere.z, 1.0);
+	let nearest_z: f32 = center.z - sphere.w;
+	if (nearest_z <= view.near) {
+		return false;
+	}
+
+	// The view's rotation rows are unit vectors, so each view-projection row's length is its axis's projection scale.
+	let row_x: vec3f = vec3f(view.view_projection[0].x, view.view_projection[1].x, view.view_projection[2].x);
+	let row_y: vec3f = vec3f(view.view_projection[0].y, view.view_projection[1].y, view.view_projection[2].y);
+	// The tangent planes through the eye bound the sphere's projection on each screen axis.
+	let slopes_x: vec2f = circle_tangent_slopes(center.x, center.z, sphere.w) * sqrt(dot(row_x, row_x));
+	let slopes_y: vec2f = circle_tangent_slopes(center.y, center.z, sphere.w) * sqrt(dot(row_y, row_y));
+	// Normalized device Y points up and texture V points down.
+	let uv_min: vec2f = vec2f(slopes_x.x * 0.5 + 0.5, 0.5 - slopes_y.y * 0.5);
+	let uv_max: vec2f = vec2f(slopes_x.y * 0.5 + 0.5, 0.5 - slopes_y.x * 0.5);
+	if (uv_min.x < 0.0 || uv_min.y < 0.0 || uv_max.x > 1.0 || uv_max.y > 1.0) {
+		return false;
+	}
+
+	// Pick the level where the rectangle spans at most one texel on each axis. The bilinear 2x2 footprint around its
+	// center then covers all of it, and the minimum-reduction sampler returns the farthest of those four texels.
+	let base_extent: vec2u = texture_size(occlusion_pyramid);
+	let footprint: f32 = max(
+		(uv_max.x - uv_min.x) * f32(base_extent.x),
+		(uv_max.y - uv_min.y) * f32(base_extent.y)
+	);
+	let level: f32 = 0.0 - floor(0.0 - log2(max(footprint, 1.0)));
+	if (level > OCCLUSION_PYRAMID_LAST_LEVEL) {
+		return false;
+	}
+	let farthest_depth: f32 = downsample_min(occlusion_pyramid, (uv_min + uv_max) * 0.5, level);
+	// Reversed perspective depth runs from one at the near plane to zero at the far plane.
+	let nearest_depth: f32 = (view.near * view.far / nearest_z - view.near) / (view.far - view.near);
+	return nearest_depth < farthest_depth;
 }
 
 main: fn() -> void {
@@ -160,23 +239,47 @@ main: fn() -> void {
 	let chunk_index: u32 = (work >> 10) & 127;
 	let lane: u32 = thread_idx();
 	let view_count: u32 = min(push_constant.view_count, MAX_TASK_VIEWS);
+	let phase: u32 = push_constant.occlusion_phase;
 
 	let mesh: Mesh = meshes.meshes[instance_index];
 	// Posed meshlets can leave their bind-pose bounds, so every view keeps a skinned instance and all its meshlets.
 	let skinned: bool = mesh.skinned_base_vertex_index != 4294967295;
+	let tests_occlusion: bool = (phase == OCCLUSION_LATE || phase == OCCLUSION_TEST) && skinned == false;
 	let sphere: vec4f = mesh.bounding_sphere;
+	let instance_sphere: vec4f = world_sphere(mesh.model, vec3f(sphere.x, sphere.y, sphere.z), sphere.w);
 
 	// Bit `v` marks view `view_base + v` as one the instance may show in. Every lane computes the same mask, so a
 	// workgroup whose instance no view sees returns before it reads a single meshlet.
 	let instance_views: u32 = 0;
 	for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 		let view: View = views.views[push_constant.view_base + view_offset];
-		if (skinned || sphere_is_visible(view, mesh.model, vec3f(sphere.x, sphere.y, sphere.z), sphere.w)) {
+		if (skinned || sphere_is_visible(view, instance_sphere)) {
 			instance_views = instance_views | (1 << view_offset);
+		}
+	}
+
+	// The packed work item names the instance and chunk, so its word survives other instances coming and going. Both
+	// camera passes read the same word, so they agree on what the early pass drew whatever the word holds.
+	let previously_unoccluded: u32 = 0;
+	if (phase == OCCLUSION_EARLY || phase == OCCLUSION_LATE) {
+		previously_unoccluded = occlusion_visibility.words[work];
+	}
+	if (phase == OCCLUSION_EARLY && previously_unoccluded == 0) {
+		instance_views = 0;
+	}
+	// Only the camera's batch of one view culls by occlusion, so one test covers every view in the mask. The nested
+	// condition skips the pyramid read entirely when it cannot matter, since shader languages need not short-circuit.
+	// A hidden instance hides every meshlet, and the early pass already drew any it had to.
+	if (tests_occlusion && instance_views != 0) {
+		if (sphere_is_occluded(views.views[push_constant.view_base], instance_sphere)) {
+			instance_views = 0;
 		}
 	}
 	if (instance_views == 0) {
 		if (lane == 0) {
+			if (phase == OCCLUSION_LATE) {
+				occlusion_visibility.words[work] = 0;
+			}
 			set_task_mesh_output_count(0);
 		}
 		return;
@@ -190,24 +293,48 @@ main: fn() -> void {
 
 	if (lane == 0) {
 		atomic_store(visible_count, 0);
+		atomic_store(unoccluded_meshlets, 0);
 	}
 	workgroup_barrier();
 
 	if (lane < chunk_meshlet_count) {
 		let relative_meshlet_index: u32 = first_meshlet + lane;
 		let meshlet: Meshlet = meshlets[mesh.base_meshlet_index + relative_meshlet_index];
-		let center: vec3f = vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z);
+		let meshlet_sphere: vec4f = world_sphere(
+			mesh.model,
+			vec3f(meshlet.center_radius.x, meshlet.center_radius.y, meshlet.center_radius.z),
+			meshlet.center_radius.w
+		);
+		let drawn_early: bool = ((previously_unoccluded >> lane) & 1) != 0;
 		for (let view_offset: u32 = 0; view_offset < view_count; view_offset = view_offset + 1) {
 			if ((instance_views & (1 << view_offset)) != 0) {
 				let view: View = views.views[push_constant.view_base + view_offset];
-				if (skinned
-					|| (sphere_is_visible(view, mesh.model, center, meshlet.center_radius.w)
-						&& cone_allows_rendering(mesh, meshlet, view))) {
-					let payload_index: u32 = atomic_add(visible_count, 1);
-					// One payload word keeps the meshlet, its owning instance, and its view indivisible across emitted
-					// mesh grids. The meshlet index is relative to the instance's first meshlet, so scene-wide meshlet
-					// capacity is not limited by its 12 bits.
-					meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12) | (view_offset << 22);
+				if (skinned || (sphere_is_visible(view, meshlet_sphere) && cone_allows_rendering(mesh, meshlet, view))) {
+					let emit: bool = true;
+					if (phase == OCCLUSION_EARLY) {
+						emit = drawn_early;
+					}
+					if (tests_occlusion) {
+						if (sphere_is_occluded(view, meshlet_sphere)) {
+							emit = false;
+						}
+					}
+					// The late pass remembers every unoccluded meshlet, but draws only those the early pass skipped.
+					if (phase == OCCLUSION_LATE) {
+						if (emit) {
+							atomic_or(unoccluded_meshlets, 1 << lane);
+						}
+						if (drawn_early) {
+							emit = false;
+						}
+					}
+					if (emit) {
+						let payload_index: u32 = atomic_add(visible_count, 1);
+						// One payload word keeps the meshlet, its owning instance, and its view indivisible across
+						// emitted mesh grids. The meshlet index is relative to the instance's first meshlet, so
+						// scene-wide meshlet capacity is not limited by its 12 bits.
+						meshlet_instances[payload_index] = relative_meshlet_index | (instance_index << 12) | (view_offset << 22);
+					}
 				}
 			}
 		}
@@ -215,6 +342,9 @@ main: fn() -> void {
 
 	workgroup_barrier();
 	if (lane == 0) {
+		if (phase == OCCLUSION_LATE) {
+			occlusion_visibility.words[work] = atomic_load(unoccluded_meshlets);
+		}
 		set_task_mesh_output_count(atomic_load(visible_count));
 	}
 }

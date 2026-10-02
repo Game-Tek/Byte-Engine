@@ -1,0 +1,26 @@
+// Seeds mip zero of the camera's occlusion-culling pyramid from reversed visibility depth. Each texel keeps the
+// farthest depth, the smallest reversed value, of every depth pixel its footprint touches. The pyramid has a fixed
+// extent, so a texel can cover a fraction of a pixel or several pixels.
+source_depth: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
+pyramid: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
+
+main: fn (input: StageInput) -> void {
+	let coordinate: vec2u = input.thread_id;
+	guard_image_bounds(pyramid, coordinate);
+	let extent: vec2u = image_size(pyramid);
+	let source_extent: vec2u = texture_size(source_depth);
+
+	// Integer bounds keep the footprint exact: it starts at the first pixel the texel overlaps and ends past the last.
+	let first_x: u32 = coordinate.x * source_extent.x / extent.x;
+	let first_y: u32 = coordinate.y * source_extent.y / extent.y;
+	let end_x: u32 = ((coordinate.x + 1) * source_extent.x + extent.x - 1) / extent.x;
+	let end_y: u32 = ((coordinate.y + 1) * source_extent.y + extent.y - 1) / extent.y;
+
+	let farthest: f32 = 1.0;
+	for (let y: u32 = first_y; y < end_y; y = y + 1) {
+		for (let x: u32 = first_x; x < end_x; x = x + 1) {
+			farthest = min(farthest, fetch(source_depth, vec2u(x, y)).x);
+		}
+	}
+	write(pyramid, coordinate, vec4f(farthest, 0.0, 0.0, 1.0));
+}

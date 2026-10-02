@@ -1,0 +1,1 @@
+{"name":"HiZ Seed","kind":{"type":"compute","shader":"byte-engine/rendering/visibility/hiz-seed.besl"}}

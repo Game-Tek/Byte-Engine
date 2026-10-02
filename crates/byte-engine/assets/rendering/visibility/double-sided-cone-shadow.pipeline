@@ -1,1 +1,1 @@
-{"name":"Double-Sided Local Shadow Pass","kind":{"type":"raster","shaders":["byte-engine/rendering/visibility/meshlet-task.besl","byte-engine/rendering/visibility/shadow-mesh.besl"],"push_constants":[{"offset":0,"size":16}],"attachments":[{"format":"depth16"}],"cull_mode":"none"}}
+{"name":"Double-Sided Local Shadow Pass","kind":{"type":"raster","shaders":["byte-engine/rendering/visibility/meshlet-task.besl","byte-engine/rendering/visibility/shadow-mesh.besl"],"push_constants":[{"offset":0,"size":20}],"attachments":[{"format":"depth16"}],"cull_mode":"none"}}

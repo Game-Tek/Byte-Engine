@@ -16,7 +16,7 @@ use super::super::layout::{
 };
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::{PhasePipelines, record_meshlet_dispatches};
+use super::{OcclusionPhase, PhasePipelines, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -274,19 +274,23 @@ impl ShadowMaps {
 	///
 	/// Record the result after the cascade fit of the sink the views were made for, see [`CascadeFitPass::prepare`].
 	/// Blend materials have no alpha-aware shadow shader, so only opaque and masked geometry casts shadows.
+	///
+	/// `occlusion_descriptor_set` is the recording sink's occlusion culling set. The shadow passes share the camera's
+	/// task shader, which declares those resources, so they bind it but never cull by occlusion.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		pipeline_manager: &PipelineManagerClient,
 		dispatches: PhaseDispatches,
 		work: ShadowWork,
+		occlusion_descriptor_set: ghi::DescriptorSetHandle,
 	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
 
 		let directional_pipelines = self.directional_pipelines.resolve(pipeline_manager)?;
 		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
 		let depth_pyramid_pipeline = pipeline_manager.pipeline(self.depth_pyramid_pipeline)?;
-		let descriptor_set = self.descriptor_set;
+		let descriptor_sets = [self.descriptor_set, occlusion_descriptor_set];
 		let depth_pyramid_descriptor_set = self.depth_pyramid_descriptor_set;
 		let images = self.images;
 		let directional_extent = Extent::square(SHADOW_MAP_RESOLUTION);
@@ -334,7 +338,7 @@ impl ShadowMaps {
 				.layers(layers as u32)];
 				let c = c.start_render_pass(extent, &attachments);
 				let ranges = dispatches.opaque_layer().into_iter().zip(pipelines);
-				record_meshlet_dispatches(c, descriptor_set, ranges, view_base, view_count);
+				record_meshlet_dispatches(c, descriptor_sets, OcclusionPhase::Disabled, ranges, view_base, view_count);
 				c.end_render_pass();
 				c.end_region();
 			};

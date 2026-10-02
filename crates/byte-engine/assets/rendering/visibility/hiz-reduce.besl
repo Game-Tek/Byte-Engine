@@ -1,0 +1,17 @@
+// Builds one level of the camera's occlusion-culling pyramid from the level above it. Every level halves an extent that
+// is a power of two, so each texel keeps the farthest depth of exactly four source texels.
+source_level: descriptor<{ type: StorageImage<r32f>, binding: 1033, access: read }>;
+destination_level: descriptor<{ type: StorageImage<r32f>, binding: 1034, access: write }>;
+
+main: fn (input: StageInput) -> void {
+	let coordinate: vec2u = input.thread_id;
+	guard_image_bounds(destination_level, coordinate);
+	let source: vec2u = coordinate * vec2u(2, 2);
+
+	// Reversed depth makes the minimum the farthest surface.
+	let farthest: f32 = min(
+		min(image_load(source_level, source).x, image_load(source_level, source + vec2u(1, 0)).x),
+		min(image_load(source_level, source + vec2u(0, 1)).x, image_load(source_level, source + vec2u(1, 1)).x)
+	);
+	write(destination_level, coordinate, vec4f(farthest, 0.0, 0.0, 1.0));
+}

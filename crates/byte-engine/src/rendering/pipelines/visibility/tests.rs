@@ -6,6 +6,7 @@ use besl::vm::{
 };
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
+use super::render_pass::OcclusionPhase;
 use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
 use crate::rendering::shader_vm_test::{
 	array_buffer, assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d,
@@ -21,6 +22,8 @@ const MATERIAL_DISPATCH_SLOT: ResourceSlot = ResourceSlot::new(1036);
 const PIXEL_MAPPING_SLOT: ResourceSlot = ResourceSlot::new(1037);
 const INSTANCE_INDEX_SLOT: ResourceSlot = ResourceSlot::new(1040);
 const MESH_DISPATCH_WORK_SLOT: ResourceSlot = ResourceSlot::new(1063);
+const OCCLUSION_PYRAMID_SLOT: ResourceSlot = ResourceSlot::new(1069);
+const OCCLUSION_VISIBILITY_SLOT: ResourceSlot = ResourceSlot::new(1070);
 const VERTEX_POSITIONS_SLOT: ResourceSlot = ResourceSlot::new(2);
 const VERTEX_UVS_SLOT: ResourceSlot = ResourceSlot::new(5);
 const SKINNED_VERTICES_SLOT: ResourceSlot = ResourceSlot::new(4);
@@ -265,12 +268,16 @@ impl Default for TaskMeshFixture {
 
 /// Executes one exact production task workgroup at its global dispatch position over consecutive meshlets, culling
 /// against `view_count` views from `view_base`.
+///
+/// With `occlusion`, the workgroup also culls by occlusion as the camera's passes do, and view zero is
+/// [`occlusion_fixture_camera`].
 fn run_meshlet_task_workgroup(
 	view_projections: &[(usize, [f32; 16])],
 	[view_base, view_count]: [u32; 2],
 	center_radii: &[[f32; 4]],
 	mesh: TaskMeshFixture,
 	workgroup_index: u32,
+	occlusion: Option<CameraOcclusion<'_>>,
 ) -> TaskOutputs {
 	let program = asset!("meshlet-task.besl");
 	let meshlet_count = center_radii.len() as u32;
@@ -286,6 +293,17 @@ fn run_meshlet_task_workgroup(
 		views
 			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
 			.expect("task inverse view");
+	}
+	if occlusion.is_some() {
+		let camera = occlusion_fixture_camera();
+		for (member, value) in [
+			("view_projection", Value::Mat4F(column_major(camera.view_projection()))),
+			("view", Value::Mat4x3F(bytemuck::cast(ghi::pod::Mat4x3f::from(camera.view())))),
+			("near", Value::F32(camera.near())),
+			("far", Value::F32(camera.far())),
+		] {
+			views.write_array_member(0, member, value).expect("task occlusion camera");
+		}
 	}
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
@@ -333,6 +351,10 @@ fn run_meshlet_task_workgroup(
 		("view_base", view_base),
 		("layer_base", 0),
 		("view_count", view_count),
+		(
+			"occlusion_phase",
+			occlusion.as_ref().map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
+		),
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
@@ -341,6 +363,13 @@ fn run_meshlet_task_workgroup(
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");
+	// The record is keyed by the packed work item, not by its position in the dispatch.
+	let mut occlusion_visibility = buffer(&program, OCCLUSION_VISIBILITY_SLOT);
+	if let Some(occlusion) = &occlusion {
+		occlusion_visibility
+			.write_array_element(packed_work as usize, Value::U32(*occlusion.record))
+			.expect("task occlusion record");
+	}
 
 	let mut task_outputs = TaskOutputs::new();
 	let mut workgroup_state = WorkgroupState::new();
@@ -358,12 +387,21 @@ fn run_meshlet_task_workgroup(
 		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
 		descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
 		descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
+		let record = occlusion.map(|occlusion| {
+			descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
+			descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
+			occlusion.record
+		});
 		descriptors.bind_push_constant(&mut push_constant);
 		descriptors.bind_task_outputs(&mut task_outputs);
 		descriptors.bind_workgroup_state(&mut workgroup_state);
 		program
 			.run_workgroup(&mut descriptors, &configs)
 			.expect("production task workgroup execution");
+		drop(descriptors);
+		if let Some(record) = record {
+			*record = read_u32(&occlusion_visibility, packed_work as usize);
+		}
 	}
 	task_outputs
 }
@@ -376,6 +414,7 @@ fn camera_task_payload(center_radii: &[[f32; 4]], mesh: TaskMeshFixture, workgro
 		center_radii,
 		mesh,
 		workgroup_index,
+		None,
 	))
 }
 
@@ -419,6 +458,7 @@ fn task_main_culls_instances_outside_every_view() {
 		&[[0.0, 0.0, 0.5, 0.1]],
 		outside,
 		0,
+		None,
 	);
 	assert_eq!(task_payload(&output), []);
 }
@@ -462,6 +502,7 @@ fn task_main_keeps_skinned_meshlets_in_every_view() {
 		&[[4.0, 0.0, 0.5, 0.1]],
 		skinned,
 		0,
+		None,
 	);
 
 	assert_eq!(
@@ -501,12 +542,248 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 		&[[0.0, 0.0, 0.5, 0.1]],
 		TaskMeshFixture::default(),
 		0,
+		None,
 	);
 
 	assert_eq!(
 		task_payload(&output),
 		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
 	);
+}
+
+/* Occlusion culling */
+
+const OCCLUSION_PYRAMID_WIDTH: u32 = 512;
+const OCCLUSION_PYRAMID_HEIGHT: u32 = 256;
+const OCCLUSION_PYRAMID_MIP_COUNT: u32 = 9;
+
+/// The camera that drew the occlusion fixture pyramids: at the origin, looking down +Z.
+fn occlusion_fixture_camera() -> crate::rendering::View {
+	crate::rendering::View::new_perspective(
+		math::Degrees::new(90.0),
+		2.0,
+		0.1,
+		100.0,
+		math::Point::origin(),
+		math::UnitVector::z_axis(),
+	)
+}
+
+/// Returns the reversed depth the fixture camera stores for a surface `z` units in front of it.
+fn occlusion_fixture_depth(z: f32) -> f32 {
+	let projection = occlusion_fixture_camera().projection();
+	let clip = projection * maths_rs::Vec4f::new(0.0, 0.0, z, 1.0);
+	clip.z / clip.w
+}
+
+/// Builds a full production-extent occlusion pyramid whose mip zero holds `depth(x, y)`. Each later level keeps the
+/// farthest of four texels, as the production build does.
+fn occlusion_pyramid(depth: impl Fn(u32, u32) -> f32) -> Texture {
+	let mut level: Vec<f32> = (0..OCCLUSION_PYRAMID_WIDTH * OCCLUSION_PYRAMID_HEIGHT)
+		.map(|index| depth(index % OCCLUSION_PYRAMID_WIDTH, index / OCCLUSION_PYRAMID_WIDTH))
+		.collect();
+	let texels = |level: &[f32]| level.iter().map(|&depth| [depth, 0.0, 0.0, 1.0]).collect::<Vec<_>>();
+	let mut pyramid = texture_2d(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT, &texels(&level));
+	for mip in 1..OCCLUSION_PYRAMID_MIP_COUNT {
+		let source_width = OCCLUSION_PYRAMID_WIDTH >> (mip - 1);
+		let [width, height] = [OCCLUSION_PYRAMID_WIDTH >> mip, OCCLUSION_PYRAMID_HEIGHT >> mip];
+		level = (0..width * height)
+			.map(|index| {
+				let [x, y] = [index % width * 2, index / width * 2];
+				let at = |x: u32, y: u32| level[(y * source_width + x) as usize];
+				at(x, y).min(at(x + 1, y)).min(at(x, y + 1)).min(at(x + 1, y + 1))
+			})
+			.collect();
+		pyramid.add_mip(texture_2d(width, height, &texels(&level)));
+	}
+	pyramid
+}
+
+/// The `CameraOcclusion` struct selects how a task-shader fixture culls by occlusion, as one of the camera's passes.
+struct CameraOcclusion<'a> {
+	phase: OcclusionPhase,
+	pyramid: &'a mut Texture,
+	/// The fixture work item's record of unoccluded meshlets. The late phase overwrites it.
+	record: &'a mut u32,
+}
+
+/// Runs the camera's task workgroup over `center_radii`, culling by occlusion in `phase`, and returns the relative
+/// indices of the meshlets it emitted.
+///
+/// The instance bounds wrap every meshlet.
+fn camera_occlusion_meshlets(
+	center_radii: &[[f32; 4]],
+	mesh: TaskMeshFixture,
+	phase: OcclusionPhase,
+	pyramid: &mut Texture,
+	record: &mut u32,
+) -> Vec<u32> {
+	let mesh = TaskMeshFixture {
+		bounding_sphere: [0.0, 0.0, 10.0, 25.0],
+		..mesh
+	};
+	let occlusion = CameraOcclusion { phase, pyramid, record };
+	task_payload(&run_meshlet_task_workgroup(&[], [0, 1], center_radii, mesh, 0, Some(occlusion)))
+		.into_iter()
+		.map(|word| match word {
+			Value::U32(word) => word & ((1 << MESHLET_INSTANCE_BITS) - 1),
+			word => panic!("Unexpected task payload word: {word:?}."),
+		})
+		.collect()
+}
+
+/// Returns how many of one meshlet's copies a pass that only tests occlusion keeps.
+fn occlusion_tested_meshlets(center_radius: [f32; 4], mesh: TaskMeshFixture, pyramid: &mut Texture) -> usize {
+	camera_occlusion_meshlets(&[center_radius], mesh, OcclusionPhase::Test, pyramid, &mut 0).len()
+}
+
+/// A meshlet in front of the fixture wall, and one behind it.
+const IN_FRONT_OF_WALL: [f32; 4] = [0.0, 0.0, 3.0, 0.25];
+const BEHIND_WALL: [f32; 4] = [0.0, 0.0, 10.0, 0.5];
+
+/// Returns a pyramid whose every texel holds a wall five units in front of the fixture camera.
+fn wall_pyramid() -> Texture {
+	occlusion_pyramid(|_, _| occlusion_fixture_depth(5.0))
+}
+
+/// Verifies a pass that tests occlusion drops geometry behind the pyramid's surfaces, and keeps geometry in front of
+/// them.
+#[test]
+fn task_main_culls_meshlets_hidden_behind_the_occlusion_pyramid() {
+	let mesh = TaskMeshFixture::default();
+	let mut wall = wall_pyramid();
+
+	assert_eq!(occlusion_tested_meshlets(BEHIND_WALL, mesh, &mut wall), 0);
+	assert_eq!(occlusion_tested_meshlets(IN_FRONT_OF_WALL, mesh, &mut wall), 1);
+}
+
+/// Verifies one uncovered texel anywhere under a meshlet's screen footprint keeps it, so culling never removes geometry
+/// that shows through a gap.
+#[test]
+fn task_main_keeps_meshlets_seen_through_a_gap_in_the_occlusion_pyramid() {
+	// The meshlet covers about the center twentieth of the screen's width. Leave one texel inside it uncovered.
+	let gap = [OCCLUSION_PYRAMID_WIDTH / 2 + 3, OCCLUSION_PYRAMID_HEIGHT / 2 - 5];
+	let mut pyramid = occlusion_pyramid(|x, y| if [x, y] == gap { 0.0 } else { occlusion_fixture_depth(5.0) });
+
+	assert_eq!(occlusion_tested_meshlets(BEHIND_WALL, TaskMeshFixture::default(), &mut pyramid), 1);
+}
+
+/// Verifies geometry that reaches past the screen edge or the near plane is kept, because the pyramid holds nothing
+/// there.
+#[test]
+fn task_main_keeps_meshlets_the_occlusion_pyramid_cannot_see_whole() {
+	let mut wall = wall_pyramid();
+	let mesh = TaskMeshFixture::default();
+	// The fixture camera spans 90 degrees vertically at an aspect ratio of two, so x = 2z is the right screen edge.
+	let at_screen_edge = [19.8, 0.0, 10.0, 0.5];
+	let at_near_plane = [0.0, 0.0, 0.3, 0.25];
+
+	assert_eq!(occlusion_tested_meshlets(at_screen_edge, mesh, &mut wall), 1);
+	assert_eq!(occlusion_tested_meshlets(at_near_plane, mesh, &mut wall), 1);
+}
+
+/// Verifies posed geometry is never culled by occlusion, since its bind-pose bounds do not hold its pose.
+#[test]
+fn task_main_keeps_skinned_meshlets_behind_the_occlusion_pyramid() {
+	let skinned = TaskMeshFixture {
+		skinned: true,
+		..Default::default()
+	};
+
+	assert_eq!(occlusion_tested_meshlets(BEHIND_WALL, skinned, &mut wall_pyramid()), 1);
+}
+
+/// Verifies the camera's early and late passes together draw every unoccluded meshlet exactly once, whatever the
+/// previous frame recorded, and that the late pass records exactly the unoccluded meshlets.
+#[test]
+fn camera_passes_draw_each_unoccluded_meshlet_once_and_record_them() {
+	// Meshlets zero and one stand in front of the wall, and meshlet two behind it.
+	let meshlets = [IN_FRONT_OF_WALL, [0.5, 0.0, 3.0, 0.25], BEHIND_WALL];
+	let mesh = TaskMeshFixture::default();
+	let mut wall = wall_pyramid();
+
+	for previous_record in 0..8u32 {
+		let mut record = previous_record;
+		let early = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Early, &mut wall, &mut record);
+		assert_eq!(record, previous_record, "The early pass must leave the record to the late pass.");
+		let late = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Late, &mut wall, &mut record);
+
+		let expected_early: Vec<u32> = (0..3).filter(|meshlet| previous_record & (1 << meshlet) != 0).collect();
+		assert_eq!(early, expected_early, "The early pass draws what the previous frame recorded.");
+		let mut drawn = [early, late].concat();
+		drawn.sort();
+		assert!(
+			drawn == [0, 1] || drawn == [0, 1, 2] && previous_record & 0b100 != 0,
+			"Expected each unoccluded meshlet once, and the hidden one only if the early pass drew it from a stale record. previous_record={previous_record:#05b}, drawn={drawn:?}"
+		);
+		assert_eq!(record, 0b011);
+	}
+}
+
+/// Verifies the late pass clears the record of an instance outside the view, so the next early pass skips it.
+#[test]
+fn late_pass_clears_the_record_of_instances_outside_the_view() {
+	let outside = TaskMeshFixture {
+		bounding_sphere: [100.0, 0.0, 10.0, 0.5],
+		..Default::default()
+	};
+	let mut wall = wall_pyramid();
+	let mut record = 0b1;
+	let occlusion = CameraOcclusion {
+		phase: OcclusionPhase::Late,
+		pyramid: &mut wall,
+		record: &mut record,
+	};
+
+	run_meshlet_task_workgroup(&[], [0, 1], &[[100.0, 0.0, 10.0, 0.5]], outside, 0, Some(occlusion));
+
+	assert_eq!(record, 0);
+}
+
+/// Runs one 8x8 workgroup of an occlusion pyramid build stage whose source and destination are already bound.
+fn run_occlusion_pyramid_stage(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>) {
+	let configs = tile_configs::<TILE_WORKGROUP_SIZE>(TILE_WORKGROUP_WIDTH, [0, 0]);
+	program
+		.run_workgroup(descriptors, &configs)
+		.expect("occlusion pyramid stage execution");
+}
+
+/// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
+/// partly covers.
+#[test]
+fn occlusion_pyramid_seed_keeps_the_farthest_depth_under_each_texel() {
+	let program = asset!("hiz-seed.besl");
+	// Five depth pixels map onto two texels, so the middle pixel straddles both.
+	let texels = [0.9, 0.8, 0.3, 0.7, 0.6].map(|depth| [depth, 0.0, 0.0, 1.0]);
+	let mut depth = texture_2d(5, 1, &texels);
+	let mut seeded = empty_image(2, 1);
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut seeded);
+	run_occlusion_pyramid_stage(&program, &mut descriptors);
+	drop(descriptors);
+
+	assert_rgba_close(rgba(&seeded, [0, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
+	assert_rgba_close(rgba(&seeded, [1, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
+}
+
+/// Verifies each reduced texel keeps the farthest of its four source texels.
+#[test]
+fn occlusion_pyramid_reduce_keeps_the_farthest_of_four_texels() {
+	let program = asset!("hiz-reduce.besl");
+	let texels = [0.5, 0.4, 0.9, 0.8, 0.6, 0.7, 0.2, 0.95].map(|depth| [depth, 0.0, 0.0, 1.0]);
+	let mut source = texture_2d(4, 2, &texels);
+	let mut reduced = empty_image(2, 1);
+
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_image(ResourceSlot::new(1033), &mut source);
+	descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
+	run_occlusion_pyramid_stage(&program, &mut descriptors);
+	drop(descriptors);
+
+	assert_rgba_close(rgba(&reduced, [0, 0]), [0.4, 0.0, 0.0, 1.0], 0.0);
+	assert_rgba_close(rgba(&reduced, [1, 0]), [0.2, 0.0, 0.0, 1.0], 0.0);
 }
 
 /// The `MeshView` struct selects the view a mesh-shader test draws: the batch its push constants name and the view's
@@ -2456,6 +2733,16 @@ async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
 			"pixel_mapping",
 			asset_source!("pixel-mapping.besl"),
 			ShaderGenerationSettings::compute(utils::Extent::square(16)),
+		),
+		(
+			"hiz_seed",
+			asset_source!("hiz-seed.besl"),
+			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+		),
+		(
+			"hiz_reduce",
+			asset_source!("hiz-reduce.besl"),
+			ShaderGenerationSettings::compute(utils::Extent::square(8)),
 		),
 	] {
 		assert_lowers_to_the_platform_shader_language(name, source, settings).await;

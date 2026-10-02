@@ -568,6 +568,34 @@ pub fn setup_smaa_render_pass(application: &mut GraphicsApplication) {
 		.add_post_scene_render_pass_for_all_sinks(|render_pass_builder| Box::new(SmaaPass::new(render_pass_builder)));
 }
 
+/// Installs exponential height fog for every current and future render sink.
+///
+/// The fog hides distant surfaces and the horizon behind mist that thins with altitude, lit by the sky and the
+/// newest [`DirectionalLight`]. Call it after the scene pipeline and [`setup_particles`], and before
+/// [`setup_lens_flare_render_pass`], [`setup_bloom_render_pass`], and tone mapping, so bright light glows through the
+/// fog. Use `render.pass.exponential-height-fog` to enable or bypass it at runtime.
+///
+/// The pass draws nothing until a fog exists. Next, create an [`rendering::ExponentialHeightFog`] through
+/// [`DefaultWorld::factory`]. Like the atmosphere sky, each window's fog subscribes to fogs and lights when the
+/// renderer adopts the window, so create them in a tick after the one that creates the window.
+pub fn setup_exponential_height_fog_render_pass(application: &mut GraphicsApplication) {
+	// Keep producer handles in the sink factory instead of template listeners, which would retain unread broadcast messages.
+	let fog_factory = application.world().factory::<rendering::ExponentialHeightFog>();
+	let light_factory = application.world().factory::<DirectionalLight>();
+	let transform_channel = application.world().transforms_channel().clone();
+
+	application
+		.renderer
+		.add_post_scene_render_pass_for_all_sinks(move |render_pass_builder| {
+			Box::new(rendering::render_passes::height_fog::ExponentialHeightFogRenderPass::new(
+				render_pass_builder,
+				fog_factory.listener(),
+				light_factory.listener(),
+				transform_channel.listener(),
+			))
+		});
+}
+
 /// Installs the atmosphere sky as every sink's scene background.
 ///
 /// Scene pipelines draw it after opaque surfaces and before transparent ones, so transparent surfaces blend over

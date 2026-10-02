@@ -19,6 +19,7 @@ use math::direction_from_orientation;
 pub mod common_shader_generator;
 
 mod environment;
+mod fog;
 
 /// Retained wireframe geometry for renderer and gameplay diagnostics.
 pub mod debug;
@@ -72,6 +73,7 @@ pub use camera::Camera;
 pub use debug::{DebugDepthMode, DebugMesh, DebugMeshRenderPass, DebugSceneManager, DebugShape};
 pub use device::GraphicsDevice;
 pub use environment::Environment;
+pub use fog::{ExponentialHeightFog, FogLayer};
 pub use lights::{
 	ConeLight, DirectionalLight, IesProfile, Light, LightClasses, LightColor, LocalEmission, PhotometricError,
 	PhotometricIntensity, PointLight,

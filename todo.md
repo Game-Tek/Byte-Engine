@@ -51,6 +51,7 @@
 - Replace generated meshlet membership scans with fixed-capacity local storage and a generation-tagged global-to-local lookup, or consistently use meshopt.
 - Coalesce visibility instance render calls into one dispatch over a compact instance and meshlet work list.
 - Sort visibility and transparent work by camera distance where required.
+- Write exponential height fog in place into `main` instead of into a replacement. `ExponentialHeightFogRenderPass` (`crates/byte-engine/src/rendering/render_passes/height_fog.rs`) calls `create_main_render_target`, so with no `ExponentialHeightFog` created, or with the pass bypassed, it still copies the whole frame through `ImageBypassPass` to forward `main`. That costs as much memory traffic as fogging it, plus one full-resolution target per sink. Bind `main` with `render_to("main")` the way particles do (`crates/byte-engine/src/rendering/particles/manager.rs`), read it with `image_load` in `crates/byte-engine/assets/rendering/height-fog.besl`, and record nothing when there is no fog. Delete the `main_copy` field and the custom `bypass`. First confirm that the scene color format, `RGBu11u11u10`, supports read-write storage-image access on Metal, Vulkan, and DX12; if a backend doesn't, keep the replacement on that backend. Check that the inspector can still capture the fogged `main` by name, then verify in the Sponza model viewer that the fog looks unchanged and that removing the fog costs no full-screen pass.
 
 ## UI
 

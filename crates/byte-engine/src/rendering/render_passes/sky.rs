@@ -4,17 +4,14 @@ use maths_rs::{Vec3f, Vec4f};
 use utils::Extent;
 
 use crate::{
-	core::{
-		Entity,
-		factory::{CreateMessage, Handle},
-		listener::{DefaultListener, Listener},
-	},
+	core::{Entity, factory::CreateMessage, listener::DefaultListener},
 	gameplay::transform::TransformationUpdate,
 	rendering::{
 		DirectionalLight, Sink,
 		render_pass::{
 			RenderPass, RenderPassBuilder, RenderPassReturn, SceneBackgroundTargets, allocate_render_command, simple_compute,
 		},
+		render_passes::sun::Sun,
 	},
 };
 
@@ -116,13 +113,7 @@ pub struct AtmosphereSkyRenderPass {
 	composite_pass: simple_compute::Pass,
 	parameters: ghi::DynamicBufferHandle<SkyShaderData>,
 	settings: AtmosphereSkyRenderPassSettings,
-	directional_lights: DefaultListener<CreateMessage<DirectionalLight>>,
-	transform_listener: DefaultListener<TransformationUpdate>,
-	directional_light: Option<Handle>,
-	/// The RGB illuminance in lux of the newest directional light. It stays black until a light is created.
-	sun_illuminance: Vec3f,
-	/// The angular radius of the newest directional light's disk.
-	sun_angular_radius: Radians,
+	sun: Sun,
 	transmittance_valid: bool,
 	sky_view_camera_height: Option<u32>,
 }
@@ -250,11 +241,7 @@ impl AtmosphereSkyRenderPass {
 			composite_pass,
 			parameters,
 			settings,
-			directional_lights,
-			transform_listener,
-			directional_light: None,
-			sun_illuminance: Vec3f::new(0.0, 0.0, 0.0),
-			sun_angular_radius: DirectionalLight::SUN_ANGULAR_RADIUS,
+			sun: Sun::new(directional_lights, transform_listener),
 			transmittance_valid: false,
 			sky_view_camera_height: None,
 		}
@@ -262,24 +249,17 @@ impl AtmosphereSkyRenderPass {
 
 	/// Adopts the newest directional light as the sun and applies its latest illuminance, disk size, and orientation to the sky.
 	fn update_sun(&mut self) {
-		while let Some(message) = self.directional_lights.read() {
-			self.directional_light = Some(message.handle());
-			self.sun_illuminance = message.data().color;
-			self.sun_angular_radius = message.data().angular_radius;
-		}
-
-		while let Some(message) = self.transform_listener.read() {
-			if self.directional_light == Some(message.handle()) {
-				// Directional-light orientation points along ray travel; the atmosphere needs the direction toward the sun.
-				self.settings.sun_direction = -math::direction_from_orientation(message.transform().get_orientation());
-				self.sky_view_camera_height = None;
-			}
+		if self.sun.update()
+			&& let Some(direction) = self.sun.direction()
+		{
+			self.settings.sun_direction = direction;
+			self.sky_view_camera_height = None;
 		}
 	}
 
 	/// Updates per-view sky constants from the active camera before dispatch and returns the camera height.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> f32 {
-		let data = sky_shader_data(&self.settings, self.sun_illuminance, self.sun_angular_radius, sink);
+		let data = sky_shader_data(&self.settings, self.sun.illuminance(), self.sun.angular_radius(), sink);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
 		data.camera_position[1]
 	}

@@ -1,6 +1,6 @@
 //! Reusable post-scene rendering passes.
 //!
-//! Tone mapping, bloom, lens flare, LUT processing, sky rendering, and utility passes in
+//! Tone mapping, bloom, lens flare, LUT processing, sky rendering, height fog, and utility passes in
 //! this module implement [`crate::rendering::RenderPass`]. Install them through
 //! [`crate::rendering::renderer::Renderer`] or the corresponding helpers in
 //! [`crate::application::graphics`].
@@ -10,10 +10,12 @@ pub mod blit;
 pub mod aces;
 pub mod agx;
 pub mod bloom;
+pub mod height_fog;
 pub mod lens_flare;
 pub mod lut;
 pub mod sky;
 pub mod smaa;
 pub mod srgb_display;
+mod sun;
 
 pub mod image_transform;

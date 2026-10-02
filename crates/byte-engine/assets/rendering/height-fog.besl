@@ -1,0 +1,146 @@
+// Blends exponential height fog over the HDR scene. Each layer's density falls off exponentially with height, so the
+// fog along each view ray has a closed form and needs no ray marching. Ambient sky light and the sun, shaped by the
+// Henyey-Greenstein phase function, light the fog. Both arrive pre-exposed, like the scene the fog covers.
+//
+// Everything that is the same for every pixel is folded into the parameters on the CPU, and positions are relative to
+// the camera, which keeps them precise far from the world origin.
+FogParameters: struct {
+	// Maps a pixel's integer coordinate and reverse-Z depth to its offset from the camera, in world axes, before the
+	// division by w.
+	pixel_to_camera_offset: mat4f,
+	// Each layer holds x: density at its base height per meter, y: height falloff per meter, z: the density exponent at
+	// the camera, falloff × (base height − camera height), and w: 1 when the layer is confined to the box between its
+	// bounds' corners, which are relative to the camera. Zero density turns a layer off.
+	layer: vec4f,
+	layer_bounds_min: vec4f,
+	layer_bounds_max: vec4f,
+	second_layer: vec4f,
+	second_layer_bounds_min: vec4f,
+	second_layer_bounds_max: vec4f,
+	// x: 1 + g² and y: 2g for the sun anisotropy g, z: maximum opacity.
+	scattering: vec4f,
+	// xyz: the direction toward the sun.
+	sun_direction: vec4f,
+	// rgb: exposed radiance the fog scatters toward the camera from the ambient sky.
+	ambient_inscattering: vec4f,
+	// rgb: exposed sun illuminance times the fog albedo and (1 − g²) / 4π, the phase function's constant factor.
+	sun_inscattering: vec4f,
+}
+
+depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+scene_texture: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+result: descriptor<{ type: StorageImage, binding: 2, access: write }>;
+parameters: descriptor<{ type: FogParameters, binding: 3, access: read, memory: constant }>;
+
+// Background pixels hold no surface, so they're fogged as if this far away. Rays that climb out of the fog stop
+// gathering it long before this distance, while level rays stay fully fogged at the horizon.
+BACKGROUND_DISTANCE: const f32 = 100000.0;
+// The largest exponent whose exponential stays finite in f32, with margin.
+MAX_EXPONENT: const f32 = 80.0;
+// Below this total change in exponent along a ray, a series replaces a difference of two nearly equal exponentials.
+LEVEL_RAY_EXPONENT: const f32 = 0.01;
+HALF_FLOAT_MAX: const f32 = 65504.0;
+
+// Narrows the ray interval `range` to where a ray from the camera lies between `low` and `high` along one axis. The
+// result is empty when its start is not below its end.
+clip_to_slab: fn (range: vec2f, direction: f32, low: f32, high: f32) -> vec2f {
+	// A ray parallel to the slab stays inside it, where the camera is, or outside it for its whole length.
+	if (abs(direction) < 0.000001) {
+		if (low > 0.0 || high < 0.0) {
+			return vec2f(0.0, 0.0);
+		}
+		return range;
+	}
+	let reciprocal: f32 = 1.0 / direction;
+	let first: f32 = low * reciprocal;
+	let second: f32 = high * reciprocal;
+	return vec2f(max(range.x, min(first, second)), min(range.y, max(first, second)));
+}
+
+// Returns the fog of `layer` along the view ray over `distance` meters. A bounded layer counts only the part of the
+// ray inside its box, which keeps the closed form: the clipped part is one straight segment.
+layer_optical_depth: fn (layer: vec4f, bounds_min: vec4f, bounds_max: vec4f, direction: vec3f, distance: f32) -> f32 {
+	// Every pixel takes the same branch here, so skipping an unused layer costs nothing.
+	if (layer.x <= 0.0) {
+		return 0.0;
+	}
+	let start: f32 = 0.0;
+	let end: f32 = distance;
+	if (layer.w > 0.5) {
+		let range: vec2f = clip_to_slab(vec2f(0.0, distance), direction.x, bounds_min.x, bounds_max.x);
+		range = clip_to_slab(range, direction.y, bounds_min.y, bounds_max.y);
+		range = clip_to_slab(range, direction.z, bounds_min.z, bounds_max.z);
+		if (range.y <= range.x) {
+			return 0.0;
+		}
+		start = range.x;
+		end = range.y;
+	}
+	// Along the ray the density is density · e^(exponent − rate · t), so its integral is the difference of the two ends
+	// over the rate.
+	let rate: f32 = layer.y * direction.y;
+	let start_exponent: f32 = layer.z - rate * start;
+	let span: f32 = end - start;
+	let change: f32 = rate * span;
+	let start_density: f32 = layer.x * exp(clamp(start_exponent, 0.0 - MAX_EXPONENT, MAX_EXPONENT));
+	if (abs(change) < LEVEL_RAY_EXPONENT) {
+		// span · (1 − e^-change) / change, expanded to second order.
+		return start_density * span * (1.0 - change * 0.5 + change * change / 6.0);
+	}
+	let end_density: f32 = layer.x * exp(clamp(start_exponent - change, 0.0 - MAX_EXPONENT, MAX_EXPONENT));
+	return (start_density - end_density) / rate;
+}
+
+main: fn (input: StageInput) -> void {
+	let pixel: vec2u = input.thread_id;
+	guard_image_bounds(result, pixel);
+	let scene: vec4f = fetch(scene_texture, pixel);
+	let depth: f32 = fetch(depth_texture, pixel).x;
+
+	// Background pixels hold no surface. Reverse Z puts the near plane at depth 1, which still gives their direction.
+	let is_surface: bool = depth > 0.000001;
+	let ray_depth: f32 = 1.0;
+	if (is_surface) {
+		ray_depth = depth;
+	}
+	let offset: vec4f = parameters.pixel_to_camera_offset * vec4f(f32(pixel.x), f32(pixel.y), ray_depth, 1.0);
+	let ray: vec3f = vec3f(offset.x, offset.y, offset.z) * (1.0 / offset.w);
+	let ray_length: f32 = length(ray);
+	let direction: vec3f = ray * (1.0 / ray_length);
+	let distance: f32 = BACKGROUND_DISTANCE;
+	if (is_surface) {
+		distance = ray_length;
+	}
+
+	// The layers' densities add at every height, so the fog each one puts along the ray adds too.
+	let optical_depth: f32 = layer_optical_depth(
+		parameters.layer,
+		parameters.layer_bounds_min,
+		parameters.layer_bounds_max,
+		direction,
+		distance
+	) + layer_optical_depth(
+		parameters.second_layer,
+		parameters.second_layer_bounds_min,
+		parameters.second_layer_bounds_max,
+		direction,
+		distance
+	);
+	let opacity: f32 = min(1.0 - exp(0.0 - optical_depth), parameters.scattering.z);
+
+	// Single scattering of light that is the same everywhere along the ray: the fog shows that light in proportion
+	// to how much of the view it hides. The phase function's angular part is (1 + g² − 2g cos θ)^-3/2.
+	let sun_direction: vec3f = vec3f(parameters.sun_direction.x, parameters.sun_direction.y, parameters.sun_direction.z);
+	let phase_root: f32 = inversesqrt(parameters.scattering.x - parameters.scattering.y * dot(direction, sun_direction));
+	let inscattering: vec3f = vec3f(parameters.ambient_inscattering.x, parameters.ambient_inscattering.y, parameters.ambient_inscattering.z)
+		+ vec3f(parameters.sun_inscattering.x, parameters.sun_inscattering.y, parameters.sun_inscattering.z) * (phase_root * phase_root * phase_root);
+	let color: vec3f = vec3f(scene.x, scene.y, scene.z);
+	let fogged: vec3f = color + (inscattering - color) * opacity;
+	// Held to the half-float range so a bright glow around the sun never overflows to infinity on store.
+	write(result, pixel, vec4f(
+		min(fogged.x, HALF_FLOAT_MAX),
+		min(fogged.y, HALF_FLOAT_MAX),
+		min(fogged.z, HALF_FLOAT_MAX),
+		scene.w
+	));
+}

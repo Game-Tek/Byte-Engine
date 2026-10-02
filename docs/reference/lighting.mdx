@@ -329,6 +329,68 @@ let environment = Environment::new("sky.environment.bead").with_illuminance(15_0
 A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one about 1,000 to
 10,000. Without `with_illuminance`, the map's own values are used unchanged.
 
+## Add height fog
+
+Height fog fills the scene with mist that is thickest near the ground and thins out with altitude,
+like rain mist, an overcast day, or haze in a valley. Install the fog pass after the scene pipeline
+and particles, and before anti-aliasing, lens flare, bloom, and tone mapping, so bright light glows
+through the mist. Then create a fog in a tick after the one that creates the window:
+
+```rust
+use byte_engine::rendering::{ExponentialHeightFog, FogLayer};
+
+byte_engine::application::graphics::setup_exponential_height_fog_render_pass(&mut app);
+
+// Later, once the window exists: rain mist that hides about 40 % of a surface 10 m away.
+app.world().factory::<ExponentialHeightFog>().create(
+	ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
+		.with_ambient_illuminance(15_000.0),
+);
+```
+
+A `FogLayer` sets how much fog there is at each height. Its density is the fraction of light it
+blocks per meter at its base height. Light rain mist is about `0.01` to `0.06`, and thick fog is
+`0.1` or more. The height falloff sets how quickly it thins: the density halves every
+`ln(2) / falloff` meters above the base height.
+
+To add mist that pools near the ground, such as spray from rain splashes, stack a second, dense
+layer with a steep falloff. Its fog adds to the first layer's:
+
+```rust
+ExponentialHeightFog::new(FogLayer::new(0.06).with_height_falloff(0.1))
+	// Spray that halves every 0.23 m, so it stays below the knees.
+	.with_second_layer(FogLayer::new(0.3).with_height_falloff(3.0))
+	.with_ambient_illuminance(15_000.0)
+```
+
+A layer covers the whole scene at its height. To keep mist in one area, such as the courtyard where
+rain splashes, confine the layer to a world-space box:
+
+```rust
+use byte_engine::math::{AABB, Point};
+
+let courtyard = AABB::new(Point::new(-7.5, -1.0, -1.0), Point::new(7.0, 2.5, 2.0));
+let splash_mist = FogLayer::new(0.3).with_height_falloff(3.0).with_bounds(courtyard);
+```
+
+The fog stops sharply at the box's faces, so line them up with walls, pillars, or the ground where
+geometry hides them. Put the top where the layer has already thinned out.
+
+Two light sources light the fog, in the same units as the rest of the scene:
+
+- The sky, given in lux with `with_ambient_illuminance`. Use the same value as the environment's
+  `with_illuminance`, so fully fogged views match the brightness of an even overcast sky.
+- The newest directional light, scattered mostly forward by water droplets. Looking toward the sun,
+  the fog glows; `with_anisotropy` sets how tight that glow is.
+
+Fog also covers the sky: the horizon disappears into it, while the sky straight up stays mostly
+clear. Use `with_max_opacity` to keep a trace of distant surfaces visible through the thickest fog.
+
+<Callout type="info" title="Height fog limits">
+	The fog doesn't cast or receive shadows, so it glows evenly in shaded areas too. Transparent
+	surfaces and particles take the fog of the opaque surface behind them.
+</Callout>
+
 ## Rust API
 
 - [`DirectionalLight`](/docs/api/latest/byte_engine/rendering)
@@ -337,6 +399,8 @@ A clear daytime sky delivers about 10,000 to 25,000 lux and an overcast one abou
 - [`IesProfile`](/docs/api/latest/byte_engine/rendering)
 - [`Camera`](/docs/api/latest/byte_engine/rendering)
 - [`Environment`](/docs/api/latest/byte_engine/rendering)
+- [`ExponentialHeightFog`](/docs/api/latest/byte_engine/rendering)
+- [`FogLayer`](/docs/api/latest/byte_engine/rendering)
 - [`LightColor`](/docs/api/latest/byte_engine/rendering)
 - [`PhotometricIntensity`](/docs/api/latest/byte_engine/rendering)
 

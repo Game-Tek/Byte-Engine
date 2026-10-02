@@ -202,11 +202,8 @@ fn world_view_matrix(position: Point, direction: UnitVector) -> Matrix {
 	let reference = if vertical { UnitVector::<WorldSpace>::z_axis() } else { up };
 	// `UnitVector` excludes zero and non-finite directions, and this reference is selected to be non-colinear with it.
 	let x_basis = maths_rs::normalize(maths_rs::cross(reference.into_maths(), direction.into_maths()));
-	let y_basis = maths_rs::normalize(if vertical {
-		maths_rs::cross(x_basis, direction.into_maths())
-	} else {
-		maths_rs::cross(direction.into_maths(), x_basis)
-	});
+	// The fallback changes the reference axis, but must preserve winding so raster and normal-cone culling agree.
+	let y_basis = maths_rs::normalize(maths_rs::cross(direction.into_maths(), x_basis));
 	let orientation = Matrix::from((
 		Vec4f::from((x_basis, 0.0)),
 		Vec4f::from((y_basis, 0.0)),
@@ -266,6 +263,39 @@ mod tests {
 
 		assert_point_near(corners[0], Point::new(-1.0, -1.0, 100.0));
 		assert_point_near(corners[7], Point::new(1.0, 1.0, 0.1));
+	}
+
+	/// Front-facing triangles keep their winding when a view turns toward either vertical axis.
+	#[test]
+	fn vertical_views_preserve_front_facing_triangle_winding() {
+		for direction in [
+			UnitVector::z_axis(),
+			UnitVector::y_axis(),
+			-UnitVector::y_axis(),
+			Vector::new(0.05, -1.0, 0.02).unit().unwrap(),
+		] {
+			let orientation = math::orientation_from_direction(direction);
+			// Rotate the same front-facing triangle with the view, so changing its direction cannot change its face.
+			let vertices = [(-0.5, -0.5), (0.0, 0.5), (0.5, -0.5)].map(|(x, y)| {
+				let point = orientation.rotate_vector(Vector::<WorldSpace>::new(x, y, 2.0));
+				Vec4f::new(point.x(), point.y(), point.z(), 1.0)
+			});
+			for view in [
+				View::new_perspective(Degrees::new(75.0), 1.0, 0.1, 10.0, Point::origin(), direction),
+				View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0, Point::origin(), direction),
+			] {
+				let projected = vertices.map(|point| {
+					let clip = view.view_projection() * point;
+					[clip.x / clip.w, clip.y / clip.w]
+				});
+				let [a, b, c] = projected;
+				let signed_area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+				assert!(
+					signed_area < 0.0,
+					"Front-facing triangle reversed winding for {direction:?}: {signed_area}"
+				);
+			}
+		}
 	}
 
 	#[test]

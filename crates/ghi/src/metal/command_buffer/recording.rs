@@ -80,38 +80,35 @@ impl<'a> CommandBufferRecording<'a> {
 		self.command_buffer.retain_allocation(&*upload_buffer);
 	}
 
-	/// Copies each proxied swapchain's frame image into the drawable it presents.
-	pub(crate) fn resolve_swapchain_proxies(
+	/// Copies each presented swapchain's image for this frame into the drawable that presents it.
+	pub(crate) fn resolve_swapchain_images(
 		&mut self,
 		present_drawables: &[(
 			graphics_hardware_interface::PresentKey,
-			Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+			Retained<ProtocolObject<dyn CAMetalDrawable>>,
 		)],
 	) {
 		// The region names the shared compute encoder in capture tools, as "Compute: Present Resolve".
 		self.start_region(|label| label.write_str("Present Resolve"));
 		for (present_key, drawable) in present_drawables {
-			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
-			let (true, Some(drawable), Some(proxy)) = (
-				swapchain.uses_proxy,
-				drawable,
-				swapchain.images[present_key.sequence_index as usize],
-			) else {
+			let Some(image) =
+				self.device.swapchains[present_key.swapchain.0 as usize].images[present_key.sequence_index as usize]
+			else {
 				continue;
 			};
-			let source = self.device.images.resource(proxy).texture.clone();
-			// The frame batch retains every presented drawable, so tracking the drawable write is enough here.
+			let source = self.device.images.resource(image).texture.clone();
+			// The resolve command retains every presented drawable, so tracking the drawable write is enough here.
 			let destination = drawable.texture();
 			let transfer_encoder = self.ensure_compute_encoder().clone();
 			self.consume_resources([
-				synchronization::MetalResourceUse::image(proxy, None, None, mtl::MTLStages::Blit, crate::AccessPolicies::READ),
+				synchronization::MetalResourceUse::image(image, None, None, mtl::MTLStages::Blit, crate::AccessPolicies::READ),
 				synchronization::MetalResourceUse::drawable(
 					destination.as_ref(),
 					mtl::MTLStages::Blit,
 					crate::AccessPolicies::WRITE,
 				),
 			]);
-			// SAFETY: Source and drawable textures are retained and validated for the proxy resolve copy.
+			// SAFETY: Source and drawable textures are retained, and both have the extent the swapchain was acquired at.
 			unsafe {
 				transfer_encoder.copyFromTexture_toTexture(source.as_ref(), destination.as_ref());
 			}
@@ -143,7 +140,6 @@ impl<'a> CommandBufferRecording<'a> {
 			command_buffer: NativeCommandSlot(Some(command_buffer)),
 			#[cfg(debug_assertions)]
 			debug_regions: Vec::new_in(allocator),
-			drawables: Vec::new_in(allocator),
 			bound_pipeline: None,
 			bound_descriptor_set_roots: SmallVec::new(),
 			bound_descriptor_sets: SmallVec::new(),
@@ -165,13 +161,13 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Labels a new native encoder and mirrors every active logical debug region into it.
 	///
 	/// The label reads `<kind>: <region path> → <targets>`, so capture tools list what each encoder does and writes.
-	/// A `None` target is a drawable. Returns how many regions it pushed, which the encoder pops before it ends.
+	/// Returns how many regions it pushed, which the encoder pops before it ends.
 	#[cfg(debug_assertions)]
 	fn begin_encoder_debug_regions(
 		&self,
 		encoder: &ProtocolObject<dyn mtl::MTL4CommandEncoder>,
 		kind: &str,
-		targets: impl IntoIterator<Item = Option<ImageHandle>>,
+		targets: impl IntoIterator<Item = ImageHandle>,
 	) -> usize {
 		use std::fmt::Write as _;
 
@@ -187,10 +183,7 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 		for (index, target) in targets.into_iter().enumerate() {
 			let _ = label.write_str(if index == 0 { " → " } else { ", " });
-			let name = match target {
-				Some(handle) => self.device.images.resource(handle).name.as_deref().unwrap_or("Unnamed Image"),
-				None => "Drawable",
-			};
+			let name = self.device.images.resource(target).name.as_deref().unwrap_or("Unnamed Image");
 			let _ = label.write_str(name);
 		}
 		encoder.setLabel(Some(&NSString::from_str(label.as_str())));
@@ -252,12 +245,12 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Call [`Self::end_encoder`] before creating the native encoder, since Metal allows one open encoder per command
 	/// buffer. This is the only place encoder-local state is built, so every new encoder starts with no pipeline, no
 	/// bound snapshot, and push constants to re-upload. A render encoder also starts with its vertex bindings
-	/// unencoded. `kind` and `targets` label the encoder in capture tools; a `None` target is a drawable.
+	/// unencoded. `kind` and `targets` label the encoder in capture tools.
 	pub(super) fn begin_encoder(
 		&mut self,
 		encoder: ActiveEncoder,
 		_kind: &str,
-		_targets: impl IntoIterator<Item = Option<ImageHandle>>,
+		_targets: impl IntoIterator<Item = ImageHandle>,
 	) {
 		assert!(
 			self.encoder.is_none(),
@@ -327,22 +320,6 @@ impl<'a> CommandBufferRecording<'a> {
 			_ => {
 				panic!("No active render pass. The most likely cause is that {operation} was called outside start_render_pass.")
 			}
-		}
-	}
-
-	/// Retains acquired drawables that may be referenced directly while recording this frame.
-	pub(crate) fn attach_drawables(
-		&mut self,
-		drawables: impl Iterator<
-			Item = (
-				graphics_hardware_interface::SwapchainHandle,
-				Retained<ProtocolObject<dyn CAMetalDrawable>>,
-			),
-		>,
-	) {
-		for (handle, drawable) in drawables {
-			self.command_buffer.retain_drawable(&drawable);
-			self.drawables.push((handle, drawable));
 		}
 	}
 
@@ -513,7 +490,7 @@ impl<'a> CommandBufferRecording<'a> {
 	/// Resolves an image or swapchain to the surface this frame's commands use.
 	///
 	/// `frame_offset` selects another frame's copy of a per-frame image; a swapchain only has this frame's surface.
-	/// Returns `None` for an unknown handle, or for a direct swapchain whose drawable was not acquired.
+	/// Returns `None` for an unknown handle, or for a swapchain this frame sequence has not acquired at a nonzero extent.
 	pub(super) fn surface(&self, target: ImageOrSwapchain, frame_offset: i32) -> Option<Surface> {
 		match target {
 			ImageOrSwapchain::Image(image) => {
@@ -529,30 +506,15 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	/// Returns the surface a swapchain renders into this frame: its proxy image when it has one, else its drawable.
+	/// Returns the surface a swapchain renders into this frame, which is its image for the frame sequence.
 	///
-	/// Both report the swapchain's uses. Returns `None` in the same cases as [`Self::surface`].
+	/// The surface reports the swapchain's uses. Returns `None` in the same cases as [`Self::surface`].
 	pub(super) fn swapchain_surface(&self, handle: crate::swapchain::SwapchainHandle) -> Option<Surface> {
 		let swapchain = self.device.swapchains.get(handle.0 as usize)?;
-		// A proxy image reports the swapchain's uses, so both arms validate against the swapchain.
-		Some(match swapchain.images[self.sequence_index as usize] {
-			Some(proxy) => Surface {
-				uses: swapchain.uses,
-				..self.image_surface(proxy)
-			},
-			None => Surface {
-				image: None,
-				texture: self
-					.drawables
-					.iter()
-					.find(|(swapchain, _)| swapchain.0 == handle.0)
-					.map(|(_, drawable)| drawable.texture())?,
-				// TODO: get the drawable's actual format.
-				format: crate::Formats::BGRAu8,
-				extent: swapchain.extent,
-				array_layers: 1,
-				uses: swapchain.uses,
-			},
+		let image = swapchain.images[self.sequence_index as usize]?;
+		Some(Surface {
+			uses: swapchain.uses,
+			..self.image_surface(image)
 		})
 	}
 
@@ -560,7 +522,7 @@ impl<'a> CommandBufferRecording<'a> {
 	fn image_surface(&self, handle: ImageHandle) -> Surface {
 		let image = self.device.images.resource(handle);
 		Surface {
-			image: Some(handle),
+			image: handle,
 			texture: image.texture.clone(),
 			format: image.description.format,
 			extent: image.description.extent,
@@ -804,7 +766,7 @@ pub(super) fn descriptors_at_slot<'s>(
 
 /// Retains the native allocation behind one tracked use until the command completes.
 ///
-/// Drawables need nothing here: the recording retains each acquired drawable when it attaches it.
+/// Drawables need nothing here: only the present resolve writes one, and its command retains the drawable.
 fn retain_tracked_use(
 	device: &RecordingDevice<'_>,
 	command_buffer: &mut queue::NativeCommand,

@@ -2,7 +2,6 @@ use objc2_foundation::NSAutoreleasePool;
 use objc2_metal::{MTL4CommandQueue, MTLDrawable};
 
 use super::*;
-use crate::SwapchainHandle;
 use crate::image::ImageHandle;
 
 /// The `Frame` struct scopes Metal rendering state to one frame.
@@ -10,8 +9,7 @@ use crate::image::ImageHandle;
 /// Its `NSAutoreleasePool` releases temporary Metal objects at the end of the frame.
 /// Without this pool, objects accumulate on threads that do not have a run-loop pool.
 ///
-/// Acquired drawables live on the device swapchains (`pending_drawable`) so acquisition can
-/// happen before the frame is started; `_autorelease_pool` stays last so it drains after every other field.
+/// `_autorelease_pool` stays last so it drains after every other field.
 pub struct Frame<'a> {
 	frame_key: graphics_hardware_interface::FrameKey,
 	queue_handle: graphics_hardware_interface::QueueHandle,
@@ -63,42 +61,20 @@ impl<'a> Frame<'a> {
 		self.device
 	}
 
-	/// Takes the pending drawables for this submission while preserving a missing drawable as an explicit skipped present.
-	fn take_present_drawables(
-		&mut self,
-		present_keys: &[graphics_hardware_interface::PresentKey],
-	) -> SmallVec<
-		[(
-			graphics_hardware_interface::PresentKey,
-			Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
-		); 4],
-	> {
-		present_keys
-			.iter()
-			.map(|&present_key| {
-				let drawable = self.device.swapchains[present_key.swapchain.0 as usize]
-					.pending_drawable
-					.take();
-				(present_key, drawable)
-			})
-			.collect()
-	}
-
-	/// Returns whether presentation needs a proxy-texture resolve before drawable submission.
-	fn uses_proxy_swapchain(&self, present_keys: &[graphics_hardware_interface::PresentKey]) -> bool {
-		present_keys
-			.iter()
-			.any(|key| self.device.swapchains[key.swapchain.0 as usize].uses_proxy)
-	}
-
-	/// Finishes and submits all frame command buffers through one Metal 4 queue commit.
+	/// Submits the frame's command buffers, then copies each presented swapchain's image into a drawable and presents it.
+	///
+	/// Frames render into swapchain images rather than drawables, so their commands are committed before any drawable
+	/// is taken. `nextDrawable` blocks the CPU until the display releases a drawable, which with two drawables is the
+	/// refresh that shows the previous frame. Taking drawables only after the commit lets the GPU render this frame
+	/// during that wait, and only the small resolve command waits on the display, through `waitForDrawable`.
 	pub(crate) fn execute_finished_batch(
 		&mut self,
 		command_buffers: SmallVec<[super::FinishedCommandBuffer; 4]>,
 		present_keys: &[graphics_hardware_interface::PresentKey],
 		synchronizer: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let present_drawables = self.take_present_drawables(present_keys);
+		let synchronizer =
+			context::synchronizer_for_sequence(&self.device.synchronizers, synchronizer, self.frame_key.sequence_index);
 
 		let mut native_commands = SmallVec::<[queue::NativeCommand; 4]>::new();
 		let mut submitted_readbacks = SmallVec::<[graphics_hardware_interface::TextureCopyHandle; 8]>::new();
@@ -117,78 +93,85 @@ impl<'a> Frame<'a> {
 			submitted_readbacks.extend(texture_readbacks);
 		}
 
-		if self.uses_proxy_swapchain(present_keys) {
-			// Proxy copies use a separate command so frame render commands can end before presentation work is appended.
-			let mut recording = self.device.begin_recording(
-				self.queue_handle,
-				Some("Present Resolve"),
-				Some(self.frame_key),
-				&std::alloc::Global,
-			);
-			recording.resolve_swapchain_proxies(&present_drawables);
-			native_commands.push(recording.into_finished().command_buffer);
-		}
-
-		// An empty command still advances the frame synchronizer and provides a valid commit point for presentation.
-		if native_commands.is_empty() {
-			native_commands.push(
-				self.device.queues[self.queue_handle.0 as usize]
-					.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels),
-			);
-		}
-		for command in &mut native_commands {
-			for (_, drawable) in &present_drawables {
-				if let Some(drawable) = drawable {
-					command.retain_drawable(drawable);
-				}
-			}
-		}
-
-		let submitted = {
-			let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
-			for (_, drawable) in &present_drawables {
-				if let Some(drawable) = drawable {
-					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-					stored_queue.queue.waitForDrawable(drawable);
-				}
-			}
-
-			let submitted = stored_queue.submit_batch(self.queue_handle, native_commands);
-			let sequence_synchronizer =
-				context::synchronizer_for_sequence(&self.device.synchronizers, synchronizer, self.frame_key.sequence_index);
+		let mut submitted_any = false;
+		if !native_commands.is_empty() {
+			let submitted = self.device.queues[self.queue_handle.0 as usize].submit_batch(self.queue_handle, native_commands);
 			for handle in &submitted_readbacks {
+				self.device.texture_readbacks.mark_submitted(*handle, Some(synchronizer));
+			}
+			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
+			submitted_any = true;
+		}
+
+		if let Some(submitted) = self.present(present_keys) {
+			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
+			submitted_any = true;
+		}
+
+		// An empty command still gives a frame that submitted nothing a completion point.
+		if !submitted_any {
+			let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
+			let command = stored_queue.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels);
+			let submitted = stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect());
+			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
+		}
+	}
+
+	/// Takes a drawable for each presented swapchain, copies the frame's swapchain image into it, and presents it.
+	///
+	/// Returns the submitted resolve, or `None` when no swapchain had a drawable to present, for example while its
+	/// window is occluded and Core Animation times out.
+	fn present(&mut self, present_keys: &[graphics_hardware_interface::PresentKey]) -> Option<queue::SubmittedBatch> {
+		let sequence_index = self.frame_key.sequence_index as usize;
+		let present_drawables = present_keys
+			.iter()
+			// A swapchain acquired at a zero extent has no image, so nothing was rendered for it.
+			.filter(|present_key| self.device.swapchains[present_key.swapchain.0 as usize].images[sequence_index].is_some())
+			.filter_map(|&present_key| {
 				self.device
-					.texture_readbacks
-					.mark_submitted(*handle, Some(sequence_synchronizer));
-			}
+					.next_drawable(present_key.swapchain)
+					.map(|drawable| (present_key, drawable))
+			})
+			.collect::<SmallVec<[_; 4]>>();
+		if present_drawables.is_empty() {
+			return None;
+		}
 
-			for (present_key, drawable) in &present_drawables {
-				if let Some(drawable) = drawable {
-					let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-					stored_queue.queue.signalDrawable(drawable);
-					let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
-					record_presented_time(drawable, swapchain.last_presented_time.clone());
-					match swapchain.present_interval {
-						// Metal schedules the drawable for the first refresh after the interval since the previous present.
-						Some(interval) => drawable.presentAfterMinimumDuration(interval.as_secs_f64()),
-						None => drawable.present(),
-					}
-				}
-			}
-			submitted
-		};
-
-		let resource_tracker = &mut self.device.queues[self.queue_handle.0 as usize].resource_tracker;
+		let mut recording = self.device.begin_recording(
+			self.queue_handle,
+			Some("Present Resolve"),
+			Some(self.frame_key),
+			&std::alloc::Global,
+		);
+		recording.resolve_swapchain_images(&present_drawables);
+		let mut command = recording.into_finished().command_buffer;
 		for (_, drawable) in &present_drawables {
-			if let Some(drawable) = drawable {
-				let texture = drawable.texture();
-				resource_tracker.forget_drawable(texture.as_ref());
+			command.retain_drawable(drawable);
+		}
+
+		let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
+		for (_, drawable) in &present_drawables {
+			let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
+			stored_queue.queue.waitForDrawable(drawable);
+		}
+		let submitted = stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect());
+		for (present_key, drawable) in &present_drawables {
+			let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
+			stored_queue.queue.signalDrawable(drawable);
+			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+			record_presented_time(drawable, swapchain.last_presented_time.clone());
+			match swapchain.present_interval {
+				// Metal schedules the drawable for the first refresh after the interval since the previous present.
+				Some(interval) => drawable.presentAfterMinimumDuration(interval.as_secs_f64()),
+				None => drawable.present(),
 			}
 		}
 
-		let synchronizer =
-			context::synchronizer_for_sequence(&self.device.synchronizers, synchronizer, self.frame_key.sequence_index);
-		self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
+		for (_, drawable) in &present_drawables {
+			stored_queue.resource_tracker.forget_drawable(drawable.texture().as_ref());
+		}
+
+		Some(submitted)
 	}
 }
 
@@ -291,23 +274,14 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		let mut drawables = Vec::new_in(self.allocator);
-		drawables.extend(self.device.swapchains.iter().enumerate().filter_map(|(index, swapchain)| {
-			swapchain
-				.pending_drawable
-				.as_ref()
-				.map(|drawable| (SwapchainHandle(index as u64), drawable.clone()))
-		}));
-		let mut recording = self.device.create_command_buffer_recording_with_frame_key_in(
+		self.device.create_command_buffer_recording_with_frame_key_in(
 			command_buffer_handle,
 			Some(self.frame_key),
 			self.allocator,
-		);
-		recording.attach_drawables(drawables.into_iter());
-		recording
+		)
 	}
 
-	/// Acquires a drawable from inside the started frame. The sequence synchronizer was already waited by `start_frame`.
+	/// Prepares the swapchain image from inside the started frame. The sequence synchronizer was already waited by `start_frame`.
 	fn acquire_swapchain_image(
 		&mut self,
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,

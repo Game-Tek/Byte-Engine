@@ -330,7 +330,7 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let attachments = attachments
 			.iter()
 			.map(|attachment| {
-				// A proxied swapchain resolves to its proxy, since presentation copies the proxy to the drawable.
+				// A swapchain resolves to its image for this frame, which presentation copies to the drawable.
 				let surface = self.surface(attachment.target, 0).expect(MISSING_SURFACE);
 				validate_attachment_layer_selection(attachment.layer, attachment.layer_count, surface.array_layers);
 				// A layer of an array image is rendered through a 2D view of that layer.

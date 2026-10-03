@@ -52,16 +52,16 @@ impl AppliedSnapshot {
 }
 
 /// The panic message for a surface a command needs but cannot resolve.
-pub(super) const MISSING_SURFACE: &str = "Missing Metal surface. The most likely cause is that an image handle came from another context, or that a direct swapchain was used before its frame image was acquired.";
+pub(super) const MISSING_SURFACE: &str = "Missing Metal surface. The most likely cause is that an image handle came from another context, or that a swapchain was used before this frame acquired it at a nonzero extent.";
 
 /// The `Surface` struct is the texture a command reaches through an image or swapchain handle.
 ///
-/// It is a frame image, a swapchain's proxy image, or a swapchain's acquired drawable. Resolve one with
-/// [`CommandBufferRecording::surface`] and describe each access with [`Self::resource_use`]; consuming that use
-/// retains the texture.
+/// It is a frame image or a swapchain's image for the frame sequence; commands never reach a drawable directly.
+/// Resolve one with [`CommandBufferRecording::surface`] and describe each access with [`Self::resource_use`];
+/// consuming that use retains the texture.
 pub(super) struct Surface {
-	/// The image behind the texture, or `None` for a drawable, which hazard tracking identifies by its texture.
-	pub(super) image: Option<ImageHandle>,
+	/// The image behind the texture.
+	pub(super) image: ImageHandle,
 	pub(super) texture: Retained<ProtocolObject<dyn mtl::MTLTexture>>,
 	pub(super) format: crate::Formats,
 	pub(super) extent: Extent,
@@ -79,10 +79,7 @@ impl Surface {
 		stages: mtl::MTLStages,
 		access: crate::AccessPolicies,
 	) -> synchronization::MetalResourceUse {
-		match self.image {
-			Some(image) => synchronization::MetalResourceUse::image(image, mip_level, layer, stages, access),
-			None => synchronization::MetalResourceUse::drawable(&self.texture, stages, access),
-		}
+		synchronization::MetalResourceUse::image(self.image, mip_level, layer, stages, access)
 	}
 }
 
@@ -543,13 +540,6 @@ pub struct CommandBufferRecording<'a> {
 	active_render_attachment_uses: SmallVec<[synchronization::MetalResourceUse; 8]>,
 	/// Readbacks recorded but not yet handed to submission. Dropping the recording abandons whatever is left.
 	texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
-	drawables: Vec<
-		(
-			graphics_hardware_interface::SwapchainHandle,
-			Retained<ProtocolObject<dyn CAMetalDrawable>>,
-		),
-		&'a dyn std::alloc::Allocator,
-	>,
 	_autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 }
 

@@ -1,3 +1,4 @@
+use super::resources::SWAPCHAIN_FORMAT;
 use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_vertex_format};
 use super::*;
 
@@ -189,10 +190,9 @@ impl crate::context::Context for Context {
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
 		let layer = CAMetalLayer::new();
-		let format = crate::Formats::BGRAu8;
 
 		layer.setDevice(Some(&self.device));
-		layer.setPixelFormat(utils::to_pixel_format(format));
+		layer.setPixelFormat(utils::to_pixel_format(SWAPCHAIN_FORMAT));
 
 		let display_sync_enabled = match presentation_mode {
 			graphics_hardware_interface::PresentationModes::Inmediate => false,
@@ -212,62 +212,37 @@ impl crate::context::Context for Context {
 		// A value other than 2 or 3 causes an exception
 		layer.setMaximumDrawableCount(desired_drawable_count);
 
-		let uses_proxy = !drawable_supports_uses(uses);
-
-		// framebufferOnly permits Metal's optimized display path when raster output is the drawable's only use.
-		let framebuffer_only_uses = Uses::RenderTarget | Uses::Clear;
-		layer.setFramebufferOnly(!uses_proxy && framebuffer_only_uses.contains(uses));
+		// Frames render into per-sequence images and presentation blits them into the drawable, so the drawable is
+		// never a render target and cannot be framebuffer-only.
+		layer.setFramebufferOnly(false);
 
 		window_os_handles.view.setWantsLayer(true);
 		window_os_handles.view.setLayer(Some(layer.as_super()));
 
 		let extent = update_layer_extent(&layer, &window_os_handles.view);
 
-		// A proxy swapchain renders into one intermediate image per frame sequence and copies it to the drawable.
-		let images = std::array::from_fn(|_| {
-			uses_proxy.then(|| {
-				let description = image::ImageDescription {
-					extent,
-					format,
-					uses: uses | Uses::BlitSource,
-					access: DeviceAccesses::DeviceOnly,
-					array_layers: 1,
-					cube_compatible: false,
-					cube_array_compatible: false,
-					mip_levels: 1,
-				};
-				let proxy = build_image(
-					&self.device,
-					Some("Swapchain Proxy Image"),
-					description,
-					self.settings.debug_labels,
-				);
-				self.images.add(proxy).1
-			})
-		});
-
 		let handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
 
 		self.swapchains.push(Swapchain {
 			layer,
 			view: window_os_handles.view.clone(),
-			images,
-			uses_proxy,
+			images: [None; MAX_FRAMES_IN_FLIGHT],
 			uses,
 			extent,
-			pending_drawable: None,
 			last_presented_time: std::sync::Arc::new(AtomicU64::new(0)),
+			presented_instant: None,
 			present_interval: None,
 		});
 
 		handle
 	}
 
-	/// Acquires the drawable that `frame` will present before the frame is started.
+	/// Prepares the swapchain image that `frame` will render into before the frame is started.
 	///
 	/// Waiting on the frame sequence's synchronizer first gives the same reuse guarantee that
 	/// `start_frame` provides for in-frame acquisition. The synchronizer stays signaled, so the
-	/// later `start_frame` wait returns immediately.
+	/// later `start_frame` wait returns immediately. The drawable is taken at submission instead,
+	/// so this never waits for the display.
 	fn acquire_swapchain_image(
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,

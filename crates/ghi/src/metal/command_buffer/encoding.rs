@@ -40,10 +40,9 @@ fn retain_descriptor_resources(
 				Descriptor::Buffer { buffer, .. } => {
 					command_buffer.retain_allocation(&*device.buffers.resource(buffer).buffer);
 				}
-				// Acquired drawables are retained when they are attached to the recording, so only proxies remain.
 				Descriptor::Swapchain { handle } => {
-					if let Some(proxy) = device.swapchains[handle.0 as usize].images[sequence_index as usize] {
-						retain_image(device, command_buffer, proxy);
+					if let Some(image) = device.swapchains[handle.0 as usize].images[sequence_index as usize] {
+						retain_image(device, command_buffer, image);
 					}
 				}
 				Descriptor::AccelerationStructure { handle } => {
@@ -211,7 +210,7 @@ impl CommandBufferRecording<'_> {
 	/// The first bound set retains the snapshot; it stays valid while every bound
 	/// set keeps its version, so unchanged bindings cost one scan per encoder
 	/// instead of a buffer allocation and encode. A snapshot that binds a
-	/// swapchain is transient because the drawable changes per frame.
+	/// swapchain is transient because each frame sequence renders into its own swapchain image.
 	fn apply_argument_buffers(
 		&mut self,
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
@@ -559,7 +558,7 @@ impl CommandBufferRecording<'_> {
 		self.begin_encoder(
 			ActiveEncoder::Render(encoder),
 			"Clear",
-			images.iter().map(|(handle, _)| Some(*handle)),
+			images.iter().map(|(handle, _)| *handle),
 		);
 		self.consume_resources(images.iter().map(|(handle, _)| {
 			synchronization::MetalResourceUse::image(

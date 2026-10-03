@@ -382,7 +382,10 @@ impl Renderer {
 	/// Acquires the swapchain image of every window for the next frame and returns the display time of the
 	/// primary window's most recently presented image, when the backend reports it.
 	///
-	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image.
+	/// Call this at the start of a tick so simulation runs after the presentation engine releases an image. Each
+	/// frame waits for the display once: here when the backend's acquisition waits for a free image, or at
+	/// submission on Metal, which takes its drawable after committing the frame. Either way the wait ends the
+	/// previous tick or starts this one, so simulation still follows the display.
 	/// The call is idempotent for one frame: windows already acquired are skipped, so [`Self::prepare`] can
 	/// call it to pick up windows adopted later in the tick or to acquire when nothing was hoisted.
 	pub(crate) fn acquire_swapchain_images(&mut self) -> Option<std::time::Instant> {
@@ -494,7 +497,8 @@ impl Renderer {
 	/// every screenshot readback comes from, and one readback result per request
 	/// in request order.
 	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
-	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it.
+	// Swapchain acquisition happens before this call (see `acquire_swapchain_images`) so the tick can pace on it, or
+	// on the drawable wait at submission where the backend defers it.
 	#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 	pub(crate) fn prepare(
 		&'_ mut self,

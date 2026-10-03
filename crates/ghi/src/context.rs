@@ -422,7 +422,9 @@ pub trait Context: ContextCreate {
 	/// Acquires the swapchain image that `frame` will present.
 	///
 	/// This can run before the frame is started so simulation can follow the presentation cadence.
-	/// It blocks until the frame sequence's previous submission and the presentation engine allow reuse.
+	/// It blocks until the frame sequence's previous submission allows reuse. A backend whose presentation engine
+	/// has no spare image may also block here until the display frees one. Metal never does: it takes its drawable
+	/// when the frame is submitted, after committing the frame's commands, so the GPU renders during that wait.
 	/// Returns `None` when the presentation engine has no image to give (an exhausted drawable pool, a hidden
 	/// window, or an out-of-date surface); the caller skips presenting that swapchain for the frame.
 	fn acquire_swapchain_image(

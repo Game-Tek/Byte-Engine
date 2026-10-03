@@ -168,17 +168,18 @@ pub mod swapchain {
 	pub(crate) struct Swapchain {
 		pub layer: Retained<CAMetalLayer>,
 		pub view: Retained<NSView>,
-		/// One proxy image per frame sequence, present only when the declared uses cannot be applied to a drawable texture.
+		/// The image each frame sequence renders into, which presentation copies to a drawable. A sequence gets its
+		/// image the first time it acquires the swapchain at a nonzero extent.
 		pub images: [Option<ImageHandle>; MAX_FRAMES_IN_FLIGHT],
-		pub uses_proxy: bool,
 		pub uses: crate::Uses,
 		pub extent: Extent,
-		/// The drawable acquired for the next presentation, held between acquisition and submission.
-		pub pending_drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
 		/// The `presentedTime` of the last drawable shown on screen, as `f64` bits. Zero means nothing was presented yet.
 		/// Metal publishes it through a presented handler on an arbitrary thread shortly after the display shows the
 		/// frame, so the value is shared atomically and may lag one acquisition behind.
 		pub last_presented_time: Arc<AtomicU64>,
+		/// The `last_presented_time` bits last converted to an `Instant`, with the result. Converting reads two clocks,
+		/// so converting an unchanged presented time again would land on a slightly different instant.
+		pub presented_instant: Option<(u64, std::time::Instant)>,
 		/// The minimum time between presented frames; `None` presents on the next refresh.
 		pub present_interval: Option<std::time::Duration>,
 	}

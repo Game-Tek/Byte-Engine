@@ -94,18 +94,6 @@ impl Drop for Context {
 	}
 }
 
-/// Reports whether a CAMetalLayer drawable can satisfy the requested texture uses directly.
-fn drawable_supports_uses(uses: crate::Uses) -> bool {
-	let drawable_uses = Uses::RenderTarget
-		| Uses::Storage
-		| Uses::Image
-		| Uses::InputAttachment
-		| Uses::TransferSource
-		| Uses::TransferDestination
-		| Uses::Clear;
-	!uses.is_empty() && drawable_uses.contains(uses)
-}
-
 mod recording;
 pub(crate) use recording::synchronizer_for_sequence;
 pub(in crate::metal) mod resources;

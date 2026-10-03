@@ -305,25 +305,6 @@ impl Context {
 		}
 	}
 
-	/// Resizes every swapchain proxy image in place so existing descriptors can keep their image handles.
-	pub(crate) fn resize_swapchain_images(
-		&mut self,
-		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
-		extent: Extent,
-	) {
-		let mut resized = false;
-		for image_handle in self.swapchains[swapchain_handle.0 as usize].images.into_iter().flatten() {
-			resized |= self.resize_image_internal(image_handle, extent);
-		}
-
-		if resized {
-			// Swapchain descriptors resolve through the stable proxy handles, so only backing replacement invalidates them.
-			self.rewrite_descriptors_for_handle(PrivateHandles::Swapchain(crate::swapchain::SwapchainHandle(
-				swapchain_handle.0,
-			)));
-		}
-	}
-
 	/// Runs the tasks scheduled for `sequence_index` and keeps every other task for its own frame.
 	pub(crate) fn process_tasks(&mut self, sequence_index: u8) {
 		for task in std::mem::take(&mut self.tasks) {

@@ -34,11 +34,9 @@ mod tests {
 	use crate::{
 		ReferenceModel,
 		resources::{
-			material::VariantModel,
-			skeleton::{
-				LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-			},
 			ModelSpace,
+			material::VariantModel,
+			skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
 		},
 		types::{AlphaMode, VertexComponent, VertexSemantics},
 	};
@@ -494,7 +492,11 @@ mod tests {
 		fn positions(
 			&self,
 		) -> Result<impl ExactSizeIterator<Item = Result<math::Point<ModelSpace>, Self::Error>> + '_, Self::Error> {
-			Ok(self.positions.iter().copied().map(|position| Ok(math::Point::from_array(position))))
+			Ok(self
+				.positions
+				.iter()
+				.copied()
+				.map(|position| Ok(math::Point::from_array(position))))
 		}
 
 		fn normals(

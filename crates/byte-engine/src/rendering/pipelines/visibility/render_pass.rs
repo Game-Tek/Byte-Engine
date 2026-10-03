@@ -511,7 +511,14 @@ impl VisibilityRenderPass {
 			// The opaque layer establishes the depth and color retained by every later transparent primitive. Its early
 			// pass draws what was unoccluded last frame, and the late pass draws what that depth does not hide.
 			let opaque = |c: &mut ghi::implementation::CommandBufferRecording, occlusion| {
-				visibility.record(c, extent, VisibilityPhase::Opaque, dispatches, visibility_pipelines, occlusion);
+				visibility.record(
+					c,
+					extent,
+					VisibilityPhase::Opaque,
+					dispatches,
+					visibility_pipelines,
+					occlusion,
+				);
 			};
 			opaque(c, OcclusionPhase::Early);
 			occlusion_pyramid(c);

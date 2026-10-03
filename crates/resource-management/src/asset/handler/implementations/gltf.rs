@@ -592,7 +592,10 @@ mod tests {
 		match animation.tracks[0].translation.as_ref().unwrap() {
 			TranslationCurve::Linear { times, values } => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values, &[math::Vector::new(0.0, 0.0, -2.0), math::Vector::new(1.0, 2.0, -3.0)]);
+				assert_eq!(
+					values,
+					&[math::Vector::new(0.0, 0.0, -2.0), math::Vector::new(1.0, 2.0, -3.0)]
+				);
 			}
 			curve => panic!("expected linear translation curve, got {curve:?}"),
 		}
@@ -605,10 +608,10 @@ mod tests {
 				out_tangents,
 			} => {
 				assert_eq!(times, &[0.0, 2.0]);
-				assert_eq!(values.iter().map(|value| value.to_array()).collect::<Vec<_>>(), [
-					[0.0, 0.0, 0.0, 1.0],
-					[0.0, 0.0, 1.0, 0.0]
-				]);
+				assert_eq!(
+					values.iter().map(|value| value.to_array()).collect::<Vec<_>>(),
+					[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]]
+				);
 				assert_eq!(in_tangents, &[[-2.0, 0.0, 0.0, 0.0], [-6.0, 0.0, 0.0, 0.0]]);
 				assert_eq!(out_tangents, &[[-4.0, 0.0, 0.0, 0.0], [-8.0, 0.0, 0.0, 0.0]]);
 			}
@@ -1495,12 +1498,12 @@ use crate::{
 	},
 	resource,
 	resources::{
+		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
-		ModelSpace,
 	},
 	types::{Formats, VertexComponent, VertexSemantics},
 };

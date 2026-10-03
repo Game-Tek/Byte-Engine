@@ -317,7 +317,10 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 	let name = iterator.next_identifier()?;
 	iterator.next_str(":")?;
 	let declaration = iterator.next().copied().ok_or(ParsingFailReasons::StreamEndedPrematurely)?;
-	if !matches!(declaration, "input" | "output" | "vertex_output" | "task_payload" | "workgroup") {
+	if !matches!(
+		declaration,
+		"input" | "output" | "vertex_output" | "task_payload" | "workgroup"
+	) {
 		return Err(ParsingFailReasons::NotMine);
 	}
 

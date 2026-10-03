@@ -14,11 +14,11 @@
 use ghi::context::{Context as _, ContextCreate as _};
 use utils::Extent;
 
-use super::{ComputeStage, record_compute_stages};
 use super::super::layout::{OCCLUSION_PYRAMID_BINDING, OCCLUSION_VISIBILITY_BINDING};
 use super::super::mesh_dispatch::MAX_MESH_DISPATCH_WORK_ITEMS;
-use crate::rendering::render_pass::RenderPassFunction;
+use super::{ComputeStage, record_compute_stages};
 use crate::rendering::PipelineManagerClient;
+use crate::rendering::render_pass::RenderPassFunction;
 
 /// The pyramid has a fixed extent, so its mip count does not depend on the sink's. Culling maps it over the whole
 /// screen, whatever the sink's aspect ratio.
@@ -85,7 +85,8 @@ impl OcclusionCulling {
 		depth: ghi::BaseImageHandle,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Occlusion Culling Descriptor Set"));
-		let build_descriptor_sets = std::array::from_fn(|_| context.create_descriptor_set(Some("Occlusion Pyramid Descriptor Set")));
+		let build_descriptor_sets =
+			std::array::from_fn(|_| context.create_descriptor_set(Some("Occlusion Pyramid Descriptor Set")));
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
 		let pyramid = context.build_image(
@@ -168,9 +169,12 @@ impl OcclusionCulling {
 	/// Returns the recording that builds the pyramid. Record it after the [`OcclusionPhase::Early`] pass and before the
 	/// [`OcclusionPhase::Late`] pass.
 	pub(super) fn prepare(&self, pipelines: OcclusionPipelines) -> impl RenderPassFunction + use<> {
-
 		let stages: [ComputeStage; OCCLUSION_PYRAMID_MIP_COUNT as usize] = std::array::from_fn(|level| ComputeStage {
-			label: if level == 0 { "Occlusion Pyramid Seed" } else { "Occlusion Pyramid Reduce" },
+			label: if level == 0 {
+				"Occlusion Pyramid Seed"
+			} else {
+				"Occlusion Pyramid Reduce"
+			},
 			pipeline: if level == 0 { pipelines.seed } else { pipelines.reduce },
 			descriptor_sets: [self.build_descriptor_sets[level]],
 			extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(level as u32),

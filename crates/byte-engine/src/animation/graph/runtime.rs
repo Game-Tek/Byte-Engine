@@ -523,7 +523,10 @@ mod tests {
 				node: 0,
 				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![math::Vector::from_array([0.0; 3]), math::Vector::from_array([end_translation, 0.0, 0.0])],
+					values: vec![
+						math::Vector::from_array([0.0; 3]),
+						math::Vector::from_array([end_translation, 0.0, 0.0]),
+					],
 				}),
 				rotation: None,
 				scale: None,

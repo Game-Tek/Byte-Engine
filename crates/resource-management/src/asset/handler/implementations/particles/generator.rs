@@ -103,7 +103,9 @@ fn simulate_program(system: &ParticleSystemSource) -> String {
 				literal(*radius),
 				random(),
 			),
-			InitializeModule::Box { size: [width, height, depth] } => writeln!(
+			InitializeModule::Box {
+				size: [width, height, depth],
+			} => writeln!(
 				initialize,
 				"		offset = offset + vec3f(({} - 0.5) * {}, ({} - 0.5) * {}, ({} - 0.5) * {});",
 				random(),

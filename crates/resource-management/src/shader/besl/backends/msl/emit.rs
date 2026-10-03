@@ -78,10 +78,7 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		let source = source.borrow();
 		let besl::Nodes::Output {
-			name,
-			count,
-			per_vertex,
-			..
+			name, count, per_vertex, ..
 		} = source.node()
 		else {
 			return None;
@@ -106,10 +103,15 @@ impl<A: Allocator + Clone> Generator<A> {
 	/// Returns one vertex or primitive field's native declaration position for Metal aggregate initialization.
 	pub(crate) fn mesh_field_order(&self, rate: MeshWriteRate, field: &str) -> usize {
 		let (builtin, fields) = match rate {
-			MeshWriteRate::Vertex => ("position", self.mesh_stage_context.as_ref().map(|context| &context.vertex_output_fields)),
+			MeshWriteRate::Vertex => (
+				"position",
+				self.mesh_stage_context.as_ref().map(|context| &context.vertex_output_fields),
+			),
 			MeshWriteRate::Primitive => (
 				"render_target_array_index",
-				self.mesh_stage_context.as_ref().map(|context| &context.primitive_output_fields),
+				self.mesh_stage_context
+					.as_ref()
+					.map(|context| &context.primitive_output_fields),
 			),
 		};
 		if field == builtin {

@@ -353,7 +353,9 @@ fn run_meshlet_task_workgroup(
 		("view_count", view_count),
 		(
 			"occlusion_phase",
-			occlusion.as_ref().map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
+			occlusion
+				.as_ref()
+				.map_or(OcclusionPhase::Disabled, |occlusion| occlusion.phase) as u32,
 		),
 	] {
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
@@ -623,13 +625,20 @@ fn camera_occlusion_meshlets(
 		..mesh
 	};
 	let occlusion = CameraOcclusion { phase, pyramid, record };
-	task_payload(&run_meshlet_task_workgroup(&[], [0, 1], center_radii, mesh, 0, Some(occlusion)))
-		.into_iter()
-		.map(|word| match word {
-			Value::U32(word) => word & ((1 << MESHLET_INSTANCE_BITS) - 1),
-			word => panic!("Unexpected task payload word: {word:?}."),
-		})
-		.collect()
+	task_payload(&run_meshlet_task_workgroup(
+		&[],
+		[0, 1],
+		center_radii,
+		mesh,
+		0,
+		Some(occlusion),
+	))
+	.into_iter()
+	.map(|word| match word {
+		Value::U32(word) => word & ((1 << MESHLET_INSTANCE_BITS) - 1),
+		word => panic!("Unexpected task payload word: {word:?}."),
+	})
+	.collect()
 }
 
 /// Returns how many of one meshlet's copies a pass that only tests occlusion keeps.
@@ -665,7 +674,10 @@ fn task_main_keeps_meshlets_seen_through_a_gap_in_the_occlusion_pyramid() {
 	let gap = [OCCLUSION_PYRAMID_WIDTH / 2 + 3, OCCLUSION_PYRAMID_HEIGHT / 2 - 5];
 	let mut pyramid = occlusion_pyramid(|x, y| if [x, y] == gap { 0.0 } else { occlusion_fixture_depth(5.0) });
 
-	assert_eq!(occlusion_tested_meshlets(BEHIND_WALL, TaskMeshFixture::default(), &mut pyramid), 1);
+	assert_eq!(
+		occlusion_tested_meshlets(BEHIND_WALL, TaskMeshFixture::default(), &mut pyramid),
+		1
+	);
 }
 
 /// Verifies geometry that reaches past the screen edge or the near plane is kept, because the pyramid holds nothing
@@ -705,11 +717,17 @@ fn camera_passes_draw_each_unoccluded_meshlet_once_and_record_them() {
 	for previous_record in 0..8u32 {
 		let mut record = previous_record;
 		let early = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Early, &mut wall, &mut record);
-		assert_eq!(record, previous_record, "The early pass must leave the record to the late pass.");
+		assert_eq!(
+			record, previous_record,
+			"The early pass must leave the record to the late pass."
+		);
 		let late = camera_occlusion_meshlets(&meshlets, mesh, OcclusionPhase::Late, &mut wall, &mut record);
 
 		let expected_early: Vec<u32> = (0..3).filter(|meshlet| previous_record & (1 << meshlet) != 0).collect();
-		assert_eq!(early, expected_early, "The early pass draws what the previous frame recorded.");
+		assert_eq!(
+			early, expected_early,
+			"The early pass draws what the previous frame recorded."
+		);
 		let mut drawn = [early, late].concat();
 		drawn.sort();
 		assert!(
@@ -2069,7 +2087,8 @@ fn ssgi_trace_stores_octahedral_normals() {
 	let wall_row = (0..SSGI_EXTENT)
 		.find(|&row| depth[(row * SSGI_EXTENT + column) as usize][0] == 4.0 && row > 2)
 		.expect("a wall row away from the image edge");
-	let stored = |depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, &[pixel])[0].1;
+	let stored =
+		|depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, &[pixel])[0].1;
 
 	assert_rgba_close(stored(&depth, [column, wall_row]), SSGI_WALL_NORMAL, 0.0001);
 	depth[(wall_row * SSGI_EXTENT + column) as usize] = [0.0; 4];

@@ -339,8 +339,14 @@ fn new_particles_start_inside_their_box() {
 	}
 	// 64 uniform draws reach well past half of each half-extent, and a zero-sized side stays flat.
 	for (axis, half_size) in [2.0f32, 0.0, 1.0].into_iter().enumerate() {
-		assert!(lowest[axis] >= -half_size && highest[axis] <= half_size, "particles left the box on axis {axis}");
-		assert!(highest[axis] - lowest[axis] >= half_size, "particles bunched up on axis {axis}");
+		assert!(
+			lowest[axis] >= -half_size && highest[axis] <= half_size,
+			"particles left the box on axis {axis}"
+		);
+		assert!(
+			highest[axis] - lowest[axis] >= half_size,
+			"particles bunched up on axis {axis}"
+		);
 	}
 }
 

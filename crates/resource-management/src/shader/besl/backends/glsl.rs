@@ -510,7 +510,10 @@ mod tests {
 			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
 			.expect("Expected mesh shader source to generate GLSL");
 		assert_string_contains!(shader, "layout(location=2)out vec2 out_uv[3];");
-		assert_string_contains!(shader, "layout(location=1)perprimitiveEXT out uint32_t out_primitive_index[1];");
+		assert_string_contains!(
+			shader,
+			"layout(location=1)perprimitiveEXT out uint32_t out_primitive_index[1];"
+		);
 		assert_string_contains!(shader, "out_uv[lane]=vec2(float(lane),1.0);");
 	}
 

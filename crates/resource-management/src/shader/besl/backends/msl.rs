@@ -899,13 +899,22 @@ mod tests {
 			"#,
 			&ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
 		);
-		assert_string_contains!(mesh, "struct VertexOutput{float4 position [[position]];float2 uv [[user(locn2)]];};");
-		assert_string_contains!(mesh, "struct PrimitiveOutput{uint primitive_index [[flat]] [[user(locn1)]];};");
+		assert_string_contains!(
+			mesh,
+			"struct VertexOutput{float4 position [[position]];float2 uv [[user(locn2)]];};"
+		);
+		assert_string_contains!(
+			mesh,
+			"struct PrimitiveOutput{uint primitive_index [[flat]] [[user(locn1)]];};"
+		);
 		assert_string_contains!(
 			mesh,
 			"out_mesh.set_vertex(index, VertexOutput{.position = float4(float(index),0.0,0.0,1.0), .uv = float2(float(index),1.0)})"
 		);
-		assert_string_contains!(mesh, "out_mesh.set_primitive(index, PrimitiveOutput{.primitive_index = index})");
+		assert_string_contains!(
+			mesh,
+			"out_mesh.set_primitive(index, PrimitiveOutput{.primitive_index = index})"
+		);
 
 		#[cfg(target_os = "macos")]
 		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-vertex-output-fixture")

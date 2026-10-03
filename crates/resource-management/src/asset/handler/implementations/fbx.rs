@@ -423,8 +423,7 @@ mod tests {
 
 		// The palette must match ufbx's evaluated clusters after expressing them in
 		// the flattened vertex basis used by the imported mesh.
-		let mut globals =
-			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
+		let mut globals = vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
@@ -523,8 +522,7 @@ mod tests {
 			SkinJoint::Node(mesh_node_index)
 		);
 
-		let mut globals =
-			vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
+		let mut globals = vec![math::AffineMatrix::identity(); imported_skeleton.model.nodes.len()];
 
 		for node in &scene.nodes {
 			let mapped = imported_skeleton.source_to_skeleton[node.element.typed_id as usize] as usize;
@@ -1209,12 +1207,12 @@ use crate::{
 	},
 	resource,
 	resources::{
+		ModelSpace,
 		animation::{AnimationModel, Curve, NodeTrack},
 		image::Image,
 		material::VariantModel,
 		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
-		ModelSpace,
 	},
 	types::{Formats, VertexComponent, VertexSemantics},
 };

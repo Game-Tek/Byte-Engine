@@ -7,7 +7,9 @@
 //! rebuilt from depth, because surfaces that touch, such as a foot on a floor, share the same depth at the contact.
 //!
 //! The result stores hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation lights the
-//! missed fraction with the environment, so rays that leave the screen fall back to image-based lighting.
+//! missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
+//! fraction is also the surface's ambient occlusion, which darkens environment specular light. Turn the pass off with
+//! `render.ssgi.enabled`.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -15,9 +17,49 @@ use math::Matrix;
 use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::gtao::configuration_bool;
 use super::{ComputeStage, record_compute_stages};
+use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
+
+/// Configuration namespace of the runtime SSGI controls.
+pub const SSGI_CONFIGURATION_PREFIX: &str = "render.ssgi.";
+
+/// The `SsgiSettings` struct holds the runtime SSGI controls the visibility pipeline manager applies to every sink.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SsgiSettings {
+	/// Whether the pass runs. Without it, indirect diffuse light comes from the environment alone, and material
+	/// evaluation takes occlusion from GTAO alone, or applies none.
+	pub(crate) enabled: bool,
+}
+
+impl Default for SsgiSettings {
+	fn default() -> Self {
+		Self { enabled: true }
+	}
+}
+
+impl SsgiSettings {
+	/// Applies one runtime parameter, returning the updated settings and the effective value, or leaves them unchanged.
+	pub(crate) fn with_parameter(
+		self,
+		parameter: &str,
+		value: &ConfigurationValue,
+	) -> Result<(Self, ConfigurationValue), String> {
+		match parameter {
+			"enabled" => {
+				let enabled = configuration_bool(value).ok_or(
+					"SSGI enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
+				)?;
+				Ok((Self { enabled }, ConfigurationValue::Bool(enabled)))
+			}
+			_ => {
+				Err("SSGI parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
+			}
+		}
+	}
+}
 
 /// The render-graph name of the diffuse light leaving opaque surfaces, which rays sample one frame later.
 ///
@@ -152,6 +194,7 @@ pub(crate) fn current_view_to_previous_clip(current: View, previous: View) -> Ma
 /// the full-resolution result. Opaque material evaluation writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next
 /// frame's rays.
 pub(super) struct SsgiPass {
+	settings: SsgiSettings,
 	trace_descriptor_set: ghi::DescriptorSetHandle,
 	temporal_descriptor_set: ghi::DescriptorSetHandle,
 	upscale_descriptor_set: ghi::DescriptorSetHandle,
@@ -179,6 +222,7 @@ impl SsgiPass {
 		depth_pyramid: ghi::DynamicImageHandle,
 		view_data: ghi::DynamicBufferHandle<ScreenViewData>,
 		targets: SsgiTargets,
+		settings: SsgiSettings,
 	) -> Self {
 		let trace_descriptor_set = context.create_descriptor_set(Some("SSGI Trace Descriptor Set"));
 		let temporal_descriptor_set = context.create_descriptor_set(Some("SSGI Temporal Descriptor Set"));
@@ -269,6 +313,7 @@ impl SsgiPass {
 		let request = |name| pipeline_manager.request_pipeline(name);
 
 		Self {
+			settings,
 			trace_descriptor_set,
 			temporal_descriptor_set,
 			upscale_descriptor_set,
@@ -277,6 +322,14 @@ impl SsgiPass {
 			upscale_pipeline: request("byte-engine/rendering/visibility/ssgi-upscale.pipeline"),
 			parameters,
 		}
+	}
+
+	pub(super) fn set_settings(&mut self, settings: SsgiSettings) {
+		self.settings = settings;
+	}
+
+	pub(super) fn enabled(&self) -> bool {
+		self.settings.enabled
 	}
 
 	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<SsgiPipelines> {
@@ -290,7 +343,8 @@ impl SsgiPass {
 	/// Uploads this frame's reprojection and noise seed, resizes the images, and returns the three-stage recording.
 	///
 	/// `previous_view` is the view this pass recorded the sink with in the previous frame, or `None` when the previous
-	/// frame's SSGI and radiance images do not hold this sink's data. Without it the stages ignore history.
+	/// frame's SSGI and radiance images do not hold this sink's data, such as the frame after the pass was turned back
+	/// on. Without it the stages ignore history.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
@@ -347,6 +401,22 @@ mod tests {
 
 	fn view_at(position: Point) -> View {
 		View::new_perspective(Degrees::new(60.0), 16.0 / 9.0, 0.1, 100.0, position, UnitVector::z_axis())
+	}
+
+	#[test]
+	fn enabled_accepts_booleans_and_startup_text() {
+		let (disabled, effective) = SsgiSettings::default()
+			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
+			.unwrap();
+		assert!(!disabled.enabled);
+		assert_eq!(effective, ConfigurationValue::Bool(false));
+		let (enabled, _) = disabled.with_parameter("enabled", &ConfigurationValue::Bool(true)).unwrap();
+		assert!(enabled.enabled);
+		assert!(
+			enabled
+				.with_parameter("enabled", &ConfigurationValue::Text("off".to_string()))
+				.is_err()
+		);
 	}
 
 	#[test]

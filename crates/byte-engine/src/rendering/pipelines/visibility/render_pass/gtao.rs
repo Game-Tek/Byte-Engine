@@ -1,7 +1,7 @@
 //! Ground-truth ambient occlusion computed at half resolution from the linear depth pyramid, then denoised and upscaled.
 //!
-//! Material evaluation applies the result to specular image-based lighting only. Indirect diffuse light gets its
-//! occlusion from [`super::ssgi::SsgiPass`], whose rays already stop at nearby geometry.
+//! Material evaluation combines the result with the hit fraction of [`super::ssgi::SsgiPass`] when both run, and
+//! darkens environment diffuse and specular light by it. Turn it off with `render.gtao.enabled`.
 
 use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
@@ -53,6 +53,8 @@ const UPSCALE_LOW_RESOLUTION_DEPTH_BINDING: ghi::ShaderResourceDescriptor = samp
 /// The `GtaoSettings` struct defines the runtime quality and world-space search controls for GTAO.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GtaoSettings {
+	/// Whether the pass runs. Without it, material evaluation takes occlusion from SSGI alone, or applies none.
+	pub(crate) enabled: bool,
 	pub(crate) radius: f32,
 	pub(crate) samples_per_ray: u32,
 	pub(crate) radial_rays: u32,
@@ -61,6 +63,7 @@ pub(crate) struct GtaoSettings {
 impl Default for GtaoSettings {
 	fn default() -> Self {
 		Self {
+			enabled: true,
 			radius: 1.0,
 			samples_per_ray: 4,
 			radial_rays: 6,
@@ -76,6 +79,12 @@ impl GtaoSettings {
 		value: &ConfigurationValue,
 	) -> Result<(Self, ConfigurationValue), String> {
 		match parameter {
+			"enabled" => {
+				let enabled = configuration_bool(value).ok_or(
+					"GTAO enabled was not set. The most likely cause is that the value is neither `true` nor `false`.",
+				)?;
+				Ok((Self { enabled, ..self }, ConfigurationValue::Bool(enabled)))
+			}
 			"radius" => {
 				let radius = configuration_float(value)
 					.filter(|radius| *radius >= 0.0 && *radius <= f32::MAX as f64)
@@ -114,6 +123,15 @@ impl GtaoSettings {
 				Err("GTAO parameter was not set. The most likely cause is that the parameter name is unsupported.".to_string())
 			}
 		}
+	}
+}
+
+/// Reads a Boolean, or the text `true` or `false` that startup parameters arrive as.
+pub(super) fn configuration_bool(value: &ConfigurationValue) -> Option<bool> {
+	match value {
+		ConfigurationValue::Bool(value) => Some(*value),
+		ConfigurationValue::Text(value) => value.parse().ok(),
+		ConfigurationValue::Integer(_) | ConfigurationValue::Float(_) => None,
 	}
 }
 
@@ -263,6 +281,10 @@ impl GtaoPass {
 		self.settings = settings;
 	}
 
+	pub(super) fn enabled(&self) -> bool {
+		self.settings.enabled
+	}
+
 	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<GtaoPipelines> {
 		Some(GtaoPipelines {
 			gtao: pipeline_manager.pipeline(self.gtao_pipeline)?,
@@ -314,5 +336,21 @@ impl GtaoPass {
 			},
 		];
 		move |c| record_compute_stages(c, Some("GTAO"), &stages)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn enabled_toggles_only_whether_the_pass_runs() {
+		let settings = GtaoSettings::default();
+		let (disabled, effective) = settings
+			.with_parameter("enabled", &ConfigurationValue::Text("false".to_string()))
+			.unwrap();
+		assert_eq!(effective, ConfigurationValue::Bool(false));
+		assert_eq!(disabled, GtaoSettings { enabled: false, ..settings });
+		assert!(disabled.with_parameter("enabled", &ConfigurationValue::Integer(1)).is_err());
 	}
 }

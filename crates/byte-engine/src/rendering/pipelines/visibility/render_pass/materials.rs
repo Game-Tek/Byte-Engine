@@ -129,10 +129,20 @@ impl MaterialPrepasses {
 	}
 }
 
+/// The `ScreenSpaceLighting` struct names the screen-space lighting passes that ran this frame, so opaque material
+/// evaluation reads only the images they wrote.
+#[derive(Clone, Copy)]
+pub(super) struct ScreenSpaceLighting {
+	/// GTAO wrote the ambient occlusion map.
+	pub(super) gtao: bool,
+	/// SSGI wrote the indirect diffuse map, and material evaluation must write the diffuse radiance its next frame reads.
+	pub(super) ssgi: bool,
+}
+
 /// The `MaterialEvaluationPass` struct shades every material's pixel list into the lit target.
 ///
-/// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history, and the lit color
-/// into this frame's copy of the radiance history. The next frame's SSGI and reflection rays read them.
+/// The opaque phase also writes diffuse-only radiance into this frame's copy of the SSGI history while SSGI runs, and
+/// the lit color into this frame's copy of the radiance history. The next frame's SSGI and reflection rays read them.
 pub(super) struct MaterialEvaluationPass {
 	lit: ghi::BaseImageHandle,
 	diffuse_radiance_history: ghi::DynamicImageHandle,
@@ -170,12 +180,14 @@ impl MaterialEvaluationPass {
 		materials: &'a [MaterialEntry],
 		active_materials: &'a ActiveMaterialMask,
 		phase: VisibilityPhase,
+		screen_space_lighting: ScreenSpaceLighting,
 	) -> impl RenderPassFunction + use<'a> {
 		let lit = self.lit;
 		let diffuse_radiance_history = self.diffuse_radiance_history.into();
 		let radiance_history = self.radiance_history.into();
 		let descriptor_sets = [self.base_descriptor_set, self.visibility_descriptor_set, self.descriptor_set];
 		let evaluation_dispatches = self.evaluation_dispatches;
+		let ScreenSpaceLighting { gtao, ssgi } = screen_space_lighting;
 
 		move |c| {
 			use ghi::command_buffer::{
@@ -186,11 +198,13 @@ impl MaterialEvaluationPass {
 			if phase == VisibilityPhase::Opaque {
 				// Clearing the histories keeps background pixels from holding light of an older frame.
 				let transparent_black = ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0));
-				c.clear_images(&[
+				let clears = [
 					(lit, transparent_black),
-					(diffuse_radiance_history, transparent_black),
 					(radiance_history, transparent_black),
-				]);
+					(diffuse_radiance_history, transparent_black),
+				];
+				// Only SSGI reads the diffuse radiance history, so it is left untouched while SSGI is off.
+				c.clear_images(if ssgi { &clears } else { &clears[..2] });
 			}
 			let active = materials
 				.iter()
@@ -208,7 +222,7 @@ impl MaterialEvaluationPass {
 					c.bind_descriptor_sets(&descriptor_sets);
 					bound_pipeline = Some(*pipeline);
 				}
-				c.write_push_constant(0, [*index, phase.blend_flag()]);
+				c.write_push_constant(0, [*index, phase.blend_flag(), u32::from(gtao), u32::from(ssgi)]);
 				c.indirect_dispatch(evaluation_dispatches, *index as usize);
 				c.end_region();
 			}

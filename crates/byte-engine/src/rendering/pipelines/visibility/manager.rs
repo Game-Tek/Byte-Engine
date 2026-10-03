@@ -30,8 +30,8 @@ use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, Visi
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
 	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, FrameWork, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
-	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets,
-	create_radiance_history_target, create_ssgi_targets,
+	SSGI_CONFIGURATION_PREFIX, ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SsgiSettings, VisibilityRenderPass,
+	create_contact_shadow_targets, create_radiance_history_target, create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
@@ -490,6 +490,8 @@ pub struct VisibilityPipelineManager {
 	shadow_maps: ShadowMaps,
 	gtao_configuration: crate::configuration::ConfigurationPort,
 	gtao_settings: GtaoSettings,
+	ssgi_configuration: crate::configuration::ConfigurationPort,
+	ssgi_settings: SsgiSettings,
 	contact_shadow_configuration: crate::configuration::ConfigurationPort,
 	contact_shadow_settings: ContactShadowSettings,
 	/// The sinks whose visibility pass recorded in the previous frame, with the view and extent they used. Only their
@@ -497,6 +499,8 @@ pub struct VisibilityPipelineManager {
 	recorded_sinks: SmallVec<[Sink; 4]>,
 	/// The exposure the previous frame's light was multiplied by. Every recorded sink shares it.
 	recorded_exposure: f32,
+	/// Whether the previous frame's recorded sinks ran SSGI, so their SSGI images hold history.
+	recorded_ssgi: bool,
 	/// Whether the light-count and cone and point shadow-pool warnings were reported while their limit stays exceeded.
 	reported_limits: [bool; 3],
 	pub(crate) scene: VisibilityScene,
@@ -514,6 +518,7 @@ impl VisibilityPipelineManager {
 		loader: VisibilityLoaderClient,
 		pipeline_manager: PipelineManagerClient,
 		gtao_configuration: crate::configuration::ConfigurationPort,
+		ssgi_configuration: crate::configuration::ConfigurationPort,
 		contact_shadow_configuration: crate::configuration::ConfigurationPort,
 		settings: VisibilityPipelineSettings,
 	) -> Self {
@@ -599,10 +604,13 @@ impl VisibilityPipelineManager {
 			shadow_maps,
 			gtao_configuration,
 			gtao_settings: GtaoSettings::default(),
+			ssgi_configuration,
+			ssgi_settings: SsgiSettings::default(),
 			contact_shadow_configuration,
 			contact_shadow_settings: ContactShadowSettings::default(),
 			recorded_sinks: SmallVec::new(),
 			recorded_exposure: 1.0,
+			recorded_ssgi: false,
 			reported_limits: [false; 3],
 			scene: VisibilityScene {
 				render_entities: StableVec::new(),
@@ -987,7 +995,7 @@ impl VisibilityPipelineManager {
 
 	/* Frame preparation */
 
-	/// Applies queued GTAO and contact-shadow controls before any sink records this frame's commands.
+	/// Applies queued GTAO, SSGI, and contact-shadow controls before any sink records this frame's commands.
 	fn apply_runtime_settings(&mut self) {
 		if drain_settings(
 			&self.gtao_configuration,
@@ -998,6 +1006,17 @@ impl VisibilityPipelineManager {
 		) {
 			for sink_state in &mut self.scene.sink_states {
 				sink_state.render_pass.set_gtao_settings(self.gtao_settings);
+			}
+		}
+		if drain_settings(
+			&self.ssgi_configuration,
+			SSGI_CONFIGURATION_PREFIX,
+			"SSGI parameter was not set. The most likely cause is that the parameter is outside the `render.ssgi.` namespace.",
+			&mut self.ssgi_settings,
+			SsgiSettings::with_parameter,
+		) {
+			for sink_state in &mut self.scene.sink_states {
+				sink_state.render_pass.set_ssgi_settings(self.ssgi_settings);
 			}
 		}
 		if drain_settings(
@@ -1236,6 +1255,7 @@ impl PipelineManager for VisibilityPipelineManager {
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
 		let recorded_exposure = self.recorded_exposure;
+		let recorded_ssgi = self.recorded_ssgi;
 		let mut recorded_sinks = SmallVec::<[Sink; 4]>::new();
 		let commands = sinks
 			.iter()
@@ -1255,6 +1275,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					.map(|previous| SinkHistory {
 						view: previous.view(),
 						exposure: recorded_exposure,
+						ssgi: recorded_ssgi,
 					});
 				let command = render_pass.prepare(
 					frame,
@@ -1273,6 +1294,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			.collect();
 		self.recorded_sinks = recorded_sinks;
 		self.recorded_exposure = exposure;
+		self.recorded_ssgi = self.ssgi_settings.enabled;
 		commands
 	}
 
@@ -1322,6 +1344,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			},
 			&self.shadow_maps,
 			self.gtao_settings,
+			self.ssgi_settings,
 			self.contact_shadow_settings,
 		);
 		context.write(

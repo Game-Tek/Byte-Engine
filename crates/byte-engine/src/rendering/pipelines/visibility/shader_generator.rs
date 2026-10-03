@@ -326,7 +326,13 @@ impl VisibilityShaderScope {
 			sampled("environment_specular", Node::combined_cube_image_sampler(), 1055),
 			sampled("cone_shadow_map", Node::combined_array_image_sampler(), 1064),
 			sampled("point_shadow_map", Node::combined_cube_array_image_sampler(), 1065),
-			Node::push_constant(vec![Node::member("material_id", "u32"), Node::member("blend", "u32")]),
+			// `gtao` and `ssgi` are nonzero when those passes wrote their images this frame.
+			Node::push_constant(vec![
+				Node::member("material_id", "u32"),
+				Node::member("blend", "u32"),
+				Node::member("gtao", "u32"),
+				Node::member("ssgi", "u32"),
+			]),
 		];
 
 		// Texture operations that differ by API stay typed intrinsics; every other helper is authored once in BESL.

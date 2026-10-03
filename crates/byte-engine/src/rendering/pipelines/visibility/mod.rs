@@ -37,5 +37,5 @@ pub use manager::{
 	DIRECTIONAL_SHADOW_SPLIT_BLEND_PARAMETER, GEOMETRY_CAPACITY_PARAMETER_PREFIX, POINT_SHADOW_MAP_POOL_CAPACITY_PARAMETER,
 	VisibilityPipelineManager, VisibilityPipelineSettings,
 };
-pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX};
+pub use render_pass::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX, SSGI_CONFIGURATION_PREFIX};
 pub use shader_generator::{ScopeAccess, VisibilityShaderGenerator, VisibilityShaderScope};

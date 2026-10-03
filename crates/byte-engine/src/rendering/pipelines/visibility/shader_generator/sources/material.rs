@@ -358,19 +358,29 @@ material_evaluation_suffix: fn () -> void {
 	let geometry_k: f16 = adjusted_roughness * adjusted_roughness / 8.0;
 	let diffuse: vec3f = vec3f(0.0, 0.0, 0.0);
 	let specular: vec3f = vec3f(0.0, 0.0, 0.0);
-	// GTAO darkens only environment specular light. SSGI and reflection rays already stop at nearby geometry, so the
-	// light they find carries its own occlusion.
-	let specular_ao_factor: f16 = 1.0;
-	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
-	let indirect_diffuse_radiance: vec3f = sample_environment_irradiance(vec3f(normal)) * lighting_data.environment_intensity;
+	// The fraction of the hemisphere around the normal that nearby geometry leaves open to the environment. GTAO and
+	// SSGI each estimate it from the opaque depth buffer, so a transparent surface has neither, and either may be off.
+	let environment_visibility: f32 = 1.0;
+	// Light from SSGI rays that hit on-screen geometry, already weighted by the fraction of rays that hit.
+	let screen_space_irradiance: vec3f = vec3f(0.0, 0.0, 0.0);
 	if (push_constant.blend == 0) {
-		specular_ao_factor = f16(fetch(ao, pixel_coordinates).x);
-		// RGB holds light from rays that hit on-screen geometry; alpha is the fraction of rays that hit.
-		// The environment lights the rays that missed.
-		let screen_space_indirect: vec4f = fetch(indirect_diffuse, pixel_coordinates);
-		indirect_diffuse_radiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)
-			+ indirect_diffuse_radiance * (1.0 - screen_space_indirect.w);
+		if (push_constant.ssgi != 0) {
+			// Alpha is the fraction of rays that hit, so the rest reach the environment.
+			let screen_space_indirect: vec4f = fetch(indirect_diffuse, pixel_coordinates);
+			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z);
+			// Filter rounding can push the hit fraction past one. The clamp keeps the base of the specular fit's pow nonnegative.
+			environment_visibility = clamp(1.0 - screen_space_indirect.w, 0.0, 1.0);
+		}
+		if (push_constant.gtao != 0) {
+			// Both passes estimate the same visibility, so multiplying them would darken an occluder they both see
+			// twice. The smaller one keeps an occluder that only one of them resolves, such as a crease below SSGI's
+			// half resolution.
+			environment_visibility = min(environment_visibility, fetch(ao, pixel_coordinates).x);
+		}
 	}
+	// Environment maps store arbitrary units; the intensity calibrates them to the lux their Environment requests.
+	let indirect_diffuse_radiance: vec3f = screen_space_irradiance
+		+ sample_environment_irradiance(vec3f(normal)) * (lighting_data.environment_intensity * environment_visibility);
 	let view_fresnel_base: f16 = clamp(f16(1.0) - NdotV, f16(0.0), f16(1.0));
 	let view_fresnel_squared: f16 = view_fresnel_base * view_fresnel_base;
 	let view_fresnel_factor: f16 = view_fresnel_squared * view_fresnel_squared * view_fresnel_base;
@@ -579,7 +589,18 @@ material_evaluation_suffix: fn () -> void {
 		);
 	}
 	let reflection_weight: f32 = screen_space_reflection.w * clamp((0.4 - f32(roughness)) * 5.0, 0.0, 1.0);
-	let specular_radiance: vec3f = reflection_radiance * (f32(specular_ao_factor) * (1.0 - reflection_weight))
+	// Visibility covers the cosine-weighted hemisphere, but a reflection gathers light from a lobe around the mirror
+	// direction that narrows as roughness falls. Lagarde and de Rousiers' fit ("Moving Frostbite to PBR", 2014)
+	// converts one to the other: smooth surfaces seen head-on keep more of their reflection, and grazing views lose it.
+	// Reflection rays stop at nearby geometry, so the light they find carries its own occlusion.
+	let specular_occlusion: f32 = clamp(
+		pow(f32(NdotV) + environment_visibility, pow(2.0, 0.0 - 16.0 * f32(roughness_alpha) - 1.0))
+			- 1.0
+			+ environment_visibility,
+		0.0,
+		1.0
+	);
+	let specular_radiance: vec3f = reflection_radiance * (specular_occlusion * (1.0 - reflection_weight))
 		+ vec3f(screen_space_reflection.x, screen_space_reflection.y, screen_space_reflection.z) * reflection_weight;
 	let one_minus_roughness: f16 = f16(1.0) - roughness;
 	let grazing: vec3f16 = vec3f16(max(one_minus_roughness, F0.x), max(one_minus_roughness, F0.y), max(one_minus_roughness, F0.z));
@@ -614,12 +635,15 @@ material_evaluation_suffix: fn () -> void {
 	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
 	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
 	if (push_constant.blend == 0) {
-		let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);
-		write(
-			diffuse_radiance_map,
-			pixel_coordinates,
-			vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
-		);
+		// Only SSGI reads the diffuse light, so it is not written while SSGI is off.
+		if (push_constant.ssgi != 0) {
+			let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);
+			write(
+				diffuse_radiance_map,
+				pixel_coordinates,
+				vec4f(diffuse_radiance.x, diffuse_radiance.y, diffuse_radiance.z, perspective_w)
+			);
+		}
 		write(radiance_history_map, pixel_coordinates, vec4f(lit.x, lit.y, lit.z, perspective_w));
 	}
 }

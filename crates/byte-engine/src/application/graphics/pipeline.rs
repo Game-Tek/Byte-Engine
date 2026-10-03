@@ -101,11 +101,15 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let gtao_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);
+	let ssgi_configuration = application
+		.configuration()
+		.register(crate::rendering::pipelines::visibility::SSGI_CONFIGURATION_PREFIX);
 	let contact_shadow_configuration = application
 		.configuration()
 		.register(crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX);
 	for prefix in [
 		crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX,
+		crate::rendering::pipelines::visibility::SSGI_CONFIGURATION_PREFIX,
 		crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX,
 	] {
 		super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
@@ -115,7 +119,8 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
 	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
-		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
+		// Material evaluation's push constant: material index, blend flag, and the GTAO and SSGI flags.
+		vec![ghi::pipelines::PushConstantRange::new(0, 16)],
 		pipeline_manager.clone(),
 	);
 
@@ -145,6 +150,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		visibility_loader,
 		pipeline_manager,
 		gtao_configuration,
+		ssgi_configuration,
 		contact_shadow_configuration,
 		visibility_pipeline_settings,
 	);

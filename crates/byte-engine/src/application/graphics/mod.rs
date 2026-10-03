@@ -36,9 +36,11 @@
 /// - `messages.cell-alignment`: Sets the alignment of each payload cell. The default is `64`.
 /// - `messages.listeners-per-topic`: Sets the maximum simultaneous listeners on one typed route. The default is `64`.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
+/// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The default is `true`.
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
-/// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `6`.
-/// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `8`.
+/// - `render.gtao.samples-per-ray`: Sets the GTAO samples along each ray. The default is `4`.
+/// - `render.gtao.radial-rays`: Sets the even number of GTAO ray directions. The default is `6`.
+/// - `render.ssgi.enabled`: Runs screen-space global illumination, which adds light bounced off visible surfaces and darkens environment light that nearby geometry blocks. The default is `true`.
 /// - `render.contact-shadows.distance`: Sets the world-space reach of each contact-shadow ray. The default is `0.15`.
 /// - `render.cone-shadow-map-pool.capacity`: Sets the startup maximum for reusable cone-light shadow maps per sink. Maps allocate on first use; the default capacity is `4`.
 /// - `render.point-shadow-map-pool.capacity`: Sets the startup maximum for reusable point-light cube shadow maps per sink. Maps allocate on first use; the default capacity is `4`.

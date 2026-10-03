@@ -1,6 +1,6 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
 //! occlusion and linear depth pyramids, contact shadows, GTAO, SSGI, and material evaluation, which also traces
-//! screen-space reflections.
+//! screen-space reflections. GTAO and SSGI each run only while their settings enable them.
 //!
 //! One [`VisibilityRenderPass`] exists per sink. It owns the sink's images, buffers, and descriptor sets, and
 //! [`VisibilityRenderPass::prepare`] turns the frame's [`RenderInfo`] into one ordered recording.
@@ -129,15 +129,16 @@ pub use self::gtao::GTAO_CONFIGURATION_PREFIX;
 use self::gtao::GtaoPass;
 pub(crate) use self::gtao::GtaoSettings;
 use self::light_clusters::LightClusterPass;
-use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses};
+use self::materials::{MaterialBuffers, MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting};
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
 use self::reflections::ScreenSpaceReflections;
 pub(crate) use self::reflections::create_radiance_history_target;
 use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT, ShadowMaps, ShadowWork};
+pub use self::ssgi::SSGI_CONFIGURATION_PREFIX;
 use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiTargets, create_ssgi_targets};
+pub(crate) use self::ssgi::{SsgiSettings, SsgiTargets, create_ssgi_targets};
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
@@ -194,6 +195,8 @@ pub(crate) struct SinkHistory {
 	pub(crate) view: View,
 	/// The exposure the recorded light was multiplied by.
 	pub(crate) exposure: f32,
+	/// Whether SSGI ran, so its history and the diffuse radiance history hold this sink's data.
+	pub(crate) ssgi: bool,
 }
 
 /// The `VisibilityRenderPass` struct sequences visibility-buffer work for one sink and scene frame.
@@ -226,6 +229,7 @@ impl VisibilityRenderPass {
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		gtao_settings: GtaoSettings,
+		ssgi_settings: SsgiSettings,
 		contact_shadow_settings: ContactShadowSettings,
 	) -> Self {
 		let visibility_descriptor_set = context.create_descriptor_set(Some("Visibility Descriptor Set"));
@@ -285,6 +289,7 @@ impl VisibilityRenderPass {
 			depth_pyramid.depth_pyramid(),
 			depth_pyramid.view_data(),
 			targets.ssgi,
+			ssgi_settings,
 		);
 		let light_clusters = LightClusterPass::new(
 			context,
@@ -406,6 +411,10 @@ impl VisibilityRenderPass {
 		self.gtao.set_settings(settings);
 	}
 
+	pub(crate) fn set_ssgi_settings(&mut self, settings: SsgiSettings) {
+		self.ssgi.set_settings(settings);
+	}
+
 	pub(crate) fn set_contact_shadow_settings(&mut self, settings: ContactShadowSettings) {
 		self.contact_shadows.set_settings(settings);
 	}
@@ -463,28 +472,41 @@ impl VisibilityRenderPass {
 		let depth_pyramid_pipeline = self.depth_pyramid.pipeline(pipeline_manager)?;
 		let occlusion_pipelines = self.occlusion.pipelines(pipeline_manager)?;
 		let contact_shadow_pipelines = self.contact_shadows.pipelines(pipeline_manager)?;
-		let gtao_pipelines = self.gtao.pipelines(pipeline_manager)?;
-		let ssgi_pipelines = self.ssgi.pipelines(pipeline_manager)?;
+		// A disabled pass neither records nor holds the frame back while its pipelines compile.
+		let gtao_pipelines = match self.gtao.enabled() {
+			true => Some(self.gtao.pipelines(pipeline_manager)?),
+			false => None,
+		};
+		let ssgi_pipelines = match self.ssgi.enabled() {
+			true => Some(self.ssgi.pipelines(pipeline_manager)?),
+			false => None,
+		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
 		let occlusion_pyramid = self.occlusion.prepare(occlusion_pipelines);
 		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
 		let contact_shadows = self
 			.contact_shadows
 			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipelines);
-		let gtao = self.gtao.prepare(frame, sink, gtao_pipelines);
-		let ssgi = self
-			.ssgi
-			.prepare(frame, sink, history.map(|history| history.view), ssgi_pipelines);
+		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, pipelines));
+		// SSGI history exists only if the pass also ran last frame.
+		let ssgi_previous_view = history.filter(|history| history.ssgi).map(|history| history.view);
+		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_previous_view, pipelines));
 		self.reflections.prepare(frame, history);
+		let screen_space_lighting = ScreenSpaceLighting {
+			gtao: gtao.is_some(),
+			ssgi: ssgi.is_some(),
+		};
 		let opaque_materials = self.material_evaluation.prepare(
 			&render_info.opaque_materials,
 			&render_info.opaque_material_mask,
 			VisibilityPhase::Opaque,
+			screen_space_lighting,
 		);
 		let transparent_materials = self.material_evaluation.prepare(
 			&render_info.transparent_materials,
 			&render_info.transparent_material_mask,
 			VisibilityPhase::Transparent,
+			screen_space_lighting,
 		);
 		// Prepare the background last: it may record one-time work, such as building lookup tables, that would be
 		// lost if this pass gave up on the frame after it. A background still compiling leaves the sky black for this
@@ -524,8 +546,12 @@ impl VisibilityRenderPass {
 			// The screen-space passes don't read shadows, so the GPU can run them alongside the shadow maps.
 			depth_pyramid(c);
 			contact_shadows(c);
-			gtao(c);
-			ssgi(c);
+			if let Some(gtao) = &gtao {
+				gtao(c);
+			}
+			if let Some(ssgi) = &ssgi {
+				ssgi(c);
+			}
 			opaque_materials(c);
 			// The background fills pixels no opaque surface covered, so transparent surfaces composite over it.
 			if let Some(background) = background {

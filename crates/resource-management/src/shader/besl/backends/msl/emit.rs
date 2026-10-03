@@ -31,7 +31,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Extracts one vertex or primitive field write so adjacent writes can become one native vertex or primitive value.
-	pub(crate) fn mesh_write_parts(&mut self, statement: &besl::NodeReference) -> Option<MeshWrite> {
+	pub(crate) fn mesh_write_parts(&self, statement: &besl::NodeReference) -> Option<MeshWrite> {
 		let node = statement.borrow();
 		if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
 			intrinsic, arguments, ..
@@ -40,13 +40,13 @@ impl<A: Allocator + Clone> Generator<A> {
 			let [index, value] = arguments.as_slice() else {
 				return None;
 			};
-			let (rate, field) = match intrinsic.borrow().get_name() {
-				Some("set_mesh_primitive_render_target_array_index") => (MeshWriteRate::Primitive, "render_target_array_index"),
-				Some("set_mesh_vertex_position") => (MeshWriteRate::Vertex, "position"),
+			let (per_vertex, field) = match intrinsic.borrow().get_name() {
+				Some("set_mesh_primitive_render_target_array_index") => (false, "render_target_array_index"),
+				Some("set_mesh_vertex_position") => (true, "position"),
 				_ => return None,
 			};
 			return Some(MeshWrite {
-				rate,
+				per_vertex,
 				field: field.to_string(),
 				index: index.clone(),
 				value: value.clone(),
@@ -71,54 +71,29 @@ impl<A: Allocator + Clone> Generator<A> {
 			return None;
 		};
 
-		let output_node = output.borrow();
-		let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = output_node.node() else {
-			return None;
-		};
-
-		let source = source.borrow();
-		let besl::Nodes::Output {
-			name, count, per_vertex, ..
-		} = source.node()
-		else {
-			return None;
-		};
-
-		if count.is_none() {
-			return None;
-		}
+		let (name, per_vertex) = crate::shader::generator::mesh_output_target(output)?;
 
 		Some(MeshWrite {
-			rate: if *per_vertex {
-				MeshWriteRate::Vertex
-			} else {
-				MeshWriteRate::Primitive
-			},
-			field: Self::mesh_output_field_name(name).to_string(),
+			per_vertex,
+			field: Self::mesh_output_field_name(&name).to_string(),
 			index: index.clone(),
 			value: right.clone(),
 		})
 	}
 
 	/// Returns one vertex or primitive field's native declaration position for Metal aggregate initialization.
-	pub(crate) fn mesh_field_order(&self, rate: MeshWriteRate, field: &str) -> usize {
-		let (builtin, fields) = match rate {
-			MeshWriteRate::Vertex => (
-				"position",
-				self.mesh_stage_context.as_ref().map(|context| &context.vertex_output_fields),
-			),
-			MeshWriteRate::Primitive => (
-				"render_target_array_index",
-				self.mesh_stage_context
-					.as_ref()
-					.map(|context| &context.primitive_output_fields),
-			),
-		};
-		if field == builtin {
+	pub(crate) fn mesh_field_order(&self, per_vertex: bool, field: &str) -> usize {
+		if field == if per_vertex { "position" } else { "render_target_array_index" } {
 			return 0;
 		}
-		fields
-			.and_then(|fields| fields.iter().position(|declared| declared == field))
+		self.mesh_stage_context
+			.as_ref()
+			.and_then(|context| {
+				context
+					.mesh_output_fields
+					.iter()
+					.position(|(vertex_field, declared)| *vertex_field == per_vertex && declared == field)
+			})
 			.map_or(usize::MAX, |index| index + 1)
 	}
 
@@ -128,25 +103,18 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		while i < statements.len() {
 			if self.mesh_stage_context.is_some()
-				&& let Some(MeshWrite {
-					rate,
-					field,
-					index,
-					value,
-				}) = self.mesh_write_parts(&statements[i])
+				&& let Some(first) = self.mesh_write_parts(&statements[i])
 			{
+				let per_vertex = first.per_vertex;
 				let mut index_string = String::new();
-				self.emit_node_string(&mut index_string, &index);
-				let mut writes = vec![(field, value)];
+				self.emit_node_string(&mut index_string, &first.index);
+				let mut writes = vec![(first.field, first.value)];
 				let mut next = i + 1;
 
-				while next < statements.len() {
-					let Some(write) = self.mesh_write_parts(&statements[next]) else {
-						break;
-					};
+				while let Some(write) = statements.get(next).and_then(|statement| self.mesh_write_parts(statement)) {
 					let mut next_index_string = String::new();
 					self.emit_node_string(&mut next_index_string, &write.index);
-					if write.rate != rate
+					if write.per_vertex != per_vertex
 						|| next_index_string != index_string
 						|| writes.iter().any(|(written, _)| written == &write.field)
 					{
@@ -157,20 +125,20 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 				// Metal sets a whole vertex at once, so a vertex written without its position would lose it.
 				assert!(
-					rate == MeshWriteRate::Primitive || writes.iter().any(|(field, _)| field == "position"),
+					!per_vertex || writes.iter().any(|(field, _)| field == "position"),
 					"Metal mesh vertex outputs must be written next to `set_mesh_vertex_position` with the same index. The most likely cause is that a `vertex_output` write is separated from the vertex position write by another statement."
 				);
 				// Metal requires designated initializers to follow the output struct's declaration order.
-				writes.sort_by_key(|(field, _)| self.mesh_field_order(rate, field));
+				writes.sort_by_key(|(field, _)| self.mesh_field_order(per_vertex, field));
 
 				formatting.push_indentation(string, indent);
-				let (setter, structure) = match rate {
-					MeshWriteRate::Vertex => ("out_mesh.set_vertex(", ", VertexOutput{"),
-					MeshWriteRate::Primitive => ("out_mesh.set_primitive(", ", PrimitiveOutput{"),
-				};
-				string.push_str(setter);
-				self.emit_node_string(string, &index);
-				string.push_str(structure);
+				string.push_str(if per_vertex {
+					"out_mesh.set_vertex("
+				} else {
+					"out_mesh.set_primitive("
+				});
+				self.emit_node_string(string, &first.index);
+				string.push_str(if per_vertex { ", VertexOutput{" } else { ", PrimitiveOutput{" });
 				for (write_index, (field, value)) in writes.iter().enumerate() {
 					if write_index > 0 {
 						string.push_str(", ");
@@ -632,25 +600,16 @@ impl<A: Allocator + Clone> Generator<A> {
 			Stages::Mesh { .. } => msl_block.push_str("// #pragma shader_stage(mesh)\n"),
 		}
 
-		match compilation_settings.stage {
-			Stages::Compute { local_size } => {
-				msl_block.push_str(&format!(
-					"// besl-threadgroup-size:{},{},{}\n",
-					local_size.width().max(1),
-					local_size.height().max(1),
-					local_size.depth().max(1)
-				));
+		if let Some(local_size) = compilation_settings.local_size() {
+			msl_block.push_str(&format!(
+				"// besl-threadgroup-size:{},{},{}\n",
+				local_size.width().max(1),
+				local_size.height().max(1),
+				local_size.depth().max(1)
+			));
+			if matches!(compilation_settings.stage, Stages::Compute { .. }) {
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}
-			Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
-				msl_block.push_str(&format!(
-					"// besl-threadgroup-size:{},{},{}\n",
-					local_size.width().max(1),
-					local_size.height().max(1),
-					local_size.depth().max(1)
-				));
-			}
-			_ => {}
 		}
 
 		msl_block.push_str("// Matrix layout: row major\n");

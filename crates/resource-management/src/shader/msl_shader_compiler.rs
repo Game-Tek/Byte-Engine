@@ -11,7 +11,7 @@ use crate::shader::{
 		backends::msl::MSLTranspiler,
 		evaluation::{BindingKind, BindingRecord, collect_bindings},
 	},
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator, Stages},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 };
 
 /// The `Compiler` struct exists to compile Metal Shading Language shaders into binary libraries.
@@ -69,27 +69,6 @@ impl<A: Allocator + Clone> Compiler<A> {
 			.await
 	}
 
-	/// Lowers `program` to the MSL source that [`compile_msl_source_to_metallib`] compiles.
-	pub fn transpile(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-	) -> Result<String, String> {
-		self.transpile_in(shader_compilation_settings, program, self.allocator.clone())
-	}
-
-	/// Lowers `program` to MSL source using `allocator` for one-call source-generation scratch.
-	fn transpile_in(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-		allocator: A,
-	) -> Result<String, String> {
-		self.msl_transpiler
-			.generate_program_in(shader_compilation_settings, program, allocator)
-			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))
-	}
-
 	/// Generates a compiled Metal shader using `allocator` for one-call source-generation scratch.
 	pub async fn generate_in(
 		&mut self,
@@ -97,7 +76,10 @@ impl<A: Allocator + Clone> Compiler<A> {
 		program: &besl::NodeReference,
 		allocator: A,
 	) -> Result<GeneratedShader, String> {
-		let msl_shader = self.transpile_in(shader_compilation_settings, program, allocator)?;
+		let msl_shader = self
+			.msl_transpiler
+			.generate_program_in(shader_compilation_settings, program, allocator)
+			.map_err(|_| error("Failed to generate MSL shader source", "The MSL transpiler returned an error"))?;
 
 		let binary = compile_msl_source_to_metallib(&msl_shader, &shader_compilation_settings.name).await?;
 
@@ -106,15 +88,8 @@ impl<A: Allocator + Clone> Compiler<A> {
 		Ok(CompiledShader::new(
 			binary,
 			bindings,
-			reflected_workgroup_extent(shader_compilation_settings),
+			shader_compilation_settings.local_size(),
 		))
-	}
-}
-
-fn reflected_workgroup_extent(settings: &ShaderGenerationSettings) -> Option<utils::Extent> {
-	match &settings.stage {
-		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => Some(*local_size),
-		Stages::Vertex | Stages::Fragment => None,
 	}
 }
 
@@ -169,14 +144,7 @@ fn metal_build_arguments() -> &'static [&'static str] {
 /// Describes the installed Metal compiler and the flags [`compile_msl_source_to_metallib`] passes.
 ///
 /// Baked shader reuse hashes this text, so a stored Metal library is only reused by the toolchain that produced it.
-/// The version query runs once per process.
 pub async fn metal_compiler_identity() -> Result<String, String> {
-	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-	if let Some(identity) = IDENTITY.get() {
-		return Ok(identity.clone());
-	}
-
 	let mut version_cmd = crate::r#async::Command::new("xcrun");
 	version_cmd.args(["-sdk", "macosx", "metal", "--version"]);
 	version_cmd
@@ -194,31 +162,18 @@ pub async fn metal_compiler_identity() -> Result<String, String> {
 	})?;
 
 	if !output.status.success() {
-		let exit_status = output
-			.status
-			.code()
-			.map_or_else(|| output.status.to_string(), |code| code.to_string());
-		let cause = if metal_toolchain_missing(&output.stderr) {
-			"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`"
-		} else {
-			"The Metal compiler could not report its version"
-		};
 		return Err(format_tool_failure(
 			"Failed to query the Metal compiler version",
-			cause,
-			&exit_status,
-			&output.stdout,
-			&output.stderr,
+			"The Metal compiler could not report its version",
+			&output,
 		));
 	}
 
-	let identity = format!(
+	Ok(format!(
 		"{}; arguments={:?}",
 		String::from_utf8_lossy(&output.stdout).trim(),
 		metal_build_arguments()
-	);
-
-	Ok(IDENTITY.get_or_init(|| identity).clone())
+	))
 }
 
 /// Compiles Metal Shading Language source into a Metal library binary.
@@ -278,25 +233,10 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 	})?;
 
 	if !metal_output.status.success() {
-		let exit_status = metal_output
-			.status
-			.code()
-			.map_or_else(|| metal_output.status.to_string(), |code| code.to_string());
-		if metal_toolchain_missing(&metal_output.stderr) {
-			return Err(format_tool_failure(
-				"Failed to compile MSL shader",
-				"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`",
-				&exit_status,
-				&metal_output.stdout,
-				&metal_output.stderr,
-			));
-		}
 		return Err(format_tool_failure(
 			"Failed to compile MSL shader",
 			"The Metal compiler reported an error",
-			&exit_status,
-			&metal_output.stdout,
-			&metal_output.stderr,
+			&metal_output,
 		));
 	}
 
@@ -308,12 +248,6 @@ pub async fn compile_msl_source_to_metallib(msl_source: &str, name: &str) -> Res
 	})?;
 
 	Ok(binary.into_boxed_slice())
-}
-
-/// Detects the missing optional Metal compiler component in `xcrun` diagnostics.
-fn metal_toolchain_missing(stderr: &[u8]) -> bool {
-	let stderr = String::from_utf8_lossy(stderr);
-	stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'")
 }
 
 fn sanitize_shader_name(name: &str) -> String {
@@ -339,11 +273,23 @@ fn error(message: &str, cause: &str) -> String {
 	format!("{message}. {cause}.")
 }
 
-fn format_tool_failure(message: &str, cause: &str, exit_status: &str, stdout: &[u8], stderr: &[u8]) -> String {
-	let stdout = String::from_utf8_lossy(stdout);
+/// Formats a failed Metal tool run with its exit status and output.
+///
+/// `cause` is replaced when the `xcrun` diagnostics report that the optional Metal Toolchain component is missing.
+fn format_tool_failure(message: &str, cause: &str, output: &std::process::Output) -> String {
+	let exit_status = output
+		.status
+		.code()
+		.map_or_else(|| output.status.to_string(), |code| code.to_string());
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	let cause = if stderr.contains("missing Metal Toolchain") || stderr.contains("cannot execute tool 'metal'") {
+		"The Metal Toolchain is missing; install it with `xcodebuild -downloadComponent MetalToolchain`"
+	} else {
+		cause
+	};
+	let stdout = String::from_utf8_lossy(&output.stdout);
 	let stdout = stdout.trim();
 	let stdout = if stdout.is_empty() { "<empty>" } else { stdout };
-	let stderr = String::from_utf8_lossy(stderr);
 	let stderr = stderr.trim();
 	let stderr = if stderr.is_empty() { "<empty>" } else { stderr };
 

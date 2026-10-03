@@ -64,9 +64,7 @@ mod tests {
 		assert_string_contains!(shader, "Instance instance=instances[");
 		assert_string_contains!(shader, "texture(sprites,vec3(");
 		assert_string_contains!(shader, "float(instance.sprite_id)");
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-runtime-array-texture-layer")
-			.expect("Expected runtime-array fragment GLSL to compile to SPIR-V");
+		compile(&shader, "besl-runtime-array-texture-layer");
 	}
 
 	#[test]
@@ -97,9 +95,7 @@ mod tests {
 			shader,
 			"layout(set=0,binding=3,scalar) writeonly buffer _results{uint32_t results[];};"
 		);
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-scalar-runtime-array")
-			.expect("Expected scalar runtime-array GLSL to compile to SPIR-V");
+		compile(&shader, "besl-scalar-runtime-array");
 	}
 
 	#[test]
@@ -118,9 +114,7 @@ mod tests {
 		assert_string_contains!(shader, "textureLod(textures[nonuniformEXT(index+1)],uv,0.0)");
 		assert_string_contains!(shader, "texture(textures[nonuniformEXT(items[index].slot)],uv)");
 
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-descriptor-array-intrinsics")
-			.expect("Expected descriptor-array fragment GLSL to compile to SPIR-V");
+		compile(&shader, "besl-descriptor-array-intrinsics");
 	}
 
 	#[test]
@@ -172,9 +166,7 @@ mod tests {
 		assert_string_contains!(shader, "float besl_float=besl_texture(wrapper.value.besl_half,2.0);");
 		assert_string_contains!(shader, "void main(");
 
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-reserved-names")
-			.expect("Expected GLSL with prefixed reserved names to compile to SPIR-V");
+		compile(&shader, "besl-reserved-names");
 	}
 
 	#[test]
@@ -481,30 +473,7 @@ mod tests {
 	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
 	#[test]
 	fn vertex_mesh_outputs_join_the_vertex_struct() {
-		let root = besl::compile_to_besl(
-			r#"
-			out_primitive_index: output<u32, 1, 1>;
-			out_uv: vertex_output<vec2f, 2, 3>;
-
-			main: fn () -> void {
-				let lane: u32 = thread_idx();
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
-				if (lane < 3) {
-					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
-					out_uv[lane] = vec2f(f32(lane), 1.0);
-				}
-				if (lane < 1) {
-					set_mesh_triangle(0, vec3u(0, 1, 2));
-					out_primitive_index[0] = lane;
-				}
-			}
-			"#,
-			None,
-		)
-		.expect("Expected mesh shader source to compile");
-		let main = root.get_main().expect("Expected mesh shader source to contain main");
+		let main = generator::tests::vertex_and_primitive_mesh_outputs();
 		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
@@ -565,9 +534,7 @@ mod tests {
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
 
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-else-chain")
-			.expect("Expected else-chain GLSL to compile to SPIR-V");
+		compile(&shader, "besl-else-chain");
 	}
 
 	#[test]
@@ -613,8 +580,7 @@ mod tests {
 			"switch(signed){case (-2147483647-1):{n=2;break;}default:{n=3;break;}}"
 		);
 
-		#[cfg(target_os = "linux")]
-		crate::shader::glsl_compile::compile(&shader, "besl-match").expect("Expected match GLSL to compile to SPIR-V");
+		compile(&shader, "besl-match");
 	}
 
 	#[test]
@@ -642,10 +608,12 @@ mod tests {
 	}
 
 	/// Compiles generated GLSL to SPIR-V on Linux so a lowering that glslang rejects fails the test.
-	#[cfg(target_os = "linux")]
 	fn compile(shader: &str, name: &str) {
-		crate::shader::glsl_compile::compile(shader, name)
+		#[cfg(target_os = "linux")]
+		crate::shader::besl::backends::spirv::compile_glsl_to_spirv(shader, name)
 			.unwrap_or_else(|error| panic!("Expected {name} GLSL to compile to SPIR-V. {error}"));
+		#[cfg(not(target_os = "linux"))]
+		let _ = (shader, name);
 	}
 
 	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
@@ -735,7 +703,6 @@ mod tests {
 			assert_string_contains!(shader, predicate);
 		}
 
-		#[cfg(target_os = "linux")]
 		compile(&shader, "besl-modern-half-atomics");
 	}
 
@@ -762,7 +729,6 @@ mod tests {
 			.expect("Expected find_lsb fixture to lower to GLSL");
 		assert_string_contains!(shader, "uint(findLSB(bits))");
 
-		#[cfg(target_os = "linux")]
 		compile(&shader, "besl-find-lsb");
 	}
 
@@ -818,7 +784,6 @@ mod tests {
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "vec4 texel=texelFetch(besl_texture,ivec2(coord),0);");
 
-		#[cfg(target_os = "linux")]
 		compile(&shader, "besl-fetch");
 	}
 
@@ -846,7 +811,6 @@ mod tests {
 			"atomicCompSwap(shared_keys[uint(gl_LocalInvocationIndex)],4294967295,7)"
 		);
 
-		#[cfg(target_os = "linux")]
 		compile(&shader, "besl-atomic-compare-exchange");
 	}
 
@@ -873,7 +837,6 @@ mod tests {
 		assert_string_contains!(shader, "const vec3 WEIGHTS = vec3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 
-		#[cfg(target_os = "linux")]
 		compile(&shader, "besl-const-array");
 	}
 }

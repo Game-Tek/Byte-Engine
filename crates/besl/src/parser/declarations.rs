@@ -536,14 +536,10 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	/// Declares a mesh output array with one flat element per primitive.
-	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), false)
-	}
-
-	/// Declares a mesh output array with one element per vertex, which rasterization interpolates.
-	pub fn vertex_output_array(name: &'a str, format: &'a str, location: u8, count: u32) -> Node<'a> {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), true)
+	/// Declares a mesh output array with one element per vertex, which rasterization interpolates, when `per_vertex`
+	/// is set, or one flat element per primitive otherwise.
+	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32, per_vertex: bool) -> Node<'a> {
+		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), per_vertex)
 	}
 
 	pub fn task_payload(name: &'a str, format: &'a str, count: u32) -> Node<'a> {

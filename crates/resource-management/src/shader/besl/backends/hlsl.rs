@@ -36,7 +36,10 @@ mod tests {
 	use std::cell::RefCell;
 
 	use super::*;
-	use crate::shader::generator::{self, ShaderGenerationSettings};
+	use crate::{
+		shader::generator::{self, ShaderGenerationSettings},
+		types::ShaderTypes,
+	};
 
 	macro_rules! assert_string_contains {
 		($haystack:expr, $needle:expr) => {
@@ -127,14 +130,7 @@ mod tests {
 			assert_string_contains!(shader, predicate);
 		}
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"modern-half-atomic-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected modern half and atomic HLSL to compile to DXIL");
+		compile_dxil(&shader, "modern-half-atomic-regression", ShaderTypes::Compute);
 	}
 
 	/// An `else if` condition's atomic runs only when that branch is reached, so it is lifted into the else block.
@@ -159,14 +155,7 @@ mod tests {
 		assert_string_contains!(shader, "}else{uint32_t besl_atomic_previous_0;");
 		assert_string_contains!(shader, "if(besl_atomic_previous_0==0){n=3;}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-else-if-atomic",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected else-if atomic HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-else-if-atomic", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -266,14 +255,7 @@ mod tests {
 		);
 		assert_string_does_not_contain!(shader, "InterlockedAdd(signed_value,-(");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"signed-atomic-sub-wrapping-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected signed atomic subtraction HLSL to compile to DXIL");
+		compile_dxil(&shader, "signed-atomic-sub-wrapping-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -461,14 +443,7 @@ mod tests {
 			"textures[2].SampleGrad(textures_sampler[2],float2(0.0,0.0),float2(0.0,0.0),float2(0.0,0.0))"
 		);
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"descriptor-array-sample-grad-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected descriptor-array gradient sample HLSL to compile to DXIL");
+		compile_dxil(&shader, "descriptor-array-sample-grad-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -570,14 +545,7 @@ mod tests {
 		assert_string_does_not_contain!(shader, "vector[x]");
 		assert_string_does_not_contain!(shader, "joints[x]");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"vector-access-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected vector access HLSL to compile to DXIL");
+		compile_dxil(&shader, "vector-access-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -613,14 +581,7 @@ mod tests {
 		);
 		assert_string_does_not_contain!(shader, "Pair pair=Pair(");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"user-struct-constructor-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected user struct constructor HLSL to compile to DXIL");
+		compile_dxil(&shader, "user-struct-constructor-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -706,14 +667,7 @@ mod tests {
 		assert_string_does_not_contain!(shader, "return float4x4(extend_vec3f(model[0]");
 		assert_string_does_not_contain!(shader, "transpose(model)[3]");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"affine-matrix-semantics-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected affine-matrix HLSL to compile to DXIL");
+		compile_dxil(&shader, "affine-matrix-semantics-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -813,14 +767,7 @@ mod tests {
 		assert_string_contains!(shader, "float4 subtracted=transpose(scale-besl_matrix)[3];");
 		assert_string_contains!(shader, "float4 remainder=transpose(besl_matrix%scale)[0];");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"buffered-matrix-column-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected buffered matrix-column HLSL to compile to DXIL");
+		compile_dxil(&shader, "buffered-matrix-column-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -862,43 +809,13 @@ mod tests {
 		assert_string_contains!(shader, "besl_mesh_output_count = besl_atomic_previous_");
 		assert_string_contains!(shader, "DispatchMesh(besl_mesh_output_count, 1, 1, payload);");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"task-payload-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Task,
-		)
-		.expect("Expected task HLSL to compile to amplification DXIL");
+		compile_dxil(&shader, "task-payload-regression", ShaderTypes::Task);
 	}
 
 	/// Verifies per-vertex mesh outputs join the interpolated vertex struct while per-primitive outputs stay flat.
 	#[test]
 	fn vertex_mesh_outputs_join_the_vertex_struct() {
-		let root = besl::compile_to_besl(
-			r#"
-			out_primitive_index: output<u32, 1, 1>;
-			out_uv: vertex_output<vec2f, 2, 3>;
-
-			main: fn () -> void {
-				let lane: u32 = thread_idx();
-				if (lane == 0) {
-					set_mesh_output_counts(3, 1);
-				}
-				if (lane < 3) {
-					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
-					out_uv[lane] = vec2f(f32(lane), 1.0);
-				}
-				if (lane < 1) {
-					set_mesh_triangle(0, vec3u(0, 1, 2));
-					out_primitive_index[0] = lane;
-				}
-			}
-			"#,
-			None,
-		)
-		.expect("Expected mesh shader source to compile");
-		let main = root.get_main().expect("Expected mesh shader source to contain main");
+		let main = generator::tests::vertex_and_primitive_mesh_outputs();
 		let shader = Generator::new()
 			.minified(true)
 			.generate(&ShaderGenerationSettings::mesh(3, 1, utils::Extent::line(32)), &main)
@@ -962,14 +879,7 @@ mod tests {
 		assert_string_contains!(shader, "besl_primitives[0].render_target_array_index = 2");
 		assert_string_contains!(shader, "besl_primitives[0].out_instance_index=meshlet_index");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"mesh-output-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Mesh,
-		)
-		.expect("Expected mesh HLSL to compile to mesh DXIL");
+		compile_dxil(&shader, "mesh-output-regression", ShaderTypes::Mesh);
 	}
 
 	#[test]
@@ -1214,14 +1124,7 @@ mod tests {
 			"Packed writes must evaluate a self-reading right-hand side before reading and replacing its destination word."
 		);
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"packed-narrow-buffer-write-regression",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected read-write narrow-buffer HLSL to compile to DXIL");
+		compile_dxil(&shader, "packed-narrow-buffer-write-regression", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -1530,14 +1433,7 @@ mod tests {
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-else-chain",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected else-chain HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-else-chain", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -1573,14 +1469,7 @@ mod tests {
 		);
 		assert_string_contains!(shader, "switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}");
 
-		#[cfg(target_os = "windows")]
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			&shader,
-			"besl-match",
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.expect("Expected match HLSL to compile to DXIL");
+		compile_dxil(&shader, "besl-match", ShaderTypes::Compute);
 	}
 
 	#[test]
@@ -1658,8 +1547,7 @@ mod tests {
 		assert_string_contains!(shader, "float4 copy[3]=values;");
 		assert_string_does_not_contain!(shader, "float4[3]");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "local arrays");
+		compile_dxil(&shader, "local arrays", ShaderTypes::Compute);
 	}
 
 	/// Verifies HLSL generation rejects an array constructor outside a declaration, which HLSL can't express.
@@ -1689,16 +1577,13 @@ mod tests {
 		);
 	}
 
-	/// Compiles generated compute HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
-	#[cfg(target_os = "windows")]
-	fn compile_compute(shader: &str, name: &str) {
-		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(
-			shader,
-			name,
-			"besl_main",
-			crate::types::ShaderTypes::Compute,
-		)
-		.unwrap_or_else(|error| panic!("Expected {name} HLSL to compile to DXIL. {error}"));
+	/// Compiles generated HLSL with DXC on Windows so a lowering that DXC rejects fails the test.
+	fn compile_dxil(shader: &str, name: &str, stage: ShaderTypes) {
+		#[cfg(target_os = "windows")]
+		crate::shader::hlsl_shader_compiler::compile_hlsl_source_to_dxil(shader, name, "besl_main", stage)
+			.unwrap_or_else(|error| panic!("Expected {name} HLSL to compile to DXIL. {error}"));
+		#[cfg(not(target_os = "windows"))]
+		let _ = (shader, name, stage);
 	}
 
 	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
@@ -1752,8 +1637,7 @@ mod tests {
 		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(remaining)");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-subgroup-waves");
+		compile_dxil(&shader, "besl-subgroup-waves", ShaderTypes::Compute);
 	}
 
 	/// Verifies `find_lsb` lowers to `firstbitlow`, which returns `0xffffffff` for zero like the BESL contract and the other backends.
@@ -1779,8 +1663,7 @@ mod tests {
 			.expect("Expected find_lsb fixture to lower to HLSL");
 		assert_string_contains!(shader, "firstbitlow(bits)");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-find-lsb");
+		compile_dxil(&shader, "besl-find-lsb", ShaderTypes::Compute);
 	}
 
 	/// Verifies specialization constants become `static const` values, because DX12 has no Vulkan-style specialization constants.
@@ -1831,8 +1714,7 @@ mod tests {
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "float4 texel=besl_texture.Load(int3(coord, 0));");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-fetch");
+		compile_dxil(&shader, "besl-fetch", ShaderTypes::Compute);
 	}
 
 	/// Verifies compute builtins, image access, storage buffers and atomic stores use their DX12 HLSL forms.
@@ -1970,8 +1852,7 @@ mod tests {
 			"InterlockedCompareExchange(shared_keys[group_thread_index],7,9,besl_atomic_previous_1);"
 		);
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-atomic-compare-exchange");
+		compile_dxil(&shader, "besl-atomic-compare-exchange", ShaderTypes::Compute);
 	}
 
 	/// Verifies a global scalar-array constant is `static const`, since a plain HLSL global would become a constant-buffer uniform.
@@ -1997,8 +1878,7 @@ mod tests {
 		assert_string_contains!(shader, "static const float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-const-array");
+		compile_dxil(&shader, "besl-const-array", ShaderTypes::Compute);
 	}
 
 	/// Verifies BESL `mix` lowers to HLSL `lerp`, since HLSL has no `mix`.
@@ -2022,8 +1902,7 @@ mod tests {
 		assert_string_contains!(shader, "float value=lerp(0.0,1.0,0.5);");
 		assert_string_does_not_contain!(shader, "mix(");
 
-		#[cfg(target_os = "windows")]
-		compile_compute(&shader, "besl-mix-lerp");
+		compile_dxil(&shader, "besl-mix-lerp", ShaderTypes::Compute);
 	}
 }
 

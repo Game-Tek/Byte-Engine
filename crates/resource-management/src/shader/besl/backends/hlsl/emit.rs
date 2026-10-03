@@ -74,31 +74,9 @@ impl Generator {
 			string.push_str(type_name);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
-			string.push_str(" : TEXCOORD");
-			string.push_str(&location.to_string());
+			let _ = write!(string, " : TEXCOORD{location}");
 			formatting.push_statement_end(string);
 		}
-	}
-
-	/// Recovers an indexed mesh-output declaration so HLSL can address its vertex or primitive structure field.
-	///
-	/// Returns the field name and whether the output is per-vertex.
-	pub(crate) fn hlsl_mesh_output_target(left: &besl::NodeReference) -> Option<(String, bool)> {
-		let left = left.borrow();
-		let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = left.node() else {
-			return None;
-		};
-		let source = source.borrow();
-		let besl::Nodes::Output {
-			name,
-			count: Some(_),
-			per_vertex,
-			..
-		} = source.node()
-		else {
-			return None;
-		};
-		Some((name.clone(), *per_vertex))
 	}
 
 	/// Finds a lane-guarded BESL mesh-count statement that HLSL must execute uniformly.
@@ -157,8 +135,7 @@ impl Generator {
 			string.push_str(type_name);
 			string.push(' ');
 			Self::identifier(name).push_to(string);
-			string.push_str(" : TEXCOORD");
-			string.push_str(&location.to_string());
+			let _ = write!(string, " : TEXCOORD{location}");
 			has_previous_parameter = true;
 		}
 

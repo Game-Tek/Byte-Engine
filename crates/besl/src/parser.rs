@@ -525,7 +525,7 @@ TAU: const f32 = 3.14 * 2.0;
 	fn parse_bitwise_expression() {
 		let source = "
 main: fn () -> void {
-	let packed: u32 = 1 << 8 | 2 & 255;
+	let packed: u32 = 1 << 8 | 2 ^ 3 & 255;
 }";
 
 		let tokens = tokenize(source).expect("Failed to tokenize");
@@ -551,37 +551,8 @@ main: fn () -> void {
 			left.node,
 			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == Operators::ShiftLeft
 		));
-		assert!(matches!(
-			right.node,
-			Nodes::Expression(Expressions::Operator { operator, .. }) if operator == Operators::BitwiseAnd
-		));
-	}
 
-	#[test]
-	fn parse_bitwise_xor_between_or_and_and() {
-		let source = "
-main: fn () -> void {
-	let packed: u32 = 1 | 2 ^ 3 & 255;
-}";
-
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		let main_node = &node["main"];
-		let Nodes::Function { statements, .. } = &main_node.node else {
-			panic!("Expected main function");
-		};
-
-		let Nodes::Expression(Expressions::Operator { right, .. }) = &statements[0].node else {
-			panic!("Expected assignment expression");
-		};
-
-		let Nodes::Expression(Expressions::Operator { operator, right, .. }) = &right.node else {
-			panic!("Expected bitwise or expression");
-		};
-
-		assert_eq!(*operator, Operators::BitwiseOr);
-
+		// XOR binds tighter than OR and looser than AND.
 		let Nodes::Expression(Expressions::Operator { operator, right, .. }) = &right.node else {
 			panic!("Expected bitwise xor expression");
 		};

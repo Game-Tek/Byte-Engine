@@ -108,9 +108,7 @@ impl<A: Allocator + Clone> Generator<A> {
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
 			Self::identifier(name).push_to(string);
-			string.push_str(" [[attribute(");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
+			let _ = write!(string, " [[attribute({location})]]");
 			formatting.push_statement_end(string);
 		}
 
@@ -118,7 +116,6 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	pub(crate) fn emit_fragment_input_struct(&mut self, string: &mut String, inputs: &[&besl::NodeReference]) {
-		let formatting = ShaderFormatting::new(self.minified);
 		self.emit_named_struct_start(string, "FragmentInput");
 
 		for input in inputs {
@@ -129,22 +126,28 @@ impl<A: Allocator + Clone> Generator<A> {
 			if Self::is_fragment_builtin_input(name) {
 				continue;
 			}
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
+			self.emit_user_attribute(string, name, format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
+	}
+
+	/// Emits one user attribute field that links a raster stage output to the next stage's input.
+	///
+	/// Metal cannot interpolate integers, so integer attributes are `[[flat]]`.
+	fn emit_user_attribute(&self, string: &mut String, name: &str, format: &besl::NodeReference, location: u8) {
+		let formatting = ShaderFormatting::new(self.minified);
+		formatting.push_indentation(string, 1);
+		let format = format.borrow();
+		let type_name = format.get_name().unwrap();
+		string.push_str(Self::translate_type(type_name));
+		string.push(' ');
+		Self::identifier(name).push_to(string);
+		if is_integer_besl_type(type_name) {
+			string.push_str(" [[flat]]");
+		}
+		let _ = write!(string, " [[user(locn{location})]]");
+		formatting.push_statement_end(string);
 	}
 
 	pub(crate) fn emit_fragment_output_struct(&mut self, string: &mut String, outputs: &[&besl::NodeReference]) {
@@ -157,15 +160,12 @@ impl<A: Allocator + Clone> Generator<A> {
 				name,
 				location,
 				format,
-				count,
+				count: None,
 				..
 			} = output.node()
 			else {
 				continue;
 			};
-			if count.is_some() {
-				continue;
-			}
 			formatting.push_indentation(string, 1);
 			string.push_str(Self::translate_type(format.borrow().get_name().unwrap()));
 			string.push(' ');
@@ -175,9 +175,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				"stencil" => string.push_str(" [[stencil]]"),
 				"sample_mask" => string.push_str(" [[sample_mask]]"),
 				_ => {
-					string.push_str(" [[color(");
-					string.push_str(location.to_string().as_str());
-					string.push_str(")]]");
+					let _ = write!(string, " [[color({location})]]");
 				}
 			}
 			formatting.push_statement_end(string);
@@ -200,28 +198,16 @@ impl<A: Allocator + Clone> Generator<A> {
 				name,
 				location,
 				format,
-				count,
+				count: None,
 				..
 			} = output.node()
 			else {
 				continue;
 			};
-			if count.is_some() || besl::is_position_output(name) {
+			if besl::is_position_output(name) {
 				continue;
 			}
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
+			self.emit_user_attribute(string, name, format, *location);
 		}
 
 		self.emit_struct_declaration_end(string);
@@ -661,34 +647,29 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 
 		let bindings = self.sort_bindings_by_slot(nodes.bindings.as_slice());
-		let mesh_output_fields = |vertex_rate: bool| {
-			nodes
-				.outputs
-				.iter()
-				.filter_map(|output| {
-					let output = output.borrow();
-					let besl::Nodes::Output {
-						name,
-						count: Some(_),
-						per_vertex,
-						..
-					} = output.node()
-					else {
-						return None;
-					};
-					(*per_vertex == vertex_rate).then(|| Self::mesh_output_field_name(name).to_string())
-				})
-				.collect()
-		};
-		let primitive_output_fields = mesh_output_fields(false);
-		let vertex_output_fields = mesh_output_fields(true);
+		let mesh_output_fields = nodes
+			.outputs
+			.iter()
+			.filter_map(|output| {
+				let output = output.borrow();
+				let besl::Nodes::Output {
+					name,
+					count: Some(_),
+					per_vertex,
+					..
+				} = output.node()
+				else {
+					return None;
+				};
+				Some((*per_vertex, Self::mesh_output_field_name(name).to_string()))
+			})
+			.collect();
 		let previous_mesh_stage_context = self.mesh_stage_context.replace(MeshStageContext {
 			has_resources: !bindings.is_empty(),
 			has_push_constant: nodes.push_constant.is_some(),
 			has_task_payload: !nodes.task_payloads.is_empty(),
 			uses_render_target_array_index,
-			primitive_output_fields,
-			vertex_output_fields,
+			mesh_output_fields,
 			maximum_vertices,
 			maximum_primitives,
 		});
@@ -765,7 +746,6 @@ impl<A: Allocator + Clone> Generator<A> {
 
 	/// Emits the mesh output arrays of one rate as user attributes of their native vertex or primitive struct.
 	fn emit_mesh_output_fields(&self, string: &mut String, outputs: &[&besl::NodeReference], vertex_rate: bool) {
-		let formatting = ShaderFormatting::new(self.minified);
 		for output in outputs {
 			let output = output.borrow();
 			let besl::Nodes::Output {
@@ -778,23 +758,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			else {
 				continue;
 			};
-			if *per_vertex != vertex_rate {
-				continue;
+			if *per_vertex == vertex_rate {
+				self.emit_user_attribute(string, Self::mesh_output_field_name(name), format, *location);
 			}
-
-			formatting.push_indentation(string, 1);
-			let format = format.borrow();
-			let type_name = format.get_name().unwrap();
-			string.push_str(Self::translate_type(type_name));
-			string.push(' ');
-			Self::identifier(Self::mesh_output_field_name(name)).push_to(string);
-			if is_integer_besl_type(type_name) {
-				string.push_str(" [[flat]]");
-			}
-			string.push_str(" [[user(locn");
-			string.push_str(location.to_string().as_str());
-			string.push_str(")]]");
-			formatting.push_statement_end(string);
 		}
 	}
 

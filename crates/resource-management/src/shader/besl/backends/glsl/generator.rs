@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, fmt::Write as _};
 
 use super::{
 	super::{ResourceAccessorKind, is_two, resource_accessor, resource_reference_kind, uses_subgroup_intrinsics},
@@ -659,34 +659,25 @@ impl Generator {
 				}
 				let format = format.borrow();
 				let besl_type = format.get_name().unwrap();
-				let type_name = Self::translate_type(besl_type);
-				if let Some(count) = count {
-					// Per-vertex mesh outputs interpolate like vertex-shader outputs, so integers stay flat.
-					let qualifier = match (*per_vertex, is_integer_besl_type(besl_type)) {
-						(false, _) => "perprimitiveEXT ",
-						(true, true) => "flat ",
-						(true, false) => "",
-					};
-					string.push_str(&format!(
-						"layout(location={}){space_char}{qualifier}out {} {}[{}];{break_char}",
-						location,
-						type_name,
-						Self::identifier(name),
-						count
-					));
+				// Per-vertex mesh outputs interpolate like vertex-shader outputs, so integers stay flat.
+				let interpolates = count.map_or(self.current_stage_interpolates_outputs, |_| *per_vertex);
+				let qualifier = if count.is_some() && !*per_vertex {
+					"perprimitiveEXT "
+				} else if interpolates && is_integer_besl_type(besl_type) {
+					"flat "
 				} else {
-					let qualifier = if self.current_stage_interpolates_outputs && is_integer_besl_type(besl_type) {
-						"flat "
-					} else {
-						""
-					};
-					string.push_str(&format!(
-						"layout(location={}){space_char}{qualifier}out {} {};{break_char}",
-						location,
-						type_name,
-						Self::identifier(name)
-					));
+					""
+				};
+				let _ = write!(
+					string,
+					"layout(location={location}){space_char}{qualifier}out {} {}",
+					Self::translate_type(besl_type),
+					Self::identifier(name)
+				);
+				if let Some(count) = count {
+					let _ = write!(string, "[{count}]");
 				}
+				let _ = write!(string, ";{break_char}");
 			}
 			besl::Nodes::Workgroup { name, format, count } if self.current_stage_supports_workgroup_storage => {
 				string.push_str("shared ");
@@ -846,7 +837,6 @@ impl crate::shader::generator::NodeEmitter for Generator {
 	}
 	const SPECIALIZATION_QUALIFIER: &'static str = "const";
 	fn emit_specialization_constant(&self, string: &mut String, type_name: &str, name: std::fmt::Arguments<'_>, index: usize) {
-		use std::fmt::Write as _;
 		let _ = write!(string, "layout(constant_id={index})const {type_name} {name}=1.0f;");
 	}
 	fn minified(&self) -> bool {

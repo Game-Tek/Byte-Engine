@@ -30,12 +30,7 @@ impl Generator {
 		self.current_stage_interpolates_inputs = matches!(shader_compilation_settings.stage, Stages::Fragment);
 		self.current_stage_interpolates_outputs =
 			matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Mesh { .. });
-		self.current_local_size = match shader_compilation_settings.stage {
-			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
-				Some(local_size)
-			}
-			_ => None,
-		};
+		self.current_local_size = shader_compilation_settings.local_size();
 		(self.current_mesh_maximum_vertices, self.current_mesh_maximum_primitives) = match shader_compilation_settings.stage {
 			Stages::Mesh {
 				maximum_vertices,

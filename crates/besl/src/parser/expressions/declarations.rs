@@ -384,11 +384,7 @@ pub(crate) fn parse_shader_interface_declaration<'i, 'a: 'i>(
 						"Invalid element count in output {name}. The most likely cause is that an output array was declared with zero elements."
 					)));
 				}
-				if declaration == "vertex_output" {
-					Node::vertex_output_array(name, format, location, count)
-				} else {
-					Node::output_array(name, format, location, count)
-				}
+				Node::output_array(name, format, location, count, declaration == "vertex_output")
 			} else {
 				Node::output(name, format, location)
 			}

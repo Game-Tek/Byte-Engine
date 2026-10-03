@@ -14,17 +14,10 @@ const DXC_SHARED_ARGUMENTS: [&str; 5] = [
 
 /// Describes the loaded DXC runtime and the flags [`compile_hlsl_source_to_dxil`] passes.
 ///
-/// Baked shader reuse hashes this text, so stored DXIL is only reused by the compiler that produced it. The runtime
-/// query runs once per process.
+/// Baked shader reuse hashes this text, so stored DXIL is only reused by the compiler that produced it.
 #[cfg(target_os = "windows")]
 pub(crate) fn dxc_compiler_identity() -> Result<String, String> {
 	use windows::Win32::Graphics::Direct3D::Dxc::{CLSID_DxcCompiler, DxcCreateInstance, IDxcCompiler3};
-
-	static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-	if let Some(identity) = IDENTITY.get() {
-		return Ok(identity.clone());
-	}
 
 	// SAFETY: DXC owns the registered compiler class and returns a typed COM interface on success.
 	let compiler = unsafe { DxcCreateInstance::<IDxcCompiler3>(&CLSID_DxcCompiler) }.map_err(|error| {
@@ -33,9 +26,8 @@ pub(crate) fn dxc_compiler_identity() -> Result<String, String> {
 		)
 	})?;
 	let version = require_shader_model_6_9_dxc(&compiler)?;
-	let identity = format!("{version}; arguments={DXC_SHARED_ARGUMENTS:?}");
 
-	Ok(IDENTITY.get_or_init(|| identity).clone())
+	Ok(format!("{version}; arguments={DXC_SHARED_ARGUMENTS:?}"))
 }
 
 /// Compiles generated HLSL into the native DXIL payload consumed by DX12.

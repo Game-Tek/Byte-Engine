@@ -70,16 +70,10 @@ pub enum ComputeBindingMode {
 	BareResources,
 }
 
-/// The `MeshWriteRate` enum names the native mesh value one output write belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MeshWriteRate {
-	Vertex,
-	Primitive,
-}
-
 /// The `MeshWrite` struct is one field write into a mesh vertex or primitive at `index`.
 pub(crate) struct MeshWrite {
-	pub(crate) rate: MeshWriteRate,
+	/// Whether the write targets a vertex instead of a primitive.
+	pub(crate) per_vertex: bool,
 	pub(crate) field: String,
 	pub(crate) index: besl::NodeReference,
 	pub(crate) value: besl::NodeReference,
@@ -91,9 +85,9 @@ pub(crate) struct MeshStageContext {
 	pub(crate) has_push_constant: bool,
 	pub(crate) has_task_payload: bool,
 	pub(crate) uses_render_target_array_index: bool,
-	pub(crate) primitive_output_fields: Vec<String>,
-	/// Per-vertex mesh output fields, in `VertexOutput` declaration order after the position.
-	pub(crate) vertex_output_fields: Vec<String>,
+	/// Mesh output fields in declaration order, each with whether it belongs to `VertexOutput` instead of
+	/// `PrimitiveOutput`.
+	pub(crate) mesh_output_fields: Vec<(bool, String)>,
 	pub(crate) maximum_vertices: u32,
 	pub(crate) maximum_primitives: u32,
 }

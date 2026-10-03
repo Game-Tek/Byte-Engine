@@ -89,10 +89,7 @@ mod tests {
 		assert_string_contains!(shader, "sampler textures_sampler [[id(22)]][4];");
 		assert_string_contains!(shader, "resources.textures[0].sample(resources.textures_sampler[0]");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-fixed-slot-array")
-			.await
-			.expect("Expected sparse fixed-slot MSL argument IDs to compile natively");
+		compile_natively(&shader, "besl-fixed-slot-array").await;
 	}
 
 	#[compio::test]
@@ -113,10 +110,7 @@ mod tests {
 		assert_string_contains!(shader, "resources.sprites.sample(resources.sprites_sampler, ");
 		assert_string_contains!(shader, ", instance.sprite_id)");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-runtime-array-texture-layer")
-			.await
-			.expect("Expected runtime-array fragment MSL to compile natively");
+		compile_natively(&shader, "besl-runtime-array-texture-layer").await;
 	}
 
 	#[compio::test]
@@ -147,10 +141,7 @@ mod tests {
 		assert_string_contains!(shader, "_besl_load_mat4x3(resources.palette[item])");
 		assert_string_contains!(shader, "_besl_store_mat4x3(resources.palette[item+1],affine)");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-affine-matrix-array")
-			.await
-			.expect("Expected affine matrix array MSL to compile natively");
+		compile_natively(&shader, "besl-affine-matrix-array").await;
 	}
 
 	#[compio::test]
@@ -171,10 +162,7 @@ mod tests {
 		assert_string_contains!(shader, "const device uchar* corners");
 		assert_string_contains!(shader, "device uint* results");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-scalar-runtime-array")
-			.await
-			.expect("Expected scalar runtime-array MSL to compile natively");
+		compile_natively(&shader, "besl-scalar-runtime-array").await;
 	}
 
 	#[compio::test]
@@ -202,10 +190,7 @@ mod tests {
 			"resources.textures[resources.items[index].slot].sample(resources.textures_sampler[resources.items[index].slot], uv)"
 		);
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-descriptor-array-intrinsics")
-			.await
-			.expect("Expected descriptor-array fragment MSL to compile natively");
+		compile_natively(&shader, "besl-descriptor-array-intrinsics").await;
 	}
 
 	#[compio::test]
@@ -225,10 +210,7 @@ mod tests {
 		assert_string_contains!(shader, "out.position=_besl_interface_position;");
 		assert!(!shader.contains("_besl_interface_position [[user("));
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-structural-position")
-			.await
-			.expect("Expected structural position MSL to compile natively");
+		compile_natively(&shader, "besl-structural-position").await;
 	}
 
 	#[test]
@@ -379,10 +361,7 @@ mod tests {
 		assert!(!shader.contains("struct packed_vec4f"));
 		shader.push_str("\nstatic_assert(sizeof(Meshlet) == 52, \"Packed Meshlet stride must match the host\");\n");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-packed-vec4f")
-			.await
-			.expect("Expected packed_vec4f storage lowering to compile natively");
+		compile_natively(&shader, "besl-packed-vec4f").await;
 	}
 
 	#[test]
@@ -427,10 +406,7 @@ mod tests {
 		assert_string_contains!(shader, "uv16*half(2.0)");
 		assert!(!shader.contains("struct vec2f16"));
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-f16-storage")
-			.await
-			.expect("Expected native f16 MSL source to compile");
+		compile_natively(&shader, "besl-f16-storage").await;
 	}
 
 	#[test]
@@ -471,10 +447,7 @@ mod tests {
 			.expect("Expected texture LOD source to lower to Metal");
 		assert_string_contains!(shader, "metal::level(float(level))");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-texture-lod-level-shadowing")
-			.await
-			.expect("Expected qualified Metal level helper to compile when a BESL parameter is named level");
+		compile_natively(&shader, "besl-texture-lod-level-shadowing").await;
 	}
 
 	#[compio::test]
@@ -512,10 +485,7 @@ mod tests {
 		assert_string_contains!(shader, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
 		assert_string_contains!(shader, "texture.read(a, level).x");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-downsample-gather")
-			.await
-			.expect("Expected gather downsampling MSL to compile natively");
+		compile_natively(&shader, "besl-downsample-gather").await;
 	}
 
 	#[compio::test]
@@ -559,13 +529,7 @@ mod tests {
 		assert_string_contains!(bare_resource_shader, "const device uint* vertices [[buffer(1)]]");
 		assert_string_contains!(bare_resource_shader, "device uint* counters [[buffer(2)]]");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(
-			&argument_buffer_shader,
-			"besl-buffer-memory-classes",
-		)
-		.await
-		.expect("Expected generated memory-class MSL to compile natively");
+		compile_natively(&argument_buffer_shader, "besl-buffer-memory-classes").await;
 	}
 
 	#[test]
@@ -626,10 +590,7 @@ mod tests {
 			"Expected no GLSL array type spelling in MSL output, got: {shader}"
 		);
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-local-array")
-			.await
-			.expect("Expected local array MSL to compile natively");
+		compile_natively(&shader, "besl-local-array").await;
 	}
 
 	const TASK_PAYLOAD_FIXTURE_SOURCE: &str = r#"
@@ -700,6 +661,16 @@ mod tests {
 			}
 		}
 	"#;
+
+	/// Compiles generated MSL with the Metal toolchain on macOS so a lowering that Metal rejects fails the test.
+	async fn compile_natively(shader: &str, name: &str) {
+		#[cfg(target_os = "macos")]
+		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(shader, name)
+			.await
+			.unwrap_or_else(|error| panic!("Expected {name} MSL to compile natively. {error}"));
+		#[cfg(not(target_os = "macos"))]
+		let _ = (shader, name);
+	}
 
 	fn lower_fixture(source: &str, settings: &ShaderGenerationSettings) -> String {
 		let root = besl::compile_to_besl(source, None).expect("Expected stage fixture source to link");
@@ -835,10 +806,7 @@ mod tests {
 		assert_string_contains!(shader, "Transform local=Transform{_besl_pack_mat4x3(model),7};");
 		assert_string_contains!(shader, "_besl_store_mat4x3(");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-packed-mat4x3")
-			.await
-			.expect("Expected packed mat4x3 storage lowering to compile natively");
+		compile_natively(&shader, "besl-packed-mat4x3").await;
 	}
 
 	/// Verifies the task stage maps BESL builtins, workgroup storage, barriers and the mesh dispatch onto Metal object-stage features.
@@ -866,17 +834,8 @@ mod tests {
 		assert_string_contains!(task, "payload.visible_meshlets[payload_index]");
 		assert_string_contains!(task, "mesh_grid.set_threadgroups_per_grid(uint3(");
 
-		#[cfg(target_os = "macos")]
-		{
-			crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&task, "besl-task-payload-fixture")
-				.await
-				.expect("Expected generated task MSL to compile natively");
-			crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-payload-fixture")
-				.await
-				.expect("Expected generated mesh MSL to compile natively");
-		}
-		#[cfg(not(target_os = "macos"))]
-		let _ = mesh;
+		compile_natively(&task, "besl-task-payload-fixture").await;
+		compile_natively(&mesh, "besl-mesh-payload-fixture").await;
 	}
 
 	/// Verifies per-vertex mesh outputs become interpolated `VertexOutput` attributes written with the vertex position,
@@ -916,10 +875,7 @@ mod tests {
 			"out_mesh.set_primitive(index, PrimitiveOutput{.primitive_index = index})"
 		);
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&mesh, "besl-mesh-vertex-output-fixture")
-			.await
-			.expect("Expected generated per-vertex mesh output MSL to compile natively");
+		compile_natively(&mesh, "besl-mesh-vertex-output-fixture").await;
 	}
 
 	/// Verifies Metal rejects a per-vertex output written apart from its vertex position, which `set_vertex` would erase.
@@ -956,10 +912,7 @@ mod tests {
 			"store_scratch(float(thread_index),gid,thread_index,threadgroup_position,scratch)"
 		);
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-workgroup-fixture")
-			.await
-			.expect("Expected generated compute workgroup MSL to compile natively");
+		compile_natively(&shader, "besl-compute-workgroup-fixture").await;
 	}
 
 	/// Verifies subgroup intrinsics map onto Metal SIMD-group operations with the lane type Metal expects.
@@ -986,10 +939,7 @@ mod tests {
 		assert_string_contains!(shader, "_besl_subgroup_ballot_count(");
 		assert_string_contains!(shader, "threadgroup uint scratch[1]");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-subgroup-fixture")
-			.await
-			.expect("Expected generated compute subgroup MSL to compile natively");
+		compile_natively(&shader, "besl-compute-subgroup-fixture").await;
 	}
 
 	#[test]
@@ -1086,10 +1036,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
 		assert_string_contains!(shader, "uint2 threadgroup_position [[threadgroup_position_in_grid]]");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-compute-stage-inputs")
-			.await
-			.expect("Expected compute StageInput fields to compile as native Metal semantics");
+		compile_natively(&shader, "besl-compute-stage-inputs").await;
 	}
 
 	#[test]
@@ -1135,10 +1082,7 @@ struct PrimitiveOutput {
 		assert!(!shader.contains("uint vertex_index=vertex_index;"));
 		assert!(!shader.contains("uint instance_index=instance_index;"));
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-vertex-invocation-indices")
-			.await
-			.expect("Expected vertex invocation builtins to compile as native Metal semantics");
+		compile_natively(&shader, "besl-vertex-invocation-indices").await;
 	}
 
 	#[test]
@@ -1473,10 +1417,7 @@ struct PrimitiveOutput {
 			.expect("Failed to generate shader");
 		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-else-chain")
-			.await
-			.expect("Expected else-chain MSL to compile natively");
+		compile_natively(&shader, "besl-else-chain").await;
 	}
 
 	#[compio::test]
@@ -1512,10 +1453,7 @@ struct PrimitiveOutput {
 		);
 		assert_string_contains!(shader, "switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-match")
-			.await
-			.expect("Expected match MSL to compile natively");
+		compile_natively(&shader, "besl-match").await;
 	}
 
 	#[compio::test]
@@ -1556,10 +1494,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "ushort3 shorts=scalar_u16();");
 		assert_string_contains!(shader, "uint3 indices=mirror_indices(scalar_u32());");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-short-scalar-arrays")
-			.await
-			.expect("Expected vector-backed scalar arrays to compile as MSL");
+		compile_natively(&shader, "besl-short-scalar-arrays").await;
 	}
 
 	#[compio::test]
@@ -1604,10 +1539,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "atomic_load_explicit(&");
 		assert_string_contains!(shader, "atomic_store_explicit(&");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-atomic-compare-exchange")
-			.await
-			.expect("Expected compare-exchange MSL to compile natively");
+		compile_natively(&shader, "besl-atomic-compare-exchange").await;
 	}
 
 	/// Verifies raster entry points and called helpers receive source-declared push constants.
@@ -1639,10 +1571,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "struct PushConstant{");
 		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-raster-push-constant")
-			.await
-			.expect("Expected raster push-constant MSL to compile natively");
+		compile_natively(&shader, "besl-raster-push-constant").await;
 	}
 
 	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
@@ -1729,10 +1658,7 @@ struct PrimitiveOutput {
 			assert_string_contains!(shader, predicate);
 		}
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-modern-half-atomics")
-			.await
-			.expect("Expected modern half and atomic MSL to compile natively");
+		compile_natively(&shader, "besl-modern-half-atomics").await;
 	}
 
 	/// Verifies BESL intrinsics without a same-named Metal function lower to their Metal equivalents.
@@ -1768,10 +1694,7 @@ struct PrimitiveOutput {
 		// Rounds half away from zero like BESL, then converts, instead of truncating.
 		assert_string_contains!(shader, "int2 rounded=int2(round(float2(0.0-1.6,2.4)));");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-intrinsic-names")
-			.await
-			.expect("Expected intrinsic MSL to compile natively");
+		compile_natively(&shader, "besl-intrinsic-names").await;
 	}
 
 	/// Verifies `fetch` reads an exact texel with `read` instead of filtering through the sampler.
@@ -1797,10 +1720,7 @@ struct PrimitiveOutput {
 			.expect("Expected fetch MSL generation");
 		assert_string_contains!(shader, "float4 texel=resources.texture.read(coord);");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-fetch")
-			.await
-			.expect("Expected fetch MSL to compile natively");
+		compile_natively(&shader, "besl-fetch").await;
 	}
 
 	/// Verifies a global scalar-array constant is placed in Metal's `constant` address space with its vector spelling.
@@ -1826,10 +1746,7 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "constant float3 WEIGHTS = float3(0.5,0.25,0.125);");
 		assert_string_contains!(shader, "float value=WEIGHTS[1];");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-const-array")
-			.await
-			.expect("Expected const-array MSL to compile natively");
+		compile_natively(&shader, "besl-const-array").await;
 	}
 
 	/// Verifies a fragment `sample` pairs the texture with its generated sampler.
@@ -1856,10 +1773,7 @@ struct PrimitiveOutput {
 			"resources.image_texture.sample(resources.image_texture_sampler, in_uv)"
 		);
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-sample-intrinsic")
-			.await
-			.expect("Expected sample intrinsic MSL to compile natively");
+		compile_natively(&shader, "besl-sample-intrinsic").await;
 	}
 
 	/// Verifies a fragment entry that returns an authored output struct returns that struct from the Metal entry point.
@@ -1885,9 +1799,6 @@ struct PrimitiveOutput {
 		assert_string_contains!(shader, "fragment FragmentOutput besl_main(FragmentInput in [[stage_in]])");
 		assert_string_contains!(shader, "return FragmentOutput{float4(1.0,0.0,0.0,1.0)};");
 
-		#[cfg(target_os = "macos")]
-		crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&shader, "besl-explicit-fragment-output")
-			.await
-			.expect("Expected explicit fragment output MSL to compile natively");
+		compile_natively(&shader, "besl-explicit-fragment-output").await;
 	}
 }

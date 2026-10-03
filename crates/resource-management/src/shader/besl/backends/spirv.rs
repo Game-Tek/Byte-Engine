@@ -5,7 +5,10 @@ mod compilation {
 	use std::cell::RefCell;
 
 	use crate::shader::{
-		besl::{backends::glsl::GLSLTranspiler, evaluation::ProgramEvaluation},
+		besl::{
+			backends::glsl::GLSLTranspiler,
+			evaluation::{BindingUsage, collect_bindings},
+		},
 		generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
 		glsl_compile,
 	};
@@ -32,23 +35,15 @@ mod compilation {
 			}
 		}
 
-		/// Lowers the BESL function graph reachable from `main` to the GLSL source that [`compile_glsl_to_spirv`] compiles.
-		pub fn transpile(
-			&mut self,
-			shader_compilation_settings: &ShaderGenerationSettings,
-			main_function_node: &besl::NodeReference,
-		) -> Result<String, String> {
-			self.glsl_transpiler
-				.generate(shader_compilation_settings, main_function_node)
-				.map_err(|_| "Failed to generate initial GLSL shader".to_string())
-		}
-
 		pub fn generate(
 			&mut self,
 			shader_compilation_settings: &ShaderGenerationSettings,
 			main_function_node: &besl::NodeReference,
 		) -> Result<CompiledShader, String> {
-			let glsl_shader = self.transpile(shader_compilation_settings, main_function_node)?;
+			let glsl_shader = self
+				.glsl_transpiler
+				.generate(shader_compilation_settings, main_function_node)
+				.map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
 
 			let compilation_artifact = compile_glsl_to_spirv(&glsl_shader, &shader_compilation_settings.name)?;
 
@@ -64,9 +59,7 @@ mod compilation {
 				}
 			}
 
-			let program_evaluation = ProgramEvaluation::from_main(main_function_node)?;
-
-			let bindings = program_evaluation.bindings();
+			let bindings = collect_bindings::<BindingUsage>(main_function_node)?;
 
 			Ok(CompiledShader::new(
 				compilation_artifact,
@@ -82,58 +75,31 @@ mod compilation {
 		}
 	}
 
-	/// Returns the shaderc options every SPIR-V compile uses.
-	///
-	/// Keep [`spirv_compiler_identity`] in sync with these options, because baked shader reuse relies on it.
-	fn spirv_compile_options() -> shaderc::CompileOptions<'static> {
-		let mut options = shaderc::CompileOptions::new().unwrap();
-
-		options.set_optimization_level(shaderc::OptimizationLevel::Performance);
-		options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
-
-		if cfg!(debug_assertions) {
-			options.set_generate_debug_info();
-		}
-
-		options.set_target_spirv(shaderc::SpirvVersion::V1_6);
-		options.set_invert_y(true);
-
-		options
-	}
-
-	/// Describes the linked shaderc build and the options from [`spirv_compile_options`].
+	/// Describes the linked shaderc build and the options [`compile_glsl_to_spirv`] passes.
 	///
 	/// Baked shader reuse hashes this text, so a stored SPIR-V binary is only reused by the compiler that produced it.
 	/// shaderc reports no release version, only the SPIR-V version it targets, so the identity comes from compiling
 	/// [`SPIRV_IDENTITY_PROBE`]: its header records glslang's generator version, which glslang bumps whenever its code
-	/// generation changes, and its full hash also changes when the bundled optimizer emits different code. The probe
-	/// compiles once per process.
+	/// generation changes, and its full hash also changes when the bundled optimizer emits different code.
 	pub(crate) fn spirv_compiler_identity() -> Result<String, String> {
-		static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-		if let Some(identity) = IDENTITY.get() {
-			return Ok(identity.clone());
-		}
-
 		let probe = compile_glsl_to_spirv(SPIRV_IDENTITY_PROBE, "spirv_identity_probe")?;
 
 		// SPIR-V header words are magic, version, generator, bound, and schema.
 		let generator = probe
 			.get(8..12)
-			.map(|word| u32::from_le_bytes(word.try_into().expect("a SPIR-V header word should be four bytes")))
+			.and_then(|word| word.try_into().ok())
+			.map(u32::from_le_bytes)
 			.ok_or_else(|| {
 				"Failed to read the shaderc identity probe header. The most likely cause is that shaderc returned an empty SPIR-V binary."
 					.to_string()
 			})?;
 		let (version, revision) = shaderc::get_spirv_version();
 
-		let identity = format!(
+		Ok(format!(
 			"shaderc spirv={version:#x}.{revision}; generator={generator:#010x}; probe={:x}; vulkan=1.4; target=spirv1.6; optimization=performance; invert_y; debug_info={}",
 			md5::compute(&probe),
 			cfg!(debug_assertions)
-		);
-
-		Ok(IDENTITY.get_or_init(|| identity).clone())
+		))
 	}
 
 	/// Exercises branching, loops, calls, and buffer access so optimizer changes are likely to change the probe binary.
@@ -163,7 +129,15 @@ void main() {
 	/// `name` appears in compiler diagnostics and debug information.
 	pub(crate) fn compile_glsl_to_spirv(glsl: &str, name: &str) -> Result<Box<[u8]>, String> {
 		let compiler = shaderc::Compiler::new().unwrap();
-		let options = spirv_compile_options();
+		// Keep `spirv_compiler_identity` in sync with these options, because baked shader reuse relies on it.
+		let mut options = shaderc::CompileOptions::new().unwrap();
+		options.set_optimization_level(shaderc::OptimizationLevel::Performance);
+		options.set_target_env(shaderc::TargetEnv::Vulkan, shaderc::EnvVersion::Vulkan1_4 as u32);
+		if cfg!(debug_assertions) {
+			options.set_generate_debug_info();
+		}
+		options.set_target_spirv(shaderc::SpirvVersion::V1_6);
+		options.set_invert_y(true);
 
 		match compiler.compile_into_spirv(glsl, shaderc::ShaderKind::InferFromSource, name, "main", Some(&options)) {
 			Ok(binary) => Ok(Box::from(binary.as_binary_u8())),

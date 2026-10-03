@@ -453,12 +453,9 @@ pub(crate) fn prepare_besl_shader(
 	stage: ShaderTypes,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let workgroup_size = match settings.stage {
-		Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
-			Some((local_size.width(), local_size.height(), local_size.depth()))
-		}
-		Stages::Vertex | Stages::Fragment => None,
-	};
+	let workgroup_size = settings
+		.local_size()
+		.map(|local_size| (local_size.width(), local_size.height(), local_size.depth()));
 	let (program, interface) = prepare_shader(parsed, workgroup_size, generator)?;
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
@@ -483,8 +480,8 @@ impl PreparedBeslShader {
 			format!("{:?}", PlatformShaderLanguage::current_platform()).as_bytes(),
 			format!("{:?}", self.stage).as_bytes(),
 			compiler_identity.as_bytes(),
-			self.lowered.name().as_bytes(),
-			self.lowered.source().as_bytes(),
+			self.lowered.name.as_bytes(),
+			self.lowered.source.as_bytes(),
 		] {
 			context.consume(field);
 			context.consume([0]);
@@ -502,7 +499,7 @@ impl PreparedBeslShader {
 	/// The compiled resource interface and workgroup must match semantic reflection, so a backend that drifts from
 	/// BESL fails the bake instead of producing a shader the renderer binds wrongly.
 	pub(crate) async fn compile(self, id: &str) -> Result<(Shader, Box<[u8]>), String> {
-		let compiled = PlatformShaderCompiler::new().compile(self.lowered).await?;
+		let compiled = self.lowered.compile().await?;
 
 		// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
 		let semantic_bindings = self.interface.bindings.iter().map(|binding| {

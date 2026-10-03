@@ -10,8 +10,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Graph<A: Allocator + Clone = Global> {
 	pub set: HashMap<besl::NodeReference, AllocVec<besl::NodeReference, A>, RandomState, A>,
-	/// Keys of `set` in first-insertion order. `set` hashes nodes by address, so iterating it would make emission order change between runs.
-	order: AllocVec<besl::NodeReference, A>,
 	allocator: A,
 }
 
@@ -31,60 +29,53 @@ impl<A: Allocator + Clone> Graph<A> {
 	pub fn new_in(allocator: A) -> Self {
 		Graph {
 			set: HashMap::with_capacity_and_hasher_in(1024, RandomState::new(), allocator.clone()),
-			order: AllocVec::new_in(allocator.clone()),
 			allocator,
 		}
 	}
 
 	pub fn add(&mut self, from: besl::NodeReference, to: besl::NodeReference) {
-		let order = &mut self.order;
 		self.set
 			.entry(from)
-			.or_insert_with_key(|key| {
-				order.push(key.clone());
-				AllocVec::new_in(self.allocator.clone())
-			})
+			.or_insert_with(|| AllocVec::new_in(self.allocator.clone()))
 			.push(to);
 	}
 }
 
 /// Performs a topological sort on the graph to determine the order in which nodes should be emitted.
-pub fn topological_sort(graph: &Graph) -> Vec<besl::NodeReference> {
-	topological_sort_in(graph, Global)
+pub fn topological_sort(graph: &Graph, root: &besl::NodeReference) -> Vec<besl::NodeReference> {
+	topological_sort_in(graph, root, Global)
 }
 
-/// Performs a topological sort using the provided allocator for temporary traversal state.
-pub fn topological_sort_in<A: Allocator + Clone>(graph: &Graph<A>, allocator: A) -> AllocVec<besl::NodeReference, A> {
-	let mut visited = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
-	let mut stack = AllocVec::new_in(allocator.clone());
-
-	// Walk roots in insertion order so independent nodes keep a stable, run-to-run identical order.
-	for node in &graph.order {
-		if !visited.contains(node) {
-			topological_sort_impl(node.clone(), graph, &mut visited, &mut stack, allocator.clone());
-		}
-	}
-
-	fn topological_sort_impl<A: Allocator + Clone>(
-		node: besl::NodeReference,
+/// Performs a topological sort from `root` using the provided allocator for temporary traversal state.
+///
+/// Every node of a graph from [`build_graph_in`] is reachable from its main function, so one depth-first walk from
+/// that root visits them all. `set` hashes nodes by address, so walking its keys instead would make emission order
+/// change between runs.
+pub fn topological_sort_in<A: Allocator + Clone>(
+	graph: &Graph<A>,
+	root: &besl::NodeReference,
+	allocator: A,
+) -> AllocVec<besl::NodeReference, A> {
+	fn visit<A: Allocator + Clone>(
+		node: &besl::NodeReference,
 		graph: &Graph<A>,
 		visited: &mut HashSet<besl::NodeReference, RandomState, A>,
 		stack: &mut AllocVec<besl::NodeReference, A>,
-		allocator: A,
 	) {
-		visited.insert(node.clone());
-
-		if let Some(neighbours) = graph.set.get(&node) {
-			for neighbour in neighbours {
-				if !visited.contains(neighbour) {
-					topological_sort_impl(neighbour.clone(), graph, visited, stack, allocator.clone());
-				}
-			}
+		if !visited.insert(node.clone()) {
+			return;
 		}
 
-		stack.push(node);
+		for neighbour in graph.set.get(node).into_iter().flatten() {
+			visit(neighbour, graph, visited, stack);
+		}
+
+		stack.push(node.clone());
 	}
 
+	let mut visited = HashSet::with_hasher_in(RandomState::new(), allocator.clone());
+	let mut stack = AllocVec::new_in(allocator);
+	visit(root, graph, &mut visited, &mut stack);
 	stack
 }
 

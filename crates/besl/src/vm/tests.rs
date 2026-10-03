@@ -2165,7 +2165,7 @@ fn mesh_intrinsics_capture_geometry_and_indexed_outputs() {
 	"#;
 	let mut root = Node::root();
 	let u32_type = root.get_child("u32").expect("Expected u32");
-	root.add_child(Node::output_array("out_index", u32_type, 0, 1).into());
+	root.add_child(Node::output_array("out_index", u32_type, 0, 1, false).into());
 	let executable = compile_test_program(script, Some(root));
 	let mut output = interface_buffer_for_output(&executable, 0);
 	let mut mesh_outputs = MeshOutputs::new();

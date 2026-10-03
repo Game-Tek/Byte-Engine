@@ -236,6 +236,28 @@ pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::No
 	}
 }
 
+/// Recovers the indexed mesh output that a member expression names, so backends can address its vertex or primitive
+/// structure field.
+///
+/// Returns the output name and whether the output is per-vertex.
+pub(crate) fn mesh_output_target(member: &besl::NodeReference) -> Option<(String, bool)> {
+	let member = member.borrow();
+	let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = member.node() else {
+		return None;
+	};
+	let source = source.borrow();
+	let besl::Nodes::Output {
+		name,
+		count: Some(_),
+		per_vertex,
+		..
+	} = source.node()
+	else {
+		return None;
+	};
+	Some((name.clone(), *per_vertex))
+}
+
 /// Reports whether a BESL input is one of the implicit vertex invocation indices.
 pub(crate) fn is_vertex_builtin_input(name: &str) -> bool {
 	matches!(name, besl::VERTEX_INDEX_BUILTIN | besl::INSTANCE_INDEX_BUILTIN)
@@ -272,7 +294,7 @@ pub(crate) fn ordered_shader_nodes_in<A: Allocator + Clone>(
 	let graph = build_graph_in(main_function_node.clone(), allocator.clone());
 
 	let mut ordered = AllocVec::new_in(allocator.clone());
-	for node in topological_sort_in(&graph, allocator) {
+	for node in topological_sort_in(&graph, main_function_node, allocator) {
 		let include = {
 			let borrowed = node.borrow();
 			!borrowed.node().is_leaf()
@@ -516,6 +538,16 @@ impl Settings {
 	pub fn name(mut self, name: String) -> Self {
 		self.name = name;
 		self
+	}
+
+	/// Returns the workgroup size of a compute, task, or mesh stage, or `None` for raster stages.
+	pub(crate) fn local_size(&self) -> Option<Extent> {
+		match self.stage {
+			Stages::Compute { local_size } | Stages::Task { local_size, .. } | Stages::Mesh { local_size, .. } => {
+				Some(local_size)
+			}
+			Stages::Vertex | Stages::Fragment => None,
+		}
 	}
 }
 
@@ -1391,6 +1423,36 @@ pub mod tests {
 		let root = besl::compile_to_besl(script, Some(root_node)).expect("Expected f16 storage shader to compile");
 
 		RefCell::borrow(&root).get_child("main").expect("Expected main function")
+	}
+
+	/// Builds a mesh shader that writes one per-vertex and one per-primitive output array, used to verify where each
+	/// backend declares mesh outputs.
+	pub fn vertex_and_primitive_mesh_outputs() -> besl::NodeReference {
+		let root = besl::compile_to_besl(
+			r#"
+			out_primitive_index: output<u32, 1, 1>;
+			out_uv: vertex_output<vec2f, 2, 3>;
+
+			main: fn () -> void {
+				let lane: u32 = thread_idx();
+				if (lane == 0) {
+					set_mesh_output_counts(3, 1);
+				}
+				if (lane < 3) {
+					set_mesh_vertex_position(lane, vec4f(f32(lane), 0.0, 0.0, 1.0));
+					out_uv[lane] = vec2f(f32(lane), 1.0);
+				}
+				if (lane < 1) {
+					set_mesh_triangle(0, vec3u(0, 1, 2));
+					out_primitive_index[0] = lane;
+				}
+			}
+			"#,
+			None,
+		)
+		.expect("Expected mesh shader source to compile");
+
+		root.get_main().expect("Expected mesh shader source to contain main")
 	}
 
 	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.

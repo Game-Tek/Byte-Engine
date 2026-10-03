@@ -373,7 +373,9 @@ pub(crate) fn switch_label(value: &Value) -> Result<u32, VmError> {
 }
 
 /// The `VmInteger` trait keeps integer instruction semantics consistent across BESL scalar widths.
-trait VmInteger: Copy + PartialEq + Default {
+trait VmInteger:
+	Copy + PartialEq + Default + std::ops::BitAnd<Output = Self> + std::ops::BitOr<Output = Self> + std::ops::BitXor<Output = Self>
+{
 	fn wrapping_add(self, right: Self) -> Self;
 	fn wrapping_sub(self, right: Self) -> Self;
 	fn wrapping_mul(self, right: Self) -> Self;
@@ -381,9 +383,6 @@ trait VmInteger: Copy + PartialEq + Default {
 	fn wrapping_rem(self, right: Self) -> Self;
 	fn wrapping_shl(self, right: Self) -> Self;
 	fn wrapping_shr(self, right: Self) -> Self;
-	fn bitand(self, right: Self) -> Self;
-	fn bitor(self, right: Self) -> Self;
-	fn bitxor(self, right: Self) -> Self;
 }
 
 macro_rules! impl_vm_integer {
@@ -396,9 +395,6 @@ macro_rules! impl_vm_integer {
 			fn wrapping_rem(self, right: Self) -> Self { self.wrapping_rem(right) }
 			fn wrapping_shl(self, right: Self) -> Self { self.wrapping_shl(right as u32) }
 			fn wrapping_shr(self, right: Self) -> Self { self.wrapping_shr(right as u32) }
-			fn bitand(self, right: Self) -> Self { self & right }
-			fn bitor(self, right: Self) -> Self { self | right }
-			fn bitxor(self, right: Self) -> Self { self ^ right }
 		})+
 	};
 }
@@ -429,9 +425,9 @@ fn apply_integer_arithmetic<T: VmInteger>(left: T, right: T, operator: Arithmeti
 		}
 		ArithmeticOperator::ShiftLeft => Ok(left.wrapping_shl(right)),
 		ArithmeticOperator::ShiftRight => Ok(left.wrapping_shr(right)),
-		ArithmeticOperator::BitwiseAnd => Ok(left.bitand(right)),
-		ArithmeticOperator::BitwiseOr => Ok(left.bitor(right)),
-		ArithmeticOperator::BitwiseXor => Ok(left.bitxor(right)),
+		ArithmeticOperator::BitwiseAnd => Ok(left & right),
+		ArithmeticOperator::BitwiseOr => Ok(left | right),
+		ArithmeticOperator::BitwiseXor => Ok(left ^ right),
 		ArithmeticOperator::LogicalAnd | ArithmeticOperator::LogicalOr => {
 			unreachable!("Logical operations are evaluated before integer arithmetic")
 		}

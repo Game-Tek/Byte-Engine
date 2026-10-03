@@ -466,7 +466,7 @@ async fn store_generated_brdf_shaders(
 			Some(&index) => index,
 			None => {
 				let prepared = prepare_generated_brdf_shader(generator, &compiler_name, material).map_err(compile_error)?;
-				let key = prepared.cache_key(&compiler_identity);
+				let key = prepared.cache_key(compiler_identity);
 				let index = *unique_by_key.entry(key).or_insert_with(|| {
 					unique.push((key, prepared));
 					unique.len() - 1

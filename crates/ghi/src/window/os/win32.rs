@@ -26,12 +26,12 @@ use windows::{
 			},
 			WindowsAndMessaging::{
 				CW_USEDEFAULT, CreateWindowExA, DefWindowProcA, DestroyWindow, DispatchMessageA, GWLP_USERDATA, GetClientRect,
-				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
-				PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK, RegisterClassA, SetWindowLongPtrA, TranslateMessage,
-				UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
-				WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_QUIT,
-				WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED, WNDCLASS_STYLES, WNDCLASSA, WS_POPUP,
-				WS_VISIBLE,
+				GetCursorPos, GetWindowLongPtrA, HCURSOR, HICON, IsIconic, MSG, MWMO_INPUTAVAILABLE,
+				MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageA, QS_ALLINPUT, RI_KEY_BREAK, RegisterClassA,
+				SetWindowLongPtrA, TranslateMessage, UnregisterClassA, WINDOW_EX_STYLE, WM_CLOSE, WM_DISPLAYCHANGE, WM_INPUT,
+				WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+				WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_WINDOWPOSCHANGED,
+				WNDCLASS_STYLES, WNDCLASSA, WS_POPUP, WS_VISIBLE,
 			},
 		},
 	},
@@ -320,6 +320,11 @@ impl WindowLike for Window {
 
 	fn refresh_interval(&self) -> Option<std::time::Duration> {
 		monitor_refresh_interval(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
+	}
+
+	/// Reports minimized windows only; Windows offers no cheap query for a window that others fully cover.
+	fn is_visible(&self) -> bool {
+		!unsafe { IsIconic(self.hwnd) }.as_bool()
 	}
 }
 

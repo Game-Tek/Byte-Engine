@@ -10,6 +10,17 @@ type SinkId = usize;
 type RenderPassId = usize;
 type PipelineManagerId = usize;
 
+/// How one window takes part in the frame being prepared.
+#[derive(Clone, Copy)]
+enum WindowFrame {
+	/// The frame renders into this acquired swapchain image and presents it.
+	Acquired(ghi::PresentKey, Extent, ghi::SwapchainHandle),
+	/// No part of the window can be seen, so the frame skips it without acquiring, unless a screenshot captures it.
+	Hidden,
+	/// The window had no usable swapchain image, so the frame skips it.
+	Unusable,
+}
+
 /// The `SinkPass` struct keeps one sink-local post-scene pass with what the renderer needs to record and capture it.
 struct SinkPass {
 	harness: RenderPassHarness,
@@ -55,8 +66,8 @@ pub struct Renderer {
 	windows: SmallVec<[(ghi::Window, ghi::SwapchainHandle, bool); 16]>,
 	/// The windowing connection that pumps every window's events. Declared after `windows` so they drop first.
 	app: Option<ghi::window::App>,
-	/// The frame index the acquisitions belong to and, per window, the acquired image or `None` when its extent is unusable.
-	acquisitions: (u64, SmallVec<[Option<(ghi::PresentKey, Extent, ghi::SwapchainHandle)>; 16]>),
+	/// The frame index the acquisitions belong to and, per window adopted so far, how the window takes part in it.
+	acquisitions: (u64, SmallVec<[WindowFrame; 16]>),
 	/// The minimum time between presented frames applied to every window; `None` presents on every refresh.
 	present_interval: Option<std::time::Duration>,
 	/// Sink indices and their camera handles.
@@ -386,13 +397,25 @@ impl Renderer {
 	/// frame waits for the display once: here when the backend's acquisition waits for a free image, or at
 	/// submission on Metal, which takes its drawable after committing the frame. Either way the wait ends the
 	/// previous tick or starts this one, so simulation still follows the display.
-	/// The call is idempotent for one frame: windows already acquired are skipped, so [`Self::prepare`] can
-	/// call it to pick up windows adopted later in the tick or to acquire when nothing was hoisted.
-	pub(crate) fn acquire_swapchain_images(&mut self) -> Option<std::time::Instant> {
+	/// A window that cannot be seen is skipped without acquiring: whatever the frame presented there would never be
+	/// shown, and on Metal the presentation engine stops pacing the loop for it. Pass the sinks a screenshot captures
+	/// as `captured` so those windows render anyway.
+	///
+	/// The call is idempotent for one frame: windows already decided are skipped, so [`Self::prepare`] can call it
+	/// to pick up windows adopted later in the tick, hidden windows a screenshot captures, or to acquire when nothing
+	/// was hoisted.
+	pub(crate) fn acquire_swapchain_images(&mut self, captured: impl Fn(SinkId) -> bool) -> Option<std::time::Instant> {
 		if self.acquisitions.0 != self.started_frame_count {
 			self.acquisitions = (self.started_frame_count, SmallVec::new());
 		}
-		if self.acquisitions.1.len() == self.windows.len() {
+		let decided = self.acquisitions.1.len();
+		let captures_hidden = self
+			.acquisitions
+			.1
+			.iter()
+			.enumerate()
+			.any(|(sink, window_frame)| matches!(window_frame, WindowFrame::Hidden) && captured(sink));
+		if decided == self.windows.len() && !captures_hidden {
 			return None;
 		}
 
@@ -406,7 +429,18 @@ impl Renderer {
 		let frame = ghi::queue::FrameRequest::new(self.started_frame_count, self.render_finished_synchronizer);
 		let mut present_time = None;
 
-		for (index, (_window, swapchain, warned)) in self.windows.iter_mut().enumerate().skip(self.acquisitions.1.len()) {
+		for (index, (window, swapchain, warned)) in self.windows.iter_mut().enumerate() {
+			let captured = captured(index);
+			match self.acquisitions.1.get(index) {
+				None => {}
+				Some(WindowFrame::Hidden) if captured => {}
+				Some(_) => continue,
+			}
+			if !captured && !window.is_visible() {
+				self.acquisitions.1.push(WindowFrame::Hidden);
+				continue;
+			}
+
 			let acquisition = self.context.acquire_swapchain_image(frame, *swapchain);
 			if index == 0 {
 				present_time = acquisition.as_ref().and_then(|acquisition| acquisition.present_time());
@@ -429,11 +463,14 @@ impl Renderer {
 				)
 			});
 
-			self.acquisitions.1.push(
-				acquisition
-					.filter(|_| problem.is_none())
-					.map(|acquisition| (acquisition.present_key(), acquisition.extent(), *swapchain)),
-			);
+			let window_frame = match acquisition.filter(|_| problem.is_none()) {
+				Some(acquisition) => WindowFrame::Acquired(acquisition.present_key(), acquisition.extent(), *swapchain),
+				None => WindowFrame::Unusable,
+			};
+			match self.acquisitions.1.get_mut(index) {
+				Some(decided) => *decided = window_frame,
+				None => self.acquisitions.1.push(window_frame),
+			}
 		}
 
 		present_time
@@ -480,9 +517,14 @@ impl Renderer {
 	/// Returns whether any window holds an acquired swapchain image for the current frame.
 	///
 	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
-	/// and the caller must pace the tick itself.
+	/// and the caller must pace the tick itself. Windows that cannot be seen hold no image.
 	pub(crate) fn presents_this_frame(&self) -> bool {
-		self.acquisitions.0 == self.started_frame_count && self.acquisitions.1.iter().any(Option::is_some)
+		self.acquisitions.0 == self.started_frame_count
+			&& self
+				.acquisitions
+				.1
+				.iter()
+				.any(|window_frame| matches!(window_frame, WindowFrame::Acquired(..)))
 	}
 
 	/// Returns whether any frame has been submitted to a window since startup.
@@ -492,8 +534,8 @@ impl Renderer {
 
 	/// Prepares a frame by invoking the configured render passes.
 	///
-	/// The renderer skips execution when no swapchain is available or when any
-	/// swapchain surface has a zero-sized dimension. It returns the frame that
+	/// The renderer skips every window that has no usable swapchain image, such as a zero-sized one, and every
+	/// window that cannot be seen and no screenshot captures. It returns the frame that
 	/// every screenshot readback comes from, and one readback result per request
 	/// in request order.
 	// Keep the frame transaction contiguous so recording, presentation, and screenshot transfers stay ordered.
@@ -523,8 +565,9 @@ impl Renderer {
 				.collect();
 			return (self.started_frame_count, screenshots);
 		};
-		// Acquire here when nothing was hoisted to the start of the tick, or for windows adopted since.
-		self.acquire_swapchain_images();
+		// Acquire here when nothing was hoisted to the start of the tick, for windows adopted since, and for hidden
+		// windows a screenshot captures.
+		self.acquire_swapchain_images(|sink| screenshot_requests.iter().any(|(captured, _)| *captured == sink));
 		self.redraw_requested = false;
 
 		if self.started_frame_count > 0 && !self.pending_sink_initializations.is_empty() {
@@ -614,7 +657,7 @@ impl Renderer {
 						let span = debug_span!("Renderer::build_sinks", cameras = cameras.len());
 						let _enter = span.enter();
 						for (sink_id, camera_handle) in sink_cameras.iter() {
-							let Some((_present_key, extent, _swapchain)) = swapchains[*sink_id] else {
+							let WindowFrame::Acquired(_present_key, extent, _swapchain) = swapchains[*sink_id] else {
 								continue;
 							};
 
@@ -682,7 +725,10 @@ impl Renderer {
 
 					let present_keys = swapchains
 						.iter()
-						.filter_map(|sc| sc.as_ref().map(|(pk, ..)| *pk))
+						.filter_map(|window_frame| match window_frame {
+							WindowFrame::Acquired(present_key, ..) => Some(*present_key),
+							WindowFrame::Hidden | WindowFrame::Unusable => None,
+						})
 						.collect::<SmallVec<[ghi::PresentKey; 16]>>();
 
 					(
@@ -781,8 +827,8 @@ impl Renderer {
 							Err(error) => Some(Err(*error)),
 							Ok(ResolvedScreenshotCapture::FinalSwapchain { sink }) => Some(match swapchains.get(*sink) {
 								None => Err(RendererScreenshotError::SinkNotFound),
-								Some(None) => Err(RendererScreenshotError::SinkUnavailable),
-								Some(Some((_present_key, _extent, swapchain))) => command_buffer_recording
+								Some(WindowFrame::Hidden | WindowFrame::Unusable) => Err(RendererScreenshotError::SinkUnavailable),
+								Some(WindowFrame::Acquired(_present_key, _extent, swapchain)) => command_buffer_recording
 									.transfer_texture(ghi::ImageOrSwapchain::Swapchain(*swapchain))
 									.map_err(RendererScreenshotError::Transfer),
 							}),

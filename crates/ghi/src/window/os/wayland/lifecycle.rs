@@ -202,6 +202,11 @@ impl WindowLike for Window {
 			nanoseconds => Some(Duration::from_nanos(nanoseconds)),
 		}
 	}
+
+	/// Wayland does not tell clients whether their surface can be seen, so every window counts as visible.
+	fn is_visible(&self) -> bool {
+		true
+	}
 }
 
 impl Drop for Window {

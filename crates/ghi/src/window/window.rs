@@ -40,6 +40,16 @@ impl Window {
 		self.os_window.refresh_interval()
 	}
 
+	/// Returns whether any part of the window can be seen on a display.
+	///
+	/// A minimized window cannot be seen, and on some platforms neither can one that other windows fully cover. Frames
+	/// presented to a window that cannot be seen are never shown, so renderers skip it.
+	/// [`crate::window::Events::VisibilityChanged`] reports when this value changes. Platforms that cannot tell
+	/// report `true`.
+	pub fn is_visible(&self) -> bool {
+		self.os_window.is_visible()
+	}
+
 	pub fn name(&self) -> &str {
 		&self.name
 	}

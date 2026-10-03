@@ -248,13 +248,16 @@ impl AtmosphereSkyRenderPass {
 	}
 
 	/// Adopts the newest directional light as the sun and applies its latest illuminance, disk size, and orientation to the sky.
-	fn update_sun(&mut self) {
+	/// Returns whether the sun moved.
+	fn update_sun(&mut self) -> bool {
 		if self.sun.update()
 			&& let Some(direction) = self.sun.direction()
 		{
 			self.settings.sun_direction = direction;
 			self.sky_view_camera_height = None;
+			return true;
 		}
+		false
 	}
 
 	/// Updates per-view sky constants from the active camera before dispatch and returns the camera height.
@@ -368,6 +371,12 @@ impl RenderPass for AtmosphereSkyRenderPass {
 		let _ = (frame, sink, frame_allocator);
 		self.update_sun();
 		None
+	}
+
+	/// Adopts the sun every tick, since frames that render no sink, such as while the window is hidden, prepare
+	/// nothing. Otherwise the sun's transform listener would fill and block whoever publishes transforms.
+	fn needs_frame(&mut self) -> bool {
+		self.update_sun()
 	}
 }
 

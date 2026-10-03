@@ -73,6 +73,10 @@ pub enum Events {
 	FocusChanged(bool),
 	/// The window was minimized.
 	Minimize,
+	/// Whether any part of the window can be seen changed. Carries [`Window::is_visible`] after the change.
+	///
+	/// Platforms that cannot tell never send it.
+	VisibilityChanged(bool),
 	/// The window was maximized.
 	Maximize,
 	/// The window was closed.

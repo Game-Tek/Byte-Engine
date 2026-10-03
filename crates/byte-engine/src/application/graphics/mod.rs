@@ -427,13 +427,19 @@ impl GraphicsApplication {
 	///
 	/// Presented times form the display clock: when the swapchain reports a newer one, `elapsed` lands on the
 	/// point that display interval reaches, so deltas follow the display cadence instead of CPU scheduling noise.
-	/// Without a newer presented time (startup, skipped frames, or a report that arrives late) the tick advances
-	/// by the wall-clock interval; the next presented time discounts that advance instead of charging it twice.
+	/// Without a newer presented time (startup, skipped frames, a window that cannot be seen, or a report that arrives
+	/// late) the tick advances by the wall-clock interval; the next presented time discounts that advance instead of
+	/// charging it twice.
 	///
 	/// After the loop waited for events, `elapsed` still advances by the time spent waiting, but the delta is capped
 	/// at one frame so systems stepping by it do not jump across the idle stretch.
 	fn sample_frame_time(&mut self, present_time: Option<std::time::Instant>, waited: bool) -> Time {
 		let now = std::time::Instant::now();
+		// A presented time from more than a frame before the previous tick shows a frame from before a stretch in which
+		// no tick read one, such as while the window was hidden or the loop idled. Anchoring the clock to it would fold
+		// that whole stretch into the delta of the next presented time, so it counts as none.
+		let present_time =
+			present_time.filter(|present_time| *present_time + self.skipped_frame_pace >= self.last_tick_instant);
 		let wall_delta = MediaTime::from_std(now - self.last_tick_instant);
 		let (delta, advance) = match (present_time, self.last_present_time) {
 			(Some(current), Some(previous)) if current > previous => {
@@ -462,7 +468,8 @@ impl GraphicsApplication {
 
 	/// Routes window input events and reports whether the platform or any window requested close.
 	///
-	/// Window state changes request a frame. Input events do not: their consumers publish what changed.
+	/// Window state changes request a frame, including a window becoming visible again, since frames skip windows
+	/// that cannot be seen. Input events do not: their consumers publish what changed.
 	fn process_window_events(&mut self, wait: ghi::window::Wait) -> bool {
 		let span = debug_span!("GraphicsApplication::process_window_events");
 		let _enter = span.enter();
@@ -483,6 +490,7 @@ impl GraphicsApplication {
 							| ghi::window::Events::Minimize
 							| ghi::window::Events::Maximize
 							| ghi::window::Events::DisplayChanged { .. }
+							| ghi::window::Events::VisibilityChanged(true)
 					);
 					if process_default_window_input(&mut self.input, event) {
 						self.actions.cancel_seat(input::SeatHandle::stub());
@@ -749,8 +757,9 @@ impl GraphicsApplication {
 		// callback so their scene can request resources before native window setup begins.
 		// An acquired image must be presented, so on-demand rendering only hoists the acquisition while frames keep
 		// coming; the first frame after an idle stretch acquires when it renders.
+		// Windows that cannot be seen acquire nothing, so a tick that only renders for them sleeps below.
 		let present_time = if self.rendering_active {
-			self.renderer.acquire_swapchain_images()
+			self.renderer.acquire_swapchain_images(|_| false)
 		} else {
 			None
 		};

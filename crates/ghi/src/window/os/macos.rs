@@ -10,7 +10,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message as _, define
 use objc2_app_kit::{
 	NSApp, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
 	NSBackingStoreType, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSScreen, NSView, NSWindow, NSWindowDelegate,
-	NSWindowStyleMask,
+	NSWindowOcclusionState, NSWindowStyleMask,
 };
 use objc2_foundation::{
 	NSAutoreleasePool, NSDate, NSDefaultRunLoopMode, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -84,6 +84,8 @@ struct WindowDelegateIvars {
 	events: EventQueue,
 	window: WindowId,
 	zoomed: Cell<bool>,
+	/// The visibility the last [`Events::VisibilityChanged`] reported, so repeated notifications report only changes.
+	visible: Cell<bool>,
 }
 
 struct ApplicationDelegateIvars {
@@ -107,8 +109,19 @@ define_class!(
 		}
 
 		#[unsafe(method(windowDidMiniaturize:))]
-		fn window_did_miniaturize(&self, _notification: &NSNotification) {
+		fn window_did_miniaturize(&self, notification: &NSNotification) {
 			self.push(Events::Minimize);
+			self.update_visibility(notification);
+		}
+
+		#[unsafe(method(windowDidDeminiaturize:))]
+		fn window_did_deminiaturize(&self, notification: &NSNotification) {
+			self.update_visibility(notification);
+		}
+
+		#[unsafe(method(windowDidChangeOcclusionState:))]
+		fn window_did_change_occlusion_state(&self, notification: &NSNotification) {
+			self.update_visibility(notification);
 		}
 
 		#[unsafe(method(windowDidResize:))]
@@ -219,6 +232,9 @@ impl WindowDelegate {
 			events,
 			window,
 			zoomed: Cell::new(false),
+			// A missed `true` would leave an on-demand loop asleep over stale contents, while an extra one only asks
+			// for a frame, so the first report that the window can be seen always goes out.
+			visible: Cell::new(false),
 		});
 		// SAFETY: `this` is a freshly allocated subclass with initialized ivars and the inherited NSObject initializer.
 		unsafe { msg_send![super(this), init] }
@@ -232,6 +248,20 @@ impl WindowDelegate {
 		});
 		// Notifications can arrive without an NSEvent, which would leave a waiting poll asleep.
 		post_wake_event();
+	}
+
+	/// Reports the window's visibility when it differs from the last report.
+	///
+	/// Occlusion and miniaturization notifications arrive in either order around one transition, so each one
+	/// re-reads the full state instead of trusting what its own notification implies.
+	fn update_visibility(&self, notification: &NSNotification) {
+		let Some(window) = notification.object().and_then(|object| object.downcast::<NSWindow>().ok()) else {
+			return;
+		};
+		let visible = window_is_visible(&window);
+		if self.ivars().visible.replace(visible) != visible {
+			self.push(Events::VisibilityChanged(visible));
+		}
 	}
 
 	/// Publishes the drawable pixel size so layout matches the swapchain after resize or display changes.
@@ -291,6 +321,14 @@ fn restore_windows(app: &NSApplication) {
 fn screen_refresh_interval(window: &NSWindow) -> Option<std::time::Duration> {
 	let frames_per_second = window.screen()?.maximumFramesPerSecond();
 	(frames_per_second > 0).then(|| std::time::Duration::from_secs_f64(1.0 / frames_per_second as f64))
+}
+
+/// Returns whether any part of the window can be seen on a display.
+///
+/// AppKit marks a window occluded when other windows fully cover it, when it is on another space, and when it is
+/// minimized. The miniaturized check also covers the minimize animation, before the occlusion state catches up.
+fn window_is_visible(window: &NSWindow) -> bool {
+	window.occlusionState().contains(NSWindowOcclusionState::Visible) && !window.isMiniaturized()
 }
 
 fn window_id(window: &NSWindow) -> WindowId {
@@ -612,6 +650,10 @@ impl WindowLike for Window {
 
 	fn refresh_interval(&self) -> Option<std::time::Duration> {
 		screen_refresh_interval(&self.window)
+	}
+
+	fn is_visible(&self) -> bool {
+		window_is_visible(&self.window)
 	}
 }
 

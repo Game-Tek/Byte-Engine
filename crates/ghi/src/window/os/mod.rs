@@ -52,4 +52,7 @@ pub trait WindowLike: Sized {
 
 	/// Returns the refresh interval of the display the window is on, when the platform reports it.
 	fn refresh_interval(&self) -> Option<std::time::Duration>;
+
+	/// Returns whether any part of the window can be seen on a display; `true` when the platform cannot tell.
+	fn is_visible(&self) -> bool;
 }

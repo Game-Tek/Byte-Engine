@@ -49,7 +49,7 @@ pub(crate) struct RenderSkin {
 }
 
 /// One material ready for evaluation: its debug name, table slot, and compiled pipeline.
-pub(crate) type MaterialEntry = (String, u32, ghi::PipelineHandle);
+pub(crate) type MaterialEntry = (Arc<str>, u32, ghi::PipelineHandle);
 
 /// The `RenderInfo` struct groups frame-local visibility work by the phase that consumes it.
 #[derive(Default)]
@@ -108,14 +108,6 @@ impl RenderInfo {
 		};
 		instances.push(instance);
 		mask[material_word] |= material_bit;
-	}
-
-	pub(crate) fn active_instance_count(&self) -> usize {
-		self.opaque_instances.len()
-			+ self.masked_instances.len()
-			+ self.double_sided_instances.len()
-			+ self.double_sided_masked_instances.len()
-			+ self.transparent_instances.len()
 	}
 }
 
@@ -214,14 +206,14 @@ impl VisibilityScene {
 	) {
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
 		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
-		// light. Entries past the count are never read, so they are left as they are.
-		lighting_data.count = 0;
+		// light. Entries past the count are never read, so they are left as they are. The loop writes exactly `count`
+		// lights, so the count is written once instead of after each light.
+		lighting_data.count = self.lights.len().min(MAX_LIGHTS) as u32;
 		lighting_data.exposure = exposure;
 		lighting_data.environment_intensity = environment_intensity;
 		lighting_data._padding = 0;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
 			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), ies_profiles[index].1);
-			lighting_data.count = index as u32 + 1;
 		}
 		frame.sync_buffer(self.lighting_buffer);
 	}

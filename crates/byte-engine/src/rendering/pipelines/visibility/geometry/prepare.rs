@@ -158,11 +158,15 @@ impl PreparedMesh {
 		let mesh = resource.resource();
 		let source = ResourceStreams::new(mesh)?;
 		let layout = source.layout(mesh)?;
-		let skins = mesh.skins.iter().cloned().map(Arc::new).collect::<Vec<_>>();
 		let skeleton_node_count = mesh
 			.skeleton
 			.as_ref()
 			.map_or(0, |skeleton| skeleton.resource().nodes.len() as u32);
+		// The bindings move out of the resource, which this function drops: nothing below reads its skins.
+		let skins = std::mem::take(&mut resource.resource_mut().skins)
+			.into_iter()
+			.map(Arc::new)
+			.collect::<Vec<_>>();
 		let mut staging = allocate_staging(&upload_staging, layout.backing_size).await?;
 		let backing = staging.bytes_mut();
 		let (source_bytes, output) = backing.split_at_mut(layout.source.byte_count);

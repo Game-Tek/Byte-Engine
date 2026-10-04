@@ -70,13 +70,19 @@ pub(crate) struct ComputePipeline {
 	pub(crate) bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
 }
 
-/// The `ComputePipelines` struct lends published compute pipelines to descriptor adoption without copying their reflected bindings.
+/// The `ComputePipelines` struct lends published pipeline entries under one read lock, so descriptor adoption reads
+/// reflected bindings without copying them and pollers check many pipeline states with one lock.
 pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineKey, PipelineEntry>>);
 
 impl ComputePipelines<'_> {
 	/// Returns a published compute pipeline, or `None` while it is unavailable.
 	pub(crate) fn get(&self, pipeline: PipelineRef) -> Option<&ComputePipeline> {
 		self.0.get(&pipeline.0).and_then(|entry| entry.compute.as_ref())
+	}
+
+	/// Returns the state published for a pipeline, so a caller that polls many pipelines takes the lock once.
+	pub(crate) fn state(&self, pipeline: PipelineRef) -> PipelineState {
+		self.0.get(&pipeline.0).map_or(PipelineState::Failed, |entry| entry.state)
 	}
 }
 
@@ -110,12 +116,7 @@ impl PipelineManagerClient {
 
 	/// Returns the state published for a pipeline without draining worker results.
 	pub fn get(&self, pipeline: PipelineRef) -> PipelineState {
-		self.shared
-			.entries
-			.read()
-			.get(&pipeline.0)
-			.map(|entry| entry.state)
-			.unwrap_or(PipelineState::Failed)
+		self.compute_pipelines().state(pipeline)
 	}
 
 	/// Returns the revision most recently published for a stable pipeline reference.

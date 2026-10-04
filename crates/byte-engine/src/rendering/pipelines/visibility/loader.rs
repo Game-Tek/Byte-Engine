@@ -8,7 +8,7 @@
 //! typed ready or unavailable events; generic keys, requests, worker residents, lane types, and material
 //! compilation state remain inside this module.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use resource_management::Reference;
 use resource_management::resource::resource_manager::ResourceManager;
@@ -140,7 +140,7 @@ pub(crate) enum VisibilityResident {
 
 /// The `VisibilityLoaderEvent` enum is the renderer's complete view of visibility resource loading.
 pub(crate) enum VisibilityLoaderEvent {
-	MeshReady { key: MeshKey, mesh: MeshData },
+	MeshReady { key: MeshKey, mesh: Arc<MeshData> },
 	MaterialReady(ResidentMaterial, ghi::PipelineHandle),
 	MaterialUnavailable { index: u32 },
 	TextureReady(ResidentTexture),
@@ -162,7 +162,8 @@ pub(crate) struct VisibilityLoader {
 pub(crate) struct VisibilityLoaderClient {
 	client: LoaderClient<VisibilityLoader>,
 	pipeline_manager: PipelineManagerClient,
-	meshes: HashMap<MeshKey, MeshData>,
+	/// Resident meshes, shared with every renderable that uses them.
+	meshes: HashMap<MeshKey, Arc<MeshData>>,
 	environments: HashMap<String, ResidentEnvironment>,
 	materials: HashMap<u32, MaterialPublication>,
 	/// Reports rebaked material variants, so their materials load again.
@@ -223,7 +224,7 @@ impl VisibilityLoaderClient {
 	}
 
 	/// Requests one mesh and reports whether that mesh was already resident.
-	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<MeshData>) {
+	pub(crate) fn request_mesh(&mut self, source: MeshSource) -> (MeshKey, Option<Arc<MeshData>>) {
 		let key = source.key();
 		let resident = self.meshes.get(&key).cloned();
 		self.client.request(VisibilityLoadRequest::Mesh(source));
@@ -260,6 +261,7 @@ impl VisibilityLoaderClient {
 					resident: VisibilityResident::Mesh(key, mesh),
 					..
 				} => {
+					let mesh = Arc::new(mesh);
 					self.meshes.insert(key, mesh.clone());
 					VisibilityLoaderEvent::MeshReady { key, mesh }
 				}
@@ -325,9 +327,10 @@ impl VisibilityLoaderClient {
 		}
 
 		// Visit each material once, even when many compilation results arrive together. A reloaded material replaced
-		// its publication, so it reports its new state here too.
+		// its publication, so it reports its new state here too. One read lock covers every material's poll.
+		let pipelines = self.pipeline_manager.compute_pipelines();
 		for publication in self.materials.values_mut() {
-			let state = self.pipeline_manager.get(publication.material.pipeline);
+			let state = pipelines.state(publication.material.pipeline);
 			if publication.published == Some(state) {
 				continue;
 			}

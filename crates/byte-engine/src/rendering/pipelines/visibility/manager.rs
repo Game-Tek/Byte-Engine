@@ -175,7 +175,8 @@ struct PendingRenderable {
 struct LoadedMaterial {
 	index: u32,
 	pipeline: ghi::PipelineHandle,
-	name: String,
+	/// Shared with the material lists, so rebuilding them does not copy names.
+	name: Arc<str>,
 	alpha_mode: AlphaMode,
 	double_sided: bool,
 	texture_indices: Vec<u32>,
@@ -694,15 +695,20 @@ impl VisibilityPipelineManager {
 	fn adopt_resource_completions(&mut self, frame: &mut ghi::implementation::Frame) {
 		let mut events = std::mem::take(&mut self.resource_events);
 		self.loader.update(frame, &mut events);
+		// Material readiness changes rebuild the material lists once, after every event of the frame.
+		let mut materials_changed = false;
 		for event in events.drain(..) {
 			match event {
 				VisibilityLoaderEvent::MeshReady { key, mesh } => self.resolve_pending_renderables(key, &mesh),
-				VisibilityLoaderEvent::MaterialReady(material, pipeline) => self.adopt_material(material, pipeline),
+				VisibilityLoaderEvent::MaterialReady(material, pipeline) => {
+					self.adopt_material(material, pipeline);
+					materials_changed = true;
+				}
 				VisibilityLoaderEvent::MaterialUnavailable { index } => {
 					self.availability.set_key_available(&Availability::Material(index), false);
-					self.rebuild_material_lists();
+					materials_changed = true;
 				}
-				VisibilityLoaderEvent::TextureReady(texture) => self.adopt_texture(frame, texture),
+				VisibilityLoaderEvent::TextureReady(texture) => materials_changed |= self.adopt_texture(frame, texture),
 				VisibilityLoaderEvent::EnvironmentReady { id, environment } => {
 					if self.environment.requested.as_deref() == Some(id.as_str()) {
 						self.environment.bind(environment);
@@ -714,6 +720,9 @@ impl VisibilityPipelineManager {
 			}
 		}
 		self.resource_events = events;
+		if materials_changed {
+			self.rebuild_material_lists();
+		}
 		if self.environment.descriptors_dirty {
 			self.environment.descriptors_dirty = false;
 			for sink_state in &self.scene.sink_states {
@@ -727,8 +736,8 @@ impl VisibilityPipelineManager {
 		}
 	}
 
-	/// Publishes one texture the loader already transferred.
-	fn adopt_texture(&mut self, frame: &mut ghi::implementation::Frame, texture: ResidentTexture) {
+	/// Publishes one texture the loader already transferred, and returns whether a loaded material samples it.
+	fn adopt_texture(&mut self, frame: &mut ghi::implementation::Frame, texture: ResidentTexture) -> bool {
 		let ResidentTexture {
 			id,
 			index,
@@ -770,17 +779,15 @@ impl VisibilityPipelineManager {
 		}
 		let texture = self.availability.get_or_insert(Availability::Texture(index), false);
 		self.availability.set_available(texture, true);
-		if self
-			.loaded_materials
+		self.loaded_materials
 			.iter()
 			.flatten()
 			.any(|material| material.texture_indices.contains(&index))
-		{
-			self.rebuild_material_lists();
-		}
 	}
 
 	/// Adopts material metadata and its compiled `pipeline` into the canonical table and wires its texture dependencies.
+	///
+	/// Next, call [`Self::rebuild_material_lists`] once the frame's events are adopted.
 	fn adopt_material(&mut self, material: ResidentMaterial, pipeline: ghi::PipelineHandle) {
 		let ResidentMaterial {
 			id,
@@ -826,13 +833,12 @@ impl VisibilityPipelineManager {
 		self.loaded_materials[slot] = Some(LoadedMaterial {
 			index,
 			pipeline,
-			name: id,
+			name: id.into(),
 			alpha_mode,
 			double_sided,
 			texture_indices,
 		});
 		self.materials_copies_current = [false; ghi::MAX_FRAMES_IN_FLIGHT];
-		self.rebuild_material_lists();
 	}
 
 	/// Rebuilds the opaque and transparent material lists consumed by material evaluation.
@@ -940,6 +946,8 @@ impl VisibilityPipelineManager {
 		self.skinning_frame.clear();
 		let mesh_data = frame.get_mut_dynamic_buffer_slice(self.scene.meshes_buffer);
 		let mut deformed_vertex_count = 0;
+		// Every admitted entity pushes exactly one instance, so this counts the instances so far.
+		let mut active_index = 0;
 
 		for entity in self.scene.render_entities.iter() {
 			// A renderable enters a frame as one object; never expose the subset whose materials loaded first.
@@ -953,7 +961,6 @@ impl VisibilityPipelineManager {
 			else {
 				continue;
 			};
-			let active_index = render_info.active_instance_count();
 			assert!(
 				active_index < MAX_INSTANCES,
 				"Visibility active instance limit exceeded. The most likely cause is that the scene contains more visible mesh primitives than the visibility pipeline supports."
@@ -1001,6 +1008,7 @@ impl VisibilityPipelineManager {
 				&material.alpha_mode,
 				material.double_sided,
 			);
+			active_index += 1;
 		}
 		frame.sync_buffer(self.scene.meshes_buffer);
 		self.skinning_pass

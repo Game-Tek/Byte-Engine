@@ -114,10 +114,12 @@ impl MeshDispatchWorkBuffer {
 fn build_work_items(destination: &mut [MeshDispatchWorkItem], instances: &[Instance]) -> usize {
 	let mut count = 0;
 	for instance in instances {
-		for chunk_index in 0..instance.meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE) {
-			destination[count] = MeshDispatchWorkItem::new(instance.shader_mesh_index, chunk_index);
-			count += 1;
+		let chunks = instance.meshlet_count.div_ceil(MESHLET_CULLING_TASK_GROUP_SIZE);
+		// One bounds check per instance instead of one per work item.
+		for (slot, chunk_index) in destination[count..count + chunks as usize].iter_mut().zip(0..chunks) {
+			*slot = MeshDispatchWorkItem::new(instance.shader_mesh_index, chunk_index);
 		}
+		count += chunks as usize;
 	}
 	count
 }

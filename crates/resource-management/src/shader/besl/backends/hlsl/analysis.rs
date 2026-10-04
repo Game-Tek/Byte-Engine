@@ -122,32 +122,6 @@ impl Generator {
 				.all(|parameter| Self::node_type_name(parameter).as_deref() == Some(column_type))
 	}
 
-	pub(crate) fn emit_texture_2d_array_grad_sample(
-		&mut self,
-		string: &mut String,
-		texture_array: &besl::NodeReference,
-		texture_index: &besl::NodeReference,
-		uv: &besl::NodeReference,
-		uv_derivative_x: &besl::NodeReference,
-		uv_derivative_y: &besl::NodeReference,
-	) {
-		self.emit_node_string(string, texture_array);
-		string.push('[');
-		self.emit_node_string(string, texture_index);
-		string.push_str("].SampleGrad(");
-		self.emit_node_string(string, texture_array);
-		string.push_str("_sampler[");
-		self.emit_node_string(string, texture_index);
-		string.push(']');
-		self.emit_separator(string);
-		self.emit_node_string(string, uv);
-		self.emit_separator(string);
-		self.emit_node_string(string, uv_derivative_x);
-		self.emit_separator(string);
-		self.emit_node_string(string, uv_derivative_y);
-		string.push(')');
-	}
-
 	pub(crate) fn image_size_arguments(expression: &besl::NodeReference) -> Option<Vec<besl::NodeReference>> {
 		let expression = expression.borrow();
 		let besl::Nodes::Expression(besl::Expressions::IntrinsicCall {
@@ -456,12 +430,7 @@ impl Generator {
 
 		// HLSL array constants use brace initializers rather than constructor syntax like float[3](...).
 		string.push('{');
-		emit_comma_separated_nodes(
-			string,
-			ShaderFormatting::new(self.minified),
-			parameters,
-			|string, parameter| self.emit_node_string(string, parameter),
-		);
+		self.emit_call_arguments(string, parameters);
 		string.push('}');
 		true
 	}
@@ -476,27 +445,10 @@ impl Generator {
 		let type_node = r#type.borrow();
 		let type_name = type_node.get_name().unwrap();
 		string.push_str("static const ");
-		if let Some(vector_type) = crate::shader::generator::scalar_array_vector_type(type_name) {
-			string.push_str(Self::translate_type(vector_type));
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" = ");
-			self.emit_node_string(string, value);
-		} else if let Some((element_type, count)) = crate::shader::generator::array_type_parts(type_name) {
-			Self::type_identifier(element_type).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push('[');
-			string.push_str(count);
-			string.push_str("] = ");
-			if !self.emit_array_initializer(string, value) {
-				self.emit_node_string(string, value);
-			}
-		} else {
-			Self::emit_type_name(string, type_name);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			string.push_str(" = ");
+		Self::emit_c_declaration(string, name, type_name);
+		string.push_str(" = ");
+		// Short scalar arrays are vectors, so only real arrays take a brace initializer.
+		if crate::shader::generator::value_array_parts(type_name).is_none() || !self.emit_array_initializer(string, value) {
 			self.emit_node_string(string, value);
 		}
 		string.push(';');

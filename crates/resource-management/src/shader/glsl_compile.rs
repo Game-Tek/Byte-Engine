@@ -93,7 +93,7 @@ pub fn pretty_format_glsl_error_lines(error_lines: &[Line]) -> String {
 	error_string
 }
 
-pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> Option<String> {
+pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> String {
 	let mut source_code_lines = source_code.lines();
 
 	let mut error_string = String::new();
@@ -127,13 +127,11 @@ pub fn pretty_format_glslang_errors(error_lines: &[Line], source_code: &str) -> 
 		error_string.push_str(&format!("{}\n", lines.collect::<Vec<_>>().join("\n")));
 	}
 
-	Some(error_string)
+	error_string
 }
 
 pub fn pretty_format_glslang_error_string(error_string: &str, shader_name: &str, source_code: &str) -> String {
-	let error_lines = process_glslc_error(shader_name, source_code, error_string);
-
-	pretty_format_glslang_errors(&error_lines, source_code).unwrap_or_else(|| error_string.to_string())
+	pretty_format_glslang_errors(&process_glslc_error(shader_name, source_code, error_string), source_code)
 }
 
 #[cfg(test)]

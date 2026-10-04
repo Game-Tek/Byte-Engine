@@ -1,18 +1,6 @@
-use std::{
-	alloc::{Allocator, Global},
-	cell::RefCell,
-	collections::HashMap,
-	fmt::Write as _,
-	vec::Vec,
-};
+use std::collections::HashMap;
 
-pub use Generator as MSLTranspiler;
-
-use super::*;
-use crate::shader::generator::{
-	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, ShaderGenerator, Stages, emit_comma_separated_nodes,
-	emit_statement_block, ordered_shader_nodes_in,
-};
+use super::{SUBGROUP_INTRINSICS, any_code_node, is_intrinsic_call};
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
@@ -27,8 +15,7 @@ use crate::shader::generator::{
 /// # Parameters
 ///
 /// - `minified`: Controls compact shader output. The default is `true` in release builds.
-pub struct Generator<A: Allocator + Clone = Global> {
-	pub(crate) allocator: A,
+pub struct Generator {
 	pub(crate) minified: bool,
 	pub(crate) compute_binding_mode: ComputeBindingMode,
 	pub(crate) in_compute_body: bool,
@@ -115,7 +102,7 @@ pub(crate) struct ComputeStageContext {
 }
 
 /// The `RasterStageContext` struct carries the flat argument buffer into binding-dependent raster helpers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct RasterStageContext {
 	pub(crate) has_resources: bool,
 	pub(crate) has_push_constant: bool,
@@ -142,31 +129,22 @@ pub(crate) struct IntrinsicRequirements {
 	pub(crate) uses_render_target_array_index: bool,
 }
 
-pub(crate) struct ClassifiedNodes<'a, A: Allocator + Clone> {
-	pub(crate) bindings: Vec<&'a besl::NodeReference, A>,
-	pub(crate) inputs: Vec<&'a besl::NodeReference, A>,
-	pub(crate) outputs: Vec<&'a besl::NodeReference, A>,
-	pub(crate) task_payloads: Vec<&'a besl::NodeReference, A>,
-	pub(crate) workgroups: Vec<&'a besl::NodeReference, A>,
-	pub(crate) declarations: Vec<&'a besl::NodeReference, A>,
-	pub(crate) functions: Vec<&'a besl::NodeReference, A>,
+#[derive(Default)]
+pub(crate) struct ClassifiedNodes<'a> {
+	pub(crate) bindings: Vec<&'a besl::NodeReference>,
+	pub(crate) inputs: Vec<&'a besl::NodeReference>,
+	pub(crate) outputs: Vec<&'a besl::NodeReference>,
+	pub(crate) task_payloads: Vec<&'a besl::NodeReference>,
+	pub(crate) workgroups: Vec<&'a besl::NodeReference>,
+	pub(crate) declarations: Vec<&'a besl::NodeReference>,
+	pub(crate) functions: Vec<&'a besl::NodeReference>,
 	pub(crate) push_constant: Option<&'a besl::NodeReference>,
 }
 
-impl<A: Allocator + Clone> ShaderGenerator for Generator<A> {}
-
-impl Generator<Global> {
+impl Generator {
 	/// Creates an MSL transpiler with the default formatting mode.
 	pub fn new() -> Self {
-		Self::new_in(Global)
-	}
-}
-
-impl<A: Allocator + Clone> Generator<A> {
-	/// Creates an MSL transpiler that uses `allocator` for temporary output buffers.
-	pub fn new_in(allocator: A) -> Self {
 		Generator {
-			allocator,
 			minified: !cfg!(debug_assertions), // Minify by default in release mode
 			compute_binding_mode: ComputeBindingMode::ArgumentBuffers,
 			in_compute_body: false,
@@ -189,10 +167,6 @@ impl<A: Allocator + Clone> Generator<A> {
 	pub fn compute_binding_mode(mut self, compute_binding_mode: ComputeBindingMode) -> Self {
 		self.compute_binding_mode = compute_binding_mode;
 		self
-	}
-
-	pub fn allocator(&self) -> &A {
-		&self.allocator
 	}
 
 	/// Collects source requirements while walking emitted function bodies once instead of rescanning them for each helper.
@@ -273,65 +247,39 @@ fn analyze_hidden_context(
 
 		visited.push(node.clone());
 
+		let mut visit = |child: &besl::NodeReference| node_requires_resource_context(child, visited, contexts);
 		let result = match node.borrow().node() {
-			besl::Nodes::Binding { .. } => true,
-			besl::Nodes::TaskPayload { .. } => true,
-			besl::Nodes::Workgroup { .. } => true,
-			besl::Nodes::PushConstant { .. } => true,
-			besl::Nodes::Scope { children, .. } => children
-				.iter()
-				.any(|child| node_requires_resource_context(child, visited, contexts)),
+			besl::Nodes::Binding { .. }
+			| besl::Nodes::TaskPayload { .. }
+			| besl::Nodes::Workgroup { .. }
+			| besl::Nodes::PushConstant { .. } => true,
+			besl::Nodes::Scope { children, .. } | besl::Nodes::Struct { fields: children, .. } => {
+				children.iter().any(&mut visit)
+			}
 			besl::Nodes::Function {
 				params,
 				return_type,
 				statements,
 				..
-			} => {
-				params
-					.iter()
-					.any(|param| node_requires_resource_context(param, visited, contexts))
-					|| node_requires_resource_context(return_type, visited, contexts)
-					|| statements
-						.iter()
-						.any(|statement| node_requires_resource_context(statement, visited, contexts))
-			}
-			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch
-				.branch_children()
-				.any(|child| node_requires_resource_context(child, visited, contexts)),
+			} => params.iter().any(&mut visit) || visit(return_type) || statements.iter().any(&mut visit),
+			branch @ (besl::Nodes::Conditional { .. } | besl::Nodes::Match { .. }) => branch.branch_children().any(&mut visit),
 			besl::Nodes::ForLoop {
 				initializer,
 				condition,
 				update,
 				statements,
-			} => {
-				node_requires_resource_context(initializer, visited, contexts)
-					|| node_requires_resource_context(condition, visited, contexts)
-					|| node_requires_resource_context(update, visited, contexts)
-					|| statements
-						.iter()
-						.any(|statement| node_requires_resource_context(statement, visited, contexts))
-			}
-			besl::Nodes::Struct { fields, .. } => fields
-				.iter()
-				.any(|field| node_requires_resource_context(field, visited, contexts)),
-			besl::Nodes::Raw { input, output, .. } => {
-				input
-					.iter()
-					.any(|input| node_requires_resource_context(input, visited, contexts))
-					|| output
-						.iter()
-						.any(|output| node_requires_resource_context(output, visited, contexts))
-			}
+			} => visit(initializer) || visit(condition) || visit(update) || statements.iter().any(&mut visit),
+			besl::Nodes::Raw { input, output, .. } => input.iter().chain(output).any(&mut visit),
 			besl::Nodes::Parameter { r#type, .. }
 			| besl::Nodes::Member { r#type, .. }
 			| besl::Nodes::Specialization { r#type, .. }
 			| besl::Nodes::Input { format: r#type, .. }
-			| besl::Nodes::Output { format: r#type, .. } => node_requires_resource_context(r#type, visited, contexts),
+			| besl::Nodes::Output { format: r#type, .. } => visit(r#type),
 			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Operator { left, right, .. } => {
-					node_requires_resource_context(left, visited, contexts)
-						|| node_requires_resource_context(right, visited, contexts)
+				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+					visit(left) || visit(right)
 				}
+				// Calls use `contexts` directly, so this arm walks without the `visit` closure.
 				besl::Expressions::FunctionCall {
 					function, parameters, ..
 				} => {
@@ -347,28 +295,13 @@ fn analyze_hidden_context(
 							.any(|parameter| node_requires_resource_context(parameter, visited, contexts))
 				}
 				besl::Expressions::IntrinsicCall { arguments, elements, .. } => {
-					arguments
-						.iter()
-						.any(|argument| node_requires_resource_context(argument, visited, contexts))
-						|| elements
-							.iter()
-							.any(|element| node_requires_resource_context(element, visited, contexts))
+					arguments.iter().chain(elements).any(&mut visit)
 				}
-				besl::Expressions::Expression { elements } => elements
-					.iter()
-					.any(|element| node_requires_resource_context(element, visited, contexts)),
-				besl::Expressions::Macro { body, .. } => node_requires_resource_context(body, visited, contexts),
-				besl::Expressions::Member { source, .. } => node_requires_resource_context(source, visited, contexts),
-				besl::Expressions::VariableDeclaration { r#type, .. } => {
-					node_requires_resource_context(r#type, visited, contexts)
-				}
-				besl::Expressions::Return { value } => value
-					.as_ref()
-					.is_some_and(|value| node_requires_resource_context(value, visited, contexts)),
-				besl::Expressions::Accessor { left, right } => {
-					node_requires_resource_context(left, visited, contexts)
-						|| node_requires_resource_context(right, visited, contexts)
-				}
+				besl::Expressions::Expression { elements } => elements.iter().any(&mut visit),
+				besl::Expressions::Macro { body, .. } => visit(body),
+				besl::Expressions::Member { source, .. } => visit(source),
+				besl::Expressions::VariableDeclaration { r#type, .. } => visit(r#type),
+				besl::Expressions::Return { value } => value.as_ref().is_some_and(&mut visit),
 				besl::Expressions::Literal { .. }
 				| besl::Expressions::Continue
 				| besl::Expressions::Break

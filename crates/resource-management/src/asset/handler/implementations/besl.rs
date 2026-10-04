@@ -436,7 +436,7 @@ pub(crate) fn prepare_besl_shader(
 	stage: ShaderTypes,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let workgroup_size = settings.local_size().map(|local_size| local_size.as_tuple());
+	let workgroup_size = settings.stage.local_size().map(|local_size| local_size.as_tuple());
 	let (program, interface) = prepare_shader(parsed, workgroup_size, generator)?;
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
@@ -488,7 +488,7 @@ impl PreparedBeslShader {
 			)
 		});
 
-		let compiled_bindings = compiled.bindings().iter().map(|binding| {
+		let compiled_bindings = compiled.bindings.iter().map(|binding| {
 			(
 				binding.slot,
 				binding.kind,
@@ -506,7 +506,7 @@ impl PreparedBeslShader {
 			);
 		}
 
-		let compiled_workgroup = compiled.extent().map(|extent| extent.as_tuple());
+		let compiled_workgroup = compiled.extent.map(|extent| extent.as_tuple());
 
 		if compiled_workgroup != self.interface.workgroup_size {
 			return Err(
@@ -515,12 +515,8 @@ impl PreparedBeslShader {
 			);
 		}
 
-		let (artifact, bytes) = finalize_platform_shader_artifact(
-			PlatformShaderLanguage::current_platform(),
-			self.stage,
-			id,
-			compiled.into_binary(),
-		)?;
+		let (artifact, bytes) =
+			finalize_platform_shader_artifact(PlatformShaderLanguage::current_platform(), self.stage, id, compiled.binary)?;
 
 		Ok((
 			Shader {

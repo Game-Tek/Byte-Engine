@@ -21,23 +21,18 @@ fn main() -> Result<(), i32> {
 
 /// Dispatches one parsed command through BELD's asynchronous library API.
 async fn run(cli: Cli) -> Result<(), i32> {
-	let source_path = cli.source;
-	let destination_path = cli.destination;
-	let storage_mode = cli.storage_mode.map(Into::into);
-	let _color = cli.color;
-
 	match cli.command {
-		Commands::Wipe {} => beld::wipe(destination_path).await,
-		Commands::Clear {} => beld::clear(destination_path).await,
-		Commands::List {} => beld::list(destination_path).await,
+		Commands::Wipe {} => beld::wipe(cli.destination).await,
+		Commands::Clear {} => beld::clear(cli.destination).await,
+		Commands::List {} => beld::list(cli.destination).await,
 		Commands::Query {
 			class,
 			properties,
 			limit,
 			cursor,
 			format,
-		} => beld::query(destination_path, class, properties, limit, cursor, format).await,
-		Commands::Inspect { id, format } => beld::inspect(destination_path, id, format).await,
+		} => beld::query(cli.destination, class, properties, limit, cursor, format).await,
+		Commands::Inspect { id, format } => beld::inspect(cli.destination, id, format).await,
 		Commands::Bake {
 			ids,
 			memory_budget,
@@ -45,17 +40,17 @@ async fn run(cli: Cli) -> Result<(), i32> {
 			force,
 		} => {
 			beld::bake(
-				source_path,
-				destination_path,
+				cli.source,
+				cli.destination,
 				ids,
-				storage_mode,
+				cli.storage_mode.map(Into::into),
 				texture_compression.map(Into::into),
 				bake_memory_budget(memory_budget),
 				force,
 			)
 			.await
 		}
-		Commands::Delete { ids } => beld::delete(destination_path, ids).await,
+		Commands::Delete { ids } => beld::delete(cli.destination, ids).await,
 	}
 }
 
@@ -77,15 +72,13 @@ fn parse_memory_budget_mib(value: &str) -> Result<NonZeroUsize, String> {
 /// pressure. A zero budget pauses every independent bake while any other bake retains memory, which serializes the
 /// whole run. The budget is soft, so the floor only bounds how much work starts at once.
 fn bake_memory_budget(configured: Option<NonZeroUsize>) -> NonZeroUsize {
-	if let Some(configured) = configured {
-		return configured;
-	}
-
-	let mut system = sysinfo::System::new();
-	system.refresh_memory();
-	let available_bytes = system.available_memory().max(system.total_memory() / 2);
-	let budget_bytes = usize::try_from(available_bytes / 2).unwrap_or(usize::MAX);
-	NonZeroUsize::new(budget_bytes).unwrap_or(NonZeroUsize::MIN)
+	configured.unwrap_or_else(|| {
+		let mut system = sysinfo::System::new();
+		system.refresh_memory();
+		let available_bytes = system.available_memory().max(system.total_memory() / 2);
+		let budget_bytes = usize::try_from(available_bytes / 2).unwrap_or(usize::MAX);
+		NonZeroUsize::new(budget_bytes).unwrap_or(NonZeroUsize::MIN)
+	})
 }
 
 /// Reads `--color` before the full parse so help and parser errors use the selected color mode.
@@ -98,11 +91,8 @@ fn parse_color_choice(args: impl IntoIterator<Item = String>) -> clap::ColorChoi
 			arg.strip_prefix("--color=").map(str::to_string)
 		};
 
-		match value.as_deref() {
-			Some("always") => return clap::ColorChoice::Always,
-			Some("never") => return clap::ColorChoice::Never,
-			Some("auto") => return clap::ColorChoice::Auto,
-			_ => {}
+		if let Some(choice) = value.and_then(|value| clap::ColorChoice::from_str(&value, false).ok()) {
+			return choice;
 		}
 	}
 

@@ -22,22 +22,22 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if self.current_stage == HlslStage::Mesh {
-			string.push_str("[outputtopology(\"triangle\")]");
-			string.push_str(ShaderFormatting::new(self.minified).break_str());
+		let break_char = ShaderFormatting::new(self.minified).break_str();
+		if matches!(self.stage, Stages::Mesh { .. }) {
+			let _ = write!(string, "[outputtopology(\"triangle\")]{break_char}");
 		}
 
-		let Some(local_size) = self.current_local_size else {
+		let Some(local_size) = self.stage.local_size() else {
 			return;
 		};
 		// HLSL attaches compute-like stage thread-group sizes directly to their entry functions.
-		string.push_str(&format!(
-			"[numthreads({}, {}, {})]",
-			local_size.width().max(1),
-			local_size.height().max(1),
-			local_size.depth().max(1)
-		));
-		string.push_str(ShaderFormatting::new(self.minified).break_str());
+		let _ = write!(
+			string,
+			"[numthreads({}, {}, {})]{break_char}",
+			local_size.width(),
+			local_size.height(),
+			local_size.depth()
+		);
 	}
 	// A value atomic in the condition is lifted into a statement, which needs a block that runs only when the branch is reached.
 	fn else_if_needs_block(&self, conditional: &besl::NodeReference) -> bool {
@@ -66,19 +66,17 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		has_previous_parameter: bool,
 	) {
 		if name != "main" {
-			if self.current_stage == HlslStage::Vertex {
-				self.emit_vertex_builtin_helper_parameters(string, has_previous_parameter);
+			if matches!(self.stage, Stages::Vertex) {
+				self.emit_vertex_builtin_helper_list(string, has_previous_parameter, true);
 			}
 			return;
 		}
-		if matches!(self.current_stage, HlslStage::Vertex | HlslStage::Fragment) {
+		if matches!(self.stage, Stages::Vertex | Stages::Fragment) {
 			self.emit_raster_entry_parameters(string, has_previous_parameter);
 			return;
 		}
-		if !matches!(self.current_stage, HlslStage::Compute | HlslStage::Task | HlslStage::Mesh) {
-			return;
-		}
 
+		// Compute, task, and mesh entry points receive the dispatch builtins.
 		if has_previous_parameter {
 			self.emit_separator(string);
 		}
@@ -90,23 +88,22 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		self.emit_separator(string);
 		string.push_str("uint group_thread_index : SV_GroupIndex");
 
-		if self.current_stage == HlslStage::Mesh {
+		if let Stages::Mesh {
+			maximum_vertices,
+			maximum_primitives,
+			..
+		} = self.stage
+		{
 			if !self.task_payloads.is_empty() {
 				self.emit_separator(string);
 				string.push_str("in payload ObjectPayload payload");
 			}
 			self.emit_separator(string);
-			string.push_str("out vertices VertexOutput besl_vertices[");
-			string.push_str(&self.current_mesh_maximum_vertices.to_string());
-			string.push(']');
+			let _ = write!(string, "out vertices VertexOutput besl_vertices[{maximum_vertices}]");
 			self.emit_separator(string);
-			string.push_str("out primitives PrimitiveOutput besl_primitives[");
-			string.push_str(&self.current_mesh_maximum_primitives.to_string());
-			string.push(']');
+			let _ = write!(string, "out primitives PrimitiveOutput besl_primitives[{maximum_primitives}]");
 			self.emit_separator(string);
-			string.push_str("out indices uint3 besl_triangles[");
-			string.push_str(&self.current_mesh_maximum_primitives.to_string());
-			string.push(']');
+			let _ = write!(string, "out indices uint3 besl_triangles[{maximum_primitives}]");
 		}
 	}
 	fn emit_function_call_extra_arguments(
@@ -115,12 +112,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		function: &besl::NodeReference,
 		has_previous_argument: bool,
 	) {
-		if self.current_stage != HlslStage::Vertex {
+		if !matches!(self.stage, Stages::Vertex) {
 			return;
 		}
 		let function = function.borrow();
 		if matches!(function.node(), besl::Nodes::Function { name, .. } if name != "main") {
-			self.emit_vertex_builtin_helper_arguments(string, has_previous_argument);
+			self.emit_vertex_builtin_helper_list(string, has_previous_argument, false);
 		}
 	}
 	fn emit_function_call(
@@ -178,32 +175,17 @@ impl crate::shader::generator::NodeEmitter for Generator {
 		let Some(binding) = Self::hlsl_buffer_binding_source(source) else {
 			return false;
 		};
-		if name == binding.name {
-			Self::identifier(&binding.name).push_to(string);
-			return true;
-		}
-
-		// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 		Self::identifier(&binding.name).push_to(string);
-		string.push_str("[0].");
-		Self::identifier(name).push_to(string);
+		if name != binding.name {
+			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
+			string.push_str("[0].");
+			Self::identifier(name).push_to(string);
+		}
 		true
 	}
 	fn emit_variable_declaration(&mut self, string: &mut String, name: &str, type_name: &str) {
 		// HLSL declares arrays in C position, so the count follows the variable name.
-		if let Some((element_type, count)) = crate::shader::generator::value_array_parts(type_name) {
-			Self::type_identifier(element_type).push_to(string);
-			string.push(' ');
-			Self::identifier(name).push_to(string);
-			let _ = write!(string, "[{count}]");
-			return;
-		}
-		Self::emit_type_name(string, type_name);
-		string.push(' ');
-		Self::identifier(name).push_to(string);
-	}
-	fn emit_parameter_node(&mut self, string: &mut String, name: &str, r#type: &besl::NodeReference) {
-		self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap());
+		Self::emit_c_declaration(string, name, type_name);
 	}
 	fn emit_expression_override(&mut self, string: &mut String, expression: &besl::Expressions) -> bool {
 		if let Some((declaration, initializer)) = Self::declaration_with_initializer(expression)
@@ -238,76 +220,29 @@ impl crate::shader::generator::NodeEmitter for Generator {
 					} else {
 						(2u32, 16u32, "0xffffu")
 					};
-					let temporary_id = self.packed_write_counter;
+					let id = self.packed_write_counter;
 					self.packed_write_counter = self.packed_write_counter.checked_add(1).expect(
 								"Packed narrow-buffer write count overflowed. The most likely cause is an invalid shader with billions of assignment nodes.",
 							);
-					let index_name = format!("besl_packed_index_{temporary_id}");
-					let value_name = format!("besl_packed_value_{temporary_id}");
-					let shift_name = format!("besl_packed_shift_{temporary_id}");
-					let mask_name = format!("besl_packed_mask_{temporary_id}");
-					let expected_name = format!("besl_packed_expected_{temporary_id}");
-					let desired_name = format!("besl_packed_desired_{temporary_id}");
-					let observed_name = format!("besl_packed_observed_{temporary_id}");
+					let binding = Self::identifier(&binding_name);
 
 					// Adjacent logical narrow elements share one DX12 word. Replace the
 					// selected lane with one compare-exchange loop so another lane cannot
 					// change between separate clear and set operations.
-					string.push_str("{uint ");
-					string.push_str(&index_name);
-					string.push('=');
+					let _ = write!(string, "{{uint besl_packed_index_{id}=");
 					self.emit_node_string(string, &index);
-					string.push_str(";uint ");
-					string.push_str(&value_name);
-					string.push_str("=(uint(");
+					let _ = write!(string, ";uint besl_packed_value_{id}=(uint(");
 					self.emit_node_string(string, right);
-					string.push_str(")&");
-					string.push_str(element_mask);
-					string.push_str(");uint ");
-					string.push_str(&shift_name);
-					string.push_str("=(");
-					string.push_str(&index_name);
-					let _ = write!(string, "%{elements_per_word}u)*{bits_per_element}u;uint ");
-					string.push_str(&mask_name);
-					string.push('=');
-					string.push_str(element_mask);
-					string.push_str("<<");
-					string.push_str(&shift_name);
-					string.push_str(";uint ");
-					string.push_str(&expected_name);
-					string.push_str(";InterlockedOr(");
-					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
-					string.push_str(",0u,");
-					string.push_str(&expected_name);
-					string.push_str(");for(;;){uint ");
-					string.push_str(&desired_name);
-					string.push_str("=(");
-					string.push_str(&expected_name);
-					string.push_str("&~");
-					string.push_str(&mask_name);
-					string.push_str(")|(");
-					string.push_str(&value_name);
-					string.push_str("<<");
-					string.push_str(&shift_name);
-					string.push_str(");uint ");
-					string.push_str(&observed_name);
-					string.push_str(";InterlockedCompareExchange(");
-					self.emit_packed_word_access_by_name(string, &binding_name, &index_name, elements_per_word);
-					string.push(',');
-					string.push_str(&expected_name);
-					string.push(',');
-					string.push_str(&desired_name);
-					string.push(',');
-					string.push_str(&observed_name);
-					string.push_str(");if(");
-					string.push_str(&observed_name);
-					string.push_str("==");
-					string.push_str(&expected_name);
-					string.push_str("){break;}");
-					string.push_str(&expected_name);
-					string.push('=');
-					string.push_str(&observed_name);
-					string.push_str(";}}");
+					let _ = write!(
+						string,
+						")&{element_mask});uint besl_packed_shift_{id}=(besl_packed_index_{id}%{elements_per_word}u)*{bits_per_element}u;\
+						 uint besl_packed_mask_{id}={element_mask}<<besl_packed_shift_{id};uint besl_packed_expected_{id};\
+						 InterlockedOr({binding}[besl_packed_index_{id}/{elements_per_word}u],0u,besl_packed_expected_{id});\
+						 for(;;){{uint besl_packed_desired_{id}=(besl_packed_expected_{id}&~besl_packed_mask_{id})|(besl_packed_value_{id}<<besl_packed_shift_{id});\
+						 uint besl_packed_observed_{id};\
+						 InterlockedCompareExchange({binding}[besl_packed_index_{id}/{elements_per_word}u],besl_packed_expected_{id},besl_packed_desired_{id},besl_packed_observed_{id});\
+						 if(besl_packed_observed_{id}==besl_packed_expected_{id}){{break;}}besl_packed_expected_{id}=besl_packed_observed_{id};}}}}"
+					);
 					return true;
 				}
 			}
@@ -422,11 +357,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				return;
 			}
 
-			if field_name == binding_name {
-				Self::identifier(&binding_name).push_to(string);
-			} else {
+			Self::identifier(&binding_name).push_to(string);
+			if field_name != binding_name {
 				// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
-				Self::identifier(&binding_name).push_to(string);
 				string.push_str("[0].");
 				Self::identifier(&field_name).push_to(string);
 			}

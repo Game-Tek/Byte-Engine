@@ -2,14 +2,9 @@ pub use crate::shader::generator::{CompiledShader as GeneratedShader, CompiledSh
 
 #[cfg(target_os = "linux")]
 mod compilation {
-	use std::cell::RefCell;
-
 	use crate::shader::{
-		besl::{
-			backends::glsl::GLSLTranspiler,
-			evaluation::{BindingUsage, collect_bindings},
-		},
-		generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
+		besl::{backends::glsl::GLSLTranspiler, evaluation::collect_bindings},
+		generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings},
 		glsl_compile,
 	};
 
@@ -19,8 +14,6 @@ mod compilation {
 	pub struct Generator {
 		glsl_transpiler: GLSLTranspiler,
 	}
-
-	impl ShaderGenerator for Generator {}
 
 	impl Default for Generator {
 		fn default() -> Self {
@@ -45,33 +38,20 @@ mod compilation {
 				.generate(shader_compilation_settings, main_function_node)
 				.map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
 
-			let compilation_artifact = compile_glsl_to_spirv(&glsl_shader, &shader_compilation_settings.name)?;
+			let binary = compile_glsl_to_spirv(&glsl_shader, &shader_compilation_settings.name)?;
 
-			{
-				let node_borrow = RefCell::borrow(main_function_node);
-				let node_ref = node_borrow.node();
-
-				match node_ref {
-					besl::Nodes::Function { name, .. } => {
-						assert_eq!(name, "main");
-					}
-					_ => panic!("Root node must be a function node."),
-				}
-			}
-
-			let bindings = collect_bindings::<BindingUsage>(main_function_node)?;
-
-			Ok(CompiledShader::new(
-				compilation_artifact,
-				bindings
-					.iter()
-					.map(|b| CompiledShaderBinding::new(b.slot, b.kind, b.count, b.buffer_stride, b.read, b.write))
+			Ok(CompiledShader {
+				binary,
+				bindings: collect_bindings(main_function_node)?
+					.into_iter()
+					.map(CompiledShaderBinding::from)
 					.collect(),
-				match shader_compilation_settings.stage {
+				// SPIR-V reflection reports a workgroup only for compute shaders.
+				extent: match shader_compilation_settings.stage {
 					crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
 					_ => None,
 				},
-			))
+			})
 		}
 	}
 
@@ -167,7 +147,7 @@ void main() {
 				.generate(&ShaderGenerationSettings::vertex(), &main)
 				.expect("Failed to generate shader");
 
-			let bindings = shader.bindings();
+			let bindings = &shader.bindings;
 
 			assert_eq!(bindings.len(), 3);
 

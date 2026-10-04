@@ -101,12 +101,7 @@ pub(crate) fn compile_hlsl_source_to_dxil(
 			"DXC returned no DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
 		)
 	})?;
-	// SAFETY: The blob owns this pointer and keeps it valid until object is dropped.
-	let bytecode_pointer = unsafe { object.GetBufferPointer() }.cast::<u8>();
-	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
-	let bytecode_size = unsafe { object.GetBufferSize() };
-	// SAFETY: The pointer and size come from the same live blob allocation.
-	let bytecode = unsafe { std::slice::from_raw_parts(bytecode_pointer, bytecode_size) };
+	let bytecode = blob_bytes(&object);
 	if bytecode.is_empty() {
 		return Err(format!(
 			"DXC returned empty DXIL output while baking HLSL shader '{name}' for entry point '{entry_point}' and target '{target}'."
@@ -219,18 +214,20 @@ fn dxc_error_output(result: &windows::Win32::Graphics::Direct3D::Dxc::IDxcResult
 	let Some(errors) = errors else {
 		return "DXC compilation failed with no error output.".to_string();
 	};
-	// SAFETY: The blob owns this pointer and keeps it valid until errors is dropped.
-	let error_pointer = unsafe { errors.GetBufferPointer() }.cast::<u8>();
-	// SAFETY: The blob reports the exact initialized byte length for its owned buffer.
-	let error_size = unsafe { errors.GetBufferSize() };
-	// SAFETY: The pointer and size come from the same live blob allocation.
-	let bytes = unsafe { std::slice::from_raw_parts(error_pointer, error_size) };
-	let message = String::from_utf8_lossy(bytes).trim().to_string();
+	let message = String::from_utf8_lossy(blob_bytes(&errors)).trim().to_string();
 	if message.is_empty() {
 		"DXC compilation failed with empty error output.".to_string()
 	} else {
 		message
 	}
+}
+
+/// Views the bytes a DXC blob owns, such as compiled DXIL or compiler errors.
+#[cfg(target_os = "windows")]
+fn blob_bytes(blob: &windows::Win32::Graphics::Direct3D::Dxc::IDxcBlob) -> &[u8] {
+	// SAFETY: The blob owns this buffer and keeps it valid while borrowed, and it reports the buffer's exact
+	// initialized length.
+	unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) }
 }
 
 #[cfg(test)]

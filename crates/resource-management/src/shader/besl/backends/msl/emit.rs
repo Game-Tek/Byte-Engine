@@ -1,7 +1,7 @@
 use super::*;
 
 mod intrinsics;
-impl<A: Allocator + Clone> Generator<A> {
+impl Generator {
 	pub(crate) fn emit_function_prototype(&mut self, string: &mut String, function_node: &besl::NodeReference) {
 		let node = RefCell::borrow(function_node);
 		let besl::Nodes::Function {
@@ -18,12 +18,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		string.push(' ');
 		Self::identifier(name).push_to(string);
 		string.push('(');
-
-		let formatting = ShaderFormatting::new(self.minified);
-		emit_comma_separated_nodes(string, formatting, params, |string, param| {
-			self.emit_node_string(string, param)
-		});
-
+		self.emit_call_arguments(string, params);
 		self.emit_hidden_context(string, function_node, !params.is_empty(), true);
 
 		string.push(')');
@@ -239,31 +234,19 @@ impl<A: Allocator + Clone> Generator<A> {
 			besl::Nodes::Struct {
 				name, fields, template, ..
 			} => self.emit_struct_node(string, name, fields, template),
-			besl::Nodes::PushConstant { members } => {
-				self.emit_named_struct_start(string, "PushConstant");
-
-				for member in members {
-					formatting.push_indentation(string, 1);
-					self.emit_node_string(string, member);
-					formatting.push_statement_end(string);
-				}
-
-				self.emit_struct_declaration_end(string);
-
+			besl::Nodes::PushConstant { .. } => {
+				self.emit_push_constant_struct(string, this_node);
 				// TODO: Confirm push constant mapping for Metal argument buffers.
-				let _ = write!(
-					string,
-					"constant PushConstant& push_constant [[buffer({PUSH_CONSTANT_BINDING_INDEX})]]"
-				);
+				self.emit_push_constant_parameter(string);
 				self.emit_statement_end(string);
 			}
 			besl::Nodes::TaskPayload { .. } | besl::Nodes::Workgroup { .. } => {}
 			besl::Nodes::Specialization { name, r#type } => self.emit_specialization_node(string, name, r#type),
 			besl::Nodes::Member { name, r#type, count } => {
 				if let Some(type_name) = r#type.borrow().get_name() {
-					if self.is_packed_mat4x3_member(this_node) {
-						Self::emit_buffer_member_type(string, type_name);
-					} else if self.in_buffer_binding_struct && msl_packs_direct_binding_member(type_name, count.is_some()) {
+					if self.is_packed_mat4x3_member(this_node)
+						|| (self.in_buffer_binding_struct && msl_packs_direct_binding_member(type_name, count.is_some()))
+					{
 						Self::emit_buffer_member_type(string, type_name);
 					} else {
 						Self::emit_type_name(string, type_name);
@@ -272,9 +255,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 				Self::identifier(name).push_to(string);
 				if let Some(count) = count {
-					string.push('[');
-					string.push_str(count.to_string().as_str());
-					string.push(']');
+					let _ = write!(string, "[{count}]");
 				}
 			}
 			besl::Nodes::Raw { glsl, hlsl, msl, .. } => {
@@ -282,7 +263,9 @@ impl<A: Allocator + Clone> Generator<A> {
 					string.push_str(code);
 				}
 			}
-			besl::Nodes::Parameter { name, r#type } => self.emit_parameter_node(string, name, r#type),
+			besl::Nodes::Parameter { name, r#type } => {
+				self.emit_variable_declaration(string, name, r#type.borrow().get_name().unwrap())
+			}
 			besl::Nodes::Input { name, location, format } => {
 				let format = format.borrow();
 				let type_name = Self::translate_type(format.get_name().unwrap());
@@ -341,7 +324,7 @@ impl<A: Allocator + Clone> Generator<A> {
 				..
 			} => {
 				if self.in_compute_body || self.mesh_stage_context.is_some() {
-					self.emit_compute_binding_reference(string, name);
+					self.emit_binding_reference(string, name);
 					return;
 				}
 
@@ -350,64 +333,31 @@ impl<A: Allocator + Clone> Generator<A> {
 				match r#type {
 					besl::BindingTypes::Buffer { members } => {
 						self.emit_named_struct_start(string, format_args!("_{name}"));
-
-						for member in members.iter() {
-							self.emit_indentation(string, 1);
-							self.emit_node_string(string, member);
-							self.emit_statement_end(string);
-						}
-
+						emit_statement_block(string, formatting, members, 1, |string, member| {
+							self.emit_node_string(string, member)
+						});
 						self.emit_struct_declaration_end(string);
 
 						let address_space = buffer_address_space(*memory_class, *write);
-
-						string.push_str(address_space);
-						string.push(' ');
-						let _ = write!(string, "_{name}* {}", Self::identifier(name));
-
+						let _ = write!(string, "{address_space} _{name}* {}", Self::identifier(name));
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" [[buffer({})]];", index));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, " [[buffer({index})]];{break_char}");
 					}
 					besl::BindingTypes::BufferArray { element, .. } => {
-						let address_space = buffer_address_space(*memory_class, *write);
-						string.push_str(address_space);
+						string.push_str(buffer_address_space(*memory_class, *write));
 						string.push(' ');
 						Self::emit_buffer_member_type(string, element.borrow().get_name().unwrap());
-						string.push_str("* ");
-						Self::identifier(name).push_to(string);
-						let _ = write!(string, " [[buffer({index})]];");
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, "* {} [[buffer({index})]];{break_char}", Self::identifier(name));
 					}
 					besl::BindingTypes::Image { format } => {
-						let element_type = match format.as_str() {
-							"r8ui" | "r16ui" | "r32ui" => "uint",
-							_ => "float",
-						};
-
-						let access = if *read && *write {
-							"access::read_write"
-						} else if *write {
-							"access::write"
-						} else {
-							"access::read"
-						};
-
+						let (element_type, access) = storage_image_type(format, *read, *write);
 						let _ = write!(string, "texture2d<{element_type}, {access}> {}", Self::identifier(name));
-
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" [[texture({})]];", index));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(string, " [[texture({index})]];{break_char}");
 					}
 					besl::BindingTypes::CombinedImageSampler { format } => {
 						let texture_type = match format.as_str() {
@@ -418,21 +368,15 @@ impl<A: Allocator + Clone> Generator<A> {
 							_ => "texture2d<float>",
 						};
 
-						string.push_str(texture_type);
-						string.push(' ');
-						Self::identifier(name).push_to(string);
-
+						let name = Self::identifier(name);
+						let _ = write!(string, "{texture_type} {name}");
 						if let Some(count) = count {
-							string.push('[');
-							string.push_str(count.to_string().as_str());
-							string.push(']');
+							let _ = write!(string, "[{count}]");
 						}
-
-						string.push_str(&format!(" [[texture({})]];", index));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
-
-						let _ = write!(string, "sampler {}_sampler [[sampler({index})]];", Self::identifier(name));
-						string.push_str(ShaderFormatting::new(self.minified).break_str());
+						let _ = write!(
+							string,
+							" [[texture({index})]];{break_char}sampler {name}_sampler [[sampler({index})]];{break_char}"
+						);
 					}
 				}
 			}
@@ -442,41 +386,25 @@ impl<A: Allocator + Clone> Generator<A> {
 				}
 			}
 			besl::Nodes::Const { name, r#type, value } => {
+				let r#type = r#type.borrow();
+				let type_name = r#type.get_name().unwrap();
 				string.push_str("constant ");
-				let type_name = r#type.borrow().get_name().unwrap().to_string();
-				let short_scalar_array = crate::shader::generator::scalar_array_vector_type(&type_name);
-				if let Some(vector_type) = short_scalar_array {
-					string.push_str(Self::translate_type(vector_type));
-					string.push(' ');
-					Self::identifier(name).push_to(string);
-				} else if let Some((element_type, count)) = type_name.split_once('[') {
-					Self::type_identifier(element_type).push_to(string);
-					string.push(' ');
-					Self::identifier(name).push_to(string);
-					string.push('[');
-					string.push_str(count.trim_end_matches(']'));
-					string.push(']');
-				} else {
-					Self::emit_type_name(string, &type_name);
-					string.push(' ');
-					Self::identifier(name).push_to(string);
-				}
+				Self::emit_c_declaration(string, name, type_name);
 				string.push_str(" = ");
+				// A C array constant initializes from braces, not from its type's constructor call.
 				if let besl::Nodes::Expression(besl::Expressions::FunctionCall {
 					parameters, function, ..
 				}) = value.borrow().node()
+					&& crate::shader::generator::scalar_array_vector_type(type_name).is_none()
+					&& function.get().borrow().get_name() == Some(type_name)
 				{
-					if short_scalar_array.is_none() && function.get().borrow().get_name() == Some(type_name.as_str()) {
-						string.push('{');
-						self.emit_call_arguments(string, parameters);
-						string.push('}');
-					} else {
-						self.emit_node_string(string, value);
-					}
+					string.push('{');
+					self.emit_call_arguments(string, parameters);
+					string.push('}');
 				} else {
 					self.emit_node_string(string, value);
 				}
-				string.push_str(&format!(";{break_char}"));
+				let _ = write!(string, ";{break_char}");
 			}
 		}
 	}
@@ -532,36 +460,23 @@ impl<A: Allocator + Clone> Generator<A> {
 		}
 		if requirements.uses_atomic_compare_exchange {
 			// Metal returns compare-exchange success as a bool, so these helpers preserve BESL's previous-value contract.
-			msl_block.push_str(
-				"inline uint _besl_atomic_compare_exchange(device atomic_uint& value, uint expected, uint desired) {\n\
-				 \tuint original = expected;\n\
-				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
-				 \t\tif (expected != original) { return expected; }\n\
-				 \t}\n\
-				 \treturn original;\n\
-				 }\n\
-				 inline uint _besl_atomic_compare_exchange(threadgroup atomic_uint& value, uint expected, uint desired) {\n\
-				 \tuint original = expected;\n\
-				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
-				 \t\tif (expected != original) { return expected; }\n\
-				 \t}\n\
-				 \treturn original;\n\
-				 }\n\
-				 inline int _besl_atomic_compare_exchange(device atomic_int& value, int expected, int desired) {\n\
-				 \tint original = expected;\n\
-				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
-				 \t\tif (expected != original) { return expected; }\n\
-				 \t}\n\
-				 \treturn original;\n\
-				 }\n\
-				 inline int _besl_atomic_compare_exchange(threadgroup atomic_int& value, int expected, int desired) {\n\
-				 \tint original = expected;\n\
-				 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {\n\
-				 \t\tif (expected != original) { return expected; }\n\
-				 \t}\n\
-				 \treturn original;\n\
-				 }\n",
-			);
+			for (value, space) in [
+				("uint", "device"),
+				("uint", "threadgroup"),
+				("int", "device"),
+				("int", "threadgroup"),
+			] {
+				let _ = write!(
+					msl_block,
+					"inline {value} _besl_atomic_compare_exchange({space} atomic_{value}& value, {value} expected, {value} desired) {{\n\
+					 \t{value} original = expected;\n\
+					 \twhile (!atomic_compare_exchange_weak_explicit(&value, &expected, desired, memory_order_relaxed, memory_order_relaxed)) {{\n\
+					 \t\tif (expected != original) {{ return expected; }}\n\
+					 \t}}\n\
+					 \treturn original;\n\
+					 }}\n"
+				);
+			}
 		}
 		if requirements.uses_sincos {
 			// Metal's two-result intrinsic returns sine and writes cosine through the second argument.
@@ -598,13 +513,14 @@ impl<A: Allocator + Clone> Generator<A> {
 			Stages::Mesh { .. } => msl_block.push_str("// #pragma shader_stage(mesh)\n"),
 		}
 
-		if let Some(local_size) = compilation_settings.local_size() {
-			msl_block.push_str(&format!(
-				"// besl-threadgroup-size:{},{},{}\n",
-				local_size.width().max(1),
-				local_size.height().max(1),
-				local_size.depth().max(1)
-			));
+		if let Some(local_size) = compilation_settings.stage.local_size() {
+			let _ = writeln!(
+				msl_block,
+				"// besl-threadgroup-size:{},{},{}",
+				local_size.width(),
+				local_size.height(),
+				local_size.depth()
+			);
 			if matches!(compilation_settings.stage, Stages::Compute { .. }) {
 				msl_block.push_str("// Note: Metal threadgroup sizes are set on the pipeline state.\n");
 			}

@@ -1,6 +1,6 @@
 //! GLSL names that a BESL identifier must not take after lowering.
 //!
-//! The GLSL [`Generator`](super::analysis::Generator) consults [`is_reserved`] through
+//! The GLSL [`Generator`](super::Generator) consults [`is_reserved`] through
 //! [`NodeEmitter::is_reserved_identifier`](crate::shader::generator::NodeEmitter::is_reserved_identifier) and prefixes
 //! matching names with [`RESERVED_IDENTIFIER_PREFIX`](crate::shader::generator::RESERVED_IDENTIFIER_PREFIX).
 

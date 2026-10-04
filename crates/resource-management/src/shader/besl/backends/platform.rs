@@ -4,11 +4,9 @@ use crate::shader::besl::backends::glsl::GLSLTranspiler;
 use crate::shader::besl::backends::hlsl::HLSLTranspiler;
 #[cfg(target_vendor = "apple")]
 use crate::shader::besl::backends::msl::MSLTranspiler;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use crate::shader::besl::evaluation::BindingUsage;
 use crate::shader::{
 	besl::evaluation::collect_bindings,
-	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, ShaderGenerator},
+	generator::{CompiledShader, CompiledShaderBinding, ShaderGenerationSettings, Stages},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,8 +22,6 @@ impl PlatformShaderLanguage {
 			Self::Msl
 		} else if cfg!(target_os = "windows") {
 			Self::Hlsl
-		} else if cfg!(target_os = "linux") {
-			Self::Glsl
 		} else {
 			Self::Glsl
 		}
@@ -61,8 +57,6 @@ pub struct Generator {
 	#[cfg(target_vendor = "apple")]
 	msl_transpiler: MSLTranspiler,
 }
-
-impl ShaderGenerator for Generator {}
 
 impl Default for Generator {
 	fn default() -> Self {
@@ -103,60 +97,45 @@ impl Generator {
 		shader_generation_settings: &ShaderGenerationSettings,
 		program: &besl::NodeReference,
 	) -> Result<LoweredPlatformShader, String> {
-		let (source, bindings, extent) = match PlatformShaderLanguage::current_platform() {
+		let source = match PlatformShaderLanguage::current_platform() {
 			#[cfg(target_os = "linux")]
 			PlatformShaderLanguage::Glsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
-				let source = self
-					.glsl_transpiler
+				self.glsl_transpiler
 					.generate(shader_generation_settings, &main)
-					.map_err(|_| "Failed to generate initial GLSL shader".to_string())?;
-				let bindings = collect_bindings::<BindingUsage>(program)?
-					.into_iter()
-					.map(CompiledShaderBinding::from)
-					.collect();
-				// SPIR-V reflection reports a workgroup only for compute shaders.
-				let extent = match shader_generation_settings.stage {
-					crate::shader::generator::Stages::Compute { local_size } => Some(local_size),
-					_ => None,
-				};
-
-				(source, bindings, extent)
+					.map_err(|_| "Failed to generate initial GLSL shader".to_string())?
 			}
 			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => {
-				let source = self
-					.msl_transpiler
-					.generate_program(shader_generation_settings, program)
-					.map_err(|_| "Failed to generate MSL shader source. The MSL transpiler returned an error.".to_string())?;
-				let bindings = collect_bindings::<CompiledShaderBinding>(program)?;
-
-				(source, bindings, shader_generation_settings.local_size())
-			}
+			PlatformShaderLanguage::Msl => self
+				.msl_transpiler
+				.generate_program(shader_generation_settings, program)
+				.map_err(|_| "Failed to generate MSL shader source. The MSL transpiler returned an error.".to_string())?,
 			#[cfg(target_os = "windows")]
 			PlatformShaderLanguage::Hlsl => {
 				let main = program.get_main().ok_or_else(missing_main_error)?;
-				let source = self
-					.hlsl_transpiler
+				self.hlsl_transpiler
 					.generate(shader_generation_settings, &main)
 					.map_err(|_| {
 						"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
 						.to_string()
-					})?;
-				let bindings = collect_bindings::<BindingUsage>(program)?
-					.into_iter()
-					.map(CompiledShaderBinding::from)
-					.collect();
-
-				(source, bindings, shader_generation_settings.local_size())
+					})?
 			}
 			_ => return Err(unsupported_language_error()),
+		};
+		let extent = match shader_generation_settings.stage {
+			Stages::Compute { local_size } => Some(local_size),
+			// SPIR-V reflection reports a workgroup only for compute shaders.
+			_ if PlatformShaderLanguage::current_platform().is_glsl() => None,
+			stage => stage.local_size(),
 		};
 
 		Ok(LoweredPlatformShader {
 			name: shader_generation_settings.name.clone(),
 			source,
-			bindings,
+			bindings: collect_bindings(program)?
+				.into_iter()
+				.map(CompiledShaderBinding::from)
+				.collect(),
 			extent,
 		})
 	}
@@ -217,7 +196,11 @@ impl LoweredPlatformShader {
 			_ => return Err(unsupported_language_error()),
 		};
 
-		Ok(CompiledShader::new(binary, self.bindings, self.extent))
+		Ok(CompiledShader {
+			binary,
+			bindings: self.bindings,
+			extent: self.extent,
+		})
 	}
 }
 

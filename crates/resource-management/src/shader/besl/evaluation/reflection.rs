@@ -37,46 +37,6 @@ pub enum TextureView {
 	Texture3D,
 }
 
-/// The `BindingRecord` trait keeps binding discovery independent of evaluated and compiled metadata representations.
-pub(crate) trait BindingRecord: Sized {
-	fn from_usage(
-		name: &str,
-		kind: BindingKind,
-		count: u32,
-		slot: u32,
-		buffer_stride: Option<u32>,
-		read: bool,
-		write: bool,
-	) -> Self;
-	fn usage(&self) -> (u32, BindingKind, u32, bool, bool);
-}
-
-impl BindingRecord for BindingUsage {
-	fn from_usage(
-		name: &str,
-		kind: BindingKind,
-		count: u32,
-		slot: u32,
-		buffer_stride: Option<u32>,
-		read: bool,
-		write: bool,
-	) -> Self {
-		Self {
-			name: name.to_string(),
-			kind,
-			count,
-			slot,
-			buffer_stride,
-			read,
-			write,
-		}
-	}
-
-	fn usage(&self) -> (u32, BindingKind, u32, bool, bool) {
-		(self.slot, self.kind, self.count, self.read, self.write)
-	}
-}
-
 /// The `BindingCollectionState` struct keeps reflection traversal aligned with graph identity deduplication.
 struct BindingCollectionState {
 	visited: HashSet<besl::NodeReference>,
@@ -437,8 +397,8 @@ impl ProgramEvaluation {
 }
 
 /// Collects sorted binding metadata while sharing repeated references and rejecting distinct slot aliases.
-pub(crate) fn collect_bindings<T: BindingRecord>(node: &besl::NodeReference) -> Result<Vec<T>, String> {
-	let mut bindings: Vec<T> = Vec::with_capacity(16);
+pub(crate) fn collect_bindings(node: &besl::NodeReference) -> Result<Vec<BindingUsage>, String> {
+	let mut bindings = Vec::with_capacity(16);
 	let mut state = BindingCollectionState {
 		visited: HashSet::new(),
 		error: None,
@@ -448,16 +408,16 @@ pub(crate) fn collect_bindings<T: BindingRecord>(node: &besl::NodeReference) -> 
 		return Err(error);
 	}
 
-	bindings.sort_by_key(|binding| binding.usage().0);
+	bindings.sort_by_key(|binding| binding.slot);
 	for (index, binding) in bindings.iter().enumerate() {
-		let (slot, _, count, ..) = binding.usage();
+		let (slot, count) = (binding.slot, binding.count);
 		let end_slot = slot.checked_add(count).ok_or_else(|| {
 			format!(
 				"Resource slot range overflow at slot {slot}. The most likely cause is that the declared resource range has no representable exclusive end."
 			)
 		})?;
 		if let Some(next) = bindings.get(index + 1) {
-			let (next_slot, ..) = next.usage();
+			let next_slot = next.slot;
 			if next_slot < end_slot {
 				return Err(format!(
 					"Resource slot ranges overlap at slots {slot} and {next_slot}. The most likely cause is that a resource array reserves a slot used by another declaration."
@@ -471,7 +431,7 @@ pub(crate) fn collect_bindings<T: BindingRecord>(node: &besl::NodeReference) -> 
 
 // This is the exhaustive BESL-node traversal contract for reflection; splitting it would duplicate child-edge rules.
 #[allow(clippy::too_many_lines)]
-fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeReference, state: &mut BindingCollectionState) {
+fn build_bindings(bindings: &mut Vec<BindingUsage>, node: &besl::NodeReference, state: &mut BindingCollectionState) {
 	if state.error.is_some() || !state.visited.insert(node.clone()) {
 		return;
 	}
@@ -592,12 +552,20 @@ fn build_bindings<T: BindingRecord>(bindings: &mut Vec<T>, node: &besl::NodeRefe
 				besl::BindingTypes::Image { .. } => (BindingKind::StorageImage, None),
 			};
 			let count = count.map_or(1, |count| count.get());
-			if bindings.iter().any(|record| record.usage().0 == *slot) {
+			if bindings.iter().any(|record| record.slot == *slot) {
 				state.error = Some(format!(
 					"Duplicate resource declaration at slot {slot}. The most likely cause is that distinct binding nodes reuse one flat slot instead of sharing the same binding reference."
 				));
 			} else {
-				bindings.push(T::from_usage(name, kind, count, *slot, buffer_stride, *read, *write));
+				bindings.push(BindingUsage {
+					name: name.to_string(),
+					kind,
+					count,
+					slot: *slot,
+					buffer_stride,
+					read: *read,
+					write: *write,
+				});
 			}
 		}
 		besl::Nodes::Raw { input, output, .. } => {

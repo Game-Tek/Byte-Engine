@@ -1,5 +1,5 @@
 use super::*;
-impl<A: Allocator + Clone> Generator<A> {
+impl Generator {
 	/// Generates an MSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -19,67 +19,26 @@ impl<A: Allocator + Clone> Generator<A> {
 		shader_compilation_settings: &ShaderGenerationSettings,
 		main_function_node: &besl::NodeReference,
 	) -> Result<String, ()> {
-		self.generate_in(shader_compilation_settings, main_function_node, self.allocator.clone())
+		let order = ordered_shader_nodes(main_function_node, "MSL");
+		self.generate_order(shader_compilation_settings, main_function_node, &order)
 	}
 
 	/// Generates an MSL shader whose resource ABI contains every binding declared by `program`.
+	///
+	/// Code reachable from `main` is emitted, while every program binding stays in the Metal resource ABI.
 	pub fn generate_program(
 		&mut self,
 		shader_compilation_settings: &ShaderGenerationSettings,
 		program: &besl::NodeReference,
 	) -> Result<String, ()> {
-		self.generate_program_in(shader_compilation_settings, program, self.allocator.clone())
-	}
-
-	/// Generates a full-program MSL shader using `allocator` for temporary graph and classification storage.
-	pub fn generate_program_in(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-		allocator: A,
-	) -> Result<String, ()> {
-		let previous_allocator = std::mem::replace(&mut self.allocator, allocator);
-		let result = self.generate_program_with_current_allocator(shader_compilation_settings, program);
-		self.allocator = previous_allocator;
-		result
-	}
-
-	/// Generates an entry-point MSL shader using `allocator` for temporary graph and classification storage.
-	pub fn generate_in(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
-		allocator: A,
-	) -> Result<String, ()> {
-		let previous_allocator = std::mem::replace(&mut self.allocator, allocator);
-		let result = self.generate_with_current_allocator(shader_compilation_settings, main_function_node);
-		self.allocator = previous_allocator;
-		result
-	}
-
-	/// Generates code reachable from `main` while retaining every program binding in the Metal resource ABI.
-	pub(crate) fn generate_program_with_current_allocator(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		program: &besl::NodeReference,
-	) -> Result<String, ()> {
 		let main = program.get_main().ok_or(())?;
-		let mut order = ordered_shader_nodes_in(&main, "MSL", self.allocator.clone());
+		let mut order = ordered_shader_nodes(&main, "MSL");
 		Self::append_declared_bindings(program, &mut order);
 		self.generate_order(shader_compilation_settings, &main, &order)
 	}
 
-	pub(crate) fn generate_with_current_allocator(
-		&mut self,
-		shader_compilation_settings: &ShaderGenerationSettings,
-		main_function_node: &besl::NodeReference,
-	) -> Result<String, ()> {
-		let order = ordered_shader_nodes_in(main_function_node, "MSL", self.allocator.clone());
-		self.generate_order(shader_compilation_settings, main_function_node, &order)
-	}
-
 	/// Appends authored binding declarations without traversing unreachable executable nodes.
-	fn append_declared_bindings(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference, A>) {
+	fn append_declared_bindings(program: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
 		let program_borrow = program.borrow();
 		match program_borrow.node() {
 			besl::Nodes::Binding { r#type, .. } => {
@@ -108,7 +67,7 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Retains user struct declarations required to represent an authored buffer binding.
-	fn append_storage_type_declarations(node: &besl::NodeReference, order: &mut Vec<besl::NodeReference, A>) {
+	fn append_storage_type_declarations(node: &besl::NodeReference, order: &mut Vec<besl::NodeReference>) {
 		let node_borrow = node.borrow();
 		match node_borrow.node() {
 			besl::Nodes::Member { r#type, .. } => Self::append_storage_type_declarations(r#type, order),
@@ -139,7 +98,7 @@ impl<A: Allocator + Clone> Generator<A> {
 		{
 			return Err(());
 		}
-		Self::validate_reachable_binding_layout(order, self.allocator.clone())?;
+		Self::validate_reachable_binding_layout(order)?;
 		self.collect_packed_mat4x3_members(order);
 		self.hidden_contexts = analyze_hidden_contexts(order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment)
@@ -160,10 +119,10 @@ impl<A: Allocator + Clone> Generator<A> {
 
 		match shader_compilation_settings.stage {
 			Stages::Vertex if Self::has_raster_interface(order) => {
-				self.generate_vertex_shader(&mut string, order, main_function_node)
+				self.generate_raster_shader(&mut string, order, main_function_node, true)
 			}
 			Stages::Fragment if Self::has_raster_interface(order) || Self::has_non_void_return(main_function_node) => {
-				self.generate_fragment_shader(&mut string, order, main_function_node)
+				self.generate_raster_shader(&mut string, order, main_function_node, false)
 			}
 			Stages::Compute { .. } => self.generate_compute_shader(
 				&mut string,
@@ -395,19 +354,18 @@ impl<A: Allocator + Clone> Generator<A> {
 	}
 
 	/// Validates logical flat-slot intervals and fixed Metal argument-ID reservations before source emission.
-	pub(crate) fn validate_reachable_binding_layout(order: &[besl::NodeReference], allocator: A) -> Result<(), ()> {
-		let binding_count = order
-			.iter()
-			.filter(|node| matches!(node.borrow().node(), besl::Nodes::Binding { .. }))
-			.count();
-		let mut ranges = Vec::with_capacity_in(binding_count, allocator);
+	pub(crate) fn validate_reachable_binding_layout(order: &[besl::NodeReference]) -> Result<(), ()> {
+		let mut ranges = Vec::new();
 
 		for binding in order {
-			let Some((start, end)) = Self::binding_layout(binding)? else {
+			let binding = binding.borrow();
+			let besl::Nodes::Binding { slot, count, .. } = binding.node() else {
 				continue;
 			};
-
-			ranges.push((start, end));
+			let count = count.map_or(1, |count| count.get());
+			let end = slot.checked_add(count).ok_or(())?;
+			Self::fixed_argument_ids(*slot, count)?;
+			ranges.push((*slot, end));
 		}
 
 		// After sorting, adjacent ranges are enough to detect every overlap.
@@ -419,47 +377,19 @@ impl<A: Allocator + Clone> Generator<A> {
 		Ok(())
 	}
 
-	pub(crate) fn binding_layout(binding: &besl::NodeReference) -> Result<Option<(u32, u32)>, ()> {
-		let binding = binding.borrow();
-		let besl::Nodes::Binding { slot, count, .. } = binding.node() else {
-			return Ok(None);
-		};
-
-		let count = count.map_or(1, |count| count.get());
-		let end = slot.checked_add(count).ok_or(())?;
-		Self::fixed_argument_ids(*slot, count)?;
-
-		Ok(Some((*slot, end)))
-	}
-
-	pub(crate) fn function_return_type_name(function_node: &besl::NodeReference) -> Option<String> {
-		let node = function_node.borrow();
-		let besl::Nodes::Function { return_type, .. } = node.node() else {
-			return None;
-		};
-
-		return_type.borrow().get_name().map(str::to_string)
-	}
-
 	pub(crate) fn has_non_void_return(function_node: &besl::NodeReference) -> bool {
-		Self::function_return_type_name(function_node).is_some_and(|name| name != "void")
+		matches!(
+			function_node.borrow().node(),
+			besl::Nodes::Function { return_type, .. } if return_type.borrow().get_name().is_some_and(|name| name != "void")
+		)
 	}
 
 	pub(crate) fn emit_argument_buffer_parameter(&self, string: &mut String) {
 		string.push_str("constant _resources& resources [[buffer(16)]]");
 	}
 
-	pub(crate) fn classify_nodes<'a>(&self, order: &'a [besl::NodeReference]) -> ClassifiedNodes<'a, A> {
-		let mut nodes = ClassifiedNodes {
-			bindings: Vec::new_in(self.allocator.clone()),
-			inputs: Vec::new_in(self.allocator.clone()),
-			outputs: Vec::new_in(self.allocator.clone()),
-			task_payloads: Vec::new_in(self.allocator.clone()),
-			workgroups: Vec::new_in(self.allocator.clone()),
-			declarations: Vec::new_in(self.allocator.clone()),
-			functions: Vec::new_in(self.allocator.clone()),
-			push_constant: None,
-		};
+	pub(crate) fn classify_nodes(order: &[besl::NodeReference]) -> ClassifiedNodes<'_> {
+		let mut nodes = ClassifiedNodes::default();
 
 		for node in order {
 			match node.borrow().node() {

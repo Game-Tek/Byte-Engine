@@ -413,7 +413,7 @@ fn native_kernel_source(
 	let main = program.get_main().ok_or_else(|| {
 		format!("BESL kernel '{label}' has no `main` function. The most likely cause is a renamed entry point.")
 	})?;
-	let (binary, ..) = SPIRVCompiler::new().generate(settings, &main)?.into_parts();
+	let binary = SPIRVCompiler::new().generate(settings, &main)?.binary;
 	Ok(ghi::shader::CompiledShaderSource::SPIRV(binary.into_vec()))
 }
 

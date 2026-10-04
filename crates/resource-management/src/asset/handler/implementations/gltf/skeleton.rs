@@ -164,17 +164,17 @@ pub(crate) fn validate_gltf_flattened_animation_transform(
 	transform: math::Matrix,
 	transform_node: Option<u32>,
 ) -> Result<(), GltfSkeletalImportError> {
-	if transform_node.is_none() {
-		return Ok(());
+	if transform_node.is_some() && invertible_determinant(&transform).is_none() {
+		return Err(GltfSkeletalImportError::SingularMeshTransform);
 	}
 
+	Ok(())
+}
+
+/// Returns the determinant of a transform that can be inverted reliably, or `None` for a singular or non-finite one.
+fn invertible_determinant(transform: &math::Matrix) -> Option<f32> {
 	let determinant = transform.determinant();
-
-	if determinant.is_finite() && determinant.abs() > f32::EPSILON {
-		Ok(())
-	} else {
-		Err(GltfSkeletalImportError::SingularMeshTransform)
-	}
+	(determinant.is_finite() && determinant.abs() > f32::EPSILON).then_some(determinant)
 }
 
 /// Converts glTF local TRS values from right-handed coordinates into the engine's left-handed basis.
@@ -208,24 +208,16 @@ pub(crate) fn handedness_matrix() -> math::Matrix {
 
 /// Builds the inverse-transpose matrix required to preserve normals under nonuniform node scale.
 pub(crate) fn gltf_normal_transform(transform: math::Matrix) -> Result<math::Matrix, GltfSkeletalImportError> {
-	let determinant = transform.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::InvalidVertexDirection);
-	}
+	invertible_determinant(&transform).ok_or(GltfSkeletalImportError::InvalidVertexDirection)?;
 
 	Ok(transform.inverse().transpose())
 }
 
 /// Reports whether an affine transform preserves or flips tangent-space handedness.
 pub(crate) fn gltf_transform_orientation(transform: math::Matrix) -> Result<f32, GltfSkeletalImportError> {
-	let determinant = transform.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::InvalidVertexDirection);
-	}
-
-	Ok(determinant.signum())
+	invertible_determinant(&transform)
+		.map(f32::signum)
+		.ok_or(GltfSkeletalImportError::InvalidVertexDirection)
 }
 
 /// Applies only the linear matrix portion to a direction and returns a normalized result without allocating.
@@ -233,13 +225,9 @@ pub(crate) fn transform_gltf_unit_direction(
 	transform: &math::Matrix,
 	direction: [f32; 3],
 ) -> Result<Vector<ModelSpace>, GltfSkeletalImportError> {
-	let transformed = Vector::new(
-		transform[(0, 0)] * direction[0] + transform[(0, 1)] * direction[1] + transform[(0, 2)] * direction[2],
-		transform[(1, 0)] * direction[0] + transform[(1, 1)] * direction[1] + transform[(1, 2)] * direction[2],
-		transform[(2, 0)] * direction[0] + transform[(2, 1)] * direction[1] + transform[(2, 2)] * direction[2],
-	);
+	let [x, y, z] = direction;
 
-	transformed
+	Vector::from_maths(maths_rs::Mat3f::from(*transform) * Vec3::new(x, y, z))
 		.normalized()
 		.map(UnitVector::into_vector)
 		.map_err(|_| GltfSkeletalImportError::InvalidVertexDirection)
@@ -262,24 +250,9 @@ pub(crate) fn transform_gltf_tangent(
 
 /// Converts the column-major matrix representation used by glTF resources into maths-rs row-major storage.
 pub(crate) fn mat4_from_columns(matrix: [[f32; 4]; 4]) -> math::Matrix {
-	math::Matrix::new(
-		matrix[0][0],
-		matrix[1][0],
-		matrix[2][0],
-		matrix[3][0],
-		matrix[0][1],
-		matrix[1][1],
-		matrix[2][1],
-		matrix[3][1],
-		matrix[0][2],
-		matrix[1][2],
-		matrix[2][2],
-		matrix[3][2],
-		matrix[0][3],
-		matrix[1][3],
-		matrix[2][3],
-		matrix[3][3],
-	)
+	math::Matrix {
+		m: std::array::from_fn(|index| matrix[index % 4][index / 4]),
+	}
 }
 
 /// Rejects non-finite matrix components before they enter serializable skeletal resources.
@@ -572,16 +545,10 @@ pub(crate) fn import_gltf_animation(
 		match (property, outputs) {
 			(gltf::animation::Property::Translation, gltf::animation::util::ReadOutputs::Translations(values)) => {
 				let values = values
-					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Translation))
+					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Translation).map(Vector::from_array))
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Ok(Vector::from_array(value)),
-					Vector::from_array,
-				)?;
+				let curve = make_curve(interpolation, times, values, Ok)?;
 
 				if track.translation.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -589,16 +556,10 @@ pub(crate) fn import_gltf_animation(
 			}
 			(gltf::animation::Property::Scale, gltf::animation::util::ReadOutputs::Scales(values)) => {
 				let values = values
-					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Scale))
+					.map(|value| convert_gltf_vector3(value, GltfVector3Semantic::Scale).map(Scale::from_array))
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Ok(Scale::from_array(value)),
-					Scale::from_array,
-				)?;
+				let curve = make_curve(interpolation, times, values, Ok)?;
 
 				if track.scale.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -610,13 +571,9 @@ pub(crate) fn import_gltf_animation(
 					.map(convert_gltf_quaternion)
 					.collect::<Result<Vec<_>, _>>()?;
 
-				let curve = make_curve(
-					interpolation,
-					times,
-					values,
-					|value| Orientation::try_from_array(value).map_err(|_| GltfSkeletalImportError::InvalidAnimationOutput),
-					|tangent| tangent,
-				)?;
+				let curve = make_curve(interpolation, times, values, |value| {
+					Orientation::try_from_array(value).map_err(|_| GltfSkeletalImportError::InvalidAnimationOutput)
+				})?;
 
 				if track.rotation.replace(curve).is_some() {
 					return Err(GltfSkeletalImportError::DuplicateAnimationTrack);
@@ -674,16 +631,15 @@ pub(crate) fn convert_gltf_quaternion(value: [f32; 4]) -> Result<[f32; 4], GltfS
 	Ok([-value[0], -value[1], value[2], value[3]])
 }
 
-/// Builds one glTF sampler's curve from raw keys, converting each key value with `map_value` and each cubic spline
-/// tangent with `map_tangent`.
+/// Builds one glTF sampler's curve from keys, converting each key value with `map_value` and keeping cubic spline
+/// tangents as authored.
 ///
 /// Rotations normalize their values without touching derivative tangents.
-pub(crate) fn make_curve<R: Copy, V, T>(
+pub(crate) fn make_curve<V, T: Copy>(
 	interpolation: gltf::animation::Interpolation,
 	times: Vec<f32>,
-	values: Vec<R>,
-	map_value: impl FnMut(R) -> Result<V, GltfSkeletalImportError>,
-	map_tangent: impl FnMut(R) -> T,
+	values: Vec<T>,
+	map_value: impl FnMut(T) -> Result<V, GltfSkeletalImportError>,
 ) -> Result<Curve<V, T>, GltfSkeletalImportError> {
 	match interpolation {
 		gltf::animation::Interpolation::Step if values.len() == times.len() => Ok(Curve::Step {
@@ -695,7 +651,7 @@ pub(crate) fn make_curve<R: Copy, V, T>(
 			values: values.into_iter().map(map_value).collect::<Result<_, _>>()?,
 		}),
 		gltf::animation::Interpolation::CubicSpline if values.len() == times.len().saturating_mul(3) => {
-			Curve::cubic_spline_from_triplets(times, values.as_chunks::<3>().0, map_value, map_tangent)
+			Curve::cubic_spline_from_triplets(times, values.as_chunks::<3>().0, map_value)
 		}
 		_ => Err(GltfSkeletalImportError::InvalidAnimationOutput),
 	}
@@ -720,11 +676,7 @@ pub(crate) fn import_gltf_skin_binding(
 		.get(node.index())
 		.ok_or(GltfSkeletalImportError::MissingSkinJoint)?;
 
-	let determinant = source_global.determinant();
-
-	if !determinant.is_finite() || determinant.abs() <= f32::EPSILON {
-		return Err(GltfSkeletalImportError::SingularMeshTransform);
-	}
+	invertible_determinant(&source_global).ok_or(GltfSkeletalImportError::SingularMeshTransform)?;
 
 	let inverse_source_global = source_global.inverse();
 
@@ -752,7 +704,11 @@ pub(crate) fn import_gltf_skin_binding(
 		for (joint, inverse_bind) in skin.joints().zip(inverse_binds) {
 			entries.push(SkinPaletteEntry {
 				joint: remap_joint(joint)?,
-				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(inverse_bind, inverse_source_global, handedness)?,
+				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(
+					mat4_from_columns(inverse_bind),
+					inverse_source_global,
+					handedness,
+				)?,
 			});
 		}
 	} else {
@@ -760,12 +716,7 @@ pub(crate) fn import_gltf_skin_binding(
 			entries.push(SkinPaletteEntry {
 				joint: remap_joint(joint)?,
 				adjusted_inverse_bind_matrix: adjust_gltf_inverse_bind(
-					[
-						[1.0, 0.0, 0.0, 0.0],
-						[0.0, 1.0, 0.0, 0.0],
-						[0.0, 0.0, 1.0, 0.0],
-						[0.0, 0.0, 0.0, 1.0],
-					],
+					math::Matrix::identity(),
 					inverse_source_global,
 					handedness,
 				)?,
@@ -778,12 +729,10 @@ pub(crate) fn import_gltf_skin_binding(
 
 /// Converts one source inverse bind into the flattened left-handed vertex basis used by the mesh resource.
 pub(crate) fn adjust_gltf_inverse_bind(
-	inverse_bind: [[f32; 4]; 4],
+	inverse_bind: math::Matrix,
 	inverse_source_global: math::Matrix,
 	handedness: math::Matrix,
 ) -> Result<AffineMatrix, GltfSkeletalImportError> {
-	let inverse_bind = mat4_from_columns(inverse_bind);
-
 	validate_finite_matrix(&inverse_bind, "inverse bind matrix")?;
 
 	validate_affine_matrix(&inverse_bind, "matrix")?;

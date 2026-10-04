@@ -67,7 +67,6 @@ pub use orientation::{Orientation, OrientationError};
 pub use plane::Plane;
 pub use ray::Ray;
 pub use scale::Scale;
-pub use serialization::ArchivedFloats;
 pub use sphere::Sphere;
 
 /// Asserts that two floating-point values differ by no more than an explicit epsilon.

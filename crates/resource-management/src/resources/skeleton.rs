@@ -327,15 +327,12 @@ pub(crate) fn validate_nodes(nodes: &[SkeletonNode]) -> Result<(), SolveError> {
 /// Validates a skeleton directly in its archived representation without allocating an owned node tree.
 pub(crate) fn validate_archived_nodes(nodes: &[ArchivedSkeletonNode]) -> Result<(), SolveError> {
 	for (index, node) in nodes.iter().enumerate() {
-		let translation = node.rest_local.translation.get();
-		let rotation = node.rest_local.rotation.get();
-		let scale = node.rest_local.scale.get();
 		validate_node(
 			index,
 			node.parent.as_ref().map(|parent| parent.to_native()),
-			&translation,
-			&rotation,
-			&scale,
+			&node.rest_local.translation.map(|value| value.to_native()),
+			&node.rest_local.rotation.map(|value| value.to_native()),
+			&node.rest_local.scale.map(|value| value.to_native()),
 		)?;
 	}
 
@@ -398,20 +395,18 @@ mod tests {
 
 	#[crate::r#async::test]
 	async fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
-		for rest_local in [LocalTransform {
-			translation: Vector::new(f32::NAN, 0.0, 0.0),
-			..LocalTransform::identity()
-		}] {
-			let model = SkeletonModel {
-				nodes: vec![SkeletonNode {
-					name: None,
-					parent: None,
-					rest_local,
-				}],
-			};
+		let model = SkeletonModel {
+			nodes: vec![SkeletonNode {
+				name: None,
+				parent: None,
+				rest_local: LocalTransform {
+					translation: Vector::new(f32::NAN, 0.0, 0.0),
+					..LocalTransform::identity()
+				},
+			}],
+		};
 
-			assert!(model.solve(&TestStorageBackend::new()).await.is_err());
-		}
+		assert!(model.solve(&TestStorageBackend::new()).await.is_err());
 	}
 
 	#[test]

@@ -1,6 +1,5 @@
 use std::{
 	cmp::Ordering,
-	convert::Infallible,
 	fmt,
 	marker::PhantomData,
 	ops::{Add, AddAssign, Div, Mul, Neg, Sub},
@@ -8,7 +7,7 @@ use std::{
 
 use maths_rs::Vec3f;
 
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::serialization::serialize_as_array;
 
 /// The `WorldSpace` struct brands positions and directions that use the engine's world coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -781,32 +780,5 @@ mod tests {
 	}
 }
 
-impl<Space> ArrayForm<3> for Point<Space> {
-	type Array = [f32; 3];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		Point::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_array(array))
-	}
-}
-
-serialize_as_array!(Point<Space>, 3, Space);
-
-impl<Space> ArrayForm<3> for Vector<Space> {
-	type Array = [f32; 3];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		Vector::to_array(*self)
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_array(array))
-	}
-}
-
-serialize_as_array!(Vector<Space>, 3, Space);
+serialize_as_array!(Point<Space>, [f32; 3], to_array, from: Point::from_array, Space);
+serialize_as_array!(Vector<Space>, [f32; 3], to_array, from: Vector::from_array, Space);

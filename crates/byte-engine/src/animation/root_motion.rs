@@ -58,17 +58,14 @@ impl Default for RootMotionDelta {
 #[cfg(test)]
 mod tests {
 	use math::{Orientation, Scale, Vector};
-	use resource_management::resources::skeleton::LocalTransform;
+	use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
 
 	use super::RootMotionDelta;
 
 	fn root(translation: [f32; 3], yaw: f32) -> LocalTransform {
 		LocalTransform {
 			translation: Vector::from_array(translation),
-			rotation: Orientation::try_from_rotation_vector(Vector::<resource_management::resources::ParentSpace>::new(
-				0.0, yaw, 0.0,
-			))
-			.unwrap(),
+			rotation: Orientation::try_from_rotation_vector(Vector::<ParentSpace>::new(0.0, yaw, 0.0)).unwrap(),
 			scale: Scale::new(2.0, 2.0, 2.0),
 		}
 	}

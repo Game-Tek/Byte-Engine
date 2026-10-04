@@ -1,12 +1,12 @@
 use resource_management::{
 	Reference,
 	resources::{
-		animation::{Animation, Curve, NodeTrack},
+		animation::{Animation, Curve, CurveComponents, NodeTrack},
 		skeleton::{LocalTransform, Skeleton, SkeletonPoseMap},
 	},
 };
 
-use super::math::{CurveComponents, CurveInterpolation, CurveValue, sample_curve};
+use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
@@ -49,9 +49,9 @@ impl PackedAnimationData {
 			.sum::<usize>();
 		let key_words = animation.tracks.iter().fold(0usize, |total, track| {
 			total
-				+ track.translation.as_ref().map_or(0, curve_words::<3, _, _>)
-				+ track.rotation.as_ref().map_or(0, curve_words::<4, _, _>)
-				+ track.scale.as_ref().map_or(0, curve_words::<3, _, _>)
+				+ track.translation.as_ref().map_or(0, curve_words)
+				+ track.rotation.as_ref().map_or(0, curve_words)
+				+ track.scale.as_ref().map_or(0, curve_words)
 		});
 		(HEADER_WORDS + animation.tracks.len() * TRACK_WORDS + curve_count * CURVE_WORDS + key_words)
 			* std::mem::size_of::<u32>()
@@ -117,13 +117,13 @@ impl<'a> PackedAnimation<'a> {
 	/// Applies the sampled channels from one packed track to a local transform.
 	fn sample_track(self, track: PackedTrack, time: f32, local: &mut LocalTransform) {
 		if let Some(curve) = track.translation {
-			local.translation = self.sample(curve, time, Self::vector3);
+			local.translation = self.sample(curve, time, 5);
 		}
 		if let Some(curve) = track.rotation {
-			local.rotation = self.sample(curve, time, Self::quaternion);
+			local.rotation = self.sample(curve, time, 6);
 		}
 		if let Some(curve) = track.scale {
-			local.scale = self.sample(curve, time, Self::vector3);
+			local.scale = self.sample(curve, time, 5);
 		}
 	}
 
@@ -162,25 +162,14 @@ impl<'a> PackedAnimation<'a> {
 		f32::from_bits(self.words[self.words[4] as usize + curve.key_start + key])
 	}
 
-	fn vector3(self, index: usize) -> [f32; 3] {
-		let start = self.words[5] as usize + index * 3;
-		std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
-	}
-
-	fn quaternion(self, index: usize) -> [f32; 4] {
-		let start = self.words[6] as usize + index * 4;
-		std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
-	}
-
-	/// Samples one packed curve whose values `read` decodes from the value array.
+	/// Samples one packed curve whose `N`-component values start at the offset in header word `table`.
 	///
 	/// Cubic curves store each key as `[value, in_tangent, out_tangent]`; other curves store one value per key.
-	fn sample<V: CurveValue<N>, const N: usize>(
-		self,
-		curve: PackedCurve,
-		time: f32,
-		read: impl Fn(Self, usize) -> [f32; N],
-	) -> V {
+	fn sample<V: CurveValue<N>, const N: usize>(self, curve: PackedCurve, time: f32, table: usize) -> V {
+		let read = |index: usize| -> [f32; N] {
+			let start = self.words[table] as usize + index * N;
+			std::array::from_fn(|component| f32::from_bits(self.words[start + component]))
+		};
 		let stride = if curve.interpolation == CurveInterpolation::CubicSpline {
 			3
 		} else {
@@ -192,8 +181,8 @@ impl<'a> PackedAnimation<'a> {
 			curve.key_count,
 			time,
 			|key| self.time(curve, key),
-			|key| V::from_components(read(self, value_index(key))),
-			|key| (read(self, value_index(key) + 1), read(self, value_index(key) + 2)),
+			|key| V::from_components(read(value_index(key))),
+			|key| (read(value_index(key) + 1), read(value_index(key) + 2)),
 		)
 	}
 }
@@ -279,7 +268,7 @@ fn pack_data(duration: f32, tracks: Vec<NodeTrack>) -> Box<[u32]> {
 }
 
 /// Counts the packed words one curve adds: a time plus every value of each key, where cubic keys also carry two tangents.
-fn curve_words<const N: usize, V, T>(curve: &Curve<V, T>) -> usize {
+fn curve_words<V: CurveComponents<N>, T, const N: usize>(curve: &Curve<V, T>) -> usize {
 	match curve {
 		Curve::Step { times, .. } | Curve::Linear { times, .. } => times.len() * (1 + N),
 		Curve::CubicSpline { times, .. } => times.len() * (1 + 3 * N),
@@ -296,50 +285,36 @@ fn pack_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
 	times: &mut Vec<f32>,
 	values: &mut Vec<[f32; N]>,
 ) -> u32 {
-	let (interpolation, curve_times, curve_values) = match curve {
-		Curve::Step { times, values } => (
-			CurveInterpolation::Step,
-			times,
-			values.into_iter().map(CurveComponents::components).collect(),
-		),
-		Curve::Linear { times, values } => (
-			CurveInterpolation::Linear,
-			times,
-			values.into_iter().map(CurveComponents::components).collect(),
-		),
+	let index = descriptors.len() as u32;
+	let value_start = values.len() as u32;
+	let (interpolation, curve_times) = match curve {
+		Curve::Step { times, values: keys } => {
+			values.extend(keys.into_iter().map(CurveComponents::components));
+			(CurveInterpolation::Step, times)
+		}
+		Curve::Linear { times, values: keys } => {
+			values.extend(keys.into_iter().map(CurveComponents::components));
+			(CurveInterpolation::Linear, times)
+		}
 		Curve::CubicSpline {
 			times,
-			values,
+			values: keys,
 			in_tangents,
 			out_tangents,
 		} => {
-			let mut packed = Vec::with_capacity(values.len() * 3);
-			for ((key, incoming), outgoing) in values.into_iter().zip(in_tangents).zip(out_tangents) {
-				packed.extend([key.components(), incoming.components(), outgoing.components()]);
+			for ((key, incoming), outgoing) in keys.into_iter().zip(in_tangents).zip(out_tangents) {
+				values.extend([key.components(), incoming.components(), outgoing.components()]);
 			}
-			(CurveInterpolation::CubicSpline, times, packed)
+			(CurveInterpolation::CubicSpline, times)
 		}
 	};
-	push_curve(interpolation, curve_times, curve_values, descriptors, times, values)
-}
-
-fn push_curve<T>(
-	interpolation: CurveInterpolation,
-	curve_times: Vec<f32>,
-	curve_values: Vec<T>,
-	descriptors: &mut Vec<CurveDescriptor>,
-	times: &mut Vec<f32>,
-	values: &mut Vec<T>,
-) -> u32 {
-	let index = descriptors.len() as u32;
 	descriptors.push(CurveDescriptor {
 		interpolation,
 		key_start: times.len() as u32,
-		value_start: values.len() as u32,
+		value_start,
 		key_count: curve_times.len() as u32,
 	});
 	times.extend(curve_times);
-	values.extend(curve_values);
 	index
 }
 

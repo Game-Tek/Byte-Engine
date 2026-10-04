@@ -51,13 +51,12 @@ pub fn blend_local_poses(
 		return Err(BlendError::ZeroWeight);
 	}
 
+	let reference = weights
+		.iter()
+		.position(|weight| *weight > 0.0)
+		.expect("a positive total weight guarantees one reference rotation");
 	for node in 0..output.len() {
-		let reference_rotation = poses
-			.iter()
-			.zip(weights)
-			.find(|(_, weight)| **weight > 0.0)
-			.map(|(pose, _)| pose[node].rotation)
-			.expect("a positive total weight guarantees one reference rotation");
+		let reference_rotation = poses[reference][node].rotation;
 		let mut translation = Vector::zero();
 		let mut rotation = Quaternion::new(0.0, 0.0, 0.0, 0.0);
 		let mut scale = Scale::new(0.0, 0.0, 0.0);

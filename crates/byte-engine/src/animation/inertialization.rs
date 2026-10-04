@@ -57,9 +57,9 @@ impl PoseInertializer {
 		duration: MediaTime,
 	) -> Result<(), InertializationError> {
 		self.validate_pose_lengths(&[source_previous, source, destination_previous, destination])?;
-		let sample_delta_seconds = sample_delta.as_seconds_f32();
+		let delta = sample_delta.as_seconds_f32();
 		let duration_seconds = duration.as_seconds_f32();
-		if !sample_delta_seconds.is_finite() || sample_delta_seconds <= 0.0 {
+		if !delta.is_finite() || delta <= 0.0 {
 			return Err(InertializationError::InvalidSampleDelta);
 		}
 		if !duration_seconds.is_finite() || duration_seconds < 0.0 {
@@ -82,18 +82,14 @@ impl PoseInertializer {
 			.zip(&mut self.nodes)
 		{
 			state.translation_offset = source.translation - destination.translation;
-			state.translation_velocity = velocity(source_previous.translation, source.translation, sample_delta_seconds)
-				- velocity(
-					destination_previous.translation,
-					destination.translation,
-					sample_delta_seconds,
-				);
+			state.translation_velocity = velocity(source_previous.translation, source.translation, delta)
+				- velocity(destination_previous.translation, destination.translation, delta);
 			state.scale_offset = source.scale - destination.scale;
-			state.scale_velocity = velocity(source_previous.scale, source.scale, sample_delta_seconds)
-				- velocity(destination_previous.scale, destination.scale, sample_delta_seconds);
+			state.scale_velocity = velocity(source_previous.scale, source.scale, delta)
+				- velocity(destination_previous.scale, destination.scale, delta);
 			state.rotation_offset = source.rotation.compose(destination.rotation.inverse()).to_rotation_vector();
-			state.rotation_velocity = angular_velocity(source_previous.rotation, source.rotation, sample_delta_seconds)
-				- angular_velocity(destination_previous.rotation, destination.rotation, sample_delta_seconds);
+			state.rotation_velocity = angular_velocity(source_previous.rotation, source.rotation, delta)
+				- angular_velocity(destination_previous.rotation, destination.rotation, delta);
 		}
 		Ok(())
 	}
@@ -125,21 +121,11 @@ impl PoseInertializer {
 			return Ok(());
 		}
 
-		let decay_rate = DECAY_TO_ONE_THOUSANDTH / self.duration_seconds;
+		let (rate, elapsed) = (DECAY_TO_ONE_THOUSANDTH / self.duration_seconds, self.elapsed_seconds);
 		for ((destination, state), output) in destination.iter().zip(&self.nodes).zip(output) {
-			let translation_offset = decay(
-				state.translation_offset,
-				state.translation_velocity,
-				decay_rate,
-				self.elapsed_seconds,
-			);
-			let scale_offset = decay(state.scale_offset, state.scale_velocity, decay_rate, self.elapsed_seconds);
-			let rotation_offset = decay(
-				state.rotation_offset,
-				state.rotation_velocity,
-				decay_rate,
-				self.elapsed_seconds,
-			);
+			let translation_offset = decay(state.translation_offset, state.translation_velocity, rate, elapsed);
+			let scale_offset = decay(state.scale_offset, state.scale_velocity, rate, elapsed);
+			let rotation_offset = decay(state.rotation_offset, state.rotation_velocity, rate, elapsed);
 			*output = LocalTransform {
 				translation: destination.translation + translation_offset,
 				rotation: Orientation::try_from_rotation_vector(rotation_offset)
@@ -272,7 +258,7 @@ fn angular_velocity(previous: Orientation, current: Orientation, delta: f32) -> 
 mod tests {
 	use std::f32::consts::FRAC_PI_2;
 
-	use resource_management::resources::skeleton::LocalTransform;
+	use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
 
 	use super::PoseInertializer;
 	use crate::MediaTime;
@@ -280,10 +266,7 @@ mod tests {
 	fn transform(position: f32, angle: f32) -> LocalTransform {
 		LocalTransform {
 			translation: math::Vector::new(position, 0.0, 0.0),
-			rotation: math::Orientation::try_from_rotation_vector(
-				math::Vector::<resource_management::resources::ParentSpace>::new(0.0, angle, 0.0),
-			)
-			.unwrap(),
+			rotation: math::Orientation::try_from_rotation_vector(math::Vector::<ParentSpace>::new(0.0, angle, 0.0)).unwrap(),
 			scale: math::Scale::identity(),
 		}
 	}

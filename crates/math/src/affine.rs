@@ -1,10 +1,9 @@
-use std::convert::Infallible;
 use std::ops::Mul;
 
-use maths_rs::mat::MatNew4;
+use maths_rs::Mat34f;
 
 use crate::Matrix;
-use crate::serialization::{ArrayForm, serialize_as_array};
+use crate::serialization::serialize_as_array;
 
 /// The `AffineMatrix` struct stores an affine transform compactly as four columns of three.
 ///
@@ -28,7 +27,7 @@ impl AffineMatrix {
 	}
 
 	/// Returns the three basis columns followed by the translation.
-	pub const fn columns(&self) -> [[f32; 3]; 4] {
+	pub const fn columns(self) -> [[f32; 3]; 4] {
 		self.columns
 	}
 
@@ -47,25 +46,10 @@ impl AffineMatrix {
 
 	/// Returns the full matrix with the implied `[0.0, 0.0, 0.0, 1.0]` bottom row.
 	pub fn into_matrix(self) -> Matrix {
-		let [x, y, z, translation] = self.columns;
-		Matrix::new(
-			x[0],
-			y[0],
-			z[0],
-			translation[0],
-			x[1],
-			y[1],
-			z[1],
-			translation[1],
-			x[2],
-			y[2],
-			z[2],
-			translation[2],
-			0.0,
-			0.0,
-			0.0,
-			1.0,
-		)
+		// `Mat34f` is row-major, and widening it to a `Matrix` appends the bottom row.
+		Matrix::from(Mat34f {
+			m: std::array::from_fn(|index| self.columns[index % 4][index / 4]),
+		})
 	}
 }
 
@@ -82,35 +66,17 @@ impl Mul for AffineMatrix {
 	// Composing affine transforms adds the left translation to the rotated right translation.
 	#[allow(clippy::suspicious_arithmetic_impl)]
 	fn mul(self, right: Self) -> Self {
-		let left = self.columns;
-		let right = right.columns;
-		let mut product = [[0.0; 3]; 4];
-		for column in 0..4 {
-			for row in 0..3 {
-				product[column][row] = (0..3).map(|index| left[index][row] * right[column][index]).sum();
-			}
-		}
-		for row in 0..3 {
-			product[3][row] += left[3][row];
-		}
-		Self::from_columns(product)
+		let (left, right) = (self.columns, right.columns);
+		Self::from_columns(std::array::from_fn(|column| {
+			std::array::from_fn(|row| {
+				let linear = (0..3).map(|index| left[index][row] * right[column][index]).sum::<f32>();
+				if column == 3 { linear + left[3][row] } else { linear }
+			})
+		}))
 	}
 }
 
-impl ArrayForm<12> for AffineMatrix {
-	type Array = [[f32; 3]; 4];
-	type Error = Infallible;
-
-	fn to_array(&self) -> Self::Array {
-		self.columns
-	}
-
-	fn try_from_array(array: Self::Array) -> Result<Self, Self::Error> {
-		Ok(Self::from_columns(array))
-	}
-}
-
-serialize_as_array!(AffineMatrix, 12);
+serialize_as_array!(AffineMatrix, [[f32; 3]; 4], columns, from: AffineMatrix::from_columns);
 
 #[cfg(test)]
 mod tests {

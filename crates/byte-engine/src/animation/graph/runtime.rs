@@ -514,7 +514,8 @@ mod tests {
 		}
 	}
 
-	fn test_animation(name: &str, end_translation: f32) -> Animation {
+	/// Builds a one-node clip that moves its root along x. The [`player`] tests share it and its packed size.
+	pub(super) fn test_animation(name: &str, end_translation: f32) -> Animation {
 		Animation {
 			name: Some(name.into()),
 			skeleton: Reference::in_memory("test.skeleton", test_skeleton()),
@@ -523,10 +524,7 @@ mod tests {
 				node: 0,
 				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![
-						math::Vector::from_array([0.0; 3]),
-						math::Vector::from_array([end_translation, 0.0, 0.0]),
-					],
+					values: vec![math::Vector::zero(), math::Vector::new(end_translation, 0.0, 0.0)],
 				}),
 				rotation: None,
 				scale: None,
@@ -535,7 +533,7 @@ mod tests {
 	}
 
 	/// Measures the representation retained by the pool rather than the transient resource representation.
-	fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
+	pub(super) fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
 		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
 	}
 

@@ -96,13 +96,9 @@ impl RootMotionTranslation {
 		Self(self.0 | other.0)
 	}
 
-	const fn contains(self, axis: Self) -> bool {
-		self.0 & axis.0 != 0
-	}
-
 	/// Takes `selected` along the axes this selection contains and `unselected` along the others.
 	fn select(self, selected: Vector<ParentSpace>, unselected: Vector<ParentSpace>) -> Vector<ParentSpace> {
-		let axis = |axis, selected: f32, unselected: f32| if self.contains(axis) { selected } else { unselected };
+		let axis = |axis: Self, selected: f32, unselected: f32| if self.0 & axis.0 != 0 { selected } else { unselected };
 		Vector::new(
 			axis(Self::X, selected.x(), unselected.x()),
 			axis(Self::Y, selected.y(), unselected.y()),
@@ -825,47 +821,9 @@ mod tests {
 		},
 	};
 
+	use super::super::tests::{packed_test_animation_bytes, test_animation};
 	use super::*;
 	use crate::MediaTime;
-
-	fn test_skeleton() -> Skeleton {
-		Skeleton {
-			nodes: vec![SkeletonNode {
-				name: Some("root".into()),
-				parent: None,
-				rest_local: LocalTransform::identity(),
-			}],
-		}
-	}
-
-	fn test_animation(name: &str, end_translation: f32) -> Animation {
-		test_animation_with_skeleton(name, end_translation, test_skeleton())
-	}
-
-	fn test_animation_with_skeleton(name: &str, end_translation: f32, skeleton: Skeleton) -> Animation {
-		Animation {
-			name: Some(name.into()),
-			skeleton: Reference::in_memory("test.skeleton", skeleton),
-			duration: 1.0,
-			tracks: vec![NodeTrack {
-				node: 0,
-				translation: Some(TranslationCurve::Linear {
-					times: vec![0.0, 1.0],
-					values: vec![
-						math::Vector::from_array([0.0; 3]),
-						math::Vector::from_array([end_translation, 0.0, 0.0]),
-					],
-				}),
-				rotation: None,
-				scale: None,
-			}],
-		}
-	}
-
-	/// Measures the representation retained by the pool rather than the transient resource representation.
-	fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
-		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
-	}
 
 	fn ready(result: Result<AnimationEvaluation<'_>, AnimationGraphPlayerError>) -> AnimationGraphPose<'_> {
 		match result.expect("animation evaluation should succeed") {
@@ -1156,10 +1114,7 @@ mod tests {
 				node: 1,
 				translation: Some(TranslationCurve::Linear {
 					times: vec![0.0, 1.0],
-					values: vec![
-						math::Vector::from_array([0.0, 100.0, 0.0]),
-						math::Vector::from_array([20.0, 110.0, -100.0]),
-					],
+					values: vec![math::Vector::new(0.0, 100.0, 0.0), math::Vector::new(20.0, 110.0, -100.0)],
 				}),
 				rotation: Some(RotationCurve::Linear {
 					times: vec![0.0, 1.0],

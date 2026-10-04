@@ -33,7 +33,7 @@
 			"get": {
 				"operationId": "listEntities",
 				"summary": "List entities",
-				"description": "Returns factory-created entities known to the shared message bus. Each result includes the numeric handle used as a message target and every complete Rust type name associated with the entity. Use either `type` or its compatibility alias `class` to filter by one complete Rust type name.",
+				"description": "Returns factory-created entities known to the shared message bus. Each result includes the numeric handle used as a message target, every complete Rust type name associated with the entity, and a `properties` object with each value the inspector tracks for it. Use either `type` or its compatibility alias `class` to filter by one complete Rust type name, and `name` to filter by an exact attached name.",
 				"tags": ["Inspection"],
 				"parameters": [
 					{
@@ -55,6 +55,16 @@
 							"type": "string",
 							"minLength": 1
 						}
+					},
+					{
+						"name": "name",
+						"in": "query",
+						"description": "Exact name attached to the entity. Names are not unique, so several entities can match.",
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						},
+						"example": "main camera"
 					}
 				],
 				"responses": {
@@ -72,8 +82,14 @@
 									{
 										"target": 47,
 										"types": [
-											"byte_engine::rendering::camera::Camera"
-										]
+											"byte_engine::rendering::camera::Camera",
+											"byte_engine::gameplay::name::Name",
+											"byte_engine::gameplay::transform::Transform"
+										],
+										"properties": {
+											"name": "main camera",
+											"position": [0.0, 1.8, -4.0]
+										}
 									}
 								]
 							}
@@ -629,7 +645,7 @@
 			"Entity": {
 				"type": "object",
 				"additionalProperties": false,
-				"required": ["target", "types"],
+				"required": ["target", "types", "properties"],
 				"properties": {
 					"target": {
 						"type": "integer",
@@ -643,6 +659,21 @@
 							"type": "string"
 						},
 						"description": "Complete Rust type names registered for the entity."
+					},
+					"properties": {
+						"type": "object",
+						"additionalProperties": false,
+						"description": "The latest value of each property the inspector tracks. A key is present only when the entity has that property.",
+						"properties": {
+							"name": {
+								"type": "string",
+								"description": "Latest name attached to the entity."
+							},
+							"position": {
+								"$ref": "#/components/schemas/Vector3",
+								"description": "World-space position from the latest transform published for the entity, as `[x, y, z]`."
+							}
+						}
 					}
 				}
 			},

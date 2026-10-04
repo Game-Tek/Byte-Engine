@@ -188,18 +188,8 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 			.transpose()
 	}
 
-	#[allow(clippy::type_complexity)]
-	fn tangent_frame(
-		&self,
-		corner: usize,
-	) -> Result<
-		(
-			Option<Vector<ModelSpace>>,
-			Option<Vector<ModelSpace>>,
-			Option<Vector<ModelSpace>>,
-		),
-		FbxImportError,
-	> {
+	/// Returns the corner's normal, tangent, and bitangent in that order, each `None` when the mesh does not store it.
+	fn tangent_frame(&self, corner: usize) -> Result<[Option<Vector<ModelSpace>>; 3], FbxImportError> {
 		let normal = self.normal(corner)?;
 		let transformed_bitangent = self
 			.context
@@ -223,7 +213,7 @@ impl<'context, 'scene, 'batch> FbxPrimitiveSource<'context, 'scene, 'batch> {
 				None => Ok(tangent),
 			})
 			.transpose()?;
-		Ok((normal, tangent, transformed_bitangent))
+		Ok([normal, tangent, transformed_bitangent])
 	}
 }
 
@@ -289,7 +279,7 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 		}
 		Ok(Some(self.source_corners.iter().map(|&source_corner| {
 			let corner = self.corner(source_corner)?;
-			let (normal, tangent, bitangent) = self.tangent_frame(corner)?;
+			let [normal, tangent, bitangent] = self.tangent_frame(corner)?;
 			let tangent = tangent.ok_or(FbxImportError::ZeroDirection)?;
 			let handedness = match (normal, bitangent) {
 				(Some(normal), Some(bitangent)) => tangent_handedness(normal, tangent, bitangent),
@@ -307,15 +297,14 @@ impl MeshPrimitiveSource for FbxPrimitiveSource<'_, '_, '_> {
 		}
 		Ok(Some(self.source_corners.iter().map(|&source_corner| {
 			let corner = self.corner(source_corner)?;
-			let (normal, tangent, transformed_bitangent) = self.tangent_frame(corner)?;
-			match (normal, tangent, transformed_bitangent) {
-				(Some(normal), Some(tangent), Some(bitangent)) => {
+			match self.tangent_frame(corner)? {
+				[Some(normal), Some(tangent), Some(bitangent)] => {
 					let handedness = tangent_handedness(normal, tangent, bitangent);
 					Ok(normal.cross(tangent) * handedness)
 				}
-				(Some(normal), None, Some(bitangent)) => orthogonalized_direction(bitangent, normal),
-				(_, _, Some(bitangent)) => Ok(bitangent),
-				(_, _, None) => Err(FbxImportError::ZeroDirection),
+				[Some(normal), None, Some(bitangent)] => orthogonalized_direction(bitangent, normal),
+				[_, _, Some(bitangent)] => Ok(bitangent),
+				[_, _, None] => Err(FbxImportError::ZeroDirection),
 			}
 		})))
 	}
@@ -485,27 +474,12 @@ pub(crate) fn skin_influences(skin: &ufbx::SkinDeformer, logical_vertex: usize) 
 
 /// Converts ufbx's affine column vectors into an engine affine matrix.
 pub(crate) fn matrix_to_affine(matrix: &ufbx::Matrix) -> Result<AffineMatrix, FbxImportError> {
+	let column = |x, y, z| vec3_to_f32(ufbx::Vec3 { x, y, z }, "skin matrix");
 	Ok(AffineMatrix::from_columns([
-		[
-			finite_f32(matrix.m00, "skin matrix")?,
-			finite_f32(matrix.m10, "skin matrix")?,
-			finite_f32(matrix.m20, "skin matrix")?,
-		],
-		[
-			finite_f32(matrix.m01, "skin matrix")?,
-			finite_f32(matrix.m11, "skin matrix")?,
-			finite_f32(matrix.m21, "skin matrix")?,
-		],
-		[
-			finite_f32(matrix.m02, "skin matrix")?,
-			finite_f32(matrix.m12, "skin matrix")?,
-			finite_f32(matrix.m22, "skin matrix")?,
-		],
-		[
-			finite_f32(matrix.m03, "skin matrix")?,
-			finite_f32(matrix.m13, "skin matrix")?,
-			finite_f32(matrix.m23, "skin matrix")?,
-		],
+		column(matrix.m00, matrix.m10, matrix.m20)?,
+		column(matrix.m01, matrix.m11, matrix.m21)?,
+		column(matrix.m02, matrix.m12, matrix.m22)?,
+		column(matrix.m03, matrix.m13, matrix.m23)?,
 	]))
 }
 
@@ -1034,11 +1008,8 @@ pub(crate) fn tangent_handedness(
 	tangent: Vector<ModelSpace>,
 	bitangent: Vector<ModelSpace>,
 ) -> f32 {
-	if normal.cross(tangent).dot(bitangent) < 0.0 {
-		-1.0
-	} else {
-		1.0
-	}
+	let alignment = normal.cross(tangent).dot(bitangent);
+	if alignment < 0.0 { -1.0 } else { 1.0 }
 }
 
 /// Converts ufbx's double-precision vectors to the engine's finite single-precision representation.

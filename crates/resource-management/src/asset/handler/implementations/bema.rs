@@ -451,6 +451,9 @@ async fn store_generated_brdf_shaders(
 
 	let compiler_identity = PlatformShaderCompiler::compiler_identity().await.map_err(compile_error)?;
 
+	// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
+	let (stage, settings) = compute_material_stage(&compiler_name);
+
 	// Graph hashes skip lowering repeated graphs; cache keys also merge distinct graphs that lower to the same source.
 	let mut unique_by_graph: HashMap<u64, usize> = HashMap::new();
 	let mut unique_by_key: HashMap<u64, usize> = HashMap::new();
@@ -462,19 +465,23 @@ async fn store_generated_brdf_shaders(
 		let graph = serde_json::to_vec(&(&material.nodes, material.surface)).map_err(|_| LoadErrors::FailedToProcess)?;
 		let graph_hash = crate::resource::compression::payload_hash(&graph);
 
-		let index = match unique_by_graph.get(&graph_hash) {
-			Some(&index) => index,
-			None => {
-				let prepared = prepare_generated_brdf_shader(generator, &compiler_name, material).map_err(compile_error)?;
+		let index = match unique_by_graph.entry(graph_hash) {
+			Entry::Occupied(entry) => *entry.get(),
+			Entry::Vacant(entry) => {
+				let program = generate_textured_brdf_program(material).map_err(|error| {
+					compile_error(format!(
+						"Failed to generate the BRDF material program ({error:?}). The most likely cause is an unsupported node in the imported material graph."
+					))
+				})?;
+				let material_json = generated_brdf_material_json(material);
+				let prepared =
+					prepare_besl_shader(program, Some((generator, &material_json)), stage, &settings).map_err(compile_error)?;
 				let key = prepared.cache_key(compiler_identity);
-				let index = *unique_by_key.entry(key).or_insert_with(|| {
+
+				*entry.insert(*unique_by_key.entry(key).or_insert_with(|| {
 					unique.push((key, prepared));
 					unique.len() - 1
-				});
-
-				unique_by_graph.insert(graph_hash, index);
-
-				index
+				}))
 			}
 		};
 
@@ -512,25 +519,6 @@ async fn store_generated_brdf_shaders(
 		.collect())
 }
 
-/// Generates the BESL program for one slot-numbered BRDF graph and lowers it for the platform compiler.
-fn prepare_generated_brdf_shader(
-	generator: &dyn ProgramGenerator,
-	compiler_name: &str,
-	material: &BrdfMaterialDescription,
-) -> Result<PreparedBeslShader, String> {
-	let program = generate_textured_brdf_program(material).map_err(|error| {
-		format!(
-			"Failed to generate the BRDF material program ({error:?}). The most likely cause is an unsupported node in the imported material graph."
-		)
-	})?;
-	let material_json = generated_brdf_material_json(material);
-
-	// Generated materials evaluate in the same compute stage as authored BEMA material shaders.
-	let (stage, settings) = compute_material_stage(compiler_name);
-
-	prepare_besl_shader(program, Some((generator, &material_json)), stage, &settings)
-}
-
 /// Declares one `Texture2D` material variable per texture slot used by a generated BRDF graph.
 fn generated_brdf_material_json(material: &BrdfMaterialDescription) -> JsonObject {
 	let slot_count = material
@@ -545,12 +533,9 @@ fn generated_brdf_material_json(material: &BrdfMaterialDescription) -> JsonObjec
 
 	let variables = (0..slot_count)
 		.map(|slot| serde_json::json!({ "name": material_texture_variable_name(slot), "data_type": "Texture2D" }))
-		.collect::<Vec<_>>();
+		.collect();
 
-	serde_json::json!({ "variables": variables })
-		.as_object()
-		.expect("generated material JSON should be an object")
-		.clone()
+	JsonObject::from_iter([("variables".to_string(), Value::Array(variables))])
 }
 
 /// Compiles a shader definition and stores the resulting resource and binary payload.
@@ -870,6 +855,7 @@ pub mod tests {
 	}
 }
 
+use std::collections::hash_map::Entry;
 use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
@@ -882,7 +868,7 @@ use super::{
 	store_model, store_model_owned,
 };
 use crate::asset::handler::implementations::besl::{
-	PlatformShaderCompilerAdapter, PreparedBeslShader, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
+	PlatformShaderCompilerAdapter, ShaderCompiler, prepare_besl_shader, shader_compilation_error_message,
 };
 use crate::pbr::{
 	BrdfMaterialDescription, BrdfNode, BrdfNodeId, BrdfValue, generate_textured_brdf_program, material_texture_variable_name,

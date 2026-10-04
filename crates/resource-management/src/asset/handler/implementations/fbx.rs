@@ -443,10 +443,8 @@ mod tests {
 			let expected = ufbx::matrix_mul(&cluster.geometry_to_world, &flattened_inverse);
 
 			assert_matrix_close(
-				matrix.columns(),
-				matrix_to_affine(&expected)
-					.expect("expected fixture palette matrix should be finite")
-					.columns(),
+				matrix,
+				matrix_to_affine(&expected).expect("expected fixture palette matrix should be finite"),
 			);
 		}
 
@@ -536,10 +534,7 @@ mod tests {
 			.write_matrix_palette(&globals, &mut palette)
 			.expect("fallback palette should be complete");
 
-		assert_matrix_close(
-			palette[fallback_joint as usize].columns(),
-			math::AffineMatrix::identity().columns(),
-		);
+		assert_matrix_close(palette[fallback_joint as usize], math::AffineMatrix::identity());
 
 		// Moving the mesh node after bind must move the fallback palette entry instead of freezing the vertex.
 		let mut moved = globals[mesh_node_index as usize].columns();
@@ -1163,9 +1158,9 @@ mod tests {
 		}
 	}
 
-	fn assert_matrix_close(actual: [[f32; 3]; 4], expected: [[f32; 3]; 4]) {
+	fn assert_matrix_close(actual: math::AffineMatrix, expected: math::AffineMatrix) {
 		for column in 0..4 {
-			assert_vec3_close(actual[column], expected[column]);
+			assert_vec3_close(actual.columns()[column], expected.columns()[column]);
 		}
 	}
 }
@@ -1186,7 +1181,7 @@ use super::{
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, select_unfragmented_resource, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
@@ -1196,10 +1191,7 @@ use crate::{
 	r#async::spawn_cpu_task,
 	pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 	processors::{
-		processor::implementations::image::{
-			ImageDescription, ImageSource, Semantic, SourceChannels, SourceEncoding, gamma_from_semantic,
-			process_image_with_mips_in,
-		},
+		processor::implementations::image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, MeshProcessorSession,
 			ProcessedMesh, VertexSkin,

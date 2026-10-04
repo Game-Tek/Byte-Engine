@@ -47,16 +47,16 @@ pub(crate) async fn resolve_gltf_materials(
 		.iter()
 		.map(|material| match material_override(spec, material) {
 			Some(override_id) => Ok(MaterialSource::Override(override_id)),
-			None => Ok(MaterialSource::Generated(GeneratedMaterial {
-				base_id: generated_material_base_id(mesh_url, material),
-				brdf: generated_gltf_brdf(material, &image_semantics).map_err(|error| {
+			None => {
+				let base_id = generated_material_base_id(mesh_url, material);
+				let brdf = generated_gltf_brdf(material, &image_semantics).map_err(|error| {
 					log::error!(
-						"Failed to generate the glTF material '{}': {error:?}. The most likely cause is a texture read of a channel its packed image does not store.",
-						generated_material_base_id(mesh_url, material)
+						"Failed to generate the glTF material '{base_id}': {error:?}. The most likely cause is a texture read of a channel its packed image does not store."
 					);
 					LoadErrors::FailedToProcess
-				})?,
-			})),
+				})?;
+				Ok(MaterialSource::Generated(GeneratedMaterial { base_id, brdf }))
+			}
 		})
 		.collect::<Result<Vec<_>, LoadErrors>>()?;
 

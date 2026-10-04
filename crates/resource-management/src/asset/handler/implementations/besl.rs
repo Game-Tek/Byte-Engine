@@ -89,7 +89,8 @@ impl AssetHandler for BESLShaderAssetHandler {
 /// The `ShaderCompiler` trait lets the BESL and BEMA asset handlers compile shaders through the platform toolchain in
 /// production and through a test double in handler tests.
 ///
-/// Production handlers use [`PlatformShaderCompilerAdapter`], which runs [`compile_besl_shader`].
+/// Production handlers use [`PlatformShaderCompilerAdapter`], which runs [`prepare_besl_shader`] and
+/// [`PreparedBeslShader::compile`].
 pub(crate) trait ShaderCompiler: Send + Sync {
 	fn compile<'a>(
 		&'a self,
@@ -113,7 +114,12 @@ impl ShaderCompiler for PlatformShaderCompilerAdapter {
 		stage: ShaderTypes,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
-		Box::pin(async move { compile_besl_shader(id, parse_besl_source(source)?, generator, stage, settings).await })
+		Box::pin(async move {
+			let parsed = besl::parse(source).map_err(|error| {
+				format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax.")
+			})?;
+			prepare_besl_shader(parsed, generator, stage, &settings)?.compile(id).await
+		})
 	}
 }
 
@@ -376,12 +382,6 @@ fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
 	})
 }
 
-/// Parses BESL source text so [`compile_besl_shader`] can compile it.
-fn parse_besl_source(source: &str) -> Result<besl::parser::Node<'_>, String> {
-	besl::parse(source)
-		.map_err(|error| format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax."))
-}
-
 /// Links a parsed shader, after the renderer's program generator adapts it, and reflects its resource interface
 /// before platform lowering starts.
 fn prepare_shader(
@@ -417,23 +417,6 @@ fn prepare_shader(
 	))
 }
 
-/// Compiles one parsed BESL shader for the active platform and returns its resource model and binary payload.
-///
-/// Standalone BESL shaders and BEMA material shaders bake through it. Pass the renderer's program generator with the
-/// material context it adapts the program for. Next, store the result with the handler's [`BakeContext`].
-///
-/// To skip compilation when an equivalent binary is already stored, call [`prepare_besl_shader`] and
-/// [`PreparedBeslShader::compile`] separately.
-pub(crate) async fn compile_besl_shader(
-	id: &str,
-	parsed: besl::parser::Node<'_>,
-	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
-	stage: ShaderTypes,
-	settings: ShaderGenerationSettings,
-) -> Result<(Shader, Box<[u8]>), String> {
-	prepare_besl_shader(parsed, generator, stage, &settings)?.compile(id).await
-}
-
 /// The `PreparedBeslShader` struct holds a linked and lowered BESL shader whose platform compilation has not run yet.
 ///
 /// Generated material shaders use it to reuse a stored binary when [`Self::cache_key`] matches. Create it with
@@ -453,9 +436,7 @@ pub(crate) fn prepare_besl_shader(
 	stage: ShaderTypes,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
-	let workgroup_size = settings
-		.local_size()
-		.map(|local_size| (local_size.width(), local_size.height(), local_size.depth()));
+	let workgroup_size = settings.local_size().map(|local_size| local_size.as_tuple());
 	let (program, interface) = prepare_shader(parsed, workgroup_size, generator)?;
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
@@ -473,25 +454,18 @@ impl PreparedBeslShader {
 	/// and the generation settings, together with the stage, the compiler diagnostic name, and `compiler_identity`
 	/// from [`PlatformShaderCompiler::compiler_identity`].
 	pub(crate) fn cache_key(&self, compiler_identity: &str) -> u64 {
+		use std::io::Write as _;
+
 		let mut context = md5::Context::new();
+		let platform = PlatformShaderLanguage::current_platform();
+		let (stage, name, source) = (self.stage, &self.lowered.name, &self.lowered.source);
 
-		// Separators keep adjacent fields from running together into an identical byte stream.
-		for field in [
-			format!("{:?}", PlatformShaderLanguage::current_platform()).as_bytes(),
-			format!("{:?}", self.stage).as_bytes(),
-			compiler_identity.as_bytes(),
-			self.lowered.name.as_bytes(),
-			self.lowered.source.as_bytes(),
-		] {
-			context.consume(field);
-			context.consume([0]);
-		}
+		// NUL separators keep adjacent fields from running together into an identical byte stream.
+		write!(context, "{platform:?}\0{stage:?}\0{compiler_identity}\0{name}\0{source}\0")
+			.expect("MD5 context writes should not fail");
 
-		u64::from_le_bytes(
-			context.finalize().0[..8]
-				.try_into()
-				.expect("MD5 digest should contain eight bytes"),
-		)
+		// The low eight digest bytes form the key.
+		u128::from_le_bytes(context.finalize().0) as u64
 	}
 
 	/// Compiles this shader with the platform toolchain and returns its resource model and binary payload.
@@ -531,9 +505,7 @@ impl PreparedBeslShader {
 			);
 		}
 
-		let compiled_workgroup = compiled
-			.extent()
-			.map(|extent| (extent.width(), extent.height(), extent.depth()));
+		let compiled_workgroup = compiled.extent().map(|extent| extent.as_tuple());
 
 		if compiled_workgroup != self.interface.workgroup_size {
 			return Err(
@@ -592,7 +564,7 @@ fn shader_compilation_docs_path(error: &str) -> Option<&'static str> {
 
 /// Formats a shader compiler failure with recovery documentation when one applies.
 ///
-/// Every handler that bakes through [`compile_besl_shader`] reports its failures with it, so a recovery link appears
+/// Every handler that bakes through [`PreparedBeslShader::compile`] reports its failures with it, so a recovery link appears
 /// only when the error names a problem the reader can fix.
 pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String {
 	let message = format!("Failed to compile BESL shader '{id}': {error}");

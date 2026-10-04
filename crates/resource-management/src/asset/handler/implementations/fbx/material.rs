@@ -146,12 +146,6 @@ pub(crate) async fn load_and_store_fbx_texture(
 	mip_generator: Option<&MipGenerator>,
 ) -> Result<(), LoadErrors> {
 	let (pixels, width, height) = load_fbx_texture_image(context, mesh_url, texture).await?;
-
-	let description = ImageDescription {
-		semantic: Semantic::Albedo,
-		gamma: gamma_from_semantic(Semantic::Albedo),
-		generate_mipmaps: mip_generator.is_some(),
-	};
 	let source = ImageSource::new(
 		Extent::rectangle(width, height),
 		SourceChannels::RGBA,
@@ -159,16 +153,7 @@ pub(crate) async fn load_and_store_fbx_texture(
 		&pixels,
 	);
 
-	let (resource, data) = process_image_with_mips_in(
-		ResourceId::new(id),
-		description,
-		source,
-		context.allocator(),
-		mip_generator.unwrap_or(&MipGenerator::Cpu),
-	)
-	.await?;
-
-	context.store_resource(resource, &data).await.map(|_| ())
+	store_imported_image(context, ResourceId::new(id), Semantic::Albedo, source, mip_generator).await
 }
 
 /// Decodes a texture embedded in the FBX or resolves its file-local image through the current asset backend.

@@ -4,6 +4,13 @@ use std::alloc::Allocator;
 
 use serde_json::{Map, Value};
 
+use crate::{
+	processors::processor::implementations::image::{
+		ImageDescription, ImageSource, Semantic, gamma_from_semantic, process_image_with_mips_in,
+	},
+	resources::mips::MipGenerator,
+};
+
 mod bake_memory;
 pub mod handler;
 pub mod manager;
@@ -136,6 +143,27 @@ pub(crate) async fn store_model_owned<M: crate::Model, T: compio::buf::IoBuf>(
 		.store_resource_owned(crate::ProcessedAsset::new(ResourceId::new(id), model), data)
 		.await
 		.map(Into::into)
+}
+
+/// Processes one texture a mesh importer extracted and stores its image resource.
+///
+/// Importers pass the shared material `mip_generator`. When it is `None`, the image keeps only its top level.
+pub(crate) async fn store_imported_image(
+	context: handler::BakeContext<'_>,
+	id: ResourceId<'_>,
+	semantic: Semantic,
+	source: ImageSource<'_>,
+	mip_generator: Option<&MipGenerator>,
+) -> Result<(), handler::LoadErrors> {
+	let description = ImageDescription {
+		semantic,
+		gamma: gamma_from_semantic(semantic),
+		generate_mipmaps: mip_generator.is_some(),
+	};
+	let mip_generator = mip_generator.unwrap_or(&MipGenerator::Cpu);
+	let (resource, data) = process_image_with_mips_in(id, description, source, context.allocator(), mip_generator).await?;
+
+	context.store_resource(resource, &data).await.map(|_| ())
 }
 
 /// Converts authored material names into stable resource-ID path components.

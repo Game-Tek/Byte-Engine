@@ -204,36 +204,6 @@ pub(crate) fn decode_external_gltf_image(bytes: &[u8]) -> Result<gltf::image::Da
 	})
 }
 
-/// Processes decoded glTF pixels and stores their image metadata and binary payload.
-pub(crate) async fn store_gltf_image(
-	context: BakeContext<'_>,
-	id: ResourceId<'_>,
-	image: gltf::image::Data,
-	semantic: Semantic,
-	mip_generator: Option<&MipGenerator>,
-) -> Result<crate::SerializableResource, LoadErrors> {
-	let (channels, encoding) = gltf_image_source_layout(image.format)?;
-	let extent = Extent::rectangle(image.width, image.height);
-
-	let image_description = ImageDescription {
-		semantic,
-		gamma: gamma_from_semantic(semantic),
-		generate_mipmaps: mip_generator.is_some(),
-	};
-	let source = ImageSource::new(extent, channels, encoding, &image.pixels);
-
-	let (resource, data) = process_image_with_mips_in(
-		id,
-		image_description,
-		source,
-		context.allocator(),
-		mip_generator.unwrap_or(&MipGenerator::Cpu),
-	)
-	.await?;
-
-	context.store_resource(resource, &data).await
-}
-
 /// Maps glTF decoder layouts to the source metadata consumed by the common image processor.
 pub(crate) fn gltf_image_source_layout(format: gltf::image::Format) -> Result<(SourceChannels, SourceEncoding), LoadErrors> {
 	match format {
@@ -300,13 +270,10 @@ pub(crate) fn collect_texture_dependencies_from_node(
 			// A metallic or roughness read of a channel the packing keeps lets the image bake as a two-channel map. Any
 			// other read of the image outranks it in `merge_texture_semantics`, so only fully packable images pack.
 			let packable = matches!(semantic, Semantic::Metallic | Semantic::Roughness)
-				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some();
-			match material.node(*source)? {
-				BrdfNode::Texture(texture) if packable => {
-					push_gltf_texture_dependency(dependencies, texture.image_index, Semantic::MetallicRoughness)
-				}
-				_ => collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?,
-			}
+				&& METALLIC_ROUGHNESS_PACKING.stored_channel(channel.index()).is_some()
+				&& matches!(material.node(*source)?, BrdfNode::Texture(_));
+			let semantic = if packable { Semantic::MetallicRoughness } else { semantic };
+			collect_texture_dependencies_from_node(material, *source, semantic, dependencies)?;
 		}
 		BrdfNode::NormalMap { source, .. } => {
 			collect_texture_dependencies_from_node(material, *source, Semantic::Normal, dependencies)?;

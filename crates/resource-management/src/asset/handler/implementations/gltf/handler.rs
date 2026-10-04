@@ -274,17 +274,15 @@ impl AssetHandler for GLTFAssetHandler {
 			let image = image_for_gltf_fragment(&gltf, fragment.as_ref()).ok_or(LoadErrors::FailedToProcess)?;
 
 			// Materials decide how an image is sampled; a standalone image falls back to its file name.
-			let semantic = gltf_image_semantics(&gltf)
-				.get(image.index())
-				.copied()
-				.flatten()
-				.unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
+			let semantic =
+				gltf_image_semantics(&gltf)[image.index()].unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
 
 			let image = load_gltf_fragment_image(context, source_id, image, binary_blob.as_deref()).await?;
+			let (channels, encoding) = gltf_image_source_layout(image.format)?;
+			let extent = Extent::rectangle(image.width, image.height);
+			let source = ImageSource::new(extent, channels, encoding, &image.pixels);
 
-			store_gltf_image(context, url, image, semantic, self.material_mip_generator.as_deref()).await?;
-
-			return Ok(());
+			return store_imported_image(context, url, semantic, source, self.material_mip_generator.as_deref()).await;
 		}
 
 		let default_resource = if url.get_fragment().is_none() {

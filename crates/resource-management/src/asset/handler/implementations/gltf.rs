@@ -153,12 +153,12 @@ mod tests {
 		glb
 	}
 
-	/// Encodes the tiny image embedded in the textured GLB fixture.
-	fn generated_rgba8_png() -> Vec<u8> {
+	/// Encodes an RGBA8 PNG of `width` by `height` pixels for embedding in GLB fixtures.
+	fn generated_rgba8_png(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
 		let mut png = Vec::new();
 
 		{
-			let mut encoder = png::Encoder::new(&mut png, 4, 4);
+			let mut encoder = png::Encoder::new(&mut png, width, height);
 
 			encoder.set_color(png::ColorType::Rgba);
 
@@ -166,26 +166,20 @@ mod tests {
 
 			let mut writer = encoder.write_header().expect("generated PNG header should encode");
 
-			writer
-				.write_image_data(&[255, 64, 32, 255].repeat(16))
-				.expect("generated PNG pixels should encode");
+			writer.write_image_data(pixels).expect("generated PNG pixels should encode");
 		}
 
 		png
 	}
 
-	/// Builds a triangle GLB with one material and one PNG stored in its binary chunk.
-	fn generated_textured_triangle_glb() -> Vec<u8> {
-		generated_textured_triangle_glb_named("Triangle")
-	}
-
-	/// Builds the textured triangle GLB with a custom node name, so tests can edit the file without touching its material.
-	fn generated_textured_triangle_glb_named(node_name: &str) -> Vec<u8> {
+	/// Builds a triangle GLB whose one material, `material`, reads texture 0, which samples `png` stored in the binary
+	/// chunk as the image `image_name`.
+	fn generated_image_triangle_glb(node_name: &str, png: &[u8], image_name: &str, material: serde_json::Value) -> Vec<u8> {
 		let (mut document, mut binary) = generated_triangle_gltf();
 
 		document["nodes"][0]["name"] = node_name.into();
 
-		let image = append_fixture_bytes(&mut binary, &generated_rgba8_png());
+		let image = append_fixture_bytes(&mut binary, png);
 
 		document["buffers"][0]["byteLength"] = binary.len().into();
 
@@ -194,25 +188,47 @@ mod tests {
 			.expect("fixture buffer views should be an array")
 			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
 
-		document["images"] = serde_json::json!([{ "name": "Test Texture", "bufferView": 2, "mimeType": "image/png" }]);
+		document["images"] = serde_json::json!([{ "name": image_name, "bufferView": 2, "mimeType": "image/png" }]);
 
 		document["textures"] = serde_json::json!([{ "source": 0 }]);
 
-		document["materials"] = serde_json::json!([{
-			"name": "Test Material",
-			"pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
-		}]);
+		document["materials"] = serde_json::json!([material]);
 
 		document["meshes"][0]["primitives"][0]["material"] = 0.into();
 
 		package_fixture_glb(&document, binary)
 	}
 
+	/// Builds the textured triangle GLB with a custom node name, so tests can edit the file without touching its material.
+	fn generated_textured_triangle_glb_named(node_name: &str) -> Vec<u8> {
+		let material = serde_json::json!({
+			"name": "Test Material",
+			"pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } }
+		});
+
+		let png = generated_rgba8_png(4, 4, &[255, 64, 32, 255].repeat(16));
+
+		generated_image_triangle_glb(node_name, &png, "Test Texture", material)
+	}
+
+	/// Builds an asset manager whose glTF handler generates material shaders with the minimal test generator.
+	fn gltf_asset_manager(assets: AssetTestStorageBackend, resources: ResourceTestStorageBackend) -> AssetManager {
+		let mut asset_manager = AssetManager::new(assets, resources);
+
+		let mut handler = GLTFAssetHandler::new();
+
+		handler.set_shader_generator(MinimalTestShaderGenerator);
+
+		asset_manager.add_asset_handler(handler);
+
+		asset_manager
+	}
+
 	/// Builds a triangle GLB drawn twice, each time with a material that samples a different image through the same graph.
 	fn generated_two_material_textured_glb() -> Vec<u8> {
 		let (mut document, mut binary) = generated_triangle_gltf();
 
-		let png = generated_rgba8_png();
+		let png = generated_rgba8_png(4, 4, &[255, 64, 32, 255].repeat(16));
 
 		let first = append_fixture_bytes(&mut binary, &png);
 
@@ -786,13 +802,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend);
 
 		let mesh: ReferenceModel<MeshModel> = asset_manager
 			.bake_if_not_exists("generated_skeletal.glb")
@@ -1093,59 +1103,25 @@ mod tests {
 		}
 	}
 
-	/// Builds a triangle GLB whose material reads a metallic-roughness PNG with distinct values in every channel.
-	fn generated_metallic_roughness_triangle_glb() -> Vec<u8> {
-		let (mut document, mut binary) = generated_triangle_gltf();
-
-		let mut png = Vec::new();
-		{
-			let mut encoder = png::Encoder::new(&mut png, 2, 2);
-			encoder.set_color(png::ColorType::Rgba);
-			encoder.set_depth(png::BitDepth::Eight);
-			let mut writer = encoder.write_header().expect("generated PNG header should encode");
-			writer
-				.write_image_data(&[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255])
-				.expect("generated PNG pixels should encode");
-		}
-
-		let image = append_fixture_bytes(&mut binary, &png);
-
-		document["buffers"][0]["byteLength"] = binary.len().into();
-
-		document["bufferViews"]
-			.as_array_mut()
-			.expect("fixture buffer views should be an array")
-			.push(serde_json::json!({ "buffer": 0, "byteOffset": image.0, "byteLength": image.1 }));
-
-		document["images"] = serde_json::json!([{ "name": "Metallic Roughness", "bufferView": 2, "mimeType": "image/png" }]);
-
-		document["textures"] = serde_json::json!([{ "source": 0 }]);
-
-		document["materials"] = serde_json::json!([{
-			"name": "Packed Material",
-			"pbrMetallicRoughness": { "metallicRoughnessTexture": { "index": 0 } }
-		}]);
-
-		document["meshes"][0]["primitives"][0]["material"] = 0.into();
-
-		package_fixture_glb(&document, binary)
-	}
-
 	#[r#async::test]
 	async fn baked_metallic_roughness_images_store_green_and_blue_as_rg8() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
-		asset_storage_backend.add_file("packed.glb", &generated_metallic_roughness_triangle_glb());
+		// A metallic-roughness PNG with distinct values in every channel.
+		let png = generated_rgba8_png(2, 2, &[10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255]);
+
+		let material = serde_json::json!({
+			"name": "Packed Material",
+			"pbrMetallicRoughness": { "metallicRoughnessTexture": { "index": 0 } }
+		});
+
+		let glb = generated_image_triangle_glb("Triangle", &png, "Metallic Roughness", material);
+
+		asset_storage_backend.add_file("packed.glb", &glb);
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("packed.glb")
@@ -1189,7 +1165,7 @@ mod tests {
 	async fn bakes_named_image_fragment_from_minimal_glb() {
 		let asset_storage_backend = AssetTestStorageBackend::new();
 
-		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb());
+		asset_storage_backend.add_file("named_image.glb", &generated_textured_triangle_glb_named("Triangle"));
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
@@ -1221,13 +1197,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("two_materials.glb")
@@ -1309,13 +1279,7 @@ mod tests {
 
 		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Triangle"));
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend.clone(), resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend.clone(), resource_storage_backend.clone());
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
@@ -1350,13 +1314,7 @@ mod tests {
 		// Editing the node leaves the material graph, program generator, and compiler unchanged.
 		asset_storage_backend.add_file("iterated.glb", &generated_textured_triangle_glb_named("Edited Triangle"));
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake_if_stale("iterated.glb")
@@ -1390,13 +1348,7 @@ mod tests {
 		let shader_id =
 			bake_textured_triangle_and_mark_its_shader(&asset_storage_backend, &resource_storage_backend, b"stale").await;
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let mut asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager.rebuild_resources_baked_before(std::time::SystemTime::now());
 
@@ -1437,13 +1389,7 @@ mod tests {
 
 		let resource_storage_backend = ResourceTestStorageBackend::new();
 
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend.clone());
-
-		let mut handler = GLTFAssetHandler::new();
-
-		handler.set_shader_generator(MinimalTestShaderGenerator);
-
-		asset_manager.add_asset_handler(handler);
+		let asset_manager = gltf_asset_manager(asset_storage_backend, resource_storage_backend.clone());
 
 		asset_manager
 			.bake("shared.glb")
@@ -1477,7 +1423,7 @@ use super::{
 	commit_mesh, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 	manager::AssetManager,
-	sanitize_material_name, select_unfragmented_resource, store_model,
+	sanitize_material_name, select_unfragmented_resource, store_imported_image, store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialSource, ProgramGenerator, bead_material_override, resolve_container_materials,
@@ -1489,8 +1435,8 @@ use crate::{
 	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
 	processors::{
 		processor::implementations::image::{
-			ImageDescription, ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding,
-			channel_packing_for_semantic, gamma_from_semantic, guess_semantic_from_name, process_image_with_mips_in,
+			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,
+			guess_semantic_from_name,
 		},
 		processor::implementations::mesh::{
 			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,

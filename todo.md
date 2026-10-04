@@ -1,5 +1,7 @@
 # P0 - Correctness and stability
 
+- Prevent SSGI temporal history overflow after large exposure changes in `ssgi-temporal.besl`. RGB 2 rescaled by a 16-stop increase produces 117964.8 after blending, exceeding RGBA16F's finite range; infinity persists into later frames. Bound or reject non-finite rescaled history and add an exposure-jump regression.
+
 - Fix the Cube test hang and gate renderer/window integration tests so normal test and `cargo llvm-cov` runs complete.
 - Make the UDP client and server exchange canonical BETP datagrams. `crates/byte-engine/src/network/client/udp.rs` treats `WouldBlock` as `IoError`, never decodes the receive buffer, and always sends a 1024-byte buffer. A data packet is 1045 bytes, so `write_packet` fails and the socket sends zeros. Handshake packets that fit are padded, and `read_packet` rejects any length other than the exact size. `crates/byte-engine/src/network/server/udp.rs` blocks in `recv`, ignores the datagram, and never inserts a client. `crates/byte-engine/src/network/server/server.rs` still only logs connect and disconnect.
 - Deliver in-process channel `Data` only after the session is connected, and apply each reliable payload once. `crates/byte-engine/src/network/server/channel.rs` pushes every `Data` packet into `received` before accept, and reliable sends stay queued for eight attempts. Stop using `client_salt ^ 0x4254_4550` as the connection id.

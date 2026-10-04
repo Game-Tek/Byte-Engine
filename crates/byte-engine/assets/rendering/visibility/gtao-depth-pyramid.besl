@@ -55,7 +55,6 @@ nearest_nonzero: fn (a: f32, b: f32) -> f32 {
 main: fn (input: StageInput) -> void {
 	let level_1_coordinate: vec2u = input.thread_id;
 	let lane: u32 = input.thread_idx;
-	let source_extent: vec2u = texture_size(source_depth);
 	let level_1_extent: vec2u = image_size(reduced_depth_1);
 	let valid_level_1_coordinate: vec2u = clamp_coordinate(level_1_coordinate, level_1_extent);
 	let workgroup_origin: vec2u = vec2u(
@@ -63,12 +62,12 @@ main: fn (input: StageInput) -> void {
 		level_1_coordinate.y - level_1_coordinate.y % 4
 	);
 
-	// A linear maximum-reduction sample centered between four texels replaces
-	// four scalar loads. Reversed depth makes the maximum the nearest surface.
-	let source_center_coordinate: vec2u = valid_level_1_coordinate * vec2u(2, 2) + vec2u(1, 1);
-	let source_center: vec2f = vec2f(f32(source_center_coordinate.x), f32(source_center_coordinate.y));
-	let source_extent_f: vec2f = vec2f(f32(source_extent.x), f32(source_extent.y));
-	let source_uv: vec2f = source_center / source_extent_f;
+	// Sample at the reduced image's normalized texel centers, including the last source row and column at odd extents.
+	// Reversed depth makes the maximum of the four surrounding source texels the nearest surface.
+	let source_uv: vec2f = vec2f(
+		(f32(valid_level_1_coordinate.x) + 0.5) / f32(level_1_extent.x),
+		(f32(valid_level_1_coordinate.y) + 0.5) / f32(level_1_extent.y)
+	);
 	let nearest_depth: f32 = linearize_depth(downsample_max(source_depth, source_uv, 0.0));
 	shared_depth[lane] = nearest_depth;
 	if (level_1_coordinate.x < level_1_extent.x && level_1_coordinate.y < level_1_extent.y) {

@@ -16,6 +16,7 @@ ScreenView: struct {
 
 SsgiParameters: struct {
 	current_view_to_previous_clip: mat4f,
+	current_view_to_previous_view: mat4f,
 	frame_index: u32,
 	history_valid: u32,
 	// Converts last frame's pre-exposed light to this frame's exposure without changing hit alpha.
@@ -81,6 +82,27 @@ SSGI_TRACE_TILE_SIZE: const u32 = 144;
 // Interleaved gradient noise (Jimenez 2014). Each 3x3 pixel block covers [0, 1) evenly.
 interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+// Converts scalar animated IGN to a uniform 32x32 Hilbert grid. Using a space-filling curve gives the
+// hemisphere two distinct coordinates while retaining IGN's stratification and 64-frame scrolling.
+// See https://blog.demofox.org/2022/01/01/interleaved-gradient-noise-a-different-kind-of-low-discrepancy-sequence/.
+interleaved_gradient_noise_2d: fn (pixel: vec2f) -> vec2f {
+	let index: u32 = u32(interleaved_gradient_noise(pixel) * 1024.0);
+	let coordinate: vec2u = vec2u(0, 0);
+	for (let scale: u32 = 1; scale < 32; scale = scale * 2) {
+		let rx: u32 = (index / 2) % 2;
+		let ry: u32 = (index % 2 + rx) % 2;
+		if (ry == 0) {
+			if (rx == 1) {
+				coordinate = vec2u(scale - 1, scale - 1) - coordinate;
+			}
+			coordinate = vec2u(coordinate.y, coordinate.x);
+		}
+		coordinate = coordinate + vec2u(scale * rx, scale * ry);
+		index = index / 4;
+	}
+	return (vec2f(f32(coordinate.x), f32(coordinate.y)) + vec2f(0.5, 0.5)) / 32.0;
 }
 
 // Reads the positive linear depth stored in mip zero, which matches the trace resolution.
@@ -436,14 +458,12 @@ main: fn (input: StageInput) -> void {
 		return;
 	}
 
-	// Three different linear functionals of the pixel keep each random dimension stratified per 3x3 block
-	// without the dimensions being phase shifts of each other. The frame offset animates all three.
+	// Jimenez's diagonal scrolling animates IGN; Hilbert conversion supplies the two hemisphere coordinates.
 	let frame_offset: f32 = f32(ssgi_parameters.frame_index % 64) * 5.588238;
 	let noise_pixel: vec2f = pixel_f + vec2f(frame_offset, frame_offset);
-	let u1: f32 = interleaved_gradient_noise(noise_pixel);
-	let u2: f32 = interleaved_gradient_noise(vec2f(noise_pixel.y, noise_pixel.x));
+	let hemisphere_sample: vec2f = interleaved_gradient_noise_2d(noise_pixel);
 	let jitter: f32 = interleaved_gradient_noise(vec2f(noise_pixel.x + noise_pixel.y, noise_pixel.x * 2.0 + 17.0));
-	let direction: vec3f = cosine_hemisphere_direction(normal, u1, u2);
+	let direction: vec3f = cosine_hemisphere_direction(normal, hemisphere_sample.x, hemisphere_sample.y);
 
 	let origin: vec3f = center_position + normal * (center_z * SSGI_ORIGIN_BIAS_SCALE);
 	let ray_length: f32 = SSGI_MAX_DISTANCE;

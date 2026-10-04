@@ -175,6 +175,8 @@ const UPSCALE_NORMALS_BINDING: ghi::ShaderResourceDescriptor = sampled(1037);
 struct SsgiShaderParameters {
 	/// Maps a current-frame view-space position to the previous frame's clip space.
 	current_view_to_previous_clip: ghi::pod::Mat4f,
+	/// Rotates current view-space normals into the previous camera's axes (multiply with w = 0).
+	current_view_to_previous_view: ghi::pod::Mat4f,
 	/// Animates the interleaved gradient noise so each frame traces different directions.
 	frame_index: u32,
 	/// Nonzero when the previous frame's radiance, SSGI history, and depth pyramid hold this sink's data.
@@ -184,11 +186,9 @@ struct SsgiShaderParameters {
 	_padding: u32,
 }
 
-/// Returns the matrix that maps a current-frame view-space position to the previous frame's clip space.
-///
-/// SSGI uses it to find where a surface visible now was on screen last frame.
-pub(crate) fn current_view_to_previous_clip(current: View, previous: View) -> Matrix {
-	previous.view_projection() * math::inverse(current.view())
+/// Maps current view-space positions and normals into the previous camera's axes.
+fn current_view_to_previous_view(current: View, previous: View) -> Matrix {
+	previous.view() * math::inverse(current.view())
 }
 
 /// The `SsgiPass` struct adds bounce light from visible geometry to the diffuse ambient term of opaque surfaces.
@@ -358,11 +358,16 @@ impl SsgiPass {
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
 		let half_extent = extent.scaled_down(2);
+		// Reprojection and normal comparison share the same camera transform and inverse.
+		let (previous_clip, previous_view) = history
+			.map(|previous| {
+				let view = current_view_to_previous_view(sink.view(), previous.view);
+				(previous.view.projection() * view, view)
+			})
+			.unwrap_or_default();
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
-			current_view_to_previous_clip: history
-				.map(|previous| current_view_to_previous_clip(sink.view(), previous.view))
-				.unwrap_or_default()
-				.into(),
+			current_view_to_previous_clip: previous_clip.into(),
+			current_view_to_previous_view: previous_view.into(),
 			// Only the low bits animate the noise, so wrapping the frame index is harmless.
 			frame_index: frame.key().frame_index() as u32,
 			history_valid: history.is_some() as u32,
@@ -431,7 +436,7 @@ mod tests {
 		let current = view_at(Point::new(1.0, 0.5, 2.0));
 		let current_view_point = current.view() * world_point;
 
-		let reprojected = current_view_to_previous_clip(current, previous) * current_view_point;
+		let reprojected = previous.projection() * current_view_to_previous_view(current, previous) * current_view_point;
 		let expected = previous.view_projection() * world_point;
 
 		for (reprojected, expected) in [

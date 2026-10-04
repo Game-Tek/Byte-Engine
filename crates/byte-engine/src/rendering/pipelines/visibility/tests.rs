@@ -1890,6 +1890,10 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 			"current_view_to_previous_clip",
 			Value::Mat4F(column_major(previous_clip.unwrap_or_else(maths_rs::Mat4f::identity))),
 		),
+		(
+			"current_view_to_previous_view",
+			Value::Mat4F(column_major(maths_rs::Mat4f::identity())),
+		),
 		("frame_index", Value::U32(frame_index)),
 		("history_valid", Value::U32(previous_clip.is_some() as u32)),
 		("history_exposure_ratio", Value::F32(1.0)),
@@ -2125,7 +2129,8 @@ const SSGI_WALL_NORMAL: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 /// The stored view-space normal of the floor below the camera, (0, 1, 0).
 const SSGI_FLOOR_NORMAL: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 
-/// The inputs of one SSGI temporal fixture. Every image is `extent` pixels square.
+/// The `SsgiTemporalFixture` struct supplies matching current and previous surfaces for temporal-filter tests.
+/// Every image is `extent` pixels square.
 struct SsgiTemporalFixture {
 	extent: u32,
 	depth: Vec<[f32; 4]>,
@@ -2136,6 +2141,7 @@ struct SsgiTemporalFixture {
 	previous_history: [f32; 4],
 	history: bool,
 	history_exposure_ratio: f32,
+	current_to_previous_view: maths_rs::Mat4f,
 }
 
 impl SsgiTemporalFixture {
@@ -2152,6 +2158,7 @@ impl SsgiTemporalFixture {
 			previous_history,
 			history,
 			history_exposure_ratio: 1.0,
+			current_to_previous_view: maths_rs::Mat4f::identity(),
 		}
 	}
 
@@ -2160,7 +2167,17 @@ impl SsgiTemporalFixture {
 		let extent = self.extent;
 		let texel_count = (extent * extent) as usize;
 		let mut view = gtao_view_data(&program, extent, extent);
-		let mut parameters = ssgi_parameters(&program, self.history.then(ssgi_projection), 0);
+		let mut parameters = ssgi_parameters(
+			&program,
+			self.history.then(|| ssgi_projection() * self.current_to_previous_view),
+			0,
+		);
+		parameters
+			.write(
+				"current_view_to_previous_view",
+				Value::Mat4F(column_major(self.current_to_previous_view)),
+			)
+			.unwrap();
 		parameters
 			.write("history_exposure_ratio", Value::F32(self.history_exposure_ratio))
 			.unwrap();
@@ -3362,5 +3379,126 @@ async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
 		),
 	] {
 		assert_lowers_to_the_platform_shader_language(name, source, ShaderGenerationSettings::compute(workgroup)).await;
+	}
+}
+
+/// Camera rotation must retain history for a static floor even when its view-space normals differ substantially.
+#[test]
+fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
+	let extent = SSGI_TEMPORAL_EXTENT;
+	let (sine, cosine) = 60.0f32.to_radians().sin_cos();
+	let mut rotation = maths_rs::Mat4f::identity();
+	rotation[0] = cosine;
+	rotation[1] = -sine;
+	rotation[4] = sine;
+	rotation[5] = cosine;
+	let texel_count = (extent * extent) as usize;
+	let mut fixture = SsgiTemporalFixture::uniform([0.1, 0.1, 0.1, 0.5], [2.0, 2.0, 2.0, 0.5], true);
+	fixture.current_to_previous_view = rotation;
+	fixture.normals.fill(SSGI_FLOOR_NORMAL);
+	let normal_length = sine.abs() + cosine.abs();
+	fixture
+		.previous_normals
+		.fill([-sine / normal_length, cosine / normal_length, 0.0, 0.0]);
+	// Intersect both cameras' rays with the same floor, one unit below the camera.
+	for index in 0..texel_count {
+		let ray = ssgi_ray_at((index as u32 % extent) as f32, (index as u32 / extent) as f32, extent);
+		let previous_y = -sine * ray[0] + cosine * ray[1];
+		fixture.depth[index][0] = if ray[1] < 0.0 { -1.0 / ray[1] } else { 0.0 };
+		fixture.previous_depth[index][0] = if previous_y < 0.0 { -1.0 / previous_y } else { 0.0 };
+	}
+	assert_rgba_close(fixture.run([4, 6]), [1.81, 1.81, 1.81, 0.5], 0.00001);
+}
+
+/// Odd-sized reconstruction must keep a smooth radiance ramp centered on the full-resolution image.
+#[test]
+fn ssgi_upscale_centers_radiance_at_odd_extents() {
+	for full in [9, 17, 33] {
+		let low = full / 2;
+		let device_z = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - GTAO_NEAR) / 5.0 - GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
+		let radiance: Vec<_> = (0..low * low)
+			.map(|index| [(index % low) as f32 / (low - 1) as f32, 0.0, 0.0, 0.5])
+			.collect();
+		assert_rgba_close(
+			run_ssgi_upscale(
+				full,
+				&vec![[device_z, 0.0, 0.0, 1.0]; (full * full) as usize],
+				&vec![[5.0, 0.0, 0.0, 1.0]; (low * low) as usize],
+				&vec![SSGI_WALL_NORMAL; (low * low) as usize],
+				&radiance,
+				[full / 2, full / 2],
+			),
+			[0.5, 0.0, 0.0, 0.5],
+			0.00001,
+		);
+	}
+}
+
+/// A nearest surface at the last row or column of an odd source must reach the reduced image.
+#[test]
+fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
+	let program = asset!("gtao-depth-pyramid.besl");
+	for edge in [0, 1] {
+		let texels: Vec<_> = (0..81)
+			.map(|index| {
+				let coordinate = [index % 9, index / 9];
+				[if coordinate[edge] == 8 { 0.9 } else { 0.1 }, 0.0, 0.0, 1.0]
+			})
+			.collect();
+		let mut source = texture_2d(9, 9, &texels);
+		let reduced = run_gtao_depth_pyramid(&program, &mut source, 9, 9);
+		assert_rgba_close(
+			rgba(&reduced[0], [3, 3]),
+			[gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0],
+			0.00001,
+		);
+	}
+}
+
+/// Hemisphere samples must cover distinct azimuth/elevation combinations even on diagonal pixels.
+#[test]
+fn ssgi_animated_ign_covers_two_dimensional_hemisphere_samples() {
+	let source = asset_source!("ssgi-trace.besl").split("main: fn").next().unwrap();
+	let program = compile(asset_program(&format!(
+		"{source}
+probe_output: descriptor<{{ type: StorageImage<rgba16f>, binding: 2000, access: write }}>;
+main: fn (input: StageInput) -> void {{
+	let offset: f32 = f32(input.thread_idx % 64) * 5.588238;
+	let sample: vec2f = interleaved_gradient_noise_2d(vec2f(f32(input.thread_id.x) + offset, f32(input.thread_id.y) + offset));
+	write(probe_output, input.thread_id, vec4f(sample.x, sample.y, 0.0, 1.0));
+}}
+"
+	)));
+	let mut output = empty_image(32, 32);
+	for pixel in [[16, 16], [16, 22], [8, 24]] {
+		let mut quadrant_counts = [0; 4];
+		let mut moments = [0.0; 3];
+		for frame in 0..64 {
+			let mut descriptors = DescriptorBindings::new();
+			descriptors.bind_image(ResourceSlot::new(2000), &mut output);
+			program
+				.run_main_with_config(
+					&mut descriptors,
+					&ExecutionConfig::new(INSTRUCTION_LIMIT)
+						.with_thread_id(pixel)
+						.with_thread_idx(frame),
+				)
+				.unwrap();
+			drop(descriptors);
+			let sample = rgba(&output, pixel);
+			quadrant_counts[(sample[0] >= 0.5) as usize + 2 * (sample[1] >= 0.5) as usize] += 1;
+			moments[0] += sample[0] / 64.0;
+			moments[1] += sample[1] / 64.0;
+			moments[2] += sample[0] * sample[1] / 64.0;
+		}
+		assert!(
+			quadrant_counts.iter().all(|count| *count >= 8),
+			"{pixel:?}: {quadrant_counts:?}"
+		);
+		assert!(
+			(moments[0] - 0.5).abs() < 0.1 && (moments[1] - 0.5).abs() < 0.1,
+			"{moments:?}"
+		);
+		assert!((moments[2] - 0.25).abs() < 0.06, "{moments:?}");
 	}
 }

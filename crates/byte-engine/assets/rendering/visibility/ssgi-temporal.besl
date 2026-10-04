@@ -15,6 +15,7 @@ ScreenView: struct {
 
 SsgiParameters: struct {
 	current_view_to_previous_clip: mat4f,
+	current_view_to_previous_view: mat4f,
 	frame_index: u32,
 	history_valid: u32,
 	history_exposure_ratio: f32,
@@ -218,6 +219,10 @@ main: fn (input: StageInput) -> void {
 	let stored_center_normal: vec4f = tile_normals[center_index];
 	let center_normal: vec3f = vec3f(stored_center_normal.x, stored_center_normal.y, stored_center_normal.z);
 	let estimate: vec4f = spatial_estimate(local, center_position, center_normal);
+	// Both normals must use the previous camera's axes; w=0 excludes camera translation and preserves zero sentinels.
+	let previous_center_normal_4: vec4f = ssgi_parameters.current_view_to_previous_view
+		* vec4f(center_normal.x, center_normal.y, center_normal.z, 0.0);
+	let previous_center_normal: vec3f = vec3f(previous_center_normal_4.x, previous_center_normal_4.y, previous_center_normal_4.z);
 	let clip: vec4f = ssgi_parameters.current_view_to_previous_clip
 		* vec4f(center_position.x, center_position.y, center_position.z, 1.0);
 	// History is selected with a branch, not weighted by zero, because an unwritten history texel may hold NaN.
@@ -252,7 +257,7 @@ main: fn (input: StageInput) -> void {
 			continue;
 		}
 		let bilinear: f32 = mix(1.0 - fraction_x, fraction_x, f32(tap % 2)) * mix(1.0 - fraction_y, fraction_y, f32(tap / 2));
-		let weight: f32 = bilinear * normal_agreement(center_normal, fetch_previous_normal(coordinate));
+		let weight: f32 = bilinear * normal_agreement(previous_center_normal, fetch_previous_normal(coordinate));
 		if (weight <= 0.0) {
 			continue;
 		}

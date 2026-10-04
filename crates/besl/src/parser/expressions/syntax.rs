@@ -646,7 +646,7 @@ pub(crate) fn parse_function<'i, 'a: 'i>(mut iterator: std::slice::Iter<'i, &'a 
 		}
 
 		// check if iter is close brace
-		if *iterator.as_slice().first().ok_or(ParsingFailReasons::BadSyntax {
+		if *iterator.as_slice().first().ok_or_else(|| ParsingFailReasons::BadSyntax {
 			message: "Expected a '}' after function body".to_string(),
 		})? == "}"
 		{

@@ -239,9 +239,9 @@ impl Lexer {
 			parser::Nodes::Member { name, r#type } => {
 				if r#type.contains('<') {
 					let mut s = r#type.split(['<', '>']);
-					let outer_type_name = s.next().ok_or(LexError::invalid("No outer name"))?;
+					let outer_type_name = s.next().ok_or_else(|| LexError::invalid("No outer name"))?;
 					let outer_type = resolve_type(&self.scopes, outer_type_name)?;
-					let inner_type_name = s.next().ok_or(LexError::invalid("No inner name"))?;
+					let inner_type_name = s.next().ok_or_else(|| LexError::invalid("No inner name"))?;
 					let inner_type = if let Some(stripped) = inner_type_name.strip_suffix('*') {
 						NodeReference::from(Node::new(Nodes::Struct {
 							name: format!("{}*", stripped),
@@ -268,11 +268,11 @@ impl Lexer {
 				}
 				if r#type.contains('[') {
 					let mut s = r#type.split(['[', ']']);
-					let type_name = s.next().ok_or(LexError::invalid("No type name"))?;
+					let type_name = s.next().ok_or_else(|| LexError::invalid("No type name"))?;
 					let member_type = resolve_type(&self.scopes, type_name)?;
 					let count = s
 						.next()
-						.ok_or(LexError::invalid("No count"))?
+						.ok_or_else(|| LexError::invalid("No count"))?
 						.parse()
 						.map_err(|_| LexError::invalid("Invalid count"))?;
 					return Ok(Node::array(name, member_type, count));

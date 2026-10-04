@@ -242,7 +242,7 @@ impl Buffer {
 				}
 				Value::Struct {
 					value_type: value_type.clone(),
-					fields: values,
+					fields: values.into(),
 				}
 			}
 		};

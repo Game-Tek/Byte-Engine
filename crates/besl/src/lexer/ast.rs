@@ -881,8 +881,10 @@ impl Node {
 		child
 	}
 
-	pub fn add_children(&mut self, children: Vec<NodeReference>) -> Vec<NodeReference> {
-		children.into_iter().map(|child| self.add_child(child)).collect()
+	pub fn add_children(&mut self, children: Vec<NodeReference>) {
+		for child in children {
+			self.add_child(child);
+		}
 	}
 
 	pub fn node(&self) -> &Nodes {

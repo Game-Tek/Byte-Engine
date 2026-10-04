@@ -247,7 +247,12 @@ impl WorkgroupState {
 				found: value.value_type().name().to_string(),
 			});
 		}
-		let values = self.values.entry(name.to_string()).or_insert_with(|| vec![None; count]);
+		// Allocate the key only for the first store to `name`.
+		let values = if let Some(values) = self.values.get_mut(name) {
+			values
+		} else {
+			self.values.entry(name.to_string()).or_insert_with(|| vec![None; count])
+		};
 		if values.len() != count {
 			values.clear();
 			values.resize(count, None);

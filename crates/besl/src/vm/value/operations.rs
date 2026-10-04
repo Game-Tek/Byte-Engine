@@ -823,7 +823,8 @@ pub(crate) fn insert_value(aggregate: &mut Value, index: usize, member: Value) -
 		(Value::Vec4F(slots) | Value::PackedVec4F(slots), Value::F32(value)) => set(slots, index, value),
 		(Value::Mat4F(slots), Value::Vec4F(column)) => set(slots.as_chunks_mut::<4>().0, index, column),
 		(Value::Mat4x3F(slots), Value::Vec3F(column)) => set(slots.as_chunks_mut::<3>().0, index, column),
-		(Value::Struct { fields, .. }, value) => match fields.get_mut(index) {
+		// Copy-on-write: a local store copies the shared fields once, and only when another copy still reads them.
+		(Value::Struct { fields, .. }, value) => match std::sync::Arc::make_mut(fields).get_mut(index) {
 			Some(field) if value.matches_type(&field.value_type()) => {
 				*field = value;
 				true

@@ -26,6 +26,11 @@ const OBSERVED_FACTORY_CREATE_COUNT: usize = 262_144;
 const BROADCAST_MESSAGE_COUNT: usize = 262_144;
 const CONTENDED_MESSAGE_COUNT: usize = 1_048_576;
 
+// Shared-bus benchmarks use the application's ticking bus, which returns chunks to its pool only
+// when a tick ends. They start a tick before every sample, outside the timed region, as the
+// application does once per frame; otherwise each sample's messages stay retained until the pool
+// is exhausted and the publisher waits forever for a free chunk.
+
 fn main() {
 	divan::main();
 }
@@ -71,9 +76,12 @@ fn shared_bus_single_producer_single_consumer(bencher: Bencher) {
 	let channel = bus.new_scope("benchmark").channel();
 	let mut listeners = [channel.listener()];
 
-	bencher.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT)).bench_local(|| {
-		publish_and_drain(&channel, &mut listeners, SCALAR_MESSAGE_COUNT, |sequence| sequence as u64);
-	});
+	bencher
+		.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT))
+		.with_inputs(|| bus.begin_tick())
+		.bench_local_values(|()| {
+			publish_and_drain(&channel, &mut listeners, SCALAR_MESSAGE_COUNT, |sequence| sequence as u64);
+		});
 }
 
 /// Measures enabled passive publication observation without including observer setup or teardown.
@@ -84,9 +92,12 @@ fn observed_shared_bus_single_producer_single_consumer(bencher: Bencher) {
 	let channel = bus.new_scope("benchmark").channel();
 	let mut listeners = [channel.listener()];
 
-	bencher.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT)).bench_local(|| {
-		publish_and_drain(&channel, &mut listeners, SCALAR_MESSAGE_COUNT, |sequence| sequence as u64);
-	});
+	bencher
+		.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT))
+		.with_inputs(|| bus.begin_tick())
+		.bench_local_values(|()| {
+			publish_and_drain(&channel, &mut listeners, SCALAR_MESSAGE_COUNT, |sequence| sequence as u64);
+		});
 }
 
 /// Measures handle generation, creation publication, and one consumer read.
@@ -116,18 +127,21 @@ fn shared_bus_factory_create_single_consumer(bencher: Bencher) {
 	let factory = bus.new_scope("benchmark").factory();
 	let mut listener = factory.listener();
 
-	bencher.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT)).bench_local(|| {
-		for batch_start in (0..SCALAR_MESSAGE_COUNT).step_by(DRAIN_BATCH_SIZE) {
-			let batch_end = batch_start + DRAIN_BATCH_SIZE;
-			for sequence in batch_start..batch_end {
-				divan::black_box(factory.create(divan::black_box(sequence as u64)));
+	bencher
+		.counter(ItemsCount::new(SCALAR_MESSAGE_COUNT))
+		.with_inputs(|| bus.begin_tick())
+		.bench_local_values(|()| {
+			for batch_start in (0..SCALAR_MESSAGE_COUNT).step_by(DRAIN_BATCH_SIZE) {
+				let batch_end = batch_start + DRAIN_BATCH_SIZE;
+				for sequence in batch_start..batch_end {
+					divan::black_box(factory.create(divan::black_box(sequence as u64)));
+				}
+				for _ in batch_start..batch_end {
+					let message = listener.read().expect("The bounded factory batch must be available");
+					divan::black_box(message);
+				}
 			}
-			for _ in batch_start..batch_end {
-				let message = listener.read().expect("The bounded factory batch must be available");
-				divan::black_box(message);
-			}
-		}
-	});
+		});
 }
 
 /// Measures enabled publication observation and semantic factory catalog updates.
@@ -176,9 +190,12 @@ fn shared_bus_broadcast_fanout(bencher: Bencher, listener_count: usize) {
 	let channel = bus.new_scope("benchmark").channel();
 	let mut listeners: Vec<_> = (0..listener_count).map(|_| channel.listener()).collect();
 
-	bencher.counter(ItemsCount::new(BROADCAST_MESSAGE_COUNT)).bench_local(|| {
-		publish_and_drain(&channel, &mut listeners, BROADCAST_MESSAGE_COUNT, |sequence| sequence as u64);
-	});
+	bencher
+		.counter(ItemsCount::new(BROADCAST_MESSAGE_COUNT))
+		.with_inputs(|| bus.begin_tick())
+		.bench_local_values(|()| {
+			publish_and_drain(&channel, &mut listeners, BROADCAST_MESSAGE_COUNT, |sequence| sequence as u64);
+		});
 }
 
 /// The `ContendedFixture` struct coordinates producer and consumer threads that stay alive across Divan samples.

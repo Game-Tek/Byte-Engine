@@ -157,22 +157,20 @@ impl AssetManager {
 
 	/// Returns whether a registered asset handler can bake the given source ID.
 	pub fn supports(&self, id: &str) -> bool {
-		let id = ResourceId::new(id);
+		let asset_type = ResourceId::new(id).get_asset_type();
 
-		self.state
-			.asset_handlers
-			.iter()
-			.any(|handler| handler.can_handle(id.get_asset_type()))
+		self.state.asset_handlers.iter().any(|handler| handler.can_handle(asset_type))
 	}
 
 	/// Returns whether recursive discovery should include the given supported source asset.
 	pub fn should_discover(&self, id: &str, has_sidecar: bool) -> bool {
 		let id = ResourceId::new(id);
+		let asset_type = id.get_asset_type();
 
 		self.state
 			.asset_handlers
 			.iter()
-			.any(|handler| handler.can_handle(id.get_asset_type()) && handler.should_discover(id, has_sidecar))
+			.any(|handler| handler.can_handle(asset_type) && handler.should_discover(id, has_sidecar))
 	}
 
 	/// Returns the discoverable source IDs supported by the registered asset handlers.
@@ -435,16 +433,8 @@ impl AssetManagerState {
 			None => true,
 		};
 
-		let rebaked = stale && {
-			let allocator = BakeAllocator::new(self.bake_memory_budget.as_ref()).await;
-
-			// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
-			let result = self.ensure_baked_in(&id, &allocator).await;
-
-			self.persist_resources();
-
-			result.is_ok()
-		};
+		// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
+		let rebaked = stale && self.dispatch_bake_in_scope(&id, true, BakeOrigin::Root).await.is_ok();
 
 		if rebaked && let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
 			self.track_resource(&resource);
@@ -597,11 +587,9 @@ impl AssetManagerState {
 			self.persist_resource_trace(id);
 		}
 
-		let Some(asset_handler) = self
-			.asset_handlers
-			.iter()
-			.find(|handler| handler.can_handle(id.get_asset_type()))
-		else {
+		let asset_type = id.get_asset_type();
+
+		let Some(asset_handler) = self.asset_handlers.iter().find(|handler| handler.can_handle(asset_type)) else {
 			let message = format!(
 				"No asset handler found for '{}'. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
 				id.as_ref(),
@@ -706,22 +694,6 @@ impl AssetManagerState {
 		log::trace!("Baked '{:#?}' resource in {:#?}", id, start_time.elapsed());
 
 		Ok(())
-	}
-
-	/// Ensures that the requested resource exists and reflects its current source versions, baking it with `allocator`.
-	pub(super) async fn ensure_baked_in(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
-		match self.register_bake(id) {
-			InFlightBakeRole::Leader(notification, _registry_cleanup) => {
-				let result = self.ensure_baked_uncoalesced(id, allocator).await.map(|_| ());
-
-				let _ = notification.announce(result.clone());
-
-				result
-			}
-			InFlightBakeRole::Follower(notification) => {
-				notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?
-			}
-		}
 	}
 
 	/// Checks freshness and runs one bake without consulting the in-flight registry.

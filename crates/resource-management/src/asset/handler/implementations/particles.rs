@@ -68,7 +68,7 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			})?;
 
 		let shader = |stage: &str| format!("{container}#shaders/{stage}");
-		for (stage, source, settings) in [
+		let stages = [
 			(
 				"simulate",
 				generator::simulate_program(&system),
@@ -84,18 +84,24 @@ impl AssetHandler for ParticleSystemAssetHandler {
 				generator::fragment_program(&system.render.shape),
 				ShaderGenerationSettings::fragment(),
 			),
-		] {
+		];
+
+		// The stages are independent, so their platform compiles overlap. Storing them in stage order keeps the stored
+		// resources and the reported error the same as compiling one stage at a time.
+		let compiled = utils::r#async::join_all(stages.map(|(stage, source, settings)| async move {
 			let id = shader(stage);
-			let (compiled, bytes) = self
-				.compiler
-				.compile(&source, None, settings.name(id.clone()))
-				.await
-				.map_err(|error| {
-					context.error(format_args!(
-						"Generated particle {stage} shader for '{container}' failed to compile: {error} The most likely cause is a defect in the particle shader generator."
-					));
-					LoadErrors::FailedToProcess
-				})?;
+			let result = self.compiler.compile(&source, None, settings.name(id.clone())).await;
+			(stage, id, result)
+		}))
+		.await;
+
+		for (stage, id, result) in compiled {
+			let (compiled, bytes) = result.map_err(|error| {
+				context.error(format_args!(
+					"Generated particle {stage} shader for '{container}' failed to compile: {error} The most likely cause is a defect in the particle shader generator."
+				));
+				LoadErrors::FailedToProcess
+			})?;
 			store_model_owned(context, &id, compiled, bytes).await?;
 		}
 

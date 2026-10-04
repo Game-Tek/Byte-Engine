@@ -86,7 +86,8 @@ impl LoadErrors {
 /// It records a source's version only after a successful read whose version matched on both sides of the read.
 pub(crate) struct TrackingStorageBackend<'a> {
 	pub(in crate::asset) inner: &'a dyn asset::DynStorageBackend,
-	/// The provenance attached to every resource the bake stores.
+	/// The provenance attached to every resource the bake stores, kept sorted by source ID so it persists
+	/// deterministically.
 	pub(in crate::asset) dependencies: &'a Mutex<Vec<AssetDependency>>,
 }
 
@@ -212,20 +213,11 @@ impl<'a> BakeContext<'a> {
 			.map_err(|_| LoadErrors::AssetCouldNotBeRead)
 	}
 
-	/// Bakes a referenced source asset when necessary and returns its stored model.
+	/// Bakes a referenced source asset on the shared worker pool when necessary and returns its stored model.
+	///
+	/// Concurrent calls from one handler bake on separate workers, each in its own arena.
 	pub async fn bake_dependency<M: Model>(&self, id: &str) -> Result<ReferenceModel<M>, LoadErrors> {
-		self.asset_manager
-			.ensure_baked_in(id, self.allocator)
-			.await
-			.map_err(dependency_load_error)?;
-
-		let Some((resource, _)) = self.asset_manager.resource_storage_backend.read(ResourceId::new(id)).await else {
-			return Err(LoadErrors::FailedToProcess);
-		};
-
-		self.inherit_dependency_provenance(&resource);
-
-		Ok(resource.into())
+		Ok(self.bake_dependencies(&[id.to_owned()], 1).await?.remove(0))
 	}
 
 	/// Bakes independent dependencies on the shared worker pool while bounding active requests.
@@ -336,7 +328,7 @@ impl<'a> BakeContext<'a> {
 		transaction: resource::ResourceTransaction<'_>,
 		resource: ProcessedAsset,
 	) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 		let stored = transaction
 			.commit(resource, self.allocator)
 			.await
@@ -365,7 +357,7 @@ impl<'a> BakeContext<'a> {
 	///
 	/// Generated dependencies use this path too; parent resources reference the returned metadata.
 	pub async fn store_resource(&self, resource: ProcessedAsset, data: &[u8]) -> Result<SerializableResource, LoadErrors> {
-		let resource = resource.with_asset_dependencies(self.sorted_asset_dependencies());
+		let resource = resource.with_asset_dependencies(self.asset_storage_backend.dependencies.lock().clone());
 
 		let stored = self
 			.asset_manager
@@ -413,15 +405,6 @@ impl<'a> BakeContext<'a> {
 		stored
 	}
 
-	/// Returns deterministic source provenance for persisted resource metadata.
-	fn sorted_asset_dependencies(&self) -> Vec<AssetDependency> {
-		let mut dependencies = self.asset_storage_backend.dependencies.lock().clone();
-
-		dependencies.sort_by(|left, right| left.id().cmp(right.id()));
-
-		dependencies
-	}
-
 	pub(crate) fn asset_storage_backend(&self) -> &'a dyn asset::DynStorageBackend {
 		self.asset_storage_backend
 	}
@@ -432,11 +415,11 @@ impl<'a> BakeContext<'a> {
 	}
 }
 
-/// Replaces the recorded version of a source already in `dependencies`, or adds it.
+/// Replaces the recorded version of a source already in `dependencies`, or inserts it so the list stays sorted by ID.
 fn upsert_dependency(dependencies: &mut Vec<AssetDependency>, dependency: AssetDependency) {
-	match dependencies.iter_mut().find(|existing| existing.id() == dependency.id()) {
-		Some(existing) => *existing = dependency,
-		None => dependencies.push(dependency),
+	match dependencies.binary_search_by(|existing| existing.id().cmp(dependency.id())) {
+		Ok(index) => dependencies[index] = dependency,
+		Err(index) => dependencies.insert(index, dependency),
 	}
 }
 

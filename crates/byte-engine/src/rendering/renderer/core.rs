@@ -408,14 +408,13 @@ impl Renderer {
 		if self.acquisitions.0 != self.started_frame_count {
 			self.acquisitions = (self.started_frame_count, SmallVec::new());
 		}
-		let decided = self.acquisitions.1.len();
-		let captures_hidden = self
-			.acquisitions
-			.1
-			.iter()
-			.enumerate()
-			.any(|(sink, window_frame)| matches!(window_frame, WindowFrame::Hidden) && captured(sink));
-		if decided == self.windows.len() && !captures_hidden {
+		// A window still needs deciding when this frame has no entry for it, or when it is hidden and a screenshot
+		// captures it.
+		let undecided = |acquisitions: &[WindowFrame], index: SinkId| match acquisitions.get(index) {
+			None => true,
+			Some(window_frame) => matches!(window_frame, WindowFrame::Hidden) && captured(index),
+		};
+		if !(0..self.windows.len()).any(|index| undecided(&self.acquisitions.1, index)) {
 			return None;
 		}
 
@@ -430,13 +429,10 @@ impl Renderer {
 		let mut present_time = None;
 
 		for (index, (window, swapchain, warned)) in self.windows.iter_mut().enumerate() {
-			let captured = captured(index);
-			match self.acquisitions.1.get(index) {
-				None => {}
-				Some(WindowFrame::Hidden) if captured => {}
-				Some(_) => continue,
+			if !undecided(&self.acquisitions.1, index) {
+				continue;
 			}
-			if !captured && !window.is_visible() {
+			if !captured(index) && !window.is_visible() {
 				self.acquisitions.1.push(WindowFrame::Hidden);
 				continue;
 			}

@@ -26,7 +26,7 @@ impl LoadPipeline for ParticleSystemLoader {
 		self.resources
 			.request::<ParticleSystem>(&id)
 			.await
-			.map(|system| system.resource().clone())
+			.map(resource_management::Reference::into_resource)
 			.map_err(|error| LoadError(format!("Particle system '{id}' could not be loaded. {error}")))
 	}
 }

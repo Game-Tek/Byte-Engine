@@ -1,6 +1,6 @@
 use ghi::{command_buffer::CommonCommandBufferMode as _, context::ContextCreate as _, frame::Frame as _};
 use math::{Point, Radians, UnitVector, inverse};
-use maths_rs::{Vec3f, Vec4f};
+use maths_rs::Vec3f;
 use utils::Extent;
 
 use crate::{
@@ -250,19 +250,17 @@ impl AtmosphereSkyRenderPass {
 	/// Adopts the newest directional light as the sun and applies its latest illuminance, disk size, and orientation to the sky.
 	/// Returns whether the sun moved.
 	fn update_sun(&mut self) -> bool {
-		if self.sun.update()
-			&& let Some(direction) = self.sun.direction()
-		{
-			self.settings.sun_direction = direction;
-			self.sky_view_camera_height = None;
-			return true;
-		}
-		false
+		let Some(direction) = self.sun.update() else {
+			return false;
+		};
+		self.settings.sun_direction = direction;
+		self.sky_view_camera_height = None;
+		true
 	}
 
 	/// Updates per-view sky constants from the active camera before dispatch and returns the camera height.
 	fn write_parameters(&self, frame: &mut ghi::implementation::Frame, sink: &Sink) -> f32 {
-		let data = sky_shader_data(&self.settings, self.sun.illuminance(), self.sun.angular_radius(), sink);
+		let data = sky_shader_data(&self.settings, self.sun.illuminance, self.sun.angular_radius, sink);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = data;
 		data.camera_position[1]
 	}
@@ -280,8 +278,8 @@ fn sky_shader_data(
 	sink: &Sink,
 ) -> SkyShaderData {
 	let view = sink.view();
-	let inverse_view = inverse(view.view());
-	let camera_position = inverse_view * Vec4f::new(0.0, 0.0, 0.0, 1.0);
+	// The translation column of the inverse view is the camera's world position.
+	let camera_position = inverse(view.view()).get_column(3);
 	let sun_direction = settings.sun_direction;
 	let planet_center = settings.planet_center.into_maths();
 	let exposed_illuminance = sun_illuminance * sink.exposure_scale();
@@ -438,24 +436,22 @@ mod tests {
 		);
 		let mut parameters = buffer(program, parameter_slot);
 		for (name, value) in [
-			("camera_position", data.camera_position),
-			("sun_direction", data.sun_direction),
-			("planet_center", data.planet_center),
-			("atmosphere", data.atmosphere),
-			("misc", data.misc),
-			("sun_illuminance", data.sun_illuminance),
-			("sun_disk_radiance", data.sun_disk_radiance),
-		] {
-			parameters
-				.write(name, Value::Vec4F(value))
-				.expect("Failed to initialize sky parameters. The most likely cause is a changed production buffer layout.");
-		}
-		parameters
-			.write(
+			(
 				"inverse_view_projection",
 				Value::Mat4F(bytemuck::cast(data.inverse_view_projection)),
-			)
-			.expect("Failed to initialize the sky matrix. The most likely cause is a changed production buffer layout.");
+			),
+			("camera_position", Value::Vec4F(data.camera_position)),
+			("sun_direction", Value::Vec4F(data.sun_direction)),
+			("planet_center", Value::Vec4F(data.planet_center)),
+			("atmosphere", Value::Vec4F(data.atmosphere)),
+			("misc", Value::Vec4F(data.misc)),
+			("sun_illuminance", Value::Vec4F(data.sun_illuminance)),
+			("sun_disk_radiance", Value::Vec4F(data.sun_disk_radiance)),
+		] {
+			parameters
+				.write(name, value)
+				.expect("Failed to initialize sky parameters. The most likely cause is a changed production buffer layout.");
+		}
 		parameters
 	}
 

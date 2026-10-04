@@ -7,10 +7,14 @@ use maths_rs::Vec3f;
 /// Pass one to [`ExponentialHeightFog::new`], and optionally a second to [`ExponentialHeightFog::with_second_layer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FogLayer {
-	density: f32,
-	height_falloff: f32,
-	base_height: f32,
-	bounds: Option<AABB>,
+	/// The fraction of light the layer blocks per meter at its base height. See [`Self::new`].
+	pub(crate) density: f32,
+	/// How quickly the layer thins with altitude, per meter. See [`Self::with_height_falloff`].
+	pub(crate) height_falloff: f32,
+	/// The height at which the layer has its base density. See [`Self::with_base_height`].
+	pub(crate) base_height: f32,
+	/// The box the layer is confined to, if any. See [`Self::with_bounds`].
+	pub(crate) bounds: Option<AABB>,
 }
 
 impl FogLayer {
@@ -66,26 +70,6 @@ impl FogLayer {
 		self.bounds = Some(bounds);
 		self
 	}
-
-	/// Returns the fraction of light the layer blocks per meter at its base height. See [`Self::new`].
-	pub fn density(&self) -> f32 {
-		self.density
-	}
-
-	/// Returns how quickly the layer thins with altitude, per meter. See [`Self::with_height_falloff`].
-	pub fn height_falloff(&self) -> f32 {
-		self.height_falloff
-	}
-
-	/// Returns the height at which the layer has its base density. See [`Self::with_base_height`].
-	pub fn base_height(&self) -> f32 {
-		self.base_height
-	}
-
-	/// Returns the box the layer is confined to, if any. See [`Self::with_bounds`].
-	pub fn bounds(&self) -> Option<AABB> {
-		self.bounds
-	}
 }
 
 /// The `ExponentialHeightFog` struct describes the mist or haze that fills a scene and thins out with altitude.
@@ -96,12 +80,18 @@ impl FogLayer {
 /// handle with [`crate::core::factory::Factory::derive`] changes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExponentialHeightFog {
-	layer: FogLayer,
-	second_layer: Option<FogLayer>,
-	albedo: Vec3f,
-	max_opacity: f32,
-	anisotropy: f32,
-	ambient_illuminance: f32,
+	/// The layer given to [`Self::new`].
+	pub(crate) layer: FogLayer,
+	/// The layer added by [`Self::with_second_layer`], if any.
+	pub(crate) second_layer: Option<FogLayer>,
+	/// The fraction of each color the fog scatters. See [`Self::with_albedo`].
+	pub(crate) albedo: Vec3f,
+	/// The most the fog can hide. See [`Self::with_max_opacity`].
+	pub(crate) max_opacity: f32,
+	/// How strongly the fog scatters sunlight forward. See [`Self::with_anisotropy`].
+	pub(crate) anisotropy: f32,
+	/// The sky illuminance that lights the fog, in lux. See [`Self::with_ambient_illuminance`].
+	pub(crate) ambient_illuminance: f32,
 }
 
 impl ExponentialHeightFog {
@@ -181,35 +171,5 @@ impl ExponentialHeightFog {
 		);
 		self.ambient_illuminance = lux;
 		self
-	}
-
-	/// Returns the layer given to [`Self::new`].
-	pub fn layer(&self) -> FogLayer {
-		self.layer
-	}
-
-	/// Returns the layer added by [`Self::with_second_layer`], if any.
-	pub fn second_layer(&self) -> Option<FogLayer> {
-		self.second_layer
-	}
-
-	/// Returns the fraction of each color the fog scatters. See [`Self::with_albedo`].
-	pub fn albedo(&self) -> Vec3f {
-		self.albedo
-	}
-
-	/// Returns the most the fog can hide. See [`Self::with_max_opacity`].
-	pub fn max_opacity(&self) -> f32 {
-		self.max_opacity
-	}
-
-	/// Returns how strongly the fog scatters sunlight forward. See [`Self::with_anisotropy`].
-	pub fn anisotropy(&self) -> f32 {
-		self.anisotropy
-	}
-
-	/// Returns the sky illuminance that lights the fog, in lux. See [`Self::with_ambient_illuminance`].
-	pub fn ambient_illuminance(&self) -> f32 {
-		self.ambient_illuminance
 	}
 }

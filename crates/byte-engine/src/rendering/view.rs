@@ -165,11 +165,7 @@ impl View {
 			let homogeneous_corner = inverse_view_projection * Vec4f::new(x, y, z, 1.0);
 
 			// Perspective division converts the explicit clip-space boundary back into a world point.
-			*corner = Point::from_maths(Vec3f::new(
-				homogeneous_corner.x / homogeneous_corner.w,
-				homogeneous_corner.y / homogeneous_corner.w,
-				homogeneous_corner.z / homogeneous_corner.w,
-			));
+			*corner = Point::from_maths(Vec3f::from(homogeneous_corner) / homogeneous_corner.w);
 		}
 
 		corners
@@ -198,25 +194,17 @@ impl View {
 /// Builds a view matrix from branded world-space camera state at the matrix boundary.
 fn world_view_matrix(position: Point, direction: UnitVector) -> Matrix {
 	let up = UnitVector::<WorldSpace>::y_axis();
+	// `UnitVector` excludes zero and non-finite directions. Looking straight up or down, the y axis is nearly colinear
+	// with the view, so the z axis orients it instead.
 	let vertical = direction.dot(up.into_vector()).abs() > 0.99;
 	let reference = if vertical { UnitVector::<WorldSpace>::z_axis() } else { up };
-	// `UnitVector` excludes zero and non-finite directions, and this reference is selected to be non-colinear with it.
-	let x_basis = maths_rs::normalize(maths_rs::cross(reference.into_maths(), direction.into_maths()));
-	// The fallback changes the reference axis, but must preserve winding so raster and normal-cone culling agree.
-	let y_basis = maths_rs::normalize(maths_rs::cross(direction.into_maths(), x_basis));
-	let orientation = Matrix::from((
-		Vec4f::from((x_basis, 0.0)),
-		Vec4f::from((y_basis, 0.0)),
-		Vec4f::from((direction.into_maths(), 0.0)),
-		Vec4f::new(0.0, 0.0, 0.0, 1.0),
-	));
-
-	orientation * Matrix::from_translation(-position.into_maths())
+	world_view_matrix_with_up(position, direction, reference)
 }
 
 /// Builds a view matrix from explicit, non-colinear forward and up directions.
 fn world_view_matrix_with_up(position: Point, direction: UnitVector, up: UnitVector) -> Matrix {
 	let x_basis = maths_rs::normalize(maths_rs::cross(up.into_maths(), direction.into_maths()));
+	// Whatever the up axis, keep the same winding so raster and normal-cone culling agree.
 	let y_basis = maths_rs::normalize(maths_rs::cross(direction.into_maths(), x_basis));
 	let orientation = Matrix::from((
 		Vec4f::from((x_basis, 0.0)),
@@ -284,11 +272,10 @@ mod tests {
 				View::new_perspective(Degrees::new(75.0), 1.0, 0.1, 10.0, Point::origin(), direction),
 				View::new_orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 10.0, Point::origin(), direction),
 			] {
-				let projected = vertices.map(|point| {
+				let [a, b, c] = vertices.map(|point| {
 					let clip = view.view_projection() * point;
 					[clip.x / clip.w, clip.y / clip.w]
 				});
-				let [a, b, c] = projected;
 				let signed_area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 				assert!(
 					signed_area < 0.0,

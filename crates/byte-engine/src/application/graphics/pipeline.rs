@@ -71,12 +71,7 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 		&resource_store,
 	);
 	application.renderer.add_pipeline_manager(pipeline_manager);
-
-	application.add_deferred_task(move |runtime| {
-		for lane in simple_loader_lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+	run_on_loading_thread(application, simple_loader_lanes.into_iter().map(|lane| lane.run()));
 }
 
 /// Installs the visibility-buffer PBR scene pipeline and its loader lanes.
@@ -132,11 +127,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		material_pipeline_config,
 	);
 
-	application.add_deferred_task(move |runtime| {
-		for lane in visibility_loader_lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));
 
 	let visibility_pipeline_manager = VisibilityPipelineManager::new(
 		application.renderer.context_mut(),
@@ -169,12 +160,15 @@ pub fn setup_particles(application: &mut GraphicsApplication) {
 		rendering::loading::spawn(loader, rendering::particles::ParticleSystemLoader { resources }, 1, 16);
 	let particle_manager = rendering::particles::ParticleManager::new(&application.world, pipeline_manager, systems_loader);
 	application.renderer.add_pipeline_manager(particle_manager);
+	run_on_loading_thread(application, lanes.into_iter().map(|lane| lane.run()));
+}
 
-	application.add_deferred_task(move |runtime| {
-		for lane in lanes {
-			runtime.spawn(lane.run()).detach();
-		}
-	});
+/// Runs every loader lane as a task on the loading thread that [`defaults::launch_deferred_tasks_thread`] starts.
+fn run_on_loading_thread<F: Future<Output = ()> + 'static>(
+	application: &mut GraphicsApplication,
+	lanes: impl IntoIterator<Item = F> + Send + 'static,
+) {
+	application.add_deferred_task(move |runtime| lanes.into_iter().for_each(|lane| runtime.spawn(lane).detach()));
 }
 
 /// Resolves the visibility pipeline's startup parameters, panicking on any value it cannot use.

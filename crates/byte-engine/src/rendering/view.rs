@@ -260,7 +260,7 @@ mod tests {
 			UnitVector::z_axis(),
 			UnitVector::y_axis(),
 			-UnitVector::y_axis(),
-			Vector::new(0.05, -1.0, 0.02).unit().unwrap(),
+			Vector::new(0.05, -1.0, 0.02).normalized().unwrap(),
 		] {
 			let orientation = math::orientation_from_direction(direction);
 			// Rotate the same front-facing triangle with the view, so changing its direction cannot change its face.

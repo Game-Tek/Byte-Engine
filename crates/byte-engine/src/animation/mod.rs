@@ -22,3 +22,17 @@ pub use skeletal::{
 	AnimationBonePositionComparison, AnimationComparisonError, BonePositionDifference, PoseError,
 	compare_animation_bone_positions, sample_local_pose, sample_pose, write_global_pose,
 };
+
+/// Builds a skeleton node for tests that author small hierarchies.
+#[cfg(test)]
+fn test_node(
+	name: Option<&str>,
+	parent: Option<u32>,
+	rest_local: resource_management::resources::skeleton::LocalTransform,
+) -> resource_management::resources::skeleton::SkeletonNode {
+	resource_management::resources::skeleton::SkeletonNode {
+		name: name.map(Into::into),
+		parent,
+		rest_local,
+	}
+}

@@ -62,16 +62,6 @@ pub struct SkinBinding {
 }
 
 impl SkinBinding {
-	/// Returns the number of matrices callers must reserve for this binding's GPU palette.
-	pub fn len(&self) -> usize {
-		self.entries.len()
-	}
-
-	/// Reports whether this binding has no addressable GPU palette entries.
-	pub fn is_empty(&self) -> bool {
-		self.entries.is_empty()
-	}
-
 	/// Writes the final skin matrices into caller-owned storage without allocating intermediate palette data.
 	pub fn write_matrix_palette(
 		&self,
@@ -369,7 +359,7 @@ fn validate_node(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use math::{AffineMatrix, Vector};
 
 	use super::{
@@ -378,15 +368,23 @@ mod tests {
 	};
 	use crate::{Solver, resource::storage_backend::tests::TestStorageBackend};
 
+	/// Builds a skeleton node whose rest pose only translates, for tests that author small hierarchies.
+	pub(crate) fn node(name: Option<&str>, parent: Option<u32>, translation: [f32; 3]) -> SkeletonNode {
+		SkeletonNode {
+			name: name.map(Into::into),
+			parent,
+			rest_local: LocalTransform {
+				translation: Vector::from_array(translation),
+				..LocalTransform::identity()
+			},
+		}
+	}
+
 	#[crate::r#async::test]
 	async fn solving_rejects_forward_and_self_parent_references() {
 		for parent in [0, 1] {
 			let model = SkeletonModel {
-				nodes: vec![SkeletonNode {
-					name: None,
-					parent: Some(parent),
-					rest_local: LocalTransform::identity(),
-				}],
+				nodes: vec![node(None, Some(parent), [0.0; 3])],
 			};
 
 			assert!(model.solve(&TestStorageBackend::new()).await.is_err());
@@ -396,14 +394,7 @@ mod tests {
 	#[crate::r#async::test]
 	async fn solving_rejects_non_finite_and_non_unit_rest_transforms() {
 		let model = SkeletonModel {
-			nodes: vec![SkeletonNode {
-				name: None,
-				parent: None,
-				rest_local: LocalTransform {
-					translation: Vector::new(f32::NAN, 0.0, 0.0),
-					..LocalTransform::identity()
-				},
-			}],
+			nodes: vec![node(None, None, [f32::NAN, 0.0, 0.0])],
 		};
 
 		assert!(model.solve(&TestStorageBackend::new()).await.is_err());
@@ -412,40 +403,13 @@ mod tests {
 	#[test]
 	fn pose_map_matches_named_nodes_and_preserves_target_only_helpers() {
 		let source = Skeleton {
-			nodes: vec![
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Spine".into()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
-			],
-		};
-		let helper_rest = LocalTransform {
-			translation: Vector::new(3.0, 0.0, 0.0),
-			..LocalTransform::identity()
+			nodes: vec![node(Some("Hips"), None, [0.0; 3]), node(Some("Spine"), Some(0), [0.0; 3])],
 		};
 		let target = Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("IKRoot".into()),
-					parent: None,
-					rest_local: helper_rest,
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some("Spine".into()),
-					parent: Some(1),
-					rest_local: LocalTransform::identity(),
-				},
+				node(Some("IKRoot"), None, [3.0, 0.0, 0.0]),
+				node(Some("Hips"), None, [0.0; 3]),
+				node(Some("Spine"), Some(1), [0.0; 3]),
 			],
 		};
 		let animated_hips = LocalTransform {
@@ -460,7 +424,7 @@ mod tests {
 
 		assert_eq!(map.target_node(0), Some(1));
 		assert_eq!(map.target_node(1), Some(2));
-		assert_eq!(output[0], helper_rest);
+		assert_eq!(output[0], target.nodes[0].rest_local);
 		assert_eq!(output[1], animated_hips);
 	}
 
@@ -468,30 +432,12 @@ mod tests {
 	fn direct_pose_map_keeps_the_last_duplicate_source_node() {
 		let source = Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform {
-						translation: Vector::new(1.0, 0.0, 0.0),
-						..LocalTransform::identity()
-					},
-				},
-				SkeletonNode {
-					name: Some("Hips".into()),
-					parent: None,
-					rest_local: LocalTransform {
-						translation: Vector::new(2.0, 0.0, 0.0),
-						..LocalTransform::identity()
-					},
-				},
+				node(Some("Hips"), None, [1.0, 0.0, 0.0]),
+				node(Some("Hips"), None, [2.0, 0.0, 0.0]),
 			],
 		};
 		let target = Skeleton {
-			nodes: vec![SkeletonNode {
-				name: Some("Hips".into()),
-				parent: None,
-				rest_local: LocalTransform::identity(),
-			}],
+			nodes: vec![node(Some("Hips"), None, [0.0; 3])],
 		};
 
 		let map = SkeletonPoseMap::by_name(&source, &target);

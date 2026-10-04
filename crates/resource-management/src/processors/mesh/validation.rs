@@ -247,10 +247,10 @@ pub(super) fn validate_skin_binding(
 	let Some(node_count) = skeleton_nodes else {
 		return Err(MeshProcessingError::SkinWithoutSkeleton);
 	};
-	if skin.len() > u16::MAX as usize + 1 {
+	if skin.entries.len() > u16::MAX as usize + 1 {
 		return Err(MeshProcessingError::SkinPaletteTooLarge {
 			skin: skin_index,
-			joints: skin.len(),
+			joints: skin.entries.len(),
 		});
 	}
 	for (joint_index, entry) in skin.entries.iter().enumerate() {
@@ -336,13 +336,13 @@ pub(super) fn validate_vertex_skin(
 	let mut total = 0.0;
 	for lane in 0..4 {
 		let joint = vertex_skin.joints[lane];
-		if joint as usize >= skin.len() {
+		if joint as usize >= skin.entries.len() {
 			return Err(MeshProcessingError::VertexJointOutOfRange {
 				primitive,
 				vertex,
 				lane,
 				joint,
-				palette_len: skin.len(),
+				palette_len: skin.entries.len(),
 			});
 		}
 		let weight = vertex_skin.weights[lane];

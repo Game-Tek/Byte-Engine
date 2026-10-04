@@ -292,25 +292,18 @@ mod tests {
 		Reference,
 		resources::{
 			animation::{Animation, NodeTrack, RotationCurve, TranslationCurve},
-			skeleton::{LocalTransform, Skeleton, SkeletonNode},
+			skeleton::{LocalTransform, Skeleton},
 		},
 	};
 
 	use super::{AnimationComparisonError, compare_animation_bone_positions, sample_resource_curve};
+	use crate::animation::test_node;
 
 	fn comparison_skeleton(child_name: &str) -> Skeleton {
 		Skeleton {
 			nodes: vec![
-				SkeletonNode {
-					name: Some("root".to_string()),
-					parent: None,
-					rest_local: LocalTransform::identity(),
-				},
-				SkeletonNode {
-					name: Some(child_name.to_string()),
-					parent: Some(0),
-					rest_local: LocalTransform::identity(),
-				},
+				test_node(Some("root"), None, LocalTransform::identity()),
+				test_node(Some(child_name), Some(0), LocalTransform::identity()),
 			],
 		}
 	}

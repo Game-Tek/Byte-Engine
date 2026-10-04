@@ -355,16 +355,18 @@ mod tests {
 		ProcessedAsset, ReferenceModel, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		resources::skeleton::{LocalTransform, SkeletonModel, SkeletonNode},
+		resources::skeleton::{SkeletonModel, tests::node},
 	};
 
 	async fn skeleton_reference(storage: &TestStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
 		let skeleton = SkeletonModel {
 			nodes: (0..node_count)
-				.map(|index| SkeletonNode {
-					name: Some(format!("node-{index}")),
-					parent: index.checked_sub(1).map(|parent| parent as u32),
-					rest_local: LocalTransform::identity(),
+				.map(|index| {
+					node(
+						Some(&format!("node-{index}")),
+						index.checked_sub(1).map(|parent| parent as u32),
+						[0.0; 3],
+					)
 				})
 				.collect(),
 		};

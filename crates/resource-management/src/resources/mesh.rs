@@ -200,7 +200,7 @@ fn validate_skin_metadata(
 
 	let skeleton_nodes = skeleton.map(|skeleton| skeleton.resource().nodes.len()).unwrap_or(0);
 	for (skin_index, skin) in skins.iter().enumerate() {
-		if skin.len() > u16::MAX as usize + 1 {
+		if skin.entries.len() > u16::MAX as usize + 1 {
 			return invalid_mesh_skeletal_metadata(format!("skin {skin_index} exceeds the u16 palette limit"));
 		}
 		for (joint_index, entry) in skin.entries.iter().enumerate() {
@@ -237,14 +237,8 @@ fn validate_skin_metadata(
 				));
 			}
 		}
-		let joints_stream = primitive
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Joints));
-		let weights_stream = primitive
-			.streams
-			.iter()
-			.find(|stream| stream.stream_type == Streams::Vertices(VertexSemantics::Weights));
+		let joints_stream = primitive.stream(Streams::Vertices(VertexSemantics::Joints));
+		let weights_stream = primitive.stream(Streams::Vertices(VertexSemantics::Weights));
 
 		match primitive.skin {
 			Some(skin) => {
@@ -317,9 +311,7 @@ mod tests {
 		ProcessedAsset, Reference, ReferenceModel, Solver,
 		asset::ResourceId,
 		resource::{WriteStorageBackend, storage_backend::tests::TestStorageBackend},
-		resources::skeleton::{
-			LocalTransform, Skeleton, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry,
-		},
+		resources::skeleton::{Skeleton, SkeletonModel, SkinBinding, SkinJoint, SkinPaletteEntry, tests::node},
 		types::{Stream, Streams, VertexComponent, VertexSemantics},
 	};
 
@@ -392,11 +384,7 @@ mod tests {
 
 	async fn test_skeleton(storage: &TestStorageBackend) -> Reference<Skeleton> {
 		let model = SkeletonModel {
-			nodes: vec![SkeletonNode {
-				name: Some("root".into()),
-				parent: None,
-				rest_local: LocalTransform::identity(),
-			}],
+			nodes: vec![node(Some("root"), None, [0.0; 3])],
 		};
 		let reference: ReferenceModel<SkeletonModel> = storage
 			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), model), &[])

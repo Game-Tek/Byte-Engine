@@ -18,7 +18,6 @@ pub struct PoseInertializer {
 	nodes: Vec<InertializedTransform>,
 	elapsed_seconds: f32,
 	duration_seconds: f32,
-	active: bool,
 }
 
 impl PoseInertializer {
@@ -28,7 +27,6 @@ impl PoseInertializer {
 			nodes: vec![InertializedTransform::default(); node_count],
 			elapsed_seconds: 0.0,
 			duration_seconds: 0.0,
-			active: false,
 		}
 	}
 
@@ -39,7 +37,7 @@ impl PoseInertializer {
 
 	/// Returns whether [`Self::apply`] is still smoothing a transition.
 	pub fn is_active(&self) -> bool {
-		self.active
+		self.elapsed_seconds < self.duration_seconds
 	}
 
 	/// Captures the positional and rotational discontinuity between two moving poses.
@@ -68,8 +66,7 @@ impl PoseInertializer {
 
 		self.elapsed_seconds = 0.0;
 		self.duration_seconds = duration_seconds;
-		self.active = duration_seconds > 0.0;
-		if !self.active {
+		if !self.is_active() {
 			self.nodes.fill(InertializedTransform::default());
 			return Ok(());
 		}
@@ -109,14 +106,9 @@ impl PoseInertializer {
 		if !delta_seconds.is_finite() || delta_seconds < 0.0 {
 			return Err(InertializationError::InvalidAdvanceDelta);
 		}
-		if !self.active {
-			output.copy_from_slice(destination);
-			return Ok(());
-		}
-
+		// An inactive transition has `elapsed == duration`, which this update leaves unchanged.
 		self.elapsed_seconds = (self.elapsed_seconds + delta_seconds).min(self.duration_seconds);
-		if self.elapsed_seconds >= self.duration_seconds {
-			self.active = false;
+		if !self.is_active() {
 			output.copy_from_slice(destination);
 			return Ok(());
 		}
@@ -141,7 +133,6 @@ impl PoseInertializer {
 	pub fn clear(&mut self) {
 		self.elapsed_seconds = 0.0;
 		self.duration_seconds = 0.0;
-		self.active = false;
 		self.nodes.fill(InertializedTransform::default());
 	}
 

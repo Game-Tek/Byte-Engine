@@ -299,7 +299,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 pub fn setup_animation_pool(application: &mut GraphicsApplication, byte_budget: NonZeroUsize) -> AnimationPool {
 	// The pool owns pose evaluation state on the application thread while its
 	// worker resolves animation resources asynchronously.
-	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), AnimationPoolConfig::new(byte_budget));
+	let (pool, worker) = AnimationPool::new(application.resource_manager_handle(), byte_budget);
 
 	application.add_deferred_task(move |runtime| {
 		runtime.spawn(worker.run()).detach();
@@ -343,7 +343,7 @@ use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};
 use crate::{
-	animation::graph::{AnimationPool, AnimationPoolConfig},
+	animation::graph::AnimationPool,
 	application::{Events, parameters::Parameters as _, thread::Thread},
 	audio::{
 		audio_system::DefaultAudioSystem,

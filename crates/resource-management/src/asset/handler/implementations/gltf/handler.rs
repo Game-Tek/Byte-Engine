@@ -36,7 +36,7 @@ impl GLTFAssetHandler {
 		primitives: &[(gltf::Primitive<'a>, math::Matrix, Option<u32>, Option<u32>)],
 		material_slots: &[usize],
 	) -> Result<MeshProcessorSession, LoadErrors> {
-		let skin_joint_counts = skin_bindings.iter().map(SkinBinding::len).collect::<Vec<_>>();
+		let skin_joint_counts = skin_bindings.iter().map(|skin| skin.entries.len()).collect::<Vec<_>>();
 		let primitive_attributes = GltfPrimitiveAttributes::from_layout(&vertex_layout);
 		let mut mesh_processor = MeshProcessorSession::new(vertex_layout, skeleton, skin_bindings).map_err(|error| {
 			log::error!("Failed to initialize glTF mesh processing '{}': {error}", url.as_ref());

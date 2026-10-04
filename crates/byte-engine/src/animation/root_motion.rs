@@ -4,7 +4,9 @@ use math::{Orientation, Vector};
 use resource_management::resources::{ParentSpace, skeleton::LocalTransform};
 
 /// The `RootMotionDelta` struct carries one frame's local translation and rotation change to gameplay.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// Its default is [`Self::IDENTITY`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RootMotionDelta {
 	/// Translation to apply in the skeleton root's parent space.
 	pub translation: Vector<ParentSpace>,
@@ -46,12 +48,6 @@ impl RootMotionDelta {
 			translation: self.translation.lerp(other.translation, factor),
 			rotation: self.rotation.nlerp(other.rotation, factor),
 		}
-	}
-}
-
-impl Default for RootMotionDelta {
-	fn default() -> Self {
-		Self::IDENTITY
 	}
 }
 

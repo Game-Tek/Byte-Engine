@@ -298,7 +298,7 @@ mod tests {
 			Point::new(0.0, 1.0, -5.0),
 			UnitVector::z_axis(),
 		);
-		let straight_down = UnitVector::try_from_vector(math::Vector::new(0.0, -1.0, 0.0)).expect("unit direction");
+		let straight_down = math::Vector::new(0.0, -1.0, 0.0).normalized().expect("unit direction");
 
 		let direction = view_space_direction_to_light(view, straight_down);
 

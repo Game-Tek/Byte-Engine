@@ -504,7 +504,7 @@ mod tests {
 
 		let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-		let skins = gltf_vertex_skin(&reader, 3, binding.len())
+		let skins = gltf_vertex_skin(&reader, 3, binding.entries.len())
 			.expect("skin streams should validate")
 			.collect::<Result<Vec<_>, _>>()
 			.expect("weights should import");

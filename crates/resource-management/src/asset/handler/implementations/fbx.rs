@@ -340,7 +340,7 @@ mod tests {
 			binding.entries.iter().map(|entry| entry.joint).collect::<Vec<_>>(),
 			[SkinJoint::Node(root_index), SkinJoint::Node(child_index)]
 		);
-		assert_eq!(binding.len(), 2);
+		assert_eq!(binding.entries.len(), 2);
 
 		// The palette must match ufbx's evaluated clusters after expressing them in
 		// the flattened vertex basis used by the imported mesh.
@@ -352,7 +352,7 @@ mod tests {
 			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.entries.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)
@@ -448,7 +448,7 @@ mod tests {
 			globals[mapped] = matrix_to_affine(&node.node_to_world).expect("fixture global matrix should be finite");
 		}
 
-		let mut palette = vec![math::AffineMatrix::identity(); binding.len()];
+		let mut palette = vec![math::AffineMatrix::identity(); binding.entries.len()];
 
 		binding
 			.write_matrix_palette(&globals, &mut palette)

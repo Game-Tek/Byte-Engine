@@ -2,6 +2,7 @@ use std::fmt;
 
 use maths_rs::Quatf;
 
+use crate::geometry::scaled_normalize;
 use crate::serialization::serialize_as_array;
 use crate::{Matrix, Radians, UnitVector, Vector, orientation_from_direction};
 
@@ -188,22 +189,12 @@ impl Default for Orientation {
 }
 
 fn normalize(value: Quatf) -> Result<Quatf, OrientationError> {
-	if !value.x.is_finite() || !value.y.is_finite() || !value.z.is_finite() || !value.w.is_finite() {
+	let components = [value.x, value.y, value.z, value.w];
+	if !components.iter().all(|component| component.is_finite()) {
 		return Err(OrientationError::NonFiniteQuaternion);
 	}
-
-	// Scaling first prevents overflow and underflow when measuring finite input components.
-	let scale = value.x.abs().max(value.y.abs()).max(value.z.abs()).max(value.w.abs());
-	if scale == 0.0 {
-		return Err(OrientationError::ZeroLengthQuaternion);
-	}
-	let x = value.x / scale;
-	let y = value.y / scale;
-	let z = value.z / scale;
-	let w = value.w / scale;
-	let length = (x * x + y * y + z * z + w * w).sqrt();
-
-	Ok(Quatf::new(x / length, y / length, z / length, w / length))
+	let ([x, y, z, w], _) = scaled_normalize(components).ok_or(OrientationError::ZeroLengthQuaternion)?;
+	Ok(Quatf::new(x, y, z, w))
 }
 
 impl From<UnitVector> for Orientation {

@@ -286,7 +286,7 @@ impl SkinningFrame {
 			return Some(*palette);
 		}
 		let matrix_base = self.matrices.len();
-		let matrix_end = matrix_base + binding.len();
+		let matrix_end = matrix_base + binding.entries.len();
 		self.matrices.resize(matrix_end, math::AffineMatrix::identity());
 		if let Err(error) = binding.write_matrix_palette(pose, &mut self.matrices[matrix_base..matrix_end]) {
 			self.matrices.truncate(matrix_base);
@@ -1062,7 +1062,7 @@ impl VisibilityPipelineManager {
 						source_vertex_base: skin.source_vertex_offset,
 						destination_vertex_base: shader_mesh.skinned_base_vertex_index,
 						palette_base,
-						palette_count: skin.binding.len() as u32,
+						palette_count: skin.binding.entries.len() as u32,
 						vertex_count: skin.vertex_count,
 						palette_kind: kind as u32,
 					});

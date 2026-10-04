@@ -483,6 +483,8 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 
 	let mut remap = Vec::with_capacity_in(remap_capacity, allocator);
 
+	let mut remapped = RemappedCorners::with_capacity_in(corner_capacity, allocator);
+
 	for (node, mesh) in fbx_mesh_instances(scene) {
 		let skin = select_fbx_skin(mesh)?;
 
@@ -526,8 +528,15 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 				}
 			}
 
-			primitive_count +=
-				import_fbx_material_corners(&context, part, &corners, &mut remap, material_keys, &mut processor, allocator)?;
+			primitive_count += import_fbx_material_corners(
+				&context,
+				part,
+				&corners,
+				&mut remap,
+				&mut remapped,
+				material_keys,
+				&mut processor,
+			)?;
 
 			Ok::<_, FbxMeshProcessingError>(())
 		};
@@ -552,14 +561,14 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 ///
 /// `part` is the part's material index within its FBX mesh, and `material_keys` lists the materials the whole mesh
 /// uses, in the order the finished mesh receives them.
-pub(crate) fn import_fbx_material_corners<'a>(
+pub(crate) fn import_fbx_material_corners(
 	context: &FbxMeshImportContext<'_>,
 	part: usize,
 	corners: &[u32],
 	remap: &mut [u32],
+	remapped: &mut RemappedCorners<'_>,
 	material_keys: &[MaterialKey],
 	processor: &mut MeshProcessorSession,
-	allocator: &'a dyn Allocator,
 ) -> Result<usize, FbxMeshProcessingError> {
 	if corners.is_empty() {
 		return Ok(0);
@@ -570,16 +579,17 @@ pub(crate) fn import_fbx_material_corners<'a>(
 		.iter()
 		.position(|used| *used == key)
 		.ok_or(FbxImportError::MissingMaterial)?;
+	remap_triangle_corners(context.mesh.num_indices, corners, remap, remapped)?;
 	let mut processed = 0;
-	for batch in remap_triangle_corners(context.mesh.num_indices, corners, remap, allocator)? {
-		if batch.source_corners.is_empty() {
+	for (source_corners, indices) in remapped.primitives() {
+		if source_corners.is_empty() {
 			return Err(FbxImportError::EmptyPrimitive.into());
 		}
 		let source = FbxPrimitiveSource {
 			context,
 			material_slot,
-			source_corners: &batch.source_corners,
-			indices: &batch.indices,
+			source_corners,
+			indices,
 		};
 		processor.push_primitive(&source)?;
 		processed += 1;
@@ -685,19 +695,47 @@ pub(crate) fn is_degenerate_fbx_triangle(mesh: &ufbx::Mesh, triangle: &[u32]) ->
 	Ok(area == [0.0; 3])
 }
 
-/// The `RemappedCorners` struct carries one u16-compatible primitive's source-corner lookup and local indices.
+/// The `RemappedCorners` struct holds one material part split into u16-compatible primitives.
+///
+/// The import reuses one for every material part, so the bake arena does not grow with each part.
 pub(crate) struct RemappedCorners<'a> {
-	pub(crate) source_corners: Vec<u32, &'a dyn Allocator>,
-	pub(crate) indices: Vec<u32, &'a dyn Allocator>,
+	/// Every primitive's source corners, back to back.
+	source_corners: Vec<u32, &'a dyn Allocator>,
+	/// Every primitive's local triangle indices, back to back.
+	indices: Vec<u32, &'a dyn Allocator>,
+	/// Where each primitive ends in `source_corners` and `indices`.
+	ends: Vec<(usize, usize), &'a dyn Allocator>,
 }
 
-/// Splits and remaps corner-indexed triangles so every processed primitive remains representable by the engine's u16 index streams.
-pub(crate) fn remap_triangle_corners<'a>(
+impl<'a> RemappedCorners<'a> {
+	/// Reserves room for material parts of up to `corners` triangle corners.
+	pub(crate) fn with_capacity_in(corners: usize, allocator: &'a dyn Allocator) -> Self {
+		Self {
+			source_corners: Vec::with_capacity_in(corners, allocator),
+			indices: Vec::with_capacity_in(corners, allocator),
+			ends: Vec::new_in(allocator),
+		}
+	}
+
+	/// Yields each primitive's source corners and local indices.
+	pub(crate) fn primitives(&self) -> impl Iterator<Item = (&[u32], &[u32])> {
+		let mut start = (0, 0);
+		self.ends.iter().map(move |&end| {
+			let primitive = (&self.source_corners[start.0..end.0], &self.indices[start.1..end.1]);
+			start = end;
+			primitive
+		})
+	}
+}
+
+/// Splits and remaps corner-indexed triangles into `remapped` so every processed primitive remains representable by
+/// the engine's u16 index streams.
+pub(crate) fn remap_triangle_corners(
 	source_corner_count: usize,
 	corners: &[u32],
 	remap: &mut [u32],
-	allocator: &'a dyn Allocator,
-) -> Result<Vec<RemappedCorners<'a>, &'a dyn Allocator>, FbxImportError> {
+	remapped: &mut RemappedCorners<'_>,
+) -> Result<(), FbxImportError> {
 	if !corners.len().is_multiple_of(3) {
 		return Err(FbxImportError::InvalidTriangleCount);
 	}
@@ -706,24 +744,14 @@ pub(crate) fn remap_triangle_corners<'a>(
 		return Err(FbxImportError::InvalidCornerIndex);
 	}
 
-	let unique_corner_capacity = source_corner_count.min(corners.len()).min(MAX_PRIMITIVE_VERTICES);
+	remapped.source_corners.clear();
 
-	let index_capacity = if source_corner_count <= MAX_PRIMITIVE_VERTICES {
-		corners.len()
-	} else {
-		corners.len().min(MAX_PRIMITIVE_VERTICES.saturating_mul(3))
-	};
+	remapped.indices.clear();
 
-	let batch_capacity = source_corner_count
-		.min(corners.len())
-		.div_ceil(MAX_PRIMITIVE_VERTICES.saturating_sub(2))
-		.max(1);
+	remapped.ends.clear();
 
-	let mut source_corners = Vec::with_capacity_in(unique_corner_capacity, allocator);
-
-	let mut indices = Vec::with_capacity_in(index_capacity, allocator);
-
-	let mut batches = Vec::with_capacity_in(batch_capacity, allocator);
+	// Where the open primitive starts in `source_corners` and `indices`.
+	let mut start = (0, 0);
 
 	for triangle in corners.as_chunks::<3>().0 {
 		let mut new_corners = 0usize;
@@ -740,42 +768,38 @@ pub(crate) fn remap_triangle_corners<'a>(
 			}
 		}
 
-		if !indices.is_empty() && source_corners.len() + new_corners > MAX_PRIMITIVE_VERTICES {
-			for &corner in &source_corners {
+		if remapped.indices.len() > start.1 && remapped.source_corners.len() - start.0 + new_corners > MAX_PRIMITIVE_VERTICES {
+			for &corner in &remapped.source_corners[start.0..] {
 				remap[corner as usize] = u32::MAX;
 			}
 
-			batches.push(RemappedCorners {
-				source_corners: std::mem::replace(
-					&mut source_corners,
-					Vec::with_capacity_in(unique_corner_capacity, allocator),
-				),
-				indices: std::mem::replace(&mut indices, Vec::with_capacity_in(index_capacity, allocator)),
-			});
+			start = (remapped.source_corners.len(), remapped.indices.len());
+
+			remapped.ends.push(start);
 		}
 
 		for &corner in triangle {
 			let slot = &mut remap[corner as usize];
 
 			if *slot == u32::MAX {
-				*slot = source_corners.len() as u32;
+				*slot = (remapped.source_corners.len() - start.0) as u32;
 
-				source_corners.push(corner);
+				remapped.source_corners.push(corner);
 			}
 
-			indices.push(*slot);
+			remapped.indices.push(*slot);
 		}
 	}
 
-	if !indices.is_empty() {
-		for &corner in &source_corners {
+	if remapped.indices.len() > start.1 {
+		for &corner in &remapped.source_corners[start.0..] {
 			remap[corner as usize] = u32::MAX;
 		}
 
-		batches.push(RemappedCorners { source_corners, indices });
+		remapped.ends.push((remapped.source_corners.len(), remapped.indices.len()));
 	}
 
-	Ok(batches)
+	Ok(())
 }
 
 /// Selects and normalizes the four strongest influences, routing unweighted vertices to the animated mesh-node fallback.

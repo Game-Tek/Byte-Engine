@@ -29,7 +29,7 @@ impl GLTFAssetHandler {
 	/// bakes, keep dispatching and collecting their work.
 	async fn process_geometry<'a>(
 		url: ResourceId<'_>,
-		buffers: &[gltf::buffer::Data],
+		buffers: &[Cow<'_, [u8]>],
 		vertex_layout: Vec<VertexComponent>,
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skin_bindings: Vec<SkinBinding>,
@@ -94,7 +94,7 @@ impl GLTFAssetHandler {
 		source_id: ResourceId<'_>,
 		spec: Option<&serde_json::Value>,
 		gltf: &'a gltf::Gltf,
-		buffers: &[gltf::buffer::Data],
+		buffers: &[Cow<'_, [u8]>],
 	) -> Result<(), LoadErrors> {
 		let graph = import_gltf_node_graph(gltf).map_err(|error| {
 			log::error!("Failed to import glTF node hierarchy '{}': {error}", url.as_ref());

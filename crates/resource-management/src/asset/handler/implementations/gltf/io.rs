@@ -1,13 +1,17 @@
 use super::*;
 
-pub(crate) async fn load_gltf_buffers(
+/// Loads the glTF buffers, in document order, that `required` selects, or every buffer when it is `None`.
+///
+/// A GLB's BIN chunk stays borrowed from the source bytes, so baking a mesh or a clip does not copy embedded images.
+/// Skipped buffers are empty.
+pub(crate) async fn load_gltf_buffers<'a>(
 	asset_storage_backend: &dyn asset::DynStorageBackend,
 	source: ResourceId<'_>,
 	gltf: &gltf::Gltf,
-	mut binary_blob: Option<std::borrow::Cow<'_, [u8]>>,
+	mut binary_blob: Option<Cow<'a, [u8]>>,
 	required: Option<&[bool]>,
 	allocator: &dyn std::alloc::Allocator,
-) -> Result<Vec<gltf::buffer::Data>, LoadErrors> {
+) -> Result<Vec<Cow<'a, [u8]>>, LoadErrors> {
 	use utils::r#async::StreamExt as _;
 
 	let requests = gltf.buffers().map(|buffer| {
@@ -20,15 +24,15 @@ pub(crate) async fn load_gltf_buffers(
 
 		async move {
 			if skipped {
-				return Ok((buffer.index(), gltf::buffer::Data(Vec::new())));
+				return Ok((buffer.index(), Cow::Borrowed(&[][..])));
 			}
 
 			let mut data = match buffer.source() {
-				gltf::buffer::Source::Bin => binary_data.map(std::borrow::Cow::into_owned).ok_or_else(|| {
+				gltf::buffer::Source::Bin => binary_data.ok_or_else(|| {
 					log::error!("glTF binary buffer is missing. The most likely cause is a GLB without its required BIN chunk.");
 					LoadErrors::FailedToProcess
 				})?,
-				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => decode_gltf_buffer_data_uri(uri)?,
+				gltf::buffer::Source::Uri(uri) if uri.starts_with("data:") => Cow::Owned(decode_gltf_buffer_data_uri(uri)?),
 				gltf::buffer::Source::Uri(uri) => {
 					let buffer_url = resolve_gltf_uri(source, uri)?;
 					let (bytes, ..) = asset_storage_backend
@@ -43,7 +47,7 @@ pub(crate) async fn load_gltf_buffers(
 					// Copy once into storage already reserved for the alignment padding.
 					let mut data = Vec::with_capacity(aligned_gltf_buffer_length(bytes.len())?);
 					data.extend_from_slice(&bytes);
-					data
+					Cow::Owned(data)
 				}
 			};
 
@@ -58,11 +62,15 @@ pub(crate) async fn load_gltf_buffers(
 				return Err(LoadErrors::FailedToProcess);
 			}
 
-			// Reserve once before adding the alignment bytes required by glTF buffer-view access.
+			// Pad to the alignment glTF buffer-view access requires. Decoded and copied buffers already reserved the
+			// padding, and a valid BIN chunk is already aligned, so it stays borrowed.
 			let aligned_length = aligned_gltf_buffer_length(raw_length)?;
-			data.reserve_exact(aligned_length - raw_length);
-			data.resize(aligned_length, 0);
-			Ok((buffer.index(), gltf::buffer::Data(data)))
+			if aligned_length != raw_length {
+				let data = data.to_mut();
+				data.reserve_exact(aligned_length - raw_length);
+				data.resize(aligned_length, 0);
+			}
+			Ok((buffer.index(), data))
 		}
 	});
 

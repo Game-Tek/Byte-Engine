@@ -16,6 +16,7 @@ pub(crate) use tests::generated_rgba8_png;
 
 #[cfg(test)]
 mod tests {
+	use std::borrow::Cow;
 
 	use maths_rs::mat::MatNew4;
 
@@ -399,10 +400,14 @@ mod tests {
 	}
 
 	/// Parses the generated GLB through the same glTF reader utilities used by the importer.
-	fn parse_skeletal_fixture() -> (gltf::Gltf, Vec<gltf::buffer::Data>) {
+	fn parse_skeletal_fixture() -> (gltf::Gltf, Vec<Cow<'static, [u8]>>) {
 		let gltf = gltf::Gltf::from_slice(&generated_skeletal_glb()).expect("generated skeletal GLB should parse");
 
-		let buffers = gltf::import_buffers(&gltf, None, gltf.blob.clone()).expect("generated binary buffer should import");
+		let buffers = gltf::import_buffers(&gltf, None, gltf.blob.clone())
+			.expect("generated binary buffer should import")
+			.into_iter()
+			.map(|data| Cow::Owned(data.0))
+			.collect();
 
 		(gltf, buffers)
 	}
@@ -1294,7 +1299,7 @@ mod tests {
 	}
 }
 
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 use math::{AffineMatrix, Orientation, Point, Scale, UnitVector, Vector};
 use maths_rs::{

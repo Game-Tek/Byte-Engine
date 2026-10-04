@@ -61,7 +61,7 @@ impl GltfPrimitiveAttributes {
 /// The `GltfPrimitiveSource` struct lends one glTF primitive and its accessor data to the common mesh processor.
 pub(crate) struct GltfPrimitiveSource<'a> {
 	pub(crate) primitive: &'a gltf::Primitive<'a>,
-	pub(crate) buffers: &'a [gltf::buffer::Data],
+	pub(crate) buffers: &'a [Cow<'a, [u8]>],
 	pub(crate) material_slot: usize,
 	pub(crate) transform: math::Matrix,
 	pub(crate) transform_node: Option<u32>,

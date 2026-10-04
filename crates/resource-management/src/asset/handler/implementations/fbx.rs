@@ -17,7 +17,7 @@ mod tests {
 	use std::alloc::{Allocator, Global};
 
 	use super::{
-		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey,
+		FBXAssetHandler, FbxCulledPolygonCounts, FbxImportError, FbxMeshProcessingError, MaterialKey, RemappedCorners,
 		canonical_animation_node_map, decode_fbx_texture_image, fbx_brdf_material, fbx_texture_source_path,
 		finite_material_component, finite_material_product, import_fbx_animation, import_fbx_mesh_session, import_fbx_skeleton,
 		import_fbx_skin_binding, load_fbx_scene, matrix_to_affine, remap_triangle_corners, resolve_fbx_texture_path,
@@ -706,15 +706,17 @@ mod tests {
 	fn reusable_corner_remap_restores_scratch_and_rejects_invalid_indices() {
 		let mut remap = vec![u32::MAX; 4];
 
-		let batches =
-			remap_triangle_corners(4, &[0, 1, 2, 2, 1, 3], &mut remap, &Global).expect("valid triangles should remap");
+		let mut remapped = RemappedCorners::with_capacity_in(6, &Global);
 
-		assert_eq!(batches.len(), 1);
-		assert_eq!(batches[0].source_corners, vec![0, 1, 2, 3]);
-		assert_eq!(batches[0].indices, vec![0, 1, 2, 2, 1, 3]);
+		remap_triangle_corners(4, &[0, 1, 2, 2, 1, 3], &mut remap, &mut remapped).expect("valid triangles should remap");
+
+		assert_eq!(
+			remapped.primitives().collect::<Vec<_>>(),
+			[(&[0, 1, 2, 3][..], &[0, 1, 2, 2, 1, 3][..])]
+		);
 		assert!(remap.iter().all(|&slot| slot == u32::MAX));
 		assert!(matches!(
-			remap_triangle_corners(4, &[0, 1, 4], &mut remap, &Global),
+			remap_triangle_corners(4, &[0, 1, 4], &mut remap, &mut remapped),
 			Err(FbxImportError::InvalidCornerIndex)
 		));
 	}

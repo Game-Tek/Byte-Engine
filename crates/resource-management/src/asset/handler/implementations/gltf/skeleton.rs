@@ -481,7 +481,7 @@ pub(crate) fn mark_gltf_accessor_buffers(accessor: gltf::Accessor<'_>, required:
 /// Converts one glTF clip into node-indexed curves ready for a future CPU animation graph.
 pub(crate) fn import_gltf_animation(
 	gltf: &gltf::Gltf,
-	buffers: &[gltf::buffer::Data],
+	buffers: &[Cow<'_, [u8]>],
 	fragment: &str,
 	source_to_dense: &[u32],
 	skeleton: ReferenceModel<SkeletonModel>,
@@ -637,7 +637,7 @@ pub(crate) fn make_curve<V, T: Copy>(
 /// Imports one mesh-node skin and adjusts source inverse binds for the handler's flattened bind-pose vertices.
 pub(crate) fn import_gltf_skin_binding(
 	node: &gltf::Node<'_>,
-	buffers: &[gltf::buffer::Data],
+	buffers: &[Cow<'_, [u8]>],
 	graph: &GltfNodeGraph,
 ) -> Result<SkinBinding, GltfImportError> {
 	let skin = node.skin().ok_or(GltfImportError::MissingSkin)?;

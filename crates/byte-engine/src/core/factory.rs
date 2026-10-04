@@ -119,7 +119,7 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	#[inline]
 	pub fn derive(&self, handle: Handle, data: T) {
 		if let Some((observer, observed)) = &self.observation {
-			observer.observe_entity(handle, *observed, &data);
+			observer.observe_entity(handle, *observed);
 		}
 		let message = CreateMessage::new(handle, data);
 

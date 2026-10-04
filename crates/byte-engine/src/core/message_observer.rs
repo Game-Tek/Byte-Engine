@@ -5,8 +5,6 @@
 //! from the bus's existing route counters, so producers do no extra work.
 //! Ranges preserve sequence within one route, not ordering between routes.
 //! Factory hooks retain handles and Rust type names, never message payloads.
-//! Startup-installed typed collectors may copy selected factory values into
-//! their owning diagnostic subsystem.
 //!
 //! The entity catalog is indexed by handle and updated without locks or
 //! hashing: each entity is one word that packs the catalog indices of its
@@ -18,7 +16,7 @@
 )]
 
 use std::{
-	any::{Any, TypeId, type_name},
+	any::{TypeId, type_name},
 	fmt,
 	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 	sync::{Arc, OnceLock},
@@ -42,9 +40,6 @@ const MAX_TYPES: usize = 1 << INDEX_BITS;
 const INLINE_TYPES: u8 = ((u64::BITS - STATE_BITS) / INDEX_BITS) as u8;
 /// Entity word state meaning the entity's types live in the side catalog.
 const OVERFLOW_STATE: u8 = u8::MAX;
-
-type ObserveEntityValue = Box<dyn Fn(Handle, &dyn Any) + Send + Sync + 'static>;
-type ForgetEntityValue = Box<dyn Fn(Handle) + Send + Sync + 'static>;
 
 /// The `MessageObservationError` enum explains why passive observation could not start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,7 +152,6 @@ impl MessageObserver {
 				message_cursors: Mutex::new(Vec::new()),
 				types: (0..MAX_TYPES).map(|_| OnceLock::new()).collect(),
 				type_registry: Mutex::new(HashMap::default()),
-				collectors: AtomicUsize::new(0),
 				chunks,
 				chunks_touched: AtomicUsize::new(0),
 				side: Mutex::new(HashMap::default()),
@@ -238,49 +232,17 @@ impl MessageObserver {
 		);
 		let index = registry.len() as u16;
 		let installed = inner.types[usize::from(index)]
-			.set(TypeEntry {
-				name: type_name::<T>(),
-				collector: OnceLock::new(),
-			})
+			.set(type_name::<T>())
 			.is_ok();
 		debug_assert!(installed, "A catalog type slot was initialized twice");
 		registry.insert(TypeId::of::<T>(), index);
 		ObservedType(index)
 	}
 
-	/// Adds one semantic factory representation and forwards its borrowed value to a matching collector.
-	pub(crate) fn observe_entity(&self, handle: Handle, observed: ObservedType, value: &dyn Any) {
+	/// Adds one semantic factory representation to the entity catalog.
+	pub(crate) fn observe_entity(&self, handle: Handle, observed: ObservedType) {
 		let inner = &*self.inner;
 		inner.catalog(inner.entry(handle.id()), handle, observed);
-		if inner.collectors.load(Ordering::Acquire) != 0
-			&& let Some(collector) = inner.indexed_type(observed.0).collector.get()
-		{
-			(collector.observe)(handle, value);
-		}
-	}
-
-	/// Registers one startup-time collector for selected factory values and deletions.
-	pub(crate) fn collect_entity_values<T, O, F>(&self, observe: O, forget: F)
-	where
-		T: 'static,
-		O: Fn(Handle, &T) + Send + Sync + 'static,
-		F: Fn(Handle) + Send + Sync + 'static,
-	{
-		let collector = EntityValueCollector {
-			observe: Box::new(move |handle, value| {
-				let value = value
-					.downcast_ref::<T>()
-					.expect("An entity value collector must receive its registered Rust type");
-				observe(handle, value);
-			}),
-			forget: Box::new(forget),
-		};
-		let observed = self.observed_type::<T>();
-		assert!(
-			self.inner.indexed_type(observed.0).collector.set(collector).is_ok(),
-			"Entity value collection is already registered. The most likely cause is that more than one inspector tried to collect the same component type."
-		);
-		self.inner.collectors.fetch_add(1, Ordering::AcqRel);
 	}
 
 	/// Removes a terminally deleted handle from the current entity catalog.
@@ -291,21 +253,16 @@ impl MessageObserver {
 		{
 			inner.side.lock().remove(&handle.id());
 		}
-		if inner.collectors.load(Ordering::Acquire) != 0 {
-			inner.forget_collected(handle);
-		}
 	}
 }
 
 /// The `MessageObserverInner` struct owns the storage shared by producers and the inspector.
 struct MessageObserverInner {
 	message_cursors: Mutex<Vec<u64>>,
-	/// Indexed catalog types, registered once through `type_registry`.
-	types: Box<[OnceLock<TypeEntry>]>,
+	/// Rust names of the indexed catalog types, registered once through `type_registry`.
+	types: Box<[OnceLock<&'static str>]>,
 	/// Catalog index for each type id. Only type registration takes this lock.
 	type_registry: Mutex<HashMap<TypeId, u16>>,
-	/// Installed collectors, so cataloging skips the lookup when there are none.
-	collectors: AtomicUsize,
 	/// Handle-indexed entity words, allocated one chunk at a time on first touch.
 	chunks: Box<[AtomicPtr<EntityChunk>]>,
 	/// Chunk slots that may hold a chunk, so snapshots skip the untouched rest of the table.
@@ -317,27 +274,11 @@ struct MessageObserverInner {
 /// The `EntityChunk` type holds the entity words for one contiguous handle range.
 type EntityChunk = [AtomicU64; ENTITIES_PER_CHUNK];
 
-/// The `TypeEntry` struct describes one indexed catalog type and its optional collector.
-struct TypeEntry {
-	name: &'static str,
-	collector: OnceLock<EntityValueCollector>,
-}
-
-/// The `EntityValueCollector` struct forwards one selected component type without retaining general factory values.
-struct EntityValueCollector {
-	observe: ObserveEntityValue,
-	forget: ForgetEntityValue,
-}
-
 impl MessageObserverInner {
-	fn indexed_type(&self, index: u16) -> &TypeEntry {
+	fn type_name(&self, index: u16) -> &'static str {
 		self.types[usize::from(index)]
 			.get()
 			.expect("An indexed catalog type is registered before any entity refers to it")
-	}
-
-	fn type_name(&self, index: u16) -> &'static str {
-		self.indexed_type(index).name
 	}
 
 	/// Returns the entity word of a handle, allocating its chunk on first touch.
@@ -420,15 +361,6 @@ impl MessageObserverInner {
 	fn catalog_in_side(&self, handle: Handle, observed: ObservedType) {
 		push_unique(self.side.lock().entry(handle.id()).or_default(), observed);
 	}
-
-	/// Tells every installed collector that a handle was deleted.
-	fn forget_collected(&self, handle: Handle) {
-		for entry in self.types.iter().map_while(OnceLock::get) {
-			if let Some(collector) = entry.collector.get() {
-				(collector.forget)(handle);
-			}
-		}
-	}
 }
 
 impl Drop for MessageObserverInner {
@@ -466,8 +398,6 @@ fn push_unique(types: &mut Vec<u16>, observed: ObservedType) {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::{Arc, Mutex};
-
 	use super::{INLINE_TYPES, MessageObserver};
 	use crate::core::factory::Handle;
 
@@ -477,7 +407,7 @@ mod tests {
 			($($marker:ident),*) => {{
 				$(struct $marker;)*
 				let catalog: &[fn(&MessageObserver, Handle)] = &[$(|observer, handle| {
-					observer.observe_entity(handle, observer.observed_type::<$marker>(), &$marker);
+					observer.observe_entity(handle, observer.observed_type::<$marker>());
 				}),*];
 				for record in catalog.iter().take(count) {
 					record(observer, handle);
@@ -525,29 +455,5 @@ mod tests {
 		observer.forget_entity(Handle::from_id(7_000_000));
 
 		assert!(observer.entities().is_empty());
-	}
-
-	#[test]
-	fn collectors_see_values_and_deletions_for_their_type_only() {
-		struct Tracked(u32);
-		struct Other;
-		let observer = MessageObserver::new();
-		let seen = Arc::new(Mutex::new(Vec::new()));
-		let forgotten = Arc::new(Mutex::new(Vec::new()));
-		let (collected, dropped) = (Arc::clone(&seen), Arc::clone(&forgotten));
-		observer.collect_entity_values::<Tracked, _, _>(
-			move |handle, value| collected.lock().unwrap().push((handle, value.0)),
-			move |handle| dropped.lock().unwrap().push(handle),
-		);
-		let tracked = observer.observed_type::<Tracked>();
-		let other = observer.observed_type::<Other>();
-		let handle = Handle::from_id(9);
-
-		observer.observe_entity(handle, other, &Other);
-		observer.observe_entity(handle, tracked, &Tracked(42));
-		observer.forget_entity(handle);
-
-		assert_eq!(*seen.lock().unwrap(), [(handle, 42)]);
-		assert_eq!(*forgotten.lock().unwrap(), [handle]);
 	}
 }

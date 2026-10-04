@@ -189,19 +189,15 @@ impl GtaoPass {
 		let depth_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
-				.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.min_lod(0f32)
 				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let ao_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.min_lod(0f32)
-				.max_lod(0f32),
+				.addressing_mode(ghi::SamplerAddressingModes::Border {}),
 		);
 		let half_resolution_image = |name| {
 			ghi::image::Builder::new(ghi::Formats::R8UNORM, ghi::Uses::Storage | ghi::Uses::Image)

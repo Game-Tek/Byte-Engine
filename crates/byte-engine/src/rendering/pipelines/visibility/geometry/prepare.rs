@@ -685,7 +685,11 @@ fn build_generated_meshlets(
 			triangle_offset: primitive_indices.len() as u32,
 			primitive_count: meshlet_vertices.len() as u32,
 			triangle_count: meshlet_triangles.len() as u32,
-			center_radius: bounding_sphere(meshlet_vertices, positions),
+			// A conservative object-space bounding sphere around the meshlet's vertices.
+			center_radius: sphere_around(meshlet_vertices.iter().map(|&index| {
+				let (x, y, z) = positions[index as usize];
+				[x, y, z, 0.0]
+			})),
 			cone_apex_cutoff: [0.0, 0.0, 0.0, 2.0],
 			cone_axis: encode_octahedral_unit_vector((0.0, 0.0, 1.0)),
 		});
@@ -712,14 +716,6 @@ fn build_generated_meshlets(
 	(vertex_indices, primitive_indices, meshlets)
 }
 
-/// Computes a conservative object-space bounding sphere for one generated meshlet.
-fn bounding_sphere(meshlet_vertices: &[u16], positions: &[(f32, f32, f32)]) -> [f32; 4] {
-	sphere_around(meshlet_vertices.iter().map(|&index| {
-		let (x, y, z) = positions[index as usize];
-		[x, y, z, 0.0]
-	}))
-}
-
 /// Returns a sphere that contains every meshlet's bounding sphere, as xyz center and w radius.
 pub(crate) fn enclosing_sphere(meshlets: &[ShaderMeshletData]) -> [f32; 4] {
 	sphere_around(meshlets.iter().map(|meshlet| meshlet.center_radius))
@@ -731,25 +727,21 @@ pub(crate) fn enclosing_sphere(meshlets: &[ShaderMeshletData]) -> [f32; 4] {
 /// It centers on the box around the spheres, which keeps it close to the smallest one for the elongated shapes meshes
 /// usually have. No spheres give a zero sphere.
 fn sphere_around(spheres: impl Iterator<Item = [f32; 4]> + Clone) -> [f32; 4] {
-	let mut min = [f32::INFINITY; 3];
-	let mut max = [f32::NEG_INFINITY; 3];
+	use maths_rs::{Vec3f, dist, max, min};
+
+	let (mut low, mut high) = (Vec3f::from(f32::INFINITY), Vec3f::from(f32::NEG_INFINITY));
 	for [x, y, z, radius] in spheres.clone() {
-		for (axis, value) in [x, y, z].into_iter().enumerate() {
-			min[axis] = min[axis].min(value - radius);
-			max[axis] = max[axis].max(value + radius);
-		}
+		low = min(low, Vec3f::new(x, y, z) - radius);
+		high = max(high, Vec3f::new(x, y, z) + radius);
 	}
-	if min[0] > max[0] {
+	if low.x > high.x {
 		return [0.0; 4];
 	}
-	let center: [f32; 3] = std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5);
+	let center = (low + high) * 0.5;
 	let radius = spheres
-		.map(|[x, y, z, radius]| {
-			let delta = [x - center[0], y - center[1], z - center[2]];
-			(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt() + radius
-		})
+		.map(|[x, y, z, radius]| dist(Vec3f::new(x, y, z), center) + radius)
 		.fold(0.0f32, f32::max);
-	[center[0], center[1], center[2], radius]
+	[center.x, center.y, center.z, radius]
 }
 
 /* Attribute packing */

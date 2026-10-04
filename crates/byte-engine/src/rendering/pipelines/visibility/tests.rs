@@ -6,7 +6,7 @@ use besl::vm::{
 };
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
-use super::render_pass::OcclusionPhase;
+use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::MESH_FLAG_DOUBLE_SIDED;
 use crate::rendering::shader_vm_test::{
 	array_buffer, assert_rgba_close, buffer, compile, empty_image, rgba, run_at, texture_2d,
@@ -89,25 +89,6 @@ macro_rules! asset {
 	};
 }
 
-/// Verifies one checked-in visibility asset compiles with the platform shader compiler, past BESL linking.
-///
-/// `settings` mirror the asset's `.bead` file.
-#[cfg(target_os = "macos")]
-async fn assert_lowers_to_the_platform_shader_language(
-	name: &str,
-	source: &str,
-	settings: resource_management::shader::ShaderGenerationSettings,
-) {
-	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
-
-	let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
-		.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
-	PlatformShaderCompiler::new()
-		.generate(&settings.name(name.to_string()), &root)
-		.await
-		.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
-}
-
 /// Builds one workgroup of lane configurations over a 2D tile at `base`.
 fn tile_configs<const N: usize>(width: u32, base: [u32; 2]) -> [ExecutionConfig; N] {
 	std::array::from_fn(|lane| {
@@ -164,14 +145,8 @@ fn read_output_u32(buffer: &besl::vm::Buffer, member: &str) -> u32 {
 #[test]
 fn masked_fragment_assets_parse_and_link_with_structural_interfaces() {
 	for source in [
-		include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/masked-fragment.besl"
-		)),
-		include_str!(concat!(
-			env!("CARGO_MANIFEST_DIR"),
-			"/assets/rendering/visibility/masked-depth-fragment.besl"
-		)),
+		asset_source!("masked-fragment.besl"),
+		asset_source!("masked-depth-fragment.besl"),
 	] {
 		asset_program(source);
 	}
@@ -217,10 +192,8 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 /// A column-major identity matrix in the BESL VM representation.
 const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
-/// Returns a column-major affine identity matrix in the BESL VM representation.
-fn identity_affine_matrix() -> [f32; 12] {
-	[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-}
+/// A column-major affine identity matrix in the BESL VM representation.
+const IDENTITY_AFFINE_MATRIX: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 
 /// Returns a view-projection matrix that moves identity geometry outside the horizontal clip range.
 fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
@@ -234,11 +207,6 @@ fn horizontally_translated_matrix(translation: f32) -> [f32; 16] {
 /// `relative_meshlet_index` counts from the instance's first meshlet, `base_meshlet_index`.
 fn meshlet_instance(relative_meshlet_index: u32, instance_index: u32) -> u32 {
 	relative_meshlet_index | (instance_index << MESHLET_INSTANCE_BITS)
-}
-
-/// The payload of the fixture instance's first meshlet, which lives at [`FIXTURE_MESHLET_INDEX`] scene-wide.
-fn fixture_meshlet_instance() -> Value {
-	Value::U32(meshlet_instance(0, FIXTURE_INSTANCE_INDEX as u32))
 }
 
 /// The `TaskMeshFixture` struct selects the instance and normal-cone inputs a task-culling test exercises.
@@ -291,7 +259,7 @@ fn run_meshlet_task_workgroup(
 			.write_array_member(view_index, "view_projection", Value::Mat4F(view_projection))
 			.expect("task view");
 		views
-			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(identity_affine_matrix()))
+			.write_array_member(view_index, "inverse_view", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 			.expect("task inverse view");
 	}
 	if occlusion.is_some() {
@@ -307,7 +275,7 @@ fn run_meshlet_task_workgroup(
 	}
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("task mesh transform");
 	meshes
 		.write_array_member(FIXTURE_INSTANCE_INDEX, "bounding_sphere", Value::Vec4F(mesh.bounding_sphere))
@@ -383,27 +351,25 @@ fn run_meshlet_task_workgroup(
 				.with_thread_position(workgroup_index * TASK_WORKGROUP_SIZE + lane)
 		})
 		.collect::<Vec<_>>();
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(VIEWS_SLOT, &mut views);
-		descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
-		descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
-		descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
-		let record = occlusion.map(|occlusion| {
-			descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
-			descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
-			occlusion.record
-		});
-		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_task_outputs(&mut task_outputs);
-		descriptors.bind_workgroup_state(&mut workgroup_state);
-		program
-			.run_workgroup(&mut descriptors, &configs)
-			.expect("production task workgroup execution");
-		drop(descriptors);
-		if let Some(record) = record {
-			*record = read_u32(&occlusion_visibility, packed_work as usize);
-		}
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
+	descriptors.bind_buffer(MESH_DATA_SLOT, &mut meshes);
+	descriptors.bind_buffer(MESHLETS_SLOT, &mut meshlets);
+	descriptors.bind_buffer(MESH_DISPATCH_WORK_SLOT, &mut mesh_dispatch_work);
+	let record = occlusion.map(|occlusion| {
+		descriptors.bind_texture(OCCLUSION_PYRAMID_SLOT, occlusion.pyramid);
+		descriptors.bind_buffer(OCCLUSION_VISIBILITY_SLOT, &mut occlusion_visibility);
+		occlusion.record
+	});
+	descriptors.bind_push_constant(&mut push_constant);
+	descriptors.bind_task_outputs(&mut task_outputs);
+	descriptors.bind_workgroup_state(&mut workgroup_state);
+	program
+		.run_workgroup(&mut descriptors, &configs)
+		.expect("production task workgroup execution");
+	drop(descriptors);
+	if let Some(record) = record {
+		*record = read_u32(&occlusion_visibility, packed_work as usize);
 	}
 	task_outputs
 }
@@ -442,7 +408,7 @@ fn batched_meshlet_instance(relative_meshlet_index: u32, view_offset: u32) -> Va
 fn task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
 	let payload = |center_radius| camera_task_payload(&[center_radius], TaskMeshFixture::default(), 0);
 
-	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [fixture_meshlet_instance()]);
+	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [batched_meshlet_instance(0, 0)]);
 	assert_eq!(payload([4.0, 0.0, 0.5, 0.1]), []);
 }
 
@@ -474,20 +440,14 @@ fn task_workgroup_compacts_mixed_meshlets_in_lane_order() {
 		0,
 	);
 
-	assert_eq!(
-		payload,
-		[
-			fixture_meshlet_instance(),
-			Value::U32(meshlet_instance(2, FIXTURE_INSTANCE_INDEX as u32))
-		]
-	);
+	assert_eq!(payload, [batched_meshlet_instance(0, 0), batched_meshlet_instance(2, 0)]);
 }
 
 /// Verifies culling reads the work item selected by the global dispatch position.
 #[test]
 fn task_main_selects_later_batched_workgroup() {
 	let payload = camera_task_payload(&[[0.0, 0.0, 0.5, 0.1]], TaskMeshFixture::default(), 1);
-	assert_eq!(payload, [fixture_meshlet_instance()]);
+	assert_eq!(payload, [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies posed geometry reaches every view of the batch, whatever its bind-pose bounds.
@@ -554,10 +514,6 @@ fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
 }
 
 /* Occlusion culling */
-
-const OCCLUSION_PYRAMID_WIDTH: u32 = 512;
-const OCCLUSION_PYRAMID_HEIGHT: u32 = 256;
-const OCCLUSION_PYRAMID_MIP_COUNT: u32 = 9;
 
 /// The camera that drew the occlusion fixture pyramids: at the origin, looking down +Z.
 fn occlusion_fixture_camera() -> crate::rendering::View {
@@ -758,14 +714,6 @@ fn late_pass_clears_the_record_of_instances_outside_the_view() {
 	assert_eq!(record, 0);
 }
 
-/// Runs one 8x8 workgroup of an occlusion pyramid build stage whose source and destination are already bound.
-fn run_occlusion_pyramid_stage(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>) {
-	let configs = tile_configs::<TILE_WORKGROUP_SIZE>(TILE_WORKGROUP_WIDTH, [0, 0]);
-	program
-		.run_workgroup(descriptors, &configs)
-		.expect("occlusion pyramid stage execution");
-}
-
 /// Verifies each seeded texel keeps the farthest depth of every pixel its footprint touches, including pixels it only
 /// partly covers.
 #[test]
@@ -779,7 +727,7 @@ fn occlusion_pyramid_seed_keeps_the_farthest_depth_under_each_texel() {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut seeded);
-	run_occlusion_pyramid_stage(&program, &mut descriptors);
+	run_tile_workgroup_containing(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
 	assert_rgba_close(rgba(&seeded, [0, 0]), [0.3, 0.0, 0.0, 1.0], 0.0);
@@ -797,7 +745,7 @@ fn occlusion_pyramid_reduce_keeps_the_farthest_of_four_texels() {
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_image(ResourceSlot::new(1033), &mut source);
 	descriptors.bind_image(ResourceSlot::new(1034), &mut reduced);
-	run_occlusion_pyramid_stage(&program, &mut descriptors);
+	run_tile_workgroup_containing(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
 
 	assert_rgba_close(rgba(&reduced, [0, 0]), [0.4, 0.0, 0.0, 1.0], 0.0);
@@ -835,7 +783,7 @@ fn assert_triangle_mesh_program(
 	let mut views = buffer(&program, VIEWS_SLOT);
 	let mut meshes = buffer(&program, MESH_DATA_SLOT);
 	meshes
-		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(identity_affine_matrix()))
+		.write_array_member(FIXTURE_INSTANCE_INDEX, "model", Value::Mat4x3F(IDENTITY_AFFINE_MATRIX))
 		.expect("mesh model matrix");
 	for (field, value) in [
 		("base_vertex_index", 0),
@@ -1069,15 +1017,12 @@ fn instance_texture(width: u32, instance: impl Fn(usize) -> u32) -> Texture {
 	texture
 }
 
-/// The `MaterialOffsets` struct holds the buffers the material-offset pass writes.
-struct MaterialOffsets {
-	offsets: besl::vm::Buffer,
-	scratch: besl::vm::Buffer,
-	dispatches: besl::vm::Buffer,
-}
-
-/// Runs the material-offset pass's one 256-thread workgroup over `material_counts`.
-fn run_material_offset(program: &ExecutableProgram, material_counts: &mut besl::vm::Buffer) -> MaterialOffsets {
+/// Runs the material-offset pass's one 256-thread workgroup over `material_counts`, and returns the buffers it writes:
+/// the offsets, the scratch cursors, and the indirect dispatches.
+fn run_material_offset(
+	program: &ExecutableProgram,
+	material_counts: &mut besl::vm::Buffer,
+) -> (besl::vm::Buffer, besl::vm::Buffer, besl::vm::Buffer) {
 	let mut offsets = buffer(program, MATERIAL_OFFSET_SLOT);
 	let mut scratch = buffer(program, MATERIAL_OFFSET_SCRATCH_SLOT);
 	let mut dispatches = buffer(program, MATERIAL_DISPATCH_SLOT);
@@ -1092,11 +1037,7 @@ fn run_material_offset(program: &ExecutableProgram, material_counts: &mut besl::
 		.run_workgroup(&mut descriptors, &tile_configs::<256>(256, [0, 0]))
 		.expect("material-offset workgroup execution");
 	drop(descriptors);
-	MaterialOffsets {
-		offsets,
-		scratch,
-		dispatches,
-	}
+	(offsets, scratch, dispatches)
 }
 
 /// Verifies the offset scan gives every material the exclusive sum of the counts before it, across every thread of its
@@ -1112,11 +1053,7 @@ fn material_offset_scans_every_material_count() {
 			.expect("material count");
 	}
 
-	let MaterialOffsets {
-		offsets,
-		scratch,
-		dispatches,
-	} = run_material_offset(&program, &mut material_counts);
+	let (offsets, scratch, dispatches) = run_material_offset(&program, &mut material_counts);
 
 	let mut expected_offset = 0;
 	for material in 0..super::layout::MAX_MATERIALS {
@@ -1162,11 +1099,8 @@ fn visibility_material_compute_pipeline_counts_offsets_and_maps_valid_pixels() {
 	assert_eq!(read_u32(&material_counts, 0), 0);
 
 	// The offset pass converts sparse counts into exclusive offsets and one indirect dispatch tuple per material.
-	let MaterialOffsets {
-		offsets: material_offsets,
-		scratch: mut material_offset_scratch,
-		dispatches: material_dispatches,
-	} = run_material_offset(&material_offset_program, &mut material_counts);
+	let (material_offsets, mut material_offset_scratch, material_dispatches) =
+		run_material_offset(&material_offset_program, &mut material_counts);
 	assert_eq!(read_u32(&material_offsets, 2), 0);
 	assert_eq!(read_u32(&material_offsets, 5), 2);
 	assert_eq!(read_u32(&material_offsets, 6), 3);
@@ -1916,11 +1850,6 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 	parameters
 }
 
-/// Builds a linear depth pyramid whose mip zero holds `linear_depth` at `width` x `height`.
-fn ssgi_depth_pyramid(width: u32, height: u32, linear_depth: &[[f32; 4]]) -> Texture {
-	texture_2d(width, height, linear_depth)
-}
-
 /// Returns the view-space ray `(x / z, y / z)` through the center of pixel `(x, y)` of a square fixture image.
 fn ssgi_ray_at(x: f32, y: f32, extent: u32) -> [f32; 2] {
 	let projection = ssgi_projection();
@@ -1965,25 +1894,11 @@ fn run_ssgi_trace(
 	pixel: [u32; 2],
 ) -> [f32; 4] {
 	let (depth, radiance) = ssgi_floor_scene(SSGI_EXTENT, wall_z);
-	run_ssgi_trace_with_radiance(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, pixel)
+	run_ssgi_trace_outputs(program, SSGI_EXTENT, &depth, &radiance, history, frame_index, &[pixel])[0].0
 }
 
 /// Runs the SSGI trace at `extent` pixels square with a full-resolution previous radiance image, twice the trace
-/// extent on each axis, and returns the raw radiance it writes.
-fn run_ssgi_trace_with_radiance(
-	program: &ExecutableProgram,
-	extent: u32,
-	depth: &[[f32; 4]],
-	radiance: &[[f32; 4]],
-	history: bool,
-	frame_index: u32,
-	pixel: [u32; 2],
-) -> [f32; 4] {
-	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, &[pixel])[0].0
-}
-
-/// Runs the SSGI trace like [`run_ssgi_trace_with_radiance`] and returns the raw radiance and the stored normal it
-/// writes at each of `pixels`.
+/// extent on each axis, and returns the raw radiance and the stored normal it writes at each of `pixels`.
 ///
 /// The trace shares a depth tile across its workgroup, so this runs each 8x8 workgroup that holds one of `pixels` once.
 fn run_ssgi_trace_outputs(
@@ -1998,7 +1913,7 @@ fn run_ssgi_trace_outputs(
 	let mut view = gtao_view_data(program, extent, extent);
 	// A static camera reprojects through the unchanged projection.
 	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
-	let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, depth);
+	let mut depth_pyramid = texture_2d(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
 	let mut output = empty_image(extent, extent);
 	let mut normals = empty_image(extent, extent);
@@ -2137,11 +2052,11 @@ impl SsgiTemporalFixture {
 		let texel_count = (extent * extent) as usize;
 		let mut view = gtao_view_data(&program, extent, extent);
 		let mut parameters = ssgi_parameters(&program, self.history.then(ssgi_projection), 0);
-		let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.depth);
+		let mut depth_pyramid = texture_2d(extent, extent, &self.depth);
 		let mut raw = texture_2d(extent, extent, &self.raw);
 		let mut output = empty_image(extent, extent);
 		let mut previous_history = texture_2d(extent, extent, &vec![self.previous_history; texel_count]);
-		let mut previous_depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.previous_depth);
+		let mut previous_depth_pyramid = texture_2d(extent, extent, &self.previous_depth);
 		let mut normals = texture_2d(extent, extent, &self.normals);
 		let mut previous_normals = texture_2d(extent, extent, &self.previous_normals);
 		let mut descriptors = DescriptorBindings::new();
@@ -2287,7 +2202,7 @@ fn run_ssgi_upscale(
 	let mut visibility_depth = texture_2d(full_extent, full_extent, device_depth);
 	let mut source = texture_2d(low_extent, low_extent, radiance);
 	let mut output = empty_image(full_extent, full_extent);
-	let mut depth_pyramid = ssgi_depth_pyramid(low_extent, low_extent, low_resolution_depth);
+	let mut depth_pyramid = texture_2d(low_extent, low_extent, low_resolution_depth);
 	let mut normals = texture_2d(low_extent, low_extent, low_resolution_normals);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
@@ -2441,7 +2356,7 @@ fn ssgi_trace_rays_toward_the_camera_reach_the_floor_in_front_of_a_wall() {
 
 	let mut hits = 0;
 	for frame_index in 0..64 {
-		let radiance = run_ssgi_trace_with_radiance(&program, EXTENT, &depth, &radiance, true, frame_index, pixel);
+		let radiance = run_ssgi_trace_outputs(&program, EXTENT, &depth, &radiance, true, frame_index, &[pixel])[0].0;
 		if radiance[3] != 0.0 {
 			assert_rgba_close(radiance, SSGI_LIT_COLOR, 0.0001);
 			hits += 1;
@@ -2686,105 +2601,76 @@ fn contact_shadow_filter_smooths_dither_without_crossing_depth_edges() {
 	assert_eq!(wall_edge, 1.0, "The floor behind the wall darkened the wall's top edge.");
 }
 
-/// Verifies the contact-shadow trace and filter compile with the platform shader compiler, past BESL linking.
+/// Verifies every visibility pass compiles with the platform shader compiler, past BESL linking.
+///
+/// Each entry's settings mirror the asset's `.bead` file.
 #[cfg(target_os = "macos")]
 #[compio::test]
-async fn contact_shadows_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
+async fn visibility_assets_lower_to_the_platform_shader_language() {
+	use resource_management::shader::ShaderGenerationSettings as Settings;
+	use resource_management::shader::besl::backends::platform::PlatformShaderCompiler;
+	use utils::Extent;
 
-	for (name, source) in [
-		("contact_shadows", asset_source!("contact-shadows.besl")),
-		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl")),
-	] {
-		assert_lowers_to_the_platform_shader_language(
-			name,
-			source,
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		)
-		.await;
-	}
-}
-
-/// Verifies the meshlet culling and rasterization stages, and the material offset and pixel mapping that follow them,
-/// compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn meshlet_raster_stages_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
+	let mesh = || Settings::mesh(64, 126, Extent::line(128));
+	let tile = || Settings::compute(Extent::square(8));
 	for (name, source, settings) in [
 		(
 			"meshlet_task",
 			asset_source!("meshlet-task.besl"),
-			ShaderGenerationSettings::task(utils::Extent::line(32), 192),
+			Settings::task(Extent::line(32), 192),
 		),
-		(
-			"visibility_mesh",
-			asset_source!("visibility-mesh.besl"),
-			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-		),
-		(
-			"shadow_mesh",
-			asset_source!("shadow-mesh.besl"),
-			ShaderGenerationSettings::mesh(64, 126, utils::Extent::line(128)),
-		),
+		("visibility_mesh", asset_source!("visibility-mesh.besl"), mesh()),
+		("shadow_mesh", asset_source!("shadow-mesh.besl"), mesh()),
 		(
 			"visibility_fragment",
 			asset_source!("visibility-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
+			Settings::fragment(),
 		),
-		(
-			"masked_fragment",
-			asset_source!("masked-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
-		),
+		("masked_fragment", asset_source!("masked-fragment.besl"), Settings::fragment()),
 		(
 			"masked_depth_fragment",
 			asset_source!("masked-depth-fragment.besl"),
-			ShaderGenerationSettings::fragment(),
+			Settings::fragment(),
 		),
 		(
 			"material_offset",
 			asset_source!("material-offset.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::line(256)),
+			Settings::compute(Extent::line(256)),
 		),
 		(
 			"pixel_mapping",
 			asset_source!("pixel-mapping.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(16)),
+			Settings::compute(Extent::square(16)),
+		),
+		("hiz_seed", asset_source!("hiz-seed.besl"), tile()),
+		("hiz_reduce", asset_source!("hiz-reduce.besl"), tile()),
+		("contact_shadows", asset_source!("contact-shadows.besl"), tile()),
+		("contact_shadow_filter", asset_source!("contact-shadows-filter.besl"), tile()),
+		("ssgi_trace", asset_source!("ssgi-trace.besl"), tile()),
+		("ssgi_temporal", asset_source!("ssgi-temporal.besl"), tile()),
+		("ssgi_upscale", asset_source!("ssgi-upscale.besl"), tile()),
+		(
+			"light_clusters",
+			asset_source!("light-clusters.besl"),
+			Settings::compute(Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32)),
 		),
 		(
-			"hiz_seed",
-			asset_source!("hiz-seed.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			"directional_shadow_receiver_bounds",
+			asset_source!("directional-shadow-receiver-bounds.besl"),
+			Settings::compute(Extent::square(RECEIVER_BOUNDS_WORKGROUP_WIDTH)),
 		),
 		(
-			"hiz_reduce",
-			asset_source!("hiz-reduce.besl"),
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
+			"directional_shadow_cascade_fit",
+			asset_source!("directional-shadow-cascade-fit.besl"),
+			Settings::compute(Extent::line(4)),
 		),
 	] {
-		assert_lowers_to_the_platform_shader_language(name, source, settings).await;
-	}
-}
-
-/// Verifies the SSGI trace, denoiser, and upscale compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn ssgi_passes_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
-	for (name, source) in [
-		("ssgi_trace", asset_source!("ssgi-trace.besl")),
-		("ssgi_temporal", asset_source!("ssgi-temporal.besl")),
-		("ssgi_upscale", asset_source!("ssgi-upscale.besl")),
-	] {
-		assert_lowers_to_the_platform_shader_language(
-			name,
-			source,
-			ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		)
-		.await;
+		let root = besl::lex(besl::parse(source).unwrap_or_else(|error| panic!("{name} should parse: {error:?}")))
+			.unwrap_or_else(|error| panic!("{name} should link: {error:?}"));
+		PlatformShaderCompiler::new()
+			.generate(&settings.name(name.to_string()), &root)
+			.await
+			.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error:?}"));
 	}
 }
 
@@ -2953,19 +2839,6 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 	assert_eq!(run_light_clusters(&lights, dim, near_cluster), [0b10100, 0]);
 	// At an exposure of one each light reaches 320 m, so only the cone facing away stays out of the view.
 	assert_eq!(run_light_clusters(&lights, 1.0, far_cluster), [0b10111, 1 << 8]);
-}
-
-/// Verifies the light-cluster pass compiles with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn light_clusters_lower_to_the_platform_shader_language() {
-	let workgroup = utils::Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32);
-	assert_lowers_to_the_platform_shader_language(
-		"light_clusters",
-		asset_source!("light-clusters.besl"),
-		resource_management::shader::ShaderGenerationSettings::compute(workgroup),
-	)
-	.await;
 }
 
 /* Directional shadow cascade fit */
@@ -3306,26 +3179,4 @@ fn cascade_fit_shrinks_only_by_two_size_steps_in_the_besl_vm() {
 		"A box three steps smaller should shrink the cascade, found {shrunk} of {fitted}."
 	);
 	assert_eq!(fit(0.5), fitted, "The original box should grow the cascade back at once.");
-}
-
-/// Verifies the cascade-fit passes compile with the platform shader compiler, past BESL linking.
-#[cfg(target_os = "macos")]
-#[compio::test]
-async fn cascade_fit_passes_lower_to_the_platform_shader_language() {
-	use resource_management::shader::ShaderGenerationSettings;
-
-	for (name, source, workgroup) in [
-		(
-			"directional_shadow_receiver_bounds",
-			asset_source!("directional-shadow-receiver-bounds.besl"),
-			utils::Extent::square(RECEIVER_BOUNDS_WORKGROUP_WIDTH),
-		),
-		(
-			"directional_shadow_cascade_fit",
-			asset_source!("directional-shadow-cascade-fit.besl"),
-			utils::Extent::line(4),
-		),
-	] {
-		assert_lowers_to_the_platform_shader_language(name, source, ShaderGenerationSettings::compute(workgroup)).await;
-	}
 }

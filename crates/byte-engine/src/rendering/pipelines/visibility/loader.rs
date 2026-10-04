@@ -216,13 +216,7 @@ impl VisibilityLoaderLane {
 
 /// Builds the default sampler used by visibility material textures.
 fn material_sampler() -> ghi::sampler::Builder {
-	ghi::sampler::Builder::new()
-		.filtering_mode(ghi::FilteringModes::Linear)
-		.reduction_mode(ghi::SamplingReductionModes::WeightedAverage)
-		.mip_map_mode(ghi::FilteringModes::Linear)
-		.addressing_mode(ghi::SamplerAddressingModes::Repeat)
-		.min_lod(0f32)
-		.max_lod(0f32)
+	ghi::sampler::Builder::new().addressing_mode(ghi::SamplerAddressingModes::Repeat)
 }
 
 /// Returns whether an image can safely provide the normalized Type C IES intensity-map contract.

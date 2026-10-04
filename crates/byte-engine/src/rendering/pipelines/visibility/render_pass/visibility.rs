@@ -31,10 +31,10 @@ impl VisibilityPhase {
 
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
 pub(super) struct VisibilityPass {
-	/// The base set and the sink's occlusion culling set.
-	descriptor_sets: [ghi::DescriptorSetHandle; 2],
+	/// The base set and the sink's occlusion culling set, which the shadow maps bind too.
+	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
-	pipelines: PhasePipelines,
+	pub(super) pipelines: PhasePipelines,
 	primitive_index: ghi::BaseImageHandle,
 	instance_id: ghi::BaseImageHandle,
 	depth: ghi::BaseImageHandle,
@@ -50,23 +50,11 @@ impl VisibilityPass {
 	) -> Self {
 		Self {
 			descriptor_sets,
-			pipelines: PhasePipelines::request(
-				pipeline_manager,
-				[
-					"byte-engine/rendering/visibility/visibility.pipeline",
-					"byte-engine/rendering/visibility/masked-visibility.pipeline",
-					"byte-engine/rendering/visibility/double-sided-visibility.pipeline",
-					"byte-engine/rendering/visibility/double-sided-masked-visibility.pipeline",
-				],
-			),
+			pipelines: PhasePipelines::request(pipeline_manager, "visibility"),
 			primitive_index,
 			instance_id,
 			depth,
 		}
-	}
-
-	pub(super) fn pipelines(&self, pipeline_manager: &PipelineManagerClient) -> Option<[ghi::PipelineHandle; 4]> {
-		self.pipelines.resolve(pipeline_manager)
 	}
 
 	/// Records the work ranges of one phase into the visibility buffers: the solid, masked, and both double-sided
@@ -121,28 +109,21 @@ impl VisibilityPass {
 		c.start_region(|label| {
 			label.write_str(phase.label())?;
 			label.write_str(" Visibility Buffer")?;
-			label.write_str(occlusion.label())
+			label.write_str(match occlusion {
+				OcclusionPhase::Early => " (Early)",
+				OcclusionPhase::Late => " (Late)",
+				OcclusionPhase::Disabled | OcclusionPhase::Test => "",
+			})
 		});
 		let c = c.start_render_pass(extent, &attachments);
-		// The camera is view zero. Blend materials have no alpha test and keep back-face culling.
-		match phase {
-			VisibilityPhase::Opaque => record_meshlet_dispatches(
-				c,
-				self.descriptor_sets,
-				occlusion,
-				dispatches.opaque_layer().into_iter().zip(pipelines),
-				0,
-				1,
-			),
-			VisibilityPhase::Transparent => record_meshlet_dispatches(
-				c,
-				self.descriptor_sets,
-				occlusion,
-				[(dispatches.transparent, pipelines[0])],
-				0,
-				1,
-			),
-		}
+		// Blend materials have no alpha test and keep back-face culling, so they pair with the solid pipeline.
+		let ranges = match phase {
+			VisibilityPhase::Opaque => &dispatches.opaque_layer[..],
+			VisibilityPhase::Transparent => std::slice::from_ref(&dispatches.transparent),
+		};
+		let ranges = ranges.iter().copied().zip(pipelines);
+		// The camera is view zero.
+		record_meshlet_dispatches(c, self.descriptor_sets, occlusion, ranges, 0, 1);
 		c.end_render_pass();
 		c.end_region();
 	}

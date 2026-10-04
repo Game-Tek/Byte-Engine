@@ -29,9 +29,9 @@ use super::layout::{
 use super::loader::{ResidentEnvironment, ResidentMaterial, ResidentTexture, VisibilityLoaderClient, VisibilityLoaderEvent};
 use super::mesh_dispatch::MeshDispatchWorkBuffer;
 use super::render_pass::{
-	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, FrameWork, GTAO_CONFIGURATION_PREFIX, GtaoSettings,
-	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets,
-	create_radiance_history_target, create_ssgi_targets,
+	CONTACT_SHADOWS_CONFIGURATION_PREFIX, ContactShadowSettings, GTAO_CONFIGURATION_PREFIX, GtaoSettings, ShadowMaps,
+	ShadowWork, SinkHistory, SinkTargets, VisibilityRenderPass, create_contact_shadow_targets, create_radiance_history_target,
+	create_ssgi_targets,
 };
 use super::scene::{Instance, RenderEntity, RenderSkin, SinkState, VisibilityScene};
 use super::shader_data::{IesProfileTexture, MESH_FLAG_DOUBLE_SIDED, MaterialData, ShaderMesh, ShaderViewData};
@@ -537,7 +537,6 @@ impl VisibilityPipelineManager {
 		let shadow_maps = ShadowMaps::new(
 			context,
 			&pipeline_manager,
-			descriptor_set,
 			settings.cone_shadow_map_pool_capacity,
 			settings.point_shadow_map_pool_capacity,
 		);
@@ -1229,10 +1228,7 @@ impl PipelineManager for VisibilityPipelineManager {
 			point_count: shadows.point_count(),
 		};
 
-		let frame_work = FrameWork {
-			skinning: &self.skinning_pass,
-			shadow_maps: &self.shadow_maps,
-		};
+		let frame_work = (&self.skinning_pass, &self.shadow_maps);
 		let render_info = &self.scene.render_info;
 		let previously_recorded_sinks = &self.recorded_sinks;
 		let recorded_exposure = self.recorded_exposure;

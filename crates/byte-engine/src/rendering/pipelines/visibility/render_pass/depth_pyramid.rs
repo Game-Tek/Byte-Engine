@@ -108,17 +108,9 @@ impl DepthPyramidPass {
 				.name("Screen View Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		// Metal applies min/max reduction only when every sampler filter is linear.
+		// Metal applies min/max reduction only when every sampler filter is linear, as the default ones are.
 		// Centered samples then conservatively collapse each reversed-depth 2x2 footprint.
-		let max_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Linear)
-				.reduction_mode(ghi::SamplingReductionModes::Max)
-				.mip_map_mode(ghi::FilteringModes::Linear)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
-				.max_lod(0f32),
-		);
+		let max_sampler = context.build_sampler(ghi::sampler::Builder::new().reduction_mode(ghi::SamplingReductionModes::Max));
 		// The initial 8x8 allocation keeps all declared mips valid before the first sink resize.
 		let depth_pyramid = context.build_dynamic_image(
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
@@ -177,8 +169,7 @@ impl DepthPyramidPass {
 		sink: &Sink,
 		pipeline: ghi::PipelineHandle,
 	) -> impl RenderPassFunction + use<> {
-		let extent = sink.extent();
-		let half_extent = extent.scaled_down(2);
+		let half_extent = sink.extent().scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
 		frame.sync_buffer(self.view_data);
 		frame.resize_image(self.depth_pyramid.into(), half_extent);

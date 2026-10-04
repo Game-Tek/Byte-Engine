@@ -110,6 +110,7 @@ impl MaterialPrepasses {
 			extent,
 			workgroup,
 		};
+		let offset_threads = Extent::line(MATERIAL_OFFSET_WORKGROUP_SIZE);
 		// The offset pass reads these counts without resetting them, so clear before every dispatch.
 		c.clear_buffers(&[self.count_buffer.into()]);
 		super::record_compute_stages(
@@ -117,12 +118,7 @@ impl MaterialPrepasses {
 			None,
 			&[
 				stage("Material Count", pipelines.count, extent, Extent::square(8)),
-				stage(
-					"Material Offset",
-					pipelines.offset,
-					Extent::line(MATERIAL_OFFSET_WORKGROUP_SIZE),
-					Extent::line(MATERIAL_OFFSET_WORKGROUP_SIZE),
-				),
+				stage("Material Offset", pipelines.offset, offset_threads, offset_threads),
 				stage("Pixel Mapping", pipelines.pixel_mapping, extent, Extent::square(16)),
 			],
 		);

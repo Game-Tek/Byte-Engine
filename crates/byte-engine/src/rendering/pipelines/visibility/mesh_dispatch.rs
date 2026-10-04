@@ -69,19 +69,10 @@ impl MeshDispatch {
 /// The `PhaseDispatches` struct groups the frame's work ranges by the raster phase that consumes them.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PhaseDispatches {
-	pub(crate) opaque: MeshDispatch,
-	pub(crate) masked: MeshDispatch,
-	pub(crate) double_sided: MeshDispatch,
-	pub(crate) double_sided_masked: MeshDispatch,
+	/// The opaque layer's work ranges in the order [`super::render_pass::PhasePipelines`] holds their pipelines: solid,
+	/// masked, double-sided, and double-sided masked.
+	pub(crate) opaque_layer: [MeshDispatch; 4],
 	pub(crate) transparent: MeshDispatch,
-}
-
-impl PhaseDispatches {
-	/// Returns the opaque layer's work ranges in the order [`super::render_pass::PhasePipelines`] holds their
-	/// pipelines: solid, masked, double-sided, and double-sided masked.
-	pub(crate) fn opaque_layer(self) -> [MeshDispatch; 4] {
-		[self.opaque, self.masked, self.double_sided, self.double_sided_masked]
-	}
 }
 
 /// The `MeshDispatchWorkBuffer` struct owns the GPU-visible work storage shared by every view of a frame.
@@ -119,10 +110,12 @@ impl MeshDispatchWorkBuffer {
 			dispatch
 		};
 		let dispatches = PhaseDispatches {
-			opaque: phase(&render_info.opaque_instances),
-			masked: phase(&render_info.masked_instances),
-			double_sided: phase(&render_info.double_sided_instances),
-			double_sided_masked: phase(&render_info.double_sided_masked_instances),
+			opaque_layer: [
+				phase(&render_info.opaque_instances),
+				phase(&render_info.masked_instances),
+				phase(&render_info.double_sided_instances),
+				phase(&render_info.double_sided_masked_instances),
+			],
 			transparent: phase(&render_info.transparent_instances),
 		};
 		frame.sync_buffer(self.handle);

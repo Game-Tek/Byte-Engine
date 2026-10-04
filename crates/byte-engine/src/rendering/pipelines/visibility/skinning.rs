@@ -203,20 +203,8 @@ fn is_rigid_transform(matrix: &AffineMatrix) -> bool {
 
 /// Converts one validated rigid matrix into the engine's xyzw dual-quaternion convention.
 fn dual_quaternion_from_rigid_transform(matrix: &AffineMatrix) -> DualQuaternion {
-	let [x, y, z, [translation_x, translation_y, translation_z]] = matrix.columns();
-	let real = rotation_from_columns(x, y, z);
-	let dual = Quaternion::new(translation_x, translation_y, translation_z, 0.0) * real.into_maths() * 0.5;
-	DualQuaternion {
-		real: real.to_array(),
-		dual: [dual.x, dual.y, dual.z, dual.w],
-	}
-}
-
-/// Extracts the rotation of orthonormal rotation columns.
-fn rotation_from_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]) -> Orientation {
-	let [m00, m10, m20] = column0;
-	let [m01, m11, m21] = column1;
-	let [m02, m12, m22] = column2;
+	let [[m00, m10, m20], [m01, m11, m21], [m02, m12, m22], translation] = matrix.columns();
+	// Extracts the rotation of the orthonormal rotation columns.
 	let trace = m00 + m11 + m22;
 	let quaternion = if trace > 0.0 {
 		let scale = (trace + 1.0).sqrt() * 2.0;
@@ -231,9 +219,14 @@ fn rotation_from_columns(column0: [f32; 3], column1: [f32; 3], column2: [f32; 3]
 		let scale = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
 		[(m02 + m20) / scale, (m12 + m21) / scale, scale * 0.25, (m10 - m01) / scale]
 	};
-	Orientation::try_from_array(quaternion).expect(
+	let real = Orientation::try_from_array(quaternion).expect(
 		"Rigid rotation columns always give a finite nonzero quaternion. The most likely cause is skipping is_rigid_transform.",
-	)
+	);
+	let dual = Quaternion::new(translation[0], translation[1], translation[2], 0.0) * real.into_maths() * 0.5;
+	DualQuaternion {
+		real: real.to_array(),
+		dual: [dual.x, dual.y, dual.z, dual.w],
+	}
 }
 
 #[cfg(test)]

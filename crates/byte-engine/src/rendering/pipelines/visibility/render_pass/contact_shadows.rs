@@ -184,10 +184,7 @@ impl ContactShadowPass {
 		let point_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.addressing_mode(ghi::SamplerAddressingModes::Clamp)
-				.min_lod(0f32)
-				.max_lod(0f32),
+				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
 		context.write(&[
 			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING.slot(), view_data.into()),

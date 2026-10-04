@@ -212,3 +212,9 @@
 
 - Replace the process-wide `COUNTER` in `crates/byte-engine/src/core/factory.rs` with an id counter owned by the world or message bus and passed to the factories. Deferred on request during the Rc/Arc and globals cleanup.
 - Remove the shared `Arc<AssetManagerState>` in `crates/resource-management/src/asset/manager.rs` (and the dependent file-watcher `Weak`, `in_flight_bakes` Arc, bake-memory Arcs, shared storage backend, material mip generator Arc, and test counters). compio dispatch requires `'static` jobs; the options considered (no dispatcher + owned-data compute pool, coordinator/actor, whole pool inside `std::thread::scope`) were rejected, so a different design is needed.
+
+## GPU counters (deferred)
+
+- Add a pipeline-statistics counter kind to the GHI counters API for Vulkan and DX12: `create_counter` takes a `CounterKind`, `Context::counter_statistics` returns input vertices and primitives plus vertex, geometry, clipper, fragment, compute, task, and mesh invocations and clipper and mesh primitives, gated by `supports_pipeline_statistics`. Vulkan needs the `pipelineStatisticsQuery` feature and `meshShaderQueries` for the mesh counts; DX12 uses `PIPELINE_STATISTICS1` where the device supports it. Metal 4 counter heaps hold only timestamps, so Metal always reports `None`. A statistics span is one query slot whose begin and end must sit in the same command buffer, and on Vulkan inside the same render pass instance or both outside it. Deferred on 2026-10-04 so timing counters shipped first.
+- Let counters record in detached recordings (loader contexts, the resource-management GPU worker). Timing counters are frame-only because slots are owned per frame sequence; detached recordings would need per-recording slot pages released on synchronizer completion, like texture readbacks.
+- Grow the counter slot pool instead of capping a frame at 512 counters, if a frame ever needs more.

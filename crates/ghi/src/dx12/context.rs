@@ -44,6 +44,11 @@ pub struct Device {
 	bottom_level_acceleration_structures: Vec<AccelerationStructure>,
 	allocations: Vec<Allocation>,
 	texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadback>,
+	counters: crate::counters::Counters,
+	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
+	counter_storage: Option<CounterStorage>,
+	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
+	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],
 	gpu_uploaded_images: HashSet<crate::BaseImageHandle>,
 	pending_texture_syncs: Vec<(crate::BaseImageHandle, u8, Option<crate::image::Region>)>,
 	untracked_present_work: bool,
@@ -185,6 +190,9 @@ impl Device {
 
 #[path = "context/commands.rs"]
 mod device_commands;
+#[path = "context/counters.rs"]
+mod device_counters;
+use device_counters::CounterStorage;
 #[path = "context/descriptors.rs"]
 mod device_descriptors;
 #[path = "context/initialization.rs"]
@@ -205,6 +213,8 @@ const DYNAMIC_BUFFER_HANDLE_FLAG: u64 = 1 << 63;
 pub(crate) struct StoredQueue {
 	queue: ID3D12CommandQueue,
 	workloads: WorkloadTypes,
+	/// GPU timestamp ticks per second on this queue, which converts counter slots into durations.
+	timestamp_frequency: u64,
 }
 
 /// Validates that a queue workload can use the backend's unified DIRECT command-list path.
@@ -1160,6 +1170,11 @@ impl crate::context::ContextCreate for Device {
 	) -> BottomLevelAccelerationStructureHandle {
 		Device::create_bottom_level_acceleration_structure(self, description)
 	}
+	/// DX12 counters share one timestamp heap, so a counter is only a slot owner and needs no native object.
+	fn create_counter(&mut self, _name: Option<&str>) -> crate::CounterHandle {
+		self.counters.create()
+	}
+
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle {
 		Device::create_synchronizer(self, name, signaled)
 	}
@@ -1172,6 +1187,10 @@ impl crate::context::Context for Device {
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
 		Device::has_errors(self)
+	}
+
+	fn counter_duration(&self, counter: crate::CounterHandle) -> Option<std::time::Duration> {
+		self.counters.duration(counter)
 	}
 
 	fn supports_bc_texture_compression(&self) -> bool {

@@ -159,6 +159,14 @@ pub struct SwapchainHandle(pub(crate) u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AllocationHandle(pub(crate) u64);
 
+/// The `CounterHandle` struct identifies a GPU timing counter of the context that created it.
+///
+/// Create one with [`crate::context::ContextCreate::create_counter`], bracket the frame work it measures with
+/// [`crate::command_buffer::CommonCommandBufferMode::counter`], and read the GPU time of the last completed frame
+/// with [`crate::context::Context::counter_duration`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CounterHandle(pub(crate) u64);
+
 /// The `TextureCopyHandle` struct identifies one texture-transfer invocation within its creating context.
 ///
 /// Handle values can overlap across contexts, so pass a handle only to the [`crate::Context`] that created it.

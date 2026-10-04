@@ -93,6 +93,10 @@ impl crate::context::Context for Context {
 		true
 	}
 
+	fn counter_duration(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<std::time::Duration> {
+		self.counters.duration(counter)
+	}
+
 	fn queue<'a>(&'a mut self, queue_handle: graphics_hardware_interface::QueueHandle) -> Self::Queue<'a> {
 		crate::vulkan::queue::Queue {
 			device: self,
@@ -827,5 +831,10 @@ impl crate::context::ContextCreate for Context {
 
 		self.set_object_debug_name(name, synchronizer_handle.into());
 		synchronizer_handle
+	}
+
+	/// Vulkan counters share one timestamp query pool, so a counter is only a slot owner and needs no native object.
+	fn create_counter(&mut self, _name: Option<&str>) -> graphics_hardware_interface::CounterHandle {
+		self.counters.create()
 	}
 }

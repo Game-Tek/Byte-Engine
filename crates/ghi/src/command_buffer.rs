@@ -3,9 +3,9 @@ use utils::Extent;
 
 use crate::{
 	AttachmentInformation, BaseBufferHandle, BaseImageHandle, BufferCopyDescriptor, BufferDescriptor, BufferHandle,
-	BufferImageCopyDescriptor, ClearValue, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle,
-	FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle, TextureCopyHandle,
-	TextureTransferError, rt,
+	BufferImageCopyDescriptor, ClearValue, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle,
+	DynamicImageHandle, FrameKey, ImageOrSwapchain, Layouts, MeshHandle, PipelineHandle, Pod, RGBAu8, SynchronizerHandle,
+	TextureCopyHandle, TextureTransferError, rt,
 };
 
 /// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
@@ -211,6 +211,25 @@ pub trait CommonCommandBufferMode {
 		self.start_region(write_label);
 		f(self);
 		self.end_region();
+	}
+
+	/// Writes the GPU timestamp that starts `counter` for this frame.
+	///
+	/// Record each counter once per frame, in a frame recording. Measure whole passes: inside a render pass, Metal
+	/// samples after the fragment stage of the draws recorded so far, and tile-based GPUs may not separate draws.
+	fn start_counter(&mut self, counter: CounterHandle);
+
+	/// Writes the GPU timestamp that ends `counter` for this frame.
+	fn end_counter(&mut self, counter: CounterHandle);
+
+	/// Measures the GPU time the closure's commands take, from the last completed frame's point of view.
+	///
+	/// Pairs [`Self::start_counter`] with [`Self::end_counter`] the way [`Self::region`] pairs debug labels. Read
+	/// the result with [`crate::context::Context::counter_duration`] once the frame completes.
+	fn counter(&mut self, counter: CounterHandle, f: impl FnOnce(&mut Self)) {
+		self.start_counter(counter);
+		f(self);
+		self.end_counter(counter);
 	}
 }
 

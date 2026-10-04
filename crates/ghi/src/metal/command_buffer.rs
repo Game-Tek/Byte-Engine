@@ -282,6 +282,8 @@ pub(super) struct RecordingDevice<'a> {
 	/// The number of frames in flight, which resolves frame offsets into per-frame resource copies.
 	pub(super) frames: u8,
 	pub(super) debug_labels: bool,
+	/// The context's timestamp heap, which counter starts and ends write into.
+	pub(super) counter_heap: &'a ProtocolObject<dyn mtl::MTL4CounterHeap>,
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.
@@ -300,6 +302,8 @@ pub(super) struct RecordingCommit<'a> {
 	pub(super) upload_arena: &'a mut UploadArena,
 	pub(super) argument_tables: &'a mut CommandArgumentTables,
 	pub(super) image_groups: &'a mut crate::image_group::ImageGroups,
+	/// Hands out the timestamp slots counters write; see [`crate::counters::Counters`].
+	pub(super) counters: &'a mut crate::counters::Counters,
 }
 
 /// The `NativeCommandSlot` struct permits a recording guard to move its uniquely owned command into the next lifecycle stage.

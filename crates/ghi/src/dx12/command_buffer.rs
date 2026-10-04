@@ -25,6 +25,8 @@ pub struct CommandBufferRecording<'a> {
 	active_extent: Option<Extent>,
 	push_constants: Vec<u8>,
 	queued_for_submission: bool,
+	/// The first counter slot this recording may write, so finishing resolves only the slots it wrote.
+	counter_slots_start: u32,
 }
 
 impl Drop for CommandBufferRecording<'_> {
@@ -41,6 +43,7 @@ impl<'a> CommandBufferRecording<'a> {
 		command_buffer: crate::CommandBufferHandle,
 		frame_key: Option<crate::FrameKey>,
 	) -> Self {
+		let counter_slots_start = frame_key.map_or(0, |frame_key| device.counter_written_slots(frame_key.sequence_index).end);
 		Self {
 			device,
 			command_buffer,
@@ -54,6 +57,7 @@ impl<'a> CommandBufferRecording<'a> {
 			active_extent: None,
 			push_constants: Vec::new(),
 			queued_for_submission: false,
+			counter_slots_start,
 		}
 	}
 
@@ -104,6 +108,11 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Transfers readback ownership to the queue path that will submit this command buffer.
 	pub(crate) fn finish_for_submission(&mut self) {
+		if let Some(frame_key) = self.frame_key {
+			// Timestamps live in an opaque heap until resolved, so the list copies the slots it wrote out last.
+			let slots = self.counter_slots_start..self.device.counter_written_slots(frame_key.sequence_index).end;
+			self.device.resolve_counter_slots(self.command_buffer, slots);
+		}
 		self.device.finish_command_buffer_recording(self.command_buffer);
 		self.queued_for_submission = true;
 	}
@@ -312,6 +321,29 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 	fn end_region(&mut self) {
 		self.device.end_debug_region(self.command_buffer);
+	}
+
+	fn start_counter(&mut self, counter: crate::CounterHandle) {
+		let sequence_index = self.counter_sequence();
+		self.device
+			.record_counter_timestamp(self.command_buffer, sequence_index, counter, true);
+	}
+
+	fn end_counter(&mut self, counter: crate::CounterHandle) {
+		let sequence_index = self.counter_sequence();
+		self.device
+			.record_counter_timestamp(self.command_buffer, sequence_index, counter, false);
+	}
+}
+
+impl CommandBufferRecording<'_> {
+	/// Returns the frame sequence whose counter slots this recording writes.
+	fn counter_sequence(&self) -> u8 {
+		self.frame_key
+			.expect(
+				"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
+			)
+			.sequence_index
 	}
 }
 

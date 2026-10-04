@@ -371,6 +371,10 @@ impl crate::context::Context for Context {
 		}
 	}
 
+	fn counter_duration(&self, counter: graphics_hardware_interface::CounterHandle) -> Option<std::time::Duration> {
+		self.counters.duration(counter)
+	}
+
 	fn set_frames_in_flight(&mut self, frames: u8) {
 		assert!(
 			frames as usize <= MAX_FRAMES_IN_FLIGHT,
@@ -705,5 +709,10 @@ impl crate::context::ContextCreate for Context {
 	fn create_synchronizer(&mut self, _name: Option<&str>, _signaled: bool) -> graphics_hardware_interface::SynchronizerHandle {
 		self.synchronizers
 			.add_chain((0..self.frames).map(|_| synchronizer::Synchronizer::new()))
+	}
+
+	/// Metal counters share one timestamp heap, so a counter is only a slot owner and needs no native object.
+	fn create_counter(&mut self, _name: Option<&str>) -> graphics_hardware_interface::CounterHandle {
+		self.counters.create()
 	}
 }

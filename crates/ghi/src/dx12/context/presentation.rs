@@ -225,6 +225,8 @@ impl Device {
 			self.wait_for_synchronizer_sequence(synchronizer_handle, frame_key.sequence_index);
 		}
 		self.last_frame_synchronizers[frame_key.sequence_index as usize] = Some(synchronizer_handle);
+		// The sequence's previous frame has completed, so its resolved timestamps are final.
+		self.resolve_counters(frame_key.sequence_index);
 		self.process_tasks(frame_key.sequence_index);
 		super::super::Frame::new(self, frame_key, synchronizer_handle)
 	}

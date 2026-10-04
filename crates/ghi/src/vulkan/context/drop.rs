@@ -16,6 +16,7 @@ impl Drop for Context {
 				self.device.destroy_semaphore(synchronizer.semaphore, None);
 				self.device.destroy_fence(synchronizer.fence, None);
 			}
+			self.device.destroy_query_pool(self.counter_query_pool, None);
 
 			for pipeline in &self.pipelines {
 				self.device.destroy_pipeline(pipeline.pipeline, None);

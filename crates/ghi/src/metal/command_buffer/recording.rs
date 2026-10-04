@@ -353,6 +353,42 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
+	/// Returns the frame sequence whose counter slots this recording writes.
+	pub(super) fn counter_sequence(&self) -> u8 {
+		self.frame_key
+			.expect(
+				"Counters need a frame. The most likely cause is that start_counter or end_counter was called in a recording created from a command buffer instead of a frame.",
+			)
+			.sequence_index
+	}
+
+	/// Writes one GPU timestamp into `slot` of the context's counter heap.
+	///
+	/// Metal 4 accepts command-buffer timestamps only while no encoder is open, so an open encoder writes the
+	/// timestamp itself. Precise granularity asks Metal to sample at the command instead of at encoder boundaries,
+	/// which keeps back-to-back passes in one compute encoder apart, at the cost of a possible encoder split.
+	pub(super) fn write_timestamp(&mut self, slot: u32) {
+		let heap = self.device.counter_heap;
+		let index = slot as usize;
+		// SAFETY: Every slot comes from the context's counters, which stay below the heap's count.
+		unsafe {
+			match self.encoder.as_ref().map(|state| &state.encoder) {
+				Some(ActiveEncoder::Compute(encoder)) => {
+					encoder.writeTimestampWithGranularity_intoHeap_atIndex(mtl::MTL4TimestampGranularity::Precise, heap, index);
+				}
+				Some(ActiveEncoder::Render(encoder)) => {
+					encoder.writeTimestampWithGranularity_afterStage_intoHeap_atIndex(
+						mtl::MTL4TimestampGranularity::Precise,
+						mtl::MTLRenderStages::Fragment,
+						heap,
+						index,
+					);
+				}
+				None => self.command_buffer.writeTimestampIntoHeap_atIndex(heap, index),
+			}
+		}
+	}
+
 	/// Allocates one command-local identity for hazard tracking within a native encoder.
 	fn allocate_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
 		let id = self.next_encoder_id;

@@ -70,6 +70,11 @@ pub struct Context {
 	pub(super) synchronizers: Vec<Synchronizer>,
 	pub(super) swapchains: Vec<Swapchain>,
 	pub(super) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
+	pub(super) counters: crate::counters::Counters,
+	/// The timestamp query pool every frame sequence writes its counter slots into; see [`crate::counters::Counters`].
+	pub(super) counter_query_pool: vk::QueryPool,
+	/// Reused storage for one frame sequence's resolved timestamps and their availability.
+	pub(super) counter_results: Vec<[u64; 2]>,
 
 	pub settings: crate::device::Features,
 

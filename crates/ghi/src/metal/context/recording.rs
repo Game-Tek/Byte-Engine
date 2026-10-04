@@ -59,6 +59,8 @@ impl Context {
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
 		let compiler = create_metal4_compiler(device.as_ref(), settings.debug_labels)?;
+		let counter_heap = create_counter_heap(device.as_ref(), settings.debug_labels)?;
+		let timestamp_frequency = device.queryTimestampFrequency();
 		let frames = MAX_FRAMES_IN_FLIGHT as u8;
 		let mut synchronizers = ResourceCollection::with_capacity(32);
 		// The context does not exist yet, so the internal upload synchronizer is built like `create_synchronizer` does.
@@ -84,6 +86,9 @@ impl Context {
 			internal_upload_queues: vec![None; MAX_FRAMES_IN_FLIGHT],
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
+			counters: crate::counters::Counters::new(),
+			counter_heap,
+			timestamp_frequency,
 			resource_to_descriptor: HashMap::default(),
 			settings,
 			pending_buffer_syncs: VecDeque::new(),
@@ -477,4 +482,26 @@ pub(crate) fn synchronizer_for_sequence(
 	synchronizers
 		.nth_handle(synchronizer_handle, sequence_index as usize)
 		.expect("Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.")
+}
+
+/// Creates the timestamp heap that holds every counter slot of one context.
+fn create_counter_heap(
+	device: &ProtocolObject<dyn mtl::MTLDevice>,
+	debug_labels: bool,
+) -> Result<Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>, &'static str> {
+	let descriptor = mtl::MTL4CounterHeapDescriptor::new();
+	descriptor.setType(mtl::MTL4CounterHeapType::Timestamp);
+	// SAFETY: The count is the fixed slot capacity of every frame sequence, which every slot index stays below.
+	unsafe { descriptor.setCount(crate::counters::COUNTER_SLOT_COUNT as usize) };
+	let heap = device.newCounterHeapWithDescriptor_error(&descriptor).map_err(|error| {
+		eprintln!(
+			"Metal 4 counter heap creation failed: {}. The most likely cause is that the device does not support timestamp counter heaps.",
+			error.localizedDescription(),
+		);
+		"Metal 4 counter heap creation failed. The most likely cause is that the device does not support timestamp counter heaps."
+	})?;
+	if cfg!(debug_assertions) && debug_labels {
+		heap.setLabel(Some(&NSString::from_str("Counters")));
+	}
+	Ok(heap)
 }

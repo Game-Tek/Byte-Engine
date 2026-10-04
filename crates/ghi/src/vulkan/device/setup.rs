@@ -187,6 +187,14 @@ impl InnerDevice {
 		let supports_formatless_storage_write =
 			|format| Self::format_supports_formatless_storage_write(vk_instance, physical_device, format);
 
+		// Counters convert ticks with the device period, and trust only the bits every used family writes.
+		let timestamp_period = physical_device_properties.properties.limits.timestamp_period;
+		let timestamp_valid_bits = queue_families
+			.iter()
+			.map(|&family| queue_family_properties[family as usize].timestamp_valid_bits)
+			.min()
+			.unwrap_or(0);
+
 		Ok(InnerDevice {
 			debug_utils: settings
 				.validation
@@ -204,6 +212,8 @@ impl InnerDevice {
 			surface_capabilities: ash::khr::get_surface_capabilities2::Instance::load(vk_entry, vk_instance),
 			wayland_surface: ash::khr::wayland_surface::Instance::load(vk_entry, vk_instance),
 			memory_properties: unsafe { vk_instance.get_physical_device_memory_properties(physical_device) },
+			timestamp_period,
+			timestamp_valid_bits,
 			queues,
 			settings,
 			swapchain_native_supports_formatless_storage_write: supports_formatless_storage_write(vk::Format::B8G8R8A8_SRGB),
@@ -441,6 +451,7 @@ fn feature_requirements(settings: &crate::device::Features) -> Vec<(&'static str
 		feature!(vulkan_12.vulkan_memory_model),
 		feature!(vulkan_12.vulkan_memory_model_device_scope),
 		feature!(vulkan_12.timeline_semaphore),
+		feature!(vulkan_12.host_query_reset),
 		feature!(vulkan_13.pipeline_creation_cache_control),
 		feature!(vulkan_13.subgroup_size_control),
 		feature!(vulkan_13.compute_full_subgroups),

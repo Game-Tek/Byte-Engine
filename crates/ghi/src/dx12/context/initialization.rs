@@ -81,9 +81,12 @@ impl Device {
 				.map_err(|_| "Failed to create a D3D12 command queue. The most likely cause is that the device does not support the requested queue type.")?;
 
 			let index = queue_storage.len() as u64;
+			// A queue that reports no frequency cannot time counters; its counters always read `None`.
+			let timestamp_frequency = unsafe { queue.GetTimestampFrequency() }.unwrap_or(0);
 			queue_storage.push(StoredQueue {
 				queue,
 				workloads: selection.r#type,
+				timestamp_frequency,
 			});
 			**handle = Some(QueueHandle(index));
 		}
@@ -318,6 +321,9 @@ impl Device {
 			bottom_level_acceleration_structures: Vec::new(),
 			allocations: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
+			counters: crate::counters::Counters::new(),
+			counter_storage: None,
+			counter_frequencies: [0; crate::MAX_FRAMES_IN_FLIGHT],
 			gpu_uploaded_images: HashSet::default(),
 			pending_texture_syncs: Vec::new(),
 			untracked_present_work: false,

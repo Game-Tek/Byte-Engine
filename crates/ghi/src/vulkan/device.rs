@@ -69,6 +69,10 @@ pub struct InnerDevice {
 	pub(super) surface_capabilities: ash::khr::get_surface_capabilities2::Instance,
 	pub(super) wayland_surface: ash::khr::wayland_surface::Instance,
 	pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
+	/// Nanoseconds per GPU timestamp tick, which converts counter slots into durations.
+	pub(super) timestamp_period: f32,
+	/// The timestamp bits every used queue family writes; zero means the device cannot time counters.
+	pub(super) timestamp_valid_bits: u32,
 	pub(super) queues: Vec<StoredQueue>,
 	pub(super) settings: crate::device::Features,
 	pub(super) swapchain_native_supports_formatless_storage_write: bool,

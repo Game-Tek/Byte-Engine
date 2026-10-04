@@ -3,9 +3,9 @@ use utils::Extent;
 use crate::synchronizer::SynchronizerHandle as PrivateSynchronizerHandle;
 use crate::{
 	AllocationHandle, BaseBufferHandle, BottomLevelAccelerationStructure, BottomLevelAccelerationStructureHandle, BufferHandle,
-	CommandBufferHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats, ImageHandle,
-	MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes, SwapchainHandle,
-	SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
+	CommandBufferHandle, CounterHandle, DescriptorSetHandle, DeviceAccesses, DynamicBufferHandle, DynamicImageHandle, Formats,
+	ImageHandle, MeshHandle, PipelineHandle, Pod, PresentationModes, QueueHandle, SamplerHandle, ShaderHandle, ShaderTypes,
+	SwapchainHandle, SynchronizerHandle, TextureCopyHandle, TopLevelAccelerationStructureHandle, Uses, buffer,
 	buffer::BufferContents,
 	descriptors, image,
 	pipelines::VertexElement,
@@ -471,6 +471,13 @@ pub trait Context: ContextCreate {
 
 	/// Waits for all pending operations to complete.
 	fn wait(&mut self);
+
+	/// Returns the GPU time `counter` measured in the most recently completed frame.
+	///
+	/// A frame completes when a later frame start reuses its sequence, which is the frame
+	/// [`crate::queue::QueueExecution::completed_frame`] reports. Returns `None` until a frame that recorded the
+	/// counter completes, and whenever the last completed frame did not record it or did not end it.
+	fn counter_duration(&self, counter: CounterHandle) -> Option<std::time::Duration>;
 }
 
 /// The `ContextCreate` trait provides creation operations for resources owned by a GHI context.
@@ -582,6 +589,13 @@ pub trait ContextCreate {
 	/// Creates a synchronization primitive (implemented as a semaphore/fence/event).\
 	/// Multiple underlying synchronization primitives are created, one for each frame
 	fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> SynchronizerHandle;
+
+	/// Creates a GPU timing counter.
+	///
+	/// Bracket the frame work it measures with [`crate::command_buffer::CommonCommandBufferMode::counter`], once per
+	/// frame, then read the time with [`Context::counter_duration`] once that frame completes. A frame can record up
+	/// to 512 counters.
+	fn create_counter(&mut self, name: Option<&str>) -> CounterHandle;
 }
 
 /// Forwards every [`ContextCreate`] method to the `device` field of the implementing type.
@@ -701,6 +715,10 @@ macro_rules! delegate_context_create_to_device {
 
 		fn create_synchronizer(&mut self, name: Option<&str>, signaled: bool) -> $crate::SynchronizerHandle {
 			self.device.create_synchronizer(name, signaled)
+		}
+
+		fn create_counter(&mut self, name: Option<&str>) -> $crate::CounterHandle {
+			self.device.create_counter(name)
 		}
 	};
 }

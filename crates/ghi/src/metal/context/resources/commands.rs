@@ -80,6 +80,7 @@ impl Context {
 			swapchains: &self.swapchains,
 			frames: self.frames,
 			debug_labels: self.settings.debug_labels,
+			counter_heap: self.counter_heap.as_ref(),
 		};
 		let commit = super::super::command_buffer::RecordingCommit {
 			queue_handle,
@@ -90,6 +91,7 @@ impl Context {
 			upload_arena: &mut self.upload_arenas[arena_index],
 			argument_tables: &mut self.argument_tables,
 			image_groups: &mut self.image_groups,
+			counters: &mut self.counters,
 		};
 
 		super::super::CommandBufferRecording::new(

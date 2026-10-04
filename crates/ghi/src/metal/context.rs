@@ -62,6 +62,11 @@ pub struct Context {
 	internal_upload_queues: Vec<Option<graphics_hardware_interface::QueueHandle>>,
 	pub(crate) swapchains: Vec<swapchain::Swapchain>,
 	pub(crate) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
+	pub(crate) counters: crate::counters::Counters,
+	/// The timestamp heap every frame sequence writes its counter slots into; see [`crate::counters::Counters`].
+	pub(crate) counter_heap: Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>,
+	/// GPU timestamp ticks per second, which converts counter slots into durations.
+	pub(crate) timestamp_frequency: u64,
 
 	pub(crate) resource_to_descriptor:
 		HashMap<PrivateHandles, HashSet<(DescriptorSetHandle, crate::shader::ResourceSlot, u32, u8)>>,

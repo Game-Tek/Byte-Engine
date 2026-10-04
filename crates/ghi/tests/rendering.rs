@@ -32,6 +32,8 @@ use utils::{Extent, RGBA};
 
 #[path = "rendering/common.rs"]
 mod common;
+#[path = "rendering/counters.rs"]
+mod counters;
 #[path = "rendering/image_groups.rs"]
 mod image_groups;
 #[path = "rendering/raster.rs"]
@@ -67,6 +69,12 @@ fn create_default_device_setup_with_features(
 	let context = ghi::device::Device::create_context(&device)
 		.expect("Failed to create the GHI test context. The most likely cause is unavailable backend command support.");
 	(instance, device, context, queue_handle.unwrap())
+}
+
+#[test]
+fn counters_measure_completed_frames() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	counters::counters_measure_completed_frames(&mut device, queue_handle);
 }
 
 #[test]

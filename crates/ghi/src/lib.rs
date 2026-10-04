@@ -54,7 +54,7 @@ pub(crate) use crate::graphics_hardware_interface::PipelineLayoutHandle;
 pub use crate::graphics_hardware_interface::{
 	AllocationHandle, AttachmentInformation, BaseBufferHandle, BaseImageHandle, BottomLevelAccelerationStructure,
 	BottomLevelAccelerationStructureDescriptions, BottomLevelAccelerationStructureHandle, BufferHandle, ClearValue,
-	CommandBufferHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle, FrameKey,
+	CommandBufferHandle, CounterHandle, DescriptorSetHandle, DispatchExtent, DynamicBufferHandle, DynamicImageHandle, FrameKey,
 	ImageGroupHandle, ImageHandle, ImageOrSwapchain, LoadOp, MeshHandle, PipelineHandle, PresentKey, PresentationModes,
 	QueueHandle, QueueSelection, RGBAu8, SamplerHandle, ShaderHandle, StoreOp, SwapchainHandle, SynchronizerHandle,
 	TextureCopyHandle, TextureViewTypes, TopLevelAccelerationStructureHandle,
@@ -88,6 +88,7 @@ pub mod binding;
 pub mod buffer;
 pub mod command_buffer;
 pub mod context;
+pub(crate) mod counters;
 pub mod descriptors;
 pub mod device;
 pub mod frame;

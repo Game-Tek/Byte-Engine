@@ -13,6 +13,7 @@ use objc2_app_kit::NSView;
 use objc2_foundation::{NSArray, NSRange};
 use objc2_metal as mtl;
 use objc2_metal::MTL4CommandBuffer as _;
+use objc2_metal::MTL4CounterHeap as _;
 use objc2_metal::MTLAccelerationStructure as _;
 use objc2_metal::MTLArgumentEncoder as _;
 use objc2_metal::MTLDevice as _;

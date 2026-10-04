@@ -8,6 +8,7 @@ impl Context {
 			.into_iter()
 			.map(std::sync::Mutex::new)
 			.collect();
+		let counter_query_pool = create_counter_query_pool(&device)?;
 
 		let mut context = Context {
 			memory_properties: device.memory_properties,
@@ -39,6 +40,9 @@ impl Context {
 			synchronizers: Vec::with_capacity(32),
 			swapchains: Vec::with_capacity(4),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
+			counters: crate::counters::Counters::new(),
+			counter_query_pool,
+			counter_results: vec![[0; 2]; crate::counters::COUNTER_SLOTS_PER_FRAME as usize],
 
 			states: HashMap::with_capacity_and_hasher(4096, Default::default()),
 			buffer_states: HashMap::with_capacity_and_hasher(4096, Default::default()),
@@ -648,6 +652,8 @@ impl Context {
 				.expect("No fence reset");
 		}
 		self.synchronizers[synchronizer_index].armed = false;
+		// The sequence's previous frame has completed, so its timestamps are final.
+		self.resolve_counters(sequence_index);
 
 		let frame_key = FrameKey {
 			frame_index: index,
@@ -1040,5 +1046,66 @@ impl Context {
 				}
 			}
 		}
+	}
+}
+
+/// Creates the timestamp query pool that holds every counter slot of one context, with every query reset.
+fn create_counter_query_pool(device: &InnerDevice) -> Result<vk::QueryPool, &'static str> {
+	let create_info = vk::QueryPoolCreateInfo::default()
+		.query_type(vk::QueryType::TIMESTAMP)
+		.query_count(crate::counters::COUNTER_SLOT_COUNT);
+	// SAFETY: The create info is complete, and the device outlives the pool, which the context destroys.
+	let query_pool = unsafe { device.create_query_pool(&create_info, None) }
+		.map_err(|_| "Vulkan counter query pool creation failed. The most likely cause is that the device is out of memory.")?;
+	// Queries start uninitialized; the host reset feature the device enables brings them to the unavailable state.
+	// SAFETY: The pool was just created and no command references it.
+	unsafe { device.reset_query_pool(query_pool, 0, crate::counters::COUNTER_SLOT_COUNT) };
+	Ok(query_pool)
+}
+
+impl Context {
+	/// Reads the timestamps the completed frame on `sequence_index` wrote, publishes its counter durations, and
+	/// resets its slots for the next frame on the sequence.
+	///
+	/// Call it after the sequence's fence was waited. A slot that a dropped recording allocated but never
+	/// submitted stays unavailable, and its counter reads `None`.
+	pub(crate) fn resolve_counters(&mut self, sequence_index: u8) {
+		let slots = self.counters.written_slots(sequence_index);
+		let period = self.device.timestamp_period;
+		let valid_bits = self.device.timestamp_valid_bits;
+		let elapsed =
+			|start, end| crate::counters::duration_from_period(crate::counters::elapsed_ticks(start, end, valid_bits), period);
+		if slots.is_empty() || valid_bits == 0 {
+			self.counters.resolve(sequence_index, |_| None, elapsed);
+			return;
+		}
+		let results = &mut self.counter_results[..slots.len()];
+		// SAFETY: The range lies inside the pool, and each result entry holds one 64-bit value and its availability.
+		match unsafe {
+			self.device.get_query_pool_results(
+				self.counter_query_pool,
+				slots.start,
+				results,
+				vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WITH_AVAILABILITY,
+			)
+		} {
+			// Unavailable queries report that status through their availability value.
+			Ok(()) | Err(vk::Result::NOT_READY) => {}
+			Err(_) => panic!("Failed to read Vulkan counter timestamps. The most likely cause is that the device was lost."),
+		}
+		let results = &self.counter_results[..slots.len()];
+		self.counters.resolve(
+			sequence_index,
+			|slot| {
+				let [ticks, available] = results[(slot - slots.start) as usize];
+				(available != 0).then_some(ticks)
+			},
+			elapsed,
+		);
+		// SAFETY: The frame that wrote the range completed, so no command uses these queries.
+		unsafe {
+			self.device
+				.reset_query_pool(self.counter_query_pool, slots.start, slots.len() as u32)
+		};
 	}
 }

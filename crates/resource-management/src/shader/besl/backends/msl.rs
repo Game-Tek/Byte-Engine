@@ -1201,6 +1201,7 @@ struct PrimitiveOutput {
 				true,
 				false,
 				besl::BufferMemoryClass::Constant,
+				None,
 			)
 			.into(),
 			besl::Node::input("in_position", vec3f, 0).into(),

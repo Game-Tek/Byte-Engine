@@ -20,7 +20,7 @@ use super::expressions::{
 	execute_parsers, parse_const, parse_descriptor, parse_function, parse_macro, parse_member, parse_push_constant,
 	parse_shader_interface_declaration, parse_struct,
 };
-use crate::{lexer::BufferMemoryClass, tokenizer};
+use crate::lexer::BufferMemoryClass;
 
 /// The `ElseBranch` enum keeps `else if` chains distinct from plain `else` blocks,
 /// so later stages can lower each form by structure. See [`Nodes::Conditional`].
@@ -126,9 +126,9 @@ impl std::fmt::Display for TypeName<'_> {
 	}
 }
 
-/// A weak syntax-node reference used to avoid ownership cycles.
-pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Node<'a>, ParsingFailReasons> {
-	let mut iterator = tokens.tokens.iter();
+/// Parses a token stream into the root scope of its declarations.
+pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i [&'a str]) -> Result<Node<'a>, ParsingFailReasons> {
+	let mut iterator = tokens.iter();
 
 	let parsers = [
 		parse_push_constant,
@@ -155,7 +155,7 @@ pub(crate) fn parse<'i, 'a: 'i>(tokens: &'i tokenizer::Tokens<'a>) -> Result<Nod
 		}
 	}
 
-	Ok(make_scope("root", children))
+	Ok(Node::root_with_children(children))
 }
 
 use std::borrow::Cow;
@@ -168,23 +168,32 @@ pub struct Node<'a> {
 
 impl<'a> Node<'a> {
 	pub fn root() -> Node<'a> {
-		make_scope("root", Vec::new())
+		Self::scope("root", Vec::new())
 	}
 
 	pub fn root_with_children(children: Vec<Node<'a>>) -> Node<'a> {
-		make_scope("root", children)
+		Self::scope("root", children)
 	}
 
 	pub fn scope(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
-		make_scope(name, children)
+		Node {
+			node: Nodes::Scope { name, children },
+		}
 	}
 
 	pub fn r#struct(name: &'a str, fields: Vec<Node<'a>>) -> Node<'a> {
-		make_struct(name, fields)
+		Node {
+			node: Nodes::Struct { name, fields },
+		}
 	}
 
-	pub fn member(name: &'a str, r#type: &'_ str) -> Node<'a> {
-		make_member(name, r#type)
+	pub fn member(name: &'a str, r#type: impl Into<String>) -> Node<'a> {
+		Node {
+			node: Nodes::Member {
+				name,
+				r#type: r#type.into(),
+			},
+		}
 	}
 
 	pub fn member_expression(name: impl Into<Cow<'a, str>>) -> Node<'a> {
@@ -199,7 +208,14 @@ impl<'a> Node<'a> {
 		return_type: impl Into<TypeName<'a>>,
 		statements: Vec<Node<'a>>,
 	) -> Node<'a> {
-		make_function(name, params, return_type, statements)
+		Node {
+			node: Nodes::Function {
+				name,
+				params,
+				return_type: return_type.into(),
+				statements,
+			},
+		}
 	}
 
 	/// Builds a `match` statement. The lexer rejects matches that don't cover every scrutinee value.
@@ -235,7 +251,7 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn main_function(statements: Vec<Node<'a>>) -> Node<'a> {
-		make_function("main", Vec::new(), "void", statements)
+		Self::function("main", Vec::new(), "void", statements)
 	}
 
 	/// Builds a resource binding. Pass [`Node::buffer`], [`Node::image`], or a `combined_*_image_sampler` builder as
@@ -244,21 +260,9 @@ impl<'a> Node<'a> {
 		Self::binding_with_count(name, r#type, slot, read, write, None, None)
 	}
 
-	/// Builds a buffer binding whose memory class is independent from its read and write access.
-	pub fn binding_in_memory(
-		name: &'a str,
-		r#type: BindingResource<'a>,
-		slot: u32,
-		read: bool,
-		write: bool,
-		memory_class: BufferMemoryClass,
-	) -> Node<'a> {
-		Self::binding_with_count(name, r#type, slot, read, write, Some(memory_class), None)
-	}
-
 	/// Builds a buffer binding that stores thread-varying data in device memory.
 	pub fn device_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Device)
+		Self::binding_with_count(name, r#type, slot, read, write, Some(BufferMemoryClass::Device), None)
 	}
 
 	/// Builds a device-memory storage buffer of `element` values whose length is set when the application creates the
@@ -275,7 +279,7 @@ impl<'a> Node<'a> {
 				slot,
 				read,
 				write,
-				memory_class: Some("device"),
+				memory_class: Some(BufferMemoryClass::Device),
 				count: None,
 			},
 		}
@@ -283,7 +287,7 @@ impl<'a> Node<'a> {
 
 	/// Builds a buffer binding that stores dispatch-shared values in constant memory.
 	pub fn constant_buffer_binding(name: &'a str, r#type: BindingResource<'a>, slot: u32, read: bool, write: bool) -> Node<'a> {
-		Self::binding_in_memory(name, r#type, slot, read, write, BufferMemoryClass::Constant)
+		Self::binding_with_count(name, r#type, slot, read, write, Some(BufferMemoryClass::Constant), None)
 	}
 
 	fn binding_with_count(
@@ -293,7 +297,7 @@ impl<'a> Node<'a> {
 		read: bool,
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	) -> Node<'a> {
 		Node {
 			node: Nodes::Binding {
@@ -316,7 +320,7 @@ impl<'a> Node<'a> {
 		write: bool,
 		count: u32,
 	) -> Node<'a> {
-		let count = NonZeroUsize::new(count as usize).expect(
+		let count = NonZeroU32::new(count).expect(
 			"Invalid binding array count. The most likely cause is that a resource array was declared with zero elements.",
 		);
 		Self::binding_with_count(name, r#type, slot, read, write, None, Some(count))
@@ -515,10 +519,13 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn output(name: &'a str, format: &'a str, location: u8) -> Node<'a> {
-		Self::output_with_count(name, format, location, None, false)
+		Self::output_array(name, format, location, None, false)
 	}
 
-	fn output_with_count(
+	/// Declares a mesh output array of `count` elements, with one element per vertex, which rasterization
+	/// interpolates, when `per_vertex` is set, or one flat element per primitive otherwise. Without a `count` it
+	/// declares a plain stage output, like [`Node::output`].
+	pub fn output_array(
 		name: &'a str,
 		format: &'a str,
 		location: u8,
@@ -536,16 +543,7 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	/// Declares a mesh output array with one element per vertex, which rasterization interpolates, when `per_vertex`
-	/// is set, or one flat element per primitive otherwise.
-	pub fn output_array(name: &'a str, format: &'a str, location: u8, count: u32, per_vertex: bool) -> Node<'a> {
-		Self::output_with_count(name, format, location, NonZeroUsize::new(count as usize), per_vertex)
-	}
-
-	pub fn task_payload(name: &'a str, format: &'a str, count: u32) -> Node<'a> {
-		let count = NonZeroUsize::new(count as usize).expect(
-			"Invalid task-payload count. The most likely cause is that a task-payload array was declared with zero elements.",
-		);
+	pub fn task_payload(name: &'a str, format: &'a str, count: NonZeroUsize) -> Node<'a> {
 		Node {
 			node: Nodes::TaskPayload { name, format, count },
 		}
@@ -583,16 +581,11 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn constant(name: &'a str, r#type: &'a str, value: Node<'a>) -> Node<'a> {
-		Self::constant_with_type(name, TypeName::Named(r#type), value)
-	}
-
-	/// Builds a constant node while preserving the parsed type structure.
-	pub(super) fn constant_with_type(name: &'a str, r#type: TypeName<'a>, value: Node<'a>) -> Node<'a> {
+	pub fn constant(name: &'a str, r#type: impl Into<TypeName<'a>>, value: Node<'a>) -> Node<'a> {
 		Node {
 			node: Nodes::Const {
 				name,
-				r#type,
+				r#type: r#type.into(),
 				value: Box::new(value),
 			},
 		}
@@ -638,33 +631,18 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn add(&mut self, children: Vec<Node<'a>>) {
-		match &mut self.node {
-			Nodes::Scope { children: c, .. } => {
-				// Extend from the beginning of the vector
-				c.extend(children);
-			}
-			_ => {
-				println!("Tried to add children to a non-scope node.");
-			}
+		if let Nodes::Scope { children: c, .. } = &mut self.node {
+			c.extend(children);
+		} else {
+			println!("Tried to add children to a non-scope node.");
 		}
 	}
 
+	/// Places each scope's `main` function last. The stable sort keeps the other declarations in source order.
 	pub(crate) fn sort(&mut self) {
-		// Place main function node at the end
-
 		if let Nodes::Scope { children, .. } = &mut self.node {
-			// Only sort scopes
-			// Place main function node at the end
-			children.sort_by(|a, b| {
-				if a.name() == Some("main") {
-					std::cmp::Ordering::Greater
-				} else if b.name() == Some("main") {
-					std::cmp::Ordering::Less
-				} else {
-					std::cmp::Ordering::Equal
-				}
-			});
-			children.iter_mut().for_each(|n| n.sort()); // Recursively sort children
+			children.sort_by_key(|child| child.name() == Some("main"));
+			children.iter_mut().for_each(|n| n.sort());
 		}
 	}
 }
@@ -731,7 +709,7 @@ pub enum Nodes<'a> {
 		read: bool,
 		write: bool,
 		memory_class: Option<BufferMemoryClass>,
-		count: Option<NonZeroUsize>,
+		count: Option<NonZeroU32>,
 	},
 	/// A named resource descriptor declared directly in BESL source.
 	Descriptor {
@@ -742,7 +720,7 @@ pub enum Nodes<'a> {
 		slot: u32,
 		read: bool,
 		write: bool,
-		memory_class: Option<&'a str>,
+		memory_class: Option<BufferMemoryClass>,
 		count: Option<NonZeroU32>,
 	},
 	/// A constant selected when the application creates a pipeline.
@@ -906,69 +884,18 @@ impl std::fmt::Display for ParsingFailReasons {
 		match self {
 			ParsingFailReasons::NotMine => write!(f, "Parser cannot handle this syntax."),
 			ParsingFailReasons::BadSyntax { message } => write!(f, "Bad syntax: {}", message),
-			ParsingFailReasons::StreamEndedPrematurely => {
-				write!(f, "Token stream ended prematurely.")
-			}
+			ParsingFailReasons::StreamEndedPrematurely => write!(f, "Token stream ended prematurely."),
 		}
 	}
 }
 
-pub(super) fn make_scope<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
-	Node {
-		node: Nodes::Scope { name, children },
-	}
-}
-
-pub(super) fn make_member<'a>(name: &'a str, r#type: &'_ str) -> Node<'a> {
-	Node {
-		node: Nodes::Member {
-			name,
-			r#type: r#type.to_string(),
-		},
-	}
-}
-
-pub(super) fn make_struct<'a>(name: &'a str, children: Vec<Node<'a>>) -> Node<'a> {
-	Node {
-		node: Nodes::Struct { name, fields: children },
-	}
-}
-
-pub(super) fn make_function<'a>(
-	name: &'a str,
-	params: Vec<Node<'a>>,
-	return_type: impl Into<TypeName<'a>>,
-	statements: Vec<Node<'a>>,
-) -> Node<'a> {
-	Node {
-		node: Nodes::Function {
-			name,
-			params,
-			return_type: return_type.into(),
-			statements,
-		},
-	}
-}
-
-pub(super) trait Precedence {
-	fn precedence(&self) -> u8;
-}
-
-impl Precedence for Atoms<'_> {
-	fn precedence(&self) -> u8 {
+impl ParsingFailReasons {
+	/// Turns a [`ParsingFailReasons::NotMine`] refusal into a syntax error with `message`, for a token the current
+	/// parser requires once it has recognized its syntax. Other errors pass through unchanged.
+	pub(super) fn claimed(self, message: impl FnOnce() -> String) -> Self {
 		match self {
-			Atoms::Keyword => 0,
-			Atoms::Continue => 0,
-			Atoms::Break => 0,
-			Atoms::Discard => 0,
-			Atoms::Accessor => 1,
-			Atoms::GroupedExpression { .. } => 0,
-			Atoms::Member { .. } => 0,
-			Atoms::Literal { .. } => 0,
-			Atoms::RecordLiteral { .. } => 0,
-			Atoms::FunctionCall { .. } => 0,
-			Atoms::Operator { operator } => operator.precedence(),
-			Atoms::VariableDeclaration { .. } => 0,
+			Self::NotMine => Self::BadSyntax { message: message() },
+			error => error,
 		}
 	}
 }

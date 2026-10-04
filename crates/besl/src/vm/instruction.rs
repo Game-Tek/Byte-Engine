@@ -32,6 +32,29 @@ pub(super) enum Instruction {
 	WorkgroupBarrier,
 }
 
+/// Lets lowering emit any instruction group directly, through `impl Into<Instruction>`.
+macro_rules! instruction_groups {
+	($($group:ident => $variant:ident),+ $(,)?) => {
+		$(impl From<$group> for Instruction {
+			fn from(instruction: $group) -> Self {
+				Self::$variant(instruction)
+			}
+		})+
+	};
+}
+
+instruction_groups!(
+	ValueInstruction => Value,
+	NumericInstruction => Numeric,
+	LocalInstruction => Local,
+	WorkgroupInstruction => Workgroup,
+	MeshOutputInstruction => MeshOutput,
+	BufferInstruction => Buffer,
+	TextureInstruction => Texture,
+	ImageInstruction => Image,
+	ControlInstruction => Control,
+);
+
 /// The `ValueInstruction` enum groups the instructions that load literals and resource handles, or build and take
 /// apart aggregate register values.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,12 +104,6 @@ pub(super) enum ValueInstruction {
 		count: usize,
 		value: usize,
 	},
-}
-
-impl From<ValueInstruction> for Instruction {
-	fn from(instruction: ValueInstruction) -> Self {
-		Self::Value(instruction)
-	}
 }
 
 /// The `NumericInstruction` enum groups the pure arithmetic, comparison, and math-library instructions. Each reads its
@@ -157,12 +174,6 @@ pub(super) enum NumericInstruction {
 	},
 }
 
-impl From<NumericInstruction> for Instruction {
-	fn from(instruction: NumericInstruction) -> Self {
-		Self::Numeric(instruction)
-	}
-}
-
 /// The `LocalInstruction` enum groups the frame-local storage, invocation builtin, and non-suspending subgroup mask
 /// instructions.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,12 +202,6 @@ pub(super) enum LocalInstruction {
 		mask: usize,
 		removed: usize,
 	},
-}
-
-impl From<LocalInstruction> for Instruction {
-	fn from(instruction: LocalInstruction) -> Self {
-		Self::Local(instruction)
-	}
 }
 
 /// The `WorkgroupInstruction` enum groups the task-payload and workgroup-shared storage instructions.
@@ -253,12 +258,6 @@ pub(super) enum WorkgroupInstruction {
 	},
 }
 
-impl From<WorkgroupInstruction> for Instruction {
-	fn from(instruction: WorkgroupInstruction) -> Self {
-		Self::Workgroup(instruction)
-	}
-}
-
 /// The `MeshOutputInstruction` enum groups the instructions that write the bound mesh-shader output capture. Each
 /// variant names the output it sets.
 #[derive(Clone, Debug, PartialEq)]
@@ -267,12 +266,6 @@ pub(super) enum MeshOutputInstruction {
 	VertexPosition { index: usize, position: usize },
 	Triangle { index: usize, triangle: usize },
 	PrimitiveRenderTargetArrayIndex { index: usize, array_index: usize },
-}
-
-impl From<MeshOutputInstruction> for Instruction {
-	fn from(instruction: MeshOutputInstruction) -> Self {
-		Self::MeshOutput(instruction)
-	}
 }
 
 /// The `BufferInstruction` enum groups the reads, writes, and atomics against bound buffers and push constants.
@@ -332,12 +325,6 @@ pub(super) enum BufferInstruction {
 	},
 }
 
-impl From<BufferInstruction> for Instruction {
-	fn from(instruction: BufferInstruction) -> Self {
-		Self::Buffer(instruction)
-	}
-}
-
 /// The `TextureInstruction` enum groups the fetch, sample, and size queries against bound textures.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TextureInstruction {
@@ -376,12 +363,6 @@ pub(super) enum TextureInstruction {
 	},
 }
 
-impl From<TextureInstruction> for Instruction {
-	fn from(instruction: TextureInstruction) -> Self {
-		Self::Texture(instruction)
-	}
-}
-
 /// The `ImageInstruction` enum groups the reads, writes, atomics, and bounds guards against bound storage images.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ImageInstruction {
@@ -416,12 +397,6 @@ pub(super) enum ImageInstruction {
 	},
 }
 
-impl From<ImageInstruction> for Instruction {
-	fn from(instruction: ImageInstruction) -> Self {
-		Self::Image(instruction)
-	}
-}
-
 /// The `ControlInstruction` enum groups the instructions that move the frame's instruction pointer, call functions, or
 /// end the frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -449,12 +424,6 @@ pub(super) enum ControlInstruction {
 	Return {
 		register: Option<usize>,
 	},
-}
-
-impl From<ControlInstruction> for Instruction {
-	fn from(instruction: ControlInstruction) -> Self {
-		Self::Control(instruction)
-	}
 }
 
 /// The `InvocationBuiltin` enum names the per-invocation coordinates a shader can read from its

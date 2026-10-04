@@ -28,7 +28,7 @@ mod tests {
 
 	#[test]
 	fn parse_stage_interface_and_task_storage_declarations() {
-		let tokens = tokenize(
+		let root = parse(&tokenize(
 			r#"
 				instance_index: input<u32, 0>;
 				primitive_index: output<u32, 1>;
@@ -38,9 +38,8 @@ mod tests {
 				visible_count: workgroup<atomicu32>;
 				scratch: workgroup<f32, 64>;
 			"#,
-		)
-		.expect("stage-interface source should tokenize");
-		let root = parse(&tokens).expect("stage-interface source should parse");
+		))
+		.expect("stage-interface source should parse");
 
 		assert!(matches!(
 			root["instance_index"].node(),
@@ -103,8 +102,7 @@ mod tests {
 
 	#[test]
 	fn workgroup_array_rejects_zero_elements() {
-		let tokens = tokenize("scratch: workgroup<f32, 0>;").expect("workgroup array source should tokenize");
-		parse(&tokens).expect_err("zero-length workgroup array should fail");
+		parse(&tokenize("scratch: workgroup<f32, 0>;")).expect_err("zero-length workgroup array should fail");
 	}
 
 	#[test]
@@ -117,15 +115,13 @@ mod tests {
 			"value: task_payload<u32, 0>;",
 			"value: workgroup<u32>",
 		] {
-			let tokens = tokenize(source).expect("invalid declaration should still tokenize");
-
-			assert!(parse(&tokens).is_err(), "expected `{source}` to be rejected");
+			assert!(parse(&tokenize(source)).is_err(), "expected `{source}` to be rejected");
 		}
 	}
 
 	#[test]
 	fn parse_resource_descriptors_with_named_properties() {
-		let tokens = tokenize(
+		let root = parse(&tokenize(
 			r#"
 				source: descriptor<{ access: read, type: Texture2D, binding: 3, }>;
 				result: descriptor<{ type: StorageImage<rgba16f>, binding: 7, access: write, count: 4 }>;
@@ -133,9 +129,8 @@ mod tests {
 				data: descriptor<{ type: Data, binding: 11, access: read_write }>;
 				textures: descriptor<{ type: Texture2DArray, binding: 20, access: read, count: 16 }>;
 			"#,
-		)
-		.expect("descriptor source should tokenize");
-		let root = parse(&tokens).expect("descriptor source should parse");
+		))
+		.expect("descriptor source should parse");
 
 		let Nodes::Descriptor {
 			resource_type,
@@ -201,10 +196,8 @@ mod tests {
 			"instances: descriptor<{ type: Instance[], binding: 1, access: read, count: 4 }>;",
 			"instances: descriptor<{ type: Instance[], binding: 1, access: read, memory: device, count: 4 }>;",
 		] {
-			let tokens = tokenize(source).expect("invalid runtime-array descriptor source should tokenize");
-
 			assert!(
-				parse(&tokens).is_err(),
+				parse(&tokenize(source)).is_err(),
 				"invalid runtime-array descriptor should be rejected: {source}"
 			);
 		}
@@ -212,7 +205,7 @@ mod tests {
 
 	#[test]
 	fn parse_source_push_constant_block() {
-		let tokens = tokenize(
+		let root = parse(&tokenize(
 			r#"
 				push_constant: push_constant {
 					source_vertex_base: u32,
@@ -220,9 +213,8 @@ mod tests {
 					vertex_count: u32,
 				}
 			"#,
-		)
-		.expect("push-constant source should tokenize");
-		let root = parse(&tokens).expect("push-constant source should parse");
+		))
+		.expect("push-constant source should parse");
 		let Nodes::Scope { children, .. } = root.node() else {
 			panic!("expected root scope");
 		};
@@ -255,9 +247,10 @@ mod tests {
 			"texture: descriptor<{ type: Texture2D, binding: 0, access: read, group: 1 }>;",
 			"texture: descriptor<{ type: Texture2D; binding: 0; access: read }>;",
 		] {
-			let tokens = tokenize(source).expect("descriptor source should tokenize");
-
-			assert!(parse(&tokens).is_err(), "malformed descriptor should be rejected: {source}");
+			assert!(
+				parse(&tokenize(source)).is_err(),
+				"malformed descriptor should be rejected: {source}"
+			);
 		}
 	}
 
@@ -267,26 +260,19 @@ mod tests {
 			"texture: descriptor<{ type: Texture2D<rgba16f>, binding: 0, access: read }>;",
 			"data: descriptor<{ type: Data<rgba16f>, binding: 0, access: read }>;",
 		] {
-			let tokens = tokenize(source).expect("formatted descriptor source should tokenize");
-
 			assert!(
-				parse(&tokens).is_err(),
+				parse(&tokenize(source)).is_err(),
 				"non-storage image descriptor format should be rejected: {source}"
 			);
 		}
 	}
 
-	fn assert_named_type(type_name: &TypeName<'_>, expected: &str) {
-		assert!(matches!(type_name, TypeName::Named(name) if *name == expected));
-	}
-
 	#[test]
 	fn parse_structural_entry_types_and_record_values() {
-		let tokens = tokenize(
+		let root = parse(&tokenize(
 			"main: fn (input: StageInput, pipeline_input: interface { uv: vec2f, }) -> output { color: vec4f, } { return { color, }; }",
-		)
-		.expect("trailing-comma record source should tokenize");
-		let root = parse(&tokens).expect("trailing-comma record source should parse");
+		))
+		.expect("trailing-comma record source should parse");
 		let Nodes::Function {
 			params,
 			return_type,
@@ -329,93 +315,10 @@ mod tests {
 			"Instance: struct { position: vec3f; }",
 			"Instance: struct { position: vec3f sprite_id: u32 }",
 		] {
-			let tokens = tokenize(source).expect("invalid field separator source should tokenize");
-
 			assert!(
-				parse(&tokens).is_err(),
+				parse(&tokenize(source)).is_err(),
 				"non-comma field separators should be rejected: {source}"
 			);
-		}
-	}
-
-	fn assert_struct(node: &Node) {
-		if let Nodes::Struct { name, fields } = &node.node {
-			assert_eq!(*name, "Light");
-			assert_eq!(fields.len(), 2);
-
-			let position = &fields[0];
-
-			if let Nodes::Member { name, r#type } = &position.node {
-				assert_eq!(*name, "position");
-				assert_eq!(r#type, "vec3f");
-			} else {
-				panic!("Not a member");
-			}
-
-			let color = &fields[1];
-
-			if let Nodes::Member { name, r#type } = &color.node {
-				assert_eq!(*name, "color");
-				assert_eq!(r#type, "vec3f");
-			} else {
-				panic!("Not a member");
-			}
-		} else {
-			panic!("Not a struct");
-		}
-	}
-
-	fn assert_function(node: &Node) {
-		if let Nodes::Function {
-			name,
-			params,
-			return_type,
-			statements,
-			..
-		} = &node.node
-		{
-			assert_eq!(*name, "main");
-			assert_eq!(params.len(), 0);
-			assert_eq!(*return_type, TypeName::Named("void"));
-			assert_eq!(statements.len(), 2);
-
-			let statement = &statements[0];
-
-			if let Nodes::Expression(Expressions::Operator {
-				operator,
-				left: var_decl,
-				right: function_call,
-			}) = &statement.node
-			{
-				assert_eq!(*operator, Operators::Assignment);
-
-				if let Nodes::Expression(Expressions::VariableDeclaration { name, r#type, .. }) = &var_decl.node {
-					assert_eq!(*name, "position");
-					assert_named_type(r#type, "vec4f");
-				} else {
-					panic!("Not an variable declaration");
-				}
-
-				if let Nodes::Expression(Expressions::Call { name, parameters, .. }) = &function_call.node {
-					assert_named_type(name, "vec4");
-
-					assert_eq!(parameters.len(), 4);
-
-					let x_param = &parameters[0];
-
-					if let Nodes::Expression(Expressions::Literal { value }) = &x_param.node {
-						assert_eq!(value, "0.0");
-					} else {
-						panic!("Not a literal");
-					}
-				} else {
-					panic!("Not a function call");
-				}
-			} else {
-				panic!("Not an assignment");
-			}
-		} else {
-			panic!("Not a function");
 		}
 	}
 
@@ -433,34 +336,60 @@ main: fn () -> void {
 	gl_Position = position;
 }";
 
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
+		let node = parse(&tokenize(source)).expect("Failed to parse");
+		assert!(matches!(node.node, Nodes::Scope { .. }), "Not root node");
 
-		if let Nodes::Scope { .. } = &node.node {
-			assert_struct(&node["Light"]);
-			assert_function(&node["main"]);
-		} else {
-			panic!("Not root node")
-		}
+		let Nodes::Struct { name: "Light", fields } = &node["Light"].node else {
+			panic!("Not a struct");
+		};
+		assert!(matches!(
+			fields.as_slice(),
+			[position, color]
+				if matches!(&position.node, Nodes::Member { name: "position", r#type } if r#type == "vec3f")
+					&& matches!(&color.node, Nodes::Member { name: "color", r#type } if r#type == "vec3f")
+		));
+
+		let Nodes::Function {
+			name: "main",
+			params,
+			return_type,
+			statements,
+		} = &node["main"].node
+		else {
+			panic!("Not a function");
+		};
+		assert_eq!(params.len(), 0);
+		assert_eq!(*return_type, TypeName::Named("void"));
+		assert_eq!(statements.len(), 2);
+
+		let Nodes::Expression(Expressions::Operator {
+			operator: Operators::Assignment,
+			left,
+			right,
+		}) = &statements[0].node
+		else {
+			panic!("Not an assignment");
+		};
+		assert!(matches!(
+			&left.node,
+			Nodes::Expression(Expressions::VariableDeclaration { name, r#type: TypeName::Named("vec4f") }) if name == "position"
+		));
+		let Nodes::Expression(Expressions::Call {
+			name: TypeName::Named("vec4"),
+			parameters,
+		}) = &right.node
+		else {
+			panic!("Not a function call");
+		};
+		assert_eq!(parameters.len(), 4);
+		assert!(matches!(&parameters[0].node, Nodes::Expression(Expressions::Literal { value }) if value == "0.0"));
 	}
 
 	#[test]
 	fn test_parse_member() {
-		let source = "color: In<vec4f>;";
+		let node = parse(&tokenize("color: In<vec4f>;")).expect("Failed to parse");
 
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
-
-		if let Nodes::Scope { .. } = &node.node {
-			let member_node = &node["color"];
-
-			if let Nodes::Member { name, r#type } = &member_node.node {
-				assert_eq!(*name, "color");
-				assert_eq!(r#type, "In<vec4f>");
-			} else {
-				panic!("Not a feature");
-			}
-		}
+		assert!(matches!(&node["color"].node, Nodes::Member { name: "color", r#type } if r#type == "In<vec4f>"));
 	}
 
 	#[test]
@@ -471,8 +400,7 @@ main: fn () -> void {
 			"main: fn () -> void { match n { 0 if n => break, } }",
 			"main: fn () -> void { match n { 0 break, } }",
 		] {
-			let tokens = tokenize(source).expect("Failed to tokenize");
-			assert!(parse(&tokens).is_err(), "`{source}` should not parse");
+			assert!(parse(&tokenize(source)).is_err(), "`{source}` should not parse");
 		}
 	}
 
@@ -482,29 +410,33 @@ main: fn () -> void {
 TAU: const f32 = 3.14 * 2.0;
 ";
 
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
+		let node = parse(&tokenize(source)).expect("Failed to parse");
 
-		let const_node = &node["TAU"];
-
-		if let Nodes::Const { name, r#type, value, .. } = &const_node.node {
-			assert_eq!(*name, "TAU");
-			assert_named_type(r#type, "f32");
-
-			if let Nodes::Expression(Expressions::Operator { operator, .. }) = &value.node {
-				assert_eq!(*operator, Operators::Multiply);
-			} else {
-				panic!("Expected an operator expression, got: {:?}", value.node);
-			}
-		} else {
+		let Nodes::Const {
+			name: "TAU",
+			r#type: TypeName::Named("f32"),
+			value,
+		} = &node["TAU"].node
+		else {
 			panic!("Expected a const node");
-		}
+		};
+		assert!(
+			matches!(
+				&value.node,
+				Nodes::Expression(Expressions::Operator {
+					operator: Operators::Multiply,
+					..
+				})
+			),
+			"Expected an operator expression, got: {:?}",
+			value.node
+		);
 	}
 
 	#[test]
 	fn parse_nested_array_type_without_flattening() {
-		let tokens = tokenize("f32 [ 3 ] [ 4 ]").expect("Failed to tokenize");
-		let mut tokens = tokens.tokens.iter();
+		let tokens = tokenize("f32 [ 3 ] [ 4 ]");
+		let mut tokens = tokens.iter();
 		let base_type = tokens.next().expect("Expected a base type");
 		let (type_name, mut iterator) = parse_type_name(tokens, base_type).expect("Failed to parse type");
 
@@ -528,8 +460,7 @@ main: fn () -> void {
 	let packed: u32 = 1 << 8 | 2 ^ 3 & 255;
 }";
 
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		let node = parse(&tokens).expect("Failed to parse");
+		let node = parse(&tokenize(source)).expect("Failed to parse");
 
 		let main_node = &node["main"];
 		let Nodes::Function { statements, .. } = &main_node.node else {
@@ -572,9 +503,7 @@ main: fn () -> void {
 	foo((a + b) * 3);
 }
 "#;
-		let tokens = tokenize(source).expect("Failed to tokenize");
-		println!("Tokens: {:?}", tokens.tokens);
-		let node = parse(&tokens).expect("Failed to parse");
+		let node = parse(&tokenize(source)).expect("Failed to parse");
 		let func = &node["main"];
 
 		assert!(matches!(&func.node, Nodes::Function { .. }));
@@ -582,8 +511,9 @@ main: fn () -> void {
 
 	#[test]
 	fn truncated_function_returns_an_error() {
-		let tokens = tokenize("main: fn () -> void {").expect("Failed to tokenize");
-
-		assert!(matches!(parse(&tokens), Err(ParsingFailReasons::BadSyntax { .. })));
+		assert!(matches!(
+			parse(&tokenize("main: fn () -> void {")),
+			Err(ParsingFailReasons::BadSyntax { .. })
+		));
 	}
 }

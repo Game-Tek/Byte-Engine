@@ -180,18 +180,7 @@ impl<'a> Compiler<'a> {
 						};
 						(ResourceSlot::new(*slot), layout)
 					};
-					match self.descriptor_layouts.get(&slot) {
-						Some(existing) if existing != &layout => {
-							return Err(VmError::UnsupportedDescriptor {
-								slot,
-								message: "Descriptor slot was reused with a different resource type".to_string(),
-							});
-						}
-						Some(_) => {}
-						None => {
-							self.descriptor_layouts.insert(slot, layout);
-						}
-					}
+					self.claim_descriptor_layout(slot, layout)?;
 					let register = self.allocate_register();
 					self.emit(ValueInstruction::LoadLiteral {
 						register,
@@ -273,19 +262,7 @@ impl<'a> Compiler<'a> {
 			}
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
-				let element_slot = ResourceSlot::new(slot.slot() + element as u32);
-				match self.descriptor_layouts.get(&element_slot) {
-					Some(existing) if existing != &DescriptorLayout::Texture => {
-						return Err(VmError::UnsupportedDescriptor {
-							slot: element_slot,
-							message: "Descriptor slot was reused with a different resource type".to_string(),
-						});
-					}
-					Some(_) => {}
-					None => {
-						self.descriptor_layouts.insert(element_slot, DescriptorLayout::Texture);
-					}
-				}
+				self.claim_descriptor_layout(ResourceSlot::new(slot.slot() + element as u32), DescriptorLayout::Texture)?;
 			}
 			let index = self.compile_value_expression(&index, &ValueType::U32)?;
 			let register = self.allocate_register();

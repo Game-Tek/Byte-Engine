@@ -7,20 +7,41 @@
 //! Factory hooks retain handles and Rust type names, never message payloads.
 //! Startup-installed typed collectors may copy selected factory values into
 //! their owning diagnostic subsystem.
+//!
+//! The entity catalog is indexed by handle and updated without locks or
+//! hashing: each entity is one word that packs the catalog indices of its
+//! types, so cataloging a creation costs one compare-and-swap.
+
+#![allow(
+	unsafe_code,
+	reason = "The entity catalog allocates its handle-indexed chunks on first touch without a lock."
+)]
 
 use std::{
 	any::{Any, TypeId, type_name},
-	collections::HashMap,
 	fmt,
-	sync::Arc,
+	sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+	sync::{Arc, OnceLock},
 };
 
-use smallvec::SmallVec;
-use utils::sync::Mutex;
+use utils::{hash::HashMap, sync::Mutex};
 
 use crate::core::{factory::Handle, message_bus::TopicSnapshot};
 
-const INLINE_ENTITY_TYPE_CAPACITY: usize = 4;
+/// Entities per catalog chunk. Chunks are allocated as handles reach them.
+const ENTITIES_PER_CHUNK: usize = 1 << 14;
+/// Chunks that cover every possible handle, so no handle needs another path.
+const CHUNK_TABLE_LEN: usize = (u32::MAX as usize + 1) / ENTITIES_PER_CHUNK;
+/// Bits of the entity word that hold its state: the inline type count or `OVERFLOW_STATE`.
+const STATE_BITS: u32 = 8;
+/// Bits of one inline type index, which bounds the distinct types a catalog can index.
+const INDEX_BITS: u32 = 11;
+const INDEX_MASK: u64 = (1 << INDEX_BITS) - 1;
+const MAX_TYPES: usize = 1 << INDEX_BITS;
+/// Types one entity word holds inline before the entity moves to the side catalog.
+const INLINE_TYPES: u8 = ((u64::BITS - STATE_BITS) / INDEX_BITS) as u8;
+/// Entity word state meaning the entity's types live in the side catalog.
+const OVERFLOW_STATE: u8 = u8::MAX;
 
 type ObserveEntityValue = Box<dyn Fn(Handle, &dyn Any) + Send + Sync + 'static>;
 type ForgetEntityValue = Box<dyn Fn(Handle) + Send + Sync + 'static>;
@@ -108,6 +129,13 @@ impl ObservedEntity {
 	}
 }
 
+/// The `ObservedType` struct identifies one factory value type inside an observer's catalog.
+///
+/// A factory resolves it once and passes it with every creation, so cataloging
+/// never hashes a type id.
+#[derive(Clone, Copy)]
+pub(crate) struct ObservedType(u16);
+
 /// The `MessageObserver` struct provides passive publication ranges and a factory-backed entity catalog.
 ///
 /// Drain publication ranges through [`Self::drain_messages`]. Query current
@@ -119,15 +147,20 @@ pub struct MessageObserver {
 }
 
 impl MessageObserver {
-	/// Allocates route cursors and an empty entity catalog.
-	pub(crate) fn new(max_topics: usize) -> Self {
+	/// Allocates an empty entity catalog. Route cursors and catalog chunks grow as they are touched.
+	pub(crate) fn new() -> Self {
+		// SAFETY: Null pointers and empty once-locks are all-zero, and the zeroed
+		// pages cost nothing until an entity touches them.
+		let chunks = unsafe { Box::<[AtomicPtr<EntityChunk>]>::new_zeroed_slice(CHUNK_TABLE_LEN).assume_init() };
 		Self {
 			inner: Arc::new(MessageObserverInner {
-				message_cursors: Mutex::new(vec![0; max_topics].into_boxed_slice()),
-				entities: Mutex::new(EntityObservationState {
-					catalog: HashMap::new(),
-					value_collectors: HashMap::new(),
-				}),
+				message_cursors: Mutex::new(Vec::new()),
+				types: (0..MAX_TYPES).map(|_| OnceLock::new()).collect(),
+				type_registry: Mutex::new(HashMap::default()),
+				collectors: AtomicUsize::new(0),
+				chunks,
+				chunks_touched: AtomicUsize::new(0),
+				side: Mutex::new(HashMap::default()),
 			}),
 		}
 	}
@@ -137,6 +170,9 @@ impl MessageObserver {
 		let mut cursors = self.inner.message_cursors.lock();
 		let mut messages = Vec::with_capacity(topics.len());
 		for topic in topics {
+			if cursors.len() <= topic.topic_id {
+				cursors.resize(topic.topic_id + 1, 0);
+			}
 			let cursor = &mut cursors[topic.topic_id];
 			// Concurrent drains may acquire an older topic snapshot after another
 			// request has already advanced this route's shared cursor.
@@ -156,31 +192,69 @@ impl MessageObserver {
 
 	/// Returns a handle-sorted snapshot of every current factory-created entity.
 	pub fn entities(&self) -> Vec<ObservedEntity> {
-		let entities = self.inner.entities.lock();
-		let mut snapshot = entities
-			.catalog
-			.iter()
-			.map(|(&handle, types)| ObservedEntity {
-				handle,
-				types: types.iter().map(|entity_type| entity_type.name).collect(),
-			})
-			.collect::<Vec<_>>();
-		snapshot.sort_unstable_by_key(|entity| entity.handle.id());
+		let inner = &*self.inner;
+		let side = inner.side.lock();
+		let mut snapshot = Vec::new();
+		let touched = inner.chunks_touched.load(Ordering::Acquire);
+		for (chunk_index, slot) in inner.chunks[..touched].iter().enumerate() {
+			let chunk = slot.load(Ordering::Acquire);
+			if chunk.is_null() {
+				continue;
+			}
+			// SAFETY: A published chunk pointer stays valid until the observer drops.
+			let chunk = unsafe { &*chunk };
+			for (entry_index, entry) in chunk.iter().enumerate() {
+				let word = entry.load(Ordering::Acquire);
+				if word == 0 {
+					continue;
+				}
+				let handle = Handle::from_id((chunk_index * ENTITIES_PER_CHUNK + entry_index) as u32);
+				let types = if entity_state(word) == OVERFLOW_STATE {
+					side.get(&handle.id())
+						.map(|types| types.iter().map(|&index| inner.type_name(index)).collect())
+						.unwrap_or_default()
+				} else {
+					inline_types(word).map(|index| inner.type_name(index)).collect()
+				};
+				snapshot.push(ObservedEntity { handle, types });
+			}
+		}
 		snapshot
 	}
 
-	/// Adds one semantic factory representation and forwards its borrowed value to a matching collector.
-	pub(crate) fn observe_entity<T: 'static>(&self, handle: Handle, value: &T) {
-		let entity_type = ObservedEntityType {
-			id: TypeId::of::<T>(),
-			name: type_name::<T>(),
-		};
-		let mut entities = self.inner.entities.lock();
-		let types = entities.catalog.entry(handle).or_default();
-		if types.iter().all(|existing| existing.id != entity_type.id) {
-			types.push(entity_type);
+	/// Resolves the catalog identity of a factory value type, registering it on first use.
+	///
+	/// Next, pass the result to [`Self::observe_entity`] with every creation.
+	pub(crate) fn observed_type<T: 'static>(&self) -> ObservedType {
+		let inner = &*self.inner;
+		let mut registry = inner.type_registry.lock();
+		if let Some(&index) = registry.get(&TypeId::of::<T>()) {
+			return ObservedType(index);
 		}
-		if let Some(collector) = entities.value_collectors.get(&entity_type.id) {
+		assert!(
+			registry.len() < MAX_TYPES,
+			"Message observer type limit {MAX_TYPES} reached while cataloging '{}'. The most likely cause is a loop that creates factories for generic types without bound.",
+			type_name::<T>()
+		);
+		let index = registry.len() as u16;
+		let installed = inner.types[usize::from(index)]
+			.set(TypeEntry {
+				name: type_name::<T>(),
+				collector: OnceLock::new(),
+			})
+			.is_ok();
+		debug_assert!(installed, "A catalog type slot was initialized twice");
+		registry.insert(TypeId::of::<T>(), index);
+		ObservedType(index)
+	}
+
+	/// Adds one semantic factory representation and forwards its borrowed value to a matching collector.
+	pub(crate) fn observe_entity(&self, handle: Handle, observed: ObservedType, value: &dyn Any) {
+		let inner = &*self.inner;
+		inner.catalog(inner.entry(handle.id()), handle, observed);
+		if inner.collectors.load(Ordering::Acquire) != 0
+			&& let Some(collector) = inner.indexed_type(observed.0).collector.get()
+		{
 			(collector.observe)(handle, value);
 		}
 	}
@@ -192,7 +266,6 @@ impl MessageObserver {
 		O: Fn(Handle, &T) + Send + Sync + 'static,
 		F: Fn(Handle) + Send + Sync + 'static,
 	{
-		let entity_type = TypeId::of::<T>();
 		let collector = EntityValueCollector {
 			observe: Box::new(move |handle, value| {
 				let value = value
@@ -202,35 +275,52 @@ impl MessageObserver {
 			}),
 			forget: Box::new(forget),
 		};
-		let mut entities = self.inner.entities.lock();
+		let observed = self.observed_type::<T>();
 		assert!(
-			!entities.value_collectors.contains_key(&entity_type),
+			self.inner.indexed_type(observed.0).collector.set(collector).is_ok(),
 			"Entity value collection is already registered. The most likely cause is that more than one inspector tried to collect the same component type."
 		);
-		let replaced = entities.value_collectors.insert(entity_type, collector);
-		debug_assert!(replaced.is_none());
+		self.inner.collectors.fetch_add(1, Ordering::AcqRel);
 	}
 
 	/// Removes a terminally deleted handle from the current entity catalog.
 	pub(crate) fn forget_entity(&self, handle: Handle) {
-		let mut entities = self.inner.entities.lock();
-		entities.catalog.remove(&handle);
-		for collector in entities.value_collectors.values() {
-			(collector.forget)(handle);
+		let inner = &*self.inner;
+		if let Some(entry) = inner.entry_if_present(handle.id())
+			&& entity_state(entry.swap(0, Ordering::AcqRel)) == OVERFLOW_STATE
+		{
+			inner.side.lock().remove(&handle.id());
+		}
+		if inner.collectors.load(Ordering::Acquire) != 0 {
+			inner.forget_collected(handle);
 		}
 	}
 }
 
 /// The `MessageObserverInner` struct owns the storage shared by producers and the inspector.
 struct MessageObserverInner {
-	message_cursors: Mutex<Box<[u64]>>,
-	entities: Mutex<EntityObservationState>,
+	message_cursors: Mutex<Vec<u64>>,
+	/// Indexed catalog types, registered once through `type_registry`.
+	types: Box<[OnceLock<TypeEntry>]>,
+	/// Catalog index for each type id. Only type registration takes this lock.
+	type_registry: Mutex<HashMap<TypeId, u16>>,
+	/// Installed collectors, so cataloging skips the lookup when there are none.
+	collectors: AtomicUsize,
+	/// Handle-indexed entity words, allocated one chunk at a time on first touch.
+	chunks: Box<[AtomicPtr<EntityChunk>]>,
+	/// Chunk slots that may hold a chunk, so snapshots skip the untouched rest of the table.
+	chunks_touched: AtomicUsize,
+	/// Types of entities with more representations than one word holds.
+	side: Mutex<HashMap<u32, Vec<u16>>>,
 }
 
-/// The `EntityObservationState` struct keeps the entity catalog and its startup-installed value collectors under one lock.
-struct EntityObservationState {
-	catalog: HashMap<Handle, SmallVec<[ObservedEntityType; INLINE_ENTITY_TYPE_CAPACITY]>>,
-	value_collectors: HashMap<TypeId, EntityValueCollector>,
+/// The `EntityChunk` type holds the entity words for one contiguous handle range.
+type EntityChunk = [AtomicU64; ENTITIES_PER_CHUNK];
+
+/// The `TypeEntry` struct describes one indexed catalog type and its optional collector.
+struct TypeEntry {
+	name: &'static str,
+	collector: OnceLock<EntityValueCollector>,
 }
 
 /// The `EntityValueCollector` struct forwards one selected component type without retaining general factory values.
@@ -239,9 +329,225 @@ struct EntityValueCollector {
 	forget: ForgetEntityValue,
 }
 
-#[derive(Clone, Copy)]
-/// The `ObservedEntityType` struct de-duplicates one Rust representation without exposing `TypeId`.
-struct ObservedEntityType {
-	id: TypeId,
-	name: &'static str,
+impl MessageObserverInner {
+	fn indexed_type(&self, index: u16) -> &TypeEntry {
+		self.types[usize::from(index)]
+			.get()
+			.expect("An indexed catalog type is registered before any entity refers to it")
+	}
+
+	fn type_name(&self, index: u16) -> &'static str {
+		self.indexed_type(index).name
+	}
+
+	/// Returns the entity word of a handle, allocating its chunk on first touch.
+	fn entry(&self, id: u32) -> &AtomicU64 {
+		let (chunk_index, entry_index) = (id as usize / ENTITIES_PER_CHUNK, id as usize % ENTITIES_PER_CHUNK);
+		let slot = &self.chunks[chunk_index];
+		let mut chunk = slot.load(Ordering::Acquire);
+		if chunk.is_null() {
+			// SAFETY: An all-zero bit pattern is a valid `AtomicU64`, and zeroed heap
+			// pages cost nothing until an entity touches them.
+			let fresh = Box::into_raw(unsafe { Box::<EntityChunk>::new_zeroed().assume_init() });
+			match slot.compare_exchange(std::ptr::null_mut(), fresh, Ordering::AcqRel, Ordering::Acquire) {
+				Ok(_) => {
+					self.chunks_touched.fetch_max(chunk_index + 1, Ordering::AcqRel);
+					chunk = fresh;
+				}
+				Err(existing) => {
+					// SAFETY: `fresh` was never published, so this is its only owner.
+					drop(unsafe { Box::from_raw(fresh) });
+					chunk = existing;
+				}
+			}
+		}
+		// SAFETY: A published chunk pointer stays valid until the observer drops.
+		let chunk = unsafe { &*chunk };
+		&chunk[entry_index]
+	}
+
+	/// Returns the entity word of a handle whose chunk already exists.
+	fn entry_if_present(&self, id: u32) -> Option<&AtomicU64> {
+		let chunk = self.chunks[id as usize / ENTITIES_PER_CHUNK].load(Ordering::Acquire);
+		if chunk.is_null() {
+			return None;
+		}
+		// SAFETY: A published chunk pointer stays valid until the observer drops.
+		let chunk = unsafe { &*chunk };
+		Some(&chunk[id as usize % ENTITIES_PER_CHUNK])
+	}
+
+	/// Appends a type to an entity word, or moves the entity to the side catalog when the word is full.
+	fn catalog(&self, entry: &AtomicU64, handle: Handle, observed: ObservedType) {
+		let mut word = entry.load(Ordering::Acquire);
+		loop {
+			let state = entity_state(word);
+			if state == OVERFLOW_STATE {
+				return self.catalog_in_side(handle, observed);
+			}
+			if inline_types(word).any(|index| index == observed.0) {
+				return;
+			}
+			if state == INLINE_TYPES {
+				return self.promote_to_side(entry, handle, observed);
+			}
+			// Replace the count byte and append the index at the next inline position.
+			let next = (word & !0xFF) | u64::from(state + 1) | (u64::from(observed.0) << type_shift(state));
+			match entry.compare_exchange_weak(word, next, Ordering::AcqRel, Ordering::Acquire) {
+				Ok(_) => return,
+				Err(actual) => word = actual,
+			}
+		}
+	}
+
+	/// Moves a full entity word's types to the side catalog together with one more type.
+	#[cold]
+	#[inline(never)]
+	fn promote_to_side(&self, entry: &AtomicU64, handle: Handle, observed: ObservedType) {
+		let mut side = self.side.lock();
+		// Another thread may have promoted the entity first; the swap reads the final inline set.
+		let word = entry.swap(u64::from(OVERFLOW_STATE), Ordering::AcqRel);
+		let types = side.entry(handle.id()).or_default();
+		if entity_state(word) != OVERFLOW_STATE {
+			types.extend(inline_types(word));
+		}
+		push_unique(types, observed);
+	}
+
+	/// Appends a type to an entity that already lives in the side catalog.
+	#[cold]
+	#[inline(never)]
+	fn catalog_in_side(&self, handle: Handle, observed: ObservedType) {
+		push_unique(self.side.lock().entry(handle.id()).or_default(), observed);
+	}
+
+	/// Tells every installed collector that a handle was deleted.
+	fn forget_collected(&self, handle: Handle) {
+		for entry in self.types.iter().map_while(OnceLock::get) {
+			if let Some(collector) = entry.collector.get() {
+				(collector.forget)(handle);
+			}
+		}
+	}
+}
+
+impl Drop for MessageObserverInner {
+	fn drop(&mut self) {
+		for slot in self.chunks.iter_mut() {
+			let chunk = *slot.get_mut();
+			if !chunk.is_null() {
+				// SAFETY: Each published chunk came from `Box::into_raw` and is freed exactly once here.
+				drop(unsafe { Box::from_raw(chunk) });
+			}
+		}
+	}
+}
+
+/// Returns the state byte of an entity word: its inline type count or `OVERFLOW_STATE`.
+fn entity_state(word: u64) -> u8 {
+	word as u8
+}
+
+/// Returns the bit position of the inline type index at `position`.
+fn type_shift(position: u8) -> u32 {
+	STATE_BITS + INDEX_BITS * u32::from(position)
+}
+
+/// Returns the catalog indices packed in an entity word, in first-published order.
+fn inline_types(word: u64) -> impl Iterator<Item = u16> {
+	(0..entity_state(word).min(INLINE_TYPES)).map(move |position| ((word >> type_shift(position)) & INDEX_MASK) as u16)
+}
+
+fn push_unique(types: &mut Vec<u16>, observed: ObservedType) {
+	if !types.contains(&observed.0) {
+		types.push(observed.0);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::{Arc, Mutex};
+
+	use super::{INLINE_TYPES, MessageObserver};
+	use crate::core::factory::Handle;
+
+	/// Catalogs `count` distinct marker types under one handle through the crate-private hooks.
+	fn catalog_distinct_types(observer: &MessageObserver, handle: Handle, count: usize) {
+		macro_rules! marker_types {
+			($($marker:ident),*) => {{
+				$(struct $marker;)*
+				let catalog: &[fn(&MessageObserver, Handle)] = &[$(|observer, handle| {
+					observer.observe_entity(handle, observer.observed_type::<$marker>(), &$marker);
+				}),*];
+				for record in catalog.iter().take(count) {
+					record(observer, handle);
+				}
+			}};
+		}
+		marker_types!(A, B, C, D, E, F, G, H, I, J);
+	}
+
+	#[test]
+	fn an_entity_keeps_every_type_in_publication_order_beyond_the_inline_word() {
+		let observer = MessageObserver::new();
+		let handle = Handle::from_id(5);
+		let count = usize::from(INLINE_TYPES) + 3;
+
+		catalog_distinct_types(&observer, handle, count);
+		// Cataloging the same types again must not duplicate them.
+		catalog_distinct_types(&observer, handle, count);
+
+		let entities = observer.entities();
+		assert_eq!(entities.len(), 1);
+		assert_eq!(entities[0].handle(), handle);
+		let types = entities[0].types();
+		assert_eq!(types.len(), count);
+		assert!(types[0].ends_with("::A") && types[count - 1].ends_with("::H"), "{types:?}");
+	}
+
+	#[test]
+	fn forgotten_entities_leave_the_catalog_whatever_their_size() {
+		let observer = MessageObserver::new();
+		let small = Handle::from_id(1);
+		let large = Handle::from_id(2);
+		let far = Handle::from_id(u32::MAX - 1);
+		catalog_distinct_types(&observer, small, 1);
+		catalog_distinct_types(&observer, large, usize::from(INLINE_TYPES) + 1);
+		catalog_distinct_types(&observer, far, 2);
+		assert_eq!(
+			observer.entities().iter().map(|entity| entity.handle()).collect::<Vec<_>>(),
+			[small, large, far]
+		);
+
+		observer.forget_entity(large);
+		observer.forget_entity(far);
+		observer.forget_entity(small);
+		observer.forget_entity(Handle::from_id(7_000_000));
+
+		assert!(observer.entities().is_empty());
+	}
+
+	#[test]
+	fn collectors_see_values_and_deletions_for_their_type_only() {
+		struct Tracked(u32);
+		struct Other;
+		let observer = MessageObserver::new();
+		let seen = Arc::new(Mutex::new(Vec::new()));
+		let forgotten = Arc::new(Mutex::new(Vec::new()));
+		let (collected, dropped) = (Arc::clone(&seen), Arc::clone(&forgotten));
+		observer.collect_entity_values::<Tracked, _, _>(
+			move |handle, value| collected.lock().unwrap().push((handle, value.0)),
+			move |handle| dropped.lock().unwrap().push(handle),
+		);
+		let tracked = observer.observed_type::<Tracked>();
+		let other = observer.observed_type::<Other>();
+		let handle = Handle::from_id(9);
+
+		observer.observe_entity(handle, other, &Other);
+		observer.observe_entity(handle, tracked, &Tracked(42));
+		observer.forget_entity(handle);
+
+		assert_eq!(*seen.lock().unwrap(), [(handle, 42)]);
+		assert_eq!(*forgotten.lock().unwrap(), [handle]);
+	}
 }

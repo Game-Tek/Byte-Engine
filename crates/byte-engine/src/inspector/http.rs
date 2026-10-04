@@ -729,10 +729,20 @@ mod tests {
 		assert_eq!(entities[0]["types"][0], std::any::type_name::<String>());
 
 		let messages = server.get_json("/messages");
-		assert_eq!(messages["messages"][0]["scope"], "http-observation-test");
-		assert_eq!(messages["messages"][0]["type"], std::any::type_name::<Option<u32>>());
-		assert_eq!(messages["messages"][0]["first_sequence"], 0);
-		assert_eq!(messages["messages"][0]["count"], 1);
+		let publications = messages["messages"].as_array().expect("publication list");
+		let publication_of = |message_type: &str| {
+			publications
+				.iter()
+				.find(|publication| publication["type"] == message_type)
+				.unwrap_or_else(|| panic!("no publication of {message_type} in {publications:?}"))
+		};
+		let generic = publication_of(std::any::type_name::<Option<u32>>());
+		assert_eq!(generic["scope"], "http-observation-test");
+		assert_eq!(generic["first_sequence"], 0);
+		assert_eq!(generic["count"], 1);
+		// Publications are stored even before any listener exists, so the creation is reported too.
+		let creation = publication_of(std::any::type_name::<crate::core::factory::CreateMessage<String>>());
+		assert_eq!(creation["count"], 1);
 	}
 
 	#[test]

@@ -338,7 +338,7 @@ use resource_management::{
 use tracing::debug_span;
 use utils::Extent;
 
-use super::{GraphicsApplication, setup_pbr_visibility_shading_render_pipeline, setup_particles};
+use super::{GraphicsApplication, setup_particles, setup_pbr_visibility_shading_render_pipeline};
 use crate::rendering::common_shader_generator::CommonShaderGenerator;
 #[cfg(debug_assertions)]
 use crate::rendering::pipelines::visibility::{ScopeAccess, VisibilityShaderGenerator};

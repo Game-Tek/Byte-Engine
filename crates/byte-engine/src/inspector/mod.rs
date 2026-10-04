@@ -203,21 +203,16 @@ impl DefaultInspector {
 	pub fn drain_messages(&self) -> Vec<InspectedMessage> {
 		let topic_snapshots = self.message_bus.topics();
 		let batch = self.message_observer.drain_messages(&topic_snapshots);
-		let mut topics = vec![None; self.message_bus.config().max_topics];
-		for topic in topic_snapshots {
-			let topic_id = topic.topic_id;
-			topics[topic_id] = Some(topic);
-		}
 		batch
 			.messages()
 			.iter()
 			.map(|observation| {
-				let topic = topics[observation.topic_id()]
-					.as_ref()
-					.expect("An observed publication must retain its registered message topic");
+				// The bus reports routes in id order, so the id indexes the snapshot list.
+				let topic = &topic_snapshots[observation.topic_id()];
+				debug_assert_eq!(topic.topic_id, observation.topic_id());
 				InspectedMessage {
 					topic_id: observation.topic_id(),
-					scope: topic.scope.clone(),
+					scope: topic.scope.as_ref().into(),
 					message_type: topic.message_type,
 					first_sequence: observation.first_sequence(),
 					count: observation.count(),

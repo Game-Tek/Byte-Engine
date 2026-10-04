@@ -29,12 +29,16 @@ impl Default for DefaultWorld {
 }
 
 impl DefaultWorld {
-	/// Creates a standalone world with its own fixed message arena.
+	/// Creates a standalone world with its own message pool and no ticks, so its listeners are future-only.
 	///
 	/// Applications should use [`Self::with_messages`] so world routes appear in
 	/// the application's unified diagnostics.
 	pub fn new() -> Self {
-		let bus = MessageBus::default();
+		let bus = MessageBus::new(MessageBusConfig {
+			ticks: false,
+			..MessageBusConfig::default()
+		})
+		.unwrap_or_else(|error| panic!("{error}"));
 		Self::with_messages(bus.new_scope("default-world"))
 	}
 
@@ -103,11 +107,12 @@ impl DefaultWorld {
 		&self.transforms
 	}
 
-	/// Creates a future-only listener for terminal entity deletions.
+	/// Creates a listener for terminal entity deletions, starting at the current tick's first one.
 	///
 	/// Next, keep the listener with the consuming system and remove matching
 	/// state when it receives a [`DeleteMessage`]. Publish deletions through
 	/// [`Self::delete`] so inspection diagnostics retire the same handle.
+	#[track_caller]
 	pub fn deletions_listener(&self) -> DefaultListener<DeleteMessage> {
 		self.deletes.listener()
 	}
@@ -206,7 +211,7 @@ use crate::{
 		factory::{CreateMessage, Creator, Factory, Handle},
 		listener::{DefaultListener, Listener},
 		message::DeleteMessage,
-		message_bus::{MessageBus, MessageScope},
+		message_bus::{MessageBus, MessageBusConfig, MessageScope},
 		publisher::Publisher,
 		targeted_message::TargetedMessagePublisher,
 	},

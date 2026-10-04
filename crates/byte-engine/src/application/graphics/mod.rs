@@ -30,11 +30,7 @@
 /// - `render.debug`: Enables validation layers. The default is `true` in debug builds.
 /// - `render.debug.dump`: Enables graphics API logging. The default is `false`.
 /// - `render.debug.extended`: Enables extended validation. The default is `false`.
-/// - `messages.max-topics`: Sets the maximum number of typed routes. The default is `64`.
-/// - `messages.cells-per-topic`: Sets the fixed payload-cell budget for each typed route. The default is `512`.
-/// - `messages.cell-bytes`: Sets the size of each payload cell in bytes. The default is `256`.
-/// - `messages.cell-alignment`: Sets the alignment of each payload cell. The default is `64`.
-/// - `messages.listeners-per-topic`: Sets the maximum simultaneous listeners on one typed route. The default is `64`.
+/// - `messages.capacity`: Sets the bytes of message storage shared by every typed route, in whole chunks of [`crate::core::message_bus::CHUNK_BYTES`]. A publisher waits when every chunk is held by unread messages. The default is `67108864`, which is 64 MiB.
 /// - `render.pass.<name>`: Selects `enabled` or `bypassed` for the named render pass.
 /// - `render.gtao.enabled`: Runs GTAO, which darkens environment light in creases and corners. Both screen-space occlusion sources can run alone, together, or not at all; together, each pixel takes the stronger occlusion. The default is `true`.
 /// - `render.gtao.radius`: Sets the GTAO world-space search radius. The default is `1.0`.
@@ -742,6 +738,7 @@ impl GraphicsApplication {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
+		self.message_bus.begin_tick();
 		{
 			let span = debug_span!("GraphicsApplication::reset_frame_allocator");
 			let _enter = span.enter();
@@ -1046,24 +1043,12 @@ fn create_message_bus(application: &BaseApplication) -> (MessageBus, MessageScop
 	(message_bus, application_messages, world_messages)
 }
 
-/// Resolves the fixed message-storage limits from application startup parameters.
+/// Resolves the message pool size from application startup parameters.
 fn message_bus_config(application: &BaseApplication) -> MessageBusConfig {
-	let defaults = MessageBusConfig::default();
-
-	MessageBusConfig::new(
-		message_bus_limit(application, "messages.max-topics", defaults.max_topics),
-		message_bus_limit(application, "messages.cells-per-topic", defaults.cells_per_topic),
-		message_bus_limit(application, "messages.cell-bytes", defaults.cell_bytes),
-	)
-	.with_cell_alignment(message_bus_limit(
+	MessageBusConfig::new(message_bus_limit(
 		application,
-		"messages.cell-alignment",
-		defaults.cell_alignment,
-	))
-	.with_max_listeners_per_topic(message_bus_limit(
-		application,
-		"messages.listeners-per-topic",
-		defaults.max_listeners_per_topic,
+		"messages.capacity",
+		MessageBusConfig::default().capacity,
 	))
 }
 

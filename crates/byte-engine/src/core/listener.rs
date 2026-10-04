@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, marker::PhantomData};
+use std::{collections::VecDeque, marker::PhantomData, panic::Location};
 
 use crate::core::message_bus::ListenerToken;
 
@@ -56,12 +56,14 @@ impl<'a, M> IntoIterator for &'a mut (dyn Listener<M> + 'a) {
 	}
 }
 
-/// The `DefaultListener` struct owns one future-only cursor in a typed message route.
+/// The `DefaultListener` struct owns one cursor in a typed message route.
 ///
-/// Use [`Self::new_listener`] to add a consumer. The new listener receives future
-/// messages but does not inherit messages already queued for this listener.
-/// Call [`Listener::read`] during the consumer's update, or use
-/// [`Self::filtered`] first when the consumer needs only part of the stream.
+/// Use [`Self::new_listener`] to add a consumer. The new listener starts at the
+/// current tick's first message, so it does not inherit messages from earlier
+/// ticks that are still queued for this listener. Call [`Listener::read`]
+/// during the consumer's update, or use [`Self::filtered`] first when the
+/// consumer needs only part of the stream. Drop the listener when the consumer
+/// stops reading, so the storage behind it returns to the pool.
 pub struct DefaultListener<M>
 where
 	M: Clone + Send + Sync + 'static,
@@ -73,15 +75,15 @@ impl<M> DefaultListener<M>
 where
 	M: Clone + Send + Sync + 'static,
 {
-	/// Creates another listener for future messages on the same channel.
-	///
-	/// The new listener does not receive messages already queued for this listener.
+	/// Creates another listener on the same channel, starting at the current tick's first message.
+	#[track_caller]
 	pub fn new_listener(&self) -> Self {
 		Self {
-			token: self.token.new_listener().unwrap_or_else(|error| panic!("{error}")),
+			token: self.token.new_listener(Location::caller()),
 		}
 	}
 
+	#[track_caller]
 	pub fn filtered<F>(&self, filter: F) -> FilteredListener<DefaultListener<M>, M, F>
 	where
 		F: Fn(&M) -> bool,

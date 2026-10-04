@@ -19,7 +19,7 @@ use byte_engine::core::{
 };
 use divan::{Bencher, counter::ItemsCount};
 
-/// Draining below the current 128-message capacity prevents a blocking send.
+/// Messages published between drains, so one chunk serves each cycle without reaching the pool.
 const DRAIN_BATCH_SIZE: usize = 64;
 const SCALAR_MESSAGE_COUNT: usize = 1_048_576;
 const OBSERVED_FACTORY_CREATE_COUNT: usize = 262_144;

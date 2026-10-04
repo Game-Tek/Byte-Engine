@@ -13,7 +13,8 @@
 #[derive(Clone)]
 pub struct Factory<T: Clone + Send + Sync + 'static> {
 	channel: DefaultChannel<CreateMessage<T>>,
-	observer: Option<MessageObserver>,
+	/// The bus observer and this factory's catalog type, resolved once so creations never hash a type id.
+	observation: Option<(MessageObserver, ObservedType)>,
 }
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -84,7 +85,7 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	pub fn new() -> Self {
 		Self {
 			channel: DefaultChannel::new(),
-			observer: None,
+			observation: None,
 		}
 	}
 
@@ -117,34 +118,28 @@ impl<T: Clone + Send + Sync + 'static> Factory<T> {
 	/// must retain the original entity identity.
 	#[inline]
 	pub fn derive(&self, handle: Handle, data: T) {
-		if let Some(observer) = &self.observer {
-			record_observed_entity(observer, handle, &data);
+		if let Some((observer, observed)) = &self.observation {
+			observer.observe_entity(handle, *observed, &data);
 		}
 		let message = CreateMessage::new(handle, data);
 
 		self.channel.send(message);
 	}
 
-	/// Creates a consumer for creation messages published after registration.
+	/// Creates a consumer for creation messages, starting at the current tick's first one.
 	///
 	/// Next, call [`Self::create`] or [`Self::derive`] and drain the messages
 	/// through [`crate::core::listener::Listener::read`].
+	#[track_caller]
 	pub fn listener(&self) -> DefaultListener<CreateMessage<T>> {
 		self.channel.listener()
 	}
 
 	#[inline]
 	pub(crate) fn from_channel(channel: DefaultChannel<CreateMessage<T>>) -> Self {
-		let observer = channel.observer();
-		Self { channel, observer }
+		let observation = channel.topic.observation::<T>();
+		Self { channel, observation }
 	}
-}
-
-/// Records type metadata and selected borrowed values before the factory takes ownership.
-#[cold]
-#[inline(never)]
-fn record_observed_entity<T: 'static>(observer: &MessageObserver, handle: Handle, value: &T) {
-	observer.observe_entity(handle, value);
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +251,6 @@ use crate::core::{
 	channel::{Channel as _, DefaultChannel},
 	listener::DefaultListener,
 	message::Message,
-	message_observer::MessageObserver,
+	message_observer::{MessageObserver, ObservedType},
 	targeted_message::TargetedMessage,
 };

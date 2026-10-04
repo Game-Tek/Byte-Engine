@@ -181,7 +181,8 @@ impl AssetHandler for FBXAssetHandler {
 		})?;
 
 		// Any fragment left names the skeleton or an animation. An unfragmented request bakes the container's default
-		// resource.
+		// resource, and its diagnostics say so.
+		let default_clip = fragment.is_none();
 		let fragment = match fragment {
 			Some(fragment) => Some(fragment),
 			None => {
@@ -205,7 +206,8 @@ impl AssetHandler for FBXAssetHandler {
 
 		if let Some(fragment) = fragment {
 			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
-				context.error(format_args!("Failed to import FBX skeleton '{}': {error}", url.as_ref()));
+				let skeleton = if default_clip { "animation skeleton" } else { "skeleton" };
+				context.error(format_args!("Failed to import FBX {skeleton} '{}': {error}", url.as_ref()));
 
 				LoadErrors::FailedToProcess
 			})?;
@@ -220,7 +222,12 @@ impl AssetHandler for FBXAssetHandler {
 				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
 
 			let animation = import_fbx_animation(&scene, fragment, skeleton, &source_to_skeleton).map_err(|error| {
-				context.error(format_args!("Failed to import FBX animation '{}': {error}", url.as_ref()));
+				let animation = if default_clip {
+					"default FBX animation"
+				} else {
+					"FBX animation"
+				};
+				context.error(format_args!("Failed to import {animation} '{}': {error}", url.as_ref()));
 
 				LoadErrors::FailedToProcess
 			})?;

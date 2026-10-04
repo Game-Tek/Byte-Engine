@@ -456,7 +456,8 @@ pub(crate) fn fbx_vertex_layout(scene: &ufbx::Scene) -> Vec<VertexComponent> {
 		(VertexSemantics::Weights, skinned),
 	]
 	.into_iter()
-	.filter_map(|(semantic, present)| present.then(|| VertexComponent::canonical(semantic)))
+	.filter(|(_, present)| *present)
+	.map(|(semantic, _)| VertexComponent::canonical(semantic))
 	.collect()
 }
 

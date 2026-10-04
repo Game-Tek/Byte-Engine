@@ -360,27 +360,27 @@ fn native_kernel_source(
 ) -> Result<ghi::shader::CompiledShaderSource, String> {
 	use crate::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage};
 
-	let lowered = PlatformShaderCompiler::new()
-		.lower(settings, program)
-		.map_err(|error| format!("BESL kernel '{label}' could not be lowered for this platform. {error}"))?;
+	let mut compiler = PlatformShaderCompiler::new();
 	let language = PlatformShaderLanguage::current_platform();
+	// SPIR-V kernels have always reflected their bindings, which rejects overlapping slots. Metal and DX12 kernels
+	// never did, so they take their source text alone.
+	let source = if language.is_glsl() {
+		compiler.lower(settings, program).map(|lowered| lowered.source)
+	} else {
+		compiler.lower_source(settings, program)
+	}
+	.map_err(|error| format!("BESL kernel '{label}' could not be lowered for this platform. {error}"))?;
 	let entry_point = language.entry_point().to_string();
 	Ok(match language {
 		#[cfg(target_os = "linux")]
 		PlatformShaderLanguage::Glsl => ghi::shader::CompiledShaderSource::SPIRV(
-			crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&lowered.source, &lowered.name)?.into_vec(),
+			crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&source, &settings.name)?.into_vec(),
 		),
 		// Lowering already reported platforms without a GLSL compiler.
 		#[cfg(not(target_os = "linux"))]
 		PlatformShaderLanguage::Glsl => unreachable!("GLSL kernels are only lowered on Linux"),
-		PlatformShaderLanguage::Hlsl => ghi::shader::CompiledShaderSource::HLSL {
-			source: lowered.source,
-			entry_point,
-		},
-		PlatformShaderLanguage::Msl => ghi::shader::CompiledShaderSource::MTL {
-			source: lowered.source,
-			entry_point,
-		},
+		PlatformShaderLanguage::Hlsl => ghi::shader::CompiledShaderSource::HLSL { source, entry_point },
+		PlatformShaderLanguage::Msl => ghi::shader::CompiledShaderSource::MTL { source, entry_point },
 	})
 }
 

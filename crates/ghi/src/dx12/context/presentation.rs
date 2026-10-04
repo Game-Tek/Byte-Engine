@@ -266,7 +266,7 @@ impl Device {
 		}
 
 		let layout = Layout::from_size_align(size, buffer.memory.layout.align()).unwrap();
-		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses);
+		let memory = self.create_buffer_memory(layout, buffer.access, buffer.uses, "resize");
 		let frame_count = self.frames as usize;
 		let buffer = self
 			.buffer_mut(buffer_handle)

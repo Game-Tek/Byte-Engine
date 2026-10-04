@@ -460,8 +460,12 @@ impl Context {
 			.device_mask(1)
 			.fence(synchronizer.fence);
 
-		self.wait_for_private_synchronizer(synchronizer_handle);
 		unsafe {
+			if synchronizer.armed {
+				self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
+					"Failed to wait for the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
+				);
+			}
 			self.device.reset_fences(&[synchronizer.fence]).expect(
 				"Failed to reset the Vulkan swapchain acquire fence. The most likely cause is that the device was lost.",
 			);

@@ -18,7 +18,7 @@ impl Device {
 			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
 		};
 		let buffer = Buffer {
-			memory: self.create_buffer_memory(layout, device_accesses, resource_uses),
+			memory: self.create_buffer_memory(layout, device_accesses, resource_uses, "allocate"),
 			size: layout.size(),
 			uses: resource_uses,
 			access: device_accesses,
@@ -102,7 +102,7 @@ impl Device {
 			return;
 		}
 
-		let frame_storage = self.create_buffer_memory(layout, access, uses);
+		let frame_storage = self.create_buffer_memory(layout, access, uses, "allocate");
 		let Some(buffer) = self.buffer_mut(buffer_handle) else {
 			return;
 		};
@@ -166,8 +166,15 @@ impl Device {
 		Some((memory.data, size))
 	}
 
-	/// Allocates zeroed CPU shadow storage and its native resource for one copy of a buffer.
-	pub(crate) fn create_buffer_memory(&self, layout: Layout, access: DeviceAccesses, uses: Uses) -> BufferMemory {
+	/// Allocates zeroed CPU shadow storage and its native resource for one copy of a buffer. `action` names the caller's
+	/// operation, such as "allocate" or "resize", in the out-of-memory panic.
+	pub(crate) fn create_buffer_memory(
+		&self,
+		layout: Layout,
+		access: DeviceAccesses,
+		uses: Uses,
+		action: &str,
+	) -> BufferMemory {
 		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
 		let data = if layout.size() == 0 {
 			std::ptr::without_provenance_mut(layout.align())
@@ -175,7 +182,7 @@ impl Device {
 			unsafe { alloc::alloc_zeroed(layout) }
 		};
 		if layout.size() != 0 && data.is_null() {
-			panic!("Failed to allocate buffer storage. The most likely cause is that the system is out of memory.");
+			panic!("Failed to {action} buffer storage. The most likely cause is that the system is out of memory.");
 		}
 
 		let resource_size = Self::buffer_resource_size(layout.size(), uses);

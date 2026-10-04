@@ -322,9 +322,11 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 	let source_height = source_height as usize;
 	let destination_width = (source_width / 2).max(1);
 	let destination_height = (source_height / 2).max(1);
-	// Each 8-bit code always decodes to the same linear value, so decoding the 256 codes once per level gives
-	// bit-identical averages without 12 powf calls per destination texel.
-	let to_linear: [f32; 256] = std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0));
+	// Each 8-bit code always decodes to the same linear value, so decoding the 256 codes once per process gives
+	// bit-identical averages without 12 powf calls per destination texel, even for the smallest levels.
+	static TO_LINEAR: std::sync::LazyLock<[f32; 256]> =
+		std::sync::LazyLock::new(|| std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0)));
+	let to_linear = &*TO_LINEAR;
 
 	for y in 0..destination_height {
 		let y0 = (y * 2).min(source_height - 1);

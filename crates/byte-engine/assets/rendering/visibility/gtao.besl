@@ -119,14 +119,32 @@ prefetch_level: fn (level: u32, group_base: vec2u) -> void {
 	}
 }
 
-// Reads the cached depth of the mip `level` texel that covers `base_resolution_coord`.
+// Reads the cached depth of the mip `level` texel that covers `base_resolution_coord`. This runs per sample step, so
+// each level's arm indexes the cache tables with a constant instead of reading them at a runtime index.
 cached_hierarchical_depth: fn (base_resolution_coord: vec2u, level: u32, group_base: vec2u) -> f32 {
-	let halo: u32 = CACHE_HALOS[level];
-	return cached_depth[
-		CACHE_BASES[level] +
-		cache_coordinate(base_resolution_coord.y >> level, group_base.y >> level, halo) * CACHE_STRIDES[level] +
-		cache_coordinate(base_resolution_coord.x >> level, group_base.x >> level, halo)
-	];
+	match level {
+		2 => {
+			return cached_depth[
+				CACHE_BASES[2] +
+				cache_coordinate(base_resolution_coord.y >> 2, group_base.y >> 2, CACHE_HALOS[2]) * CACHE_STRIDES[2] +
+				cache_coordinate(base_resolution_coord.x >> 2, group_base.x >> 2, CACHE_HALOS[2])
+			];
+		}
+		1 => {
+			return cached_depth[
+				CACHE_BASES[1] +
+				cache_coordinate(base_resolution_coord.y >> 1, group_base.y >> 1, CACHE_HALOS[1]) * CACHE_STRIDES[1] +
+				cache_coordinate(base_resolution_coord.x >> 1, group_base.x >> 1, CACHE_HALOS[1])
+			];
+		}
+		_ => {
+			return cached_depth[
+				CACHE_BASES[0] +
+				cache_coordinate(base_resolution_coord.y, group_base.y, CACHE_HALOS[0]) * CACHE_STRIDES[0] +
+				cache_coordinate(base_resolution_coord.x, group_base.x, CACHE_HALOS[0])
+			];
+		}
+	}
 }
 
 // Reconstructs Psample - Pcenter without materializing either complete position.

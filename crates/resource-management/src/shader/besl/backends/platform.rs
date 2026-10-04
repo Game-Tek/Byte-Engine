@@ -97,31 +97,7 @@ impl Generator {
 		shader_generation_settings: &ShaderGenerationSettings,
 		program: &besl::NodeReference,
 	) -> Result<LoweredPlatformShader, String> {
-		let source = match PlatformShaderLanguage::current_platform() {
-			#[cfg(target_os = "linux")]
-			PlatformShaderLanguage::Glsl => {
-				let main = program.get_main().ok_or_else(missing_main_error)?;
-				self.glsl_transpiler
-					.generate(shader_generation_settings, &main)
-					.map_err(|_| "Failed to generate initial GLSL shader".to_string())?
-			}
-			#[cfg(target_vendor = "apple")]
-			PlatformShaderLanguage::Msl => self
-				.msl_transpiler
-				.generate_program(shader_generation_settings, program)
-				.map_err(|_| "Failed to generate MSL shader source. The MSL transpiler returned an error.".to_string())?,
-			#[cfg(target_os = "windows")]
-			PlatformShaderLanguage::Hlsl => {
-				let main = program.get_main().ok_or_else(missing_main_error)?;
-				self.hlsl_transpiler
-					.generate(shader_generation_settings, &main)
-					.map_err(|_| {
-						"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
-						.to_string()
-					})?
-			}
-			_ => return Err(unsupported_language_error()),
-		};
+		let source = self.lower_source(shader_generation_settings, program)?;
 		let extent = match shader_generation_settings.stage {
 			Stages::Compute { local_size } => Some(local_size),
 			// SPIR-V reflection reports a workgroup only for compute shaders.
@@ -138,6 +114,44 @@ impl Generator {
 				.collect(),
 			extent,
 		})
+	}
+
+	/// Lowers a linked BESL program to the source text the current platform compiler consumes, without reflecting its
+	/// bindings.
+	///
+	/// GPU bake kernels use it on Metal and DX12, where they describe their bindings to GHI themselves. Shaders that
+	/// need their bindings use [`Self::lower`].
+	pub(crate) fn lower_source(
+		&mut self,
+		shader_generation_settings: &ShaderGenerationSettings,
+		program: &besl::NodeReference,
+	) -> Result<String, String> {
+		match PlatformShaderLanguage::current_platform() {
+			#[cfg(target_os = "linux")]
+			PlatformShaderLanguage::Glsl => {
+				let main = program.get_main().ok_or_else(missing_main_error)?;
+				self.glsl_transpiler
+					.generate(shader_generation_settings, &main)
+					.map_err(|_| "Failed to generate initial GLSL shader".to_string())
+			}
+			#[cfg(target_vendor = "apple")]
+			PlatformShaderLanguage::Msl => self
+				.msl_transpiler
+				.generate_program(shader_generation_settings, program)
+				.map_err(|_| {
+					"Failed to generate MSL shader source. The most likely cause is a BESL construct the MSL backend can't lower."
+						.to_string()
+				}),
+			#[cfg(target_os = "windows")]
+			PlatformShaderLanguage::Hlsl => {
+				let main = program.get_main().ok_or_else(missing_main_error)?;
+				self.hlsl_transpiler.generate(shader_generation_settings, &main).map_err(|_| {
+					"Failed to generate HLSL shader source. The most likely cause is that the BESL program uses unsupported HLSL constructs."
+						.to_string()
+				})
+			}
+			_ => Err(unsupported_language_error()),
+		}
 	}
 
 	/// Describes the platform compiler toolchain, including its version and the flags every compile passes.

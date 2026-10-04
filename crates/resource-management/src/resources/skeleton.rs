@@ -62,6 +62,11 @@ pub struct SkinBinding {
 }
 
 impl SkinBinding {
+	/// Reports whether this binding has no addressable GPU palette entries.
+	pub fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
+
 	/// Writes the final skin matrices into caller-owned storage without allocating intermediate palette data.
 	pub fn write_matrix_palette(
 		&self,

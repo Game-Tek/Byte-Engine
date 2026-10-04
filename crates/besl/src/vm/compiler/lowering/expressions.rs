@@ -180,7 +180,7 @@ impl<'a> Compiler<'a> {
 						};
 						(ResourceSlot::new(*slot), layout)
 					};
-					self.claim_descriptor_layout(slot, layout)?;
+					self.claim_descriptor_layout(slot, layout, "resource type")?;
 					let register = self.allocate_register();
 					self.emit(ValueInstruction::LoadLiteral {
 						register,
@@ -262,7 +262,11 @@ impl<'a> Compiler<'a> {
 			}
 			// Every possible element occupies one flat host slot; only the selected resource is read at execution.
 			for element in 0..count {
-				self.claim_descriptor_layout(ResourceSlot::new(slot.slot() + element as u32), DescriptorLayout::Texture)?;
+				self.claim_descriptor_layout(
+					ResourceSlot::new(slot.slot() + element as u32),
+					DescriptorLayout::Texture,
+					"resource type",
+				)?;
 			}
 			let index = self.compile_value_expression(&index, &ValueType::U32)?;
 			let register = self.allocate_register();

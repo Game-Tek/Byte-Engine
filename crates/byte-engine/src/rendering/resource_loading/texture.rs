@@ -339,7 +339,9 @@ impl MipStreamName {
 		let mut bytes = [0_u8; 16];
 		// Writing into the slice advances it, so what remains unwritten gives the length.
 		let mut unwritten = &mut bytes[..];
-		write!(unwritten, "mip[{level}]").expect("A `mip[u32]` name fits in 16 bytes.");
+		write!(unwritten, "mip[{level}]").expect(
+			"Mip stream name overflowed its 16-byte buffer. The most likely cause is that MipStreamName's buffer was shrunk below the 15 bytes `mip[4294967295]` needs.",
+		);
 		let len = 16 - unwritten.len();
 		Self { bytes, len }
 	}

@@ -41,6 +41,7 @@ impl<'a> Compiler<'a> {
 			} else {
 				DescriptorLayout::Buffer(layout.clone())
 			},
+			"layout",
 		)?;
 
 		resolve_buffer_access(slot, &layout, runtime_element_type, &selectors)
@@ -79,7 +80,7 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		self.claim_descriptor_layout(slot, DescriptorLayout::Texture)?;
+		self.claim_descriptor_layout(slot, DescriptorLayout::Texture, "layout")?;
 		Ok(slot)
 	}
 
@@ -138,7 +139,7 @@ impl<'a> Compiler<'a> {
 				});
 			}
 		};
-		self.claim_descriptor_layout(slot, DescriptorLayout::Image)?;
+		self.claim_descriptor_layout(slot, DescriptorLayout::Image, "layout")?;
 		Ok(slot)
 	}
 
@@ -260,7 +261,7 @@ impl<'a> Compiler<'a> {
 			element: None,
 			element_count: None,
 		};
-		self.claim_descriptor_layout(slot, DescriptorLayout::Buffer(layout))?;
+		self.claim_descriptor_layout(slot, DescriptorLayout::Buffer(layout), "layout")?;
 
 		Ok(ResolvedBufferAccess {
 			slot,
@@ -273,12 +274,17 @@ impl<'a> Compiler<'a> {
 	}
 
 	/// Records `layout` for `slot`, or rejects it when an earlier access gave the slot a different layout, so every
-	/// access to one slot agrees on what it holds.
-	pub(super) fn claim_descriptor_layout(&mut self, slot: ResourceSlot, layout: DescriptorLayout) -> Result<(), VmError> {
+	/// access to one slot agrees on what it holds. `conflict` names what differs in the rejection message.
+	pub(super) fn claim_descriptor_layout(
+		&mut self,
+		slot: ResourceSlot,
+		layout: DescriptorLayout,
+		conflict: &str,
+	) -> Result<(), VmError> {
 		match self.descriptor_layouts.get(&slot) {
 			Some(existing) if *existing != layout => Err(VmError::UnsupportedDescriptor {
 				slot,
-				message: "Descriptor slot was reused with a different layout".to_string(),
+				message: format!("Descriptor slot was reused with a different {conflict}"),
 			}),
 			Some(_) => Ok(()),
 			None => {

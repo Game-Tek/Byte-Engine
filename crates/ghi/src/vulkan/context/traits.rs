@@ -19,13 +19,7 @@ impl std::ops::DerefMut for Context {
 fn chain_tails<H: HandleLike>(collection: &[H::Item]) -> Vec<H> {
 	collection
 		.iter()
-		.filter_map(|item| {
-			let mut handle = item.next()?;
-			while let Some(next) = handle.access(collection).next() {
-				handle = next;
-			}
-			Some(handle)
-		})
+		.filter_map(|item| item.next()?.get_all(collection).last().copied())
 		.collect()
 }
 
@@ -79,10 +73,6 @@ impl crate::context::Context for Context {
 		= crate::vulkan::queue::Queue<'a>
 	where
 		Self: 'a;
-	type CommandBuffer<'a>
-		= crate::vulkan::command_buffer::CommandBufferReference<'a>
-	where
-		Self: 'a;
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
@@ -100,14 +90,11 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn command_buffer<'a>(
-		&'a mut self,
+	fn create_command_buffer_recording(
+		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> Self::CommandBuffer<'a> {
-		crate::vulkan::command_buffer::CommandBufferReference {
-			device: self,
-			command_buffer_handle,
-		}
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		Context::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {
@@ -125,21 +112,8 @@ impl crate::context::Context for Context {
 		);
 
 		for image_handle in chain_tails::<ImageHandle>(&self.images) {
-			let image = &self.images[image_handle.0 as usize];
-			let new_image = self.create_image_internal(
-				image.next,
-				None,
-				None,
-				image.format_,
-				image.access,
-				image.layers,
-				image.cube_compatible,
-				image.cube_array_compatible,
-				image.extent,
-				image.uses,
-				image.mip_levels,
-			);
-			self.images[image_handle.0 as usize].next = Some(new_image);
+			let builder = self.images[image_handle.0 as usize].builder();
+			self.create_image_internal(Some(image_handle), &builder);
 		}
 
 		for synchronizer_handle in chain_tails::<SynchronizerHandle>(&self.synchronizers) {
@@ -160,7 +134,7 @@ impl crate::context::Context for Context {
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {
-		self.get_buffer_address(buffer_handle)
+		self.buffers.get_single(buffer_handle).unwrap().device_address
 	}
 
 	fn get_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
@@ -175,7 +149,8 @@ impl crate::context::Context for Context {
 		&mut self,
 		buffer_handle: graphics_hardware_interface::BufferHandle<T>,
 	) -> &mut T {
-		self.get_mut_buffer_slice(buffer_handle)
+		// SAFETY: Typed handles preserve the allocation's type and `&mut self` guarantees exclusive CPU access.
+		unsafe { &mut *self.typed_buffer_pointer(buffer_handle) }
 	}
 
 	unsafe fn transfer_buffer_mapping<T: ?Sized + crate::buffer::BufferContents>(
@@ -187,29 +162,89 @@ impl crate::context::Context for Context {
 		unsafe { crate::buffer::Mapping::from_raw_parts(pointer.cast::<u8>(), T::byte_count(pointer)) }
 	}
 
-	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		self.sync_buffer(buffer_handle);
+	fn sync_buffer(&mut self, buffer_handle: impl Into<crate::BaseBufferHandle>) {
+		let handle = BufferHandle(buffer_handle.into().0);
+		if self.buffers.resource(handle).staging.is_some() {
+			self.pending_buffer_syncs.insert(handle);
+		}
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: graphics_hardware_interface::ImageHandle) -> &mut [u8] {
-		self.get_texture_slice_mut(texture_handle)
+		let texture = &self.images[texture_handle.0.0 as usize];
+
+		assert!(
+			texture.staging_buffer.is_some(),
+			"Attempted to map an image without a staging buffer. The most likely cause is that the image was created without CPU-visible access but is being written from the CPU."
+		);
+		let pointer = texture.pointer.map(|pointer| pointer.0).expect(
+			"Attempted to map an image without a CPU-visible pointer. The most likely cause is that image resize or creation did not rebuild the host-visible staging allocation."
+		);
+		assert!(
+			texture.size > 0,
+			"Attempted to map a zero-sized image. The most likely cause is that the image was used before receiving a valid extent."
+		);
+
+		unsafe { std::slice::from_raw_parts_mut(pointer, texture.size) }
 	}
 
-	fn sync_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle) {
-		self.sync_texture(image_handle);
+	fn sync_texture(&mut self, image_handle: crate::ImageHandle) {
+		let image_handle = ImageHandle(image_handle.0.0);
+		assert!(
+			self.images[image_handle.0 as usize].staging_buffer.is_some(),
+			"Attempted to sync an image without a staging buffer. The most likely cause is that CPU-side image uploads are being requested for a GPU-only image."
+		);
+		self.pending_image_syncs.insert((image_handle, None));
 	}
 
-	fn write_texture(&mut self, texture_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
-		self.write_texture(texture_handle, f);
+	fn write_texture(&mut self, image_handle: graphics_hardware_interface::ImageHandle, f: impl FnOnce(&mut [u8])) {
+		let handle = ImageHandle(image_handle.0.0);
+		let texture = handle.access(&self.images);
+		f(unsafe { std::slice::from_raw_parts_mut(texture.pointer.unwrap().0, texture.size) });
+		self.pending_image_syncs.insert((handle, None));
 	}
 
+	/// Retains flat descriptor writes and schedules frame-local snapshot refreshes without touching command-visible heap memory.
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		Context::write(self, descriptor_set_writes);
+		for &descriptor_write in descriptor_set_writes {
+			assert!(
+				!matches!(
+					descriptor_write.descriptor,
+					crate::descriptors::WriteData::StaticSamplers | crate::descriptors::WriteData::CombinedImageSamplerArray
+				),
+				"Unsupported Vulkan descriptor write. The most likely cause is that a removed legacy descriptor constructor is still in use.",
+			);
+			let retained = crate::vulkan::descriptor_set::RetainedDescriptor {
+				descriptor: descriptor_write.descriptor,
+				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
+			};
+			let descriptor_set = self
+				.descriptor_sets
+				.get_mut(descriptor_write.descriptor_set.0 as usize)
+				.expect(
+					"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context.",
+				);
+			let previous = descriptor_set
+				.descriptors
+				.entry(descriptor_write.slot)
+				.or_default()
+				.insert(descriptor_write.array_element, retained);
+			if previous == Some(retained) {
+				continue;
+			}
+
+			descriptor_set.version = descriptor_set.version.wrapping_add(1);
+			let expected_set_version = descriptor_set.version;
+			self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, None);
+			self.add_task_to_all_frames(Tasks::UpdateDescriptor {
+				descriptor_write,
+				expected_set_version,
+			});
+		}
 	}
 
 	fn write_instance(
 		&mut self,
-		instances_buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+		instances_buffer: graphics_hardware_interface::BaseBufferHandle,
 		instance_index: usize,
 		transform: [[f32; 4]; 3],
 		custom_index: u16,
@@ -217,15 +252,32 @@ impl crate::context::Context for Context {
 		sbt_record_offset: usize,
 		acceleration_structure: graphics_hardware_interface::BottomLevelAccelerationStructureHandle,
 	) {
-		self.write_instance(
-			instances_buffer_handle,
-			instance_index,
-			transform,
-			custom_index,
-			mask,
-			sbt_record_offset,
-			acceleration_structure,
-		);
+		let buffer = self.acceleration_structures[acceleration_structure.0 as usize].buffer;
+		let address = unsafe {
+			self.device
+				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
+		};
+
+		let instance = vk::AccelerationStructureInstanceKHR {
+			transform: vk::TransformMatrixKHR {
+				matrix: std::array::from_fn(|i| transform[i / 4][i % 4]),
+			},
+			instance_custom_index_and_mask: vk::Packed24_8::new(custom_index as u32, mask),
+			instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+				sbt_record_offset as u32,
+				vk::GeometryInstanceFlagsKHR::FORCE_OPAQUE.as_raw() as u8,
+			),
+			acceleration_structure_reference: vk::AccelerationStructureReferenceKHR { device_handle: address },
+		};
+
+		let instance_buffer = self.buffers.get_single(instances_buffer).unwrap();
+		let instances = unsafe {
+			std::slice::from_raw_parts_mut(
+				instance_buffer.pointer.0 as *mut vk::AccelerationStructureInstanceKHR,
+				instance_buffer.size / std::mem::size_of::<vk::AccelerationStructureInstanceKHR>(),
+			)
+		};
+		instances[instance_index] = instance;
 	}
 
 	fn write_sbt_entry(
@@ -235,7 +287,13 @@ impl crate::context::Context for Context {
 		pipeline_handle: graphics_hardware_interface::PipelineHandle,
 		shader_handle: graphics_hardware_interface::ShaderHandle,
 	) {
-		self.write_sbt_entry(sbt_buffer_handle, sbt_record_offset, pipeline_handle, shader_handle);
+		let shader_group_handle = &self.pipelines[pipeline_handle.0 as usize].shader_handles[&shader_handle];
+		let buffer = self
+			.buffers
+			.resource(self.buffers.get_single(sbt_buffer_handle).unwrap().staging.unwrap());
+
+		(unsafe { std::slice::from_raw_parts_mut(buffer.pointer.0, buffer.size) })[sbt_record_offset..sbt_record_offset + 32]
+			.copy_from_slice(shader_group_handle);
 	}
 
 	fn bind_to_window(
@@ -245,51 +303,254 @@ impl crate::context::Context for Context {
 		fallback_extent: Extent,
 		uses: crate::Uses,
 	) -> graphics_hardware_interface::SwapchainHandle {
-		self.bind_to_window(window_os_handles, presentation_mode, fallback_extent, uses)
+		let vk_surface = self.create_vulkan_surface(window_os_handles);
+		let vk_present_mode = match presentation_mode {
+			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
+			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
+			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
+		};
+		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
+		let extent = InnerDevice::swapchain_extent(
+			&vk_surface_capabilities,
+			vk::Extent2D::default()
+				.width(fallback_extent.width())
+				.height(fallback_extent.height()),
+		);
+
+		// Native images that cannot take the requested uses are written through proxy images and copied before present.
+		let requested_image_usage = into_vk_image_usage_flags(uses, crate::Formats::BGRAsRGB);
+		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
+		let uses_storage = uses.contains(crate::Uses::Storage);
+		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage)
+			|| uses_storage && !self.swapchain_native_supports_formatless_storage_write;
+		let native_image_usage = if uses_proxy_images {
+			assert!(
+				!uses_storage || self.swapchain_proxy_supports_formatless_storage_write,
+				"Failed to create swapchain storage proxy image. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain proxy format."
+			);
+			assert!(
+				supported_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST),
+				"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
+			);
+			vk::ImageUsageFlags::TRANSFER_DST
+		} else {
+			requested_image_usage
+		};
+		let vk_swapchain = self.create_vulkan_swapchain(
+			vk_surface,
+			vk_present_mode,
+			&vk_surface_capabilities,
+			extent,
+			native_image_usage,
+			vk::SwapchainKHR::null(),
+		);
+
+		let swapchain_handle = graphics_hardware_interface::SwapchainHandle(self.swapchains.len() as u64);
+
+		let mut acquire_synchronizers = [SynchronizerHandle(!0u64); MAX_FRAMES_IN_FLIGHT];
+		for synchronizer in &mut acquire_synchronizers[..self.frames as usize] {
+			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Acquire Sync"), true);
+		}
+
+		let vk_images = unsafe {
+			self.device
+				.swapchain
+				.get_swapchain_images(vk_swapchain)
+				.expect("No swapchain images found.")
+		};
+		assert!(
+			vk_images.len() <= MAX_SWAPCHAIN_IMAGES,
+			"Vulkan swapchain returned more images than the backend tracks. The most likely cause is a surface whose minimum image count exceeds MAX_SWAPCHAIN_IMAGES."
+		);
+
+		let mut submit_synchronizers = [SynchronizerHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		for synchronizer in &mut submit_synchronizers[..vk_images.len()] {
+			*synchronizer = self.create_synchronizer_internal(Some("Swapchain Submit Sync"), true);
+		}
+
+		let native_uses = if uses_proxy_images {
+			crate::Uses::TransferDestination
+		} else {
+			uses
+		};
+		let mut native_images = [ImageHandle(!0u64); MAX_SWAPCHAIN_IMAGES];
+		for (i, &vk_image) in vk_images.iter().enumerate() {
+			let previous = i.checked_sub(1).map(|previous| native_images[previous]);
+			native_images[i] =
+				self.create_swapchain_image(vk_image, crate::Formats::BGRAsRGB, native_uses, native_image_usage, previous);
+		}
+
+		let mut images = native_images;
+		if uses_proxy_images {
+			let proxy = image::Builder::new(
+				crate::Formats::BGRAu8,
+				uses | crate::Uses::TransferSource | crate::Uses::TransferDestination,
+			)
+			.name("Swapchain Proxy Image")
+			.extent(Extent::rectangle(extent.width, extent.height));
+			for i in 0..vk_images.len() {
+				let previous = i.checked_sub(1).map(|previous| images[previous]);
+				images[i] = self.create_image_internal(previous, &proxy);
+			}
+		}
+
+		self.swapchains.push(Swapchain {
+			surface: vk_surface,
+			swapchain: vk_swapchain,
+			acquire_synchronizers,
+			submit_synchronizers,
+			extent,
+			images,
+			native_images,
+			uses_proxy_images,
+			uses,
+			native_image_usage,
+			needs_recreation: false,
+			acquired_image_indices: [0; MAX_FRAMES_IN_FLIGHT],
+			acquire_wait_stages: [vk::PipelineStageFlags2::NONE; MAX_FRAMES_IN_FLIGHT],
+			min_image_count: vk_surface_capabilities.min_image_count,
+			max_image_count: vk_images.len() as u32,
+			vk_present_mode,
+			present_interval: None,
+			next_present_slot: None,
+		});
+
+		swapchain_handle
 	}
 
+	/// Acquires the swapchain image that `frame` will present before the frame is started.
+	///
+	/// The sequence fence is waited (not reset) first: the acquire semaphore of this sequence was last waited by the
+	/// submission `frames_in_flight` frames ago, and that wait must have executed before the semaphore can be signaled
+	/// again. [`crate::queue::Queue::start_frame`] later sees the same fence signaled, so its wait returns at once before
+	/// the reset.
 	fn acquire_swapchain_image(
 		&mut self,
 		frame: crate::queue::FrameRequest<'_>,
-		swapchain: graphics_hardware_interface::SwapchainHandle,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
-		Context::acquire_swapchain_image(self, frame, swapchain)
+		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
+		self.wait_for_private_synchronizer(self.get_syncronizer_handles(frame.synchronizer)[sequence_index as usize]);
+		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
 	fn set_present_interval(
 		&mut self,
-		swapchain: graphics_hardware_interface::SwapchainHandle,
+		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 		interval: Option<std::time::Duration>,
 	) {
-		Context::set_present_interval(self, swapchain, interval);
+		self.swapchains[swapchain_handle.0 as usize].present_interval = interval;
 	}
 
+	/// Waits for the transfer's submission, copies one mapped transfer result, and releases its dedicated staging resources.
 	fn get_image_data(
 		&mut self,
 		texture_copy_handle: graphics_hardware_interface::TextureCopyHandle,
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
-		Context::get_image_data(self, texture_copy_handle)
+		// Only the transfer's own submission has to finish; other work in flight on this context keeps running.
+		let (_, synchronizer) = self.texture_readbacks.submitted(texture_copy_handle)?;
+		match synchronizer {
+			Some(synchronizer) => self.wait_for_private_synchronizer(synchronizer),
+			None => self.device.wait(),
+		}
+		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
+		let result = if readback.memory == vk::DeviceMemory::null() || readback.pointer.0.is_null() {
+			Err(crate::TextureTransferError::MappingFailed)
+		} else {
+			let mapped_range = vk::MappedMemoryRange::default()
+				.memory(readback.memory)
+				.offset(0)
+				.size(vk::WHOLE_SIZE);
+			unsafe {
+				self.device
+					.invalidate_mapped_memory_ranges(&[mapped_range])
+					.map(|()| std::slice::from_raw_parts(readback.pointer.0, readback.size).to_vec())
+					.map_err(|_| crate::TextureTransferError::MappingFailed)
+			}
+		};
+
+		// The transfer slot has been consumed, so retire its dedicated native resources before returning owned bytes.
+		self.release_texture_readback(&readback);
+
+		result.map(|bytes| crate::TextureReadback {
+			bytes,
+			extent: readback.extent,
+			format: readback.format,
+			bytes_per_row: readback.bytes_per_row,
+			bytes_per_image: readback.bytes_per_image,
+		})
 	}
 
+	/// Grows every frame copy of a dynamic buffer, its staging, and its persistent source to `size`.
+	///
+	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
+	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
 	fn resize_buffer<T: crate::Pod>(
 		&mut self,
 		buffer_handle: graphics_hardware_interface::DynamicBufferHandle<T>,
 		size: usize,
 	) {
-		let buffer_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
-		self.resize_buffer_internal(BufferHandle(buffer_handle.0), size);
+		let master_handle: graphics_hardware_interface::BaseBufferHandle = buffer_handle.into();
+		if self.buffers.resource(BufferHandle(master_handle.0)).size >= size {
+			return;
+		}
+
+		let name = self.get_object_debug_name(master_handle.into());
+		let name = name.as_deref();
+
+		// Copies for later sequences may not exist yet; their pending build tasks copy the master's new size.
+		let mut frame_copies = SmallVec::<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>::new();
+		for sequence_index in 0..self.frames as usize {
+			let handle = self
+				.buffers
+				.nth_handle(master_handle, sequence_index)
+				.expect("Missing Vulkan dynamic buffer. The most likely cause is that the handle came from another context.");
+			if !frame_copies.contains(&handle) {
+				frame_copies.push(handle);
+			}
+		}
+
+		let mut persistent_source = None;
+		for handle in frame_copies {
+			let current = *self.buffers.resource(handle);
+			let mut replacement = self.build_buffer_internal(name, current.uses, size, current.access);
+			if let Some(source_handle) = current.source {
+				persistent_source = Some((source_handle, current.access));
+				replacement.source = Some(source_handle);
+			}
+
+			if let Some(staging_handle) = current.staging {
+				self.retire_buffer_storage(staging_handle);
+			}
+			self.retire_buffer_storage(handle);
+			*self.buffers.resource_mut(handle) = replacement;
+
+			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
+			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
+			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
+		}
+
+		// Pending build tasks captured the shared source handle, so it is replaced in place rather than reallocated.
+		if let Some((source_handle, device_accesses)) = persistent_source {
+			let uses = self.buffers.resource(source_handle).uses;
+			let replacement = self.build_host_staging_buffer(name, size, uses, device_accesses);
+			self.retire_buffer_storage(source_handle);
+			*self.buffers.resource_mut(source_handle) = replacement;
+		}
+
+		for sequence_index in 0..self.frames {
+			self.bump_descriptor_sequence_epoch(sequence_index);
+		}
 	}
 
-	fn start_frame_capture(&mut self) {
-		self.device.start_frame_capture();
-	}
+	fn start_frame_capture(&mut self) {}
 
-	fn end_frame_capture(&mut self) {
-		self.device.end_frame_capture();
-	}
+	fn end_frame_capture(&mut self) {}
 
-	fn wait_for_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
-		Context::wait_for_synchronizer(self, synchronizer);
+	fn wait_for_synchronizer(&mut self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
+		for handle in self.get_syncronizer_handles(synchronizer_handle) {
+			self.wait_for_private_synchronizer(handle);
+		}
 	}
 
 	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
@@ -298,7 +559,7 @@ impl crate::context::Context for Context {
 			let synchronizer = &self.synchronizers[handle.0 as usize];
 			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
 			!synchronizer.armed
-				|| unsafe { self.device.device.get_fence_status(synchronizer.fence) }.expect(
+				|| unsafe { self.device.get_fence_status(synchronizer.fence) }.expect(
 					"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
 				)
 		})
@@ -347,7 +608,7 @@ impl crate::context::ContextCreate for Context {
 			buffer: buffer.resource,
 			vertex_count,
 			index_count,
-			vertex_size: vertex_layout.size(),
+			vertex_size: vertex_layout.iter().map(|element| element.format.size()).sum(),
 		});
 		graphics_hardware_interface::MeshHandle(self.meshes.len() as u64 - 1)
 	}
@@ -402,68 +663,35 @@ impl crate::context::ContextCreate for Context {
 		&mut self,
 		builder: crate::pipelines::raster::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		self.create_vulkan_pipeline(builder)
+		let (pipeline, layout) =
+			build_raster_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		self.add_pipeline(pipeline, layout, HashMap::default())
 	}
 
 	fn create_compute_pipeline(
 		&mut self,
 		builder: crate::pipelines::compute::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let shader_parameter = builder.shader;
-		let pipeline_layout_handle =
-			self.get_or_create_pipeline_layout(std::slice::from_ref(&shader_parameter), builder.push_constant_ranges);
-		let (specialization_entries_buffer, specialization_map_entries) =
-			crate::vulkan::utils::build_specialization_entries(shader_parameter.specialization_map);
-
-		let specialization_info = vk::SpecializationInfo::default()
-			.data(&specialization_entries_buffer)
-			.map_entries(&specialization_map_entries);
-
-		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
-		let shader = &self.shaders[shader_parameter.handle.0 as usize];
-		let mappings = crate::vulkan::build_shader_mappings(pipeline_layout, &shader.shader_resource_descriptors);
-		let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
-		let stage = vk::PipelineShaderStageCreateInfo::default()
-			.push(&mut mapping_info)
-			.stage(vk::ShaderStageFlags::COMPUTE)
-			.module(shader.shader)
-			.name(c"main")
-			.specialization_info(&specialization_info);
-		let mut descriptor_heap_flags =
-			vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
-		let create_infos = [vk::ComputePipelineCreateInfo::default()
-			.push(&mut descriptor_heap_flags)
-			.stage(stage)
-			.layout(vk::PipelineLayout::null())];
-
-		let pipeline = unsafe {
-			self.device
-				.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
-				.expect("No compute pipeline")[0]
-		};
-
-		self.pipelines.push(Pipeline {
-			pipeline,
-			layout: pipeline_layout_handle,
-			shader_handles: HashMap::default(),
-		});
-		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
+		let pipeline = build_compute_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
+		self.add_pipeline(pipeline.pipeline, pipeline.layout, HashMap::default())
 	}
 
 	fn create_ray_tracing_pipeline(
 		&mut self,
 		builder: crate::pipelines::ray_tracing::Builder,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let pipeline_layout_handle =
-			self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
 		let shaders = builder.shaders;
-
-		let pipeline_layout = &self.pipeline_layouts[pipeline_layout_handle.0 as usize];
+		let pipeline_layout = pipelines::shader_pipeline_layout(
+			&self.shaders,
+			shaders,
+			builder.push_constant_ranges,
+			&self.device.descriptor_heap_properties,
+		);
 		let stage_mappings = shaders
 			.iter()
 			.map(|stage| {
 				let shader = &self.shaders[stage.handle.0 as usize];
-				crate::vulkan::build_shader_mappings(pipeline_layout, &shader.shader_resource_descriptors)
+				crate::vulkan::build_shader_mappings(&pipeline_layout, &shader.shader_resource_descriptors)
 			})
 			.collect::<Vec<_>>();
 		let mut mapping_infos = stage_mappings
@@ -476,7 +704,7 @@ impl crate::context::ContextCreate for Context {
 			.map(|(stage, mapping_info)| {
 				vk::PipelineShaderStageCreateInfo::default()
 					.push(mapping_info)
-					.stage(to_shader_stage_flags(stage.stage))
+					.stage(stage.stage.into())
 					.module(self.shaders[stage.handle.0 as usize].shader)
 					.name(c"main")
 			})
@@ -486,42 +714,25 @@ impl crate::context::ContextCreate for Context {
 			.iter()
 			.enumerate()
 			.filter_map(|(i, shader)| {
+				use vk::RayTracingShaderGroupTypeKHR as Group;
+
+				use crate::ShaderTypes;
+
 				let (i, unused) = (i as u32, vk::SHADER_UNUSED_KHR);
-				let (ty, general, closest_hit, any_hit, intersection) = match shader.stage {
-					crate::ShaderTypes::RayGen | crate::ShaderTypes::Miss | crate::ShaderTypes::Callable => {
-						(vk::RayTracingShaderGroupTypeKHR::GENERAL, i, unused, unused, unused)
+				let group = vk::RayTracingShaderGroupCreateInfoKHR::default()
+					.general_shader(unused)
+					.closest_hit_shader(unused)
+					.any_hit_shader(unused)
+					.intersection_shader(unused);
+				Some(match shader.stage {
+					ShaderTypes::RayGen | ShaderTypes::Miss | ShaderTypes::Callable => {
+						group.ty(Group::GENERAL).general_shader(i)
 					}
-					crate::ShaderTypes::ClosestHit => (
-						vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
-						unused,
-						i,
-						unused,
-						unused,
-					),
-					crate::ShaderTypes::AnyHit => (
-						vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
-						unused,
-						unused,
-						i,
-						unused,
-					),
-					crate::ShaderTypes::Intersection => (
-						vk::RayTracingShaderGroupTypeKHR::PROCEDURAL_HIT_GROUP,
-						unused,
-						unused,
-						unused,
-						i,
-					),
+					ShaderTypes::ClosestHit => group.ty(Group::TRIANGLES_HIT_GROUP).closest_hit_shader(i),
+					ShaderTypes::AnyHit => group.ty(Group::TRIANGLES_HIT_GROUP).any_hit_shader(i),
+					ShaderTypes::Intersection => group.ty(Group::PROCEDURAL_HIT_GROUP).intersection_shader(i),
 					_ => return None,
-				};
-				Some(
-					vk::RayTracingShaderGroupCreateInfoKHR::default()
-						.ty(ty)
-						.general_shader(general)
-						.closest_hit_shader(closest_hit)
-						.any_hit_shader(any_hit)
-						.intersection_shader(intersection),
-				)
+				})
 			})
 			.collect::<Vec<_>>();
 
@@ -557,42 +768,22 @@ impl crate::context::ContextCreate for Context {
 			.map(|(i, shader)| (*shader.handle, handle_buffer[i * 32..(i + 1) * 32].try_into().unwrap()))
 			.collect();
 
-		self.pipelines.push(Pipeline {
-			pipeline,
-			layout: pipeline_layout_handle,
-			shader_handles,
-		});
-		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
+		self.add_pipeline(pipeline, pipeline_layout, shader_handles)
 	}
 
 	fn build_image(&mut self, builder: image::Builder) -> graphics_hardware_interface::ImageHandle {
 		if builder.group.is_some() {
 			crate::image_group::ImageGroups::validate_member(&builder);
 		}
-		let create_image = |context: &mut Self, previous| {
-			context.create_image_internal(
-				None,
-				previous,
-				builder.name,
-				builder.format,
-				builder.device_accesses,
-				builder.array_layers,
-				builder.cube_compatible,
-				builder.cube_array_compatible,
-				builder.extent,
-				builder.resource_uses,
-				builder.mip_levels,
-			)
-		};
 
-		let root_image_handle = create_image(self, None);
+		let root_image_handle = self.create_image_internal(None, &builder);
 		let instances = match builder.use_case {
 			crate::UseCases::DYNAMIC => self.frames,
 			crate::UseCases::STATIC => 1,
 		};
 		let mut previous = root_image_handle;
 		for _ in 1..instances {
-			previous = create_image(self, Some(previous));
+			previous = self.create_image_internal(Some(previous), &builder);
 		}
 
 		let handle =
@@ -758,7 +949,6 @@ impl crate::context::ContextCreate for Context {
 	) -> graphics_hardware_interface::BufferHandle<T> {
 		let buffer_handle = self.create_buffer_internal(
 			None,
-			None,
 			builder.name,
 			builder.resource_uses,
 			T::layout(builder.length).size(),
@@ -773,7 +963,7 @@ impl crate::context::ContextCreate for Context {
 	fn build_dynamic_buffer<T: crate::Pod>(&mut self, builder: crate::buffer::Builder) -> crate::DynamicBufferHandle<T> {
 		let size = <T as crate::buffer::BufferContents>::layout(builder.length).size();
 		let buffer_handle =
-			self.create_buffer_internal(None, None, builder.name, builder.resource_uses, size, builder.device_accesses);
+			self.create_buffer_internal(None, builder.name, builder.resource_uses, size, builder.device_accesses);
 		let handle = graphics_hardware_interface::DynamicBufferHandle::<T>(
 			graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0),
 			std::marker::PhantomData,

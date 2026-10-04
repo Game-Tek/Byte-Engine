@@ -1133,7 +1133,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 	) {
 		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
 		let (indirect_buffer_address, record_use) =
-			self.resolve_indirect_record(buffer_handle.into().handle(), entry, mtl::MTLStages::Dispatch);
+			self.resolve_indirect_record(buffer_handle.into().0, entry, mtl::MTLStages::Dispatch);
 		self.prepare_dispatch([record_use]);
 
 		let bound_pipeline = self.bound_pipeline.expect(

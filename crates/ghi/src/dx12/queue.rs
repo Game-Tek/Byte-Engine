@@ -48,16 +48,6 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		self.completed_frame
 	}
 
-	fn record<'record>(
-		&'record mut self,
-		command_buffer_handle: CommandBufferHandle,
-		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
-	) where
-		Self::Frame: 'record,
-	{
-		self.record_with_present_keys(command_buffer_handle, &[], record);
-	}
-
 	fn record_with_present_keys<'record>(
 		&'record mut self,
 		command_buffer_handle: CommandBufferHandle,

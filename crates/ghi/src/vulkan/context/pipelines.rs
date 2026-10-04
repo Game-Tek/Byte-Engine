@@ -1,61 +1,48 @@
 use super::*;
 
 impl Context {
-	/// Returns a cached descriptor-heap layout derived from shader resource metadata.
-	pub(crate) fn get_or_create_pipeline_layout(
-		&mut self,
-		shaders: &[crate::pipelines::ShaderParameter],
-		push_constant_ranges: &[crate::pipelines::PushConstantRange],
-	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let stage_resources = shaders
-			.iter()
-			.map(|shader_parameter| {
-				let shader = &self.shaders[shader_parameter.handle.0 as usize];
-				(shader.stage, shader.shader_resource_descriptors.clone())
-			})
-			.collect::<Vec<_>>();
-		let layout = crate::vulkan::build_pipeline_layout(
-			&stage_resources,
-			push_constant_ranges,
-			&self.device.descriptor_heap_properties,
-		);
-		self.intern_pipeline_layout(layout)
-	}
-
-	/// Returns the handle of an equal layout this context already holds, or adds `layout`.
+	/// Adds a built pipeline and returns the handle commands bind it with.
 	///
-	/// Pipelines built on factory threads bring their own layouts, so interning them shares one handle per layout.
-	pub(crate) fn intern_pipeline_layout(
+	/// Pipelines built on factory threads bring their own layouts, so an equal layout this context already holds is
+	/// shared instead of added again.
+	pub(crate) fn add_pipeline(
 		&mut self,
+		pipeline: vk::Pipeline,
 		layout: PipelineLayout,
-	) -> graphics_hardware_interface::PipelineLayoutHandle {
-		let key = PipelineLayoutKey::new(&layout);
-		if let Some(handle) = self.pipeline_layout_indices.get(&key) {
-			return *handle;
-		}
-
-		let handle = graphics_hardware_interface::PipelineLayoutHandle(self.pipeline_layouts.len() as u64);
-		self.pipeline_layouts.push(layout);
-		self.pipeline_layout_indices.insert(key, handle);
-		handle
-	}
-
-	/// Creates a raster pipeline owned by this context.
-	pub(crate) fn create_vulkan_pipeline(
-		&mut self,
-		builder: crate::pipelines::raster::Builder,
+		shader_handles: HashMap<graphics_hardware_interface::ShaderHandle, [u8; 32]>,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let (pipeline, layout) =
-			build_raster_pipeline(&self.device, &self.device.descriptor_heap_properties, &self.shaders, builder);
-		let layout = self.intern_pipeline_layout(layout);
-		let handle = graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64);
+		let layouts = &mut self.pipeline_layouts;
+		let layout = *self
+			.pipeline_layout_indices
+			.entry(PipelineLayoutKey::new(&layout))
+			.or_insert_with(|| {
+				layouts.push(layout);
+				graphics_hardware_interface::PipelineLayoutHandle(layouts.len() as u64 - 1)
+			});
 		self.pipelines.push(Pipeline {
 			pipeline,
 			layout,
-			shader_handles: HashMap::default(),
+			shader_handles,
 		});
-		handle
+		graphics_hardware_interface::PipelineHandle(self.pipelines.len() as u64 - 1)
 	}
+}
+
+/// Builds the descriptor-heap layout shared by the shaders that `parameters` name.
+pub(super) fn shader_pipeline_layout(
+	shaders: &[Shader],
+	parameters: &[crate::pipelines::ShaderParameter],
+	push_constant_ranges: &[crate::pipelines::PushConstantRange],
+	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
+) -> PipelineLayout {
+	let stage_resources = parameters
+		.iter()
+		.map(|parameter| {
+			let shader = &shaders[parameter.handle.0 as usize];
+			(shader.stage, shader.shader_resource_descriptors.clone())
+		})
+		.collect::<Vec<_>>();
+	crate::vulkan::build_pipeline_layout(&stage_resources, push_constant_ranges, properties)
 }
 
 /// Creates a native raster pipeline and the descriptor-heap layout its shaders need.
@@ -68,17 +55,12 @@ pub(crate) fn build_raster_pipeline(
 	shaders: &[Shader],
 	builder: crate::pipelines::raster::Builder,
 ) -> (vk::Pipeline, PipelineLayout) {
-	let stage_resources = builder
-		.shaders
-		.iter()
-		.map(|shader_parameter| {
-			let shader = &shaders[shader_parameter.handle.0 as usize];
-			(shader.stage, shader.shader_resource_descriptors.clone())
-		})
-		.collect::<Vec<_>>();
-	let layout = crate::vulkan::build_pipeline_layout(
-		&stage_resources,
-		builder.push_constant_ranges.as_ref(),
+	use crate::pipelines::raster::{BlendMode, CullMode, FaceWinding, FillMode};
+
+	let layout = shader_pipeline_layout(
+		shaders,
+		builder.shaders,
+		builder.push_constant_ranges,
 		descriptor_heap_properties,
 	);
 	let mut offset_per_binding = [0u32; 8]; // Assume 8 bindings max
@@ -147,7 +129,7 @@ pub(crate) fn build_raster_pipeline(
 		.map(|((stage, mapping_info), specialization_info)| {
 			vk::PipelineShaderStageCreateInfo::default()
 				.push(mapping_info)
-				.stage(to_shader_stage_flags(stage.stage))
+				.stage(stage.stage.into())
 				.module(shaders[stage.handle.0 as usize].shader)
 				.name(c"main")
 				.specialization_info(specialization_info)
@@ -159,13 +141,9 @@ pub(crate) fn build_raster_pipeline(
 		.clone()
 		.map(|attachment| {
 			let (blend_enable, src_color_blend_factor, dst_blend_factor) = match attachment.blend {
-				crate::pipelines::raster::BlendMode::None => (false, vk::BlendFactor::ONE, vk::BlendFactor::ZERO),
-				crate::pipelines::raster::BlendMode::Alpha => {
-					(true, vk::BlendFactor::SRC_ALPHA, vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-				}
-				crate::pipelines::raster::BlendMode::Premultiplied => {
-					(true, vk::BlendFactor::ONE, vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-				}
+				BlendMode::None => (false, vk::BlendFactor::ONE, vk::BlendFactor::ZERO),
+				BlendMode::Alpha => (true, vk::BlendFactor::SRC_ALPHA, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
+				BlendMode::Premultiplied => (true, vk::BlendFactor::ONE, vk::BlendFactor::ONE_MINUS_SRC_ALPHA),
 			};
 			vk::PipelineColorBlendAttachmentState::default()
 				.color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -208,17 +186,17 @@ pub(crate) fn build_raster_pipeline(
 
 	let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
 		.polygon_mode(match builder.fill_mode {
-			crate::pipelines::raster::FillMode::Solid => vk::PolygonMode::FILL,
-			crate::pipelines::raster::FillMode::Wireframe => vk::PolygonMode::LINE,
+			FillMode::Solid => vk::PolygonMode::FILL,
+			FillMode::Wireframe => vk::PolygonMode::LINE,
 		})
 		.cull_mode(match builder.cull_mode {
-			crate::pipelines::raster::CullMode::None => vk::CullModeFlags::NONE,
-			crate::pipelines::raster::CullMode::Front => vk::CullModeFlags::FRONT,
-			crate::pipelines::raster::CullMode::Back => vk::CullModeFlags::BACK,
+			CullMode::None => vk::CullModeFlags::NONE,
+			CullMode::Front => vk::CullModeFlags::FRONT,
+			CullMode::Back => vk::CullModeFlags::BACK,
 		})
 		.front_face(match builder.face_winding {
-			crate::pipelines::raster::FaceWinding::Clockwise => vk::FrontFace::CLOCKWISE,
-			crate::pipelines::raster::FaceWinding::CounterClockwise => vk::FrontFace::COUNTER_CLOCKWISE,
+			FaceWinding::Clockwise => vk::FrontFace::CLOCKWISE,
+			FaceWinding::CounterClockwise => vk::FrontFace::COUNTER_CLOCKWISE,
 		})
 		.line_width(1.0);
 
@@ -251,4 +229,52 @@ pub(crate) fn build_raster_pipeline(
 	};
 
 	(pipeline, layout)
+}
+
+/// Creates a native compute pipeline whose flat bindings map directly into descriptor heaps.
+///
+/// Like [`build_raster_pipeline`], it only reads device state, so detached factories and contexts share it.
+pub(crate) fn build_compute_pipeline(
+	device: &ash::Device,
+	descriptor_heap_properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
+	shaders: &[Shader],
+	builder: crate::pipelines::compute::Builder,
+) -> crate::vulkan::ComputePipeline {
+	let shader_parameter = builder.shader;
+	let shader = &shaders[shader_parameter.handle.0 as usize];
+	let layout = shader_pipeline_layout(
+		shaders,
+		std::slice::from_ref(&shader_parameter),
+		builder.push_constant_ranges,
+		descriptor_heap_properties,
+	);
+	let mappings = crate::vulkan::build_shader_mappings(&layout, &shader.shader_resource_descriptors);
+	let mut mapping_info = vk::ShaderDescriptorSetAndBindingMappingInfoEXT::default().mappings(&mappings);
+	let (specialization_entries_buffer, specialization_map_entries) =
+		crate::vulkan::utils::build_specialization_entries(shader_parameter.specialization_map);
+	let specialization_info = vk::SpecializationInfo::default()
+		.data(&specialization_entries_buffer)
+		.map_entries(&specialization_map_entries);
+	let stage = vk::PipelineShaderStageCreateInfo::default()
+		.push(&mut mapping_info)
+		.stage(vk::ShaderStageFlags::COMPUTE)
+		.module(shader.shader)
+		.name(c"main")
+		.specialization_info(&specialization_info);
+	let mut flags = vk::PipelineCreateFlags2CreateInfo::default().flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT);
+	let create_infos = [vk::ComputePipelineCreateInfo::default()
+		.push(&mut flags)
+		.stage(stage)
+		.layout(vk::PipelineLayout::null())];
+	let pipeline = unsafe {
+		device
+			.create_compute_pipelines(vk::PipelineCache::null(), &create_infos, None)
+			.expect("Vulkan descriptor-heap compute pipeline creation failed. The most likely cause is an invalid shader resource mapping or specialization constant.")[0]
+	};
+
+	crate::vulkan::ComputePipeline {
+		pipeline,
+		layout,
+		shader_handles: HashMap::from_iter([(*shader_parameter.handle, [0; 32])]),
+	}
 }

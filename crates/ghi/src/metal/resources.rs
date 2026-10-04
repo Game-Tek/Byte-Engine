@@ -6,11 +6,6 @@ pub(crate) struct StoredCommandBuffer {
 	pub(crate) name: Option<String>,
 }
 
-pub struct CommandBuffer<'a> {
-	pub(crate) device: &'a mut context::Context,
-	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-}
-
 pub(crate) struct Mesh {
 	pub(crate) vertex_buffers: Vec<Option<Retained<ProtocolObject<dyn mtl::MTLBuffer>>>>,
 	pub(crate) index_buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,

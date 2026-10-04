@@ -11,19 +11,15 @@ use super::{
 		to_clear_value, to_load_operation, to_pipeline_stage_flags, to_store_operation,
 	},
 };
-use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
+use crate::{FrameKey, HandleLike as _, Size, context::Context as _, graphics_hardware_interface};
 
-/// The `CommandBufferReference` struct creates recordings for one Vulkan command buffer through a borrowed context.
-pub struct CommandBufferReference<'a> {
-	pub(crate) device: &'a mut Context,
-	pub(crate) command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-}
-
-impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
+/// Describes a transfer-stage access to `handle` in the transfer layout.
+fn transfer_consumption(handle: Handles, access: crate::AccessPolicies) -> Consumption {
+	Consumption {
+		handle,
+		stages: crate::Stages::TRANSFER,
+		access,
+		layout: crate::Layouts::Transfer,
 	}
 }
 

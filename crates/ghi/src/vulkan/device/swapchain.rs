@@ -1,7 +1,7 @@
 use super::*;
 
 impl InnerDevice {
-	fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
+	pub(crate) fn create_vulkan_surface(&self, window_os_handles: &window::Handles) -> vk::SurfaceKHR {
 		let wayland_surface_create_info = vk::WaylandSurfaceCreateInfoKHR::default()
 			.display(window_os_handles.display)
 			.surface(window_os_handles.surface);
@@ -24,79 +24,6 @@ impl InnerDevice {
 		);
 
 		surface
-	}
-
-	pub fn build_swapchain(
-		&mut self,
-		window_os_handles: &window::Handles,
-		presentation_mode: crate::PresentationModes,
-		fallback_extent: Extent,
-		uses: crate::Uses,
-	) -> (
-		vk::SurfaceKHR,
-		vk::PresentModeKHR,
-		u32,
-		vk::Extent2D,
-		crate::Formats,
-		bool,
-		vk::ImageUsageFlags,
-		vk::SwapchainKHR,
-	) {
-		let vk_surface = self.create_vulkan_surface(window_os_handles);
-
-		let vk_present_mode = match presentation_mode {
-			graphics_hardware_interface::PresentationModes::FIFO => vk::PresentModeKHR::FIFO,
-			graphics_hardware_interface::PresentationModes::Inmediate => vk::PresentModeKHR::IMMEDIATE,
-			graphics_hardware_interface::PresentationModes::Mailbox => vk::PresentModeKHR::MAILBOX,
-		};
-
-		let vk_surface_capabilities = self.query_swapchain_surface_capabilities(vk_surface, vk_present_mode);
-		let extent = Self::swapchain_extent(
-			&vk_surface_capabilities,
-			vk::Extent2D::default()
-				.width(fallback_extent.width())
-				.height(fallback_extent.height()),
-		);
-
-		let format = crate::Formats::BGRAsRGB;
-		let requested_image_usage = into_vk_image_usage_flags(uses, format);
-		let supported_image_usage = vk_surface_capabilities.supported_usage_flags;
-		let uses_storage = uses.contains(crate::Uses::Storage);
-		let uses_proxy_images = !supported_image_usage.contains(requested_image_usage)
-			|| uses_storage && !self.swapchain_native_supports_formatless_storage_write;
-
-		let native_image_usage = if uses_proxy_images {
-			assert!(
-				!uses_storage || self.swapchain_proxy_supports_formatless_storage_write,
-				"Failed to create swapchain storage proxy image. The most likely cause is that the selected Vulkan device does not support storage writes without format for the swapchain proxy format."
-			);
-			assert!(
-				supported_image_usage.contains(vk::ImageUsageFlags::TRANSFER_DST),
-				"Failed to create swapchain fallback copy path. The most likely cause is that the surface does not support transfer destination usage for swapchain images."
-			);
-			vk::ImageUsageFlags::TRANSFER_DST
-		} else {
-			requested_image_usage
-		};
-
-		let vk_swapchain = self.create_vulkan_swapchain(
-			vk_surface,
-			vk_present_mode,
-			&vk_surface_capabilities,
-			extent,
-			native_image_usage,
-			vk::SwapchainKHR::null(),
-		);
-		(
-			vk_surface,
-			vk_present_mode,
-			vk_surface_capabilities.min_image_count,
-			extent,
-			crate::Formats::BGRAu8,
-			uses_proxy_images,
-			native_image_usage,
-			vk_swapchain,
-		)
 	}
 
 	pub(crate) fn query_swapchain_surface_capabilities(

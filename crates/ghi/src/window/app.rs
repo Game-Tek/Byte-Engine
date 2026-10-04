@@ -1,9 +1,6 @@
 use utils::Extent;
 
-use crate::window::{
-	Event, Features, Wait, Window,
-	os::{self, AppLike as _},
-};
+use crate::window::{Event, Features, Wait, Window, os};
 
 /// The `App` struct exists because platforms deliver events for the whole process through one queue.
 /// Keep one per process, create every [`Window`] from it, and drain it once per frame with [`App::poll`].

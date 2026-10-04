@@ -878,9 +878,9 @@ impl Device {
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
 		for entry in specialization_map {
-			Self::fnv64_update_text(&mut hash, entry.get_type());
-			Self::fnv64_update(&mut hash, &entry.get_constant_id().to_le_bytes());
-			Self::fnv64_update(&mut hash, entry.get_data());
+			Self::fnv64_update_text(&mut hash, entry.r#type);
+			Self::fnv64_update(&mut hash, &entry.constant_id.to_le_bytes());
+			Self::fnv64_update(&mut hash, &entry.value);
 		}
 
 		let mut path = std::env::current_exe().ok()?;
@@ -1100,52 +1100,20 @@ impl Device {
 		let mut names = Vec::new();
 		let mut values = Vec::new();
 		for entry in specialization_map {
-			match entry.get_type() {
-				"bool" => Self::push_hlsl_bool_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"i32" => Self::push_hlsl_i32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"u32" => Self::push_hlsl_u32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"f32" => Self::push_hlsl_f32_specialization_macro(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-				)?,
-				"vec2f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					2,
-				)?,
-				"vec3f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					3,
-				)?,
-				"vec4f" => Self::push_hlsl_specialization_macro_vector(
-					&mut names,
-					&mut values,
-					entry.get_constant_id(),
-					entry.get_data(),
-					4,
-				)?,
+			match entry.r#type {
+				"bool" => Self::push_hlsl_bool_specialization_macro(&mut names, &mut values, entry.constant_id, &entry.value)?,
+				"i32" => Self::push_hlsl_i32_specialization_macro(&mut names, &mut values, entry.constant_id, &entry.value)?,
+				"u32" => Self::push_hlsl_u32_specialization_macro(&mut names, &mut values, entry.constant_id, &entry.value)?,
+				"f32" => Self::push_hlsl_f32_specialization_macro(&mut names, &mut values, entry.constant_id, &entry.value)?,
+				"vec2f" => {
+					Self::push_hlsl_specialization_macro_vector(&mut names, &mut values, entry.constant_id, &entry.value, 2)?
+				}
+				"vec3f" => {
+					Self::push_hlsl_specialization_macro_vector(&mut names, &mut values, entry.constant_id, &entry.value, 3)?
+				}
+				"vec4f" => {
+					Self::push_hlsl_specialization_macro_vector(&mut names, &mut values, entry.constant_id, &entry.value, 4)?
+				}
 				_ => return Err(()),
 			}
 		}

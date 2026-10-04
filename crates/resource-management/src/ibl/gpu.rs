@@ -242,8 +242,7 @@ impl GPUIBLProcessor {
 		let source_row_angle_step = std::f32::consts::PI / source_height as f32;
 		let source_solid_angle_scale =
 			(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
-		let mut command_buffer = self.gpu.context.command_buffer(scratch.command_buffer);
-		let mut recording = command_buffer.create_command_buffer_recording();
+		let mut recording = self.gpu.context.create_command_buffer_recording(scratch.command_buffer);
 		let command = recording.bind_compute_pipeline(self.pipeline);
 		command.bind_descriptor_sets(&[scratch.descriptor_set]);
 		// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
@@ -677,8 +676,7 @@ use std::{alloc::Global, error::Error, fmt};
 use exr::prelude::f16;
 use ghi::{
 	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBuffer as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _,
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
 	device::Device as _,

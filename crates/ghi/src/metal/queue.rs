@@ -416,9 +416,10 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 		self.completed_frame
 	}
 
-	fn record<'record>(
+	fn record_with_present_keys<'record>(
 		&'record mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
+		_present_keys: &[graphics_hardware_interface::PresentKey],
 		record: impl FnOnce(&mut <Self::Frame as crate::frame::Frame<'a>>::CBR<'record>),
 	) where
 		Self::Frame: 'record,

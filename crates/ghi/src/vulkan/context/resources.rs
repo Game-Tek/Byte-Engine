@@ -259,7 +259,7 @@ impl Context {
 	}
 
 	/// Builds the host-visible buffer that carries CPU reads and writes for a GPU buffer with `device_accesses`.
-	fn build_host_staging_buffer(
+	pub(super) fn build_host_staging_buffer(
 		&mut self,
 		name: Option<&str>,
 		size: usize,
@@ -330,10 +330,9 @@ impl Context {
 		buffer
 	}
 
-	/// Builds a buffer and returns its handle.
+	/// Builds a buffer, links it after `previous` in its per-frame chain, and returns its handle.
 	pub(crate) fn create_buffer_internal(
 		&mut self,
-		next: Option<BufferHandle>,
 		previous: Option<BufferHandle>,
 		name: Option<&str>,
 		resource_uses: crate::Uses,
@@ -346,7 +345,6 @@ impl Context {
 		if let Some(previous) = previous {
 			self.buffers.set_next(previous, Some(handle));
 		}
-		self.buffers.set_next(handle, next);
 
 		handle
 	}
@@ -360,19 +358,20 @@ impl Context {
 		self.buffers.add(buffer).1
 	}
 
-	pub(crate) fn build_image_internal(
-		&mut self,
-		next: Option<ImageHandle>,
-		name: Option<&str>,
-		format: crate::Formats,
-		device_accesses: DeviceAccesses,
-		array_layers: Option<NonZeroU32>,
-		cube_compatible: bool,
-		cube_array_compatible: bool,
-		extent: Extent,
-		resource_uses: crate::Uses,
-		mip_levels: u32,
-	) -> Image {
+	/// Creates the native image, memory, staging buffer, and views that `builder` describes, linked to `next`.
+	pub(crate) fn build_image_internal(&mut self, next: Option<ImageHandle>, builder: &crate::image::Builder) -> Image {
+		let crate::image::Builder {
+			name,
+			extent,
+			format,
+			resource_uses,
+			device_accesses,
+			mip_levels,
+			array_layers,
+			cube_compatible,
+			cube_array_compatible,
+			..
+		} = *builder;
 		let unbacked = Image {
 			next,
 			layers: array_layers,
@@ -630,33 +629,14 @@ impl Context {
 		self.image_groups.commit(group, requests, placement);
 	}
 
+	/// Builds an image from `builder` and links it after `previous` in its per-frame chain.
 	pub(crate) fn create_image_internal(
 		&mut self,
-		next: Option<ImageHandle>,
 		previous: Option<ImageHandle>,
-		name: Option<&str>,
-		format: crate::Formats,
-		device_accesses: DeviceAccesses,
-		array_layers: Option<NonZeroU32>,
-		cube_compatible: bool,
-		cube_array_compatible: bool,
-		extent: Extent,
-		resource_uses: crate::Uses,
-		mip_levels: u32,
+		builder: &crate::image::Builder,
 	) -> ImageHandle {
 		let texture_handle = ImageHandle(self.images.len() as u64);
-		let image = self.build_image_internal(
-			next,
-			name,
-			format,
-			device_accesses,
-			array_layers,
-			cube_compatible,
-			cube_array_compatible,
-			extent,
-			resource_uses,
-			mip_levels,
-		);
+		let image = self.build_image_internal(None, builder);
 
 		if let Some(previous) = previous {
 			self.images[previous.0 as usize].next = Some(texture_handle);
@@ -678,64 +658,6 @@ impl Context {
 		synchronizer_handle
 	}
 
-	/// Grows every frame copy of a dynamic buffer, its staging, and its persistent source to `size`.
-	///
-	/// Contents are discarded, matching the other backends. Replaced storage is destroyed only after the frames that
-	/// may still read it have completed, so the resize is safe while earlier frames are in flight.
-	pub(crate) fn resize_buffer_internal(&mut self, buffer_handle: BufferHandle, size: usize) {
-		if self.buffers.resource(buffer_handle).size >= size {
-			return;
-		}
-
-		let master_handle = graphics_hardware_interface::BaseBufferHandle::new(buffer_handle.0);
-		let name = self.get_object_debug_name(master_handle.into());
-		let name = name.as_deref();
-
-		// Copies for later sequences may not exist yet; their pending build tasks copy the master's new size.
-		let mut frame_copies = SmallVec::<[BufferHandle; MAX_FRAMES_IN_FLIGHT]>::new();
-		for sequence_index in 0..self.frames as usize {
-			let handle = self
-				.buffers
-				.nth_handle(master_handle, sequence_index)
-				.expect("Missing Vulkan dynamic buffer. The most likely cause is that the handle came from another context.");
-			if !frame_copies.contains(&handle) {
-				frame_copies.push(handle);
-			}
-		}
-
-		let mut persistent_source = None;
-		for handle in frame_copies {
-			let current = *self.buffers.resource(handle);
-			let mut replacement = self.build_buffer_internal(name, current.uses, size, current.access);
-			if let Some(source_handle) = current.source {
-				persistent_source = Some((source_handle, current.access));
-				replacement.source = Some(source_handle);
-			}
-
-			if let Some(staging_handle) = current.staging {
-				self.retire_buffer_storage(staging_handle);
-			}
-			self.retire_buffer_storage(handle);
-			*self.buffers.resource_mut(handle) = replacement;
-
-			// The replacement has no GPU history; stale ranges would only add barriers against the retired buffer.
-			self.states.remove(&crate::vulkan::Handles::Buffer(handle));
-			self.buffer_states.remove(&crate::vulkan::Handles::Buffer(handle));
-		}
-
-		// Pending build tasks captured the shared source handle, so it is replaced in place rather than reallocated.
-		if let Some((source_handle, device_accesses)) = persistent_source {
-			let uses = self.buffers.resource(source_handle).uses;
-			let replacement = self.build_host_staging_buffer(name, size, uses, device_accesses);
-			self.retire_buffer_storage(source_handle);
-			*self.buffers.resource_mut(source_handle) = replacement;
-		}
-
-		for sequence_index in 0..self.frames {
-			self.bump_descriptor_sequence_epoch(sequence_index);
-		}
-	}
-
 	pub(crate) fn resize_image_internal(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
 		let image = image_handle.access(&self.images);
 		if !image.owns_image || image.extent == extent {
@@ -748,18 +670,12 @@ impl Context {
 		);
 
 		let image = self.images[image_handle.0 as usize].clone();
-		let new_image = self.build_image_internal(
-			image.next,
-			name.as_deref(),
-			image.format_,
-			image.access,
-			image.layers,
-			image.cube_compatible,
-			image.cube_array_compatible,
+		let builder = crate::image::Builder {
+			name: name.as_deref(),
 			extent,
-			image.uses,
-			image.mip_levels,
-		);
+			..image.builder()
+		};
+		let new_image = self.build_image_internal(image.next, &builder);
 
 		self.images[image_handle.0 as usize] = new_image;
 		self.retire_image_storage(&image);

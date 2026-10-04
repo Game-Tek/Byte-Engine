@@ -479,7 +479,7 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device.dispatch_compute_indirect_native::<N>(
 			self.command_buffer,
-			buffer.into().handle(),
+			buffer.into().0,
 			entry_index,
 			self.sequence_index(),
 		);

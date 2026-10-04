@@ -4,7 +4,7 @@ use super::*;
 
 impl Device {
 	pub fn create_raster_pipeline(&mut self, builder: pipelines::raster::Builder) -> PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
+		let layout = self.get_or_create_pipeline_layout(builder.shaders, builder.push_constant_ranges);
 		let pipeline_state = self.create_graphics_pipeline_state(layout, &builder);
 		let shaders = builder.shaders.iter().map(|s| *s.handle).collect();
 		let has_mesh_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Mesh));
@@ -34,8 +34,8 @@ impl Device {
 			.pipeline_layouts
 			.get(layout.0 as usize)
 			.map(|layout| layout.root_signature.clone())?;
-		let vertex_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Vertex)?;
-		let fragment_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Fragment)?;
+		let vertex_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Vertex)?;
+		let fragment_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?;
 		if vertex_shader.is_empty() || fragment_shader.is_empty() {
 			return None;
 		}
@@ -183,17 +183,17 @@ impl Device {
 			.map(|layout| layout.root_signature.clone())?;
 		let has_task_shader = builder.shaders.iter().any(|shader| matches!(shader.stage, ShaderTypes::Task));
 		let task_shader = if has_task_shader {
-			self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Task)?
+			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Task)?
 		} else {
 			Vec::new()
 		};
-		let mesh_shader = self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Mesh)?;
+		let mesh_shader = self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Mesh)?;
 		let has_fragment_shader = builder
 			.shaders
 			.iter()
 			.any(|shader| matches!(shader.stage, ShaderTypes::Fragment));
 		let fragment_shader = if has_fragment_shader {
-			self.shader_dxil_for_stage(builder.shaders.as_ref(), ShaderTypes::Fragment)?
+			self.shader_dxil_for_stage(builder.shaders, ShaderTypes::Fragment)?
 		} else {
 			Vec::new()
 		};
@@ -526,7 +526,7 @@ impl Device {
 	}
 
 	pub fn create_ray_tracing_pipeline(&mut self, builder: pipelines::ray_tracing::Builder) -> PipelineHandle {
-		let layout = self.get_or_create_pipeline_layout(builder.shaders.as_ref(), builder.push_constant_ranges.as_ref());
+		let layout = self.get_or_create_pipeline_layout(builder.shaders, builder.push_constant_ranges);
 		let shaders = builder.shaders;
 		let (ray_tracing_state_object, ray_tracing_shader_identifiers) = self.create_ray_tracing_state_object(layout, &shaders);
 		self.pipelines.push(Pipeline {

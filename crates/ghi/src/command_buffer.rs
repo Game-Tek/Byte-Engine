@@ -10,13 +10,7 @@ use crate::{
 
 /// The `IndirectDispatchBuffer` struct preserves the typed dispatch-record count for either static or frame-local buffers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IndirectDispatchBuffer<const N: usize>(BaseBufferHandle);
-
-impl<const N: usize> IndirectDispatchBuffer<N> {
-	pub(crate) const fn handle(self) -> BaseBufferHandle {
-		self.0
-	}
-}
+pub struct IndirectDispatchBuffer<const N: usize>(pub(crate) BaseBufferHandle);
 
 impl<const N: usize> From<BufferHandle<[[u32; 3]; N]>> for IndirectDispatchBuffer<N> {
 	fn from(buffer: BufferHandle<[[u32; 3]; N]>) -> Self {
@@ -42,6 +36,7 @@ pub(crate) fn indirect_entry_range<R, const N: usize>(entry_index: usize) -> std
 }
 
 /// The `DebugLabelWriter` struct exists so command-buffer implementations can provide temporary label storage without forcing callers to allocate strings.
+#[derive(Default)]
 pub struct DebugLabelWriter {
 	bytes: SmallVec<[u8; 128]>,
 }
@@ -74,28 +69,14 @@ impl DebugLabelWriter {
 	}
 }
 
-impl Default for DebugLabelWriter {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
 impl std::fmt::Write for DebugLabelWriter {
 	fn write_str(&mut self, s: &str) -> std::fmt::Result {
 		self.write_str(s)
 	}
 }
 
-pub trait CommandBuffer {
-	/// Starts recording commands into an existing command buffer.
-	fn create_command_buffer_recording(&mut self) -> impl CommandBufferRecording + CommonCommandBufferMode;
-}
-
 /// The `CommandBufferRecording` trait captures backend command encoding so GPU work can be recorded before submission.
-pub trait CommandBufferRecording
-where
-	Self: Sized,
-{
+pub trait CommandBufferRecording: Sized {
 	/// Returns the frame key that scoped this command-buffer recording.
 	fn frame_key(&self) -> FrameKey;
 

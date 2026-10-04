@@ -550,20 +550,6 @@ pub struct FinishedCommandBuffer {
 	pub(crate) texture_readbacks: SmallVec<[graphics_hardware_interface::TextureCopyHandle; 4]>,
 }
 
-impl crate::command_buffer::CommandBuffer for super::CommandBuffer<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
-}
-
-impl super::CommandBuffer<'_> {
-	pub fn create_command_buffer_recording(&mut self) -> super::CommandBufferRecording<'_> {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
-}
-
 mod encoding;
 mod operations;
 mod recording;

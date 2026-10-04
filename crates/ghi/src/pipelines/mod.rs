@@ -92,21 +92,8 @@ impl SpecializationMapEntry {
 		}
 	}
 
-	pub fn get_constant_id(&self) -> u32 {
-		self.constant_id
-	}
-
-	pub fn get_type(&self) -> &'static str {
-		self.r#type
-	}
-
 	/// Returns the byte size of the constant's value.
 	pub fn get_size(&self) -> usize {
 		self.value.len()
-	}
-
-	pub fn get_data(&self) -> &[u8] {
-		// SAFETY: We know that the data is valid for the lifetime of the specialization map entry.
-		self.value.as_ref()
 	}
 }

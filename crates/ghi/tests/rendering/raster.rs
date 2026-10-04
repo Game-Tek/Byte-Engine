@@ -93,8 +93,7 @@ pub(super) fn render_triangle(device: &mut impl ghi::context::Context, queue_han
 	device.start_frame_capture();
 
 	let texture_copy_handle = {
-		let mut command_buffer = device.command_buffer(command_buffer_handle);
-		let mut recording = command_buffer.create_command_buffer_recording();
+		let mut recording = device.create_command_buffer_recording(command_buffer_handle);
 
 		let attachments = [AttachmentInformation::new(
 			render_target,
@@ -209,9 +208,8 @@ pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Contex
 	);
 	let command_buffer_handle = device.queue(queue_handle).create_command_buffer(None);
 
-	let texture_copy_handles = {
-		let mut command_buffer = device.command_buffer(command_buffer_handle);
-		let mut recording = command_buffer.create_command_buffer_recording();
+	let copy_handle = {
+		let mut recording = device.create_command_buffer_recording(command_buffer_handle);
 		let attachments = [
 			AttachmentInformation::new(
 				render_target,
@@ -236,12 +234,11 @@ pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Contex
 		render_pass.bind_raster_pipeline(no_depth_write_pipeline).draw_mesh(&behind);
 		render_pass.end_render_pass();
 
-		let texture_copy_handles =
-			vec![recording.transfer_texture(render_target.into()).expect(
-				"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-			)];
+		let copy_handle = recording
+			.transfer_texture(render_target.into())
+			.expect("Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.");
 		recording.execute(signal);
-		texture_copy_handles
+		copy_handle
 	};
 
 	device.wait();
@@ -249,9 +246,6 @@ pub(super) fn render_without_depth_writes(device: &mut impl ghi::context::Contex
 	assert!(
 		!device.has_errors(),
 		"Metal depth-state rendering failed. The most likely cause is an invalid pipeline or render-pass attachment configuration.",
-	);
-	let copy_handle = *texture_copy_handles.first().expect(
-		"Missing Metal depth-state test readback. The most likely cause is that the color target was not created for CPU access.",
 	);
 	let image_data = device
 		.get_image_data(copy_handle)

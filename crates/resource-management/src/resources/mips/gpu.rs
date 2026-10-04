@@ -245,8 +245,7 @@ impl GpuProcessor for GPUMipProcessor {
 
 		// The shader filters in linear light when this push constant is non-zero.
 		let srgb = u32::from(gamma == Gamma::SRGB);
-		let mut command_buffer = context.command_buffer(scratch.command_buffer);
-		let mut recording = command_buffer.create_command_buffer_recording();
+		let mut recording = context.create_command_buffer_recording(scratch.command_buffer);
 		for level in &scratch.levels {
 			let command = recording.bind_compute_pipeline(self.mip_pipeline);
 			command.bind_descriptor_sets(&[level.descriptor_set]);
@@ -879,8 +878,7 @@ use std::{error::Error, fmt};
 
 use ghi::{
 	command_buffer::{
-		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBuffer as _, CommandBufferRecording as _,
-		CommonCommandBufferMode as _,
+		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 	},
 	context::{Context as _, ContextCreate as _},
 	device::Device as _,

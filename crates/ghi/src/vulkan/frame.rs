@@ -4,9 +4,9 @@ use utils::Extent;
 use super::{command_buffer::CommandBufferRecording, context::Context};
 use crate::{
 	FrameKey, HandleLike as _, MasterHandle as _,
-	context::ContextCreate as _,
+	context::{Context as _, ContextCreate as _},
 	graphics_hardware_interface,
-	vulkan::{ImageHandle, Swapchain, Synchronizer, Tasks},
+	vulkan::{ImageHandle, Swapchain, Tasks},
 };
 
 pub struct Frame<'a> {
@@ -88,7 +88,6 @@ impl<'a> Frame<'a> {
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 		unsafe {
 			self.device
-				.device
 				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
@@ -130,21 +129,21 @@ impl<'a> Frame<'a> {
 		&mut self,
 		synchronizer_handle: graphics_hardware_interface::SynchronizerHandle,
 	) {
-		let fence = self.get_synchronizer(synchronizer_handle).fence;
+		let index = self.device.get_syncronizer_handles(synchronizer_handle)[self.frame_key.sequence_index as usize].0 as usize;
+		let fence = self.device.synchronizers[index].fence;
 		{
 			let queue = self.device.vk_queues[self.device.queues[0].vk_queue_index]
 				.lock()
 				.expect("Failed to lock Vulkan queue for empty frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
 			unsafe {
 				self.device
-					.device
 					.queue_submit2(*queue, &[vk::SubmitInfo2::default()], fence)
 					.expect(
 						"Failed to submit empty Vulkan frame. The most likely cause is that the completion fence is invalid.",
 					);
 			}
 		}
-		self.get_synchronizer_mut(synchronizer_handle).armed = true;
+		self.device.synchronizers[index].armed = true;
 	}
 
 	fn get_current_image_handle(&self, image_handle: graphics_hardware_interface::BaseImageHandle) -> ImageHandle {
@@ -171,7 +170,7 @@ impl<'a> Frame<'a> {
 		// Explicit transfer command buffers must not consume frame-global pending uploads. Those uploads belong to the
 		// normal render recording path, and stealing them here makes helper transfer submissions write render-frame
 		// resources such as dynamic view buffers.
-		let (buffer_copies, images) = if include_implicit_sync {
+		let pending_syncs = if include_implicit_sync {
 			let device = &mut *self.device;
 			// Copy each persistent source into this frame's staging buffer and enqueue the staging to GPU copy, so every
 			// frame gets the latest data even if the CPU didn't write this frame.
@@ -214,10 +213,7 @@ impl<'a> Frame<'a> {
 			(Vec::new(), Vec::new())
 		};
 
-		let mut recording = CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into());
-		recording.sync_buffers(buffer_copies.into_iter());
-		recording.sync_textures(images.into_iter());
-		recording
+		CommandBufferRecording::new(self.device, command_buffer_handle, self.frame_key.into(), pending_syncs)
 	}
 
 	/// Interns a raster pipeline that a factory thread already compiled into this frame's device.
@@ -225,15 +221,8 @@ impl<'a> Frame<'a> {
 		&mut self,
 		pipeline: crate::implementation::RasterPipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout = self.device.intern_pipeline_layout(pipeline.layout);
-		let handle = graphics_hardware_interface::PipelineHandle(self.device.pipelines.len() as u64);
-		self.device.pipelines.push(crate::vulkan::Pipeline {
-			pipeline: pipeline.pipeline,
-			layout,
-			shader_handles: utils::hash::HashMap::default(),
-		});
-
-		handle
+		self.device
+			.add_pipeline(pipeline.pipeline, pipeline.layout, utils::hash::HashMap::default())
 	}
 
 	/// Interns a factory-built compute pipeline into this frame's device.
@@ -241,25 +230,13 @@ impl<'a> Frame<'a> {
 		&mut self,
 		pipeline: crate::implementation::ComputePipeline,
 	) -> graphics_hardware_interface::PipelineHandle {
-		let layout_handle = self.device.intern_pipeline_layout(pipeline.layout);
-		let handle = graphics_hardware_interface::PipelineHandle(self.device.pipelines.len() as u64);
-		self.device.pipelines.push(crate::vulkan::Pipeline {
-			pipeline: pipeline.pipeline,
-			layout: layout_handle,
-			shader_handles: pipeline.shader_handles,
-		});
-
-		handle
+		self.device
+			.add_pipeline(pipeline.pipeline, pipeline.layout, pipeline.shader_handles)
 	}
 
 	/// Interns a factory-built image through this frame's device.
 	pub fn intern_image(&mut self, image: crate::implementation::FactoryImage) -> graphics_hardware_interface::ImageHandle {
 		self.device.intern_image(image)
-	}
-
-	/// Updates retained descriptor-set state before command recording.
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		self.device.write(descriptor_set_writes);
 	}
 
 	/// Interns a factory-built sampler through this frame's device.
@@ -268,22 +245,6 @@ impl<'a> Frame<'a> {
 		sampler: crate::implementation::FactorySampler,
 	) -> graphics_hardware_interface::SamplerHandle {
 		self.device.intern_sampler(sampler)
-	}
-
-	pub(crate) fn get_synchronizer(
-		&self,
-		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> &Synchronizer {
-		&self.device.synchronizers
-			[self.device.get_syncronizer_handles(syncronizer_handle)[self.frame_key.sequence_index as usize].0 as usize]
-	}
-
-	fn get_synchronizer_mut(
-		&mut self,
-		syncronizer_handle: graphics_hardware_interface::SynchronizerHandle,
-	) -> &mut Synchronizer {
-		let index = self.device.get_syncronizer_handles(syncronizer_handle)[self.frame_key.sequence_index as usize].0 as usize;
-		&mut self.device.synchronizers[index]
 	}
 
 	pub(crate) fn get_swapchain(&self, swapchain_handle: graphics_hardware_interface::SwapchainHandle) -> &Swapchain {

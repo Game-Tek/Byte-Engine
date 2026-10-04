@@ -1,9 +1,8 @@
 use super::*;
 
-impl AppLike for App {
-	type Window = Window;
-
-	fn try_new(id_name: &str) -> Result<Self, String> {
+impl App {
+	/// Connects to the windowing system; see [`crate::window::App::new`].
+	pub(crate) fn try_new(id_name: &str) -> Result<Self, String> {
 		let conn = wayland_client::Connection::connect_to_env().map_err(|e| e.to_string())?;
 
 		let mut configuration_event_queue: wayland_client::EventQueue<Configuration> = conn.new_event_queue();
@@ -80,7 +79,8 @@ impl AppLike for App {
 		Ok(app)
 	}
 
-	fn create_window(&mut self, name: &str, extent: Extent, _features: Features) -> Result<Window, String> {
+	/// Creates and shows a native window; see [`crate::window::App::create_window`].
+	pub(crate) fn create_window(&mut self, name: &str, extent: Extent, _features: Features) -> Result<Window, String> {
 		let id = WindowId::from_raw(self.next_window);
 		self.next_window += 1;
 
@@ -127,7 +127,8 @@ impl AppLike for App {
 		})
 	}
 
-	fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
+	/// Pumps the native queue and yields its events; see [`crate::window::App::poll`].
+	pub(crate) fn poll(&mut self, wait: Wait) -> impl Iterator<Item = Event> + '_ {
 		self.data.forget_destroyed_windows();
 
 		self.event_queue
@@ -173,7 +174,7 @@ impl AppLike for App {
 		std::iter::from_fn(move || self.data.events.pop_front())
 	}
 
-	fn waker(&self) -> AppWaker {
+	pub(crate) fn waker(&self) -> AppWaker {
 		AppWaker(Arc::clone(&self.wake))
 	}
 }
@@ -184,19 +185,19 @@ impl Drop for App {
 	}
 }
 
-impl WindowLike for Window {
-	fn id(&self) -> WindowId {
+impl Window {
+	pub(crate) fn id(&self) -> WindowId {
 		self.id
 	}
 
-	fn handles(&self) -> Handles {
+	pub(crate) fn handles(&self) -> Handles {
 		Handles {
 			display: self.display.id().as_ptr() as _,
 			surface: self.surface.id().as_ptr() as _,
 		}
 	}
 
-	fn refresh_interval(&self) -> Option<Duration> {
+	pub(crate) fn refresh_interval(&self) -> Option<Duration> {
 		match self.refresh.load(Ordering::Relaxed) {
 			0 => None,
 			nanoseconds => Some(Duration::from_nanos(nanoseconds)),
@@ -204,7 +205,7 @@ impl WindowLike for Window {
 	}
 
 	/// Wayland does not tell clients whether their surface can be seen, so every window counts as visible.
-	fn is_visible(&self) -> bool {
+	pub(crate) fn is_visible(&self) -> bool {
 		true
 	}
 }
@@ -232,7 +233,7 @@ impl AppData {
 
 	/// Recomputes a window's refresh interval from the outputs it is on and reports a change.
 	pub(super) fn update_window_refresh(&mut self, id: WindowId) {
-		let Some(window) = self.windows.iter().find(|window| window.id == id) else {
+		let Some(window) = self.window(id) else {
 			return;
 		};
 		let interval = window

@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use crate::{
 	Formats,
 	pipelines::{ShaderParameter, VertexElement},
@@ -8,10 +6,10 @@ use crate::{
 /// The `Builder` struct collects portable raster state before a backend creates its native pipeline.
 pub struct Builder<'a> {
 	pub(crate) name: Option<&'a str>,
-	pub(crate) push_constant_ranges: Cow<'a, [crate::pipelines::PushConstantRange]>,
-	pub(crate) vertex_elements: Cow<'a, [VertexElement<'a>]>,
-	pub(crate) render_targets: Cow<'a, [AttachmentDescriptor]>,
-	pub(crate) shaders: Cow<'a, [ShaderParameter<'a>]>,
+	pub(crate) push_constant_ranges: &'a [crate::pipelines::PushConstantRange],
+	pub(crate) vertex_elements: &'a [VertexElement<'a>],
+	pub(crate) render_targets: &'a [AttachmentDescriptor],
+	pub(crate) shaders: &'a [ShaderParameter<'a>],
 	pub(crate) face_winding: FaceWinding,
 	pub(crate) cull_mode: CullMode,
 	pub(crate) fill_mode: FillMode,
@@ -27,10 +25,10 @@ impl<'a> Builder<'a> {
 	) -> Self {
 		Self {
 			name: None,
-			push_constant_ranges: Cow::Borrowed(push_constant_ranges),
-			vertex_elements: Cow::Borrowed(vertex_elements),
-			shaders: Cow::Borrowed(shaders),
-			render_targets: Cow::Borrowed(render_targets),
+			push_constant_ranges,
+			vertex_elements,
+			shaders,
+			render_targets,
 			face_winding: FaceWinding::Clockwise,
 			cull_mode: CullMode::Back,
 			fill_mode: FillMode::Solid,

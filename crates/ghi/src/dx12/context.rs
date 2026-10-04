@@ -1001,20 +1001,6 @@ impl Drop for Execution<'_> {
 	}
 }
 
-/// The `CommandBufferReference` struct exists to start DX12 command-buffer recordings from a command-buffer handle.
-pub struct CommandBufferReference<'a> {
-	device: &'a mut Device,
-	command_buffer_handle: CommandBufferHandle,
-}
-
-impl crate::command_buffer::CommandBuffer for CommandBufferReference<'_> {
-	fn create_command_buffer_recording(
-		&mut self,
-	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
-		self.device.create_command_buffer_recording(self.command_buffer_handle)
-	}
-}
-
 impl crate::device::Device for Device {
 	type Context = Device;
 	type Allocator = std::alloc::Global;
@@ -1167,7 +1153,6 @@ impl crate::context::ContextCreate for Device {
 
 impl crate::context::Context for Device {
 	type Queue<'a> = super::queue::Queue<'a>;
-	type CommandBuffer<'a> = CommandBufferReference<'a>;
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
@@ -1185,11 +1170,11 @@ impl crate::context::Context for Device {
 		}
 	}
 
-	fn command_buffer<'a>(&'a mut self, command_buffer_handle: CommandBufferHandle) -> Self::CommandBuffer<'a> {
-		CommandBufferReference {
-			device: self,
-			command_buffer_handle,
-		}
+	fn create_command_buffer_recording(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		Device::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn set_frames_in_flight(&mut self, frames: u8) {

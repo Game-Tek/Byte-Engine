@@ -1,6 +1,6 @@
 use ash::vk;
 
-use crate::{Layouts, Size, Stages, Uses, graphics_hardware_interface};
+use crate::{Layouts, Stages, Uses, graphics_hardware_interface};
 
 /// Folds the Vulkan flags of every `(ghi, vulkan)` table entry whose GHI flags satisfy `matches`.
 fn fold_flags<G: Copy, V: Copy + Default + std::ops::BitOr<Output = V>>(table: &[(G, V)], matches: impl Fn(G) -> bool) -> V {
@@ -107,9 +107,9 @@ pub(super) fn build_specialization_entries(
 	let mut entries = Vec::with_capacity(48);
 
 	for specialization_map_entry in specialization_map {
-		let value = specialization_map_entry.get_data();
+		let value = &specialization_map_entry.value;
 		let offset = data.len() as u32;
-		let constant_type = specialization_map_entry.get_type();
+		let constant_type = specialization_map_entry.r#type;
 		let scalar_count = match constant_type {
 			"bool" | "i32" | "u32" | "f32" => 1,
 			"vec2f" => 2,
@@ -132,7 +132,7 @@ pub(super) fn build_specialization_entries(
 		for i in 0..scalar_count {
 			entries.push(
 				vk::SpecializationMapEntry::default()
-					.constant_id(specialization_map_entry.get_constant_id() + i)
+					.constant_id(specialization_map_entry.constant_id + i)
 					.offset(offset + i * 4)
 					.size(4),
 			);
@@ -189,22 +189,6 @@ pub(super) fn to_format(format: crate::Formats) -> vk::Format {
 		crate::Formats::BC5SNORM => vk::Format::BC5_SNORM_BLOCK,
 		crate::Formats::BC7 => vk::Format::BC7_UNORM_BLOCK,
 		crate::Formats::BC7SRGB => vk::Format::BC7_SRGB_BLOCK,
-	}
-}
-
-pub(super) fn to_shader_stage_flags(shader_type: crate::ShaderTypes) -> vk::ShaderStageFlags {
-	match shader_type {
-		crate::ShaderTypes::Vertex => vk::ShaderStageFlags::VERTEX,
-		crate::ShaderTypes::Fragment => vk::ShaderStageFlags::FRAGMENT,
-		crate::ShaderTypes::Compute => vk::ShaderStageFlags::COMPUTE,
-		crate::ShaderTypes::Task => vk::ShaderStageFlags::TASK_EXT,
-		crate::ShaderTypes::Mesh => vk::ShaderStageFlags::MESH_EXT,
-		crate::ShaderTypes::RayGen => vk::ShaderStageFlags::RAYGEN_KHR,
-		crate::ShaderTypes::ClosestHit => vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-		crate::ShaderTypes::AnyHit => vk::ShaderStageFlags::ANY_HIT_KHR,
-		crate::ShaderTypes::Intersection => vk::ShaderStageFlags::INTERSECTION_KHR,
-		crate::ShaderTypes::Miss => vk::ShaderStageFlags::MISS_KHR,
-		crate::ShaderTypes::Callable => vk::ShaderStageFlags::CALLABLE_KHR,
 	}
 }
 
@@ -415,15 +399,9 @@ impl From<crate::DataTypes> for vk::Format {
 	}
 }
 
-impl Size for &[crate::pipelines::VertexElement<'_>] {
-	fn size(&self) -> usize {
-		self.iter().map(|element| element.format.size()).sum()
-	}
-}
-
 impl From<crate::ShaderTypes> for vk::ShaderStageFlags {
 	fn from(value: crate::ShaderTypes) -> Self {
-		to_shader_stage_flags(value)
+		Stages::from(value).into()
 	}
 }
 

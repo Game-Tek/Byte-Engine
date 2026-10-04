@@ -15,7 +15,7 @@ use ghi::{
 	UseCases, Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		BoundRayTracingPipelineMode as _, CommandBuffer as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+		BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
 		RasterizationRenderPassMode as _,
 	},
 	frame::Frame as _,
@@ -69,79 +69,75 @@ fn create_default_device_setup_with_features(
 	(instance, device, context, queue_handle.unwrap())
 }
 
+/// Runs one rendering scenario on a fresh validated device setup.
+///
+/// The setup locals drop in reverse order, so the context goes before the device and the instance.
+fn run(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
+	scenario(&mut context, queue_handle);
+}
+
 #[test]
 fn image_group_members_keep_their_contents_until_reused() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	image_groups::members_keep_their_contents_until_another_member_reuses_them(&mut device, queue_handle);
+	run(image_groups::members_keep_their_contents_until_another_member_reuses_them);
 }
 
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "was used without valid contents")]
 fn image_group_member_read_after_reuse_fails_validation() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	image_groups::reading_a_member_after_another_reused_its_memory_fails(&mut device, queue_handle);
+	run(image_groups::reading_a_member_after_another_reused_its_memory_fails);
 }
 
 #[test]
 fn render_triangle_pixels() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	raster::render_triangle(&mut device, queue_handle, raster::TriangleDraw::Mesh);
+	run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Mesh));
 }
 
 #[test]
 fn render_triangle_with_indirect_draw() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	raster::render_triangle(&mut device, queue_handle, raster::TriangleDraw::Indirect);
+	run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Indirect));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn raster_pipeline_can_disable_depth_writes() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	raster::render_without_depth_writes(&mut device, queue_handle);
+	run(raster::render_without_depth_writes);
 }
 
 #[test]
 fn change_frames_in_flight() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::change_frames(&mut device, queue_handle);
+	run(resources::change_frames);
 }
 
 #[test]
 fn resize_render_target() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize(&mut device, queue_handle, UseCases::DYNAMIC);
+	run(|context, queue_handle| resources::resize(context, queue_handle, UseCases::DYNAMIC));
 }
 
 #[test]
 fn resize_static_render_target() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize(&mut device, queue_handle, UseCases::STATIC);
+	run(|context, queue_handle| resources::resize(context, queue_handle, UseCases::STATIC));
 }
 
 #[test]
 fn resize_static_render_target_in_flight() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize_render_target_in_flight(&mut device, queue_handle, UseCases::STATIC);
+	run(|context, queue_handle| resources::resize_render_target_in_flight(context, queue_handle, UseCases::STATIC));
 }
 
 #[test]
 fn array_buffer_round_trip() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::array_buffer_round_trip(&mut device, queue_handle);
+	run(resources::array_buffer_round_trip);
 }
 
 #[test]
 fn resize_dynamic_buffer() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::resize_dynamic_buffer(&mut device, queue_handle);
+	run(resources::resize_dynamic_buffer);
 }
 
 #[test]
 fn update_dynamic_data() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::dynamic_data(&mut device, queue_handle);
+	run(resources::dynamic_data);
 }
 
 #[test]
@@ -150,33 +146,28 @@ fn update_dynamic_data() {
 	ignore = "Vulkan creates later dynamic-buffer copies through deferred tasks and shares one persistent write source; see todo.md"
 )]
 fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame() {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
-	resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame(&mut context, queue_handle);
+	run(resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame);
 }
 
 #[test]
 fn update_dynamic_textures() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::dynamic_textures(&mut device, queue_handle);
+	run(resources::dynamic_textures);
 }
 
 #[test]
 fn transfer_previous_frame_textures() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::previous_frame_transfers(&mut device, queue_handle);
+	run(resources::previous_frame_transfers);
 }
 
 #[test]
 fn render_with_multiframe_resources() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::multiframe_resources(&mut device, queue_handle);
+	run(resources::multiframe_resources);
 }
 
 #[cfg(target_os = "windows")]
 #[test]
 fn round_trip_texture3d_lut() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	resources::texture3d_lut_round_trip(&mut device, queue_handle);
+	run(resources::texture3d_lut_round_trip);
 }
 
 #[test]
@@ -204,12 +195,10 @@ fn imported_buffer_receives_copies() {
 
 #[test]
 fn polled_synchronizer_reports_completion() {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
-	resources::polled_synchronizer_reports_completion(&mut context, queue_handle);
+	run(resources::polled_synchronizer_reports_completion);
 }
 
 #[test]
 fn update_texture_regions() {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
-	resources::texture_region_uploads(&mut context, queue_handle);
+	run(resources::texture_region_uploads);
 }

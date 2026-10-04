@@ -245,7 +245,8 @@ impl Context {
 				continue;
 			};
 			for retained in elements.values() {
-				let target_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset) as u8;
+				let target_sequence =
+					frame_index_with_offset(sequence_index as usize, retained.frame_offset, self.frames as usize) as u8;
 				let key = match retained.descriptor {
 					WriteData::Buffer { .. } => None,
 					WriteData::Swapchain(handle) => Some((
@@ -281,7 +282,7 @@ impl Context {
 		retained: crate::vulkan::descriptor_set::RetainedDescriptor,
 		sequence_index: u8,
 	) -> Descriptor {
-		let resource_sequence = self.frame_index_with_offset(sequence_index as usize, retained.frame_offset);
+		let resource_sequence = frame_index_with_offset(sequence_index as usize, retained.frame_offset, self.frames as usize);
 		let image = |handle| {
 			self.resolve_descriptor_image_handle(
 				graphics_hardware_interface::ImageHandle(handle),
@@ -452,13 +453,13 @@ impl Context {
 			.max(properties.image_descriptor_alignment);
 		let heaps = self.descriptor_heaps.as_mut().unwrap();
 		let resource_heap_offset = if layout.resource_heap_size > 0 {
-			heaps.resource_mut().allocate(layout.resource_heap_size, resource_alignment)
+			heaps.resource.allocate(layout.resource_heap_size, resource_alignment)
 		} else {
 			0
 		};
 		let sampler_heap_offset = if layout.sampler_heap_size > 0 {
 			heaps
-				.sampler_mut()
+				.sampler
 				.allocate(layout.sampler_heap_size, properties.sampler_descriptor_alignment)
 		} else {
 			0
@@ -593,7 +594,7 @@ impl Context {
 				.collect::<Box<[_]>>();
 			let destinations = address_writes
 				.iter()
-				.map(|(_, _, offset, size)| heaps.resource().host_range(*offset, *size))
+				.map(|(_, _, offset, size)| heaps.resource.host_range(*offset, *size))
 				.collect::<Box<[_]>>();
 			unsafe {
 				self.device
@@ -620,7 +621,7 @@ impl Context {
 				.collect::<Box<[_]>>();
 			let destinations = image_writes
 				.iter()
-				.map(|(_, _, _, offset, size)| heaps.resource().host_range(*offset, *size))
+				.map(|(_, _, _, offset, size)| heaps.resource.host_range(*offset, *size))
 				.collect::<Box<[_]>>();
 			unsafe {
 				self.device
@@ -650,7 +651,7 @@ impl Context {
 				.collect::<Box<[_]>>();
 			let destinations = sampler_writes
 				.iter()
-				.map(|(_, offset, size)| heaps.sampler().host_range(*offset, *size))
+				.map(|(_, offset, size)| heaps.sampler.host_range(*offset, *size))
 				.collect::<Box<[_]>>();
 			unsafe {
 				self.device

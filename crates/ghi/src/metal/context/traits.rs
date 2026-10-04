@@ -3,7 +3,6 @@ use super::*;
 
 impl crate::context::Context for Context {
 	type Queue<'a> = crate::metal::queue::Queue<'a>;
-	type CommandBuffer<'a> = crate::metal::CommandBuffer<'a>;
 
 	#[cfg(any(debug_assertions, test))]
 	fn has_errors(&self) -> bool {
@@ -23,14 +22,11 @@ impl crate::context::Context for Context {
 		}
 	}
 
-	fn command_buffer<'a>(
-		&'a mut self,
+	fn create_command_buffer_recording(
+		&mut self,
 		command_buffer_handle: graphics_hardware_interface::CommandBufferHandle,
-	) -> super::CommandBuffer<'a> {
-		super::CommandBuffer {
-			device: self,
-			command_buffer_handle,
-		}
+	) -> impl crate::command_buffer::CommandBufferRecording + crate::command_buffer::CommonCommandBufferMode {
+		Context::create_command_buffer_recording(self, command_buffer_handle)
 	}
 
 	fn get_buffer_address(&self, buffer_handle: graphics_hardware_interface::BaseBufferHandle) -> u64 {

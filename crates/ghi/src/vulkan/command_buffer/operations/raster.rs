@@ -18,22 +18,17 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		}))
 		.apply(self);
 
-		let buffers = buffer_descriptors
+		let (buffers, offsets): (Vec<_>, Vec<_>) = buffer_descriptors
 			.iter()
-			.map(|buffer_descriptor| {
-				self.get_buffer(self.get_internal_buffer_handle(buffer_descriptor.buffer))
-					.buffer
+			.map(|descriptor| {
+				let buffer = self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer)).buffer;
+				(buffer, descriptor.offset as vk::DeviceSize)
 			})
-			.collect::<Vec<_>>();
-		let offsets = buffer_descriptors
-			.iter()
-			.map(|buffer_descriptor| buffer_descriptor.offset as vk::DeviceSize)
-			.collect::<Vec<_>>();
+			.unzip();
 
 		// TODO: implement slot splitting
 		unsafe {
 			self.device
-				.device
 				.cmd_bind_vertex_buffers(self.get_command_buffer().command_buffer, 0, &buffers, &offsets);
 		}
 	}
@@ -59,7 +54,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 		};
 
 		unsafe {
-			self.device.device.cmd_bind_index_buffer(
+			self.device.cmd_bind_index_buffer(
 				self.get_command_buffer().command_buffer,
 				self.get_buffer(buffer_handle).buffer,
 				buffer_descriptor.offset as _,
@@ -77,7 +72,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			.extent(vk::Extent2D::default().width(extent.width()).height(extent.height()));
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.device.cmd_set_scissor(command_buffer, 0, &[rect]);
+			self.device.cmd_set_scissor(command_buffer, 0, &[rect]);
 		}
 	}
 
@@ -90,7 +85,7 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 			"No Vulkan render pass is active. The most likely cause is that end_render_pass was called without start_render_pass.",
 		);
 		unsafe {
-			self.device.device.cmd_end_rendering(self.get_command_buffer().command_buffer);
+			self.device.cmd_end_rendering(self.get_command_buffer().command_buffer);
 		}
 		self.active_rendering = false;
 	}
@@ -141,15 +136,10 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
 		let index_data_offset = (mesh.vertex_count * mesh.vertex_size as u32).next_multiple_of(16) as u64;
 		unsafe {
+			self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);
 			self.device
-				.device
-				.cmd_bind_vertex_buffers(command_buffer, 0, &[mesh.buffer], &[0]);
-			self.device
-				.device
 				.cmd_bind_index_buffer(command_buffer, mesh.buffer, index_data_offset, vk::IndexType::UINT16);
-			self.device
-				.device
-				.cmd_draw_indexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
+			self.device.cmd_draw_indexed(command_buffer, mesh.index_count, 1, 0, 0, 0);
 		}
 	}
 
@@ -185,7 +175,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer = self.prepare_draw();
 		unsafe {
 			// The stride is one record, which is the entry's size.
-			self.device.device.cmd_draw_indirect(
+			self.device.cmd_draw_indirect(
 				command_buffer,
 				vk_buffer,
 				entry.start as vk::DeviceSize,
@@ -199,7 +189,6 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 		let command_buffer = self.prepare_draw();
 		unsafe {
 			self.device
-				.device
 				.cmd_draw(command_buffer, vertex_count, instance_count, first_vertex, first_instance);
 		}
 	}
@@ -214,7 +203,7 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 	) {
 		let command_buffer = self.prepare_draw();
 		unsafe {
-			self.device.device.cmd_draw_indexed(
+			self.device.cmd_draw_indexed(
 				command_buffer,
 				index_count,
 				instance_count,

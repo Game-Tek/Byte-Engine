@@ -11,14 +11,12 @@ use super::{
 	MaterializationKey, MemoryBackedResourceCreationResult, Mesh, Pipeline, PipelineLayout, PipelineLayoutKey,
 	PipelineResourceDescriptor, ResolvedPipelineDescriptor, Sampler, Shader, Swapchain, Synchronizer,
 	TopLevelAccelerationStructureHandle, TransitionState,
-	utils::{
-		into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, to_shader_stage_flags,
-		uses_to_vk_usage_flags,
-	},
+	utils::{into_vk_image_usage_flags, texture_format_and_resource_use_to_image_layout, to_format, uses_to_vk_usage_flags},
 };
 use crate::vulkan::{Device, InnerDevice, StoredQueue};
 use crate::{
-	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, graphics_hardware_interface, image, sampler,
+	FrameKey, HandleLike, MasterHandle as _, ResourceCollection, Size, frame_index_with_offset, graphics_hardware_interface,
+	image, sampler,
 	synchronizer::SynchronizerHandle,
 	vulkan::{
 		BufferCopy, BuildBuffer, CommandBufferRecording, Descriptor, Frame, ImageCopy, ImageHandle, MAX_SWAPCHAIN_IMAGES, Task,
@@ -71,8 +69,6 @@ pub struct Context {
 	pub(super) swapchains: Vec<Swapchain>,
 	pub(super) texture_readbacks: crate::context::TextureReadbackRegistry<TextureReadbackStorage>,
 
-	pub settings: crate::device::Features,
-
 	pub(super) states: HashMap<super::Handles, TransitionState>,
 	pub(super) buffer_states: HashMap<super::Handles, Vec<super::BufferTransitionState>>,
 
@@ -85,8 +81,6 @@ pub struct Context {
 	/// These buffers have their source buffer memcpy'd into the per-frame staging
 	/// buffer every frame before GPU copies are issued.
 	pub(super) persistent_write_dynamic_buffers: Vec<graphics_hardware_interface::BaseBufferHandle>,
-
-	memory_properties: vk::PhysicalDeviceMemoryProperties,
 
 	/// Stores the debug names for resources.
 	/// Used when inspecting resources from a rendering debugger such as RenderDoc.
@@ -125,7 +119,7 @@ fn descriptor_task_is_current(
 mod descriptors;
 mod drop;
 mod pipelines;
-pub(crate) use pipelines::build_raster_pipeline;
+pub(crate) use pipelines::{build_compute_pipeline, build_raster_pipeline};
 mod resources;
 mod runtime;
 mod traits;

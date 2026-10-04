@@ -37,7 +37,6 @@ use xkbcommon::xkb::{self, keysyms};
 use crate::window::{
 	Event, Events, Features, Seat, Wait, WindowId,
 	input::{Keys, MouseKeys},
-	os::{AppLike, WindowLike},
 };
 
 /// The `App` struct owns the process's single Wayland connection and its event queue.

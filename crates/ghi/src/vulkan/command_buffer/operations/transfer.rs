@@ -1,14 +1,5 @@
 use super::*;
 
-fn transfer_consumption(handle: Handles, access: crate::AccessPolicies) -> Consumption {
-	Consumption {
-		handle,
-		stages: crate::Stages::TRANSFER,
-		access,
-		layout: crate::Layouts::Transfer,
-	}
-}
-
 fn subresource_layers(aspect_mask: vk::ImageAspectFlags, mip_level: u32, layer_count: u32) -> vk::ImageSubresourceLayers {
 	vk::ImageSubresourceLayers::default()
 		.aspect_mask(aspect_mask)
@@ -43,13 +34,9 @@ fn acceleration_structure_build_access(handle: Handles, access: vk::AccessFlags2
 
 impl CommandBufferRecording<'_> {
 	fn buffer_descriptor_address(&self, descriptor: &crate::BufferDescriptor) -> vk::DeviceAddress {
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer)).buffer;
-		let address = unsafe {
-			self.device
-				.device
-				.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(buffer))
-		};
-		address + descriptor.offset as u64
+		self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer))
+			.device_address
+			+ descriptor.offset as u64
 	}
 
 	fn acceleration_structure_build_info(
@@ -102,7 +89,6 @@ impl CommandBufferRecording<'_> {
 			.regions(&regions);
 		unsafe {
 			self.device
-				.device
 				.cmd_copy_buffer_to_image2(self.get_command_buffer().command_buffer, &copy);
 		}
 	}
@@ -119,18 +105,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		&mut self,
 		source: graphics_hardware_interface::ImageOrSwapchain,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
-		let (source_handle, format, extent, declared_uses) = match source {
+		match source {
 			graphics_hardware_interface::ImageOrSwapchain::Image(handle) => {
 				if self.device.images.get(handle.0 as usize).is_none() {
 					return Err(crate::TextureTransferError::InvalidSource);
 				}
 				let source_handle = self.get_internal_base_image_handle(handle);
-				let image = self
-					.device
-					.images
-					.get(source_handle.0 as usize)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				(source_handle, image.format_, image.extent, image.uses)
+				self.record_texture_transfer(source_handle, None, None)
 			}
 			graphics_hardware_interface::ImageOrSwapchain::Swapchain(handle) => {
 				let swapchain = self
@@ -143,25 +124,12 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 					.images
 					.get(image_index)
 					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				let source_image = self
-					.device
-					.images
-					.get(source_handle.0 as usize)
-					.ok_or(crate::TextureTransferError::InvalidSource)?;
-				let declared_uses = if swapchain.uses_proxy_images {
-					swapchain.proxy_uses
-				} else {
-					source_image.uses
-				};
-				(
-					source_handle,
-					source_image.format_,
-					Extent::rectangle(swapchain.extent.width, swapchain.extent.height),
-					declared_uses,
-				)
+				// Native swapchain images keep no extent, and proxied swapchains were declared with the requested uses.
+				let extent = Extent::rectangle(swapchain.extent.width, swapchain.extent.height);
+				let declared_uses = swapchain.uses_proxy_images.then_some(swapchain.uses);
+				self.record_texture_transfer(source_handle, Some(extent), declared_uses)
 			}
-		};
-		self.record_texture_transfer(source_handle, format, extent, declared_uses)
+		}
 	}
 
 	fn transfer_texture_with_frame(
@@ -179,13 +147,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			self.sequence_index as usize,
 			frame_offset,
 		);
-		let source_image = self
-			.device
-			.images
-			.get(source_handle.0 as usize)
-			.ok_or(crate::TextureTransferError::InvalidSource)?;
-		let (format, extent, uses) = (source_image.format_, source_image.extent, source_image.uses);
-		self.record_texture_transfer(source_handle, format, extent, uses)
+		self.record_texture_transfer(source_handle, None, None)
 	}
 
 	fn start_render_pass(
@@ -395,7 +357,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.filter(vk::Filter::LINEAR);
 		unsafe {
 			self.device
-				.device
 				.cmd_blit_image2(self.get_command_buffer().command_buffer, &blit_info);
 		}
 	}
@@ -456,13 +417,8 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				};
 				let clear_value = vk::ClearDepthStencilValue { depth, stencil: 0 };
 				unsafe {
-					self.device.device.cmd_clear_depth_stencil_image(
-						command_buffer,
-						image.image,
-						layout,
-						&clear_value,
-						&[range],
-					);
+					self.device
+						.cmd_clear_depth_stencil_image(command_buffer, image.image, layout, &clear_value, &[range]);
 				}
 			} else {
 				let clear_value = match clear_value {
@@ -479,7 +435,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 				};
 				unsafe {
 					self.device
-						.device
 						.cmd_clear_color_image(command_buffer, image.image, layout, &clear_value, &[range]);
 				}
 			}
@@ -544,8 +499,16 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		.apply(self);
 	}
 
+	/// Records a staging-to-buffer upload on this command buffer.
 	fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		CommandBufferRecording::sync_buffer(self, buffer_handle);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.device.buffers.resource(buffer_handle);
+		let Some(staging_handle) = buffer.staging else {
+			return;
+		};
+
+		let copy = BufferCopy::new(staging_handle, 0, buffer_handle, 0, buffer.size);
+		self.sync_buffers(std::iter::once(copy));
 	}
 
 	fn clear_buffers(&mut self, buffer_handles: &[graphics_hardware_interface::BaseBufferHandle]) {
@@ -565,7 +528,6 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 
 			unsafe {
 				self.device
-					.device
 					.cmd_fill_buffer(self.get_command_buffer().command_buffer, buffer, 0, vk::WHOLE_SIZE, 0);
 			}
 			self.states.insert(
@@ -661,14 +623,13 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let synchronizer = &self.device.synchronizers[synchronizer_handle.0 as usize];
 
 		unsafe {
-			self.device.device.reset_fences(&[synchronizer.fence]).expect(
+			self.device.reset_fences(&[synchronizer.fence]).expect(
 				"Failed to reset Vulkan command buffer synchronizer. The most likely cause is that the fence is invalid or already in use.",
 			);
 			let vk_queue = self.device.vk_queues[command_buffer.vk_queue_index]
 				.lock()
 				.expect("Failed to lock Vulkan queue for command-buffer submission. The most likely cause is that another thread panicked while holding the queue lock.");
 			self.device
-				.device
 				.queue_submit2(*vk_queue, &[submit_info], synchronizer.fence)
 				.expect("Failed to submit Vulkan command buffer. The most likely cause is that the command buffer was not recorded for this queue.");
 		}
@@ -688,20 +649,22 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 impl CommandBufferRecording<'_> {
 	/// Records one copy of a resolved image into CPU-readable staging.
 	///
-	/// `declared_uses` are the uses the public source was created with, which differ from the native image's uses
-	/// for proxied swapchains.
+	/// Swapchains override the image's `extent`, and proxied swapchains its `declared_uses`, which are the uses the
+	/// public source was created with.
 	fn record_texture_transfer(
 		&mut self,
 		source_handle: ImageHandle,
-		format: crate::Formats,
-		extent: Extent,
-		declared_uses: crate::Uses,
+		extent: Option<Extent>,
+		declared_uses: Option<crate::Uses>,
 	) -> Result<graphics_hardware_interface::TextureCopyHandle, crate::TextureTransferError> {
 		let image = self
 			.device
 			.images
 			.get(source_handle.0 as usize)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
+		let format = image.format_;
+		let extent = extent.unwrap_or(image.extent);
+		let declared_uses = declared_uses.unwrap_or(image.uses);
 		let array_layers = image.layers.map_or(1, std::num::NonZeroU32::get);
 		let source_image = image.image;
 		let aspect_mask = image_aspect_mask(image.format);
@@ -760,8 +723,8 @@ impl CommandBufferRecording<'_> {
 			.size(vk::WHOLE_SIZE)];
 		let command_buffer = self.get_command_buffer().command_buffer;
 		unsafe {
-			self.device.device.cmd_copy_image_to_buffer2(command_buffer, &copy);
-			self.device.device.cmd_pipeline_barrier2(
+			self.device.cmd_copy_image_to_buffer2(command_buffer, &copy);
+			self.device.cmd_pipeline_barrier2(
 				command_buffer,
 				&vk::DependencyInfo::default().buffer_memory_barriers(&host_read_barriers),
 			);

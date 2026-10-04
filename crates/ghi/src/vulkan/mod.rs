@@ -266,24 +266,6 @@ impl DescriptorHeapArena {
 	}
 }
 
-impl DescriptorHeaps {
-	pub(crate) fn resource(&self) -> &DescriptorHeapArena {
-		&self.resource
-	}
-
-	pub(crate) fn resource_mut(&mut self) -> &mut DescriptorHeapArena {
-		&mut self.resource
-	}
-
-	pub(crate) fn sampler(&self) -> &DescriptorHeapArena {
-		&self.sampler
-	}
-
-	pub(crate) fn sampler_mut(&mut self) -> &mut DescriptorHeapArena {
-		&mut self.sampler
-	}
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct DescriptorMaterializationHandle(u64);
 
@@ -534,18 +516,10 @@ impl Task {
 		}
 	}
 
-	pub(crate) fn frame(&self) -> Option<u8> {
-		self.frame
-	}
-
 	/// Whether the GPU may still use what this task touches, given the latest frame known to have completed.
 	pub(crate) fn is_pending(&self, completed_frame: Option<u64>) -> bool {
 		self.after_frame
 			.is_some_and(|after_frame| completed_frame.is_none_or(|completed_frame| completed_frame < after_frame))
-	}
-
-	pub(crate) fn task(&self) -> &Tasks {
-		&self.task
 	}
 }
 

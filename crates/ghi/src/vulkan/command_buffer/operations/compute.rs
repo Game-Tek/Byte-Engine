@@ -51,7 +51,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		let (x, y, z) = dispatch.get_extent().as_tuple();
 		let command_buffer = self.prepare_shader_work();
 		unsafe {
-			self.device.device.cmd_dispatch(command_buffer, x, y, z);
+			self.device.cmd_dispatch(command_buffer, x, y, z);
 		}
 	}
 
@@ -60,7 +60,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
 		entry_index: usize,
 	) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into().handle());
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into().0);
 		let buffer = self.get_buffer(buffer_handle);
 		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
 		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
@@ -78,7 +78,7 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		}])
 		.apply(self);
 		unsafe {
-			self.device.device.cmd_dispatch_indirect(
+			self.device.cmd_dispatch_indirect(
 				self.get_command_buffer().command_buffer,
 				vk_buffer,
 				entry.start as vk::DeviceSize,

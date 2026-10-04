@@ -37,11 +37,11 @@ pub(crate) fn apply_specialization_map_entry(
 	constant_values: &mtl::MTLFunctionConstantValues,
 	specialization_map_entry: &crate::pipelines::SpecializationMapEntry,
 ) {
-	let value = specialization_map_entry.get_data().as_ptr() as *const c_void as *mut c_void;
+	let value = specialization_map_entry.value.as_ptr() as *const c_void as *mut c_void;
 	let value = NonNull::new(value).expect(
 		"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
 	);
-	let (data_type, count) = match specialization_map_entry.get_type() {
+	let (data_type, count) = match specialization_map_entry.r#type {
 		"bool" => (mtl::MTLDataType::Bool, 1),
 		"i32" => (mtl::MTLDataType::Int, 1),
 		"u32" => (mtl::MTLDataType::UInt, 1),
@@ -53,7 +53,7 @@ pub(crate) fn apply_specialization_map_entry(
 			"Unsupported Metal specialization constant type. The most likely cause is that the Metal backend was not updated for a new specialization entry type."
 		),
 	};
-	let range = NSRange::new(specialization_map_entry.get_constant_id() as usize, count);
+	let range = NSRange::new(specialization_map_entry.constant_id as usize, count);
 	// SAFETY: The specialization entry owns `count` contiguous values of `data_type` for the duration of this call.
 	unsafe { constant_values.setConstantValues_type_withRange(value, data_type, range) };
 }
@@ -972,7 +972,7 @@ pub(crate) fn build_raster_pipeline(
 	}
 
 	let name = builder.name.filter(|_| cfg!(debug_assertions) && debug_labels);
-	let render_targets = builder.render_targets.as_ref();
+	let render_targets = builder.render_targets;
 	let pipeline = if let Some(mesh_function) = mesh_function.as_deref() {
 		compile_metal4_mesh_pipeline(
 			compiler,
@@ -983,7 +983,7 @@ pub(crate) fn build_raster_pipeline(
 			render_targets,
 		)
 	} else if let Some(vertex_function) = vertex_function.as_deref() {
-		let vertex_descriptor = build_vertex_descriptor(builder.vertex_elements.as_ref());
+		let vertex_descriptor = build_vertex_descriptor(builder.vertex_elements);
 		compile_metal4_render_pipeline(
 			compiler,
 			name,
@@ -1031,7 +1031,7 @@ pub(crate) fn build_raster_pipeline(
 				.shaders
 				.iter()
 				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
-			builder.push_constant_ranges.as_ref(),
+			builder.push_constant_ranges,
 		),
 	}
 }
@@ -1094,7 +1094,7 @@ pub(crate) fn build_ray_tracing_pipeline(
 				.shaders
 				.iter()
 				.map(|shader_parameter| &shaders[shader_parameter.handle.0 as usize]),
-			builder.push_constant_ranges.as_ref(),
+			builder.push_constant_ranges,
 		),
 	}
 }

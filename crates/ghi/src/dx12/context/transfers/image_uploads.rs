@@ -111,7 +111,7 @@ impl Device {
 		copy: &crate::BufferImageCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(copy.destination_image, sequence_index);
@@ -192,7 +192,7 @@ impl Device {
 		data: &[RGBAu8],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);
@@ -290,7 +290,7 @@ impl Device {
 		sequence_index: u8,
 		region: Option<crate::image::Region>,
 	) -> bool {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return false;
 		};
 		let destination = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index);

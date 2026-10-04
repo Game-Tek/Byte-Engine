@@ -8,7 +8,7 @@ impl Device {
 		buffer_descriptors: &[BufferDescriptor],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 
@@ -66,7 +66,7 @@ impl Device {
 		buffer_descriptor: &BufferDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
@@ -413,7 +413,7 @@ impl Device {
 		sequence_index: u8,
 	) {
 		AttachmentInformation::render_pass_layer_count(attachments);
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		// A pass that clears or discards an attachment gives an image-group member new contents.

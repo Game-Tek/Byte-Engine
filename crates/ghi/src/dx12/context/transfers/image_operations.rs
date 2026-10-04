@@ -54,7 +54,7 @@ impl Device {
 		destination_image: crate::BaseImageHandle,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(source) = self.images.get(source_image.0 as usize) else {

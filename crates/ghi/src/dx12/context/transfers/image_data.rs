@@ -46,6 +46,7 @@ impl Device {
 	) -> Result<Option<TextureReadback>, crate::TextureTransferError> {
 		let command_list = self
 			.command_list(command_buffer_handle)
+			.cloned()
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
 		let image = self
 			.images

@@ -55,7 +55,7 @@ impl Device {
 		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
 		entry: impl FnOnce() -> std::ops::Range<usize>,
 	) -> bool {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return false;
 		};
 		let Some(buffer_size) = self.buffer(base_buffer_handle).map(|buffer| buffer.size) else {

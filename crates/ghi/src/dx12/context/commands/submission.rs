@@ -188,7 +188,7 @@ impl Device {
 			Some(CommandBufferLifecycle::Recording),
 			"DX12 command buffer is not recording. The most likely cause is that the recording was finished more than once."
 		);
-		if let Some(command_list) = self.command_list(command_buffer_handle) {
+		if let Some(command_list) = self.command_list(command_buffer_handle).cloned() {
 			self.transition_present_resources(command_buffer_handle, &command_list);
 		}
 		self.finish_command_buffer_state_transaction(command_buffer_handle);
@@ -200,7 +200,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		present_keys: &[PresentKey],
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 

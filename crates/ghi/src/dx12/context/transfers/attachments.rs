@@ -159,7 +159,7 @@ impl Device {
 		final_state: Option<TextureBarrierState>,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(destination) = self.ensure_image_resource_for_sequence(image_handle.0, sequence_index) else {

@@ -34,7 +34,7 @@ impl Device {
 			}
 		}
 
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let mut gpu_clear_buffers = SmallVec::<[(BaseBufferHandle, ID3D12Resource); 16]>::new();
@@ -146,7 +146,7 @@ impl Device {
 		copy: &crate::BufferCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(source) = self.copy_buffer_info_for_sequence(copy.source_buffer, sequence_index) else {
@@ -218,7 +218,7 @@ impl Device {
 		sequence_index: u8,
 		transition_before_clear: bool,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(destination_buffer) = self.copy_buffer_info_for_sequence(buffer_handle, sequence_index) else {

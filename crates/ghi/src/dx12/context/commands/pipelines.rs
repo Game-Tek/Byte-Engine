@@ -7,7 +7,7 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		pipeline_handle: PipelineHandle,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {

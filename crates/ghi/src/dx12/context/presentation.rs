@@ -622,11 +622,11 @@ impl Device {
 	}
 
 	/// Returns the native list that a command buffer records into, or `None` when the handle or its list is missing.
-	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<ID3D12GraphicsCommandList7> {
+	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<&ID3D12GraphicsCommandList7> {
 		self.command_buffers
 			.get(command_buffer_handle.0 as usize)?
 			.command_list
-			.clone()
+			.as_ref()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.

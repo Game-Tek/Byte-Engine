@@ -440,7 +440,7 @@ impl Device {
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(acceleration_structure) = self
@@ -662,7 +662,7 @@ impl Device {
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return;
 		};
 		let Some(command_list4) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
@@ -970,7 +970,7 @@ impl Device {
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) -> bool {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
+		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
 			return false;
 		};
 		let Some(scratch_resource) = self.buffer_resource_for_sequence(build.scratch_buffer.buffer, sequence_index) else {

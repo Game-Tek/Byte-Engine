@@ -16,7 +16,7 @@ use super::super::layout::{
 };
 use super::super::mesh_dispatch::PhaseDispatches;
 use super::depth_pyramid::{ScreenViewData, screen_view_data};
-use super::{ComputeStage, OcclusionPhase, PhasePipelines, record_compute_stages, record_meshlet_dispatches};
+use super::{ComputeStage, OcclusionPhase, Pipelines, record_compute_stages, record_meshlet_dispatches};
 use crate::rendering::csm::{CASTER_REACH, CascadeFrame, EDGE_TEXELS, SIZE_STEPS_PER_OCTAVE};
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -26,37 +26,12 @@ pub(crate) const DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT: u32 = 1;
 /// Shadow-map texels on each side of one max-depth cell in the cascade depth pyramid. The directional shadow helpers
 /// and `directional-shadow-depth-pyramid.besl` assume this size.
 pub(crate) const DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE: u32 = 8;
-const DEPTH_PYRAMID_SOURCE_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-)
-.texture_view_type(ghi::TextureViewTypes::Texture2DArray);
-const DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageImage,
-	ghi::AccessPolicies::WRITE,
-);
-const RECEIVER_DEPTH_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const RECEIVER_BOUNDS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1034),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ_WRITE,
-);
-const RECEIVER_FIT_PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1035),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const CASCADE_SIZE_STEPS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1036),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ_WRITE,
-);
+const DEPTH_PYRAMID_SOURCE_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+const DEPTH_PYRAMID_OUTPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const RECEIVER_DEPTH_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+const RECEIVER_BOUNDS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1034);
+const RECEIVER_FIT_PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1035);
+const CASCADE_SIZE_STEPS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1036);
 /// Screen pixels on each side of the square one receiver-bounds thread reads. The bounds shader assumes this size.
 const RECEIVER_BOUNDS_PIXELS_PER_THREAD: u32 = 4;
 /// Encoded bounds per cascade: the lower then the upper corner of the box its receivers fill.
@@ -140,10 +115,10 @@ pub(crate) fn receiver_fit_shader_data(
 /// writes, so frames in flight share the images too.
 pub(crate) struct ShadowMaps {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
-	directional_pipelines: PhasePipelines,
+	directional_pipelines: Pipelines<4>,
 	/// Cone and point maps share one perspective depth format, so they share these pipelines.
-	local_pipelines: PhasePipelines,
-	depth_pyramid_pipeline: crate::rendering::PipelineRef,
+	local_pipelines: Pipelines<4>,
+	depth_pyramid_pipeline: Pipelines<1>,
 	pub(crate) directional: ghi::BaseImageHandle,
 	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade.
 	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
@@ -210,14 +185,14 @@ impl ShadowMaps {
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				depth_pyramid_descriptor_set,
-				DEPTH_PYRAMID_SOURCE_BINDING.slot(),
+				DEPTH_PYRAMID_SOURCE_BINDING,
 				directional,
 				max_sampler,
 				ghi::Layouts::Read,
 			),
 			ghi::DescriptorWrite::image_mip(
 				depth_pyramid_descriptor_set,
-				DEPTH_PYRAMID_OUTPUT_BINDING.slot(),
+				DEPTH_PYRAMID_OUTPUT_BINDING,
 				directional_depth_pyramid,
 				ghi::Layouts::General,
 				0,
@@ -225,10 +200,9 @@ impl ShadowMaps {
 		]);
 		Self {
 			depth_pyramid_descriptor_set,
-			directional_pipelines: PhasePipelines::request(pipeline_manager, "directional-shadow"),
-			local_pipelines: PhasePipelines::request(pipeline_manager, "cone-shadow"),
-			depth_pyramid_pipeline: pipeline_manager
-				.request_pipeline("byte-engine/rendering/visibility/directional-shadow-depth-pyramid.pipeline"),
+			directional_pipelines: Pipelines::phases(pipeline_manager, "directional-shadow"),
+			local_pipelines: Pipelines::phases(pipeline_manager, "cone-shadow"),
+			depth_pyramid_pipeline: Pipelines::request(pipeline_manager, ["directional-shadow-depth-pyramid"]),
 			directional,
 			directional_depth_pyramid,
 			cone,
@@ -256,10 +230,11 @@ impl ShadowMaps {
 
 		let directional_pipelines = self.directional_pipelines.resolve(pipeline_manager)?;
 		let local_pipelines = self.local_pipelines.resolve(pipeline_manager)?;
+		let [depth_pyramid_pipeline] = self.depth_pyramid_pipeline.resolve(pipeline_manager)?;
 		// Each SIMD-width workgroup reduces two adjacent 8x8 source tiles into one cell each.
 		let depth_pyramid = ComputeStage {
 			label: "Directional Shadow Depth Pyramid",
-			pipeline: pipeline_manager.pipeline(self.depth_pyramid_pipeline)?,
+			pipeline: depth_pyramid_pipeline,
 			descriptor_sets: [self.depth_pyramid_descriptor_set],
 			extent: Extent::rectangle(
 				SHADOW_MAP_RESOLUTION / 2,
@@ -361,8 +336,8 @@ pub(super) struct CascadeFitPass {
 	receiver_fit_parameters: ghi::DynamicBufferHandle<ReceiverFitShaderData>,
 	/// The box each cascade's receivers fill, rebuilt every frame the cascades fit receivers.
 	receiver_bounds: ghi::BufferHandle<[u32; RECEIVER_BOUNDS_PER_CASCADE * SHADOW_CASCADE_COUNT]>,
-	receiver_bounds_pipeline: crate::rendering::PipelineRef,
-	cascade_fit_pipeline: crate::rendering::PipelineRef,
+	/// The receiver-bounds and cascade-fit pipelines.
+	pipelines: Pipelines<2>,
 }
 
 impl CascadeFitPass {
@@ -397,13 +372,12 @@ impl CascadeFitPass {
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest),
 		);
-		let fit_buffer = |binding: ghi::ShaderResourceDescriptor, buffer: ghi::BaseBufferHandle| {
-			ghi::DescriptorWrite::buffer(receiver_fit_descriptor_set, binding.slot(), buffer)
-		};
+		let fit_buffer =
+			|binding, buffer: ghi::BaseBufferHandle| ghi::DescriptorWrite::buffer(receiver_fit_descriptor_set, binding, buffer);
 		context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				receiver_fit_descriptor_set,
-				RECEIVER_DEPTH_BINDING.slot(),
+				RECEIVER_DEPTH_BINDING,
 				depth,
 				point_sampler,
 				ghi::Layouts::Read,
@@ -412,14 +386,15 @@ impl CascadeFitPass {
 			fit_buffer(RECEIVER_FIT_PARAMETERS_BINDING, receiver_fit_parameters.into()),
 			fit_buffer(CASCADE_SIZE_STEPS_BINDING, cascade_size_steps.into()),
 		]);
-		let request = |name| pipeline_manager.request_pipeline(name);
 		Self {
 			descriptor_set,
 			receiver_fit_descriptor_set,
 			receiver_fit_parameters,
 			receiver_bounds,
-			receiver_bounds_pipeline: request("byte-engine/rendering/visibility/directional-shadow-receiver-bounds.pipeline"),
-			cascade_fit_pipeline: request("byte-engine/rendering/visibility/directional-shadow-cascade-fit.pipeline"),
+			pipelines: Pipelines::request(
+				pipeline_manager,
+				["directional-shadow-receiver-bounds", "directional-shadow-cascade-fit"],
+			),
 		}
 	}
 
@@ -436,8 +411,7 @@ impl CascadeFitPass {
 	) -> Option<impl RenderPassFunction + use<>> {
 		use ghi::frame::Frame as _;
 
-		let receiver_bounds_pipeline = pipeline_manager.pipeline(self.receiver_bounds_pipeline)?;
-		let cascade_fit_pipeline = pipeline_manager.pipeline(self.cascade_fit_pipeline)?;
+		let [receiver_bounds_pipeline, cascade_fit_pipeline] = self.pipelines.resolve(pipeline_manager)?;
 		let receiver_fit_extent = work.receiver_fit.map(|cascades| {
 			let extent = sink.extent();
 			*frame.get_mut_dynamic_buffer_slice(self.receiver_fit_parameters) =

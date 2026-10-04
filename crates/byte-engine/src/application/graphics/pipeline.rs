@@ -109,10 +109,6 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 	let application_resource_manager = application.resource_manager.clone();
 	let (loader, renderer) = application.loader_and_renderer_mut();
 	let pipeline_manager = renderer.pipeline_manager_client();
-	let material_pipeline_config = rendering::pipelines::visibility::MaterialPipelineConfig::new(
-		vec![ghi::pipelines::PushConstantRange::new(0, 8)],
-		pipeline_manager.clone(),
-	);
 
 	let geometry = rendering::pipelines::visibility::GeometryHandles::new(
 		renderer.context_mut(),
@@ -124,7 +120,7 @@ pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsAp
 		renderer.context_mut(),
 		application_resource_manager,
 		&geometry,
-		material_pipeline_config,
+		pipeline_manager.clone(),
 	);
 
 	run_on_loading_thread(application, visibility_loader_lanes.into_iter().map(|lane| lane.run()));

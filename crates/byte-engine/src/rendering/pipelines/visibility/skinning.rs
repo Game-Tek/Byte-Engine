@@ -64,11 +64,12 @@ pub(crate) struct SkinningDispatch {
 
 /// The `SkinningPass` struct owns the frame-local palettes and deformed-vertex output every sink reads.
 pub(crate) struct SkinningPass {
-	pipeline: crate::rendering::PipelineRef,
+	pub(crate) pipeline: crate::rendering::PipelineRef,
 	descriptor_set: ghi::DescriptorSetHandle,
 	matrix_palette_buffer: ghi::DynamicBufferHandle<[ghi::pod::Mat4x3f; MAX_SKINNING_MATRICES]>,
 	dual_quaternion_palette_buffer: ghi::DynamicBufferHandle<[DualQuaternion; MAX_SKINNING_MATRICES]>,
-	skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
+	/// The deformed vertices every stage reads in place of the bind pose.
+	pub(crate) skinned_vertices_buffer: ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]>,
 }
 
 impl SkinningPass {
@@ -113,14 +114,6 @@ impl SkinningPass {
 			dual_quaternion_palette_buffer,
 			skinned_vertices_buffer,
 		}
-	}
-
-	pub(crate) const fn skinned_vertices_buffer(&self) -> ghi::DynamicBufferHandle<[SkinnedVertex; MAX_SKINNED_VERTICES]> {
-		self.skinned_vertices_buffer
-	}
-
-	pub(crate) const fn pipeline(&self) -> crate::rendering::PipelineRef {
-		self.pipeline
 	}
 
 	/// Uploads this frame's palettes. Empty palettes skip the sync.

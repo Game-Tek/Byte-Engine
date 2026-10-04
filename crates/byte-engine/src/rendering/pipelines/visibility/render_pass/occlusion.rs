@@ -16,7 +16,7 @@ use utils::Extent;
 
 use super::super::layout::{OCCLUSION_PYRAMID_BINDING, OCCLUSION_VISIBILITY_BINDING};
 use super::super::mesh_dispatch::MAX_MESH_DISPATCH_WORK_ITEMS;
-use super::{ComputeStage, record_compute_stages};
+use super::{ComputeStage, Pipelines, record_compute_stages};
 use crate::rendering::PipelineManagerClient;
 use crate::rendering::render_pass::RenderPassFunction;
 
@@ -57,8 +57,8 @@ pub(super) struct OcclusionCulling {
 	pub(super) descriptor_set: ghi::DescriptorSetHandle,
 	/// Seeds mip zero from the sink's depth, then reduces each later level from the one above it.
 	build_descriptor_sets: [ghi::DescriptorSetHandle; OCCLUSION_PYRAMID_MIP_COUNT as usize],
-	seed_pipeline: crate::rendering::PipelineRef,
-	reduce_pipeline: crate::rendering::PipelineRef,
+	/// The seed and reduce pipelines.
+	pipelines: Pipelines<2>,
 }
 
 impl OcclusionCulling {
@@ -129,16 +129,14 @@ impl OcclusionCulling {
 		Self {
 			descriptor_set,
 			build_descriptor_sets,
-			seed_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/hiz-seed.pipeline"),
-			reduce_pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/hiz-reduce.pipeline"),
+			pipelines: Pipelines::request(pipeline_manager, ["hiz-seed", "hiz-reduce"]),
 		}
 	}
 
 	/// Returns the recording that builds the pyramid, or `None` while a pipeline is still compiling. Record it after the
 	/// [`OcclusionPhase::Early`] pass and before the [`OcclusionPhase::Late`] pass.
 	pub(super) fn prepare(&self, pipeline_manager: &PipelineManagerClient) -> Option<impl RenderPassFunction + use<>> {
-		let seed = pipeline_manager.pipeline(self.seed_pipeline)?;
-		let reduce = pipeline_manager.pipeline(self.reduce_pipeline)?;
+		let [seed, reduce] = self.pipelines.resolve(pipeline_manager)?;
 		let stages: [ComputeStage; OCCLUSION_PYRAMID_MIP_COUNT as usize] = std::array::from_fn(|level| ComputeStage {
 			label: if level == 0 {
 				"Occlusion Pyramid Seed"

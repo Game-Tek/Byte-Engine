@@ -3,14 +3,16 @@
 use utils::Extent;
 
 use super::super::mesh_dispatch::PhaseDispatches;
-use super::{OcclusionPhase, PhasePipelines, record_meshlet_dispatches};
-use crate::rendering::PipelineManagerClient;
+use super::{OcclusionPhase, Pipelines, record_meshlet_dispatches};
 
 /// The `VisibilityPhase` enum selects between the opaque layer and the single depth-resolved transparent layer.
+///
+/// Material evaluation pushes the discriminant as its blend flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub(super) enum VisibilityPhase {
-	Opaque,
-	Transparent,
+	Opaque = 0,
+	Transparent = 1,
 }
 
 impl VisibilityPhase {
@@ -20,13 +22,6 @@ impl VisibilityPhase {
 			Self::Transparent => "Transparent",
 		}
 	}
-
-	pub(super) fn blend_flag(self) -> u32 {
-		match self {
-			Self::Opaque => 0,
-			Self::Transparent => 1,
-		}
-	}
 }
 
 /// The `VisibilityPass` struct owns the depth-writing raster state used to populate the visibility buffers.
@@ -34,29 +29,13 @@ pub(super) struct VisibilityPass {
 	/// The base set and the sink's occlusion culling set, which the shadow maps bind too.
 	pub(super) descriptor_sets: [ghi::DescriptorSetHandle; 2],
 	/// The double-sided pipelines run without back-face culling, and only the masked ones run the alpha test.
-	pub(super) pipelines: PhasePipelines,
-	primitive_index: ghi::BaseImageHandle,
-	instance_id: ghi::BaseImageHandle,
-	depth: ghi::BaseImageHandle,
+	pub(super) pipelines: Pipelines<4>,
+	pub(super) primitive_index: ghi::BaseImageHandle,
+	pub(super) instance_id: ghi::BaseImageHandle,
+	pub(super) depth: ghi::BaseImageHandle,
 }
 
 impl VisibilityPass {
-	pub(super) fn new(
-		pipeline_manager: &PipelineManagerClient,
-		descriptor_sets: [ghi::DescriptorSetHandle; 2],
-		primitive_index: ghi::BaseImageHandle,
-		instance_id: ghi::BaseImageHandle,
-		depth: ghi::BaseImageHandle,
-	) -> Self {
-		Self {
-			descriptor_sets,
-			pipelines: PhasePipelines::request(pipeline_manager, "visibility"),
-			primitive_index,
-			instance_id,
-			depth,
-		}
-	}
-
 	/// Records the work ranges of one phase into the visibility buffers: the solid, masked, and both double-sided
 	/// ranges for the opaque phase, or the transparent range.
 	///

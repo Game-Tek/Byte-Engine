@@ -3,11 +3,13 @@
 //! Slots below 1024 belong to the base descriptor set that every visibility stage binds. Slots from 1033
 //! belong to the per-sink visibility set (material dispatch bookkeeping and the visibility buffer images)
 //! and the material-evaluation set (lighting, materials, shadow maps, and environment). Keep the numbers in
-//! sync with [`super::shader_generator::VisibilityShaderScope`] and the checked-in BESL assets.
+//! sync with [`super::shader_generator::visibility_shader_scope`] and the checked-in BESL assets.
 
 use ghi::{AccessPolicies, ResourceKind, ResourceSlot, ShaderResourceDescriptor, TextureViewTypes};
 
-use super::shader_data::{LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters};
+use super::shader_data::{
+	LightClusterParameters, LightingData, MaterialData, ReflectionShaderParameters, ShaderMesh, ShaderViewData,
+};
 
 /* Limits */
 
@@ -88,9 +90,9 @@ pub(crate) const VERTEX_NORMAL_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeV
 pub(crate) type RuntimeVertexUv = [u16; 2];
 pub(crate) const VERTEX_UV_BUFFER_STRIDE: u32 = std::mem::size_of::<RuntimeVertexUv>() as u32;
 // Every backend stores affine matrices as twelve floats; MSL reconstructs native float4x3 values when reading them.
-pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = 176;
+pub(crate) const VIEW_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderViewData>() as u32;
 // ShaderMesh retains an explicit 16-byte record alignment while its affine matrix occupies 48 bytes.
-pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = 96;
+pub(crate) const MESH_DATA_BUFFER_STRIDE: u32 = std::mem::size_of::<ShaderMesh>() as u32;
 // HLSL reads packed narrow indices through 32-bit structured words. Metal and Vulkan expose native widths.
 pub(crate) const VERTEX_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 2 };
 pub(crate) const PRIMITIVE_INDEX_BUFFER_STRIDE: u32 = if cfg!(target_os = "windows") { 4 } else { 1 };

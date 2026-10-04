@@ -188,10 +188,8 @@ impl VisibilityScene {
 	/// Removes all scene state owned by the renderable identified by `handle`.
 	pub(crate) fn remove_renderable(&mut self, handle: Handle) {
 		self.skinning_poses.remove(&handle);
-		if let Some(render_entity_handles) = self.render_entity_handles.remove(&handle) {
-			for render_entity_handle in render_entity_handles {
-				self.render_entities.remove(render_entity_handle);
-			}
+		for render_entity_handle in self.render_entity_handles.remove(&handle).into_iter().flatten() {
+			self.render_entities.remove(render_entity_handle);
 		}
 	}
 
@@ -205,14 +203,14 @@ impl VisibilityScene {
 	/// Uploads the current scene lights and the frame's lighting scales to the GPU buffer used by material evaluation.
 	///
 	/// `exposure` is the camera's linear exposure and `environment_intensity` calibrates the environment map; see
-	/// [`LightingData`].
+	/// [`LightingData`]. `ies_profiles` holds each light's IES intensity scale and resident profile by light index.
 	pub(crate) fn write_lighting(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		shadows: &ShadowLightSelection<'_>,
 		exposure: f32,
 		environment_intensity: f32,
-		mut resolve_ies_profile: impl FnMut(usize) -> Option<IesProfileTexture>,
+		ies_profiles: &[(f32, Option<IesProfileTexture>)],
 	) {
 		let lighting_data = frame.get_mut_dynamic_buffer_slice(self.lighting_buffer);
 		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
@@ -222,7 +220,7 @@ impl VisibilityScene {
 		lighting_data.environment_intensity = environment_intensity;
 		lighting_data._padding = 0;
 		for (index, (_, light, transform)) in self.lights.iter().take(MAX_LIGHTS).enumerate() {
-			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), resolve_ies_profile(index));
+			lighting_data.lights[index] = light_data(light, transform, shadows.shadow_for(index), ies_profiles[index].1);
 			lighting_data.count = index as u32 + 1;
 		}
 		frame.sync_buffer(self.lighting_buffer);
@@ -331,9 +329,9 @@ fn assert_affine_matrix(matrix: &Matrix) {
 }
 
 /// Applies one update to every live scene slot registered for one handle.
-fn update_renderable_instances<T, A: std::alloc::Allocator>(
+fn update_renderable_instances<T>(
 	render_entity_handles: &HashMap<Handle, SmallVec<[StableVecHandle; 1]>>,
-	render_entities: &mut StableVec<T, A>,
+	render_entities: &mut StableVec<T>,
 	handle: Handle,
 	mut update: impl FnMut(&mut T),
 ) {

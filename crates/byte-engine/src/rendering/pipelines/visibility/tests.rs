@@ -329,7 +329,7 @@ fn run_meshlet_task_workgroup(
 		push_constant.write(member, Value::U32(value)).expect("task push constant");
 	}
 	let mut mesh_dispatch_work = buffer(&program, MESH_DISPATCH_WORK_SLOT);
-	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed();
+	let packed_work = MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed;
 	mesh_dispatch_work
 		.write_array_element(workgroup_index as usize, Value::U32(packed_work))
 		.expect("compact mesh dispatch work");

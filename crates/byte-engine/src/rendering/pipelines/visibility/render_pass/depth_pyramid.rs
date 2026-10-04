@@ -7,6 +7,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
+use super::Pipelines;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
@@ -14,32 +15,12 @@ use crate::rendering::{PipelineManagerClient, Sink};
 /// the pyramid starts at half resolution.
 pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 
-const VIEW_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const INPUT_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::CombinedImageSampler,
-	ghi::AccessPolicies::READ,
-);
-const OUTPUT_BINDINGS: [ghi::ShaderResourceDescriptor; 3] = [
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(1034),
-		ghi::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
-	),
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(1035),
-		ghi::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
-	),
-	ghi::ShaderResourceDescriptor::single(
-		ghi::ResourceSlot::new(1036),
-		ghi::ResourceKind::StorageImage,
-		ghi::AccessPolicies::WRITE,
-	),
+const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
+const INPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+const OUTPUT_BINDINGS: [ghi::ResourceSlot; 3] = [
+	ghi::ResourceSlot::new(1034),
+	ghi::ResourceSlot::new(1035),
+	ghi::ResourceSlot::new(1036),
 ];
 
 /// The `ScreenViewData` struct gives half-resolution screen-space passes compact camera reconstruction constants.
@@ -90,9 +71,11 @@ pub(crate) fn screen_view_data(sink: &Sink, extent: Extent) -> ScreenViewData {
 /// disocclusion.
 pub(super) struct DepthPyramidPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: crate::rendering::PipelineRef,
-	view_data: ghi::DynamicBufferHandle<ScreenViewData>,
-	depth_pyramid: ghi::DynamicImageHandle,
+	pub(super) pipelines: Pipelines<1>,
+	/// The half-resolution camera constants that match the pyramid's mip zero.
+	pub(super) view_data: ghi::DynamicBufferHandle<ScreenViewData>,
+	/// The pyramid whose mips zero through two hold nearest positive linear depth from half resolution down.
+	pub(super) depth_pyramid: ghi::DynamicImageHandle,
 }
 
 impl DepthPyramidPass {
@@ -120,46 +103,20 @@ impl DepthPyramidPass {
 				.mip_levels(DEPTH_PYRAMID_MIP_COUNT),
 		);
 		let mut writes = vec![
-			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING.slot(), view_data.into()),
-			ghi::DescriptorWrite::combined_image_sampler(
-				descriptor_set,
-				INPUT_BINDING.slot(),
-				depth,
-				max_sampler,
-				ghi::Layouts::Read,
-			),
+			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING, view_data.into()),
+			ghi::DescriptorWrite::combined_image_sampler(descriptor_set, INPUT_BINDING, depth, max_sampler, ghi::Layouts::Read),
 		];
-		writes.extend(OUTPUT_BINDINGS.iter().enumerate().map(|(index, binding)| {
-			ghi::DescriptorWrite::image_mip(
-				descriptor_set,
-				binding.slot(),
-				depth_pyramid,
-				ghi::Layouts::General,
-				index as u32,
-			)
+		writes.extend(OUTPUT_BINDINGS.iter().enumerate().map(|(index, &binding)| {
+			ghi::DescriptorWrite::image_mip(descriptor_set, binding, depth_pyramid, ghi::Layouts::General, index as u32)
 		}));
 		context.write(&writes);
 
 		Self {
 			descriptor_set,
-			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/gtao-depth-pyramid.pipeline"),
+			pipelines: Pipelines::request(pipeline_manager, ["gtao-depth-pyramid"]),
 			view_data,
 			depth_pyramid,
 		}
-	}
-
-	/// Returns the pyramid whose mips zero through two hold nearest positive linear depth from half resolution down.
-	pub(super) fn depth_pyramid(&self) -> ghi::DynamicImageHandle {
-		self.depth_pyramid
-	}
-
-	/// Returns the half-resolution camera constants that match the pyramid's mip zero.
-	pub(super) fn view_data(&self) -> ghi::DynamicBufferHandle<ScreenViewData> {
-		self.view_data
-	}
-
-	pub(super) fn pipeline(&self, pipeline_manager: &PipelineManagerClient) -> Option<ghi::PipelineHandle> {
-		pipeline_manager.pipeline(self.pipeline)
 	}
 
 	/// Uploads this frame's camera constants, resizes the pyramid, and returns the reduction recording.

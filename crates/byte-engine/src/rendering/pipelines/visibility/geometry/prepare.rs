@@ -10,6 +10,7 @@ use std::sync::Arc;
 use resource_management::Reference;
 use resource_management::resources::mesh::Mesh;
 use resource_management::resources::skeleton::SkinBinding;
+use resource_management::stream::StreamMut;
 use resource_management::types::{Stream, Streams, VertexSemantics};
 
 use super::{
@@ -65,18 +66,6 @@ pub(super) struct SkinningCopy {
 	pub(super) normals: Range<usize>,
 	pub(super) joints: Range<usize>,
 	pub(super) weights: Range<usize>,
-}
-
-/// The `SkinningStagingBases` struct locates the start of each bind-pose source stream in the staging lease.
-///
-/// A baked primitive records its stream offsets relative to its semantic's aggregate stream, while the copies in
-/// [`GeometryBuffers::append_mesh`] address the staging lease. These bases convert between the two.
-#[derive(Clone)]
-struct SkinningStagingBases {
-	positions: Range<usize>,
-	normals: Range<usize>,
-	joints: Range<usize>,
-	weights: Range<usize>,
 }
 
 /// Reserves one 4-byte aligned range in a staging layout.
@@ -147,16 +136,9 @@ impl PreparedMesh {
 			primitives: vec![PreparedPrimitive {
 				material_id: GENERATED_MESH_MATERIAL.to_string(),
 				primitive: MeshPrimitive {
-					material_index: 0,
 					meshlet_count: meshlets.len() as u32,
 					bounding_sphere: enclosing_sphere(&meshlets),
-					meshlet_offset: 0,
-					vertex_offset: 0,
-					primitive_offset: 0,
-					triangle_offset: 0,
-					skinning_source_vertex_offset: None,
-					skinning_vertex_count: 0,
-					skin: None,
+					..MeshPrimitive::default()
 				},
 				skinning: None,
 			}],
@@ -183,7 +165,7 @@ impl PreparedMesh {
 			.map_or(0, |skeleton| skeleton.resource().nodes.len() as u32);
 		let mut staging = allocate_staging(&upload_staging, layout.backing_size).await?;
 		let backing = staging.bytes_mut();
-		let (source_bytes, output) = backing.split_at_mut(layout.source_byte_count);
+		let (source_bytes, output) = backing.split_at_mut(layout.source.byte_count);
 
 		let loaded = resource
 			.load(source.read_targets(source_bytes).into())
@@ -196,31 +178,29 @@ impl PreparedMesh {
 				None
 			})?;
 		let meshlet_bytes = loaded.stream("Meshlets").expect("requested meshlet stream").buffer();
-		let (primitives, meshlets) = build_resource_primitives(
-			resource.resource(),
-			meshlet_bytes,
-			&skins,
-			layout.counts,
-			layout.skinning_bases.clone(),
-		)?;
+		let (primitives, meshlets) =
+			build_resource_primitives(resource.resource(), meshlet_bytes, &skins, layout.counts, &layout.source)?;
 
 		// Converted streams live after every loaded source stream, so their ranges are rebased into `output`.
-		let rebase = |range: &Range<usize>| range.start - layout.source_byte_count..range.end - layout.source_byte_count;
-		let vertex_count = layout.counts.vertices as usize;
+		let rebase = |range: &Range<usize>| range.start - layout.source.byte_count..range.end - layout.source.byte_count;
 		for (destination, source) in output[rebase(&layout.streams.normals)]
 			.as_chunks_mut::<4>()
 			.0
 			.iter_mut()
-			.zip(source_bytes[layout.source_normals.clone()].as_chunks::<12>().0.iter())
+			.zip(source_bytes[layout.source.normals.clone()].as_chunks::<12>().0.iter())
 		{
 			write_unit_vector(destination, (read_f32(source, 0), read_f32(source, 4), read_f32(source, 8)));
 		}
+		// Half floats keep sampler coordinates outside [0, 1] instead of clamping them.
 		if layout.uvs_are_f32 {
-			pack_f32_uvs(
-				&source_bytes[layout.source_uvs.clone()],
-				&mut output[rebase(&layout.streams.uvs)],
-				vertex_count,
-			);
+			for (destination, source) in output[rebase(&layout.streams.uvs)]
+				.as_chunks_mut::<F16_UV_STRIDE>()
+				.0
+				.iter_mut()
+				.zip(source_bytes[layout.source.uvs.clone()].as_chunks::<F32_UV_STRIDE>().0)
+			{
+				write_f16_pair(destination, read_f32(source, 0), read_f32(source, 4));
+			}
 		}
 		output[rebase(&layout.streams.meshlets)].copy_from_slice(bytemuck::cast_slice(&meshlets));
 
@@ -260,12 +240,9 @@ struct ResourceStreams {
 /// The `ResourceLayout` struct places loaded source streams and converted runtime streams in one staging lease.
 struct ResourceLayout {
 	streams: PreparedStreams,
-	/// Present when any primitive is skinned.
-	skinning_bases: Option<SkinningStagingBases>,
-	source_normals: Range<usize>,
-	source_uvs: Range<usize>,
+	/// Where every source stream was loaded; conversions and skinned copies read from these ranges.
+	source: SourceStagingLayout,
 	uvs_are_f32: bool,
-	source_byte_count: usize,
 	backing_size: usize,
 	counts: GeometryCounts,
 }
@@ -273,7 +250,9 @@ struct ResourceLayout {
 /// The `SourceStagingLayout` struct places every loaded source stream in the front of a staging lease.
 ///
 /// [`ResourceStreams::read_targets`] loads the streams in this order, so a copy that reads a source stream
-/// addresses it through these ranges rather than through the baked resource's own offsets.
+/// addresses it through these ranges rather than through the baked resource's own offsets. A baked primitive records
+/// its stream offsets relative to its semantic's aggregate stream, while the copies in
+/// [`GeometryBuffers::append_mesh`] address the staging lease, so these ranges convert between the two.
 struct SourceStagingLayout {
 	positions: Range<usize>,
 	normals: Range<usize>,
@@ -380,43 +359,26 @@ impl ResourceStreams {
 		let skinning_vertices = self.validate_skinning(mesh)?;
 
 		let source = self.source_staging_layout();
-		let positions = source.positions;
-		let source_normals = source.normals;
-		let source_uvs = source.uvs;
-		let vertex_indices = source.vertex_indices;
-		let primitive_indices = source.primitive_indices;
-		let skinning_sources = source.skinning;
-		let source_byte_count = source.byte_count;
-		let mut cursor = source_byte_count;
+		let mut cursor = source.byte_count;
 		let normals = take_range(&mut cursor, vertex_count * VERTEX_NORMAL_BUFFER_STRIDE as usize);
 		let uvs = if uvs_are_f32 {
 			take_range(&mut cursor, vertex_count * VERTEX_UV_BUFFER_STRIDE as usize)
 		} else {
-			source_uvs.clone()
+			source.uvs.clone()
 		};
 		let meshlets = take_range(&mut cursor, meshlet_count * std::mem::size_of::<ShaderMeshletData>());
 
-		let skinning_bases = skinning_sources.map(|(joints, weights)| SkinningStagingBases {
-			positions: positions.clone(),
-			normals: source_normals.clone(),
-			joints,
-			weights,
-		});
-
 		Some(ResourceLayout {
 			streams: PreparedStreams {
-				positions,
+				positions: source.positions.clone(),
 				normals,
 				uvs,
-				vertex_indices,
-				primitive_indices,
+				vertex_indices: source.vertex_indices.clone(),
+				primitive_indices: source.primitive_indices.clone(),
 				meshlets,
 			},
-			skinning_bases,
-			source_normals,
-			source_uvs,
+			source,
 			uvs_are_f32,
-			source_byte_count,
 			backing_size: cursor,
 			counts: GeometryCounts {
 				vertices: vertex_count as u32,
@@ -477,7 +439,7 @@ impl ResourceStreams {
 	}
 
 	/// Builds the named read targets that load every source stream into the front of the staging lease.
-	fn read_targets<'b>(&self, backing: &'b mut [u8]) -> Vec<resource_management::stream::StreamMut<'b>> {
+	fn read_targets<'b>(&self, backing: &'b mut [u8]) -> Vec<StreamMut<'b>> {
 		let mut allocator = utils::BufferAllocator::new(backing);
 		let mut streams = Vec::with_capacity(8);
 		for (name, size) in [
@@ -487,21 +449,12 @@ impl ResourceStreams {
 			("VertexIndices", self.vertex_indices.size),
 			("MeshletIndices", self.meshlet_indices.size),
 		] {
-			streams.push(resource_management::stream::StreamMut::new(
-				name,
-				allocator.take_with_offset_aligned(size, 4).1,
-			));
+			streams.push(StreamMut::new(name, allocator.take_with_offset_aligned(size, 4).1));
 		}
-		streams.push(resource_management::stream::StreamMut::new(
-			"Meshlets",
-			allocator.take(self.meshlets.size),
-		));
+		streams.push(StreamMut::new("Meshlets", allocator.take(self.meshlets.size)));
 		if let Some((joints, weights)) = &self.skinning {
 			for (name, size) in [("Vertex.Joints", joints.size), ("Vertex.Weights", weights.size)] {
-				streams.push(resource_management::stream::StreamMut::new(
-					name,
-					allocator.take_with_offset_aligned(size, 4).1,
-				));
+				streams.push(StreamMut::new(name, allocator.take_with_offset_aligned(size, 4).1));
 			}
 		}
 		streams
@@ -527,7 +480,7 @@ fn build_resource_primitives(
 	meshlet_bytes: &[u8],
 	skins: &[Arc<SkinBinding>],
 	expected: GeometryCounts,
-	skinning_bases: Option<SkinningStagingBases>,
+	source: &SourceStagingLayout,
 ) -> Option<(Vec<PreparedPrimitive>, Vec<ShaderMeshletData>)> {
 	let mut primitives = Vec::with_capacity(mesh.primitives.len());
 	let mut meshlets = Vec::with_capacity(expected.meshlets as usize);
@@ -541,7 +494,7 @@ fn build_resource_primitives(
 			return None;
 		};
 		stream_count(meshlet_stream, "primitive meshlet", RESOURCE_MESHLET_STRIDE)?;
-		let Some(source) = meshlet_bytes.get(meshlet_stream.offset..meshlet_stream.offset + meshlet_stream.size) else {
+		let Some(meshlet_source) = meshlet_bytes.get(meshlet_stream.offset..meshlet_stream.offset + meshlet_stream.size) else {
 			log::error!(
 				"Mesh primitive {index} meshlet range is out of bounds. The most likely cause is that its baked range does not refer to the aggregate meshlet stream."
 			);
@@ -550,55 +503,45 @@ fn build_resource_primitives(
 		let meshlet_offset = meshlets.len() as u32;
 		let mut local_primitive_offset = 0;
 		let mut local_triangle_offset = 0;
-		for bytes in source.as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
-			let meshlet = read_resource_meshlet(bytes);
-			meshlets.push(ShaderMeshletData {
-				primitive_offset: local_primitive_offset,
-				triangle_offset: local_triangle_offset,
-				primitive_count: meshlet.primitive_count,
-				triangle_count: meshlet.triangle_count,
-				center_radius: meshlet.center_radius,
-				cone_apex_cutoff: meshlet.cone_apex_cutoff,
-				cone_axis: encode_octahedral_unit_vector((meshlet.cone_axis[0], meshlet.cone_axis[1], meshlet.cone_axis[2])),
-			});
+		for bytes in meshlet_source.as_chunks::<RESOURCE_MESHLET_STRIDE>().0 {
+			let meshlet = read_resource_meshlet(bytes, local_primitive_offset, local_triangle_offset);
 			local_primitive_offset += meshlet.primitive_count;
 			local_triangle_offset += meshlet.triangle_count;
+			meshlets.push(meshlet);
 		}
 
-		let skinning = match primitive.skin {
-			Some(_) => {
-				let bases = skinning_bases
-					.as_ref()
-					.expect("a skinned primitive requires skinning staging bases");
-				// A baked stream offset is relative to its semantic's aggregate stream, so rebase it onto
-				// where that stream was loaded in the staging lease. Without the rebase every primitive
-				// would copy from the front of the lease, which holds the position stream.
-				let range = |semantic, base: &Range<usize>| {
-					// Stream presence and bounds were validated by `ResourceStreams::validate_skinning`.
-					let stream = primitive
-						.stream(Streams::Vertices(semantic))
-						.expect("validated skinning stream");
-					let range = base.start + stream.offset..base.start + stream.offset + stream.size;
-					debug_assert!(
-						range.start >= base.start && range.end <= base.end,
-						"Skinned primitive {semantic:?} copy leaves its staging stream. The most likely cause is a baked offset used without rebasing it onto the staging lease."
-					);
-					range
-				};
-				Some(SkinningCopy {
-					positions: range(VertexSemantics::Position, &bases.positions),
-					normals: range(VertexSemantics::Normal, &bases.normals),
-					joints: range(VertexSemantics::Joints, &bases.joints),
-					weights: range(VertexSemantics::Weights, &bases.weights),
-				})
+		let skinning = primitive.skin.map(|_| {
+			let (joints, weights) = source
+				.skinning
+				.as_ref()
+				.expect("a skinned primitive requires skinning staging ranges");
+			// A baked stream offset is relative to its semantic's aggregate stream, so rebase it onto
+			// where that stream was loaded in the staging lease. Without the rebase every primitive
+			// would copy from the front of the lease, which holds the position stream.
+			let range = |semantic, base: &Range<usize>| {
+				// Stream presence and bounds were validated by `ResourceStreams::validate_skinning`.
+				let stream = primitive
+					.stream(Streams::Vertices(semantic))
+					.expect("validated skinning stream");
+				let range = base.start + stream.offset..base.start + stream.offset + stream.size;
+				debug_assert!(
+					range.start >= base.start && range.end <= base.end,
+					"Skinned primitive {semantic:?} copy leaves its staging stream. The most likely cause is a baked offset used without rebasing it onto the staging lease."
+				);
+				range
+			};
+			SkinningCopy {
+				positions: range(VertexSemantics::Position, &source.positions),
+				normals: range(VertexSemantics::Normal, &source.normals),
+				joints: range(VertexSemantics::Joints, joints),
+				weights: range(VertexSemantics::Weights, weights),
 			}
-			None => None,
-		};
+		});
 		primitives.push(PreparedPrimitive {
 			material_id: mesh.material(primitive).id().as_ref().to_string(),
 			primitive: MeshPrimitive {
 				material_index: 0,
-				meshlet_count: (source.len() / RESOURCE_MESHLET_STRIDE) as u32,
+				meshlet_count: (meshlet_source.len() / RESOURCE_MESHLET_STRIDE) as u32,
 				bounding_sphere: enclosing_sphere(&meshlets[meshlet_offset as usize..]),
 				meshlet_offset,
 				vertex_offset: counts.vertices,
@@ -628,31 +571,19 @@ fn build_resource_primitives(
 	Some((primitives, meshlets))
 }
 
-/// One baked meshlet record decoded from the packed resource stream.
-struct ResourceMeshlet {
-	primitive_count: u32,
-	triangle_count: u32,
-	center_radius: [f32; 4],
-	cone_apex_cutoff: [f32; 4],
-	cone_axis: [f32; 4],
-}
-
-/// Decodes one packed meshlet record without assuming the resource stream is aligned.
-fn read_resource_meshlet(bytes: &[u8]) -> ResourceMeshlet {
-	let read_vec4 = |offset| {
-		[
-			read_f32(bytes, offset),
-			read_f32(bytes, offset + 4),
-			read_f32(bytes, offset + 8),
-			read_f32(bytes, offset + 12),
-		]
-	};
-	ResourceMeshlet {
+/// Decodes one packed meshlet record into the runtime record at the given mesh-relative offsets, without assuming the
+/// resource stream is aligned.
+fn read_resource_meshlet(bytes: &[u8], primitive_offset: u32, triangle_offset: u32) -> ShaderMeshletData {
+	let read_vec4 = |offset: usize| -> [f32; 4] { std::array::from_fn(|component| read_f32(bytes, offset + 4 * component)) };
+	let [axis_x, axis_y, axis_z, _] = read_vec4(36);
+	ShaderMeshletData {
+		primitive_offset,
+		triangle_offset,
 		primitive_count: bytes[0] as u32,
 		triangle_count: bytes[1] as u32,
 		center_radius: read_vec4(4),
 		cone_apex_cutoff: read_vec4(20),
-		cone_axis: read_vec4(36),
+		cone_axis: encode_octahedral_unit_vector((axis_x, axis_y, axis_z)),
 	}
 }
 
@@ -752,41 +683,24 @@ pub(crate) fn encode_octahedral_unit_vector(vector: (f32, f32, f32)) -> RuntimeU
 	if !length.is_finite() || length == 0.0 {
 		return [32768, 32768];
 	}
-	let mut x = vector.0 / length;
-	let mut y = vector.1 / length;
-	let z = vector.2 / length;
-	if z < 0.0 {
-		let sign = |value: f32| if value < 0.0 { -1.0 } else { 1.0 };
-		let (previous_x, previous_y) = (x, y);
-		x = (1.0 - previous_y.abs()) * sign(previous_x);
-		y = (1.0 - previous_x.abs()) * sign(previous_y);
-	}
+	let (x, y, z) = (vector.0 / length, vector.1 / length, vector.2 / length);
+	let sign = |value: f32| if value < 0.0 { -1.0 } else { 1.0 };
+	// The lower hemisphere folds into the square's outer triangles.
+	let (x, y) = if z < 0.0 {
+		((1.0 - y.abs()) * sign(x), (1.0 - x.abs()) * sign(y))
+	} else {
+		(x, y)
+	};
 	let unorm16 = |value: f32| ((value * 0.5 + 0.5).clamp(0.0, 1.0) * u16::MAX as f32).round() as u16;
 	[unorm16(x), unorm16(y)]
 }
 
-fn write_unit_vector(destination: &mut [u8], vector: (f32, f32, f32)) {
-	let encoded = encode_octahedral_unit_vector(vector);
-	destination[..2].copy_from_slice(&encoded[0].to_ne_bytes());
-	destination[2..4].copy_from_slice(&encoded[1].to_ne_bytes());
+fn write_unit_vector(destination: &mut [u8; 4], vector: (f32, f32, f32)) {
+	*destination = bytemuck::cast(encode_octahedral_unit_vector(vector));
 }
 
-fn write_f16_pair(destination: &mut [u8], u: f32, v: f32) {
-	destination[..2].copy_from_slice(&half::f16::from_f32(u).to_bits().to_ne_bytes());
-	destination[2..4].copy_from_slice(&half::f16::from_f32(v).to_bits().to_ne_bytes());
-}
-
-/// Converts an f32 UV stream to half-float storage without clamping sampler coordinates.
-fn pack_f32_uvs(source: &[u8], destination: &mut [u8], vertex_count: usize) {
-	for (source, destination) in source
-		.as_chunks::<F32_UV_STRIDE>()
-		.0
-		.iter()
-		.zip(destination.as_chunks_mut::<F16_UV_STRIDE>().0.iter_mut())
-		.take(vertex_count)
-	{
-		write_f16_pair(destination, read_f32(source, 0), read_f32(source, 4));
-	}
+fn write_f16_pair(destination: &mut [u8; 4], u: f32, v: f32) {
+	*destination = bytemuck::cast([half::f16::from_f32(u).to_bits(), half::f16::from_f32(v).to_bits()]);
 }
 
 #[cfg(test)]

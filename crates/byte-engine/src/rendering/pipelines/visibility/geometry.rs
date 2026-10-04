@@ -139,7 +139,7 @@ pub(crate) struct MeshData {
 }
 
 /// The `MeshPrimitive` struct locates one primitive's geometry, material slot, and optional skin inside its mesh.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct MeshPrimitive {
 	pub(crate) material_index: u32,
 	pub(crate) meshlet_count: u32,

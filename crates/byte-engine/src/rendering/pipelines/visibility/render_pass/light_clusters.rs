@@ -13,24 +13,13 @@ use super::super::layout::{
 	LIGHT_CLUSTER_PARAMETERS_BINDING,
 };
 use super::super::shader_data::{LightClusterParameters, LightingData};
+use super::Pipelines;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink};
 
-const LIGHTING_DATA_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(0),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const PARAMETERS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::READ,
-);
-const MASKS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescriptor::single(
-	ghi::ResourceSlot::new(1033),
-	ghi::ResourceKind::StorageBuffer,
-	ghi::AccessPolicies::WRITE,
-);
+const LIGHTING_DATA_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
+const PARAMETERS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1);
+const MASKS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
 
 /// The `LightClusterPass` struct buckets the light table into one sink's clusters before material evaluation reads them.
 ///
@@ -38,7 +27,7 @@ const MASKS_BINDING: ghi::ShaderResourceDescriptor = ghi::ShaderResourceDescript
 /// [`LightClusterPass::new`], which also binds its output into the material-evaluation descriptor set.
 pub(super) struct LightClusterPass {
 	descriptor_set: ghi::DescriptorSetHandle,
-	pipeline: crate::rendering::PipelineRef,
+	pub(super) pipelines: Pipelines<1>,
 	parameters: ghi::DynamicBufferHandle<LightClusterParameters>,
 }
 
@@ -62,9 +51,9 @@ impl LightClusterPass {
 				.device_accesses(ghi::DeviceAccesses::DeviceOnly),
 		);
 		context.write(&[
-			ghi::DescriptorWrite::buffer(descriptor_set, LIGHTING_DATA_BINDING.slot(), lighting_buffer.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING.slot(), parameters.into()),
-			ghi::DescriptorWrite::buffer(descriptor_set, MASKS_BINDING.slot(), masks.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, LIGHTING_DATA_BINDING, lighting_buffer.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, PARAMETERS_BINDING, parameters.into()),
+			ghi::DescriptorWrite::buffer(descriptor_set, MASKS_BINDING, masks.into()),
 			ghi::DescriptorWrite::buffer(
 				material_evaluation_descriptor_set,
 				LIGHT_CLUSTER_MASKS_BINDING.slot(),
@@ -79,13 +68,9 @@ impl LightClusterPass {
 
 		Self {
 			descriptor_set,
-			pipeline: pipeline_manager.request_pipeline("byte-engine/rendering/visibility/light-clusters.pipeline"),
+			pipelines: Pipelines::request(pipeline_manager, ["light-clusters"]),
 			parameters,
 		}
-	}
-
-	pub(super) fn pipeline(&self, pipeline_manager: &PipelineManagerClient) -> Option<ghi::PipelineHandle> {
-		pipeline_manager.pipeline(self.pipeline)
 	}
 
 	/// Uploads this frame's cluster layout for `sink` and returns the bucketing recording.

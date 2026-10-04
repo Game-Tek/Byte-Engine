@@ -25,7 +25,7 @@ const _: () = assert!(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(transparent)]
 pub(crate) struct MeshDispatchWorkItem {
-	packed: u32,
+	pub(super) packed: u32,
 }
 
 impl MeshDispatchWorkItem {
@@ -38,39 +38,26 @@ impl MeshDispatchWorkItem {
 			packed: instance_index | (chunk_index << INSTANCE_BITS),
 		}
 	}
-
-	#[cfg(test)]
-	pub(super) fn packed(self) -> u32 {
-		self.packed
-	}
 }
 
 /// The `MeshDispatch` struct identifies one contiguous work range that a single `dispatch_meshes` call consumes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MeshDispatch {
-	work_item_base: u32,
-	workgroup_count: u32,
+	pub(crate) work_item_base: u32,
+	pub(crate) workgroup_count: u32,
 }
 
 impl MeshDispatch {
 	pub(crate) fn is_empty(self) -> bool {
 		self.workgroup_count == 0
 	}
-
-	pub(crate) fn workgroup_count(self) -> u32 {
-		self.workgroup_count
-	}
-
-	pub(crate) fn work_item_base(self) -> u32 {
-		self.work_item_base
-	}
 }
 
 /// The `PhaseDispatches` struct groups the frame's work ranges by the raster phase that consumes them.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PhaseDispatches {
-	/// The opaque layer's work ranges in the order [`super::render_pass::PhasePipelines`] holds their pipelines: solid,
-	/// masked, double-sided, and double-sided masked.
+	/// The opaque layer's work ranges in the order [`super::render_pass::Pipelines::phases`] requests their pipelines:
+	/// solid, masked, double-sided, and double-sided masked.
 	pub(crate) opaque_layer: [MeshDispatch; 4],
 	pub(crate) transparent: MeshDispatch,
 }

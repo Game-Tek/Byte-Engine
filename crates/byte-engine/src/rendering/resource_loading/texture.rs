@@ -124,7 +124,6 @@ async fn prepare_texture(
 	};
 
 	let source = if reference.is_gpu_backed() {
-		let streams = reference.streams().map(<[StreamDescription]>::to_vec);
 		let backing = reference
 			.consume_reader()
 			.into_backing_storage()
@@ -133,7 +132,8 @@ async fn prepare_texture(
 		let ResourceReaderBacking::Gpu(backing) = backing else {
 			return Err(TexturePreparationError::NativeBacking);
 		};
-		PreparedTextureSource::Native(NativeTextureUpload { backing, streams })
+		// The reference keeps its stream table after giving up its reader, so the upload reads the table in place.
+		PreparedTextureSource::Native(NativeTextureUpload { backing, reference })
 	} else {
 		PreparedTextureSource::Staged(prepare_staged_texture(&mut reference, staging, metadata).await?)
 	};
@@ -160,12 +160,12 @@ struct StagedTextureUpload {
 	layouts: SmallVec<[TextureUploadLayout; 16]>,
 }
 
-/// The `NativeTextureUpload` struct retains a persisted GPU source and decoded mip ranges.
+/// The `NativeTextureUpload` struct retains a persisted GPU source and the reference whose stream table locates each mip.
 ///
 /// The loader opens the backing file and waits for its reads before [`load_texture`] returns.
 struct NativeTextureUpload {
 	backing: ResourceGpuBacking,
-	streams: Option<Vec<StreamDescription>>,
+	reference: Reference<ResourceImage>,
 }
 
 impl NativeTextureUpload {
@@ -182,7 +182,7 @@ impl NativeTextureUpload {
 		let mut regions = SmallVec::new();
 		for mip_level in 0..metadata.mip_count {
 			let name = MipStreamName::new(mip_level);
-			let decoded_offset = match self.streams.as_deref() {
+			let decoded_offset = match self.reference.streams() {
 				Some(streams) => streams
 					.iter()
 					.find(|stream| stream.name() == name.as_str())
@@ -244,6 +244,12 @@ impl TextureUploadLayout {
 	/// Expands compact rows backward inside one final padded staging range.
 	pub(crate) fn pack_rows(&self, bytes: &mut [u8]) {
 		assert_eq!(bytes.len(), self.padded_size);
+		// Compact rows already on the copy pitch sit where the GPU reads them, so every move would be onto itself.
+		if self.source_bytes_per_row == self.compact_bytes_per_row
+			&& self.source_bytes_per_image == self.compact_bytes_per_image
+		{
+			return;
+		}
 		let layer_count = self.compact_size / self.compact_bytes_per_image;
 		for layer in (0..layer_count).rev() {
 			for row in (0..self.row_count).rev() {

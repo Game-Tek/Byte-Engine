@@ -31,7 +31,8 @@ pub struct PipelineManager {
 	/// The instance slot of each renderable that has one.
 	instance_slots: HashMap<Handle, StableVecHandle>,
 	// TODO: Replace this temporary map with proper retained component storage.
-	renderable_transforms: HashMap<Handle, Transform>,
+	/// Each renderable's latest transform and, once a frame needed it, the instance matrix composed from it.
+	renderable_transforms: HashMap<Handle, (Transform, Option<ghi::pod::Mat4x3f>)>,
 	sinks: Vec<RenderPass>,
 }
 
@@ -162,12 +163,15 @@ impl PipelineManager {
 	/// Writes every live instance's transform into this frame's copy of the instance-data buffer.
 	///
 	/// Each frame in flight reads its own copy, and a copy last written by an earlier frame misses every change
-	/// since. So each frame writes its whole copy instead of only the slots that changed.
-	fn write_instance_data(&self, frame: &mut ghi::implementation::Frame) {
+	/// since. So each frame writes its whole copy instead of only the slots that changed. A matrix is composed again
+	/// only after its transform changes.
+	fn write_instance_data(&mut self, frame: &mut ghi::implementation::Frame) {
 		let instance_data = frame.get_mut_dynamic_buffer_slice(self.instance_data_buffer);
 		for (slot, (_, handle)) in self.instances.indexed_iter() {
-			let transform = self.renderable_transforms.get(handle).cloned().unwrap_or_default();
-			instance_data[slot] = transform.get_matrix().into();
+			instance_data[slot] = match self.renderable_transforms.get_mut(handle) {
+				Some((transform, matrix)) => *matrix.get_or_insert_with(|| transform.get_matrix().into()),
+				None => Transform::default().get_matrix().into(),
+			};
 		}
 	}
 
@@ -238,7 +242,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		// arrives before residency is kept, and the instance reads it once it exists.
 		while let Some(message) = self.transforms_listener.read() {
 			self.renderable_transforms
-				.insert(message.handle(), message.transform().clone());
+				.insert(message.handle(), (message.transform().clone(), None));
 		}
 		while let Some(message) = self.deletions_listener.read() {
 			self.remove_mesh(message.into_handle());

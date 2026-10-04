@@ -47,7 +47,12 @@ impl DebugSceneManager {
 struct DebugMeshStore {
 	listener: DefaultListener<CreateMessage<DebugMesh>>,
 	delete_listener: DefaultListener<DeleteMessage>,
-	meshes: Vec<(Handle, DebugMesh)>,
+	/// Retained meshes in creation order, each with its creation number. Both debug pipelines blend, so meshes draw in
+	/// this order.
+	meshes: Vec<(u64, DebugMesh)>,
+	/// The creation number of each retained handle, which finds its mesh in `meshes` without a scan.
+	creations: HashMap<Handle, u64>,
+	next_creation: u64,
 }
 
 impl DebugMeshStore {
@@ -57,6 +62,8 @@ impl DebugMeshStore {
 			listener,
 			delete_listener,
 			meshes: Vec::new(),
+			creations: HashMap::default(),
+			next_creation: 0,
 		}
 	}
 
@@ -66,10 +73,16 @@ impl DebugMeshStore {
 			let handle = message.handle();
 			let debug_mesh = message.into_data();
 			if valid_debug_mesh(debug_mesh) {
-				if let Some((_, retained)) = self.meshes.iter_mut().find(|(retained_handle, _)| *retained_handle == handle) {
-					*retained = debug_mesh;
-				} else {
-					self.meshes.push((handle, debug_mesh));
+				match self.creations.get(&handle) {
+					Some(&creation) => {
+						let index = self.index_of(creation);
+						self.meshes[index].1 = debug_mesh;
+					}
+					None => {
+						self.creations.insert(handle, self.next_creation);
+						self.meshes.push((self.next_creation, debug_mesh));
+						self.next_creation += 1;
+					}
 				}
 			} else {
 				log::warn!(
@@ -78,10 +91,18 @@ impl DebugMeshStore {
 			}
 		}
 		while let Some(message) = self.delete_listener.read() {
-			if let Some(index) = self.meshes.iter().position(|(handle, _)| handle == message.handle()) {
+			if let Some(creation) = self.creations.remove(message.handle()) {
+				let index = self.index_of(creation);
 				self.meshes.remove(index);
 			}
 		}
+	}
+
+	/// Finds a retained mesh by its creation number. Meshes stay sorted by it, because new ones are only appended.
+	fn index_of(&self, creation: u64) -> usize {
+		self.meshes.binary_search_by_key(&creation, |(retained, _)| *retained).expect(
+			"Retained debug mesh is missing. The most likely cause is that a handle's creation number outlived its mesh.",
+		)
 	}
 
 	/// Visits every retained debug mesh without exposing storage identity.
@@ -373,6 +394,7 @@ mod tests {
 }
 
 use ghi::context::ContextCreate as _;
+use utils::hash::HashMap;
 
 use crate::{
 	core::{

@@ -103,8 +103,9 @@ pub(super) fn image_aspect_mask(format: vk::Format) -> vk::ImageAspectFlags {
 pub(super) fn build_specialization_entries(
 	specialization_map: &[crate::pipelines::SpecializationMapEntry],
 ) -> (Vec<u8>, Vec<vk::SpecializationMapEntry>) {
-	let mut data = Vec::<u8>::with_capacity(256);
-	let mut entries = Vec::with_capacity(48);
+	// A constant takes at most 16 bytes and four map entries, so one allocation each covers the map.
+	let mut data = Vec::<u8>::with_capacity(specialization_map.len() * 16);
+	let mut entries = Vec::with_capacity(specialization_map.len() * 4);
 
 	for specialization_map_entry in specialization_map {
 		let value = &specialization_map_entry.value;

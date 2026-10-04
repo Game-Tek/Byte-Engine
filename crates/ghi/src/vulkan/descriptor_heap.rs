@@ -144,7 +144,7 @@ fn reserve_descriptor_range(cursor: &mut u64, count: u32, representation: Option
 
 /// Builds a descriptor-heap layout by merging every shader stage's flat resource interface.
 pub(crate) fn build_pipeline_layout(
-	stage_resources: &[(crate::Stages, Vec<ShaderResourceDescriptor>)],
+	stage_resources: &[(crate::Stages, &[ShaderResourceDescriptor])],
 	push_constant_ranges: &[crate::pipelines::PushConstantRange],
 	properties: &vk::PhysicalDeviceDescriptorHeapPropertiesEXT<'_>,
 ) -> PipelineLayout {
@@ -329,7 +329,7 @@ mod tests {
 			resource(9, ResourceKind::CombinedImageSampler, 1024),
 			resource(1033, ResourceKind::StorageBuffer, 1),
 		];
-		let layout = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.clone())], &[], &properties());
+		let layout = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.as_slice())], &[], &properties());
 		let mappings = build_shader_mappings(&layout, &resources);
 
 		assert_eq!(layout.resources.len(), 2);
@@ -348,7 +348,7 @@ mod tests {
 			resource(9, ResourceKind::CombinedImageSampler, 1024),
 			resource(10, ResourceKind::StorageBuffer, 1),
 		];
-		let _ = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources)], &[], &properties());
+		let _ = build_pipeline_layout(&[(crate::Stages::COMPUTE, resources.as_slice())], &[], &properties());
 	}
 
 	#[test]
@@ -356,7 +356,7 @@ mod tests {
 		let read = resource(4, ResourceKind::StorageBuffer, 1);
 		let write = ShaderResourceDescriptor::new(read.slot(), read.kind(), read.count(), crate::AccessPolicies::WRITE);
 		let layout = build_pipeline_layout(
-			&[(crate::Stages::VERTEX, vec![read]), (crate::Stages::FRAGMENT, vec![write])],
+			&[(crate::Stages::VERTEX, &[read][..]), (crate::Stages::FRAGMENT, &[write][..])],
 			&[],
 			&properties(),
 		);

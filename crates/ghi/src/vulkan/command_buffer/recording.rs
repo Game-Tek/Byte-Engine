@@ -194,6 +194,10 @@ impl CommandBufferRecording<'_> {
 		}
 		self.descriptor_resources_initialized = true;
 		consumptions.extend(additional_transitions);
+		// An empty batch records no barrier and changes no state, which is the common case for draws after the first.
+		if consumptions.is_empty() {
+			return TransitionStateUpdates::default();
+		}
 		self.consume_resources(consumptions)
 	}
 
@@ -360,8 +364,13 @@ impl CommandBufferRecording<'_> {
 	fn merge_repeated_consumptions(
 		consumptions: impl IntoIterator<Item = VulkanConsumption>,
 	) -> SmallVec<[VulkanConsumption; 16]> {
-		let mut merged = SmallVec::<[VulkanConsumption; 16]>::new();
-		let mut indices = HashMap::<(Handles, vk::ImageLayout), usize>::default();
+		const INLINE: usize = 16;
+		let consumptions = consumptions.into_iter();
+		let expected = consumptions.size_hint().0;
+		let mut merged = SmallVec::<[VulkanConsumption; INLINE]>::new();
+		merged.reserve(expected);
+		// Batches that fit the inline storage search `merged` directly; an index only pays off for larger ones.
+		let mut indices = None::<HashMap<(Handles, vk::ImageLayout), usize>>;
 
 		for consumption in consumptions {
 			if consumption.range.is_some() {
@@ -369,14 +378,33 @@ impl CommandBufferRecording<'_> {
 				continue;
 			}
 
-			match indices.entry((consumption.handle, consumption.layout)) {
-				std::collections::hash_map::Entry::Occupied(entry) => {
-					let existing = &mut merged[*entry.get()];
-					existing.stages |= consumption.stages;
-					existing.access |= consumption.access;
+			let key = (consumption.handle, consumption.layout);
+			if indices.is_none() && (expected > INLINE || merged.len() >= INLINE) {
+				let mut map = HashMap::with_capacity_and_hasher(expected.max(merged.len() + 1), Default::default());
+				map.extend(
+					merged
+						.iter()
+						.enumerate()
+						.filter(|(_, entry)| entry.range.is_none())
+						.map(|(index, entry)| ((entry.handle, entry.layout), index)),
+				);
+				indices = Some(map);
+			}
+			let existing = match &indices {
+				Some(indices) => indices.get(&key).copied(),
+				None => merged
+					.iter()
+					.position(|entry| entry.range.is_none() && (entry.handle, entry.layout) == key),
+			};
+			match existing {
+				Some(index) => {
+					merged[index].stages |= consumption.stages;
+					merged[index].access |= consumption.access;
 				}
-				std::collections::hash_map::Entry::Vacant(entry) => {
-					entry.insert(merged.len());
+				None => {
+					if let Some(indices) = &mut indices {
+						indices.insert(key, merged.len());
+					}
 					merged.push(consumption);
 				}
 			}
@@ -582,18 +610,11 @@ impl CommandBufferRecording<'_> {
 		}
 	}
 
-	fn get_attachment_format(&self, attachment: &graphics_hardware_interface::AttachmentInformation) -> crate::Formats {
-		attachment
-			.format
-			.unwrap_or_else(|| self.get_image(self.get_attachment_image_handle(attachment)).format_)
-	}
-
-	/// Selects the native image view declared by one render-pass attachment.
-	pub(super) fn get_attachment_image_view(
-		&self,
+	/// Selects the native view of `image` that one render-pass attachment declares.
+	pub(super) fn attachment_image_view(
 		attachment: &graphics_hardware_interface::AttachmentInformation,
+		image: &Image,
 	) -> vk::ImageView {
-		let image = self.get_image(self.get_attachment_image_handle(attachment));
 		let image_layer_count = image.layers.map_or(1, |layer_count| layer_count.get());
 		let requested_layer_count = attachment.layer_count.map_or(1, std::num::NonZeroU32::get);
 
@@ -631,39 +652,53 @@ impl CommandBufferRecording<'_> {
 			return;
 		};
 
-		let attachment_info = |attachment: &graphics_hardware_interface::AttachmentInformation| {
-			vk::RenderingAttachmentInfo::default()
-				.image_view(self.get_attachment_image_view(attachment))
-				.image_layout(texture_format_and_resource_use_to_image_layout(
-					self.get_attachment_format(attachment),
-					attachment.layout,
-					None,
-				))
-				.load_op(to_load_operation(attachment.load))
-				.store_op(to_store_operation(attachment.store))
-				.clear_value(to_clear_value(attachment.clear_value()))
-		};
 		let render_area = vk::Rect2D::default().extent(vk::Extent2D {
 			width: extent.width(),
 			height: extent.height(),
 		});
-		let color_attachments = attachments
-			.iter()
-			.filter(|attachment| !self.get_attachment_format(attachment).is_depth())
-			.map(|attachment| {
-				let info = attachment_info(attachment);
-				let image_extent = self.get_image(self.get_attachment_image_handle(attachment)).extent;
-				if info.image_view.is_null() && image_extent.as_array() == [0; 3] {
-					eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
-				}
-				info
-			})
-			.collect::<Vec<_>>();
-		let depth_attachment = attachments
-			.iter()
-			.find(|attachment| self.get_attachment_format(attachment).is_depth())
-			.map(attachment_info)
-			.unwrap_or_default();
+		// Each attachment's image is resolved once; its format decides whether it is the depth attachment.
+		let (color_attachments, depth_attachment) = {
+			let resolved = attachments
+				.iter()
+				.map(|attachment| {
+					let image = self.get_image(self.get_attachment_image_handle(attachment));
+					(attachment, image, attachment.format.unwrap_or(image.format_))
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let attachment_info = |&(attachment, image, format): &(
+				&graphics_hardware_interface::AttachmentInformation,
+				&Image,
+				crate::Formats,
+			)| {
+				vk::RenderingAttachmentInfo::default()
+					.image_view(Self::attachment_image_view(attachment, image))
+					.image_layout(texture_format_and_resource_use_to_image_layout(
+						format,
+						attachment.layout,
+						None,
+					))
+					.load_op(to_load_operation(attachment.load))
+					.store_op(to_store_operation(attachment.store))
+					.clear_value(to_clear_value(attachment.clear_value()))
+			};
+			let color_attachments = resolved
+				.iter()
+				.filter(|(.., format)| !format.is_depth())
+				.map(|resolved| {
+					let info = attachment_info(resolved);
+					if info.image_view.is_null() && resolved.1.extent.as_array() == [0; 3] {
+						eprintln!("Creating a Vulkan render pass with an attachment that has no image view or extent. The image was most likely not resized before rendering.");
+					}
+					info
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let depth_attachment = resolved
+				.iter()
+				.find(|(.., format)| format.is_depth())
+				.map(attachment_info)
+				.unwrap_or_default();
+			(color_attachments, depth_attachment)
+		};
 		let rendering_info = vk::RenderingInfoKHR::default()
 			.color_attachments(&color_attachments)
 			.depth_attachment(&depth_attachment)

@@ -39,7 +39,7 @@ pub(super) fn shader_pipeline_layout(
 		.iter()
 		.map(|parameter| {
 			let shader = &shaders[parameter.handle.0 as usize];
-			(shader.stage, shader.shader_resource_descriptors.clone())
+			(shader.stage, shader.shader_resource_descriptors.as_slice())
 		})
 		.collect::<Vec<_>>();
 	crate::vulkan::build_pipeline_layout(&stage_resources, push_constant_ranges, properties)

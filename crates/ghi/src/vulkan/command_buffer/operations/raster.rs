@@ -9,21 +9,23 @@ impl crate::command_buffer::RasterizationRenderPassMode for CommandBufferRecordi
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[crate::BufferDescriptor]) {
-		self.vulkan_consume_resources(buffer_descriptors.iter().map(|buffer_descriptor| {
+		let handles = buffer_descriptors
+			.iter()
+			.map(|descriptor| self.get_internal_buffer_handle(descriptor.buffer))
+			.collect::<SmallVec<[_; 8]>>();
+		self.vulkan_consume_resources(handles.iter().map(|handle| {
 			vulkan_consumption(
-				self.buffer_resource(buffer_descriptor.buffer),
+				Handles::Buffer(*handle),
 				vk::PipelineStageFlags2::VERTEX_INPUT,
 				vk::AccessFlags2::VERTEX_ATTRIBUTE_READ,
 			)
 		}))
 		.apply(self);
 
-		let (buffers, offsets): (Vec<_>, Vec<_>) = buffer_descriptors
+		let (buffers, offsets): (SmallVec<[_; 8]>, SmallVec<[_; 8]>) = handles
 			.iter()
-			.map(|descriptor| {
-				let buffer = self.get_buffer(self.get_internal_buffer_handle(descriptor.buffer)).buffer;
-				(buffer, descriptor.offset as vk::DeviceSize)
-			})
+			.zip(buffer_descriptors)
+			.map(|(handle, descriptor)| (self.get_buffer(*handle).buffer, descriptor.offset as vk::DeviceSize))
 			.unzip();
 
 		// TODO: implement slot splitting
@@ -120,11 +122,15 @@ impl crate::command_buffer::BoundPipelineLayoutMode for CommandBufferRecording<'
 		self.bound_pipeline.expect(
 			"No Vulkan pipeline is bound. The most likely cause is that bind_descriptor_sets was called before binding a pipeline.",
 		);
-		// Binding replaces the complete flat set union; no implicit set index or prior binding survives.
-		self.bound_descriptor_set_handles.clear();
-		self.bound_descriptor_set_handles.extend_from_slice(sets);
-		self.current_descriptor_materialization = None;
-		self.descriptor_materialization_dirty = true;
+		// Binding replaces the complete flat set union; no implicit set index or prior binding survives. A recording
+		// cannot write descriptors, bump epochs, or acquire images, so rebinding the same sets keeps their
+		// materialization; their read-only resources are still consumed again before the next draw or dispatch.
+		if self.bound_descriptor_set_handles != sets {
+			self.bound_descriptor_set_handles.clear();
+			self.bound_descriptor_set_handles.extend_from_slice(sets);
+			self.current_descriptor_materialization = None;
+			self.descriptor_materialization_dirty = true;
+		}
 		self.descriptor_resources_initialized = false;
 		self
 	}

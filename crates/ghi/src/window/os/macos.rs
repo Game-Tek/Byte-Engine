@@ -537,7 +537,9 @@ impl App {
 			unsafe { NSDefaultRunLoopMode },
 			true,
 		) {
-			if event.r#type() == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
+			// Each read is an Objective-C message send, and the type cannot change while this event is handled.
+			let event_type = event.r#type();
+			if event_type == NSEventType::ApplicationDefined && event.subtype().0 == WAKE_EVENT_SUBTYPE {
 				continue;
 			}
 
@@ -548,7 +550,6 @@ impl App {
 				let mut queue = self.events.borrow_mut();
 				let push = &mut |event| queue.push_back(Event::Window { window: id, event });
 
-				let event_type = event.r#type();
 				if let Some((button, pressed)) = mouse_button(event_type) {
 					// The position goes first so the button event lands at the drag endpoint.
 					append_mouse_position(&window, &event, time, push);
@@ -601,7 +602,7 @@ impl App {
 			// Keyboard events are consumed here because the default responder chain
 			// treats unhandled key presses as errors and plays the system beep.
 			if !matches!(
-				event.r#type(),
+				event_type,
 				NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
 			) {
 				app.sendEvent(&event);

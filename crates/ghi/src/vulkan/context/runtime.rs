@@ -38,8 +38,9 @@ impl Context {
 			swapchains: Vec::with_capacity(4),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 
-			states: HashMap::with_capacity_and_hasher(4096, Default::default()),
-			buffer_states: HashMap::with_capacity_and_hasher(4096, Default::default()),
+			// Every recording clones these maps, so they stay sized to the tracked resources rather than pre-sized.
+			states: HashMap::default(),
+			buffer_states: HashMap::default(),
 
 			pending_buffer_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
 			pending_image_syncs: HashSet::with_capacity_and_hasher(128, Default::default()),
@@ -505,13 +506,17 @@ impl Context {
 		frame_offset: i32,
 	) -> ImageHandle {
 		let frame_index = frame_index_with_offset(sequence_index, frame_offset, self.frames as usize);
-		self.get_swapchain_image_for_sequence(handle, frame_index)
-			.unwrap_or_else(|| self.image_handle_for_sequence(ImageHandle(handle.0.0), frame_index))
+		self.get_swapchain_image_for_sequence(handle, frame_index).unwrap_or_else(|| {
+			let handle = ImageHandle(handle.0.0);
+			// Public image handles name the first image of their chain, so no root search is needed.
+			debug_assert!(handle.root(&self.images) == handle);
+			self.image_handle_for_sequence(handle, frame_index)
+		})
 	}
 
-	/// Selects the frame-local image handle for a chained image resource.
-	pub(crate) fn image_handle_for_sequence(&self, handle: ImageHandle, sequence_index: usize) -> ImageHandle {
-		let handles = handle.root(&self.images).get_all(&self.images);
+	/// Selects the frame-local image handle in the chain that starts at `root`.
+	pub(crate) fn image_handle_for_sequence(&self, root: ImageHandle, sequence_index: usize) -> ImageHandle {
+		let handles = root.get_all(&self.images);
 		handles[sequence_index.rem_euclid(handles.len())]
 	}
 
@@ -629,7 +634,8 @@ impl Context {
 					self.bump_descriptor_sequence_epoch(sequence_index);
 				}
 				Tasks::ResizeImage { handle, extent } => {
-					let handle = self.image_handle_for_sequence(*handle, sequence_index as usize);
+					// The task names the resized frame's own image, which need not be the chain's first.
+					let handle = self.image_handle_for_sequence(handle.root(&self.images), sequence_index as usize);
 					self.resize_image_internal(handle, *extent, sequence_index);
 				}
 			}

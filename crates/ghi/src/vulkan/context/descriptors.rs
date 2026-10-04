@@ -259,8 +259,16 @@ impl Context {
 					} => self.swapchain_key_for_image(handle, target_sequence),
 					_ => continue,
 				};
-				resource_epochs.push((target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]));
-				swapchain_images.extend(key);
+				// Only a few distinct entries exist, so skipping repeats keeps both lists inline for large arrays.
+				let epoch = (target_sequence, self.descriptor_sequence_epochs[target_sequence as usize]);
+				if !resource_epochs.contains(&epoch) {
+					resource_epochs.push(epoch);
+				}
+				if let Some(key) = key
+					&& !swapchain_images.contains(&key)
+				{
+					swapchain_images.push(key);
+				}
 			}
 		}
 		resource_epochs.sort_unstable_by_key(|(sequence, _)| *sequence);

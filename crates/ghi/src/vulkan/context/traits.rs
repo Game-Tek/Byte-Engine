@@ -205,6 +205,7 @@ impl crate::context::Context for Context {
 
 	/// Retains flat descriptor writes and schedules frame-local snapshot refreshes without touching command-visible heap memory.
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
+		let mut changed_sets = SmallVec::<[graphics_hardware_interface::DescriptorSetHandle; 8]>::new();
 		for &descriptor_write in descriptor_set_writes {
 			assert!(
 				!matches!(
@@ -234,10 +235,19 @@ impl crate::context::Context for Context {
 
 			descriptor_set.version = descriptor_set.version.wrapping_add(1);
 			let expected_set_version = descriptor_set.version;
-			self.invalidate_descriptor_set_materializations(descriptor_write.descriptor_set, None);
+			if !changed_sets.contains(&descriptor_write.descriptor_set) {
+				changed_sets.push(descriptor_write.descriptor_set);
+			}
 			self.add_task_to_all_frames(Tasks::UpdateDescriptor {
 				descriptor_write,
 				expected_set_version,
+			});
+		}
+
+		// Snapshots of every changed set are retired in one pass over the cache instead of one pass per write.
+		if !changed_sets.is_empty() {
+			self.retire_descriptor_materializations(|key| {
+				key.descriptor_sets.iter().any(|(handle, ..)| changed_sets.contains(handle))
 			});
 		}
 	}

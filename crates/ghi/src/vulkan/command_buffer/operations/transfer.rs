@@ -161,7 +161,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		);
 		graphics_hardware_interface::AttachmentInformation::render_pass_layer_count(attachments);
 		for attachment in attachments {
-			self.get_attachment_image_view(attachment);
+			Self::attachment_image_view(attachment, self.get_image(self.get_attachment_image_handle(attachment)));
 			// A pass that clears or discards an attachment gives an image-group member new contents.
 			if let (graphics_hardware_interface::ImageOrSwapchain::Image(image), false) =
 				(attachment.target, attachment.loads())

@@ -59,6 +59,21 @@ pub enum MeshPrimitiveProcessingError<E> {
 	Processing(MeshProcessingError),
 }
 
+impl<E: std::fmt::Display> std::fmt::Display for MeshPrimitiveProcessingError<E> {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Source(error) => error.fmt(formatter),
+			Self::Processing(error) => error.fmt(formatter),
+		}
+	}
+}
+
+impl<E> From<MeshProcessingError> for MeshPrimitiveProcessingError<E> {
+	fn from(error: MeshProcessingError) -> Self {
+		Self::Processing(error)
+	}
+}
+
 /// The `MeshProcessorSession` struct keeps reusable scratch and final stream writers alive across borrowed primitives.
 pub struct MeshProcessorSession {
 	vertex_layout: Vec<VertexComponent>,
@@ -116,9 +131,7 @@ impl MeshProcessorSession {
 				.positions
 				.push(position.map_err(MeshPrimitiveProcessingError::Source)?.to_array());
 		}
-		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::InvalidPositionData,
-		))?;
+		let bounds = bounding_box_from_positions(&self.scratch.positions).ok_or(MeshProcessingError::InvalidPositionData)?;
 
 		let indices = primitive.indices().map_err(MeshPrimitiveProcessingError::Source)?;
 		self.scratch.indices.clear();
@@ -129,9 +142,7 @@ impl MeshProcessorSession {
 				.push(index.map_err(MeshPrimitiveProcessingError::Source)?);
 		}
 		if !self.scratch.indices.len().is_multiple_of(3) {
-			return Err(MeshPrimitiveProcessingError::Processing(
-				MeshProcessingError::InvalidTriangleIndexCount,
-			));
+			return Err(MeshProcessingError::InvalidTriangleIndexCount.into());
 		}
 		rewind_triangles_to_clockwise(&mut self.scratch.indices);
 		meshopt::optimize_vertex_cache_in_place(&mut self.scratch.indices, position_count);
@@ -143,7 +154,7 @@ impl MeshProcessorSession {
 			write_f32_components(&mut self.scratch.position_bytes, position);
 		}
 		let meshlet_vertex_adapter = meshopt::VertexDataAdapter::new(&self.scratch.position_bytes, 12, 0)
-			.map_err(|_| MeshPrimitiveProcessingError::Processing(MeshProcessingError::FailedToBuildMeshlets))?;
+			.map_err(|_| MeshProcessingError::FailedToBuildMeshlets)?;
 		let meshlets = meshopt::clusterize::build_meshlets(
 			&self.scratch.indices,
 			&meshlet_vertex_adapter,
@@ -215,8 +226,7 @@ impl MeshProcessorSession {
 			&self.vertex_layout,
 			self.skeleton_nodes,
 			&self.skins,
-		)
-		.map_err(MeshPrimitiveProcessingError::Processing)?;
+		)?;
 
 		let mut streams = Vec::with_capacity(self.vertex_layout.len() + 4);
 		streams.push(append_f32_slice(
@@ -455,18 +465,13 @@ where
 		return Ok(());
 	};
 	if values.len() != position_count {
-		return Err(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::AttributeLengthMismatch(semantic, 0),
-		));
+		return Err(MeshProcessingError::AttributeLengthMismatch(semantic, 0).into());
 	}
 	let stream_type = Streams::Vertices(semantic);
-	let block =
-		blocks
-			.iter_mut()
-			.find(|block| block.stream_type == stream_type)
-			.ok_or(MeshPrimitiveProcessingError::Processing(
-				MeshProcessingError::MissingAttribute(semantic, 0),
-			))?;
+	let block = blocks
+		.iter_mut()
+		.find(|block| block.stream_type == stream_type)
+		.ok_or(MeshProcessingError::MissingAttribute(semantic, 0))?;
 	let offset = block.bytes.len();
 	for value in values {
 		write_f32_components(&mut block.bytes, &value.map_err(MeshPrimitiveProcessingError::Source)?);
@@ -492,31 +497,26 @@ where
 	I: ExactSizeIterator<Item = Result<VertexSkin, E>>,
 {
 	if values.len() != position_count {
-		return Err(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::SkinVertexCountMismatch {
-				primitive,
-				values: values.len(),
-				positions: position_count,
-			},
-		));
+		return Err(MeshProcessingError::SkinVertexCountMismatch {
+			primitive,
+			values: values.len(),
+			positions: position_count,
+		}
+		.into());
 	}
 	let joints_index = blocks
 		.iter()
 		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Joints))
-		.ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Joints),
-		))?;
+		.ok_or(MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Joints))?;
 	let weights_index = blocks
 		.iter()
 		.position(|block| block.stream_type == Streams::Vertices(VertexSemantics::Weights))
-		.ok_or(MeshPrimitiveProcessingError::Processing(
-			MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Weights),
-		))?;
+		.ok_or(MeshProcessingError::MissingSkinVertexComponent(VertexSemantics::Weights))?;
 	let joints_offset = blocks[joints_index].bytes.len();
 	let weights_offset = blocks[weights_index].bytes.len();
 	for (vertex, value) in values.enumerate() {
 		let value = value.map_err(MeshPrimitiveProcessingError::Source)?;
-		validate_vertex_skin(primitive, vertex, value, skin).map_err(MeshPrimitiveProcessingError::Processing)?;
+		validate_vertex_skin(primitive, vertex, value, skin)?;
 		for joint in value.joints {
 			blocks[joints_index].bytes.extend(joint.to_le_bytes());
 		}

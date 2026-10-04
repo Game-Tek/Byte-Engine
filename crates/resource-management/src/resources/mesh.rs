@@ -385,16 +385,8 @@ mod tests {
 
 	fn skin_vertex_layout() -> Vec<VertexComponent> {
 		vec![
-			VertexComponent {
-				semantic: VertexSemantics::Joints,
-				format: "vec4u16".into(),
-				channel: 0,
-			},
-			VertexComponent {
-				semantic: VertexSemantics::Weights,
-				format: "vec4f".into(),
-				channel: 0,
-			},
+			VertexComponent::canonical(VertexSemantics::Joints),
+			VertexComponent::canonical(VertexSemantics::Weights),
 		]
 	}
 

@@ -1,33 +1,21 @@
 use super::*;
 
-pub(crate) fn unique_gltf_materials<'a>(primitives: &[gltf::Primitive<'a>]) -> (Vec<gltf::Material<'a>>, Vec<usize>) {
+/// Lists each distinct material once, in first-use order, and returns every input material's position in that list.
+pub(crate) fn unique_gltf_materials<'a>(
+	materials: impl Iterator<Item = gltf::Material<'a>>,
+) -> (Vec<gltf::Material<'a>>, Vec<usize>) {
 	let mut unique_materials = Vec::new();
-
 	let mut unique_material_indices = HashMap::new();
+	let slots = materials
+		.map(|material| {
+			*unique_material_indices.entry(material.index()).or_insert_with(|| {
+				unique_materials.push(material);
+				unique_materials.len() - 1
+			})
+		})
+		.collect();
 
-	let mut material_indices_per_primitive = Vec::with_capacity(primitives.len());
-
-	for primitive in primitives {
-		let material = primitive.material();
-
-		let key = material.index();
-
-		let material_index = if let Some(index) = unique_material_indices.get(&key) {
-			*index
-		} else {
-			let index = unique_materials.len();
-
-			unique_materials.push(material);
-
-			unique_material_indices.insert(key, index);
-
-			index
-		};
-
-		material_indices_per_primitive.push(material_index);
-	}
-
-	(unique_materials, material_indices_per_primitive)
+	(unique_materials, slots)
 }
 
 /// Resolves glTF materials into variants, in the order given.
@@ -45,7 +33,8 @@ pub(crate) async fn resolve_gltf_materials(
 	let image_semantics = gltf_image_semantics(gltf);
 	let sources = materials
 		.iter()
-		.map(|material| match material_override(spec, material) {
+		// Unnamed materials have no BEAD override key, so they are always generated.
+		.map(|material| match material.name().and_then(|name| bead_material_override(spec, name)) {
 			Some(override_id) => Ok(MaterialSource::Override(override_id)),
 			None => {
 				let base_id = generated_material_base_id(mesh_url, material);
@@ -86,11 +75,6 @@ pub(crate) fn generated_gltf_brdf(
 	Ok(brdf)
 }
 
-/// Reads the BEAD override for a named glTF material. Unnamed materials are always generated.
-pub(crate) fn material_override(spec: Option<&serde_json::Value>, material: &gltf::Material<'_>) -> Option<String> {
-	bead_material_override(spec, material.name()?)
-}
-
 pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gltf::Material<'_>) -> String {
 	let material_name = material
 		.name()
@@ -101,11 +85,4 @@ pub(crate) fn generated_material_base_id(mesh_url: ResourceId<'_>, material: &gl
 		});
 
 	format!("{}#materials/{material_name}", mesh_url.as_ref())
-}
-
-/// The `GltfTextureDependency` struct records a glTF image required by a generated material variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GltfTextureDependency {
-	pub(crate) image_index: u32,
-	pub(crate) semantic: Semantic,
 }

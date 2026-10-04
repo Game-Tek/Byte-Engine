@@ -2,18 +2,6 @@ use super::*;
 
 pub(crate) const MAX_PRIMITIVE_VERTICES: usize = u16::MAX as usize + 1;
 
-const ANIMATION_SKELETON_SETTING: &str = "skeleton";
-
-/// Returns the canonical skeleton resource selected for animations in one FBX sidecar.
-fn animation_skeleton_setting(spec: Option<&asset::BEADType>) -> Result<Option<&str>, String> {
-	let Some(value) = spec.and_then(|spec| spec.get(ANIMATION_SKELETON_SETTING)) else {
-		return Ok(None);
-	};
-	value.as_str().map(Some).ok_or_else(|| {
-		"Invalid animation skeleton. The most likely cause is that `skeleton` is not a resource ID string.".to_string()
-	})
-}
-
 /// Maps imported FBX skeleton indices into a compatible canonical skeleton by unique node name.
 pub(crate) fn canonical_animation_node_map(source: &SkeletonModel, target: &SkeletonModel) -> Result<Vec<u32>, String> {
 	let mut target_by_name = std::collections::HashMap::with_capacity(target.nodes.len());
@@ -61,11 +49,19 @@ async fn resolve_animation_skeleton(
 	imported: ImportedFbxSkeleton,
 	base: &str,
 ) -> Result<(ReferenceModel<SkeletonModel>, Vec<u32>), LoadErrors> {
-	let Some(target_id) = animation_skeleton_setting(spec).map_err(|error| {
-		context.error(error);
-		LoadErrors::FailedToProcess
-	})?
-	else {
+	// The sidecar's `skeleton` setting names the canonical skeleton resource its animations target.
+	let target_id = spec
+		.and_then(|spec| spec.get("skeleton"))
+		.map(|value| {
+			value.as_str().ok_or_else(|| {
+				context
+					.error("Invalid animation skeleton. The most likely cause is that `skeleton` is not a resource ID string.");
+				LoadErrors::FailedToProcess
+			})
+		})
+		.transpose()?;
+
+	let Some(target_id) = target_id else {
 		let skeleton_id = generated_skeleton_id(base);
 		let skeleton = store_model::<SkeletonModel>(*context, &skeleton_id, imported.model, &[]).await?;
 		return Ok((skeleton, imported.source_to_skeleton));
@@ -88,20 +84,6 @@ async fn resolve_animation_skeleton(
 		.map(|source| source_to_target[source as usize])
 		.collect();
 	Ok((target, source_to_skeleton))
-}
-
-/// Picks the resource an unfragmented FBX request bakes. See [`select_unfragmented_resource`].
-pub(crate) fn select_unfragmented_fbx_resource(
-	scene: &ufbx::Scene,
-	spec: Option<&asset::BEADType>,
-) -> Result<ContainerDefaultResource, String> {
-	select_unfragmented_resource(
-		spec,
-		!scene.meshes.is_empty(),
-		scene.anim_stacks.len(),
-		"FBX",
-		"animation stacks",
-	)
 }
 
 /// The `FBXAssetHandler` struct provides the authored-FBX import path used to bake meshes, skeletons, and animation clips.
@@ -138,7 +120,7 @@ impl FBXAssetHandler {
 		data: &[u8],
 		texture_index: usize,
 	) -> Result<(), LoadErrors> {
-		let scene = load_fbx_scene_textures(data, source_id.as_ref()).map_err(|error| {
+		let scene = load_fbx_scene_with(data, source_id.as_ref(), true).map_err(|error| {
 			context.error(format_args!("Failed to import FBX asset '{}': {error}", url.as_ref()));
 
 			LoadErrors::FailedToProcess
@@ -153,14 +135,15 @@ impl FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		load_and_store_fbx_texture(
-			context,
-			source_id,
-			url.as_ref(),
-			texture,
-			self.material_mip_generator.as_deref(),
-		)
-		.await
+		let (pixels, width, height) = load_fbx_texture_image(context, source_id, texture).await?;
+		let source = ImageSource::new(
+			Extent::rectangle(width, height),
+			SourceChannels::RGBA,
+			SourceEncoding::U8,
+			&pixels,
+		);
+
+		store_imported_image(context, url, Semantic::Albedo, source, self.material_mip_generator.as_deref()).await
 	}
 }
 
@@ -184,10 +167,10 @@ impl AssetHandler for FBXAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		if let Some(texture_index) = url
-			.get_fragment()
-			.and_then(|fragment| fbx_image_fragment_texture_index(fragment.as_ref()))
-		{
+		let fragment = url.get_fragment();
+		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
+
+		if let Some(texture_index) = fragment.and_then(fbx_image_fragment_texture_index) {
 			return self.store_texture(context, url, source_id, &data, texture_index).await;
 		}
 
@@ -197,14 +180,37 @@ impl AssetHandler for FBXAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		if let Some(fragment) = url.get_fragment() {
+		// Any fragment left names the skeleton or an animation. An unfragmented request bakes the container's default
+		// resource.
+		let fragment = match fragment {
+			Some(fragment) => Some(fragment),
+			None => {
+				let default_resource = select_unfragmented_resource(
+					spec.as_ref(),
+					!scene.meshes.is_empty(),
+					scene.anim_stacks.len(),
+					"FBX",
+					"animation stacks",
+				)
+				.map_err(|error| {
+					context.error(format_args!(
+						"Failed to select the default FBX resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
+						url.as_ref()
+					));
+					LoadErrors::FailedToProcess
+				})?;
+				(default_resource == ContainerDefaultResource::Animation).then_some(DEFAULT_ANIMATION_FRAGMENT)
+			}
+		};
+
+		if let Some(fragment) = fragment {
 			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
 				context.error(format_args!("Failed to import FBX skeleton '{}': {error}", url.as_ref()));
 
 				LoadErrors::FailedToProcess
 			})?;
 
-			if fragment.as_ref() == SKELETON_FRAGMENT {
+			if fragment == SKELETON_FRAGMENT {
 				return context
 					.store_primary(ProcessedAsset::new(url, imported_skeleton.model), &[])
 					.await;
@@ -213,46 +219,11 @@ impl AssetHandler for FBXAssetHandler {
 			let (skeleton, source_to_skeleton) =
 				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
 
-			let animation =
-				import_fbx_animation(&scene, fragment.as_ref(), skeleton, &source_to_skeleton).map_err(|error| {
-					context.error(format_args!("Failed to import FBX animation '{}': {error}", url.as_ref()));
-
-					LoadErrors::FailedToProcess
-				})?;
-
-			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
-		}
-
-		let default_resource = select_unfragmented_fbx_resource(&scene, spec.as_ref()).map_err(|error| {
-			context.error(format_args!(
-				"Failed to select the default FBX resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
-				url.as_ref()
-			));
-			LoadErrors::FailedToProcess
-		})?;
-
-		if default_resource == ContainerDefaultResource::Animation {
-			let imported_skeleton = import_fbx_skeleton(&scene).map_err(|error| {
-				context.error(format_args!(
-					"Failed to import FBX animation skeleton '{}': {error}",
-					url.as_ref()
-				));
+			let animation = import_fbx_animation(&scene, fragment, skeleton, &source_to_skeleton).map_err(|error| {
+				context.error(format_args!("Failed to import FBX animation '{}': {error}", url.as_ref()));
 
 				LoadErrors::FailedToProcess
 			})?;
-
-			let (skeleton, source_to_skeleton) =
-				resolve_animation_skeleton(&context, spec.as_ref(), imported_skeleton, base.as_ref()).await?;
-
-			let animation =
-				import_fbx_animation(&scene, DEFAULT_ANIMATION_FRAGMENT, skeleton, &source_to_skeleton).map_err(|error| {
-					context.error(format_args!(
-						"Failed to import default FBX animation '{}': {error}",
-						url.as_ref()
-					));
-
-					LoadErrors::FailedToProcess
-				})?;
 
 			return context.store_primary(ProcessedAsset::new(url, animation), &[]).await;
 		}
@@ -297,7 +268,6 @@ impl AssetHandler for FBXAssetHandler {
 					&material_keys,
 					skeleton,
 					&source_to_skeleton,
-					MeshProcessor::new(),
 					allocator,
 					&mut culled_polygons,
 				)

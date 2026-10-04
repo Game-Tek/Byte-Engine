@@ -44,9 +44,9 @@ mod tests {
 	#[test]
 	fn finish_into_writes_the_owned_payload_layout_without_a_combined_buffer() {
 		let layout = vec![
-			component(VertexSemantics::Position),
-			component(VertexSemantics::Normal),
-			component(VertexSemantics::UV),
+			VertexComponent::canonical(VertexSemantics::Position),
+			VertexComponent::canonical(VertexSemantics::Normal),
+			VertexComponent::canonical(VertexSemantics::UV),
 		];
 		let expected = process(
 			layout.clone(),
@@ -84,7 +84,7 @@ mod tests {
 			variant("materials/c.variant"),
 		];
 		let mut session = MeshProcessor::new()
-			.begin(vec![component(VertexSemantics::Position)], None, Vec::new())
+			.begin(vec![VertexComponent::canonical(VertexSemantics::Position)], None, Vec::new())
 			.unwrap();
 		for slot in [2, 1, 0] {
 			session
@@ -129,7 +129,7 @@ mod tests {
 		);
 
 		let error = process(
-			vec![component(VertexSemantics::Position)],
+			vec![VertexComponent::canonical(VertexSemantics::Position)],
 			&[TestPrimitive::triangle().with_transform_node(0)],
 			None,
 			Vec::new(),
@@ -166,7 +166,9 @@ mod tests {
 	fn rejects_invalid_skin_layout_and_vertex_values() {
 		let primitive = TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 3]);
 		let error = process(
-			vec![component(VertexSemantics::Position), component(VertexSemantics::Joints)],
+			[VertexSemantics::Position, VertexSemantics::Joints]
+				.map(VertexComponent::canonical)
+				.to_vec(),
 			&[primitive],
 			Some(test_skeleton(1)),
 			vec![test_skin(SkinJoint::Node(0))],
@@ -282,7 +284,9 @@ mod tests {
 
 	#[test]
 	fn rejects_duplicate_semantics_and_omits_unused_streams() {
-		let duplicate = vec![component(VertexSemantics::UV), component(VertexSemantics::UV)];
+		let duplicate = [VertexSemantics::UV, VertexSemantics::UV]
+			.map(VertexComponent::canonical)
+			.to_vec();
 		let error = MeshProcessor::new()
 			.begin(duplicate, None, Vec::new())
 			.err()
@@ -290,7 +294,9 @@ mod tests {
 		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
 
 		let processed = process(
-			vec![component(VertexSemantics::Position), component(VertexSemantics::BiTangent)],
+			[VertexSemantics::Position, VertexSemantics::BiTangent]
+				.map(VertexComponent::canonical)
+				.to_vec(),
 			&[TestPrimitive::triangle()],
 			None,
 			Vec::new(),
@@ -305,7 +311,9 @@ mod tests {
 		let mut primitive = TestPrimitive::triangle().with_normals();
 		primitive.normals.as_mut().expect("normal values should exist").pop();
 		let error = process(
-			vec![component(VertexSemantics::Position), component(VertexSemantics::Normal)],
+			[VertexSemantics::Position, VertexSemantics::Normal]
+				.map(VertexComponent::canonical)
+				.to_vec(),
 			&[primitive],
 			None,
 			Vec::new(),
@@ -333,25 +341,11 @@ mod tests {
 		Ok(processor.finish(&[test_material()]))
 	}
 
-	fn component(semantic: VertexSemantics) -> VertexComponent {
-		VertexComponent {
-			semantic,
-			format: match semantic {
-				VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => "vec3f",
-				VertexSemantics::UV => "vec2f",
-				VertexSemantics::Joints => "vec4u16",
-				VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => "vec4f",
-			}
-			.to_string(),
-			channel: 0,
-		}
-	}
-
 	fn skinned_layout() -> Vec<VertexComponent> {
 		vec![
-			component(VertexSemantics::Position),
-			component(VertexSemantics::Joints),
-			component(VertexSemantics::Weights),
+			VertexComponent::canonical(VertexSemantics::Position),
+			VertexComponent::canonical(VertexSemantics::Joints),
+			VertexComponent::canonical(VertexSemantics::Weights),
 		]
 	}
 

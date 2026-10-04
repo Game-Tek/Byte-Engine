@@ -89,6 +89,26 @@ pub struct VertexComponent {
 	pub channel: u32,
 }
 
+impl VertexComponent {
+	/// Returns the stream every importer declares for `semantic`: its canonical format on channel 0.
+	///
+	/// Build importer vertex layouts from these, then pass them to
+	/// [`MeshProcessor::begin`](crate::processors::processor::implementations::mesh::MeshProcessor::begin).
+	pub fn canonical(semantic: VertexSemantics) -> Self {
+		let format = match semantic {
+			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => "vec3f",
+			VertexSemantics::UV => "vec2f",
+			VertexSemantics::Joints => "vec4u16",
+			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => "vec4f",
+		};
+		Self {
+			semantic,
+			format: format.to_string(),
+			channel: 0,
+		}
+	}
+}
+
 #[derive(
 	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
 )]

@@ -40,13 +40,9 @@ impl AssetHandler for PNGAssetHandler {
 		let extent = Extent::rectangle(info.width, info.height);
 		let gamma = png_gamma(reader.info(), semantic);
 		let (channels, encoding) = png_source_layout(info.color_type, info.bit_depth)?;
-		let description = ImageDescription {
-			semantic,
-			gamma,
-			generate_mipmaps: false,
-		};
+		let description = ImageDescription { semantic, gamma };
 		let source = ImageSource::new(extent, channels, encoding, &buffer);
-		let (asset, data) = process_image_in(url, description, source, allocator)
+		let (asset, data) = process_image_in(url, description, source, allocator, None)
 			.await
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 

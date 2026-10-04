@@ -4,43 +4,19 @@ const GPU_ATLAS_MAX_DIMENSION: u32 = 8192;
 #[derive(Debug)]
 pub enum GPUIBLBakeError {
 	InvalidInput(IBLBakeError),
-	InstanceCreation(&'static str),
-	DeviceCreation(&'static str),
-	ContextCreation(&'static str),
-	ShaderCompilation(String),
-	ShaderCreation,
+	Worker(GpuWorkerError),
 	AtlasTooLarge { width: u32, height: u32 },
 	AtlasLayoutOverflow,
 	SourceUploadSizeMismatch { expected: usize, got: usize },
 	OutputReadbackSizeMismatch { expected: usize, got: usize },
 	GPUExecution,
-	WorkerCreation(String),
-	WorkerUnavailable,
 }
 
 impl fmt::Display for GPUIBLBakeError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::InvalidInput(error) => error.fmt(formatter),
-			Self::InstanceCreation(error) => write!(
-				formatter,
-				"GPU environment-map instance creation failed. The most likely cause is that no supported graphics backend is available. Error: {error}"
-			),
-			Self::DeviceCreation(error) => write!(
-				formatter,
-				"GPU environment-map device creation failed. The most likely cause is that no device supports compute and transfer work. Error: {error}"
-			),
-			Self::ContextCreation(error) => write!(
-				formatter,
-				"GPU environment-map context creation failed. The most likely cause is that the selected device could not create an auxiliary context. Error: {error}"
-			),
-			Self::ShaderCompilation(error) => write!(
-				formatter,
-				"GPU environment-map shader compilation failed. The most likely cause is unsupported native shader syntax. Error: {error}"
-			),
-			Self::ShaderCreation => formatter.write_str(
-				"GPU environment-map shader creation failed. The most likely cause is that the selected backend rejected the compute shader.",
-			),
+			Self::Worker(error) => error.describe("environment-map", formatter),
 			Self::AtlasTooLarge { width, height } => write!(
 				formatter,
 				"GPU environment-map atlas is too large ({width}x{height}). The most likely cause is a source image that exceeds the portable 8192-pixel atlas limit."
@@ -59,13 +35,6 @@ impl fmt::Display for GPUIBLBakeError {
 			Self::GPUExecution => formatter.write_str(
 				"GPU environment-map generation failed. The most likely cause is a graphics backend validation or command-execution error.",
 			),
-			Self::WorkerCreation(error) => write!(
-				formatter,
-				"GPU environment-map worker creation failed. The most likely cause is that the process cannot create another thread. Error: {error}"
-			),
-			Self::WorkerUnavailable => formatter.write_str(
-				"GPU environment-map worker is unavailable. The most likely cause is that GPU initialization or command execution terminated the worker.",
-			),
 		}
 	}
 }
@@ -75,6 +44,12 @@ impl Error for GPUIBLBakeError {}
 impl From<IBLBakeError> for GPUIBLBakeError {
 	fn from(error: IBLBakeError) -> Self {
 		Self::InvalidInput(error)
+	}
+}
+
+impl From<GpuWorkerError> for GPUIBLBakeError {
+	fn from(error: GpuWorkerError) -> Self {
+		Self::Worker(error)
 	}
 }
 
@@ -91,7 +66,7 @@ pub struct OwnedBakedImageIBL {
 /// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
 /// without moving or concurrently accessing the backend context, and it awaits each bake instead of blocking a pool thread.
 pub struct GPUIBLClient {
-	worker: GpuWorker<Extent, Result<OwnedBakedImageIBL, GPUIBLBakeError>>,
+	worker: GpuWorker<GPUIBLProcessor>,
 }
 
 impl GPUIBLClient {
@@ -107,28 +82,23 @@ impl GPUIBLClient {
 	pub fn from_processor_factory(
 		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, GPUIBLBakeError> {
-		let worker = GpuWorker::spawn("GPU Environment Map Worker", initialize).map_err(|error| match error {
-			GpuWorkerSpawnError::Initialization(error) => error,
-			GpuWorkerSpawnError::WorkerCreation(error) => GPUIBLBakeError::WorkerCreation(error.to_string()),
-			GpuWorkerSpawnError::WorkerUnavailable => GPUIBLBakeError::WorkerUnavailable,
-		})?;
-		Ok(Self { worker })
+		Ok(Self {
+			worker: GpuWorker::spawn("GPU Environment Map Worker", initialize)?,
+		})
 	}
 
 	/// Submits one source image and resolves once the GPU result is safe to consume.
 	///
-	/// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result, so the
-	/// request lends the worker no output bytes.
+	/// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result.
 	pub async fn bake_image_ibl(
 		&self,
 		source_extent: Extent,
 		source_rgba16f: &[u8],
 	) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
 		self.worker
-			.submit(source_extent, source_rgba16f.to_vec(), Vec::new())
+			.submit(source_extent, source_rgba16f.to_vec())
 			.await
-			.map_err(|_| GPUIBLBakeError::WorkerUnavailable)?
-			.0
+			.map_err(|_| GpuWorkerError::Unavailable)?
 	}
 
 	/// Creates a client whose worker already stopped, so every bake reports it as unavailable.
@@ -165,28 +135,16 @@ impl GPUIBLProcessor {
 	/// Call this constructor inside [`crate::ibl::IBLGenerator::with_gpu_processor_factory`] when an asset handler owns the
 	/// generation path.
 	pub fn try_new() -> Result<Self, GPUIBLBakeError> {
-		let (context, queue, owner) = create_compute_context().map_err(|error| match error {
-			ComputeContextError::Instance(error) => GPUIBLBakeError::InstanceCreation(error),
-			ComputeContextError::Device(error) => GPUIBLBakeError::DeviceCreation(error),
-			ComputeContextError::Context(error) => GPUIBLBakeError::ContextCreation(error),
-		})?;
-		Self::from_parts(context, queue, owner)
+		let (context, queue, owner) = create_compute_context()?;
+		Self::from_context(context, queue, owner)
 	}
 
 	/// Uses a caller-created auxiliary context for environment-map generation.
 	///
 	/// `owner` keeps the device, instance, or other native state alive until after the context is dropped. Create all three
 	/// values on the current thread, then continue using the processor on this thread or return it from a worker-local factory.
+	/// The shared compute pipeline is created here, before the handler begins processing concurrent assets.
 	pub fn from_context<Owner: 'static>(
-		context: ghi::implementation::Context,
-		queue: ghi::QueueHandle,
-		owner: Owner,
-	) -> Result<Self, GPUIBLBakeError> {
-		Self::from_parts(context, queue, owner)
-	}
-
-	/// Creates the shared compute pipeline before the handler begins processing concurrent assets.
-	fn from_parts<Owner: 'static>(
 		context: ghi::implementation::Context,
 		queue: ghi::QueueHandle,
 		owner: Owner,
@@ -208,11 +166,7 @@ impl GPUIBLProcessor {
 				hlsl_entry_point: "generate_environment_map",
 			},
 			std::mem::size_of::<GPUIBLPushConstants>(),
-		)
-		.map_err(|error| match error {
-			ComputeKernelError::Compilation(error) => GPUIBLBakeError::ShaderCompilation(error),
-			ComputeKernelError::Creation => GPUIBLBakeError::ShaderCreation,
-		})?;
+		)?;
 		let source_sampler = context.build_sampler(ghi::sampler::Builder::new().max_lod(0.0));
 
 		let OwnedContext { context, owner } = construction;
@@ -420,7 +374,7 @@ impl GpuProcessor for GPUIBLProcessor {
 		Submission::Complete(self.bake_image_ibl(*source_extent, source_rgba16f))
 	}
 
-	fn poll(&mut self, ticket: Self::Ticket, _output: &mut [u8]) -> Option<Self::Result> {
+	fn poll(&mut self, ticket: Self::Ticket) -> Option<Self::Result> {
 		match ticket {}
 	}
 }
@@ -711,10 +665,10 @@ mod tests {
 
 		let result = GPUIBLClient::from_processor_factory(move || {
 			worker_result.store(std::thread::current().id() != caller, Ordering::SeqCst);
-			Err(GPUIBLBakeError::WorkerUnavailable)
+			Err(GPUIBLBakeError::Worker(GpuWorkerError::Unavailable))
 		});
 
-		assert!(matches!(result, Err(GPUIBLBakeError::WorkerUnavailable)));
+		assert!(matches!(result, Err(GPUIBLBakeError::Worker(GpuWorkerError::Unavailable))));
 		assert!(ran_on_worker.load(Ordering::SeqCst));
 	}
 
@@ -843,8 +797,8 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, atlas_byte_size, source_atlas_layout, write_source_atlas,
-		write_source_level,
+		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, GpuWorkerError, atlas_byte_size, source_atlas_layout,
+		write_source_atlas, write_source_level,
 	};
 	use crate::ibl::cpu::{bake_image_ibl_in, build_source_mips, decode_source_radiance};
 }
@@ -871,8 +825,8 @@ use super::{
 };
 use crate::{
 	gpu_worker::{
-		ComputeContextError, ComputeKernelError, GpuProcessor, GpuWorker, GpuWorkerSpawnError, OUTPUT_SLOT, OwnedContext,
-		SOURCE_SLOT, Submission, create_compute_context, create_compute_kernel,
+		GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission, create_compute_context,
+		create_compute_kernel,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},
 };

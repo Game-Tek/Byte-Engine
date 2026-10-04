@@ -23,50 +23,29 @@ pub(crate) struct MipLevel<'a> {
 	pub(crate) data: &'a [u8],
 }
 
-const MAX_MIP_LEVELS: usize = u32::BITS as usize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OwnedMipRange {
-	width: u32,
-	height: u32,
-	offset: usize,
-	size: usize,
-}
-
-impl OwnedMipRange {
-	const EMPTY: Self = Self {
-		width: 0,
-		height: 0,
-		offset: 0,
-		size: 0,
-	};
-}
-
 /// The `OwnedMipChain` struct holds the filtered levels below a base level until the CPU path encodes them.
 ///
-/// The chain uses one allocation for all texels and keeps its bounded level metadata inline.
+/// The chain uses one allocation for all texels, laid out as [`packed_lower_levels`] reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedMipChain {
-	levels: [OwnedMipRange; MAX_MIP_LEVELS],
-	level_count: usize,
-	data: Box<[u8]>,
+	/// The base level's extent, which the lower levels halve.
+	width: u32,
+	height: u32,
+	bytes_per_pixel: usize,
+	data: Vec<u8>,
 }
 
 impl OwnedMipChain {
 	/// Returns each generated level in order without allocating view metadata.
-	fn levels(&self) -> impl ExactSizeIterator<Item = MipLevel<'_>> + '_ {
-		self.levels[..self.level_count].iter().map(|level| MipLevel {
-			width: level.width,
-			height: level.height,
-			data: &self.data[level.offset..level.offset + level.size],
-		})
+	fn levels(&self) -> impl Iterator<Item = MipLevel<'_>> + '_ {
+		packed_lower_levels(self.width, self.height, self.bytes_per_pixel, &self.data)
 	}
 }
 
 /// The `MipGenerator` enum selects where material importers filter and block-compress texture mip chains.
 ///
 /// Material importers share one generator and call [`Self::encode_mip_chain`] once per material texture, after
-/// [`crate::processors::processor::implementations::image::process_image_with_mips_in`] sized the stored chain.
+/// [`crate::processors::processor::implementations::image::process_image_in`] sized the stored chain.
 /// `Cpu` filters and encodes on the calling thread. `Gpu` submits to the offline GPU worker and falls back to the CPU
 /// path for requests it can't serve or whose GPU work fails.
 pub enum MipGenerator {
@@ -112,45 +91,35 @@ impl MipGenerator {
 			}
 		}
 
-		encode_mip_chain_on_cpu(output_format, gamma, width, height, base_level, output)
-	}
-}
+		// The CPU path filters and encodes on the calling thread.
+		let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
+			.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
+		if output.len() != expected {
+			return Err(MipGenerationError::BufferSizeMismatch {
+				expected,
+				got: output.len(),
+			});
+		}
 
-/// Filters and encodes a whole mip chain on the calling thread; see [`MipGenerator::encode_mip_chain`] for the contract.
-pub(crate) fn encode_mip_chain_on_cpu(
-	output_format: Formats,
-	gamma: Gamma,
-	width: u32,
-	height: u32,
-	base_level: &[u8],
-	output: &mut [u8],
-) -> Result<(), MipGenerationError> {
-	let expected = encoded_mip_chain_size(output_format, Extent::rectangle(width, height))
-		.ok_or(MipGenerationError::UnsupportedFormat(output_format))?;
-	if output.len() != expected {
-		return Err(MipGenerationError::BufferSizeMismatch {
-			expected,
-			got: output.len(),
-		});
+		let lower_levels = generate_owned_lower_mip_chain(filtering_format(output_format), gamma, width, height, base_level)?;
+		encode_levels(
+			output_format,
+			std::iter::once(MipLevel {
+				width,
+				height,
+				data: base_level,
+			})
+			.chain(lower_levels.levels()),
+			output,
+		);
+		Ok(())
 	}
-
-	let lower_levels = generate_owned_lower_mip_chain(filtering_format(output_format), gamma, width, height, base_level)?;
-	encode_levels(
-		output_format,
-		std::iter::once(MipLevel {
-			width,
-			height,
-			data: base_level,
-		})
-		.chain(lower_levels.levels()),
-		output,
-	);
-	Ok(())
 }
 
 /// Returns the levels below a `width` by `height` base level as stored back to back in `data`.
 ///
-/// This is the layout the GPU path reads filtered levels back in, with `bytes_per_pixel` per texel.
+/// The CPU filter writes lower levels in this layout and the GPU path reads them back in it, with `bytes_per_pixel`
+/// per texel.
 pub(crate) fn packed_lower_levels(
 	width: u32,
 	height: u32,
@@ -273,42 +242,9 @@ pub fn encoded_mip_chain_size(format: Formats, extent: Extent) -> Option<usize> 
 /// Returns the stored size of one level in a format the image processor can encode.
 pub(crate) fn encoded_mip_level_size(format: Formats, extent: Extent) -> Option<usize> {
 	match format {
-		Formats::BC5
-		| Formats::BC5SNORM
-		| Formats::BC7
-		| Formats::BC7SRGB
-		| Formats::RG8
-		| Formats::RG16
-		| Formats::RGBA8
-		| Formats::RGBA8SRGB
-		| Formats::R16F
-		| Formats::RGBA16
-		| Formats::RGBA16F => format.level_size(extent),
 		Formats::RGB8 | Formats::RGB16 => None,
+		format => format.level_size(extent),
 	}
-}
-
-/// Lays out every level below the base level back to back and returns the ranges, their count, and the total size.
-fn lower_level_layout(
-	width: u32,
-	height: u32,
-	bytes_per_pixel: usize,
-) -> Result<([OwnedMipRange; MAX_MIP_LEVELS], usize, usize), MipGenerationError> {
-	let mut levels = [OwnedMipRange::EMPTY; MAX_MIP_LEVELS];
-	let mut level_count = 0usize;
-	let mut offset = 0usize;
-	for (level_width, level_height) in mip_extents(width, height).skip(1) {
-		let size = expected_size(level_width, level_height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
-		levels[level_count] = OwnedMipRange {
-			width: level_width,
-			height: level_height,
-			offset,
-			size,
-		};
-		offset = offset.checked_add(size).ok_or(MipGenerationError::DimensionsTooLarge)?;
-		level_count += 1;
-	}
-	Ok((levels, level_count, offset))
 }
 
 /// Generates packed lower mip levels using one output allocation.
@@ -323,40 +259,35 @@ fn generate_owned_lower_mip_chain(
 		return Err(MipGenerationError::ZeroDimensions);
 	}
 	let bytes_per_pixel = bytes_per_pixel(format).ok_or(MipGenerationError::UnsupportedFormat(format))?;
-	let expected_base_size = expected_size(width, height, bytes_per_pixel).ok_or(MipGenerationError::DimensionsTooLarge)?;
+	let expected_base_size = (width as usize)
+		.checked_mul(height as usize)
+		.and_then(|texels| texels.checked_mul(bytes_per_pixel))
+		.ok_or(MipGenerationError::DimensionsTooLarge)?;
 	if base_level.len() != expected_base_size {
 		return Err(MipGenerationError::BufferSizeMismatch {
 			expected: expected_base_size,
 			got: base_level.len(),
 		});
 	}
-	let (levels, level_count, total_size) = lower_level_layout(width, height, bytes_per_pixel)?;
-
-	let mut data = vec![0_u8; total_size];
-	let (mut source_width, mut source_height) = (width, height);
-	let mut source = None;
-	for level in &levels[..level_count] {
-		let (completed, destination) = data.split_at_mut(level.offset);
-		// Each level filters the one before it, which the previous iteration just wrote.
-		let source_bytes = source
-			.map(|range: std::ops::Range<usize>| &completed[range])
-			.unwrap_or(base_level);
-		downsample_level(
-			format,
-			gamma,
-			source_width,
-			source_height,
-			source_bytes,
-			&mut destination[..level.size],
-		)?;
-		source = Some(level.offset..level.offset + level.size);
-		(source_width, source_height) = (level.width, level.height);
+	// The lower levels together are smaller than the base level, so their sizes can't overflow.
+	let mut data = vec![0_u8; packed_lower_levels_size(width, height, bytes_per_pixel)];
+	// Each level filters the one before it, which the previous iteration just wrote.
+	let (mut source, mut remaining) = (base_level, data.as_mut_slice());
+	for ((source_width, source_height), (level_width, level_height)) in
+		mip_extents(width, height).zip(mip_extents(width, height).skip(1))
+	{
+		let (destination, rest) =
+			std::mem::take(&mut remaining).split_at_mut(level_width as usize * level_height as usize * bytes_per_pixel);
+		downsample_level(format, gamma, source_width, source_height, source, destination)?;
+		source = destination;
+		remaining = rest;
 	}
 
 	Ok(OwnedMipChain {
-		levels,
-		level_count,
-		data: data.into_boxed_slice(),
+		width,
+		height,
+		bytes_per_pixel,
+		data,
 	})
 }
 
@@ -366,10 +297,6 @@ fn bytes_per_pixel(format: Formats) -> Option<usize> {
 		Formats::R16F | Formats::RGBA16F => None,
 		format => format.texel_bytes(),
 	}
-}
-
-fn expected_size(width: u32, height: u32, bytes_per_pixel: usize) -> Option<usize> {
-	(width as usize).checked_mul(height as usize)?.checked_mul(bytes_per_pixel)
 }
 
 /// Downsamples one level according to format and channel depth.
@@ -390,16 +317,7 @@ fn downsample_level(
 		Formats::RGB16 => downsample_u16::<3>(source_width, source_height, source, destination),
 		Formats::RGBA16 => downsample_u16::<4>(source_width, source_height, source, destination),
 		// Packed RG formats filter as their RGBA filtering format and are truncated when each level is encoded.
-		Formats::RG8
-		| Formats::RG16
-		| Formats::R16F
-		| Formats::RGBA16F
-		| Formats::BC5
-		| Formats::BC5SNORM
-		| Formats::BC7
-		| Formats::BC7SRGB => {
-			return Err(MipGenerationError::UnsupportedFormat(format));
-		}
+		_ => return Err(MipGenerationError::UnsupportedFormat(format)),
 	}
 
 	Ok(())

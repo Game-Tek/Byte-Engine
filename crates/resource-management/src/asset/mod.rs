@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 
 use crate::{
 	processors::processor::implementations::image::{
-		ImageDescription, ImageSource, Semantic, gamma_from_semantic, process_image_with_mips_in,
+		ImageDescription, ImageSource, Semantic, gamma_from_semantic, process_image_in,
 	},
 	resources::mips::MipGenerator,
 };
@@ -158,10 +158,8 @@ pub(crate) async fn store_imported_image(
 	let description = ImageDescription {
 		semantic,
 		gamma: gamma_from_semantic(semantic),
-		generate_mipmaps: mip_generator.is_some(),
 	};
-	let mip_generator = mip_generator.unwrap_or(&MipGenerator::Cpu);
-	let (resource, data) = process_image_with_mips_in(id, description, source, context.allocator(), mip_generator).await?;
+	let (resource, data) = process_image_in(id, description, source, context.allocator(), mip_generator).await?;
 
 	context.store_resource(resource, &data).await.map(|_| ())
 }

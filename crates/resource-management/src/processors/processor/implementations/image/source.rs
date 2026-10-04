@@ -59,7 +59,7 @@ pub struct ImageSource<'a> {
 }
 
 impl<'a> ImageSource<'a> {
-	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image`] or its allocator-aware variants.
+	/// Creates a borrowed two-dimensional source view that can be passed to [`super::process_image_in`].
 	pub fn new(extent: Extent, channels: SourceChannels, encoding: SourceEncoding, data: &'a [u8]) -> Self {
 		Self {
 			extent,
@@ -119,14 +119,12 @@ impl<A: Allocator> CanonicalImageData<'_, A> {
 	/// Returns the texels for in-place editing, copying borrowed decoder output into `allocator` first.
 	pub(crate) fn to_mut(&mut self, allocator: A) -> &mut [u8] {
 		if let Self::Borrowed(data) = *self {
-			let mut owned = Vec::with_capacity_in(data.len(), allocator);
-			owned.extend_from_slice(data);
-			*self = Self::Owned(owned.into_boxed_slice());
+			*self = Self::Owned(data.to_vec_in(allocator).into_boxed_slice());
 		}
-		match self {
-			Self::Owned(data) => data,
-			Self::Borrowed(_) => unreachable!("borrowed texels were copied above"),
-		}
+		let Self::Owned(data) = self else {
+			unreachable!("borrowed texels were copied above")
+		};
+		data
 	}
 }
 

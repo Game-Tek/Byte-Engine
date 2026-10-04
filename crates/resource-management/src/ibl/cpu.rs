@@ -276,18 +276,16 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 			if width == source_width && height == source_height {
 				write_sanitized_source(&source_mips[0].pixels, &mut data[offset..level_end]);
 			} else {
-				resample_environment(
-					&source_mips[0].pixels,
-					source_width,
-					source_height,
-					width,
-					height,
-					&mut data[offset..level_end],
-				);
+				write_lat_long(width, height, &mut data[offset..level_end], |direction| {
+					sample_direction(&source_mips[0].pixels, source_width, source_height, direction)
+				});
 			}
 		} else {
 			let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
-			prefilter_specular_level(&source_mips, width, height, roughness, &mut data[offset..level_end]);
+			let samples = ggx_half_vector_samples(roughness);
+			write_lat_long(width, height, &mut data[offset..level_end], |normal| {
+				prefiltered_radiance(&source_mips, &samples, normal, roughness)
+			});
 		}
 		streams.push(StreamDescription::new(
 			ibl_prefiltered_specular_stream_name(level as u32),
@@ -298,7 +296,10 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 	}
 
 	let diffuse_end = offset.checked_add(diffuse_size).ok_or(IBLBakeError::DimensionsTooLarge)?;
-	convolve_diffuse_irradiance(&source_mips, DIFFUSE_WIDTH, DIFFUSE_HEIGHT, &mut data[offset..diffuse_end]);
+	let samples = cosine_hemisphere_samples();
+	write_lat_long(DIFFUSE_WIDTH, DIFFUSE_HEIGHT, &mut data[offset..diffuse_end], |normal| {
+		diffuse_irradiance(&source_mips, &samples, normal)
+	});
 	streams.push(StreamDescription::new(
 		IBL_DIFFUSE_IRRADIANCE_STREAM_NAME,
 		diffuse_size,
@@ -341,18 +342,20 @@ pub fn bake_image_ibl_in<'a>(
 		let range = layout.specular_range(level);
 		let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
 		if level == 0 {
-			resample_environment_cubemap(
-				&source_mips[0].pixels,
-				source_width,
-				source_height,
-				face_size,
-				&mut data[range],
-			);
+			write_cubemap(face_size, &mut data[range], |direction| {
+				sample_direction(&source_mips[0].pixels, source_width, source_height, direction)
+			});
 		} else {
-			prefilter_specular_cubemap(&source_mips, face_size, roughness, &mut data[range]);
+			let samples = ggx_half_vector_samples(roughness);
+			write_cubemap(face_size, &mut data[range], |normal| {
+				prefiltered_radiance(&source_mips, &samples, normal, roughness)
+			});
 		}
 	}
-	convolve_diffuse_irradiance_cubemap(&source_mips, DIFFUSE_CUBE_FACE_SIZE, &mut data[layout.diffuse_range()]);
+	let samples = cosine_hemisphere_samples();
+	write_cubemap(DIFFUSE_CUBE_FACE_SIZE, &mut data[layout.diffuse_range()], |normal| {
+		diffuse_irradiance(&source_mips, &samples, normal)
+	});
 
 	Ok(layout.finish(data))
 }
@@ -509,190 +512,83 @@ fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
 	}
 }
 
-fn resample_environment(
-	source: &[Radiance],
-	source_width: u32,
-	source_height: u32,
-	destination_width: u32,
-	destination_height: u32,
-	destination: &mut [u8],
-) {
-	for y in 0..destination_height {
-		for x in 0..destination_width {
-			let direction = texel_direction(x, y, destination_width, destination_height);
-			let radiance = sample_direction(source, source_width, source_height, direction);
-			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+/// Writes the radiance `radiance` returns for each texel direction of a `width` by `height` lat-long destination.
+fn write_lat_long(width: u32, height: u32, destination: &mut [u8], radiance: impl Fn(Vector) -> Radiance) {
+	for y in 0..height {
+		for x in 0..width {
+			let offset = ((y * width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
+			write_rgba16f(
+				&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL],
+				radiance(texel_direction(x, y, width, height)),
+			);
 		}
 	}
 }
 
-fn resample_environment_cubemap(
-	source: &[Radiance],
-	source_width: u32,
-	source_height: u32,
-	face_size: u32,
-	destination: &mut [u8],
-) {
+/// Writes the radiance `radiance` returns for each texel direction of a cubemap destination, face after face.
+fn write_cubemap(face_size: u32, destination: &mut [u8], radiance: impl Fn(Vector) -> Radiance) {
 	for face in 0..CUBE_FACE_COUNT as u32 {
 		for y in 0..face_size {
 			for x in 0..face_size {
-				let direction = cubemap_texel_direction(face, x, y, face_size);
-				let radiance = sample_direction(source, source_width, source_height, direction);
-				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-				write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
-			}
-		}
-	}
-}
-
-/// Stores irradiance divided by pi, allowing Lambertian shading to multiply this map by albedo directly.
-fn convolve_diffuse_irradiance(
-	source_mips: &[SourceMIP<'_>],
-	destination_width: u32,
-	destination_height: u32,
-	destination: &mut [u8],
-) {
-	let samples = cosine_hemisphere_samples();
-
-	for y in 0..destination_height {
-		for x in 0..destination_width {
-			let normal = texel_direction(x, y, destination_width, destination_height);
-			let (tangent, bitangent) = orthonormal_basis(normal);
-			let mut sum = [0.0_f64; 3];
-
-			for &local_direction in &samples {
-				let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
-				let pdf = local_direction.z() / PI;
-				let radiance = sample_filtered_direction(source_mips, direction, pdf, DIFFUSE_SAMPLE_COUNT);
-				for channel in 0..3 {
-					sum[channel] += radiance[channel] as f64;
-				}
-			}
-
-			let scale = 1.0 / DIFFUSE_SAMPLE_COUNT as f64;
-			let radiance = [(sum[0] * scale) as f32, (sum[1] * scale) as f32, (sum[2] * scale) as f32];
-			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
-		}
-	}
-}
-
-fn convolve_diffuse_irradiance_cubemap(source_mips: &[SourceMIP<'_>], face_size: u32, destination: &mut [u8]) {
-	let samples = cosine_hemisphere_samples();
-	for face in 0..CUBE_FACE_COUNT as u32 {
-		for y in 0..face_size {
-			for x in 0..face_size {
-				let normal = cubemap_texel_direction(face, x, y, face_size);
-				let (tangent, bitangent) = orthonormal_basis(normal);
-				let mut sum = [0.0_f64; 3];
-				for &local_direction in &samples {
-					let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
-					let radiance =
-						sample_filtered_direction(source_mips, direction, local_direction.z() / PI, DIFFUSE_SAMPLE_COUNT);
-					for channel in 0..3 {
-						sum[channel] += radiance[channel] as f64;
-					}
-				}
-				let scale = 1.0 / DIFFUSE_SAMPLE_COUNT as f64;
 				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
 				write_rgba16f(
 					&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL],
-					[(sum[0] * scale) as f32, (sum[1] * scale) as f32, (sum[2] * scale) as f32],
+					radiance(cubemap_texel_direction(face, x, y, face_size)),
 				);
 			}
 		}
 	}
 }
 
-fn prefilter_specular_level(
-	source_mips: &[SourceMIP<'_>],
-	destination_width: u32,
-	destination_height: u32,
-	roughness: f32,
-	destination: &mut [u8],
-) {
-	let samples = ggx_half_vector_samples(roughness);
-
-	for y in 0..destination_height {
-		for x in 0..destination_width {
-			let normal = texel_direction(x, y, destination_width, destination_height);
-			let view = normal;
-			let (tangent, bitangent) = orthonormal_basis(normal);
-			let mut sum = [0.0_f64; 3];
-			let mut total_weight = 0.0_f64;
-
-			for &local_half_vector in &samples {
-				let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
-				let view_dot_half = view.dot(half_vector).max(0.0);
-				let light = normalize(half_vector * (2.0 * view_dot_half) - view);
-				let normal_dot_light = normal.dot(light).max(0.0);
-				if normal_dot_light <= 0.0 {
-					continue;
-				}
-
-				let normal_dot_half = normal.dot(half_vector).max(0.0);
-				let pdf = ggx_light_pdf(normal_dot_half, view_dot_half, roughness);
-				let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
-				let weight = normal_dot_light as f64;
-				for channel in 0..3 {
-					sum[channel] += radiance[channel] as f64 * weight;
-				}
-				total_weight += weight;
-			}
-
-			let radiance = if total_weight > 0.0 {
-				[
-					(sum[0] / total_weight) as f32,
-					(sum[1] / total_weight) as f32,
-					(sum[2] / total_weight) as f32,
-				]
-			} else {
-				sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, normal)
-			};
-			let offset = ((y * destination_width + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-			write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
+/// Returns the irradiance around `normal` divided by pi, allowing Lambertian shading to multiply it by albedo directly.
+fn diffuse_irradiance(source_mips: &[SourceMIP<'_>], samples: &[Vector; DIFFUSE_SAMPLE_COUNT], normal: Vector) -> Radiance {
+	let (tangent, bitangent) = orthonormal_basis(normal);
+	let mut sum = [0.0_f64; 3];
+	for &local_direction in samples {
+		let direction = tangent_to_world(local_direction, tangent, bitangent, normal);
+		let pdf = local_direction.z() / PI;
+		let radiance = sample_filtered_direction(source_mips, direction, pdf, DIFFUSE_SAMPLE_COUNT);
+		for channel in 0..3 {
+			sum[channel] += radiance[channel] as f64;
 		}
 	}
+	let scale = 1.0 / DIFFUSE_SAMPLE_COUNT as f64;
+	sum.map(|total| (total * scale) as f32)
 }
 
-fn prefilter_specular_cubemap(source_mips: &[SourceMIP<'_>], face_size: u32, roughness: f32, destination: &mut [u8]) {
-	let samples = ggx_half_vector_samples(roughness);
-	for face in 0..CUBE_FACE_COUNT as u32 {
-		for y in 0..face_size {
-			for x in 0..face_size {
-				let normal = cubemap_texel_direction(face, x, y, face_size);
-				let (tangent, bitangent) = orthonormal_basis(normal);
-				let mut sum = [0.0_f64; 3];
-				let mut total_weight = 0.0_f64;
-				for &local_half_vector in &samples {
-					let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
-					let view_dot_half = normal.dot(half_vector).max(0.0);
-					let light = normalize(half_vector * (2.0 * view_dot_half) - normal);
-					let normal_dot_light = normal.dot(light).max(0.0);
-					if normal_dot_light <= 0.0 {
-						continue;
-					}
-					let pdf = ggx_light_pdf(normal.dot(half_vector).max(0.0), view_dot_half, roughness);
-					let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
-					for channel in 0..3 {
-						sum[channel] += radiance[channel] as f64 * normal_dot_light as f64;
-					}
-					total_weight += normal_dot_light as f64;
-				}
-				let radiance = if total_weight > 0.0 {
-					[
-						(sum[0] / total_weight) as f32,
-						(sum[1] / total_weight) as f32,
-						(sum[2] / total_weight) as f32,
-					]
-				} else {
-					sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, normal)
-				};
-				let offset = (((face * face_size + y) * face_size + x) as usize) * BYTES_PER_RGBA16F_PIXEL;
-				write_rgba16f(&mut destination[offset..offset + BYTES_PER_RGBA16F_PIXEL], radiance);
-			}
+/// Returns the GGX-prefiltered radiance around `normal` for `roughness`, viewed along the normal.
+fn prefiltered_radiance(
+	source_mips: &[SourceMIP<'_>],
+	samples: &[Vector; SPECULAR_SAMPLE_COUNT],
+	normal: Vector,
+	roughness: f32,
+) -> Radiance {
+	let (tangent, bitangent) = orthonormal_basis(normal);
+	let mut sum = [0.0_f64; 3];
+	let mut total_weight = 0.0_f64;
+	for &local_half_vector in samples {
+		let half_vector = normalize(tangent_to_world(local_half_vector, tangent, bitangent, normal));
+		// The view is the normal, so this cosine is also the normal-half cosine the PDF needs.
+		let view_dot_half = normal.dot(half_vector).max(0.0);
+		let light = normalize(half_vector * (2.0 * view_dot_half) - normal);
+		let normal_dot_light = normal.dot(light).max(0.0);
+		if normal_dot_light <= 0.0 {
+			continue;
 		}
+
+		let pdf = ggx_light_pdf(view_dot_half, view_dot_half, roughness);
+		let radiance = sample_filtered_direction(source_mips, light, pdf, SPECULAR_SAMPLE_COUNT);
+		let weight = normal_dot_light as f64;
+		for channel in 0..3 {
+			sum[channel] += radiance[channel] as f64 * weight;
+		}
+		total_weight += weight;
+	}
+
+	if total_weight > 0.0 {
+		sum.map(|total| (total / total_weight) as f32)
+	} else {
+		sample_direction(&source_mips[0].pixels, source_mips[0].width, source_mips[0].height, normal)
 	}
 }
 
@@ -708,27 +604,22 @@ fn ggx_light_pdf(normal_dot_half: f32, view_dot_half: f32, roughness: f32) -> f3
 /// Filters a directional sample according to the solid angle represented by its Monte Carlo PDF.
 fn sample_filtered_direction(source_mips: &[SourceMIP<'_>], direction: Vector, pdf: f32, sample_count: usize) -> Radiance {
 	let base = &source_mips[0];
+	let (u, v) = direction_uv(direction);
 	let sample_solid_angle = 1.0 / (sample_count as f32 * pdf.max(f32::MIN_POSITIVE));
-	let texel_solid_angle = direction_texel_solid_angle(base.width, base.height, direction);
+	// The exact spherical area of the base lat-long texel containing the direction.
+	let row = (v * base.height as f32)
+		.floor()
+		.clamp(0.0, base.height.saturating_sub(1) as f32) as u32;
+	let texel_solid_angle = lat_long_row_solid_angle(base.width, base.height, row);
 	let lod = (0.5 * (sample_solid_angle / texel_solid_angle).max(1.0).log2()).clamp(0.0, (source_mips.len() - 1) as f32);
 	let lower_level = lod.floor() as usize;
 	let upper_level = (lower_level + 1).min(source_mips.len() - 1);
 	let blend = lod - lower_level as f32;
-	let lower = sample_mip_direction(&source_mips[lower_level], direction);
-	let upper = sample_mip_direction(&source_mips[upper_level], direction);
+	let [lower, upper] = [lower_level, upper_level].map(|level| {
+		let mip = &source_mips[level];
+		sample_lat_long_uv(&mip.pixels, mip.width, mip.height, u, v)
+	});
 	lerp_radiance(lower, upper, blend)
-}
-
-fn sample_mip_direction(mip: &SourceMIP<'_>, direction: Vector) -> Radiance {
-	sample_direction(&mip.pixels, mip.width, mip.height, direction)
-}
-
-/// Returns the exact spherical area of the base lat-long texel containing a direction.
-fn direction_texel_solid_angle(width: u32, height: u32, direction: Vector) -> f32 {
-	let direction = normalize(direction);
-	let v = 0.5 - direction.y().clamp(-1.0, 1.0).asin() / PI;
-	let row = (v * height as f32).floor().clamp(0.0, height.saturating_sub(1) as f32) as u32;
-	lat_long_row_solid_angle(width, height, row)
 }
 
 /// Returns one texel's solid angle for a row of an equirectangular image.
@@ -802,10 +693,17 @@ fn cubemap_texel_direction(face: u32, x: u32, y: u32, face_size: u32) -> Vector 
 }
 
 fn sample_direction(source: &[Radiance], width: u32, height: u32, direction: Vector) -> Radiance {
-	let direction = normalize(direction);
-	let u = direction.z().atan2(direction.x()) / TAU + 0.5;
-	let v = 0.5 - direction.y().clamp(-1.0, 1.0).asin() / PI;
+	let (u, v) = direction_uv(direction);
 	sample_lat_long_uv(source, width, height, u, v)
+}
+
+/// Returns the lat-long coordinates of a direction.
+fn direction_uv(direction: Vector) -> (f32, f32) {
+	let direction = normalize(direction);
+	(
+		direction.z().atan2(direction.x()) / TAU + 0.5,
+		0.5 - direction.y().clamp(-1.0, 1.0).asin() / PI,
+	)
 }
 
 fn sample_lat_long_uv(source: &[Radiance], width: u32, height: u32, u: f32, v: f32) -> Radiance {

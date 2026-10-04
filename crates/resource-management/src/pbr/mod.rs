@@ -45,23 +45,19 @@ impl BrdfMaterialDescription {
 		mut packing_for: impl FnMut(u32) -> Option<ChannelPacking>,
 	) -> Result<(), BrdfMaterialValidationError> {
 		for index in 0..self.nodes.len() {
-			let BrdfNode::ExtractChannel { source, channel } = self.nodes[index] else {
-				continue;
-			};
-			let BrdfNode::Texture(texture) = self.node(source)? else {
-				continue;
-			};
-			let Some(packing) = packing_for(texture.image_index) else {
-				continue;
-			};
-			let stored = packing
-				.stored_channel(channel.index())
-				.and_then(BrdfChannel::from_index)
-				.ok_or(BrdfMaterialValidationError::ChannelNotStored {
-					node: BrdfNodeId::new(index as u32),
-					channel,
-				})?;
-			self.nodes[index] = BrdfNode::ExtractChannel { source, channel: stored };
+			if let BrdfNode::ExtractChannel { source, channel } = self.nodes[index]
+				&& let BrdfNode::Texture(texture) = self.node(source)?
+				&& let Some(packing) = packing_for(texture.image_index)
+			{
+				let stored = packing
+					.stored_channel(channel.index())
+					.and_then(BrdfChannel::from_index)
+					.ok_or(BrdfMaterialValidationError::ChannelNotStored {
+						node: BrdfNodeId::new(index as u32),
+						channel,
+					})?;
+				self.nodes[index] = BrdfNode::ExtractChannel { source, channel: stored };
+			}
 		}
 		Ok(())
 	}
@@ -244,12 +240,7 @@ pub enum BrdfChannel {
 impl BrdfChannel {
 	/// Returns the channel's position in an RGBA texel.
 	pub fn index(self) -> usize {
-		match self {
-			Self::Red => 0,
-			Self::Green => 1,
-			Self::Blue => 2,
-			Self::Alpha => 3,
-		}
+		self as usize
 	}
 
 	/// Returns the channel at `index` in an RGBA texel.

@@ -560,12 +560,8 @@ fn write_f32_components<const N: usize>(bytes: &mut Vec<u8>, value: &[f32; N]) {
 
 fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<AABB<ModelSpace>> {
 	let first = *positions.first()?;
-	if first.iter().any(|component| !component.is_finite()) {
-		return None;
-	}
-	let mut minimum = first;
-	let mut maximum = first;
-	for position in &positions[1..] {
+	let (mut minimum, mut maximum) = (first, first);
+	for position in positions {
 		if position.iter().any(|component| !component.is_finite()) {
 			return None;
 		}

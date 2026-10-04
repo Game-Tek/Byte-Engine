@@ -17,7 +17,6 @@ use crate::{
 		pipeline::{Attachment, BlendMode, CullMode, FaceWinding, FillMode, Format, Pipeline, PipelineKind, PushConstantRange},
 	},
 	shader::ShaderGenerationSettings,
-	types::ShaderTypes,
 };
 
 /// The `ParticleSystemAssetHandler` struct exists to bake `.particles` module lists into a runnable GPU particle system.
@@ -69,30 +68,27 @@ impl AssetHandler for ParticleSystemAssetHandler {
 			})?;
 
 		let shader = |stage: &str| format!("{container}#shaders/{stage}");
-		for (stage, source, kind, settings) in [
+		for (stage, source, settings) in [
 			(
 				"simulate",
 				generator::simulate_program(&system),
-				ShaderTypes::Compute,
 				ShaderGenerationSettings::compute(Extent::line(generator::SIMULATION_WORKGROUP_SIZE)),
 			),
 			(
 				"vertex",
 				generator::vertex_program(&system),
-				ShaderTypes::Vertex,
 				ShaderGenerationSettings::vertex(),
 			),
 			(
 				"fragment",
 				generator::fragment_program(&system.render.shape),
-				ShaderTypes::Fragment,
 				ShaderGenerationSettings::fragment(),
 			),
 		] {
 			let id = shader(stage);
 			let (compiled, bytes) = self
 				.compiler
-				.compile(&id, &source, None, kind, settings.name(id.clone()))
+				.compile(&source, None, settings.name(id.clone()))
 				.await
 				.map_err(|error| {
 					context.error(format_args!(

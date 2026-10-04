@@ -2,9 +2,11 @@
 pub struct BESLShaderAssetHandler {
 	compiler: Box<dyn ShaderCompiler>,
 	generator: Option<Box<dyn ProgramGenerator>>,
-	/// Empty material context handed to [`ProgramGenerator::transform`], since standalone shaders have no material.
-	standalone_context: crate::asset::JsonObject,
 }
+
+/// The empty material context handed to [`ProgramGenerator::transform`], since standalone shaders have no material.
+static STANDALONE_CONTEXT: LazyLock<JsonObject> =
+	LazyLock::new(|| JsonObject::from_iter([("variables".to_string(), serde_json::Value::Array(Vec::new()))]));
 
 impl Default for BESLShaderAssetHandler {
 	fn default() -> Self {
@@ -17,7 +19,6 @@ impl BESLShaderAssetHandler {
 		Self {
 			compiler: Box::new(PlatformShaderCompilerAdapter),
 			generator: None,
-			standalone_context: standalone_shader_context(),
 		}
 	}
 
@@ -44,9 +45,7 @@ impl AssetHandler for BESLShaderAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let source = std::str::from_utf8(&source)
-			.map_err(|_| LoadErrors::FailedToProcess)?
-			.to_string();
+		let source = std::str::from_utf8(&source).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let settings = parse_shader_settings(spec.as_ref()).map_err(|error| {
 			log::error!(
@@ -58,23 +57,12 @@ impl AssetHandler for BESLShaderAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 
-		let id_string = id.as_ref().to_string();
-
-		let generator = self
-			.generator
-			.as_deref()
-			.map(|generator| (generator, &self.standalone_context));
+		let generator = self.generator.as_deref().map(|generator| (generator, &*STANDALONE_CONTEXT));
 
 		// Platform compilation may invoke native shader toolchains, so it must not block the asset executor.
 		let (shader, bytes) = self
 			.compiler
-			.compile(
-				&id_string,
-				&source,
-				generator,
-				settings.stage,
-				settings.generation_settings(&id_string),
-			)
+			.compile(source, generator, settings.name(id.as_ref().to_string()))
 			.await
 			.map_err(|error| {
 				log::error!("{}", shader_compilation_error_message(id.as_ref(), &error));
@@ -92,12 +80,11 @@ impl AssetHandler for BESLShaderAssetHandler {
 /// Production handlers use [`PlatformShaderCompilerAdapter`], which runs [`prepare_besl_shader`] and
 /// [`PreparedBeslShader::compile`].
 pub(crate) trait ShaderCompiler: Send + Sync {
+	/// Compiles `source` for the stage in `settings` into the shader named by `settings`.
 	fn compile<'a>(
 		&'a self,
-		id: &'a str,
 		source: &'a str,
-		generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
-		stage: ShaderTypes,
+		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>>;
 }
@@ -108,87 +95,23 @@ pub(crate) struct PlatformShaderCompilerAdapter;
 impl ShaderCompiler for PlatformShaderCompilerAdapter {
 	fn compile<'a>(
 		&'a self,
-		id: &'a str,
 		source: &'a str,
-		generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
-		stage: ShaderTypes,
+		generator: Option<(&'a dyn ProgramGenerator, &'a JsonObject)>,
 		settings: ShaderGenerationSettings,
 	) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 		Box::pin(async move {
 			let parsed = besl::parse(source).map_err(|error| {
 				format!("Failed to parse BESL source ({error:?}). The most likely cause is invalid shader syntax.")
 			})?;
-			prepare_besl_shader(parsed, generator, stage, &settings)?.compile(id).await
+			prepare_besl_shader(parsed, generator, &settings)?
+				.compile(&settings.name)
+				.await
 		})
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BESLShaderSettings {
-	stage: ShaderTypes,
-	workgroup_size: Option<(u32, u32, u32)>,
-	maximum_mesh_threadgroups: Option<u32>,
-	maximum_vertices: Option<u32>,
-	maximum_primitives: Option<u32>,
-}
-
-/// Builds the empty material context that standalone program generators receive, since standalone shaders have no material.
-fn standalone_shader_context() -> crate::asset::JsonObject {
-	let mut context = crate::asset::JsonObject::new();
-	context.insert("variables".to_string(), serde_json::Value::Array(Vec::new()));
-	context
-}
-
-impl BESLShaderSettings {
-	fn generation_settings(self, name: &str) -> ShaderGenerationSettings {
-		let settings = match self.stage {
-			ShaderTypes::Vertex => ShaderGenerationSettings::vertex(),
-			ShaderTypes::Fragment => ShaderGenerationSettings::fragment(),
-			ShaderTypes::Compute => {
-				let (width, height, depth) = self.workgroup_size.expect(
-					"Missing compute workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
-				);
-
-				ShaderGenerationSettings::compute(Extent::new(width, height, depth))
-			}
-			ShaderTypes::Task => {
-				let (width, height, depth) = self.workgroup_size.expect(
-					"Missing task workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
-				);
-
-				ShaderGenerationSettings::task(
-					Extent::new(width, height, depth),
-					self.maximum_mesh_threadgroups.expect(
-						"Missing task mesh-threadgroup limit. The most likely cause is that validated BESL shader settings were not preserved.",
-					),
-				)
-			}
-			ShaderTypes::Mesh => {
-				let (width, height, depth) = self.workgroup_size.expect(
-					"Missing mesh workgroup. The most likely cause is that validated BESL shader settings were not preserved.",
-				);
-
-				ShaderGenerationSettings::mesh(
-					self.maximum_vertices.expect(
-						"Missing mesh vertex limit. The most likely cause is that validated BESL shader settings were not preserved.",
-					),
-					self.maximum_primitives.expect(
-						"Missing mesh primitive limit. The most likely cause is that validated BESL shader settings were not preserved.",
-					),
-					Extent::new(width, height, depth),
-				)
-			}
-			_ => unreachable!(
-				"Unsupported standalone BESL shader stage. The most likely cause is invalid shader settings validation."
-			),
-		};
-
-		settings.name(name.to_string())
-	}
-}
-
 /// Reads the stage contract used to compile one standalone BESL source file.
-fn parse_shader_settings(spec: Option<&BEADType>) -> Result<BESLShaderSettings, String> {
+fn parse_shader_settings(spec: Option<&BEADType>) -> Result<ShaderGenerationSettings, String> {
 	let spec = spec.ok_or_else(|| {
 		"Missing BESL shader settings. The most likely cause is that the source has no adjacent `.besl.bead` file.".to_string()
 	})?;
@@ -197,60 +120,35 @@ fn parse_shader_settings(spec: Option<&BEADType>) -> Result<BESLShaderSettings, 
 		"Missing BESL shader stage. The most likely cause is that `stage` is absent or is not a string.".to_string()
 	})?;
 
-	let stage = match stage {
-		"Vertex" => ShaderTypes::Vertex,
-		"Fragment" => ShaderTypes::Fragment,
-		"Compute" => ShaderTypes::Compute,
-		"Task" => ShaderTypes::Task,
-		"Mesh" => ShaderTypes::Mesh,
+	// Only compute, task, and mesh stages read a workgroup, which defaults to one thread.
+	let workgroup = || {
+		spec.get("workgroup")
+			.map_or(Ok(WorkgroupSize::DEFAULT.into()), parse_workgroup_size)
+	};
+
+	Ok(match stage {
+		"Vertex" => ShaderGenerationSettings::vertex(),
+		"Fragment" => ShaderGenerationSettings::fragment(),
+		"Compute" => ShaderGenerationSettings::compute(workgroup()?),
+		"Task" => ShaderGenerationSettings::task(
+			workgroup()?,
+			parse_positive_u32_setting(spec, "maximum_mesh_threadgroups", "task mesh-threadgroup limit")?,
+		),
+		"Mesh" => {
+			// The workgroup is validated before the mesh limits.
+			let local_size = workgroup()?;
+
+			ShaderGenerationSettings::mesh(
+				parse_positive_u32_setting(spec, "maximum_vertices", "mesh vertex limit")?,
+				parse_positive_u32_setting(spec, "maximum_primitives", "mesh primitive limit")?,
+				local_size,
+			)
+		}
 		stage => {
 			return Err(format!(
 				"Unsupported BESL shader stage '{stage}'. The most likely cause is that `stage` is not `Vertex`, `Fragment`, `Compute`, `Task`, or `Mesh`."
 			));
 		}
-	};
-
-	let workgroup_size = if matches!(stage, ShaderTypes::Compute | ShaderTypes::Task | ShaderTypes::Mesh) {
-		Some(match spec.get("workgroup") {
-			Some(workgroup) => parse_workgroup_size(workgroup)?,
-			None => WorkgroupSize::DEFAULT.into(),
-		})
-	} else {
-		None
-	};
-
-	let maximum_mesh_threadgroups = if stage == ShaderTypes::Task {
-		Some(parse_positive_u32_setting(
-			spec,
-			"maximum_mesh_threadgroups",
-			"task mesh-threadgroup limit",
-		)?)
-	} else {
-		None
-	};
-
-	let maximum_vertices = if stage == ShaderTypes::Mesh {
-		Some(parse_positive_u32_setting(spec, "maximum_vertices", "mesh vertex limit")?)
-	} else {
-		None
-	};
-
-	let maximum_primitives = if stage == ShaderTypes::Mesh {
-		Some(parse_positive_u32_setting(
-			spec,
-			"maximum_primitives",
-			"mesh primitive limit",
-		)?)
-	} else {
-		None
-	};
-
-	Ok(BESLShaderSettings {
-		stage,
-		workgroup_size,
-		maximum_mesh_threadgroups,
-		maximum_vertices,
-		maximum_primitives,
 	})
 }
 
@@ -282,9 +180,9 @@ impl WorkgroupSize {
 	const DEFAULT: Self = Self([1; 3]);
 }
 
-impl From<WorkgroupSize> for (u32, u32, u32) {
-	fn from(value: WorkgroupSize) -> Self {
-		(value.0[0], value.0[1], value.0[2])
+impl From<WorkgroupSize> for Extent {
+	fn from(WorkgroupSize([width, height, depth]): WorkgroupSize) -> Self {
+		Extent::new(width, height, depth)
 	}
 }
 
@@ -329,29 +227,22 @@ impl<'de> serde::Deserialize<'de> for WorkgroupSize {
 			where
 				A: MapAccess<'de>,
 			{
+				const FIELDS: [&str; 3] = ["width", "height", "depth"];
+
 				let mut dimensions = WorkgroupSize::DEFAULT.0;
 
 				let mut present = [false; 3];
 
 				while let Some(key) = map.next_key::<String>()? {
-					let index = match key.as_str() {
-						"width" => 0,
-						"height" => 1,
-						"depth" => 2,
-						_ => return Err(de::Error::unknown_field(&key, &["width", "height", "depth"])),
+					let Some(index) = FIELDS.iter().position(|field| *field == key) else {
+						return Err(de::Error::unknown_field(&key, &FIELDS));
 					};
 
 					if present[index] {
-						return Err(de::Error::duplicate_field(match index {
-							0 => "width",
-							1 => "height",
-							_ => "depth",
-						}));
+						return Err(de::Error::duplicate_field(FIELDS[index]));
 					}
 
-					let value = map.next_value::<u64>()?;
-
-					dimensions[index] = positive_dimension::<A::Error>(value, &key)?;
+					dimensions[index] = positive_dimension::<A::Error>(map.next_value::<u64>()?, &key)?;
 
 					present[index] = true;
 				}
@@ -376,7 +267,7 @@ fn positive_dimension<E: de::Error>(value: u64, name: &str) -> Result<u32, E> {
 }
 
 /// Deserializes positional or named workgroup dimensions and defaults omitted dimensions to one.
-fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
+fn parse_workgroup_size(value: &BEADType) -> Result<Extent, String> {
 	WorkgroupSize::deserialize(value).map(Into::into).map_err(|error| {
 		format!("Invalid shader workgroup: {error}. The most likely cause is that `workgroup` contains an invalid dimension.")
 	})
@@ -387,7 +278,7 @@ fn parse_workgroup_size(value: &BEADType) -> Result<(u32, u32, u32), String> {
 fn prepare_shader(
 	parsed: besl::parser::Node<'_>,
 	workgroup_size: Option<(u32, u32, u32)>,
-	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
+	generator: Option<(&dyn ProgramGenerator, &JsonObject)>,
 ) -> Result<(besl::NodeReference, ShaderInterface), String> {
 	let parsed = match generator {
 		Some((generator, context)) => generator.transform(parsed, context),
@@ -432,8 +323,7 @@ pub(crate) struct PreparedBeslShader {
 /// Next, call [`PreparedBeslShader::compile`].
 pub(crate) fn prepare_besl_shader(
 	parsed: besl::parser::Node<'_>,
-	generator: Option<(&dyn ProgramGenerator, &crate::asset::JsonObject)>,
-	stage: ShaderTypes,
+	generator: Option<(&dyn ProgramGenerator, &JsonObject)>,
 	settings: &ShaderGenerationSettings,
 ) -> Result<PreparedBeslShader, String> {
 	let workgroup_size = settings.stage.local_size().map(|local_size| local_size.as_tuple());
@@ -441,7 +331,7 @@ pub(crate) fn prepare_besl_shader(
 	let lowered = PlatformShaderCompiler::new().lower(settings, &program)?;
 
 	Ok(PreparedBeslShader {
-		stage,
+		stage: settings.stage.into(),
 		interface,
 		lowered,
 	})
@@ -477,29 +367,30 @@ impl PreparedBeslShader {
 		let compiled = self.lowered.compile().await?;
 
 		// Compiled reflection is a backend contract; semantic reflection supplies the authored names retained in the resource.
-		let semantic_bindings = self.interface.bindings.iter().map(|binding| {
-			(
-				binding.slot,
-				binding.kind,
-				binding.count,
-				binding.buffer_stride,
-				binding.read,
-				binding.write,
-			)
-		});
+		let bindings_match = compiled.bindings.len() == self.interface.bindings.len()
+			&& compiled
+				.bindings
+				.iter()
+				.zip(&self.interface.bindings)
+				.all(|(actual, expected)| {
+					(
+						actual.slot,
+						actual.kind,
+						actual.count,
+						actual.buffer_stride,
+						actual.read,
+						actual.write,
+					) == (
+						expected.slot,
+						expected.kind,
+						expected.count,
+						expected.buffer_stride,
+						expected.read,
+						expected.write,
+					)
+				});
 
-		let compiled_bindings = compiled.bindings.iter().map(|binding| {
-			(
-				binding.slot,
-				binding.kind,
-				binding.count,
-				binding.buffer_stride,
-				binding.read,
-				binding.write,
-			)
-		});
-
-		if !compiled_bindings.eq(semantic_bindings) {
+		if !bindings_match {
 			return Err(
 				"BESL shader reflection mismatch. The most likely cause is that the active platform compiler emitted a different resource interface than semantic evaluation."
 					.to_string(),
@@ -575,9 +466,9 @@ pub(crate) fn shader_compilation_error_message(id: &str, error: &str) -> String 
 #[cfg(test)]
 mod tests {
 	use super::{
-		BESL_DOCS_PATH, BESLShaderAssetHandler, BESLShaderSettings, MACOS_SETUP_DOCS_PATH, ShaderCompiler,
-		WINDOWS_SETUP_DOCS_PATH, parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader,
-		shader_compilation_docs_path, shader_compilation_error_message,
+		BESL_DOCS_PATH, BESLShaderAssetHandler, MACOS_SETUP_DOCS_PATH, ShaderCompiler, WINDOWS_SETUP_DOCS_PATH,
+		parse_shader_settings, parse_workgroup_size, prepare_besl_shader, prepare_shader, shader_compilation_docs_path,
+		shader_compilation_error_message,
 	};
 	use crate::{
 		asset::{
@@ -619,19 +510,13 @@ mod tests {
 	impl ShaderCompiler for TestShaderCompiler {
 		fn compile<'a>(
 			&'a self,
-			id: &'a str,
 			source: &'a str,
-			generator: Option<(
-				&'a dyn crate::asset::handler::implementations::bema::ProgramGenerator,
-				&'a crate::asset::JsonObject,
-			)>,
-			stage: ShaderTypes,
+			generator: Option<(&'a dyn ProgramGenerator, &'a crate::asset::JsonObject)>,
 			settings: ShaderGenerationSettings,
 		) -> crate::r#async::BoxedFuture<'a, Result<(Shader, Box<[u8]>), String>> {
 			Box::pin(async move {
-				assert_eq!(id, "passes/resolve.besl");
+				assert_eq!(settings.name, "passes/resolve.besl");
 				assert!(source.contains("main"));
-				assert_eq!(stage, ShaderTypes::Compute);
 				assert!(matches!(
 					settings.stage,
 					Stages::Compute { local_size } if local_size == utils::Extent::new(8, 8, 1)
@@ -645,8 +530,8 @@ mod tests {
 
 				Ok((
 					Shader {
-						id: id.to_string(),
-						stage,
+						id: settings.name,
+						stage: settings.stage.into(),
 						interface: ShaderInterface {
 							workgroup_size: Some((8, 8, 1)),
 							bindings: vec![Binding::named("output", 1, BindingKind::StorageImage, 1, None, false, true)],
@@ -700,7 +585,6 @@ mod tests {
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
 			generator: None,
-			standalone_context: super::standalone_shader_context(),
 		});
 
 		assert!(asset_manager.supports("passes/resolve.besl"));
@@ -721,7 +605,6 @@ mod tests {
 		asset_manager.add_asset_handler(BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
 			generator: None,
-			standalone_context: super::standalone_shader_context(),
 		});
 
 		let result = asset_manager.bake("passes/no-settings.besl").await;
@@ -754,7 +637,6 @@ mod tests {
 		let mut handler = BESLShaderAssetHandler {
 			compiler: Box::new(TestShaderCompiler),
 			generator: None,
-			standalone_context: super::standalone_shader_context(),
 		};
 
 		handler.set_shader_generator(TestStandaloneGenerator);
@@ -774,16 +656,10 @@ mod tests {
 		for (stage, expected) in [("Vertex", ShaderTypes::Vertex), ("Fragment", ShaderTypes::Fragment)] {
 			let spec = crate::asset::parse_json(&format!(r#"{{ "stage": "{stage}" }}"#)).unwrap();
 
-			assert_eq!(
-				parse_shader_settings(Some(&spec)),
-				Ok(BESLShaderSettings {
-					stage: expected,
-					workgroup_size: None,
-					maximum_mesh_threadgroups: None,
-					maximum_vertices: None,
-					maximum_primitives: None,
-				})
-			);
+			let settings = parse_shader_settings(Some(&spec)).expect("a raster sidecar should parse");
+
+			assert_eq!(ShaderTypes::from(settings.stage), expected);
+			assert_eq!(settings.stage.local_size(), None);
 		}
 
 		let compute_without_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute" }"#).unwrap();
@@ -791,8 +667,9 @@ mod tests {
 		assert_eq!(
 			parse_shader_settings(Some(&compute_without_workgroup))
 				.expect("an omitted compute workgroup should use the unit extent")
-				.workgroup_size,
-			Some((1, 1, 1))
+				.stage
+				.local_size(),
+			Some(utils::Extent::new(1, 1, 1))
 		);
 
 		let zero_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute", "workgroup": [8, 0, 1] }"#).unwrap();
@@ -802,20 +679,8 @@ mod tests {
 		let task = crate::asset::parse_json(r#"{ "stage": "Task", "workgroup": [32, 1, 1], "maximum_mesh_threadgroups": 32 }"#)
 			.unwrap();
 
-		let task = parse_shader_settings(Some(&task)).expect("task sidecar should parse");
-
-		assert_eq!(
-			task,
-			BESLShaderSettings {
-				stage: ShaderTypes::Task,
-				workgroup_size: Some((32, 1, 1)),
-				maximum_mesh_threadgroups: Some(32),
-				maximum_vertices: None,
-				maximum_primitives: None,
-			}
-		);
 		assert!(matches!(
-			task.generation_settings("task").stage,
+			parse_shader_settings(Some(&task)).expect("task sidecar should parse").stage,
 			Stages::Task {
 				local_size,
 				maximum_mesh_threadgroups: 32,
@@ -827,20 +692,8 @@ mod tests {
 		)
 		.unwrap();
 
-		let mesh = parse_shader_settings(Some(&mesh)).expect("mesh sidecar should parse");
-
-		assert_eq!(
-			mesh,
-			BESLShaderSettings {
-				stage: ShaderTypes::Mesh,
-				workgroup_size: Some((128, 1, 1)),
-				maximum_mesh_threadgroups: None,
-				maximum_vertices: Some(64),
-				maximum_primitives: Some(126),
-			}
-		);
 		assert!(matches!(
-			mesh.generation_settings("mesh").stage,
+			parse_shader_settings(Some(&mesh)).expect("mesh sidecar should parse").stage,
 			Stages::Mesh {
 				maximum_vertices: 64,
 				maximum_primitives: 126,
@@ -875,7 +728,7 @@ mod tests {
 			let value = crate::asset::parse_json(workgroup).expect("workgroup fixture should be valid JSON5");
 
 			assert_eq!(
-				parse_workgroup_size(&value),
+				parse_workgroup_size(&value).map(|extent| extent.as_tuple()),
 				Ok(expected),
 				"failed to deserialize {workgroup}"
 			);
@@ -913,7 +766,7 @@ mod tests {
 				main: fn () -> void {{ data.value = {value}; }}"
 			);
 
-			prepare_besl_shader(besl::parse(&source).unwrap(), None, ShaderTypes::Compute, &settings)
+			prepare_besl_shader(besl::parse(&source).unwrap(), None, &settings)
 				.expect("Failed to prepare the cache key fixture. The most likely cause is invalid BESL test syntax.")
 				.cache_key(compiler_identity)
 		};
@@ -996,7 +849,7 @@ mod tests {
 	}
 }
 
-use std::fmt;
+use std::{fmt, sync::LazyLock};
 
 use serde::Deserialize as _;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -1012,6 +865,7 @@ use super::{
 use crate::asset::handler::implementations::bema::ProgramGenerator;
 use crate::{
 	ProcessedAsset,
+	asset::JsonObject,
 	r#async::spawn_cpu_task,
 	online_docs_url,
 	resources::material::{Binding, Shader, ShaderInterface},

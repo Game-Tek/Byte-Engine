@@ -49,6 +49,21 @@ pub enum ShaderTypes {
 	Callable,
 }
 
+impl From<crate::shader::generator::Stages> for ShaderTypes {
+	/// Returns the resource stage of shaders generated for `stage`.
+	fn from(stage: crate::shader::generator::Stages) -> Self {
+		use crate::shader::generator::Stages;
+
+		match stage {
+			Stages::Vertex => Self::Vertex,
+			Stages::Fragment => Self::Fragment,
+			Stages::Compute { .. } => Self::Compute,
+			Stages::Task { .. } => Self::Task,
+			Stages::Mesh { .. } => Self::Mesh,
+		}
+	}
+}
+
 // Mesh
 
 #[derive(
@@ -118,27 +133,17 @@ pub trait Size {
 impl Size for VertexSemantics {
 	fn size(&self) -> usize {
 		match self {
-			VertexSemantics::Position => 3 * 4,
-			VertexSemantics::Normal => 3 * 4,
-			VertexSemantics::Tangent => 4 * 4,
-			VertexSemantics::BiTangent => 3 * 4,
+			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => 3 * 4,
+			VertexSemantics::Tangent | VertexSemantics::Color | VertexSemantics::Weights => 4 * 4,
 			VertexSemantics::UV => 2 * 4,
-			VertexSemantics::Color => 4 * 4,
 			VertexSemantics::Joints => 4 * 2,
-			VertexSemantics::Weights => 4 * 4,
 		}
 	}
 }
 
 impl Size for Vec<VertexComponent> {
 	fn size(&self) -> usize {
-		let mut size = 0;
-
-		for component in self {
-			size += component.semantic.size();
-		}
-
-		size
+		self.iter().map(|component| component.semantic.size()).sum()
 	}
 }
 

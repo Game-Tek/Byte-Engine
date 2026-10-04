@@ -13,14 +13,14 @@ pub struct AssetManager {
 pub(crate) struct AssetManagerState {
 	asset_handlers: Vec<Box<dyn DynAssetHandler>>,
 	storage_backend: Box<dyn DynStorageBackend>,
-	resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
+	pub(in crate::asset) resource_storage_backend: Arc<dyn DynResourceStorageBackend>,
 	in_flight_bakes: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
 	bake_memory_budget: Option<Arc<BakeMemoryBudget>>,
 	/// Resources stored before this time, in nanoseconds since the Unix epoch, count as stale.
 	rebuild_cutoff: Option<u64>,
 	dispatcher: compio::dispatcher::Dispatcher,
 	#[cfg(debug_assertions)]
-	resource_trace: ResourceTrace,
+	pub(in crate::asset) resource_trace: ResourceTrace,
 	#[cfg(debug_assertions)]
 	hot_reload: Mutex<HotReloadState>,
 }
@@ -255,19 +255,14 @@ impl AssetManager {
 			move |result: notify_debouncer_full::DebounceEventResult| match result {
 				Ok(events) => {
 					let Some(state) = weak.upgrade() else { return };
-					let mut sources = std::collections::HashSet::new();
 
-					for path in events.iter().flat_map(|event| event.paths.iter()) {
-						let Some((id, sidecar_source)) = source_ids_from_path(&watched_root, path) else {
-							continue;
-						};
-
-						sources.insert(id);
-
-						if let Some(sidecar_source) = sidecar_source {
-							sources.insert(sidecar_source);
-						}
-					}
+					// A BEAD path also reports the source it may configure.
+					let sources = events
+						.iter()
+						.flat_map(|event| &event.paths)
+						.filter_map(|path| source_ids_from_path(&watched_root, path))
+						.flat_map(|(id, sidecar_source)| std::iter::once(id).chain(sidecar_source))
+						.collect();
 
 					state.reload_sources(sources);
 				}
@@ -304,7 +299,8 @@ impl AssetManager {
 }
 
 enum InFlightBakeRole {
-	Leader(announcement::Announcer<Result<(), LoadMessages>>),
+	/// The caller runs the bake, announces its result, and drops the cleanup guard once it finishes.
+	Leader(announcement::Announcer<Result<(), LoadMessages>>, InFlightBakeCleanup),
 	Follower(announcement::Listener<Result<(), LoadMessages>>),
 }
 
@@ -312,15 +308,6 @@ enum InFlightBakeRole {
 struct InFlightBakeCleanup {
 	registry: Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>,
 	id: String,
-}
-
-impl InFlightBakeCleanup {
-	fn new(registry: &Arc<Mutex<HashMap<String, announcement::Announcement<Result<(), LoadMessages>>>>>, id: &str) -> Self {
-		Self {
-			registry: Arc::clone(registry),
-			id: id.to_owned(),
-		}
-	}
 }
 
 impl Drop for InFlightBakeCleanup {
@@ -366,14 +353,12 @@ impl AssetManagerState {
 	fn track_resource(&self, resource: &crate::SerializableResource) {
 		let mut hot_reload = self.hot_reload.lock();
 
-		if let Some(previous) = hot_reload.sources_by_resource.remove(resource.id()) {
-			for source in previous {
-				if let Some(resources) = hot_reload.resources_by_source.get_mut(&source) {
-					resources.remove(resource.id());
+		for source in hot_reload.sources_by_resource.remove(resource.id()).into_iter().flatten() {
+			if let Some(resources) = hot_reload.resources_by_source.get_mut(&source) {
+				resources.remove(resource.id());
 
-					if resources.is_empty() {
-						hot_reload.resources_by_source.remove(&source);
-					}
+				if resources.is_empty() {
+					hot_reload.resources_by_source.remove(&source);
 				}
 			}
 		}
@@ -422,17 +407,23 @@ impl AssetManagerState {
 		};
 
 		for root in roots {
-			let state = Arc::clone(self);
+			self.dispatch_reload(root);
+		}
+	}
 
-			let root_for_error = root.clone();
+	/// Rebakes `root` on a worker and clears its in-flight mark when no worker accepts the job.
+	#[cfg(debug_assertions)]
+	fn dispatch_reload(self: &Arc<Self>, root: String) {
+		let state = Arc::clone(self);
 
-			if self
-				.dispatcher
-				.dispatch(move || async move { state.reload_resource(root).await })
-				.is_err()
-			{
-				self.hot_reload.lock().in_flight.remove(&root_for_error);
-			}
+		let id = root.clone();
+
+		if self
+			.dispatcher
+			.dispatch(move || async move { state.reload_resource(id).await })
+			.is_err()
+		{
+			self.hot_reload.lock().in_flight.remove(&root);
 		}
 	}
 
@@ -444,7 +435,7 @@ impl AssetManagerState {
 			None => true,
 		};
 
-		let result = if stale {
+		let rebaked = stale && {
 			let allocator = BakeAllocator::new(self.bake_memory_budget.as_ref()).await;
 
 			// Enter the shared bake registry so one source referenced by several changed roots is rebuilt once.
@@ -452,15 +443,10 @@ impl AssetManagerState {
 
 			self.persist_resources();
 
-			result
-		} else {
-			Ok(())
+			result.is_ok()
 		};
 
-		if stale
-			&& result.is_ok()
-			&& let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await
-		{
+		if rebaked && let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(&id)).await {
 			self.track_resource(&resource);
 
 			let update = crate::resource::resource_manager::ResourceUpdate::new(id.clone(), resource.class().to_string());
@@ -479,19 +465,9 @@ impl AssetManagerState {
 		};
 
 		if retry {
-			let state = Arc::clone(&self);
-
-			let retry_id = id.clone();
-
 			self.hot_reload.lock().in_flight.insert(id.clone());
 
-			if self
-				.dispatcher
-				.dispatch(move || async move { state.reload_resource(retry_id).await })
-				.is_err()
-			{
-				self.hot_reload.lock().in_flight.remove(&id);
-			}
+			self.dispatch_reload(id);
 		}
 	}
 
@@ -502,7 +478,10 @@ impl AssetManagerState {
 		only_when_stale: bool,
 		origin: BakeOrigin,
 	) -> Result<(), LoadMessages> {
-		if let Some(notification) = self.bake_listener(id) {
+		// Bind the listener first so the registry lock is released before waiting on the leader.
+		let listener = self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener);
+
+		if let Some(notification) = listener {
 			return notification.listen().await.map_err(|_| LoadMessages::ExecutionUnavailable)?;
 		}
 
@@ -516,8 +495,8 @@ impl AssetManagerState {
 			(BakeOrigin::Root, None) => None,
 		};
 
-		let notification = match self.register_bake(id) {
-			InFlightBakeRole::Leader(notification) => notification,
+		let (notification, registry_cleanup) = match self.register_bake(id) {
+			InFlightBakeRole::Leader(notification, registry_cleanup) => (notification, registry_cleanup),
 			InFlightBakeRole::Follower(notification) => {
 				drop(memory_scope);
 
@@ -526,8 +505,6 @@ impl AssetManagerState {
 		};
 
 		let id = id.to_owned();
-
-		let registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, &id);
 
 		// Only the leader needs an owned reference for the queued worker future.
 		let state = Arc::clone(self);
@@ -571,11 +548,6 @@ impl AssetManagerState {
 		}
 	}
 
-	/// Returns a listener when the requested resource is already being baked.
-	fn bake_listener(&self, id: &str) -> Option<announcement::Listener<Result<(), LoadMessages>>> {
-		self.in_flight_bakes.lock().get(id).map(announcement::Announcement::listener)
-	}
-
 	/// Registers one requested resource before it is submitted to a worker.
 	fn register_bake(&self, id: &str) -> InFlightBakeRole {
 		let mut registry = self.in_flight_bakes.lock();
@@ -587,7 +559,12 @@ impl AssetManagerState {
 
 				entry.insert(announcement);
 
-				InFlightBakeRole::Leader(announcer)
+				let registry_cleanup = InFlightBakeCleanup {
+					registry: Arc::clone(&self.in_flight_bakes),
+					id: id.to_owned(),
+				};
+
+				InFlightBakeRole::Leader(announcer, registry_cleanup)
 			}
 		}
 	}
@@ -620,35 +597,27 @@ impl AssetManagerState {
 			self.persist_resource_trace(id);
 		}
 
-		let asset_handler = match self
+		let Some(asset_handler) = self
 			.asset_handlers
 			.iter()
 			.find(|handler| handler.can_handle(id.get_asset_type()))
-		{
-			Some(handler) => handler,
-			None => {
-				#[cfg(debug_assertions)]
-				self.resource_trace.record(
-					id,
-					ResourceTraceLevel::Error,
-					format!(
-						"No asset handler found for '{}'. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
-						id.as_ref(),
-						online_docs_url(ASSETS_DOCS_PATH)
-					),
-				);
+		else {
+			let message = format!(
+				"No asset handler found for '{}'. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
+				id.as_ref(),
+				online_docs_url(ASSETS_DOCS_PATH)
+			);
 
-				#[cfg(debug_assertions)]
+			log::warn!("{message}");
+
+			#[cfg(debug_assertions)]
+			{
+				self.resource_trace.record(id, ResourceTraceLevel::Error, message);
+
 				self.persist_resource_trace(id);
-
-				log::warn!(
-					"No asset handler found for asset: {:#?}. The most likely cause is an unsupported file extension or missing handler registration. See {}.",
-					id,
-					online_docs_url(ASSETS_DOCS_PATH)
-				);
-
-				return Err(LoadMessages::NoAssetHandler);
 			}
+
+			return Err(LoadMessages::NoAssetHandler);
 		};
 
 		let start_time = std::time::Instant::now();
@@ -660,19 +629,18 @@ impl AssetManagerState {
 		// Every resolution during this handler invocation contributes to the provenance attached to stored outputs.
 		let asset_dependencies = Mutex::new(Vec::new());
 
-		let tracking_storage_backend = TrackingStorageBackend::new(self.storage_backend.as_ref(), &asset_dependencies);
+		let tracking_storage_backend = TrackingStorageBackend {
+			inner: self.storage_backend.as_ref(),
+			dependencies: &asset_dependencies,
+		};
 
-		let context = BakeContext::new(
-			self,
-			self.resource_storage_backend.as_ref(),
-			&tracking_storage_backend,
-			&asset_dependencies,
+		let context = BakeContext {
+			asset_manager: self,
+			asset_storage_backend: &tracking_storage_backend,
 			allocator,
-			id,
-			&primary_stored,
-			#[cfg(debug_assertions)]
-			&self.resource_trace,
-		);
+			primary_id: id,
+			primary_stored: &primary_stored,
+		};
 
 		let result = match asset_handler.bake(context, id).await {
 			Ok(()) if primary_stored.get() => Ok(()),
@@ -740,27 +708,10 @@ impl AssetManagerState {
 		Ok(())
 	}
 
-	/// Bakes an asset with the provided allocator when the resource is missing or stale.
-	pub(super) async fn bake_if_not_exists_in(
-		self: &Arc<Self>,
-		id: &str,
-		allocator: &BakeAllocator,
-	) -> Result<crate::SerializableResource, LoadMessages> {
-		self.ensure_baked_in(id, allocator).await?;
-
-		if let Some((resource, _)) = self.resource_storage_backend.read(ResourceId::new(id)).await {
-			return Ok(resource);
-		}
-
-		Err(LoadMessages::NoAsset)
-	}
-
-	/// Ensures that the requested resource exists and reflects its current source versions.
-	async fn ensure_baked_in(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
+	/// Ensures that the requested resource exists and reflects its current source versions, baking it with `allocator`.
+	pub(super) async fn ensure_baked_in(self: &Arc<Self>, id: &str, allocator: &BakeAllocator) -> Result<(), LoadMessages> {
 		match self.register_bake(id) {
-			InFlightBakeRole::Leader(notification) => {
-				let _registry_cleanup = InFlightBakeCleanup::new(&self.in_flight_bakes, id);
-
+			InFlightBakeRole::Leader(notification, _registry_cleanup) => {
 				let result = self.ensure_baked_uncoalesced(id, allocator).await.map(|_| ());
 
 				let _ = notification.announce(result.clone());
@@ -873,13 +824,15 @@ pub mod tests {
 		}
 	}
 
-	struct TestAssetHandler {}
+	struct TestAssetHandler;
 	struct CompoundBeadAssetHandler;
 
-	impl TestAssetHandler {
-		fn new() -> TestAssetHandler {
-			TestAssetHandler {}
-		}
+	/// Builds a manager with [`TestAssetHandler`] over `storage` and returns the resource store it writes to.
+	fn test_asset_manager(storage: TestStorageBackend) -> (AssetManager, ResourceTestStorageBackend) {
+		let resource_storage = ResourceTestStorageBackend::new();
+		let mut asset_manager = AssetManager::new(storage, resource_storage.clone());
+		asset_manager.add_asset_handler(TestAssetHandler);
+		(asset_manager, resource_storage)
 	}
 
 	struct VersionedAssetHandler {
@@ -1028,19 +981,15 @@ pub mod tests {
 
 		let thread_ids = Arc::new(Mutex::new(Vec::with_capacity(8)));
 
-		let mut started_announcers = Vec::with_capacity(8);
+		let (started, started_listeners): (Vec<_>, Vec<_>) = (0..8)
+			.map(|_| {
+				let (announcer, announcement) = announcement::Announcement::new();
 
-		let mut started_listeners = Vec::with_capacity(8);
+				(Mutex::new(Some(announcer)), announcement.listener())
+			})
+			.unzip();
 
-		for _ in 0..8 {
-			let (announcer, announcement) = announcement::Announcement::new();
-
-			started_announcers.push(Mutex::new(Some(announcer)));
-
-			started_listeners.push(announcement.listener());
-		}
-
-		let started = Arc::new(started_announcers);
+		let started = Arc::new(started);
 
 		let (release, release_announcement) = announcement::Announcement::new();
 
@@ -1107,9 +1056,14 @@ pub mod tests {
 	}
 
 	pub fn new_testing_asset_manager() -> AssetManager {
-		let storage_backend = TestStorageBackend::new();
+		AssetManager::new(TestStorageBackend::new(), ResourceTestStorageBackend::new())
+	}
 
-		AssetManager::new(storage_backend, ResourceTestStorageBackend::new())
+	/// Releases the blocked test handler once `started` reports that the awaited invocation began.
+	async fn release_once_started(started: &announcement::Listener<()>, release: announcement::Announcer<()>) {
+		started.listen().await.expect("the awaited invocation should start");
+
+		release.announce(()).expect("release should be announced once");
 	}
 
 	#[r#async::test]
@@ -1120,8 +1074,7 @@ pub mod tests {
 		storage_backend.add_file("nested/a-first.test.bead", b"{}");
 		storage_backend.add_file("ignored.unknown", b"");
 
-		let mut asset_manager = AssetManager::new(storage_backend, ResourceTestStorageBackend::new());
-		asset_manager.add_asset_handler(TestAssetHandler::new());
+		let (asset_manager, _) = test_asset_manager(storage_backend);
 
 		assert_eq!(
 			asset_manager.discover().await.unwrap(),
@@ -1253,76 +1206,53 @@ pub mod tests {
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage.clone());
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("initial source should bake");
+		let bake = async |expectation: &str| {
+			asset_manager
+				.bake_if_not_exists::<TestResource>("versioned.test")
+				.await
+				.expect(expectation);
+		};
 
-		let first_hash = resource_storage
-			.read(ResourceId::new("versioned.test"))
-			.await
-			.expect("initial resource should be stored")
-			.0
-			.hash();
+		let stored_hash = async || {
+			let (resource, _) = resource_storage
+				.read(ResourceId::new("versioned.test"))
+				.await
+				.expect("the resource should be stored");
+			resource.hash()
+		};
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("unchanged source should be reused");
+		bake("initial source should bake").await;
+
+		let first_hash = stored_hash().await;
+
+		bake("unchanged source should be reused").await;
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
 		asset_storage.add_file("versioned.test", b"changed source bytes");
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("changed source should rebake");
+		bake("changed source should rebake").await;
 
-		let changed_hash = resource_storage
-			.read(ResourceId::new("versioned.test"))
-			.await
-			.expect("changed resource should replace the prior value")
-			.0
-			.hash();
+		let changed_hash = stored_hash().await;
 
 		assert_ne!(first_hash, changed_hash);
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 
 		asset_storage.add_file("versioned.test.bead", br#"{ purpose: "first" }"#);
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("new sidecar should rebake");
+		bake("new sidecar should rebake").await;
 
 		asset_storage.add_file("versioned.test.bead", br#"{ purpose: "changed" }"#);
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("changed sidecar should rebake");
+		bake("changed sidecar should rebake").await;
 
-		let sidecar_rebake_hash = resource_storage
-			.read(ResourceId::new("versioned.test"))
-			.await
-			.expect("sidecar rebake should keep the resource")
-			.0
-			.hash();
-
-		assert_eq!(sidecar_rebake_hash, changed_hash);
+		assert_eq!(stored_hash().await, changed_hash);
 		assert_eq!(invocations.load(Ordering::SeqCst), 4);
 
 		asset_storage.remove_file("versioned.test.bead");
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("removing the requested sidecar should rebake");
+		bake("removing the requested sidecar should rebake").await;
 		assert_eq!(invocations.load(Ordering::SeqCst), 5);
-		asset_manager
-			.bake_if_not_exists::<TestResource>("versioned.test")
-			.await
-			.expect("an unchanged absent sidecar should stay fresh");
+		bake("an unchanged absent sidecar should stay fresh").await;
 		assert_eq!(invocations.load(Ordering::SeqCst), 5);
 	}
 
@@ -1338,31 +1268,26 @@ pub mod tests {
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("external.test")
-			.await
-			.expect("asset with external source should bake");
+		let bake = async |expectation: &str| {
+			asset_manager
+				.bake_if_not_exists::<TestResource>("external.test")
+				.await
+				.expect(expectation);
+		};
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("external.test")
-			.await
-			.expect("unchanged external source should be reused");
+		bake("asset with external source should bake").await;
+
+		bake("unchanged external source should be reused").await;
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
 		asset_storage.add_file("external.bin.bead", b"invalid unrequested settings");
-		asset_manager
-			.bake_if_not_exists::<TestResource>("external.test")
-			.await
-			.expect("unrequested dependency settings must leave the resource fresh");
+		bake("unrequested dependency settings must leave the resource fresh").await;
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 
 		asset_storage.add_file("external.bin", b"changed dependency");
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("external.test")
-			.await
-			.expect("changed external source should rebake its owner");
+		bake("changed external source should rebake its owner").await;
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 	}
@@ -1379,24 +1304,22 @@ pub mod tests {
 
 		let (asset_manager, invocations) = versioned_asset_manager(asset_storage.clone(), resource_storage);
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("parent.test")
-			.await
-			.expect("parent and child should bake");
+		let bake = async |expectation: &str| {
+			asset_manager
+				.bake_if_not_exists::<TestResource>("parent.test")
+				.await
+				.expect(expectation);
+		};
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("parent.test")
-			.await
-			.expect("unchanged dependency graph should be reused");
+		bake("parent and child should bake").await;
+
+		bake("unchanged dependency graph should be reused").await;
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 
 		asset_storage.add_file("child.test", b"changed child");
 
-		asset_manager
-			.bake_if_not_exists::<TestResource>("parent.test")
-			.await
-			.expect("changed child should rebake the child and parent");
+		bake("changed child should rebake the child and parent").await;
 
 		assert_eq!(invocations.load(Ordering::SeqCst), 4);
 	}
@@ -1464,24 +1387,15 @@ pub mod tests {
 	async fn concurrent_bakes_for_one_asset_and_store_share_one_invocation() {
 		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
 
-		let release_handler = async {
-			started[0].listen().await.expect("first invocation should start");
+		let (_, first, second, third) = std::future::join!(
+			release_once_started(&started[0], release),
+			asset_manager.bake("coalesced.test"),
+			asset_manager.bake("coalesced.test"),
+			asset_manager.bake("coalesced.test"),
+		)
+		.await;
 
-			release.announce(()).expect("release should be announced once");
-		};
-
-		let requests = async {
-			std::future::join!(
-				asset_manager.bake("coalesced.test"),
-				asset_manager.bake("coalesced.test"),
-				asset_manager.bake("coalesced.test"),
-			)
-			.await
-		};
-
-		let (_, results) = std::future::join!(release_handler, requests).await;
-
-		assert_eq!(results, (Ok(()), Ok(()), Ok(())));
+		assert_eq!((first, second, third), (Ok(()), Ok(()), Ok(())));
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
 	}
 
@@ -1489,16 +1403,12 @@ pub mod tests {
 	async fn concurrent_failures_are_shared_but_later_bakes_retry() {
 		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(true, false);
 
-		let release_handler = async {
-			started[0].listen().await.expect("first invocation should start");
-
-			release.announce(()).expect("release should be announced once");
-		};
-
-		let requests =
-			async { std::future::join!(asset_manager.bake("failed.test"), asset_manager.bake("failed.test"),).await };
-
-		let (_, (first, follower)) = std::future::join!(release_handler, requests).await;
+		let (_, first, follower) = std::future::join!(
+			release_once_started(&started[0], release),
+			asset_manager.bake("failed.test"),
+			asset_manager.bake("failed.test"),
+		)
+		.await;
 
 		assert_eq!(first, follower);
 		assert_eq!(invocations.load(Ordering::SeqCst), 1);
@@ -1513,13 +1423,8 @@ pub mod tests {
 	async fn completed_explicit_bake_is_not_memoized() {
 		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, true);
 
-		let release_handler = async {
-			started[0].listen().await.expect("first invocation should start");
-
-			release.announce(()).expect("release should be announced once");
-		};
-
-		let (_, first) = std::future::join!(release_handler, asset_manager.bake("repeat.test"),).await;
+		let (_, first) =
+			std::future::join!(release_once_started(&started[0], release), asset_manager.bake("repeat.test")).await;
 
 		assert_eq!(first, Ok(()));
 		assert_eq!(asset_manager.bake("repeat.test").await, Ok(()));
@@ -1530,17 +1435,14 @@ pub mod tests {
 	async fn different_assets_run_independently() {
 		let (asset_manager, invocations, _, started, release) = coordinating_asset_manager(false, false);
 
-		let release_handler = async {
-			started[1].listen().await.expect("two independent invocations should start");
+		let (_, first, second) = std::future::join!(
+			release_once_started(&started[1], release),
+			asset_manager.bake("first.test"),
+			asset_manager.bake("second.test"),
+		)
+		.await;
 
-			release.announce(()).expect("release should be announced once");
-		};
-
-		let requests = async { std::future::join!(asset_manager.bake("first.test"), asset_manager.bake("second.test"),).await };
-
-		let (_, results) = std::future::join!(release_handler, requests).await;
-
-		assert_eq!(results, (Ok(()), Ok(())));
+		assert_eq!((first, second), (Ok(()), Ok(())));
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
 	}
 
@@ -1579,11 +1481,8 @@ pub mod tests {
 			release.announce(()).unwrap();
 		};
 
-		let (parent, competing_root) = compio::time::timeout(Duration::from_secs(1), async {
-			let ((parent, competing_root), ()) =
-				std::future::join!(async { std::future::join!(parent, competing_root).await }, release_parent).await;
-
-			(parent, competing_root)
+		let (parent, competing_root, ()) = compio::time::timeout(Duration::from_secs(1), async {
+			std::future::join!(parent, competing_root, release_parent).await
 		})
 		.await
 		.expect("the admitted parent and competing root should not deadlock");
@@ -1601,13 +1500,8 @@ pub mod tests {
 
 		asset_manager.add_asset_handler(BatchedDependencyAssetHandler);
 
-		let release_handler = async {
-			started[1].listen().await.expect("both dependency bakes should start");
-
-			release.announce(()).expect("dependency release should be announced once");
-		};
-
-		let (_, result) = std::future::join!(release_handler, asset_manager.bake("parent.batch")).await;
+		let (_, result) =
+			std::future::join!(release_once_started(&started[1], release), asset_manager.bake("parent.batch")).await;
 
 		assert_eq!(result, Ok(()));
 		assert_eq!(invocations.load(Ordering::SeqCst), 2);
@@ -1616,13 +1510,7 @@ pub mod tests {
 	#[cfg(debug_assertions)]
 	#[r#async::test]
 	async fn handler_trace_keeps_ordered_info_and_warning_items_for_a_baked_resource() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
+		let (asset_manager, resource_storage_backend) = test_asset_manager(TestStorageBackend::new());
 
 		asset_manager
 			.bake("messages.test")
@@ -1654,13 +1542,7 @@ pub mod tests {
 	#[cfg(debug_assertions)]
 	#[r#async::test]
 	async fn handler_error_trace_survives_when_the_resource_bake_fails() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
+		let (asset_manager, resource_storage_backend) = test_asset_manager(TestStorageBackend::new());
 
 		let result = asset_manager.bake("failed.test").await;
 
@@ -1697,13 +1579,7 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn successful_handler_must_store_the_requested_primary_resource() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend);
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
+		let (asset_manager, _) = test_asset_manager(TestStorageBackend::new());
 
 		let result = asset_manager.bake("unstored.test").await;
 
@@ -1718,13 +1594,7 @@ pub mod tests {
 
 	#[r#async::test]
 	async fn handler_cannot_store_a_different_resource_as_the_primary() {
-		let storage_backend = TestStorageBackend::new();
-
-		let resource_storage_backend = ResourceTestStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(storage_backend, resource_storage_backend.clone());
-
-		asset_manager.add_asset_handler(TestAssetHandler::new());
+		let (asset_manager, resource_storage_backend) = test_asset_manager(TestStorageBackend::new());
 
 		let result = asset_manager.bake("mismatched.test").await;
 

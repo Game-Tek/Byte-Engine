@@ -1,6 +1,7 @@
 /// The `PNGAssetHandler` struct configures PNG decoding for image assets.
 ///
 /// Palette and low-bit-depth images are expanded to whole channels while decoding.
+#[derive(Default)]
 pub struct PNGAssetHandler;
 
 impl PNGAssetHandler {
@@ -25,13 +26,10 @@ impl AssetHandler for PNGAssetHandler {
 			return Err(LoadErrors::UnsupportedType);
 		}
 
-		let cursor = std::io::Cursor::new(data);
-		let mut decoder = png::Decoder::new(cursor);
+		let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
 		decoder.set_transformations(png::Transformations::EXPAND);
 		let mut reader = decoder.read_info().map_err(|_| LoadErrors::FailedToProcess)?;
-		let Some(size) = reader.output_buffer_size() else {
-			return Err(LoadErrors::FailedToProcess);
-		};
+		let size = reader.output_buffer_size().ok_or(LoadErrors::FailedToProcess)?;
 		let mut buffer = Vec::with_capacity_in(size, allocator);
 		buffer.resize(size, 0);
 		let info = reader.next_frame(&mut buffer).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -47,12 +45,6 @@ impl AssetHandler for PNGAssetHandler {
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
 		context.store_primary(asset, &data).await
-	}
-}
-
-impl Default for PNGAssetHandler {
-	fn default() -> Self {
-		Self::new()
 	}
 }
 

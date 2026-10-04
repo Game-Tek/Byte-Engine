@@ -89,8 +89,8 @@ halo_coordinate: fn (base: u32, tile_coordinate: u32, halo: u32, extent: u32) ->
 
 // Maps one texture coordinate back into a cache whose logical origin may be off-screen.
 cache_coordinate: fn (coordinate: u32, base: u32, halo: u32) -> u32 {
-	// Every caller selects a mip whose cache includes this coordinate, so the signed result is nonnegative.
-	return u32(f32(halo) + f32(coordinate) - f32(base));
+	// Every caller selects a mip whose cache includes this coordinate, so the result is nonnegative.
+	return halo + coordinate - base;
 }
 
 // Loads the cached rectangle of mip `level` around the workgroup whose level-zero origin is `group_base`.

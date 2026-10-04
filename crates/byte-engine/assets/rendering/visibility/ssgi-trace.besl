@@ -132,12 +132,14 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch(depth_pyramid, hit_texel).x);
 	}
 
-	// At a silhouette, the object in front is the nearest nonzero texel of the footprint.
+	// At a silhouette, the object in front is the nearest nonzero texel of the footprint. The continuity tests above
+	// already fetched three of its four depths.
+	let footprint: f32[4] = f32[4](z00, z10, z01, fetch(depth_pyramid, clamped_texel(base_x + 1.0, base_y + 1.0, extent)).x);
 	let nearest_z: f32 = 0.0;
 	let nearest_texel: vec2u = vec2u(0, 0);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let texel: vec2u = clamped_texel(base_x + f32(tap % 2), base_y + f32(tap / 2), extent);
-		let z: f32 = fetch(depth_pyramid, texel).x;
+		let z: f32 = footprint[tap];
 		if (z != 0.0 && (nearest_z == 0.0 || z < nearest_z)) {
 			nearest_z = z;
 			nearest_texel = texel;

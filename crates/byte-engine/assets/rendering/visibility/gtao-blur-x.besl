@@ -37,11 +37,15 @@ tiled_source_coordinate: fn (origin: u32, tile_coordinate: u32, halo: u32, exten
 compute_local_depth_variance: fn (center_index: u32, center_linear_depth: f32) -> f32 {
 	let mean: f32 = 0.0;
 	let mean_sq: f32 = 0.0;
-	let sample_count: f32 = 0.0;
+	// The nonzero center always counts, with a zero delta that leaves both sums unchanged, so the loop skips it.
+	let sample_count: f32 = 1.0;
 	// The neighborhood starts one row above and one texel left of the center.
 	let first_index: u32 = center_index - GTAO_BLUR_DEPTH_TILE_WIDTH - 1;
 	for (let y: u32 = 0; y < 3; y = y + 1) {
 		for (let x: u32 = 0; x < 3; x = x + 1) {
+			if (x == 1 && y == 1) {
+				continue;
+			}
 			let sample_linear_depth: f32 = shared_linear_depth[first_index + y * GTAO_BLUR_DEPTH_TILE_WIDTH + x];
 			if (sample_linear_depth != 0.0) {
 				let delta: f32 = relative_depth_delta(center_linear_depth, sample_linear_depth);

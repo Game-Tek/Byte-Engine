@@ -91,10 +91,13 @@ main: fn() -> void {
 		let relative_vertex_index: u32 =
 			u32(vertex_indices[mesh.base_primitive_index + meshlet.primitive_offset + primitive_index]);
 		let vertex_index: u32 = mesh.base_vertex_index + relative_vertex_index;
-		let object_position: vec3f = vertex_positions[vertex_index];
-		let position: vec4f = vec4f(object_position.x, object_position.y, object_position.z, 1.0);
+		// A skinned vertex reads only its posed position, never the bind-pose one.
+		let position: vec4f = vec4f(0.0, 0.0, 0.0, 1.0);
 		if (mesh.skinned_base_vertex_index != 4294967295) {
 			position = skinned_vertices.vertices[mesh.skinned_base_vertex_index + relative_vertex_index].position;
+		} else {
+			let object_position: vec3f = vertex_positions[vertex_index];
+			position = vec4f(object_position.x, object_position.y, object_position.z, 1.0);
 		}
 
 		let world_position: vec3f = mesh.model * position;

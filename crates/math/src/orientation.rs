@@ -80,6 +80,20 @@ impl Orientation {
 		Self::try_from_maths(Quatf::new(x, y, z, w))
 	}
 
+	/// Rebuilds an orientation from components that [`Self::to_array`] returned, without normalizing them again.
+	///
+	/// Use it to read back rotations that were stored already validated. Use [`Self::try_from_array`] for any other
+	/// data, because this does not check that the components are finite and unit length.
+	pub fn from_unit_array_unchecked([x, y, z, w]: [f32; 4]) -> Self {
+		debug_assert!(
+			(x * x + y * y + z * z + w * w - 1.0).abs() < 1.0e-3,
+			"Unchecked orientation components are not unit length. The most likely cause is reading data that did not come from Orientation::to_array."
+		);
+		Self {
+			value: Quatf::new(x, y, z, w),
+		}
+	}
+
 	/// Returns the `[x, y, z, w]` components of this orientation's unit quaternion.
 	pub fn to_array(self) -> [f32; 4] {
 		[self.value.x, self.value.y, self.value.z, self.value.w]

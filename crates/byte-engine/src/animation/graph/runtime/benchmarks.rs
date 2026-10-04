@@ -44,14 +44,9 @@ impl AnimationGraphBenchmarkFixture {
 			animations.push((DESTINATION_CLIP_ID, benchmark_animation("destination", node_count, 0.75)));
 		}
 		// Preallocate one arena large enough to keep every benchmark clip resident.
-		let mut pool = AnimationPool::detached(
-			animations
-				.iter()
-				.map(|(_, animation)| PackedAnimationData::resident_bytes(animation))
-				.sum(),
-		);
-		for (resource_id, animation) in animations {
-			pool.admit(resource_id.into(), animation);
+		let mut pool = AnimationPool::detached(animations.iter().map(|(_, packed)| packed.resident_bytes()).sum());
+		for (resource_id, packed) in animations {
+			pool.admit(resource_id.into(), packed);
 		}
 		let (graph, initial, destination) = benchmark_graph(benchmark);
 		Self {
@@ -139,8 +134,8 @@ fn benchmark_skeleton(node_count: usize) -> Skeleton {
 	Skeleton { nodes }
 }
 
-/// Creates one fully animated track per node to represent normal runtime sampling work.
-fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Animation {
+/// Packs one fully animated track per node to represent normal runtime sampling work.
+fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> PackedAnimationData {
 	let tracks = (0..node_count)
 		.map(|node| {
 			let node_phase = node as f32 / node_count as f32;
@@ -168,12 +163,12 @@ fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Anim
 			}
 		})
 		.collect();
-	Animation {
+	PackedAnimationData::from_resource(Animation {
 		name: Some(name.into()),
 		skeleton: Reference::in_memory(format!("benchmark-{name}.skeleton"), benchmark_skeleton(node_count)),
 		duration: CLIP_DURATION_SECONDS,
 		tracks,
-	}
+	})
 }
 
 fn benchmark_frame_delta() -> MediaTime {

@@ -43,6 +43,10 @@ pub(crate) enum CurveInterpolation {
 pub(crate) trait CurveValue<const N: usize>: CurveComponents<N> {
 	/// Builds a value from interpolated or stored components, which is how rotations stay unit length.
 	fn from_components(components: [f32; N]) -> Self;
+	/// Rebuilds a stored key whose components already passed through [`Self::from_components`].
+	fn from_key(components: [f32; N]) -> Self {
+		Self::from_components(components)
+	}
 	/// Blends two linear keys.
 	fn lerp(self, other: Self, factor: f32) -> Self;
 }
@@ -71,6 +75,11 @@ impl CurveValue<4> for Orientation {
 	/// A cubic blend can pass through zero length only for degenerate tangents, which fall back to identity.
 	fn from_components(components: [f32; 4]) -> Self {
 		Self::try_from_array(components).unwrap_or_default()
+	}
+
+	/// Packed keys are stored normalized, so reading one back skips a second normalization.
+	fn from_key(components: [f32; 4]) -> Self {
+		Self::from_unit_array_unchecked(components)
 	}
 
 	fn lerp(self, other: Self, factor: f32) -> Self {

@@ -36,15 +36,13 @@ enum AnimationPoolEntry {
 		resource_id: Option<String>,
 	},
 	Resident(CachedAnimation),
-	Blocked {
-		resident_bytes: usize,
-		animation: Animation,
-	},
+	/// Holds a packed clip until the arena has room for it.
+	Blocked(PackedAnimationData),
 	Failed,
 }
 
-/// A finished load: the requested resource ID and its decoded clip or load error.
-type AnimationLoadCompletion = (String, Result<Animation, resource_management::RequestError>);
+/// A finished load: the requested resource ID and its packed clip or load error.
+type AnimationLoadCompletion = (String, Result<PackedAnimationData, resource_management::RequestError>);
 
 /// The `AnimationPoolRequest` enum reports whether a clip can be sampled immediately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,7 +93,8 @@ pub struct AnimationPool {
 	completions: kanal::Receiver<AnimationLoadCompletion>,
 	storage: Box<[u32]>,
 	free_words: utils::RangeAllocator,
-	entries: HashMap<Box<str>, AnimationPoolEntry>,
+	/// Players look up their clips several times per frame, so the map uses the engine's fast in-memory hasher.
+	entries: utils::hash::HashMap<Box<str>, AnimationPoolEntry>,
 	events: VecDeque<AnimationPoolEvent>,
 	byte_budget: usize,
 	resident_bytes: usize,
@@ -144,7 +143,7 @@ impl AnimationPool {
 			completions: completions.to_sync(),
 			storage: vec![0; word_capacity].into_boxed_slice(),
 			free_words: utils::RangeAllocator::new(word_capacity, 1),
-			entries: HashMap::with_capacity(ANIMATION_LOAD_QUEUE_CAPACITY),
+			entries: utils::hash::HashMap::with_capacity_and_hasher(ANIMATION_LOAD_QUEUE_CAPACITY, Default::default()),
 			events: VecDeque::with_capacity(ANIMATION_POOL_EVENT_CAPACITY),
 			byte_budget,
 			resident_bytes: 0,
@@ -184,16 +183,14 @@ impl AnimationPool {
 			AnimationPoolEntry::Resident(_) => AnimationPoolRequest::Ready,
 			AnimationPoolEntry::Loading { .. } => AnimationPoolRequest::Loading,
 			AnimationPoolEntry::Failed => AnimationPoolRequest::Failed,
-			AnimationPoolEntry::Blocked { resident_bytes, .. } => {
-				let resident_bytes = *resident_bytes;
-				if !self.make_room(resident_bytes) {
+			AnimationPoolEntry::Blocked(packed) => {
+				if !self.make_room(packed.resident_bytes()) {
 					return AnimationPoolRequest::WaitingForCapacity;
 				}
-				let Some((resource_id, AnimationPoolEntry::Blocked { animation, .. })) = self.entries.remove_entry(resource_id)
-				else {
+				let Some((resource_id, AnimationPoolEntry::Blocked(packed))) = self.entries.remove_entry(resource_id) else {
 					unreachable!("Blocked animation entry changed during synchronous admission.");
 				};
-				self.write_animation(resource_id, animation);
+				self.write_animation(resource_id, packed);
 				AnimationPoolRequest::Ready
 			}
 		}
@@ -289,7 +286,7 @@ impl AnimationPool {
 			return;
 		}
 		match completion {
-			Ok(animation) => self.admit(resource_id.into(), animation),
+			Ok(packed) => self.admit(resource_id.into(), packed),
 			Err(error) => {
 				self.entries.insert(resource_id.as_str().into(), AnimationPoolEntry::Failed);
 				self.push_event(AnimationPoolEvent::LoadFailed { resource_id, error });
@@ -297,8 +294,8 @@ impl AnimationPool {
 		}
 	}
 
-	fn admit(&mut self, resource_id: Box<str>, animation: Animation) {
-		let resident_bytes = PackedAnimationData::resident_bytes(&animation);
+	fn admit(&mut self, resource_id: Box<str>, packed: PackedAnimationData) {
+		let resident_bytes = packed.resident_bytes();
 		if resident_bytes > self.byte_budget || resident_bytes / std::mem::size_of::<u32>() > self.storage.len() {
 			self.entries.insert(resource_id.clone(), AnimationPoolEntry::Failed);
 			self.push_event(AnimationPoolEvent::Oversized {
@@ -312,29 +309,22 @@ impl AnimationPool {
 			let blocked_count = self
 				.entries
 				.values()
-				.filter(|entry| matches!(entry, AnimationPoolEntry::Blocked { .. }))
+				.filter(|entry| matches!(entry, AnimationPoolEntry::Blocked(_)))
 				.count();
 			if blocked_count < ANIMATION_LOAD_QUEUE_CAPACITY {
-				self.entries.insert(
-					resource_id,
-					AnimationPoolEntry::Blocked {
-						resident_bytes,
-						animation,
-					},
-				);
+				self.entries.insert(resource_id, AnimationPoolEntry::Blocked(packed));
 			} else {
 				// Drop this completed payload so a later request can retry after capacity frees.
 				self.entries.remove(&resource_id);
 			}
 			return;
 		}
-		self.write_animation(resource_id, animation);
+		self.write_animation(resource_id, packed);
 	}
 
-	/// Packs a completed load only after admission owns a contiguous arena range.
-	fn write_animation(&mut self, resource_id: Box<str>, animation: Animation) {
-		let packed = PackedAnimationData::from_resource(animation);
-		let resident_bytes = packed.data.len() * std::mem::size_of::<u32>();
+	/// Copies a packed clip into the contiguous arena range that admission made room for.
+	fn write_animation(&mut self, resource_id: Box<str>, packed: PackedAnimationData) {
+		let resident_bytes = packed.resident_bytes();
 		let region = self
 			.free_words
 			.take(packed.data.len(), 1)
@@ -353,7 +343,7 @@ impl AnimationPool {
 		debug_assert!(
 			matches!(
 				replaced,
-				None | Some(AnimationPoolEntry::Loading { .. }) | Some(AnimationPoolEntry::Blocked { .. })
+				None | Some(AnimationPoolEntry::Loading { .. }) | Some(AnimationPoolEntry::Blocked(_))
 			),
 			"Animation admission must not replace an unrelated entry."
 		);
@@ -395,7 +385,7 @@ impl AnimationPool {
 	}
 }
 
-/// The `AnimationLoadWorker` struct resolves animation resources away from synchronous pose evaluation.
+/// The `AnimationLoadWorker` struct loads and packs animation resources away from synchronous pose evaluation.
 pub struct AnimationLoadWorker {
 	resource_manager: EntityHandle<ResourceManager>,
 	commands: kanal::AsyncReceiver<String>,
@@ -407,12 +397,13 @@ impl AnimationLoadWorker {
 	pub async fn run(self) {
 		while let Ok(resource_id) = self.commands.recv().await {
 			// Animation resources keep decoded curves in metadata, so the
-			// reference reader is intentionally released before pooling.
+			// reference reader is intentionally released before pooling. Packing
+			// here keeps the per-key work off the thread that calls `AnimationPool::update`.
 			let completion = self
 				.resource_manager
 				.request::<Animation>(&resource_id)
 				.await
-				.map(|reference| reference.into_resource());
+				.map(|reference| PackedAnimationData::from_resource(reference.into_resource()));
 			if self.completions.send((resource_id, completion)).await.is_err() {
 				break;
 			}
@@ -451,9 +442,9 @@ mod tests {
 		}
 	}
 
-	/// Builds a one-node clip that moves its root along x. The [`player`] tests share it and its packed size.
-	pub(super) fn test_animation(name: &str, end_translation: f32) -> Animation {
-		Animation {
+	/// Packs a one-node clip that moves its root along x. The [`player`] tests share it and its packed size.
+	pub(super) fn test_animation(name: &str, end_translation: f32) -> PackedAnimationData {
+		PackedAnimationData::from_resource(Animation {
 			name: Some(name.into()),
 			skeleton: Reference::in_memory("test.skeleton", test_skeleton()),
 			duration: 1.0,
@@ -466,12 +457,12 @@ mod tests {
 				rotation: None,
 				scale: None,
 			}],
-		}
+		})
 	}
 
 	/// Measures the representation retained by the pool rather than the transient resource representation.
 	pub(super) fn packed_test_animation_bytes(name: &str, end_translation: f32) -> usize {
-		PackedAnimationData::resident_bytes(&test_animation(name, end_translation))
+		test_animation(name, end_translation).resident_bytes()
 	}
 
 	#[test]

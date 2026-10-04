@@ -150,7 +150,8 @@ pub struct SkeletonPoseMap {
 impl SkeletonPoseMap {
 	/// Builds a mapping from stable authored node names while leaving target-only helpers on their rest pose.
 	pub fn by_name(source: &Skeleton, target: &Skeleton) -> Self {
-		let mut target_by_name = std::collections::HashMap::with_capacity(target.nodes.len());
+		// Players build a map on every state entry, so the transient name lookup uses the engine's fast hasher.
+		let mut target_by_name = utils::hash::HashMap::with_capacity_and_hasher(target.nodes.len(), Default::default());
 		for (index, node) in target.nodes.iter().enumerate() {
 			let Some(name) = node.name.as_deref() else {
 				continue;

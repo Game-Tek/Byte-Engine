@@ -963,7 +963,7 @@ mod tests {
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let graph = builder.build(idle).expect("graph should build");
 		let animation = test_animation("idle", 0.0);
-		let mut pool = AnimationPool::detached(PackedAnimationData::resident_bytes(&animation));
+		let mut pool = AnimationPool::detached(animation.resident_bytes());
 		let mut player = pool.create_player(&graph, None);
 
 		assert!(matches!(player.advance(MediaTime::ZERO, idle.id(), &mut pool), Ok(None)));
@@ -1031,8 +1031,8 @@ mod tests {
 		};
 		let byte_budget = idle_animation.estimated_resident_bytes() + animation.estimated_resident_bytes();
 		let mut pool = AnimationPool::detached(byte_budget);
-		pool.admit("idle.animation".into(), idle_animation);
-		pool.admit("walk.animation".into(), animation);
+		pool.admit("idle.animation".into(), PackedAnimationData::from_resource(idle_animation));
+		pool.admit("walk.animation".into(), PackedAnimationData::from_resource(animation));
 		let builder = AnimationGraph::builder();
 		let idle = builder.state("idle").with(AnimationClip::looping("idle.animation"));
 		let walk = builder.state("walk").with(AnimationClip::looping("walk.animation"));

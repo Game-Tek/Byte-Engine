@@ -1285,6 +1285,7 @@ impl PipelineManager for VisibilityPipelineManager {
 					render_info,
 					shadow_work,
 					history,
+					exposure,
 					background,
 					frame_allocator,
 				)?;

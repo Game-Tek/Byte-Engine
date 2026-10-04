@@ -1,4 +1,4 @@
-// Reconstructs full-resolution indirect diffuse light from the half-resolution SSGI history. Bilinear taps are
+// Reconstructs full-resolution pre-exposed indirect diffuse light from the half-resolution SSGI history. Bilinear taps are
 // weighted by how well they lie on the full-resolution pixel's surface, so light does not bleed across edges.
 // Each 8x8 workgroup first loads the linear depth of its pixels and a two-pixel border into workgroup memory, so every
 // pixel rebuilds its normal from shared values instead of fetching and linearizing eight neighbors again.

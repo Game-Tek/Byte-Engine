@@ -438,6 +438,7 @@ impl VisibilityRenderPass {
 		render_info: &'a RenderInfo,
 		shadow_work: ShadowWork,
 		history: Option<SinkHistory>,
+		exposure: f32,
 		background: Option<&crate::rendering::render_pass::SceneBackground>,
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<impl RenderPassFunction + use<'a>> {
@@ -489,8 +490,8 @@ impl VisibilityRenderPass {
 			.prepare(frame, sink, shadow_work.directional, contact_shadow_pipelines);
 		let gtao = gtao_pipelines.map(|pipelines| self.gtao.prepare(frame, sink, pipelines));
 		// SSGI history exists only if the pass also ran last frame.
-		let ssgi_previous_view = history.filter(|history| history.ssgi).map(|history| history.view);
-		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_previous_view, pipelines));
+		let ssgi_history = history.filter(|history| history.ssgi);
+		let ssgi = ssgi_pipelines.map(|pipelines| self.ssgi.prepare(frame, sink, ssgi_history, exposure, pipelines));
 		self.reflections.prepare(frame, history);
 		let screen_space_lighting = ScreenSpaceLighting {
 			gtao: gtao.is_some(),

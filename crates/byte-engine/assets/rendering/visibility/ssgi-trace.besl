@@ -1,5 +1,5 @@
 // Traces one cosine-weighted diffuse ray per half-resolution pixel through the linear depth pyramid.
-// A hit reads last frame's diffuse radiance at the reprojected hit point. The output keeps hit radiance in RGB
+// A hit reads last frame's pre-exposed diffuse radiance at the reprojected hit point. The output keeps hit radiance in RGB
 // and one in alpha for a hit, so later averaging turns alpha into the fraction of rays that hit.
 // It also stores the view-space normal it rebuilt from depth, which the denoiser and upscaler use to keep light on
 // the surface it was gathered for.
@@ -18,7 +18,8 @@ SsgiParameters: struct {
 	current_view_to_previous_clip: mat4f,
 	frame_index: u32,
 	history_valid: u32,
-	padding_0: u32,
+	// Converts last frame's pre-exposed light to this frame's exposure without changing hit alpha.
+	history_exposure_ratio: f32,
 	padding_1: u32,
 }
 
@@ -65,7 +66,7 @@ SSGI_RADIANCE_DEPTH_TOLERANCE: const f32 = 0.05;
 SSGI_REFINEMENT_STEPS: const u32 = 4;
 // Moves the ray origin off the surface, relative to its distance, so the first steps do not hit the start pixel.
 SSGI_ORIGIN_BIAS_SCALE: const f32 = 0.002;
-// Clamps rare very bright hits. One-sample-per-pixel rays otherwise turn a small emitter into sparkling noise.
+// Clamps rare very bright hits in pre-exposed units. An unexposed cap would suppress ordinary daylight bounce light.
 SSGI_MAX_RADIANCE: const f32 = 64.0;
 // Matches the finite-difference degeneracy test that GTAO uses for reconstructed normals.
 SSGI_NORMAL_SIN_SQ_EPSILON: const f32 = 0.00000001;
@@ -361,7 +362,7 @@ previous_radiance: fn (position: vec3f) -> vec4f {
 	if (color.w == 0.0) {
 		return vec4f(0.0, 0.0, 0.0, 0.0 - 1.0);
 	}
-	let radiance: vec3f = vec3f(color.x, color.y, color.z);
+	let radiance: vec3f = vec3f(color.x, color.y, color.z) * ssgi_parameters.history_exposure_ratio;
 	// One non-finite texel would otherwise spread through every later frame's history.
 	if (is_finite(radiance.x + radiance.y + radiance.z) == false) {
 		return vec4f(0.0, 0.0, 0.0, 1.0);

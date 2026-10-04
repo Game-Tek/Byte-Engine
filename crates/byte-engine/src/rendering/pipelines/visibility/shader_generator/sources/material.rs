@@ -367,7 +367,10 @@ material_evaluation_suffix: fn () -> void {
 		if (push_constant.ssgi != 0) {
 			// Alpha is the fraction of rays that hit, so the rest reach the environment.
 			let screen_space_indirect: vec4f = fetch(indirect_diffuse, pixel_coordinates);
-			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z);
+			// SSGI carries pre-exposed light through its half-float images. Undo that scale before combining it
+			// with physical lighting, so the final exposure below applies exactly once.
+			screen_space_irradiance = vec3f(screen_space_indirect.x, screen_space_indirect.y, screen_space_indirect.z)
+				/ lighting_data.exposure;
 			// Filter rounding can push the hit fraction past one. The clamp keeps the base of the specular fit's pow nonnegative.
 			environment_visibility = clamp(1.0 - screen_space_indirect.w, 0.0, 1.0);
 		}
@@ -630,14 +633,15 @@ material_evaluation_suffix: fn () -> void {
 	write(lit_map, pixel_coordinates, output_color);
 	// SSGI rays read this one frame later. View-dependent specular is left out: a surface receives the light that
 	// leaves a neighbor toward it, not the highlight the camera sees, and highlights would turn into sparkling noise.
-	// It stays unexposed because SSGI feeds it back in as incident light, which the exposure above then applies to once.
+	// Pre-exposure keeps daylight radiance within the half-float range. SSGI rescales previous-frame light when
+	// exposure changes, and the material consumer removes that scale before combining it with physical lighting.
 	// Alpha keeps the view depth, the clip w of this pixel, so a ray can tell which pixel belongs to the surface it hit.
 	// Reflection rays read the full exposed light the camera sees, highlights included, from the radiance history.
 	// It stays exposed, like the lit map, so a bright highlight fits in half-float range.
 	if (push_constant.blend == 0) {
 		// Only SSGI reads the diffuse light, so it is not written while SSGI is off.
 		if (push_constant.ssgi != 0) {
-			let diffuse_radiance: vec3f = diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission);
+			let diffuse_radiance: vec3f = (diffuse + ibl_diffuse * f32(occlusion) + vec3f(emission)) * lighting_data.exposure;
 			write(
 				diffuse_radiance_map,
 				pixel_coordinates,

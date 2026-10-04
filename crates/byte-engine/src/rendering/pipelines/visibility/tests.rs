@@ -1892,6 +1892,7 @@ fn ssgi_parameters(program: &ExecutableProgram, previous_clip: Option<maths_rs::
 		),
 		("frame_index", Value::U32(frame_index)),
 		("history_valid", Value::U32(previous_clip.is_some() as u32)),
+		("history_exposure_ratio", Value::F32(1.0)),
 	] {
 		parameters.write(member, value).expect("SSGI parameters");
 	}
@@ -1961,7 +1962,7 @@ fn run_ssgi_trace_with_radiance(
 	frame_index: u32,
 	pixel: [u32; 2],
 ) -> [f32; 4] {
-	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, &[pixel])[0].0
+	run_ssgi_trace_outputs(program, extent, depth, radiance, history, frame_index, &[pixel], 1.0)[0].0
 }
 
 /// Runs the SSGI trace like [`run_ssgi_trace_with_radiance`] and returns the raw radiance and the stored normal it
@@ -1976,10 +1977,14 @@ fn run_ssgi_trace_outputs(
 	history: bool,
 	frame_index: u32,
 	pixels: &[[u32; 2]],
+	history_exposure_ratio: f32,
 ) -> Vec<([f32; 4], [f32; 4])> {
 	let mut view = gtao_view_data(program, extent, extent);
 	// A static camera reprojects through the unchanged projection.
 	let mut parameters = ssgi_parameters(program, history.then(ssgi_projection), frame_index);
+	parameters
+		.write("history_exposure_ratio", Value::F32(history_exposure_ratio))
+		.unwrap();
 	let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, depth);
 	let mut previous_lit = texture_2d(extent * 2, extent * 2, radiance);
 	let mut output = empty_image(extent, extent);
@@ -2033,6 +2038,40 @@ fn ssgi_trace_gathers_last_frame_light_from_geometry_that_rays_hit() {
 	);
 }
 
+/// Verifies daylight-strength history keeps its bounce energy when the camera switches to a daylight exposure.
+#[test]
+fn ssgi_trace_preserves_daylight_radiance_across_an_exposure_change() {
+	let program = asset!("ssgi-trace.besl");
+	let (depth, mut radiance) = ssgi_floor_scene(SSGI_EXTENT, Some(4.0));
+	let exposure = 1.0 / (1.2 * 32768.0);
+	for color in &mut radiance {
+		color[..3].copy_from_slice(&[20000.0, 10000.0, 5000.0]);
+	}
+	let pixel = [SSGI_EXTENT / 2, 23];
+	let mut hits = 0;
+	for frame_index in 0..8 {
+		let (gathered, _) = run_ssgi_trace_outputs(
+			&program,
+			SSGI_EXTENT,
+			&depth,
+			&radiance,
+			true,
+			frame_index,
+			&[pixel],
+			exposure,
+		)[0];
+		if gathered[3] != 0.0 {
+			assert_rgba_close(
+				gathered,
+				[20000.0 * exposure, 10000.0 * exposure, 5000.0 * exposure, 1.0],
+				0.0001,
+			);
+			hits += 1;
+		}
+	}
+	assert!(hits > 0, "The daylight fixture must gather bounce light.");
+}
+
 /// Verifies a flat floor never occludes itself, so every ray misses and the environment lights the pixel.
 #[test]
 fn ssgi_trace_reports_misses_on_an_unoccluded_floor() {
@@ -2069,7 +2108,9 @@ fn ssgi_trace_stores_octahedral_normals() {
 	let wall_row = (0..SSGI_EXTENT)
 		.find(|&row| depth[(row * SSGI_EXTENT + column) as usize][0] == 4.0 && row > 2)
 		.expect("a wall row away from the image edge");
-	let stored = |depth: &[[f32; 4]], pixel| run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, &[pixel])[0].1;
+	let stored = |depth: &[[f32; 4]], pixel| {
+		run_ssgi_trace_outputs(&program, SSGI_EXTENT, depth, &radiance, false, 0, &[pixel], 1.0)[0].1
+	};
 
 	assert_rgba_close(stored(&depth, [column, wall_row]), SSGI_WALL_NORMAL, 0.0001);
 	depth[(wall_row * SSGI_EXTENT + column) as usize] = [0.0; 4];
@@ -2094,6 +2135,7 @@ struct SsgiTemporalFixture {
 	previous_normals: Vec<[f32; 4]>,
 	previous_history: [f32; 4],
 	history: bool,
+	history_exposure_ratio: f32,
 }
 
 impl SsgiTemporalFixture {
@@ -2109,6 +2151,7 @@ impl SsgiTemporalFixture {
 			previous_normals: vec![SSGI_WALL_NORMAL; texel_count],
 			previous_history,
 			history,
+			history_exposure_ratio: 1.0,
 		}
 	}
 
@@ -2118,6 +2161,9 @@ impl SsgiTemporalFixture {
 		let texel_count = (extent * extent) as usize;
 		let mut view = gtao_view_data(&program, extent, extent);
 		let mut parameters = ssgi_parameters(&program, self.history.then(ssgi_projection), 0);
+		parameters
+			.write("history_exposure_ratio", Value::F32(self.history_exposure_ratio))
+			.unwrap();
 		let mut depth_pyramid = ssgi_depth_pyramid(extent, extent, &self.depth);
 		let mut raw = texture_2d(extent, extent, &self.raw);
 		let mut output = empty_image(extent, extent);
@@ -2164,6 +2210,14 @@ fn ssgi_temporal_accumulates_history_of_the_same_surface() {
 		[0.1, 0.55, 0.1, 0.1],
 		0.00001,
 	);
+}
+
+/// Verifies an exposure change rescales accumulated light while preserving the fraction of rays that hit.
+#[test]
+fn ssgi_temporal_rescales_history_rgb_without_changing_hit_fraction() {
+	let mut fixture = SsgiTemporalFixture::uniform([2.0, 1.0, 0.5, 0.25], [0.5, 0.25, 0.125, 0.75], true);
+	fixture.history_exposure_ratio = 4.0;
+	assert_rgba_close(fixture.run([4, 4]), [2.0, 1.0, 0.5, 0.7], 0.00001);
 }
 
 /// Verifies history is rejected where the previous frame saw a different surface.
@@ -2475,7 +2529,7 @@ fn ssgi_trace_does_not_read_the_background_past_a_silhouette() {
 
 	let mut hits = 0;
 	for frame_index in 0..32 {
-		let outputs = run_ssgi_trace_outputs(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, &pixels);
+		let outputs = run_ssgi_trace_outputs(&program, SSGI_EXTENT, &depth, &radiance, true, frame_index, &pixels, 1.0);
 		for (&pixel, &(radiance, _)) in pixels.iter().zip(&outputs) {
 			if radiance[3] != 0.0 {
 				hits += 1;

@@ -6,8 +6,8 @@
 //! upscale writes the full-resolution result that material evaluation composites. Both compare surface normals
 //! rebuilt from depth, because surfaces that touch, such as a foot on a floor, share the same depth at the contact.
 //!
-//! The result stores hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation lights the
-//! missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
+//! The result stores pre-exposed hit radiance in RGB and the fraction of rays that hit in alpha. Material evaluation
+//! lights the missed fraction with the environment, so rays that leave the screen fall back to image-based lighting. The missed
 //! fraction is also the surface's ambient occlusion, which darkens environment specular light. Turn the pass off with
 //! `render.ssgi.enabled`.
 
@@ -18,7 +18,7 @@ use utils::Extent;
 
 use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::gtao::configuration_bool;
-use super::{ComputeStage, record_compute_stages};
+use super::{ComputeStage, SinkHistory, record_compute_stages};
 use crate::configuration::ConfigurationValue;
 use crate::rendering::render_pass::RenderPassFunction;
 use crate::rendering::{PipelineManagerClient, Sink, View};
@@ -65,7 +65,8 @@ impl SsgiSettings {
 ///
 /// It holds direct diffuse, indirect diffuse, and emitted light in RGB, but no specular. A surface receives the light
 /// a neighbor sends toward it, not the view-dependent highlight the camera sees there. Alpha holds each pixel's view
-/// depth, and zero where no opaque surface was drawn.
+/// depth, and zero where no opaque surface was drawn. RGB includes the frame's exposure so daylight light fits in
+/// half-float storage; the trace converts it to the current frame's exposure before filtering.
 pub(crate) const DIFFUSE_RADIANCE_HISTORY_TARGET: &str = "Diffuse Radiance History";
 /// The render-graph name of the half-resolution trace output: one ray's radiance and hit per pixel.
 pub(crate) const SSGI_RAW_TARGET: &str = "SSGI Raw";
@@ -178,7 +179,9 @@ struct SsgiShaderParameters {
 	frame_index: u32,
 	/// Nonzero when the previous frame's radiance, SSGI history, and depth pyramid hold this sink's data.
 	history_valid: u32,
-	_padding: [u32; 2],
+	/// Converts the previous frame's pre-exposed radiance to this frame's exposure.
+	history_exposure_ratio: f32,
+	_padding: u32,
 }
 
 /// Returns the matrix that maps a current-frame view-space position to the previous frame's clip space.
@@ -342,27 +345,29 @@ impl SsgiPass {
 
 	/// Uploads this frame's reprojection and noise seed, resizes the images, and returns the three-stage recording.
 	///
-	/// `previous_view` is the view this pass recorded the sink with in the previous frame, or `None` when the previous
-	/// frame's SSGI and radiance images do not hold this sink's data, such as the frame after the pass was turned back
-	/// on. Without it the stages ignore history.
+	/// `history` describes the previous frame's view and exposure, or is `None` when its SSGI and radiance images do
+	/// not hold this sink's data, such as the frame after the pass was turned back on. Without it the stages ignore
+	/// history. `exposure` is the shared lighting exposure uploaded for every sink in this frame.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
-		previous_view: Option<View>,
+		history: Option<SinkHistory>,
+		exposure: f32,
 		pipelines: SsgiPipelines,
 	) -> impl RenderPassFunction + use<> {
 		let extent = sink.extent();
 		let half_extent = extent.scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.parameters) = SsgiShaderParameters {
-			current_view_to_previous_clip: previous_view
-				.map(|previous| current_view_to_previous_clip(sink.view(), previous))
+			current_view_to_previous_clip: history
+				.map(|previous| current_view_to_previous_clip(sink.view(), previous.view))
 				.unwrap_or_default()
 				.into(),
 			// Only the low bits animate the noise, so wrapping the frame index is harmless.
 			frame_index: frame.key().frame_index() as u32,
-			history_valid: previous_view.is_some() as u32,
-			_padding: [0; 2],
+			history_valid: history.is_some() as u32,
+			history_exposure_ratio: history.map_or(1.0, |previous| exposure / previous.exposure),
+			_padding: 0,
 		};
 		frame.sync_buffer(self.parameters);
 

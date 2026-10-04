@@ -17,7 +17,7 @@ SsgiParameters: struct {
 	current_view_to_previous_clip: mat4f,
 	frame_index: u32,
 	history_valid: u32,
-	padding_0: u32,
+	history_exposure_ratio: f32,
 	padding_1: u32,
 }
 
@@ -256,7 +256,10 @@ main: fn (input: StageInput) -> void {
 		if (weight <= 0.0) {
 			continue;
 		}
-		history_sum = history_sum + fetch(previous_history, coordinate) * weight;
+		// Both estimates must use this frame's exposure. Alpha remains the fraction of rays that hit.
+		let history: vec4f = fetch(previous_history, coordinate);
+		let radiance: vec3f = vec3f(history.x, history.y, history.z) * ssgi_parameters.history_exposure_ratio;
+		history_sum = history_sum + vec4f(radiance.x, radiance.y, radiance.z, history.w) * weight;
 		history_weight = history_weight + weight;
 	}
 	// Without a matching texel this surface was hidden or off screen last frame.

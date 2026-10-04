@@ -1,15 +1,15 @@
 //! Runtime inspection contracts and protocol-facing state access.
 //!
 //! [`DefaultInspector`] exposes factory-created handles, their tracked
-//! properties, application controls, screenshots, and passive message
-//! publication headers without choosing a transport. Untracked application
-//! values and published payloads remain opaque.
+//! properties, application controls, screenshots, per-tick performance
+//! metrics, and passive message publication headers without choosing a
+//! transport. Untracked application values and published payloads remain opaque.
 
 use std::{collections::HashMap, sync::Arc};
 
+use math::Point;
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
-use math::Point;
 use serde::{Serialize, Serializer, ser::SerializeMap, ser::SerializeStruct};
 use utils::sync::Mutex;
 
@@ -24,6 +24,7 @@ use crate::{
 		message_observer::{MessageObserver, ObservedEntity},
 	},
 	gameplay::{Name, TransformationUpdate},
+	metrics::Metrics,
 };
 
 #[cfg(feature = "headed")]
@@ -178,6 +179,7 @@ pub struct DefaultInspector {
 	properties: Arc<Mutex<HashMap<Handle, InspectedProperties>>>,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
+	metrics: Arc<Metrics>,
 }
 
 impl DefaultInspector {
@@ -188,8 +190,14 @@ impl DefaultInspector {
 	/// observation before acquiring any routes in `messages`. Next, call
 	/// [`Self::register_message`] with each supported destination channel before sharing
 	/// the inspector with a protocol adapter. Spawn entities after construction
-	/// because property tracking is future-only.
-	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
+	/// because property tracking is future-only. `metrics` is the application's
+	/// collector, which `GET /metrics` and `GET /metrics/frames` read.
+	pub fn new(
+		events: DefaultChannel<Events>,
+		configuration: Configuration,
+		messages: MessageScope,
+		metrics: Arc<Metrics>,
+	) -> Self {
 		let message_bus = messages.message_bus().clone();
 		let message_observer = message_bus.observer().unwrap_or_else(|| {
 			panic!(
@@ -207,7 +215,13 @@ impl DefaultInspector {
 			properties,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
+			metrics,
 		}
+	}
+
+	/// Returns the per-tick CPU and GPU timings of the application.
+	pub fn metrics(&self) -> &Metrics {
+		&self.metrics
 	}
 
 	/// Returns the bounded screenshot exchange consumed by the graphics application.
@@ -232,7 +246,12 @@ impl DefaultInspector {
 					return None;
 				}
 				let entity_properties = properties.get(&entity.handle()).cloned().unwrap_or_default();
-				if name.is_some_and(|name| entity_properties.name.as_ref().is_none_or(|entity_name| entity_name.as_str() != name)) {
+				if name.is_some_and(|name| {
+					entity_properties
+						.name
+						.as_ref()
+						.is_none_or(|entity_name| entity_name.as_str() != name)
+				}) {
 					return None;
 				}
 				Some(InspectedEntity {
@@ -301,6 +320,8 @@ fn watch_properties(messages: &MessageScope, properties: &Arc<Mutex<HashMap<Hand
 
 #[cfg(all(test, feature = "headed"))]
 mod tests {
+	use std::sync::Arc;
+
 	use math::Point;
 
 	use super::{DefaultInspector, InspectedValue};
@@ -308,6 +329,7 @@ mod tests {
 		configuration::Configuration,
 		core::{Creator as _, channel::Channel as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},
 		gameplay::{DefaultWorld, Name, Transform, TransformationUpdate},
+		metrics::Metrics,
 	};
 
 	#[test]
@@ -316,7 +338,12 @@ mod tests {
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("inspected-entity-test-world");
 		let world = DefaultWorld::with_messages(messages.clone());
-		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		);
 
 		let handle: Handle = world
 			.create(String::from("crate-model"))

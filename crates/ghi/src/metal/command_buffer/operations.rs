@@ -906,6 +906,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 
 impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	fn draw_mesh(&mut self, mesh_handle: &graphics_hardware_interface::MeshHandle) {
+		self.note_command();
 		self.prepare_draw("draw_mesh", []);
 		let mesh = &self.device.meshes[mesh_handle.0 as usize];
 
@@ -949,6 +950,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn draw(&mut self, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) {
+		self.note_command();
 		let resource_uses = self.bound_vertex_resource_uses();
 		self.prepare_draw("draw", resource_uses);
 		self.apply_bound_vertex_buffers();
@@ -974,6 +976,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
+		self.note_command();
 		let (buffer_handle, offset, index_type) = self
 			.bound_index_buffer
 			.expect("No index buffer bound. The most likely cause is that draw_indexed was called before bind_index_buffer.");
@@ -1040,6 +1043,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 	}
 
 	fn dispatch_meshes(&mut self, x: u32, y: u32, z: u32) {
+		self.note_command();
 		self.prepare_draw("dispatch_meshes", []);
 		let bound_pipeline = self
 			.bound_pipeline
@@ -1068,6 +1072,7 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
 		entry_index: usize,
 	) {
+		self.note_command();
 		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
 		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into().handle());
 		let (buffer_size, buffer_gpu_address) = {

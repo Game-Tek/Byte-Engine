@@ -26,6 +26,11 @@
 			"name": "Screenshots",
 			"description": "Capture renderer sinks and render targets, one image at a time or several from the same frame, as PNG, lossless EXR, or raw bytes.",
 			"x-displayName": "Capture screenshots"
+		},
+		{
+			"name": "Metrics",
+			"description": "Read per-tick CPU and GPU timings: a summary over the retained ticks, or every retained tick as NDJSON rows.",
+			"x-displayName": "Read performance metrics"
 		}
 	],
 	"paths": {
@@ -576,6 +581,194 @@
 					}
 				}
 			}
+		},
+		"/metrics": {
+			"get": {
+				"operationId": "summarizeMetrics",
+				"summary": "Summarize performance metrics",
+				"description": "Returns the distribution of every metric over the retained ticks, in milliseconds. The engine retains the last 1024 ticks. CPU metrics are named after the engine `tracing` spans they sum, such as `GraphicsApplication::tick` for the whole tick or `Renderer::prepare` for frame preparation. GPU metrics are `frame` for all GPU work of a frame, `scene.<manager>` for each scene pipeline manager, and `pass.<name>` for each post-scene render pass, with `@<sink>` appended on sinks after the first. GPU times arrive once the frame that recorded them completes, so the newest frames in flight have none yet. `delta` is the frame delta the application clock advanced by.",
+				"tags": [
+					"Metrics"
+				],
+				"parameters": [
+					{
+						"name": "since",
+						"in": "query",
+						"required": false,
+						"description": "Only ticks after this tick number.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					},
+					{
+						"name": "presented",
+						"in": "query",
+						"required": false,
+						"description": "When `true`, only ticks in which a window acquired a swapchain image, so the frame could reach the screen. Ticks of a hidden or occluded window present nothing and skew timings.",
+						"schema": {
+							"type": "boolean"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Summary of the retained ticks.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/MetricsSummary"
+								},
+								"example": {
+									"ticks": 600,
+									"first_tick": 12,
+									"last_tick": 611,
+									"presented_ticks": 598,
+									"time_to_first_frame": 412.7,
+									"delta": {
+										"count": 600,
+										"mean": 16.67,
+										"min": 16.51,
+										"max": 33.4,
+										"p50": 16.67,
+										"p95": 16.71,
+										"p99": 33.3
+									},
+									"metrics": [
+										{
+											"name": "GraphicsApplication::tick",
+											"kind": "cpu",
+											"count": 600,
+											"mean": 3.21,
+											"min": 2.8,
+											"max": 9.7,
+											"p50": 3.1,
+											"p95": 4.2,
+											"p99": 8.9
+										},
+										{
+											"name": "frame",
+											"kind": "gpu",
+											"count": 598,
+											"mean": 5.42,
+											"min": 5.1,
+											"max": 7.9,
+											"p50": 5.4,
+											"p95": 5.9,
+											"p99": 7.1
+										},
+										{
+											"name": "pass.Bloom",
+											"kind": "gpu",
+											"count": 598,
+											"mean": 0.41,
+											"min": 0.39,
+											"max": 0.52,
+											"p50": 0.41,
+											"p95": 0.44,
+											"p99": 0.5
+										}
+									]
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "The query names a field other than `since`, `presented`, or `limit`, or a value is not a number or `true`/`false`.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "The summary could not be serialized.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/metrics/frames": {
+			"get": {
+				"operationId": "listMetricFrames",
+				"summary": "List per-tick metric rows",
+				"description": "Returns the retained ticks oldest first as NDJSON: one JSON object per line. Each row carries the tick number, the renderer `frame` the tick submitted (the same number screenshots report, or `null` when the tick rendered nothing), the wall-clock `time` since start and the frame delta `dt` in milliseconds, whether the tick could be `presented`, and `cpu` and `gpu` objects of metric name to milliseconds that list only what the tick measured. Pass the last `tick` you saw as `since` to read only new rows.",
+				"tags": [
+					"Metrics"
+				],
+				"parameters": [
+					{
+						"name": "since",
+						"in": "query",
+						"required": false,
+						"description": "Only ticks after this tick number.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					},
+					{
+						"name": "presented",
+						"in": "query",
+						"required": false,
+						"description": "When `true`, only ticks in which a window acquired a swapchain image, so the frame could reach the screen. Ticks of a hidden or occluded window present nothing and skew timings.",
+						"schema": {
+							"type": "boolean"
+						}
+					},
+					{
+						"name": "limit",
+						"in": "query",
+						"required": false,
+						"description": "Keep only this many of the newest matching rows.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Retained ticks, one per line.",
+						"content": {
+							"application/x-ndjson": {
+								"schema": {
+									"$ref": "#/components/schemas/MetricRow"
+								},
+								"example": "{\"tick\":610,\"frame\":598,\"time\":10412.3,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.12,\"Renderer::prepare\":1.9},\"gpu\":{\"frame\":5.4,\"scene.VisibilityPipelineManager\":3.8,\"pass.Bloom\":0.41}}\n{\"tick\":611,\"frame\":599,\"time\":10429.0,\"dt\":16.67,\"presented\":true,\"cpu\":{\"GraphicsApplication::tick\":3.08,\"Renderer::prepare\":1.88},\"gpu\":{}}\n"
+							}
+						}
+					},
+					"400": {
+						"description": "The query names a field other than `since`, `presented`, or `limit`, or a value is not a number or `true`/`false`.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					},
+					"500": {
+						"description": "A row could not be serialized.",
+						"content": {
+							"text/plain": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorMessage"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -1048,6 +1241,187 @@
 						"schema": {
 							"$ref": "#/components/schemas/ErrorMessage"
 						}
+					}
+				}
+			},
+			"MetricStatistics": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"count",
+					"mean",
+					"min",
+					"max",
+					"p50",
+					"p95",
+					"p99"
+				],
+				"description": "The distribution of one value over the summarized ticks, in milliseconds.",
+				"properties": {
+					"count": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many summarized ticks measured the value."
+					},
+					"mean": {
+						"type": "number"
+					},
+					"min": {
+						"type": "number"
+					},
+					"max": {
+						"type": "number"
+					},
+					"p50": {
+						"type": "number"
+					},
+					"p95": {
+						"type": "number"
+					},
+					"p99": {
+						"type": "number"
+					}
+				}
+			},
+			"MetricSummary": {
+				"allOf": [
+					{
+						"$ref": "#/components/schemas/MetricStatistics"
+					},
+					{
+						"type": "object",
+						"required": [
+							"name",
+							"kind"
+						],
+						"properties": {
+							"name": {
+								"type": "string",
+								"description": "The span name of a CPU metric, or `frame`, `scene.<manager>`, or `pass.<name>` for a GPU metric."
+							},
+							"kind": {
+								"type": "string",
+								"enum": [
+									"cpu",
+									"gpu"
+								],
+								"description": "Which clock measured the metric. CPU and GPU times of one tick do not add up."
+							}
+						}
+					}
+				]
+			},
+			"MetricsSummary": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"ticks",
+					"first_tick",
+					"last_tick",
+					"presented_ticks",
+					"time_to_first_frame",
+					"delta",
+					"metrics"
+				],
+				"properties": {
+					"ticks": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many ticks the summary covers."
+					},
+					"first_tick": {
+						"type": [
+							"integer",
+							"null"
+						]
+					},
+					"last_tick": {
+						"type": [
+							"integer",
+							"null"
+						]
+					},
+					"presented_ticks": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many covered ticks could reach the screen."
+					},
+					"time_to_first_frame": {
+						"type": [
+							"number",
+							"null"
+						],
+						"description": "Milliseconds from application start to the first tick that could reach the screen."
+					},
+					"delta": {
+						"oneOf": [
+							{
+								"$ref": "#/components/schemas/MetricStatistics"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "The frame delta over the covered ticks."
+					},
+					"metrics": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/MetricSummary"
+						},
+						"description": "Every metric at least one covered tick measured."
+					}
+				}
+			},
+			"MetricRow": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"tick",
+					"frame",
+					"time",
+					"dt",
+					"presented",
+					"cpu",
+					"gpu"
+				],
+				"properties": {
+					"tick": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"frame": {
+						"type": [
+							"integer",
+							"null"
+						],
+						"description": "The renderer frame the tick submitted, which screenshots also report."
+					},
+					"time": {
+						"type": "number",
+						"description": "Milliseconds since the application started, at the end of the tick."
+					},
+					"dt": {
+						"type": "number",
+						"description": "The frame delta of the tick, in milliseconds."
+					},
+					"presented": {
+						"type": "boolean",
+						"description": "Whether a window acquired a swapchain image this tick."
+					},
+					"cpu": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "number"
+						},
+						"description": "Milliseconds the CPU spent in each span name during the tick, summed over every entry on every thread."
+					},
+					"gpu": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "number"
+						},
+						"description": "Milliseconds the GPU spent in each counter of the frame the tick submitted. Empty until that frame completes."
 					}
 				}
 			}

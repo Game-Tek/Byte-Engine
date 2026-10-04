@@ -55,6 +55,16 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// a JSON `captures` list; the response is `multipart/form-data` with one part
 /// per capture.
 ///
+/// `GET /metrics` summarizes the CPU time of every engine span and the GPU time of
+/// every scene pipeline and render pass over the retained ticks, in milliseconds,
+/// with `count`, `mean`, `min`, `max`, `p50`, `p95`, and `p99`. Add
+/// `since=<tick>` to summarize only later ticks and `presented=true` to count only
+/// ticks that could reach the screen. `GET /metrics/frames` streams the retained
+/// ticks themselves as NDJSON, one object per line with `tick`, `frame`, `time`,
+/// `dt`, `presented`, and `cpu` and `gpu` maps; it takes the same filters plus
+/// `limit=<count>` to keep only the newest rows. GPU values of the last frames in
+/// flight arrive once those frames complete.
+///
 /// See the [HTTP Inspector API](/docs/api/inspector) for every endpoint and payload.
 pub struct HttpInspectorServer {
 	_server: ListeningServer,
@@ -114,6 +124,8 @@ fn handle_request(inspector: &DefaultInspector, waker: &LoopWaker, request: &mut
 		(&Method::GET, "/messages/types") => message_types_response(inspector),
 		(&Method::POST, "/messages") => message_response(inspector, request.body_mut()),
 		(&Method::GET, "/configuration") => json_response(&inspector.configuration_events()),
+		(&Method::GET, "/metrics") => metrics_response(inspector, request.uri().query()),
+		(&Method::GET, "/metrics/frames") => metrics_frames_response(inspector, request.uri().query()),
 		(&Method::GET, "/entities") => entities_response(inspector, request.uri().query()),
 		(&Method::DELETE, "/") => {
 			inspector.close_application();
@@ -163,6 +175,81 @@ fn messages_response(inspector: &DefaultInspector) -> Response<Body> {
 fn message_types_response(inspector: &DefaultInspector) -> Response<Body> {
 	let types = inspector.message_types();
 	json_response(&serde_json::json!({ "types": types }))
+}
+
+/// The filters the metrics endpoints share.
+struct MetricsQuery {
+	/// Only ticks after this one.
+	since: Option<u64>,
+	/// Only ticks that could reach the screen.
+	presented: bool,
+	/// At most this many of the newest rows.
+	limit: Option<usize>,
+}
+
+/// Parses `since`, `presented`, and `limit`, rejecting unknown fields and malformed numbers.
+fn parse_metrics_query(query: Option<&str>) -> Result<MetricsQuery, ()> {
+	let Some(query) = query else {
+		return Ok(MetricsQuery {
+			since: None,
+			presented: false,
+			limit: None,
+		});
+	};
+	let [since, presented, limit] = parse_query(query, [&["since"], &["presented"], &["limit"]])?;
+	let presented = match presented.as_deref() {
+		None | Some("false") => false,
+		Some("true") => true,
+		Some(_) => return Err(()),
+	};
+	Ok(MetricsQuery {
+		since: since.map(|since| since.parse()).transpose().map_err(|_| ())?,
+		presented,
+		limit: limit.map(|limit| limit.parse()).transpose().map_err(|_| ())?,
+	})
+}
+
+const METRICS_QUERY_ERROR: &str = "Metrics query is invalid. The most likely cause is a field other than `since`, `presented`, or `limit`, or a value that is not a number or `true`/`false`.";
+
+/// Summarizes the retained ticks as JSON.
+fn metrics_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Ok(query) = parse_metrics_query(query) else {
+		return response(StatusCode::BAD_REQUEST, METRICS_QUERY_ERROR);
+	};
+	json_response(&inspector.metrics().summary(query.since, query.presented))
+}
+
+/// Streams the retained ticks as NDJSON, oldest first.
+fn metrics_frames_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
+	let Ok(query) = parse_metrics_query(query) else {
+		return response(StatusCode::BAD_REQUEST, METRICS_QUERY_ERROR);
+	};
+	let rows = inspector.metrics().ticks_since(query.since);
+	let rows = rows.iter().filter(|row| !query.presented || row.tick().presented);
+	let rows = match query.limit {
+		Some(limit) => rows
+			.rev()
+			.take(limit)
+			.collect::<Vec<_>>()
+			.into_iter()
+			.rev()
+			.collect::<Vec<_>>(),
+		None => rows.collect(),
+	};
+	let mut body = Vec::new();
+	for row in rows {
+		if let Err(error) = serde_json::to_writer(&mut body, row) {
+			return response(
+				StatusCode::INTERNAL_SERVER_ERROR,
+				format!("Metrics row could not be serialized. The most likely cause is an unsupported value: {error}"),
+			);
+		}
+		body.push(b'\n');
+	}
+	Response::builder()
+		.header("Content-Type", "application/x-ndjson")
+		.body(Body::from(body))
+		.expect("Inspector NDJSON response is valid. The most likely cause is an invalid static header name.")
 }
 
 fn json_response(value: &impl Serialize) -> Response<Body> {
@@ -606,6 +693,7 @@ mod tests {
 	use std::{
 		io::{Read, Write},
 		net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+		sync::Arc,
 		time::Duration,
 	};
 
@@ -628,6 +716,7 @@ mod tests {
 			DESTROY_MESSAGE_TYPE, DefaultInspector, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
 			Screenshots, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::ScreenshotBroker,
 		},
+		metrics::{MetricKind, Metrics, TickClock},
 	};
 
 	/// Creates an inspector with live future-only control and transform listeners.
@@ -645,7 +734,7 @@ mod tests {
 		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transforms = messages.channel();
 		let transform_listener = transforms.listener();
-		let mut inspector = DefaultInspector::new(events, configuration, messages);
+		let mut inspector = DefaultInspector::new(events, configuration, messages, Arc::new(Metrics::new()));
 		inspector
 			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
 			.expect("register reflected transformation update");
@@ -725,7 +814,12 @@ mod tests {
 		let generic_messages = messages.channel::<Option<u32>>();
 		let _generic_listener = generic_messages.listener();
 		generic_messages.send(Some(7));
-		let inspector = EntityHandle::from(DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages));
+		let inspector = EntityHandle::from(DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		));
 		let server = TestServer::new(inspector);
 		let entities = server.get_json("/entities?type=alloc%3A%3Astring%3A%3AString");
 		assert_eq!(entities[0]["target"], entity.id());
@@ -756,7 +850,12 @@ mod tests {
 		let labels = messages.factory::<String>();
 		let names = messages.factory::<Name>();
 		let transforms = messages.factory::<Transform>();
-		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		);
 
 		let named = labels.create("crate-model".to_string());
 		names.derive(named, Name::new("shipping crate"));
@@ -1023,6 +1122,92 @@ mod tests {
 		}
 	}
 
+	/// Records two ticks with CPU and GPU time, the second one presented.
+	fn record_test_ticks(metrics: &Metrics) {
+		let tick = metrics.register(MetricKind::Cpu, "GraphicsApplication::tick").unwrap();
+		let bloom = metrics.register(MetricKind::Gpu, "pass.Bloom").unwrap();
+		for (index, presented) in [(0, false), (1, true)] {
+			metrics.add_cpu(tick, Duration::from_millis(2 + index));
+			metrics.end_tick(TickClock {
+				tick: index,
+				frame: Some(index),
+				time: Duration::from_millis(100 * (index + 1)),
+				delta: Duration::from_micros(16_667),
+				presented,
+			});
+		}
+		metrics.set_gpu(0, bloom, Duration::from_micros(500));
+	}
+
+	#[test]
+	fn server_summarizes_metrics_and_filters_presented_ticks() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		record_test_ticks(inspector.metrics());
+		let server = TestServer::new(inspector);
+
+		let summary = server.get_json("/metrics");
+		assert_eq!(summary["ticks"], 2);
+		assert_eq!(summary["presented_ticks"], 1);
+		assert_eq!(summary["time_to_first_frame"], 200.0);
+		let metrics = summary["metrics"].as_array().unwrap();
+		let tick = metrics
+			.iter()
+			.find(|metric| metric["name"] == "GraphicsApplication::tick")
+			.unwrap();
+		assert_eq!((tick["kind"].as_str(), tick["count"].as_u64()), (Some("cpu"), Some(2)));
+		assert_eq!(
+			(tick["min"].as_f64(), tick["max"].as_f64(), tick["mean"].as_f64()),
+			(Some(2.0), Some(3.0), Some(2.5))
+		);
+		let bloom = metrics.iter().find(|metric| metric["name"] == "pass.Bloom").unwrap();
+		assert_eq!(
+			(bloom["kind"].as_str(), bloom["count"].as_u64(), bloom["p99"].as_f64()),
+			(Some("gpu"), Some(1), Some(0.5))
+		);
+
+		let presented = server.get_json("/metrics?presented=true");
+		assert_eq!(presented["ticks"], 1);
+		assert_eq!(presented["first_tick"], 1);
+
+		let response = server.request("GET", "/metrics?window=5", "");
+		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
+	}
+
+	#[test]
+	fn server_streams_metric_rows_as_ndjson() {
+		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
+		record_test_ticks(inspector.metrics());
+		let server = TestServer::new(inspector);
+
+		let response = server.request("GET", "/metrics/frames", "");
+		let (headers, body) = split_response(&response);
+		assert!(headers.starts_with("HTTP/1.1 200"), "unexpected response: {headers}");
+		assert!(
+			headers.to_ascii_lowercase().contains("content-type: application/x-ndjson"),
+			"unexpected headers: {headers}"
+		);
+		let rows = std::str::from_utf8(body)
+			.unwrap()
+			.lines()
+			.map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+			.collect::<Vec<_>>();
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0]["tick"], 0);
+		assert_eq!(rows[0]["frame"], 0);
+		assert_eq!(rows[0]["cpu"]["GraphicsApplication::tick"], 2.0);
+		assert_eq!(rows[0]["gpu"]["pass.Bloom"], 0.5);
+		assert_eq!(rows[1]["presented"], true);
+		assert!(rows[1]["gpu"].as_object().unwrap().is_empty());
+
+		let response = server.request("GET", "/metrics/frames?since=0&limit=1", "");
+		let (_, body) = split_response(&response);
+		assert_eq!(std::str::from_utf8(body).unwrap().lines().count(), 1);
+		let response = server.request("GET", "/metrics/frames?limit=1", "");
+		let (_, body) = split_response(&response);
+		let row: serde_json::Value = serde_json::from_str(std::str::from_utf8(body).unwrap().trim()).unwrap();
+		assert_eq!(row["tick"], 1);
+	}
+
 	#[test]
 	fn server_posts_targeted_transform_updates_over_http() {
 		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
@@ -1048,7 +1233,12 @@ mod tests {
 		let deletion_messages = messages.channel::<DeleteMessage>();
 		let mut deletions = deletion_messages.listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		);
 		inspector
 			.register_message(DESTROY_MESSAGE_TYPE, deletion_messages)
 			.expect("register reflected destroy message");

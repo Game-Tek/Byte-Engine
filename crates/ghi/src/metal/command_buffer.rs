@@ -111,6 +111,11 @@ struct EncoderState {
 	/// The argument-buffer snapshot this encoder's tables reference.
 	descriptors: Option<AppliedDescriptorBinding>,
 	push_constants_dirty: bool,
+	/// The counter slot of the last timestamp this encoder wrote, while no command followed it.
+	///
+	/// Metal drops a precise timestamp that nothing in the encoder follows, so ending the encoder writes that slot
+	/// again from the command buffer, at the encoder boundary, where it belongs.
+	tail_timestamp: Option<u32>,
 	/// How many logical debug regions this encoder mirrors, which it pops before it ends.
 	#[cfg(debug_assertions)]
 	debug_region_depth: usize,
@@ -282,8 +287,8 @@ pub(super) struct RecordingDevice<'a> {
 	/// The number of frames in flight, which resolves frame offsets into per-frame resource copies.
 	pub(super) frames: u8,
 	pub(super) debug_labels: bool,
-	/// The context's timestamp heap, which counter starts and ends write into.
-	pub(super) counter_heap: &'a ProtocolObject<dyn mtl::MTL4CounterHeap>,
+	/// The context's timestamp heaps, one per frame sequence, which counter starts and ends write into.
+	pub(super) counter_heaps: &'a [Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>; MAX_FRAMES_IN_FLIGHT],
 }
 
 /// The `RecordingCommit` struct carries recording results back into the owning device after encoding ends.

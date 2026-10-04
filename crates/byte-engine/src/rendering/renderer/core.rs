@@ -29,7 +29,12 @@ struct SinkPass {
 	writable_targets: Vec<(String, ghi::ImageOrSwapchain)>,
 	/// The copy that keeps `main` flowing while the pass is bypassed, when the pass replaced `main`.
 	main_copy: Option<ImageBypassPass>,
+	/// The GPU counter around the pass's commands and the metric its time is reported under.
+	counter: Option<GpuCounter>,
 }
+
+/// A GPU timing counter paired with the metric the renderer publishes its durations to.
+type GpuCounter = (ghi::CounterHandle, MetricId);
 
 impl SinkPass {
 	/// Prepares the pass's command and, while it is bypassed, the copy that forwards `main` after it.
@@ -105,6 +110,13 @@ pub struct Renderer {
 	/// Whether renderer state changed in a way that the last presented frame does not show.
 	redraw_requested: bool,
 
+	/// Where the renderer reports the GPU time of completed frames.
+	metrics: Arc<Metrics>,
+	/// The counter around every command of a frame, reported as `frame`.
+	frame_counter: Option<GpuCounter>,
+	/// The counter around each pipeline manager's scene commands on each sink, reported as `scene.<manager>`.
+	scene_counters: SmallVec<[(PipelineManagerId, SinkId, GpuCounter); 16]>,
+
 	/// The GHI context where all rendering resources and operations are performed. Only the render thread uses it.
 	/// This field drops last so renderer subsystems finish pending GPU work before their resources are destroyed.
 	context: ghi::implementation::Context,
@@ -119,8 +131,16 @@ impl Renderer {
 	/// - `render.pipeline-compilation.threads`: Sets how many threads compile pipelines. Defaults to half the
 	///   available cores, between one and four.
 	///
+	/// GPU times of every frame, scene pipeline, and post-scene pass are reported to `metrics` once each frame
+	/// completes, under `frame`, `scene.<manager>`, and `pass.<name>`, with `@<sink>` appended for sinks after the first.
+	///
 	/// Next, add a scene pipeline with [`Self::add_pipeline_manager`].
-	pub fn new(device: &crate::rendering::GraphicsDevice, parameters: &dyn Parameters, configuration: &Configuration) -> Self {
+	pub fn new(
+		device: &crate::rendering::GraphicsDevice,
+		parameters: &dyn Parameters,
+		configuration: &Configuration,
+		metrics: Arc<Metrics>,
+	) -> Self {
 		let defer_first_frame_sink_setup = parameters
 			.get_parameter("render.startup.defer-sink-setup")
 			.map(|parameter| parameter.as_bool_simple())
@@ -140,6 +160,9 @@ impl Renderer {
 
 		let render_command_buffer = context.queue(graphics_queue_handle).create_command_buffer(Some("Render"));
 		let render_finished_synchronizer = context.create_synchronizer(Some("Render Finisished"), true);
+		let frame_counter = metrics
+			.register(MetricKind::Gpu, "frame")
+			.map(|metric| (context.create_counter(Some("Frame")), metric));
 
 		Renderer {
 			context,
@@ -178,6 +201,42 @@ impl Renderer {
 			render_finished_synchronizer,
 			defer_first_frame_sink_setup,
 			redraw_requested: true,
+
+			metrics,
+			frame_counter,
+			scene_counters: SmallVec::new(),
+		}
+	}
+
+	/// Creates the counter that times one node of `sink` and registers the metric it reports to.
+	///
+	/// The metric is `<kind>.<name>`, with `@<sink>` appended on every sink after the first so one name stays one
+	/// column while the usual single-sink application reads plain names.
+	fn create_gpu_counter(&mut self, kind: &str, name: &str, sink_id: SinkId) -> Option<GpuCounter> {
+		let metric_name = if sink_id == 0 {
+			format!("{kind}.{name}")
+		} else {
+			format!("{kind}.{name}@{sink_id}")
+		};
+		let metric = self.metrics.register(MetricKind::Gpu, &metric_name)?;
+		Some((self.context.create_counter(Some(&metric_name)), metric))
+	}
+
+	/// Reports the GPU time every counter measured in `frame`, now that the frame completed.
+	fn publish_gpu_metrics(&self, frame: u64) {
+		let counters = self
+			.frame_counter
+			.iter()
+			.chain(self.scene_counters.iter().map(|(_, _, counter)| counter))
+			.chain(
+				self.render_passes
+					.iter()
+					.filter_map(|render_pass| render_pass.counter.as_ref()),
+			);
+		for (counter, metric) in counters {
+			if let Some(duration) = self.context.counter_duration(*counter) {
+				self.metrics.set_gpu(frame, *metric, duration);
+			}
 		}
 	}
 
@@ -253,6 +312,9 @@ impl Renderer {
 		builder.record_node();
 		let backgrounds = builder.take_scene_backgrounds();
 		self.scene_backgrounds.extend(backgrounds);
+		if let Some(counter) = self.create_gpu_counter("scene", pipeline_manager.name(), sink_id) {
+			self.scene_counters.push((pipeline_manager_id, sink_id, counter));
+		}
 	}
 
 	fn initialize_scene_sink(&mut self, sink_id: SinkId) {
@@ -339,11 +401,13 @@ impl Renderer {
 			builder.record_node();
 			let writable_targets = builder.writable_targets();
 			let main_copy = builder.take_main_copy();
+			let counter = self.create_gpu_counter("pass", render_pass.name(), sink_id);
 			self.render_passes.push(SinkPass {
 				harness: RenderPassHarness::new(render_pass, &mut self.render_pass_states),
 				sink: sink_id,
 				writable_targets,
 				main_copy,
+				counter,
 			});
 		}
 		self.post_scene_render_pass_factories = factories;
@@ -519,17 +583,19 @@ impl Renderer {
 	/// When this is `false` after [`Self::acquire_swapchain_images`], nothing blocked on the presentation engine
 	/// and the caller must pace the tick itself. Windows that cannot be seen hold no image.
 	pub(crate) fn presents_this_frame(&self) -> bool {
-		self.acquisitions.0 == self.started_frame_count
+		self.frame_acquired(self.started_frame_count)
+	}
+
+	/// Returns whether any window held an acquired swapchain image in `frame`, the current or the last submitted one.
+	///
+	/// A frame that acquired nothing rendered no sink, so its pass and scene counters measured nothing.
+	pub(crate) fn frame_acquired(&self, frame: u64) -> bool {
+		self.acquisitions.0 == frame
 			&& self
 				.acquisitions
 				.1
 				.iter()
 				.any(|window_frame| matches!(window_frame, WindowFrame::Acquired(..)))
-	}
-
-	/// Returns whether any frame has been submitted to a window since startup.
-	pub(crate) fn has_presented(&self) -> bool {
-		self.started_frame_count > 0
 	}
 
 	/// Prepares a frame by invoking the configured render passes.
@@ -623,11 +689,15 @@ impl Renderer {
 		let frame_allocator = frame_allocator;
 		let submitted_frame = self.started_frame_count - 1;
 		let mut screenshot_transfers = (0..screenshot_captures.len()).map(|_| None).collect::<Vec<_>>();
+		let scene_counters = &self.scene_counters;
+		let frame_counter = self.frame_counter;
+		let mut completed_frame = None;
 
 		{
 			let span = debug_span!("Renderer::queue_execute");
 			let _enter = span.enter();
 			queue.execute(Some(frame), wait_for, synchronizer, |execution| {
+				completed_frame = execution.completed_frame();
 				#[cfg(debug_assertions)]
 				if let Some(resource_updates) = resource_updates {
 					while let Some(update) = resource_updates.read() {
@@ -702,7 +772,9 @@ impl Renderer {
 					};
 
 					// A list of render pass commands and their corresponding pass/sink indices.
-					let render_pass_commands: SmallVec<[([Option<RenderPassReturn>; 2], RenderPassId, SinkId); 64]> = {
+					let render_pass_commands: SmallVec<
+						[([Option<RenderPassReturn>; 2], RenderPassId, SinkId, Option<GpuCounter>); 64],
+					> = {
 						let span = debug_span!("Renderer::prepare_render_passes");
 						let _enter = span.enter();
 						render_passes
@@ -710,7 +782,13 @@ impl Renderer {
 							.enumerate()
 							.filter_map(|(render_pass_id, render_pass)| {
 								let sink = sinks.iter().find(|sink| sink.index() == render_pass.sink)?;
-								Some((render_pass.prepare(frame, sink, frame_allocator), render_pass_id, sink.index()))
+								let counter = render_pass.counter;
+								Some((
+									render_pass.prepare(frame, sink, frame_allocator),
+									render_pass_id,
+									sink.index(),
+									counter,
+								))
 							})
 							.collect()
 					};
@@ -744,6 +822,9 @@ impl Renderer {
 				execution.record_with_present_keys(command_buffer, &present_keys, |command_buffer_recording| {
 					let span = debug_span!("Renderer::record_commands", sinks = sinks.len());
 					let _enter = span.enter();
+					if let Some((counter, _)) = frame_counter {
+						command_buffer_recording.start_counter(counter);
+					}
 					{
 						let span = debug_span!("Renderer::record_pipeline_manager_commands");
 						let _enter = span.enter();
@@ -760,7 +841,10 @@ impl Renderer {
 									command.is_some(),
 								);
 								if let Some(command) = command {
-									command(&mut *command_buffer_recording);
+									let counter = scene_counters.iter().find_map(|(manager, sink_id, counter)| {
+										(*manager == pipeline_manager_id && *sink_id == sink.index()).then_some(counter.0)
+									});
+									record_counted(&mut *command_buffer_recording, counter, |recording| command(recording));
 								}
 							}
 						}
@@ -783,7 +867,7 @@ impl Renderer {
 					{
 						let span = debug_span!("Renderer::record_render_pass_commands");
 						let _enter = span.enter();
-						for (commands, render_pass_id, sink) in render_pass_commands {
+						for (commands, render_pass_id, sink, counter) in render_pass_commands {
 							initialize_first_uses(
 								&mut *command_buffer_recording,
 								&first_uses,
@@ -791,8 +875,12 @@ impl Renderer {
 								RenderNode::Pass(render_pass_id),
 								commands.iter().any(Option::is_some),
 							);
-							for command in commands.into_iter().flatten() {
-								command(&mut *command_buffer_recording);
+							if commands.iter().any(Option::is_some) {
+								record_counted(&mut *command_buffer_recording, counter.map(|(counter, _)| counter), |recording| {
+									for command in commands.into_iter().flatten() {
+										command(recording);
+									}
+								});
 							}
 							for request_index in captures_after_pass(&screenshot_captures, render_pass_id) {
 								let Ok(ResolvedScreenshotCapture::AfterPass { target, .. }) = screenshot_captures[request_index]
@@ -842,10 +930,16 @@ impl Renderer {
 							screenshot_transfers[request_index] = transfer;
 						}
 					}
+					if let Some((counter, _)) = frame_counter {
+						command_buffer_recording.end_counter(counter);
+					}
 				});
 
 				present_keys
 			});
+		}
+		if let Some(completed_frame) = completed_frame {
+			self.publish_gpu_metrics(completed_frame.frame_index());
 		}
 
 		if screenshot_transfers.iter().any(|transfer| matches!(transfer, Some(Ok(_)))) {
@@ -1046,6 +1140,18 @@ fn initialize_first_uses(
 	}
 }
 
+/// Records `commands` inside `counter` when the node has one, and plainly otherwise.
+fn record_counted<R: ghi::command_buffer::CommonCommandBufferMode + ?Sized>(
+	recording: &mut R,
+	counter: Option<ghi::CounterHandle>,
+	commands: impl FnOnce(&mut R),
+) {
+	match counter {
+		Some(counter) => recording.counter(counter, commands),
+		None => commands(recording),
+	}
+}
+
 /// Returns request slots transferred immediately after one prepared pass entry.
 pub(super) fn captures_after_pass(
 	captures: &[Result<ResolvedScreenshotCapture, RendererScreenshotError>],
@@ -1087,10 +1193,10 @@ pub(crate) enum RendererScreenshotError {
 	Transfer(ghi::TextureTransferError),
 }
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use ghi::{
-	command_buffer::CommandBufferRecording,
+	command_buffer::{CommandBufferRecording, CommonCommandBufferMode as _},
 	context::{Context as _, ContextCreate as _},
 	frame::Frame as _,
 	queue::{Queue as _, QueueExecution as _},
@@ -1111,6 +1217,7 @@ use crate::{
 	configuration::{Configuration, ConfigurationPort},
 	core::{EntityHandle, factory::Handle, listener::Listener},
 	gameplay::transform::TransformationUpdate,
+	metrics::{MetricId, MetricKind, Metrics},
 	rendering::{
 		Camera, Sink, make_perspective_view_from_camera,
 		pipeline_manager::PipelineManager,

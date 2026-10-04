@@ -78,6 +78,24 @@ fn counters_measure_completed_frames() {
 }
 
 #[test]
+fn counters_measure_every_completed_frame() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	counters::counters_measure_every_completed_frame(&mut device, queue_handle);
+}
+
+#[test]
+fn nested_counters_resolve_when_the_outer_end_closes_the_frame() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	counters::nested_counters_resolve_when_the_outer_end_closes_the_frame(&mut device, queue_handle);
+}
+
+#[test]
+fn counters_ended_after_the_last_dispatch_resolve() {
+	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
+	counters::counters_ended_after_the_last_dispatch_resolve(&mut device, queue_handle);
+}
+
+#[test]
 fn image_group_members_keep_their_contents_until_reused() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
 	image_groups::members_keep_their_contents_until_another_member_reuses_them(&mut device, queue_handle);

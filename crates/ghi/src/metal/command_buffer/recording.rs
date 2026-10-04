@@ -268,6 +268,7 @@ impl<'a> CommandBufferRecording<'a> {
 			pipeline: None,
 			descriptors: None,
 			push_constants_dirty: !self.push_constant_data.is_empty(),
+			tail_timestamp: None,
 			#[cfg(debug_assertions)]
 			debug_region_depth,
 		});
@@ -286,10 +287,28 @@ impl<'a> CommandBufferRecording<'a> {
 			encoder.popDebugGroup();
 		}
 		encoder.endEncoding();
+		if let Some(slot) = state.tail_timestamp {
+			self.write_command_buffer_timestamp(slot);
+		}
 		if let ActiveEncoder::Render(_) = state.encoder {
 			self.resource_tracker
 				.record_final(state.scope, self.active_render_attachment_uses.drain(..));
 		}
+	}
+
+	/// Marks that the active encoder, if any, recorded a command, so a timestamp before it is no longer its tail.
+	pub(super) fn note_command(&mut self) {
+		if let Some(state) = self.encoder.as_mut() {
+			state.tail_timestamp = None;
+		}
+	}
+
+	/// Writes one GPU timestamp into pool `slot` from the command buffer, between encoders.
+	fn write_command_buffer_timestamp(&mut self, slot: u32) {
+		let (sequence_index, index) = crate::counters::heap_entry(slot);
+		let heap = &*self.device.counter_heaps[sequence_index as usize];
+		// SAFETY: Every slot comes from the context's counters, whose entry index stays below the heap's count.
+		unsafe { self.command_buffer.writeTimestampIntoHeap_atIndex(heap, index as usize) };
 	}
 
 	/// Records render-target writes after a draw so a later aliased access sees the dependency.
@@ -335,6 +354,8 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	pub(super) fn ensure_compute_encoder(&mut self) -> &Retained<ProtocolObject<dyn mtl::MTL4ComputeCommandEncoder>> {
+		// Every compute command asks for the encoder right before it records, so a timestamp before it has a follower.
+		self.note_command();
 		if !matches!(
 			self.encoder.as_ref().map(|state| &state.encoder),
 			Some(ActiveEncoder::Compute(_))
@@ -362,21 +383,27 @@ impl<'a> CommandBufferRecording<'a> {
 			.sequence_index
 	}
 
-	/// Writes one GPU timestamp into `slot` of the context's counter heap.
+	/// Writes one GPU timestamp into pool `slot`, which selects the frame sequence's heap and the entry in it.
 	///
 	/// Metal 4 accepts command-buffer timestamps only while no encoder is open, so an open encoder writes the
 	/// timestamp itself. Precise granularity asks Metal to sample at the command instead of at encoder boundaries,
 	/// which keeps back-to-back passes in one compute encoder apart, at the cost of a possible encoder split.
 	pub(super) fn write_timestamp(&mut self, slot: u32) {
-		let heap = self.device.counter_heap;
-		let index = slot as usize;
-		// SAFETY: Every slot comes from the context's counters, which stay below the heap's count.
+		let Some(state) = self.encoder.as_mut() else {
+			self.write_command_buffer_timestamp(slot);
+			return;
+		};
+		let (sequence_index, index) = crate::counters::heap_entry(slot);
+		let heap = &*self.device.counter_heaps[sequence_index as usize];
+		let index = index as usize;
+		state.tail_timestamp = Some(slot);
+		// SAFETY: Every slot comes from the context's counters, whose entry index stays below the heap's count.
 		unsafe {
-			match self.encoder.as_ref().map(|state| &state.encoder) {
-				Some(ActiveEncoder::Compute(encoder)) => {
+			match &state.encoder {
+				ActiveEncoder::Compute(encoder) => {
 					encoder.writeTimestampWithGranularity_intoHeap_atIndex(mtl::MTL4TimestampGranularity::Precise, heap, index);
 				}
-				Some(ActiveEncoder::Render(encoder)) => {
+				ActiveEncoder::Render(encoder) => {
 					encoder.writeTimestampWithGranularity_afterStage_intoHeap_atIndex(
 						mtl::MTL4TimestampGranularity::Precise,
 						mtl::MTLRenderStages::Fragment,
@@ -384,7 +411,6 @@ impl<'a> CommandBufferRecording<'a> {
 						index,
 					);
 				}
-				None => self.command_buffer.writeTimestampIntoHeap_atIndex(heap, index),
 			}
 		}
 	}

@@ -80,7 +80,7 @@ impl Context {
 			swapchains: &self.swapchains,
 			frames: self.frames,
 			debug_labels: self.settings.debug_labels,
-			counter_heap: self.counter_heap.as_ref(),
+			counter_heaps: &self.counter_heaps,
 		};
 		let commit = super::super::command_buffer::RecordingCommit {
 			queue_handle,

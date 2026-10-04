@@ -22,6 +22,7 @@
 ///
 /// # Configuration
 /// - `kill-after`: Closes the application after this number of ticks. The default is `None`.
+/// - `metrics-out`: Writes the performance metrics the inspector serves to this file when the application closes: the `GET /metrics` summary as JSON, or every retained tick as NDJSON, one `GET /metrics/frames` row per line, when the path ends in `.ndjson`. Combine it with `kill-after` to measure a run without polling. The default is `None`.
 /// - `max-frame-rate`: Caps presentation at this many frames per second; frames land on even refreshes. The default is uncapped.
 /// - `simulation-rate`: Steps simulation this many times per second, independent of how often frames are presented. [`Self::tick_stepped_with`] paces its steps on it and defaults to `60`. [`Self::tick_with`] simulates once per frame and panics when this rate disagrees with the rate frames are presented at.
 /// - `render-on-demand`: Renders only when something changed instead of on every tick. Window changes, UI renders, and screenshot requests ask for frames; call [`Renderer::request_redraw`] after changing the scene. Idle ticks keep running at the refresh rate of the fastest display showing a window, or the `max-frame-rate` pace when that is slower, so events are still handled. Once the frame is shown and no UI component waits for a frame, the loop waits in the window system until an event, a UI timer, or a [`crate::application::LoopWaker`] wakes it; call [`crate::application::LoopWaker::wake`] from threads that change state the loop must see. The default is `false`.
@@ -116,12 +117,8 @@ pub struct GraphicsApplication {
 	/// Persistent lanes shared by initialization and application frame work.
 	alley: crate::core::alley::Alley,
 
-	#[cfg(debug_assertions)]
-	ttff: MediaTime,
-	#[cfg(debug_assertions)]
-	min_frame_time: MediaTime,
-	#[cfg(debug_assertions)]
-	max_frame_time: MediaTime,
+	/// Where the metrics summary or rows are written when the application closes, until written.
+	metrics_out: Option<std::path::PathBuf>,
 
 	#[cfg(debug_assertions)]
 	kill_after: Option<u64>,
@@ -132,6 +129,8 @@ pub struct GraphicsApplication {
 
 impl Drop for GraphicsApplication {
 	fn drop(&mut self) {
+		// An application closed from outside a tick still gets its metrics written.
+		self.write_metrics_out();
 		// Workers may own transferred views into renderer allocations. Join them
 		// before field destruction reaches the renderer and its GHI context.
 		self.stop_worker_threads();
@@ -183,6 +182,7 @@ impl GraphicsApplication {
 		let resources_path = resolve_application_directory(application.get_parameter("resources.path"), "resources");
 
 		let configuration = Configuration::new();
+		let metrics = Arc::clone(application.metrics());
 		let mut alley = crate::core::alley::Alley::new();
 		let world = DefaultWorld::with_messages(world_messages.clone());
 		let transforms = world.transforms_channel().clone();
@@ -229,8 +229,12 @@ impl GraphicsApplication {
 						let renderer_transforms_listener = transforms.listener();
 
 						// Register reflected posts after the world's initial future-only transform and deletion listeners exist.
-						let mut inspector =
-							DefaultInspector::new(application_events.0.clone(), configuration.clone(), world_messages.clone());
+						let mut inspector = DefaultInspector::new(
+							application_events.0.clone(),
+							configuration.clone(),
+							world_messages.clone(),
+							Arc::clone(&metrics),
+						);
 						inspector
 							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
 							.unwrap_or_else(|error| panic!("{error}"));
@@ -272,7 +276,12 @@ impl GraphicsApplication {
 				},
 				|| {
 					let graphics_device = rendering::GraphicsDevice::new(&application);
-					let renderer = rendering::renderer::Renderer::new(&graphics_device, &application, &configuration);
+					let renderer = rendering::renderer::Renderer::new(
+						&graphics_device,
+						&application,
+						&configuration,
+						Arc::clone(&metrics),
+					);
 					(graphics_device, renderer)
 				},
 			)
@@ -334,6 +343,9 @@ impl GraphicsApplication {
 		let kill_after = application
 			.get_parameter("kill-after")
 			.map(|parameter| parameter.parse::<u64>().unwrap_or_else(|error| panic!("{error}")));
+		let metrics_out = application
+			.get_parameter("metrics-out")
+			.map(|parameter| std::path::PathBuf::from(parameter.value()));
 
 		GraphicsApplication {
 			application,
@@ -387,12 +399,7 @@ impl GraphicsApplication {
 			platform_waker_set: false,
 			requested_tick: None,
 
-			#[cfg(debug_assertions)]
-			ttff: MediaTime::ZERO,
-			#[cfg(debug_assertions)]
-			min_frame_time: MediaTime::MAX,
-			#[cfg(debug_assertions)]
-			max_frame_time: MediaTime::ZERO,
+			metrics_out,
 
 			#[cfg(debug_assertions)]
 			kill_after,
@@ -596,11 +603,11 @@ impl GraphicsApplication {
 		}
 	}
 
-	/// Renders one frame and completes every screenshot request with its readbacks.
+	/// Renders one frame, completes every screenshot request with its readbacks, and returns the frame's identity.
 	///
 	/// Every capture of every request is read from this one frame. Transports encode the readbacks on their own
 	/// threads, so encoding never delays the next frame.
-	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) {
+	fn render_frame(&mut self, requests: Vec<crate::inspector::screenshot::ScreenshotRequest>, time: MediaTime) -> u64 {
 		let span = debug_span!("GraphicsApplication::render_frame");
 		let _enter = span.enter();
 		let captures = requests
@@ -624,6 +631,7 @@ impl GraphicsApplication {
 				.collect();
 			request.complete(crate::inspector::screenshot::Screenshots { frame, captures });
 		}
+		frame
 	}
 
 	/// Drops the transforms physics published since the last time simulation read them.
@@ -733,8 +741,33 @@ impl GraphicsApplication {
 		})
 	}
 
-	/// Runs the tick every entry point shares, calling `run` where application and world updates belong.
+	/// Runs the tick every entry point shares, calling `run` where application and world updates belong, then
+	/// closes the tick's metrics row once the tick's own span has ended so its time lands in this row.
 	fn tick_internal<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> Option<R> {
+		let (result, clock) = self.tick_span(run);
+		self.application.metrics().end_tick(clock);
+		if self.close {
+			self.write_metrics_out();
+		}
+		result
+	}
+
+	/// Writes the `metrics-out` file once, with every tick that has ended so far.
+	fn write_metrics_out(&mut self) {
+		let Some(path) = self.metrics_out.take() else {
+			return;
+		};
+		let metrics = self.application.metrics();
+		if let Err(error) = write_metrics(&path, metrics, &metrics.summary(None, false)) {
+			log::error!(
+				"Metrics could not be written to {}. The most likely cause is that the directory does not exist or is not writable: {error}",
+				path.display()
+			);
+		}
+	}
+
+	/// Runs one tick inside its span and reports what the tick's metrics row records about it.
+	fn tick_span<R, F: FnOnce(&mut Self, Time) -> R>(&mut self, run: F) -> (Option<R>, TickClock) {
 		let span = debug_span!("GraphicsApplication::tick");
 		let _enter = span.enter();
 
@@ -787,9 +820,10 @@ impl GraphicsApplication {
 		// Ask the renderer even when rendering anyway so passes adopt this tick's inputs before deciding next tick.
 		let changed = self.renderer.needs_frame() || !screenshot_requests.is_empty();
 		self.rendering_active = changed || !self.render_on_demand;
-		if self.rendering_active || self.renderer.presents_this_frame() {
-			self.render_frame(screenshot_requests, time.elapsed());
-		}
+		let frame = (self.rendering_active || self.renderer.presents_this_frame())
+			.then(|| self.render_frame(screenshot_requests, time.elapsed()));
+		// Rendering may acquire more than the tick's start did, such as a hidden window a screenshot captures.
+		let presented = frame.is_some_and(|frame| self.renderer.frame_acquired(frame));
 
 		{
 			let span = debug_span!("GraphicsApplication::flush_world_deletions");
@@ -797,32 +831,27 @@ impl GraphicsApplication {
 			self.world.flush_deletions();
 		}
 
+		let clock = TickClock {
+			tick: self.tick_count,
+			frame,
+			time: self.start_time.elapsed(),
+			delta: dt.to_std(),
+			presented,
+		};
 		self.tick_count += 1;
 
 		#[cfg(debug_assertions)]
+		if let Some(kill_after) = self.kill_after
+			&& self.tick_count >= kill_after
 		{
-			// A tick without a window submits nothing, so stamp the first tick that reached the screen.
-			if self.ttff == MediaTime::ZERO && self.renderer.has_presented() {
-				self.ttff = MediaTime::from_std(self.start_time.elapsed());
-			}
-
-			if let Some(kill_after) = self.kill_after
-				&& self.tick_count >= kill_after
-			{
-				close = true;
-			}
-
-			{
-				self.min_frame_time = self.min_frame_time.min(dt);
-				self.max_frame_time = self.max_frame_time.max(dt);
-			}
+			close = true;
 		}
 
 		if close {
 			self.close();
-			None
+			(None, clock)
 		} else {
-			Some(result)
+			(Some(result), clock)
 		}
 	}
 
@@ -846,15 +875,18 @@ impl GraphicsApplication {
 
 		self.stop_worker_threads();
 
-		#[cfg(debug_assertions)]
-		log::debug!(
-			"Run stats:\n\tElapsed time: {:#?}\n\tAverage frame time: {:#?}\n\tMin frame time: {:#?}\n\tMax frame time: {:#?}\n\tTime to first frame: {:#?}",
-			MediaTime::from_std(self.start_time.elapsed()),
-			MediaTime::from_std(self.start_time.elapsed()) / self.tick_count as i64,
-			self.min_frame_time,
-			self.max_frame_time,
-			self.ttff
-		);
+		let summary = self.application.metrics().summary(None, false);
+		if let Some(delta) = &summary.delta {
+			log::debug!(
+				"Run stats over the last {} ticks: frame delta mean {:.3} ms, min {:.3} ms, max {:.3} ms, p99 {:.3} ms; time to first frame {:?}.",
+				summary.ticks,
+				delta.mean,
+				delta.min,
+				delta.max,
+				delta.p99,
+				summary.time_to_first_frame,
+			);
+		}
 	}
 
 	/// Returns a waker that makes this application run its next tick from any thread.
@@ -1252,6 +1284,29 @@ mod tests {
 	}
 }
 
+/// Writes the metrics of a finished run to `path`: every retained tick as NDJSON when the extension is `ndjson`,
+/// otherwise the summary as JSON.
+fn write_metrics(
+	path: &std::path::Path,
+	metrics: &crate::metrics::Metrics,
+	summary: &crate::metrics::Summary,
+) -> std::io::Result<()> {
+	use std::io::Write as _;
+
+	let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+	if path.extension().is_some_and(|extension| extension == "ndjson") {
+		for row in metrics.ticks_since(None) {
+			serde_json::to_writer(&mut file, &row)?;
+			file.write_all(b"\n")?;
+		}
+	} else {
+		serde_json::to_writer(&mut file, summary)?;
+	}
+	file.flush()
+}
+
+use std::sync::Arc;
+
 use resource_management::resource::{
 	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
 	resource_manager::ResourceManager,
@@ -1279,6 +1334,7 @@ use crate::{
 		DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE, DefaultInspector, TRANSFORMATION_UPDATE_MESSAGE_TYPE,
 		TRIGGER_ACTION_MESSAGE_TYPE, http::HttpInspectorServer,
 	},
+	metrics::TickClock,
 	rendering::{
 		pipelines::{
 			simple::SimplePipelineManager,

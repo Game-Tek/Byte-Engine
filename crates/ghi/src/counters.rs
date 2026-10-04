@@ -162,6 +162,13 @@ impl Counters {
 	}
 }
 
+/// Splits a pool slot into the frame sequence that owns it and its entry index inside that sequence's range.
+///
+/// Backends that keep one native pool per sequence, as Metal does, address their pools with this.
+pub(crate) fn heap_entry(slot: u32) -> (u8, u32) {
+	((slot / COUNTER_SLOTS_PER_FRAME) as u8, slot % COUNTER_SLOTS_PER_FRAME)
+}
+
 /// Returns the ticks between two timestamps of which only the low `valid_bits` are meaningful.
 ///
 /// Vulkan reports how many bits a queue family writes; DX12 and Metal always write all 64. An end that reads
@@ -286,6 +293,13 @@ mod tests {
 	fn a_handle_from_another_context_is_rejected() {
 		let counters = Counters::new();
 		counters.duration(CounterHandle(0));
+	}
+
+	#[test]
+	fn pool_slots_split_into_sequence_and_entry() {
+		assert_eq!(heap_entry(0), (0, 0));
+		assert_eq!(heap_entry(COUNTER_SLOTS_PER_FRAME + 5), (1, 5));
+		assert_eq!(heap_entry(2 * COUNTER_SLOTS_PER_FRAME), (2, 0));
 	}
 
 	#[test]

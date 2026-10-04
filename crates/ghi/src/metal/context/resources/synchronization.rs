@@ -35,9 +35,11 @@ impl Context {
 impl Context {
 	/// Reads the timestamps the completed frame on `sequence_index` wrote and publishes its counter durations.
 	///
-	/// Call it after the sequence's synchronizer was waited. Resolving copies the slots out of the opaque heap, and
-	/// invalidating them afterwards makes a slot the next frame allocates but never writes read as zero, which
-	/// counts as unwritten.
+	/// Call it after the sequence's synchronizer was waited. Resolving copies the entries out of the sequence's
+	/// opaque heap, and invalidating them afterwards makes a slot the next frame allocates but never writes read as
+	/// zero, which counts as unwritten. Only this sequence's frames write that heap, and the last of them completed,
+	/// so the GPU does not use it while it is invalidated; invalidating a heap frames in flight still write to zeroes
+	/// entries they write later.
 	pub(crate) fn resolve_counters(&mut self, sequence_index: u8) {
 		let slots = self.counters.written_slots(sequence_index);
 		let frequency = self.timestamp_frequency;
@@ -48,9 +50,10 @@ impl Context {
 			self.counters.resolve(sequence_index, |_| None, elapsed);
 			return;
 		}
-		let range = NSRange::new(slots.start as usize, slots.len());
-		// SAFETY: The range lies inside the heap, and the frame that wrote it completed before this call.
-		let data = unsafe { self.counter_heap.resolveCounterRange(range) };
+		let heap = &*self.counter_heaps[sequence_index as usize];
+		let range = NSRange::new(crate::counters::heap_entry(slots.start).1 as usize, slots.len());
+		// SAFETY: The range lies inside the sequence's heap, and the frame that wrote it completed before this call.
+		let data = unsafe { heap.resolveCounterRange(range) };
 		// SAFETY: The resolved data is a fresh immutable object that nothing mutates while the slice is read.
 		let bytes = data.as_deref().map_or(&[][..], |data| unsafe { data.as_bytes_unchecked() });
 		self.counters.resolve(
@@ -63,7 +66,7 @@ impl Context {
 			},
 			elapsed,
 		);
-		// SAFETY: The frame that wrote the range completed, so the GPU no longer uses these entries.
-		unsafe { self.counter_heap.invalidateCounterRange(range) };
+		// SAFETY: Only this sequence's frames write this heap, and the last of them completed, so the GPU does not use it.
+		unsafe { heap.invalidateCounterRange(range) };
 	}
 }

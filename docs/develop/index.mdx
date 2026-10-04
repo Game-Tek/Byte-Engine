@@ -82,6 +82,44 @@ data, pass `--test` to Divan. For example:
 cargo bench -p byte-engine --bench animation_graph -- --test
 ```
 
+## Measure performance
+
+Every headed application serves its own timings while it runs, so you can
+measure a change without a profiler attached. The inspector listens on
+`http://localhost:6680` and keeps the last 1024 ticks.
+
+Read a summary of the CPU time in every engine span and the GPU time of the
+frame, each scene pipeline, and each render pass, in milliseconds:
+
+```bash
+curl -s 'http://localhost:6680/metrics?presented=true' | jq '.metrics[] | select(.kind == "gpu")'
+```
+
+`presented=true` drops ticks in which no window could reach the screen, such as
+while the window is hidden behind another one. Those ticks render nothing and
+would skew the numbers. Pass `since=<tick>` to compare the ticks after a change
+with the ticks before it.
+
+Read the ticks themselves, one JSON object per line, to see where a spike landed:
+
+```bash
+curl -s 'http://localhost:6680/metrics/frames?limit=120' | jq -c '{tick, dt, gpu: .gpu.frame, bloom: .gpu["pass.Bloom"]}'
+```
+
+Each row names the renderer `frame` it submitted, which is the same number a
+screenshot of that frame reports, so you can pair a slow frame with its image.
+GPU values arrive once the frame completes, so the newest rows have none yet.
+
+To measure a run without polling, let the application close itself and write
+the metrics on the way out:
+
+```bash
+cargo run -- --kill-after=600 --metrics-out=run.json
+```
+
+A path ending in `.ndjson` writes every retained tick instead of the summary.
+The same spans stream to Tracy when the `tracy` Cargo feature is enabled.
+
 ## Measure code coverage
 
 Install `cargo-llvm-cov`:

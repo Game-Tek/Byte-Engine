@@ -16,6 +16,13 @@ use crate::{
 /// [`crate::rendering::loading`] request resources when scene messages arrive
 /// and adopt fully resident loader events before building draws.
 pub trait PipelineManager {
+	/// Returns the stable name the renderer reports this manager's GPU time under, as `scene.<name>`.
+	///
+	/// The default is the implementing type's name without its module path.
+	fn name(&self) -> &'static str {
+		std::any::type_name::<Self>().rsplit("::").next().unwrap_or_default()
+	}
+
 	/// Adopts scene messages and requests resources before new windows are created.
 	///
 	/// The application calls this after publishing the tick's changes and without borrowing the graphics

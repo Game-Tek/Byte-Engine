@@ -124,6 +124,8 @@ impl DefaultInspector {
 
 #[cfg(test)]
 mod tests {
+	use std::sync::Arc;
+
 	use serde_json::json;
 
 	use super::*;
@@ -140,6 +142,7 @@ mod tests {
 		gameplay::TransformationUpdate,
 		input::{ActionEvent, SeatHandle, Value as InputValue},
 		inspector::DefaultInspector,
+		metrics::Metrics,
 	};
 
 	/// Creates an inspector whose transform route already has a listener.
@@ -150,7 +153,12 @@ mod tests {
 		let transforms = messages.channel();
 		let listener = transforms.listener();
 
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		);
 		inspector
 			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
 			.expect("register reflected transformation update");
@@ -171,7 +179,12 @@ mod tests {
 		let deletions = messages.channel::<DeleteMessage>();
 		let listener = deletions.listener();
 		let entities = messages.factory::<String>();
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			messages,
+			Arc::new(Metrics::new()),
+		);
 		for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
 			inspector
 				.register_message(message_type, deletions.clone())
@@ -254,7 +267,12 @@ mod tests {
 		let destination_messages = message_bus.new_scope("reflected-message-test-destination");
 		let reflected_messages = destination_messages.channel::<ReflectedTestMessage>();
 		let mut listener = reflected_messages.listener();
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), inspector_messages);
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			inspector_messages,
+			Arc::new(Metrics::new()),
+		);
 		inspector
 			.register_message("ReflectedTestMessage", reflected_messages)
 			.expect("register reflected test message");
@@ -311,7 +329,12 @@ mod tests {
 		let inspector_messages = message_bus.new_scope("action-inspector-test");
 		let action_events = message_bus.new_scope("action-event-test").channel::<ActionEvent>();
 		let mut listener = action_events.listener();
-		let mut inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), inspector_messages);
+		let mut inspector = DefaultInspector::new(
+			DefaultChannel::new(),
+			Configuration::new(),
+			inspector_messages,
+			Arc::new(Metrics::new()),
+		);
 		inspector
 			.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
 			.expect("register reflected action event");

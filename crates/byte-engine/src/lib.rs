@@ -148,3 +148,4 @@ pub mod space;
 pub mod time;
 
 pub mod inspector;
+pub mod metrics;

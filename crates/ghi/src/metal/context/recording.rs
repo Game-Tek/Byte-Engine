@@ -59,7 +59,13 @@ impl Context {
 		queues: Vec<queue::StoredQueue>,
 	) -> Result<Context, &'static str> {
 		let compiler = create_metal4_compiler(device.as_ref(), settings.debug_labels)?;
-		let counter_heap = create_counter_heap(device.as_ref(), settings.debug_labels)?;
+		let mut counter_heaps = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+		for sequence_index in 0..MAX_FRAMES_IN_FLIGHT {
+			counter_heaps.push(create_counter_heap(device.as_ref(), settings.debug_labels, sequence_index)?);
+		}
+		let counter_heaps = counter_heaps
+			.try_into()
+			.unwrap_or_else(|_| unreachable!("One counter heap was created for every frame sequence."));
 		let timestamp_frequency = device.queryTimestampFrequency();
 		let frames = MAX_FRAMES_IN_FLIGHT as u8;
 		let mut synchronizers = ResourceCollection::with_capacity(32);
@@ -87,7 +93,7 @@ impl Context {
 			swapchains: Vec::new(),
 			texture_readbacks: crate::context::TextureReadbackRegistry::new(),
 			counters: crate::counters::Counters::new(),
-			counter_heap,
+			counter_heaps,
 			timestamp_frequency,
 			resource_to_descriptor: HashMap::default(),
 			settings,
@@ -484,15 +490,16 @@ pub(crate) fn synchronizer_for_sequence(
 		.expect("Missing Metal synchronizer. The most likely cause is that the synchronizer handle came from another context.")
 }
 
-/// Creates the timestamp heap that holds every counter slot of one context.
+/// Creates the timestamp heap that holds the counter slots of one frame sequence of one context.
 fn create_counter_heap(
 	device: &ProtocolObject<dyn mtl::MTLDevice>,
 	debug_labels: bool,
+	sequence_index: usize,
 ) -> Result<Retained<ProtocolObject<dyn mtl::MTL4CounterHeap>>, &'static str> {
 	let descriptor = mtl::MTL4CounterHeapDescriptor::new();
 	descriptor.setType(mtl::MTL4CounterHeapType::Timestamp);
-	// SAFETY: The count is the fixed slot capacity of every frame sequence, which every slot index stays below.
-	unsafe { descriptor.setCount(crate::counters::COUNTER_SLOT_COUNT as usize) };
+	// SAFETY: The count is the fixed slot capacity of one frame sequence, which every slot index stays below.
+	unsafe { descriptor.setCount(crate::counters::COUNTER_SLOTS_PER_FRAME as usize) };
 	let heap = device.newCounterHeapWithDescriptor_error(&descriptor).map_err(|error| {
 		eprintln!(
 			"Metal 4 counter heap creation failed: {}. The most likely cause is that the device does not support timestamp counter heaps.",
@@ -501,7 +508,7 @@ fn create_counter_heap(
 		"Metal 4 counter heap creation failed. The most likely cause is that the device does not support timestamp counter heaps."
 	})?;
 	if cfg!(debug_assertions) && debug_labels {
-		heap.setLabel(Some(&NSString::from_str("Counters")));
+		heap.setLabel(Some(&NSString::from_str(&format!("Counters {sequence_index}"))));
 	}
 	Ok(heap)
 }

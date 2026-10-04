@@ -68,6 +68,8 @@ pub struct GPUIBLProcessor {
 	scratch: Vec<GPUIBLScratch>,
 	// Retain the largest lower level and downsample it in place instead of allocating a source pyramid for every bake.
 	source_mip: Vec<Radiance>,
+	// Retain the row solid angles of the level being downsampled for the same reason.
+	source_row_solid_angles: Vec<f32>,
 }
 
 impl GPUIBLProcessor {
@@ -116,6 +118,7 @@ impl GPUIBLProcessor {
 			source_sampler,
 			scratch: Vec::with_capacity(2),
 			source_mip: Vec::new(),
+			source_row_solid_angles: Vec::new(),
 		})
 	}
 
@@ -148,7 +151,14 @@ impl GPUIBLProcessor {
 				got: upload.len(),
 			});
 		}
-		write_source_atlas(source_width, source_height, source_rgba16f, upload, &mut self.source_mip)?;
+		write_source_atlas(
+			source_width,
+			source_height,
+			source_rgba16f,
+			upload,
+			&mut self.source_mip,
+			&mut self.source_row_solid_angles,
+		)?;
 		self.gpu.context.sync_texture(scratch.source_atlas);
 
 		let copy_handle = self.dispatch(layout, source_level_count, scratch)?;
@@ -358,31 +368,43 @@ fn write_source_atlas(
 	source_rgba16f: &[u8],
 	atlas: &mut [u8],
 	source_mip: &mut Vec<Radiance>,
+	row_solid_angles: &mut Vec<f32>,
 ) -> Result<(), GPUIBLBakeError> {
 	let source_pixels = source_rgba16f.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0;
-	// The root level spans the full atlas width. Decode while copying so non-finite source values remain sanitized.
+	// The root level spans the full atlas width. Finite halves survive decoding and re-encoding unchanged, so copying
+	// their bits, zeroing non-finite ones, and setting alpha to one stages exactly the sanitized source.
 	for (source, destination) in source_pixels.iter().zip(
 		atlas[..source_rgba16f.len()]
 			.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>()
 			.0
 			.iter_mut(),
 	) {
-		write_rgba16f(destination, decode_source_pixel(source));
+		*destination = *source;
+		for channel in destination[..6].as_chunks_mut::<2>().0 {
+			// All exponent bits set mark an infinity or NaN.
+			if u16::from_le_bytes(*channel) & 0x7C00 == 0x7C00 {
+				*channel = [0, 0];
+			}
+		}
+		destination[6..8].copy_from_slice(&f16::ONE.to_le_bytes());
 	}
 
 	if source_width == 1 && source_height == 1 {
 		return Ok(());
 	}
 
-	let (mut mip_width, mut mip_height) = downsample_source_mip(source_width, source_height, source_mip, |index| {
-		decode_source_pixel(&source_pixels[index])
-	})?;
+	fill_row_solid_angles(source_width, source_height, row_solid_angles)?;
+	let (mut mip_width, mut mip_height) =
+		downsample_source_mip(source_width, source_height, row_solid_angles, source_mip, |index| {
+			decode_source_pixel(&source_pixels[index])
+		})?;
 	let mut level_y_offset = source_height;
 	write_source_level(atlas, source_width, level_y_offset, mip_width, mip_height, source_mip);
 	level_y_offset += mip_height;
 
 	while mip_width > 1 || mip_height > 1 {
-		(mip_width, mip_height) = downsample_source_mip_in_place(mip_width, mip_height, source_mip)?;
+		fill_row_solid_angles(mip_width, mip_height, row_solid_angles)?;
+		(mip_width, mip_height) = downsample_source_mip_in_place(mip_width, mip_height, row_solid_angles, source_mip)?;
 		write_source_level(atlas, source_width, level_y_offset, mip_width, mip_height, source_mip);
 		level_y_offset += mip_height;
 	}
@@ -398,6 +420,7 @@ fn write_source_atlas(
 fn downsample_source_mip_in_place(
 	source_width: u32,
 	source_height: u32,
+	source_row_solid_angles: &[f32],
 	pixels: &mut Vec<Radiance>,
 ) -> Result<(u32, u32), GPUIBLBakeError> {
 	let destination_width = (source_width / 2).max(1);
@@ -415,6 +438,7 @@ fn downsample_source_mip_in_place(
 			let radiance = downsample_source_pixel(
 				source_width,
 				source_height,
+				source_row_solid_angles,
 				[x, y],
 				[destination_width, destination_height],
 				|source_index| pixels[source_index],
@@ -530,7 +554,15 @@ mod tests {
 		let (extent, level_count) = source_atlas_layout(width as u32, height as u32).unwrap();
 		let mut atlas = vec![0; atlas_byte_size(extent).unwrap()];
 		let mut source_mip = Vec::new();
-		write_source_atlas(width as u32, height as u32, &source, &mut atlas, &mut source_mip).unwrap();
+		write_source_atlas(
+			width as u32,
+			height as u32,
+			&source,
+			&mut atlas,
+			&mut source_mip,
+			&mut Vec::new(),
+		)
+		.unwrap();
 
 		let mut expected = vec![0; atlas.len()];
 		let mut level_y_offset = 0;
@@ -642,6 +674,7 @@ mod tests {
 
 use std::{alloc::Global, error::Error, fmt};
 
+use exr::prelude::f16;
 use ghi::{
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommandBuffer as _, CommandBufferRecording as _,
@@ -656,7 +689,8 @@ use utils::Extent;
 use super::{
 	cpu::{
 		BYTES_PER_RGBA16F_PIXEL, BakedImageIBL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError,
-		Radiance, decode_source_pixel, downsample_source_mip, downsample_source_pixel, write_rgba16f, write_sanitized_source,
+		Radiance, decode_source_pixel, downsample_source_mip, downsample_source_pixel, fill_row_solid_angles,
+		write_sanitized_source,
 	},
 	gpu_shaders::{GPU_IBL_GLSL, GPU_IBL_HLSL, GPU_IBL_MSL},
 };

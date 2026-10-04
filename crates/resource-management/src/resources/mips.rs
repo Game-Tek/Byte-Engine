@@ -322,6 +322,9 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 	let source_height = source_height as usize;
 	let destination_width = (source_width / 2).max(1);
 	let destination_height = (source_height / 2).max(1);
+	// Each 8-bit code always decodes to the same linear value, so decoding the 256 codes once per level gives
+	// bit-identical averages without 12 powf calls per destination texel.
+	let to_linear: [f32; 256] = std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0));
 
 	for y in 0..destination_height {
 		let y0 = (y * 2).min(source_height - 1);
@@ -339,7 +342,7 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 			for channel in 0..3 {
 				let linear_average = sources
 					.iter()
-					.map(|source_pixel| srgb_u8_to_linear(source[*source_pixel + channel]))
+					.map(|source_pixel| to_linear[usize::from(source[*source_pixel + channel])])
 					.sum::<f32>() * 0.25;
 				destination[destination_pixel + channel] = linear_to_srgb_u8(linear_average);
 			}
@@ -350,10 +353,6 @@ fn downsample_rgba8_srgb(source_width: u32, source_height: u32, source: &[u8], d
 			destination[destination_pixel + 3] = ((alpha_sum + 2) / 4) as u8;
 		}
 	}
-}
-
-fn srgb_u8_to_linear(value: u8) -> f32 {
-	srgb_to_linear(f32::from(value) / 255.0)
 }
 
 fn linear_to_srgb_u8(value: f32) -> u8 {

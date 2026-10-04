@@ -488,9 +488,9 @@ where
 	for (vertex, value) in values.enumerate() {
 		let value = value.map_err(MeshPrimitiveProcessingError::Source)?;
 		validate_vertex_skin(primitive, vertex, value, skin)?;
-		for joint in value.joints {
-			blocks[joints_index].bytes.extend(joint.to_le_bytes());
-		}
+		blocks[joints_index]
+			.bytes
+			.extend_from_slice(value.joints.map(u16::to_le_bytes).as_flattened());
 		write_f32_components(&mut blocks[weights_index].bytes, &value.weights);
 	}
 	for (index, offset, semantic) in [
@@ -524,9 +524,7 @@ fn append_generated_stream(blocks: &mut [PackedStreamBlock], stream_type: Stream
 }
 
 fn write_f32_components<const N: usize>(bytes: &mut Vec<u8>, value: &[f32; N]) {
-	for component in value {
-		bytes.extend(component.to_le_bytes());
-	}
+	bytes.extend_from_slice(value.map(f32::to_le_bytes).as_flattened());
 }
 
 fn bounding_box_from_positions(positions: &[[f32; 3]]) -> Option<AABB<ModelSpace>> {

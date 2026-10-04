@@ -178,6 +178,15 @@ pub(super) fn append_canonical_image_in<A: Allocator>(
 	}
 	let encoding = source.encoding;
 	match target_format {
+		// Eight-bit RGB is how JPEG and most color textures decode, so it expands as whole texels, which vectorizes.
+		Formats::RGBA8 | Formats::RGBA8SRGB if (source.channels, encoding) == (SourceChannels::RGB, SourceEncoding::U8) => {
+			let start = output.len();
+			output.resize(start + source.data.len() / 3 * 4, 0);
+			for (texel, &[red, green, blue]) in output[start..].as_chunks_mut().0.iter_mut().zip(source.data.as_chunks().0) {
+				*texel = [red, green, blue, u8::MAX];
+			}
+			Some(())
+		}
 		Formats::RGBA8 | Formats::RGBA8SRGB => for_each_rgba(
 			source,
 			encoding.bytes_per_sample(),
@@ -190,11 +199,7 @@ pub(super) fn append_canonical_image_in<A: Allocator>(
 			2,
 			u16::MAX,
 			|bytes| read_u16(bytes, encoding),
-			|rgba| {
-				for channel in rgba {
-					output.extend_from_slice(&channel.to_le_bytes());
-				}
-			},
+			|rgba| output.extend_from_slice(rgba.map(u16::to_le_bytes).as_flattened()),
 		),
 		Formats::RGBA16F => append_rgba16f(source, Gamma::Linear, output),
 		_ => None,
@@ -275,13 +280,13 @@ fn append_rgba16f<A: Allocator>(source: ImageSource<'_>, gamma: Gamma, output: &
 			if gamma == Gamma::SRGB {
 				rgba[..3].iter_mut().for_each(|channel| *channel = srgb_to_linear(*channel));
 			}
-			for channel in rgba {
-				output.extend_from_slice(&f16::from_f32(channel).to_le_bytes());
-			}
+			output.extend_from_slice(rgba.map(|channel| f16::from_f32(channel).to_le_bytes()).as_flattened());
 		},
 	)
 }
 
+/// Reads one sample as an 8-bit unorm value. The readers are inlined so each per-sample loop compiles its encoding in.
+#[inline]
 fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	match encoding {
 		SourceEncoding::U8 => bytes.first().copied(),
@@ -292,6 +297,7 @@ fn read_unorm8(bytes: &[u8], encoding: SourceEncoding) -> Option<u8> {
 	}
 }
 
+#[inline]
 fn read_u16(bytes: &[u8], encoding: SourceEncoding) -> Option<u16> {
 	let bytes = *bytes.first_chunk()?;
 	match encoding {
@@ -303,6 +309,7 @@ fn read_u16(bytes: &[u8], encoding: SourceEncoding) -> Option<u16> {
 }
 
 /// Reads one source sample as linear floating-point radiance without applying a transfer function.
+#[inline]
 fn read_linear_f32(bytes: &[u8], encoding: SourceEncoding) -> Option<f32> {
 	match encoding {
 		SourceEncoding::U16LittleEndian | SourceEncoding::U16BigEndian | SourceEncoding::U16NativeEndian => {

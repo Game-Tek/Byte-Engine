@@ -18,6 +18,8 @@ pub(super) struct SourceMIP<'a> {
 	pub(super) width: u32,
 	pub(super) height: u32,
 	pub(super) pixels: Vec<Radiance, &'a dyn Allocator>,
+	/// The solid angle of one texel in each row, which filtering reads instead of evaluating two sines per sample.
+	pub(super) row_solid_angles: Vec<f32, &'a dyn Allocator>,
 }
 
 /// The `BakedImageIBL` struct carries the parent image and its embedded lighting maps into resource storage.
@@ -108,8 +110,9 @@ impl CubemapIBLLayout {
 		let mut data = Vec::new_in(allocator);
 		data.try_reserve_exact(self.total_size)
 			.map_err(|_| IBLBakeError::AllocationFailed)?;
+		// Only the derived ranges need zeros; the root stream is written once.
+		data.extend_from_slice(source_rgba16f);
 		data.resize(self.total_size, 0);
-		data[..self.root_size].copy_from_slice(source_rgba16f);
 		Ok(data)
 	}
 
@@ -210,11 +213,11 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 	let mut data = Vec::new_in(allocator);
 	data.try_reserve_exact(total_size)
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
+	data.extend_from_slice(source_rgba16f);
 	data.resize(total_size, 0);
 
 	let mut streams = Vec::with_capacity(IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
 	streams.push(StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, root_size, 0));
-	data[..root_size].copy_from_slice(source_rgba16f);
 
 	let mut offset = root_size;
 	for (level, &(width, height)) in specular_extents.iter().enumerate() {
@@ -316,28 +319,53 @@ pub(super) fn build_source_mips<'a>(
 	allocator: &'a dyn Allocator,
 ) -> Result<Vec<SourceMIP<'a>, &'a dyn Allocator>, IBLBakeError> {
 	let level_count = width.max(height).ilog2() as usize + 1;
+	let level = |width, height, pixels| {
+		let mut row_solid_angles = Vec::new_in(allocator);
+		fill_row_solid_angles(width, height, &mut row_solid_angles)?;
+		Ok(SourceMIP {
+			width,
+			height,
+			pixels,
+			row_solid_angles,
+		})
+	};
 	let mut mips = Vec::new_in(allocator);
 	mips.try_reserve_exact(level_count)
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
-	mips.push(SourceMIP { width, height, pixels });
+	mips.push(level(width, height, pixels)?);
 
 	while let Some(source) = mips.last().filter(|level| level.width > 1 || level.height > 1) {
 		let mut pixels = Vec::new_in(allocator);
-		let (width, height) = downsample_source_mip(source.width, source.height, &mut pixels, |index| source.pixels[index])?;
-		mips.push(SourceMIP { width, height, pixels });
+		let (width, height) =
+			downsample_source_mip(source.width, source.height, &source.row_solid_angles, &mut pixels, |index| {
+				source.pixels[index]
+			})?;
+		mips.push(level(width, height, pixels)?);
 	}
 
 	Ok(mips)
 }
 
+/// Replaces `rows` with the solid angle of one texel in each row of a `width` by `height` lat-long level.
+///
+/// Filters look these up, because a row's solid angle costs two sines and every texel of the row shares it.
+pub(super) fn fill_row_solid_angles<A: Allocator>(width: u32, height: u32, rows: &mut Vec<f32, A>) -> Result<(), IBLBakeError> {
+	rows.clear();
+	rows.try_reserve_exact(height as usize)
+		.map_err(|_| IBLBakeError::AllocationFailed)?;
+	rows.extend((0..height).map(|row| lat_long_row_solid_angle(width, height, row)));
+	Ok(())
+}
+
 /// Replaces `destination` with the area-preserving level below a `source_width` by `source_height` level and returns
 /// its extent.
 ///
-/// `source_pixel` reads the source texel at a row-major index, so the CPU pyramid and the GPU atlas staging share
-/// this level filter.
+/// `source_row_solid_angles` holds the source level's [`fill_row_solid_angles`], and `source_pixel` reads the source
+/// texel at a row-major index, so the CPU pyramid and the GPU atlas staging share this level filter.
 pub(super) fn downsample_source_mip<A: Allocator>(
 	source_width: u32,
 	source_height: u32,
+	source_row_solid_angles: &[f32],
 	destination: &mut Vec<Radiance, A>,
 	mut source_pixel: impl FnMut(usize) -> Radiance,
 ) -> Result<(u32, u32), IBLBakeError> {
@@ -356,6 +384,7 @@ pub(super) fn downsample_source_mip<A: Allocator>(
 			destination.push(downsample_source_pixel(
 				source_width,
 				source_height,
+				source_row_solid_angles,
 				[x, y],
 				[destination_width, destination_height],
 				&mut source_pixel,
@@ -368,11 +397,12 @@ pub(super) fn downsample_source_mip<A: Allocator>(
 
 /// Integrates the solid-angle-weighted source texels covered by one destination texel.
 ///
-/// `source_pixel` reads the source texel at a row-major index, so the CPU pyramid and the GPU atlas staging share
-/// this kernel and its accumulation order and precision.
+/// `source_row_solid_angles` weighs each source row, and `source_pixel` reads the source texel at a row-major index, so
+/// the CPU pyramid and the GPU atlas staging share this kernel and its accumulation order and precision.
 pub(super) fn downsample_source_pixel(
 	source_width: u32,
 	source_height: u32,
+	source_row_solid_angles: &[f32],
 	destination: [u32; 2],
 	destination_extent: [u32; 2],
 	mut source_pixel: impl FnMut(usize) -> Radiance,
@@ -387,7 +417,7 @@ pub(super) fn downsample_source_pixel(
 	let mut total_weight = 0.0_f64;
 
 	for source_y in source_y_begin..source_y_end {
-		let weight = lat_long_row_solid_angle(source_width, source_height, source_y as u32) as f64;
+		let weight = source_row_solid_angles[source_y as usize] as f64;
 		for source_x in source_x_begin..source_x_end {
 			let radiance = source_pixel(source_y as usize * source_width as usize + source_x as usize);
 			for channel in 0..3 {
@@ -571,16 +601,21 @@ fn sample_filtered_direction(source_mips: &[SourceMIP<'_>], direction: Vector, p
 	let row = (v * base.height as f32)
 		.floor()
 		.clamp(0.0, base.height.saturating_sub(1) as f32) as u32;
-	let texel_solid_angle = lat_long_row_solid_angle(base.width, base.height, row);
+	let texel_solid_angle = base.row_solid_angles[row as usize];
 	let lod = (0.5 * (sample_solid_angle / texel_solid_angle).max(1.0).log2()).clamp(0.0, (source_mips.len() - 1) as f32);
 	let lower_level = lod.floor() as usize;
 	let upper_level = (lower_level + 1).min(source_mips.len() - 1);
 	let blend = lod - lower_level as f32;
-	let [lower, upper] = [lower_level, upper_level].map(|level| {
+	let sample = |level: usize| {
 		let mip = &source_mips[level];
 		sample_lat_long_uv(&mip.pixels, mip.width, mip.height, u, v)
-	});
-	lerp_radiance(lower, upper, blend)
+	};
+	let lower = sample(lower_level);
+	// A whole-number LOD reads one level. Blending toward the next would add exactly zero to the finite radiance.
+	if blend == 0.0 {
+		return lower;
+	}
+	lerp_radiance(lower, sample(upper_level), blend)
 }
 
 /// Returns one texel's solid angle for a row of an equirectangular image.
@@ -671,8 +706,13 @@ fn sample_lat_long_uv(source: &[Radiance], width: u32, height: u32, u: f32, v: f
 	let source_x = u * width as f32 - 0.5;
 	let x0_unwrapped = source_x.floor() as i64;
 	let x_fraction = source_x - x0_unwrapped as f32;
-	let x0 = x0_unwrapped.rem_euclid(width as i64) as usize;
-	let x1 = (x0 + 1) % width as usize;
+	// `u` lies in [0, 1], so taps leave the row only at the seam; comparing first skips the divisions inside it.
+	let x0 = if (0..width as i64).contains(&x0_unwrapped) {
+		x0_unwrapped as usize
+	} else {
+		x0_unwrapped.rem_euclid(width as i64) as usize
+	};
+	let x1 = if x0 + 1 == width as usize { 0 } else { x0 + 1 };
 
 	let source_y = (v * height as f32 - 0.5).clamp(0.0, height.saturating_sub(1) as f32);
 	let y0 = source_y.floor() as usize;
@@ -714,12 +754,12 @@ fn normalize(vector: Vector) -> Vector {
 		.map_or(Vector::new(1.0, 0.0, 0.0), UnitVector::into_vector)
 }
 
-pub(super) fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
+fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
 	for (channel, value) in radiance.into_iter().enumerate() {
 		let value = if value.is_finite() { value } else { 0.0 };
 		destination[channel * 2..channel * 2 + 2].copy_from_slice(&f16::from_f32(value).to_le_bytes());
 	}
-	destination[6..8].copy_from_slice(&f16::from_f32(1.0).to_le_bytes());
+	destination[6..8].copy_from_slice(&f16::ONE.to_le_bytes());
 }
 
 #[cfg(test)]

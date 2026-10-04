@@ -102,17 +102,11 @@ pub fn setup_default_window(application: &mut GraphicsApplication) {
 ///
 /// Release builds intentionally leave the manager without asset processors and
 /// must receive their complete resource store from BELD.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub fn setup_default_resource_and_asset_management(
 	application: &mut GraphicsApplication,
 	generator: impl ProgramGenerator + Clone + 'static,
 ) {
-	#[cfg(not(debug_assertions))]
-	{
-		let _ = (application, generator);
-
-		return;
-	}
-
 	#[cfg(debug_assertions)]
 	{
 		let assets_path = super::resolve_application_directory(application.get_parameter("assets-path"), "assets");
@@ -243,9 +237,7 @@ pub fn setup_default_audio(application: &mut GraphicsApplication) {
 					}
 				};
 
-				let span = debug_span!("Render audio");
-
-				let _entered = span.enter();
+				let _span = debug_span!("Render audio").entered();
 
 				loop {
 					if matches!(receiver.read(), Some(Events::Close)) {

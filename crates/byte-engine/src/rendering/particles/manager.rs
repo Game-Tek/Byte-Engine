@@ -104,8 +104,6 @@ enum Slot {
 /// The `PoolFrame` struct is what one system's commands need in a frame.
 #[derive(Clone, Copy)]
 struct PoolFrame {
-	/// The index of the system in [`ParticleManager::systems`].
-	system: usize,
 	simulate: ghi::PipelineHandle,
 	draw: ghi::PipelineHandle,
 	descriptor_set: ghi::DescriptorSetHandle,
@@ -302,7 +300,7 @@ fn release(systems: &mut [SystemEntry], state: EmitterState, simulated_time: f64
 /// Writes one system's spawn runs and spawning emitters into `data` for a simulation that fills `side`, and returns
 /// how many particles were requested.
 fn write_frame_data(
-	pool: &mut SystemPool,
+	pool: &SystemPool,
 	system: usize,
 	emitters: &mut HashMap<Handle, EmitterState>,
 	data: &mut ParticleFrameData,
@@ -384,6 +382,11 @@ impl PipelineManager for ParticleManager {
 		}
 
 		self.seed = self.seed.wrapping_add(1);
+		// Every active pool draws for each sink with attachments, so such a sink decides up front whether this frame
+		// records anything and advances the pools.
+		let records = sinks
+			.iter()
+			.any(|sink| self.sink_attachments.iter().any(|(sink_id, _)| *sink_id == sink.index()));
 		// The frame arena holds the active pools; it allocates on the first push, so idle frames allocate nothing.
 		let mut pools = bumpalo::collections::Vec::new_in(frame_allocator);
 		for (index, entry) in self.systems.iter_mut().enumerate() {
@@ -398,12 +401,11 @@ impl PipelineManager for ParticleManager {
 			};
 			// The simulation reads the half the last one filled and packs survivors into the other.
 			let side = pool.side ^ 1;
-			let frame_data = pool.frame_data;
 			let spawn_total = write_frame_data(
 				pool,
 				index,
 				&mut self.emitters,
-				frame.get_mut_dynamic_buffer_slice(frame_data),
+				frame.get_mut_dynamic_buffer_slice(pool.frame_data),
 				side,
 				delta_time,
 				self.seed,
@@ -419,9 +421,8 @@ impl PipelineManager for ParticleManager {
 				pool.reset = true;
 				continue;
 			}
-			frame.sync_buffer(frame_data);
+			frame.sync_buffer(pool.frame_data);
 			pools.push(PoolFrame {
-				system: index,
 				simulate,
 				draw,
 				descriptor_set: pool.descriptor_set,
@@ -429,6 +430,11 @@ impl PipelineManager for ParticleManager {
 				dispatch: pool.dispatch,
 				side,
 			});
+			// A frame that records nothing leaves the live particles in the half they were in.
+			if records {
+				pool.side = side;
+				pool.reset = false;
+			}
 		}
 		if pools.is_empty() {
 			return commands;
@@ -479,16 +485,6 @@ impl PipelineManager for ParticleManager {
 				);
 			});
 			commands.push((sink.index(), command));
-		}
-
-		// A frame that recorded nothing leaves the live particles in the half they were in.
-		if !commands.is_empty() {
-			for pool_frame in pools {
-				if let Some(pool) = self.systems[pool_frame.system].pool.as_deref_mut() {
-					pool.side = pool_frame.side;
-					pool.reset = false;
-				}
-			}
 		}
 		commands
 	}

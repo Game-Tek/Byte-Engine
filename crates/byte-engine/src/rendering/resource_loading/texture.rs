@@ -32,10 +32,9 @@ pub async fn load_texture<P: LoadPipeline>(
 	name: &str,
 	lane: &LoaderLane<P>,
 ) -> Result<ghi::implementation::DetachedImage, TextureTransferError> {
-	let transfer = PreparedTextureTransfer::prepare(reference, lane.staging().clone())
+	let (metadata, source) = prepare_texture(reference, lane.staging().clone())
 		.await
 		.map_err(|error| TextureTransferError(format!("Texture preparation failed for {name}. {error}")))?;
-	let (metadata, source) = transfer.into_parts();
 	let description = ImageDescription {
 		name: name.to_owned(),
 		format: metadata.format,
@@ -45,7 +44,13 @@ pub async fn load_texture<P: LoadPipeline>(
 	};
 	match source {
 		PreparedTextureSource::Staged(source) => {
-			let regions = source.regions();
+			// Every mip sits at its own offset inside the staging lease.
+			let regions = source
+				.layouts
+				.iter()
+				.enumerate()
+				.map(|(mip_level, layout)| layout.region(mip_level as u32))
+				.collect();
 			let [image] = lane
 				.upload(source.staging, [ImageUpload { description, regions }], SmallVec::new())
 				.await
@@ -61,7 +66,7 @@ pub async fn load_texture<P: LoadPipeline>(
 				.map_err(|error| TextureTransferError(format!("Texture I/O requests are invalid for {name}. {error}")))?;
 			lane.upload_native_image(NativeImageUpload {
 				description,
-				path: source.path().to_owned(),
+				path: source.backing.path().to_owned(),
 				compression,
 				regions,
 			})
@@ -91,64 +96,53 @@ struct TextureMetadata {
 	mip_count: u32,
 }
 
-/// The `PreparedTextureTransfer` struct keeps validated texture data alive until the loader uploads it.
-struct PreparedTextureTransfer {
-	metadata: TextureMetadata,
-	source: PreparedTextureSource,
+/// Prepares all persisted mips without choosing a renderer destination, and returns the validated image shape with
+/// the source the loader uploads from.
+///
+/// CPU-readable resources receive one exclusive staging lease with rows
+/// already padded for GHI copies. GPU-backed resources retain their native
+/// file and stream metadata without decoding on the CPU. The caller supplies
+/// logical identity when reporting [`TexturePreparationError`].
+async fn prepare_texture(
+	mut reference: Reference<ResourceImage>,
+	staging: Arc<UploadStagingArena>,
+) -> Result<(TextureMetadata, PreparedTextureSource), TexturePreparationError> {
+	let image = reference.resource();
+	let [width, height, depth] = image.extent;
+	if width == 0 || height == 0 || depth != 0 {
+		return Err(TexturePreparationError::Dimensions);
+	}
+	let mip_count = image.mip_count.max(1);
+	let available_mips = u32::BITS - width.max(height).leading_zeros();
+	if mip_count > available_mips {
+		return Err(TexturePreparationError::MipCount);
+	}
+	let metadata = TextureMetadata {
+		format: resource_format_to_ghi(image.format),
+		extent: Extent::rectangle(width, height),
+		mip_count,
+	};
+
+	let source = if reference.is_gpu_backed() {
+		let streams = reference.streams().map(<[StreamDescription]>::to_vec);
+		let backing = reference
+			.consume_reader()
+			.into_backing_storage()
+			.await
+			.map_err(|_| TexturePreparationError::NativeBacking)?;
+		let ResourceReaderBacking::Gpu(backing) = backing else {
+			return Err(TexturePreparationError::NativeBacking);
+		};
+		PreparedTextureSource::Native(NativeTextureUpload { backing, streams })
+	} else {
+		PreparedTextureSource::Staged(prepare_staged_texture(&mut reference, staging, metadata).await?)
+	};
+
+	Ok((metadata, source))
 }
 
-impl PreparedTextureTransfer {
-	/// Prepares all persisted mips without choosing a renderer destination.
-	///
-	/// CPU-readable resources receive one exclusive staging lease with rows
-	/// already padded for GHI copies. GPU-backed resources retain their native
-	/// file and stream metadata without decoding on the CPU. The caller supplies
-	/// logical identity when reporting [`TexturePreparationError`].
-	async fn prepare(
-		mut reference: Reference<ResourceImage>,
-		staging: Arc<UploadStagingArena>,
-	) -> Result<Self, TexturePreparationError> {
-		let image = reference.resource();
-		let [width, height, depth] = image.extent;
-		if width == 0 || height == 0 || depth != 0 {
-			return Err(TexturePreparationError::Dimensions);
-		}
-		let mip_count = image.mip_count.max(1);
-		let available_mips = u32::BITS - width.max(height).leading_zeros();
-		if mip_count > available_mips {
-			return Err(TexturePreparationError::MipCount);
-		}
-		let metadata = TextureMetadata {
-			format: resource_format_to_ghi(image.format),
-			extent: Extent::rectangle(width, height),
-			mip_count,
-		};
-
-		let source = if reference.is_gpu_backed() {
-			let streams = reference.streams().map(<[StreamDescription]>::to_vec);
-			let backing = reference
-				.consume_reader()
-				.into_backing_storage()
-				.await
-				.map_err(|_| TexturePreparationError::NativeBacking)?;
-			let ResourceReaderBacking::Gpu(backing) = backing else {
-				return Err(TexturePreparationError::NativeBacking);
-			};
-			PreparedTextureSource::Native(NativeTextureUpload { backing, streams })
-		} else {
-			PreparedTextureSource::Staged(prepare_staged_texture(&mut reference, staging, metadata).await?)
-		};
-
-		Ok(Self { metadata, source })
-	}
-
-	/// Splits preparation into the renderer-creation metadata and delivery source.
-	fn into_parts(self) -> (TextureMetadata, PreparedTextureSource) {
-		(self.metadata, self.source)
-	}
-}
-
-/// The `PreparedTextureSource` enum selects CPU staging or native GPU resource I/O.
+/// The `PreparedTextureSource` enum selects CPU staging or native GPU resource I/O, and keeps the validated texture
+/// data alive until the loader uploads it.
 ///
 /// [`load_texture`] turns this internal delivery choice into the matching loader upload.
 enum PreparedTextureSource {
@@ -166,17 +160,6 @@ struct StagedTextureUpload {
 	layouts: SmallVec<[TextureUploadLayout; 16]>,
 }
 
-impl StagedTextureUpload {
-	/// Places every mip inside the staging lease.
-	fn regions(&self) -> SmallVec<[ImageRegion; 16]> {
-		self.layouts
-			.iter()
-			.enumerate()
-			.map(|(mip_level, layout)| layout.region(mip_level as u32))
-			.collect()
-	}
-}
-
 /// The `NativeTextureUpload` struct retains a persisted GPU source and decoded mip ranges.
 ///
 /// The loader opens the backing file and waits for its reads before [`load_texture`] returns.
@@ -186,11 +169,6 @@ struct NativeTextureUpload {
 }
 
 impl NativeTextureUpload {
-	/// Returns the persisted file consumed by the native storage queue.
-	fn path(&self) -> &std::path::Path {
-		self.backing.path()
-	}
-
 	/// Returns the native decompression method declared by resource storage.
 	fn compression(&self) -> Result<ghi::io::ResourceIoCompression, TexturePreparationError> {
 		match self.backing.encoding() {
@@ -350,24 +328,13 @@ struct MipStreamName {
 impl MipStreamName {
 	/// Formats one bounded `mip[level]` identifier without allocating.
 	fn new(level: u32) -> Self {
+		use std::io::Write as _;
+
 		let mut bytes = [0_u8; 16];
-		bytes[..4].copy_from_slice(b"mip[");
-		let mut digits = [0_u8; 10];
-		let mut value = level;
-		let mut digit_count = 0usize;
-		loop {
-			digits[digit_count] = b'0' + (value % 10) as u8;
-			digit_count += 1;
-			value /= 10;
-			if value == 0 {
-				break;
-			}
-		}
-		for index in 0..digit_count {
-			bytes[4 + index] = digits[digit_count - index - 1];
-		}
-		let len = digit_count + 5;
-		bytes[len - 1] = b']';
+		// Writing into the slice advances it, so what remains unwritten gives the length.
+		let mut unwritten = &mut bytes[..];
+		write!(unwritten, "mip[{level}]").expect("A `mip[u32]` name fits in 16 bytes.");
+		let len = 16 - unwritten.len();
 		Self { bytes, len }
 	}
 
@@ -385,11 +352,9 @@ pub(crate) async fn load_image_streams<'a>(
 		.load(streams.into_vec().into())
 		.await
 		.map_err(|_| TexturePreparationError::Payload)?;
-	if matches!(loaded, ReadTargets::Streams(_)) {
-		Ok(())
-	} else {
-		Err(TexturePreparationError::Payload)
-	}
+	matches!(loaded, ReadTargets::Streams(_))
+		.then_some(())
+		.ok_or(TexturePreparationError::Payload)
 }
 
 async fn prepare_staged_texture(
@@ -400,9 +365,8 @@ async fn prepare_staged_texture(
 	let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
 	let mut upload_byte_count = 0usize;
 	for level in 0..metadata.mip_count {
-		let mut layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, 0)
+		let layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, upload_byte_count)
 			.ok_or(TexturePreparationError::Layout)?;
-		layout.offset = upload_byte_count;
 		upload_byte_count = upload_byte_count
 			.checked_add(layout.padded_size)
 			.ok_or(TexturePreparationError::Layout)?;
@@ -426,23 +390,17 @@ fn texture_payload_is_compact(
 	stream_names: &[MipStreamName],
 	layouts: &[TextureUploadLayout],
 ) -> bool {
-	let Some(descriptions) = descriptions else {
-		return false;
-	};
-	let mut offset = 0usize;
-	for (name, layout) in stream_names.iter().zip(layouts) {
-		let Some(description) = descriptions.iter().find(|description| description.name() == name.as_str()) else {
-			return false;
-		};
-		if description.offset() != offset || description.size() != layout.compact_size {
-			return false;
-		}
-		let Some(next_offset) = offset.checked_add(layout.compact_size) else {
-			return false;
-		};
-		offset = next_offset;
-	}
-	offset == decoded_size
+	// Each mip's stream must start where the previous one ended, so together they end at the decoded size.
+	let end = descriptions.and_then(|descriptions| {
+		stream_names.iter().zip(layouts).try_fold(0usize, |offset, (name, layout)| {
+			let description = descriptions.iter().find(|description| description.name() == name.as_str())?;
+			if description.offset() != offset || description.size() != layout.compact_size {
+				return None;
+			}
+			offset.checked_add(layout.compact_size)
+		})
+	});
+	end == Some(decoded_size)
 }
 
 fn expand_compact_texture_levels(

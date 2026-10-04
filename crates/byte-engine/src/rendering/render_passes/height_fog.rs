@@ -40,11 +40,8 @@ struct FogLayerShaderData {
 }
 
 impl FogLayerShaderData {
-	/// Packs `layer` for a camera at `camera`. `None` packs a layer without density, which adds no fog.
-	fn new(layer: Option<FogLayer>, camera: Vec3f) -> Self {
-		let Some(layer) = layer else {
-			return Self::zeroed();
-		};
+	/// Packs `layer` for a camera at `camera`.
+	fn new(layer: FogLayer, camera: Vec3f) -> Self {
 		// The density at the camera is density · e^exponent. The shader clamps the exponent once it adds the ray's part.
 		let exponent = layer.height_falloff() * (layer.base_height() - camera.y);
 		let (bounded, bounds_min, bounds_max) = match layer.bounds() {
@@ -179,8 +176,10 @@ fn fog_shader_data(
 	FogShaderData {
 		pixel_to_camera_offset: pixel_to_camera_offset(view, sink.extent()).into(),
 		layers: [
-			FogLayerShaderData::new(Some(fog.layer()), camera),
-			FogLayerShaderData::new(fog.second_layer(), camera),
+			FogLayerShaderData::new(fog.layer(), camera),
+			// A missing second layer packs no density, which adds no fog.
+			fog.second_layer()
+				.map_or_else(FogLayerShaderData::zeroed, |layer| FogLayerShaderData::new(layer, camera)),
 		],
 		scattering: [1.0 + squared, 2.0 * anisotropy, fog.max_opacity(), 0.0],
 		sun_direction,

@@ -43,6 +43,20 @@ pub(crate) fn push_constant_buffer(program: &ExecutableProgram) -> Buffer {
 	)
 }
 
+/// Links one checked-in BESL shader through the frontend production baking uses.
+///
+/// Returns the program rather than its `main`, because the program owns every function it calls. Pass the result to
+/// [`compile`].
+pub(crate) fn link_program(source: &str, name: &str) -> besl::NodeReference {
+	let program = besl::compile_to_besl(source, None).unwrap_or_else(|error| {
+		panic!("Failed to link {name}: {error:?}. The most likely cause is invalid syntax in the checked-in BESL asset.")
+	});
+	program.get_main().unwrap_or_else(|| {
+		panic!("Missing {name} entry point. The most likely cause is that the checked-in BESL asset has no `main` function.")
+	});
+	program
+}
+
 /// Compiles the exact production shader entry point for a VM runtime test.
 pub(crate) fn compile(main: besl::NodeReference) -> ExecutableProgram {
 	ExecutableProgram::compile(main).expect(

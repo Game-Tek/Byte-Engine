@@ -92,19 +92,16 @@ pub fn setup_simple_render_pipeline(application: &mut GraphicsApplication) {
 /// [`DefaultWorld::factory`] to select the HDR image used for ambient and
 /// specular reflections.
 pub fn setup_pbr_visibility_shading_render_pipeline(application: &mut GraphicsApplication) {
+	use crate::rendering::pipelines::visibility::{CONTACT_SHADOWS_CONFIGURATION_PREFIX, GTAO_CONFIGURATION_PREFIX};
+
 	let visibility_pipeline_settings = visibility_pipeline_settings(application);
-	let gtao_configuration = application
-		.configuration()
-		.register(crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX);
-	let contact_shadow_configuration = application
-		.configuration()
-		.register(crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX);
-	for prefix in [
-		crate::rendering::pipelines::visibility::GTAO_CONFIGURATION_PREFIX,
-		crate::rendering::pipelines::visibility::CONTACT_SHADOWS_CONFIGURATION_PREFIX,
-	] {
-		super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
-	}
+	// Each port subscribes before its startup parameters are queued, so it reports every one of them.
+	let [gtao_configuration, contact_shadow_configuration] = [GTAO_CONFIGURATION_PREFIX, CONTACT_SHADOWS_CONFIGURATION_PREFIX]
+		.map(|prefix| {
+			let port = application.configuration.register(prefix);
+			super::queue_startup_parameters(application.application.parameters(), &application.configuration, prefix);
+			port
+		});
 
 	let application_resource_manager = application.resource_manager.clone();
 	let (loader, renderer) = application.loader_and_renderer_mut();
@@ -306,10 +303,8 @@ mod ui_source_tests {
 	use super::*;
 	use crate::ui::{Context, ElementContext, Engine, Size};
 
-	#[test]
-	fn republished_unchanged_render_is_not_adopted_again() {
-		let factory = Factory::new();
-		let mut source = UiRenderSource::new(factory.listener());
+	/// Creates an engine whose root renders on every evaluation, so each test controls what it publishes.
+	fn rendering_engine() -> Engine {
 		let mut engine = Engine::new();
 		engine.mount(async move |ctx| {
 			let _root = ctx.element("root").container(|c| c).await;
@@ -317,6 +312,14 @@ mod ui_source_tests {
 				ctx.render().await;
 			}
 		});
+		engine
+	}
+
+	#[test]
+	fn republished_unchanged_render_is_not_adopted_again() {
+		let factory = Factory::new();
+		let mut source = UiRenderSource::new(factory.listener());
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
@@ -338,13 +341,7 @@ mod ui_source_tests {
 	fn adopted_ui_returns_render_buffers_to_the_engine() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let _root = ctx.element("root").container(|c| c).await;
-			loop {
-				ctx.render().await;
-			}
-		});
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);
@@ -363,13 +360,7 @@ mod ui_source_tests {
 	fn submitted_ui_reaches_late_sinks_without_republication() {
 		let factory = Factory::new();
 		let mut source = UiRenderSource::new(factory.listener());
-		let mut engine = Engine::new();
-		engine.mount(async move |ctx| {
-			let _root = ctx.element("root").container(|c| c).await;
-			loop {
-				ctx.render().await;
-			}
-		});
+		let mut engine = rendering_engine();
 		let allocator = bumpalo::Bump::new();
 		let mut publish = |size| {
 			engine.evaluate(Size::new(size, size), &allocator);

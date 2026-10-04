@@ -76,20 +76,12 @@ fn instance_batches_in<'a, T>(
 					index_count: mesh.index_count,
 					base_instance: slot,
 				};
-				if let Some((_, finished)) = current.replace((*mesh, batch)) {
-					batches.push(finished);
-				}
+				batches.extend(current.replace((*mesh, batch)).map(|(_, finished)| finished));
 			}
-			(None, _) => {
-				if let Some((_, finished)) = current.take() {
-					batches.push(finished);
-				}
-			}
+			(None, _) => batches.extend(current.take().map(|(_, finished)| finished)),
 		}
 	}
-	if let Some((_, finished)) = current {
-		batches.push(finished);
-	}
+	batches.extend(current.map(|(_, finished)| finished));
 	batches
 }
 
@@ -167,13 +159,6 @@ impl PipelineManager {
 		self.pending_renderables.push(PendingRenderable { handle, key });
 	}
 
-	/// Retains the latest transform, which the next [`Self::write_instance_data`] uploads.
-	///
-	/// Updates arriving before residency are not lost; the instance reads the retained transform once it exists.
-	fn update_transform(&mut self, handle: Handle, transform: &Transform) {
-		self.renderable_transforms.insert(handle, transform.clone());
-	}
-
 	/// Writes every live instance's transform into this frame's copy of the instance-data buffer.
 	///
 	/// Each frame in flight reads its own copy, and a copy last written by an earlier frame misses every change
@@ -204,21 +189,9 @@ impl PipelineManager {
 
 	/// Removes pending scene state for one deleted handle.
 	fn remove_pending(&mut self, handle: Handle) {
-		let Some(index) = self.pending_renderables.iter().position(|pending| pending.handle == handle) else {
-			return;
-		};
-		self.pending_renderables.swap_remove(index);
-	}
-
-	/// Allocates one resident instance; [`Self::write_instance_data`] uploads its retained transform.
-	fn add_resident_instance(&mut self, handle: Handle, resident: ResidentSimpleMesh) {
-		let slot = self.instances.push((resident, handle));
-		if slot.index() >= MAX_INSTANCES {
-			self.instances.remove(slot);
-			log::error!("Simple instance storage is full. The most likely cause is more than 1,024 live renderable instances.");
-			return;
+		if let Some(index) = self.pending_renderables.iter().position(|pending| pending.handle == handle) {
+			self.pending_renderables.swap_remove(index);
 		}
-		self.instance_slots.insert(handle, slot);
 	}
 
 	/// Creates scene instances whose shared mesh uploads completed at the frame boundary.
@@ -230,8 +203,17 @@ impl PipelineManager {
 				index += 1;
 				continue;
 			};
+			// Each resident instance gets one slot; `write_instance_data` uploads its retained transform.
 			let pending = self.pending_renderables.swap_remove(index);
-			self.add_resident_instance(pending.handle, resident);
+			let slot = self.instances.push((resident, pending.handle));
+			if slot.index() >= MAX_INSTANCES {
+				self.instances.remove(slot);
+				log::error!(
+					"Simple instance storage is full. The most likely cause is more than 1,024 live renderable instances."
+				);
+				continue;
+			}
+			self.instance_slots.insert(pending.handle, slot);
 		}
 	}
 }
@@ -240,8 +222,7 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 	/// Adopts mesh creation messages so their loads overlap window setup.
 	fn update(&mut self) {
 		while let Some(message) = self.mesh_listener.read() {
-			let handle = message.handle();
-			self.request_mesh(handle, message.into_data());
+			self.request_mesh(message.handle(), message.into_data());
 		}
 	}
 
@@ -253,9 +234,11 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		_alpha: f32,
 		_time: crate::time::MediaTime,
 	) -> SmallVec<[(usize, RenderPassReturn<'a>); 16]> {
-		// Transforms apply before deletions, so a renderable moved and deleted in one tick ends deleted.
+		// Transforms apply before deletions, so a renderable moved and deleted in one tick ends deleted. A transform that
+		// arrives before residency is kept, and the instance reads it once it exists.
 		while let Some(message) = self.transforms_listener.read() {
-			self.update_transform(message.handle(), message.transform());
+			self.renderable_transforms
+				.insert(message.handle(), message.transform().clone());
 		}
 		while let Some(message) = self.deletions_listener.read() {
 			self.remove_mesh(message.into_handle());
@@ -280,17 +263,12 @@ impl crate::rendering::pipeline_manager::PipelineManager for PipelineManager {
 		sinks
 			.iter()
 			.filter_map(|sink| {
-				self.sinks
-					.iter()
-					.find(|sink_state| sink_state.index == sink.index())
-					.map(|sink_state| (sink, sink_state))
-			})
-			.map(|(sink, sink_state)| {
+				let sink_state = self.sinks.iter().find(|sink_state| sink_state.index == sink.index())?;
 				let command = sink_state.prepare(frame, sink, self, pipeline, instance_batches, frame_allocator);
-				(
+				Some((
 					sink.index(),
 					crate::rendering::render_pass::allocate_render_command(frame_allocator, command),
-				)
+				))
 			})
 			.collect()
 	}
@@ -391,30 +369,12 @@ mod tests {
 	};
 
 	use crate::rendering::shader_vm_test::{
-		IDENTITY_MATRIX, buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at,
+		IDENTITY_MATRIX, buffer, builtin_position_buffer, compile, input_buffer, link_program, output_buffer, run_at,
 	};
 
-	/// Links the checked-in Simple fragment shader and returns the program, which owns every function it calls.
-	fn create_simple_fragment_program() -> besl::NodeReference {
-		let program = besl::compile_to_besl(
-			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/fragment.besl")),
-			None,
-		)
-		.expect("Simple fragment asset should compile");
-		program.get_main().expect("Simple fragment asset should contain main");
-		program
-	}
-
-	/// Links the checked-in Simple vertex shader and returns the program, which owns every function it calls.
-	fn create_simple_vertex_program() -> besl::NodeReference {
-		let program = besl::compile_to_besl(
-			include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/vertex.besl")),
-			None,
-		)
-		.expect("Simple vertex asset should compile");
-		program.get_main().expect("Simple vertex asset should contain main");
-		program
-	}
+	const SIMPLE_FRAGMENT_BESL: &str =
+		include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/fragment.besl"));
+	const SIMPLE_VERTEX_BESL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/rendering/simple/vertex.besl"));
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {
@@ -424,7 +384,7 @@ mod tests {
 
 	/// Executes the production simple fragment shader for one instance and object-space position.
 	fn run_fragment(instance_index: u32, local_position: [f32; 3]) -> [f32; 4] {
-		let program = compile(create_simple_fragment_program());
+		let program = compile(link_program(SIMPLE_FRAGMENT_BESL, "Simple fragment shader"));
 
 		let mut instance = input_buffer(&program, 0);
 
@@ -462,7 +422,7 @@ mod tests {
 	/// Verifies the production vertex program applies indexed transforms and preserves its varyings.
 	#[test]
 	fn simple_vertex_besl_vm_transforms_and_forwards_inputs() {
-		let program = compile(create_simple_vertex_program());
+		let program = compile(link_program(SIMPLE_VERTEX_BESL, "Simple vertex shader"));
 
 		let mut cameras = buffer(&program, ResourceSlot::new(0));
 

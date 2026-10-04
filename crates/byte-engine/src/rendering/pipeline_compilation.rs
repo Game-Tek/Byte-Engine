@@ -1,28 +1,15 @@
 //! Asynchronous pipeline compilation and frame-boundary publication.
 
-/// The `PipelineKey` struct identifies one complete pipeline compilation input.
-///
-/// The manager derives this value from the resource ID passed to
-/// [`PipelineManagerClient::request_pipeline`], or from every input of a
-/// [`SpecializedComputePipelineRequest`]. Requests with equal keys share one
-/// compiled pipeline.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PipelineKey(u64);
-
-impl PipelineKey {
-	/// Creates a stable key from a hash of the complete pipeline description.
-	pub const fn new(value: u64) -> Self {
-		Self(value)
-	}
-}
-
 /// The `PipelineRef` struct keeps a stable reference to a requested pipeline.
+///
+/// The manager derives it from the resource ID passed to [`PipelineManagerClient::request_pipeline`], or from every
+/// input of a [`SpecializedComputePipelineRequest`]. Requests with equal inputs share one compiled pipeline.
 ///
 /// Poll it with [`PipelineManagerClient::get`] during frame preparation. A
 /// compiled pipeline becomes visible only after the renderer publishes results
 /// at the start of a frame.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct PipelineRef(PipelineKey);
+pub struct PipelineRef(u64);
 
 /// The `SpecializedComputePipelineRequest` struct describes a specialized compute pipeline by everything it compiles from.
 ///
@@ -67,29 +54,29 @@ pub enum PipelineState {
 pub(crate) struct ComputePipeline {
 	pub(crate) handle: ghi::PipelineHandle,
 	pub(crate) workgroup: utils::Extent,
-	pub(crate) bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	pub(crate) bindings: Arc<[Binding]>,
 }
 
 /// The `ComputePipelines` struct lends published pipeline entries under one read lock, so descriptor adoption reads
 /// reflected bindings without copying them and pollers check many pipeline states with one lock.
-pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineKey, PipelineEntry>>);
+pub(crate) struct ComputePipelines<'a>(utils::sync::RwLockReadGuard<'a, HashMap<PipelineRef, PipelineEntry>>);
 
 impl ComputePipelines<'_> {
 	/// Returns a published compute pipeline, or `None` while it is unavailable.
 	pub(crate) fn get(&self, pipeline: PipelineRef) -> Option<&ComputePipeline> {
-		self.0.get(&pipeline.0).and_then(|entry| entry.compute.as_ref())
+		self.0.get(&pipeline).and_then(|entry| entry.compute.as_ref())
 	}
 
 	/// Returns the state published for a pipeline, so a caller that polls many pipelines takes the lock once.
 	pub(crate) fn state(&self, pipeline: PipelineRef) -> PipelineState {
-		self.0.get(&pipeline.0).map_or(PipelineState::Failed, |entry| entry.state)
+		self.0.get(&pipeline).map_or(PipelineState::Failed, |entry| entry.state)
 	}
 }
 
 /// The `PipelineManagerClient` struct lets renderer dependants request and poll
 /// asynchronously compiled pipelines without blocking.
 ///
-/// Clone this client for each dependant. Requests with the same [`PipelineKey`]
+/// Clone this client for each dependant. Requests with the same inputs
 /// are coalesced before they reach a compilation server.
 #[derive(Clone)]
 pub struct PipelineManagerClient {
@@ -100,18 +87,14 @@ pub struct PipelineManagerClient {
 impl PipelineManagerClient {
 	/// Requests a pipeline resource without waiting for storage or compilation.
 	pub fn request_pipeline(&self, id: &str) -> PipelineRef {
-		self.request(
-			pipeline_key(PipelineRequestNamespace::Resource, id),
-			PipelineRequestKind::Resource { id: id.to_string() },
-		)
+		self.request(PipelineRequestKind::Resource { id: id.to_string() })
 	}
 
 	/// Requests a specialized compute pipeline without waiting for shader loading or compilation.
 	///
 	/// Equal requests return the same [`PipelineRef`] and compile once.
 	pub(crate) fn request_specialized_compute_pipeline(&self, request: SpecializedComputePipelineRequest) -> PipelineRef {
-		let key = pipeline_key(PipelineRequestNamespace::SpecializedCompute, &request);
-		self.request(key, PipelineRequestKind::SpecializedCompute(request))
+		self.request(PipelineRequestKind::SpecializedCompute(request))
 	}
 
 	/// Returns the state published for a pipeline without draining worker results.
@@ -124,7 +107,7 @@ impl PipelineManagerClient {
 		self.shared
 			.entries
 			.read()
-			.get(&pipeline.0)
+			.get(&pipeline)
 			.map_or(0, |entry| entry.published_revision)
 	}
 
@@ -179,12 +162,17 @@ impl PipelineManagerClient {
 	}
 
 	/// Coalesces a request before placing compilation work on the shared queue.
-	fn request(&self, key: PipelineKey, kind: PipelineRequestKind) -> PipelineRef {
-		let reference = PipelineRef(key);
+	fn request(&self, kind: PipelineRequestKind) -> PipelineRef {
+		use std::hash::{Hash as _, Hasher as _};
+
+		// The request kind is part of the hash, so resource and specialized requests never coalesce.
+		let mut hasher = std::collections::hash_map::DefaultHasher::new();
+		kind.hash(&mut hasher);
+		let key = PipelineRef(hasher.finish());
 		{
 			let mut entries = self.shared.entries.write();
 			if entries.contains_key(&key) {
-				return reference;
+				return key;
 			}
 			entries.insert(
 				key,
@@ -205,7 +193,7 @@ impl PipelineManagerClient {
 			);
 		}
 
-		reference
+		key
 	}
 }
 
@@ -229,8 +217,7 @@ pub struct PipelineManagerServer {
 impl PipelineManagerServer {
 	/// Compiles requests with shaders and pipelines read from `resources` until every client sender is dropped.
 	pub async fn run(mut self, resources: crate::core::EntityHandle<resource_management::ResourceManager>) {
-		while let Ok(request) = self.requests.recv().await {
-			let PipelineRequest { key, revision, kind } = request;
+		while let Ok(PipelineRequest { key, revision, kind }) = self.requests.recv().await {
 			let result = match kind {
 				PipelineRequestKind::Resource { id } => self.compile_resource_pipeline(&resources, &id).await,
 				PipelineRequestKind::SpecializedCompute(request) => {
@@ -249,8 +236,8 @@ impl PipelineManagerServer {
 		resources: &resource_management::ResourceManager,
 		id: &str,
 	) -> Result<DetachedPipeline, String> {
-		use ghi::Device as _;
-		use resource_management::resources::pipeline::PipelineKind;
+		use ghi::{Device as _, pipelines::raster};
+		use resource_management::resources::pipeline::{CullMode, FaceWinding, FillMode, PipelineKind};
 
 		let pipeline: resource_management::Reference<resource_management::resources::pipeline::Pipeline> =
 			resources.request(id).await.map_err(|_| {
@@ -259,13 +246,14 @@ impl PipelineManagerServer {
 				)
 			})?;
 		let pipeline = pipeline.resource();
+		let (PipelineKind::Compute { push_constants, .. } | PipelineKind::Raster { push_constants, .. }) = &pipeline.kind;
+		let ranges = push_constants
+			.iter()
+			.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
+			.collect::<Vec<_>>();
 		match &pipeline.kind {
-			PipelineKind::Compute { shader, push_constants } => {
+			PipelineKind::Compute { shader, .. } => {
 				let prepared = shared_shader(&self.shared, resources, shader).await?;
-				let ranges = push_constants
-					.iter()
-					.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
-					.collect::<Vec<_>>();
 				self.compile_compute(&prepared, &ranges, &[], &pipeline.name, || {
 					format!(
 						"Compute pipeline '{id}' has no workgroup size. The most likely cause is missing shader workgroup metadata."
@@ -274,13 +262,13 @@ impl PipelineManagerServer {
 			}
 			PipelineKind::Raster {
 				shaders,
-				push_constants,
 				vertex_elements,
 				attachments,
 				face_winding,
 				cull_mode,
 				fill_mode,
 				depth_write,
+				..
 			} => {
 				// Shader reads and debug bakes are independent of mutable GHI state, so
 				// prepare every shader before adopting handles in descriptor order.
@@ -295,10 +283,6 @@ impl PipelineManagerServer {
 					.iter()
 					.map(|(handle, stage)| ghi::ShaderParameter::new(handle, *stage))
 					.collect::<Vec<_>>();
-				let ranges = push_constants
-					.iter()
-					.map(|range| ghi::pipelines::PushConstantRange::new(range.offset, range.size))
-					.collect::<Vec<_>>();
 				let vertices = vertex_elements
 					.iter()
 					.map(|element| {
@@ -306,26 +290,20 @@ impl PipelineManagerServer {
 					})
 					.collect::<Vec<_>>();
 				let targets = attachments.iter().map(attachment).collect::<Vec<_>>();
-				let builder = ghi::pipelines::raster::Builder::new(&ranges, &vertices, &parameters, &targets)
+				let builder = raster::Builder::new(&ranges, &vertices, &parameters, &targets)
 					.name(&pipeline.name)
 					.face_winding(match face_winding {
-						resource_management::resources::pipeline::FaceWinding::Clockwise => {
-							ghi::pipelines::raster::FaceWinding::Clockwise
-						}
-						resource_management::resources::pipeline::FaceWinding::CounterClockwise => {
-							ghi::pipelines::raster::FaceWinding::CounterClockwise
-						}
+						FaceWinding::Clockwise => raster::FaceWinding::Clockwise,
+						FaceWinding::CounterClockwise => raster::FaceWinding::CounterClockwise,
 					})
 					.cull_mode(match cull_mode {
-						resource_management::resources::pipeline::CullMode::None => ghi::pipelines::raster::CullMode::None,
-						resource_management::resources::pipeline::CullMode::Front => ghi::pipelines::raster::CullMode::Front,
-						resource_management::resources::pipeline::CullMode::Back => ghi::pipelines::raster::CullMode::Back,
+						CullMode::None => raster::CullMode::None,
+						CullMode::Front => raster::CullMode::Front,
+						CullMode::Back => raster::CullMode::Back,
 					})
 					.fill_mode(match fill_mode {
-						resource_management::resources::pipeline::FillMode::Solid => ghi::pipelines::raster::FillMode::Solid,
-						resource_management::resources::pipeline::FillMode::Wireframe => {
-							ghi::pipelines::raster::FillMode::Wireframe
-						}
+						FillMode::Solid => raster::FillMode::Solid,
+						FillMode::Wireframe => raster::FillMode::Wireframe,
 					})
 					.depth_write(*depth_write);
 				Ok(DetachedPipeline::Raster(self.factory.create_raster_pipeline(builder)))
@@ -377,7 +355,7 @@ impl PipelineManagerServer {
 			pipeline: self
 				.factory
 				.create_compute_pipeline(ghi::pipelines::compute::Builder::new(push_constant_ranges, shader).name(name)),
-			workgroup: utils::Extent::new(workgroup.0, workgroup.1, workgroup.2),
+			workgroup,
 			bindings: prepared.bindings.clone(),
 		})
 	}
@@ -418,9 +396,9 @@ struct PreparedShader {
 	id: String,
 	stage: ghi::ShaderTypes,
 	artifact: resource_management::resources::material::ShaderArtifact,
-	workgroup: Option<(u32, u32, u32)>,
+	workgroup: Option<utils::Extent>,
 	descriptors: Vec<ghi::shader::ShaderResourceDescriptor>,
-	bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+	bindings: Arc<[Binding]>,
 	backing: resource_management::resource::reader::ResourceReaderBacking,
 }
 
@@ -480,71 +458,61 @@ fn shader_type_to_ghi(stage: resource_management::types::ShaderTypes) -> ghi::Sh
 }
 
 /// Converts one persisted binding into the descriptor used for detached shader creation.
-fn binding_to_descriptor(binding: &resource_management::resources::material::Binding) -> ghi::ShaderResourceDescriptor {
+fn binding_to_descriptor(binding: &Binding) -> ghi::ShaderResourceDescriptor {
 	use resource_management::resources::material::{BindingKind, TextureView};
 
-	let kind = match binding.kind {
-		BindingKind::StorageBuffer => ghi::ResourceKind::StorageBuffer,
-		BindingKind::CombinedImageSampler { .. } => ghi::ResourceKind::CombinedImageSampler,
-		BindingKind::StorageImage => ghi::ResourceKind::StorageImage,
-	};
-	let access = (if binding.read {
-		ghi::AccessPolicies::READ
-	} else {
-		ghi::AccessPolicies::empty()
-	}) | if binding.write {
-		ghi::AccessPolicies::WRITE
-	} else {
-		ghi::AccessPolicies::empty()
-	};
-	let descriptor = ghi::ShaderResourceDescriptor::new(ghi::ResourceSlot::new(binding.slot), kind, binding.count, access);
+	let mut access = ghi::AccessPolicies::empty();
+	access.set(ghi::AccessPolicies::READ, binding.read);
+	access.set(ghi::AccessPolicies::WRITE, binding.write);
 	let descriptor =
-		match binding.kind {
-			BindingKind::StorageBuffer => descriptor.buffer_stride(binding.buffer_stride.expect(
-				"Missing persisted storage-buffer stride. The most likely cause is a stale shader interface resource.",
-			)),
-			_ => descriptor,
-		};
-
+		|kind| ghi::ShaderResourceDescriptor::new(ghi::ResourceSlot::new(binding.slot), kind, binding.count, access);
 	match binding.kind {
-		BindingKind::CombinedImageSampler { view } => descriptor.texture_view_type(match view {
-			TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
-			TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
-			TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
-			TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
-			TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
-		}),
-		_ => descriptor,
+		BindingKind::StorageBuffer => descriptor(ghi::ResourceKind::StorageBuffer).buffer_stride(
+			binding
+				.buffer_stride
+				.expect("Missing persisted storage-buffer stride. The most likely cause is a stale shader interface resource."),
+		),
+		BindingKind::CombinedImageSampler { view } => {
+			descriptor(ghi::ResourceKind::CombinedImageSampler).texture_view_type(match view {
+				TextureView::Texture2D => ghi::TextureViewTypes::Texture2D,
+				TextureView::Texture2DArray => ghi::TextureViewTypes::Texture2DArray,
+				TextureView::TextureCube => ghi::TextureViewTypes::TextureCube,
+				TextureView::TextureCubeArray => ghi::TextureViewTypes::TextureCubeArray,
+				TextureView::Texture3D => ghi::TextureViewTypes::Texture3D,
+			})
+		}
+		BindingKind::StorageImage => descriptor(ghi::ResourceKind::StorageImage),
 	}
 }
 
 /// Borrows persisted shader bytes in the source representation expected by GHI.
 fn shader_artifact_source<'a>(
 	artifact: &'a resource_management::resources::material::ShaderArtifact,
-	workgroup_size: Option<(u32, u32, u32)>,
+	workgroup_size: Option<utils::Extent>,
 	bytes: &'a [u8],
 ) -> Result<ghi::shader::Sources<'a>, String> {
 	use resource_management::resources::material::ShaderArtifact;
 
+	let text = |language: &str| {
+		std::str::from_utf8(bytes).map_err(|_| {
+			format!("Failed to read baked {language} shader. The most likely cause is invalid UTF-8 shader bytes.")
+		})
+	};
 	match artifact {
 		ShaderArtifact::Spirv => Ok(ghi::shader::Sources::SPIRV(bytes)),
 		ShaderArtifact::Dxil => Ok(ghi::shader::Sources::DXIL(bytes)),
 		ShaderArtifact::Hlsl { entry_point } => Ok(ghi::shader::Sources::HLSL {
-			source: std::str::from_utf8(bytes).map_err(|_| {
-				"Failed to read baked HLSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
-			})?,
+			source: text("HLSL")?,
 			entry_point,
 		}),
 		ShaderArtifact::Msl { entry_point } => Ok(ghi::shader::Sources::MTL {
-			source: std::str::from_utf8(bytes).map_err(|_| {
-				"Failed to read baked MSL shader. The most likely cause is invalid UTF-8 shader bytes.".to_string()
-			})?,
+			source: text("MSL")?,
 			entry_point,
 		}),
 		ShaderArtifact::Mtlb { entry_point } => Ok(ghi::shader::Sources::MTLB {
 			binary: bytes,
 			entry_point,
-			threadgroup_size: workgroup_size.map(|(width, height, depth)| utils::Extent::new(width, height, depth)),
+			threadgroup_size: workgroup_size,
 		}),
 	}
 }
@@ -555,31 +523,20 @@ async fn prepare_shader(resources: &resource_management::ResourceManager, id: &s
 		.request(id)
 		.await
 		.map_err(|error| format!("Could not load shader '{id}'. {error}"))?;
-	let stage = shader_type_to_ghi(shader.resource().stage);
-	let artifact = shader.resource().artifact.clone();
-	let workgroup = shader.resource().interface.workgroup_size;
-	let descriptors = shader
-		.resource()
+	let resource = shader.resource();
+	let stage = shader_type_to_ghi(resource.stage);
+	let artifact = resource.artifact.clone();
+	let workgroup = resource
+		.interface
+		.workgroup_size
+		.map(|(width, height, depth)| utils::Extent::new(width, height, depth));
+	let descriptors = resource
 		.interface
 		.bindings
 		.iter()
 		.map(binding_to_descriptor)
 		.collect::<Vec<_>>();
-	let bindings = shader
-		.resource()
-		.interface
-		.bindings
-		.iter()
-		.map(|binding| resource_management::shader::besl::evaluation::BindingUsage {
-			name: binding.name.clone(),
-			kind: binding.kind,
-			count: binding.count,
-			slot: binding.slot,
-			buffer_stride: binding.buffer_stride,
-			read: binding.read,
-			write: binding.write,
-		})
-		.collect();
+	let bindings = Arc::from(resource.interface.bindings.as_slice());
 	let backing = shader.consume_reader().into_backing_storage().await.map_err(|_| {
 		format!("Shader bytes for '{id}' could not be loaded. The most likely cause is an unsupported resource reader.")
 	})?;
@@ -629,22 +586,6 @@ fn attachment(value: &resource_management::resources::pipeline::Attachment) -> g
 		descriptor = descriptor.layer(layer);
 	}
 	descriptor
-}
-
-#[derive(Clone, Copy, Hash)]
-enum PipelineRequestNamespace {
-	Resource,
-	SpecializedCompute,
-}
-
-/// Hashes one complete request identity within its request kind so distinct pipeline workflows never coalesce.
-fn pipeline_key(namespace: PipelineRequestNamespace, id: &(impl std::hash::Hash + ?Sized)) -> PipelineKey {
-	use std::hash::{Hash as _, Hasher as _};
-
-	let mut hasher = std::collections::hash_map::DefaultHasher::new();
-	namespace.hash(&mut hasher);
-	id.hash(&mut hasher);
-	PipelineKey::new(hasher.finish())
 }
 
 #[cfg(test)]
@@ -776,7 +717,7 @@ mod tests {
 
 		let rebuilt = requests.try_recv().unwrap().unwrap();
 
-		assert_eq!(rebuilt.key, reference.0);
+		assert_eq!(rebuilt.key, reference);
 		assert_eq!(rebuilt.revision, 1);
 		assert!(matches!(client.get(reference), PipelineState::Pending));
 	}
@@ -797,11 +738,11 @@ mod tests {
 			requests.try_recv().unwrap().unwrap().key,
 		];
 		rebuilt.sort_by_key(|key| key.0);
-		let mut expected = [first.0, second.0];
+		let mut expected = [first, second];
 		expected.sort_by_key(|key| key.0);
 
 		assert_eq!(rebuilt, expected);
-		assert!(!rebuilt.contains(&unrelated.0));
+		assert!(!rebuilt.contains(&unrelated));
 		assert!(matches!(requests.try_recv(), Ok(None)));
 	}
 }
@@ -893,7 +834,7 @@ impl PipelineManager {
 
 #[derive(Default)]
 struct PipelineManagerShared {
-	entries: RwLock<HashMap<PipelineKey, PipelineEntry>>,
+	entries: RwLock<HashMap<PipelineRef, PipelineEntry>>,
 	/// Prepared shaders keyed by resource ID, see [`shared_shader`].
 	shaders: Mutex<HashMap<String, ShaderPreparation>>,
 }
@@ -909,12 +850,12 @@ struct PipelineEntry {
 }
 
 struct PipelineRequest {
-	key: PipelineKey,
+	key: PipelineRef,
 	revision: u64,
 	kind: PipelineRequestKind,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 enum PipelineRequestKind {
 	Resource { id: String },
 	SpecializedCompute(SpecializedComputePipelineRequest),
@@ -932,7 +873,7 @@ impl PipelineRequestKind {
 }
 
 struct PipelineCompletion {
-	key: PipelineKey,
+	key: PipelineRef,
 	revision: u64,
 	result: Result<DetachedPipeline, String>,
 }
@@ -941,13 +882,14 @@ enum DetachedPipeline {
 	Compute {
 		pipeline: ghi::factory::ComputePipeline,
 		workgroup: utils::Extent,
-		bindings: Arc<[resource_management::shader::besl::evaluation::BindingUsage]>,
+		bindings: Arc<[Binding]>,
 	},
 	Raster(ghi::factory::RasterPipeline),
 }
 
 use std::sync::Arc;
 
+use resource_management::resources::material::Binding;
 use utils::{
 	hash::HashMap,
 	sync::{Mutex, RwLock},

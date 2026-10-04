@@ -81,25 +81,16 @@ impl View {
 
 	/// Creates a view that shares this projection but uses a caller-provided view matrix.
 	pub fn from_view(&self, view: Matrix) -> Self {
-		Self {
-			projection: self.projection,
-			view,
-			near: self.near,
-			far: self.far,
-			y_fov: self.y_fov,
-			aspect_ratio: self.aspect_ratio,
-		}
+		Self { view, ..*self }
 	}
 
 	/// Creates a perspective view with this view's settings and new clipping planes.
 	pub fn from_from_z_planes(&self, near: f32, far: f32) -> Self {
 		Self {
 			projection: projection_matrix(self.y_fov, self.aspect_ratio, near, far),
-			view: self.view,
 			near,
 			far,
-			y_fov: self.y_fov,
-			aspect_ratio: self.aspect_ratio,
+			..*self
 		}
 	}
 

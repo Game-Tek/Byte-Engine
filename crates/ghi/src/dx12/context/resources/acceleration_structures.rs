@@ -2,35 +2,35 @@ use super::super::*;
 
 impl Device {
 	pub(crate) fn acceleration_structure_resource_count(&self) -> usize {
-		self.acceleration_structure_resource_count
+		self.counters.acceleration_structure_resource_count
 	}
 
 	pub(crate) fn native_acceleration_structure_resource_count(&self) -> usize {
-		self.native_acceleration_structure_resource_count
+		self.counters.native_acceleration_structure_resource_count
 	}
 
 	pub(crate) fn acceleration_structure_instance_write_count(&self) -> usize {
-		self.acceleration_structure_instance_write_count
+		self.counters.acceleration_structure_instance_write_count
 	}
 
 	pub(crate) fn shader_binding_table_write_count(&self) -> usize {
-		self.shader_binding_table_write_count
+		self.counters.shader_binding_table_write_count
 	}
 
 	pub(crate) fn top_level_acceleration_structure_build_record_count(&self) -> usize {
-		self.top_level_acceleration_structure_build_record_count
+		self.counters.top_level_acceleration_structure_build_record_count
 	}
 
 	pub(crate) fn bottom_level_acceleration_structure_build_record_count(&self) -> usize {
-		self.bottom_level_acceleration_structure_build_record_count
+		self.counters.bottom_level_acceleration_structure_build_record_count
 	}
 
 	pub(crate) fn native_top_level_acceleration_structure_build_encode_count(&self) -> usize {
-		self.native_top_level_acceleration_structure_build_encode_count
+		self.counters.native_top_level_acceleration_structure_build_encode_count
 	}
 
 	pub(crate) fn native_bottom_level_acceleration_structure_build_encode_count(&self) -> usize {
-		self.native_bottom_level_acceleration_structure_build_encode_count
+		self.counters.native_bottom_level_acceleration_structure_build_encode_count
 	}
 
 	pub(crate) fn acceleration_structure_size(&self, handle: TopLevelAccelerationStructureHandle) -> Option<usize> {
@@ -92,10 +92,10 @@ impl Device {
 		let size = self.top_level_acceleration_structure_size(max_instance_count);
 		let (resource, native_resource) = self.create_acceleration_structure_resource(size);
 		if resource.is_some() {
-			self.acceleration_structure_resource_count += 1;
+			self.counters.acceleration_structure_resource_count += 1;
 		}
 		if native_resource {
-			self.native_acceleration_structure_resource_count += 1;
+			self.counters.native_acceleration_structure_resource_count += 1;
 		}
 		self.top_level_acceleration_structures.push(AccelerationStructure {
 			resource,
@@ -112,10 +112,10 @@ impl Device {
 		let size = self.bottom_level_acceleration_structure_allocation_size(description);
 		let (resource, native_resource) = self.create_acceleration_structure_resource(size);
 		if resource.is_some() {
-			self.acceleration_structure_resource_count += 1;
+			self.counters.acceleration_structure_resource_count += 1;
 		}
 		if native_resource {
-			self.native_acceleration_structure_resource_count += 1;
+			self.counters.native_acceleration_structure_resource_count += 1;
 		}
 		self.bottom_level_acceleration_structures.push(AccelerationStructure {
 			resource,
@@ -358,17 +358,17 @@ impl Device {
 		let Some(buffer) = self.buffer_mut(instances_buffer_handle) else {
 			return;
 		};
-		Self::mark_buffer_host_write(buffer);
+		Self::mark_host_write(&mut buffer.memory);
 		// SAFETY: The checked descriptor range lies in the allocated shadow buffer and the source is one initialized descriptor.
 		unsafe {
 			std::ptr::copy_nonoverlapping(
 				(&instance as *const D3D12_RAYTRACING_INSTANCE_DESC).cast::<u8>(),
-				buffer.data.add(offset),
+				buffer.memory.data.add(offset),
 				descriptor_size,
 			);
 		}
-		Self::sync_buffer_storage(buffer);
-		self.acceleration_structure_instance_write_count += 1;
+		Self::sync_buffer_memory(&mut buffer.memory, buffer.size, buffer.access);
+		self.counters.acceleration_structure_instance_write_count += 1;
 	}
 
 	pub fn write_sbt_entry(
@@ -413,13 +413,17 @@ impl Device {
 		let Some(buffer) = self.buffer_mut(sbt_buffer_handle) else {
 			return;
 		};
-		Self::mark_buffer_host_write(buffer);
+		Self::mark_host_write(&mut buffer.memory);
 		// SAFETY: The checked record range lies in the allocated shadow buffer and `identifier` owns all copied bytes.
 		unsafe {
-			std::ptr::copy_nonoverlapping(identifier.as_ptr(), buffer.data.add(sbt_record_offset), identifier.len());
+			std::ptr::copy_nonoverlapping(
+				identifier.as_ptr(),
+				buffer.memory.data.add(sbt_record_offset),
+				identifier.len(),
+			);
 		}
-		Self::sync_buffer_storage(buffer);
-		self.shader_binding_table_write_count += 1;
+		Self::sync_buffer_memory(&mut buffer.memory, buffer.size, buffer.access);
+		self.counters.shader_binding_table_write_count += 1;
 	}
 
 	pub(crate) fn placeholder_shader_identifier(pipeline_handle: PipelineHandle, shader_handle: ShaderHandle) -> [u8; 32] {
@@ -436,11 +440,7 @@ impl Device {
 		build: &crate::rt::TopLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let Some(acceleration_structure) = self
@@ -477,7 +477,7 @@ impl Device {
 			}
 		}
 		self.encode_top_level_acceleration_structure_build(command_buffer_handle, &command_list, build, sequence_index);
-		self.top_level_acceleration_structure_build_record_count += 1;
+		self.counters.top_level_acceleration_structure_build_record_count += 1;
 	}
 
 	pub(crate) fn record_bottom_level_acceleration_structure_builds(
@@ -499,7 +499,7 @@ impl Device {
 				continue;
 			}
 			self.encode_bottom_level_acceleration_structure_build(command_buffer_handle, build, sequence_index);
-			self.bottom_level_acceleration_structure_build_record_count += 1;
+			self.counters.bottom_level_acceleration_structure_build_record_count += 1;
 		}
 	}
 
@@ -652,8 +652,8 @@ impl Device {
 		}
 		self.complete_acceleration_structure_build(command_list, &destination_resource);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.uav_barrier_count += 1;
-		self.native_top_level_acceleration_structure_build_encode_count += 1;
+		self.counters.uav_barrier_count += 1;
+		self.counters.native_top_level_acceleration_structure_build_encode_count += 1;
 	}
 
 	pub(crate) fn encode_bottom_level_acceleration_structure_build(
@@ -662,11 +662,7 @@ impl Device {
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let Some(command_list4) = command_list.cast::<ID3D12GraphicsCommandList4>().ok() else {
@@ -739,8 +735,8 @@ impl Device {
 		}
 		self.complete_acceleration_structure_build(&command_list, &destination_resource);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.uav_barrier_count += 1;
-		self.native_bottom_level_acceleration_structure_build_encode_count += 1;
+		self.counters.uav_barrier_count += 1;
+		self.counters.native_bottom_level_acceleration_structure_build_encode_count += 1;
 	}
 
 	pub(crate) fn bottom_level_geometry_desc(
@@ -963,7 +959,7 @@ impl Device {
 			BufferBarrierState::ACCELERATION_STRUCTURE_INPUT,
 		);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.buffer_copy_count += 1;
+		self.counters.buffer_copy_count += 1;
 		self.retain_command_buffer_upload_resource(command_buffer_handle, staged.clone());
 		Some(staged)
 	}
@@ -974,11 +970,7 @@ impl Device {
 		build: &crate::rt::BottomLevelAccelerationStructureBuild,
 		sequence_index: u8,
 	) -> bool {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return false;
 		};
 		let Some(scratch_resource) = self.buffer_resource_for_sequence(build.scratch_buffer.buffer, sequence_index) else {

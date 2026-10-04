@@ -7,20 +7,13 @@ impl Device {
 		pipeline_handle: Option<PipelineHandle>,
 		dispatch: DispatchExtent,
 	) {
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
-		};
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.0 as usize)) else {
 			return;
 		};
 		if !matches!(pipeline.kind, PipelineKind::Compute) || pipeline.pipeline_state.is_none() {
 			return;
 		}
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let extent = dispatch.get_extent();
@@ -28,7 +21,7 @@ impl Device {
 			command_list.Dispatch(extent.width(), extent.height(), extent.depth());
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.compute_dispatch_encode_count += 1;
+		self.counters.compute_dispatch_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 indirect compute dispatch command.
@@ -46,7 +39,7 @@ impl Device {
 			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
 			|| crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
 		) {
-			self.indirect_dispatch_encode_count += 1;
+			self.counters.indirect_dispatch_encode_count += 1;
 		}
 	}
 
@@ -62,11 +55,7 @@ impl Device {
 		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
 		entry: impl FnOnce() -> std::ops::Range<usize>,
 	) -> bool {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return false;
 		};
 		let Some(buffer_size) = self.buffer(base_buffer_handle).map(|buffer| buffer.size) else {

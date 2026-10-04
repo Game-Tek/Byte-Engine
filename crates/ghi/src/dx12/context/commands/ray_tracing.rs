@@ -12,10 +12,7 @@ impl Device {
 		z: u32,
 		sequence_index: u8,
 	) {
-		let Some(pipeline_handle) = pipeline_handle else {
-			return;
-		};
-		let Some(pipeline) = self.pipelines.get(pipeline_handle.0 as usize) else {
+		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.0 as usize)) else {
 			return;
 		};
 		if !matches!(pipeline.kind, PipelineKind::RayTracing) {
@@ -54,9 +51,7 @@ impl Device {
 		};
 		if state_object.is_some() {
 			if let Some(command_list) = self
-				.command_buffers
-				.get(command_buffer_handle.0 as usize)
-				.and_then(|command_buffer| command_buffer.command_list.clone())
+				.command_list(command_buffer_handle)
 				.and_then(|command_list| command_list.cast::<ID3D12GraphicsCommandList4>().ok())
 			{
 				unsafe {
@@ -65,7 +60,7 @@ impl Device {
 				self.mark_command_buffer_work(command_buffer_handle);
 			}
 		}
-		self.trace_rays_record_count += 1;
+		self.counters.trace_rays_record_count += 1;
 	}
 
 	pub(crate) fn ray_generation_shader_record(

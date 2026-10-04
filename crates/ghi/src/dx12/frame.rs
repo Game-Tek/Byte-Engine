@@ -20,12 +20,6 @@ impl<'a> Frame<'a> {
 		}
 	}
 
-	pub(crate) fn device_mut(&mut self) -> &mut super::Device {
-		self.device
-	}
-}
-
-impl Frame<'_> {
 	pub fn intern_raster_pipeline(&mut self, pipeline: crate::implementation::RasterPipeline) -> crate::PipelineHandle {
 		let shader_handles = self.intern_factory_shaders(&pipeline.factory_shaders);
 		let vertex_elements = pipeline
@@ -101,79 +95,6 @@ impl Frame<'_> {
 			.collect()
 	}
 
-	pub fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(
-		&mut self,
-		buffer_handle: BufferHandle<T>,
-	) -> &mut T {
-		self.device.get_mut_buffer_slice(buffer_handle)
-	}
-
-	pub fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		self.device
-			.sync_buffer_for_sequence(buffer_handle, self.frame_key.sequence_index);
-	}
-
-	pub fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8] {
-		self.device
-			.texture_slice_mut_for_sequence(texture_handle, self.frame_key.sequence_index)
-	}
-
-	pub fn sync_texture(&mut self, image_handle: BaseImageHandle) {
-		self.device
-			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
-	}
-
-	/// Schedules a rectangular upload from this frame's image staging storage.
-	pub fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
-		self.device
-			.queue_texture_region_for_sequence(image_handle, self.frame_key.sequence_index, region);
-	}
-
-	pub fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		self.device.write(descriptor_set_writes);
-	}
-
-	pub fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
-		self.device
-			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
-	}
-
-	pub fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
-		self.device.image_groups.assert_resizable(image_handle);
-		self.device
-			.resize_image_internal(ImageHandle(image_handle), extent, self.frame_key.sequence_index);
-	}
-
-	pub fn create_command_buffer_recording<'a>(
-		&'a mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> super::CommandBufferRecording<'a> {
-		self.device
-			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
-		self.device
-			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
-		self.device
-			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
-		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
-	}
-
-	pub fn create_command_buffer_recording_without_implicit_sync<'a>(
-		&'a mut self,
-		command_buffer_handle: CommandBufferHandle,
-	) -> super::CommandBufferRecording<'a> {
-		self.device
-			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
-		self.device
-			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
-		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
-	}
-
-	/// Acquires a backbuffer from inside the started frame. The sequence fences were already waited by `start_frame`.
-	pub fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
-		self.device
-			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
-	}
-
 	pub fn device(&mut self) -> &mut super::Device {
 		self.device
 	}
@@ -190,35 +111,43 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 	}
 
 	fn get_mut_buffer_slice<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>) -> &mut T {
-		Frame::get_mut_buffer_slice(self, buffer_handle)
+		self.device.get_mut_buffer_slice(buffer_handle)
 	}
 
 	fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
-		Frame::sync_buffer(self, buffer_handle);
+		self.device
+			.sync_buffer_for_sequence(buffer_handle, self.frame_key.sequence_index);
 	}
 
 	fn get_texture_slice_mut(&mut self, texture_handle: BaseImageHandle) -> &mut [u8] {
-		Frame::get_texture_slice_mut(self, texture_handle)
+		self.device
+			.texture_slice_mut_for_sequence(texture_handle, self.frame_key.sequence_index)
 	}
 
 	fn sync_texture(&mut self, image_handle: BaseImageHandle) {
-		Frame::sync_texture(self, image_handle);
+		self.device
+			.queue_texture_sync_for_sequence(image_handle, self.frame_key.sequence_index);
 	}
 
+	/// Schedules a rectangular upload from this frame's image staging storage.
 	fn sync_texture_region(&mut self, image_handle: BaseImageHandle, region: crate::image::Region) {
-		Frame::sync_texture_region(self, image_handle, region);
+		self.device
+			.queue_texture_region_for_sequence(image_handle, self.frame_key.sequence_index, region);
 	}
 
 	fn write(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
-		Frame::write(self, descriptor_set_writes);
+		self.device.write(descriptor_set_writes);
 	}
 
 	fn get_mut_dynamic_buffer_slice<T: crate::Pod>(&mut self, buffer_handle: DynamicBufferHandle<T>) -> &mut T {
-		Frame::get_mut_dynamic_buffer_slice(self, buffer_handle)
+		self.device
+			.dynamic_buffer_slice_mut(buffer_handle, self.frame_key.sequence_index)
 	}
 
 	fn resize_image(&mut self, image_handle: BaseImageHandle, extent: Extent) {
-		Frame::resize_image(self, image_handle, extent);
+		self.device.image_groups.assert_resizable(image_handle);
+		self.device
+			.resize_image_internal(ImageHandle(image_handle), extent, self.frame_key.sequence_index);
 	}
 
 	fn place_image_group(&mut self, group: crate::ImageGroupHandle, members: &[crate::ImageGroupMember]) {
@@ -229,18 +158,30 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		&'record mut self,
 		command_buffer_handle: CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		Frame::create_command_buffer_recording(self, command_buffer_handle)
+		self.device
+			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
+		self.device
+			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
+		self.device
+			.flush_pending_texture_syncs_for_sequence(command_buffer_handle, self.frame_key.sequence_index);
+		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
 	fn create_command_buffer_recording_without_implicit_sync<'record>(
 		&'record mut self,
 		command_buffer_handle: CommandBufferHandle,
 	) -> Self::CBR<'record> {
-		Frame::create_command_buffer_recording_without_implicit_sync(self, command_buffer_handle)
+		self.device
+			.begin_command_buffer(command_buffer_handle, self.frame_key.sequence_index);
+		self.device
+			.set_command_buffer_frame_synchronizer(command_buffer_handle, self.synchronizer);
+		super::CommandBufferRecording::new(self.device, command_buffer_handle, Some(self.frame_key))
 	}
 
+	/// Acquires a backbuffer from inside the started frame. The sequence fences were already waited by `start_frame`.
 	fn acquire_swapchain_image(&mut self, swapchain_handle: SwapchainHandle) -> Option<crate::frame::SwapchainAcquisition> {
-		Frame::acquire_swapchain_image(self, swapchain_handle)
+		self.device
+			.acquire_swapchain_image_for_sequence(self.frame_key.sequence_index, swapchain_handle)
 	}
 }
 

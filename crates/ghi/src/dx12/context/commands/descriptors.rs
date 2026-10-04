@@ -241,11 +241,7 @@ impl Device {
 		// Complete deferred uploads before collecting barriers. Holding a batch across a copy command
 		// would move an earlier transition past the command that depends on it.
 		for (_, retained_descriptor) in &retained {
-			let resource_sequence = self.frame_index_with_offset(
-				sequence_index as usize,
-				Some(retained_descriptor.frame_offset),
-				self.frames as usize,
-			) as u8;
+			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
 			match retained_descriptor.descriptor {
 				// Native buffer resolution centrally flushes dirty CPU shadows.
 				WriteData::Buffer { .. } => {}
@@ -259,11 +255,7 @@ impl Device {
 
 		let mut requirements = DescriptorRequirementCollection::new(retained.len());
 		for (resource_descriptor, retained_descriptor) in retained.drain(..) {
-			let resource_sequence = self.frame_index_with_offset(
-				sequence_index as usize,
-				Some(retained_descriptor.frame_offset),
-				self.frames as usize,
-			) as u8;
+			let resource_sequence = self.frame_index_with_offset(sequence_index, retained_descriptor.frame_offset);
 			match retained_descriptor.descriptor {
 				WriteData::Buffer { handle, .. } => {
 					// Buffer contents can change without changing the retained descriptor or its native heap.
@@ -341,7 +333,7 @@ impl Device {
 				_ => unreachable!("A DX12 native descriptor requirement cannot change resource category."),
 			}
 		}
-		Self::submit_resource_barriers(&command_list, &barriers);
+		barriers.submit(&command_list);
 	}
 
 	pub(crate) fn descriptor_matches_kind(descriptor: WriteData, kind: ResourceKind) -> bool {
@@ -405,11 +397,7 @@ impl Device {
 				};
 
 				for retained in descriptors.values() {
-					let resource_sequence = self.frame_index_with_offset(
-						sequence_index as usize,
-						Some(retained.frame_offset),
-						self.frames as usize,
-					) as u8;
+					let resource_sequence = self.frame_index_with_offset(sequence_index, retained.frame_offset);
 					let alias = match retained.descriptor {
 						WriteData::Buffer { handle, .. } => DescriptorAliasUse {
 							key: self.descriptor_buffer_alias_key(handle, resource_sequence),
@@ -758,7 +746,7 @@ impl Device {
 				command_buffer.bound_cbv_srv_uav_heap = cbv_srv_uav_identity;
 				command_buffer.bound_sampler_heap = sampler_identity;
 			}
-			self.descriptor_heap_bind_count += 1;
+			self.counters.descriptor_heap_bind_count += 1;
 		}
 		let Some((resource_table_root, sampler_table_root)) = self
 			.pipeline_layouts
@@ -797,7 +785,7 @@ impl Device {
 			table_binds += 1;
 			#[cfg(test)]
 			{
-				self.descriptor_table_bind_records.push(DescriptorTableBindRecord {
+				self.counters.descriptor_table_bind_records.push(DescriptorTableBindRecord {
 					root_parameter_index,
 					set_index: 0,
 					binding_index: 0,
@@ -806,7 +794,7 @@ impl Device {
 				});
 			}
 		}
-		self.descriptor_table_bind_count += table_binds;
+		self.counters.descriptor_table_bind_count += table_binds;
 	}
 
 	pub(crate) fn write_push_constants_native(
@@ -816,11 +804,7 @@ impl Device {
 		offset: u32,
 		bytes: &[u8],
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let Some(pipeline_handle) = pipeline_handle else {
@@ -882,10 +866,10 @@ impl Device {
 				);
 			}
 		}
-		self.push_constant_write_count += 1;
+		self.counters.push_constant_write_count += 1;
 		#[cfg(test)]
 		{
-			self.push_constant_write_records.push(PushConstantWriteRecord {
+			self.counters.push_constant_write_records.push(PushConstantWriteRecord {
 				root_parameter_index,
 				offset,
 				size: bytes.len() as u32,

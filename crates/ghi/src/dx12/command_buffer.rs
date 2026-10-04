@@ -83,6 +83,11 @@ impl<'a> CommandBufferRecording<'a> {
 			"No pipeline is bound. The most likely cause is that descriptor tables were marked dirty without an active pipeline.",
 		);
 		self.validate_descriptor_bindings(pipeline, &self.bound_descriptor_sets);
+		self.bind_descriptor_tables(pipeline);
+	}
+
+	/// Flushes the texture uploads that the bound sets read, then binds their descriptor heaps and tables.
+	fn bind_descriptor_tables(&mut self, pipeline: PipelineHandle) {
 		self.device.flush_pending_descriptor_texture_syncs(
 			self.command_buffer,
 			Some(pipeline),
@@ -91,11 +96,37 @@ impl<'a> CommandBufferRecording<'a> {
 		);
 		self.device.bind_descriptor_heaps_and_tables(
 			self.command_buffer,
-			self.bound_pipeline,
+			Some(pipeline),
 			&self.bound_descriptor_sets,
 			self.sequence_index(),
 		);
 		self.descriptor_tables_dirty = false;
+	}
+
+	/// Revalidates retained descriptor sets against a pipeline, binds its native state, and marks the tables for a
+	/// refresh before the next command that reads them.
+	fn bind_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut Self {
+		if !self.bound_descriptor_sets.is_empty() {
+			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
+		}
+		self.bound_pipeline = Some(pipeline_handle);
+		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
+		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
+		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
+		self
+	}
+
+	/// Validates an image as a transfer source and records its readback from one frame sequence.
+	fn transfer_image(
+		&mut self,
+		handle: BaseImageHandle,
+		sequence_index: u8,
+	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
+		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
+		self.device
+			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(sequence_index));
+		self.device
+			.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(handle), sequence_index)
 	}
 
 	pub(crate) fn record_present_preparation(&mut self, present_keys: &[crate::PresentKey]) {
@@ -215,16 +246,7 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		let ImageOrSwapchain::Image(handle) = source else {
 			return Err(crate::TextureTransferError::Unsupported);
 		};
-		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
-
-		self.device
-			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(self.sequence_index()));
-		let copy = self.device.record_image_readback_for_copy(
-			self.command_buffer,
-			crate::ImageHandle(handle),
-			self.sequence_index(),
-		)?;
-		Ok(copy)
+		self.transfer_image(handle, self.sequence_index())
 	}
 
 	fn transfer_texture_with_frame(
@@ -232,19 +254,9 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 		image: crate::DynamicImageHandle,
 		frame_offset: i32,
 	) -> Result<TextureCopyHandle, crate::TextureTransferError> {
-		let handle = BaseImageHandle::from(image);
-		self.device.validate_texture_transfer_source(crate::ImageHandle(handle))?;
 		// Descriptor writes select other frames' copies the same way, so both paths agree on which copy is "previous".
-		let sequence_index = self.device.frame_index_with_offset(
-			self.sequence_index() as usize,
-			Some(frame_offset),
-			self.device.frames as usize,
-		) as u8;
-
-		self.device
-			.flush_pending_texture_syncs(self.command_buffer, Some(handle), Some(sequence_index));
-		self.device
-			.record_image_readback_for_copy(self.command_buffer, crate::ImageHandle(handle), sequence_index)
+		let sequence_index = self.device.frame_index_with_offset(self.sequence_index(), frame_offset);
+		self.transfer_image(image.into(), sequence_index)
 	}
 
 	fn write_image_data(&mut self, image_handle: BaseImageHandle, data: &[RGBAu8]) {
@@ -273,35 +285,20 @@ impl crate::command_buffer::CommandBufferRecording for CommandBufferRecording<'_
 			.record_image_copy(self.command_buffer, source_image, destination_image, self.sequence_index());
 	}
 
-	fn execute(mut self, synchronizer: SynchronizerHandle) {
-		self.finish_for_submission();
-		// Keep unwind cleanup armed until submission moves the recording into the native queue.
-		self.queued_for_submission = false;
+	fn execute(self, synchronizer: SynchronizerHandle) {
+		// Unwind cleanup stays armed until submission moves the recording into the native queue.
+		self.device.finish_command_buffer_recording(self.command_buffer);
 		self.device.submit_command_buffer(self.command_buffer, synchronizer);
 	}
 }
 
 impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 	fn bind_compute_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundComputePipelineMode {
-		if !self.bound_descriptor_sets.is_empty() {
-			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
-		}
-		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
-		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
-		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
-		self
+		self.bind_pipeline(pipeline_handle)
 	}
 
 	fn bind_ray_tracing_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRayTracingPipelineMode {
-		if !self.bound_descriptor_sets.is_empty() {
-			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
-		}
-		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
-		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
-		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
-		self
+		self.bind_pipeline(pipeline_handle)
 	}
 
 	fn start_region(&mut self, _write_label: impl FnOnce(&mut crate::command_buffer::DebugLabelWriter) -> std::fmt::Result) {
@@ -317,14 +314,7 @@ impl CommonCommandBufferMode for CommandBufferRecording<'_> {
 
 impl RasterizationRenderPassMode for CommandBufferRecording<'_> {
 	fn bind_raster_pipeline(&mut self, pipeline_handle: PipelineHandle) -> &mut impl BoundRasterizationPipelineMode {
-		if !self.bound_descriptor_sets.is_empty() {
-			self.validate_descriptor_bindings(pipeline_handle, &self.bound_descriptor_sets);
-		}
-		self.bound_pipeline = Some(pipeline_handle);
-		self.bound_pipeline_layout = Some(self.device.pipelines[pipeline_handle.0 as usize].layout);
-		self.device.bind_pipeline_native_state(self.command_buffer, pipeline_handle);
-		self.descriptor_tables_dirty = !self.bound_descriptor_sets.is_empty();
-		self
+		self.bind_pipeline(pipeline_handle)
 	}
 
 	fn bind_vertex_buffers(&mut self, buffer_descriptors: &[BufferDescriptor]) {
@@ -363,15 +353,7 @@ impl BoundPipelineLayoutMode for CommandBufferRecording<'_> {
 		self.validate_descriptor_bindings(pipeline, sets);
 		self.bound_descriptor_sets.clear();
 		self.bound_descriptor_sets.extend_from_slice(sets);
-		self.device.flush_pending_descriptor_texture_syncs(
-			self.command_buffer,
-			self.bound_pipeline,
-			sets,
-			self.sequence_index(),
-		);
-		self.device
-			.bind_descriptor_heaps_and_tables(self.command_buffer, self.bound_pipeline, sets, self.sequence_index());
-		self.descriptor_tables_dirty = false;
+		self.bind_descriptor_tables(pipeline);
 		self
 	}
 
@@ -401,21 +383,14 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 		self.refresh_descriptor_tables_if_dirty();
 		self.device.draw_mesh_native(self.command_buffer, *_mesh_handle);
 
-		let Some(target) = self.active_render_target else {
+		let (Some(target), Some(extent)) = (self.active_render_target, self.active_extent) else {
 			return;
 		};
-		let Some(extent) = self.active_extent else {
-			return;
-		};
-
-		let transform = if self.push_constants.len() >= std::mem::size_of::<[f32; 16]>() {
-			let mut matrix = [0.0f32; 16];
-			let bytes = bytemuck::bytes_of_mut(&mut matrix);
-			bytes.copy_from_slice(&self.push_constants[..std::mem::size_of::<[f32; 16]>()]);
-			Some(matrix)
-		} else {
-			None
-		};
+		// The first push-constant bytes carry the mesh transform when the recording wrote a full matrix.
+		let transform = self
+			.push_constants
+			.get(..std::mem::size_of::<[f32; 16]>())
+			.map(bytemuck::pod_read_unaligned::<[f32; 16]>);
 
 		self.device
 			.rasterize_mesh_to_image(*_mesh_handle, target, extent, transform, self.sequence_index());

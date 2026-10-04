@@ -45,9 +45,7 @@ impl Device {
 		sequence_index: u8,
 	) -> Result<Option<TextureReadback>, crate::TextureTransferError> {
 		let command_list = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
+			.command_list(command_buffer_handle)
 			.ok_or(crate::TextureTransferError::MappingFailed)?;
 		let image = self
 			.images
@@ -123,12 +121,11 @@ impl Device {
 			resource: Some(readback),
 			sequence_index,
 			row_pitch: readback_row_pitch,
-			row_bytes: layout.bytes_per_row,
 			height: layout.row_count,
 			depth: layout.depth_slices,
 			size: readback_size,
 			mapping_failed: false,
-			data: TextureReadbackData {
+			data: MappedTextureReadback {
 				bytes: Vec::new(),
 				extent,
 				format: image_format,
@@ -187,7 +184,7 @@ impl Device {
 						.checked_mul(readback.row_pitch)
 						.and_then(|row| offset.checked_add(row))
 				})
-				.and_then(|offset| offset.checked_add(readback.row_bytes));
+				.and_then(|offset| offset.checked_add(readback.data.bytes_per_row));
 			if native_required.is_none_or(|required| required > readback.size) {
 				readback.mapping_failed = true;
 				readback.resource = None;
@@ -221,13 +218,13 @@ impl Device {
 			for depth_slice in 0..readback.depth {
 				for row in 0..readback.height {
 					let source_offset = depth_slice * native_bytes_per_image + row * readback.row_pitch;
-					let destination_offset = depth_slice * readback.data.bytes_per_image + row * readback.row_bytes;
+					let destination_offset = depth_slice * readback.data.bytes_per_image + row * readback.data.bytes_per_row;
 					// SAFETY: The checked native footprint and compact allocation bound this row copy.
 					unsafe {
 						std::ptr::copy_nonoverlapping(
 							(mapped as *const u8).add(source_offset),
 							compact.as_mut_ptr().add(destination_offset),
-							readback.row_bytes,
+							readback.data.bytes_per_row,
 						);
 					}
 				}
@@ -237,7 +234,7 @@ impl Device {
 
 			readback.data.bytes = compact;
 			readback.resource = None;
-			self.texture_readback_resolve_count += 1;
+			self.counters.texture_readback_resolve_count += 1;
 		}
 	}
 

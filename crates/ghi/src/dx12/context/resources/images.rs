@@ -296,19 +296,19 @@ impl Device {
 
 	#[cfg(test)]
 	pub(crate) fn render_target_view_allocation_count(&self) -> usize {
-		self.render_target_view_allocation_count
+		self.counters.render_target_view_allocation_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn depth_stencil_view_allocation_count(&self) -> usize {
-		self.depth_stencil_view_allocation_count
+		self.counters.depth_stencil_view_allocation_count
 	}
 
 	#[cfg(test)]
 	pub(crate) fn depth_stencil_descriptor_count(&self) -> u32 {
 		self.depth_stencil_views
 			.values()
-			.map(|view| unsafe { view.heap.native.GetDesc() }.NumDescriptors)
+			.map(|view| unsafe { view.native.GetDesc() }.NumDescriptors)
 			.sum()
 	}
 
@@ -327,7 +327,7 @@ impl Device {
 	}
 
 	pub(crate) fn texture_readback_resolve_count(&self) -> usize {
-		self.texture_readback_resolve_count
+		self.counters.texture_readback_resolve_count
 	}
 
 	pub(crate) fn image_is_in_common_state(&self, image: ImageHandle) -> Option<bool> {

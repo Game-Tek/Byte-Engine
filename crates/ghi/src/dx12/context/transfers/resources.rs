@@ -4,13 +4,6 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DX
 use super::*;
 
 impl Device {
-	/// Returns a non-null pointer with the alignment required for a zero-sized typed buffer.
-	pub(crate) fn zero_sized_buffer_pointer(layout: Layout) -> *mut u8 {
-		debug_assert_eq!(layout.size(), 0);
-		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
-		std::ptr::without_provenance_mut(layout.align())
-	}
-
 	pub(crate) fn create_buffer_with_layout(
 		&mut self,
 		layout: Layout,
@@ -20,33 +13,15 @@ impl Device {
 	) -> u64 {
 		Self::validate_buffer_heap_contract(resource_uses, device_accesses);
 
-		// Allocates CPU storage for a buffer with the requested layout.
-		let data = if layout.size() == 0 {
-			Self::zero_sized_buffer_pointer(layout)
-		} else {
-			unsafe { alloc::alloc_zeroed(layout) }
-		};
-		if layout.size() != 0 && data.is_null() {
-			panic!("Failed to allocate buffer storage. The most likely cause is that the system is out of memory.");
-		}
-
-		let resource_size = Self::buffer_resource_size(layout.size(), resource_uses);
-		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, device_accesses);
 		let frame_resources = match storage_kind {
 			BufferStorage::Static => None,
 			BufferStorage::Dynamic => Some((0..self.frames as usize).map(|_| None).collect()),
 		};
 		let buffer = Buffer {
-			data,
-			layout,
+			memory: self.create_buffer_memory(layout, device_accesses, resource_uses),
 			size: layout.size(),
-			host_generation: 1,
-			uploaded_generation: 0,
 			uses: resource_uses,
 			access: device_accesses,
-			resource,
-			mapped,
-			heap_kind,
 			frame_resources,
 		};
 
@@ -113,7 +88,7 @@ impl Device {
 		}
 
 		let (layout, access, uses) = match self.buffer(buffer_handle) {
-			Some(buffer) if buffer.frame_resources.is_some() => (buffer.layout, buffer.access, buffer.uses),
+			Some(buffer) if buffer.frame_resources.is_some() => (buffer.memory.layout, buffer.access, buffer.uses),
 			_ => return,
 		};
 		let frame_index = sequence_index as usize;
@@ -127,7 +102,7 @@ impl Device {
 			return;
 		}
 
-		let frame_storage = self.create_buffer_frame_storage(layout, access, uses);
+		let frame_storage = self.create_buffer_memory(layout, access, uses);
 		let Some(buffer) = self.buffer_mut(buffer_handle) else {
 			return;
 		};
@@ -148,17 +123,12 @@ impl Device {
 		// Every native consumer crosses this seam, so dirty host writes become visible without per-command special cases.
 		self.sync_buffer_for_sequence(buffer_handle, sequence_index);
 		let buffer = self.buffer(buffer_handle)?;
-		let resource = if sequence_index == 0 {
-			buffer.resource.clone()
-		} else {
-			buffer
-				.frame_resources
-				.as_ref()
-				.and_then(|resources| resources.get(sequence_index as usize))
-				.and_then(|resource| resource.as_ref())
-				.and_then(|resource| resource.resource.clone())
-				.or_else(|| buffer.resource.clone())
-		};
+		// A frame copy without a native resource still reads the base resource.
+		let resource = buffer
+			.memory(sequence_index)
+			.resource
+			.clone()
+			.or_else(|| buffer.memory.resource.clone());
 		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
@@ -170,17 +140,8 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<BufferHeapKind> {
-		let buffer = self.buffer(buffer_handle)?;
-		if sequence_index == 0 {
-			return Some(buffer.heap_kind);
-		}
-		buffer
-			.frame_resources
-			.as_ref()
-			.and_then(|resources| resources.get(sequence_index as usize))
-			.and_then(|resource| resource.as_ref())
-			.map(|resource| resource.heap_kind)
-			.or(Some(buffer.heap_kind))
+		self.buffer(buffer_handle)
+			.map(|buffer| buffer.memory(sequence_index).heap_kind)
 	}
 
 	pub(crate) fn buffer_storage_parts_for_sequence(
@@ -188,17 +149,8 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<(*const u8, usize)> {
-		let buffer = self.buffer(buffer_handle)?;
-		if sequence_index == 0 {
-			return Some((buffer.data.cast_const(), buffer.size));
-		}
-		buffer
-			.frame_resources
-			.as_ref()
-			.and_then(|resources| resources.get(sequence_index as usize))
-			.and_then(|resource| resource.as_ref())
-			.map(|resource| (resource.data.cast_const(), buffer.size))
-			.or(Some((buffer.data.cast_const(), buffer.size)))
+		self.buffer(buffer_handle)
+			.map(|buffer| (buffer.memory(sequence_index).data.cast_const(), buffer.size))
 	}
 
 	pub(crate) fn buffer_storage_parts_mut_for_sequence(
@@ -208,28 +160,17 @@ impl Device {
 	) -> Option<(*mut u8, usize)> {
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		let buffer = self.buffer_mut(buffer_handle)?;
-		if sequence_index == 0 {
-			Self::mark_buffer_host_write(buffer);
-			return Some((buffer.data, buffer.size));
-		}
 		let size = buffer.size;
-		let storage = buffer
-			.frame_resources
-			.as_mut()
-			.and_then(|resources| resources.get_mut(sequence_index as usize))
-			.and_then(|resource| resource.as_mut());
-		if let Some(storage) = storage {
-			Self::mark_buffer_frame_host_write(storage);
-			Some((storage.data, size))
-		} else {
-			Self::mark_buffer_host_write(buffer);
-			Some((buffer.data, size))
-		}
+		let memory = buffer.memory_mut(sequence_index);
+		Self::mark_host_write(memory);
+		Some((memory.data, size))
 	}
 
-	pub(crate) fn create_buffer_frame_storage(&self, layout: Layout, access: DeviceAccesses, uses: Uses) -> BufferFrameStorage {
+	/// Allocates zeroed CPU shadow storage and its native resource for one copy of a buffer.
+	pub(crate) fn create_buffer_memory(&self, layout: Layout, access: DeviceAccesses, uses: Uses) -> BufferMemory {
+		// A zero-sized reference still requires a non-null, aligned pointer. The address is never dereferenced for bytes.
 		let data = if layout.size() == 0 {
-			Self::zero_sized_buffer_pointer(layout)
+			std::ptr::without_provenance_mut(layout.align())
 		} else {
 			unsafe { alloc::alloc_zeroed(layout) }
 		};
@@ -239,7 +180,7 @@ impl Device {
 
 		let resource_size = Self::buffer_resource_size(layout.size(), uses);
 		let (resource, mapped, heap_kind) = self.create_buffer_resource(resource_size, access);
-		BufferFrameStorage {
+		BufferMemory {
 			data,
 			layout,
 			host_generation: 1,
@@ -633,20 +574,16 @@ impl Device {
 			return support;
 		}
 
-		let mut support = d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
-			Format: format,
-			..Default::default()
-		};
-		let result = unsafe {
-			self.device.CheckFeatureSupport(
-				d3d12::D3D12_FEATURE_FORMAT_SUPPORT,
-				(&mut support as *mut d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT).cast(),
-				std::mem::size_of::<d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT>() as u32,
-			)
-		};
-		assert!(
-			result.is_ok(),
-			"Failed to query DX12 format support. The most likely cause is that the device was removed or the driver rejected the capability query. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_format_support."
+		let support = Self::feature_support(
+			&self.device,
+			d3d12::D3D12_FEATURE_FORMAT_SUPPORT,
+			d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT {
+				Format: format,
+				..Default::default()
+			},
+		)
+		.expect(
+			"Failed to query DX12 format support. The most likely cause is that the device was removed or the driver rejected the capability query. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_format_support.",
 		);
 		self.format_support_cache.borrow_mut().insert(format.0, support);
 		support
@@ -915,50 +852,27 @@ impl Device {
 		}
 	}
 
-	/// Marks the base CPU shadow dirty before exposing mutable storage.
-	pub(crate) fn mark_buffer_host_write(buffer: &mut Buffer) {
-		buffer.host_generation = buffer.host_generation.wrapping_add(1);
-		if buffer.host_generation == buffer.uploaded_generation {
-			buffer.host_generation = buffer.host_generation.wrapping_add(1);
+	/// Marks one CPU shadow of a buffer dirty before exposing it as mutable storage.
+	pub(crate) fn mark_host_write(memory: &mut BufferMemory) {
+		memory.host_generation = memory.host_generation.wrapping_add(1);
+		if memory.host_generation == memory.uploaded_generation {
+			memory.host_generation = memory.host_generation.wrapping_add(1);
 		}
 	}
 
-	/// Marks one frame-local CPU shadow dirty before exposing mutable storage.
-	fn mark_buffer_frame_host_write(frame_storage: &mut BufferFrameStorage) {
-		frame_storage.host_generation = frame_storage.host_generation.wrapping_add(1);
-		if frame_storage.host_generation == frame_storage.uploaded_generation {
-			frame_storage.host_generation = frame_storage.host_generation.wrapping_add(1);
-		}
-	}
-
-	/// Copies a changed base CPU shadow into its mapped native allocation.
-	pub(crate) fn sync_buffer_storage(buffer: &mut Buffer) {
-		if buffer.mapped.is_null() || buffer.size == 0 || !buffer.access.intersects(DeviceAccesses::CpuWrite) {
+	/// Copies a changed CPU shadow of a `size`-byte buffer into its mapped native allocation.
+	pub(crate) fn sync_buffer_memory(memory: &mut BufferMemory, size: usize, access: DeviceAccesses) {
+		if memory.mapped.is_null() || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
 			return;
 		}
-		if buffer.host_generation == buffer.uploaded_generation {
+		if memory.host_generation == memory.uploaded_generation {
 			return;
 		}
 
 		unsafe {
-			std::ptr::copy_nonoverlapping(buffer.data, buffer.mapped, buffer.size);
+			std::ptr::copy_nonoverlapping(memory.data, memory.mapped, size);
 		}
-		buffer.uploaded_generation = buffer.host_generation;
-	}
-
-	/// Copies a changed frame-local CPU shadow into its mapped native allocation.
-	pub(crate) fn sync_buffer_frame_storage(frame_storage: &mut BufferFrameStorage, size: usize, access: DeviceAccesses) {
-		if frame_storage.mapped.is_null() || size == 0 || !access.intersects(DeviceAccesses::CpuWrite) {
-			return;
-		}
-		if frame_storage.host_generation == frame_storage.uploaded_generation {
-			return;
-		}
-
-		unsafe {
-			std::ptr::copy_nonoverlapping(frame_storage.data, frame_storage.mapped, size);
-		}
-		frame_storage.uploaded_generation = frame_storage.host_generation;
+		memory.uploaded_generation = memory.host_generation;
 	}
 
 	pub(crate) fn sync_buffer(&mut self, buffer_handle: impl Into<BaseBufferHandle>) {
@@ -969,20 +883,10 @@ impl Device {
 		let buffer_handle = buffer_handle.into();
 		self.ensure_buffer_frame_storage(buffer_handle, sequence_index);
 		if let Some(buffer) = self.buffer_mut(buffer_handle) {
-			// Static buffers share one host-mapped resource across all frame sequences.
-			// Transfer recordings may run on sequence 1, so do not gate their flushes on sequence 0.
-			if sequence_index == 0 || buffer.frame_resources.is_none() {
-				Self::sync_buffer_storage(buffer);
-				return;
-			}
-			if let Some(frame_storage) = buffer
-				.frame_resources
-				.as_mut()
-				.and_then(|resources| resources.get_mut(sequence_index as usize))
-				.and_then(|resource| resource.as_mut())
-			{
-				Self::sync_buffer_frame_storage(frame_storage, buffer.size, buffer.access);
-			}
+			let (size, access) = (buffer.size, buffer.access);
+			// Static buffers share one host-mapped resource across all frame sequences, so transfer recordings on
+			// sequence 1 flush the base storage. A dynamic buffer has its frame copy from the call above.
+			Self::sync_buffer_memory(buffer.memory_mut(sequence_index), size, access);
 		}
 	}
 }

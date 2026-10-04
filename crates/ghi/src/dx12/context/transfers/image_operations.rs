@@ -54,11 +54,7 @@ impl Device {
 		destination_image: crate::BaseImageHandle,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self
-			.command_buffers
-			.get(command_buffer_handle.0 as usize)
-			.and_then(|command_buffer| command_buffer.command_list.clone())
-		else {
+		let Some(command_list) = self.command_list(command_buffer_handle) else {
 			return;
 		};
 		let Some(source) = self.images.get(source_image.0 as usize) else {
@@ -101,7 +97,7 @@ impl Device {
 		);
 		self.transition_tracked_image(&command_list, source_image, &source_resource, TextureBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.texture_copy_count += 1;
+		self.counters.texture_copy_count += 1;
 	}
 
 	pub(crate) fn rasterize_mesh_to_image(

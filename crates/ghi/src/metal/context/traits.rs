@@ -1,4 +1,3 @@
-use super::resources::SWAPCHAIN_FORMAT;
 use super::resources::acceleration_structures::{INSTANCE_DESCRIPTOR_SIZE, to_vertex_format};
 use super::*;
 
@@ -350,11 +349,7 @@ impl crate::context::Context for Context {
 		let mut complete = true;
 		for frame_index in 0..self.frames as usize {
 			let synchronizer_handle = synchronizer_for_sequence(&self.synchronizers, synchronizer_handle, frame_index as u8);
-			let (finished, error) = self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
-			if let Some(error) = error {
-				panic!("{error}");
-			}
-			complete &= finished;
+			complete &= self.synchronizers.resource_mut(synchronizer_handle).poll(&mut self.queues);
 		}
 		complete
 	}

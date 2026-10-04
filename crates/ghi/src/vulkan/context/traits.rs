@@ -292,8 +292,16 @@ impl crate::context::Context for Context {
 		Context::wait_for_synchronizer(self, synchronizer);
 	}
 
+	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
 	fn poll_synchronizer(&mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) -> bool {
-		Context::poll_synchronizer(self, synchronizer)
+		self.get_syncronizer_handles(synchronizer).into_iter().all(|handle| {
+			let synchronizer = &self.synchronizers[handle.0 as usize];
+			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
+			!synchronizer.armed
+				|| unsafe { self.device.device.get_fence_status(synchronizer.fence) }.expect(
+					"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
+				)
+		})
 	}
 
 	fn wait(&mut self) {

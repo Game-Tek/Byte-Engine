@@ -57,8 +57,8 @@ pub(super) const MISSING_SURFACE: &str = "Missing Metal surface. The most likely
 /// The `Surface` struct is the texture a command reaches through an image or swapchain handle.
 ///
 /// It is a frame image or a swapchain's image for the frame sequence; commands never reach a drawable directly.
-/// Resolve one with [`CommandBufferRecording::surface`] and describe each access with [`Self::resource_use`];
-/// consuming that use retains the texture.
+/// Resolve one with [`CommandBufferRecording::surface`] and describe each access to its `image` with
+/// [`MetalResourceUse::image`](synchronization::MetalResourceUse::image); consuming that use retains the texture.
 pub(super) struct Surface {
 	/// The image behind the texture.
 	pub(super) image: ImageHandle,
@@ -68,19 +68,6 @@ pub(super) struct Surface {
 	pub(super) array_layers: u32,
 	/// The uses the texture was created with. A swapchain's surfaces report the swapchain's uses.
 	pub(super) uses: crate::Uses,
-}
-
-impl Surface {
-	/// Describes one access to this surface for hazard tracking.
-	pub(super) fn resource_use(
-		&self,
-		mip_level: Option<u32>,
-		layer: Option<u32>,
-		stages: mtl::MTLStages,
-		access: crate::AccessPolicies,
-	) -> synchronization::MetalResourceUse {
-		synchronization::MetalResourceUse::image(self.image, mip_level, layer, stages, access)
-	}
 }
 
 /// The `ActiveEncoder` enum holds the one native encoder a recording writes into at a time.

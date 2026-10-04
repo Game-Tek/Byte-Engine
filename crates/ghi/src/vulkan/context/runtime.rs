@@ -568,13 +568,8 @@ impl Context {
 	) -> Result<crate::TextureReadback, crate::TextureTransferError> {
 		// Only the transfer's own submission has to finish; other work in flight on this context keeps running.
 		let (_, synchronizer) = self.texture_readbacks.submitted(texture_copy_handle)?;
-		match synchronizer.map(|handle| &self.synchronizers[handle.0 as usize]) {
-			Some(synchronizer) if synchronizer.armed => unsafe {
-				self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
-					"Failed to wait for a Vulkan readback. The most likely cause is that the fence is invalid or the device was lost.",
-				);
-			},
-			Some(_) => {}
+		match synchronizer {
+			Some(synchronizer) => self.wait_for_private_synchronizer(synchronizer),
 			None => self.device.wait(),
 		}
 		let readback = self.texture_readbacks.take_submitted(texture_copy_handle)?;
@@ -680,15 +675,7 @@ impl Context {
 		swapchain_handle: graphics_hardware_interface::SwapchainHandle,
 	) -> Option<crate::frame::SwapchainAcquisition> {
 		let sequence_index = (frame.index % u64::from(self.frames)) as u8;
-		let synchronizer_index = self.get_syncronizer_handles(frame.synchronizer)[sequence_index as usize].0 as usize;
-		let synchronizer = &self.synchronizers[synchronizer_index];
-		if synchronizer.armed {
-			unsafe {
-				self.device.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX).expect(
-					"Failed to wait for the frame sequence fence before swapchain acquisition. The most likely cause is that the device was lost.",
-				);
-			}
-		}
+		self.wait_for_private_synchronizer(self.get_syncronizer_handles(frame.synchronizer)[sequence_index as usize]);
 		self.acquire_swapchain_image_for_sequence(sequence_index, swapchain_handle)
 	}
 
@@ -1016,29 +1003,20 @@ impl Context {
 		SynchronizerHandle(synchroizer_handle.0).get_all(&self.synchronizers)
 	}
 
-	/// Returns whether every armed fence of the synchronizer has signaled, without blocking.
-	pub(crate) fn poll_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) -> bool {
-		self.get_syncronizer_handles(synchronizer_handle).into_iter().all(|handle| {
-			let synchronizer = &self.synchronizers[handle.0 as usize];
-			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
-			!synchronizer.armed
-				|| unsafe { self.device.device.get_fence_status(synchronizer.fence) }.expect(
-					"Failed to query a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
-				)
-		})
-	}
-
 	pub(crate) fn wait_for_synchronizer(&self, synchronizer_handle: graphics_hardware_interface::SynchronizerHandle) {
 		for handle in self.get_syncronizer_handles(synchronizer_handle) {
-			let synchronizer = &self.synchronizers[handle.0 as usize];
-			// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
-			if synchronizer.armed {
-				unsafe {
-					self.device
-						.wait_for_fences(&[synchronizer.fence], true, u64::MAX)
-						.expect("Failed to wait for Vulkan synchronizer. The most likely cause is that the submitted fence is invalid or the device was lost.");
-				}
-			}
+			self.wait_for_private_synchronizer(handle);
+		}
+	}
+
+	/// Waits for one sequence's fence, when a submission armed it.
+	fn wait_for_private_synchronizer(&self, handle: SynchronizerHandle) {
+		let synchronizer = &self.synchronizers[handle.0 as usize];
+		// Non-frame submissions only signal one sequence's fence, so the other sequences may never have been submitted.
+		if synchronizer.armed {
+			unsafe { self.device.wait_for_fences(&[synchronizer.fence], true, u64::MAX) }.expect(
+				"Failed to wait for a Vulkan fence. The most likely cause is that the fence is invalid or the device was lost.",
+			);
 		}
 	}
 }

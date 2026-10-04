@@ -162,12 +162,12 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 
 	fn draw_indirect<const N: usize>(
 		&mut self,
-		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
 		entry_index: usize,
 	) {
-		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
-		let buffer_handle = buffer_handle.into().handle();
-		let buffer = self.get_buffer(self.get_internal_buffer_handle(buffer_handle));
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
+		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
+		let buffer = self.get_buffer(buffer_handle);
 		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
 		assert!(
 			entry.end <= buffer_size,
@@ -177,19 +177,20 @@ impl crate::command_buffer::BoundRasterizationPipelineMode for CommandBufferReco
 
 		// The draw record must be visible to the indirect stage before the deferred render pass begins.
 		self.vulkan_consume_resources([vulkan_consumption(
-			self.buffer_resource(buffer_handle),
+			Handles::Buffer(buffer_handle),
 			vk::PipelineStageFlags2::DRAW_INDIRECT,
 			vk::AccessFlags2::INDIRECT_COMMAND_READ,
 		)])
 		.apply(self);
 		let command_buffer = self.prepare_draw();
 		unsafe {
+			// The stride is one record, which is the entry's size.
 			self.device.device.cmd_draw_indirect(
 				command_buffer,
 				vk_buffer,
 				entry.start as vk::DeviceSize,
 				1,
-				crate::command_buffer::INDIRECT_DRAW_RECORD_SIZE as u32,
+				entry.len() as u32,
 			);
 		}
 	}

@@ -423,27 +423,19 @@ impl Device {
 	}
 
 	pub(crate) fn render_target_blend_desc(blend: pipelines::raster::BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
-		let blend_enable = !matches!(blend, pipelines::raster::BlendMode::None);
+		let (blend_enable, source, destination) = match blend {
+			pipelines::raster::BlendMode::None => (false, D3D12_BLEND_ONE, D3D12_BLEND_ZERO),
+			pipelines::raster::BlendMode::Alpha => (true, D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA),
+			pipelines::raster::BlendMode::Premultiplied => (true, D3D12_BLEND_ONE, D3D12_BLEND_INV_SRC_ALPHA),
+		};
 		D3D12_RENDER_TARGET_BLEND_DESC {
 			BlendEnable: BOOL(blend_enable as i32),
 			LogicOpEnable: BOOL(0),
-			SrcBlend: if matches!(blend, pipelines::raster::BlendMode::Alpha) {
-				D3D12_BLEND_SRC_ALPHA
-			} else {
-				D3D12_BLEND_ONE
-			},
-			DestBlend: if blend_enable {
-				D3D12_BLEND_INV_SRC_ALPHA
-			} else {
-				D3D12_BLEND_ZERO
-			},
+			SrcBlend: source,
+			DestBlend: destination,
 			BlendOp: D3D12_BLEND_OP_ADD,
 			SrcBlendAlpha: D3D12_BLEND_ONE,
-			DestBlendAlpha: if blend_enable {
-				D3D12_BLEND_INV_SRC_ALPHA
-			} else {
-				D3D12_BLEND_ZERO
-			},
+			DestBlendAlpha: destination,
 			BlendOpAlpha: D3D12_BLEND_OP_ADD,
 			LogicOp: D3D12_LOGIC_OP_NOOP,
 			RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,

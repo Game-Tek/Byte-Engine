@@ -34,11 +34,7 @@ impl Context {
 			}
 			let synchronizer =
 				synchronizer_for_sequence(&self.synchronizers, self.internal_upload_synchronizer, sequence_index as u8);
-			let (finished, error) = self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues);
-			if let Some(error) = error {
-				panic!("{error}");
-			}
-			if finished {
+			if self.synchronizers.resource_mut(synchronizer).poll(&mut self.queues) {
 				self.internal_upload_queues[sequence_index] = None;
 			}
 		}

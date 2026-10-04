@@ -878,7 +878,7 @@ impl Device {
 		Self::fnv64_update_text(&mut hash, entry_point);
 		Self::fnv64_update_text(&mut hash, target);
 		for entry in specialization_map {
-			Self::fnv64_update_text(&mut hash, entry.get_type().as_str());
+			Self::fnv64_update_text(&mut hash, entry.get_type());
 			Self::fnv64_update(&mut hash, &entry.get_constant_id().to_le_bytes());
 			Self::fnv64_update(&mut hash, entry.get_data());
 		}
@@ -1100,7 +1100,7 @@ impl Device {
 		let mut names = Vec::new();
 		let mut values = Vec::new();
 		for entry in specialization_map {
-			match entry.get_type().as_str() {
+			match entry.get_type() {
 				"bool" => Self::push_hlsl_bool_specialization_macro(
 					&mut names,
 					&mut values,

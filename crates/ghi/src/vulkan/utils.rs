@@ -110,7 +110,7 @@ pub(super) fn build_specialization_entries(
 		let value = specialization_map_entry.get_data();
 		let offset = data.len() as u32;
 		let constant_type = specialization_map_entry.get_type();
-		let scalar_count = match constant_type.as_str() {
+		let scalar_count = match constant_type {
 			"bool" | "i32" | "u32" | "f32" => 1,
 			"vec2f" => 2,
 			"vec3f" => 3,

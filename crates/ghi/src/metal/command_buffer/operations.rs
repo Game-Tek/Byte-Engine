@@ -20,7 +20,13 @@ impl CommandBufferRecording<'_> {
 		let surface = self
 			.surface(source, frame_offset)
 			.ok_or(crate::TextureTransferError::InvalidSource)?;
-		let source_use = surface.resource_use(Some(0), None, mtl::MTLStages::Blit, crate::AccessPolicies::READ);
+		let source_use = synchronization::MetalResourceUse::image(
+			surface.image,
+			Some(0),
+			None,
+			mtl::MTLStages::Blit,
+			crate::AccessPolicies::READ,
+		);
 		let Surface {
 			texture: source_texture,
 			format,
@@ -134,6 +140,29 @@ impl CommandBufferRecording<'_> {
 				access,
 			),
 		}
+	}
+
+	/// Resolves one indirect argument record to its GPU address and the read `stages` make of it.
+	fn resolve_indirect_record(
+		&self,
+		buffer_handle: graphics_hardware_interface::BaseBufferHandle,
+		entry: std::ops::Range<usize>,
+		stages: mtl::MTLStages,
+	) -> (mtl::MTLGPUAddress, synchronization::MetalResourceUse) {
+		let handle = self.get_internal_buffer_handle(buffer_handle);
+		let buffer = self.device.buffers.resource(handle);
+		assert!(
+			entry.end <= buffer.size,
+			"Metal indirect entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={}",
+			entry.end,
+			buffer.size,
+		);
+		let address = buffer.gpu_address.checked_add(entry.start as u64).expect(
+			"Metal indirect GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
+		);
+		let record_use =
+			synchronization::MetalResourceUse::buffer(handle, entry.start, entry.len(), stages, crate::AccessPolicies::READ);
+		(address, record_use)
 	}
 
 	/// Resolves one strided geometry range from a build description.
@@ -382,7 +411,15 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 		let mut initial_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
 		let mut final_attachment_uses = SmallVec::<[synchronization::MetalResourceUse; 8]>::new();
 		for (attachment, surface, _) in &attachments {
-			let resource_use = |access| surface.resource_use(Some(0), attachment.layer, mtl::MTLStages::Fragment, access);
+			let resource_use = |access| {
+				synchronization::MetalResourceUse::image(
+					surface.image,
+					Some(0),
+					attachment.layer,
+					mtl::MTLStages::Fragment,
+					access,
+				)
+			};
 			let initial_access = crate::AccessPolicies::WRITE
 				| if attachment.loads() {
 					crate::AccessPolicies::READ
@@ -1055,33 +1092,15 @@ impl BoundRasterizationPipelineMode for CommandBufferRecording<'_> {
 
 	fn draw_indirect<const N: usize>(
 		&mut self,
-		buffer_handle: impl Into<crate::command_buffer::IndirectDrawBuffer<N>>,
+		buffer_handle: graphics_hardware_interface::BufferHandle<[[u32; 4]; N]>,
 		entry_index: usize,
 	) {
-		let entry = crate::command_buffer::IndirectDrawBuffer::<N>::entry_range(entry_index);
-		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into().handle());
-		let (buffer_size, buffer_gpu_address) = {
-			let buffer = self.device.buffers.resource(internal_buffer);
-			(buffer.size, buffer.gpu_address)
-		};
-		assert!(
-			entry.end <= buffer_size,
-			"Metal indirect draw entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
-			entry.end,
-		);
-		let indirect_buffer_address = buffer_gpu_address.checked_add(entry.start as u64).expect(
-			"Metal indirect draw GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
-		);
-
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
 		// The vertex stage consumes the draw record, so it must wait for whichever GPU work wrote the counts.
+		let (indirect_buffer_address, record_use) =
+			self.resolve_indirect_record(buffer_handle.into(), entry, mtl::MTLStages::Vertex);
 		let mut resource_uses = self.bound_vertex_resource_uses();
-		resource_uses.push(synchronization::MetalResourceUse::buffer(
-			internal_buffer,
-			entry.start,
-			entry.len(),
-			mtl::MTLStages::Vertex,
-			crate::AccessPolicies::READ,
-		));
+		resource_uses.push(record_use);
 		self.prepare_draw("draw_indirect", resource_uses);
 		self.apply_bound_vertex_buffers();
 
@@ -1112,35 +1131,10 @@ impl BoundComputePipelineMode for CommandBufferRecording<'_> {
 		buffer_handle: impl Into<crate::command_buffer::IndirectDispatchBuffer<N>>,
 		entry_index: usize,
 	) {
-		assert!(
-			entry_index < N,
-			"Metal indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
-		);
-		let internal_buffer = self.get_internal_buffer_handle(buffer_handle.into().handle());
-		let buffer = self.device.buffers.resource(internal_buffer);
-		let indirect_offset = entry_index.checked_mul(std::mem::size_of::<[u32; 3]>()).expect(
-			"Metal indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-		let indirect_end = indirect_offset.checked_add(std::mem::size_of::<[u32; 3]>()).expect(
-			"Metal indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-
-		assert!(
-			indirect_end <= buffer.size,
-			"Metal indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={indirect_end}, buffer_size={}",
-			buffer.size,
-		);
-		let indirect_buffer_address = buffer.gpu_address.checked_add(indirect_offset as u64).expect(
-			"Metal indirect dispatch GPU address overflowed. The most likely cause is that the selected entry exceeds the native address space.",
-		);
-
-		self.prepare_dispatch([synchronization::MetalResourceUse::buffer(
-			internal_buffer,
-			indirect_offset,
-			std::mem::size_of::<[u32; 3]>(),
-			mtl::MTLStages::Dispatch,
-			crate::AccessPolicies::READ,
-		)]);
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
+		let (indirect_buffer_address, record_use) =
+			self.resolve_indirect_record(buffer_handle.into().handle(), entry, mtl::MTLStages::Dispatch);
+		self.prepare_dispatch([record_use]);
 
 		let bound_pipeline = self.bound_pipeline.expect(
 			"No pipeline bound. The most likely cause is that indirect_dispatch was called before bind_compute_pipeline.",

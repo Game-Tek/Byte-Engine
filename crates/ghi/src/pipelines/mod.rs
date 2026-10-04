@@ -96,8 +96,8 @@ impl SpecializationMapEntry {
 		self.constant_id
 	}
 
-	pub fn get_type(&self) -> String {
-		self.r#type.to_string()
+	pub fn get_type(&self) -> &'static str {
+		self.r#type
 	}
 
 	/// Returns the byte size of the constant's value.

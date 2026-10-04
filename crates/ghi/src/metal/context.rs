@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 
 use super::*;
 use crate::{
-	DeviceAccesses, ResourceCollection, Uses,
+	ResourceCollection, Uses,
 	buffer::{self as buffer_builder, BufferHandle},
 	descriptors::DescriptorSetHandle,
 	image::{self as image_builder, ImageHandle},
@@ -31,6 +31,9 @@ pub(crate) struct TextureReadbackStorage {
 	/// The padded row pitch of `buffer`. Its image pitch is this times the layout's row count.
 	pub(crate) native_bytes_per_row: usize,
 }
+
+/// The pixel format of every swapchain drawable and of the images frames render into before presentation.
+pub(crate) const SWAPCHAIN_FORMAT: crate::Formats = crate::Formats::BGRAu8;
 
 /// The frame-local descriptor sets of a context, one chain per public set with an entry per frame in flight.
 pub(crate) type DescriptorSets =

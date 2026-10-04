@@ -127,10 +127,10 @@ pub mod synchronizer {
 			self.workloads.push(workload);
 		}
 
-		/// Finishes every batch Metal already completed without blocking.
+		/// Finishes every batch Metal already completed without blocking, and returns whether no batch is still running.
 		///
-		/// Returns whether no batch is still running, and the first GPU error among the finished batches.
-		pub(crate) fn poll(&mut self, queues: &mut [StoredQueue]) -> (bool, Option<String>) {
+		/// Panics with the first GPU error among the finished batches, after finishing all of them.
+		pub(crate) fn poll(&mut self, queues: &mut [StoredQueue]) -> bool {
 			let mut first_error = None;
 			for workload in std::mem::take(&mut self.workloads) {
 				match workload.try_feedback() {
@@ -142,7 +142,10 @@ pub mod synchronizer {
 					None => self.workloads.push(workload),
 				}
 			}
-			(self.workloads.is_empty(), first_error)
+			if let Some(error) = first_error {
+				panic!("{error}");
+			}
+			self.workloads.is_empty()
 		}
 
 		/// Waits for every submitted batch, returns its commands to `queues` for reuse, and reports the first GPU error.

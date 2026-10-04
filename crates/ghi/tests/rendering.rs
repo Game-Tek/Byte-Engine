@@ -86,13 +86,13 @@ fn image_group_member_read_after_reuse_fails_validation() {
 #[test]
 fn render_triangle_pixels() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	raster::render_triangle(&mut device, queue_handle);
+	raster::render_triangle(&mut device, queue_handle, raster::TriangleDraw::Mesh);
 }
 
 #[test]
 fn render_triangle_with_indirect_draw() {
 	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	raster::render_triangle_indirect(&mut device, queue_handle);
+	raster::render_triangle(&mut device, queue_handle, raster::TriangleDraw::Indirect);
 }
 
 #[cfg(target_os = "macos")]

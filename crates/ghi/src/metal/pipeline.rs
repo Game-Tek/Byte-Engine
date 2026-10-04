@@ -41,7 +41,7 @@ pub(crate) fn apply_specialization_map_entry(
 	let value = NonNull::new(value).expect(
 		"Metal specialization constant value pointer was null. The most likely cause is an empty specialization entry.",
 	);
-	let (data_type, count) = match specialization_map_entry.get_type().as_str() {
+	let (data_type, count) = match specialization_map_entry.get_type() {
 		"bool" => (mtl::MTLDataType::Bool, 1),
 		"i32" => (mtl::MTLDataType::Int, 1),
 		"u32" => (mtl::MTLDataType::UInt, 1),

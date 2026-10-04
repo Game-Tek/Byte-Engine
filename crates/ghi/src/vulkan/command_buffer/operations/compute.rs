@@ -63,23 +63,11 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into().handle());
 		let buffer = self.get_buffer(buffer_handle);
 		let (vk_buffer, buffer_size) = (buffer.buffer, buffer.size);
+		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
 		assert!(
-			entry_index < N,
-			"Vulkan indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
-		);
-		let argument_size = std::mem::size_of::<[u32; 3]>();
-		let argument_offset = entry_index.checked_mul(argument_size).expect(
-			"Vulkan indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-		let argument_end = argument_offset.checked_add(argument_size).expect(
-			"Vulkan indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-		assert!(
-			argument_end <= buffer_size,
-			"Vulkan indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={argument_end}, buffer_size={buffer_size}",
-		);
-		let argument_offset = u64::try_from(argument_offset).expect(
-			"Vulkan indirect dispatch offset exceeds the native address range. The most likely cause is that the host address space is wider than Vulkan device offsets.",
+			entry.end <= buffer_size,
+			"Vulkan indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
 		);
 
 		self.consume_resources_current([Consumption {
@@ -90,9 +78,11 @@ impl crate::command_buffer::BoundComputePipelineMode for CommandBufferRecording<
 		}])
 		.apply(self);
 		unsafe {
-			self.device
-				.device
-				.cmd_dispatch_indirect(self.get_command_buffer().command_buffer, vk_buffer, argument_offset);
+			self.device.device.cmd_dispatch_indirect(
+				self.get_command_buffer().command_buffer,
+				vk_buffer,
+				entry.start as vk::DeviceSize,
+			);
 		}
 	}
 }

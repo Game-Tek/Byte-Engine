@@ -39,46 +39,74 @@ impl Device {
 		entry_index: usize,
 		sequence_index: u8,
 	) {
+		if self.execute_indirect_native(
+			command_buffer_handle,
+			base_buffer_handle,
+			sequence_index,
+			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
+			|| crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
+		) {
+			self.indirect_dispatch_encode_count += 1;
+		}
+	}
+
+	/// Encodes one `ExecuteIndirect` of the buffer record that `entry` returns, and returns whether it recorded work.
+	///
+	/// `entry` runs after the command list and buffer lookups, so a command without either records nothing and checks
+	/// nothing. Each argument type caches its own command signature, whose stride is one record.
+	pub(crate) fn execute_indirect_native(
+		&mut self,
+		command_buffer_handle: CommandBufferHandle,
+		base_buffer_handle: BaseBufferHandle,
+		sequence_index: u8,
+		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
+		entry: impl FnOnce() -> std::ops::Range<usize>,
+	) -> bool {
 		let Some(command_list) = self
 			.command_buffers
 			.get(command_buffer_handle.0 as usize)
 			.and_then(|command_buffer| command_buffer.command_list.clone())
 		else {
-			return;
+			return false;
 		};
-		let buffer_size = {
-			let Some(buffer) = self.buffer(base_buffer_handle) else {
-				return;
-			};
-			buffer.size
+		let Some(buffer_size) = self.buffer(base_buffer_handle).map(|buffer| buffer.size) else {
+			return false;
 		};
+		let entry = entry();
 		assert!(
-			entry_index < N,
-			"DX12 indirect dispatch entry is out of bounds. The most likely cause is that entry_index exceeds the typed indirect buffer length. entry_index={entry_index}, entry_count={N}",
-		);
-		let argument_size = std::mem::size_of::<[u32; 3]>();
-		let argument_offset = entry_index.checked_mul(argument_size).expect(
-			"DX12 indirect dispatch offset overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-		let argument_end = argument_offset.checked_add(argument_size).expect(
-			"DX12 indirect dispatch range overflowed. The most likely cause is that entry_index exceeds the host address range.",
-		);
-		assert!(
-			argument_end <= buffer_size,
-			"DX12 indirect dispatch entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={argument_end}, buffer_size={}",
-			buffer_size,
-		);
-		let argument_offset = u64::try_from(argument_offset).expect(
-			"DX12 indirect dispatch offset exceeds the native address range. The most likely cause is that the host address space is wider than DX12 GPU offsets.",
+			entry.end <= buffer_size,
+			"DX12 indirect entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
+			entry.end,
 		);
 		let Some(resource) = self.buffer_resource_for_sequence(base_buffer_handle, sequence_index) else {
-			return;
+			return false;
 		};
-		let Some(command_signature) = self.indirect_dispatch_command_signature() else {
-			return;
+		let command_signature = if argument_type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW {
+			&mut self.indirect_draw_signature
+		} else {
+			&mut self.indirect_dispatch_signature
+		};
+		if command_signature.is_none() {
+			let argument = D3D12_INDIRECT_ARGUMENT_DESC {
+				Type: argument_type,
+				Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
+			};
+			let description = D3D12_COMMAND_SIGNATURE_DESC {
+				ByteStride: entry.len() as u32,
+				NumArgumentDescs: 1,
+				pArgumentDescs: &argument,
+				NodeMask: 0,
+			};
+			// A failed creation leaves the cache empty, so the next indirect command tries again.
+			if unsafe { self.device.CreateCommandSignature(&description, None, command_signature) }.is_err() {
+				return false;
+			}
+		}
+		let Some(command_signature) = command_signature.clone() else {
+			return false;
 		};
 
-		// A 12-byte dispatch record keeps every selected offset on DX12's required four-byte boundary.
+		// Draw and dispatch records are 16 and 12 bytes, so every selected offset is on DX12's required four-byte boundary.
 		unsafe {
 			self.transition_tracked_buffer(
 				&command_list,
@@ -86,45 +114,9 @@ impl Device {
 				&resource,
 				BufferBarrierState::INDIRECT_ARGUMENT,
 			);
-			command_list.ExecuteIndirect(&command_signature, 1, &resource, argument_offset, None, 0);
+			command_list.ExecuteIndirect(&command_signature, 1, &resource, entry.start as u64, None, 0);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.indirect_dispatch_encode_count += 1;
-	}
-
-	pub(crate) fn indirect_dispatch_command_signature(&mut self) -> Option<ID3D12CommandSignature> {
-		if let Some(command_signature) = self.indirect_dispatch_signature.clone() {
-			return Some(command_signature);
-		}
-
-		let command_signature =
-			self.create_indirect_command_signature(D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH, std::mem::size_of::<[u32; 3]>())?;
-		self.indirect_dispatch_signature = Some(command_signature.clone());
-		Some(command_signature)
-	}
-
-	/// Creates a command signature that executes one native argument record of `argument_type` per stride.
-	pub(crate) fn create_indirect_command_signature(
-		&self,
-		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
-		byte_stride: usize,
-	) -> Option<ID3D12CommandSignature> {
-		let argument = D3D12_INDIRECT_ARGUMENT_DESC {
-			Type: argument_type,
-			Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0::default(),
-		};
-		let description = D3D12_COMMAND_SIGNATURE_DESC {
-			ByteStride: byte_stride as u32,
-			NumArgumentDescs: 1,
-			pArgumentDescs: &argument,
-			NodeMask: 0,
-		};
-		let mut command_signature: Option<ID3D12CommandSignature> = None;
-		unsafe {
-			self.device
-				.CreateCommandSignature(&description, None, &mut command_signature)
-				.ok()?;
-		}
-		command_signature
+		true
 	}
 }

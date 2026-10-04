@@ -93,28 +93,26 @@ impl<'a> Frame<'a> {
 			submitted_readbacks.extend(texture_readbacks);
 		}
 
-		let mut submitted_any = false;
-		if !native_commands.is_empty() {
+		let rendered = !native_commands.is_empty();
+		if rendered {
 			let submitted = self.device.queues[self.queue_handle.0 as usize].submit_batch(self.queue_handle, native_commands);
 			for handle in &submitted_readbacks {
 				self.device.texture_readbacks.mark_submitted(*handle, Some(synchronizer));
 			}
 			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
-			submitted_any = true;
 		}
 
-		if let Some(submitted) = self.present(present_keys) {
-			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
-			submitted_any = true;
-		}
-
-		// An empty command still gives a frame that submitted nothing a completion point.
-		if !submitted_any {
-			let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
-			let command = stored_queue.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels);
-			let submitted = stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect());
-			self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
-		}
+		let submitted = match self.present(present_keys) {
+			Some(submitted) => submitted,
+			None if rendered => return,
+			// An empty command still gives a frame that submitted nothing a completion point.
+			None => {
+				let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
+				let command = stored_queue.acquire_native_command(Some("Empty Frame"), self.device.settings.debug_labels);
+				stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect())
+			}
+		};
+		self.device.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 
 	/// Takes a drawable for each presented swapchain, copies the frame's swapchain image into it, and presents it.
@@ -125,12 +123,17 @@ impl<'a> Frame<'a> {
 		let sequence_index = self.frame_key.sequence_index as usize;
 		let present_drawables = present_keys
 			.iter()
-			// A swapchain acquired at a zero extent has no image, so nothing was rendered for it.
-			.filter(|present_key| self.device.swapchains[present_key.swapchain.0 as usize].images[sequence_index].is_some())
 			.filter_map(|&present_key| {
-				self.device
-					.next_drawable(present_key.swapchain)
-					.map(|drawable| (present_key, drawable))
+				let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
+				// A swapchain acquired at a zero extent has no image, so nothing was rendered for it.
+				swapchain.images[sequence_index]?;
+				// `nextDrawable` blocks until the display releases a drawable, which with display sync is usually the
+				// refresh that shows the previously presented frame. It returns `None` when no drawable became available
+				// within Core Animation's one-second timeout, as happens while the window is occluded.
+				// SAFETY: The pool is created and drained on this thread, so the drawable's autoreleased reference does
+				// not outlive the closure and only the returned reference keeps it from the layer's pool.
+				let _pool = unsafe { NSAutoreleasePool::new() };
+				swapchain.layer.nextDrawable().map(|drawable| (present_key, drawable))
 			})
 			.collect::<SmallVec<[_; 4]>>();
 		if present_drawables.is_empty() {
@@ -145,17 +148,15 @@ impl<'a> Frame<'a> {
 		);
 		recording.resolve_swapchain_images(&present_drawables);
 		let mut command = recording.into_finished().command_buffer;
-		for (_, drawable) in &present_drawables {
-			command.retain_drawable(drawable);
-		}
 
 		let stored_queue = &mut self.device.queues[self.queue_handle.0 as usize];
 		for (_, drawable) in &present_drawables {
-			let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
-			stored_queue.queue.waitForDrawable(drawable);
+			command.retain_drawable(drawable);
+			stored_queue.queue.waitForDrawable(drawable.as_ref());
 		}
 		let submitted = stored_queue.submit_batch(self.queue_handle, [command].into_iter().collect());
 		for (present_key, drawable) in &present_drawables {
+			stored_queue.resource_tracker.forget_drawable(drawable.texture().as_ref());
 			let drawable: &ProtocolObject<dyn mtl::MTLDrawable> = drawable.as_ref();
 			stored_queue.queue.signalDrawable(drawable);
 			let swapchain = &self.device.swapchains[present_key.swapchain.0 as usize];
@@ -165,10 +166,6 @@ impl<'a> Frame<'a> {
 				Some(interval) => drawable.presentAfterMinimumDuration(interval.as_secs_f64()),
 				None => drawable.present(),
 			}
-		}
-
-		for (_, drawable) in &present_drawables {
-			stored_queue.resource_tracker.forget_drawable(drawable.texture().as_ref());
 		}
 
 		Some(submitted)

@@ -39,6 +39,9 @@ impl<'a> Frame<'a> {
 		let command_buffer = self.device.command_buffers[command_buffer_handle.0 as usize].frames
 			[self.frame_key.sequence_index as usize]
 			.clone();
+		// The submission signals the frame sequence's own synchronizer.
+		let synchronizer = synchronizer
+			.map(|synchronizer| self.device.get_syncronizer_handles(synchronizer)[self.frame_key.sequence_index as usize]);
 		let command_buffer_infos = [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer.command_buffer)];
 
 		let wait_semaphores = present_keys
@@ -79,7 +82,7 @@ impl<'a> Frame<'a> {
 			.wait_semaphore_infos(&wait_semaphores)
 			.signal_semaphore_infos(&signal_semaphores);
 		let execution_completion_fence =
-			synchronizer.map_or(vk::Fence::null(), |synchronizer| self.get_synchronizer(synchronizer).fence);
+			synchronizer.map_or(vk::Fence::null(), |handle| self.device.synchronizers[handle.0 as usize].fence);
 		let vk_queue = self.device.vk_queues[command_buffer.vk_queue_index]
 			.lock()
 			.expect("Failed to lock Vulkan queue for frame submission. The most likely cause is that another thread panicked while holding the queue lock.");
@@ -89,10 +92,8 @@ impl<'a> Frame<'a> {
 				.queue_submit2(*vk_queue, &[submit_info], execution_completion_fence)
 				.expect("Failed to submit command buffer.");
 		}
-		let readback_synchronizer = synchronizer
-			.map(|synchronizer| self.device.get_syncronizer_handles(synchronizer)[self.frame_key.sequence_index as usize]);
 		for handle in texture_readbacks {
-			self.device.texture_readbacks.mark_submitted(handle, readback_synchronizer);
+			self.device.texture_readbacks.mark_submitted(handle, synchronizer);
 		}
 
 		// Binary semaphores are consumed by one wait, so each present waits only on its own image's render semaphore.
@@ -117,8 +118,8 @@ impl<'a> Frame<'a> {
 		}
 		// The queue lock borrows the context, so release it before marking the fence as pending.
 		drop(vk_queue);
-		if let Some(synchronizer) = synchronizer {
-			self.get_synchronizer_mut(synchronizer).armed = true;
+		if let Some(handle) = synchronizer {
+			self.device.synchronizers[handle.0 as usize].armed = true;
 		}
 
 		self.device.states.extend(states);

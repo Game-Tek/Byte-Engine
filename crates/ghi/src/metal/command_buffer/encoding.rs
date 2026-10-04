@@ -326,10 +326,10 @@ impl CommandBufferRecording<'_> {
 					Descriptor::CombinedImageSampler { image, .. } => {
 						synchronization::MetalResourceUse::image(image, None, None, stages, access)
 					}
-					Descriptor::Swapchain { handle } => self
-						.swapchain_surface(handle)
-						.expect(MISSING_SURFACE)
-						.resource_use(None, None, stages, access),
+					Descriptor::Swapchain { handle } => {
+						let image = self.swapchain_surface(handle).expect(MISSING_SURFACE).image;
+						synchronization::MetalResourceUse::image(image, None, None, stages, access)
+					}
 					Descriptor::AccelerationStructure { handle } => {
 						synchronization::MetalResourceUse::acceleration_structure(handle.0 as usize, stages, access)
 					}

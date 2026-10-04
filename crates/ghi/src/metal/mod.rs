@@ -1,7 +1,6 @@
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {}
 
-use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU64;
 
@@ -35,7 +34,6 @@ pub mod queue;
 mod resources;
 mod state;
 mod synchronization;
-mod types;
 pub(crate) use io::write_compressed_file;
 pub use io::{ResourceIoQueue, ResourceIoTicket};
 pub(crate) mod utils {
@@ -113,19 +111,12 @@ pub(crate) mod utils {
 		}
 	}
 
-	pub(crate) fn storage_mode_from_access(access: DeviceAccesses) -> mtl::MTLStorageMode {
-		if access == DeviceAccesses::DeviceOnly {
-			mtl::MTLStorageMode::Private
-		} else {
-			// Metal 4 has no managed-resource synchronization commands. Shared storage is CPU-coherent after queue completion.
-			mtl::MTLStorageMode::Shared
-		}
-	}
-
+	/// Selects the storage of a buffer or texture, with default CPU caching and hazard tracking.
 	pub(crate) fn resource_options_from_access(access: DeviceAccesses) -> mtl::MTLResourceOptions {
 		if access == DeviceAccesses::DeviceOnly {
 			mtl::MTLResourceOptions::StorageModePrivate
 		} else {
+			// Metal 4 has no managed-resource synchronization commands. Shared storage is CPU-coherent after queue completion.
 			mtl::MTLResourceOptions::StorageModeShared
 		}
 	}
@@ -275,32 +266,13 @@ pub(crate) mod utils {
 	}
 
 	pub(crate) fn clear_color(clear: crate::ClearValue) -> mtl::MTLClearColor {
-		match clear {
-			crate::ClearValue::None => mtl::MTLClearColor {
-				red: 0.0,
-				green: 0.0,
-				blue: 0.0,
-				alpha: 0.0,
-			},
-			crate::ClearValue::Color(color) => mtl::MTLClearColor {
-				red: color.r as f64,
-				green: color.g as f64,
-				blue: color.b as f64,
-				alpha: color.a as f64,
-			},
-			crate::ClearValue::Integer(r, g, b, a) => mtl::MTLClearColor {
-				red: r as f64,
-				green: g as f64,
-				blue: b as f64,
-				alpha: a as f64,
-			},
-			crate::ClearValue::Depth(depth) => mtl::MTLClearColor {
-				red: depth as f64,
-				green: 0.0,
-				blue: 0.0,
-				alpha: 0.0,
-			},
-		}
+		let (red, green, blue, alpha) = match clear {
+			crate::ClearValue::None => (0.0, 0.0, 0.0, 0.0),
+			crate::ClearValue::Color(color) => (color.r as f64, color.g as f64, color.b as f64, color.a as f64),
+			crate::ClearValue::Integer(r, g, b, a) => (r as f64, g as f64, b as f64, a as f64),
+			crate::ClearValue::Depth(depth) => (depth as f64, 0.0, 0.0, 0.0),
+		};
+		mtl::MTLClearColor { red, green, blue, alpha }
 	}
 
 	pub(crate) fn clear_depth(clear: crate::ClearValue) -> std::os::raw::c_double {
@@ -353,8 +325,8 @@ pub(crate) mod utils {
 
 pub(crate) use pipeline::*;
 pub(crate) use resources::*;
-pub use state::{buffer, descriptor_set, image, sampler, swapchain, synchronizer};
-pub(crate) use types::*;
+pub use state::Image;
+pub(crate) use state::{Buffer, DescriptorSet, GroupSlot, ImageDescription, Swapchain, Synchronizer};
 
 /// Creates a real Metal context with one queue for the requested workloads, for tests that run GPU work.
 #[cfg(test)]
@@ -378,26 +350,22 @@ pub(crate) fn test_context(workloads: crate::WorkloadTypes) -> (Context, crate::
 #[cfg(test)]
 mod flat_binding_tests {
 	use super::*;
+	use crate::{
+		AccessPolicies,
+		command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
+		queue::{FrameRequest, Queue as _, QueueExecution as _},
+		shader::{ResourceKind, ResourceSlot},
+	};
 
-	fn resource(
-		slot: u32,
-		kind: crate::shader::ResourceKind,
-		count: u32,
-		access: crate::AccessPolicies,
-	) -> crate::shader::ShaderResourceDescriptor {
-		crate::shader::ShaderResourceDescriptor::new(crate::shader::ResourceSlot::new(slot), kind, count, access)
+	fn resource(slot: u32, kind: ResourceKind, count: u32, access: AccessPolicies) -> crate::shader::ShaderResourceDescriptor {
+		crate::shader::ShaderResourceDescriptor::new(ResourceSlot::new(slot), kind, count, access)
 	}
 
 	#[test]
 	fn flat_resource_ranges_treat_arrays_as_reserved_slot_intervals() {
-		let array = resource(
-			9,
-			crate::shader::ResourceKind::SampledImage,
-			1024,
-			crate::AccessPolicies::READ,
-		);
-		let inside = resource(10, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ);
-		let after = resource(1033, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ);
+		let array = resource(9, ResourceKind::SampledImage, 1024, AccessPolicies::READ);
+		let inside = resource(10, ResourceKind::Sampler, 1, AccessPolicies::READ);
+		let after = resource(1033, ResourceKind::Sampler, 1, AccessPolicies::READ);
 
 		assert!(resource_ranges_overlap(array, inside));
 		assert!(!resource_ranges_overlap(array, after));
@@ -405,51 +373,37 @@ mod flat_binding_tests {
 
 	#[test]
 	fn active_array_interiors_are_not_independent_retained_slot_keys() {
-		let array = resource(9, crate::shader::ResourceKind::SampledImage, 4, crate::AccessPolicies::READ);
+		let array = resource(9, ResourceKind::SampledImage, 4, AccessPolicies::READ);
 
-		assert!(resource_accepts_retained_slot_key(array, crate::shader::ResourceSlot::new(9)));
-		assert!(!resource_accepts_retained_slot_key(
-			array,
-			crate::shader::ResourceSlot::new(10)
-		));
-		assert!(!resource_accepts_retained_slot_key(
-			array,
-			crate::shader::ResourceSlot::new(12)
-		));
-		assert!(resource_accepts_retained_slot_key(
-			array,
-			crate::shader::ResourceSlot::new(13)
-		));
+		assert!(resource_accepts_retained_slot_key(array, ResourceSlot::new(9)));
+		assert!(!resource_accepts_retained_slot_key(array, ResourceSlot::new(10)));
+		assert!(!resource_accepts_retained_slot_key(array, ResourceSlot::new(12)));
+		assert!(resource_accepts_retained_slot_key(array, ResourceSlot::new(13)));
 	}
 
 	#[test]
 	#[should_panic(expected = "Overlapping Metal shader resources")]
 	fn canonical_stage_interface_rejects_overlapping_ranges() {
 		canonicalize_stage_resources(&[
-			resource(4, crate::shader::ResourceKind::StorageBuffer, 4, crate::AccessPolicies::READ),
-			resource(7, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ),
+			resource(4, ResourceKind::StorageBuffer, 4, AccessPolicies::READ),
+			resource(7, ResourceKind::Sampler, 1, AccessPolicies::READ),
 		]);
 	}
 
 	#[test]
 	fn canonical_stage_interfaces_share_only_when_representation_and_access_match() {
 		let split_declarations = canonicalize_stage_resources(&[
-			resource(8, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ),
-			resource(2, crate::shader::ResourceKind::StorageBuffer, 1, crate::AccessPolicies::READ),
-			resource(2, crate::shader::ResourceKind::StorageBuffer, 1, crate::AccessPolicies::WRITE),
+			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
+			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
 		]);
 		let merged_declaration = canonicalize_stage_resources(&[
-			resource(
-				2,
-				crate::shader::ResourceKind::StorageBuffer,
-				1,
-				crate::AccessPolicies::READ_WRITE,
-			),
-			resource(8, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ),
+			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ_WRITE),
+			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
 		]);
 		let read_only = canonicalize_stage_resources(&[
-			resource(2, crate::shader::ResourceKind::StorageBuffer, 1, crate::AccessPolicies::READ),
-			resource(8, crate::shader::ResourceKind::Sampler, 1, crate::AccessPolicies::READ),
+			resource(2, ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+			resource(8, ResourceKind::Sampler, 1, AccessPolicies::READ),
 		]);
 
 		assert_eq!(split_declarations, merged_declaration);
@@ -458,20 +412,13 @@ mod flat_binding_tests {
 
 	/// Exercises the production material ordering where scalar resources follow the bindless texture table.
 	#[test]
-	// This integration test keeps the complete bindless retention seam in one setup and assertion flow.
-	#[allow(clippy::too_many_lines)]
 	fn retained_material_resources_after_bindless_array_reach_metal() {
 		use objc2_metal::MTLComputePipelineState as _;
 
-		use crate::{
-			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			queue::{FrameRequest, Queue as _, QueueExecution as _},
-		};
-
-		const TEXTURES_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(9);
-		const MATERIAL_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(1046);
-		const AO_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(1051);
-		const OUTPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(1054);
+		const TEXTURES_SLOT: ResourceSlot = ResourceSlot::new(9);
+		const MATERIAL_SLOT: ResourceSlot = ResourceSlot::new(1046);
+		const AO_SLOT: ResourceSlot = ResourceSlot::new(1051);
+		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1054);
 		const TEXTURE_INDEX: u32 = 7;
 
 		let source = r#"
@@ -503,28 +450,13 @@ mod flat_binding_tests {
 
 		let texture_resource = resource(
 			TEXTURES_SLOT.index(),
-			crate::shader::ResourceKind::CombinedImageSampler,
+			ResourceKind::CombinedImageSampler,
 			1024,
-			crate::AccessPolicies::READ,
+			AccessPolicies::READ,
 		);
-		let material_resource = resource(
-			MATERIAL_SLOT.index(),
-			crate::shader::ResourceKind::StorageBuffer,
-			1,
-			crate::AccessPolicies::READ,
-		);
-		let ao_resource = resource(
-			AO_SLOT.index(),
-			crate::shader::ResourceKind::CombinedImageSampler,
-			1,
-			crate::AccessPolicies::READ,
-		);
-		let output_resource = resource(
-			OUTPUT_SLOT.index(),
-			crate::shader::ResourceKind::StorageBuffer,
-			1,
-			crate::AccessPolicies::WRITE,
-		);
+		let material_resource = resource(MATERIAL_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ);
+		let ao_resource = resource(AO_SLOT.index(), ResourceKind::CombinedImageSampler, 1, AccessPolicies::READ);
+		let output_resource = resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
 		let shader = context
 			.create_shader(
 				Some("Retained Material Binding Probe"),
@@ -637,12 +569,7 @@ mod flat_binding_tests {
 	/// Verifies Metal 4 function descriptors preserve specialization constants through pipeline compilation.
 	#[test]
 	fn metal4_specialized_function_descriptor_reaches_pipeline_compiler() {
-		use crate::{
-			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			queue::{FrameRequest, Queue as _, QueueExecution as _},
-		};
-
-		const OUTPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(0);
+		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -656,12 +583,7 @@ mod flat_binding_tests {
 			}
 		"#;
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
-		let output_resource = resource(
-			OUTPUT_SLOT.index(),
-			crate::shader::ResourceKind::StorageBuffer,
-			1,
-			crate::AccessPolicies::WRITE,
-		);
+		let output_resource = resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
 		let shader = context
 			.create_shader(
 				Some("Metal 4 Specialization Probe"),
@@ -712,16 +634,9 @@ mod flat_binding_tests {
 
 	/// Verifies argument buffers and upload pages are reused across frames and refreshed by descriptor writes.
 	#[test]
-	// One resource setup drives the retention, reuse, and invalidation checks in frame order.
-	#[allow(clippy::too_many_lines)]
 	fn argument_buffers_and_upload_pages_are_retained_across_frames_and_refreshed_on_writes() {
-		use crate::{
-			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			queue::{FrameRequest, Queue as _, QueueExecution as _},
-		};
-
-		const INPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(0);
-		const OUTPUT_SLOT: crate::shader::ResourceSlot = crate::shader::ResourceSlot::new(1);
+		const INPUT_SLOT: ResourceSlot = ResourceSlot::new(0);
+		const OUTPUT_SLOT: ResourceSlot = ResourceSlot::new(1);
 		let source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -744,18 +659,8 @@ mod flat_binding_tests {
 				},
 				crate::ShaderTypes::Compute,
 				[
-					resource(
-						INPUT_SLOT.index(),
-						crate::shader::ResourceKind::StorageBuffer,
-						1,
-						crate::AccessPolicies::READ,
-					),
-					resource(
-						OUTPUT_SLOT.index(),
-						crate::shader::ResourceKind::StorageBuffer,
-						1,
-						crate::AccessPolicies::WRITE,
-					),
+					resource(INPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::READ),
+					resource(OUTPUT_SLOT.index(), ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE),
 				],
 			)
 			.expect("Metal retention shader creation failed. The most likely cause is invalid Metal test source.");
@@ -849,14 +754,7 @@ mod flat_binding_tests {
 
 	/// Verifies frame-local storage mip views remain valid after argument-buffer materialization.
 	#[test]
-	// Alternating both frame sequences is one contiguous residency contract and shares a single resource setup.
-	#[allow(clippy::too_many_lines)]
 	fn dynamic_storage_mips_survive_alternating_frame_sequences() {
-		use crate::{
-			command_buffer::{BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _},
-			queue::{FrameRequest, Queue as _, QueueExecution as _},
-		};
-
 		let writer_source = r#"
 			#include <metal_stdlib>
 			using namespace metal;
@@ -912,31 +810,11 @@ mod flat_binding_tests {
 		let (mut context, queue_handle) = test_context(crate::WorkloadTypes::COMPUTE);
 		context.set_frames_in_flight(2);
 
-		let mip_one = crate::shader::ShaderResourceDescriptor::single(
-			crate::shader::ResourceSlot::new(0),
-			crate::shader::ResourceKind::StorageImage,
-			crate::AccessPolicies::WRITE,
-		);
-		let mip_two = crate::shader::ShaderResourceDescriptor::single(
-			crate::shader::ResourceSlot::new(1),
-			crate::shader::ResourceKind::StorageImage,
-			crate::AccessPolicies::WRITE,
-		);
-		let mip_three = crate::shader::ShaderResourceDescriptor::single(
-			crate::shader::ResourceSlot::new(2),
-			crate::shader::ResourceKind::StorageImage,
-			crate::AccessPolicies::WRITE,
-		);
-		let pyramid = crate::shader::ShaderResourceDescriptor::single(
-			crate::shader::ResourceSlot::new(0),
-			crate::shader::ResourceKind::CombinedImageSampler,
-			crate::AccessPolicies::READ,
-		);
-		let output = crate::shader::ShaderResourceDescriptor::single(
-			crate::shader::ResourceSlot::new(1),
-			crate::shader::ResourceKind::StorageBuffer,
-			crate::AccessPolicies::WRITE,
-		);
+		let mip_one = resource(0, ResourceKind::StorageImage, 1, AccessPolicies::WRITE);
+		let mip_two = resource(1, ResourceKind::StorageImage, 1, AccessPolicies::WRITE);
+		let mip_three = resource(2, ResourceKind::StorageImage, 1, AccessPolicies::WRITE);
+		let pyramid = resource(0, ResourceKind::CombinedImageSampler, 1, AccessPolicies::READ);
+		let output = resource(1, ResourceKind::StorageBuffer, 1, AccessPolicies::WRITE);
 		let writer_shader = context
 			.create_shader(
 				Some("Dynamic Storage Mip Writer"),
@@ -996,35 +874,17 @@ mod flat_binding_tests {
 		let writer_set = context.create_descriptor_set(Some("Dynamic Storage Mip Writer Set"));
 		let reader_set = context.create_descriptor_set(Some("Dynamic Storage Mip Reader Set"));
 		context.write(&[
-			crate::DescriptorWrite::image_mip(
-				writer_set,
-				crate::shader::ResourceSlot::new(0),
-				depth_pyramid,
-				crate::Layouts::General,
-				1,
-			),
-			crate::DescriptorWrite::image_mip(
-				writer_set,
-				crate::shader::ResourceSlot::new(1),
-				depth_pyramid,
-				crate::Layouts::General,
-				2,
-			),
-			crate::DescriptorWrite::image_mip(
-				writer_set,
-				crate::shader::ResourceSlot::new(2),
-				depth_pyramid,
-				crate::Layouts::General,
-				3,
-			),
+			crate::DescriptorWrite::image_mip(writer_set, ResourceSlot::new(0), depth_pyramid, crate::Layouts::General, 1),
+			crate::DescriptorWrite::image_mip(writer_set, ResourceSlot::new(1), depth_pyramid, crate::Layouts::General, 2),
+			crate::DescriptorWrite::image_mip(writer_set, ResourceSlot::new(2), depth_pyramid, crate::Layouts::General, 3),
 			crate::DescriptorWrite::combined_image_sampler(
 				reader_set,
-				crate::shader::ResourceSlot::new(0),
+				ResourceSlot::new(0),
 				depth_pyramid,
 				sampler,
 				crate::Layouts::Read,
 			),
-			crate::DescriptorWrite::buffer(reader_set, crate::shader::ResourceSlot::new(1), output_buffer.into()),
+			crate::DescriptorWrite::buffer(reader_set, ResourceSlot::new(1), output_buffer.into()),
 		]);
 
 		let command_buffer = context

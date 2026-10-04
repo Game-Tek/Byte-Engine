@@ -1,11 +1,6 @@
 use super::super::*;
 
 impl Context {
-	/// Selects the frame's retained arena, or the transient arena for recordings outside any frame.
-	pub(crate) fn upload_arena_index(&self, frame_key: Option<graphics_hardware_interface::FrameKey>) -> usize {
-		frame_key.map_or(self.frames as usize, |key| key.sequence_index as usize)
-	}
-
 	pub(crate) fn create_command_buffer(
 		&mut self,
 		name: Option<&str>,
@@ -42,63 +37,19 @@ impl Context {
 		// Detached recordings have no completion point that could recycle pages, so they start from empty pages and
 		// release the upload submissions that finished since the last one.
 		if frame_key.is_none() {
-			let arena_index = self.upload_arena_index(frame_key);
-			self.upload_arenas[arena_index].discard();
+			// The transient arena follows the frames' retained arenas.
+			self.upload_arenas[self.frames as usize].discard();
 			self.retire_completed_internal_uploads();
 		}
-		// Same-queue uploads stay asynchronous; a queue switch waits because pending writes have no public queue owner.
-		self.synchronize_internal_upload_queue(queue_handle);
+		// Same-queue uploads stay asynchronous; a queue switch waits for outstanding uploads on another queue because
+		// pending writes have no public queue owner.
+		for sequence_index in 0..self.internal_upload_queues.len() {
+			if self.internal_upload_queues[sequence_index].is_some_and(|owner| owner != queue_handle) {
+				self.retire_internal_uploads(sequence_index as u8);
+			}
+		}
 		self.flush_pending_uploads(queue_handle, frame_key);
 
-		self.begin_recording(queue_handle, command_buffer_name.as_deref(), frame_key, allocator)
-	}
-
-	/// Starts a recording on `queue_handle` without submitting pending uploads first.
-	///
-	/// Internal work that is itself part of an upload or a presentation records through this, so it shares the
-	/// hazard tracking and copy code of every other recording.
-	pub(crate) fn begin_recording<'a>(
-		&'a mut self,
-		queue_handle: graphics_hardware_interface::QueueHandle,
-		label: Option<&str>,
-		frame_key: Option<graphics_hardware_interface::FrameKey>,
-		allocator: &'a dyn std::alloc::Allocator,
-	) -> super::super::CommandBufferRecording<'a> {
-		// SAFETY: Detached recordings create and drain the pool on their owning thread.
-		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
-		let arena_index = self.upload_arena_index(frame_key);
-		let mtl_command_buffer = self.create_metal_command_buffer(queue_handle, label);
-
-		let recording_device = super::super::command_buffer::RecordingDevice {
-			metal_device: self.device.as_ref(),
-			buffers: &self.buffers,
-			images: &self.images,
-			samplers: &self.samplers,
-			acceleration_structures: &self.acceleration_structures,
-			meshes: &self.meshes,
-			pipelines: &self.pipelines,
-			swapchains: &self.swapchains,
-			frames: self.frames,
-			debug_labels: self.settings.debug_labels,
-		};
-		let commit = super::super::command_buffer::RecordingCommit {
-			queue_handle,
-			queue: &mut self.queues[queue_handle.0 as usize],
-			synchronizers: &mut self.synchronizers,
-			texture_readbacks: &mut self.texture_readbacks,
-			descriptor_sets: &mut self.descriptor_sets,
-			upload_arena: &mut self.upload_arenas[arena_index],
-			argument_tables: &mut self.argument_tables,
-			image_groups: &mut self.image_groups,
-		};
-
-		super::super::CommandBufferRecording::new(
-			recording_device,
-			commit,
-			mtl_command_buffer,
-			frame_key,
-			autorelease_pool,
-			allocator,
-		)
+		super::super::CommandBufferRecording::new(self, queue_handle, command_buffer_name.as_deref(), frame_key, allocator)
 	}
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::sampler::SamplerHandle;
 
 #[derive(Clone)]
 pub(crate) struct StoredCommandBuffer {
@@ -19,19 +20,53 @@ pub(crate) struct AccelerationStructure {
 	pub(crate) build_scratch_size: usize,
 }
 
-/// The `Tasks` enum lists backend work that must wait until a frame's previous submission has completed.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tasks {
-	/// Replaces one frame-local image with a new extent.
-	ResizeImage {
-		handle: graphics_hardware_interface::BaseImageHandle,
-		extent: Extent,
+/// The `Task` struct defers replacing one frame-local image with a new extent until the frame sequence that uses
+/// it has completed its previous submission.
+///
+/// [`Context::process_tasks`] runs it when that frame sequence starts again.
+#[derive(Clone, PartialEq)]
+pub(crate) struct Task {
+	pub(crate) handle: graphics_hardware_interface::BaseImageHandle,
+	pub(crate) extent: Extent,
+	pub(crate) frame: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Descriptor {
+	Image {
+		image: ImageHandle,
+		layout: crate::Layouts,
+		mip_level: Option<u32>,
+	},
+	CombinedImageSampler {
+		image: ImageHandle,
+		sampler: SamplerHandle,
+		layout: crate::Layouts,
+	},
+	Buffer {
+		buffer: BufferHandle,
+		size: graphics_hardware_interface::Ranges,
+	},
+	Sampler {
+		sampler: SamplerHandle,
+	},
+	Swapchain {
+		handle: crate::swapchain::SwapchainHandle,
+	},
+	AccelerationStructure {
+		handle: graphics_hardware_interface::TopLevelAccelerationStructureHandle,
 	},
 }
 
-/// The `Task` struct schedules backend work for the frame sequence that can safely perform it.
-#[derive(Clone, PartialEq)]
-pub(crate) struct Task {
-	pub(crate) task: Tasks,
-	pub(crate) frame: u8,
+impl Descriptor {
+	pub(crate) fn tracked_resource(self) -> Option<PrivateHandles> {
+		match self {
+			Descriptor::Buffer { buffer, .. } => Some(PrivateHandles::Buffer(buffer)),
+			Descriptor::Image { image, .. } => Some(PrivateHandles::Image(image)),
+			Descriptor::CombinedImageSampler { image, .. } => Some(PrivateHandles::Image(image)),
+			Descriptor::Sampler { .. } => None,
+			Descriptor::Swapchain { handle } => Some(PrivateHandles::Swapchain(handle)),
+			Descriptor::AccelerationStructure { .. } => None,
+		}
+	}
 }

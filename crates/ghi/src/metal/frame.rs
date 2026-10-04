@@ -45,11 +45,11 @@ impl<'a> Frame<'a> {
 	}
 
 	pub fn intern_raster_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device.intern_raster_pipeline(pipeline)
+		self.device.intern_pipeline(pipeline)
 	}
 
 	pub fn intern_compute_pipeline(&mut self, pipeline: Pipeline) -> graphics_hardware_interface::PipelineHandle {
-		self.device.intern_compute_pipeline(pipeline)
+		self.device.intern_pipeline(pipeline)
 	}
 
 	/// Interns an image another context exported, so this frame's recordings can use it.
@@ -140,7 +140,8 @@ impl<'a> Frame<'a> {
 			return None;
 		}
 
-		let mut recording = self.device.begin_recording(
+		let mut recording = super::CommandBufferRecording::new(
+			self.device,
 			self.queue_handle,
 			Some("Present Resolve"),
 			Some(self.frame_key),
@@ -258,8 +259,14 @@ impl<'a> crate::frame::Frame<'a> for Frame<'a> {
 		let handle = self.get_current_image_handle(image_handle);
 		if self.device.resize_image_internal(handle, extent) {
 			// Other frame-local images may still be in flight, so replace each one when its frame is reused.
-			self.device
-				.resize_image_on_other_frames(image_handle, extent, self.frame_key.sequence_index);
+			let frames = self.device.frames;
+			for offset in 1..frames {
+				self.device.tasks.push(Task {
+					handle: image_handle,
+					extent,
+					frame: (self.frame_key.sequence_index + offset) % frames,
+				});
+			}
 		}
 	}
 

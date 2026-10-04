@@ -1,12 +1,6 @@
 use super::*;
 
 impl<'a> CommandBufferRecording<'a> {
-	/// Records a staging-to-buffer upload on this command buffer.
-	pub fn sync_buffer(&mut self, buffer_handle: impl Into<graphics_hardware_interface::BaseBufferHandle>) {
-		let buffer_handle = self.get_internal_buffer_handle(buffer_handle.into());
-		self.sync_private_buffer(buffer_handle);
-	}
-
 	/// Records the upload of one frame-local buffer copy from its staging buffer, if it has one.
 	pub(crate) fn sync_private_buffer(&mut self, buffer_handle: BufferHandle) {
 		let buffer = self.device.buffers.resource(buffer_handle);
@@ -15,36 +9,32 @@ impl<'a> CommandBufferRecording<'a> {
 			return;
 		};
 
-		let staging = self.device.buffers.resource(staging_handle);
-		let staging_buffer = staging.buffer.clone();
-		let destination_buffer = buffer.buffer.clone();
-		let destination_size = buffer.size;
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([
 			synchronization::MetalResourceUse::buffer(
 				staging_handle,
 				0,
-				destination_size,
+				buffer.size,
 				mtl::MTLStages::Blit,
 				crate::AccessPolicies::READ,
 			),
 			synchronization::MetalResourceUse::buffer(
 				buffer_handle,
 				0,
-				destination_size,
+				buffer.size,
 				mtl::MTLStages::Blit,
 				crate::AccessPolicies::WRITE,
 			),
 		]);
 
-		// SAFETY: Both retained buffers expose `destination_size` bytes and are tracked for nonoverlapping transfer accesses.
+		// SAFETY: Both retained buffers expose `buffer.size` bytes and are tracked for nonoverlapping transfer accesses.
 		unsafe {
 			transfer_encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
-				staging_buffer.as_ref(),
+				&self.device.buffers.resource(staging_handle).buffer,
 				0,
-				destination_buffer.as_ref(),
+				&buffer.buffer,
 				0,
-				destination_size as _,
+				buffer.size as _,
 			);
 		}
 	}
@@ -53,10 +43,23 @@ impl<'a> CommandBufferRecording<'a> {
 	///
 	/// Does nothing for images the CPU cannot access.
 	pub(crate) fn sync_image(&mut self, image_handle: ImageHandle, region: Option<crate::image::Region>) {
+		if let Some(staging) = self.device.images.resource(image_handle).staging.as_deref() {
+			self.upload_texture(image_handle, staging, region);
+		}
+	}
+
+	/// Copies compact CPU texture data into an aligned upload range and records the blits into one frame-local image.
+	///
+	/// `bytes` holds every array layer of the image; `region`, when present, selects the rectangle of each layer to
+	/// copy. The upload range snapshots `bytes` now, and the tracked blits write the image in command order.
+	pub(super) fn upload_texture(&mut self, image_handle: ImageHandle, bytes: &[u8], region: Option<crate::image::Region>) {
 		let image = self.device.images.resource(image_handle);
-		let Some(staging) = image.staging.as_deref() else {
-			return;
-		};
+		let ImageDescription {
+			format,
+			extent,
+			array_layers,
+			..
+		} = image.description;
 		let transfer_encoder = self.ensure_compute_encoder().clone();
 		self.consume_resources([synchronization::MetalResourceUse::image(
 			image_handle,
@@ -65,19 +68,81 @@ impl<'a> CommandBufferRecording<'a> {
 			mtl::MTLStages::Blit,
 			crate::AccessPolicies::WRITE,
 		)]);
-		let upload_buffer = encode_texture_upload(
-			self.device.metal_device,
-			self.commit.upload_arena,
-			transfer_encoder.as_ref(),
-			image.texture.as_ref(),
-			image.description.format,
-			image.description.extent,
-			image.description.array_layers,
-			staging,
-			region,
+
+		let (source_row_pitch, _, source_image_pitch) = utils::texture_upload_layout(format, extent);
+		if let Some(region) = region {
+			region.validate(extent, format, array_layers);
+		}
+		let copy_extent = region.map_or(extent, |region| Extent::rectangle(region.size[0], region.size[1]));
+		let origin = region.map_or([0, 0], |region| region.offset);
+		let source_start = origin[1] as usize * source_row_pitch + origin[0] as usize * crate::types::Size::size(&format);
+		let (bytes_per_row, row_count, _) = utils::texture_upload_layout(format, copy_extent);
+		let expected_size = source_image_pitch.checked_mul(array_layers as usize).expect(
+			"Metal texture upload size overflowed. The most likely cause is an invalid array layer count or image extent.",
 		);
+
+		assert!(
+			bytes.len() >= expected_size,
+			"Metal texture upload data is too small. The most likely cause is that the source payload does not contain every image layer. staging_len={}, expected_size={expected_size}",
+			bytes.len(),
+		);
+		if format.bc_bytes_per_block().is_some() {
+			assert_eq!(
+				bytes.len(),
+				expected_size,
+				"Metal compressed texture staging size mismatch. The most likely cause is that CPU staging was not packed as one compact BC image per slice. format={format:?}, extent={extent:?}, array_layers={array_layers}, staging_len={}, expected_size={expected_size}",
+				bytes.len()
+			);
+		}
+
+		let (aligned_bytes_per_row, aligned_bytes_per_image) = utils::texture_copy_pitches(bytes_per_row, row_count);
+		let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
+			"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
+		);
+		let (upload_buffer, upload_offset) = self.commit.upload_arena.allocate(self.device.metal_device, upload_size);
+		// SAFETY: The arena range starts at `upload_offset` and spans `upload_size` writable bytes.
+		let destination = unsafe { upload_buffer.contents().as_ptr().cast::<u8>().add(upload_offset) };
+		let mut source_size = utils::mtl_size(copy_extent);
+		source_size.depth = 1;
+		let destination_origin = mtl::MTLOrigin {
+			x: origin[0] as _,
+			y: origin[1] as _,
+			z: 0,
+		};
+
+		// The CPU copies all land before the command is submitted, so each blit can follow its slice's copy.
+		for slice in 0..array_layers as usize {
+			let source_offset = slice * source_image_pitch;
+			let source_bytes = &bytes[source_offset..source_offset + source_image_pitch];
+			// SAFETY: The size checks above keep every source row of the region inside this slice, the upload allocation
+			// covers every padded row of every layer, and caller bytes never alias an upload page.
+			unsafe {
+				utils::copy_rows(
+					source_bytes.as_ptr().add(source_start),
+					source_row_pitch,
+					destination.add(slice * aligned_bytes_per_image),
+					aligned_bytes_per_row,
+					bytes_per_row,
+					row_count,
+				);
+			}
+			// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
+			unsafe {
+				transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+					upload_buffer,
+					(upload_offset + slice * aligned_bytes_per_image) as _,
+					aligned_bytes_per_row as _,
+					aligned_bytes_per_image as _,
+					source_size,
+					&image.texture,
+					slice,
+					0,
+					destination_origin,
+				);
+			}
+		}
 		// Hazard tracking never sees the upload page, so the command retains it here.
-		self.command_buffer.retain_allocation(&*upload_buffer);
+		self.command_buffer.retain_allocation(&**upload_buffer);
 	}
 
 	/// Copies each presented swapchain's image for this frame into the drawable that presents it.
@@ -96,7 +161,7 @@ impl<'a> CommandBufferRecording<'a> {
 			else {
 				continue;
 			};
-			let source = self.device.images.resource(image).texture.clone();
+			let source = &self.device.images.resource(image).texture;
 			// The resolve command retains every presented drawable, so tracking the drawable write is enough here.
 			let destination = drawable.texture();
 			let transfer_encoder = self.ensure_compute_encoder().clone();
@@ -110,25 +175,63 @@ impl<'a> CommandBufferRecording<'a> {
 			]);
 			// SAFETY: Source and drawable textures are retained, and both have the extent the swapchain was acquired at.
 			unsafe {
-				transfer_encoder.copyFromTexture_toTexture(source.as_ref(), destination.as_ref());
+				transfer_encoder.copyFromTexture_toTexture(source, &destination);
 			}
 		}
 		self.end_region();
 	}
 
+	/// Starts a recording on `queue_handle` without submitting pending uploads first.
+	///
+	/// [`context::Context::create_command_buffer_recording`] submits pending uploads and then starts caller recordings
+	/// here. Internal work that is itself part of an upload or a presentation starts here directly, so it shares the
+	/// hazard tracking and copy code of every other recording.
 	pub(crate) fn new(
-		device: RecordingDevice<'a>,
-		commit: RecordingCommit<'a>,
-		mut command_buffer: queue::NativeCommand,
+		context: &'a mut context::Context,
+		queue_handle: graphics_hardware_interface::QueueHandle,
+		label: Option<&str>,
 		frame_key: Option<graphics_hardware_interface::FrameKey>,
-		autorelease_pool: Option<Retained<NSAutoreleasePool>>,
 		allocator: &'a dyn std::alloc::Allocator,
 	) -> Self {
+		// SAFETY: Detached recordings create and drain the pool on their owning thread.
+		let autorelease_pool = frame_key.is_none().then(|| unsafe { NSAutoreleasePool::new() });
+		// A frame records into its retained arena, and a recording outside any frame into the transient arena.
+		let arena_index = frame_key.map_or(context.frames as usize, |key| key.sequence_index as usize);
+		// Acquire one reusable native command from the selected queue's context-local pool.
+		let mut command_buffer = context
+			.queues
+			.get_mut(queue_handle.0 as usize)
+			.expect("Metal command queue is missing. The most likely cause is that the queue handle came from another context.")
+			.acquire_native_command(label, context.settings.debug_labels);
+
+		let device = RecordingDevice {
+			metal_device: context.device.as_ref(),
+			buffers: &context.buffers,
+			images: &context.images,
+			samplers: &context.samplers,
+			acceleration_structures: &context.acceleration_structures,
+			meshes: &context.meshes,
+			pipelines: &context.pipelines,
+			swapchains: &context.swapchains,
+			frames: context.frames,
+			debug_labels: context.settings.debug_labels,
+		};
+		let commit = RecordingCommit {
+			queue_handle,
+			queue: &mut context.queues[queue_handle.0 as usize],
+			synchronizers: &mut context.synchronizers,
+			texture_readbacks: &mut context.texture_readbacks,
+			descriptor_sets: &mut context.descriptor_sets,
+			upload_arena: &mut context.upload_arenas[arena_index],
+			argument_tables: &mut context.argument_tables,
+			image_groups: &mut context.image_groups,
+		};
+
 		let sequence_index = frame_key.map(|key| key.sequence_index).unwrap_or(0);
 		let mut resource_tracker = std::mem::take(&mut commit.queue.resource_tracker);
 		resource_tracker.begin_recording();
 		// Shared argument tables are snapshotted by every command that binds them, so retain them up front.
-		for table in commit.argument_tables.iter() {
+		for table in commit.argument_tables.iter().flatten() {
 			command_buffer.retain_object(&**table);
 		}
 
@@ -262,9 +365,14 @@ impl<'a> CommandBufferRecording<'a> {
 			self.render_vertex_buffers_dirty = !self.bound_vertex_buffers.is_empty();
 			self.encoded_vertex_buffer_count = 0;
 		}
+		// Each encoder gets its own hazard-tracking identity within the recording.
+		let id = self.next_encoder_id;
+		self.next_encoder_id = id.checked_add(1).expect(
+			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
+		);
 		self.encoder = Some(EncoderState {
 			encoder,
-			scope: self.allocate_encoder_scope(),
+			scope: synchronization::MetalEncoderScope::Encoder(id),
 			pipeline: None,
 			descriptors: None,
 			push_constants_dirty: !self.push_constant_data.is_empty(),
@@ -353,15 +461,6 @@ impl<'a> CommandBufferRecording<'a> {
 		}
 	}
 
-	/// Allocates one command-local identity for hazard tracking within a native encoder.
-	fn allocate_encoder_scope(&mut self) -> synchronization::MetalEncoderScope {
-		let id = self.next_encoder_id;
-		self.next_encoder_id = self.next_encoder_id.checked_add(1).expect(
-			"Metal encoder identity overflowed. The most likely cause is that one command recording created more than u32::MAX encoders.",
-		);
-		synchronization::MetalEncoderScope::Encoder(id)
-	}
-
 	/// Applies the dependencies one command needs on the active encoder and retains what it uses.
 	///
 	/// `descriptors` is the snapshot the command binds, whose uses are read in place. Every use in `additional_uses`
@@ -414,7 +513,7 @@ impl<'a> CommandBufferRecording<'a> {
 	}
 
 	/// Publishes this finalized recording's resource history to its queue.
-	fn publish_resource_states(&mut self) {
+	pub(super) fn publish_resource_states(&mut self) {
 		let recording = self.resource_tracker.finish_recording();
 		self.command_buffer.set_tracked_recording(recording);
 		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
@@ -422,7 +521,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Returns the shared Metal 4 argument table for one stage, creating it on first use.
 	pub(super) fn argument_table(&mut self, stage: ArgumentTableStage) -> Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>> {
-		if let Some(table) = self.commit.argument_tables.get(stage) {
+		if let Some(table) = &self.commit.argument_tables[stage as usize] {
 			return table.clone();
 		}
 
@@ -438,7 +537,7 @@ impl<'a> CommandBufferRecording<'a> {
 			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
 		);
 		self.command_buffer.retain_object(&*table);
-		self.commit.argument_tables.insert(stage, table.clone());
+		self.commit.argument_tables[stage as usize] = Some(table.clone());
 		table
 	}
 
@@ -464,19 +563,6 @@ impl<'a> CommandBufferRecording<'a> {
 				"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
 			),
 		}
-	}
-
-	/// Uploads the current logical push state into an immutable range of the frame's upload arena.
-	fn upload_push_constants(&mut self) -> mtl::MTLGPUAddress {
-		let (buffer, offset) = self
-			.commit
-			.upload_arena
-			.upload(self.device.metal_device, &self.push_constant_data);
-		let address = buffer.gpuAddress().checked_add(offset as u64).expect(
-			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
-		);
-		self.command_buffer.retain_allocation(&**buffer);
-		address
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
@@ -726,26 +812,19 @@ impl<'a> CommandBufferRecording<'a> {
 				stages.push(ArgumentTableStage::Fragment);
 			}
 		}
-		let address = self.upload_push_constants();
+		// The logical push state is copied into an immutable range of the frame's upload arena.
+		let (buffer, offset) = self
+			.commit
+			.upload_arena
+			.upload(self.device.metal_device, &self.push_constant_data);
+		let address = buffer.gpuAddress().checked_add(offset as u64).expect(
+			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
+		);
+		self.command_buffer.retain_allocation(&**buffer);
 		for stage in stages {
 			self.set_stage_buffer_address(stage, PUSH_CONSTANT_BINDING_INDEX, address);
 		}
 		self.encoder_state_mut().push_constants_dirty = false;
-	}
-
-	/// Ends and submits a non-frame recording as a one-command Metal 4 batch.
-	pub(crate) fn finish(mut self, synchronizer: graphics_hardware_interface::SynchronizerHandle) {
-		self.end_encoder();
-		self.publish_resource_states();
-		let synchronizer = context::synchronizer_for_sequence(self.commit.synchronizers, synchronizer, self.sequence_index);
-		for handle in self.texture_readbacks.drain(..) {
-			self.commit.texture_readbacks.mark_submitted(handle, Some(synchronizer));
-		}
-
-		let commands = SmallVec::<[queue::NativeCommand; 4]>::from_iter([self.command_buffer.take()]);
-		let submitted = self.commit.queue.submit_batch(self.commit.queue_handle, commands);
-		// The synchronizer owns the submitted batch until its completion message arrives.
-		self.commit.synchronizers.resource_mut(synchronizer).signal(submitted);
 	}
 }
 

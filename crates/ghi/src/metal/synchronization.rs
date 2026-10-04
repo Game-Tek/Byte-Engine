@@ -11,7 +11,7 @@ pub(crate) enum MetalResourceKey {
 	SwapchainDrawable(usize),
 	/// One acceleration structure, identified by its index in the context's acceleration-structure storage.
 	AccelerationStructure(usize),
-	/// One image-group heap, identified by [`image::GroupSlot::heap_serial`]. Members are regions of it.
+	/// One image-group heap, identified by [`GroupSlot::heap_serial`]. Members are regions of it.
 	GroupHeap(u64),
 }
 
@@ -216,7 +216,7 @@ impl MetalResourceUse {
 	/// member's memory waits for that member's earlier accesses. Other uses are returned unchanged.
 	pub(crate) fn in_group_memory(
 		self,
-		images: &crate::ResourceCollection<image::Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
+		images: &crate::ResourceCollection<Image, graphics_hardware_interface::BaseImageHandle, ImageHandle>,
 	) -> Self {
 		let MetalResourceKey::Image(handle) = self.key else {
 			return self;

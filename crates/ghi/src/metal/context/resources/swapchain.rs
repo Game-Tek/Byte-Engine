@@ -14,11 +14,9 @@ impl Context {
 		// Update the layer extent here so drawables taken at submission already have the frame's size.
 		// update_layer_extent only calls setDrawableSize when the size actually changed, avoiding unnecessary drawable
 		// pool invalidation.
-		let extent = {
-			let swapchain = &self.swapchains[swapchain_handle.0 as usize];
-			update_layer_extent(&swapchain.layer, &swapchain.view)
-		};
-		self.swapchains[swapchain_handle.0 as usize].extent = extent;
+		let swapchain = &mut self.swapchains[swapchain_handle.0 as usize];
+		let extent = update_layer_extent(&swapchain.layer, &swapchain.view);
+		swapchain.extent = extent;
 
 		// A zero-sized window has nothing to render, and Metal cannot create an empty texture.
 		if extent.width() > 0 && extent.height() > 0 {
@@ -59,7 +57,7 @@ impl Context {
 			match self.swapchains[swapchain_handle.0 as usize].images[sequence_index] {
 				Some(image) => changed |= self.resize_image_internal(image, extent),
 				None => {
-					let description = image::ImageDescription::new(
+					let description = ImageDescription::new(
 						&image_builder::Builder::new(SWAPCHAIN_FORMAT, uses | Uses::BlitSource).extent(extent),
 					);
 					let image = build_image(&self.device, Some("Swapchain Image"), description, self.settings.debug_labels);

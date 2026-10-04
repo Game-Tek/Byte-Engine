@@ -53,63 +53,6 @@ impl From<GpuWorkerError> for GPUIBLBakeError {
 	}
 }
 
-/// The `OwnedBakedImageIBL` struct carries GPU-generated environment maps from the dedicated worker to asset storage.
-pub struct OwnedBakedImageIBL {
-	pub root_extent: [u32; 3],
-	pub ibl: crate::resources::image::ImageIBL,
-	pub streams: Vec<crate::StreamDescription>,
-	pub data: Box<[u8]>,
-}
-
-/// The `GPUIBLClient` struct queues environment-map requests onto a dedicated GHI context thread.
-///
-/// Install this client on an environment-map asset handler. The handler can then run on the asset manager's shared worker pool
-/// without moving or concurrently accessing the backend context, and it awaits each bake instead of blocking a pool thread.
-pub struct GPUIBLClient {
-	worker: GpuWorker<GPUIBLProcessor>,
-}
-
-impl GPUIBLClient {
-	/// Creates a dedicated worker with its own compute device and context.
-	pub fn try_new() -> Result<Self, GPUIBLBakeError> {
-		Self::from_processor_factory(GPUIBLProcessor::try_new)
-	}
-
-	/// Runs a processor factory on the dedicated GPU thread before accepting requests.
-	///
-	/// Create every thread-affine GHI device and context inside `initialize`. The factory itself must be safe to move,
-	/// but the processor it returns remains on the worker for its entire lifetime.
-	pub fn from_processor_factory(
-		initialize: impl FnOnce() -> Result<GPUIBLProcessor, GPUIBLBakeError> + Send + 'static,
-	) -> Result<Self, GPUIBLBakeError> {
-		Ok(Self {
-			worker: GpuWorker::spawn("GPU Environment Map Worker", initialize)?,
-		})
-	}
-
-	/// Submits one source image and resolves once the GPU result is safe to consume.
-	///
-	/// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result.
-	pub async fn bake_image_ibl(
-		&self,
-		source_extent: Extent,
-		source_rgba16f: &[u8],
-	) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
-		self.worker
-			.submit(source_extent, source_rgba16f.to_vec())
-			.await
-			.map_err(|_| GpuWorkerError::Unavailable)?
-	}
-
-	/// Creates a client whose worker already stopped, so every bake reports it as unavailable.
-	#[cfg(test)]
-	pub(crate) fn unavailable_for_test() -> Self {
-		Self {
-			worker: GpuWorker::unavailable(),
-		}
-	}
-}
-
 /// The `GPUIBLProcessor` struct provides thread-confined environment-map generation with CPU-compatible output.
 ///
 /// It serves the worker one bake at a time: [`GpuProcessor::submit`] runs the whole bake and completes inline.
@@ -118,15 +61,13 @@ impl GPUIBLClient {
 /// Create and use this processor on one thread. To use it from an asset handler, construct it inside the factory passed to
 /// [`crate::ibl::IBLGenerator::with_gpu_processor_factory`].
 pub struct GPUIBLProcessor {
-	// Drop the context before its owner guard. `dyn Any` also keeps this thread-confined processor explicitly non-Send.
-	context: ghi::implementation::Context,
+	gpu: OwnedContext,
 	pipeline: ghi::PipelineHandle,
 	queue: ghi::QueueHandle,
 	source_sampler: ghi::SamplerHandle,
 	scratch: Vec<GPUIBLScratch>,
 	// Retain the largest lower level and downsample it in place instead of allocating a source pyramid for every bake.
 	source_mip: Vec<Radiance>,
-	_context_owner: Box<dyn Any>,
 }
 
 impl GPUIBLProcessor {
@@ -135,7 +76,7 @@ impl GPUIBLProcessor {
 	/// Call this constructor inside [`crate::ibl::IBLGenerator::with_gpu_processor_factory`] when an asset handler owns the
 	/// generation path.
 	pub fn try_new() -> Result<Self, GPUIBLBakeError> {
-		let (context, queue, owner) = create_compute_context()?;
+		let (OwnedContext { context, owner }, queue) = create_compute_context()?;
 		Self::from_context(context, queue, owner)
 	}
 
@@ -150,13 +91,12 @@ impl GPUIBLProcessor {
 		owner: Owner,
 	) -> Result<Self, GPUIBLBakeError> {
 		// Keep native owners alive after the context on every early-return and unwinding path.
-		let mut construction = OwnedContext {
+		let mut gpu = OwnedContext {
 			context,
 			owner: Box::new(owner),
 		};
-		let context = &mut construction.context;
 		let pipeline = create_compute_kernel(
-			context,
+			&mut gpu.context,
 			"GPU environment-map generation",
 			ghi::shader::ShaderSource::PlatformNative {
 				glsl: GPU_IBL_GLSL,
@@ -167,26 +107,20 @@ impl GPUIBLProcessor {
 			},
 			std::mem::size_of::<GPUIBLPushConstants>(),
 		)?;
-		let source_sampler = context.build_sampler(ghi::sampler::Builder::new().max_lod(0.0));
+		let source_sampler = gpu.context.build_sampler(ghi::sampler::Builder::new().max_lod(0.0));
 
-		let OwnedContext { context, owner } = construction;
 		Ok(Self {
-			context,
+			gpu,
 			pipeline,
 			queue,
 			source_sampler,
 			scratch: Vec::with_capacity(2),
 			source_mip: Vec::new(),
-			_context_owner: owner,
 		})
 	}
 
 	/// Generates cubemap IBL streams and repacks them into the CPU processor's stable resource layout.
-	pub fn bake_image_ibl(
-		&mut self,
-		source_extent: Extent,
-		source_rgba16f: &[u8],
-	) -> Result<OwnedBakedImageIBL, GPUIBLBakeError> {
+	pub fn bake_image_ibl(&mut self, source_extent: Extent, source_rgba16f: &[u8]) -> Result<BakedImageIBL, GPUIBLBakeError> {
 		let layout = CubemapIBLLayout::new(source_extent, source_rgba16f)?;
 		let (source_width, source_height) = layout.source_dimensions();
 		let (source_atlas_extent, source_level_count) = source_atlas_layout(source_width, source_height)?;
@@ -206,7 +140,7 @@ impl GPUIBLProcessor {
 			scratch
 		};
 
-		let upload = self.context.get_texture_slice_mut(scratch.source_atlas);
+		let upload = self.gpu.context.get_texture_slice_mut(scratch.source_atlas);
 		let expected_upload_size = atlas_byte_size(source_atlas_extent)?;
 		if upload.len() != expected_upload_size {
 			return Err(GPUIBLBakeError::SourceUploadSizeMismatch {
@@ -215,17 +149,18 @@ impl GPUIBLProcessor {
 			});
 		}
 		write_source_atlas(source_width, source_height, source_rgba16f, upload, &mut self.source_mip)?;
-		self.context.sync_texture(scratch.source_atlas);
+		self.gpu.context.sync_texture(scratch.source_atlas);
 
 		let copy_handle = self.dispatch(layout, source_level_count, scratch)?;
-		self.context.wait_for_synchronizer(scratch.synchronizer);
+		self.gpu.context.wait_for_synchronizer(scratch.synchronizer);
 		#[cfg(debug_assertions)]
-		if self.context.has_errors() {
+		if self.gpu.context.has_errors() {
 			return Err(GPUIBLBakeError::GPUExecution);
 		}
 
 		let expected_readback_size = atlas_byte_size(output_atlas_extent)?;
 		let readback = self
+			.gpu
 			.context
 			.get_image_data(copy_handle)
 			.map_err(|_| GPUIBLBakeError::GPUExecution)?;
@@ -236,39 +171,29 @@ impl GPUIBLProcessor {
 			});
 		}
 
-		let mut data = Vec::new();
-		data.try_reserve_exact(layout.total_size())
-			.map_err(|_| IBLBakeError::AllocationFailed)?;
-		data.resize(layout.total_size(), 0);
-		data[..layout.root_size()].copy_from_slice(source_rgba16f);
+		let mut data = layout.allocate_data(source_rgba16f, Global)?;
 		copy_output_atlas(layout, &readback.bytes, output_atlas_extent.width(), &mut data);
-		let (root_extent, ibl, streams) = layout.metadata();
-		Ok(OwnedBakedImageIBL {
-			root_extent,
-			ibl,
-			streams,
-			data: data.into_boxed_slice(),
-		})
+		Ok(layout.finish(data))
 	}
 
 	/// Allocates one reusable source/output atlas pair for a dimension combination.
 	fn create_scratch(&mut self, key: GPUIBLScratchKey) -> GPUIBLScratch {
-		let source_atlas = self.context.build_image(
+		let source_atlas = self.gpu.context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Image)
 				.name("Environment source mip atlas")
 				.extent(key.source_atlas_extent)
 				.device_accesses(ghi::DeviceAccesses::HostToDevice)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let output_atlas = self.context.build_image(
+		let output_atlas = self.gpu.context.build_image(
 			ghi::image::Builder::new(ghi::Formats::RGBA16F, ghi::Uses::Storage | ghi::Uses::TransferSource)
 				.name("Environment cubemap output atlas")
 				.extent(key.output_atlas_extent)
 				.device_accesses(ghi::DeviceAccesses::DeviceToHost)
 				.use_case(ghi::UseCases::STATIC),
 		);
-		let descriptor_set = self.context.create_descriptor_set(Some("Environment-map atlases"));
-		self.context.write(&[
+		let descriptor_set = self.gpu.context.create_descriptor_set(Some("Environment-map atlases"));
+		self.gpu.context.write(&[
 			ghi::DescriptorWrite::combined_image_sampler(
 				descriptor_set,
 				SOURCE_SLOT,
@@ -279,10 +204,11 @@ impl GPUIBLProcessor {
 			ghi::DescriptorWrite::image(descriptor_set, OUTPUT_SLOT, output_atlas, ghi::Layouts::General),
 		]);
 		let command_buffer = self
+			.gpu
 			.context
 			.queue(self.queue)
 			.create_command_buffer(Some("Generate environment maps"));
-		let synchronizer = self.context.create_synchronizer(Some("Environment maps generated"), true);
+		let synchronizer = self.gpu.context.create_synchronizer(Some("Environment maps generated"), true);
 
 		GPUIBLScratch {
 			key,
@@ -306,52 +232,42 @@ impl GPUIBLProcessor {
 		let source_row_angle_step = std::f32::consts::PI / source_height as f32;
 		let source_solid_angle_scale =
 			(std::f32::consts::TAU / source_width as f32) * 2.0 * (std::f32::consts::PI / (2.0 * source_height as f32)).sin();
-		let mut command_buffer = self.context.command_buffer(scratch.command_buffer);
+		let mut command_buffer = self.gpu.context.command_buffer(scratch.command_buffer);
 		let mut recording = command_buffer.create_command_buffer_recording();
-		{
-			let command = recording.bind_compute_pipeline(self.pipeline);
-			command.bind_descriptor_sets(&[scratch.descriptor_set]);
-			let mut output_y_offset = 0;
-			for (level, face_size) in layout.specular_face_sizes().into_iter().enumerate() {
-				let push_constants = GPUIBLPushConstants {
+		let command = recording.bind_compute_pipeline(self.pipeline);
+		command.bind_descriptor_sets(&[scratch.descriptor_set]);
+		// Specular levels use mode 1, except the unfiltered level 0, and the diffuse map uses mode 2.
+		let specular = layout
+			.specular_face_sizes()
+			.into_iter()
+			.enumerate()
+			.map(|(level, face_size)| {
+				let roughness = level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32;
+				(face_size, (level != 0) as u32, roughness)
+			});
+		let mut output_y_offset = 0;
+		for (face_size, mode, roughness) in specular.chain([(DIFFUSE_CUBE_FACE_SIZE, 2, 1.0)]) {
+			command.write_push_constant(
+				0,
+				GPUIBLPushConstants {
 					source_width,
 					source_height,
 					source_level_count,
 					output_face_size: face_size,
 					output_y_offset,
-					mode: (level != 0) as u32,
-					roughness: level as f32 / (IBL_PREFILTERED_SPECULAR_MIP_COUNT - 1) as f32,
+					mode,
+					roughness,
 					source_row_angle_step,
 					source_solid_angle_scale,
 					_padding: [0; 3],
 					source_level_y_offsets,
-				};
-				command.write_push_constant(0, push_constants);
-				command.dispatch(ghi::DispatchExtent::new(
-					Extent::new(face_size * face_size * CUBE_FACE_COUNT as u32, 1, 1),
-					Extent::new(64, 1, 1),
-				));
-				output_y_offset += face_size * CUBE_FACE_COUNT as u32;
-			}
-
-			let push_constants = GPUIBLPushConstants {
-				source_width,
-				source_height,
-				source_level_count,
-				output_face_size: DIFFUSE_CUBE_FACE_SIZE,
-				output_y_offset,
-				mode: 2,
-				roughness: 1.0,
-				source_row_angle_step,
-				source_solid_angle_scale,
-				_padding: [0; 3],
-				source_level_y_offsets,
-			};
-			command.write_push_constant(0, push_constants);
+				},
+			);
 			command.dispatch(ghi::DispatchExtent::new(
-				Extent::new(DIFFUSE_CUBE_FACE_SIZE * DIFFUSE_CUBE_FACE_SIZE * CUBE_FACE_COUNT as u32, 1, 1),
+				Extent::new(face_size * face_size * CUBE_FACE_COUNT as u32, 1, 1),
 				Extent::new(64, 1, 1),
 			));
+			output_y_offset += face_size * CUBE_FACE_COUNT as u32;
 		}
 
 		let copy_handle = recording
@@ -364,7 +280,7 @@ impl GPUIBLProcessor {
 
 impl GpuProcessor for GPUIBLProcessor {
 	type Request = Extent;
-	type Result = Result<OwnedBakedImageIBL, GPUIBLBakeError>;
+	type Result = Result<BakedImageIBL, GPUIBLBakeError>;
 	/// No request is ever in flight, which the type states so `poll` needs no body.
 	type Ticket = std::convert::Infallible;
 
@@ -426,15 +342,12 @@ fn source_level_y_offsets(source_height: u32) -> [[u32; 4]; 4] {
 
 /// Computes the vertical source-mip atlas without allocating level descriptors.
 fn source_atlas_layout(width: u32, height: u32) -> Result<(Extent, u32), GPUIBLBakeError> {
-	let mut atlas_height = 0_u32;
-	let mut level_count = 0_u32;
 	// Levels stack vertically in the full-width atlas.
-	for (_, level_height) in mip_extents(width, height) {
-		atlas_height = atlas_height
-			.checked_add(level_height)
-			.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
-		level_count += 1;
-	}
+	let (atlas_height, level_count) = mip_extents(width, height)
+		.try_fold((0_u32, 0_u32), |(atlas_height, level_count), (_, level_height)| {
+			Some((atlas_height.checked_add(level_height)?, level_count + 1))
+		})
+		.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
 	Ok((Extent::rectangle(width, atlas_height), level_count))
 }
 
@@ -446,10 +359,9 @@ fn write_source_atlas(
 	atlas: &mut [u8],
 	source_mip: &mut Vec<Radiance>,
 ) -> Result<(), GPUIBLBakeError> {
-	source_mip.clear();
-
+	let source_pixels = source_rgba16f.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0;
 	// The root level spans the full atlas width. Decode while copying so non-finite source values remain sanitized.
-	for (source, destination) in source_rgba16f.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter().zip(
+	for (source, destination) in source_pixels.iter().zip(
 		atlas[..source_rgba16f.len()]
 			.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>()
 			.0
@@ -462,9 +374,8 @@ fn write_source_atlas(
 		return Ok(());
 	}
 
-	let (mut mip_width, mut mip_height) = generate_source_mip(source_width, source_height, source_mip, |index| {
-		let offset = index * BYTES_PER_RGBA16F_PIXEL;
-		decode_source_pixel(&source_rgba16f[offset..offset + BYTES_PER_RGBA16F_PIXEL])
+	let (mut mip_width, mut mip_height) = downsample_source_mip(source_width, source_height, source_mip, |index| {
+		decode_source_pixel(&source_pixels[index])
 	})?;
 	let mut level_y_offset = source_height;
 	write_source_level(atlas, source_width, level_y_offset, mip_width, mip_height, source_mip);
@@ -481,38 +392,6 @@ fn write_source_atlas(
 		atlas.len() as u32 / source_width / BYTES_PER_RGBA16F_PIXEL as u32
 	);
 	Ok(())
-}
-
-/// Generates one solid-angle-filtered level while preserving the CPU pyramid's accumulation order and precision.
-fn generate_source_mip(
-	source_width: u32,
-	source_height: u32,
-	destination: &mut Vec<Radiance>,
-	mut source_pixel: impl FnMut(usize) -> Radiance,
-) -> Result<(u32, u32), GPUIBLBakeError> {
-	let destination_width = (source_width / 2).max(1);
-	let destination_height = (source_height / 2).max(1);
-	let pixel_count = (destination_width as usize)
-		.checked_mul(destination_height as usize)
-		.ok_or(IBLBakeError::DimensionsTooLarge)?;
-	destination.clear();
-	destination
-		.try_reserve_exact(pixel_count)
-		.map_err(|_| IBLBakeError::AllocationFailed)?;
-
-	for y in 0..destination_height {
-		for x in 0..destination_width {
-			destination.push(downsample_source_pixel(
-				source_width,
-				source_height,
-				[x, y],
-				[destination_width, destination_height],
-				&mut source_pixel,
-			));
-		}
-	}
-
-	Ok((destination_width, destination_height))
 }
 
 /// Reuses one level's allocation for its child after each source region has been consumed.
@@ -558,43 +437,23 @@ fn write_source_level(
 	pixels: &[Radiance],
 ) {
 	debug_assert_eq!(pixels.len(), level_width as usize * level_height as usize);
-	for y in 0..level_height as usize {
-		let source_start = y * level_width as usize;
-		let destination_start = ((level_y_offset as usize + y) * atlas_width as usize) * BYTES_PER_RGBA16F_PIXEL;
-		let destination_end = destination_start + level_width as usize * BYTES_PER_RGBA16F_PIXEL;
-		for (radiance, destination) in pixels[source_start..source_start + level_width as usize].iter().zip(
-			atlas[destination_start..destination_end]
-				.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>()
-				.0
-				.iter_mut(),
-		) {
-			write_rgba16f(destination, *radiance);
-		}
+	for (y, row) in pixels.chunks_exact(level_width as usize).enumerate() {
+		let start = (level_y_offset as usize + y) * atlas_width as usize * BYTES_PER_RGBA16F_PIXEL;
+		write_sanitized_source(row, &mut atlas[start..][..row.len() * BYTES_PER_RGBA16F_PIXEL]);
 	}
 }
 
 /// Computes the fixed vertical regions used by all specular levels followed by diffuse irradiance.
 fn output_atlas_extent(layout: CubemapIBLLayout) -> Result<Extent, GPUIBLBakeError> {
-	let width = layout.specular_face_size().max(DIFFUSE_CUBE_FACE_SIZE);
-	let specular_height = layout
-		.specular_face_sizes()
+	let face_sizes = layout.specular_face_sizes();
+	let height = face_sizes
 		.into_iter()
+		.chain([DIFFUSE_CUBE_FACE_SIZE])
 		.try_fold(0_u32, |height, face_size| {
-			height
-				.checked_add(
-					face_size
-						.checked_mul(CUBE_FACE_COUNT as u32)
-						.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?,
-				)
-				.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)
-		})?;
-	let diffuse_height = DIFFUSE_CUBE_FACE_SIZE
-		.checked_mul(CUBE_FACE_COUNT as u32)
+			height.checked_add(face_size.checked_mul(CUBE_FACE_COUNT as u32)?)
+		})
 		.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
-	let height = specular_height
-		.checked_add(diffuse_height)
-		.ok_or(GPUIBLBakeError::AtlasLayoutOverflow)?;
-	Ok(Extent::rectangle(width, height))
+	Ok(Extent::rectangle(face_sizes[0].max(DIFFUSE_CUBE_FACE_SIZE), height))
 }
 
 fn validate_atlas_extent(extent: Extent) -> Result<(), GPUIBLBakeError> {
@@ -616,33 +475,17 @@ fn atlas_byte_size(extent: Extent) -> Result<usize, GPUIBLBakeError> {
 
 /// Removes unused atlas columns while retaining mip-major, face-major stream order.
 fn copy_output_atlas(layout: CubemapIBLLayout, atlas: &[u8], atlas_width: u32, destination: &mut [u8]) {
-	let mut atlas_y_offset = 0_u32;
-	for (level, face_size) in layout.specular_face_sizes().into_iter().enumerate() {
-		copy_output_region(
-			atlas,
-			atlas_width,
-			atlas_y_offset,
-			face_size,
-			&mut destination[layout.specular_range(level)],
-		);
-		atlas_y_offset += face_size * CUBE_FACE_COUNT as u32;
-	}
-	copy_output_region(
-		atlas,
-		atlas_width,
-		atlas_y_offset,
-		DIFFUSE_CUBE_FACE_SIZE,
-		&mut destination[layout.diffuse_range()],
-	);
-}
-
-fn copy_output_region(atlas: &[u8], atlas_width: u32, atlas_y_offset: u32, face_size: u32, destination: &mut [u8]) {
-	let compact_row_size = face_size as usize * BYTES_PER_RGBA16F_PIXEL;
-	for row in 0..face_size as usize * CUBE_FACE_COUNT {
-		let source_start = ((atlas_y_offset as usize + row) * atlas_width as usize) * BYTES_PER_RGBA16F_PIXEL;
-		let destination_start = row * compact_row_size;
-		destination[destination_start..destination_start + compact_row_size]
-			.copy_from_slice(&atlas[source_start..source_start + compact_row_size]);
+	let specular = (layout.specular_face_sizes().into_iter().enumerate())
+		.map(|(level, face_size)| (face_size, layout.specular_range(level)));
+	let mut atlas_row = 0;
+	for (face_size, range) in specular.chain([(DIFFUSE_CUBE_FACE_SIZE, layout.diffuse_range())]) {
+		let compact_row_size = face_size as usize * BYTES_PER_RGBA16F_PIXEL;
+		// Each region's rows start at the atlas's left edge, one atlas row apart.
+		for row in destination[range].chunks_exact_mut(compact_row_size) {
+			let source_start = atlas_row * atlas_width as usize * BYTES_PER_RGBA16F_PIXEL;
+			row.copy_from_slice(&atlas[source_start..source_start + compact_row_size]);
+			atlas_row += 1;
+		}
 	}
 }
 
@@ -663,7 +506,7 @@ mod tests {
 		let ran_on_worker = Arc::new(AtomicBool::new(false));
 		let worker_result = ran_on_worker.clone();
 
-		let result = GPUIBLClient::from_processor_factory(move || {
+		let result = crate::ibl::IBLGenerator::with_gpu_processor_factory(move || {
 			worker_result.store(std::thread::current().id() != caller, Ordering::SeqCst);
 			Err(GPUIBLBakeError::Worker(GpuWorkerError::Unavailable))
 		});
@@ -708,9 +551,9 @@ mod tests {
 		assert_eq!(f16::from_le_bytes([atlas[6], atlas[7]]).to_f32(), 1.0);
 	}
 
-	#[crate::r#async::test]
-	async fn gpu_base_cubemap_matches_cpu_projection_for_nonconstant_radiance() {
-		let client = GPUIBLClient::try_new().expect(
+	#[test]
+	fn gpu_base_cubemap_matches_cpu_projection_for_nonconstant_radiance() {
+		let mut processor = GPUIBLProcessor::try_new().expect(
 			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
 		);
 		let (width, height) = (8_u32, 4_u32);
@@ -726,10 +569,7 @@ mod tests {
 			}
 		}
 
-		let gpu = client
-			.bake_image_ibl(Extent::rectangle(width, height), &source)
-			.await
-			.unwrap();
+		let gpu = processor.bake_image_ibl(Extent::rectangle(width, height), &source).unwrap();
 		let cpu = bake_image_ibl_in(Extent::rectangle(width, height), &source, &Global).unwrap();
 		let gpu_stream = &gpu.streams[1];
 		let cpu_stream = &cpu.streams[1];
@@ -742,9 +582,9 @@ mod tests {
 			.zip(cpu_base.as_chunks::<BYTES_PER_RGBA16F_PIXEL>().0.iter())
 			.enumerate()
 		{
+			let (gpu_pixel, cpu_pixel) = (decode_pixel(gpu_pixel), decode_pixel(cpu_pixel));
 			for channel in 0..3 {
-				let gpu_value = f16::from_le_bytes([gpu_pixel[channel * 2], gpu_pixel[channel * 2 + 1]]).to_f32();
-				let cpu_value = f16::from_le_bytes([cpu_pixel[channel * 2], cpu_pixel[channel * 2 + 1]]).to_f32();
+				let (gpu_value, cpu_value) = (gpu_pixel[channel], cpu_pixel[channel]);
 
 				assert!(
 					(gpu_value - cpu_value).abs() <= 0.01,
@@ -754,21 +594,15 @@ mod tests {
 		}
 	}
 
-	#[crate::r#async::test]
-	async fn gpu_bake_keeps_a_constant_environment_constant() {
-		let client = GPUIBLClient::try_new().expect(
+	#[test]
+	fn gpu_bake_keeps_a_constant_environment_constant() {
+		let mut processor = GPUIBLProcessor::try_new().expect(
 			"GPU IBL setup failed. The most likely cause is invalid native shader code or unavailable compute support on the system device.",
 		);
 		let color = [4.0_f32, 0.5, 2.0];
-		let mut source = vec![0; 4 * 2 * BYTES_PER_RGBA16F_PIXEL];
-		for pixel in source.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0 {
-			for (channel, value) in color.into_iter().enumerate() {
-				pixel[channel * 2..channel * 2 + 2].copy_from_slice(&f16::from_f32(value).to_le_bytes());
-			}
-			pixel[6..8].copy_from_slice(&f16::from_f32(0.25).to_le_bytes());
-		}
+		let source = constant_source(4, 2, color);
 
-		let baked = client.bake_image_ibl(Extent::rectangle(4, 2), &source).await.unwrap();
+		let baked = processor.bake_image_ibl(Extent::rectangle(4, 2), &source).unwrap();
 
 		assert_eq!(&baked.data[..source.len()], source.as_slice());
 		for (pixel_index, pixel) in baked.data[source.len()..]
@@ -777,11 +611,11 @@ mod tests {
 			.iter()
 			.enumerate()
 		{
-			let decoded = std::array::from_fn::<_, 4, _>(|channel| {
-				f16::from_le_bytes([pixel[channel * 2], pixel[channel * 2 + 1]]).to_f32()
-			});
-
-			assert_eq!(decoded, [color[0], color[1], color[2], 1.0], "generated pixel {pixel_index}");
+			assert_eq!(
+				decode_pixel(pixel),
+				[color[0], color[1], color[2], 1.0],
+				"generated pixel {pixel_index}"
+			);
 		}
 	}
 
@@ -797,13 +631,16 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLClient, GpuWorkerError, atlas_byte_size, source_atlas_layout,
+		BYTES_PER_RGBA16F_PIXEL, GPUIBLBakeError, GPUIBLProcessor, GpuWorkerError, atlas_byte_size, source_atlas_layout,
 		write_source_atlas, write_source_level,
 	};
-	use crate::ibl::cpu::{bake_image_ibl_in, build_source_mips, decode_source_radiance};
+	use crate::ibl::cpu::{
+		bake_image_ibl_in, build_source_mips, decode_source_radiance,
+		tests::{constant_source, decode_pixel},
+	};
 }
 
-use std::{any::Any, error::Error, fmt};
+use std::{alloc::Global, error::Error, fmt};
 
 use ghi::{
 	command_buffer::{
@@ -818,14 +655,14 @@ use utils::Extent;
 
 use super::{
 	cpu::{
-		BYTES_PER_RGBA16F_PIXEL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError, Radiance,
-		decode_source_pixel, downsample_source_pixel, lat_long_row_solid_angle, write_rgba16f,
+		BYTES_PER_RGBA16F_PIXEL, BakedImageIBL, CUBE_FACE_COUNT, CubemapIBLLayout, DIFFUSE_CUBE_FACE_SIZE, IBLBakeError,
+		Radiance, decode_source_pixel, downsample_source_mip, downsample_source_pixel, write_rgba16f, write_sanitized_source,
 	},
 	gpu_shaders::{GPU_IBL_GLSL, GPU_IBL_HLSL, GPU_IBL_MSL},
 };
 use crate::{
 	gpu_worker::{
-		GpuProcessor, GpuWorker, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission, create_compute_context,
+		GpuProcessor, GpuWorkerError, OUTPUT_SLOT, OwnedContext, SOURCE_SLOT, Submission, create_compute_context,
 		create_compute_kernel,
 	},
 	resources::{image::IBL_PREFILTERED_SPECULAR_MIP_COUNT, mips::mip_extents},

@@ -86,7 +86,7 @@
 - Pipeline environment-map bakes the way material mips are pipelined. `GPUIBLProcessor` in `crates/resource-management/src/ibl/gpu.rs` completes each request inline in `GpuProcessor::submit`; give it per-request scratch and finish requests in `poll` so several HDR images overlap on the GPU.
 - Replace the 1 ms completion poll in `crates/resource-management/src/gpu_worker.rs` with a backend wake only if profiling shows it matters: a `Context::wait_for_any_synchronizer` with a timeout (Vulkan `vkWaitForFences` wait-any, DX12 `SetEventOnCompletion` with real events, Metal a condvar pulsed from the commit feedback handler).
 - Replace asset-handler tuple results with an allocator-backed or borrowed `BakedAsset` payload that storage can consume before arena reset.
-- Redesign `MeshProcessor` as a two-pass packer that computes offsets and writes directly into one final allocation.
+- Redesign `MeshProcessorSession` as a two-pass packer that computes offsets and writes directly into one final allocation.
 - Let glTF parsing borrow GLB and external BIN data instead of copying whole buffers.
 - Flatten glTF traversal into one caller-owned primitive record buffer rather than separate tree and primitive collections.
 - Bake each unique glTF material once, resolve primitive material references concurrently, and reuse generated resources.

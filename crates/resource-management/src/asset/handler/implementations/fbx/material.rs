@@ -286,9 +286,9 @@ pub(crate) fn fbx_brdf_material(material: Option<&ufbx::Material>) -> crate::pbr
 	}));
 
 	let alpha_mode = if base_color[3] < 0.999 {
-		BrdfAlphaMode::Blend
+		AlphaMode::Blend
 	} else {
-		BrdfAlphaMode::Opaque
+		AlphaMode::Opaque
 	};
 
 	builder.finish(name, surface, double_sided, alpha_mode)

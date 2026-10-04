@@ -36,10 +36,10 @@ mod tests {
 			manager::AssetManager, storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		pbr::{
-			BrdfAlphaMode, BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode,
-			BrdfNodeId, BrdfTexture, BrdfValue,
+			BrdfChannel, BrdfMaterialBuilder, BrdfMaterialDescription, BrdfMetallicRoughness, BrdfNode, BrdfNodeId,
+			BrdfTexture, BrdfValue,
 		},
-		processors::processor::implementations::image::Semantic,
+		processors::image::Semantic,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
@@ -48,7 +48,7 @@ mod tests {
 			mesh::MeshModel,
 			skeleton::{SkeletonModel, SkinJoint},
 		},
-		types::{Formats, VertexComponent, VertexSemantics},
+		types::{AlphaMode, Formats, VertexComponent, VertexSemantics},
 	};
 
 	#[test]
@@ -891,7 +891,7 @@ mod tests {
 			emission: Some(emission),
 		}));
 
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		let mut semantics = vec![None; 11];
 
@@ -1322,13 +1322,11 @@ use crate::{
 	asset::{self},
 	pbr::{BrdfMaterialDescription, BrdfMaterialValidationError, BrdfNode, BrdfNodeId, brdf_material_from_gltf},
 	processors::{
-		processor::implementations::image::{
+		image::{
 			ImageSource, METALLIC_ROUGHNESS_PACKING, Semantic, SourceChannels, SourceEncoding, channel_packing_for_semantic,
 			guess_semantic_from_name,
 		},
-		processor::implementations::mesh::{
-			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,
-		},
+		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
 	resources::{
 		ModelSpace,

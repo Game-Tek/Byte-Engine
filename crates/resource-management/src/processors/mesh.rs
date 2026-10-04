@@ -2,25 +2,7 @@ mod packing;
 mod source;
 mod validation;
 
-use crate::types::VertexSemantics;
-
-/// Returns the position of one vertex semantic in the canonical interleaved vertex layout.
-///
-/// Validation and packing both order streams by this, so the layout they agree on is defined once.
-const fn vertex_semantic_order(semantic: VertexSemantics) -> usize {
-	match semantic {
-		VertexSemantics::Position => 0,
-		VertexSemantics::Normal => 1,
-		VertexSemantics::Tangent => 2,
-		VertexSemantics::BiTangent => 3,
-		VertexSemantics::UV => 4,
-		VertexSemantics::Color => 5,
-		VertexSemantics::Joints => 6,
-		VertexSemantics::Weights => 7,
-	}
-}
-
-pub use packing::{MeshPrimitiveProcessingError, MeshProcessor, MeshProcessorSession, ProcessedMesh};
+pub use packing::{MeshPrimitiveProcessingError, MeshProcessorSession, ProcessedMesh};
 pub use source::{MeshPrimitiveSource, VertexSkin};
 pub use validation::MeshProcessingError;
 
@@ -29,7 +11,7 @@ mod tests {
 	use std::convert::Infallible;
 
 	use super::{
-		MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessor, ProcessedMesh, VertexSkin,
+		MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessingError, MeshProcessorSession, ProcessedMesh, VertexSkin,
 	};
 	use crate::{
 		ReferenceModel,
@@ -55,7 +37,7 @@ mod tests {
 			Vec::new(),
 		)
 		.unwrap();
-		let mut session = MeshProcessor::new().begin(layout, None, Vec::new()).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new()).unwrap();
 		session
 			.push_primitive(&TestPrimitive::triangle().with_normals().with_uvs())
 			.unwrap();
@@ -83,9 +65,8 @@ mod tests {
 			variant("materials/a.variant"),
 			variant("materials/c.variant"),
 		];
-		let mut session = MeshProcessor::new()
-			.begin(vec![VertexComponent::canonical(VertexSemantics::Position)], None, Vec::new())
-			.unwrap();
+		let mut session =
+			MeshProcessorSession::new(vec![VertexComponent::canonical(VertexSemantics::Position)], None, Vec::new()).unwrap();
 		for slot in [2, 1, 0] {
 			session
 				.push_primitive(&TestPrimitive::triangle().with_material_slot(slot))
@@ -143,22 +124,12 @@ mod tests {
 
 	#[test]
 	fn rejects_skin_data_without_matching_metadata() {
-		let error = process(
-			skinned_layout(),
-			&[TestPrimitive::triangle().with_skin_index_without_data(0)],
-			Some(test_skeleton(1)),
-			vec![test_skin(SkinJoint::Node(0))],
-		)
-		.expect_err("skin binding should require vertex skin values");
+		let error = process_skinned(TestPrimitive::triangle().with_skin_index_without_data(0))
+			.expect_err("skin binding should require vertex skin values");
 		assert_eq!(error, MeshProcessingError::IncompleteSkinAttributes { primitive: 0 });
 
-		let error = process(
-			skinned_layout(),
-			&[TestPrimitive::triangle().with_unbound_skin_data(vec![valid_vertex_skin(); 3])],
-			Some(test_skeleton(1)),
-			vec![test_skin(SkinJoint::Node(0))],
-		)
-		.expect_err("vertex skin values should require a binding");
+		let error = process_skinned(TestPrimitive::triangle().with_unbound_skin_data(vec![valid_vertex_skin(); 3]))
+			.expect_err("vertex skin values should require a binding");
 		assert_eq!(error, MeshProcessingError::UnboundSkinAttributes { primitive: 0 });
 	}
 
@@ -202,13 +173,8 @@ mod tests {
 			));
 		}
 
-		let error = process(
-			skinned_layout(),
-			&[TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 2])],
-			Some(test_skeleton(1)),
-			vec![test_skin(SkinJoint::Node(0))],
-		)
-		.expect_err("skin value count should match positions");
+		let error = process_skinned(TestPrimitive::triangle().with_skin(0, vec![valid_vertex_skin(); 2]))
+			.expect_err("skin value count should match positions");
 		assert_eq!(
 			error,
 			MeshProcessingError::SkinVertexCountMismatch {
@@ -271,13 +237,8 @@ mod tests {
 		] {
 			let mut values = vec![valid_vertex_skin(); 3];
 			values[0] = value;
-			let error = process(
-				skinned_layout(),
-				&[TestPrimitive::triangle().with_skin(0, values)],
-				Some(test_skeleton(1)),
-				vec![test_skin(SkinJoint::Node(0))],
-			)
-			.expect_err("invalid vertex skin should fail");
+			let error =
+				process_skinned(TestPrimitive::triangle().with_skin(0, values)).expect_err("invalid vertex skin should fail");
 			assert_eq!(error, expected);
 		}
 	}
@@ -287,8 +248,7 @@ mod tests {
 		let duplicate = [VertexSemantics::UV, VertexSemantics::UV]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let error = MeshProcessor::new()
-			.begin(duplicate, None, Vec::new())
+		let error = MeshProcessorSession::new(duplicate, None, Vec::new())
 			.err()
 			.expect("duplicate layout should fail");
 		assert_eq!(error, MeshProcessingError::DuplicateVertexSemantic(VertexSemantics::UV));
@@ -331,7 +291,7 @@ mod tests {
 		skeleton: Option<ReferenceModel<SkeletonModel>>,
 		skins: Vec<SkinBinding>,
 	) -> Result<ProcessedMesh, MeshProcessingError> {
-		let mut processor = MeshProcessor::new().begin(layout, skeleton, skins)?;
+		let mut processor = MeshProcessorSession::new(layout, skeleton, skins)?;
 		for primitive in primitives {
 			processor.push_primitive(primitive).map_err(|error| match error {
 				MeshPrimitiveProcessingError::Source(never) => match never {},
@@ -339,6 +299,16 @@ mod tests {
 			})?;
 		}
 		Ok(processor.finish(&[test_material()]))
+	}
+
+	/// Processes one primitive with the skinned layout, a one-node skeleton, and one skin bound to that node.
+	fn process_skinned(primitive: TestPrimitive) -> Result<ProcessedMesh, MeshProcessingError> {
+		process(
+			skinned_layout(),
+			&[primitive],
+			Some(test_skeleton(1)),
+			vec![test_skin(SkinJoint::Node(0))],
+		)
 	}
 
 	fn skinned_layout() -> Vec<VertexComponent> {

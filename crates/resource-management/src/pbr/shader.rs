@@ -479,7 +479,10 @@ mod tests {
 	use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ResourceSlot, Texture, Value, f16, output_slot};
 
 	use super::*;
-	use crate::pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture};
+	use crate::{
+		pbr::{BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfTexture},
+		types::AlphaMode,
+	};
 
 	/// Verifies the constant-material generator produces the expected BRDF values when executed.
 	#[test]
@@ -582,7 +585,7 @@ mod tests {
 			occlusion: Some(occlusion),
 			emission: Some(emission),
 		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 		let mut program = generate_textured_brdf_program(&material)
 			.expect("Failed to generate textured material BESL. The most likely cause is an invalid BRDF material graph.");
 		// Production resolves these logical material slots through a bindless table; the VM adapter maps the same slots to fixed descriptors.
@@ -752,7 +755,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		let program = generate_solid_brdf_program(&material).expect("material should generate");
 
@@ -777,7 +780,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		let program = generate_solid_brdf_program(&material).expect("material should generate");
 
@@ -802,7 +805,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		assert!(matches!(
 			generate_solid_brdf_program(&material),
@@ -826,7 +829,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		let material = builder.finish(None, surface, false, BrdfAlphaMode::Opaque);
+		let material = builder.finish(None, surface, false, AlphaMode::Opaque);
 
 		assert!(matches!(
 			generate_solid_brdf_program(&material),
@@ -847,7 +850,7 @@ mod tests {
 			occlusion: None,
 			emission: None,
 		}));
-		builder.finish(None, surface, false, BrdfAlphaMode::Opaque)
+		builder.finish(None, surface, false, AlphaMode::Opaque)
 	}
 
 	fn main_statements<'a>(program: &'a besl::parser::Node<'a>) -> &'a [besl::parser::Node<'a>] {

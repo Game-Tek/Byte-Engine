@@ -164,7 +164,7 @@ use super::{
 };
 use crate::{
 	ProcessedAsset, StreamDescription,
-	processors::processor::implementations::image::decode_rgba16f_in,
+	processors::image::decode_rgba16f_in,
 	resources::image::{IMAGE_BASE_MIP_STREAM_NAME, Image},
 	types::{Formats, Gamma},
 };

@@ -10,24 +10,18 @@ mod gpu_shaders;
 ///
 /// Pass this generator to an environment-map asset handler after choosing the desired GPU setup. GPU generation
 /// automatically falls back to the CPU implementation when an individual bake fails.
+#[derive(Default)]
 pub struct IBLGenerator {
+	/// The worker thread that owns the GPU processor, so asset handlers on the shared pool await bakes instead of
+	/// blocking a pool thread.
 	#[cfg(feature = "gpu-ibl")]
-	gpu_client: Option<gpu::GPUIBLClient>,
-}
-
-impl Default for IBLGenerator {
-	fn default() -> Self {
-		Self::new()
-	}
+	gpu_worker: Option<GpuWorker<gpu::GPUIBLProcessor>>,
 }
 
 impl IBLGenerator {
 	/// Creates an IBL generator that always uses the CPU implementation.
 	pub fn new() -> Self {
-		Self {
-			#[cfg(feature = "gpu-ibl")]
-			gpu_client: None,
-		}
+		Self::default()
 	}
 
 	/// Creates an IBL generator whose GPU processor is initialized on its dedicated worker thread.
@@ -38,8 +32,8 @@ impl IBLGenerator {
 	pub fn with_gpu_processor_factory(
 		initialize: impl FnOnce() -> Result<gpu::GPUIBLProcessor, gpu::GPUIBLBakeError> + Send + 'static,
 	) -> Result<Self, gpu::GPUIBLBakeError> {
-		gpu::GPUIBLClient::from_processor_factory(initialize).map(|gpu_client| Self {
-			gpu_client: Some(gpu_client),
+		Ok(Self {
+			gpu_worker: Some(GpuWorker::spawn("GPU Environment Map Worker", initialize)?),
 		})
 	}
 
@@ -77,19 +71,14 @@ impl IBLGenerator {
 		rgba16f: &[u8],
 	) -> Result<(), LoadErrors> {
 		#[cfg(feature = "gpu-ibl")]
-		if let Some(client) = &self.gpu_client {
-			match client.bake_image_ibl(extent, rgba16f).await {
+		if let Some(worker) = &self.gpu_worker {
+			// The worker owns a copy of the source while the bake is in flight. The baked maps come back in the result.
+			let baked = (worker.submit(extent, rgba16f.to_vec()).await)
+				.unwrap_or_else(|_| Err(crate::GpuWorkerError::Unavailable.into()));
+			match baked {
 				Ok(baked) => {
 					context.info("Generated environment maps on the GPU.");
-					return store_baked_image(
-						context,
-						url,
-						baked.root_extent,
-						baked.ibl,
-						baked.streams,
-						&baked.data,
-					)
-					.await;
+					return store_baked_image(context, url, baked).await;
 				}
 				Err(error) => context.warn(format!(
 					"GPU environment-map generation failed; using the CPU fallback. The most likely cause is an unavailable or unsupported GPU path. Error: {error}"
@@ -104,13 +93,13 @@ impl IBLGenerator {
 			LoadErrors::FailedToProcess
 		})?;
 
-		store_baked_image(context, url, baked.root_extent, baked.ibl, baked.streams, &baked.data).await
+		store_baked_image(context, url, baked).await
 	}
 
 	#[cfg(all(test, feature = "gpu-ibl"))]
 	pub(crate) fn unavailable_for_test() -> Self {
 		Self {
-			gpu_client: Some(gpu::GPUIBLClient::unavailable_for_test()),
+			gpu_worker: Some(GpuWorker::unavailable()),
 		}
 	}
 }
@@ -119,31 +108,32 @@ impl IBLGenerator {
 async fn store_baked_image(
 	context: BakeContext<'_>,
 	url: ResourceId<'_>,
-	root_extent: [u32; 3],
-	ibl: ImageIBL,
-	streams: Vec<StreamDescription>,
-	data: &[u8],
+	baked: BakedImageIBL<impl Allocator>,
 ) -> Result<(), LoadErrors> {
 	let image = Image {
 		format: Formats::RGBA16F,
 		gamma: Gamma::Linear,
-		extent: root_extent,
+		extent: baked.root_extent,
 		mip_count: 1,
-		ibl: Some(ibl),
+		ibl: Some(baked.ibl),
 		photometry: None,
 	};
 
-	let asset = ProcessedAsset::new(url, image).with_streams(streams);
+	let asset = ProcessedAsset::new(url, image).with_streams(baked.streams);
 
-	context.store_primary(asset, data).await
+	context.store_primary(asset, &baked.data).await
 }
+
+use std::alloc::Allocator;
 
 use utils::Extent;
 
+#[cfg(feature = "gpu-ibl")]
+use crate::gpu_worker::GpuWorker;
 use crate::{
-	BakeContext, ProcessedAsset, StreamDescription,
+	BakeContext, ProcessedAsset,
 	asset::{ResourceId, handler::LoadErrors},
-	ibl::cpu::bake_image_ibl_in,
-	resources::image::{Image, ImageIBL},
+	ibl::cpu::{BakedImageIBL, bake_image_ibl_in},
+	resources::image::Image,
 	types::{Formats, Gamma},
 };

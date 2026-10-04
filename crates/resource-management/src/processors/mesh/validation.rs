@@ -215,7 +215,7 @@ impl std::error::Error for MeshProcessingError {}
 pub(super) fn validate_vertex_layout(vertex_layout: &[VertexComponent]) -> Result<(), MeshProcessingError> {
 	let mut seen = [false; 8];
 	for component in vertex_layout {
-		let index = super::vertex_semantic_order(component.semantic);
+		let index = component.semantic as usize;
 		if seen[index] {
 			return Err(MeshProcessingError::DuplicateVertexSemantic(component.semantic));
 		}
@@ -230,13 +230,11 @@ pub(super) fn skeleton_node_count(
 ) -> Result<Option<usize>, MeshProcessingError> {
 	skeleton
 		.map(|skeleton| {
-			crate::archived_from_slice::<SkeletonModel>(&skeleton.resource)
-				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)
-				.and_then(|skeleton| {
-					crate::resources::skeleton::validate_archived_nodes(skeleton.nodes.as_slice())
-						.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
-					Ok(skeleton.nodes.len())
-				})
+			let skeleton = crate::archived_from_slice::<SkeletonModel>(&skeleton.resource)
+				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
+			crate::resources::skeleton::validate_archived_nodes(skeleton.nodes.as_slice())
+				.map_err(|_| MeshProcessingError::InvalidSkeletonModel)?;
+			Ok(skeleton.nodes.len())
 		})
 		.transpose()
 }

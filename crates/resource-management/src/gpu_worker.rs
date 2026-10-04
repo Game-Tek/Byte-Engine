@@ -1,6 +1,6 @@
 //! Run thread-confined GHI compute processors for offline asset processing.
 //!
-//! The environment-map generator ([`crate::ibl::gpu::GPUIBLClient`]) and the material mip generator
+//! The environment-map generator ([`crate::ibl::IBLGenerator`]) and the material mip generator
 //! ([`crate::resources::mips::gpu::MaterialMipGenerator`]) share this worker thread, device setup, and kernel setup.
 //! Asset bakes submit requests from the shared worker pool and await the reply, so no pool thread blocks while the
 //! GPU works, and the worker keeps several requests in flight at once.
@@ -178,11 +178,7 @@ impl<P: GpuProcessor + 'static> GpuWorker<P> {
 		let (reply, receiver) = oneshot::channel();
 		if let Some(sender) = &self.sender {
 			// A failed send drops the request and its reply sender, which cancels the receiver.
-			let _ = sender.send(Request {
-				parameters,
-				input,
-				reply,
-			});
+			let _ = sender.send((parameters, input, reply));
 		}
 		receiver
 	}
@@ -207,12 +203,12 @@ impl<P: GpuProcessor> Drop for GpuWorker<P> {
 	}
 }
 
-/// The `Request` struct carries one request's parameters, input bytes, and reply channel to the worker.
-struct Request<P: GpuProcessor> {
-	parameters: P::Request,
-	input: Vec<u8>,
-	reply: oneshot::Sender<P::Result>,
-}
+/// Carries one request's parameters, input bytes, and reply channel to the worker.
+type Request<P> = (
+	<P as GpuProcessor>::Request,
+	Vec<u8>,
+	oneshot::Sender<<P as GpuProcessor>::Result>,
+);
 
 /// Serves requests on the worker thread until the channel closes, keeping as many in flight as the processor allows.
 ///
@@ -251,11 +247,7 @@ fn serve<P: GpuProcessor>(mut processor: P, receiver: Receiver<Request<P>>) {
 		// Finish completed work first so the scratch it held can serve the queue.
 		finish_completed(&mut processor, &mut in_flight);
 		while in_flight.len() < P::MAX_IN_FLIGHT
-			&& let Some(Request {
-				parameters,
-				input,
-				reply,
-			}) = queued.pop_front()
+			&& let Some((parameters, input, reply)) = queued.pop_front()
 		{
 			// The input is uploaded once submitted, so only the reply waits for the GPU.
 			match processor.submit(&parameters, &input) {
@@ -281,10 +273,10 @@ fn finish_completed<P: GpuProcessor>(processor: &mut P, in_flight: &mut Vec<(P::
 	}
 }
 
-/// The `OwnedContext` struct keeps a GHI context and the native state it depends on together while a processor is built.
+/// The `OwnedContext` struct keeps a GHI context and the native state it depends on together for a processor's lifetime.
 ///
-/// Its field order drops the context before its owner on every early-return and unwinding path. Destructure it once the
-/// processor is complete and keep both values in the same order there.
+/// Processors store it whole. Its field order drops the context before its owner on every path, and `dyn Any` keeps
+/// the thread-confined processor that holds it non-`Send`.
 pub(crate) struct OwnedContext {
 	pub(crate) context: ghi::implementation::Context,
 	pub(crate) owner: Box<dyn Any>,
@@ -292,10 +284,8 @@ pub(crate) struct OwnedContext {
 
 /// Creates a self-contained compute and transfer device and context for offline asset processing.
 ///
-/// Returns the context, its queue, and an owner that keeps the device and instance alive; put the context and owner in
-/// an [`OwnedContext`] before building anything else on them.
-pub(crate) fn create_compute_context() -> Result<(ghi::implementation::Context, ghi::QueueHandle, Box<dyn Any>), GpuWorkerError>
-{
+/// Returns the context, with the device and instance that keep it alive, and its queue.
+pub(crate) fn create_compute_context() -> Result<(OwnedContext, ghi::QueueHandle), GpuWorkerError> {
 	let features = ghi::device::Features::new().mesh_shading(false);
 	let mut instance = ghi::implementation::Instance::new(features).map_err(GpuWorkerError::Instance)?;
 	let mut queue = None;
@@ -311,7 +301,8 @@ pub(crate) fn create_compute_context() -> Result<(ghi::implementation::Context, 
 	let context = device.create_context().map_err(GpuWorkerError::Context)?;
 	let queue = queue.expect("GHI device creation must populate the requested compute queue handle.");
 
-	Ok((context, queue, Box::new((device, instance))))
+	let owner = Box::new((device, instance));
+	Ok((OwnedContext { context, owner }, queue))
 }
 
 /// Compiles one native compute kernel that samples [`SOURCE_SLOT`] and writes the storage image at [`OUTPUT_SLOT`], and
@@ -358,75 +349,39 @@ pub(crate) fn create_besl_compute_kernel(
 	build_compute_pipeline(context, label, &compiled, resources, push_constant_size)
 }
 
-/// Generates Metal source for a linked BESL kernel. The Metal driver compiles it when the shader is created.
-#[cfg(target_os = "macos")]
+/// Lowers a linked BESL kernel with the platform shader generator into the source the active GHI backend takes.
+///
+/// Linux compiles the GLSL to SPIR-V here. The Metal and DX12 backends compile their source text when the shader is
+/// created.
 fn native_kernel_source(
 	label: &str,
 	settings: &crate::shader::ShaderGenerationSettings,
 	program: &besl::NodeReference,
 ) -> Result<ghi::shader::CompiledShaderSource, String> {
-	use crate::shader::besl::backends::msl::{MSL_ENTRY_POINT, MSLTranspiler};
+	use crate::shader::besl::backends::platform::{PlatformShaderCompiler, PlatformShaderLanguage};
 
-	let source = MSLTranspiler::new().generate_program(settings, program).map_err(|()| {
-		format!(
-			"MSL generation failed for BESL kernel '{label}'. The most likely cause is a BESL construct the MSL backend can't lower."
-		)
-	})?;
-	Ok(ghi::shader::CompiledShaderSource::MTL {
-		source,
-		entry_point: MSL_ENTRY_POINT.to_string(),
+	let lowered = PlatformShaderCompiler::new()
+		.lower(settings, program)
+		.map_err(|error| format!("BESL kernel '{label}' could not be lowered for this platform. {error}"))?;
+	let language = PlatformShaderLanguage::current_platform();
+	let entry_point = language.entry_point().to_string();
+	Ok(match language {
+		#[cfg(target_os = "linux")]
+		PlatformShaderLanguage::Glsl => ghi::shader::CompiledShaderSource::SPIRV(
+			crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&lowered.source, &lowered.name)?.into_vec(),
+		),
+		// Lowering already reported platforms without a GLSL compiler.
+		#[cfg(not(target_os = "linux"))]
+		PlatformShaderLanguage::Glsl => unreachable!("GLSL kernels are only lowered on Linux"),
+		PlatformShaderLanguage::Hlsl => ghi::shader::CompiledShaderSource::HLSL {
+			source: lowered.source,
+			entry_point,
+		},
+		PlatformShaderLanguage::Msl => ghi::shader::CompiledShaderSource::MTL {
+			source: lowered.source,
+			entry_point,
+		},
 	})
-}
-
-/// Generates HLSL source for a linked BESL kernel. The DX12 backend compiles it when the shader is created.
-#[cfg(target_os = "windows")]
-fn native_kernel_source(
-	label: &str,
-	settings: &crate::shader::ShaderGenerationSettings,
-	program: &besl::NodeReference,
-) -> Result<ghi::shader::CompiledShaderSource, String> {
-	use crate::shader::besl::backends::{hlsl::HLSLTranspiler, platform::PlatformShaderLanguage};
-
-	let main = program.get_main().ok_or_else(|| {
-		format!("BESL kernel '{label}' has no `main` function. The most likely cause is a renamed entry point.")
-	})?;
-	let source = HLSLTranspiler::new().generate(settings, &main).map_err(|()| {
-		format!(
-			"HLSL generation failed for BESL kernel '{label}'. The most likely cause is a BESL construct the HLSL backend can't lower."
-		)
-	})?;
-	Ok(ghi::shader::CompiledShaderSource::HLSL {
-		source,
-		entry_point: PlatformShaderLanguage::Hlsl.entry_point().to_string(),
-	})
-}
-
-/// Compiles a linked BESL kernel to SPIR-V for the Vulkan backend.
-#[cfg(target_os = "linux")]
-fn native_kernel_source(
-	label: &str,
-	settings: &crate::shader::ShaderGenerationSettings,
-	program: &besl::NodeReference,
-) -> Result<ghi::shader::CompiledShaderSource, String> {
-	use crate::shader::besl::backends::spirv::SPIRVCompiler;
-
-	let main = program.get_main().ok_or_else(|| {
-		format!("BESL kernel '{label}' has no `main` function. The most likely cause is a renamed entry point.")
-	})?;
-	let binary = SPIRVCompiler::new().generate(settings, &main)?.binary;
-	Ok(ghi::shader::CompiledShaderSource::SPIRV(binary.into_vec()))
-}
-
-/// Reports that no graphics backend on this platform can run BESL kernels.
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn native_kernel_source(
-	label: &str,
-	_: &crate::shader::ShaderGenerationSettings,
-	_: &besl::NodeReference,
-) -> Result<ghi::shader::CompiledShaderSource, String> {
-	Err(format!(
-		"BESL kernel '{label}' can't be compiled on this platform. The most likely cause is an operating system without a supported graphics backend."
-	))
 }
 
 /// Creates the shader and compute pipeline for compiled kernel source.

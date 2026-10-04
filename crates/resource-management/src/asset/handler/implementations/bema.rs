@@ -398,11 +398,11 @@ async fn store_generated_variant(
 	shader: ReferenceModel<Shader>,
 	variables: Vec<VariantVariableModel>,
 ) -> Result<ReferenceModel<VariantModel>, LoadErrors> {
-	let alpha_mode = AlphaMode::from(brdf.alpha_mode);
+	let alpha_mode = brdf.alpha_mode;
 
 	let material = MaterialModel {
 		double_sided: brdf.double_sided,
-		alpha_mode: alpha_mode.clone(),
+		alpha_mode,
 		coverage: generated_material_coverage(&brdf),
 		model: RenderModel {
 			name: "Visibility".to_string(),

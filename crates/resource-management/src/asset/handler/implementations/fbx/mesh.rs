@@ -473,7 +473,7 @@ pub(crate) fn import_fbx_mesh_session<'a>(
 	culled_polygons: &mut FbxCulledPolygonCounts,
 ) -> Result<MeshProcessorSession, FbxMeshProcessingError> {
 	let (scratch_capacity, corner_capacity, remap_capacity) = fbx_mesh_allocation_estimates(scene);
-	let mut processor = MeshProcessor::new().begin(fbx_vertex_layout(scene), skeleton, Vec::new())?;
+	let mut processor = MeshProcessorSession::new(fbx_vertex_layout(scene), skeleton, Vec::new())?;
 	let mut primitive_count = 0usize;
 
 	// Reuse triangulation and corner-remap storage across mesh instances and material parts to bound import allocations.

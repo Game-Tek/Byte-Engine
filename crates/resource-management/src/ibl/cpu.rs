@@ -21,11 +21,13 @@ pub(super) struct SourceMIP<'a> {
 }
 
 /// The `BakedImageIBL` struct carries the parent image and its embedded lighting maps into resource storage.
-pub struct BakedImageIBL<'a> {
+///
+/// CPU bakes return their payload in the bake allocator `A`, and the GPU worker returns it in the global heap.
+pub struct BakedImageIBL<A: Allocator = Global> {
 	pub root_extent: [u32; 3],
 	pub ibl: ImageIBL,
 	pub streams: Vec<StreamDescription>,
-	pub data: Box<[u8], &'a dyn Allocator>,
+	pub data: Box<[u8], A>,
 }
 
 /// The `CubemapIBLLayout` struct keeps CPU and GPU environment-map generators on one binary resource contract.
@@ -34,7 +36,6 @@ pub(super) struct CubemapIBLLayout {
 	source_width: u32,
 	source_height: u32,
 	root_size: usize,
-	specular_face_size: u32,
 	specular_face_sizes: [u32; IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize],
 	specular_offsets: [usize; IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize],
 	diffuse_offset: usize,
@@ -45,20 +46,7 @@ pub(super) struct CubemapIBLLayout {
 impl CubemapIBLLayout {
 	/// Validates the source and computes every tightly packed cubemap stream range.
 	pub(super) fn new(source_extent: Extent, source_rgba16f: &[u8]) -> Result<Self, IBLBakeError> {
-		let source_width = source_extent.width();
-		let source_height = source_extent.height();
-		if source_width == 0 || source_height == 0 {
-			return Err(IBLBakeError::ZeroDimensions);
-		}
-
-		let root_size = image_byte_size(source_width, source_height)?;
-		if source_rgba16f.len() != root_size {
-			return Err(IBLBakeError::BufferSizeMismatch {
-				expected: root_size,
-				got: source_rgba16f.len(),
-			});
-		}
-
+		let (source_width, source_height, root_size) = validated_source_size(source_extent, source_rgba16f)?;
 		let specular_face_size = (source_width / 4)
 			.min(source_height / 2)
 			.clamp(1, MAX_SPECULAR_CUBE_FACE_SIZE);
@@ -87,7 +75,6 @@ impl CubemapIBLLayout {
 			source_width,
 			source_height,
 			root_size,
-			specular_face_size,
 			specular_face_sizes,
 			specular_offsets,
 			diffuse_offset,
@@ -98,11 +85,6 @@ impl CubemapIBLLayout {
 
 	pub(super) fn source_dimensions(self) -> (u32, u32) {
 		(self.source_width, self.source_height)
-	}
-
-	#[cfg(feature = "gpu-ibl")]
-	pub(super) fn specular_face_size(self) -> u32 {
-		self.specular_face_size
 	}
 
 	pub(super) fn specular_face_sizes(self) -> [u32; IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize] {
@@ -119,18 +101,21 @@ impl CubemapIBLLayout {
 		self.diffuse_offset..self.total_size
 	}
 
-	#[cfg(feature = "gpu-ibl")]
-	pub(super) fn root_size(self) -> usize {
-		self.root_size
+	/// Allocates final storage once in `allocator` and preserves the decoded source image as the root stream.
+	///
+	/// Next, fill the derived ranges and call [`Self::finish`].
+	pub(super) fn allocate_data<A: Allocator>(self, source_rgba16f: &[u8], allocator: A) -> Result<Vec<u8, A>, IBLBakeError> {
+		let mut data = Vec::new_in(allocator);
+		data.try_reserve_exact(self.total_size)
+			.map_err(|_| IBLBakeError::AllocationFailed)?;
+		data.resize(self.total_size, 0);
+		data[..self.root_size].copy_from_slice(source_rgba16f);
+		Ok(data)
 	}
 
-	#[cfg(feature = "gpu-ibl")]
-	pub(super) fn total_size(self) -> usize {
-		self.total_size
-	}
-
-	/// Builds the metadata shared by allocator-backed and owned bake results.
-	pub(super) fn metadata(self) -> ([u32; 3], ImageIBL, Vec<StreamDescription>) {
+	/// Adds stable stream metadata after an integrator fills all derived ranges.
+	pub(super) fn finish<A: Allocator>(self, data: Vec<u8, A>) -> BakedImageIBL<A> {
+		debug_assert_eq!(data.len(), self.total_size);
 		let mut streams = Vec::with_capacity(IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize + 2);
 		streams.push(StreamDescription::new(IMAGE_BASE_MIP_STREAM_NAME, self.root_size, 0));
 		for level in 0..IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize {
@@ -154,37 +139,13 @@ impl CubemapIBLLayout {
 			mip_count,
 			array_layers: CUBE_FACE_COUNT as u32,
 		};
-		(
-			[self.source_width, self.source_height, 0],
-			ImageIBL {
-				diffuse_irradiance: subresource(DIFFUSE_CUBE_FACE_SIZE, 1),
-				prefiltered_specular: subresource(self.specular_face_size, IBL_PREFILTERED_SPECULAR_MIP_COUNT),
-			},
-			streams,
-		)
-	}
-
-	/// Allocates final storage once and preserves the decoded source image as the root stream.
-	pub(super) fn allocate_data<'a>(
-		self,
-		source_rgba16f: &[u8],
-		allocator: &'a dyn Allocator,
-	) -> Result<Vec<u8, &'a dyn Allocator>, IBLBakeError> {
-		let mut data = Vec::new_in(allocator);
-		data.try_reserve_exact(self.total_size)
-			.map_err(|_| IBLBakeError::AllocationFailed)?;
-		data.resize(self.total_size, 0);
-		data[..self.root_size].copy_from_slice(source_rgba16f);
-		Ok(data)
-	}
-
-	/// Adds stable stream metadata after an integrator fills all derived ranges.
-	pub(super) fn finish<'a>(self, data: Vec<u8, &'a dyn Allocator>) -> BakedImageIBL<'a> {
-		debug_assert_eq!(data.len(), self.total_size);
-		let (root_extent, ibl, streams) = self.metadata();
 		BakedImageIBL {
-			root_extent,
-			ibl,
+			root_extent: [self.source_width, self.source_height, 0],
+			ibl: ImageIBL {
+				diffuse_irradiance: subresource(DIFFUSE_CUBE_FACE_SIZE, 1),
+				// Level 0 has the full specular face size.
+				prefiltered_specular: subresource(self.specular_face_sizes[0], IBL_PREFILTERED_SPECULAR_MIP_COUNT),
+			},
 			streams,
 			data: data.into_boxed_slice(),
 		}
@@ -226,20 +187,8 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 	source_extent: Extent,
 	source_rgba16f: &[u8],
 	allocator: &'a dyn Allocator,
-) -> Result<BakedImageIBL<'a>, IBLBakeError> {
-	let source_width = source_extent.width();
-	let source_height = source_extent.height();
-	if source_width == 0 || source_height == 0 {
-		return Err(IBLBakeError::ZeroDimensions);
-	}
-
-	let expected_source_size = image_byte_size(source_width, source_height)?;
-	if source_rgba16f.len() != expected_source_size {
-		return Err(IBLBakeError::BufferSizeMismatch {
-			expected: expected_source_size,
-			got: source_rgba16f.len(),
-		});
-	}
+) -> Result<BakedImageIBL<&'a dyn Allocator>, IBLBakeError> {
+	let (source_width, source_height, root_size) = validated_source_size(source_extent, source_rgba16f)?;
 
 	// Sampling from decoded f32 radiance avoids repeating four half-float conversions for every
 	// bilinear tap during the comparatively expensive convolution loops.
@@ -248,7 +197,6 @@ pub fn bake_image_ibl_lat_long_in<'a>(
 	let specular_width = source_width.min(MAX_SPECULAR_WIDTH);
 	let specular_height = source_height.min(MAX_SPECULAR_HEIGHT);
 	let specular_extents = specular_extents(specular_width, specular_height);
-	let root_size = expected_source_size;
 	let diffuse_size = image_byte_size(DIFFUSE_WIDTH, DIFFUSE_HEIGHT)?;
 
 	let mut total_size = root_size;
@@ -331,7 +279,7 @@ pub fn bake_image_ibl_in<'a>(
 	source_extent: Extent,
 	source_rgba16f: &[u8],
 	allocator: &'a dyn Allocator,
-) -> Result<BakedImageIBL<'a>, IBLBakeError> {
+) -> Result<BakedImageIBL<&'a dyn Allocator>, IBLBakeError> {
 	let layout = CubemapIBLLayout::new(source_extent, source_rgba16f)?;
 	let (source_width, source_height) = layout.source_dimensions();
 	let source = decode_source_radiance(source_rgba16f, allocator)?;
@@ -373,33 +321,32 @@ pub(super) fn build_source_mips<'a>(
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
 	mips.push(SourceMIP { width, height, pixels });
 
-	while mips.last().is_some_and(|level| level.width > 1 || level.height > 1) {
-		let source = mips.last().expect("the source pyramid always contains its base level");
-		let destination_width = (source.width / 2).max(1);
-		let destination_height = (source.height / 2).max(1);
-		let destination = downsample_source_mip(source, destination_width, destination_height, allocator)?;
-
-		mips.push(SourceMIP {
-			width: destination_width,
-			height: destination_height,
-			pixels: destination,
-		});
+	while let Some(source) = mips.last().filter(|level| level.width > 1 || level.height > 1) {
+		let mut pixels = Vec::new_in(allocator);
+		let (width, height) = downsample_source_mip(source.width, source.height, &mut pixels, |index| source.pixels[index])?;
+		mips.push(SourceMIP { width, height, pixels });
 	}
 
 	Ok(mips)
 }
 
-/// Downsamples one area-preserving source level without nesting allocation and integration concerns.
-fn downsample_source_mip<'a>(
-	source: &SourceMIP<'_>,
-	destination_width: u32,
-	destination_height: u32,
-	allocator: &'a dyn Allocator,
-) -> Result<Vec<Radiance, &'a dyn Allocator>, IBLBakeError> {
+/// Replaces `destination` with the area-preserving level below a `source_width` by `source_height` level and returns
+/// its extent.
+///
+/// `source_pixel` reads the source texel at a row-major index, so the CPU pyramid and the GPU atlas staging share
+/// this level filter.
+pub(super) fn downsample_source_mip<A: Allocator>(
+	source_width: u32,
+	source_height: u32,
+	destination: &mut Vec<Radiance, A>,
+	mut source_pixel: impl FnMut(usize) -> Radiance,
+) -> Result<(u32, u32), IBLBakeError> {
+	let destination_width = (source_width / 2).max(1);
+	let destination_height = (source_height / 2).max(1);
 	let pixel_count = (destination_width as usize)
 		.checked_mul(destination_height as usize)
 		.ok_or(IBLBakeError::DimensionsTooLarge)?;
-	let mut destination = Vec::new_in(allocator);
+	destination.clear();
 	destination
 		.try_reserve_exact(pixel_count)
 		.map_err(|_| IBLBakeError::AllocationFailed)?;
@@ -407,16 +354,16 @@ fn downsample_source_mip<'a>(
 	for y in 0..destination_height {
 		for x in 0..destination_width {
 			destination.push(downsample_source_pixel(
-				source.width,
-				source.height,
+				source_width,
+				source_height,
 				[x, y],
 				[destination_width, destination_height],
-				|index| source.pixels[index],
+				&mut source_pixel,
 			));
 		}
 	}
 
-	Ok(destination)
+	Ok((destination_width, destination_height))
 }
 
 /// Integrates the solid-angle-weighted source texels covered by one destination texel.
@@ -450,11 +397,27 @@ pub(super) fn downsample_source_pixel(
 		}
 	}
 
-	[
-		(sum[0] / total_weight) as f32,
-		(sum[1] / total_weight) as f32,
-		(sum[2] / total_weight) as f32,
-	]
+	sum.map(|total| (total / total_weight) as f32)
+}
+
+/// Checks that `source_rgba16f` holds one RGBA16F pixel per texel of a non-empty `source_extent`.
+///
+/// Returns the source width, height, and byte size.
+fn validated_source_size(source_extent: Extent, source_rgba16f: &[u8]) -> Result<(u32, u32, usize), IBLBakeError> {
+	let source_width = source_extent.width();
+	let source_height = source_extent.height();
+	if source_width == 0 || source_height == 0 {
+		return Err(IBLBakeError::ZeroDimensions);
+	}
+
+	let source_size = image_byte_size(source_width, source_height)?;
+	if source_rgba16f.len() != source_size {
+		return Err(IBLBakeError::BufferSizeMismatch {
+			expected: source_size,
+			got: source_rgba16f.len(),
+		});
+	}
+	Ok((source_width, source_height, source_size))
 }
 
 fn image_byte_size(width: u32, height: u32) -> Result<usize, IBLBakeError> {
@@ -466,11 +429,8 @@ fn image_byte_size(width: u32, height: u32) -> Result<usize, IBLBakeError> {
 
 /// Returns the extent of each prefiltered specular level; levels past 1x1 stay 1x1.
 fn specular_extents(width: u32, height: u32) -> [(u32, u32); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize] {
-	let mut extents = [(1, 1); IBL_PREFILTERED_SPECULAR_MIP_COUNT as usize];
-	for (extent, level) in extents.iter_mut().zip(mip_extents(width, height)) {
-		*extent = level;
-	}
-	extents
+	let mut levels = mip_extents(width, height);
+	std::array::from_fn(|_| levels.next().unwrap_or((1, 1)))
 }
 
 pub(super) fn decode_source_radiance<'a>(
@@ -503,7 +463,8 @@ fn decode_finite_half(bytes: &[u8]) -> f32 {
 	if value.is_finite() { value } else { 0.0 }
 }
 
-fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
+/// Writes `source` radiance as RGBA16F pixels, zeroing non-finite channels and setting alpha to one.
+pub(super) fn write_sanitized_source(source: &[Radiance], destination: &mut [u8]) {
 	for (radiance, pixel) in source
 		.iter()
 		.zip(destination.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0.iter_mut())
@@ -762,8 +723,9 @@ pub(super) fn write_rgba16f(destination: &mut [u8], radiance: Radiance) {
 }
 
 #[cfg(test)]
-mod tests {
-	fn constant_source(width: u32, height: u32, color: Radiance) -> Vec<u8> {
+pub(super) mod tests {
+	/// Returns a `width` by `height` RGBA16F source whose every pixel holds `color` with an alpha of 0.25.
+	pub(in crate::ibl) fn constant_source(width: u32, height: u32, color: Radiance) -> Vec<u8> {
 		let mut source = vec![0; image_byte_size(width, height).unwrap()];
 		for pixel in source.as_chunks_mut::<BYTES_PER_RGBA16F_PIXEL>().0 {
 			for (channel, value) in color.into_iter().enumerate() {
@@ -774,7 +736,8 @@ mod tests {
 		source
 	}
 
-	fn decode_pixel(pixel: &[u8]) -> [f32; 4] {
+	/// Decodes one RGBA16F pixel.
+	pub(in crate::ibl) fn decode_pixel(pixel: &[u8]) -> [f32; 4] {
 		let mut values = [0.0; 4];
 		for (channel, bytes) in pixel.as_chunks::<2>().0.iter().enumerate() {
 			values[channel] = f16::from_le_bytes([bytes[0], bytes[1]]).to_f32();
@@ -835,11 +798,7 @@ mod tests {
 			total_weight += normal_dot_light as f64;
 		}
 
-		[
-			(sum[0] / total_weight) as f32,
-			(sum[1] / total_weight) as f32,
-			(sum[2] / total_weight) as f32,
-		]
+		sum.map(|total| (total / total_weight) as f32)
 	}
 
 	#[test]
@@ -1035,7 +994,7 @@ mod tests {
 }
 
 use std::{
-	alloc::Allocator,
+	alloc::{Allocator, Global},
 	error::Error,
 	f32::consts::{PI, TAU},
 	fmt,

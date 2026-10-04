@@ -21,7 +21,10 @@ impl From<BitDepths> for usize {
 	}
 }
 
-#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone)]
+/// The `AlphaMode` enum identifies how alpha affects surface visibility, from the material graph to the renderer.
+#[derive(
+	Debug, PartialEq, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Clone, Copy,
+)]
 pub enum AlphaMode {
 	Opaque,
 	Mask(f32),
@@ -66,6 +69,10 @@ impl From<crate::shader::generator::Stages> for ShaderTypes {
 
 // Mesh
 
+/// The `VertexSemantics` enum names what one vertex stream holds.
+///
+/// The declaration order is the canonical interleaved vertex layout, which mesh processing orders streams by, and
+/// stored meshes encode each variant by its index, so new semantics go at the end.
 #[derive(
 	Clone, Copy, Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq,
 )]
@@ -93,7 +100,7 @@ impl VertexComponent {
 	/// Returns the stream every importer declares for `semantic`: its canonical format on channel 0.
 	///
 	/// Build importer vertex layouts from these, then pass them to
-	/// [`MeshProcessor::begin`](crate::processors::processor::implementations::mesh::MeshProcessor::begin).
+	/// [`MeshProcessorSession::new`](crate::processors::mesh::MeshProcessorSession::new).
 	pub fn canonical(semantic: VertexSemantics) -> Self {
 		let format = match semantic {
 			VertexSemantics::Position | VertexSemantics::Normal | VertexSemantics::BiTangent => "vec3f",

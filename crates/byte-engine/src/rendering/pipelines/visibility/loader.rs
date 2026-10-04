@@ -366,7 +366,7 @@ impl VisibilityLoaderClient {
 						id: material.id.clone(),
 						index: material.index,
 						pipeline,
-						alpha_mode: material.alpha_mode.clone(),
+						alpha_mode: material.alpha_mode,
 						double_sided: material.double_sided,
 						coverage: material.coverage,
 						texture_slots: material.texture_slots.clone(),
@@ -598,7 +598,7 @@ impl VisibilityLoader {
 			))
 		})?;
 		let variant = reference.resource_mut();
-		let alpha_mode = variant.alpha_mode.clone();
+		let alpha_mode = variant.alpha_mode;
 		let texture_ids: Vec<Option<String>> = variant
 			.variables
 			.iter()

@@ -425,4 +425,4 @@ use super::{
 	ResourceId,
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
-use crate::{ibl::IBLGenerator, processors::processor::implementations::image::decode_rgba16f_in};
+use crate::{ibl::IBLGenerator, processors::image::decode_rgba16f_in};

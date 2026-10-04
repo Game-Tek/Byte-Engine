@@ -37,8 +37,8 @@ mod tests {
 			storage_backend::tests::TestStorageBackend as AssetTestStorageBackend,
 		},
 		r#async,
-		pbr::{BrdfAlphaMode, BrdfMaterialDescription, BrdfNode, BrdfValue},
-		processors::processor::implementations::mesh::ProcessedMesh,
+		pbr::{BrdfMaterialDescription, BrdfNode, BrdfValue},
+		processors::mesh::ProcessedMesh,
 		resource::storage_backend::tests::TestStorageBackend as ResourceTestStorageBackend,
 		resources::{
 			animation::{AnimationModel, RotationCurve, TranslationCurve},
@@ -571,7 +571,7 @@ mod tests {
 
 		assert_close(emission, [0.2, 0.6, 1.0]);
 
-		assert_eq!(phong_brdf.alpha_mode, BrdfAlphaMode::Opaque);
+		assert_eq!(phong_brdf.alpha_mode, AlphaMode::Opaque);
 		assert!(phong_brdf.nodes.iter().any(|node| {
 			matches!(node, BrdfNode::Texture(texture) if texture.image_index == diffuse_texture.element.typed_id)
 		}));
@@ -937,7 +937,7 @@ mod tests {
 		)
 	}
 
-	/// Computes the first triangle's signed XY area after applying MeshProcessor's clockwise index convention.
+	/// Computes the first triangle's signed XY area after applying MeshProcessorSession's clockwise index convention.
 	fn first_clockwise_triangle_area(scene: &ufbx::Scene) -> f32 {
 		let processed = import_test_fbx_meshes(scene, None, &[], &Global).expect("fixture mesh should import");
 		let positions = primitive_f32_values::<3>(&processed, 0, VertexSemantics::Position);
@@ -1076,12 +1076,10 @@ use crate::asset::handler::implementations::bema::{
 };
 use crate::{
 	ProcessedAsset, ReferenceModel, asset,
-	pbr::{BrdfAlphaMode, BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
+	pbr::{BrdfMaterialBuilder, BrdfMetallicRoughness, BrdfNode, BrdfTexture, BrdfValue},
 	processors::{
-		processor::implementations::image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
-		processor::implementations::mesh::{
-			MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessor, MeshProcessorSession, VertexSkin,
-		},
+		image::{ImageSource, Semantic, SourceChannels, SourceEncoding},
+		mesh::{MeshPrimitiveProcessingError, MeshPrimitiveSource, MeshProcessorSession, VertexSkin},
 	},
 	resources::{
 		ModelSpace,
@@ -1090,5 +1088,5 @@ use crate::{
 		mips::MipGenerator,
 		skeleton::{LocalTransform, SkeletonModel, SkeletonNode, SkinBinding, SkinJoint, SkinPaletteEntry},
 	},
-	types::{VertexComponent, VertexSemantics},
+	types::{AlphaMode, VertexComponent, VertexSemantics},
 };

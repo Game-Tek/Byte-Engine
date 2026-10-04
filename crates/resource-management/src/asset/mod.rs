@@ -5,9 +5,7 @@ use std::alloc::Allocator;
 use serde_json::{Map, Value};
 
 use crate::{
-	processors::processor::implementations::image::{
-		ImageDescription, ImageSource, Semantic, gamma_from_semantic, process_image_in,
-	},
+	processors::image::{ImageSource, Semantic, gamma_from_semantic, process_image_in},
 	resources::mips::MipGenerator,
 };
 
@@ -102,7 +100,7 @@ pub(crate) fn select_unfragmented_resource(
 pub(crate) async fn commit_mesh(
 	context: handler::BakeContext<'_>,
 	url: ResourceId<'_>,
-	mesh: crate::processors::processor::implementations::mesh::MeshProcessorSession,
+	mesh: crate::processors::mesh::MeshProcessorSession,
 	materials: &[crate::ReferenceModel<crate::resources::material::VariantModel>],
 ) -> Result<(), handler::LoadErrors> {
 	let mut transaction = context.begin_resource(url, mesh.payload_size()).await?;
@@ -155,11 +153,8 @@ pub(crate) async fn store_imported_image(
 	source: ImageSource<'_>,
 	mip_generator: Option<&MipGenerator>,
 ) -> Result<(), handler::LoadErrors> {
-	let description = ImageDescription {
-		semantic,
-		gamma: gamma_from_semantic(semantic),
-	};
-	let (resource, data) = process_image_in(id, description, source, context.allocator(), mip_generator).await?;
+	let gamma = gamma_from_semantic(semantic);
+	let (resource, data) = process_image_in(id, semantic, gamma, source, context.allocator(), mip_generator).await?;
 
 	context.store_resource(resource, &data).await.map(|_| ())
 }

@@ -268,6 +268,6 @@ use super::{
 	handler::{AssetHandler, BakeContext, LoadErrors},
 };
 use crate::{
-	processors::processor::implementations::lut::{LutDescription, process_lut},
+	processors::lut::{LutDescription, process_lut},
 	resources::lut::LutKind,
 };

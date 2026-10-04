@@ -2,7 +2,7 @@ mod decode;
 mod source;
 
 pub(crate) use decode::{decode_rgba16f_in, png_declared_gamma};
-pub(crate) use source::{CanonicalImageData, canonicalize_rgba16f_in};
+pub(crate) use source::canonicalize_rgba16f_in;
 pub use source::{ImageSource, SourceChannels, SourceEncoding};
 use source::{append_canonical_image_in, canonicalize_image_in};
 
@@ -68,28 +68,22 @@ pub fn channel_packing_for_semantic(semantic: Semantic) -> Option<ChannelPacking
 	(semantic == Semantic::MetallicRoughness).then_some(METALLIC_ROUGHNESS_PACKING)
 }
 
-/// The `ImageDescription` struct selects semantic processing and gamma for one decoded image.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct ImageDescription {
-	pub gamma: Gamma,
-	pub semantic: Semantic,
-}
-
 /// Processes image pixels into a stored image, using `allocator` for transient and output buffers.
 ///
-/// Material importers pass their shared `mip_generator`, which stores a full mip chain after the base level, and the
+/// `semantic` selects the stored format and channel packing, and `gamma` is the transfer function of the source's
+/// color channels. Material importers pass their shared `mip_generator`, which stores a full mip chain after the base level, and the
 /// call suspends while a GPU generator serves the request. Standalone image handlers pass `None`, so their authored
 /// texture payload stays one level. A single block-compressed or packed level is encoded on the CPU. Packed semantics
 /// move their kept channels to the front of the filtering surface first, so every level filters and stores the same
 /// texels the unpacked image would.
 pub async fn process_image_in<'a, A: Allocator + Clone>(
 	id: ResourceId<'a>,
-	description: ImageDescription,
+	semantic: Semantic,
+	gamma: Gamma,
 	source: ImageSource<'_>,
 	allocator: A,
 	mip_generator: Option<&MipGenerator>,
 ) -> Result<(ProcessedAsset, Box<[u8], A>), LoadErrors> {
-	let ImageDescription { semantic, gamma } = description;
 	let source_format = source.natural_format().ok_or(LoadErrors::FailedToProcess)?;
 	let extent = source.extent;
 	let packing = channel_packing_for_semantic(semantic);
@@ -149,32 +143,26 @@ pub async fn process_image_in<'a, A: Allocator + Clone>(
 	Ok((ProcessedAsset::new(id, image).with_streams(streams), data.into_boxed_slice()))
 }
 
+/// Guesses how a standalone texture is sampled from the last words of its file name, such as `brick_Base_Color`.
 pub fn guess_semantic_from_name(name: ResourceIdBase) -> Semantic {
-	let name = name.as_ref();
-	if has_suffix_token_sequence(name, &["base", "color"])
-		|| has_suffix_token_sequence(name, &["albedo"])
-		|| has_suffix_token_sequence(name, &["diffuse"])
-	{
-		Semantic::Albedo
-	} else if has_suffix_token_sequence(name, &["normal"]) {
-		Semantic::Normal
-	} else if has_suffix_token_sequence(name, &["metallic"]) {
-		Semantic::Metallic
-	} else if has_suffix_token_sequence(name, &["roughness"]) {
-		Semantic::Roughness
-	} else if has_suffix_token_sequence(name, &["emissive"]) {
-		Semantic::Emissive
-	} else if has_suffix_token_sequence(name, &["height"]) {
-		Semantic::Height
-	} else if has_suffix_token_sequence(name, &["opacity"]) {
-		Semantic::Opacity
-	} else if has_suffix_token_sequence(name, &["displacement"]) {
-		Semantic::Displacement
-	} else if has_suffix_token_sequence(name, &["ao"]) {
-		Semantic::AO
-	} else {
-		Semantic::Other
-	}
+	// The first suffix that matches wins.
+	const SUFFIXES: [(&[&str], Semantic); 11] = [
+		(&["base", "color"], Semantic::Albedo),
+		(&["albedo"], Semantic::Albedo),
+		(&["diffuse"], Semantic::Albedo),
+		(&["normal"], Semantic::Normal),
+		(&["metallic"], Semantic::Metallic),
+		(&["roughness"], Semantic::Roughness),
+		(&["emissive"], Semantic::Emissive),
+		(&["height"], Semantic::Height),
+		(&["opacity"], Semantic::Opacity),
+		(&["displacement"], Semantic::Displacement),
+		(&["ao"], Semantic::AO),
+	];
+	SUFFIXES
+		.iter()
+		.find(|(sequence, _)| has_suffix_token_sequence(name.as_ref(), sequence))
+		.map_or(Semantic::Other, |&(_, semantic)| semantic)
 }
 
 fn has_suffix_token_sequence(name: &str, sequence: &[&str]) -> bool {
@@ -236,8 +224,9 @@ mod tests {
 
 	use utils::Extent;
 
-	use super::{ImageDescription, ImageSource, Semantic, gamma_from_semantic, guess_semantic_from_name, process_image_in};
+	use super::{ImageSource, Semantic, gamma_from_semantic, guess_semantic_from_name, process_image_in};
 	use crate::{
+		ProcessedAsset,
 		asset::ResourceId,
 		resources::{image::Image, mips::MipGenerator},
 		types::{Formats, Gamma},
@@ -280,26 +269,32 @@ mod tests {
 		}
 	}
 
-	#[crate::r#async::test]
-	async fn process_image_expands_rgb8_into_rgba8_without_compression() {
-		let extent = Extent::rectangle(2, 1);
-		let description = ImageDescription {
-			gamma: Gamma::SRGB,
-			semantic: Semantic::Other,
-		};
-		let source = [1, 2, 3, 4, 5, 6];
-
+	/// Processes `source` as "textures/test.png" and returns the asset, its decoded image, and its payload.
+	async fn process(
+		semantic: Semantic,
+		gamma: Gamma,
+		source: ImageSource<'_>,
+		mip_generator: Option<&MipGenerator>,
+	) -> (ProcessedAsset, Image, Box<[u8]>) {
 		let (asset, data) = process_image_in(
 			ResourceId::new("textures/test.png"),
-			description,
-			image_source(extent, Formats::RGB8, &source),
+			semantic,
+			gamma,
+			source,
 			Global,
-			None,
+			mip_generator,
 		)
 		.await
 		.expect("Image processing should succeed");
+		let image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+		(asset, image, data)
+	}
 
-		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+	#[crate::r#async::test]
+	async fn process_image_expands_rgb8_into_rgba8_without_compression() {
+		let source = image_source(Extent::rectangle(2, 1), Formats::RGB8, &[1, 2, 3, 4, 5, 6]);
+
+		let (asset, image, data) = process(Semantic::Other, Gamma::SRGB, source, None).await;
 
 		assert_eq!(asset.id, "textures/test.png");
 		assert_eq!(asset.class, "Image");
@@ -316,25 +311,10 @@ mod tests {
 		source: &[u8],
 		generate_mipmaps: bool,
 	) -> (Image, Box<[u8]>, Box<[u8]>) {
-		let process = async |semantic| {
-			let description = ImageDescription {
-				gamma: Gamma::Linear,
-				semantic,
-			};
-			let (asset, data) = process_image_in(
-				ResourceId::new("textures/metallic_roughness.png"),
-				description,
-				image_source(extent, format, source),
-				Global,
-				generate_mipmaps.then_some(&MipGenerator::Cpu),
-			)
-			.await
-			.expect("metallic-roughness processing should succeed");
-			let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
-			(image, data)
-		};
-		let (packed, packed_data) = process(Semantic::MetallicRoughness).await;
-		let (_, unpacked_data) = process(Semantic::Metallic).await;
+		let mip_generator = generate_mipmaps.then_some(&MipGenerator::Cpu);
+		let source = image_source(extent, format, source);
+		let (_, packed, packed_data) = process(Semantic::MetallicRoughness, Gamma::Linear, source, mip_generator).await;
+		let (_, _, unpacked_data) = process(Semantic::Metallic, Gamma::Linear, source, mip_generator).await;
 		(packed, packed_data, unpacked_data)
 	}
 
@@ -396,60 +376,37 @@ mod tests {
 		// the BC7 compressor with stride = width * 4 (an RGBA8 stride), halving the effective row
 		// width and producing horizontal stripes. The correct path converts RGB16 → RGBA8 first.
 		let extent = Extent::rectangle(4, 4);
-		let description = ImageDescription {
-			gamma: Gamma::Linear,
-			semantic: Semantic::Albedo,
-		};
-
 		// RGB16: 3 channels × 2 bytes = 6 bytes per pixel
-		let source = vec![128_u8; 4 * 4 * 6].into_boxed_slice();
+		let source = vec![128_u8; 4 * 4 * 6];
 
-		let (asset, data) = process_image_in(
-			ResourceId::new("textures/albedo16.png"),
-			description,
+		let (_, image, data) = process(
+			Semantic::Albedo,
+			Gamma::Linear,
 			image_source(extent, Formats::RGB16, &source),
-			Global,
 			None,
 		)
-		.await
-		.expect("RGB16 albedo processing should succeed");
-
-		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+		.await;
 
 		assert_eq!(image.format, Formats::BC7);
 		assert_eq!(image.extent, [4, 4, 0]);
 		// 4×4 image → 1×1 block grid → 1 block × 16 bytes
-
 		assert_eq!(data.len(), 16);
 	}
 
 	#[crate::r#async::test]
 	async fn process_image_with_mipmaps_produces_correct_mip_count_for_bc5_normal_map() {
 		// BC5 compresses RGBA8 intermediate in 4×4 blocks.
-		let width = 8_u32;
-
-		let height = 8_u32;
-		let extent = Extent::rectangle(width, height);
-
-		let description = ImageDescription {
-			gamma: Gamma::Linear,
-			semantic: Semantic::Normal,
-		};
-
+		let (width, height) = (8_u32, 8_u32);
 		// RGBA8: 4 bytes/pixel
-		let source = vec![128_u8; (width * height * 4) as usize].into_boxed_slice();
+		let source = vec![128_u8; (width * height * 4) as usize];
 
-		let (asset, data) = process_image_in(
-			ResourceId::new("textures/mip_normal_bc5.png"),
-			description,
-			image_source(extent, Formats::RGBA8, &source),
-			Global,
+		let (_, image, data) = process(
+			Semantic::Normal,
+			Gamma::Linear,
+			image_source(Extent::rectangle(width, height), Formats::RGBA8, &source),
 			Some(&MipGenerator::Cpu),
 		)
-		.await
-		.expect("BC5 mip generation should succeed");
-
-		let image: Image = crate::from_slice(&asset.resource).expect("Processed asset should deserialize as an image");
+		.await;
 
 		// 8×8 → 4×4 → 2×2 → 1×1  =  4 levels
 		let expected_levels = crate::resources::mips::mip_level_count(width, height).unwrap();

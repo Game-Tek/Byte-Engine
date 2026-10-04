@@ -6,7 +6,7 @@ use exr::prelude::{ReadChannels as _, ReadImage as _, ReadLayers as _, f16};
 use image::ImageDecoder as _;
 use utils::Extent;
 
-use super::{CanonicalImageData, ImageSource, SourceChannels, SourceEncoding, canonicalize_rgba16f_in};
+use super::{ImageSource, SourceChannels, SourceEncoding, canonicalize_rgba16f_in};
 use crate::types::Gamma;
 
 /// The `DecodedImage` struct owns one decoded linear RGBA16F image.
@@ -134,10 +134,7 @@ fn decode_image_rs_in<'a>(
 
 	decoder.read_image(&mut data).map_err(|_| ImageDecodeError::InvalidData)?;
 	let source = ImageSource::new(Extent::rectangle(width, height), channels, encoding, &data);
-	let converted = canonicalize_rgba16f_in(source, gamma, allocator).ok_or(ImageDecodeError::InvalidData)?;
-	let CanonicalImageData::Owned(data) = converted else {
-		unreachable!("image-rs does not expose borrowed RGBA16F decoder output")
-	};
+	let data = canonicalize_rgba16f_in(source, gamma, allocator).ok_or(ImageDecodeError::InvalidData)?;
 
 	Ok(DecodedImage {
 		format,

@@ -43,8 +43,8 @@ SSGI_TEMPORAL_WORKGROUP_SIZE: const u32 = 64;
 // The workgroup's texels plus the filter radius on every side.
 SSGI_TEMPORAL_TILE_WIDTH: const u32 = 12;
 SSGI_TEMPORAL_TILE_SIZE: const u32 = 144;
-// Gaussian weights for offsets zero, one, and two. The product of two gives the 5x5 kernel.
-SSGI_FILTER_WEIGHTS: const f32[3] = f32[3](0.4026199469, 0.2442013420, 0.0544886845);
+// Gaussian weights of the five taps along one axis, centered on the texel. The product of two gives the 5x5 kernel.
+SSGI_FILTER_WEIGHTS: const f32[5] = f32[5](0.0544886845, 0.2442013420, 0.4026199469, 0.2442013420, 0.0544886845);
 // A 5% relative-depth sigma keeps neighbors on the same surface where no normal is known.
 SSGI_FILTER_INVERSE_DEPTH_VARIANCE: const f32 = 200.0;
 // A 1% sigma, relative to the center's depth, for a neighbor's distance from the center's tangent plane.
@@ -58,11 +58,6 @@ SSGI_HISTORY_WEIGHT: const f32 = 0.9;
 // A history texel is reused only when last frame's depth there is within this relative distance of the reprojected
 // point's depth.
 SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
-
-// Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
-filter_weight: fn (offset: u32) -> f32 {
-	return SSGI_FILTER_WEIGHTS[max(offset, SSGI_FILTER_RADIUS) - min(offset, SSGI_FILTER_RADIUS)];
-}
 
 // Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
 // texel without a normal. That pair encodes +z, which points away from the camera and so is never a stored normal.
@@ -93,12 +88,6 @@ normal_agreement: fn (a: vec3f, b: vec3f) -> f32 {
 		0.0,
 		1.0
 	);
-}
-
-// Returns the view-space position of a half-resolution texel at view depth `z`.
-view_position: fn (coordinate: vec2u, z: f32) -> vec3f {
-	let ray: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y)) * screen_view.pixel_to_ray_mul + screen_view.pixel_to_ray_add;
-	return vec3f(ray.x * z, ray.y * z, z);
 }
 
 // Returns how much a neighbor belongs to the center's surface: one on the center's tangent plane with a similar
@@ -135,7 +124,7 @@ spatial_estimate: fn (local: vec2u, center_position: vec3f, center_normal: vec3f
 				continue;
 			}
 			let tap_normal: vec4f = tile_normals[tap_index];
-			let weight: f32 = filter_weight(x_offset) * filter_weight(y_offset)
+			let weight: f32 = SSGI_FILTER_WEIGHTS[x_offset] * SSGI_FILTER_WEIGHTS[y_offset]
 				* surface_weight(
 					center_normal,
 					center_position,
@@ -169,8 +158,10 @@ main: fn (input: StageInput) -> void {
 		);
 		// Mip zero of the depth pyramid holds positive linear depth at the SSGI resolution.
 		let z: f32 = fetch(depth_pyramid, coordinate).x;
-		let position: vec3f = view_position(coordinate, z);
-		tile_positions[tile_index] = vec4f(position.x, position.y, position.z, 0.0);
+		// The texel's view-space position at depth `z`.
+		let ray: vec2f = vec2f(f32(coordinate.x), f32(coordinate.y)) * screen_view.pixel_to_ray_mul
+			+ screen_view.pixel_to_ray_add;
+		tile_positions[tile_index] = vec4f(ray.x * z, ray.y * z, z, 0.0);
 		// A texel without a surface keeps zero depth and never counts as a tap, so nothing reads its normal or ray.
 		if (z != 0.0) {
 			let normal: vec3f = decode_stored_normal(fetch(surface_normals, coordinate));

@@ -97,14 +97,11 @@ decode_octahedral_normal: fn(encoded: vec2u16) -> vec3f {
 	);
 }
 
-normalize_plane: fn(plane: vec4f) -> vec4f {
-	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
-	return plane * inversesqrt(max(dot(normal, normal), 0.000000000001));
-}
-
+// Returns whether a sphere reaches the positive side of a plane, after normalizing the plane.
 sphere_intersects_plane: fn(plane: vec4f, sphere: vec4f) -> bool {
 	let normal: vec3f = vec3f(plane.x, plane.y, plane.z);
-	return dot(vec3f(sphere.x, sphere.y, sphere.z), normal) + plane.w >= 0.0 - sphere.w;
+	let scale: f32 = inversesqrt(max(dot(normal, normal), 0.000000000001));
+	return dot(vec3f(sphere.x, sphere.y, sphere.z), normal * scale) + plane.w * scale >= 0.0 - sphere.w;
 }
 
 // Returns whether a world-space sphere may show in a view: no frustum plane has it wholly outside.
@@ -115,26 +112,12 @@ sphere_is_visible: fn(view: View, sphere: vec4f) -> bool {
 	let row2: vec4f = vec4f(matrix[0].z, matrix[1].z, matrix[2].z, matrix[3].z);
 	let row3: vec4f = vec4f(matrix[0].w, matrix[1].w, matrix[2].w, matrix[3].w);
 
-	return sphere_intersects_plane(normalize_plane(row3 + row0), sphere)
-		&& sphere_intersects_plane(normalize_plane(row3 - row0), sphere)
-		&& sphere_intersects_plane(normalize_plane(row3 - row1), sphere)
-		&& sphere_intersects_plane(normalize_plane(row3 + row1), sphere)
-		&& sphere_intersects_plane(normalize_plane(row2), sphere)
-		&& sphere_intersects_plane(normalize_plane(row3 - row2), sphere);
-}
-
-transform_world_to_object: fn(model: mat4x3f, world_position: vec3f, determinant: f32) -> vec3f {
-	let object_x: vec3f = model[0];
-	let object_y: vec3f = model[1];
-	let object_z: vec3f = model[2];
-	let world_delta: vec3f = world_position - model[3];
-	let inverse_determinant: f32 = 1.0 / determinant;
-
-	return vec3f(
-		dot(cross(object_y, object_z) * inverse_determinant, world_delta),
-		dot(cross(object_z, object_x) * inverse_determinant, world_delta),
-		dot(cross(object_x, object_y) * inverse_determinant, world_delta)
-	);
+	return sphere_intersects_plane(row3 + row0, sphere)
+		&& sphere_intersects_plane(row3 - row0, sphere)
+		&& sphere_intersects_plane(row3 - row1, sphere)
+		&& sphere_intersects_plane(row3 + row1, sphere)
+		&& sphere_intersects_plane(row2, sphere)
+		&& sphere_intersects_plane(row3 - row2, sphere);
 }
 
 cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
@@ -144,13 +127,16 @@ cone_allows_rendering: fn(mesh: Mesh, meshlet: Meshlet, view: View) -> bool {
 		return true;
 	}
 
-	// The inverse view's translation column is the camera's world position.
-	let camera_position_object: vec3f = transform_world_to_object(mesh.model, view.inverse_view[3], determinant);
-	let cone_apex: vec3f = vec3f(
-		meshlet.cone_apex_cutoff.x,
-		meshlet.cone_apex_cutoff.y,
-		meshlet.cone_apex_cutoff.z
+	// The inverse view's translation column is the camera's world position. The rows of the model's inverse are the
+	// cross products of its columns over the determinant.
+	let world_delta: vec3f = view.inverse_view[3] - mesh.model[3];
+	let inverse_determinant: f32 = 1.0 / determinant;
+	let camera_position_object: vec3f = vec3f(
+		dot(cross(mesh.model[1], mesh.model[2]) * inverse_determinant, world_delta),
+		dot(cross(mesh.model[2], mesh.model[0]) * inverse_determinant, world_delta),
+		dot(cross(mesh.model[0], mesh.model[1]) * inverse_determinant, world_delta)
 	);
+	let cone_apex: vec3f = vec3f(meshlet.cone_apex_cutoff.x, meshlet.cone_apex_cutoff.y, meshlet.cone_apex_cutoff.z);
 	let cone_axis: vec3f = decode_octahedral_normal(meshlet.cone_axis);
 	let cone_view: vec3f = cone_apex - camera_position_object;
 	let cone_view_length_squared: f32 = dot(cone_view, cone_view);

@@ -1,15 +1,16 @@
 //! Runtime inspection contracts and protocol-facing state access.
 //!
-//! [`DefaultInspector`] exposes factory-created handles, attached [`Name`]
-//! values, application controls, screenshots, and passive message publication
-//! headers without choosing a transport. Other application values and
-//! published payloads remain opaque.
+//! [`DefaultInspector`] exposes factory-created handles, their tracked
+//! properties, application controls, screenshots, and passive message
+//! publication headers without choosing a transport. Untracked application
+//! values and published payloads remain opaque.
 
 use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "headed")]
 use screenshot::ScreenshotBroker;
-use serde::{Serialize, Serializer, ser::SerializeStruct};
+use math::Point;
+use serde::{Serialize, Serializer, ser::SerializeMap, ser::SerializeStruct};
 use utils::sync::Mutex;
 
 use crate::{
@@ -17,11 +18,12 @@ use crate::{
 	configuration::{Configuration, ConfigurationEvent},
 	core::{
 		channel::{Channel, DefaultChannel},
-		factory::Handle,
+		factory::{CreateMessage, Handle},
+		message::DeleteMessage,
 		message_bus::{MessageBus, MessageScope},
 		message_observer::{MessageObserver, ObservedEntity},
 	},
-	gameplay::Name,
+	gameplay::{Name, TransformationUpdate},
 };
 
 #[cfg(feature = "headed")]
@@ -79,20 +81,71 @@ pub struct InspectedMessage {
 	pub count: u64,
 }
 
-/// The `InspectedEntity` struct describes one current entity and its optional human-readable name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The `InspectedEntity` struct describes one current entity and the properties the inspector tracks for it.
+///
+/// Read a property by its protocol name with [`Self::property`].
+#[derive(Clone, Debug, PartialEq)]
 pub struct InspectedEntity {
 	entity: ObservedEntity,
+	properties: InspectedProperties,
+}
+
+/// The `InspectedValue` enum carries one tracked property value in a transport-neutral form.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InspectedValue<'a> {
+	/// Text, such as an attached [`Name`].
+	Text(&'a str),
+	/// A world-space location, serialized as `[x, y, z]`.
+	Point(Point),
+}
+
+impl Serialize for InspectedValue<'_> {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			Self::Text(text) => serializer.serialize_str(text),
+			Self::Point(point) => [point.x(), point.y(), point.z()].serialize(serializer),
+		}
+	}
+}
+
+/// The `InspectedProperties` struct holds the latest published value of each tracked property of one entity.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct InspectedProperties {
+	/// The latest [`Name`] derived for the entity.
 	name: Option<Name>,
+	/// The position of the latest [`Transform`](crate::gameplay::Transform) published for the entity.
+	position: Option<Point>,
+}
+
+impl InspectedProperties {
+	/// Returns each present property with its protocol name, in a stable order.
+	fn iter(&self) -> impl Iterator<Item = (&'static str, InspectedValue<'_>)> {
+		[
+			self.name.as_ref().map(|name| ("name", InspectedValue::Text(name.as_str()))),
+			self.position.map(|position| ("position", InspectedValue::Point(position))),
+		]
+		.into_iter()
+		.flatten()
+	}
 }
 
 impl Serialize for InspectedEntity {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
 		let mut entity = serializer.serialize_struct("InspectedEntity", 3)?;
 		entity.serialize_field("target", &self.handle().id())?;
-		entity.serialize_field("name", &self.name())?;
 		entity.serialize_field("types", self.types())?;
+		entity.serialize_field("properties", &self.properties)?;
 		entity.end()
+	}
+}
+
+impl Serialize for InspectedProperties {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut properties = serializer.serialize_map(None)?;
+		for (name, value) in self.iter() {
+			properties.serialize_entry(name, &value)?;
+		}
+		properties.end()
 	}
 }
 
@@ -107,9 +160,11 @@ impl InspectedEntity {
 		self.entity.types()
 	}
 
-	/// Returns the name attached through [`Name`] when the entity has one.
-	pub fn name(&self) -> Option<&str> {
-		self.name.as_ref().map(Name::as_str)
+	/// Returns the tracked property with this protocol name, such as `name` or `position`, when the entity has it.
+	pub fn property(&self, name: &str) -> Option<InspectedValue<'_>> {
+		self.properties
+			.iter()
+			.find_map(|(property, value)| (property == name).then_some(value))
 	}
 }
 
@@ -120,7 +175,7 @@ pub struct DefaultInspector {
 	serializable_messages: HashMap<&'static str, SerializableMessage>,
 	message_bus: MessageBus,
 	message_observer: MessageObserver,
-	entity_names: Arc<Mutex<HashMap<Handle, Name>>>,
+	properties: Arc<Mutex<HashMap<Handle, InspectedProperties>>>,
 	#[cfg(feature = "headed")]
 	screenshots: Arc<ScreenshotBroker>,
 }
@@ -132,8 +187,8 @@ impl DefaultInspector {
 	/// inspector requests cannot be published without a consumer. Attach message
 	/// observation before acquiring any routes in `messages`. Next, call
 	/// [`Self::register_message`] with each supported destination channel before sharing
-	/// the inspector with a protocol adapter. Spawn named entities after
-	/// construction because name collection is future-only.
+	/// the inspector with a protocol adapter. Spawn entities after construction
+	/// because property tracking is future-only.
 	pub fn new(events: DefaultChannel<Events>, configuration: Configuration, messages: MessageScope) -> Self {
 		let message_bus = messages.message_bus().clone();
 		let message_observer = message_bus.observer().unwrap_or_else(|| {
@@ -141,26 +196,15 @@ impl DefaultInspector {
 				"Inspector message observation is unavailable. The most likely cause is that MessageBus::observe was not called before acquiring application routes."
 			)
 		});
-		let entity_names = Arc::new(Mutex::new(HashMap::new()));
-		let collected_names = Arc::clone(&entity_names);
-		let forgotten_names = Arc::clone(&entity_names);
-		// Names are the one factory value retained by inspection. The collector
-		// runs at publication time, so scene spawning cannot fill a dormant queue.
-		message_observer.collect_entity_values::<Name, _, _>(
-			move |handle, name| {
-				collected_names.lock().insert(handle, name.clone());
-			},
-			move |handle| {
-				forgotten_names.lock().remove(&handle);
-			},
-		);
+		let properties = Arc::new(Mutex::new(HashMap::new()));
+		watch_properties(&messages, &properties);
 		Self {
 			events,
 			configuration,
 			serializable_messages: HashMap::new(),
 			message_bus,
 			message_observer,
-			entity_names,
+			properties,
 			#[cfg(feature = "headed")]
 			screenshots: Arc::new(ScreenshotBroker::new()),
 		}
@@ -179,7 +223,7 @@ impl DefaultInspector {
 
 	/// Returns current factory-created entities filtered by an exact Rust type or attached name.
 	pub fn entities(&self, entity_type: Option<&str>, name: Option<&str>) -> Vec<InspectedEntity> {
-		let names = self.entity_names.lock();
+		let properties = self.properties.lock();
 		self.message_observer
 			.entities()
 			.into_iter()
@@ -187,13 +231,13 @@ impl DefaultInspector {
 				if entity_type.is_some_and(|entity_type| !entity.types().contains(&entity_type)) {
 					return None;
 				}
-				let entity_name = names.get(&entity.handle()).cloned();
-				if name.is_some_and(|name| entity_name.as_ref().is_none_or(|entity_name| entity_name.as_str() != name)) {
+				let entity_properties = properties.get(&entity.handle()).cloned().unwrap_or_default();
+				if name.is_some_and(|name| entity_properties.name.as_ref().is_none_or(|entity_name| entity_name.as_str() != name)) {
 					return None;
 				}
 				Some(InspectedEntity {
 					entity,
-					name: entity_name,
+					properties: entity_properties,
 				})
 			})
 			.collect()
@@ -236,37 +280,76 @@ impl DefaultInspector {
 	}
 }
 
+/// Keeps `properties` current by watching the scope's routes for every tracked value.
+///
+/// Watchers see each publication, whatever sent it, so physics and gameplay
+/// updates count as well as spawns. Deletions drop the entity's properties.
+fn watch_properties(messages: &MessageScope, properties: &Arc<Mutex<HashMap<Handle, InspectedProperties>>>) {
+	let names = Arc::clone(properties);
+	messages.channel::<CreateMessage<Name>>().watch(move |creation| {
+		names.lock().entry(creation.handle()).or_default().name = Some(creation.data().clone());
+	});
+	let positions = Arc::clone(properties);
+	messages.channel::<TransformationUpdate>().watch(move |update| {
+		positions.lock().entry(update.handle()).or_default().position = Some(update.transform().get_position());
+	});
+	let deleted = Arc::clone(properties);
+	messages.channel::<DeleteMessage>().watch(move |deletion| {
+		deleted.lock().remove(deletion.handle());
+	});
+}
+
 #[cfg(all(test, feature = "headed"))]
 mod tests {
-	use super::DefaultInspector;
+	use math::Point;
+
+	use super::{DefaultInspector, InspectedValue};
 	use crate::{
 		configuration::Configuration,
-		core::{Creator as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},
-		gameplay::{DefaultWorld, Name},
+		core::{Creator as _, channel::Channel as _, channel::DefaultChannel, factory::Handle, message_bus::MessageBus},
+		gameplay::{DefaultWorld, Name, Transform, TransformationUpdate},
 	};
 
 	#[test]
-	fn names_follow_spawn_replacement_and_deletion_through_the_inspector() {
+	fn properties_follow_spawn_replacement_and_deletion_through_the_inspector() {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
-		let messages = message_bus.new_scope("named-entity-test-world");
+		let messages = message_bus.new_scope("inspected-entity-test-world");
 		let world = DefaultWorld::with_messages(messages.clone());
 		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 
-		let handle: Handle = world.create(String::from("crate-model")).with(Name::new("crate")).into();
+		let handle: Handle = world
+			.create(String::from("crate-model"))
+			.with(Name::new("crate"))
+			.with(Transform::from_position(Point::new(1.0, 2.0, 3.0)))
+			.into();
 
 		let entities = inspector.entities(None, Some("crate"));
 		assert_eq!(entities.len(), 1);
 		assert_eq!(entities[0].handle(), handle);
-		assert_eq!(entities[0].name(), Some("crate"));
+		assert_eq!(entities[0].property("name"), Some(InspectedValue::Text("crate")));
+		assert_eq!(
+			entities[0].property("position"),
+			Some(InspectedValue::Point(Point::new(1.0, 2.0, 3.0)))
+		);
 		assert_eq!(
 			inspector.entities(Some(std::any::type_name::<String>()), Some("crate")).len(),
 			1
 		);
 
+		// Updates sent straight to the transform route, as physics does, replace the spawn position.
+		world.transforms_channel().send(TransformationUpdate::new(
+			handle,
+			Transform::from_position(Point::new(4.0, 5.0, 6.0)),
+		));
 		world.factory::<Name>().derive(handle, Name::new("shipping crate"));
 		assert!(inspector.entities(None, Some("crate")).is_empty());
-		assert_eq!(inspector.entities(None, Some("shipping crate"))[0].handle(), handle);
+		let entities = inspector.entities(None, Some("shipping crate"));
+		assert_eq!(entities[0].handle(), handle);
+		assert_eq!(
+			entities[0].property("position"),
+			Some(InspectedValue::Point(Point::new(4.0, 5.0, 6.0)))
+		);
 
 		world.delete(handle);
 		assert!(inspector.entities(None, Some("shipping crate")).is_empty());

@@ -25,9 +25,10 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 /// through an HTTP API.
 ///
 /// Clients use this server to inspect factory-created entities and drain
-/// passive publication ranges. `GET /entities` returns each numeric `target`
-/// and its optional `name` plus Rust `types`. Filter entities with an exact
-/// `name`, `type`, or both. `GET /messages` returns the `scope`, complete
+/// passive publication ranges. `GET /entities` returns each numeric `target`,
+/// its Rust `types`, and a `properties` object with every tracked value it has:
+/// its `name` and its latest `position` as `[x, y, z]`. Filter entities with an
+/// exact `name`, `type`, or both. `GET /messages` returns the `scope`, complete
 /// generic `type`, `first_sequence`, and `count` for each route that published
 /// since the previous request. Payloads remain opaque. `GET /messages/types`
 /// returns each registered protocol `type` and the reflected shape of its JSON
@@ -608,6 +609,8 @@ mod tests {
 		time::Duration,
 	};
 
+	use math::Point;
+
 	use super::HttpInspectorServer;
 	use crate::{
 		application::Events,
@@ -620,7 +623,7 @@ mod tests {
 			message::DeleteMessage,
 			message_bus::MessageBus,
 		},
-		gameplay::{Name, TransformationUpdate},
+		gameplay::{Name, Transform, TransformationUpdate},
 		inspector::{
 			DESTROY_MESSAGE_TYPE, DefaultInspector, ScreenshotCapture, ScreenshotError, ScreenshotFormat, ScreenshotSelection,
 			Screenshots, TRANSFORMATION_UPDATE_MESSAGE_TYPE, screenshot::ScreenshotBroker,
@@ -746,16 +749,18 @@ mod tests {
 	}
 
 	#[test]
-	fn entity_endpoint_returns_and_filters_attached_names() {
+	fn entity_endpoint_returns_tracked_properties_and_filters_by_name() {
 		let message_bus = MessageBus::default();
 		message_bus.observe().expect("attach test message observer");
 		let messages = message_bus.new_scope("named-http-entity-test");
 		let labels = messages.factory::<String>();
 		let names = messages.factory::<Name>();
+		let transforms = messages.factory::<Transform>();
 		let inspector = DefaultInspector::new(DefaultChannel::new(), Configuration::new(), messages);
 
 		let named = labels.create("crate-model".to_string());
 		names.derive(named, Name::new("shipping crate"));
+		transforms.derive(named, Transform::from_position(Point::new(1.0, 2.0, 3.0)));
 		let _unnamed = labels.create("barrel-model".to_string());
 
 		let response = super::entities_response(&inspector, Some("name=shipping+crate"));
@@ -763,7 +768,10 @@ mod tests {
 		let entities: serde_json::Value = serde_json::from_reader(response.into_body()).expect("parse named entities");
 		assert_eq!(entities.as_array().expect("entity array").len(), 1);
 		assert_eq!(entities[0]["target"], named.id());
-		assert_eq!(entities[0]["name"], "shipping crate");
+		assert_eq!(
+			entities[0]["properties"],
+			serde_json::json!({ "name": "shipping crate", "position": [1.0, 2.0, 3.0] })
+		);
 		assert!(
 			entities[0]["types"]
 				.as_array()

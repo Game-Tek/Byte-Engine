@@ -59,27 +59,9 @@ SSGI_HISTORY_WEIGHT: const f32 = 0.9;
 // point's depth.
 SSGI_DISOCCLUSION_TOLERANCE: const f32 = 0.05;
 
-// Reads the positive linear depth stored in mip zero, which matches the SSGI resolution.
-fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f(
-		(f32(coordinate.x) + 0.5) / f32(extent.x),
-		(f32(coordinate.y) + 0.5) / f32(extent.y)
-	);
-	return texture_lod(depth_pyramid, uv, 0.0).x;
-}
-
 // Returns the Gaussian weight of a filter tap `offset` steps along one axis, whose distance is |offset - radius|.
 filter_weight: fn (offset: u32) -> f32 {
 	return SSGI_FILTER_WEIGHTS[max(offset, SSGI_FILTER_RADIUS) - min(offset, SSGI_FILTER_RADIUS)];
-}
-
-// Reads last frame's positive linear depth at a texel.
-fetch_previous_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f(
-		(f32(coordinate.x) + 0.5) / f32(extent.x),
-		(f32(coordinate.y) + 0.5) / f32(extent.y)
-	);
-	return texture_lod(previous_depth_pyramid, uv, 0.0).x;
 }
 
 // Decodes a normal the trace stored as an octahedral pair in RG, or returns zero for the pair (0, 0), which marks a
@@ -98,11 +80,6 @@ decode_stored_normal: fn (stored: vec4f) -> vec3f {
 		z
 	);
 	return normal * inversesqrt(dot(normal, normal));
-}
-
-// Reads the view-space normal the trace rebuilt for a texel last frame, or zero where it had none.
-fetch_previous_normal: fn (coordinate: vec2u) -> vec3f {
-	return decode_stored_normal(fetch(previous_surface_normals, coordinate));
 }
 
 // Returns one for normals within about 25 degrees of each other, falling to zero past about 45 degrees. A missing
@@ -190,19 +167,16 @@ main: fn (input: StageInput) -> void {
 			tap_coordinate(workgroup_origin.x, tile_index % SSGI_TEMPORAL_TILE_WIDTH, extent.x),
 			tap_coordinate(workgroup_origin.y, tile_index / SSGI_TEMPORAL_TILE_WIDTH, extent.y)
 		);
-		let z: f32 = fetch_linear_depth(coordinate, extent);
-		let position: vec3f = vec3f(0.0, 0.0, 0.0);
-		let normal: vec3f = vec3f(0.0, 0.0, 0.0);
-		let radiance: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
-		// A texel without a surface keeps zero depth and never counts as a tap.
-		if (z != 0.0) {
-			position = view_position(coordinate, z);
-			normal = decode_stored_normal(fetch(surface_normals, coordinate));
-			radiance = fetch(raw_radiance, coordinate);
-		}
+		// Mip zero of the depth pyramid holds positive linear depth at the SSGI resolution.
+		let z: f32 = fetch(depth_pyramid, coordinate).x;
+		let position: vec3f = view_position(coordinate, z);
 		tile_positions[tile_index] = vec4f(position.x, position.y, position.z, 0.0);
-		tile_normals[tile_index] = vec4f(normal.x, normal.y, normal.z, 0.0);
-		tile_radiance[tile_index] = radiance;
+		// A texel without a surface keeps zero depth and never counts as a tap, so nothing reads its normal or ray.
+		if (z != 0.0) {
+			let normal: vec3f = decode_stored_normal(fetch(surface_normals, coordinate));
+			tile_normals[tile_index] = vec4f(normal.x, normal.y, normal.z, 0.0);
+			tile_radiance[tile_index] = fetch(raw_radiance, coordinate);
+		}
 	}
 	workgroup_barrier();
 
@@ -247,12 +221,13 @@ main: fn (input: StageInput) -> void {
 			continue;
 		}
 		let coordinate: vec2u = vec2u(u32(tap_x), u32(tap_y));
-		let previous_z: f32 = fetch_previous_depth(coordinate, extent);
+		let previous_z: f32 = fetch(previous_depth_pyramid, coordinate).x;
 		if (previous_z == 0.0 || abs(previous_z - clip.w) > clip.w * SSGI_DISOCCLUSION_TOLERANCE) {
 			continue;
 		}
 		let bilinear: f32 = mix(1.0 - fraction_x, fraction_x, f32(tap % 2)) * mix(1.0 - fraction_y, fraction_y, f32(tap / 2));
-		let weight: f32 = bilinear * normal_agreement(center_normal, fetch_previous_normal(coordinate));
+		let weight: f32 = bilinear
+			* normal_agreement(center_normal, decode_stored_normal(fetch(previous_surface_normals, coordinate)));
 		if (weight <= 0.0) {
 			continue;
 		}

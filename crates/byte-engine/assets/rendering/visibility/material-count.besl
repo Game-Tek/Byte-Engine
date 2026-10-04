@@ -34,13 +34,10 @@ main: fn (input: StageInput) -> void {
 	let extent: vec2u = image_size(instance_index_render_target);
 	let material_index: u32 = INVALID_MATERIAL_INDEX;
 
-	if (coord.x < extent.x) {
-		if (coord.y < extent.y) {
-			let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
-
-			if (pixel_instance_index < INVALID_MATERIAL_INDEX && pixel_instance_index < 1024) {
-				material_index = mesh_data.meshes[pixel_instance_index].material_index;
-			}
+	if (coord.x < extent.x && coord.y < extent.y) {
+		let pixel_instance_index: u32 = image_load_u32(instance_index_render_target, coord);
+		if (pixel_instance_index < 1024) {
+			material_index = mesh_data.meshes[pixel_instance_index].material_index;
 		}
 	}
 
@@ -72,22 +69,14 @@ main: fn (input: StageInput) -> void {
 			) {
 				let slot: u32 = (leader_material_index + probe) & 31;
 				let key: u32 = atomic_load(tile_histogram_keys[slot]);
-
-				// Most later leaders hit an established key and avoid a contended compare-exchange.
-				if (key == leader_material_index) {
+				// Most later leaders hit an established key and avoid a contended compare-exchange. An empty slot is
+				// claimed, unless another leader claims it first.
+				if (key == INVALID_MATERIAL_INDEX) {
+					key = atomic_compare_exchange(tile_histogram_keys[slot], INVALID_MATERIAL_INDEX, leader_material_index);
+				}
+				if (key == INVALID_MATERIAL_INDEX || key == leader_material_index) {
 					atomic_add(tile_histogram_counts[slot], matching_count);
 					claimed_slot = slot;
-				} else if (key == INVALID_MATERIAL_INDEX) {
-					let previous_key: u32 = atomic_compare_exchange(
-						tile_histogram_keys[slot],
-						INVALID_MATERIAL_INDEX,
-						leader_material_index
-					);
-
-					if (previous_key == INVALID_MATERIAL_INDEX || previous_key == leader_material_index) {
-						atomic_add(tile_histogram_counts[slot], matching_count);
-						claimed_slot = slot;
-					}
 				}
 			}
 

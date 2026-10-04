@@ -90,18 +90,10 @@ interleaved_gradient_noise: fn (pixel: vec2u) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
 }
 
+// Returns the extent of depth pyramid mip `level`, which halves per level down to one texel.
 hierarchy_extent: fn (level: u32) -> vec2u {
-	let divisor: u32 = 1 << level;
 	let base_extent: vec2u = texture_size(depth_pyramid);
-	let width: u32 = base_extent.x / divisor;
-	let height: u32 = base_extent.y / divisor;
-	if (width == 0) {
-		width = 1;
-	}
-	if (height == 0) {
-		height = 1;
-	}
-	return vec2u(width, height);
+	return vec2u(max(base_extent.x >> level, 1), max(base_extent.y >> level, 1));
 }
 
 fetch_linear_depth: fn (coordinate: vec2u, level: u32, extent: vec2u) -> f32 {

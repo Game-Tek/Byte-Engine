@@ -99,13 +99,12 @@ main: fn (input: StageInput) -> void {
 		let column: f32 = tile_origin_column + f32(tile_index % CONTACT_SHADOW_FILTER_TILE_WIDTH);
 		let row: f32 = tile_origin_row + f32(tile_index / CONTACT_SHADOW_FILTER_TILE_WIDTH);
 		let inverse_depth: f32 = fetch_inverse_depth(column, row, extent);
-		let trace: f32 = 0.0;
-		// A texel outside the image, or without a surface, has zero depth and never counts as a tap.
-		if (inverse_depth != 0.0) {
-			trace = fetch(contact_shadow_trace, vec2u(u32(column), u32(row))).x;
-		}
 		shared_inverse_depth[tile_index] = inverse_depth;
-		shared_trace[tile_index] = trace;
+		// A texel outside the image, or without a surface, has zero depth and never counts as a tap, so nothing reads
+		// its trace.
+		if (inverse_depth != 0.0) {
+			shared_trace[tile_index] = fetch(contact_shadow_trace, vec2u(u32(column), u32(row))).x;
+		}
 	}
 	workgroup_barrier();
 

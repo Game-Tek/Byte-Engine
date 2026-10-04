@@ -22,8 +22,7 @@ use crate::{
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct FogShaderData {
 	pixel_to_camera_offset: ghi::pod::Mat4f,
-	layer: FogLayerShaderData,
-	second_layer: FogLayerShaderData,
+	layers: [FogLayerShaderData; 2],
 	scattering: [f32; 4],
 	sun_direction: [f32; 4],
 	ambient_inscattering: [f32; 4],
@@ -179,8 +178,10 @@ fn fog_shader_data(
 
 	FogShaderData {
 		pixel_to_camera_offset: pixel_to_camera_offset(view, sink.extent()).into(),
-		layer: FogLayerShaderData::new(Some(fog.layer), camera),
-		second_layer: FogLayerShaderData::new(fog.second_layer, camera),
+		layers: [
+			FogLayerShaderData::new(Some(fog.layer), camera),
+			FogLayerShaderData::new(fog.second_layer, camera),
+		],
 		scattering: [1.0 + squared, 2.0 * anisotropy, fog.max_opacity, 0.0],
 		sun_direction,
 		ambient_inscattering: [ambient.x, ambient.y, ambient.z, 0.0],
@@ -305,12 +306,6 @@ mod tests {
 				"pixel_to_camera_offset",
 				Value::Mat4F(bytemuck::cast(data.pixel_to_camera_offset)),
 			),
-			("layer", Value::Vec4F(data.layer.shape)),
-			("layer_bounds_min", Value::Vec4F(data.layer.bounds_min)),
-			("layer_bounds_max", Value::Vec4F(data.layer.bounds_max)),
-			("second_layer", Value::Vec4F(data.second_layer.shape)),
-			("second_layer_bounds_min", Value::Vec4F(data.second_layer.bounds_min)),
-			("second_layer_bounds_max", Value::Vec4F(data.second_layer.bounds_max)),
 			("scattering", Value::Vec4F(data.scattering)),
 			("sun_direction", Value::Vec4F(data.sun_direction)),
 			("ambient_inscattering", Value::Vec4F(data.ambient_inscattering)),
@@ -319,6 +314,17 @@ mod tests {
 			parameters
 				.write(name, value)
 				.expect("Failed to initialize fog parameters. The most likely cause is a changed production buffer layout.");
+		}
+		for (index, layer) in data.layers.iter().enumerate() {
+			for (field, value) in [
+				("shape", layer.shape),
+				("bounds_min", layer.bounds_min),
+				("bounds_max", layer.bounds_max),
+			] {
+				parameters
+					.write_indexed_field("layers", index, field, Value::Vec4F(value))
+					.expect("Failed to initialize fog layers. The most likely cause is a changed production buffer layout.");
+			}
 		}
 		// Every pixel holds the same depth and color, so only the view ray changes from pixel to pixel.
 		let (width, height) = (sink.extent().width(), sink.extent().height());

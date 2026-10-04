@@ -32,6 +32,7 @@ SsgiRay: struct {
 
 screen_view: descriptor<{ type: ScreenView, binding: 0, access: read }>;
 ssgi_parameters: descriptor<{ type: SsgiParameters, binding: 1, access: read }>;
+// Mip zero holds positive linear depth at the trace resolution.
 depth_pyramid: descriptor<{ type: Texture2D, binding: 1033, access: read }>;
 raw_output: descriptor<{ type: StorageImage<rgba16f>, binding: 1034, access: write }>;
 previous_radiance_map: descriptor<{ type: Texture2D, binding: 1035, access: read }>;
@@ -82,15 +83,6 @@ interleaved_gradient_noise: fn (pixel: vec2f) -> f32 {
 	return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
 }
 
-// Reads the positive linear depth stored in mip zero, which matches the trace resolution.
-fetch_linear_depth: fn (coordinate: vec2u, extent: vec2u) -> f32 {
-	let uv: vec2f = vec2f(
-		(f32(coordinate.x) + 0.5) / f32(extent.x),
-		(f32(coordinate.y) + 0.5) / f32(extent.y)
-	);
-	return texture_lod(depth_pyramid, uv, 0.0).x;
-}
-
 // Reports whether four consecutive depths along one screen axis lie on one connected surface. Across a plane,
 // 1/depth changes by the same step between neighboring texels, and at a crease the step changes gradually. At a
 // silhouette, the step between the middle texels is several times larger than the steps on either side.
@@ -120,24 +112,24 @@ clamped_texel: fn (x: f32, y: f32, extent: vec2u) -> vec2u {
 hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let base_x: f32 = floor(hit_pixel.x);
 	let base_y: f32 = floor(hit_pixel.y);
-	let z00: f32 = fetch_linear_depth(clamped_texel(base_x, base_y, extent), extent);
-	let z10: f32 = fetch_linear_depth(clamped_texel(base_x + 1.0, base_y, extent), extent);
-	let z01: f32 = fetch_linear_depth(clamped_texel(base_x, base_y + 1.0, extent), extent);
+	let z00: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y, extent)).x;
+	let z10: f32 = fetch(depth_pyramid, clamped_texel(base_x + 1.0, base_y, extent)).x;
+	let z01: f32 = fetch(depth_pyramid, clamped_texel(base_x, base_y + 1.0, extent)).x;
 	let continuous_x: bool = depths_are_continuous(
-		fetch_linear_depth(clamped_texel(base_x - 1.0, base_y, extent), extent),
+		fetch(depth_pyramid, clamped_texel(base_x - 1.0, base_y, extent)).x,
 		z00,
 		z10,
-		fetch_linear_depth(clamped_texel(base_x + 2.0, base_y, extent), extent)
+		fetch(depth_pyramid, clamped_texel(base_x + 2.0, base_y, extent)).x
 	);
 	let continuous_y: bool = depths_are_continuous(
-		fetch_linear_depth(clamped_texel(base_x, base_y - 1.0, extent), extent),
+		fetch(depth_pyramid, clamped_texel(base_x, base_y - 1.0, extent)).x,
 		z00,
 		z01,
-		fetch_linear_depth(clamped_texel(base_x, base_y + 2.0, extent), extent)
+		fetch(depth_pyramid, clamped_texel(base_x, base_y + 2.0, extent)).x
 	);
 	if (continuous_x && continuous_y) {
 		let hit_texel: vec2u = clamped_texel(round(hit_pixel.x), round(hit_pixel.y), extent);
-		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch_linear_depth(hit_texel, extent));
+		return vec3f(f32(hit_texel.x), f32(hit_texel.y), fetch(depth_pyramid, hit_texel).x);
 	}
 
 	// At a silhouette, the object in front is the nearest nonzero texel of the footprint.
@@ -145,7 +137,7 @@ hit_surface: fn (hit_pixel: vec2f, hit_ray_z: f32, extent: vec2u) -> vec3f {
 	let nearest_texel: vec2u = vec2u(0, 0);
 	for (let tap: u32 = 0; tap < 4; tap = tap + 1) {
 		let texel: vec2u = clamped_texel(base_x + f32(tap % 2), base_y + f32(tap / 2), extent);
-		let z: f32 = fetch_linear_depth(texel, extent);
+		let z: f32 = fetch(depth_pyramid, texel).x;
 		if (z != 0.0 && (nearest_z == 0.0 || z < nearest_z)) {
 			nearest_z = z;
 			nearest_texel = texel;
@@ -177,7 +169,7 @@ ray_depth: fn (ray: SsgiRay, fraction: f32) -> f32 {
 // Background holds nothing to hit, so the ray is in front of it.
 ray_penetration: fn (ray: SsgiRay, fraction: f32, extent: vec2u) -> f32 {
 	let sample_pixel: vec2f = ray_pixel(ray, fraction);
-	let scene_z: f32 = fetch_linear_depth(clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent), extent);
+	let scene_z: f32 = fetch(depth_pyramid, clamped_texel(round(sample_pixel.x), round(sample_pixel.y), extent)).x;
 	if (scene_z == 0.0) {
 		return 0.0 - 1.0;
 	}
@@ -197,7 +189,7 @@ neighbor_depth: fn (pixel: vec2u, offset_x: f32, offset_y: f32, extent: vec2u) -
 	if (x < 0.0 || y < 0.0 || x >= f32(extent.x) || y >= f32(extent.y)) {
 		return 0.0;
 	}
-	return fetch_linear_depth(vec2u(u32(x), u32(y)), extent);
+	return fetch(depth_pyramid, vec2u(u32(x), u32(y))).x;
 }
 
 // Returns the error of predicting the center depth by extending the line through two neighbors on one side, in 1/z.
@@ -296,16 +288,6 @@ hit_normal: fn (pixel: vec2u, extent: vec2u, center_position: vec3f) -> vec3f {
 	return tangent_normal(
 		hit_axis_tangent(pixel, vec2f(1.0, 0.0), center_position, extent),
 		hit_axis_tangent(pixel, vec2f(0.0, 1.0), center_position, extent),
-		center_position
-	);
-}
-
-// Rebuilds the view-space normal of one of the workgroup's own texels from its tile, or returns zero when the
-// neighborhood is degenerate.
-reconstruct_tile_normal: fn (center_index: u32, pixel: vec2f, center_position: vec3f) -> vec3f {
-	return tangent_normal(
-		tile_axis_tangent(center_index, 1, pixel, vec2f(1.0, 0.0), center_position),
-		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel, vec2f(0.0, 1.0), center_position),
 		center_position
 	);
 }
@@ -426,8 +408,13 @@ main: fn (input: StageInput) -> void {
 
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let center_position: vec3f = view_position(pixel_f, center_z);
-	let normal: vec3f = reconstruct_tile_normal(center_index, pixel_f, center_position);
-	// A zero normal marks a degenerate neighborhood; the denoiser then compares depth only.
+	// The normal comes from the depths in the workgroup's tile. A zero normal marks a degenerate neighborhood; the
+	// denoiser then compares depth only.
+	let normal: vec3f = tangent_normal(
+		tile_axis_tangent(center_index, 1, pixel_f, vec2f(1.0, 0.0), center_position),
+		tile_axis_tangent(center_index, SSGI_TRACE_TILE_WIDTH, pixel_f, vec2f(0.0, 1.0), center_position),
+		center_position
+	);
 	write(normal_output, pixel, encode_stored_normal(normal));
 	// Without history there is no light to gather, so every ray reports a miss and the environment lights the pixel.
 	if (ssgi_parameters.history_valid == 0 || dot(normal, normal) == 0.0) {

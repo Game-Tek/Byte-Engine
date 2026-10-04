@@ -71,11 +71,9 @@ impl<A: Allocator + Clone> Generator<A> {
 			return None;
 		};
 
-		let (name, per_vertex) = crate::shader::generator::mesh_output_target(output)?;
-
-		Some(MeshWrite {
+		crate::shader::generator::mesh_output_target(output, |name, per_vertex| MeshWrite {
 			per_vertex,
-			field: Self::mesh_output_field_name(&name).to_string(),
+			field: Self::mesh_output_field_name(name).to_string(),
 			index: index.clone(),
 			value: right.clone(),
 		})

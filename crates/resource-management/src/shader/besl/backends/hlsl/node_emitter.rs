@@ -365,7 +365,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((field_name, per_vertex)) = crate::shader::generator::mesh_output_target(left) {
+		if let Some((field_name, per_vertex)) =
+			crate::shader::generator::mesh_output_target(left, |name, per_vertex| (name.to_string(), per_vertex))
+		{
 			// Mesh attributes live in the native per-vertex or per-primitive output array rather than module globals.
 			string.push_str(if per_vertex { "besl_vertices[" } else { "besl_primitives[" });
 			self.emit_node_string(string, right);

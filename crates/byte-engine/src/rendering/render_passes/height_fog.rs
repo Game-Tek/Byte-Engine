@@ -46,13 +46,13 @@ impl FogLayerShaderData {
 			return Self::zeroed();
 		};
 		// The density at the camera is density · e^exponent. The shader clamps the exponent once it adds the ray's part.
-		let exponent = layer.height_falloff * (layer.base_height - camera.y);
-		let (bounded, bounds_min, bounds_max) = match layer.bounds {
+		let exponent = layer.height_falloff() * (layer.base_height() - camera.y);
+		let (bounded, bounds_min, bounds_max) = match layer.bounds() {
 			Some(bounds) => (1.0, bounds.min().into_maths() - camera, bounds.max().into_maths() - camera),
 			None => (0.0, Vec3f::new(0.0, 0.0, 0.0), Vec3f::new(0.0, 0.0, 0.0)),
 		};
 		Self {
-			shape: [layer.density, layer.height_falloff, exponent, bounded],
+			shape: [layer.density(), layer.height_falloff(), exponent, bounded],
 			bounds_min: [bounds_min.x, bounds_min.y, bounds_min.z, 0.0],
 			bounds_max: [bounds_max.x, bounds_max.y, bounds_max.z, 0.0],
 		}
@@ -158,13 +158,13 @@ fn fog_shader_data(
 	// The translation column of the inverse view is the camera's world position.
 	let camera = Vec3f::from(inverse(view.view()).get_column(3));
 	let exposure = sink.exposure_scale();
-	let albedo = fog.albedo;
+	let albedo = fog.albedo();
 	// A sky that delivers E lux to the ground evenly from every direction has a radiance of E / π, and fog lit evenly
 	// from every direction scatters that radiance unchanged, whatever its phase function.
-	let ambient = albedo * (fog.ambient_illuminance / std::f32::consts::PI * exposure);
+	let ambient = albedo * (fog.ambient_illuminance() / std::f32::consts::PI * exposure);
 	// The Henyey-Greenstein phase function is (1 − g²) / 4π · (1 + g² − 2g cos θ)^-3/2. The constant factor rides on the
 	// sunlight, and the shader evaluates the angular part.
-	let anisotropy = fog.anisotropy;
+	let anisotropy = fog.anisotropy();
 	let squared = anisotropy * anisotropy;
 	let phase_scale = (1.0 - squared) / (4.0 * std::f32::consts::PI);
 	// Without a sun direction there is no sun to scatter.
@@ -179,10 +179,10 @@ fn fog_shader_data(
 	FogShaderData {
 		pixel_to_camera_offset: pixel_to_camera_offset(view, sink.extent()).into(),
 		layers: [
-			FogLayerShaderData::new(Some(fog.layer), camera),
-			FogLayerShaderData::new(fog.second_layer, camera),
+			FogLayerShaderData::new(Some(fog.layer()), camera),
+			FogLayerShaderData::new(fog.second_layer(), camera),
 		],
-		scattering: [1.0 + squared, 2.0 * anisotropy, fog.max_opacity, 0.0],
+		scattering: [1.0 + squared, 2.0 * anisotropy, fog.max_opacity(), 0.0],
 		sun_direction,
 		ambient_inscattering: [ambient.x, ambient.y, ambient.z, 0.0],
 		sun_inscattering: [sun.x, sun.y, sun.z, 0.0],

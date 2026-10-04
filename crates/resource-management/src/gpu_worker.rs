@@ -80,7 +80,8 @@ pub(crate) struct GpuWorker<P: GpuProcessor> {
 
 /// The `GpuWorkerError` enum reports why the shared GPU worker could not set up a processor or serve a request.
 ///
-/// Processor errors wrap it and print it with [`Self::describe`], which names their subsystem.
+/// GPU processor errors, such as the environment-map and mip errors, wrap it. Return it from a processor factory to
+/// report your own instance, device, or context failure.
 #[derive(Debug)]
 pub enum GpuWorkerError {
 	Instance(&'static str),

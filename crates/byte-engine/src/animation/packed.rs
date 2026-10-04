@@ -10,6 +10,10 @@ use super::math::{CurveInterpolation, CurveValue, sample_curve};
 
 const NONE: u32 = u32::MAX;
 const HEADER_WORDS: usize = 8;
+/// The header word that holds the offset of the three-component value table, used by translation and scale curves.
+const VECTOR3_VALUES_WORD: usize = 5;
+/// The header word that holds the offset of the four-component value table, used by rotation curves.
+const QUATERNION_VALUES_WORD: usize = 6;
 const TRACK_WORDS: usize = 4;
 const CURVE_WORDS: usize = 4;
 
@@ -117,13 +121,13 @@ impl<'a> PackedAnimation<'a> {
 	/// Applies the sampled channels from one packed track to a local transform.
 	fn sample_track(self, track: PackedTrack, time: f32, local: &mut LocalTransform) {
 		if let Some(curve) = track.translation {
-			local.translation = self.sample(curve, time, 5);
+			local.translation = self.sample(curve, time, VECTOR3_VALUES_WORD);
 		}
 		if let Some(curve) = track.rotation {
-			local.rotation = self.sample(curve, time, 6);
+			local.rotation = self.sample(curve, time, QUATERNION_VALUES_WORD);
 		}
 		if let Some(curve) = track.scale {
-			local.scale = self.sample(curve, time, 5);
+			local.scale = self.sample(curve, time, VECTOR3_VALUES_WORD);
 		}
 	}
 

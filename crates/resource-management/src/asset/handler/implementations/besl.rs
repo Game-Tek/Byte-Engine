@@ -471,7 +471,8 @@ impl PreparedBeslShader {
 	/// Compiles this shader with the platform toolchain and returns its resource model and binary payload.
 	///
 	/// The compiled resource interface and workgroup must match semantic reflection, so a backend that drifts from
-	/// BESL fails the bake instead of producing a shader the renderer binds wrongly.
+	/// BESL fails the bake instead of producing a shader the renderer binds wrongly. Next, store the shader and its
+	/// payload with the handler's [`BakeContext`].
 	pub(crate) async fn compile(self, id: &str) -> Result<(Shader, Box<[u8]>), String> {
 		let compiled = self.lowered.compile().await?;
 

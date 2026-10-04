@@ -134,9 +134,10 @@ pub(crate) fn receiver_fit_shader_data(
 /// The `ShadowMaps` struct holds the frame's shadow maps for every sink at once.
 ///
 /// The shadow views come from the first sink, so each sink would render the same maps. The visibility pipeline manager
-/// owns one `ShadowMaps` and records it with the first sink only; every sink's material evaluation samples its images.
-/// Each frame renders its maps before it reads them, and the graphics queue orders one frame's reads before the next
-/// frame's writes, so frames in flight share the images too.
+/// owns one `ShadowMaps` and records it with the first sink only; every sink's material evaluation samples its
+/// [`Self::directional`], [`Self::directional_depth_pyramid`], [`Self::cone`], and [`Self::point`] images. Each frame
+/// renders its maps before it reads them, and the graphics queue orders one frame's reads before the next frame's
+/// writes, so frames in flight share the images too.
 pub(crate) struct ShadowMaps {
 	depth_pyramid_descriptor_set: ghi::DescriptorSetHandle,
 	directional_pipelines: PhasePipelines,
@@ -153,8 +154,9 @@ pub(crate) struct ShadowMaps {
 impl ShadowMaps {
 	/// Creates the shadow maps and requests their depth pipelines.
 	///
-	/// Next, write the map images into each sink's material-evaluation descriptor set, and record [`Self::prepare`]
-	/// with the first sink each frame.
+	/// Next, write [`Self::directional`], [`Self::directional_depth_pyramid`], [`Self::cone`], and [`Self::point`] into
+	/// each sink's material-evaluation descriptor set, as [`super::VisibilityRenderPass::new`] does, and record
+	/// [`Self::prepare`] with the first sink each frame.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,

@@ -384,7 +384,8 @@ impl PipelineManager for ParticleManager {
 		}
 
 		self.seed = self.seed.wrapping_add(1);
-		let mut pools = bumpalo::collections::Vec::with_capacity_in(self.systems.len(), frame_allocator);
+		// The frame arena holds the active pools; it allocates on the first push, so idle frames allocate nothing.
+		let mut pools = bumpalo::collections::Vec::new_in(frame_allocator);
 		for (index, entry) in self.systems.iter_mut().enumerate() {
 			let Some(pool) = entry.pool.as_deref_mut() else {
 				continue;

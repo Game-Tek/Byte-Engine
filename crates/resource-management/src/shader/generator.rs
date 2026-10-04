@@ -239,8 +239,9 @@ pub(crate) fn validate_workgroup_storage_stage(stage: &Stages, order: &[besl::No
 /// Recovers the indexed mesh output that a member expression names, so backends can address its vertex or primitive
 /// structure field.
 ///
-/// Returns the output name and whether the output is per-vertex.
-pub(crate) fn mesh_output_target(member: &besl::NodeReference) -> Option<(String, bool)> {
+/// Passes the output name and whether the output is per-vertex to `target`, so each backend copies only the name it
+/// emits.
+pub(crate) fn mesh_output_target<R>(member: &besl::NodeReference, target: impl FnOnce(&str, bool) -> R) -> Option<R> {
 	let member = member.borrow();
 	let besl::Nodes::Expression(besl::Expressions::Member { source, .. }) = member.node() else {
 		return None;
@@ -255,7 +256,7 @@ pub(crate) fn mesh_output_target(member: &besl::NodeReference) -> Option<(String
 	else {
 		return None;
 	};
-	Some((name.clone(), *per_vertex))
+	Some(target(name, *per_vertex))
 }
 
 /// Reports whether a BESL input is one of the implicit vertex invocation indices.

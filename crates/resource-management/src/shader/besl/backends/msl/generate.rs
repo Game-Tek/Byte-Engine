@@ -92,20 +92,20 @@ impl Generator {
 	) -> Result<String, ()> {
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, order)?;
-		let intrinsic_requirements = Self::collect_intrinsic_requirements(order);
+		let intrinsic_requirements = intrinsic_requirements(order);
 		if intrinsic_requirements.uses_subgroup_intrinsics
 			&& !matches!(shader_compilation_settings.stage, Stages::Compute { .. })
 		{
 			return Err(());
 		}
 		Self::validate_reachable_binding_layout(order)?;
-		self.collect_packed_mat4x3_members(order);
-		self.hidden_contexts = analyze_hidden_contexts(order);
 		if matches!(shader_compilation_settings.stage, Stages::Vertex | Stages::Fragment)
 			&& let Some(source) = Self::find_full_source_passthrough(main_function_node)
 		{
 			return Ok(source);
 		}
+		self.collect_packed_mat4x3_members(order);
+		self.hidden_contexts = analyze_hidden_contexts(order);
 
 		let downsample_helper_capacity =
 			if intrinsic_requirements.uses_downsample_min || intrinsic_requirements.uses_downsample_max {
@@ -267,6 +267,10 @@ impl Generator {
 
 	/// Reports whether one accessor evaluates to a native matrix loaded from packed storage.
 	pub(crate) fn accessor_returns_packed_mat4x3(&self, left: &besl::NodeReference, right: &besl::NodeReference) -> bool {
+		// Without packed matrix storage no accessor can return one, so skip the type inference below.
+		if self.packed_mat4x3_members.is_empty() {
+			return false;
+		}
 		if self.packed_mat4x3_storage_is_array(right, Some(left)) == Some(false) {
 			return true;
 		}

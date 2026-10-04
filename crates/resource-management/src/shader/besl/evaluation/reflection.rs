@@ -39,7 +39,7 @@ pub enum TextureView {
 
 /// The `BindingCollectionState` struct keeps reflection traversal aligned with graph identity deduplication.
 struct BindingCollectionState {
-	visited: HashSet<besl::NodeReference>,
+	visited: utils::hash::HashSet<besl::NodeReference>,
 	error: Option<String>,
 }
 
@@ -400,7 +400,7 @@ impl ProgramEvaluation {
 pub(crate) fn collect_bindings(node: &besl::NodeReference) -> Result<Vec<BindingUsage>, String> {
 	let mut bindings = Vec::with_capacity(16);
 	let mut state = BindingCollectionState {
-		visited: HashSet::new(),
+		visited: utils::hash::HashSet::default(),
 		error: None,
 	};
 	build_bindings(&mut bindings, node, &mut state);

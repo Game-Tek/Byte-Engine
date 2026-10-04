@@ -30,18 +30,16 @@ impl Generator {
 		if order.iter().any(Self::has_misplaced_array_constructor) {
 			return Err(());
 		}
-		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
-		let uses_fma = order.iter().any(|node| uses_intrinsic(node, "fma"));
-		if uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
+		let requirements = intrinsic_requirements(&order);
+		if requirements.uses_subgroup_intrinsics && !matches!(self.stage, Stages::Compute { .. }) {
 			return Err(());
 		}
-		self.mesh_uses_render_target_array_index = order
-			.iter()
-			.any(|node| uses_intrinsic(node, "set_mesh_primitive_render_target_array_index"));
+		self.mesh_uses_render_target_array_index = requirements.uses_render_target_array_index;
 		self.task_payloads.clear();
 		self.mesh_outputs.clear();
 		self.raster_inputs.clear();
 		self.raster_outputs.clear();
+		self.user_struct_constructors.clear();
 		self.packed_write_counter = 0;
 		self.atomic_temporary_counter = 0;
 		self.atomic_temporaries.clear();
@@ -54,17 +52,7 @@ impl Generator {
 				_ => {}
 			}
 		}
-		self.user_struct_constructors.clear();
-		// Discover constructor calls before declarations are emitted so their HLSL factories can stay next to each struct.
-		for node in &order {
-			self.emit_node_string(&mut string, node);
-		}
-		string.clear();
-		self.packed_write_counter = 0;
-		self.atomic_temporary_counter = 0;
-		self.atomic_temporaries.clear();
-
-		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, uses_subgroup_intrinsics, uses_fma);
+		self.generate_hlsl_header_block(&mut string, shader_compilation_settings, &requirements);
 		if matches!(self.stage, Stages::Task { .. }) {
 			string.push_str("groupshared uint32_t besl_mesh_output_count;");
 			string.push_str(ShaderFormatting::new(self.minified).break_str());
@@ -73,8 +61,23 @@ impl Generator {
 			self.emit_mesh_output_structs(&mut string);
 		}
 
+		// Each constructed user struct gets its factory right after its declaration. Constructor calls are emitted after
+		// the struct they construct, so the factories are inserted once emission has recorded every call.
+		let mut struct_ends = Vec::new();
 		for node in order {
 			self.emit_node_string(&mut string, &node);
+			if matches!(node.borrow().node(), besl::Nodes::Struct { .. }) {
+				struct_ends.push((string.len(), node));
+			}
+		}
+		for (end, node) in struct_ends.into_iter().rev() {
+			if let besl::Nodes::Struct { name, fields, .. } = node.borrow().node()
+				&& self.user_struct_constructors.contains(&node)
+			{
+				let mut factory = String::new();
+				self.emit_hlsl_struct_factory(&mut factory, name, fields);
+				string.insert_str(end, &factory);
+			}
 		}
 
 		Ok(string)
@@ -246,13 +249,7 @@ impl Generator {
 			}
 			besl::Nodes::Struct {
 				name, fields, template, ..
-			} => {
-				self.emit_struct_node(string, name, fields, template);
-				// Only user structs the program constructs are recorded, see `emit_function_call`.
-				if self.user_struct_constructors.contains(this_node) {
-					self.emit_hlsl_struct_factory(string, name, fields);
-				}
-			}
+			} => self.emit_struct_node(string, name, fields, template),
 			besl::Nodes::Expression(besl::Expressions::Operator { operator, left, right })
 				if *operator == besl::Operators::Assignment && self.emit_image_size_assignment(string, left, right) => {}
 			besl::Nodes::PushConstant { members } => {
@@ -493,8 +490,7 @@ impl Generator {
 		&self,
 		hlsl_block: &mut String,
 		compilation_settings: &ShaderGenerationSettings,
-		uses_subgroup_intrinsics: bool,
-		uses_fma: bool,
+		requirements: &IntrinsicRequirements,
 	) {
 		// Generated HLSL uses the engine's modern-only DXIL contract.
 		hlsl_block.push_str("// Shader Model 6.9\n");
@@ -519,7 +515,7 @@ impl Generator {
 		hlsl_block.push_str("#pragma pack_matrix(row_major)\nstatic const float PI = 3.14159265359;");
 
 		hlsl_block.push_str(ShaderFormatting::new(self.minified).break_str());
-		if uses_subgroup_intrinsics {
+		if requirements.uses_subgroup_intrinsics {
 			hlsl_block.push_str(
 				"bool _besl_subgroup_ballot_any(uint4 mask) { return any(mask); }\n\
 				 uint _besl_subgroup_ballot_find_lsb(uint4 mask) { if (mask.x != 0u) { return firstbitlow(mask.x); } if (mask.y != 0u) { return 32u + firstbitlow(mask.y); } if (mask.z != 0u) { return 64u + firstbitlow(mask.z); } if (mask.w != 0u) { return 96u + firstbitlow(mask.w); } return 0xffffffffu; }\n\
@@ -527,7 +523,7 @@ impl Generator {
 				 uint4 _besl_subgroup_ballot_and_not(uint4 mask, uint4 removed) { return mask & ~removed; }\n",
 			);
 		}
-		if uses_fma {
+		if requirements.uses_fma {
 			// These helpers preserve BESL's one-rounding FMA contract.
 			hlsl_block.push_str(
 				"// A binary16 product is exact in binary32. TwoSum recovers the addition residual so a binary32 midpoint can be rounded on the exact side.\n\

@@ -247,12 +247,13 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				}
 			}
 
+			// Only multiplication depends on the operand types, so other operators skip type inference.
+			if *operator != besl::Operators::Multiply {
+				return false;
+			}
 			let left_type = Self::node_type_name(left);
 			let right_type = Self::node_type_name(right);
-			if *operator == besl::Operators::Multiply
-				&& left_type.as_deref() == Some("mat4x3f")
-				&& right_type.as_deref() == Some("vec4f")
-			{
+			if left_type.as_deref() == Some("mat4x3f") && right_type.as_deref() == Some("vec4f") {
 				// HLSL float4x3 stores the four BESL columns as rows, so the vector must be the left mul operand.
 				string.push_str("mul(");
 				self.emit_node_string(string, right);
@@ -261,13 +262,12 @@ impl crate::shader::generator::NodeEmitter for Generator {
 				string.push(')');
 				return true;
 			}
-			if *operator == besl::Operators::Multiply
-				&& matches!(
-					(left_type.as_deref(), right_type.as_deref()),
-					(Some("mat4f"), Some("mat4f" | "vec4f"))
-						| (Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"), Some("f32"))
-						| (Some("f32"), Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"))
-				) {
+			if matches!(
+				(left_type.as_deref(), right_type.as_deref()),
+				(Some("mat4f"), Some("mat4f" | "vec4f"))
+					| (Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"), Some("f32"))
+					| (Some("f32"), Some("mat2f" | "mat3f" | "mat4f" | "mat4x3f"))
+			) {
 				// BESL reserves algebraic multiplication for these matrix
 				// shapes. Same-shaped mat4x3 values use component-wise `*`.
 				string.push_str("mul(");
@@ -287,8 +287,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			right.borrow().node(),
 			besl::Nodes::Expression(besl::Expressions::Member { .. })
 		);
-		if right_is_member
-			&& let Some((binding_name, field_name, ..)) = Self::hlsl_buffer_member_target(left)
+		// Resolved at most once: the swizzle path needs it only for member accessors, and the indexing path always.
+		let buffer_target = right_is_member.then(|| Self::hlsl_buffer_member_target(left));
+		if let Some(Some((binding_name, field_name, ..))) = &buffer_target
 			&& field_name != binding_name
 		{
 			// A component selected from a buffer field remains an HLSL swizzle after the buffer access itself is lowered.
@@ -311,7 +312,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let (Some(binding), Some(field_name)) = (Self::hlsl_buffer_binding_source(left), Self::hlsl_member_name(right)) {
+		if let Some(binding) = Self::hlsl_buffer_binding_source(left)
+			&& let Some(field_name) = Self::hlsl_member_name(right)
+		{
 			// BESL buffers are engine storage buffers, so HLSL always reads fields through element zero.
 			Self::identifier(&binding.name).push_to(string);
 			string.push_str("[0].");
@@ -336,7 +339,9 @@ impl crate::shader::generator::NodeEmitter for Generator {
 			return;
 		}
 
-		if let Some((binding_name, field_name, _, narrow_element)) = Self::hlsl_buffer_member_target(left) {
+		if let Some((binding_name, field_name, _, narrow_element)) =
+			buffer_target.unwrap_or_else(|| Self::hlsl_buffer_member_target(left))
+		{
 			if let Some(element_type) = narrow_element {
 				let (word_index, bit_offset, element_mask) = if element_type == "u8" {
 					(") / 4u] >> (((", ") % 4u) * 8u)) & ", "0xffu")

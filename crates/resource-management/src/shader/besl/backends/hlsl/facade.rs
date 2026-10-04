@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use utils::hash::HashMap;
 
 use crate::shader::generator::Stages;
 
@@ -45,7 +45,7 @@ impl Generator {
 			user_struct_constructors: Vec::new(),
 			packed_write_counter: 0,
 			atomic_temporary_counter: 0,
-			atomic_temporaries: HashMap::new(),
+			atomic_temporaries: HashMap::default(),
 			match_break_depth: None,
 		}
 	}

@@ -186,7 +186,25 @@ impl LoweredPlatformShader {
 	pub async fn compile(self) -> Result<CompiledShader, String> {
 		let binary = match PlatformShaderLanguage::current_platform() {
 			#[cfg(target_os = "linux")]
-			PlatformShaderLanguage::Glsl => crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&self.source, &self.name)?,
+			PlatformShaderLanguage::Glsl => {
+				let (source, name) = (self.source, self.name);
+				// shaderc compiles on the calling thread, so a blocking worker keeps concurrent compiles from queuing
+				// behind each other on the executor thread.
+				match crate::r#async::offload(move || {
+					crate::shader::besl::backends::spirv::compile_glsl_to_spirv(&source, &name)
+				})
+				.await
+				{
+					Ok(result) => result?,
+					Err(error) => {
+						error.resume_unwind();
+						return Err(
+							"SPIR-V compilation stopped. The most likely cause is that its blocking worker was cancelled."
+								.to_string(),
+						);
+					}
+				}
+			}
 			#[cfg(target_vendor = "apple")]
 			PlatformShaderLanguage::Msl => {
 				crate::shader::msl_shader_compiler::compile_msl_source_to_metallib(&self.source, &self.name).await?

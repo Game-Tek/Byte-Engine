@@ -4,7 +4,7 @@ use utils::Extent;
 
 use crate::shader::besl::{
 	evaluation::{BindingKind, BindingUsage},
-	graph::{build_graph, topological_sort},
+	graph::dependency_order,
 };
 
 /// The `CompiledShaderBinding` struct preserves the flat resource interface required to create a backend shader.
@@ -211,8 +211,7 @@ pub(crate) fn ordered_shader_nodes(main_function_node: &besl::NodeReference, bac
 
 	besl::optimization::optimize(main_function_node);
 
-	let graph = build_graph(main_function_node.clone());
-	let mut ordered = topological_sort(&graph, main_function_node);
+	let mut ordered = dependency_order(main_function_node);
 	ordered.retain(|node| {
 		let node = node.borrow();
 		!node.node().is_leaf()
@@ -829,11 +828,13 @@ pub(crate) trait NodeEmitter {
 		let formatting = ShaderFormatting::new(self.minified());
 		match expression {
 			besl::Expressions::Operator { operator, left, right } => {
-				let left_uses_f16 = expression_uses_f16(left);
-				let right_uses_f16 = expression_uses_f16(right);
+				// A numeric literal beside an f16 value is cast, because GLSL does not implicitly narrow float literals to
+				// float16_t. The f16 walks run only for literal operands.
+				let left_as_f16 =
+					*operator != besl::Operators::Assignment && is_numeric_literal(left) && expression_uses_f16(right);
+				let right_as_f16 = is_numeric_literal(right) && expression_uses_f16(left);
 				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeReference, as_f16: bool| {
-					if as_f16 && is_numeric_literal(value) {
-						// GLSL does not implicitly narrow float literals to float16_t.
+					if as_f16 {
 						Self::emit_type_name(string, "f16");
 						string.push('(');
 						emitter.emit_node(string, value);
@@ -843,12 +844,11 @@ pub(crate) trait NodeEmitter {
 					}
 				};
 
-				let left_needs_f16 = *operator != besl::Operators::Assignment && right_uses_f16;
-				emit_value(self, string, left, left_needs_f16);
+				emit_value(self, string, left, left_as_f16);
 				string.push_str(formatting.space_str());
 				string.push_str(operator_token(operator));
 				string.push_str(formatting.space_str());
-				emit_value(self, string, right, left_uses_f16);
+				emit_value(self, string, right, right_as_f16);
 			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..

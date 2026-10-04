@@ -3,7 +3,8 @@ use std::{cell::RefCell, fmt::Write as _};
 pub use Generator as MSLTranspiler;
 
 use super::{
-	ResourceAccessorKind, SUBGROUP_INTRINSICS, any_code_node, is_intrinsic_call, resource_accessor, runtime_buffer_element,
+	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, is_intrinsic_call, resource_accessor,
+	runtime_buffer_element,
 };
 
 /// Names the generated BESL Metal entry point persisted with compiled shader artifacts.

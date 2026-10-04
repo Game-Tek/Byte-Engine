@@ -108,7 +108,11 @@ void main() {
 	///
 	/// `name` appears in compiler diagnostics and debug information.
 	pub(crate) fn compile_glsl_to_spirv(glsl: &str, name: &str) -> Result<Box<[u8]>, String> {
-		let compiler = shaderc::Compiler::new().unwrap();
+		// shaderc rebuilds glslang's built-in symbol tables for every new compiler, so one compiler serves every
+		// compile. shaderc allows concurrent compiles on one compiler.
+		static COMPILER: std::sync::LazyLock<shaderc::Compiler> =
+			std::sync::LazyLock::new(|| shaderc::Compiler::new().unwrap());
+		let compiler = &*COMPILER;
 		// Keep `spirv_compiler_identity` in sync with these options, because baked shader reuse relies on it.
 		let mut options = shaderc::CompileOptions::new().unwrap();
 		options.set_optimization_level(shaderc::OptimizationLevel::Performance);

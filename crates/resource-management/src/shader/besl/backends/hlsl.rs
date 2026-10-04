@@ -1,7 +1,8 @@
 use std::{cell::RefCell, fmt::Write as _};
 
 use super::{
-	ResourceAccessorKind, any_code_node, resource_accessor, runtime_buffer_element, uses_intrinsic, uses_subgroup_intrinsics,
+	IntrinsicRequirements, ResourceAccessorKind, any_code_node, intrinsic_requirements, resource_accessor,
+	runtime_buffer_element, uses_intrinsic,
 };
 use crate::shader::generator::{
 	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,

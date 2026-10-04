@@ -1,62 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use utils::hash::HashSet;
 
-/// The `Graph` struct exists to track dependencies between shader nodes.
-#[derive(Clone, Debug)]
-pub struct Graph {
-	pub set: HashMap<besl::NodeReference, Vec<besl::NodeReference>>,
-}
-
-impl Default for Graph {
-	fn default() -> Self {
-		Self::new()
-	}
-}
-
-impl Graph {
-	pub fn new() -> Self {
-		Graph {
-			set: HashMap::with_capacity(1024),
-		}
-	}
-
-	pub fn add(&mut self, from: besl::NodeReference, to: besl::NodeReference) {
-		self.set.entry(from).or_default().push(to);
-	}
-}
-
-/// Performs a topological sort on the graph to determine the order in which nodes should be emitted.
+/// Returns every node the `main` function reaches, each after the nodes it depends on, and `main` last.
 ///
-/// Every node of a graph from [`build_graph`] is reachable from its main function, so one depth-first walk from
-/// that root visits them all. `set` hashes nodes by address, so walking its keys instead would make emission order
-/// change between runs.
-pub fn topological_sort(graph: &Graph, root: &besl::NodeReference) -> Vec<besl::NodeReference> {
-	fn visit(
-		node: &besl::NodeReference,
-		graph: &Graph,
-		visited: &mut HashSet<besl::NodeReference>,
-		stack: &mut Vec<besl::NodeReference>,
-	) {
-		if !visited.insert(node.clone()) {
-			return;
-		}
-
-		for neighbour in graph.set.get(node).into_iter().flatten() {
-			visit(neighbour, graph, visited, stack);
-		}
-
-		stack.push(node.clone());
-	}
-
-	let mut visited = HashSet::new();
-	let mut stack = Vec::new();
-	visit(root, graph, &mut visited, &mut stack);
-	stack
-}
-
-/// Builds a dependency graph from the main function node.
-pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
-	let mut graph = Graph::new();
-	let mut expanded = HashSet::new();
+/// Backends emit declarations in this order, so every type, binding, and function is declared before its first use.
+/// The walk visits each node's dependencies in a fixed order, so the order does not change between runs.
+///
+/// # Panics
+///
+/// Panics if `main_function_node` is not the `main` function, or if the nodes depend on each other in a cycle.
+pub fn dependency_order(main_function_node: &besl::NodeReference) -> Vec<besl::NodeReference> {
+	let mut order = Vec::new();
+	let mut expanded = HashSet::default();
 	let mut active = Vec::new();
 
 	let node = main_function_node.borrow();
@@ -72,39 +26,32 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 	};
 	assert_eq!(name, "main");
 	for child in params.iter().chain(statements).chain([return_type]) {
-		build_graph_impl(
-			main_function_node.clone(),
-			child.clone(),
-			&mut graph,
-			&mut expanded,
-			&mut active,
-		);
+		visit_node(child, &mut order, &mut expanded, &mut active);
 	}
+	order.push(main_function_node.clone());
 
+	/// Appends `node` after its dependencies unless an earlier visit already appended it.
 	// This match is the exhaustive shader-node dependency-edge contract.
-	fn build_graph_impl(
-		parent: besl::NodeReference,
-		node: besl::NodeReference,
-		graph: &mut Graph,
+	fn visit_node(
+		node: &besl::NodeReference,
+		order: &mut Vec<besl::NodeReference>,
 		expanded: &mut HashSet<besl::NodeReference>,
 		active: &mut Vec<besl::NodeReference>,
 	) {
-		graph.add(parent, node.clone());
-
-		if expanded.contains(&node) {
+		if expanded.contains(node) {
 			return;
 		}
 
 		assert!(
-			!active.contains(&node),
+			!active.contains(node),
 			"Cyclic shader dependency detected while building the shader graph. The most likely cause is a self-referential or mutually recursive BESL node graph."
 		);
 
 		active.push(node.clone());
 
 		let node_borrow = node.borrow();
-		// Each child gets an edge from `node`, in the order the arms list them.
-		let mut visit = |child: &besl::NodeReference| build_graph_impl(node.clone(), child.clone(), graph, expanded, active);
+		// Dependencies are visited in the order the arms list them.
+		let mut visit = |child: &besl::NodeReference| visit_node(child, order, expanded, active);
 
 		match node_borrow.node() {
 			besl::Nodes::Scope { children, .. }
@@ -174,7 +121,8 @@ pub fn build_graph(main_function_node: besl::NodeReference) -> Graph {
 
 		active.pop();
 		expanded.insert(node.clone());
+		order.push(node.clone());
 	}
 
-	graph
+	order
 }

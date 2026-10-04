@@ -1,6 +1,6 @@
 use std::{cell::RefCell, fmt::Write as _};
 
-use super::super::{ResourceAccessorKind, is_two, resource_accessor, resource_reference_kind, uses_subgroup_intrinsics};
+use super::super::{ResourceAccessorKind, intrinsic_requirements, is_two, resource_accessor, resource_reference_kind};
 use crate::shader::generator::{
 	NodeEmitter, ShaderFormatting, ShaderGenerationSettings, Stages, emit_statement_block, is_integer_besl_type,
 	ordered_shader_nodes,
@@ -33,17 +33,6 @@ impl Generator {
 		self
 	}
 
-	/// Reports whether reachable code requires native 16-bit floating-point arithmetic.
-	fn uses_f16_types(order: &[besl::NodeReference]) -> bool {
-		const F16_TYPES: [&str; 4] = ["f16", "vec2f16", "vec3f16", "vec4f16"];
-		order
-			.iter()
-			.any(|node| matches!(node.borrow().node(), besl::Nodes::Struct { name, .. } if F16_TYPES.contains(&name.as_str())))
-			|| order
-				.iter()
-				.any(|node| F16_TYPES.iter().any(|name| super::super::uses_intrinsic(node, name)))
-	}
-
 	/// Generates a GLSL shader from a BESL AST.
 	///
 	/// # Arguments
@@ -68,8 +57,12 @@ impl Generator {
 		let order = ordered_shader_nodes(main_function_node, "GLSL");
 		crate::shader::generator::validate_workgroup_storage_stage(&shader_compilation_settings.stage, &order)?;
 		crate::shader::generator::validate_vertex_builtin_inputs(&shader_compilation_settings.stage, &order)?;
-		let uses_subgroup_intrinsics = uses_subgroup_intrinsics(&order);
-		let uses_f16_types = Self::uses_f16_types(&order);
+		let requirements = intrinsic_requirements(&order);
+		let uses_subgroup_intrinsics = requirements.uses_subgroup_intrinsics;
+		// Reachable code needs native 16-bit floating-point arithmetic when it declares or converts to an f16 type.
+		let uses_f16_types = order.iter().any(|node| {
+			matches!(node.borrow().node(), besl::Nodes::Struct { name, .. } if matches!(name.as_str(), "f16" | "vec2f16" | "vec3f16" | "vec4f16"))
+		}) || requirements.uses_f16;
 		if uses_subgroup_intrinsics && !matches!(shader_compilation_settings.stage, Stages::Compute { .. }) {
 			return Err(());
 		}

@@ -269,39 +269,6 @@ impl Generator {
 		}
 	}
 
-	/// Returns the expression children that must be evaluated before `node`.
-	fn hlsl_expression_children(node: &besl::NodeReference) -> Vec<besl::NodeReference> {
-		let node = node.borrow();
-		match node.node() {
-			besl::Nodes::Conditional { condition, .. }
-			| besl::Nodes::Match {
-				scrutinee: condition, ..
-			} => {
-				vec![condition.clone()]
-			}
-			// A for-loop initializer runs once, so it can be lifted before the loop.
-			// Atomics in the repeated condition or update are rejected by validation.
-			besl::Nodes::ForLoop { initializer, .. } => vec![initializer.clone()],
-			besl::Nodes::Expression(expression) => match expression {
-				besl::Expressions::Return { value } => value.iter().cloned().collect(),
-				besl::Expressions::Expression { elements } => elements.clone(),
-				besl::Expressions::FunctionCall { parameters, .. } => parameters.clone(),
-				besl::Expressions::IntrinsicCall { arguments, .. } => arguments.clone(),
-				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
-					vec![left.clone(), right.clone()]
-				}
-				besl::Expressions::Macro { body, .. } => vec![body.clone()],
-				besl::Expressions::Continue
-				| besl::Expressions::Break
-				| besl::Expressions::Discard
-				| besl::Expressions::Member { .. }
-				| besl::Expressions::VariableDeclaration { .. }
-				| besl::Expressions::Literal { .. } => Vec::new(),
-			},
-			_ => Vec::new(),
-		}
-	}
-
 	/// Emits one HLSL Interlocked call with the previous value written to `previous_value`.
 	pub(crate) fn emit_hlsl_atomic_call(
 		&mut self,
@@ -363,8 +330,36 @@ impl Generator {
 
 	/// Lifts expression-valued atomics into HLSL statements because Interlocked intrinsics return through out parameters.
 	pub(crate) fn emit_hlsl_atomic_temporaries(&mut self, string: &mut String, node: &besl::NodeReference, indent: usize) {
-		for child in Self::hlsl_expression_children(node) {
-			self.emit_hlsl_atomic_temporaries(string, &child, indent);
+		// Lift the atomics of the expression children that are evaluated before `node` first.
+		let mut lift = |child: &besl::NodeReference| self.emit_hlsl_atomic_temporaries(string, child, indent);
+		match node.borrow().node() {
+			besl::Nodes::Conditional { condition, .. }
+			| besl::Nodes::Match {
+				scrutinee: condition, ..
+			} => lift(condition),
+			// A for-loop initializer runs once, so it can be lifted before the loop.
+			// Atomics in the repeated condition or update are rejected by validation.
+			besl::Nodes::ForLoop { initializer, .. } => lift(initializer),
+			besl::Nodes::Expression(expression) => match expression {
+				besl::Expressions::Return { value } => value.iter().for_each(&mut lift),
+				besl::Expressions::Expression { elements: children }
+				| besl::Expressions::FunctionCall {
+					parameters: children, ..
+				}
+				| besl::Expressions::IntrinsicCall { arguments: children, .. } => children.iter().for_each(&mut lift),
+				besl::Expressions::Operator { left, right, .. } | besl::Expressions::Accessor { left, right } => {
+					lift(left);
+					lift(right);
+				}
+				besl::Expressions::Macro { body, .. } => lift(body),
+				besl::Expressions::Continue
+				| besl::Expressions::Break
+				| besl::Expressions::Discard
+				| besl::Expressions::Member { .. }
+				| besl::Expressions::VariableDeclaration { .. }
+				| besl::Expressions::Literal { .. } => {}
+			},
+			_ => {}
 		}
 		if self.atomic_temporaries.contains_key(node) {
 			return;

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use utils::hash::{HashMap, HashSet};
 
-use super::{SUBGROUP_INTRINSICS, any_code_node, is_intrinsic_call};
+use super::{any_code_node, is_intrinsic_call};
 
 /// The `Generator` struct exists to generate Metal Shading Language shaders from BESL ASTs.
 ///
@@ -116,19 +116,6 @@ impl RasterStageContext {
 	}
 }
 
-/// The `IntrinsicRequirements` struct records the generated helpers and Metal builtins a shader needs.
-#[derive(Default)]
-pub(crate) struct IntrinsicRequirements {
-	pub(crate) uses_atomic_compare_exchange: bool,
-	pub(crate) uses_sincos: bool,
-	pub(crate) uses_find_lsb: bool,
-	pub(crate) uses_subgroup_intrinsics: bool,
-	pub(crate) uses_simd_lane_id: bool,
-	pub(crate) uses_downsample_min: bool,
-	pub(crate) uses_downsample_max: bool,
-	pub(crate) uses_render_target_array_index: bool,
-}
-
 #[derive(Default)]
 pub(crate) struct ClassifiedNodes<'a> {
 	pub(crate) bindings: Vec<&'a besl::NodeReference>,
@@ -155,7 +142,7 @@ impl Generator {
 			in_buffer_binding_struct: false,
 			packed_mat4x3_members: Vec::new(),
 			match_break_depth: None,
-			hidden_contexts: HashMap::new(),
+			hidden_contexts: HashMap::default(),
 		}
 	}
 
@@ -169,51 +156,18 @@ impl Generator {
 		self
 	}
 
-	/// Collects source requirements while walking emitted function bodies once instead of rescanning them for each helper.
-	pub(crate) fn collect_intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
-		pub(crate) fn record(requirements: &mut IntrinsicRequirements, name: &str) {
-			match name {
-				"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
-				"sincos" => requirements.uses_sincos = true,
-				"find_lsb" => requirements.uses_find_lsb = true,
-				"subgroup_lane_index" => {
-					requirements.uses_subgroup_intrinsics = true;
-					requirements.uses_simd_lane_id = true;
-				}
-				name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
-				"downsample_min" => requirements.uses_downsample_min = true,
-				"downsample_max" => requirements.uses_downsample_max = true,
-				"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
-				_ => {}
-			}
-		}
-
-		let mut requirements = IntrinsicRequirements::default();
-		for node in order {
-			any_code_node(node, false, &mut |node| {
-				if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
-					&& let Some(name) = intrinsic.borrow().get_name()
-				{
-					record(&mut requirements, name);
-				}
-				false
-			});
-		}
-		requirements
-	}
-
 	/// Returns the hidden kernel values a function forwards, as analyzed for the shader being generated.
 	pub(crate) fn hidden_context(&self, function: &besl::NodeReference) -> HiddenContext {
 		self.hidden_contexts
 			.get(function)
 			.copied()
-			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::new()))
+			.unwrap_or_else(|| analyze_hidden_context(function, &mut HashMap::default()))
 	}
 }
 
 /// Analyzes every function in `order` once, so emitting each declaration and call site is a lookup.
 pub(crate) fn analyze_hidden_contexts(order: &[besl::NodeReference]) -> HashMap<besl::NodeReference, HiddenContext> {
-	let mut contexts = HashMap::with_capacity(order.len());
+	let mut contexts = HashMap::with_capacity_and_hasher(order.len(), Default::default());
 	for node in order {
 		if matches!(node.borrow().node(), besl::Nodes::Function { .. }) {
 			analyze_hidden_context(node, &mut contexts);
@@ -236,19 +190,19 @@ fn analyze_hidden_context(
 	// Shaders can't recurse, but a placeholder keeps a malformed call graph from looping.
 	contexts.insert(function.clone(), HiddenContext::default());
 
+	// A node already visited returns false: a true result ends the whole walk, so every finished node was false, and a
+	// node still on the path is a cycle that cannot add a resource.
 	fn node_requires_resource_context(
 		node: &besl::NodeReference,
-		visited: &mut Vec<besl::NodeReference>,
+		visited: &mut HashSet<besl::NodeReference>,
 		contexts: &mut HashMap<besl::NodeReference, HiddenContext>,
 	) -> bool {
-		if visited.iter().any(|visited_node| visited_node == node) {
+		if !visited.insert(node.clone()) {
 			return false;
 		}
 
-		visited.push(node.clone());
-
 		let mut visit = |child: &besl::NodeReference| node_requires_resource_context(child, visited, contexts);
-		let result = match node.borrow().node() {
+		match node.borrow().node() {
 			besl::Nodes::Binding { .. }
 			| besl::Nodes::TaskPayload { .. }
 			| besl::Nodes::Workgroup { .. }
@@ -308,13 +262,10 @@ fn analyze_hidden_context(
 				| besl::Expressions::Discard => false,
 			},
 			_ => false,
-		};
-
-		visited.pop();
-		result
+		}
 	}
 
-	let requires_resources = node_requires_resource_context(function, &mut Vec::new(), contexts);
+	let requires_resources = node_requires_resource_context(function, &mut HashSet::default(), contexts);
 	// The lane index is a kernel builtin, so every caller on the path to its use must forward it.
 	let uses_simd_lane_id = any_code_node(function, false, &mut |node| {
 		if is_intrinsic_call(node, "subgroup_lane_index") {

@@ -308,11 +308,53 @@ const SUBGROUP_INTRINSICS: [&str; 8] = [
 	"subgroup_broadcast_f32",
 ];
 
-/// Reports whether any node in `order` uses one of BESL's compute-only subgroup operations.
-fn uses_subgroup_intrinsics(order: &[besl::NodeReference]) -> bool {
-	order.iter().any(|node| {
+/// The `IntrinsicRequirements` struct records which intrinsics a shader calls, so each backend declares only the
+/// helpers, extensions, and builtins the shader needs. Build it with [`intrinsic_requirements`].
+#[derive(Default)]
+pub(crate) struct IntrinsicRequirements {
+	pub(crate) uses_atomic_compare_exchange: bool,
+	pub(crate) uses_sincos: bool,
+	pub(crate) uses_find_lsb: bool,
+	pub(crate) uses_fma: bool,
+	/// The shader converts to `f16` or a `vecNf16`.
+	pub(crate) uses_f16: bool,
+	pub(crate) uses_subgroup_intrinsics: bool,
+	pub(crate) uses_simd_lane_id: bool,
+	pub(crate) uses_downsample_min: bool,
+	pub(crate) uses_downsample_max: bool,
+	pub(crate) uses_render_target_array_index: bool,
+}
+
+/// Records the intrinsics that the code of every node in `order` calls, walking each body once.
+///
+/// It does not search the bodies of called functions, so pass every emitted function, as
+/// [`crate::shader::generator::ordered_shader_nodes`] returns them.
+fn intrinsic_requirements(order: &[besl::NodeReference]) -> IntrinsicRequirements {
+	let mut requirements = IntrinsicRequirements::default();
+	for node in order {
 		any_code_node(node, false, &mut |node| {
-			SUBGROUP_INTRINSICS.iter().any(|intrinsic| is_intrinsic_call(node, intrinsic))
-		})
-	})
+			if let besl::Nodes::Expression(besl::Expressions::IntrinsicCall { intrinsic, .. }) = node.borrow().node()
+				&& let Some(name) = intrinsic.borrow().get_name()
+			{
+				match name {
+					"atomic_compare_exchange" => requirements.uses_atomic_compare_exchange = true,
+					"sincos" => requirements.uses_sincos = true,
+					"find_lsb" => requirements.uses_find_lsb = true,
+					"fma" => requirements.uses_fma = true,
+					"f16" | "vec2f16" | "vec3f16" | "vec4f16" => requirements.uses_f16 = true,
+					"subgroup_lane_index" => {
+						requirements.uses_subgroup_intrinsics = true;
+						requirements.uses_simd_lane_id = true;
+					}
+					name if SUBGROUP_INTRINSICS.contains(&name) => requirements.uses_subgroup_intrinsics = true,
+					"downsample_min" => requirements.uses_downsample_min = true,
+					"downsample_max" => requirements.uses_downsample_max = true,
+					"set_mesh_primitive_render_target_array_index" => requirements.uses_render_target_array_index = true,
+					_ => {}
+				}
+			}
+			false
+		});
+	}
+	requirements
 }

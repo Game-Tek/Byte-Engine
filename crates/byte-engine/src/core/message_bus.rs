@@ -32,7 +32,7 @@ use std::{
 	marker::PhantomData,
 	panic::Location,
 	ptr::NonNull,
-	sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+	sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence},
 	sync::{Arc, OnceLock},
 	time::{Duration, Instant},
 };
@@ -442,6 +442,7 @@ impl MessageScope {
 			core: Arc::clone(core),
 			state,
 			observed_type: OnceLock::new(),
+			watcher: AtomicPtr::new(std::ptr::null_mut()),
 			_marker: PhantomData,
 		});
 		registry.insert(key, topic.clone());
@@ -456,6 +457,31 @@ impl fmt::Debug for MessageScope {
 			.field("id", &self.id)
 			.field("name", &self.name)
 			.finish()
+	}
+}
+
+/// The `Watcher` type is the boxed diagnostics hook one route calls for every publication.
+type Watcher<M> = Box<dyn Fn(&M) + Send + Sync>;
+
+/// Passes one publication to a route watcher loaded with relaxed ordering.
+///
+/// Kept out of line so the unwatched send path stays as small as it was without watchers.
+#[cold]
+#[inline(never)]
+fn notify_watcher<M>(watcher: *mut Watcher<M>, message: &M) {
+	// Pairs with the release in `Topic::watch`, so the boxed watcher is fully visible.
+	fence(Ordering::Acquire);
+	// SAFETY: A published watcher stays valid until its topic drops, and the topic outlives this send.
+	unsafe { (*watcher)(message) };
+}
+
+impl<M> Drop for Topic<M> {
+	fn drop(&mut self) {
+		let watcher = *self.watcher.get_mut();
+		if !watcher.is_null() {
+			// SAFETY: The watcher came from `Box::into_raw` in `Topic::watch` and is freed exactly once here.
+			drop(unsafe { Box::from_raw(watcher) });
+		}
 	}
 }
 
@@ -1194,6 +1220,10 @@ pub(crate) struct Topic<M> {
 	state: Arc<TopicState>,
 	/// The observer's catalog identity of the factory value type carried by `M`, resolved once.
 	observed_type: OnceLock<ObservedType>,
+	/// The optional diagnostics hook that sees every publication before listeners can read it.
+	///
+	/// Sends load it relaxed, and only watched sends pay for the acquire fence.
+	watcher: AtomicPtr<Watcher<M>>,
 	_marker: PhantomData<fn() -> M>,
 }
 
@@ -1216,9 +1246,17 @@ where
 			accounting.remaining.store(value(membership), Ordering::Relaxed);
 			accounting.epoch.store(tag(membership), Ordering::Relaxed);
 		}
+		let payload = pool.payload::<M>(chunk, slot, layout);
 		// SAFETY: The reservation gives this publisher exclusive ownership of the
 		// slot, whose previous payload was destroyed before its chunk was recycled.
-		unsafe { pool.payload::<M>(chunk, slot, layout).write(message) };
+		unsafe { payload.write(message) };
+		// The watcher borrows the payload in place, before the stamp lets listeners take it.
+		// Borrowing it here keeps the message out of memory on the unwatched path.
+		let watcher = self.watcher.load(Ordering::Relaxed);
+		if !watcher.is_null() {
+			// SAFETY: The payload was just written and stays owned by this publisher until it is stamped.
+			notify_watcher(watcher, unsafe { &*payload });
+		}
 		pool.stamp(chunk, slot, layout)
 			.store(self.state.stamp(sequence), Ordering::Release);
 	}
@@ -1334,6 +1372,24 @@ where
 		let observer = self.core.observer.get()?;
 		let observed = *self.observed_type.get_or_init(|| observer.observed_type::<T>());
 		Some((observer.clone(), observed))
+	}
+
+	/// Installs the route's one watcher, which sees every later publication from any sender.
+	pub(crate) fn watch(&self, watcher: impl Fn(&M) + Send + Sync + 'static) {
+		let fresh = Box::into_raw(Box::new(Box::new(watcher) as Watcher<M>));
+		let installed = self
+			.watcher
+			.compare_exchange(std::ptr::null_mut(), fresh, Ordering::Release, Ordering::Relaxed)
+			.is_ok();
+		if !installed {
+			// SAFETY: `fresh` was never published, so this is its only owner.
+			drop(unsafe { Box::from_raw(fresh) });
+		}
+		assert!(
+			installed,
+			"Message route '{}' already has a watcher. The most likely cause is that more than one inspector watches the same scope.",
+			self.state.message_type
+		);
 	}
 
 	/// Removes one terminally deleted handle from the optional entity catalog.

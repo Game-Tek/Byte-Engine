@@ -89,6 +89,14 @@ where
 		Self { topic }
 	}
 
+	/// Installs the route's one diagnostics watcher, which sees every later publication on this route.
+	///
+	/// Every channel and factory of the same scope and message type shares the route,
+	/// so the watcher sees their sends too. Keep it short: it runs on the sender's thread.
+	pub(crate) fn watch(&self, watcher: impl Fn(&M) + Send + Sync + 'static) {
+		self.topic.watch(watcher);
+	}
+
 	/// Removes one terminally deleted handle from this bus's optional diagnostics catalog.
 	#[inline(always)]
 	pub(crate) fn forget_entity(&self, handle: Handle) {

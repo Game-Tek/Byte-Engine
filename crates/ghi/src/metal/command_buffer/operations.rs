@@ -46,11 +46,11 @@ impl CommandBufferRecording<'_> {
 			.bytes_per_image
 			.checked_mul(layout.depth_slices)
 			.ok_or(crate::TextureTransferError::UnsupportedLayout)?;
+		// Mapping fills every reserved byte, so the vector is only reserved here.
 		let mut bytes = Vec::new();
 		bytes
 			.try_reserve_exact(compact_size)
 			.map_err(|_| crate::TextureTransferError::AllocationFailed)?;
-		bytes.resize(compact_size, 0);
 		let staging = self
 			.device
 			.metal_device
@@ -424,6 +424,8 @@ impl CommandBufferRecordingTrait for CommandBufferRecording<'_> {
 			}
 		}
 		self.consume_resources(initial_attachment_uses);
+		// Every draw records the same attachment writes, so they are consolidated once for the whole pass.
+		synchronization::MetalResourceTracker::consolidate_in_place(&mut final_attachment_uses);
 		self.active_render_attachment_uses = final_attachment_uses;
 
 		let rce = self.render_encoder("start_render_pass");

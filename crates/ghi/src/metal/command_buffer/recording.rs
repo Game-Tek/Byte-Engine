@@ -99,9 +99,9 @@ impl<'a> CommandBufferRecording<'a> {
 		let upload_size = aligned_bytes_per_image.checked_mul(array_layers as usize).expect(
 			"Metal texture upload buffer size overflowed. The most likely cause is an invalid array layer count or image pitch.",
 		);
-		let (upload_buffer, upload_offset) = self.commit.upload_arena.allocate(self.device.metal_device, upload_size);
+		let (upload_page, upload_offset) = self.commit.upload_arena.allocate(self.device.metal_device, upload_size);
 		// SAFETY: The arena range starts at `upload_offset` and spans `upload_size` writable bytes.
-		let destination = unsafe { upload_buffer.contents().as_ptr().cast::<u8>().add(upload_offset) };
+		let destination = unsafe { upload_page.contents.add(upload_offset) };
 		let mut source_size = utils::mtl_size(copy_extent);
 		source_size.depth = 1;
 		let destination_origin = mtl::MTLOrigin {
@@ -129,7 +129,7 @@ impl<'a> CommandBufferRecording<'a> {
 			// SAFETY: The upload buffer layout and destination slice range were validated while the image was built.
 			unsafe {
 				transfer_encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-					upload_buffer,
+					&upload_page.buffer,
 					(upload_offset + slice * aligned_bytes_per_image) as _,
 					aligned_bytes_per_row as _,
 					aligned_bytes_per_image as _,
@@ -142,7 +142,7 @@ impl<'a> CommandBufferRecording<'a> {
 			}
 		}
 		// Hazard tracking never sees the upload page, so the command retains it here.
-		self.command_buffer.retain_allocation(&**upload_buffer);
+		self.command_buffer.retain_allocation(&*upload_page.buffer);
 	}
 
 	/// Copies each presented swapchain's image for this frame into the drawable that presents it.
@@ -375,6 +375,7 @@ impl<'a> CommandBufferRecording<'a> {
 			scope: synchronization::MetalEncoderScope::Encoder(id),
 			pipeline: None,
 			descriptors: None,
+			bound_argument_tables: 0,
 			push_constants_dirty: !self.push_constant_data.is_empty(),
 			#[cfg(debug_assertions)]
 			debug_region_depth,
@@ -396,15 +397,15 @@ impl<'a> CommandBufferRecording<'a> {
 		encoder.endEncoding();
 		if let ActiveEncoder::Render(_) = state.encoder {
 			self.resource_tracker
-				.record_final(state.scope, self.active_render_attachment_uses.drain(..));
+				.record_final(state.scope, &self.active_render_attachment_uses);
+			self.active_render_attachment_uses.clear();
 		}
 	}
 
 	/// Records render-target writes after a draw so a later aliased access sees the dependency.
 	pub(super) fn record_render_attachment_writes(&mut self) {
 		let scope = self.encoder_state().scope;
-		self.resource_tracker
-			.record_final(scope, self.active_render_attachment_uses.iter().copied());
+		self.resource_tracker.record_final(scope, &self.active_render_attachment_uses);
 	}
 
 	/// Returns the active encoder's local state.
@@ -463,11 +464,12 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Applies the dependencies one command needs on the active encoder and retains what it uses.
 	///
-	/// `descriptors` is the snapshot the command binds, whose uses are read in place. Every use in `additional_uses`
-	/// has its native allocation retained here, so commands only retain objects hazard tracking never sees.
+	/// With `bind_descriptors`, the command also binds the active encoder's applied snapshot, whose uses are read in
+	/// place. Every use in `additional_uses` has its native allocation retained here, so commands only retain objects
+	/// hazard tracking never sees.
 	pub(super) fn consume_resources_with_descriptors(
 		&mut self,
-		descriptors: Option<&mut AppliedDescriptorBinding>,
+		bind_descriptors: bool,
 		additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>,
 	) {
 		let scope = self.encoder_state().scope;
@@ -476,6 +478,7 @@ impl<'a> CommandBufferRecording<'a> {
 			commit,
 			command_buffer,
 			resource_tracker,
+			encoder,
 			..
 		} = self;
 		let additional_uses = additional_uses
@@ -485,7 +488,15 @@ impl<'a> CommandBufferRecording<'a> {
 		for resource_use in &additional_uses {
 			retain_tracked_use(device, command_buffer, resource_use);
 		}
-		let descriptors = descriptors.map(|binding| (binding.snapshot.uses(commit.descriptor_sets), &mut binding.settled));
+		// The applied binding stays in the encoder state and is borrowed in place.
+		let descriptors = if bind_descriptors {
+			let binding = encoder.as_mut().and_then(|state| state.descriptors.as_mut()).expect(
+				"Metal descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
+			);
+			Some((binding.snapshot.uses(commit.descriptor_sets), &mut binding.settled))
+		} else {
+			None
+		};
 		// Only debug builds check members; descriptor members' memory was retained when their snapshot was applied.
 		if cfg!(debug_assertions) {
 			let descriptor_members = descriptors.iter().flat_map(|(uses, _)| uses.members());
@@ -509,7 +520,7 @@ impl<'a> CommandBufferRecording<'a> {
 
 	/// Applies only the queue and encoder dependencies required by the resources one command consumes.
 	pub(super) fn consume_resources(&mut self, uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
-		self.consume_resources_with_descriptors(None, uses);
+		self.consume_resources_with_descriptors(false, uses);
 	}
 
 	/// Publishes this finalized recording's resource history to its queue.
@@ -519,41 +530,49 @@ impl<'a> CommandBufferRecording<'a> {
 		self.commit.queue.resource_tracker = std::mem::take(&mut self.resource_tracker);
 	}
 
-	/// Returns the shared Metal 4 argument table for one stage, creating it on first use.
-	pub(super) fn argument_table(&mut self, stage: ArgumentTableStage) -> Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>> {
-		if let Some(table) = &self.commit.argument_tables[stage as usize] {
-			return table.clone();
-		}
-
-		let descriptor = mtl::MTL4ArgumentTableDescriptor::new();
-		descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
-		descriptor.setInitializeBindings(true);
-		#[cfg(debug_assertions)]
-		if self.device.debug_labels {
-			descriptor.setLabel(Some(&NSString::from_str(stage.label())));
-		}
-		let table = self.device.metal_device.newArgumentTableWithDescriptor_error(&descriptor);
-		let table = table.expect(
-			"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
-		);
-		self.command_buffer.retain_object(&*table);
-		self.commit.argument_tables[stage as usize] = Some(table.clone());
-		table
-	}
-
 	/// Updates one stage table and associates it with the active encoder before its next snapshot command.
+	///
+	/// Each stage's shared table is created on first use. An encoder keeps the table it was given, and draws and
+	/// dispatches snapshot table contents when they are encoded, so each encoder is given each stage's table once.
 	pub(super) fn set_stage_buffer_address(&mut self, stage: ArgumentTableStage, binding: u32, address: mtl::MTLGPUAddress) {
 		assert!(
 			(binding as usize) < ARGUMENT_TABLE_BUFFER_COUNT,
 			"Metal argument-table buffer binding is out of range. The most likely cause is that a shader buffer index exceeded the fixed 17-buffer ABI. binding={binding}",
 		);
-		let table = self.argument_table(stage);
+		let Self {
+			device,
+			commit,
+			command_buffer,
+			encoder,
+			..
+		} = self;
+		let table = commit.argument_tables[stage as usize].get_or_insert_with(|| {
+			let descriptor = mtl::MTL4ArgumentTableDescriptor::new();
+			descriptor.setMaxBufferBindCount(ARGUMENT_TABLE_BUFFER_COUNT);
+			descriptor.setInitializeBindings(true);
+			#[cfg(debug_assertions)]
+			if device.debug_labels {
+				descriptor.setLabel(Some(&NSString::from_str(stage.label())));
+			}
+			let table = device.metal_device.newArgumentTableWithDescriptor_error(&descriptor).expect(
+				"Metal 4 argument table creation failed. The most likely cause is that the device ran out of binding-table memory.",
+			);
+			command_buffer.retain_object(&*table);
+			table
+		});
 		// SAFETY: `binding` is checked against the fixed table size and `address` names a retained buffer.
 		unsafe {
 			table.setAddress_atIndex(address, binding as _);
 		}
 
-		match (stage, &self.encoder_state().encoder) {
+		let state = encoder
+			.as_mut()
+			.expect("No active Metal encoder. The most likely cause is that a command was recorded after its encoder ended.");
+		let stage_bit = 1 << stage as u8;
+		if state.bound_argument_tables & stage_bit != 0 {
+			return;
+		}
+		match (stage, &state.encoder) {
 			(ArgumentTableStage::Compute, ActiveEncoder::Compute(encoder)) => encoder.setArgumentTable(Some(table.as_ref())),
 			(ArgumentTableStage::Compute, ActiveEncoder::Render(_)) => panic!(
 				"No active Metal compute encoder. The most likely cause is that a compute table was updated outside dispatch preparation.",
@@ -563,6 +582,7 @@ impl<'a> CommandBufferRecording<'a> {
 				"No active Metal render encoder. The most likely cause is that a render table was updated outside a render pass.",
 			),
 		}
+		state.bound_argument_tables |= stage_bit;
 	}
 
 	pub(super) fn get_internal_buffer_handle(&self, handle: graphics_hardware_interface::BaseBufferHandle) -> BufferHandle {
@@ -813,14 +833,14 @@ impl<'a> CommandBufferRecording<'a> {
 			}
 		}
 		// The logical push state is copied into an immutable range of the frame's upload arena.
-		let (buffer, offset) = self
+		let (page, offset) = self
 			.commit
 			.upload_arena
 			.upload(self.device.metal_device, &self.push_constant_data);
-		let address = buffer.gpuAddress().checked_add(offset as u64).expect(
+		let address = page.gpu_address.checked_add(offset as u64).expect(
 			"Metal push upload GPU address overflowed. The most likely cause is an invalid buffer address or upload offset.",
 		);
-		self.command_buffer.retain_allocation(&**buffer);
+		self.command_buffer.retain_allocation(&*page.buffer);
 		for stage in stages {
 			self.set_stage_buffer_address(stage, PUSH_CONSTANT_BINDING_INDEX, address);
 		}

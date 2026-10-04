@@ -96,6 +96,8 @@ struct EncoderState {
 	pipeline: Option<graphics_hardware_interface::PipelineHandle>,
 	/// The argument-buffer snapshot this encoder's tables reference.
 	descriptors: Option<AppliedDescriptorBinding>,
+	/// The stages whose shared argument table this encoder already holds, one bit per `ArgumentTableStage as usize`.
+	bound_argument_tables: u8,
 	push_constants_dirty: bool,
 	/// How many logical debug regions this encoder mirrors, which it pops before it ends.
 	#[cfg(debug_assertions)]
@@ -250,8 +252,15 @@ impl ArgumentTableStage {
 pub(crate) type CommandArgumentTables = [Option<Retained<ProtocolObject<dyn mtl::MTL4ArgumentTable>>>; 5];
 
 /// The `UploadPage` struct keeps immutable upload snapshots in one shared Metal buffer.
-struct UploadPage {
-	buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+///
+/// [`UploadArena::allocate`] hands out ranges of it; callers write through `contents` and bind through `gpu_address`.
+pub(crate) struct UploadPage {
+	pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	/// The buffer's length, CPU mapping, and GPU address, which never change, read once so allocations ask Metal
+	/// for none of them.
+	capacity: usize,
+	pub(crate) contents: *mut u8,
+	pub(crate) gpu_address: mtl::MTLGPUAddress,
 	cursor: usize,
 	/// Sized for one oversized request; released at the next reset instead of being kept resident.
 	dedicated: bool,
@@ -297,11 +306,7 @@ impl UploadArena {
 	}
 
 	/// Returns an aligned range of `size` bytes and the page that backs it.
-	pub(crate) fn allocate(
-		&mut self,
-		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		size: usize,
-	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
+	pub(crate) fn allocate(&mut self, device: &ProtocolObject<dyn mtl::MTLDevice>, size: usize) -> (&UploadPage, usize) {
 		assert!(
 			size > 0,
 			"Empty Metal upload. The most likely cause is that a zero-sized upload was requested."
@@ -309,7 +314,7 @@ impl UploadArena {
 		let page_index = self
 			.pages
 			.iter()
-			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.buffer.length()).is_some())
+			.position(|page| !page.dedicated && upload_offset(page.cursor, size, page.capacity).is_some())
 			.unwrap_or_else(|| {
 				let dedicated = size > UPLOAD_PAGE_SIZE;
 				let capacity = if dedicated {
@@ -328,6 +333,9 @@ impl UploadArena {
 					buffer.setLabel(Some(&NSString::from_str(label)));
 				}
 				self.pages.push(UploadPage {
+					capacity: buffer.length(),
+					contents: buffer.contents().as_ptr().cast(),
+					gpu_address: buffer.gpuAddress(),
 					buffer,
 					cursor: 0,
 					dedicated,
@@ -335,25 +343,21 @@ impl UploadArena {
 				self.pages.len() - 1
 			});
 		let page = &mut self.pages[page_index];
-		let offset = upload_offset(page.cursor, size, page.buffer.length()).expect(
+		let offset = upload_offset(page.cursor, size, page.capacity).expect(
 			"Metal upload range does not fit. The most likely cause is that the selected page is smaller than the request.",
 		);
 		page.cursor = offset + size;
-		(&page.buffer, offset)
+		(page, offset)
 	}
 
 	/// Copies `bytes` into a fresh range and returns its page and offset.
-	pub(crate) fn upload(
-		&mut self,
-		device: &ProtocolObject<dyn mtl::MTLDevice>,
-		bytes: &[u8],
-	) -> (&Retained<ProtocolObject<dyn mtl::MTLBuffer>>, usize) {
-		let (buffer, offset) = self.allocate(device, bytes.len());
+	pub(crate) fn upload(&mut self, device: &ProtocolObject<dyn mtl::MTLDevice>, bytes: &[u8]) -> (&UploadPage, usize) {
+		let (page, offset) = self.allocate(device, bytes.len());
 		// SAFETY: `offset` was computed against this page's capacity and leaves `bytes.len()` writable bytes.
-		let destination = unsafe { buffer.contents().as_ptr().cast::<u8>().add(offset) };
+		let destination = unsafe { page.contents.add(offset) };
 		// SAFETY: Caller bytes and the shared upload page do not overlap and no command reads this range yet.
 		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
-		(buffer, offset)
+		(page, offset)
 	}
 }
 

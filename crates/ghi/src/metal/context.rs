@@ -22,6 +22,7 @@ use crate::{
 /// The `TextureReadbackStorage` struct keeps one Metal transfer result alive for later CPU mapping.
 pub(crate) struct TextureReadbackStorage {
 	pub(crate) buffer: Retained<ProtocolObject<dyn mtl::MTLBuffer>>,
+	/// Reserved for the compact image when the transfer is recorded, and filled when it is mapped.
 	pub(crate) bytes: Vec<u8>,
 	pub(crate) extent: Extent,
 	pub(crate) format: crate::Formats,

@@ -541,8 +541,15 @@ impl MetalResourceTracker {
 	}
 
 	/// Records accesses that occurred throughout an encoder without adding an artificial trailing command.
-	pub(crate) fn record_final(&mut self, scope: MetalEncoderScope, uses: impl IntoIterator<Item = MetalResourceUse>) {
-		for resource_use in Self::consolidate(uses) {
+	///
+	/// `uses` must be consolidated as [`Self::consolidate_in_place`] leaves them, so a render pass consolidates its
+	/// attachment writes once and records them after every draw.
+	pub(crate) fn record_final(&mut self, scope: MetalEncoderScope, uses: &[MetalResourceUse]) {
+		debug_assert!(
+			uses.is_sorted_by_key(|resource_use| (resource_use.key, resource_use.region)),
+			"Unconsolidated final Metal resource uses. The most likely cause is that a caller skipped consolidate_in_place.",
+		);
+		for &resource_use in uses {
 			self.apply_use(scope, resource_use);
 		}
 	}
@@ -630,7 +637,7 @@ impl MetalResourceTracker {
 	}
 
 	/// Consolidates one materialized use table once so command recording can consume it by reference.
-	pub(crate) fn consolidate_in_place(uses: &mut SmallVec<[MetalResourceUse; 16]>) {
+	pub(crate) fn consolidate_in_place<A: smallvec::Array<Item = MetalResourceUse>>(uses: &mut SmallVec<A>) {
 		uses.retain(|resource_use| !resource_use.stages.is_empty() && !resource_use.access.is_empty());
 		uses.sort_unstable_by_key(|resource_use| (resource_use.key, resource_use.region));
 
@@ -851,7 +858,7 @@ mod tests {
 		let attachment = buffer(crate::AccessPolicies::WRITE, mtl::MTLStages::Fragment);
 		tracker.consume(scope, [attachment]);
 		tracker.consume(scope, [buffer(crate::AccessPolicies::READ, mtl::MTLStages::Fragment)]);
-		tracker.record_final(scope, [attachment]);
+		tracker.record_final(scope, &[attachment]);
 		tracker.finish_recording();
 
 		let barrier = tracker.consume(
@@ -872,7 +879,7 @@ mod tests {
 		let descriptor = buffer(crate::AccessPolicies::READ, mtl::MTLStages::Fragment);
 		tracker.consume(scope, [attachment]);
 		tracker.consume(scope, [descriptor]);
-		tracker.record_final(scope, [attachment]);
+		tracker.record_final(scope, &[attachment]);
 
 		let barrier = tracker.consume(scope, [descriptor]);
 

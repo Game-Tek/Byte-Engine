@@ -256,21 +256,30 @@ impl crate::context::Context for Context {
 		let pointer = readback.buffer.contents().as_ptr().cast::<u8>();
 		let layout = &readback.layout;
 		let native_bytes_per_image = readback.native_bytes_per_row * layout.row_count;
-		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact authoritative layout.
+		debug_assert_eq!(
+			layout.bytes_per_image,
+			layout.bytes_per_row * layout.row_count,
+			"Metal readback rows do not tile the compact image. The most likely cause is a copy layout with row padding.",
+		);
+		// Metal requires aligned native rows. Repack once mapping is synchronized so callers receive the compact
+		// authoritative layout, writing into the bytes the transfer reserved.
+		let destination = readback.bytes.spare_capacity_mut().as_mut_ptr().cast::<u8>();
 		for image in 0..layout.depth_slices {
-			// SAFETY: The transfer sized the mapped buffer for every padded row and the owned vector for every compact
-			// row of each image, and the two allocations are distinct.
+			// SAFETY: The transfer sized the mapped buffer for every padded row and reserved the owned vector for every
+			// compact row of each image, and the two allocations are distinct.
 			unsafe {
 				utils::copy_rows(
 					pointer.add(image * native_bytes_per_image),
 					readback.native_bytes_per_row,
-					readback.bytes.as_mut_ptr().add(image * layout.bytes_per_image),
+					destination.add(image * layout.bytes_per_image),
 					layout.bytes_per_row,
 					layout.bytes_per_row,
 					layout.row_count,
 				);
 			}
 		}
+		// SAFETY: Each image's rows tile its compact bytes, so the copies initialized every byte of the reserved size.
+		unsafe { readback.bytes.set_len(layout.bytes_per_image * layout.depth_slices) };
 
 		Ok(crate::TextureReadback {
 			bytes: readback.bytes,

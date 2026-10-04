@@ -221,13 +221,7 @@ impl CommandBufferRecording<'_> {
 		let addresses = snapshot
 			.argument_buffers
 			.iter()
-			.map(|(stage, buffer, offset)| {
-				let address = buffer
-					.gpuAddress()
-					.checked_add(*offset as u64)
-					.expect("Metal argument buffer GPU address overflowed. The most likely cause is an invalid upload offset.");
-				(*stage, address)
-			})
+			.map(|&(stage, _, address)| (stage, address))
 			.collect::<SmallVec<[_; 5]>>();
 		let applied = AppliedDescriptorBinding {
 			key: snapshot.key.clone(),
@@ -324,16 +318,16 @@ impl CommandBufferRecording<'_> {
 			.stage_argument_layouts
 			.iter()
 			.map(|stage_layout| {
-				let (buffer, offset) = if transient {
+				let (buffer, offset, buffer_address) = if transient {
 					debug_assert!(
 						stage_layout.argument_encoder.alignment() <= UPLOAD_ALIGNMENT,
 						"Metal argument encoder alignment exceeds the upload arena alignment. The most likely cause is a device requiring more than 256-byte argument buffer alignment.",
 					);
-					let (buffer, offset) = self
+					let (page, offset) = self
 						.commit
 						.upload_arena
 						.allocate(self.device.metal_device, stage_layout.encoded_length.max(1));
-					(buffer.clone(), offset)
+					(page.buffer.clone(), offset, page.gpu_address)
 				} else {
 					let buffer = self
 						.device
@@ -349,10 +343,15 @@ impl CommandBufferRecording<'_> {
 					if self.device.debug_labels {
 						buffer.setLabel(Some(&NSString::from_str("Argument Buffer")));
 					}
-					(buffer, 0)
+					let buffer_address = buffer.gpuAddress();
+					(buffer, 0, buffer_address)
 				};
 				self.encode_stage_argument_buffer(stage_layout, &buffer, offset, &mut texture_views);
-				(stage_layout.stage, buffer, offset)
+				// Every apply binds this address, so it is resolved once here.
+				let address = buffer_address
+					.checked_add(offset as u64)
+					.expect("Metal argument buffer GPU address overflowed. The most likely cause is an invalid upload offset.");
+				(stage_layout.stage, buffer, address)
 			})
 			.collect::<SmallVec<[_; 5]>>();
 		Materialization {
@@ -439,11 +438,7 @@ impl CommandBufferRecording<'_> {
 	fn prepare_command(&mut self, additional_uses: impl IntoIterator<Item = synchronization::MetalResourceUse>) {
 		self.apply_bound_pipeline();
 		self.apply_bound_descriptors();
-		let mut binding = self.encoder_state_mut().descriptors.take().expect(
-			"Metal descriptors are missing. The most likely cause is that descriptor application did not retain its materialization.",
-		);
-		self.consume_resources_with_descriptors(Some(&mut binding), additional_uses);
-		self.encoder_state_mut().descriptors = Some(binding);
+		self.consume_resources_with_descriptors(true, additional_uses);
 		self.flush_push_constants();
 	}
 

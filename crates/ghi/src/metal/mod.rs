@@ -199,6 +199,13 @@ pub(crate) mod utils {
 		row_bytes: usize,
 		rows: usize,
 	) {
+		// Rows packed on both sides form one contiguous range, which one copy moves faster than a copy per row.
+		if source_pitch == row_bytes && destination_pitch == row_bytes {
+			// SAFETY: With both pitches equal to the row size, the caller's rows join into `rows * row_bytes` contiguous
+			// bytes on each side.
+			unsafe { std::ptr::copy_nonoverlapping(source, destination, rows * row_bytes) };
+			return;
+		}
 		for row in 0..rows {
 			// SAFETY: The caller guarantees both rows lie inside distinct live allocations.
 			unsafe {

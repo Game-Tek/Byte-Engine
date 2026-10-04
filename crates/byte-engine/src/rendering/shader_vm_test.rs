@@ -5,6 +5,14 @@ use besl::vm::{Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, R
 const TEST_INSTRUCTION_LIMIT: usize = 4_000_000;
 const TEST_CALL_DEPTH_LIMIT: usize = 128;
 
+/// A column-major identity matrix in the BESL VM representation.
+pub(crate) const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+/// Converts a row-major matrix to the column-major element order the BESL VM multiplies with.
+pub(crate) fn column_major(matrix: maths_rs::Mat4f) -> [f32; 16] {
+	std::array::from_fn(|index| matrix[(index % 4) * 4 + index / 4])
+}
+
 /// Creates a VM input buffer from a compiled shader interface.
 pub(crate) fn input_buffer(program: &ExecutableProgram, index: u8) -> Buffer {
 	Buffer::new(program.input_layout(index).expect("Missing VM input layout.").clone())
@@ -86,12 +94,19 @@ pub(crate) fn array_buffer(program: &ExecutableProgram, slot: ResourceSlot, elem
 	)
 }
 
+/// Returns the configuration of workgroup lane `thread_idx`, bounded so a runaway shader fails its test instead of
+/// hanging it.
+///
+/// Workgroup fixtures add the lane's coordinates and pass one per lane to [`ExecutableProgram::run_workgroup`].
+pub(crate) fn lane_config(thread_idx: u32) -> ExecutionConfig {
+	ExecutionConfig::new(TEST_INSTRUCTION_LIMIT)
+		.with_call_depth_limit(TEST_CALL_DEPTH_LIMIT)
+		.with_thread_idx(thread_idx)
+}
+
 /// Executes one bounded shader invocation at the requested two-dimensional thread coordinate.
 pub(crate) fn run_at(program: &ExecutableProgram, descriptors: &mut DescriptorBindings<'_>, thread_id: [u32; 2]) {
-	let config = ExecutionConfig::new(TEST_INSTRUCTION_LIMIT)
-		.with_call_depth_limit(TEST_CALL_DEPTH_LIMIT)
-		.with_thread_id(thread_id);
-	program.run_main_with_config(descriptors, &config).expect(
+	program.run_main_with_config(descriptors, &lane_config(0).with_thread_id(thread_id)).expect(
 		"Failed to execute a production shader with the BESL VM. The most likely cause is missing runtime support or an invalid fixture binding.",
 	);
 }

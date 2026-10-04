@@ -390,7 +390,9 @@ mod tests {
 		DescriptorBindings, ResourceSlot, Value, builtin_instance_index_slot, builtin_position_slot, input_slot, output_slot,
 	};
 
-	use crate::rendering::shader_vm_test::{buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at};
+	use crate::rendering::shader_vm_test::{
+		IDENTITY_MATRIX, buffer, builtin_position_buffer, compile, input_buffer, output_buffer, run_at,
+	};
 
 	/// Links the checked-in Simple fragment shader and returns the program, which owns every function it calls.
 	fn create_simple_fragment_program() -> besl::NodeReference {
@@ -413,8 +415,6 @@ mod tests {
 		program.get_main().expect("Simple vertex asset should contain main");
 		program
 	}
-
-	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 	fn assert_vec4_close(actual: [f32; 4], expected: [f32; 4]) {
 		for (actual, expected) in actual.into_iter().zip(expected) {

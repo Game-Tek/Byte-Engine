@@ -324,12 +324,11 @@ mod tests {
 
 	use super::*;
 	use crate::rendering::shader_vm_test::{
-		builtin_position_buffer, compile, input_buffer, output_buffer, push_constant_buffer, run_at,
+		IDENTITY_MATRIX, builtin_position_buffer, compile, input_buffer, output_buffer, push_constant_buffer, run_at,
 	};
 
 	const DEBUG_VERTEX_BESL: &str = include_str!("../../../assets/rendering/debug/vertex.besl");
 	const DEBUG_FRAGMENT_BESL: &str = include_str!("../../../assets/rendering/debug/fragment.besl");
-	const IDENTITY_MATRIX: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 	/// Links one checked-in debug shader through the same BESL frontend used by production baking.
 	///

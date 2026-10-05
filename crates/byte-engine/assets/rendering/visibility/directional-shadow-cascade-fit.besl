@@ -1,6 +1,7 @@
 // Shrinks each directional shadow cascade from the CPU's fit to its slice of the camera frustum down to the box its
-// receivers fill, as the receiver-bounds pass found it. One thread rewrites one cascade's view in place, and a cascade
-// without receivers keeps the CPU's fit.
+// receivers fill, as the linear depth pyramid pass found it. One thread rewrites one cascade's view in place, and a
+// cascade without receivers keeps the CPU's fit. Each thread then resets its cascade's bounds, so the next frame's
+// pyramid pass merges into empty boxes without a clear.
 //
 // Like the CPU's fit, the new view is a square padded by the edge margin, sized on the same ladder of steps per
 // doubling, centered on the texel grid fixed in the world, and reaching the caster reach toward the light. It is never
@@ -43,7 +44,7 @@ receiver_bounds: descriptor<{ type: ReceiverBounds, binding: 1034, access: read_
 receiver_fit: descriptor<{ type: ReceiverFit, binding: 1035, access: read }>;
 cascade_size_steps: descriptor<{ type: CascadeSizeSteps, binding: 1036, access: read_write, memory: device }>;
 
-// Must match directional-shadow-receiver-bounds.besl.
+// Must match gtao-depth-pyramid.besl.
 RECEIVER_BOUNDS_STEPS_PER_UNIT: const f32 = 4194304.0;
 RECEIVER_BOUNDS_OFFSET: const f32 = 8388608.0;
 RECEIVER_BOUNDS_CODE_RANGE: const u32 = 16777216;
@@ -81,6 +82,9 @@ main: fn (input: StageInput) -> void {
 			let upper_x: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 3]));
 			let upper_y: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 4]));
 			let upper_z: f32 = decode_upper_bound(atomic_load(receiver_bounds.bounds[first + 5]));
+			for (let bound: u32 = 0; bound < 6; bound = bound + 1) {
+				atomic_store(receiver_bounds.bounds[first + bound], 0);
+			}
 			// The frustum fit's light-space center x and y, half extent, and depth range, in meters. Its normalized
 			// device x and y span one half extent per unit, and z falls from one at its light-facing side to zero one
 			// depth range along the light.

@@ -1,8 +1,8 @@
 //! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures.
 
 use besl::vm::{
-	DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, Sampler, SamplerReductionMode,
-	TaskOutputs, Texture, Value, WorkgroupState, input_slot, output_slot,
+	DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
+	WorkgroupState, input_slot, output_slot,
 };
 
 use super::mesh_dispatch::MeshDispatchWorkItem;
@@ -46,6 +46,12 @@ const GTAO_WORKGROUP_SIZE: usize = 128;
 const PYRAMID_WORKGROUP_WIDTH: u32 = 8;
 const PYRAMID_WORKGROUP_HEIGHT: u32 = 4;
 const PYRAMID_WORKGROUP_SIZE: usize = 32;
+/// The linear depth pyramid pass's workgroup, and its receiver bounds and cascade fit bindings.
+const DEPTH_PYRAMID_WORKGROUP_WIDTH: u32 = 16;
+const DEPTH_PYRAMID_WORKGROUP_HEIGHT: u32 = 16;
+const DEPTH_PYRAMID_WORKGROUP_SIZE: usize = 256;
+const PYRAMID_RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1037);
+const PYRAMID_RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1038);
 const PIXEL_MAPPING_WORKGROUP_WIDTH: u32 = 16;
 const PIXEL_MAPPING_WORKGROUP_SIZE: usize = 256;
 /// The 8x8 workgroup most visibility compute passes use, such as the material count, the occlusion pyramid, the GTAO
@@ -1492,14 +1498,24 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 		empty_image((width / 8).max(1), (height / 8).max(1)),
 	];
 	let mut view = gtao_view_data(program, width, height);
+	// Without a cascade fit, the pass leaves the bounds alone.
+	let mut bounds = buffer(program, PYRAMID_RECEIVER_BOUNDS_SLOT);
+	let mut fit = buffer(program, PYRAMID_RECEIVER_FIT_SLOT);
+	let mut push_constant = push_constant_buffer(program);
+	push_constant
+		.write("fit_receivers", Value::U32(0))
+		.expect("depth pyramid push constant");
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut view);
-	descriptors.bind_texture_with_sampler(ResourceSlot::new(1033), source, Sampler::new(SamplerReductionMode::Max));
+	descriptors.bind_texture(ResourceSlot::new(1033), source);
 	let [reduced_1, reduced_2, reduced_3] = &mut reduced;
 	descriptors.bind_image(ResourceSlot::new(1034), reduced_1);
 	descriptors.bind_image(ResourceSlot::new(1035), reduced_2);
 	descriptors.bind_image(ResourceSlot::new(1036), reduced_3);
-	run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(program, descriptors, PYRAMID_WORKGROUP_WIDTH, [0, 0]);
+	descriptors.bind_buffer(PYRAMID_RECEIVER_BOUNDS_SLOT, &mut bounds);
+	descriptors.bind_buffer(PYRAMID_RECEIVER_FIT_SLOT, &mut fit);
+	descriptors.bind_push_constant(&mut push_constant);
+	run_workgroup_containing::<DEPTH_PYRAMID_WORKGROUP_SIZE>(program, descriptors, DEPTH_PYRAMID_WORKGROUP_WIDTH, [0, 0]);
 	reduced
 }
 
@@ -2692,11 +2708,6 @@ async fn visibility_assets_lower_to_the_platform_shader_language() {
 			Settings::compute(Extent::line(super::layout::LIGHT_CLUSTER_MASK_WORDS as u32)),
 		),
 		(
-			"directional_shadow_receiver_bounds",
-			asset_source!("directional-shadow-receiver-bounds.besl"),
-			tile(),
-		),
-		(
 			"directional_shadow_cascade_fit",
 			asset_source!("directional-shadow-cascade-fit.besl"),
 			Settings::compute(Extent::line(4)),
@@ -2865,7 +2876,7 @@ fn light_clusters_hold_the_lights_whose_reach_touches_them() {
 const RECEIVER_BOUNDS_SLOT: ResourceSlot = ResourceSlot::new(1034);
 const RECEIVER_FIT_SLOT: ResourceSlot = ResourceSlot::new(1035);
 const CASCADE_SIZE_STEPS_SLOT: ResourceSlot = ResourceSlot::new(1036);
-/// Pixels one receiver-bounds workgroup covers on each side: eight threads of four pixels.
+/// Pixels one depth pyramid workgroup covers on each side: sixteen threads of two pixels.
 const RECEIVER_BOUNDS_TILE: u32 = 32;
 const RECEIVER_FIT_EXTENT: u32 = 64;
 const RECEIVER_FIT_WALL_Z: f32 = 20.0;
@@ -2944,8 +2955,12 @@ fn receiver_fit_scene() -> ReceiverFitScene {
 	}
 }
 
-fn receiver_fit_buffer(program: &ExecutableProgram, data: &super::render_pass::ReceiverFitShaderData) -> besl::vm::Buffer {
-	let mut fit = buffer(program, RECEIVER_FIT_SLOT);
+fn receiver_fit_buffer(
+	program: &ExecutableProgram,
+	slot: ResourceSlot,
+	data: &super::render_pass::ReceiverFitShaderData,
+) -> besl::vm::Buffer {
+	let mut fit = buffer(program, slot);
 	for (index, row) in data.view_to_cascade_rows.iter().enumerate() {
 		fit.write_indexed("view_to_cascade_rows", index, Value::Vec4F(*row))
 			.expect("receiver fit rows");
@@ -2965,20 +2980,41 @@ fn receiver_fit_buffer(program: &ExecutableProgram, data: &super::render_pass::R
 	fit
 }
 
-/// Runs the receiver-bounds pass over the whole scene and returns the bounds it found.
+/// Runs the depth pyramid pass with the cascade fit enabled over the whole scene and returns the receiver bounds it
+/// found.
 fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
-	let program = asset!("directional-shadow-receiver-bounds.besl");
+	let program = asset!("gtao-depth-pyramid.besl");
+	let half_extent = RECEIVER_FIT_EXTENT / 2;
 	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
-	let mut fit = receiver_fit_buffer(&program, &scene.shader_data);
-	let mut bounds = buffer(&program, RECEIVER_BOUNDS_SLOT);
+	let mut view = gtao_view_data(&program, half_extent, half_extent);
+	let mut reduced = [
+		empty_image(half_extent, half_extent),
+		empty_image(half_extent / 2, half_extent / 2),
+		empty_image(half_extent / 4, half_extent / 4),
+	];
+	let mut fit = receiver_fit_buffer(&program, PYRAMID_RECEIVER_FIT_SLOT, &scene.shader_data);
+	let mut bounds = buffer(&program, PYRAMID_RECEIVER_BOUNDS_SLOT);
+	let mut push_constant = push_constant_buffer(&program);
+	push_constant
+		.write("fit_receivers", Value::U32(1))
+		.expect("depth pyramid push constant");
 	let tiles = RECEIVER_FIT_EXTENT / RECEIVER_BOUNDS_TILE;
 	for tile in 0..tiles * tiles {
-		let base = [tile % tiles * TILE_WORKGROUP_WIDTH, tile / tiles * TILE_WORKGROUP_WIDTH];
+		let base = [
+			tile % tiles * DEPTH_PYRAMID_WORKGROUP_WIDTH,
+			tile / tiles * DEPTH_PYRAMID_WORKGROUP_HEIGHT,
+		];
+		let [reduced_1, reduced_2, reduced_3] = &mut reduced;
 		let mut descriptors = DescriptorBindings::new();
+		descriptors.bind_buffer(VIEWS_SLOT, &mut view);
 		descriptors.bind_texture(ResourceSlot::new(1033), &mut depth);
-		descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, &mut bounds);
-		descriptors.bind_buffer(RECEIVER_FIT_SLOT, &mut fit);
-		run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, base);
+		descriptors.bind_image(ResourceSlot::new(1034), reduced_1);
+		descriptors.bind_image(ResourceSlot::new(1035), reduced_2);
+		descriptors.bind_image(ResourceSlot::new(1036), reduced_3);
+		descriptors.bind_buffer(PYRAMID_RECEIVER_BOUNDS_SLOT, &mut bounds);
+		descriptors.bind_buffer(PYRAMID_RECEIVER_FIT_SLOT, &mut fit);
+		descriptors.bind_push_constant(&mut push_constant);
+		run_workgroup_containing::<DEPTH_PYRAMID_WORKGROUP_SIZE>(&program, descriptors, DEPTH_PYRAMID_WORKGROUP_WIDTH, base);
 	}
 	bounds
 }
@@ -3006,7 +3042,7 @@ fn run_cascade_fit(
 			views.write_array_member(1 + cascade, field, value).expect("cascade view");
 		}
 	}
-	let mut fit = receiver_fit_buffer(program, &scene.shader_data);
+	let mut fit = receiver_fit_buffer(program, RECEIVER_FIT_SLOT, &scene.shader_data);
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(VIEWS_SLOT, &mut views);
 	descriptors.bind_buffer(RECEIVER_BOUNDS_SLOT, bounds);
@@ -3050,6 +3086,15 @@ fn cascades_fit_the_receivers_the_camera_sees_in_the_besl_vm() {
 	let mut size_steps = buffer(&program, CASCADE_SIZE_STEPS_SLOT);
 	let views = run_cascade_fit(&program, &scene, &mut bounds, &mut size_steps);
 	let resolution = super::layout::DEFAULT_SHADOW_MAP_RESOLUTION as f32;
+
+	// The fit resets the bounds it read, so the next frame's depth pyramid pass merges into empty boxes.
+	for bound in 0..24 {
+		assert_eq!(
+			bounds.read_array_element(bound).expect("receiver bound"),
+			Value::U32(0),
+			"Bound {bound} was not reset after the fit. The most likely cause is that the fit skipped the store."
+		);
+	}
 
 	for (cascade, frame) in scene.cascades.iter().enumerate() {
 		let view_projection = read_matrix(&views, 1 + cascade, "view_projection");

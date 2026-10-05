@@ -18,6 +18,9 @@ pub(super) const DEPTH_PYRAMID_MIP_COUNT: u32 = 3;
 
 const VIEW_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(0);
 const INPUT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1033);
+// The directional shadow receiver bounds the pass finds, and the CPU's cascade fit they are measured against.
+const RECEIVER_BOUNDS_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1037);
+const RECEIVER_FIT_BINDING: ghi::ResourceSlot = ghi::ResourceSlot::new(1038);
 const OUTPUT_BINDINGS: [ghi::ResourceSlot; 3] = [
 	ghi::ResourceSlot::new(1034),
 	ghi::ResourceSlot::new(1035),
@@ -85,6 +88,8 @@ impl DepthPyramidPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
+		receiver_bounds: ghi::BaseBufferHandle,
+		receiver_fit: ghi::BaseBufferHandle,
 	) -> Self {
 		let descriptor_set = context.create_descriptor_set(Some("Depth Pyramid Descriptor Set"));
 		let view_data = context.build_dynamic_buffer(
@@ -92,9 +97,12 @@ impl DepthPyramidPass {
 				.name("Screen View Data")
 				.device_accesses(ghi::DeviceAccesses::HostToDevice),
 		);
-		// Metal applies min/max reduction only when every sampler filter is linear, as the default ones are.
-		// Centered samples then conservatively collapse each reversed-depth 2x2 footprint.
-		let max_sampler = context.build_sampler(ghi::sampler::Builder::new().reduction_mode(ghi::SamplingReductionModes::Max));
+		// The pass gathers texel quads, which no sampler filter or reduction touches.
+		let point_sampler = context.build_sampler(
+			ghi::sampler::Builder::new()
+				.filtering_mode(ghi::FilteringModes::Closest)
+				.mip_map_mode(ghi::FilteringModes::Closest),
+		);
 		// The initial 8x8 allocation keeps all declared mips valid before the first sink resize.
 		let depth_pyramid = context.build_dynamic_image(
 			ghi::image::Builder::new(ghi::Formats::R32F, ghi::Uses::Storage | ghi::Uses::Image)
@@ -105,7 +113,15 @@ impl DepthPyramidPass {
 		);
 		let mut writes = vec![
 			ghi::DescriptorWrite::buffer(descriptor_set, VIEW_BINDING, view_data.into()),
-			ghi::DescriptorWrite::combined_image_sampler(descriptor_set, INPUT_BINDING, depth, max_sampler, ghi::Layouts::Read),
+			ghi::DescriptorWrite::combined_image_sampler(
+				descriptor_set,
+				INPUT_BINDING,
+				depth,
+				point_sampler,
+				ghi::Layouts::Read,
+			),
+			ghi::DescriptorWrite::buffer(descriptor_set, RECEIVER_BOUNDS_BINDING, receiver_bounds),
+			ghi::DescriptorWrite::buffer(descriptor_set, RECEIVER_FIT_BINDING, receiver_fit),
 		];
 		writes.extend(OUTPUT_BINDINGS.iter().enumerate().map(|(index, &binding)| {
 			ghi::DescriptorWrite::image_mip(descriptor_set, binding, depth_pyramid, ghi::Layouts::General, index as u32)
@@ -120,26 +136,33 @@ impl DepthPyramidPass {
 		}
 	}
 
-	/// Uploads this frame's camera constants, resizes the pyramid, and returns the reduction recording.
+	/// Uploads this frame's camera constants, resizes the pyramid, and returns the reduction recording. With
+	/// `fit_receivers`, the pass also finds the directional shadow receiver bounds the cascade fit reads after it.
 	pub(super) fn prepare(
 		&self,
 		frame: &mut ghi::implementation::Frame,
 		sink: &Sink,
 		pipeline: ghi::PipelineHandle,
+		fit_receivers: bool,
 	) -> impl RenderPassFunction + use<> {
 		let half_extent = sink.extent().scaled_down(2);
 		*frame.get_mut_dynamic_buffer_slice(self.view_data) = screen_view_data(sink, half_extent);
 		frame.sync_buffer(self.view_data);
 		frame.resize_image(self.depth_pyramid.into(), half_extent);
-		let stage = super::ComputeStage {
-			label: "Linear Depth Pyramid",
-			pipeline,
-			descriptor_sets: [self.descriptor_set],
-			extent: half_extent,
-			workgroup: Extent::new(8, 4, 1),
-		};
+		let descriptor_set = self.descriptor_set;
 
-		move |c| super::record_compute_stages(c, None, &[stage])
+		move |c: &mut ghi::implementation::CommandBufferRecording| {
+			use ghi::command_buffer::{
+				BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, CommonCommandBufferMode as _,
+			};
+
+			c.start_region(|label| label.write_str("Linear Depth Pyramid"));
+			let c = c.bind_compute_pipeline(pipeline);
+			c.bind_descriptor_sets(&[descriptor_set]);
+			c.write_push_constant(0, [u32::from(fit_receivers)]);
+			c.dispatch(ghi::DispatchExtent::new(half_extent, Extent::square(16)));
+			c.end_region();
+		}
 	}
 }
 

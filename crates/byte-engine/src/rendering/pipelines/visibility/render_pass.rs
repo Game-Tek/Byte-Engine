@@ -332,7 +332,14 @@ impl VisibilityRenderPass {
 				ghi::Layouts::Read,
 			)
 		};
-		let depth_pyramid = DepthPyramidPass::new(context, &pipeline_manager, targets.depth);
+		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, base_descriptor_set);
+		let depth_pyramid = DepthPyramidPass::new(
+			context,
+			&pipeline_manager,
+			targets.depth,
+			cascade_fit.receiver_bounds(),
+			cascade_fit.receiver_fit_parameters(),
+		);
 		let occlusion = OcclusionCulling::new(context, &pipeline_manager, targets.depth);
 		let ssgi = SsgiPass::new(
 			context,
@@ -399,7 +406,7 @@ impl VisibilityRenderPass {
 		]);
 
 		Self {
-			cascade_fit: CascadeFitPass::new(context, &pipeline_manager, base_descriptor_set, targets.depth),
+			cascade_fit,
 			light_clusters,
 			visibility: VisibilityPass {
 				descriptor_sets: [base_descriptor_set, occlusion.descriptor_set],
@@ -519,7 +526,9 @@ impl VisibilityRenderPass {
 			false => None,
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
-		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline);
+		let depth_pyramid = self
+			.depth_pyramid
+			.prepare(frame, sink, depth_pyramid_pipeline, fits_receivers);
 		let sun_visibility = self.sun_visibility.prepare(
 			frame,
 			sink,
@@ -592,6 +601,8 @@ impl VisibilityRenderPass {
 				self.material_prepasses
 					.record(c, extent, prepass_pipelines, VisibilityPhase::Opaque)
 			});
+			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
+			c.counter(counters.depth_pyramid, &depth_pyramid);
 			if fits_receivers {
 				c.counter(counters.cascade_fit, &cascade_fit);
 				if let Some(shadows) = &shadows {
@@ -600,7 +611,6 @@ impl VisibilityRenderPass {
 			}
 			// GTAO and SSGI don't read shadows, so the GPU can run them alongside the shadow maps. The sun visibility
 			// resolve reads the maps and their pyramid, which both orders above record before it.
-			c.counter(counters.depth_pyramid, &depth_pyramid);
 			if let Some(sun_visibility) = &sun_visibility {
 				c.counter(counters.sun_visibility, sun_visibility);
 			}
